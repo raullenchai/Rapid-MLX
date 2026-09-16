@@ -5,7 +5,7 @@ import json
 
 import pytest
 
-from vllm_mlx.tool_parsers import MiniMaxToolParser, ToolParserManager
+from rapid_mlx.tool_parsers import MiniMaxToolParser, ToolParserManager
 
 
 class TestMiniMaxRegistration:

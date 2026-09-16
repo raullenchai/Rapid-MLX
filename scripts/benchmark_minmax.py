@@ -12,7 +12,7 @@ Measures 6 dimensions that map to our optimization tiers:
 
 Usage:
   # Start server first:
-  python -m vllm_mlx.cli serve <model> --port 8000 ...
+  python -m rapid_mlx.cli serve <model> --port 8000 ...
 
   # Run all benchmarks:
   python benchmark_minmax.py

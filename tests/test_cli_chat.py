@@ -15,7 +15,7 @@ from unittest.mock import patch
 
 import pytest
 
-from vllm_mlx import cli
+from rapid_mlx import cli
 
 
 def _sse(events: list[dict]) -> bytes:
@@ -171,7 +171,7 @@ def test_chat_no_model_defaults_to_qwen35_4b(hub_online_env):
         # download gate silently — that path is covered by the non-TTY tests.)
         patch.object(sys.stdin, "isatty", return_value=True),
         # Cold cache → select_chat_default() falls back to FIRST_RUN_MODEL.
-        patch("vllm_mlx.first_run.cached_known_aliases", return_value=[]),
+        patch("rapid_mlx.first_run.cached_known_aliases", return_value=[]),
         patch.object(cli, "chat_command", side_effect=captured.append),
     ):
         cli.main()
@@ -244,7 +244,7 @@ class _FakeMCPRuntime:
             for call in calls
         ]
         if on_event is not None:
-            from vllm_mlx.chat_mcp import ChatToolEvent
+            from rapid_mlx.chat_mcp import ChatToolEvent
 
             for call, message in zip(calls, messages, strict=True):
                 name = call["function"]["name"]
@@ -523,7 +523,7 @@ def test_complete_chat_with_mcp_preserves_partial_multi_call_results():
 
     class _Runtime(_FakeMCPRuntime):
         def execute_tool_calls(self, calls, on_event=None):
-            from vllm_mlx.chat_mcp import ChatToolEvent
+            from rapid_mlx.chat_mcp import ChatToolEvent
 
             completed = {
                 "role": "tool",
@@ -731,7 +731,7 @@ def test_chat_exit_agent_tip_fires_once_after_response(monkeypatch, tmp_path, ca
     monkeypatch.setenv("RAPID_MLX_STATE_DIR", str(tmp_path / "state"))
     # Force the interactive path so the TTY-gated tip runs under capsys.
     monkeypatch.setattr(
-        "vllm_mlx.chat_render.supports_rich_output", lambda *_a, **_k: True
+        "rapid_mlx.chat_render.supports_rich_output", lambda *_a, **_k: True
     )
 
     canned = [_delta("Hi there!")]
@@ -755,7 +755,7 @@ def test_chat_exit_agent_tip_skipped_when_no_response(monkeypatch, tmp_path, cap
     is NOT consumed, so a later real session can still show it."""
     monkeypatch.setenv("RAPID_MLX_STATE_DIR", str(tmp_path / "state"))
     monkeypatch.setattr(
-        "vllm_mlx.chat_render.supports_rich_output", lambda *_a, **_k: True
+        "rapid_mlx.chat_render.supports_rich_output", lambda *_a, **_k: True
     )
 
     with _fake_server([_delta("unused")]) as (port, _payloads):
@@ -986,7 +986,7 @@ def test_chat_command_owns_mcp_runtime_without_configuring_serve(monkeypatch, ca
             self.closed = True
 
     def _complete(base_url, payload, runtime, timeout_s, max_rounds, on_tool_event):
-        from vllm_mlx.chat_mcp import ChatToolEvent
+        from rapid_mlx.chat_mcp import ChatToolEvent
 
         loop_payloads.append((base_url, deepcopy(payload), runtime, timeout_s))
         assert max_rounds == 8
@@ -1003,7 +1003,7 @@ def test_chat_command_owns_mcp_runtime_without_configuring_serve(monkeypatch, ca
         )
         return "done", {"completion_tokens": 1, "finish_reason": "stop"}
 
-    monkeypatch.setattr("vllm_mlx.chat_mcp.ChatMCPRuntime", _Runtime)
+    monkeypatch.setattr("rapid_mlx.chat_mcp.ChatMCPRuntime", _Runtime)
     monkeypatch.setattr(cli, "_complete_chat_with_mcp", _complete)
     monkeypatch.setattr("atexit.register", cleanup_callbacks.append)
     monkeypatch.setattr("builtins.input", lambda _p="": next(iter_inputs))
@@ -1054,7 +1054,7 @@ def test_chat_command_closes_mcp_runtime_on_unexpected_error(monkeypatch):
     def _explode(*_args, **_kwargs):
         raise ValueError("unexpected")
 
-    monkeypatch.setattr("vllm_mlx.chat_mcp.ChatMCPRuntime", _Runtime)
+    monkeypatch.setattr("rapid_mlx.chat_mcp.ChatMCPRuntime", _Runtime)
     monkeypatch.setattr(cli, "_complete_chat_with_mcp", _explode)
     monkeypatch.setattr("builtins.input", lambda _p="": "use a tool")
 
@@ -1090,7 +1090,7 @@ def test_chat_command_surfaces_and_retries_mcp_close_failure(monkeypatch):
             if self.close_calls == 1:
                 raise RuntimeError("still stopping")
 
-    monkeypatch.setattr("vllm_mlx.chat_mcp.ChatMCPRuntime", _Runtime)
+    monkeypatch.setattr("rapid_mlx.chat_mcp.ChatMCPRuntime", _Runtime)
     monkeypatch.setattr("atexit.register", cleanup_callbacks.append)
     monkeypatch.setattr("builtins.input", lambda _p="": "exit")
 
@@ -1109,7 +1109,7 @@ def test_chat_command_reports_mcp_startup_failure(monkeypatch, capsys):
         def __init__(self, _path):
             raise RuntimeError("cannot connect")
 
-    monkeypatch.setattr("vllm_mlx.chat_mcp.ChatMCPRuntime", _BrokenRuntime)
+    monkeypatch.setattr("rapid_mlx.chat_mcp.ChatMCPRuntime", _BrokenRuntime)
     with (
         _fake_server([]) as (port, _payloads),
         pytest.raises(SystemExit) as exc,
@@ -1651,7 +1651,7 @@ def test_ensure_model_downloaded_aborts_when_the_hub_wont_answer(
     "Pre-download skipped; server will retry" and starts the serve subprocess,
     which walks straight back into the same unbounded lookup.
     """
-    from vllm_mlx import _download_gate as gate
+    from rapid_mlx import _download_gate as gate
 
     monkeypatch.setattr(
         "huggingface_hub.try_to_load_from_cache", lambda *_a, **_kw: None
@@ -1682,7 +1682,7 @@ def test_ensure_model_downloaded_pins_resolved_sha_and_records_main_ref(
     """The bounded probe result must replace, not precede, an unbounded lookup."""
     from types import SimpleNamespace
 
-    from vllm_mlx import _download_gate as gate
+    from rapid_mlx import _download_gate as gate
 
     monkeypatch.setattr("os.path.exists", lambda _p: False)
     monkeypatch.setattr(cli, "_check_disk_space", lambda *_a, **_kw: None)
@@ -1724,7 +1724,7 @@ def test_ensure_model_downloaded_uses_strict_cache_probe(monkeypatch):
         cache_calls.append(name)
         return True
 
-    monkeypatch.setattr("vllm_mlx._download_gate.is_repo_cached", _fake_is_cached)
+    monkeypatch.setattr("rapid_mlx._download_gate.is_repo_cached", _fake_is_cached)
 
     # If the strict probe returns True the function must return without
     # touching the disk gate or snapshot_download (cache hit path).
@@ -1913,7 +1913,7 @@ def test_chat_command_switch_model_rollback_on_wait_failure(monkeypatch, capsys)
     monkeypatch.setattr(cli, "_ensure_model_downloaded", lambda *_a, **_kw: None)
     monkeypatch.setattr(cli, "_wait_for_chat_server", _fake_wait)
     monkeypatch.setattr(
-        "vllm_mlx.model_aliases.resolve_model",
+        "rapid_mlx.model_aliases.resolve_model",
         lambda alias: f"mlx-community/{alias}-resolved",
     )
 
@@ -1993,7 +1993,7 @@ def test_chat_switch_download_abort_reports_reason_above(monkeypatch, capsys):
     monkeypatch.setattr(cli, "_ensure_model_downloaded", _ensure_aborts_on_switch)
     monkeypatch.setattr(cli, "_wait_for_chat_server", lambda *_a, **_kw: True)
     monkeypatch.setattr(
-        "vllm_mlx.model_aliases.resolve_model",
+        "rapid_mlx.model_aliases.resolve_model",
         lambda alias: f"mlx-community/{alias}-resolved",
     )
 
@@ -2051,7 +2051,7 @@ def test_chat_switch_confirm_cancel_keeps_old_server(
             log_handle.release()
         return proc, f"http://127.0.0.1:{port}"
 
-    from vllm_mlx import _download_gate as gate
+    from rapid_mlx import _download_gate as gate
 
     monkeypatch.setattr(cli, "_spawn_chat_server", _fake_spawn)
     monkeypatch.setattr(cli, "_ensure_model_downloaded", lambda *_a, **_kw: None)
@@ -2065,7 +2065,7 @@ def test_chat_switch_confirm_cancel_keeps_old_server(
         lambda *_a, **_kw: (_ for _ in ()).throw(SystemExit(0)),
     )
     monkeypatch.setattr(
-        "vllm_mlx.model_aliases.resolve_model",
+        "rapid_mlx.model_aliases.resolve_model",
         lambda alias: f"mlx-community/{alias}-resolved",
     )
 
@@ -2121,7 +2121,7 @@ def test_chat_switch_refuses_offline_uncached_before_confirm(monkeypatch, capsys
             log_handle.release()
         return proc, f"http://127.0.0.1:{port}"
 
-    from vllm_mlx import _download_gate as gate
+    from rapid_mlx import _download_gate as gate
 
     monkeypatch.setattr(cli, "_spawn_chat_server", _fake_spawn)
     monkeypatch.setattr(cli, "_ensure_model_downloaded", lambda *_a, **_kw: None)
@@ -2139,7 +2139,7 @@ def test_chat_switch_refuses_offline_uncached_before_confirm(monkeypatch, capsys
 
     monkeypatch.setattr(gate, "confirm_or_abort", _confirm_never)
     monkeypatch.setattr(
-        "vllm_mlx.model_aliases.resolve_model",
+        "rapid_mlx.model_aliases.resolve_model",
         lambda alias: f"mlx-community/{alias}-resolved",
     )
 
@@ -2583,7 +2583,7 @@ def test_chat_no_thinking_hidden_from_help(capsys):
     ``chat --help`` (otherwise we double-document the same flag).
 
     In-process help capture (DeepSeek round-3 NIT #3) — earlier version
-    forked ``python -m vllm_mlx.cli`` which is the only test in the
+    forked ``python -m rapid_mlx.cli`` which is the only test in the
     file that forks a subprocess, adds ~1s overhead, depends on
     PYTHONPATH/install state, and breaks in restricted CI runners.
     """
@@ -2643,7 +2643,7 @@ def test_teardown_unlinks_only_empty_log_files(tmp_path, monkeypatch):
     monkeypatch.setattr(cli, "_ensure_model_downloaded", lambda *_a, **_kw: None)
     monkeypatch.setattr(cli, "_wait_for_chat_server", lambda *_a, **_kw: None)
     monkeypatch.setattr(
-        "vllm_mlx.model_aliases.resolve_model",
+        "rapid_mlx.model_aliases.resolve_model",
         lambda alias: f"mlx-community/{alias}-resolved",
     )
 
@@ -2739,12 +2739,12 @@ def test_main_skips_download_gate_when_chat_spawn_env_set(monkeypatch):
         calls.append("gate")
         return False
 
-    monkeypatch.setattr("vllm_mlx._download_gate.is_repo_cached", _fake_gate)
+    monkeypatch.setattr("rapid_mlx._download_gate.is_repo_cached", _fake_gate)
     monkeypatch.setattr(
-        "vllm_mlx._download_gate.estimate_repo_size_bytes", lambda *_a, **_kw: None
+        "rapid_mlx._download_gate.estimate_repo_size_bytes", lambda *_a, **_kw: None
     )
     monkeypatch.setattr(
-        "vllm_mlx._download_gate.confirm_or_abort",
+        "rapid_mlx._download_gate.confirm_or_abort",
         lambda *_a, **_kw: calls.append("confirm") or True,
     )
 
@@ -2772,15 +2772,15 @@ def test_main_skips_size_estimate_in_non_tty_context(monkeypatch):
     calls: list[str] = []
 
     monkeypatch.setattr(
-        "vllm_mlx._download_gate.estimate_repo_size_bytes",
+        "rapid_mlx._download_gate.estimate_repo_size_bytes",
         lambda *_a, **_kw: calls.append("estimate") or None,
     )
     monkeypatch.setattr(
-        "vllm_mlx._download_gate.is_repo_cached",
+        "rapid_mlx._download_gate.is_repo_cached",
         lambda *_a, **_kw: calls.append("cached") or False,
     )
     monkeypatch.setattr(
-        "vllm_mlx._download_gate.confirm_or_abort",
+        "rapid_mlx._download_gate.confirm_or_abort",
         lambda *_a, **_kw: calls.append("confirm") or True,
     )
     monkeypatch.setattr(cli, "serve_command", lambda *_a, **_kw: None)
@@ -2808,11 +2808,11 @@ def test_main_skips_size_estimate_when_auto_pull_env_set(monkeypatch):
 
     calls: list[str] = []
     monkeypatch.setattr(
-        "vllm_mlx._download_gate.estimate_repo_size_bytes",
+        "rapid_mlx._download_gate.estimate_repo_size_bytes",
         lambda *_a, **_kw: calls.append("estimate") or None,
     )
     monkeypatch.setattr(
-        "vllm_mlx._download_gate.is_repo_cached",
+        "rapid_mlx._download_gate.is_repo_cached",
         lambda *_a, **_kw: calls.append("cached") or False,
     )
     monkeypatch.setattr(cli, "serve_command", lambda *_a, **_kw: None)
@@ -3264,7 +3264,7 @@ def test_spawn_chat_server_releases_log_handle_under_signal_mask(monkeypatch, tm
     """
     import signal as _signal
 
-    from vllm_mlx._tempfile_safe import managed_tempfile_path
+    from rapid_mlx._tempfile_safe import managed_tempfile_path
 
     # Track every ``pthread_sigmask`` call. Each milestone reads the
     # CURRENT blocked set so we can assert it includes SIGTERM+SIGINT.
@@ -3333,7 +3333,7 @@ def test_spawn_chat_server_releases_log_handle_under_signal_mask(monkeypatch, tm
             milestones["append"] = _current_blocked()
             super().append(item)
 
-    from vllm_mlx._tempfile_safe import _TempfileHandle
+    from rapid_mlx._tempfile_safe import _TempfileHandle
 
     class _SpyHandle(_TempfileHandle):
         def release(self):

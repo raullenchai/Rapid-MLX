@@ -36,7 +36,7 @@ Params covered (route gates each one with a Field bound + shared
 
 The test asserts every bad shape returns the project's unified
 ``invalid_request_error`` 400 envelope (production handler in
-``vllm_mlx.middleware.exception_handlers``) AND that the server stays
+``rapid_mlx.middleware.exception_handlers``) AND that the server stays
 alive across the full burst (no port death — the H-10 symptom this
 PR closes).
 """
@@ -60,7 +60,7 @@ from fastapi.testclient import TestClient
 @pytest.fixture
 def patched_config():
     """Patch the global config singleton and restore on teardown."""
-    from vllm_mlx.config import get_config
+    from rapid_mlx.config import get_config
 
     cfg = get_config()
     saved: dict = {}
@@ -94,8 +94,8 @@ def _stub_engine_cfg(patch_cfg):
 
 
 def _build_chat_client(patch_cfg, monkeypatch):
-    from vllm_mlx.middleware.exception_handlers import install_exception_handlers
-    from vllm_mlx.routes import chat as chat_route
+    from rapid_mlx.middleware.exception_handlers import install_exception_handlers
+    from rapid_mlx.routes import chat as chat_route
 
     engine = _stub_engine_cfg(patch_cfg)
     monkeypatch.setattr(chat_route, "get_engine", lambda *_a, **_kw: engine)
@@ -107,8 +107,8 @@ def _build_chat_client(patch_cfg, monkeypatch):
 
 
 def _build_completions_client(patch_cfg, monkeypatch):
-    from vllm_mlx.middleware.exception_handlers import install_exception_handlers
-    from vllm_mlx.routes import completions as comp_route
+    from rapid_mlx.middleware.exception_handlers import install_exception_handlers
+    from rapid_mlx.routes import completions as comp_route
 
     engine = _stub_engine_cfg(patch_cfg)
     monkeypatch.setattr(comp_route, "get_engine", lambda *_a, **_kw: engine)
@@ -120,8 +120,8 @@ def _build_completions_client(patch_cfg, monkeypatch):
 
 
 def _build_anthropic_client(patch_cfg, monkeypatch):
-    from vllm_mlx.middleware.exception_handlers import install_exception_handlers
-    from vllm_mlx.routes import anthropic as anthropic_route
+    from rapid_mlx.middleware.exception_handlers import install_exception_handlers
+    from rapid_mlx.routes import anthropic as anthropic_route
 
     engine = _stub_engine_cfg(patch_cfg)
     monkeypatch.setattr(
@@ -445,8 +445,8 @@ def test_good_float_sampling_param_accepted_by_schema(
     the H-10 contract, and the F-011 ``test_chat_valid_sampling_param_reaches_route_dispatch``
     already pins ``valid → route dispatch reached`` for the chat
     surface."""
-    from vllm_mlx.api.anthropic_models import AnthropicRequest
-    from vllm_mlx.api.models import ChatCompletionRequest, CompletionRequest
+    from rapid_mlx.api.anthropic_models import AnthropicRequest
+    from rapid_mlx.api.models import ChatCompletionRequest, CompletionRequest
 
     if route == "chat":
         body = _base_chat_body()
@@ -503,8 +503,8 @@ def test_bad_int_sampling_param_rejected(
 @pytest.mark.parametrize("field,routes", INT_PARAM_SPEC)
 @pytest.mark.parametrize("shape_label,value", GOOD_INT_SHAPES)
 def test_good_int_sampling_param_accepted(field, routes, shape_label, value):
-    from vllm_mlx.api.anthropic_models import AnthropicRequest
-    from vllm_mlx.api.models import ChatCompletionRequest, CompletionRequest
+    from rapid_mlx.api.anthropic_models import AnthropicRequest
+    from rapid_mlx.api.models import ChatCompletionRequest, CompletionRequest
 
     for route in routes:
         if route == "chat":
@@ -557,7 +557,7 @@ def test_logit_bias_nonfinite_value_rejected(patched_config, monkeypatch, value)
 def test_logit_bias_empty_accepted():
     """The OpenAI spec accepts ``logit_bias: {}`` as "no bias" — must
     still parse cleanly post-fix."""
-    from vllm_mlx.api.models import ChatCompletionRequest
+    from rapid_mlx.api.models import ChatCompletionRequest
 
     req = ChatCompletionRequest.model_validate(
         {
@@ -689,13 +689,13 @@ def test_server_survives_50_bad_payloads_back_to_back(patched_config, monkeypatc
 
 
 def test_validate_finite_in_range_passes_through_none():
-    from vllm_mlx.api.models import _validate_finite_in_range
+    from rapid_mlx.api.models import _validate_finite_in_range
 
     assert _validate_finite_in_range(None, min_value=0, max_value=1) is None
 
 
 def test_validate_finite_in_range_rejects_nan_inf():
-    from vllm_mlx.api.models import _validate_finite_in_range
+    from rapid_mlx.api.models import _validate_finite_in_range
 
     for bad in [float("nan"), float("inf"), float("-inf")]:
         with pytest.raises(ValueError, match="finite"):
@@ -706,7 +706,7 @@ def test_validate_finite_in_range_rejects_nan_inf():
 
 
 def test_validate_finite_in_range_enforces_inclusive_bounds():
-    from vllm_mlx.api.models import _validate_finite_in_range
+    from rapid_mlx.api.models import _validate_finite_in_range
 
     # Inclusive default: boundaries OK
     assert _validate_finite_in_range(0.0, min_value=0.0, max_value=2.0) == 0.0
@@ -719,7 +719,7 @@ def test_validate_finite_in_range_enforces_inclusive_bounds():
 
 
 def test_validate_finite_in_range_enforces_exclusive_min():
-    from vllm_mlx.api.models import _validate_finite_in_range
+    from rapid_mlx.api.models import _validate_finite_in_range
 
     # exclusive min: 0.0 must be rejected
     with pytest.raises(ValueError, match=">"):
@@ -736,7 +736,7 @@ def test_validate_finite_in_range_enforces_exclusive_min():
 
 
 def test_validate_nonnegative_int_rejects_bools():
-    from vllm_mlx.api.models import _validate_nonnegative_int
+    from rapid_mlx.api.models import _validate_nonnegative_int
 
     for bad in (True, False):
         with pytest.raises(ValueError, match="bool"):
@@ -748,42 +748,42 @@ def test_validate_nonnegative_int_accepts_integer_valued_float():
     We mirror that contract so this H-10 gate is purely additive (only
     rejects shapes the legacy path also rejected, plus the
     specifically-H-10 bad shapes). Anything else is a regression risk."""
-    from vllm_mlx.api.models import _validate_nonnegative_int
+    from rapid_mlx.api.models import _validate_nonnegative_int
 
     out = _validate_nonnegative_int(64.0, field_name="top_k")
     assert out == 64 and isinstance(out, int)
 
 
 def test_validate_nonnegative_int_rejects_nonint_float():
-    from vllm_mlx.api.models import _validate_nonnegative_int
+    from rapid_mlx.api.models import _validate_nonnegative_int
 
     with pytest.raises(ValueError, match="integer"):
         _validate_nonnegative_int(64.5, field_name="top_k")
 
 
 def test_validate_nonnegative_int_rejects_negative():
-    from vllm_mlx.api.models import _validate_nonnegative_int
+    from rapid_mlx.api.models import _validate_nonnegative_int
 
     with pytest.raises(ValueError, match=">= 0"):
         _validate_nonnegative_int(-1, field_name="top_k")
 
 
 def test_validate_logit_bias_finite_passes_through_none_and_empty():
-    from vllm_mlx.api.models import _validate_logit_bias_finite
+    from rapid_mlx.api.models import _validate_logit_bias_finite
 
     assert _validate_logit_bias_finite(None) is None
     assert _validate_logit_bias_finite({}) == {}
 
 
 def test_validate_logit_bias_finite_rejects_nan_value():
-    from vllm_mlx.api.models import _validate_logit_bias_finite
+    from rapid_mlx.api.models import _validate_logit_bias_finite
 
     with pytest.raises(ValueError, match="finite"):
         _validate_logit_bias_finite({"42": float("nan")})
 
 
 def test_validate_logit_bias_finite_rejects_inf_value():
-    from vllm_mlx.api.models import _validate_logit_bias_finite
+    from rapid_mlx.api.models import _validate_logit_bias_finite
 
     with pytest.raises(ValueError, match="finite"):
         _validate_logit_bias_finite({"42": float("inf")})
@@ -796,7 +796,7 @@ def test_validate_logit_bias_finite_rejects_bool_value():
     only — but defensively rejecting bool keeps the surface tight
     and matches the convention on ``_reject_non_one_n`` /
     ``_validate_nonnegative_int``."""
-    from vllm_mlx.api.models import _validate_logit_bias_finite
+    from rapid_mlx.api.models import _validate_logit_bias_finite
 
     with pytest.raises(ValueError, match="bool"):
         _validate_logit_bias_finite({"42": True})

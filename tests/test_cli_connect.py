@@ -1,7 +1,7 @@
 # SPDX-License-Identifier: Apache-2.0
 """Tests for the unified server ready/connect output SSOT.
 
-``vllm_mlx.connect`` is the single source of truth for how a running server's
+``rapid_mlx.connect`` is the single source of truth for how a running server's
 endpoints are rendered — both the serve lifespan banner and ``rapid-mlx
 connect`` (human + ``--json``) consume it. These tests lock:
 
@@ -22,8 +22,8 @@ from contextlib import redirect_stdout
 
 import pytest
 
-from vllm_mlx import connect
-from vllm_mlx.cli import connect_command
+from rapid_mlx import connect
+from rapid_mlx.cli import connect_command
 
 
 def _endpoints(host="localhost", port=8000, model="qwen3.6-35b-4bit"):
@@ -359,7 +359,7 @@ def test_ipv6_json_renders_bracketed(monkeypatch):
 
 def test_connect_invalid_port_rejected():
     """`connect --port` must reuse `_port_arg`, rejecting 0 / out-of-range."""
-    from vllm_mlx.cli import build_parser
+    from rapid_mlx.cli import build_parser
 
     parser = build_parser()
     for bad in ("0", "70000", "-1", "65536"):
@@ -369,7 +369,7 @@ def test_connect_invalid_port_rejected():
 
 def test_connect_valid_port_accepted():
     """`connect --port` accepts a legitimate in-range value."""
-    from vllm_mlx.cli import build_parser
+    from rapid_mlx.cli import build_parser
 
     args = build_parser().parse_args(["connect", "--port", "9000", "--host", "x"])
     assert args.port == 9000
@@ -397,7 +397,7 @@ def test_render_banner_connect_carries_ipv6_endpoint():
 
 def test_resolve_endpoints_preserves_explicit_model(monkeypatch):
     """An explicit --model must never be overwritten by a live probe."""
-    from vllm_mlx.config import get_config
+    from rapid_mlx.config import get_config
 
     probe_called = []
 
@@ -420,7 +420,7 @@ def test_resolve_endpoints_preserves_explicit_model(monkeypatch):
 
 def test_resolve_endpoints_probes_when_no_model(monkeypatch):
     """Live probe still fills in the model when none was supplied anywhere."""
-    from vllm_mlx.config import get_config
+    from rapid_mlx.config import get_config
 
     probe_called = []
 
@@ -648,7 +648,7 @@ def test_point_command_base_url_is_shell_quoted():
     continue`` render, and it carries the same copy-paste security contract as
     the banner.
     """
-    from vllm_mlx.cli import _print_point_command
+    from rapid_mlx.cli import _print_point_command
 
     buf = io.StringIO()
     with redirect_stdout(buf):

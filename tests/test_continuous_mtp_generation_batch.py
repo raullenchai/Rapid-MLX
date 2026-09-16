@@ -9,7 +9,7 @@ from pathlib import Path
 
 import pytest
 
-MTP_DIR = Path(__file__).parents[1] / "vllm_mlx" / "spec_decode" / "mtp"
+MTP_DIR = Path(__file__).parents[1] / "rapid_mlx" / "spec_decode" / "mtp"
 PACKAGE = "_continuous_mtp_generation_batch_probe"
 package = types.ModuleType(PACKAGE)
 package.__path__ = [str(MTP_DIR)]

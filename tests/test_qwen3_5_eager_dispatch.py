@@ -12,7 +12,7 @@ pytestmark = pytest.mark.requires_mlx
 
 import mlx.core as mx
 
-from vllm_mlx.patches import qwen3_5_eager_dispatch as eager
+from rapid_mlx.patches import qwen3_5_eager_dispatch as eager
 
 
 @pytest.fixture

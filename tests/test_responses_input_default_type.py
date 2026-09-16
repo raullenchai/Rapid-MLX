@@ -104,37 +104,37 @@ class _Engine:
 
 
 _IMPORTED = (
-    "vllm_mlx.config",
-    "vllm_mlx.config.server_config",
-    "vllm_mlx.engine",
-    "vllm_mlx.engine.base",
-    "vllm_mlx.middleware.auth",
-    "vllm_mlx.service.helpers",
-    "vllm_mlx.routes.responses",
+    "rapid_mlx.config",
+    "rapid_mlx.config.server_config",
+    "rapid_mlx.engine",
+    "rapid_mlx.engine.base",
+    "rapid_mlx.middleware.auth",
+    "rapid_mlx.service.helpers",
+    "rapid_mlx.routes.responses",
 )
 _PARENT_ATTRS = (
-    ("vllm_mlx", "config"),
-    ("vllm_mlx", "engine"),
-    ("vllm_mlx.config", "server_config"),
-    ("vllm_mlx.engine", "base"),
-    ("vllm_mlx.middleware", "auth"),
-    ("vllm_mlx.service", "helpers"),
-    ("vllm_mlx.routes", "responses"),
+    ("rapid_mlx", "config"),
+    ("rapid_mlx", "engine"),
+    ("rapid_mlx.config", "server_config"),
+    ("rapid_mlx.engine", "base"),
+    ("rapid_mlx.middleware", "auth"),
+    ("rapid_mlx.service", "helpers"),
+    ("rapid_mlx.routes", "responses"),
 )
 _MISSING = object()
 
 
 def _install_lightweight_engine_modules(monkeypatch):
-    engine_pkg = types.ModuleType("vllm_mlx.engine")
+    engine_pkg = types.ModuleType("rapid_mlx.engine")
     engine_pkg.BaseEngine = _BaseEngine
     engine_pkg.GenerationOutput = _GenerationOutput
 
-    base_mod = types.ModuleType("vllm_mlx.engine.base")
+    base_mod = types.ModuleType("rapid_mlx.engine.base")
     base_mod.BaseEngine = _BaseEngine
     base_mod.GenerationOutput = _GenerationOutput
 
-    monkeypatch.setitem(sys.modules, "vllm_mlx.engine", engine_pkg)
-    monkeypatch.setitem(sys.modules, "vllm_mlx.engine.base", base_mod)
+    monkeypatch.setitem(sys.modules, "rapid_mlx.engine", engine_pkg)
+    monkeypatch.setitem(sys.modules, "rapid_mlx.engine.base", base_mod)
 
 
 @pytest.fixture
@@ -149,10 +149,10 @@ def responses_client(monkeypatch):
 
     _install_lightweight_engine_modules(monkeypatch)
 
-    from vllm_mlx.config import reset_config
-    from vllm_mlx.middleware.auth import rate_limiter
-    from vllm_mlx.middleware.exception_handlers import install_exception_handlers
-    from vllm_mlx.routes.responses import router
+    from rapid_mlx.config import reset_config
+    from rapid_mlx.middleware.auth import rate_limiter
+    from rapid_mlx.middleware.exception_handlers import install_exception_handlers
+    from rapid_mlx.routes.responses import router
 
     cfg = reset_config()
     cfg.api_key = "test-secret"
@@ -206,7 +206,7 @@ class TestResponsesInputItemTypeDefault:
     cannot mask a Pydantic-level regression."""
 
     def test_message_shape_without_type_defaults_to_message(self):
-        from vllm_mlx.api.responses_models import ResponsesRequest
+        from rapid_mlx.api.responses_models import ResponsesRequest
 
         req = ResponsesRequest(
             model="test-model",
@@ -218,7 +218,7 @@ class TestResponsesInputItemTypeDefault:
         assert req.input[0].content == "hi"
 
     def test_explicit_type_message_unchanged(self):
-        from vllm_mlx.api.responses_models import ResponsesRequest
+        from rapid_mlx.api.responses_models import ResponsesRequest
 
         req = ResponsesRequest(
             model="test-model",
@@ -230,7 +230,7 @@ class TestResponsesInputItemTypeDefault:
         """Sanity: a well-formed ``function_call`` item (explicit
         ``type``) still parses through its own branch — proves the
         loosening did not steal the function_call shape."""
-        from vllm_mlx.api.responses_models import ResponsesRequest
+        from rapid_mlx.api.responses_models import ResponsesRequest
 
         req = ResponsesRequest(
             model="test-model",
@@ -255,7 +255,7 @@ class TestResponsesInputItemTypeDefault:
         type default."""
         from pydantic import ValidationError
 
-        from vllm_mlx.api.responses_models import ResponsesRequest
+        from rapid_mlx.api.responses_models import ResponsesRequest
 
         with pytest.raises(ValidationError):
             ResponsesRequest(
@@ -274,7 +274,7 @@ class TestResponsesInputItemTypeDefault:
         treat it as a message; the discriminator gate still fires."""
         from pydantic import ValidationError
 
-        from vllm_mlx.api.responses_models import ResponsesRequest
+        from rapid_mlx.api.responses_models import ResponsesRequest
 
         with pytest.raises(ValidationError):
             ResponsesRequest(model="test-model", input=[{}])
@@ -286,7 +286,7 @@ class TestResponsesInputItemTypeDefault:
 
 # The route module transitively imports ``mlx`` (via the engine layer
 # the route ultimately calls into). The Pydantic-layer tests above don't
-# need it, but importing ``vllm_mlx.routes.responses`` does — and the
+# need it, but importing ``rapid_mlx.routes.responses`` does — and the
 # Linux test-matrix CI runners don't ship ``mlx``. Skip the route-level
 # class cleanly on those hosts so pr_validate's targeted-tests step (and
 # any other env without mlx) doesn't see a spurious ImportError. The
@@ -302,7 +302,7 @@ except ImportError:
 
 @pytest.mark.skipif(
     not _HAS_MLX,
-    reason="vllm_mlx.routes.responses transitively imports mlx; route-level "
+    reason="rapid_mlx.routes.responses transitively imports mlx; route-level "
     "test coverage runs on Apple Silicon CI + dev machines (Pydantic-layer "
     "unit tests above already pin the schema contract everywhere).",
 )

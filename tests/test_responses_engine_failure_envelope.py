@@ -39,7 +39,7 @@ _REQUIRES_MLX = pytest.mark.skipif(
 @pytest.mark.asyncio
 async def test_deepseek_codex_nonprogress_retry_is_internal(monkeypatch):
     """A hidden-only first attempt must not leak a failed SSE lifecycle."""
-    import vllm_mlx.routes.responses as responses_route
+    import rapid_mlx.routes.responses as responses_route
 
     calls: list[bool] = []
     visible_heartbeat_state: dict[str, object] = {}
@@ -97,8 +97,8 @@ async def test_deepseek_retry_never_sends_heartbeat_before_response_created(
     monkeypatch,
 ):
     """A slow hidden attempt must not put an invalid lifecycle event first."""
-    import vllm_mlx.routes.responses as responses_route
-    from vllm_mlx.service.helpers import _disconnect_guard
+    import rapid_mlx.routes.responses as responses_route
+    from rapid_mlx.service.helpers import _disconnect_guard
 
     class ConnectedRequest:
         async def is_disconnected(self):
@@ -755,37 +755,37 @@ class _CountedEosOnlyStopEngine:
 
 
 _IMPORTED = (
-    "vllm_mlx.config",
-    "vllm_mlx.config.server_config",
-    "vllm_mlx.engine",
-    "vllm_mlx.engine.base",
-    "vllm_mlx.middleware.auth",
-    "vllm_mlx.service.helpers",
-    "vllm_mlx.routes.responses",
+    "rapid_mlx.config",
+    "rapid_mlx.config.server_config",
+    "rapid_mlx.engine",
+    "rapid_mlx.engine.base",
+    "rapid_mlx.middleware.auth",
+    "rapid_mlx.service.helpers",
+    "rapid_mlx.routes.responses",
 )
 _PARENT_ATTRS = (
-    ("vllm_mlx", "config"),
-    ("vllm_mlx", "engine"),
-    ("vllm_mlx.config", "server_config"),
-    ("vllm_mlx.engine", "base"),
-    ("vllm_mlx.middleware", "auth"),
-    ("vllm_mlx.service", "helpers"),
-    ("vllm_mlx.routes", "responses"),
+    ("rapid_mlx", "config"),
+    ("rapid_mlx", "engine"),
+    ("rapid_mlx.config", "server_config"),
+    ("rapid_mlx.engine", "base"),
+    ("rapid_mlx.middleware", "auth"),
+    ("rapid_mlx.service", "helpers"),
+    ("rapid_mlx.routes", "responses"),
 )
 _MISSING = object()
 
 
 def _install_lightweight_engine_modules(monkeypatch):
-    engine_pkg = types.ModuleType("vllm_mlx.engine")
+    engine_pkg = types.ModuleType("rapid_mlx.engine")
     engine_pkg.BaseEngine = _BaseEngine
     engine_pkg.GenerationOutput = _GenerationOutput
 
-    base_mod = types.ModuleType("vllm_mlx.engine.base")
+    base_mod = types.ModuleType("rapid_mlx.engine.base")
     base_mod.BaseEngine = _BaseEngine
     base_mod.GenerationOutput = _GenerationOutput
 
-    monkeypatch.setitem(sys.modules, "vllm_mlx.engine", engine_pkg)
-    monkeypatch.setitem(sys.modules, "vllm_mlx.engine.base", base_mod)
+    monkeypatch.setitem(sys.modules, "rapid_mlx.engine", engine_pkg)
+    monkeypatch.setitem(sys.modules, "rapid_mlx.engine.base", base_mod)
 
 
 def _build_client(monkeypatch, engine_factory):
@@ -799,10 +799,10 @@ def _build_client(monkeypatch, engine_factory):
 
     _install_lightweight_engine_modules(monkeypatch)
 
-    from vllm_mlx.config import reset_config
-    from vllm_mlx.middleware.auth import rate_limiter
-    from vllm_mlx.middleware.exception_handlers import install_exception_handlers
-    from vllm_mlx.routes.responses import router
+    from rapid_mlx.config import reset_config
+    from rapid_mlx.middleware.auth import rate_limiter
+    from rapid_mlx.middleware.exception_handlers import install_exception_handlers
+    from rapid_mlx.routes.responses import router
 
     cfg = reset_config()
     cfg.api_key = "test-secret"
@@ -825,8 +825,8 @@ def _build_client(monkeypatch, engine_factory):
 
 
 def _cleanup(previous_modules, previous_attrs):
-    from vllm_mlx.config import reset_config
-    from vllm_mlx.middleware.auth import rate_limiter
+    from rapid_mlx.config import reset_config
+    from rapid_mlx.middleware.auth import rate_limiter
 
     reset_config()
     rate_limiter.enabled = False
@@ -921,7 +921,7 @@ def reasoning_then_whitespace_stop_client(monkeypatch):
 @pytest.fixture
 def content_then_reasoning_then_tool_client(monkeypatch):
     holder = _build_client(monkeypatch, _ContentThenReasoningThenToolEngine)
-    from vllm_mlx.config import get_config
+    from rapid_mlx.config import get_config
 
     cfg = get_config()
     cfg.model_name = "deepseek-v4-flash-0731"

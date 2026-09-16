@@ -126,35 +126,35 @@ class _Engine:
 
 
 def _install_lightweight_engine_modules(monkeypatch):
-    engine_pkg = types.ModuleType("vllm_mlx.engine")
+    engine_pkg = types.ModuleType("rapid_mlx.engine")
     engine_pkg.BaseEngine = _BaseEngine
     engine_pkg.GenerationOutput = _GenerationOutput
 
-    base_mod = types.ModuleType("vllm_mlx.engine.base")
+    base_mod = types.ModuleType("rapid_mlx.engine.base")
     base_mod.BaseEngine = _BaseEngine
     base_mod.GenerationOutput = _GenerationOutput
 
-    monkeypatch.setitem(sys.modules, "vllm_mlx.engine", engine_pkg)
-    monkeypatch.setitem(sys.modules, "vllm_mlx.engine.base", base_mod)
+    monkeypatch.setitem(sys.modules, "rapid_mlx.engine", engine_pkg)
+    monkeypatch.setitem(sys.modules, "rapid_mlx.engine.base", base_mod)
 
 
 _IMPORTED_UNDER_LIGHTWEIGHT_ENGINE = (
-    "vllm_mlx.config",
-    "vllm_mlx.config.server_config",
-    "vllm_mlx.engine",
-    "vllm_mlx.engine.base",
-    "vllm_mlx.middleware.auth",
-    "vllm_mlx.service.helpers",
-    "vllm_mlx.routes.responses",
+    "rapid_mlx.config",
+    "rapid_mlx.config.server_config",
+    "rapid_mlx.engine",
+    "rapid_mlx.engine.base",
+    "rapid_mlx.middleware.auth",
+    "rapid_mlx.service.helpers",
+    "rapid_mlx.routes.responses",
 )
 _PARENT_ATTRS_UNDER_LIGHTWEIGHT_ENGINE = (
-    ("vllm_mlx", "config"),
-    ("vllm_mlx", "engine"),
-    ("vllm_mlx.config", "server_config"),
-    ("vllm_mlx.engine", "base"),
-    ("vllm_mlx.middleware", "auth"),
-    ("vllm_mlx.service", "helpers"),
-    ("vllm_mlx.routes", "responses"),
+    ("rapid_mlx", "config"),
+    ("rapid_mlx", "engine"),
+    ("rapid_mlx.config", "server_config"),
+    ("rapid_mlx.engine", "base"),
+    ("rapid_mlx.middleware", "auth"),
+    ("rapid_mlx.service", "helpers"),
+    ("rapid_mlx.routes", "responses"),
 )
 _MISSING = object()
 
@@ -173,10 +173,10 @@ def _make_client(monkeypatch, engine: _Engine) -> SimpleNamespace:
 
     _install_lightweight_engine_modules(monkeypatch)
 
-    from vllm_mlx.config import reset_config
-    from vllm_mlx.middleware.auth import rate_limiter
-    from vllm_mlx.middleware.exception_handlers import install_exception_handlers
-    from vllm_mlx.routes.responses import router
+    from rapid_mlx.config import reset_config
+    from rapid_mlx.middleware.auth import rate_limiter
+    from rapid_mlx.middleware.exception_handlers import install_exception_handlers
+    from rapid_mlx.routes.responses import router
 
     cfg = reset_config()
     cfg.api_key = "test-secret"
@@ -389,7 +389,7 @@ class TestDeepSeekV4ResponsesStreaming:
         self, make_responses_client
     ):
         # Import registers the model-specific parser with ToolParserManager.
-        import vllm_mlx.tool_parsers.deepseek_v4_0731_tool_parser  # noqa: F401
+        import rapid_mlx.tool_parsers.deepseek_v4_0731_tool_parser  # noqa: F401
 
         wire_chunks = [
             "<｜DS",
@@ -470,9 +470,9 @@ class TestDeepSeekV4ResponsesStreaming:
         # the HTTP fixture lightweight on Linux pr_validation, where MLX is
         # intentionally unavailable and importing the real scheduler would
         # fail before the mocked engine reaches the Responses route.
-        scheduler_stub = types.ModuleType("vllm_mlx.scheduler")
+        scheduler_stub = types.ModuleType("rapid_mlx.scheduler")
         scheduler_stub.BackpressureError = type("BackpressureError", (Exception,), {})
-        monkeypatch.setitem(sys.modules, "vllm_mlx.scheduler", scheduler_stub)
+        monkeypatch.setitem(sys.modules, "rapid_mlx.scheduler", scheduler_stub)
 
         state = make_responses_client(
             tool_calls=[_make_function_call("get_weather", "12")],
@@ -519,7 +519,7 @@ class TestDeepSeekV4ResponsesStreaming:
     def test_empty_dsml_invoke_for_required_tool_fails_instead_of_reaching_codex(
         self, make_responses_client
     ):
-        import vllm_mlx.tool_parsers.deepseek_v4_0731_tool_parser  # noqa: F401
+        import rapid_mlx.tool_parsers.deepseek_v4_0731_tool_parser  # noqa: F401
 
         wire = (
             '<｜DSML｜tool_calls><｜DSML｜invoke name="exec_command">'
@@ -573,7 +573,7 @@ class TestDeepSeekV4ResponsesStreaming:
     def test_non_stream_empty_required_tool_call_returns_failed_envelope(
         self, make_responses_client
     ):
-        import vllm_mlx.tool_parsers.deepseek_v4_0731_tool_parser  # noqa: F401
+        import rapid_mlx.tool_parsers.deepseek_v4_0731_tool_parser  # noqa: F401
 
         wire = (
             '<｜DSML｜tool_calls><｜DSML｜invoke name="exec_command">'

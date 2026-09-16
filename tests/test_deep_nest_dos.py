@@ -6,7 +6,7 @@ Pre-fix:
 * **D-TOOL-RECUR**: a client-supplied ``tools[].function.parameters``
   JSON Schema nested ~1000 levels deep (~10-30 KB on the wire) crashed
   the worker with HTTP 500 and a stack trace fragment mentioning
-  ``vllm_mlx.utils.chat_template._sanitize_tools_for_template._walk``.
+  ``rapid_mlx.utils.chat_template._sanitize_tools_for_template._walk``.
   Cross-confirmed on five tool-call parsers (qwen / hermes / phi /
   deepseek / glm47), so the surface was the framework-level recursive
   walk, not any model-specific path. Unauthenticated DoS.
@@ -20,15 +20,15 @@ Pre-fix:
 
 Post-fix:
 
-* :func:`vllm_mlx.utils.chat_template._sanitize_tools_for_template` and
+* :func:`rapid_mlx.utils.chat_template._sanitize_tools_for_template` and
   its fail-closed baseline twin walk iteratively
   (:func:`_walk_tools_iter`) so an extreme tree cannot crash the worker
   by exhausting the C stack.
-* :class:`vllm_mlx.api.models.ToolDefinition` rejects a deeply-nested
+* :class:`rapid_mlx.api.models.ToolDefinition` rejects a deeply-nested
   ``function.parameters`` at request-model construction time (envvar
   ``RAPID_MLX_MAX_TOOL_SCHEMA_DEPTH``, default 64) with the canonical
   ``invalid_request_error`` envelope.
-* :class:`vllm_mlx.middleware.body_depth.RequestBodyDepthMiddleware`
+* :class:`rapid_mlx.middleware.body_depth.RequestBodyDepthMiddleware`
   rejects a whole-body that's deeply-nested before FastAPI/Pydantic
   ever recurses over it (envvar ``RAPID_MLX_MAX_BODY_DEPTH``, default
   64) with the canonical ``request_body_too_deep`` envelope.
@@ -59,7 +59,7 @@ def _isolate_env(monkeypatch):
     yield
 
 
-from vllm_mlx.api.models import ChatCompletionRequest as _ChatCompletionRequest
+from rapid_mlx.api.models import ChatCompletionRequest as _ChatCompletionRequest
 
 
 def _build_minimal_app(*, with_pydantic_chat: bool = False) -> FastAPI:
@@ -69,10 +69,10 @@ def _build_minimal_app(*, with_pydantic_chat: bool = False) -> FastAPI:
     so the per-tool depth validator inside the Pydantic model gets
     exercised; the other handlers accept a plain dict so the body-
     depth middleware is the only filter."""
-    from vllm_mlx.middleware.body_depth import (
+    from rapid_mlx.middleware.body_depth import (
         install_request_body_depth_middleware,
     )
-    from vllm_mlx.middleware.exception_handlers import install_exception_handlers
+    from rapid_mlx.middleware.exception_handlers import install_exception_handlers
 
     app = FastAPI()
     install_exception_handlers(app)
@@ -455,7 +455,7 @@ def test_walk_tools_iter_preserves_nested_tuples():
     sees JSON-decoded values (no tuples), but internal callers can
     construct tools with tuples and the iterative walk's contract
     promises tuple preservation."""
-    from vllm_mlx.utils.chat_template import _walk_tools_iter
+    from rapid_mlx.utils.chat_template import _walk_tools_iter
 
     # Nested tuple: outer -> inner -> "<|im_start|>"
     inp = ("outer-prefix", ("inner-a", ("deep-leaf-<|im_start|>",)))
@@ -503,7 +503,7 @@ def test_d_tool_recur_iterative_walk_handles_extreme_depth(monkeypatch):
     # restoring the limit, and only THEN letting GC see the object
     # keeps every stack frame the test ever opens well under 200 even
     # in the teardown path.
-    from vllm_mlx.utils.chat_template import (
+    from rapid_mlx.utils.chat_template import (
         _baseline_sanitize_tools,
         _sanitize_tools_for_template,
     )
@@ -601,7 +601,7 @@ def test_body_depth_gate_catches_parser_recursion_error(monkeypatch):
     import json as _real_json
     import types
 
-    import vllm_mlx.middleware.body_depth as _bd
+    import rapid_mlx.middleware.body_depth as _bd
 
     stub = types.SimpleNamespace(
         loads=lambda body: (_ for _ in ()).throw(
@@ -655,7 +655,7 @@ def test_recursion_error_handler_returns_sanitized_500_no_traceback():
     "Internal server error"}}`` — same shape as
     :func:`_generic_error_response` — so SDKs handle it
     consistently."""
-    from vllm_mlx.middleware.exception_handlers import install_exception_handlers
+    from rapid_mlx.middleware.exception_handlers import install_exception_handlers
 
     app = FastAPI()
     install_exception_handlers(app)
@@ -703,7 +703,7 @@ def test_quick_depth_heuristic_skips_shallow_bodies():
     of normal chat/completion requests never pays the
     ``json.loads`` + tree-walk cost. A regression that broke the
     bypass would add 50–500 µs to every legitimate request."""
-    from vllm_mlx.middleware.body_depth import _quick_depth_might_exceed
+    from rapid_mlx.middleware.body_depth import _quick_depth_might_exceed
 
     # Empty / scalar — depth 0.
     assert _quick_depth_might_exceed(b"", 64) is False
@@ -721,7 +721,7 @@ def test_quick_depth_heuristic_catches_deep_bodies():
     A regression that returned ``False`` here would silently let
     deeply-nested payloads through the bypass — the exact D-DEEP-JSON
     surface."""
-    from vllm_mlx.middleware.body_depth import _quick_depth_might_exceed
+    from rapid_mlx.middleware.body_depth import _quick_depth_might_exceed
 
     # Depth 100 dict.
     assert _quick_depth_might_exceed(_deep_dict_bytes(100), 64) is True
@@ -767,7 +767,7 @@ def test_quick_depth_heuristic_string_close_brackets_do_not_mask_deep_tree():
     Post-fix the close-bracket decrement only runs OUTSIDE strings,
     so the heuristic correctly reports ``True`` (might exceed) and
     the precise gate fires."""
-    from vllm_mlx.middleware.body_depth import _quick_depth_might_exceed
+    from rapid_mlx.middleware.body_depth import _quick_depth_might_exceed
 
     string_closes = b"]" * 500
     # Build a body: {"x": "]]]…]]]", "tree": <100-deep nest>}
@@ -784,7 +784,7 @@ def test_quick_depth_heuristic_escaped_quote_does_not_break_string_state():
     structural mode mid-string and decrement on close brackets that
     are actually still inside a string. This pins the JSON-aware
     string state machine on the common ``\\"`` escape shape."""
-    from vllm_mlx.middleware.body_depth import _quick_depth_might_exceed
+    from rapid_mlx.middleware.body_depth import _quick_depth_might_exceed
 
     # String body containing an escaped quote followed by close
     # brackets: the close brackets are STILL inside the string.
@@ -812,7 +812,7 @@ def test_quick_depth_heuristic_string_content_does_not_force_fallback():
     and the test sees 200 from the handler."""
     import os
 
-    from vllm_mlx.middleware.body_depth import _quick_depth_might_exceed
+    from rapid_mlx.middleware.body_depth import _quick_depth_might_exceed
 
     open_braces = b"{" * 100
     suspicious = (
@@ -838,7 +838,7 @@ def test_quick_depth_heuristic_string_content_does_not_force_fallback():
 
 
 def test_json_nesting_depth_exceeds_basic():
-    from vllm_mlx.utils.json_depth import json_nesting_depth_exceeds
+    from rapid_mlx.utils.json_depth import json_nesting_depth_exceeds
 
     # Scalars are depth 0.
     assert json_nesting_depth_exceeds(1, 5) is False
@@ -858,7 +858,7 @@ def test_json_nesting_depth_exceeds_basic():
 def test_json_nesting_depth_exceeds_does_not_recurse():
     """The depth-measurement function itself MUST be iterative — a
     1000-deep input MUST not crash a tightened recursion limit."""
-    from vllm_mlx.utils.json_depth import json_nesting_depth_exceeds
+    from rapid_mlx.utils.json_depth import json_nesting_depth_exceeds
 
     deep = 1
     for _ in range(1000):
@@ -878,8 +878,8 @@ def test_resolve_max_helpers_fallback():
     """A non-integer / empty env value MUST fall back to the
     documented default, NOT silently 0 (which would disable the gate
     — masking a typo as a DoS regression). Mirrors
-    :func:`vllm_mlx.middleware.body_size._resolve_limit`."""
-    from vllm_mlx.utils.json_depth import (
+    :func:`rapid_mlx.middleware.body_size._resolve_limit`."""
+    from rapid_mlx.utils.json_depth import (
         DEFAULT_MAX_BODY_DEPTH,
         DEFAULT_MAX_TOOL_SCHEMA_DEPTH,
         resolve_max_body_depth,
@@ -919,7 +919,7 @@ def test_body_depth_replay_with_disconnect_preserves_disconnect_semantics():
     rolled ASGI stub (TestClient ships full bodies in one frame)."""
     import asyncio
 
-    from vllm_mlx.middleware.body_depth import _replay_with_disconnect
+    from rapid_mlx.middleware.body_depth import _replay_with_disconnect
 
     chunks = [b'{"x":1', b',"y":2', b',"z":3']  # 3 partial chunks
     receive = _replay_with_disconnect(chunks)
@@ -961,7 +961,7 @@ def test_body_depth_replay_buffered_delegates_to_original_receive_after_body():
     flows through unchanged."""
     import asyncio
 
-    from vllm_mlx.middleware.body_depth import _replay_buffered
+    from rapid_mlx.middleware.body_depth import _replay_buffered
 
     # Simulate a real ASGI receive that returns nothing immediately —
     # the client is still connected and idle. Pre-fix the synthetic
@@ -1016,7 +1016,7 @@ def test_body_depth_missing_content_type_only_defaults_to_json_on_known_paths(
     spurious ``request_body_too_deep`` rejection. The historical
     back-compat (OpenAI client < 0.27 omits the header) only applies
     to the well-known JSON endpoints."""
-    from vllm_mlx.middleware.body_depth import (
+    from rapid_mlx.middleware.body_depth import (
         _JSON_CONTENT_TYPE_OPTIONAL_PATHS,
         _is_jsonish_content_type,
     )
@@ -1067,8 +1067,8 @@ def test_body_depth_skips_unguarded_paths(monkeypatch):
     fast path. We only add a handler at an out-of-scope path; if the
     middleware fired here it would 400 instead of reaching the handler."""
     monkeypatch.setenv("RAPID_MLX_MAX_BODY_DEPTH", "5")
-    from vllm_mlx.middleware.body_depth import install_request_body_depth_middleware
-    from vllm_mlx.middleware.exception_handlers import install_exception_handlers
+    from rapid_mlx.middleware.body_depth import install_request_body_depth_middleware
+    from rapid_mlx.middleware.exception_handlers import install_exception_handlers
 
     app = FastAPI()
     install_exception_handlers(app)

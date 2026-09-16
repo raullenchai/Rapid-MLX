@@ -24,8 +24,8 @@ import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
-from vllm_mlx.config import reset_config
-from vllm_mlx.routes.anthropic import (
+from rapid_mlx.config import reset_config
+from rapid_mlx.routes.anthropic import (
     _enforce_required_tool_choice_present,
     _estimate_anthropic_prompt_tokens,
     _inject_tool_use_required_suffix,
@@ -33,7 +33,7 @@ from vllm_mlx.routes.anthropic import (
     _synthesize_anthropic_forced_tool_call,
     router,
 )
-from vllm_mlx.service.helpers import _TOOL_USE_REQUIRED_SUFFIX
+from rapid_mlx.service.helpers import _TOOL_USE_REQUIRED_SUFFIX
 
 # ──────────────────────────────────────────────────────────────────
 # Engine doubles
@@ -818,9 +818,9 @@ def test_stream_helper_forwards_prepared_multimodal_to_engine():
     """
     import asyncio
 
-    from vllm_mlx.api.anthropic_models import AnthropicRequest
-    from vllm_mlx.api.models import ChatCompletionRequest
-    from vllm_mlx.routes.anthropic import _stream_anthropic_messages
+    from rapid_mlx.api.anthropic_models import AnthropicRequest
+    from rapid_mlx.api.models import ChatCompletionRequest
+    from rapid_mlx.routes.anthropic import _stream_anthropic_messages
 
     sentinel_messages = [{"role": "user", "content": "stream this"}]
     sentinel_images: list = [b"img-bytes-0", b"img-bytes-1"]
@@ -877,9 +877,9 @@ def test_stream_helper_skips_empty_multimodal_kwargs():
     ``routes/chat.py`` lines 1049-1050."""
     import asyncio
 
-    from vllm_mlx.api.anthropic_models import AnthropicRequest
-    from vllm_mlx.api.models import ChatCompletionRequest
-    from vllm_mlx.routes.anthropic import _stream_anthropic_messages
+    from rapid_mlx.api.anthropic_models import AnthropicRequest
+    from rapid_mlx.api.models import ChatCompletionRequest
+    from rapid_mlx.routes.anthropic import _stream_anthropic_messages
 
     direct_engine = _ToolStreamingEngine(["ok"], engine_prompt_tokens=4)
     cfg = reset_config()

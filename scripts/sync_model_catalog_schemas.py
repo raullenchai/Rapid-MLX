@@ -8,7 +8,7 @@ import shutil
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
-DESTINATION = ROOT / "vllm_mlx" / "catalog" / "schemas"
+DESTINATION = ROOT / "rapid_mlx" / "catalog" / "schemas"
 SOURCES = (
     (
         ROOT / "proto" / "model-runtime" / "v1" / "model-identity.schema.json",

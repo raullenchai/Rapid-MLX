@@ -1,7 +1,7 @@
 # SPDX-License-Identifier: Apache-2.0
 """Regression test for text-only models silently dropping audio content parts.
 
-Bug: ``vllm_mlx/routes/chat.py`` rejected ``image_url``/``image``/``video``/
+Bug: ``rapid_mlx/routes/chat.py`` rejected ``image_url``/``image``/``video``/
 ``video_url`` parts on text-only models (``engine.is_mllm = False``) with a
 clean HTTP 400, but ``audio_url``/``audio``/``input_audio`` were not in the
 reject list. ``extract_multimodal_content`` then silently stripped the audio
@@ -17,9 +17,9 @@ the full set.
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
-from vllm_mlx.config import reset_config
-from vllm_mlx.engine.base import GenerationOutput
-from vllm_mlx.routes.chat import router as chat_router
+from rapid_mlx.config import reset_config
+from rapid_mlx.engine.base import GenerationOutput
+from rapid_mlx.routes.chat import router as chat_router
 
 
 class _TextOnlyEngine:

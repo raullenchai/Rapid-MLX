@@ -27,7 +27,7 @@ pytestmark = pytest.mark.requires_mlx
 
 from types import SimpleNamespace
 
-from vllm_mlx.quantized_batch_cache import (
+from rapid_mlx.quantized_batch_cache import (
     _text_attention_args,
     probe_kv_head_dims,
     resolve_kv_quantization,

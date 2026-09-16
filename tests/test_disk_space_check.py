@@ -13,7 +13,7 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-from vllm_mlx.cli import _check_disk_space
+from rapid_mlx.cli import _check_disk_space
 
 
 def _make_info(file_sizes_bytes: list[int]) -> SimpleNamespace:
@@ -195,7 +195,7 @@ class TestDiskSpaceCheck:
         cache_lookup = MagicMock()
         statvfs = MagicMock()
         with (
-            patch("vllm_mlx._download_gate.mflux_missing_weights", return_value=[]),
+            patch("rapid_mlx._download_gate.mflux_missing_weights", return_value=[]),
             patch("huggingface_hub.model_info", model_info),
             patch("huggingface_hub.try_to_load_from_cache", cache_lookup),
             patch("os.statvfs", statvfs),

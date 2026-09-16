@@ -42,8 +42,8 @@ from openai_harmony import (  # noqa: E402
     load_harmony_encoding,
 )
 
-from vllm_mlx.output_router import Channel, TokenMap  # noqa: E402
-from vllm_mlx.output_router_harmony import HarmonyStreamingRouter  # noqa: E402
+from rapid_mlx.output_router import Channel, TokenMap  # noqa: E402
+from rapid_mlx.output_router_harmony import HarmonyStreamingRouter  # noqa: E402
 
 from .._harmony_markers import HARMONY_LEAK_MARKERS  # noqa: E402
 
@@ -501,8 +501,8 @@ def test_compat_gate_rejects_unknown_tokenizer_identity():
     to match the markers and probes would otherwise be wrongly
     upgraded and might corrupt uncommon body tokens.
     """
-    from vllm_mlx.output_router import TokenMap
-    from vllm_mlx.output_router_harmony import is_openai_harmony_compatible
+    from rapid_mlx.output_router import TokenMap
+    from rapid_mlx.output_router_harmony import is_openai_harmony_compatible
 
     tm = TokenMap(
         format_tag="harmony",
@@ -536,8 +536,8 @@ def test_compat_gate_accepts_gpt_oss_quant_suffix_variants():
     publishes (``mlx-community/gpt-oss-20b-MXFP4-Q8``,
     ``mlx-community/gpt-oss-120b-MXFP4-Q4`` etc.).
     """
-    from vllm_mlx.output_router import TokenMap
-    from vllm_mlx.output_router_harmony import is_openai_harmony_compatible
+    from rapid_mlx.output_router import TokenMap
+    from rapid_mlx.output_router_harmony import is_openai_harmony_compatible
 
     enc = openai_harmony.load_harmony_encoding(
         openai_harmony.HarmonyEncodingName.HARMONY_GPT_OSS
@@ -595,8 +595,8 @@ def test_compat_gate_rejects_tokenizer_without_encode():
     ``.encode`` cannot prove vocab parity → gate must return False so
     the legacy router runs.
     """
-    from vllm_mlx.output_router import TokenMap
-    from vllm_mlx.output_router_harmony import is_openai_harmony_compatible
+    from rapid_mlx.output_router import TokenMap
+    from rapid_mlx.output_router_harmony import is_openai_harmony_compatible
 
     tm = TokenMap(
         format_tag="harmony",
@@ -627,8 +627,8 @@ def test_compat_gate_rejects_mismatched_body_vocab():
     decoded through harmony's vocabulary and corrupt content / tool
     arguments.
     """
-    from vllm_mlx.output_router import TokenMap
-    from vllm_mlx.output_router_harmony import is_openai_harmony_compatible
+    from rapid_mlx.output_router import TokenMap
+    from rapid_mlx.output_router_harmony import is_openai_harmony_compatible
 
     tm = TokenMap(
         format_tag="harmony",
@@ -665,8 +665,8 @@ def test_compat_gate_anchored_allowlist_rejects_tail_substring_fake():
     remote IDs require an allowlisted owner; local paths trust the
     basename.
     """
-    from vllm_mlx.output_router import TokenMap
-    from vllm_mlx.output_router_harmony import is_openai_harmony_compatible
+    from rapid_mlx.output_router import TokenMap
+    from rapid_mlx.output_router_harmony import is_openai_harmony_compatible
 
     tm = TokenMap(
         format_tag="harmony",
@@ -760,8 +760,8 @@ def test_compat_gate_accepts_hf_cache_snapshot_path():
     remote-owner allowlist), so cache-loaded models route through the
     openai-harmony bypass like their HF-id-loaded siblings.
     """
-    from vllm_mlx.output_router import TokenMap
-    from vllm_mlx.output_router_harmony import is_openai_harmony_compatible
+    from rapid_mlx.output_router import TokenMap
+    from rapid_mlx.output_router_harmony import is_openai_harmony_compatible
 
     enc = openai_harmony.load_harmony_encoding(
         openai_harmony.HarmonyEncodingName.HARMONY_GPT_OSS
@@ -836,8 +836,8 @@ def test_compat_cache_key_segregates_by_tokenizer_instance():
     ``WeakKeyDictionary`` keyed on the tokenizer instance segregates
     naturally.
     """
-    from vllm_mlx.output_router import TokenMap
-    from vllm_mlx.output_router_harmony import is_openai_harmony_compatible
+    from rapid_mlx.output_router import TokenMap
+    from rapid_mlx.output_router_harmony import is_openai_harmony_compatible
 
     tm = TokenMap(
         format_tag="harmony",
@@ -893,8 +893,8 @@ def test_compat_gate_rejects_non_int_encode_result():
     rather than a flat ``list[int]``. The gate must return False on
     anything that isn't a flat int sequence.
     """
-    from vllm_mlx.output_router import TokenMap
-    from vllm_mlx.output_router_harmony import is_openai_harmony_compatible
+    from rapid_mlx.output_router import TokenMap
+    from rapid_mlx.output_router_harmony import is_openai_harmony_compatible
 
     tm = TokenMap(
         format_tag="harmony",
@@ -944,8 +944,8 @@ def test_compat_gate_rejects_missing_marker_ids():
     """Codex round-4 BLOCKING (PR #515): the gate must require ALL
     seven harmony markers to be present in the tokenizer's TokenMap.
     """
-    from vllm_mlx.output_router import TokenMap
-    from vllm_mlx.output_router_harmony import is_openai_harmony_compatible
+    from rapid_mlx.output_router import TokenMap
+    from rapid_mlx.output_router_harmony import is_openai_harmony_compatible
 
     enc = openai_harmony.load_harmony_encoding(
         openai_harmony.HarmonyEncodingName.HARMONY_GPT_OSS
@@ -985,8 +985,8 @@ def test_compat_gate_cache_segregates_by_marker_ids():
     with two different ``TokenMap`` marker-ID tuples must NOT share a
     cached compatibility result.
     """
-    from vllm_mlx.output_router import TokenMap
-    from vllm_mlx.output_router_harmony import (
+    from rapid_mlx.output_router import TokenMap
+    from rapid_mlx.output_router_harmony import (
         _COMPAT_RESULT_CACHE,
         is_openai_harmony_compatible,
     )
@@ -1023,8 +1023,8 @@ def test_compat_gate_caches_per_tokenizer_identity():
     on every request from the engine's streaming factory; the marker
     + body-vocab checks should only run once per tokenizer identity.
     """
-    from vllm_mlx.output_router import TokenMap
-    from vllm_mlx.output_router_harmony import is_openai_harmony_compatible
+    from rapid_mlx.output_router import TokenMap
+    from rapid_mlx.output_router_harmony import is_openai_harmony_compatible
 
     enc = openai_harmony.load_harmony_encoding(
         openai_harmony.HarmonyEncodingName.HARMONY_GPT_OSS

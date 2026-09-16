@@ -54,8 +54,8 @@ def client_factory():
     Cache routes don't touch the engine for the happy path; the mock
     satisfies the 503-check guard in the route handlers.
     """
-    from vllm_mlx.config import get_config
-    from vllm_mlx.routes.health import admin_router, router
+    from rapid_mlx.config import get_config
+    from rapid_mlx.routes.health import admin_router, router
 
     cfg = get_config()
     prev = {
@@ -243,7 +243,7 @@ def _empty_prefix_cache_engine():
     # #1100 codex round 4 (#2): the route prefers the outcome/result-returning
     # engine methods. A bare MagicMock would auto-return a MagicMock whose
     # ``.entries`` breaks arithmetic — pin real result objects (empty snapshot).
-    from vllm_mlx.cache.protocol import LoadResult, SaveOutcome
+    from rapid_mlx.cache.protocol import LoadResult, SaveOutcome
 
     engine.save_cache_with_outcome = MagicMock(
         return_value=SaveOutcome(outcome="empty")
@@ -261,8 +261,8 @@ def test_cache_export_200_body_does_not_leak_operator_path(client_factory):
     operator home dir / username to any bearer-token holder. After the #728
     revert the route runs on plain ``verify_api_key``, so this leak shape
     matters even more when ``--api-key`` is unset."""
-    from vllm_mlx.config import get_config
-    from vllm_mlx.routes.cache import router as cache_router
+    from rapid_mlx.config import get_config
+    from rapid_mlx.routes.cache import router as cache_router
 
     build, _ = client_factory
     client = build(api_key=None)
@@ -314,7 +314,7 @@ def test_cache_export_403_sandbox_escape_does_not_leak_operator_path(
     """
     from pathlib import Path
 
-    from vllm_mlx.routes.cache import router as cache_router
+    from rapid_mlx.routes.cache import router as cache_router
 
     build, _ = client_factory
     client = build(api_key=None)
@@ -345,9 +345,9 @@ def test_cache_import_200_body_does_not_leak_operator_path(
 
     import json
 
-    from vllm_mlx.cache.protocol import PROTOCOL_VERSION
-    from vllm_mlx.config import get_config
-    from vllm_mlx.routes.cache import router as cache_router
+    from rapid_mlx.cache.protocol import PROTOCOL_VERSION
+    from rapid_mlx.config import get_config
+    from rapid_mlx.routes.cache import router as cache_router
 
     manifest = {
         "protocol_version": PROTOCOL_VERSION,
@@ -423,8 +423,8 @@ def test_cache_info_does_not_leak_operator_path(
 
     import json
 
-    from vllm_mlx.cache.protocol import PROTOCOL_VERSION
-    from vllm_mlx.routes.cache import router as cache_router
+    from rapid_mlx.cache.protocol import PROTOCOL_VERSION
+    from rapid_mlx.routes.cache import router as cache_router
 
     manifest = {
         "protocol_version": PROTOCOL_VERSION,
@@ -465,8 +465,8 @@ def test_cache_info_returns_canonical_shape_without_path_field(
 
     import json
 
-    from vllm_mlx.cache.protocol import PROTOCOL_VERSION
-    from vllm_mlx.routes.cache import router as cache_router
+    from rapid_mlx.cache.protocol import PROTOCOL_VERSION
+    from rapid_mlx.routes.cache import router as cache_router
 
     manifest = {
         "protocol_version": PROTOCOL_VERSION,

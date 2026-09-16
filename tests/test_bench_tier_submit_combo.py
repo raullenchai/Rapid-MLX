@@ -33,7 +33,7 @@ from unittest.mock import patch
 
 import pytest
 
-from vllm_mlx.bench.tier_runner import TierResult, run_tier
+from rapid_mlx.bench.tier_runner import TierResult, run_tier
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 SCHEMA_PATH = REPO_ROOT / "community-benchmarks" / "schema.json"
@@ -50,8 +50,8 @@ def _stub_bench_inputs():
     ``tests/test_payload_builder_v2_full.py`` so behavior is
     cross-consistent across the schema-v2 test suite.
     """
-    from vllm_mlx.community_bench.hardware import Hardware, Software
-    from vllm_mlx.community_bench.runner import (
+    from rapid_mlx.community_bench.hardware import Hardware, Software
+    from rapid_mlx.community_bench.runner import (
         BenchResult,
         BucketResult,
         RoundResult,
@@ -113,10 +113,10 @@ def _patch_serve_boot():
 
     return [
         patch(
-            "vllm_mlx.bench.tier_runner._find_free_port_in_range",
+            "rapid_mlx.bench.tier_runner._find_free_port_in_range",
             side_effect=_free_port,
         ),
-        patch("vllm_mlx.bench._server.serve", _fake_serve),
+        patch("rapid_mlx.bench._server.serve", _fake_serve),
     ]
 
 
@@ -155,9 +155,11 @@ def test_run_tier_returns_payload_when_requested():
     with contextlib.ExitStack() as stack:
         for p in _patch_serve_boot():
             stack.enter_context(p)
-        stack.enter_context(patch("vllm_mlx.bench.tier_runner._run_smoke", _smoke_stub))
         stack.enter_context(
-            patch("vllm_mlx.bench.tier_runner._run_harness", _harness_stub)
+            patch("rapid_mlx.bench.tier_runner._run_smoke", _smoke_stub)
+        )
+        stack.enter_context(
+            patch("rapid_mlx.bench.tier_runner._run_harness", _harness_stub)
         )
 
         result = run_tier(
@@ -189,7 +191,9 @@ def test_run_tier_default_signature_unchanged():
     with contextlib.ExitStack() as stack:
         for p in _patch_serve_boot():
             stack.enter_context(p)
-        stack.enter_context(patch("vllm_mlx.bench.tier_runner._run_smoke", _smoke_stub))
+        stack.enter_context(
+            patch("rapid_mlx.bench.tier_runner._run_smoke", _smoke_stub)
+        )
 
         result = run_tier(model="qwen3.5-4b-4bit", tier="smoke")
 
@@ -218,7 +222,9 @@ def test_run_tier_returns_payload_with_none_for_missing_tiers():
     with contextlib.ExitStack() as stack:
         for p in _patch_serve_boot():
             stack.enter_context(p)
-        stack.enter_context(patch("vllm_mlx.bench.tier_runner._run_smoke", _smoke_stub))
+        stack.enter_context(
+            patch("rapid_mlx.bench.tier_runner._run_smoke", _smoke_stub)
+        )
 
         rc, payload = run_tier(
             model="qwen3.5-4b-4bit",
@@ -269,10 +275,14 @@ def test_run_tier_skip_speed_avoids_lightweight_probe():
     with contextlib.ExitStack() as stack:
         for p in _patch_serve_boot():
             stack.enter_context(p)
-        stack.enter_context(patch("vllm_mlx.bench.tier_runner._run_smoke", _smoke_stub))
-        stack.enter_context(patch("vllm_mlx.bench.tier_runner._run_speed", _speed_stub))
         stack.enter_context(
-            patch("vllm_mlx.bench.tier_runner._run_harness", _harness_stub)
+            patch("rapid_mlx.bench.tier_runner._run_smoke", _smoke_stub)
+        )
+        stack.enter_context(
+            patch("rapid_mlx.bench.tier_runner._run_speed", _speed_stub)
+        )
+        stack.enter_context(
+            patch("rapid_mlx.bench.tier_runner._run_harness", _harness_stub)
         )
 
         run_tier(
@@ -307,7 +317,9 @@ def test_run_tier_skip_speed_ignored_for_non_all_tier():
     with contextlib.ExitStack() as stack:
         for p in _patch_serve_boot():
             stack.enter_context(p)
-        stack.enter_context(patch("vllm_mlx.bench.tier_runner._run_speed", _speed_stub))
+        stack.enter_context(
+            patch("rapid_mlx.bench.tier_runner._run_speed", _speed_stub)
+        )
 
         run_tier(
             model="qwen3.5-4b-4bit",
@@ -338,7 +350,7 @@ def test_tier_all_submit_payload_shape():
     - Payload validates against ``community-benchmarks/schema.json``.
     """
     jsonschema = pytest.importorskip("jsonschema")
-    from vllm_mlx.community_bench.submission import build_submission_payload
+    from rapid_mlx.community_bench.submission import build_submission_payload
 
     hw, sw, bench = _stub_bench_inputs()
     payload = build_submission_payload(
@@ -386,7 +398,7 @@ def test_tier_smoke_submit_populates_smoke_result_only():
     of the spec would contradict the locked schema.
     """
     jsonschema = pytest.importorskip("jsonschema")
-    from vllm_mlx.community_bench.submission import build_submission_payload
+    from rapid_mlx.community_bench.submission import build_submission_payload
 
     hw, sw, bench = _stub_bench_inputs()
     payload = build_submission_payload(
@@ -416,7 +428,7 @@ def test_tier_harness_submit_populates_harness_result_only():
     NO smoke_result.
     """
     jsonschema = pytest.importorskip("jsonschema")
-    from vllm_mlx.community_bench.submission import build_submission_payload
+    from rapid_mlx.community_bench.submission import build_submission_payload
 
     hw, sw, bench = _stub_bench_inputs()
     payload = build_submission_payload(
@@ -458,7 +470,7 @@ def test_mutual_exclusive_guard_removed():
     """
     import sys as _sys
 
-    from vllm_mlx import cli as _cli
+    from rapid_mlx import cli as _cli
 
     captured = {}
 
@@ -514,7 +526,7 @@ def test_tier_submit_refuses_base_url(capsys):
     """
     import argparse
 
-    from vllm_mlx.cli import _run_tier_submit_flow
+    from rapid_mlx.cli import _run_tier_submit_flow
 
     args = argparse.Namespace(
         model="qwen3.5-9b-4bit",
@@ -550,7 +562,7 @@ def test_smoke_payload_is_none_when_boot_time_unknown(capsys):
     closed and lets the caller decide what to do with the missing
     metric.
     """
-    from vllm_mlx.bench.tier_runner import _run_smoke
+    from rapid_mlx.bench.tier_runner import _run_smoke
 
     class _FakeResp:
         def raise_for_status(self):
@@ -621,7 +633,7 @@ def test_smoke_passes_when_only_reasoning_content_streams():
     is the reasoning text tagged with ``[reasoning]``, and TTFT is
     measured from the first reasoning chunk.
     """
-    from vllm_mlx.bench.tier_runner import _run_smoke
+    from rapid_mlx.bench.tier_runner import _run_smoke
 
     class _FakeResp:
         def raise_for_status(self):
@@ -704,7 +716,7 @@ def test_tier_submit_routes_through_unified_flow(monkeypatch):
     import argparse
     import importlib
 
-    cli = importlib.import_module("vllm_mlx.cli")
+    cli = importlib.import_module("rapid_mlx.cli")
 
     captured = {}
 

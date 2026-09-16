@@ -5,7 +5,7 @@ Gemma 4 (Gemma-3n lineage) e2b/e4b "altup" variants carry a Per-Layer-
 Embedding table — ``embed_tokens_per_layer``, a large ``nn.Embedding``
 (``vocab_size_per_layer_input x num_hidden_layers*hidden_size_per_layer_input``)
 whose rows feed every decoder layer's per-layer input gate
-(``vllm_mlx/models/gemma4_vendored/language.py`` ``get_per_layer_inputs`` /
+(``rapid_mlx/models/gemma4_vendored/language.py`` ``get_per_layer_inputs`` /
 ``project_per_layer_inputs``). Early 4-bit conversions quantized this table
 at the model default (4-bit) and the model emitted garbage — the PLE rows
 are too information-dense to survive 4-bit affine quantization.
@@ -45,8 +45,8 @@ pytestmark = pytest.mark.requires_mlx
 
 import mlx.nn as nn
 
-from vllm_mlx.models.gemma4_vendored.config import TextConfig
-from vllm_mlx.models.gemma4_vendored.language import LanguageModel
+from rapid_mlx.models.gemma4_vendored.config import TextConfig
+from rapid_mlx.models.gemma4_vendored.language import LanguageModel
 
 # Minimum bit-width the PLE table may be quantized to. 4-bit corrupts it
 # (the historical garbage-output failure); 8-bit is what mlx-community ships.

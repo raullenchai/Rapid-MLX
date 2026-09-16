@@ -14,7 +14,7 @@ pytestmark = pytest.mark.requires_mlx
 
 import mlx.core as mx  # noqa: E402
 
-from vllm_mlx.models import k2_horizon  # noqa: E402
+from rapid_mlx.models import k2_horizon  # noqa: E402
 
 TINY = {
     "model_type": "k2_horizon",
@@ -191,7 +191,7 @@ def test_group_rms_norm_matches_grouped_reference_not_global_rms():
 
 
 def _reset_registration(monkeypatch):
-    from vllm_mlx.utils import tokenizer
+    from rapid_mlx.utils import tokenizer
 
     monkeypatch.delitem(sys.modules, "mlx_lm.models.k2_horizon", raising=False)
     monkeypatch.setattr(
@@ -248,7 +248,7 @@ def test_registration_failure_does_not_advertise_k2(monkeypatch, caplog):
     real_import_module = importlib.import_module
 
     def import_module(name, package=None):
-        if name == "vllm_mlx.models.k2_horizon":
+        if name == "rapid_mlx.models.k2_horizon":
             raise ImportError("broken adapter")
         return real_import_module(name, package)
 
@@ -259,7 +259,7 @@ def test_registration_failure_does_not_advertise_k2(monkeypatch, caplog):
 
 
 def test_runtime_probe_failure_fails_closed(tmp_path, monkeypatch):
-    from vllm_mlx.utils import tokenizer
+    from rapid_mlx.utils import tokenizer
 
     (tmp_path / "config.json").write_text(json.dumps(TINY))
     tokenizer._register_vendored_archs()
@@ -286,7 +286,7 @@ def test_cache_shape_must_match_layer_count():
 
 
 def test_repo_code_trust_boundary_is_scoped_to_rapid_owned_k2(tmp_path, monkeypatch):
-    from vllm_mlx.utils import tokenizer
+    from rapid_mlx.utils import tokenizer
 
     k2_dir = tmp_path / "k2"
     k2_dir.mkdir()
@@ -315,7 +315,7 @@ def test_public_loader_fails_closed_when_k2_registration_is_unavailable(
     tmp_path, monkeypatch
 ):
     """An untrusted model_type declaration cannot grant a validation bypass."""
-    from vllm_mlx.utils import tokenizer
+    from rapid_mlx.utils import tokenizer
 
     model_root = tmp_path / "untrusted-k2"
     model_root.mkdir()
@@ -348,7 +348,7 @@ def test_public_eager_loader_ignores_checkpoint_owned_model_code(tmp_path, monke
     """The real eager loader must execute Rapid's runtime, not repo Python."""
     from mlx.utils import tree_flatten
 
-    from vllm_mlx.utils import tokenizer
+    from rapid_mlx.utils import tokenizer
 
     checkpoint_config = {
         **TINY,
@@ -387,7 +387,7 @@ def test_public_lazy_loader_ignores_checkpoint_owned_model_code(
     tmp_path, monkeypatch, remote
 ):
     """The primary mlx-lm entry point receives the same safe config overlay."""
-    from vllm_mlx.utils import tokenizer
+    from rapid_mlx.utils import tokenizer
 
     (tmp_path / "config.json").write_text(
         json.dumps(

@@ -42,7 +42,7 @@ def client_with_completions_route(monkeypatch):
     NOT try to load a real model; the goal is purely to drive the
     request-logging path with caplog.
     """
-    from vllm_mlx.routes import completions as completions_mod
+    from rapid_mlx.routes import completions as completions_mod
 
     # Fake engine that returns a deterministic empty completion. The
     # body-redaction log line runs BEFORE the engine is touched, but
@@ -86,8 +86,8 @@ def client_with_completions_route(monkeypatch):
     # No-op auth + rate limit so the request reaches the body of the
     # handler without hitting either middleware.
     with (
-        patch("vllm_mlx.middleware.auth.verify_api_key", new=lambda *a, **kw: None),
-        patch("vllm_mlx.middleware.auth.check_rate_limit", new=lambda *a, **kw: None),
+        patch("rapid_mlx.middleware.auth.verify_api_key", new=lambda *a, **kw: None),
+        patch("rapid_mlx.middleware.auth.check_rate_limit", new=lambda *a, **kw: None),
     ):
         app = FastAPI()
         app.include_router(completions_mod.router)
@@ -103,7 +103,7 @@ def test_info_log_does_not_leak_prompt_body(client_with_completions_route, caplo
     assert it does NOT appear in any INFO-or-higher log record."""
     # Capture every level so we can also positively assert the DEBUG
     # preview behaviour later.
-    # Note: the runtime log-namespace rebrand (vllm_mlx -> rapid_mlx)
+    # Note: the runtime log-namespace rebrand (rapid_mlx -> rapid_mlx)
     # rewrites the record.name AFTER emit, but caplog filters by the
     # logger we configure — set both to be safe.
     caplog.set_level(logging.DEBUG)
@@ -164,7 +164,7 @@ def test_debug_log_carries_redacted_preview(client_with_completions_route, caplo
     the log level to DEBUG still get a 300-char preview for local
     debugging — but it's behind an explicit opt-in, not the production
     default."""
-    # Note: the runtime log-namespace rebrand (vllm_mlx -> rapid_mlx)
+    # Note: the runtime log-namespace rebrand (rapid_mlx -> rapid_mlx)
     # rewrites the record.name AFTER emit, but caplog filters by the
     # logger we configure — set both to be safe.
     caplog.set_level(logging.DEBUG)

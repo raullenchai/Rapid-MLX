@@ -13,7 +13,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from vllm_mlx.chip_tier import (
+from rapid_mlx.chip_tier import (
     VARIANT_BASE,
     VARIANT_MAX,
     VARIANT_PRO,
@@ -112,13 +112,13 @@ def test_detect_chip_tier_returns_valid_tier():
 
 
 def test_chip_tier_has_no_dangling_vllm_platform_reference():
-    """Regression for #1295: #1288 deleted ``vllm_mlx.vllm_platform`` but
+    """Regression for #1295: #1288 deleted ``rapid_mlx.vllm_platform`` but
     ``chip_tier.py`` still imported ``_get_apple_chip_name`` from it. The
     ``try/except`` masked the resulting ``ImportError`` at runtime (the
     ``sysctl`` fallback ran), so no test caught the dangling reference. Assert
     the deleted module is never referenced in the source at all.
     """
-    import vllm_mlx.chip_tier as chip_tier_mod
+    import rapid_mlx.chip_tier as chip_tier_mod
 
     source = Path(chip_tier_mod.__file__).read_text()
     assert "vllm_platform" not in source, (

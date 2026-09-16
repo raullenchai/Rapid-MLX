@@ -125,7 +125,7 @@ def _serve_model(model: str, snapshot: Path, revision: str | None) -> str:
     # checkpoint look like a root-sharded text model. Keep the repository ID
     # on the wire, but first prove the production resolver will hand mflux the
     # same content-addressed snapshot that the release manifest selected.
-    from vllm_mlx._download_gate import mflux_local_snapshot
+    from rapid_mlx._download_gate import mflux_local_snapshot
 
     runtime_snapshot = mflux_local_snapshot(model)
     if runtime_snapshot is None:

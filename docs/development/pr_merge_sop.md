@@ -56,7 +56,7 @@ For first-time contributors learning the ropes: relax tone, not standards. Walk 
 - Read the PR description. If "what" or "why" is unclear, ask before touching anything.
 - Confirm `git status` clean; branch rebased on latest `raullenchai/main`. Heavy divergence → ask the contributor to rebase first.
 - **Identify blast radius** (this gates which later steps fire):
-  - **Inference-touching** (`vllm_mlx/{engine,scheduler,parsers,routes,reasoning,tool_parsers,memory_cache}/`, `vllm_mlx/runtime/`, `vllm_mlx/agents/`) → all gates required, including the Step 8 live benchmark baseline and the Anthropic-compat round-trip.
+  - **Inference-touching** (`rapid_mlx/{engine,scheduler,parsers,routes,reasoning,tool_parsers,memory_cache}/`, `rapid_mlx/runtime/`, `rapid_mlx/agents/`) → all gates required, including the Step 8 live benchmark baseline and the Anthropic-compat round-trip.
   - **Surface-touching** (CLI flags, alias registry, `pyproject.toml`) → the version-bump guard now only fires to *block* a stray `version` change, not to require one; surface PRs ship with **no** version bump (release is cut later in a dedicated bump PR). Step 8 skip OK if no behavior change in generation path.
   - **Dev-only** (bench scripts, dev tooling, CI workflows, docs, tests) → Step 8 skip OK; full unit + lint still required.
 
@@ -84,7 +84,7 @@ Run codex review **iteratively until convergence**.
 ## Step 3 — Test coverage
 
 - Every new behavior MUST have a new test. If a behavior is genuinely untestable, document why in the PR description (not just "hard to test").
-- Diff-aware: each behavior-changing production file should map to a named test file in the same PR, OR an explicit "no test because X" rationale. The naming heuristic `vllm_mlx/foo.py` → `tests/test_foo*.py` covers most cases but breaks down for shared fixtures, integration paths, and cross-parser tests — judgment over rule.
+- Diff-aware: each behavior-changing production file should map to a named test file in the same PR, OR an explicit "no test because X" rationale. The naming heuristic `rapid_mlx/foo.py` → `tests/test_foo*.py` covers most cases but breaks down for shared fixtures, integration paths, and cross-parser tests — judgment over rule.
 - **Test-must-fail-on-broken-code spot check.** For new tests on critical code paths (parsers, scheduler, security boundaries, serialization), evidence the test catches a deliberate break must be in the PR. The bar:
   - **Required content**: the exact mutation (one-line `sed`/`Edit` description, or a small diff hunk), the failing test name, and the failure assertion.
   - **NOT acceptable**: "I broke a return statement and the test failed" — that's an obvious mutation that says little about what the test actually asserts. The mutation should be against the *contract* the test is pinning, not against any random line.
@@ -176,7 +176,7 @@ error. Baseline refreshes are reviewed changes, never automatic acceptance.
 
 ## Step 9 — Anthropic-compat round-trip (gated on parser/router PRs)
 
-If the diff touches `vllm_mlx/parsers/`, `vllm_mlx/reasoning/`, `vllm_mlx/routes/anthropic.py`, or `vllm_mlx/routes/chat.py`:
+If the diff touches `rapid_mlx/parsers/`, `rapid_mlx/reasoning/`, `rapid_mlx/routes/anthropic.py`, or `rapid_mlx/routes/chat.py`:
 
 ```bash
 # in one shell:
@@ -349,7 +349,7 @@ Everything else is automated. The `pr_validate` scorecard comment is the single 
 - **Bench data unreliability** — `scripts/bench_suffix_decoding_integrated.py` needs the reliability gates from PR #284 (decode-time floor, TPS ceiling). Older bench data without `raw_runs` field is suspect.
 - **Cache contamination** — disk-persisted prefix cache (`~/.cache/rapid-mlx/prefix_cache/`) can replay cached generations and pin TPS to bogus values. Bench tools must pass `--disable-prefix-cache`.
 - **Hybrid models** (`is_hybrid=True`: Qwen3.5/3.6, Qwopus, Nemotron, Granite4) cannot use spec-decode / suffix-decode. Trust the gate.
-- **Background processes block GPU** — orphaned `rapid-mlx serve` from prior sessions can hang pytest. `pkill -f "vllm_mlx.cli serve"` before benches.
+- **Background processes block GPU** — orphaned `rapid-mlx serve` from prior sessions can hang pytest. During the package-name deprecation window, inspect with `pgrep -fl 'rapid_mlx\.cli serve|vllm_mlx\.cli serve'`, then clean up the confirmed matches with the same expression passed to `pkill -f`; this covers both current and legacy module launches.
 - **Auto-deploy blast radius** — merging to main with version bump = instant PyPI + Homebrew release. External PR review must include the Step 7 supply-chain audit before merge.
 - **Squash-suffix trap** — GitHub's default squash-merge appends `(#NN)` to the subject, breaking `auto-release.yml`'s regex. Always pass `--subject` to `gh pr merge` for bump PRs. `release-preflight.yml` PF-1 catches this pre-merge.
 - **`skip-version-bump` label** — the label is now the escape hatch for intentionally changing the `version` line outside a titled bump PR (including a rollback correction that should not publish). `version-check.yml` subscribes to `labeled` / `unlabeled` (and `edited` for title changes), so adding or removing the label — or re-titling the PR — automatically refires the guard; no close/reopen or empty push needed. (This supersedes the old `gotcha_skip_version_bump_label_after_run` close-reopen workaround, which applied to the pre-inversion workflow that didn't subscribe to label events.)

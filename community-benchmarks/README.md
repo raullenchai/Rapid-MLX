@@ -41,7 +41,7 @@ The registered text protocol (`rapid-community-speed` v2) is two fixed workloads
 | `pp512-tg128` | 512 | 128 |
 | `pp2048-tg512` | 2048 | 512 |
 
-Prompts are synthetic token sequences (`rapid-synthetic-token-corpus` v2, seeded per case), so no user content is ever measured or recorded. If the model is not in the local Hugging Face cache yet, `run` downloads it first — that network call is model loading, not a submission. The image and video protocols are a fixed prompt, seed and size (see `rapid-image-speed-v1.json` / `rapid-video-speed-v1.json` under `vllm_mlx/catalog/schemas/`). The protocol files are immutable; a new version is a new file and a new `protocol_version`.
+Prompts are synthetic token sequences (`rapid-synthetic-token-corpus` v2, seeded per case), so no user content is ever measured or recorded. If the model is not in the local Hugging Face cache yet, `run` downloads it first — that network call is model loading, not a submission. The image and video protocols are a fixed prompt, seed and size (see `rapid-image-speed-v1.json` / `rapid-video-speed-v1.json` under `rapid_mlx/catalog/schemas/`). The protocol files are immutable; a new version is a new file and a new `protocol_version`.
 
 Per round, a text measurement records `prompt_tokens`, `output_tokens`, `ttft_ms`, `decode_duration_ms`, `total_duration_ms` and `peak_active_memory_mib`. Decode throughput is derived by readers as `(output_tokens − 1) / (decode_duration_ms / 1000)` tokens per second — the first token lands at `ttft_ms` — which matches llama.cpp `tg` and vLLM TPOT semantics. The website uses this formula; the CLI summary printed by `benchmark run` uses the same one from the release after 0.13.4 (earlier releases divided by `output_tokens`, about 1% higher).
 
@@ -62,7 +62,7 @@ On acceptance the server returns a receipt (`submission_id` = your `run_id`, the
 
 ### Contract
 
-The wire format is JSON Schema 2020-12 with `additionalProperties: false` everywhere. The source of truth is `proto/` at the repo root (`proto/model-runtime/v1` for model identity, machine observation and execution config; `proto/community-benchmark/v1` for the run, the protocols and the receipt). Packaged copies live in `vllm_mlx/catalog/schemas/`; tests pin them byte-for-byte to `proto/`. Design notes: [`docs/engineering/decisions/2026-08-31-community-benchmark-wire-contract.md`](../docs/engineering/decisions/2026-08-31-community-benchmark-wire-contract.md) and [`…-community-benchmark-local-workspace.md`](../docs/engineering/decisions/2026-08-31-community-benchmark-local-workspace.md).
+The wire format is JSON Schema 2020-12 with `additionalProperties: false` everywhere. The source of truth is `proto/` at the repo root (`proto/model-runtime/v1` for model identity, machine observation and execution config; `proto/community-benchmark/v1` for the run, the protocols and the receipt). Packaged copies live in `rapid_mlx/catalog/schemas/`; tests pin them byte-for-byte to `proto/`. Design notes: [`docs/engineering/decisions/2026-08-31-community-benchmark-wire-contract.md`](../docs/engineering/decisions/2026-08-31-community-benchmark-wire-contract.md) and [`…-community-benchmark-local-workspace.md`](../docs/engineering/decisions/2026-08-31-community-benchmark-local-workspace.md).
 
 Public read surfaces: `GET https://rapidmlx.com/api/benchmarks/atomic/public` (privacy-safe projection; never returns `install_id` or digests) and `GET …/atomic/contributions` (paginated history, `?contributor=<slug>`). Raw records are admin-only.
 
@@ -72,7 +72,7 @@ Public read surfaces: `GET https://rapidmlx.com/api/benchmarks/atomic/public` (p
 $ rapid-mlx bench qwen3.5-9b-4bit --submit
 ```
 
-Runs the same two-bucket workload (512/128 and 2048/512, 1 warmup + 5 rounds, greedy), pretty-prints the submission JSON, asks for `y/N`, saves a local copy, then POSTs it to `https://rapidmlx.com/api/benchmarks`. The payload is the shape in [`schema.json`](schema.json): `hardware`, `software`, `model`, `config`, `buckets.short` / `buckets.long` (median + raw rounds of `decode_tps`, `prefill_tps`, `ttft_ms`), `peak_ram_mb`, optional `--notes`. `--sampled` submits a second row at temp 0.7 / top_p 0.9. The hardware allowlist for this flow lives in `vllm_mlx/community_bench/hardware.py`.
+Runs the same two-bucket workload (512/128 and 2048/512, 1 warmup + 5 rounds, greedy), pretty-prints the submission JSON, asks for `y/N`, saves a local copy, then POSTs it to `https://rapidmlx.com/api/benchmarks`. The payload is the shape in [`schema.json`](schema.json): `hardware`, `software`, `model`, `config`, `buckets.short` / `buckets.long` (median + raw rounds of `decode_tps`, `prefill_tps`, `ttft_ms`), `peak_ram_mb`, optional `--notes`. `--sampled` submits a second row at temp 0.7 / top_p 0.9. The hardware allowlist for this flow lives in `rapid_mlx/community_bench/hardware.py`.
 
 Rows accepted here feed the comparable board (`GET https://rapidmlx.com/api/benchmarks`). The checked-in aggregator groups by `(chip, model alias, rapid_mlx_version)` with median + IQR per metric; memory size is recorded on every row but is not part of that key.
 

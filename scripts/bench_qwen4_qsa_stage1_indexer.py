@@ -13,8 +13,8 @@ from importlib.metadata import version
 import mlx.core as mx
 import numpy as np
 
-from vllm_mlx.models.qwen4_exp import QSAIndexer, TextModelArgs
-from vllm_mlx.models.qwen4_exp_cache import QSAIndexCache
+from rapid_mlx.models.qwen4_exp import QSAIndexer, TextModelArgs
+from rapid_mlx.models.qwen4_exp_cache import QSAIndexCache
 
 try:
     from scripts.bench_metadata import format_bench_json

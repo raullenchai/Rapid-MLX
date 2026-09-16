@@ -41,7 +41,7 @@ Each rejection produces a 400 with a stable, field-named message:
 
 Live HTTP behaviour pinned via TestClient — the FastAPI route is
 constructed with the route-level handlers from
-``vllm_mlx.middleware.exception_handlers`` so the envelope-shape
+``rapid_mlx.middleware.exception_handlers`` so the envelope-shape
 assertions match production.
 """
 
@@ -53,9 +53,9 @@ from fastapi.exceptions import RequestValidationError
 from fastapi.testclient import TestClient
 from pydantic import ValidationError
 
-from vllm_mlx.api.anthropic_models import AnthropicContentBlock, AnthropicRequest
-from vllm_mlx.api.models import ChatCompletionRequest, ContentPart, Message
-from vllm_mlx.middleware.exception_handlers import _validation_error_response
+from rapid_mlx.api.anthropic_models import AnthropicContentBlock, AnthropicRequest
+from rapid_mlx.api.models import ChatCompletionRequest, ContentPart, Message
+from rapid_mlx.middleware.exception_handlers import _validation_error_response
 
 # ---------------------------------------------------------------------------
 # Direct Pydantic construction — pins schema-layer rejection contract.

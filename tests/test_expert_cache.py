@@ -1,5 +1,5 @@
 # SPDX-License-Identifier: Apache-2.0
-"""Tests for the disk-streaming MoE expert-weight cache (vllm_mlx/expert_cache.py).
+"""Tests for the disk-streaming MoE expert-weight cache (rapid_mlx/expert_cache.py).
 
 Ported from the disk-streaming MoE spike's `test_expert_cache.py` (see
 PRD-rapid-mlx-integration.md) — same 9 cases, no behavior changes, adapted
@@ -18,7 +18,7 @@ from dataclasses import dataclass
 
 import pytest
 
-from vllm_mlx.expert_cache import ExpertCache
+from rapid_mlx.expert_cache import ExpertCache
 
 
 @dataclass

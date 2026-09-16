@@ -13,7 +13,7 @@ from mlx_vlm import generate, load
 from mlx_vlm.speculative.drafters import load_drafter
 from mlx_vlm.utils import get_model_path
 
-from vllm_mlx.speculative.native_mtp.eligibility import QWEN36_35B_4BIT
+from rapid_mlx.speculative.native_mtp.eligibility import QWEN36_35B_4BIT
 
 PROMPTS = {
     "coding": (

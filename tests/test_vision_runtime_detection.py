@@ -147,7 +147,7 @@ def _simulate_mlx_vlm_installed_but_import_raises(monkeypatch, exc):
 def test_status_broken_when_pil_missing(monkeypatch):
     """mlx-vlm present but PIL missing ⇒ status is the "present-but-broken"
     state and names the missing module (PIL), NOT "absent"."""
-    from vllm_mlx.models.mllm import VisionRuntimeStatus, vision_runtime_status
+    from rapid_mlx.models.mllm import VisionRuntimeStatus, vision_runtime_status
 
     _simulate_mlx_vlm_present_but_pil_missing(monkeypatch)
 
@@ -161,7 +161,7 @@ def test_status_broken_when_pil_missing(monkeypatch):
 def test_status_absent_when_mlx_vlm_missing(monkeypatch):
     """mlx-vlm not installed at all ⇒ status is "absent" (distinct from
     broken)."""
-    from vllm_mlx.models.mllm import VisionRuntimeStatus, vision_runtime_status
+    from rapid_mlx.models.mllm import VisionRuntimeStatus, vision_runtime_status
 
     _simulate_mlx_vlm_absent(monkeypatch)
 
@@ -176,7 +176,7 @@ def test_mlx_vlm_available_false_when_pil_missing(monkeypatch):
     but a broken import chain ⇒ NOT available. Pre-fix this returned True
     (find_spec-only), so the boot guard passed and the crash surfaced deep
     in FastAPI lifespan."""
-    from vllm_mlx.models.mllm import mlx_vlm_available
+    from rapid_mlx.models.mllm import mlx_vlm_available
 
     _simulate_mlx_vlm_present_but_pil_missing(monkeypatch)
 
@@ -189,7 +189,7 @@ def test_status_broken_when_internal_submodule_missing(monkeypatch):
     NOT absent. Pre-fix the ``name.startswith('mlx_vlm')`` heuristic
     mislabelled it ABSENT → misleading "install mlx-vlm" for an install that
     is already present."""
-    from vllm_mlx.models.mllm import VisionRuntimeStatus, vision_runtime_status
+    from rapid_mlx.models.mllm import VisionRuntimeStatus, vision_runtime_status
 
     _simulate_mlx_vlm_installed_but_import_raises(
         monkeypatch,
@@ -210,7 +210,7 @@ def test_status_broken_when_import_raises_oserror(monkeypatch):
     mlx_vlm``. Pre-fix this ESCAPED ``vision_runtime_status`` (only
     ModuleNotFoundError/ImportError were caught) and crashed the boot guard;
     it must now be classified BROKEN without raising."""
-    from vllm_mlx.models.mllm import VisionRuntimeStatus, vision_runtime_status
+    from rapid_mlx.models.mllm import VisionRuntimeStatus, vision_runtime_status
 
     _simulate_mlx_vlm_installed_but_import_raises(
         monkeypatch, OSError("dlopen(libmlx.dylib): image not found")
@@ -227,7 +227,7 @@ def test_status_broken_when_import_raises_runtimeerror(monkeypatch):
     """A broken native extension / ABI mismatch can raise ``RuntimeError``
     on import — also non-control-flow, also previously escaping. Must be
     BROKEN, not a crash."""
-    from vllm_mlx.models.mllm import VisionRuntimeStatus, vision_runtime_status
+    from rapid_mlx.models.mllm import VisionRuntimeStatus, vision_runtime_status
 
     _simulate_mlx_vlm_installed_but_import_raises(
         monkeypatch, RuntimeError("incompatible mlx ABI")
@@ -243,7 +243,7 @@ def test_boot_guard_exit_2_when_import_raises_oserror(monkeypatch, capsys):
     must be caught and turned into a clean exit-code-2 boot guard with an
     honest diagnostic — NOT propagate as an uncaught crash, and NOT misdirect
     the user to "install mlx-vlm" (which IS installed)."""
-    from vllm_mlx.models.mllm import require_mlx_vlm_or_exit
+    from rapid_mlx.models.mllm import require_mlx_vlm_or_exit
 
     _simulate_mlx_vlm_installed_but_import_raises(
         monkeypatch, OSError("dlopen(libmlx.dylib): image not found")
@@ -271,7 +271,7 @@ def test_require_mlx_vlm_message_names_pil_when_broken(monkeypatch):
     """``_require_mlx_vlm`` (engine-side last line of defence) must raise an
     ImportError that names the actually-missing module (PIL) rather than
     telling the user to install mlx-vlm (which IS installed)."""
-    from vllm_mlx.models.mllm import _require_mlx_vlm
+    from rapid_mlx.models.mllm import _require_mlx_vlm
 
     _simulate_mlx_vlm_present_but_pil_missing(monkeypatch)
 
@@ -286,7 +286,7 @@ def test_broken_and_absent_messages_are_distinct(monkeypatch):
     broken message names the missing runtime dep (PIL); the absent message
     tells the user to install mlx-vlm. A user staring at 'install mlx-vlm'
     while mlx-vlm IS installed is the exact #1126 confusion."""
-    from vllm_mlx.models.mllm import _require_mlx_vlm
+    from rapid_mlx.models.mllm import _require_mlx_vlm
 
     _simulate_mlx_vlm_present_but_pil_missing(monkeypatch)
     with pytest.raises(ImportError) as broken_exc:
@@ -312,7 +312,7 @@ def test_boot_guard_exit_message_names_pil_when_broken(monkeypatch, capsys):
     """``require_mlx_vlm_or_exit`` must preserve its exit-code-2 shape AND
     name PIL in the broken case so the operator sees the actionable hint on
     stderr before any download starts."""
-    from vllm_mlx.models.mllm import require_mlx_vlm_or_exit
+    from rapid_mlx.models.mllm import require_mlx_vlm_or_exit
 
     _simulate_mlx_vlm_present_but_pil_missing(monkeypatch)
 
@@ -350,8 +350,8 @@ def test_doctor_vision_row_not_ok_and_names_pil_when_pil_missing(monkeypatch):
     The check stays FAST (≤5 s doctor contract) — a lightweight
     ``find_spec('PIL')`` probe, not a heavy ``import mlx_vlm`` that would
     pull torch."""
-    from vllm_mlx.doctor import env_health
-    from vllm_mlx.doctor.env_health import CheckStatus
+    from rapid_mlx.doctor import env_health
+    from rapid_mlx.doctor.env_health import CheckStatus
 
     # mlx-vlm metadata present (Homebrew --no-deps), PIL not importable.
     def fake_safe_version(dist, runtime=None):
@@ -393,8 +393,8 @@ def test_doctor_vision_row_ok_when_pil_present(monkeypatch):
     """Guard against over-warning: when BOTH mlx-vlm metadata AND PIL are
     present the vision + dflash rows stay green — the honest-detection fix
     must not turn a healthy vision install red."""
-    from vllm_mlx.doctor import env_health
-    from vllm_mlx.doctor.env_health import CheckStatus
+    from rapid_mlx.doctor import env_health
+    from rapid_mlx.doctor.env_health import CheckStatus
 
     def fake_safe_version(dist, runtime=None):
         if dist == "mlx-vlm":
@@ -429,8 +429,8 @@ def test_doctor_vision_row_warns_when_mlx_vlm_truly_absent(monkeypatch):
     """The truly-absent path must still WARN as before (not silently pass,
     not spuriously name PIL). Preserves the existing text-only install
     messaging."""
-    from vllm_mlx.doctor import env_health
-    from vllm_mlx.doctor.env_health import CheckStatus
+    from rapid_mlx.doctor import env_health
+    from rapid_mlx.doctor.env_health import CheckStatus
 
     # mlx-vlm not installed at all.
     monkeypatch.setattr(env_health, "_safe_version", lambda dist, runtime=None: None)
@@ -502,7 +502,7 @@ def test_pil_importable_false_when_pillow_damaged(monkeypatch):
     """``_pil_importable`` must return False when the real ``from PIL import
     Image`` raises even though something named PIL is discoverable. Pre-fix it
     used ``find_spec('PIL')`` only and returned True (false green)."""
-    from vllm_mlx.doctor import env_health
+    from rapid_mlx.doctor import env_health
 
     _simulate_pillow_damaged(monkeypatch)
 
@@ -540,7 +540,7 @@ def test_pil_importable_false_when_native_backend_broken(monkeypatch):
     but its native ``_imaging`` backend is broken — i.e. ``from PIL import
     Image`` succeeds yet a real op (``Image.new``) raises. A probe that only
     did the import (no native-backed op) could false-green this."""
-    from vllm_mlx.doctor import env_health
+    from rapid_mlx.doctor import env_health
 
     _simulate_pillow_native_backend_broken(monkeypatch)
 
@@ -555,8 +555,8 @@ def test_doctor_vision_row_red_when_pillow_damaged(monkeypatch):
     """End-to-end: a damaged/shadowed Pillow must turn the doctor vision +
     dflash rows red, exercising the REAL ``_pil_importable`` (not a stub) so
     the find_spec-only false-green regression stays pinned."""
-    from vllm_mlx.doctor import env_health
-    from vllm_mlx.doctor.env_health import CheckStatus
+    from rapid_mlx.doctor import env_health
+    from rapid_mlx.doctor.env_health import CheckStatus
 
     def fake_safe_version(dist, runtime=None):
         return "0.7.1" if dist == "mlx-vlm" else None

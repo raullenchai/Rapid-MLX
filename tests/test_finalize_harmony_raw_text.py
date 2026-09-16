@@ -28,10 +28,10 @@ the retry branch.
 
 from __future__ import annotations
 
-from vllm_mlx.reasoning.deepseek_r1_parser import DeepSeekR1ReasoningParser
-from vllm_mlx.reasoning.harmony_parser import HarmonyReasoningParser
-from vllm_mlx.reasoning.qwen3_parser import Qwen3ReasoningParser
-from vllm_mlx.service.helpers import _finalize_content_and_reasoning
+from rapid_mlx.reasoning.deepseek_r1_parser import DeepSeekR1ReasoningParser
+from rapid_mlx.reasoning.harmony_parser import HarmonyReasoningParser
+from rapid_mlx.reasoning.qwen3_parser import Qwen3ReasoningParser
+from rapid_mlx.service.helpers import _finalize_content_and_reasoning
 
 # A realistic gpt-oss-20b-mxfp4-q8 harmony non-stream response: analysis channel
 # (CoT) followed by final channel (answer), terminated with <|return|>.
@@ -210,8 +210,8 @@ def test_engine_reasoning_empty_falls_through_to_parser():
 # #575 — Case-4 leak plug + effective-thinking resolution + signature probe
 # ---------------------------------------------------------------------------
 
-from vllm_mlx.reasoning.glm4_parser import Glm4ReasoningParser
-from vllm_mlx.service.helpers import (
+from rapid_mlx.reasoning.glm4_parser import Glm4ReasoningParser
+from rapid_mlx.service.helpers import (
     _effective_enable_thinking,
     _parser_accepts_enable_thinking,
 )
@@ -369,7 +369,7 @@ def test_effective_enable_thinking_concrete_false_passes_through():
 
 
 def test_effective_enable_thinking_none_non_coder_defaults_true():
-    """Mirrors ``vllm_mlx/utils/chat_template.py:127`` — the same
+    """Mirrors ``rapid_mlx/utils/chat_template.py:127`` — the same
     default the prompt-render path applies. Without this, ``None`` on
     the default Qwen3 path would skip the Case-4 fallback even though
     the chat template DID inject ``<think>`` (codex R1 BLOCKING)."""
@@ -507,7 +507,7 @@ def test_575_r2_qwen3_case4_still_clears_when_thinking_on():
 # ``reasoning_content``. The helper now clears ``cleaned_text`` when the
 # parser returns ``(reasoning, None)`` AND ``cleaned_text`` opens with an
 # unclosed ``<think>``. See ``first_parse_was_truncated_think`` in
-# ``vllm_mlx/service/helpers.py``.
+# ``rapid_mlx/service/helpers.py``.
 # ---------------------------------------------------------------------------
 
 _VIBETHINKER_TRUNCATED_THINK = (

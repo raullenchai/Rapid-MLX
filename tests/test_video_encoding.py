@@ -8,7 +8,7 @@ from pathlib import Path
 import numpy as np
 import pytest
 
-from vllm_mlx.video.encoding import (
+from rapid_mlx.video.encoding import (
     VideoEncodingError,
     _ffmpeg_command,
     encode_rgb_video,
@@ -60,9 +60,9 @@ def test_encode_streams_frames_and_atomically_replaces_output(
             self.returncode = -9
 
     monkeypatch.setattr(
-        "vllm_mlx.runtime.video_lane._resolve_ffmpeg", lambda: "/bundle/bin/ffmpeg"
+        "rapid_mlx.runtime.video_lane._resolve_ffmpeg", lambda: "/bundle/bin/ffmpeg"
     )
-    monkeypatch.setattr("vllm_mlx.video.encoding.subprocess.Popen", FakeProcess)
+    monkeypatch.setattr("rapid_mlx.video.encoding.subprocess.Popen", FakeProcess)
     output = tmp_path / "result.mp4"
     output.write_bytes(b"old")
     frames = np.zeros((2, 4, 8, 3), dtype=np.uint8)
@@ -101,9 +101,9 @@ def test_encode_timeout_kills_process_and_unblocks_a_stalled_pipe(
             killed.set()
 
     monkeypatch.setattr(
-        "vllm_mlx.runtime.video_lane._resolve_ffmpeg", lambda: "/bundle/bin/ffmpeg"
+        "rapid_mlx.runtime.video_lane._resolve_ffmpeg", lambda: "/bundle/bin/ffmpeg"
     )
-    monkeypatch.setattr("vllm_mlx.video.encoding.subprocess.Popen", StalledProcess)
+    monkeypatch.setattr("rapid_mlx.video.encoding.subprocess.Popen", StalledProcess)
 
     with pytest.raises(VideoEncodingError, match="timed out"):
         encode_rgb_video(
@@ -117,7 +117,7 @@ def test_encode_timeout_kills_process_and_unblocks_a_stalled_pipe(
 def test_encode_rejects_missing_encoder(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    monkeypatch.setattr("vllm_mlx.runtime.video_lane._resolve_ffmpeg", lambda: None)
+    monkeypatch.setattr("rapid_mlx.runtime.video_lane._resolve_ffmpeg", lambda: None)
 
     with pytest.raises(VideoEncodingError, match="ffmpeg is unavailable"):
         encode_rgb_video(
@@ -154,9 +154,9 @@ def test_encode_tolerates_stdin_close_error_after_all_frames(
             self.returncode = -9
 
     monkeypatch.setattr(
-        "vllm_mlx.runtime.video_lane._resolve_ffmpeg", lambda: "/bundle/bin/ffmpeg"
+        "rapid_mlx.runtime.video_lane._resolve_ffmpeg", lambda: "/bundle/bin/ffmpeg"
     )
-    monkeypatch.setattr("vllm_mlx.video.encoding.subprocess.Popen", SuccessfulProcess)
+    monkeypatch.setattr("rapid_mlx.video.encoding.subprocess.Popen", SuccessfulProcess)
     output = tmp_path / "result.mp4"
 
     encode_rgb_video(np.zeros((1, 4, 4, 3), dtype=np.uint8), output, 8)
@@ -196,10 +196,10 @@ def test_encode_rejects_writer_that_does_not_stop(
             return True
 
     monkeypatch.setattr(
-        "vllm_mlx.runtime.video_lane._resolve_ffmpeg", lambda: "/bundle/bin/ffmpeg"
+        "rapid_mlx.runtime.video_lane._resolve_ffmpeg", lambda: "/bundle/bin/ffmpeg"
     )
-    monkeypatch.setattr("vllm_mlx.video.encoding.subprocess.Popen", CompletedProcess)
-    monkeypatch.setattr("vllm_mlx.video.encoding.threading.Thread", StuckWriter)
+    monkeypatch.setattr("rapid_mlx.video.encoding.subprocess.Popen", CompletedProcess)
+    monkeypatch.setattr("rapid_mlx.video.encoding.threading.Thread", StuckWriter)
 
     with pytest.raises(VideoEncodingError, match="writer did not stop"):
         encode_rgb_video(
@@ -236,9 +236,9 @@ def test_encode_surfaces_encoder_stderr(
             self.returncode = -9
 
     monkeypatch.setattr(
-        "vllm_mlx.runtime.video_lane._resolve_ffmpeg", lambda: "/bundle/bin/ffmpeg"
+        "rapid_mlx.runtime.video_lane._resolve_ffmpeg", lambda: "/bundle/bin/ffmpeg"
     )
-    monkeypatch.setattr("vllm_mlx.video.encoding.subprocess.Popen", FailedProcess)
+    monkeypatch.setattr("rapid_mlx.video.encoding.subprocess.Popen", FailedProcess)
 
     with pytest.raises(VideoEncodingError, match="status 7: encoder failed"):
         encode_rgb_video(
@@ -275,9 +275,9 @@ def test_encode_surfaces_pipe_write_failure(
             self.returncode = -9
 
     monkeypatch.setattr(
-        "vllm_mlx.runtime.video_lane._resolve_ffmpeg", lambda: "/bundle/bin/ffmpeg"
+        "rapid_mlx.runtime.video_lane._resolve_ffmpeg", lambda: "/bundle/bin/ffmpeg"
     )
-    monkeypatch.setattr("vllm_mlx.video.encoding.subprocess.Popen", Process)
+    monkeypatch.setattr("rapid_mlx.video.encoding.subprocess.Popen", Process)
 
     with pytest.raises(VideoEncodingError, match="input failed: BrokenPipeError"):
         encode_rgb_video(
@@ -311,9 +311,9 @@ def test_encode_rejects_empty_encoder_output(
             self.returncode = -9
 
     monkeypatch.setattr(
-        "vllm_mlx.runtime.video_lane._resolve_ffmpeg", lambda: "/bundle/bin/ffmpeg"
+        "rapid_mlx.runtime.video_lane._resolve_ffmpeg", lambda: "/bundle/bin/ffmpeg"
     )
-    monkeypatch.setattr("vllm_mlx.video.encoding.subprocess.Popen", EmptyOutputProcess)
+    monkeypatch.setattr("rapid_mlx.video.encoding.subprocess.Popen", EmptyOutputProcess)
 
     with pytest.raises(VideoEncodingError, match="without an MP4 output"):
         encode_rgb_video(
@@ -328,9 +328,9 @@ def test_encode_wraps_process_launch_failure(
         raise OSError("launch denied")
 
     monkeypatch.setattr(
-        "vllm_mlx.runtime.video_lane._resolve_ffmpeg", lambda: "/bundle/bin/ffmpeg"
+        "rapid_mlx.runtime.video_lane._resolve_ffmpeg", lambda: "/bundle/bin/ffmpeg"
     )
-    monkeypatch.setattr("vllm_mlx.video.encoding.subprocess.Popen", fail_launch)
+    monkeypatch.setattr("rapid_mlx.video.encoding.subprocess.Popen", fail_launch)
 
     with pytest.raises(VideoEncodingError, match="encoding failed: OSError"):
         encode_rgb_video(

@@ -32,8 +32,8 @@ import textwrap
 
 import pytest
 
-from vllm_mlx.api.models import Message
-from vllm_mlx.api.responses_adapter import _merge_system_messages as _merge_raw
+from rapid_mlx.api.models import Message
+from rapid_mlx.api.responses_adapter import _merge_system_messages as _merge_raw
 
 
 def _merge_system_messages(messages):
@@ -468,7 +468,7 @@ class TestRelocationIsOptInAndOffByDefault:
     ]
 
     def test_default_is_off(self):
-        from vllm_mlx.config.server_config import ServerConfig
+        from rapid_mlx.config.server_config import ServerConfig
 
         assert ServerConfig().relocate_mid_conversation_system is False
 
@@ -484,12 +484,14 @@ class TestRelocationIsOptInAndOffByDefault:
 
     def test_adapter_consults_the_config_flag(self, monkeypatch):
         """The switch is a server flag, not an out-of-band env var."""
-        from vllm_mlx.api import anthropic_adapter
+        from rapid_mlx.api import anthropic_adapter
 
         class _Cfg:
             relocate_mid_conversation_system = True
 
-        monkeypatch.setattr("vllm_mlx.config.get_config", lambda: _Cfg(), raising=False)
+        monkeypatch.setattr(
+            "rapid_mlx.config.get_config", lambda: _Cfg(), raising=False
+        )
         assert anthropic_adapter._relocate_mid_system_enabled() is True
 
         _Cfg.relocate_mid_conversation_system = False
@@ -523,7 +525,7 @@ class TestFlagReachesTheAdapterEndToEnd:
         import sys
         from unittest import mock
 
-        from vllm_mlx import cli
+        from rapid_mlx import cli
 
         captured = {}
 
@@ -541,14 +543,14 @@ class TestFlagReachesTheAdapterEndToEnd:
 
     @staticmethod
     def _publish(value):
-        from vllm_mlx import server
+        from rapid_mlx import server
 
         server._relocate_mid_conversation_system = value
         server._sync_config()
 
     @staticmethod
     def _request():
-        from vllm_mlx.api.anthropic_models import AnthropicRequest
+        from rapid_mlx.api.anthropic_models import AnthropicRequest
 
         return AnthropicRequest(
             model="m",
@@ -563,7 +565,7 @@ class TestFlagReachesTheAdapterEndToEnd:
 
     @pytest.fixture(autouse=True)
     def _restore(self):
-        from vllm_mlx import server
+        from rapid_mlx import server
 
         before = server._relocate_mid_conversation_system
         yield
@@ -571,7 +573,7 @@ class TestFlagReachesTheAdapterEndToEnd:
         server._sync_config()
 
     def test_flag_present_relocates(self):
-        from vllm_mlx.api.anthropic_adapter import anthropic_to_openai
+        from rapid_mlx.api.anthropic_adapter import anthropic_to_openai
 
         args = self._parse(["--relocate-mid-conversation-system"])
         assert args.relocate_mid_conversation_system is True
@@ -602,7 +604,7 @@ class TestFlagReachesTheAdapterEndToEnd:
         import ast
         import inspect
 
-        from vllm_mlx import cli
+        from rapid_mlx import cli
 
         src = inspect.getsource(cli.serve_command)
         tree = ast.parse(textwrap.dedent(src))
@@ -644,7 +646,7 @@ class TestFlagReachesTheAdapterEndToEnd:
         )
 
     def test_flag_absent_hoists(self):
-        from vllm_mlx.api.anthropic_adapter import anthropic_to_openai
+        from rapid_mlx.api.anthropic_adapter import anthropic_to_openai
 
         args = self._parse([])
         assert args.relocate_mid_conversation_system is False

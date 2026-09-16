@@ -172,7 +172,7 @@ enum PortSweep {
                 // Verify identity via the same command-line predicate
                 // the heuristic path uses before signalling. If the
                 // command matches our owned shape (rapid-mlx serve OR
-                // python -m vllm_mlx serve) the recorded pgid is
+                // python -m rapid_mlx serve) the recorded pgid is
                 // trustworthy; if not, drop the record and fall
                 // through to the existing per-PID heuristic which
                 // will skip the foreign process explicitly.
@@ -482,7 +482,7 @@ enum PortSweep {
     /// PR #26 codex meta-review finding 5 (P1 regression): the
     /// previous shape ONLY accepted basename ``rapid-mlx``, but
     /// editable pip installs and dev-mode runs use the
-    /// ``python -m vllm_mlx serve`` form where the basename is
+    /// ``python -m rapid_mlx serve`` form where the basename is
     /// ``python3`` / ``python3.12``. Those orphans were leaking
     /// through the sweep and holding GPU memory across launches.
     ///
@@ -494,7 +494,7 @@ enum PortSweep {
     /// P, which the existing ``.lowercased()`` already handles) and
     /// argv[1] as the ``rapid-mlx`` script path. That is neither
     /// Form 1 (basename != "rapid-mlx") nor Form 2 (no
-    /// ``-m vllm_mlx``), so a Force-Quit orphan from a brew install
+    /// ``-m rapid_mlx``), so a Force-Quit orphan from a brew install
     /// survived the sweep and held the port + GPU memory across
     /// launches — defeating the whole PR #142 / #20 cleanup chain
     /// on the most common install channel. Form 3 catches that
@@ -506,7 +506,7 @@ enum PortSweep {
     ///   * Form 1 — basename == "rapid-mlx" (brew/pip console-script
     ///     install path) and argv contains the ``serve`` subcommand
     ///   * Form 2 — basename matches ``python`` / ``python3`` /
-    ///     ``python3.N`` and argv carries ``-m vllm_mlx serve``
+    ///     ``python3.N`` and argv carries ``-m rapid_mlx serve``
     ///   * Form 3 — basename matches ``python*`` AND the first
     ///     non-flag argv token is a path whose basename is
     ///     ``rapid-mlx`` AND argv contains the ``serve`` verb
@@ -535,7 +535,7 @@ enum PortSweep {
             return containsServeVerb(argvLower)
         }
 
-        // Form 2: ``python -m vllm_mlx serve``. Match any python
+        // Form 2: ``python -m rapid_mlx serve``. Match any python
         // basename (``python``, ``python3``, ``python3.12`` etc.)
         // because pyenv / virtualenv / homebrew vary the suffix.
         // Form 3: ``python <path-to>/rapid-mlx serve …``. The kernel
@@ -547,7 +547,7 @@ enum PortSweep {
         // in order.
         if isPythonBasename(exeBase) {
             // Require BOTH the module flag and the serve verb so a
-            // user running ``python -m vllm_mlx pull foo`` is
+            // user running ``python -m rapid_mlx pull foo`` is
             // correctly classified as NOT a server orphan.
             if containsModuleFlag(argvLower) && containsServeVerb(argvLower) {
                 return true
@@ -708,9 +708,9 @@ enum PortSweep {
     }
 
     private static func containsModuleFlag(_ argv: String) -> Bool {
-        // Match ``-m vllm_mlx`` or ``-m vllm_mlx.<submodule>``
-        // (e.g. ``vllm_mlx.cli``, ``vllm_mlx.main``) as adjacent
-        // tokens — guards against a stray ``vllm_mlx`` substring
+        // Match both the current ``-m rapid_mlx[.<submodule>]`` form and
+        // the deprecated-but-supported ``-m vllm_mlx[.<submodule>]`` form
+        // as adjacent tokens — guards against a stray package-name substring
         // in a file path. Both the top-level package run shape
         // and the submodule run shape are reachable depending on
         // how rapid-mlx was installed.
@@ -735,8 +735,10 @@ enum PortSweep {
         // Verified: repro trapped at this line with exit 133 (SIGTRAP).
         for (flag, modName) in zip(tokens, tokens.dropFirst()) {
             guard flag == "-m" else { continue }
-            if modName == "vllm_mlx" || modName.hasPrefix("vllm_mlx.") {
-                return true
+            for package in ["rapid_mlx", "vllm_mlx"] {
+                if modName == package || modName.hasPrefix("\(package).") {
+                    return true
+                }
             }
         }
         return false

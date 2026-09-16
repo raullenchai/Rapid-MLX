@@ -8,7 +8,7 @@ def benchmark_model(model_name: str):
     """Benchmark a single model and return results."""
     from mlx_lm import load
 
-    from vllm_mlx import EngineConfig, EngineCore, SamplingParams, SchedulerConfig
+    from rapid_mlx import EngineConfig, EngineCore, SamplingParams, SchedulerConfig
 
     base_prompts = [
         "What is 2+2?",

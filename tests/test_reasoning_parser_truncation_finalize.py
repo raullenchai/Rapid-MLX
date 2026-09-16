@@ -22,9 +22,9 @@ Fix (shared finalize-on-truncation):
   the route knows whether the unclosed buffer should be classified
   as reasoning.
 * A shared ``finalize_truncation(open_in_think, buffer)`` helper in
-  ``vllm_mlx/reasoning/base.py`` routes the buffer parser-agnostically.
+  ``rapid_mlx/reasoning/base.py`` routes the buffer parser-agnostically.
 * The non-streaming aggregator
-  ``vllm_mlx/service/helpers.py::_finalize_content_and_reasoning``
+  ``rapid_mlx/service/helpers.py::_finalize_content_and_reasoning``
   invokes the helper when ``finish_reason="length"`` is reported AND
   the parser's first pass returned the leak shape.
 * Each parser's own ``extract_reasoning`` ALSO routes correctly on the
@@ -40,19 +40,19 @@ from __future__ import annotations
 
 import pytest
 
-from vllm_mlx.api.constants import REASONING_CUTOFF_SENTINEL
-from vllm_mlx.api.utils import clean_output_text, strip_thinking_tags
-from vllm_mlx.reasoning import finalize_truncation
-from vllm_mlx.reasoning.deepseek_r1_parser import (
+from rapid_mlx.api.constants import REASONING_CUTOFF_SENTINEL
+from rapid_mlx.api.utils import clean_output_text, strip_thinking_tags
+from rapid_mlx.reasoning import finalize_truncation
+from rapid_mlx.reasoning.deepseek_r1_parser import (
     DeepSeekR1DistillReasoningParser,
     DeepSeekR1ReasoningParser,
     VibeThinkerReasoningParser,
 )
-from vllm_mlx.reasoning.gemma4_parser import Gemma4ReasoningParser
-from vllm_mlx.reasoning.glm4_parser import Glm4ReasoningParser
-from vllm_mlx.reasoning.minimax_parser import MiniMaxReasoningParser
-from vllm_mlx.reasoning.qwen3_parser import Qwen3ReasoningParser
-from vllm_mlx.service.helpers import (
+from rapid_mlx.reasoning.gemma4_parser import Gemma4ReasoningParser
+from rapid_mlx.reasoning.glm4_parser import Glm4ReasoningParser
+from rapid_mlx.reasoning.minimax_parser import MiniMaxReasoningParser
+from rapid_mlx.reasoning.qwen3_parser import Qwen3ReasoningParser
+from rapid_mlx.service.helpers import (
     _apply_reasoning_cutoff_notice,
     _finalize_content_and_reasoning,
     _rescue_silent_drop_from_reasoning,
@@ -1045,7 +1045,7 @@ class TestHarmonyPromptPrimedAnswerSurvives:
     def test_harmony_final_channel_answer_preserved(
         self, enable_thinking, prompt_thinking_active
     ):
-        from vllm_mlx.reasoning.harmony_parser import HarmonyReasoningParser
+        from rapid_mlx.reasoning.harmony_parser import HarmonyReasoningParser
 
         parser = HarmonyReasoningParser()
         cleaned = clean_output_text(self._RAW)

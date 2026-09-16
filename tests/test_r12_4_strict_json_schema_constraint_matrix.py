@@ -50,11 +50,11 @@ import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
-from vllm_mlx.api import response_format_metrics
-from vllm_mlx.config import reset_config
-from vllm_mlx.engine.base import GenerationOutput
-from vllm_mlx.middleware.exception_handlers import install_exception_handlers
-from vllm_mlx.routes.chat import router as chat_router
+from rapid_mlx.api import response_format_metrics
+from rapid_mlx.config import reset_config
+from rapid_mlx.engine.base import GenerationOutput
+from rapid_mlx.middleware.exception_handlers import install_exception_handlers
+from rapid_mlx.routes.chat import router as chat_router
 
 
 class _StubEngine:

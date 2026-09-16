@@ -1,0 +1,3223 @@
+# SPDX-License-Identifier: Apache-2.0
+"""
+MLX Multimodal Language Model (MLLM) wrapper.
+
+This module provides a wrapper around mlx-vlm for multimodal inference,
+supporting vision, audio, and video understanding on Apple Silicon.
+
+Features:
+- OpenAI-compatible API format for images and video
+- Smart video frame extraction with configurable FPS
+- Base64 and URL image support
+- Streaming generation
+- MLLM KV cache for repeated image/video+prompt combinations
+"""
+
+import atexit
+import base64
+import fcntl
+import ipaddress
+import logging
+import math
+import os
+import plistlib
+import re
+import shlex
+import shutil
+import socket
+import stat
+import sys
+import tempfile
+import threading
+from collections.abc import Iterator
+from dataclasses import dataclass, field
+from enum import Enum
+from importlib.metadata import PackageNotFoundError, version
+from pathlib import Path
+from urllib.parse import urljoin, urlparse, urlsplit, urlunsplit
+
+import numpy as np
+import requests
+from requests.adapters import HTTPAdapter
+
+from rapid_mlx.mllm_cache import MLLMPrefixCacheManager
+from rapid_mlx.model_metadata import MULTIMODAL_TENSOR_PREFIXES
+
+logger = logging.getLogger(__name__)
+
+
+class TextOnlyCheckpointError(RuntimeError):
+    """A vision-config checkpoint that ships no usable vision tower.
+
+    Raised by :meth:`MLXMultimodalLM.load` when ``config.json`` declares a
+    vision (or audio) modality — so auto-detection routed the checkpoint to
+    the MLLM lane — but the actual safetensors do NOT carry a complete vision
+    tower. Three real-world sources produce this state, all indistinguishable
+    at load time and all handled identically:
+
+    * a text-only *fork* of a multimodal architecture (config inherited from
+      the base, weights language-only);
+    * a broken multimodal *quant* that dropped the vision tower;
+    * an ``index.json`` whose ``weight_map`` LISTS vision tensors the shards
+      don't actually contain (e.g. ``gemma-4`` OptiQ — the routing detector
+      trusts the index, so it can't catch this before load).
+
+    The language backbone is fully present and servable, so the engine treats
+    this as the authoritative "serve text-only" signal and auto-degrades to
+    the text lane (equivalent to the operator passing ``--no-mllm``), rather
+    than aborting startup. A dedicated subclass (not a bare ``RuntimeError``)
+    lets the engine degrade on THIS condition alone and let every other load
+    failure propagate. Subclasses ``RuntimeError`` so existing callers that
+    catch ``RuntimeError`` (and the #393 friendly-message contract) still hold.
+
+    Tracked in #393.
+    """
+
+    def __init__(self, message: str, *, missing_count: int | None = None):
+        super().__init__(message)
+        self.missing_count = missing_count
+
+
+def _parse_missing_param_names(msg: str) -> list[str]:
+    """Extract the missing tensor names from mlx's strict-load ``ValueError``.
+
+    ``mlx.nn.Module.load_weights(..., strict=True)`` raises
+    ``f"Missing {n} parameters: \\n{name1},\\n{name2},...{nameK}."`` — the
+    names are comma-joined (mlx uses ``",\\n".join(sorted(missing))``) and the
+    whole list is terminated by a single ``.``. Return the individual names
+    (empty list if the message doesn't match, so callers fail safe).
+    """
+    m = re.search(r"Missing\s+\d+\s+parameters?:(.*)", msg, re.DOTALL)
+    if not m:
+        return []
+    body = m.group(1).strip().rstrip(".")
+    return [tok.strip() for tok in body.split(",") if tok.strip()]
+
+
+def _parse_missing_count(msg: str) -> int | None:
+    """Return mlx's own ``Missing N`` count from the strict-load ``ValueError``.
+
+    This is mlx's authoritative tally; it always equals the number of names it
+    then lists. Callers cross-check it against ``_parse_missing_param_names`` —
+    a mismatch means the name list wasn't parsed in full, so the degrade
+    decision can't be trusted and must fail safe.
+    """
+    m = re.search(r"Missing\s+(\d+)\s+parameters?", msg)
+    return int(m.group(1)) if m else None
+
+
+def _name_is_multimodal_tensor(name: str) -> bool:
+    """Whether a single tensor path names a vision/audio/projector weight.
+
+    Draws the vocabulary from the canonical :data:`MULTIMODAL_TENSOR_PREFIXES`
+    allowlist the routing detector keys on (one source of truth), but matches
+    each token at a DOTTED-SEGMENT boundary rather than by bare substring: a
+    tensor path is a dot-joined module chain (``a.b.c.weight``), so a token
+    counts only when it is a whole segment (start-of-path, after a ``.``, or a
+    trailing leaf). This is stricter than the detector's substring test on
+    purpose — the degrade decision wants PRECISION (never mistake a language
+    weight like ``...q_proj.weight`` for multimodal just because a token is a
+    substring of a segment), and erring strict only ever degrades LESS (re-
+    raises), which is the fail-safe direction. Segment-anchored matching still
+    catches every real layout: top-level (``vision_tower.…``), nested
+    (``model.visual.blocks.…``), and leaf (``…image_newline``).
+    """
+    for prefix in MULTIMODAL_TENSOR_PREFIXES:
+        token = prefix.rstrip(".")
+        if (
+            name == token
+            or name.startswith(token + ".")
+            or ("." + token + ".") in name
+            or name.endswith("." + token)
+        ):
+            return True
+    return False
+
+
+def _all_missing_are_multimodal(missing_names: list[str]) -> bool:
+    """Whether EVERY missing tensor belongs to a vision/audio/projector module.
+
+    A checkpoint whose ONLY missing weights are multimodal (per
+    :func:`_name_is_multimodal_tensor`) has a fully-present language backbone →
+    the text lane is viable → degrade. If ANY missing weight is a language/
+    text-backbone tensor the checkpoint is genuinely incomplete; degrading
+    would mask real corruption, so the caller must re-raise. Empty
+    ``missing_names`` (unparseable message) is ``False`` — fail safe, don't
+    degrade on an unrecognised error shape.
+    """
+    return bool(missing_names) and all(
+        _name_is_multimodal_tensor(name) for name in missing_names
+    )
+
+
+# The bare-mlx-vlm line is pinned to the same validated runtime as the
+# ``rapid-mlx[vision]`` extra. Keeping both recovery paths aligned avoids
+# resolver-dependent behavior between direct installs and the packaged app.
+VALIDATED_MLX_VLM_VERSION = "0.7.1"
+
+
+def _managed_desktop_runtime_kind() -> str | None:
+    """Return the Desktop-managed runtime slot for this interpreter."""
+    executable_path = Path(sys.executable).resolve()
+    executable = str(executable_path)
+    if "/Library/Application Support/Rapid/runtime-override/" in executable:
+        try:
+            root = executable_path.parents[2]
+        except (IndexError, OSError):  # pragma: no cover - defensive Path guard
+            return None
+        if (
+            executable_path.parent.name == "bin"
+            and executable_path.parent.parent.name == "python"
+            and executable_path.name.startswith("python")
+            and root.name == "rapid-mlx"
+            and root.parent.name == "runtime-override"
+            and root.parent.parent.name == "Rapid"
+            and root.parent.parent.parent.name == "Application Support"
+        ):
+            return "runtime-override"
+        return None
+    if ".app/Contents/Resources/rapid-mlx/" in executable:
+        try:
+            root = executable_path.parents[2]
+            app_root = root.parents[2]
+            with (app_root / "Contents" / "Info.plist").open("rb") as handle:
+                bundle_id = plistlib.load(handle).get("CFBundleIdentifier", "")
+        except (  # pragma: no cover - individual filesystem failures tested via result
+            IndexError,
+            OSError,
+            plistlib.InvalidFileException,
+        ):
+            return None
+        if (
+            executable_path.parent.name == "bin"
+            and executable_path.parent.parent.name == "python"
+            and executable_path.name.startswith("python")
+            and root.name == "rapid-mlx"
+            and root.parent.name == "Resources"
+            and root.parent.parent.name == "Contents"
+            and app_root.name.endswith(".app")
+            and (
+                bundle_id == "com.rapidmlx.rapid"
+                or bundle_id.startswith("com.rapidmlx.rapid.dogfood-")
+            )
+        ):
+            return "embedded"
+        return None
+    return None
+
+
+def _managed_desktop_runtime() -> bool:
+    """Whether this interpreter belongs to a Desktop-managed runtime tree."""
+    return _managed_desktop_runtime_kind() is not None
+
+
+def _managed_desktop_runtime_root() -> Path:
+    """Return the active sidecar root derived from its interpreter layout."""
+    return Path(sys.executable).resolve().parents[2]
+
+
+def _vision_install_hint() -> str:
+    """Return a repair path that cannot accidentally target another Python.
+
+    A signed Desktop runtime is immutable product state: mutating it with pip
+    invalidates the tested dependency set (and can invalidate a bundle seal).
+    Standalone environments use the active interpreter explicitly so a
+    two-venv installation cannot repair the wrong environment.
+    """
+    managed_kind = _managed_desktop_runtime_kind()
+    if managed_kind == "runtime-override":
+        runtime_root = _managed_desktop_runtime_root()
+        return (
+            "Install the current Rapid-MLX Desktop.app first (its DMG ships a "
+            "validated sidecar), then remove "
+            f"{runtime_root} "
+            "and relaunch so Desktop uses the bundled sidecar. Do not "
+            "pip-install into the managed runtime override."
+        )
+    if managed_kind == "embedded":
+        return (
+            "Reinstall Rapid-MLX Desktop.app to restore its validated vision "
+            "runtime. Do not pip-install into the code-signed bundled sidecar."
+        )
+    python = shlex.quote(sys.executable)
+    return (
+        "Install the validated vision stack into this runtime with:\n"
+        f"    {python} -m pip install --upgrade --force-reinstall "
+        "'rapid-mlx[vision]'\n"
+        "or repair mlx-vlm directly (pinned to Rapid-MLX's validated set):\n"
+        f"    {python} -m pip install --upgrade --force-reinstall "
+        f"'mlx-vlm=={VALIDATED_MLX_VLM_VERSION}'"
+    )
+
+
+# Backwards-compatible public constant used by docs/tests. It is generated
+# from the active runtime so its commands cannot land in a different venv.
+VLM_EXTRA_INSTALL_HINT = _vision_install_hint()
+
+
+# Import-module → PyPI-distribution name for the runtime deps mlx-vlm
+# pulls. mlx-vlm imports Pillow as ``PIL`` but the installable package is
+# ``pillow``; naming the import module in a ``pip install`` line would 404.
+_MISSING_MODULE_PIP_NAME = {
+    "PIL": "pillow",
+}
+
+
+def _pip_name_for_module(module: str) -> str:
+    """Map a missing *import* module name to its ``pip install`` target."""
+    return _MISSING_MODULE_PIP_NAME.get(module, module)
+
+
+class VisionRuntimeStatus(str, Enum):
+    """Health of the vision runtime (``mlx-vlm`` + its dependencies).
+
+    * ``OK`` — ``import mlx_vlm`` succeeds; vision paths are usable.
+    * ``ABSENT`` — ``mlx-vlm`` is not installed at all (plain
+      ``pip install rapid-mlx`` without the ``[vision]`` extra).
+    * ``BROKEN`` — the top-level ``mlx_vlm`` package IS installed (its
+      import spec is present) but the real ``import mlx_vlm`` raises. The
+      canonical case is the Homebrew ``pip install --no-deps mlx-vlm`` state
+      #1126 is about — a missing runtime dependency (Pillow / ``PIL``) —
+      where metadata/spec-only checks answered "yes" while the import
+      crashed on ``from PIL import Image``. It also covers a damaged internal
+      ``mlx_vlm.<sub>`` submodule, an incompatible symbol (``ImportError``),
+      and a missing shared library (``OSError``/``RuntimeError``): all mean
+      "installed but not loadable", never "absent".
+    * ``INCOMPATIBLE`` — the package imports, but its distribution version is
+      not the exact version validated with this Rapid-MLX release. Import
+      success is insufficient: mlx-vlm and Transformers are a coupled stack,
+      and an unbounded upgrade can make the next server boot fail.
+    """
+
+    OK = "ok"
+    ABSENT = "absent"
+    BROKEN = "broken"
+    INCOMPATIBLE = "incompatible"
+
+
+def _mlx_vlm_installed() -> bool:
+    """Is the TOP-LEVEL ``mlx_vlm`` package installed on the import path,
+    independent of whether its import chain (Pillow, native libs, internal
+    submodules) actually loads?
+
+    Package PRESENCE — not an exception-``name`` heuristic — is the
+    authoritative ``ABSENT`` vs ``BROKEN`` discriminator (#1126). Probing the
+    top-level spec ONLY means an internal ``mlx_vlm.<sub>`` ModuleNotFoundError,
+    a missing runtime dep (PIL), an incompatible symbol, or a missing shared
+    lib can't masquerade as "not installed". ``find_spec`` locates the spec
+    without executing the module, so it never triggers the ``from PIL import
+    Image`` crash we are trying to classify.
+    """
+    import importlib.util
+
+    try:
+        return importlib.util.find_spec("mlx_vlm") is not None
+    except (ImportError, ValueError):
+        # ``find_spec`` on a genuinely-absent top-level package returns None
+        # (it does not raise), and for the real BROKEN scenarios — missing
+        # PIL, damaged internal submodule, missing shared lib — the top-level
+        # source IS present so ``find_spec`` returns the spec cleanly. So the
+        # only way we land here is a finder that actively refuses the name,
+        # i.e. "cannot be located" → treat as ABSENT (the conservative choice
+        # that keeps the plain "install mlx-vlm" hint for a base install).
+        return False
+
+
+def _broken_detail(exc: BaseException) -> str:
+    """Best-effort actionable detail for a ``BROKEN`` runtime.
+
+    Returns the name of the missing import when the exception carries one
+    (``ModuleNotFoundError``/``ImportError`` ``.name`` — e.g. ``PIL`` or
+    ``mlx_vlm.trainer``), otherwise a short ``TypeName: message`` summary so
+    the ORIGINAL failure (a missing shared lib ``OSError``, an incompatible
+    symbol) is retained in the diagnostic instead of being swallowed.
+    """
+    name = getattr(exc, "name", None)
+    if name:
+        return name
+    text = str(exc).strip()
+    return f"{type(exc).__name__}: {text}" if text else type(exc).__name__
+
+
+def vision_runtime_status() -> tuple[VisionRuntimeStatus, str | None]:
+    """Authoritative check of whether the vision runtime can actually load.
+
+    Single source of truth for "is vision usable?". Returns
+    ``(status, detail)``:
+
+    * ``(OK, None)`` — ``import mlx_vlm`` succeeded.
+    * ``(ABSENT, "mlx_vlm")`` — the top-level package is not installed.
+    * ``(BROKEN, detail)`` — the package IS installed but its import chain
+      raised; ``detail`` is always truthy (a missing-module name like
+      ``PIL``, or an exception summary for an opaque failure).
+    * ``(INCOMPATIBLE, version)`` — import succeeded, but the installed
+      distribution does not match :data:`VALIDATED_MLX_VLM_VERSION`.
+
+    We perform the REAL ``import mlx_vlm`` (not a bare ``find_spec`` /
+    ``importlib.metadata.version`` probe) so a broken dependency chain
+    (mlx-vlm present, Pillow absent — the Homebrew ``--no-deps`` state) is
+    reported honestly and FAST at ``serve`` entry rather than deep inside
+    the FastAPI lifespan (#1126). The ``ABSENT`` vs ``BROKEN`` split is
+    decided by TOP-LEVEL package PRESENCE (:func:`_mlx_vlm_installed`), never
+    by the exception's ``name``: a damaged internal ``mlx_vlm.<sub>``
+    ModuleNotFoundError, an incompatible-symbol ImportError, and a missing
+    shared-lib ``OSError``/``RuntimeError`` (which previously ESCAPED this
+    function and crashed the boot guard) all mean "installed but broken".
+    """
+    try:
+        import mlx_vlm  # noqa: F401
+    except Exception as exc:  # noqa: BLE001 — any import failure ⇒ not usable
+        if not _mlx_vlm_installed():
+            return VisionRuntimeStatus.ABSENT, "mlx_vlm"
+        return VisionRuntimeStatus.BROKEN, _broken_detail(exc)
+    try:
+        installed_version = version("mlx-vlm")
+    except PackageNotFoundError:
+        return VisionRuntimeStatus.BROKEN, "mlx-vlm version metadata unavailable"
+    if installed_version != VALIDATED_MLX_VLM_VERSION:
+        return VisionRuntimeStatus.INCOMPATIBLE, installed_version
+    return VisionRuntimeStatus.OK, None
+
+
+def _vlm_broken_install_hint(detail: str | None) -> str:
+    """Install hint for the "mlx-vlm present but its import chain is broken"
+    case (#1126).
+
+    ``detail`` is either a missing external module name (e.g. ``PIL``) or,
+    when the failure names no external dependency (a damaged internal
+    ``mlx_vlm`` submodule, a missing shared lib, an incompatible symbol), the
+    raw exception summary. Only a module we EXPLICITLY map to a PyPI
+    distribution (:data:`_MISSING_MODULE_PIP_NAME`) earns a precise
+    ``pip install <dist>`` line — guessing ``pip install <import-name>`` for
+    an unmapped module produces invalid commands (``cv2`` is really
+    ``opencv-python``; a dotted submodule isn't a distribution at all).
+    Everything else surfaces the diagnostic verbatim and points at a clean
+    reinstall of the vision extra — never a misleading "install mlx-vlm"
+    (which IS installed).
+    """
+    if detail in _MISSING_MODULE_PIP_NAME:
+        pip_name = _pip_name_for_module(detail)
+        hint = (
+            f"`mlx-vlm` is installed but its dependency {detail!r} is not, so "
+            f"the vision runtime cannot load. {_vision_install_hint()}"
+        )
+        if _managed_desktop_runtime():
+            return hint
+        return (
+            hint + "\nAlternatively, repair just the missing dependency in this "
+            f"runtime:\n    {shlex.quote(sys.executable)} -m pip install {pip_name}"
+        )
+    suffix = f" ({detail})" if detail else ""
+    return (
+        f"`mlx-vlm` is installed but its import chain is broken, so the "
+        f"vision runtime cannot load{suffix}. {_vision_install_hint()}"
+    )
+
+
+def mlx_vlm_available() -> bool:
+    """Return True iff the vision runtime can actually be imported.
+
+    Historically a bare ``find_spec('mlx_vlm')`` probe, which answered
+    True for the Homebrew ``pip install --no-deps mlx-vlm`` state where
+    mlx-vlm's spec exists but ``import mlx_vlm`` crashes on a missing
+    Pillow (#1126). It now reflects REAL importability so the boot guard
+    (:func:`require_mlx_vlm_or_exit`) fails fast with an honest message
+    instead of passing to a lifespan crash. Mirrors
+    :func:`rapid_mlx.embedding.mlx_embeddings_available`'s role as the
+    cli-side ``--mllm`` / vision-alias presence probe.
+    """
+    return vision_runtime_status()[0] is VisionRuntimeStatus.OK
+
+
+def require_mlx_vlm_or_exit(model_name: str, *, text_diffusion: bool = False) -> None:
+    """CLI-side boot guard for vision/multimodal aliases.
+
+    ``text_diffusion=True`` names the alias as a discrete-text-diffusion
+    checkpoint (DiffusionGemma) instead of a "vision/multimodal alias" and
+    drops the ``--no-mllm`` escape hatch from the hint: that lane is
+    dispatched by modality in ``server.py`` and imports ``mlx_vlm``
+    unconditionally, so ``--no-mllm`` only moves the same ImportError
+    minutes later into model load (#3113).
+
+    R-10 (PyPI 0.8.6 dogfood): a first-time ``pip install rapid-mlx``
+    user running ``rapid-mlx serve ui-tars-1.5-7b-4bit`` got a deep,
+    confusing ImportError mid-load because ``mlx-vlm`` lives behind the
+    ``[vision]`` extra. The existing :func:`_require_mlx_vlm` raises an
+    actionable ``ImportError`` only after the alias has been resolved,
+    weights downloaded, and the engine handed control to the MLLM
+    code path — minutes of wall-clock noise before the actionable
+    message. Probe at flag-parse / serve_command entry instead and
+    exit ``2`` (argparse usage-error code) with the same install hint
+    on stderr — matches :func:`require_mlx_embeddings_or_exit` shape.
+
+    #1126: distinguish "mlx-vlm not installed" from "mlx-vlm installed
+    but its dependency (e.g. PIL) is missing" (Homebrew ``--no-deps``)
+    so the hint names the actually-missing piece rather than telling the
+    user to install a package they already have.
+    """
+    # One authoritative probe; branch on the returned status (a second
+    # ``mlx_vlm_available()`` call would re-run the import redundantly).
+    status, detail = vision_runtime_status()
+    if status is VisionRuntimeStatus.OK:
+        return
+    if status is VisionRuntimeStatus.INCOMPATIBLE:
+        print(
+            f"error: model {model_name!r} requires the Rapid-MLX vision lane, "
+            f"but mlx-vlm {detail!r} is incompatible; this release validates "
+            f"exactly {VALIDATED_MLX_VLM_VERSION}. This is a vision-runtime "
+            f"compatibility error, not a Metal out-of-memory error.\n"
+            + _vision_install_hint(),
+            file=sys.stderr,
+        )
+    elif status is VisionRuntimeStatus.BROKEN:
+        print(
+            f"error: model {model_name!r} is a vision/multimodal alias, but "
+            f"the vision runtime cannot load.\n" + _vlm_broken_install_hint(detail),
+            file=sys.stderr,
+        )
+    elif text_diffusion:
+        print(
+            f"error: model {model_name!r} is a text-diffusion alias and runs "
+            f"on the mlx-vlm DiffusionGemma runtime, which requires the "
+            f"optional `mlx-vlm` dependency (shipped with the [vision] "
+            f"extra).\n" + VLM_EXTRA_INSTALL_HINT,
+            file=sys.stderr,
+        )
+    else:
+        print(
+            f"error: model {model_name!r} is a vision/multimodal alias and "
+            f"requires the optional `mlx-vlm` dependency (shipped with the "
+            f"[vision] extra).\n" + VLM_EXTRA_INSTALL_HINT + "\n"
+            "Or, if this checkpoint has a text-capable backbone and you only "
+            "need text output, `--no-mllm` boots the text-only lane straight "
+            "from the base wheel (no mlx-vlm, drops image/vision input).",
+            file=sys.stderr,
+        )
+    sys.exit(2)
+
+
+def _require_mlx_vlm(model_name: str | None = None) -> None:
+    """Verify the vision runtime can load; raise actionable error if not.
+
+    Engine-side last-line-of-defence: ``rapid-mlx serve`` is supposed
+    to short-circuit at :func:`require_mlx_vlm_or_exit` before this
+    runs, but library callers (``MLXMultimodalLM`` used directly,
+    benchmark/eval harnesses) still need an actionable error if they
+    skipped the CLI guard.
+
+    #1126: when mlx-vlm is installed but a runtime dep is missing
+    (Homebrew ``--no-deps`` → no PIL), name the missing module instead
+    of the misleading "install mlx-vlm" (which IS installed).
+    """
+    status, detail = vision_runtime_status()
+    if status is VisionRuntimeStatus.OK:
+        return
+    model_context = f" for model {model_name!r}" if model_name else ""
+    if status is VisionRuntimeStatus.INCOMPATIBLE:
+        raise ImportError(
+            f"Vision/multimodal runtime{model_context} is incompatible: "
+            f"installed mlx-vlm {detail!r}, validated version "
+            f"{VALIDATED_MLX_VLM_VERSION}. This is not a Metal "
+            "out-of-memory error.\n" + _vision_install_hint()
+        )
+    if status is VisionRuntimeStatus.BROKEN:
+        raise ImportError(
+            f"Vision/multimodal models{model_context} cannot load the vision "
+            "runtime.\n" + _vlm_broken_install_hint(detail)
+        )
+    raise ImportError(
+        f"Vision/multimodal models{model_context} require the optional `mlx-vlm` "
+        "dependency.\n" + VLM_EXTRA_INSTALL_HINT
+    )
+
+
+class TempFileManager:
+    """Thread-safe manager for tracking and cleaning up temporary files."""
+
+    def __init__(self):
+        self._files: set[str] = set()
+        self._lock = threading.Lock()
+        atexit.register(self.cleanup_all)
+
+    def register(self, path: str) -> str:
+        """Register a temp file for tracking. Returns the path for convenience."""
+        with self._lock:
+            self._files.add(path)
+        return path
+
+    def cleanup(self, path: str) -> bool:
+        """Clean up a specific temp file. Returns True if successful."""
+        with self._lock:
+            if path in self._files:
+                self._files.discard(path)
+        try:
+            if os.path.exists(path):
+                os.unlink(path)
+                logger.debug(f"Cleaned up temp file: {path}")
+                return True
+        except OSError as e:
+            logger.warning(f"Failed to clean up temp file {path}: {e}")
+        return False
+
+    def cleanup_all(self) -> int:
+        """Clean up all tracked temp files. Returns count of cleaned files."""
+        with self._lock:
+            files_to_clean = list(self._files)
+            self._files.clear()
+
+        cleaned = 0
+        for path in files_to_clean:
+            try:
+                if os.path.exists(path):
+                    os.unlink(path)
+                    cleaned += 1
+            except OSError:
+                pass
+
+        if cleaned:
+            logger.info(f"Cleaned up {cleaned} temp files")
+        return cleaned
+
+
+# Global temp file manager
+_temp_manager = TempFileManager()
+
+
+# Video processing constants
+FRAME_FACTOR = 2  # Frames must be divisible by this
+DEFAULT_FPS = 2.0  # Default frames per second for video
+MIN_FRAMES = 4
+MAX_FRAMES = 128  # Practical limit for most MLLMs
+IMAGE_FACTOR = 28  # For smart resize
+
+# Security: File size limits (in bytes)
+MAX_IMAGE_SIZE = 20 * 1024 * 1024  # 20 MB max for images
+MAX_VIDEO_SIZE = 500 * 1024 * 1024  # 500 MB max for videos
+MAX_BASE64_IMAGE_LENGTH = 30 * 1024 * 1024  # 30 MB base64 string (~22 MB decoded)
+MAX_BASE64_VIDEO_LENGTH = 700 * 1024 * 1024  # 700 MB base64 string (~500 MB decoded)
+
+
+class FileSizeExceededError(Exception):
+    """Raised when a downloaded file exceeds the size limit."""
+
+    pass
+
+
+@dataclass
+class MultimodalInput:
+    """Input for multimodal generation."""
+
+    prompt: str
+    images: list[str] = field(default_factory=list)  # Paths, URLs, or base64
+    videos: list[str] = field(default_factory=list)  # Paths
+    audio: list[str] = field(default_factory=list)  # Paths
+
+
+@dataclass
+class MLLMOutput:
+    """Output from multimodal language model."""
+
+    text: str
+    finish_reason: str | None = None
+    prompt_tokens: int = 0
+    completion_tokens: int = 0
+
+
+def is_base64_image(s: str) -> bool:
+    """Check if string is base64-encoded image data."""
+    return s.startswith("data:image/") or (
+        len(s) > 100 and not s.startswith(("http://", "https://", "/"))
+    )
+
+
+def is_url(s: str) -> bool:
+    """Check if string is a URL."""
+    return s.startswith(("http://", "https://"))
+
+
+def is_base64_video(s: str) -> bool:
+    """Check if string is base64-encoded video data."""
+    return s.startswith("data:video/")
+
+
+def decode_base64_image(
+    base64_string: str, max_length: int = MAX_BASE64_IMAGE_LENGTH
+) -> bytes:
+    """
+    Decode base64 image to bytes.
+
+    Args:
+        base64_string: Base64 encoded image (optionally with data URL prefix)
+        max_length: Maximum allowed length of base64 string
+
+    Returns:
+        Decoded image bytes
+
+    Raises:
+        FileSizeExceededError: If base64 string exceeds max_length
+    """
+    if len(base64_string) > max_length:
+        raise FileSizeExceededError(
+            f"Base64 image data exceeds maximum size: {len(base64_string) / 1024 / 1024:.1f} MB > "
+            f"{max_length / 1024 / 1024:.1f} MB limit"
+        )
+
+    # Handle data URL format: data:image/jpeg;base64,/9j/4AAQ...
+    if base64_string.startswith("data:"):
+        # Extract the base64 part after the comma
+        _, data = base64_string.split(",", 1)
+        return base64.b64decode(data)
+    return base64.b64decode(base64_string)
+
+
+class RemoteMediaFetchError(ValueError):
+    """A user-supplied remote media URL was denied by the SSRF guard.
+
+    Subclasses ``ValueError`` so it surfaces as a clean HTTP 400 from the
+    route exception handlers instead of a raw 5xx.
+    """
+
+
+# RFC1918 private ranges, loopback, link-local (incl. the cloud metadata
+# address 169.254.169.254), multicast, unspecified, and reserved addresses are
+# never valid targets for a user-supplied remote media URL coming from a
+# network-facing process.
+def _is_blocked_address(ip_str: str) -> bool:
+    """Return True if ``ip_str`` is a private/loopback/link-local/etc address."""
+    try:
+        ip = ipaddress.ip_address(ip_str)
+    except ValueError:
+        # Unparseable address -> conservative deny.
+        return True
+    return (
+        ip.is_private
+        or ip.is_loopback
+        or ip.is_link_local
+        or ip.is_multicast
+        or ip.is_reserved
+        or ip.is_unspecified
+    )
+
+
+def _safe_remote_target(url: str) -> tuple[str, tuple[str, ...]]:
+    """Reject remote media URLs whose effective target is a blocked host.
+
+    This closes the SSRF primitive on user-supplied image/video URLs: the
+    request is refused when the target resolves to loopback, RFC1918 private
+    space, link-local (e.g. cloud metadata ``169.254.169.254``), multicast,
+    unspecified, or reserved addresses.
+
+    Returns the original hostname and one validated address. Callers must
+    connect to that returned address, rather than resolving the hostname a
+    second time, so DNS rebinding cannot race validation against connection.
+    """
+    parsed = urlparse(url)
+    if parsed.scheme not in ("http", "https"):
+        raise RemoteMediaFetchError(
+            f"Remote media URL must use http(s), got scheme {parsed.scheme!r}"
+        )
+    host = parsed.hostname
+    if not host:
+        raise RemoteMediaFetchError(f"Remote media URL has no host: {url[:80]!r}")
+    if parsed.username is not None or parsed.password is not None:
+        raise RemoteMediaFetchError("Remote media URL must not contain credentials")
+    try:
+        port = parsed.port
+    except ValueError:
+        raise RemoteMediaFetchError(f"Invalid port in remote media URL: {url[:80]!r}")
+    if port is None:
+        port = 443 if parsed.scheme == "https" else 80
+    try:
+        infos = socket.getaddrinfo(host, port, proto=socket.IPPROTO_TCP)
+    except socket.gaierror:
+        raise RemoteMediaFetchError(f"Could not resolve remote media host {host!r}")
+    addresses: list[str] = []
+    for info in infos:
+        ip = info[4][0]
+        if _is_blocked_address(ip):
+            raise RemoteMediaFetchError(
+                "Remote media URL resolves to a blocked address "
+                f"(private/loopback/link-local/metadata): {ip}"
+            )
+        if ip not in addresses:
+            addresses.append(ip)
+    if not addresses:
+        raise RemoteMediaFetchError(
+            f"Remote media host resolved no addresses: {host!r}"
+        )
+    return host, tuple(addresses)
+
+
+def _assert_safe_remote_url(url: str) -> None:
+    """Validate a remote URL without issuing a request (test/public helper)."""
+    _safe_remote_target(url)
+
+
+class _PinnedHTTPSAdapter(HTTPAdapter):
+    """Connect to a validated IP while verifying TLS for the URL hostname."""
+
+    def __init__(self, server_hostname: str):
+        self._server_hostname = server_hostname
+        super().__init__()
+
+    def init_poolmanager(self, connections, maxsize, block=False, **pool_kwargs):
+        pool_kwargs["assert_hostname"] = self._server_hostname
+        pool_kwargs["server_hostname"] = self._server_hostname
+        return super().init_poolmanager(connections, maxsize, block, **pool_kwargs)
+
+
+def _pinned_url(url: str, address: str) -> str:
+    """Replace a URL hostname with a validated address, retaining all else."""
+    parsed = urlsplit(url)
+    host = f"[{address}]" if ":" in address else address
+    netloc = f"{host}:{parsed.port}" if parsed.port is not None else host
+    return urlunsplit(
+        (parsed.scheme, netloc, parsed.path, parsed.query, parsed.fragment)
+    )
+
+
+def _guarded_request(
+    method: str, url: str, *, timeout: int, headers: dict, stream: bool
+):
+    """Issue ``method`` on ``url``, validating the host on every hop.
+
+    Redirects are followed manually (bounded) so each destination is checked
+    against the SSRF guard — otherwise a malicious or compromised host could
+    ``302`` us straight to ``http://169.254.169.254/...`` or an internal host.
+    """
+    session = requests.Session()
+    # Proxy environment variables would delegate target resolution to the
+    # proxy and defeat the validated-address connection invariant.
+    session.trust_env = False
+    current = url
+    seen = {current}
+    try:
+        for _ in range(6):  # initial request + up to 5 validated redirects
+            hostname, addresses = _safe_remote_target(current)
+            parsed = urlparse(current)
+            request_headers = dict(headers)
+            default_port = 443 if parsed.scheme == "https" else 80
+            host_header = f"[{hostname}]" if ":" in hostname else hostname
+            request_headers["Host"] = (
+                host_header
+                if parsed.port in (None, default_port)
+                else f"{host_header}:{parsed.port}"
+            )
+            if parsed.scheme == "https":
+                session.mount("https://", _PinnedHTTPSAdapter(hostname))
+            response = None
+            last_error = None
+            for address in addresses:
+                try:
+                    response = session.request(
+                        method,
+                        _pinned_url(current, address),
+                        timeout=timeout,
+                        headers=request_headers,
+                        stream=stream,
+                        allow_redirects=False,
+                        verify=True,
+                    )
+                    break
+                except requests.RequestException as exc:
+                    last_error = exc
+            if response is None:
+                assert last_error is not None
+                raise last_error
+            if response.is_redirect or response.is_permanent_redirect:
+                location = response.headers.get("Location")
+                response.close()
+                if not location:
+                    raise RemoteMediaFetchError("Remote media redirect has no location")
+                current = urljoin(current, location)
+                if current in seen:
+                    raise RemoteMediaFetchError("Remote media URL redirect loop")
+                seen.add(current)
+                continue
+            response._rapid_mlx_session = session
+            return response
+        raise RemoteMediaFetchError("Remote media URL redirected too many times")
+    except Exception:
+        session.close()
+        raise
+
+
+def _close_guarded_response(response) -> None:
+    """Close a guarded response and the private session that owns its pool."""
+    try:
+        response.close()
+    finally:
+        session = getattr(response, "_rapid_mlx_session", None)
+        if session is not None:
+            session.close()
+
+
+# Local media file reads are confined to regular files with a media extension
+# so a malicious caller cannot use the image/video path branch to read
+# arbitrary files (``/etc/passwd``, ``~/.ssh/id_rsa``, configs, secrets). The
+# extension allowlist is intentionally wide so local operators and the desktop
+# app can keep passing real image/video paths picked from the filesystem. For
+# remote-facing deployments set ``RAPID_MLX_DISABLE_LOCAL_MEDIA_PATHS=1`` to
+# refuse local files entirely (URLs / base64 only), or set
+# ``RAPID_MLX_MEDIA_ROOT`` to additionally confine reads to one directory
+# tree.
+_ALLOWED_MEDIA_EXTENSIONS = frozenset(
+    {
+        # images
+        ".jpg",
+        ".jpeg",
+        ".jfif",
+        ".png",
+        ".gif",
+        ".webp",
+        ".bmp",
+        ".tif",
+        ".tiff",
+        ".heic",
+        ".heif",
+        ".avif",
+        # video
+        ".mp4",
+        ".webm",
+        ".mov",
+        ".avi",
+        ".mkv",
+        ".m4v",
+        ".mpg",
+        ".mpeg",
+        ".flv",
+        ".3gp",
+    }
+)
+
+
+def _has_media_signature(header: bytes) -> bool:
+    """Recognize common raster-image/video container signatures."""
+    if header.startswith(
+        (b"\xff\xd8\xff", b"\x89PNG\r\n\x1a\n", b"GIF87a", b"GIF89a", b"BM")
+    ):
+        return True
+    if header[:4] in (b"II*\x00", b"MM\x00*"):
+        return True
+    if header.startswith(b"RIFF") and header[8:12] in (b"WEBP", b"AVI "):
+        return True
+    if header.startswith(
+        (b"\x1aE\xdf\xa3", b"FLV", b"\x00\x00\x01\xba", b"\x00\x00\x01\xb3")
+    ):
+        return True
+    # ISO base-media containers: MP4/MOV/M4V/3GP and HEIF/HEIC/AVIF.
+    return len(header) >= 12 and header[4:8] == b"ftyp"
+
+
+def _opened_fd_path(fd: int) -> Path:
+    """Return the kernel-resolved path of an open descriptor."""
+    if sys.platform == "darwin":
+        raw = fcntl.fcntl(fd, 50, b"\0" * 1024)  # F_GETPATH
+        return Path(raw.split(b"\0", 1)[0].decode())
+    return Path(os.readlink(f"/proc/self/fd/{fd}"))
+
+
+def _local_media_root() -> Path | None:
+    """Return the confinement root for local media reads, if configured."""
+    root = os.environ.get("RAPID_MLX_MEDIA_ROOT")
+    if not root:
+        return None
+    try:
+        resolved = Path(root).expanduser().resolve(strict=True)
+    except (OSError, RuntimeError) as exc:
+        raise ValueError("Configured RAPID_MLX_MEDIA_ROOT is invalid") from exc
+    if not resolved.is_dir():
+        raise ValueError("Configured RAPID_MLX_MEDIA_ROOT is not a directory")
+    return resolved
+
+
+def _resolve_local_media(path: str) -> str | None:
+    """Return ``path`` if it is an allowed local media file, else None.
+
+    Guards: regular file only, a media extension only, and (when
+    ``RAPID_MLX_MEDIA_ROOT`` is set) resolved inside that root so ``..``
+    escapes, absolute paths elsewhere, and symlinks pointing outside are all
+    refused. ``RAPID_MLX_DISABLE_LOCAL_MEDIA_PATHS=1`` disables the local-file
+    branch entirely.
+    """
+    if os.environ.get("RAPID_MLX_DISABLE_LOCAL_MEDIA_PATHS") == "1":
+        return None
+    if not path or len(path) >= 4096:
+        return None
+    try:
+        supplied = Path(path).expanduser()
+        if supplied.is_symlink():
+            return None
+        candidate = supplied.resolve(strict=False)
+    except (OSError, RuntimeError):
+        return None
+    if candidate.suffix.lower() not in _ALLOWED_MEDIA_EXTENSIONS:
+        return None
+    root = _local_media_root()
+    if root is None:
+        return None
+    try:
+        candidate.relative_to(root)
+    except ValueError:
+        logger.warning("Refusing media path outside allowed root %s: %s", root, path)
+        return None
+
+    flags = os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0)
+    try:
+        fd = os.open(candidate, flags)
+    except OSError:
+        return None
+    temp_file = None
+    try:
+        opened = _opened_fd_path(fd).resolve()
+        try:
+            opened.relative_to(root)
+        except ValueError:
+            return None
+        file_stat = os.fstat(fd)
+        if not stat.S_ISREG(file_stat.st_mode) or file_stat.st_size > MAX_VIDEO_SIZE:
+            return None
+        header = os.read(fd, 32)
+        if not _has_media_signature(header):
+            return None
+        os.lseek(fd, 0, os.SEEK_SET)
+        temp_file = tempfile.NamedTemporaryFile(
+            suffix=candidate.suffix.lower(), delete=False
+        )
+        with os.fdopen(os.dup(fd), "rb") as source:
+            shutil.copyfileobj(source, temp_file, length=1024 * 1024)
+        temp_file.close()
+        return _temp_manager.register(temp_file.name)
+    except Exception:
+        if temp_file is not None:
+            temp_file.close()
+            if os.path.exists(temp_file.name):
+                os.unlink(temp_file.name)
+        raise
+    finally:
+        os.close(fd)
+
+
+def download_image(url: str, timeout: int = 30, max_size: int = MAX_IMAGE_SIZE) -> str:
+    """
+    Download image from URL and return local path.
+
+    Args:
+        url: Image URL
+        timeout: Download timeout in seconds
+        max_size: Maximum allowed file size in bytes
+
+    Returns:
+        Local file path to downloaded image
+
+    Raises:
+        FileSizeExceededError: If image exceeds max_size
+    """
+    headers = {
+        "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36"
+    }
+
+    # First, make a HEAD request to check Content-Length
+    try:
+        head_response = _guarded_request(
+            "HEAD", url, timeout=timeout, headers=headers, stream=False
+        )
+        try:
+            content_length = head_response.headers.get("content-length")
+            if content_length and int(content_length) > max_size:
+                raise FileSizeExceededError(
+                    f"Image at {url} exceeds maximum size: {int(content_length) / 1024 / 1024:.1f} MB > "
+                    f"{max_size / 1024 / 1024:.1f} MB limit"
+                )
+        finally:
+            _close_guarded_response(head_response)
+    except requests.RequestException:
+        # HEAD request failed, proceed with GET and check during download
+        pass
+
+    response = _guarded_request(
+        "GET", url, timeout=timeout, headers=headers, stream=True
+    )
+    try:
+        response.raise_for_status()
+
+        # Check Content-Length header from GET response
+        content_length = response.headers.get("content-length")
+        if content_length and int(content_length) > max_size:
+            raise FileSizeExceededError(
+                f"Image at {url} exceeds maximum size: {int(content_length) / 1024 / 1024:.1f} MB > "
+                f"{max_size / 1024 / 1024:.1f} MB limit"
+            )
+
+        # Determine extension from content type or URL
+        content_type = response.headers.get("content-type", "")
+        if "jpeg" in content_type or "jpg" in content_type:
+            ext = ".jpg"
+        elif "png" in content_type:
+            ext = ".png"
+        elif "gif" in content_type:
+            ext = ".gif"
+        elif "webp" in content_type:
+            ext = ".webp"
+        else:
+            path = urlparse(url).path
+            ext = Path(path).suffix or ".jpg"
+
+        # Save to temp file with size checking during download
+        temp_file = tempfile.NamedTemporaryFile(suffix=ext, delete=False)
+        downloaded_size = 0
+        for chunk in response.iter_content(chunk_size=8192):
+            downloaded_size += len(chunk)
+            if downloaded_size > max_size:
+                temp_file.close()
+                os.unlink(temp_file.name)
+                raise FileSizeExceededError(
+                    f"Image at {url} exceeds maximum size during download: "
+                    f"{downloaded_size / 1024 / 1024:.1f} MB > {max_size / 1024 / 1024:.1f} MB limit"
+                )
+            temp_file.write(chunk)
+        temp_file.close()
+    except Exception:
+        if "temp_file" not in locals():
+            raise
+        temp_file.close()
+        if os.path.exists(temp_file.name):
+            os.unlink(temp_file.name)
+        raise
+    finally:
+        _close_guarded_response(response)
+
+    return _temp_manager.register(temp_file.name)
+
+
+def download_video(url: str, timeout: int = 120, max_size: int = MAX_VIDEO_SIZE) -> str:
+    """
+    Download video from URL and return local path.
+
+    Args:
+        url: Video URL (http/https)
+        timeout: Download timeout in seconds (default 120s for larger videos)
+        max_size: Maximum allowed file size in bytes
+
+    Returns:
+        Local file path to downloaded video
+
+    Raises:
+        FileSizeExceededError: If video exceeds max_size
+    """
+    headers = {
+        "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36"
+    }
+
+    logger.info(f"Downloading video from: {url}")
+
+    # First, make a HEAD request to check Content-Length
+    try:
+        head_response = _guarded_request(
+            "HEAD", url, timeout=timeout, headers=headers, stream=False
+        )
+        try:
+            content_length = head_response.headers.get("content-length")
+            if content_length and int(content_length) > max_size:
+                raise FileSizeExceededError(
+                    f"Video at {url} exceeds maximum size: {int(content_length) / 1024 / 1024:.1f} MB > "
+                    f"{max_size / 1024 / 1024:.1f} MB limit"
+                )
+        finally:
+            _close_guarded_response(head_response)
+    except requests.RequestException:
+        # HEAD request failed, proceed with GET and check during download
+        pass
+
+    response = _guarded_request(
+        "GET", url, timeout=timeout, headers=headers, stream=True
+    )
+    try:
+        response.raise_for_status()
+
+        # Check Content-Length header from GET response
+        content_length = response.headers.get("content-length")
+        if content_length and int(content_length) > max_size:
+            raise FileSizeExceededError(
+                f"Video at {url} exceeds maximum size: {int(content_length) / 1024 / 1024:.1f} MB > "
+                f"{max_size / 1024 / 1024:.1f} MB limit"
+            )
+
+        # Determine extension from content type or URL
+        content_type = response.headers.get("content-type", "")
+        if "mp4" in content_type:
+            ext = ".mp4"
+        elif "webm" in content_type:
+            ext = ".webm"
+        elif "avi" in content_type:
+            ext = ".avi"
+        elif "mov" in content_type or "quicktime" in content_type:
+            ext = ".mov"
+        elif "mkv" in content_type:
+            ext = ".mkv"
+        else:
+            path = urlparse(url).path
+            ext = Path(path).suffix or ".mp4"
+
+        # Save to temp file (stream for larger files) with size checking
+        temp_file = tempfile.NamedTemporaryFile(suffix=ext, delete=False)
+        downloaded_size = 0
+        for chunk in response.iter_content(chunk_size=8192):
+            downloaded_size += len(chunk)
+            if downloaded_size > max_size:
+                temp_file.close()
+                os.unlink(temp_file.name)
+                raise FileSizeExceededError(
+                    f"Video at {url} exceeds maximum size during download: "
+                    f"{downloaded_size / 1024 / 1024:.1f} MB > {max_size / 1024 / 1024:.1f} MB limit"
+                )
+            temp_file.write(chunk)
+        temp_file.close()
+    except Exception:
+        if "temp_file" not in locals():
+            raise
+        temp_file.close()
+        if os.path.exists(temp_file.name):
+            os.unlink(temp_file.name)
+        raise
+    finally:
+        _close_guarded_response(response)
+
+    file_size = Path(temp_file.name).stat().st_size
+    logger.info(
+        f"Video downloaded: {temp_file.name} ({file_size / 1024 / 1024:.1f} MB)"
+    )
+
+    return _temp_manager.register(temp_file.name)
+
+
+def decode_base64_video(
+    base64_string: str, max_length: int = MAX_BASE64_VIDEO_LENGTH
+) -> str:
+    """
+    Decode base64 video to temp file and return path.
+
+    Supports format: data:video/mp4;base64,AAAA...
+
+    Args:
+        base64_string: Base64-encoded video with data URL prefix
+        max_length: Maximum allowed length of base64 string
+
+    Returns:
+        Local file path to decoded video
+
+    Raises:
+        FileSizeExceededError: If base64 string exceeds max_length
+    """
+    if len(base64_string) > max_length:
+        raise FileSizeExceededError(
+            f"Base64 video data exceeds maximum size: {len(base64_string) / 1024 / 1024:.1f} MB > "
+            f"{max_length / 1024 / 1024:.1f} MB limit"
+        )
+
+    # Extract format and data
+    if base64_string.startswith("data:video/"):
+        # Format: data:video/mp4;base64,AAAA...
+        header, data = base64_string.split(",", 1)
+        # Extract extension from header (e.g., "data:video/mp4;base64" -> "mp4")
+        format_part = header.split(";")[0]  # "data:video/mp4"
+        ext = "." + format_part.split("/")[-1]  # ".mp4"
+    else:
+        # Assume mp4 if no header
+        data = base64_string
+        ext = ".mp4"
+
+    # Decode, save, and register for cleanup
+    video_bytes = base64.b64decode(data)
+    temp_file = tempfile.NamedTemporaryFile(suffix=ext, delete=False)
+    temp_file.write(video_bytes)
+    temp_file.close()
+
+    logger.info(
+        f"Base64 video decoded: {temp_file.name} ({len(video_bytes) / 1024 / 1024:.1f} MB)"
+    )
+
+    return _temp_manager.register(temp_file.name)
+
+
+def process_video_input(video: str | dict) -> str:
+    """
+    Process video input in various formats and return local path.
+
+    Supports:
+    - Local file path
+    - URL (http/https)
+    - Base64 encoded string (data:video/mp4;base64,...)
+    - OpenAI format dict: {"url": "..."} or {"url": "data:video/...;base64,..."}
+
+    Args:
+        video: Video input in any supported format
+
+    Returns:
+        Local file path to video
+    """
+    # Handle dict format (OpenAI style)
+    if isinstance(video, dict):
+        url = video.get("url", video.get("video_url", ""))
+        if isinstance(url, dict):
+            url = url.get("url", "")
+        video = url
+
+    if not video:
+        raise ValueError("Empty video input")
+
+    # Check if it's a local file (confined to regular media files; see
+    # ``_resolve_local_media`` for the extension / root-lockdown guards).
+    local = _resolve_local_media(video)
+    if local is not None:
+        return local
+
+    # Check if it's a URL
+    if is_url(video):
+        return download_video(video)
+
+    # Check if it's base64
+    if is_base64_video(video):
+        return decode_base64_video(video)
+
+    raise ValueError(f"Cannot process video: {video[:50]}...")
+
+
+# Cache for base64 images to avoid re-saving the same image
+_base64_image_cache: dict[str, str] = {}  # hash -> temp file path
+
+
+def save_base64_image(base64_string: str) -> str:
+    """Save base64 image to temp file and return path. Caches identical images."""
+    import hashlib
+
+    # Hash the base64 string to check cache
+    image_hash = hashlib.md5(base64_string.encode()).hexdigest()
+
+    # Return cached path if available and file still exists
+    if image_hash in _base64_image_cache:
+        cached_path = _base64_image_cache[image_hash]
+        if Path(cached_path).exists():
+            return cached_path
+
+    image_bytes = decode_base64_image(base64_string)
+
+    # Detect format from magic bytes
+    if image_bytes[:8] == b"\x89PNG\r\n\x1a\n":
+        ext = ".png"
+    elif image_bytes[:2] == b"\xff\xd8":
+        ext = ".jpg"
+    elif image_bytes[:6] in (b"GIF87a", b"GIF89a"):
+        ext = ".gif"
+    elif image_bytes[:4] == b"RIFF" and image_bytes[8:12] == b"WEBP":
+        ext = ".webp"
+    else:
+        ext = ".jpg"  # Default
+
+    temp_file = tempfile.NamedTemporaryFile(suffix=ext, delete=False)
+    temp_file.write(image_bytes)
+    temp_file.close()
+
+    path = _temp_manager.register(temp_file.name)
+    _base64_image_cache[image_hash] = path
+    return path
+
+
+def process_image_input(image: str | dict) -> str:
+    """
+    Process image input in various formats and return local path.
+
+    Supports:
+    - Local file path
+    - URL (http/https)
+    - Base64 encoded string
+    - OpenAI format dict: {"url": "..."} or {"url": "data:image/...;base64,..."}
+    """
+    # Handle dict format (OpenAI style)
+    if isinstance(image, dict):
+        url = image.get("url", image.get("image_url", ""))
+        if isinstance(url, dict):
+            url = url.get("url", "")
+        image = url
+
+    if not image:
+        raise ValueError("Empty image input")
+
+    # Belt-and-suspenders for F-066: the schema-layer validator in
+    # ``api/models.py`` rejects non-string ``image_url.url`` payloads
+    # before they reach this point, but the function is also called
+    # directly from the Anthropic / Responses adapters and from
+    # internal code paths where the type-check isn't repeated. Without
+    # this guard, ``is_base64_image(123)`` would raise
+    # ``AttributeError: 'int' object has no attribute 'startswith'``
+    # and the route's broad ``except Exception`` wrap would surface
+    # that raw Python error text in the HTTP 400 body.
+    if not isinstance(image, str):
+        raise ValueError(f"image_url.url must be a string (got {type(image).__name__})")
+
+    # Check if it's base64 FIRST (before Path.exists() which fails on long strings)
+    if is_base64_image(image):
+        return save_base64_image(image)
+
+    # Check if it's a URL
+    if is_url(image):
+        return download_image(image)
+
+    # Local file path — only for short strings that resolve to a regular
+    # media file (extension / root-lockdown guards; see ``_resolve_local_media``).
+    local = _resolve_local_media(image)
+    if local is not None:
+        return local
+
+    raise ValueError(f"Cannot process image: {image[:50]}...")
+
+
+def floor_by_factor(x: float, factor: int) -> int:
+    """Floor to previous multiple of factor."""
+    return math.floor(x / factor) * factor
+
+
+def smart_nframes(
+    total_frames: int,
+    video_fps: float,
+    target_fps: float = DEFAULT_FPS,
+    min_frames: int = MIN_FRAMES,
+    max_frames: int = MAX_FRAMES,
+) -> int:
+    """
+    Calculate optimal number of frames to extract from video.
+
+    Uses smart sampling based on video length and target FPS.
+    """
+    # Calculate duration-based frame count
+    duration = total_frames / video_fps if video_fps > 0 else 0
+    nframes = duration * target_fps
+
+    # Clamp to min/max
+    nframes = max(min_frames, min(nframes, max_frames, total_frames))
+
+    # Round to factor
+    nframes = max(FRAME_FACTOR, floor_by_factor(nframes, FRAME_FACTOR))
+
+    return int(nframes)
+
+
+def extract_video_frames_smart(
+    video_path: str,
+    fps: float = DEFAULT_FPS,
+    max_frames: int = MAX_FRAMES,
+    resize: tuple[int, int] | None = None,
+) -> list[np.ndarray]:
+    """
+    Extract frames from video with smart sampling.
+
+    Args:
+        video_path: Path to video file
+        fps: Target frames per second (default: 2.0)
+        max_frames: Maximum frames to extract
+        resize: Optional (width, height) to resize frames
+
+    Returns:
+        List of frame arrays (RGB format)
+    """
+    try:
+        import cv2
+    except ImportError:
+        raise ImportError("opencv-python is required for video processing")
+
+    cap = cv2.VideoCapture(video_path)
+    if not cap.isOpened():
+        raise ValueError(f"Cannot open video: {video_path}")
+
+    total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
+    video_fps = cap.get(cv2.CAP_PROP_FPS) or 30.0
+
+    # Calculate number of frames to extract
+    nframes = smart_nframes(
+        total_frames=total_frames,
+        video_fps=video_fps,
+        target_fps=fps,
+        max_frames=max_frames,
+    )
+
+    # Calculate frame indices (evenly spaced)
+    indices = np.linspace(0, total_frames - 1, nframes).round().astype(int)
+
+    logger.info(
+        f"Video: {total_frames} total frames @ {video_fps:.1f} fps, "
+        f"extracting {nframes} frames"
+    )
+
+    frames = []
+    for idx in indices:
+        cap.set(cv2.CAP_PROP_POS_FRAMES, idx)
+        ret, frame = cap.read()
+        if not ret:
+            continue
+
+        # Convert BGR to RGB
+        frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+
+        # Resize if specified
+        if resize:
+            frame = cv2.resize(frame, resize)
+
+        frames.append(frame)
+
+    cap.release()
+
+    return frames
+
+
+def save_frames_to_temp(frames: list[np.ndarray]) -> list[str]:
+    """Save frame arrays to temporary files and return paths."""
+    try:
+        from PIL import Image
+    except ImportError:
+        raise ImportError("Pillow is required for frame processing")
+
+    paths = []
+    for i, frame in enumerate(frames):
+        img = Image.fromarray(frame)
+        temp_file = tempfile.NamedTemporaryFile(suffix=".jpg", delete=False)
+        img.save(temp_file.name, "JPEG", quality=85)
+        paths.append(_temp_manager.register(temp_file.name))
+
+    return paths
+
+
+class MLXMultimodalLM:
+    """
+    Wrapper around mlx-vlm for multimodal inference.
+
+    This class provides a unified interface for multimodal language models
+    using Apple's MLX framework. Supports:
+    - Image understanding (single and multi-image)
+    - Video understanding (smart frame extraction)
+    - Audio understanding (for supported models)
+    - OpenAI-compatible API format
+
+    Supported models include:
+    - Qwen2-VL / Qwen2.5-VL / Qwen3-VL
+    - LLaVA
+    - Idefics3
+    - PaliGemma
+    - And more via mlx-vlm
+
+    Example:
+        >>> model = MLXMultimodalLM("mlx-community/Qwen2-VL-2B-Instruct-4bit")
+        >>> model.load()
+        >>> output = model.generate(
+        ...     prompt="What's in this image?",
+        ...     images=["photo.jpg"]
+        ... )
+        >>> print(output.text)
+    """
+
+    def __init__(
+        self,
+        model_name: str,
+        trust_remote_code: bool = True,
+        enable_cache: bool = True,
+        cache_size: int = 50,
+    ):
+        """
+        Initialize the MLX multimodal language model.
+
+        Args:
+            model_name: HuggingFace model name or local path
+            trust_remote_code: Whether to trust remote code
+            enable_cache: Enable KV cache for repeated image/video+prompt (default: True)
+            cache_size: Maximum cache entries (default: 50)
+        """
+        self.model_name = model_name
+        self.trust_remote_code = trust_remote_code
+        self.enable_cache = enable_cache
+
+        self.model = None
+        self.processor = None
+        self.config = None
+        self._loaded = False
+        self._video_native = False
+
+        # Initialize MLLM prefix cache manager (with vision embedding caching)
+        self._cache_manager: MLLMPrefixCacheManager | None = None
+        if enable_cache:
+            self._cache_manager = MLLMPrefixCacheManager(max_entries=cache_size)
+
+    def load(self) -> None:
+        """Load the model and processor."""
+        if self._loaded:
+            return
+
+        _require_mlx_vlm()
+
+        try:
+            # Stable Transformers does not yet register the processor used by
+            # glm5_next checkpoints. Install the architecture-owned processor
+            # at the same lazy boundary as mlx-vlm itself so base/text-only
+            # installs remain import-light.
+            from ..patches.glm5_next_forget_gate_quant import (
+                install_glm5_next_forget_gate_quant_fix,
+            )
+            from ..patches.glm5_next_processor import (
+                install_glm5_next_processor_patch,
+            )
+            from ..patches.glm5_next_runtime import install_glm5_next_runtime_fix
+
+            install_glm5_next_runtime_fix()
+            install_glm5_next_processor_patch()
+            install_glm5_next_forget_gate_quant_fix()
+
+            from mlx_vlm import load
+            from mlx_vlm.utils import load_config
+
+            from ..utils.tokenizer import apply_remote_code_policy
+
+            logger.info(f"Loading MLLM: {self.model_name}")
+
+            _, trust_remote_code = apply_remote_code_policy(
+                {"trust_remote_code": self.trust_remote_code}
+            )
+            if trust_remote_code:
+                # Preserve mlx-vlm's historical call shape (and compatibility
+                # with older versions/wrappers) unless the operator opts out.
+                self.model, self.processor = load(self.model_name)
+                self.config = load_config(self.model_name)
+            else:
+                self.model, self.processor = load(
+                    self.model_name,
+                    trust_remote_code=False,
+                )
+                # mlx-vlm 0.6.x currently reads config.json directly, but
+                # forwarding the policy here makes the process-wide opt-out
+                # explicit and prevents a future/config-loader implementation
+                # from silently re-enabling repository code.
+                self.config = load_config(
+                    self.model_name,
+                    trust_remote_code=False,
+                )
+
+            config_model_type = (
+                self.config.get("model_type")
+                if isinstance(self.config, dict)
+                else getattr(self.config, "model_type", None)
+            )
+            if config_model_type in {"glm5_next", "qwen3_5_moe"}:
+                # Keep qualified MLLM MoE lanes at parity with BatchedEngine's
+                # text lane: collapse each eligible gate/up pair into one
+                # gather_qmm. GLM-5.3-Flash and Qwen3.5-family MoE both route
+                # through this wrapper, so otherwise every sparse layer issues
+                # an extra quantized projection for every generated token.
+                # Other MoE VLMs still need real-model qualification.
+                # Server use runs this method on the model-owning mllm-step
+                # worker, preserving the stream contract from #170.
+                from ..moe_fusion import fuse_gate_up
+
+                fuse_gate_up(self.model)
+
+            if config_model_type == "qwen3_5_moe":
+                from ..qwen35_fused_gdn_decode import (
+                    install_qwen35_fused_gdn_decode,
+                )
+                from ..qwen35_moe_router import install_qwen35_moe_router
+
+                install_qwen35_moe_router(self.model)
+                # The multimodal wrapper owns a separate Qwen GDN class from
+                # mlx-lm. Enroll its qualified single-token recurrence too so
+                # the catalog's default vision-capable lane receives the same
+                # exact decode optimization as explicit text-only serving.
+                install_qwen35_fused_gdn_decode(self.model)
+
+            # Augment the wrapped tokenizer's EOS set with the chat-
+            # template terminator ids from ``generation_config.json``.
+            # Gemma 3 / 3n VL variants are the canonical case:
+            # ``tokenizer.eos_token_id == 1`` but the model halts on
+            # ``<end_of_turn>`` (id 106), which lives only in the
+            # generation config. See ``augment_eos_token_ids_from_generation_config``
+            # for the full rationale.
+            from ..utils.tokenizer import (
+                augment_eos_token_ids_from_generation_config,
+                repair_byte_level_decoder,
+            )
+
+            tok = (
+                self.processor.tokenizer
+                if hasattr(self.processor, "tokenizer")
+                else self.processor
+            )
+            augment_eos_token_ids_from_generation_config(tok, self.model_name)
+            # D-DETOK-BPE: some VLM processors (Qwen3-VL distills, etc.)
+            # carry the same broken SentencePiece-decoder-on-byte-level-BPE
+            # mis-configuration as text-only DeepSeek-R1; patch the live
+            # backend decoder so streaming + non-stream emit clean UTF-8.
+            repair_byte_level_decoder(tok)
+
+            self._loaded = True
+            self._video_native = hasattr(
+                self.model.config, "video_token_id"
+            ) or hasattr(self.model.config, "video_token_index")
+            logger.info(f"MLLM loaded successfully: {self.model_name}")
+            if self._video_native:
+                logger.info("Native video pipeline enabled (temporal 3D conv + M-RoPE)")
+
+        except ImportError:
+            raise ImportError(
+                "Vision dependencies are required for multimodal inference. "
+                "Install with: pip install 'rapid-mlx[vision]'"
+            )
+        except ValueError as e:
+            # mlx's strict `load_weights` raises `ValueError: Missing N
+            # parameters: <names>` when config.json declares a vision (or
+            # audio) modality — so MLLM auto-detection routed the checkpoint
+            # here — but the actual safetensors don't carry every tensor the
+            # assembled multimodal model expects. Two very different states hit
+            # this path and MUST be distinguished by WHICH tensors are missing:
+            #
+            #   * ONLY vision/audio/projector tensors missing → the language
+            #     backbone is intact, the text lane is viable → raise the typed
+            #     `TextOnlyCheckpointError` so the engine auto-degrades to
+            #     text-only (equivalent to `--no-mllm`). See #393 (Qwen3.6-35B
+            #     8-bit partial vision tower) and #1187 (gemma-4 OptiQ, whose
+            #     index.json lists 356 vision tensors the shards lack).
+            #   * ANY language/text-backbone tensor also missing → the
+            #     checkpoint is genuinely incomplete; the text lane can't serve
+            #     it either. Degrading would MASK real corruption behind a
+            #     confusing two-stage failure, so re-raise the raw ValueError.
+            #
+            # The partition uses the SAME canonical MULTIMODAL_TENSOR_PREFIXES
+            # allowlist the routing detector keys on — one source of truth, not
+            # an ad-hoc vision-name substring test.
+            msg = str(e)
+            declared_count = _parse_missing_count(msg)
+            missing_names = _parse_missing_param_names(msg)
+            # Degrade ONLY when we recovered EVERY name mlx reported (parse is
+            # complete: len matches mlx's own count) AND every one is a
+            # multimodal tensor. A parse gap or any language/text-backbone
+            # weight means the text lane isn't provably viable → re-raise.
+            if (
+                declared_count is not None
+                and len(missing_names) == declared_count
+                and _all_missing_are_multimodal(missing_names)
+            ):
+                missing_count = declared_count
+                # Modality-neutral wording: the allowlist accepts audio and
+                # projector tensors too, so an audio-only checkpoint can reach
+                # here — don't hard-code "vision".
+                missing_count_hint = f" ({missing_count} multimodal tensors missing)"
+                # INFO, not ERROR: this is a recoverable, policy-eligible
+                # condition — the engine catches the typed error below and
+                # (unless --mllm forces the vision lane) auto-degrades to the
+                # text lane, logging its own WARNING. Emitting ERROR here fires
+                # a false failure alert during an otherwise healthy startup
+                # (codex NIT). The engine owns the policy-level severity.
+                logger.info(
+                    "MLLM checkpoint has no usable multimodal tower%s — declares"
+                    " a vision/audio modality in config.json but its safetensors"
+                    " don't carry the multimodal weights. Surfacing to the "
+                    "engine for the text-only auto-degrade (pass --mllm to force"
+                    " the vision lane, --no-mllm to pin text). See #393.",
+                    missing_count_hint,
+                )
+                raise TextOnlyCheckpointError(
+                    f"MLLM load failed{missing_count_hint}: this checkpoint "
+                    "is text-only despite its multimodal config. "
+                    "Re-run with --no-mllm (or --text-only) to force "
+                    "text-only routing. Tracked in #393.",
+                    missing_count=missing_count,
+                ) from e
+            logger.error(f"Failed to load MLLM: {e}")
+            raise
+        except Exception as e:
+            logger.error(f"Failed to load MLLM: {e}")
+            raise
+
+    def get_language_model(self):
+        """Extract the underlying language model for mlx_lm TextModel construction."""
+        return self.model.language_model
+
+    def get_tokenizer(self):
+        """Get the text tokenizer (not the multimodal processor)."""
+        return self.processor.tokenizer
+
+    def _prepare_images(self, images: list) -> list[str]:
+        """Process image inputs and return local file paths.
+
+        Image-fetch failures are raised (not swallowed) so the route layer
+        can convert to HTTP 400 — the silent-failure pattern (continue with
+        zero images) caused #457 where requests hit upstream 4xx returned
+        200 with empty completion + finish_reason=length.
+        """
+        processed = []
+        for img in images:
+            try:
+                path = process_image_input(img)
+            except Exception as e:
+                raise ValueError(f"Failed to process image: {e}") from e
+            processed.append(path)
+        return processed
+
+    def _prepare_video(
+        self,
+        video_input: str | dict,
+        fps: float = DEFAULT_FPS,
+        max_frames: int = MAX_FRAMES,
+    ) -> list[str]:
+        """
+        Process video input and extract frames.
+
+        Supports:
+        - Local file paths
+        - URLs (http/https) - will be downloaded
+        - Base64 encoded videos (data:video/mp4;base64,...)
+        - OpenAI format dicts: {"url": "..."} or {"video_url": {"url": "..."}}
+
+        Args:
+            video_input: Video in any supported format
+            fps: Frames per second to extract
+            max_frames: Maximum frames to extract
+
+        Returns:
+            List of paths to extracted frame images
+        """
+        # Process video input (download if URL, decode if base64)
+        video_path = process_video_input(video_input)
+
+        # Extract frames
+        frames = extract_video_frames_smart(
+            video_path,
+            fps=fps,
+            max_frames=max_frames,
+        )
+        return save_frames_to_temp(frames)
+
+    def _collect_video_inputs(self, messages: list[dict]) -> dict[int, list]:
+        """Collect video inputs from messages, keyed by message index.
+
+        Handles both 'video' and 'video_url' content types, including
+        Pydantic model conversion.
+        """
+        video_inputs: dict[int, list] = {}
+        for msg_idx, msg in enumerate(messages):
+            content = msg.get("content", "")
+            if not isinstance(content, list):
+                continue
+            for item in content:
+                if hasattr(item, "model_dump"):
+                    item = item.model_dump(exclude_none=True)
+                elif hasattr(item, "dict"):
+                    item = {k: v for k, v in item.dict().items() if v is not None}
+
+                if not isinstance(item, dict):
+                    continue
+                item_type = item.get("type", "")
+                if item_type == "video":
+                    video_inputs.setdefault(msg_idx, []).append(
+                        item.get("video", item.get("url", ""))
+                    )
+                elif item_type == "video_url":
+                    vid_url = item.get("video_url", {})
+                    if isinstance(vid_url, str):
+                        video_inputs.setdefault(msg_idx, []).append(vid_url)
+                    elif isinstance(vid_url, dict):
+                        url = vid_url.get("url", "")
+                        if url:
+                            video_inputs.setdefault(msg_idx, []).append(url)
+        return video_inputs
+
+    def _prepare_native_video_inputs(
+        self,
+        messages: list[dict],
+        video_fps: float = DEFAULT_FPS,
+        video_max_frames: int = MAX_FRAMES,
+        tools: list | None = None,
+    ) -> tuple[str, dict]:
+        """Preprocess messages into prompt + generation kwargs for native video.
+
+        Mirrors the preprocessing in mlx_vlm.video_generate.main() so that
+        upstream improvements are easy to adopt. Returns the formatted prompt
+        text and a dict of kwargs ready to pass to video_generate.generate().
+
+        Currently Qwen-family-specific (video_token_id / video_token_index).
+        """
+        import mlx.core as mx
+
+        try:
+            from mlx_vlm.video_generate import process_vision_info
+        except ImportError:
+            raise ImportError(
+                "mlx_vlm.video_generate is required for native video support. "
+                "Upgrade with: pip install --upgrade mlx-vlm"
+            )
+
+        # Translate OpenAI API messages into process_vision_info format
+        native_messages = self._translate_messages_for_native_video(
+            messages, video_fps, video_max_frames
+        )
+
+        # Use HF processor's chat template (handles timestamp interleaving)
+        template_kwargs: dict = {}
+
+        # Neutralise chat-template role markers in user-supplied
+        # content before passing to the processor's template — same
+        # sanitisation layer as ``utils.chat_template.apply_chat_template``
+        # so this bespoke video path doesn't bypass the prompt-injection
+        # defence.
+        #
+        # Defence-in-depth: if the registry-driven sanitiser fails (an
+        # unusual processor quirk), fall back to the literal baseline
+        # marker set instead of letting raw input reach the tokenizer.
+        # Codex r4 BLOCKING — silently swallowing the exception would
+        # reopen the prompt-injection bypass on any quirk that trips
+        # the sanitiser.
+        from ..utils.chat_template import (
+            _baseline_sanitize_messages,
+            _baseline_sanitize_tools,
+            _sanitize_messages_for_template,
+            _sanitize_tools_for_template,
+        )
+
+        try:
+            native_messages = _sanitize_messages_for_template(
+                native_messages, self.processor
+            )
+        except Exception:
+            native_messages = _baseline_sanitize_messages(native_messages)
+
+        # Tool definitions are also client-controlled and reach the
+        # processor via ``template_kwargs["tools"]`` — sanitise them
+        # with the same fail-closed semantics or the marker bypass is
+        # still open for video requests (codex r8 BLOCKING).
+        if tools:
+            try:
+                sanitised_tools = _sanitize_tools_for_template(tools, self.processor)
+            except Exception:
+                sanitised_tools = _baseline_sanitize_tools(tools)
+            template_kwargs["tools"] = sanitised_tools
+
+        text = self.processor.apply_chat_template(
+            native_messages,
+            tokenize=False,
+            add_generation_prompt=True,
+            **template_kwargs,
+        )
+
+        # Extract vision inputs via mlx-vlm's process_vision_info
+        image_inputs, video_inputs, fps_info = process_vision_info(
+            native_messages, return_video_kwargs=True
+        )
+
+        # Process through HF processor to get input_ids, pixel_values, grid_thw
+        inputs = self.processor(
+            text=[text],
+            images=image_inputs,
+            videos=video_inputs,
+            padding=True,
+            return_tensors="pt",
+        )
+
+        input_ids = mx.array(inputs["input_ids"])
+        pixel_values = inputs.get(
+            "pixel_values_videos", inputs.get("pixel_values", None)
+        )
+        if pixel_values is not None:
+            pixel_values = mx.array(pixel_values)
+        mask = mx.array(inputs["attention_mask"])
+
+        gen_kwargs: dict = {}
+        if inputs.get("video_grid_thw", None) is not None:
+            gen_kwargs["video_grid_thw"] = mx.array(inputs["video_grid_thw"])
+        if inputs.get("image_grid_thw", None) is not None:
+            gen_kwargs["image_grid_thw"] = mx.array(inputs["image_grid_thw"])
+
+        gen_kwargs["input_ids"] = input_ids
+        gen_kwargs["pixel_values"] = pixel_values
+        gen_kwargs["mask"] = mask
+
+        grid_thw_info = gen_kwargs.get("video_grid_thw")
+        logger.info(
+            f"Native video: {input_ids.size} input tokens, "
+            f"video_grid_thw={grid_thw_info.tolist() if grid_thw_info is not None else None}"
+        )
+
+        return text, gen_kwargs
+
+    def _generate_native_video(
+        self,
+        messages: list[dict],
+        max_tokens: int = 256,
+        temperature: float = 0.7,
+        video_fps: float = DEFAULT_FPS,
+        video_max_frames: int = MAX_FRAMES,
+        tools: list | None = None,
+        **kwargs,
+    ) -> MLLMOutput:
+        """Generate using native video pipeline (Qwen-family models).
+
+        Delegates preprocessing to _prepare_native_video_inputs and generation
+        to mlx_vlm.video_generate.generate(), keeping our code aligned with
+        upstream's video pipeline so improvements are easy to adopt.
+        """
+        try:
+            from mlx_vlm.video_generate import generate
+        except ImportError:
+            raise ImportError(
+                "mlx_vlm.video_generate is required for native video support. "
+                "Upgrade with: pip install --upgrade mlx-vlm"
+            )
+
+        text, gen_kwargs = self._prepare_native_video_inputs(
+            messages, video_fps, video_max_frames, tools
+        )
+        gen_kwargs["temperature"] = temperature
+
+        result = generate(
+            self.model,
+            self.processor,
+            prompt=text,
+            max_tokens=max_tokens,
+            verbose=False,
+            **gen_kwargs,
+        )
+
+        if hasattr(result, "text"):
+            return MLLMOutput(
+                text=result.text,
+                finish_reason="stop",
+                prompt_tokens=getattr(result, "prompt_tokens", 0),
+                completion_tokens=getattr(result, "generation_tokens", 0),
+            )
+        return MLLMOutput(text=str(result), finish_reason="stop")
+
+    def _translate_messages_for_native_video(
+        self,
+        messages: list[dict],
+        video_fps: float,
+        video_max_frames: int,
+    ) -> list[dict]:
+        """Translate OpenAI API format messages to process_vision_info format.
+
+        Converts video_url/video types and resolves URLs/base64 to local paths.
+        Images are preserved as-is (process_vision_info handles them).
+        """
+        translated = []
+        for msg in messages:
+            role = msg.get("role", "user")
+            content = msg.get("content", "")
+
+            if isinstance(content, str):
+                translated.append({"role": role, "content": content})
+                continue
+
+            if not isinstance(content, list):
+                translated.append({"role": role, "content": str(content)})
+                continue
+
+            new_content = []
+            for item in content:
+                if hasattr(item, "model_dump"):
+                    item = item.model_dump(exclude_none=True)
+                elif hasattr(item, "dict"):
+                    item = {k: v for k, v in item.dict().items() if v is not None}
+
+                if not isinstance(item, dict):
+                    new_content.append({"type": "text", "text": str(item)})
+                    continue
+
+                item_type = item.get("type", "")
+
+                if item_type == "text":
+                    new_content.append(item)
+
+                elif item_type == "image_url":
+                    img_url = item.get("image_url", {})
+                    url = (
+                        img_url.get("url", img_url)
+                        if isinstance(img_url, dict)
+                        else img_url
+                    )
+                    # Resolve to local path for process_vision_info
+                    local_path = process_image_input(url)
+                    new_content.append({"type": "image", "image": local_path})
+
+                elif item_type == "image":
+                    img = item.get("image", item.get("url", ""))
+                    local_path = process_image_input(img)
+                    new_content.append({"type": "image", "image": local_path})
+
+                elif item_type in ("video", "video_url"):
+                    # Extract video path/URL from various formats
+                    if item_type == "video_url":
+                        vid_url = item.get("video_url", {})
+                        if isinstance(vid_url, str):
+                            video_source = vid_url
+                        elif isinstance(vid_url, dict):
+                            video_source = vid_url.get("url", "")
+                        else:
+                            continue
+                    else:
+                        video_source = item.get("video", item.get("url", ""))
+
+                    if not video_source:
+                        continue
+
+                    # Resolve to local path
+                    video_path = process_video_input(video_source)
+                    new_content.append(
+                        {
+                            "type": "video",
+                            "video": video_path,
+                            "fps": video_fps,
+                            "max_frames": video_max_frames,
+                        }
+                    )
+
+                else:
+                    new_content.append(item)
+
+            translated.append({"role": role, "content": new_content})
+
+        return translated
+
+    def generate(
+        self,
+        prompt: str,
+        images: list | None = None,
+        videos: list | None = None,
+        audio: list[str] | None = None,
+        max_tokens: int = 256,
+        temperature: float = 0.7,
+        top_p: float = 0.9,
+        video_fps: float = DEFAULT_FPS,
+        video_max_frames: int = MAX_FRAMES,
+        use_cache: bool = True,
+        **kwargs,
+    ) -> MLLMOutput:
+        """
+        Generate text from multimodal input.
+
+        Args:
+            prompt: Text prompt/question
+            images: List of image paths, URLs, or base64 strings
+            videos: List of video inputs (paths, URLs, base64, or OpenAI format dicts)
+            audio: List of audio file paths
+            max_tokens: Maximum tokens to generate
+            temperature: Sampling temperature
+            top_p: Top-p sampling parameter
+            video_fps: FPS for video frame extraction (default: 2.0)
+            video_max_frames: Max frames to extract from video
+            use_cache: Whether to use KV cache (default: True)
+            **kwargs: Additional generation parameters
+
+        Returns:
+            MLLMOutput with generated text
+
+        Example:
+            # With local video
+            output = model.generate("Describe this video", videos=["video.mp4"])
+
+            # With video URL
+            output = model.generate("What happens?", videos=["https://example.com/video.mp4"])
+
+            # With base64 video
+            output = model.generate("Describe", videos=["data:video/mp4;base64,AAAA..."])
+        """
+        if not self._loaded:
+            self.load()
+
+        from mlx_vlm import generate
+        from mlx_vlm.models import cache as vlm_cache
+        from mlx_vlm.prompt_utils import apply_chat_template
+
+        images = images or []
+        videos = videos or []
+        audio = audio or []
+
+        # Process all images (including frames from videos)
+        all_images = []
+        all_sources = []  # Track original sources for cache key
+
+        # Process image inputs
+        if images:
+            all_images.extend(self._prepare_images(images))
+            all_sources.extend(images)
+
+        # Extract frames from videos
+        for video_path in videos:
+            frames = self._prepare_video(
+                video_path,
+                fps=video_fps,
+                max_frames=video_max_frames,
+            )
+            all_images.extend(frames)
+            # Include video params in cache key
+            video_str = video_path if isinstance(video_path, str) else str(video_path)
+            all_sources.append(
+                f"video:{video_str}:fps{video_fps}:max{video_max_frames}"
+            )
+            logger.info(f"Added {len(frames)} frames from video: {video_path}")
+
+        # Apply chat template if needed
+        if all_images and hasattr(self.processor, "apply_chat_template"):
+            try:
+                formatted_prompt = apply_chat_template(
+                    self.processor,
+                    self.config,
+                    prompt,
+                    num_images=len(all_images),
+                )
+            except Exception:
+                formatted_prompt = prompt
+        else:
+            formatted_prompt = prompt
+
+        # Check cache for existing KV state
+        prompt_cache = None
+        cache_hit = False
+
+        if use_cache and self._cache_manager is not None and all_sources:
+            prompt_cache, cache_hit = self._cache_manager.fetch_cache(
+                all_sources, formatted_prompt
+            )
+            if cache_hit:
+                logger.info(f"MLLM cache hit for {len(all_sources)} source(s)")
+
+        # Create new cache if needed
+        if prompt_cache is None and self.model is not None:
+            try:
+                prompt_cache = vlm_cache.make_prompt_cache(self.model.language_model)
+            except Exception:
+                prompt_cache = None
+
+        # Generate with cache
+        result = generate(
+            self.model,
+            self.processor,
+            formatted_prompt,
+            all_images if all_images else None,
+            max_tokens=max_tokens,
+            temp=temperature,
+            top_p=top_p,
+            verbose=False,
+            prompt_cache=prompt_cache,
+            **kwargs,
+        )
+
+        # Store cache for future reuse (only on miss)
+        if use_cache and self._cache_manager and all_sources and not cache_hit:
+            if prompt_cache is not None:
+                try:
+                    num_tokens = getattr(result, "prompt_tokens", 0)
+                    self._cache_manager.store_cache(
+                        all_sources, formatted_prompt, prompt_cache, num_tokens
+                    )
+                    logger.info(f"MLLM cache stored for {len(all_sources)} source(s)")
+                except Exception as e:
+                    logger.debug(f"Failed to store MLLM cache: {e}")
+
+        # Handle GenerationResult object or plain string
+        if hasattr(result, "text"):
+            output_text = result.text
+            prompt_tokens = getattr(result, "prompt_tokens", 0)
+            generation_tokens = getattr(result, "generation_tokens", 0)
+        else:
+            output_text = str(result)
+            prompt_tokens = 0
+            generation_tokens = 0
+
+        return MLLMOutput(
+            text=output_text,
+            finish_reason="stop",
+            prompt_tokens=prompt_tokens,
+            completion_tokens=generation_tokens,
+        )
+
+    def stream_generate(
+        self,
+        prompt: str,
+        images: list | None = None,
+        videos: list[str] | None = None,
+        max_tokens: int = 256,
+        temperature: float = 0.7,
+        video_fps: float = DEFAULT_FPS,
+        **kwargs,
+    ) -> Iterator[str]:
+        """
+        Stream text generation for multimodal input.
+
+        Args:
+            prompt: Text prompt
+            images: List of image inputs
+            videos: List of video paths
+            max_tokens: Maximum tokens to generate
+            temperature: Sampling temperature
+            video_fps: FPS for video frame extraction
+            **kwargs: Additional parameters
+
+        Yields:
+            Generated text chunks
+        """
+        if not self._loaded:
+            self.load()
+
+        try:
+            from mlx_vlm import stream_generate
+            from mlx_vlm.prompt_utils import apply_chat_template
+        except ImportError:
+            # Fallback to non-streaming
+            output = self.generate(
+                prompt=prompt,
+                images=images,
+                videos=videos,
+                max_tokens=max_tokens,
+                temperature=temperature,
+                video_fps=video_fps,
+                **kwargs,
+            )
+            yield output.text
+            return
+
+        images = images or []
+        videos = videos or []
+
+        # Process images
+        all_images = []
+        if images:
+            all_images.extend(self._prepare_images(images))
+        for video_path in videos:
+            frames = self._prepare_video(video_path, fps=video_fps)
+            all_images.extend(frames)
+
+        # Apply chat template
+        if all_images:
+            try:
+                formatted_prompt = apply_chat_template(
+                    self.processor,
+                    self.config,
+                    prompt,
+                    num_images=len(all_images),
+                )
+            except Exception:
+                formatted_prompt = prompt
+        else:
+            formatted_prompt = prompt
+
+        for chunk in stream_generate(
+            self.model,
+            self.processor,
+            formatted_prompt,
+            all_images if all_images else None,
+            max_tokens=max_tokens,
+            temp=temperature,
+            **kwargs,
+        ):
+            yield chunk
+
+    def chat(
+        self,
+        messages: list[dict],
+        max_tokens: int = 256,
+        temperature: float = 0.7,
+        **kwargs,
+    ) -> MLLMOutput:
+        """
+        Chat with OpenAI-compatible message format.
+
+        Supports multimodal content in messages:
+        - {"type": "text", "text": "..."}
+        - {"type": "image_url", "image_url": {"url": "..."}}
+        - {"type": "image_url", "image_url": {"url": "data:image/...;base64,..."}}
+
+        Args:
+            messages: List of chat messages (OpenAI format)
+            max_tokens: Maximum tokens to generate
+            temperature: Sampling temperature
+            **kwargs: Additional parameters
+
+        Returns:
+            MLLMOutput with assistant's response
+        """
+        if not self._loaded:
+            self.load()
+
+        from mlx_vlm import generate
+        from mlx_vlm.prompt_utils import get_chat_template
+
+        # Extract text and images from messages
+        # Build chat_messages for multi-turn support WITH proper image tokens per message
+        all_image_urls = []  # Raw URLs/paths to process later
+        chat_messages = []  # List of properly formatted messages for chat template
+
+        logger.info(f"MLLM.chat() called with {len(messages)} messages")
+
+        # Pop params early so they don't leak into mlx_vlm.generate()
+        video_fps = kwargs.pop("video_fps", DEFAULT_FPS)
+        video_max_frames = kwargs.pop("video_max_frames", MAX_FRAMES)
+        tools = kwargs.pop("tools", None)
+        use_cache = kwargs.pop("use_cache", True)
+
+        # Collect video inputs from messages
+        _msg_video_inputs = self._collect_video_inputs(messages)
+
+        # Use native video pipeline for supported models
+        if self._video_native and _msg_video_inputs:
+            return self._generate_native_video(
+                messages=messages,
+                max_tokens=max_tokens,
+                temperature=temperature,
+                video_fps=video_fps,
+                video_max_frames=video_max_frames,
+                tools=tools,
+                **kwargs,
+            )
+
+        # Fallback: extract frames and treat as individual images
+        _msg_video_frame_counts: dict[int, int] = {}
+        all_video_frames: list[str] = []
+        for msg_idx, vid_inputs in _msg_video_inputs.items():
+            total_frames = 0
+            for vid_input in vid_inputs:
+                frames = self._prepare_video(
+                    vid_input, fps=video_fps, max_frames=video_max_frames
+                )
+                all_video_frames.extend(frames)
+                total_frames += len(frames)
+                logger.info(f"Added {len(frames)} frames from video: {vid_input}")
+            _msg_video_frame_counts[msg_idx] = total_frames
+
+        # Second pass: build chat messages with image counts that include video frames
+        for msg_idx, msg in enumerate(messages):
+            role = msg.get("role", "user")
+            content = msg.get("content", "")
+            msg_text = ""  # Text content for this message
+            msg_image_count = 0  # Number of images in THIS message
+
+            if isinstance(content, str):
+                msg_text = content
+            elif isinstance(content, list):
+                # OpenAI multimodal format - extract text and count images for THIS message
+                for item in content:
+                    if isinstance(item, str):
+                        msg_text += item
+                        continue
+
+                    # Convert Pydantic models to dicts, excluding None fields
+                    # to avoid null keys like image_url: null on text parts
+                    if hasattr(item, "model_dump"):
+                        item = item.model_dump(exclude_none=True)
+                    elif hasattr(item, "dict"):
+                        item = {k: v for k, v in item.dict().items() if v is not None}
+
+                    if isinstance(item, dict):
+                        item_type = item.get("type", "")
+
+                        if item_type == "text":
+                            msg_text += item.get("text", "")
+
+                        elif item_type == "image_url":
+                            img_url = item.get("image_url", {})
+                            if isinstance(img_url, str):
+                                all_image_urls.append(img_url)
+                            else:
+                                all_image_urls.append(img_url.get("url", ""))
+                            msg_image_count += 1
+
+                        elif item_type == "image":
+                            all_image_urls.append(
+                                item.get("image", item.get("url", ""))
+                            )
+                            msg_image_count += 1
+
+            # Add video frame count to image count for this message
+            msg_image_count += _msg_video_frame_counts.get(msg_idx, 0)
+
+            # Build properly structured message for Qwen3-VL-MoE
+            # Format: {"role": "...", "content": [{"type": "image"}, ..., {"type": "text", "text": "..."}]}
+            if msg_text or msg_image_count > 0:
+                if role == "user" and msg_image_count > 0:
+                    # User message WITH images - build content array with image tokens FIRST
+                    content_list = []
+                    for _ in range(msg_image_count):
+                        content_list.append({"type": "image"})
+                    content_list.append(
+                        {"type": "text", "text": msg_text, "content": msg_text}
+                    )
+                    chat_messages.append({"role": role, "content": content_list})
+                elif role == "assistant":
+                    # Assistant messages - just text content (not array)
+                    chat_messages.append({"role": role, "content": msg_text})
+                else:
+                    # User/system message WITHOUT images - still use content array format
+                    chat_messages.append(
+                        {
+                            "role": role,
+                            "content": [
+                                {"type": "text", "text": msg_text, "content": msg_text}
+                            ],
+                        }
+                    )
+
+        # Process images
+        all_images = []
+        if all_image_urls:
+            all_images.extend(self._prepare_images(all_image_urls))
+        # Append pre-processed video frames
+        all_images.extend(all_video_frames)
+
+        # Apply chat template directly - messages are already properly structured
+        logger.info(
+            f"Applying chat template with {len(chat_messages)} messages, {len(all_images)} images"
+        )
+        for i, cm in enumerate(chat_messages):
+            content_preview = str(cm.get("content", ""))[:80]
+            logger.info(
+                f"  Chat msg {i}: role={cm['role']}, content={content_preview}..."
+            )
+
+        # Build template kwargs for tool definitions (tools already popped above)
+        template_extra_kwargs = {}
+        if tools:
+            template_extra_kwargs["tools"] = tools
+
+        try:
+            # Use get_chat_template directly since messages are already properly formatted
+            formatted_prompt = get_chat_template(
+                self.processor,
+                chat_messages,
+                add_generation_prompt=True,
+                **template_extra_kwargs,
+            )
+        except Exception as e:
+            logger.warning(
+                f"Failed to apply chat template: {e}, using last user message"
+            )
+            # Fallback to last user message if template fails
+            last_user_msg = ""
+            for m in reversed(chat_messages):
+                if m["role"] == "user":
+                    content = m.get("content", "")
+                    if isinstance(content, list):
+                        for item in content:
+                            if isinstance(item, dict) and item.get("type") == "text":
+                                last_user_msg = item.get("text", "")
+                                break
+                    else:
+                        last_user_msg = content
+                    break
+            formatted_prompt = last_user_msg
+
+        # Prefix caching with vision embedding support
+        # Following LMCache approach: cache vision embeddings to skip encoder on hit
+        from mlx_vlm.models import cache as vlm_cache
+
+        # use_cache was already popped near the top of chat() — don't re-pop
+        # with a default of True, as that would overwrite a caller's False.
+        cache_entry = None
+        prefix_match_len = 0
+        vision_embeddings = None
+        cache_hit = False
+
+        # Tokenize prompt for cache lookup
+        tokenizer = (
+            self.processor.tokenizer
+            if hasattr(self.processor, "tokenizer")
+            else self.processor
+        )
+        token_ids = tokenizer.encode(formatted_prompt)
+
+        # Check prefix cache
+        if use_cache and self._cache_manager is not None and all_images:
+            try:
+                cache_entry, prefix_match_len = self._cache_manager.fetch(
+                    all_images, formatted_prompt, token_ids
+                )
+                if cache_entry:
+                    cache_hit = True
+                    vision_embeddings = cache_entry.vision_embeddings
+                    if vision_embeddings is not None:
+                        logger.info(
+                            "[PREFIX CACHE] Vision embeddings cached - would skip encoder!"
+                        )
+                    if prefix_match_len > 0:
+                        logger.info(
+                            f"[PREFIX CACHE] {prefix_match_len} prefix tokens match"
+                        )
+            except Exception as e:
+                logger.warning(f"Cache fetch failed: {e}")
+
+        # Generate - use KV cache if available from previous identical request
+        # Create or reuse prompt cache for prefix caching speedup
+        prompt_cache = None
+        skip_prompt_processing = False
+
+        if cache_hit and cache_entry and cache_entry.kv_cache:
+            # NOTE: mlx-vlm's generate_step() has its own multimodal KV cache with prefix matching
+            # (MULTIMODAL_KV_CACHE_ENABLED in mlx_vlm/utils.py). Let it handle caching.
+            # We only use rapid-mlx's cache for text-only requests (no images).
+            if all_images:
+                # Pass cached KV state so mlx-vlm's generate can reuse it
+                # (skip_prompt_processing stays False — vision encoder must run)
+                import copy
+
+                prompt_cache = copy.deepcopy(cache_entry.kv_cache)
+                skip_prompt_processing = False
+                logger.info(
+                    f"[PREFIX CACHE] Image cache hit - passing {prefix_match_len} "
+                    f"cached KV tokens to mlx-vlm"
+                )
+            else:
+                # Text-only: can use skip_prompt_processing for maximum speedup
+                logger.info(
+                    "[PREFIX CACHE] Text-only cache hit - using skip_prompt_processing speedup"
+                )
+                cached_prompt_cache = cache_entry.kv_cache
+                try:
+                    import copy
+
+                    prompt_cache = []
+                    for layer_cache in cached_prompt_cache:
+                        new_cache = copy.copy(layer_cache)
+                        if hasattr(layer_cache, "state"):
+                            state = layer_cache.state
+                            if state is not None:
+                                import mlx.core as mx
+
+                                if len(state) >= 2 and state[0] is not None:
+                                    new_cache.keys = mx.array(state[0])
+                                    new_cache.values = mx.array(state[1])
+                                    if len(state) >= 3:
+                                        new_cache.offset = state[2]
+                                    elif hasattr(layer_cache, "offset"):
+                                        new_cache.offset = layer_cache.offset
+                        prompt_cache.append(new_cache)
+                    skip_prompt_processing = True
+                    logger.info(
+                        f"[PREFIX CACHE] Skipping {prefix_match_len} token forward pass"
+                    )
+                except Exception as e:
+                    logger.warning(f"[PREFIX CACHE] Failed to copy cache: {e}")
+                    prompt_cache = None
+                    skip_prompt_processing = False
+
+        if prompt_cache is None and self.model is not None:
+            # Create fresh cache
+            try:
+                prompt_cache = vlm_cache.make_prompt_cache(self.model.language_model)
+            except Exception:
+                prompt_cache = None
+
+        result = generate(
+            self.model,
+            self.processor,
+            formatted_prompt,
+            all_images if all_images else None,
+            max_tokens=max_tokens,
+            temp=temperature,
+            verbose=False,
+            prompt_cache=prompt_cache,
+            skip_prompt_processing=skip_prompt_processing,
+            **kwargs,
+        )
+
+        # Store KV cache for future reuse (on cache miss)
+        # IMPORTANT: We need to store only the prompt portion, not generated tokens
+        if (
+            use_cache
+            and self._cache_manager is not None
+            and all_images
+            and not cache_hit
+            and prompt_cache
+        ):
+            try:
+                import copy
+
+                import mlx.core as mx
+
+                # Get prompt token count (before generation)
+                prompt_tokens_count = getattr(result, "prompt_tokens", 0)
+
+                # Deep copy the cache and trim to prompt tokens only
+                cache_to_store = []
+                for layer_cache in prompt_cache:
+                    new_cache = copy.copy(layer_cache)
+                    if hasattr(layer_cache, "state"):
+                        state = layer_cache.state
+                        if (
+                            state is not None
+                            and len(state) >= 2
+                            and state[0] is not None
+                        ):
+                            # Copy arrays
+                            keys = mx.array(state[0])
+                            values = mx.array(state[1])
+                            # Trim to prompt tokens only (not generated tokens)
+                            if (
+                                hasattr(layer_cache, "offset")
+                                and layer_cache.offset > prompt_tokens_count
+                            ):
+                                # For caches with offset tracking, slice to prompt length
+                                new_cache.keys = keys[:, :, :prompt_tokens_count, :]
+                                new_cache.values = values[:, :, :prompt_tokens_count, :]
+                                new_cache.offset = prompt_tokens_count
+                            else:
+                                new_cache.keys = keys
+                                new_cache.values = values
+                                if len(state) >= 3:
+                                    new_cache.offset = state[2]
+                                elif hasattr(layer_cache, "offset"):
+                                    new_cache.offset = min(
+                                        layer_cache.offset, prompt_tokens_count
+                                    )
+                    cache_to_store.append(new_cache)
+
+                self._cache_manager.store(
+                    images=all_images,
+                    prompt=formatted_prompt,
+                    vision_embeddings=None,
+                    kv_cache=cache_to_store,
+                    token_ids=token_ids,
+                    model_name=self.model_name,
+                )
+                logger.info(
+                    f"[PREFIX CACHE] Stored KV cache for {len(all_images)} image(s) ({prompt_tokens_count} prompt tokens)"
+                )
+            except Exception as e:
+                logger.warning(f"Failed to cache: {e}")
+
+        # Handle GenerationResult object or plain string
+        if hasattr(result, "text"):
+            output_text = result.text
+            prompt_tokens = getattr(result, "prompt_tokens", 0)
+            generation_tokens = getattr(result, "generation_tokens", 0)
+        else:
+            output_text = str(result)
+            prompt_tokens = 0
+            generation_tokens = 0
+
+        return MLLMOutput(
+            text=output_text,
+            finish_reason="stop",
+            prompt_tokens=prompt_tokens,
+            completion_tokens=generation_tokens,
+        )
+
+    def stream_chat(
+        self,
+        messages: list[dict],
+        max_tokens: int = 256,
+        temperature: float = 0.7,
+        **kwargs,
+    ) -> Iterator[MLLMOutput]:
+        """
+        Stream chat with OpenAI-compatible message format.
+
+        Supports multimodal content in messages:
+        - {"type": "text", "text": "..."}
+        - {"type": "image_url", "image_url": {"url": "..."}}
+        - {"type": "image_url", "image_url": {"url": "data:image/...;base64,..."}}
+
+        Args:
+            messages: List of chat messages (OpenAI format)
+            max_tokens: Maximum tokens to generate
+            temperature: Sampling temperature
+            **kwargs: Additional parameters
+
+        Yields:
+            MLLMOutput with incremental text chunks
+        """
+        if not self._loaded:
+            self.load()
+
+        try:
+            from mlx_vlm import stream_generate
+            from mlx_vlm.prompt_utils import get_chat_template
+        except ImportError:
+            # Fallback to non-streaming if stream_generate not available
+            output = self.chat(
+                messages=messages,
+                max_tokens=max_tokens,
+                temperature=temperature,
+                **kwargs,
+            )
+            yield output
+            return
+
+        # Extract text and images from messages
+        # Build chat_messages for multi-turn support WITH proper image tokens per message
+        all_image_urls = []  # Raw URLs/paths to process later
+        chat_messages = []  # List of properly formatted messages for chat template
+
+        # Pop params early so they don't leak into mlx_vlm.generate()
+        video_fps = kwargs.pop("video_fps", DEFAULT_FPS)
+        video_max_frames = kwargs.pop("video_max_frames", MAX_FRAMES)
+        tools = kwargs.pop("tools", None)
+        use_cache = kwargs.pop("use_cache", True)
+
+        # Collect video inputs from messages
+        _msg_video_inputs = self._collect_video_inputs(messages)
+
+        # Use native video pipeline for supported models.
+        # NOTE: Native video yields a single chunk (not incremental streaming)
+        # because mlx_vlm.video_generate has no streaming API. The event loop
+        # is NOT blocked at the server level. True token-level streaming requires upstream
+        # mlx-vlm support for video stream_generate.
+        if self._video_native and _msg_video_inputs:
+            output = self._generate_native_video(
+                messages=messages,
+                max_tokens=max_tokens,
+                temperature=temperature,
+                video_fps=video_fps,
+                video_max_frames=video_max_frames,
+                tools=tools,
+                **kwargs,
+            )
+            yield output
+            return
+
+        # Fallback: frames as images
+        _msg_video_frame_counts: dict[int, int] = {}
+        all_video_frames: list[str] = []
+        for msg_idx, vid_inputs in _msg_video_inputs.items():
+            total_frames = 0
+            for vid_input in vid_inputs:
+                frames = self._prepare_video(
+                    vid_input, fps=video_fps, max_frames=video_max_frames
+                )
+                all_video_frames.extend(frames)
+                total_frames += len(frames)
+                logger.info(f"Added {len(frames)} frames from video: {vid_input}")
+            _msg_video_frame_counts[msg_idx] = total_frames
+
+        for msg_idx, msg in enumerate(messages):
+            role = msg.get("role", "user")
+            content = msg.get("content", "")
+            msg_text = ""
+            msg_image_count = 0
+
+            if isinstance(content, str):
+                msg_text = content
+            elif isinstance(content, list):
+                for item in content:
+                    if isinstance(item, str):
+                        msg_text += item
+                        continue
+
+                    if hasattr(item, "model_dump"):
+                        item = item.model_dump(exclude_none=True)
+                    elif hasattr(item, "dict"):
+                        item = {k: v for k, v in item.dict().items() if v is not None}
+
+                    if isinstance(item, dict):
+                        item_type = item.get("type", "")
+
+                        if item_type == "text":
+                            msg_text += item.get("text", "")
+
+                        elif item_type == "image_url":
+                            img_url = item.get("image_url", {})
+                            if isinstance(img_url, str):
+                                all_image_urls.append(img_url)
+                            else:
+                                all_image_urls.append(img_url.get("url", ""))
+                            msg_image_count += 1
+
+                        elif item_type == "image":
+                            all_image_urls.append(
+                                item.get("image", item.get("url", ""))
+                            )
+                            msg_image_count += 1
+
+            msg_image_count += _msg_video_frame_counts.get(msg_idx, 0)
+
+            if msg_text or msg_image_count > 0:
+                if role == "user" and msg_image_count > 0:
+                    content_list = []
+                    for _ in range(msg_image_count):
+                        content_list.append({"type": "image"})
+                    content_list.append(
+                        {"type": "text", "text": msg_text, "content": msg_text}
+                    )
+                    chat_messages.append({"role": role, "content": content_list})
+                elif role == "assistant":
+                    chat_messages.append({"role": role, "content": msg_text})
+                else:
+                    chat_messages.append(
+                        {
+                            "role": role,
+                            "content": [
+                                {"type": "text", "text": msg_text, "content": msg_text}
+                            ],
+                        }
+                    )
+
+        all_images = []
+        if all_image_urls:
+            all_images.extend(self._prepare_images(all_image_urls))
+        all_images.extend(all_video_frames)
+
+        # Build template kwargs for tool definitions (tools already popped above)
+        template_extra_kwargs = {}
+        if tools:
+            template_extra_kwargs["tools"] = tools
+
+        try:
+            formatted_prompt = get_chat_template(
+                self.processor,
+                chat_messages,
+                add_generation_prompt=True,
+                **template_extra_kwargs,
+            )
+        except Exception as e:
+            logger.warning(
+                f"Failed to apply chat template: {e}, using last user message"
+            )
+            # Fallback to last user message if template fails
+            last_user_msg = ""
+            for m in reversed(chat_messages):
+                if m["role"] == "user":
+                    content = m.get("content", "")
+                    if isinstance(content, list):
+                        for item in content:
+                            if isinstance(item, dict) and item.get("type") == "text":
+                                last_user_msg = item.get("text", "")
+                                break
+                    else:
+                        last_user_msg = content
+                    break
+            formatted_prompt = last_user_msg
+
+        # Check cache for existing KV state (uses images as cache key)
+        from mlx_vlm.models import cache as vlm_cache
+
+        prompt_cache = None
+        cache_hit = False
+
+        if use_cache and self._cache_manager is not None and all_images:
+            prompt_cache, cache_hit = self._cache_manager.fetch_cache(
+                all_images, formatted_prompt
+            )
+            if cache_hit:
+                logger.debug(f"Stream chat cache hit for {len(all_images)} image(s)")
+
+        # Create new cache if needed
+        if prompt_cache is None and self.model is not None:
+            try:
+                prompt_cache = vlm_cache.make_prompt_cache(self.model.language_model)
+            except Exception:
+                prompt_cache = None
+
+        # Stream generate tokens with cache
+        accumulated_text = ""
+        token_count = 0
+
+        for chunk in stream_generate(
+            self.model,
+            self.processor,
+            formatted_prompt,
+            all_images if all_images else None,
+            max_tokens=max_tokens,
+            temp=temperature,
+            prompt_cache=prompt_cache,
+            **kwargs,
+        ):
+            token_count += 1
+            # chunk is a GenerationResult with .text attribute containing the new token
+            new_text = chunk.text if hasattr(chunk, "text") else str(chunk)
+            accumulated_text += new_text
+
+            yield MLLMOutput(
+                text=new_text,  # Just the new token for streaming
+                finish_reason=None,
+                prompt_tokens=getattr(chunk, "prompt_tokens", 0),
+                completion_tokens=token_count,
+            )
+
+        # Store KV cache for future reuse (on cache miss, same as non-streaming path)
+        if (
+            use_cache
+            and self._cache_manager is not None
+            and all_images
+            and not cache_hit
+            and prompt_cache
+        ):
+            try:
+                import copy
+
+                import mlx.core as mx
+
+                # Use the generation engine's prompt_tokens count which includes
+                # expanded image/video tokens. Plain text tokenization undercounts
+                # for multimodal prompts and would truncate the KV cache.
+                prompt_tokens_count = (
+                    getattr(chunk, "prompt_tokens", 0) if "chunk" in dir() else 0
+                )
+                if prompt_tokens_count <= 0:
+                    # Zero-token streams have no reliable prompt length —
+                    # skip cache storage to avoid truncating KV with a
+                    # text-only token count that undercounts multimodal prompts.
+                    raise ValueError(
+                        "No prompt_tokens from generation, skipping cache store"
+                    )
+                token_ids = self.processor.tokenizer.encode(formatted_prompt)
+
+                cache_to_store = []
+                for layer_cache in prompt_cache:
+                    new_cache = copy.copy(layer_cache)
+                    if hasattr(layer_cache, "state"):
+                        state = layer_cache.state
+                        if (
+                            state is not None
+                            and len(state) >= 2
+                            and state[0] is not None
+                        ):
+                            keys = mx.array(state[0])
+                            values = mx.array(state[1])
+                            if (
+                                hasattr(layer_cache, "offset")
+                                and layer_cache.offset > prompt_tokens_count
+                            ):
+                                new_cache.keys = keys[:, :, :prompt_tokens_count, :]
+                                new_cache.values = values[:, :, :prompt_tokens_count, :]
+                                new_cache.offset = prompt_tokens_count
+                            else:
+                                new_cache.keys = keys
+                                new_cache.values = values
+                                if len(state) >= 3:
+                                    new_cache.offset = state[2]
+                                elif hasattr(layer_cache, "offset"):
+                                    new_cache.offset = min(
+                                        layer_cache.offset, prompt_tokens_count
+                                    )
+                    cache_to_store.append(new_cache)
+
+                self._cache_manager.store(
+                    images=all_images,
+                    prompt=formatted_prompt,
+                    vision_embeddings=None,
+                    kv_cache=cache_to_store,
+                    token_ids=token_ids,
+                    model_name=self.model_name,
+                )
+                logger.info(
+                    f"[PREFIX CACHE] Stream: stored KV cache for {len(all_images)} image(s) ({prompt_tokens_count} prompt tokens)"
+                )
+            except Exception as e:
+                logger.warning(f"Stream cache store failed: {e}")
+
+        # Final yield with finish_reason
+        yield MLLMOutput(
+            text="",
+            finish_reason="stop",
+            prompt_tokens=getattr(chunk, "prompt_tokens", 0) if "chunk" in dir() else 0,
+            completion_tokens=token_count,
+        )
+
+    def describe_image(
+        self,
+        image: str,
+        prompt: str = "Describe this image in detail.",
+        max_tokens: int = 512,
+        **kwargs,
+    ) -> str:
+        """
+        Convenience method to describe an image.
+
+        Args:
+            image: Image path, URL, or base64 string
+            prompt: Description prompt
+            max_tokens: Maximum tokens
+            **kwargs: Additional parameters
+
+        Returns:
+            Image description text
+        """
+        output = self.generate(
+            prompt=prompt,
+            images=[image],
+            max_tokens=max_tokens,
+            **kwargs,
+        )
+        return output.text
+
+    def answer_about_image(
+        self,
+        image: str,
+        question: str,
+        max_tokens: int = 256,
+        **kwargs,
+    ) -> str:
+        """
+        Answer a question about an image.
+
+        Args:
+            image: Image path, URL, or base64 string
+            question: Question about the image
+            max_tokens: Maximum tokens
+            **kwargs: Additional parameters
+
+        Returns:
+            Answer text
+        """
+        output = self.generate(
+            prompt=question,
+            images=[image],
+            max_tokens=max_tokens,
+            **kwargs,
+        )
+        return output.text
+
+    def describe_video(
+        self,
+        video: str | dict,
+        prompt: str = "Describe what happens in this video.",
+        fps: float = 2.0,
+        max_frames: int = 32,
+        max_tokens: int = 512,
+        **kwargs,
+    ) -> str:
+        """
+        Describe a video using frame extraction.
+
+        Args:
+            video: Video file path, URL, base64, or OpenAI format dict
+            prompt: Description prompt
+            fps: Frames per second to extract
+            max_frames: Maximum frames to extract
+            max_tokens: Maximum tokens to generate
+
+        Returns:
+            Video description text
+
+        Example:
+            # Local file
+            model.describe_video("video.mp4")
+
+            # URL
+            model.describe_video("https://example.com/video.mp4")
+
+            # OpenAI format
+            model.describe_video({"url": "https://example.com/video.mp4"})
+        """
+        output = self.generate(
+            prompt=prompt,
+            videos=[video],
+            video_fps=fps,
+            video_max_frames=max_frames,
+            max_tokens=max_tokens,
+            **kwargs,
+        )
+        return output.text
+
+    def get_cache_stats(self) -> dict:
+        """
+        Get MLLM cache statistics.
+
+        Returns:
+            Dictionary with cache stats (hits, misses, hit_rate, tokens_saved, etc.)
+        """
+        if self._cache_manager is None:
+            return {"enabled": False}
+
+        stats = self._cache_manager.get_stats()
+        stats["enabled"] = True
+        stats["cache_entries"] = len(self._cache_manager)
+        stats["max_entries"] = self._cache_manager.max_size
+        return stats
+
+    def clear_cache(self) -> None:
+        """Clear the MLLM KV cache."""
+        if self._cache_manager is not None:
+            self._cache_manager.clear()
+            logger.info("MLLM cache cleared")
+
+    def get_model_info(self) -> dict:
+        """Get information about the loaded model."""
+        if not self._loaded:
+            return {"loaded": False, "model_name": self.model_name}
+
+        info = {
+            "loaded": True,
+            "model_name": self.model_name,
+            "type": "multimodal-language-model",
+            "supports_video": True,
+            "supports_streaming": True,
+            "cache_enabled": self.enable_cache,
+        }
+
+        if self.config:
+            info["model_type"] = getattr(self.config, "model_type", "unknown")
+
+        if self._cache_manager is not None:
+            info["cache_stats"] = self._cache_manager.get_stats()
+
+        return info
+
+    @staticmethod
+    def list_supported_model_families() -> dict[str, str]:
+        """
+        List supported model families and their patterns.
+
+        Any model on HuggingFace containing these patterns in the name
+        is likely compatible with mlx-vlm.
+        """
+        return {
+            "Qwen-VL": "Qwen VL models (Qwen2-VL, Qwen2.5-VL, Qwen3-VL, etc.)",
+            "LLaVA": "LLaVA vision-language models",
+            "Idefics": "Idefics vision-language models",
+            "PaliGemma": "PaliGemma multimodal models",
+            "Pixtral": "Mistral's Pixtral vision models",
+            "Molmo": "Allen AI's Molmo models",
+            "Phi-3-Vision": "Microsoft's Phi-3 Vision models",
+            "CogVLM": "Tsinghua's CogVLM models",
+            "InternVL": "InternVL models",
+            "MiniCPM-V": "OpenBMB's MiniCPM-V models",
+            "Florence": "Microsoft Florence vision models",
+            "DeepSeek-VL": "DeepSeek's vision-language models (DeepSeek-VL, DeepSeek-VL2)",
+        }
+
+    @staticmethod
+    def is_mllm_model(model_name: str) -> bool:
+        """Check if a model name indicates an MLLM model."""
+        mllm_patterns = [
+            "-VL-",
+            "-VL/",
+            "VL-",
+            "llava",
+            "LLaVA",
+            "idefics",
+            "Idefics",
+            "paligemma",
+            "PaliGemma",
+            "gemma-3",
+            "gemma3",  # Gemma 3 (multimodal)
+            "medgemma",
+            "MedGemma",  # MedGemma (medical multimodal)
+            "pixtral",
+            "Pixtral",
+            "molmo",
+            "Molmo",
+            "phi3-vision",
+            "phi-3-vision",
+            "cogvlm",
+            "CogVLM",
+            "internvl",
+            "InternVL",
+            "minicpm-v",
+            "MiniCPM-V",
+            "florence",
+            "Florence",
+            "deepseek-vl",
+            "DeepSeek-VL",
+        ]
+        model_lower = model_name.lower()
+        return any(pattern.lower() in model_lower for pattern in mllm_patterns)
+
+    def __repr__(self) -> str:
+        status = "loaded" if self._loaded else "not loaded"
+        return f"<MLXMultimodalLM model={self.model_name} status={status}>"
+
+
+# Backwards compatibility aliases
+MLXVisionLanguageModel = MLXMultimodalLM
+VLMOutput = MLLMOutput
+is_vlm_model = MLXMultimodalLM.is_mllm_model

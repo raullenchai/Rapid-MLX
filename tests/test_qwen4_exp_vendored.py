@@ -14,12 +14,10 @@ import mlx.nn as nn
 from mlx_lm.models.cache import ArraysCache, BatchKVCache, CacheList, KVCache
 from mlx_lm.models.gated_delta import gated_delta_update
 
-import vllm_mlx.models.qwen4_exp as qwen4_exp
-import vllm_mlx.models.qwen4_exp_cache as qwen4_exp_cache
-from scripts import qwen38_streaming_convert as converter
-from scripts.qwen38_streaming_convert import quantized_tensor_names
-from vllm_mlx.kernels import qwen4_fused_gdn_decode as fused_gdn
-from vllm_mlx.models.qwen4_exp import (
+import rapid_mlx.models.qwen4_exp as qwen4_exp
+import rapid_mlx.models.qwen4_exp_cache as qwen4_exp_cache
+from rapid_mlx.kernels import qwen4_fused_gdn_decode as fused_gdn
+from rapid_mlx.models.qwen4_exp import (
     GatedDeltaNet,
     GatedResidual,
     Model,
@@ -36,7 +34,9 @@ from vllm_mlx.models.qwen4_exp import (
     apply_qwen4_exp_rope,
     build_layer_multipliers,
 )
-from vllm_mlx.models.qwen4_exp_cache import QSAIndexCache
+from rapid_mlx.models.qwen4_exp_cache import QSAIndexCache
+from scripts import qwen38_streaming_convert as converter
+from scripts.qwen38_streaming_convert import quantized_tensor_names
 
 
 def _args(**overrides):
@@ -357,7 +357,7 @@ def test_gated_residual_matches_reference_equations():
 
 
 def test_qwen4_moe_verify_rows_match_fused_projection_path():
-    from vllm_mlx.moe_fusion import fuse_gate_up
+    from rapid_mlx.moe_fusion import fuse_gate_up
 
     block = SparseMoeBlock(_args())
     inputs = mx.array(
@@ -374,7 +374,7 @@ def test_qwen4_moe_verify_rows_match_fused_projection_path():
 
 @pytest.mark.parametrize("masked", [False, True])
 def test_qwen4_gdn_verify_kernel_matches_reference_and_boundaries(masked):
-    from vllm_mlx.kernels.qwen4_gdn_verify import (
+    from rapid_mlx.kernels.qwen4_gdn_verify import (
         gated_delta_verify_with_states,
     )
 
@@ -792,7 +792,7 @@ def test_qsa_cache_refuses_rewind_beyond_retained_raw_group():
 
 def test_scheduler_rollback_preflights_qsa_cachelist_for_full_rejection():
     """A multi-token rejection cannot trim KV before QSA refuses it."""
-    from vllm_mlx.cache_rollback import can_trim, trim_all
+    from rapid_mlx.cache_rollback import can_trim, trim_all
 
     kv = KVCache()
     keys = mx.arange(9, dtype=mx.float32).reshape(1, 1, 9, 1)
@@ -816,7 +816,7 @@ def test_scheduler_rollback_preflights_qsa_cachelist_for_full_rejection():
 
 def test_prompt_lookup_admits_qsa_snapshot_rollback_across_group():
     """QSA's verify snapshot admits the full PLD proposal at a boundary."""
-    from vllm_mlx.spec_decode.mtp.generator import (
+    from rapid_mlx.spec_decode.mtp.generator import (
         _safe_prompt_lookup_draft_count,
     )
 
@@ -840,7 +840,7 @@ def test_prompt_lookup_admits_qsa_snapshot_rollback_across_group():
 
 def test_qsa_speculative_snapshot_restores_cross_group_accepted_prefix():
     """A partial PLD rejection preserves only base + accepted QSA rows."""
-    from vllm_mlx.cache_rollback import trim_all
+    from rapid_mlx.cache_rollback import trim_all
 
     def transform(group, start):
         return group + start
@@ -905,7 +905,7 @@ def test_qwen4_state_cache_implements_cache_rollback_contract():
     undo record. Only the spec-verify window is trimmable; the preflight and
     transactional restore must behave correctly.
     """
-    from vllm_mlx.cache_rollback import can_advance, can_trim, trim_all
+    from rapid_mlx.cache_rollback import can_advance, can_trim, trim_all
 
     recurrent = Qwen4ExpStateCache(size=2)
 
@@ -1008,7 +1008,7 @@ def test_qwen4_state_cache_zero_trim_is_side_effect_free():
     zero tokens were trimmed. ``can_trim(0)`` must be ``False`` so ``trim(0)``
     is a no-op that leaves cache and undo record untouched.
     """
-    from vllm_mlx.cache_rollback import can_trim, trim_all
+    from rapid_mlx.cache_rollback import can_trim, trim_all
 
     recurrent = Qwen4ExpStateCache(size=2)
     b0 = [
@@ -1035,7 +1035,7 @@ def test_qwen4_state_cache_zero_trim_is_side_effect_free():
 
 def test_qwen4_state_cache_rollback_full_rejection():
     """Rejecting every draft restores the state after the committed token."""
-    from vllm_mlx.cache_rollback import trim_all
+    from rapid_mlx.cache_rollback import trim_all
 
     recurrent = Qwen4ExpStateCache(size=2)
     after1 = [
@@ -1070,7 +1070,7 @@ def test_qwen4_state_cache_rollback_via_composite_cache_list():
     boundary. This is the Layer B' precondition for opening the hybrid n-gram
     allowlist.
     """
-    from vllm_mlx.cache_rollback import can_advance, trim_all
+    from rapid_mlx.cache_rollback import can_advance, trim_all
 
     def transform(group, start):
         return group + start
@@ -1139,7 +1139,7 @@ def test_qwen4_state_cache_transactional_restore_on_later_leaf_failure():
     recurrent cache returns to its exact pre-trim (verify) state, undo record
     intact.
     """
-    from vllm_mlx.cache_rollback import trim_all
+    from rapid_mlx.cache_rollback import trim_all
 
     class _FailingLeaf:
         def can_trim(self, n):
@@ -1172,7 +1172,7 @@ def test_qwen4_state_cache_transactional_restore_on_later_leaf_failure():
 
 
 def test_suffix_scheduler_falls_through_before_qsa_multitoken_verify():
-    from vllm_mlx.scheduler import _install_suffix_decoding
+    from rapid_mlx.scheduler import _install_suffix_decoding
 
     kv = KVCache()
     keys = mx.arange(9, dtype=mx.float32).reshape(1, 1, 9, 1)
@@ -1276,7 +1276,7 @@ def test_qsa_attention_uses_reference_dense_path_below_sparse_budget(monkeypatch
         return mx.zeros_like(queries)
 
     monkeypatch.setattr(
-        "vllm_mlx.models.qwen4_exp.scaled_dot_product_attention",
+        "rapid_mlx.models.qwen4_exp.scaled_dot_product_attention",
         fake_attention,
     )
     output = attention(mx.zeros((1, 5, args.hidden_size)), cache)
@@ -1322,7 +1322,7 @@ def test_qsa_batch_prefill_builds_mask_before_kv_update(monkeypatch):
         return mx.zeros_like(queries)
 
     monkeypatch.setattr(
-        "vllm_mlx.models.qwen4_exp.scaled_dot_product_attention",
+        "rapid_mlx.models.qwen4_exp.scaled_dot_product_attention",
         fake_attention,
     )
     output = attention(mx.zeros((1, 5, args.hidden_size)), cache)
@@ -1350,7 +1350,7 @@ def test_qsa_prefill_synthetic_singleton_cannot_enter_fast_rms_norm():
 
 def test_scheduler_mid_prefill_restores_qsa_cachelist():
     """The live restore path recognizes the same vendored QSA side-cache."""
-    from vllm_mlx.scheduler import Scheduler
+    from rapid_mlx.scheduler import Scheduler
 
     scheduler = Scheduler.__new__(Scheduler)
     kv = KVCache()
@@ -1784,13 +1784,13 @@ def test_qwen4_state_cache_restores_atomic_slot_boundary():
 
 def test_qwen4_state_cache_preserves_type_across_prefix_cache_lifecycle(tmp_path):
     """A cache hit must retain the rollback API required by native MTP."""
-    from vllm_mlx.memory_cache import (
+    from rapid_mlx.memory_cache import (
         MemoryAwarePrefixCache,
         MemoryCacheConfig,
         _load_prompt_cache_compat,
         _save_prompt_cache_compat,
     )
-    from vllm_mlx.scheduler import Scheduler
+    from rapid_mlx.scheduler import Scheduler
 
     first = Qwen4ExpStateCache(size=2)
     first.cache = [mx.array([[1.0]]), mx.array([[2.0]])]
@@ -1897,8 +1897,8 @@ def test_qwen4_mtp_target_verify_matches_forced_greedy_oracle(monkeypatch, max_k
     import mlx.nn as nn
     from mlx_lm.generate import generate_step
 
-    from vllm_mlx.spec_decode.mtp import MTPAcceptCounter, dispatch_mtp_inject
-    from vllm_mlx.spec_decode.mtp.generator import mtp_generate_step
+    from rapid_mlx.spec_decode.mtp import MTPAcceptCounter, dispatch_mtp_inject
+    from rapid_mlx.spec_decode.mtp.generator import mtp_generate_step
 
     # Earlier executor tests may leave MLX's process-global default tagged to
     # a worker-owned stream. Rebind this real-device test to the current
@@ -1960,8 +1960,8 @@ def test_qwen4_mtp_target_verify_matches_forced_greedy_oracle(monkeypatch, max_k
 def test_qwen4_native_mtp_dispatch_attaches_synthetic_head(monkeypatch):
     import mlx.nn as nn
 
-    from vllm_mlx.spec_decode.mtp import dispatch_mtp_inject, dispatch_mtp_validate
-    from vllm_mlx.spec_decode.mtp.dispatch import (
+    from rapid_mlx.spec_decode.mtp import dispatch_mtp_inject, dispatch_mtp_validate
+    from rapid_mlx.spec_decode.mtp.dispatch import (
         _MTP_INJECT_DISPATCH,
         _MTP_VALIDATE_DISPATCH,
     )
@@ -1975,11 +1975,11 @@ def test_qwen4_native_mtp_dispatch_attaches_synthetic_head(monkeypatch):
     monkeypatch.setattr(nn, "quantize", lambda *_args, **_kwargs: None)
 
     assert _MTP_INJECT_DISPATCH["qwen4_exp"] == (
-        "vllm_mlx.spec_decode.mtp.qwen4_exp_inject",
+        "rapid_mlx.spec_decode.mtp.qwen4_exp_inject",
         "inject_qwen4_exp_mtp_support",
     )
     assert _MTP_VALIDATE_DISPATCH["qwen4_exp"] == (
-        "vllm_mlx.spec_decode.mtp.qwen4_exp_inject",
+        "rapid_mlx.spec_decode.mtp.qwen4_exp_inject",
         "validate_qwen4_exp_mtp_support",
     )
     assert dispatch_mtp_inject(model, "qwen4_exp", allow_random_init=True) is True
@@ -1997,7 +1997,7 @@ def test_qwen4_native_mtp_dispatch_attaches_synthetic_head(monkeypatch):
 
 
 def test_qwen4_mtp_checkpoint_file_discovery_and_weight_sanitize(tmp_path):
-    from vllm_mlx.spec_decode.mtp import qwen4_exp_inject as inject
+    from rapid_mlx.spec_decode.mtp import qwen4_exp_inject as inject
 
     direct = tmp_path / "direct.safetensors"
     direct.touch()
@@ -2063,7 +2063,7 @@ def test_qwen4_mtp_quantization_predicate_delegates_only_quantizable_modules(
 ):
     import mlx.nn as nn
 
-    from vllm_mlx.spec_decode.mtp import qwen4_exp_inject as inject
+    from rapid_mlx.spec_decode.mtp import qwen4_exp_inject as inject
 
     args = _ple_args()
     args.mtp_num_hidden_layers = 1
@@ -2088,7 +2088,7 @@ def test_qwen4_mtp_inject_loads_complete_local_tensor_contract(tmp_path, monkeyp
     import mlx.nn as nn
     from mlx.utils import tree_flatten
 
-    from vllm_mlx.spec_decode.mtp import qwen4_exp_inject as inject
+    from rapid_mlx.spec_decode.mtp import qwen4_exp_inject as inject
 
     args = _ple_args()
     args.mtp_num_hidden_layers = 1
@@ -2116,7 +2116,7 @@ def test_qwen4_mtp_inject_fails_closed_on_guards_tensor_mismatch_and_exception(
 ):
     import mlx.nn as nn
 
-    from vllm_mlx.spec_decode.mtp import qwen4_exp_inject as inject
+    from rapid_mlx.spec_decode.mtp import qwen4_exp_inject as inject
 
     assert inject._resolve_inner(object()) is None
     assert inject.validate_qwen4_exp_mtp_support(object()) is False
@@ -2154,7 +2154,7 @@ def test_qwen4_mtp_inject_fails_closed_on_guards_tensor_mismatch_and_exception(
 def test_qwen4_mtp_untied_logits_and_validation_signature_failure(monkeypatch):
     import mlx.nn as nn
 
-    from vllm_mlx.spec_decode.mtp import qwen4_exp_inject as inject
+    from rapid_mlx.spec_decode.mtp import qwen4_exp_inject as inject
 
     args = _ple_args(tie_word_embeddings=False)
     args.mtp_num_hidden_layers = 1
@@ -2459,7 +2459,7 @@ def test_model_wrapper_properties_sanitize_and_tied_logits():
 
 
 def test_experimental_capability_uses_live_residency_truth(monkeypatch):
-    from vllm_mlx.routes import models as models_route
+    from rapid_mlx.routes import models as models_route
 
     entry = SimpleNamespace(
         experimental=True,
@@ -2512,8 +2512,8 @@ def test_qwen4_registration_probes_native_and_fails_closed(monkeypatch, caplog):
     import importlib.util
     import sys
 
-    import vllm_mlx.models as model_package
-    from vllm_mlx.utils import tokenizer
+    import rapid_mlx.models as model_package
+    from rapid_mlx.utils import tokenizer
 
     module_name = "mlx_lm.models.qwen4_exp"
     monkeypatch.setattr(
@@ -2543,7 +2543,7 @@ def test_qwen4_registration_probes_native_and_fails_closed(monkeypatch, caplog):
     assert module_name in sys.modules
 
     monkeypatch.delitem(sys.modules, module_name, raising=False)
-    monkeypatch.delitem(sys.modules, "vllm_mlx.models.qwen4_exp", raising=False)
+    monkeypatch.delitem(sys.modules, "rapid_mlx.models.qwen4_exp", raising=False)
     monkeypatch.delattr(model_package, "qwen4_exp", raising=False)
     monkeypatch.setattr(importlib.util, "find_spec", lambda _name: None)
     original_import = builtins.__import__
@@ -2567,7 +2567,7 @@ def test_qwen4_gdn_verify_single_step_initializes_state_and_empty_boundaries():
     one-step shape, so keep this edge last in the module while still asserting
     the production fallback used outside multi-token verification.
     """
-    from vllm_mlx.kernels.qwen4_gdn_verify import gated_delta_verify_with_states
+    from rapid_mlx.kernels.qwen4_gdn_verify import gated_delta_verify_with_states
 
     output, state, boundaries = gated_delta_verify_with_states(
         mx.ones((1, 1, 1, 4)),

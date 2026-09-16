@@ -5,7 +5,7 @@ from __future__ import annotations
 import copy
 import threading
 
-from vllm_mlx.engine.batched import _clone_mllm_worker_processor
+from rapid_mlx.engine.batched import _clone_mllm_worker_processor
 
 
 class _BorrowCheckedTokenizer:

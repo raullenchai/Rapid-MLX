@@ -5,15 +5,15 @@ Tests for the MLX hardware-compat shim (#404 M5 single-stream).
 We can't test on actual M5 from CI, but we can:
 1. Verify the shim is installed *before* any module-level
    ``mx.new_thread_local_stream`` capture inside ``mlx_lm.generate``,
-   by checking that importing ``vllm_mlx.scheduler`` triggers install().
+   by checking that importing ``rapid_mlx.scheduler`` triggers install().
 2. Mock the probe failure and assert the fallback path returns
    ``mx.default_stream(...)``.
 3. Verify idempotency — install() can be called multiple times safely.
 4. Verify the shim is transparent on hardware that works (this runs on
    the dev's actual hardware in the test-apple-silicon CI job).
 
-We do NOT test that ``import vllm_mlx`` installs the shim — that is the
-*wrong* contract. We deliberately keep top-level ``import vllm_mlx``
+We do NOT test that ``import rapid_mlx`` installs the shim — that is the
+*wrong* contract. We deliberately keep top-level ``import rapid_mlx``
 free of ``mlx.core`` import so the package stays usable for metadata-only
 access on systems where ``mlx`` is installed but Metal is unavailable
 (``import mlx.core`` SIGABRTs there with an uncatchable NSException).
@@ -30,7 +30,7 @@ pytest.importorskip("mlx.core")
 
 
 def test_shim_installed_when_scheduler_imports():
-    """Importing vllm_mlx.scheduler must install the compat shim — that's
+    """Importing rapid_mlx.scheduler must install the compat shim — that's
     the gate that protects the module-level ``mx.new_thread_local_stream``
     call inside mlx_lm.generate (which scheduler imports at module top)."""
     import mlx.core as mx
@@ -38,11 +38,11 @@ def test_shim_installed_when_scheduler_imports():
     # Re-install explicitly so this test is order-independent: even if
     # scheduler was already imported by a prior test, install() is
     # idempotent and the assertion still holds.
-    from vllm_mlx import _mlx_compat
+    from rapid_mlx import _mlx_compat
 
     if hasattr(mx, "_rapid_mlx_compat_installed"):
         delattr(mx, "_rapid_mlx_compat_installed")
-    import vllm_mlx.scheduler  # noqa: F401
+    import rapid_mlx.scheduler  # noqa: F401
 
     if not getattr(mx, "_rapid_mlx_compat_installed", False):
         # scheduler may already be in sys.modules from a previous test —
@@ -52,8 +52,8 @@ def test_shim_installed_when_scheduler_imports():
     assert getattr(mx, "_rapid_mlx_compat_installed", False) is True
 
 
-def test_vllm_mlx_init_does_not_install_shim_or_import_mlx():
-    """`vllm_mlx/__init__.py` must NOT import mlx or call _mlx_compat.install().
+def test_rapid_mlx_init_does_not_install_shim_or_import_mlx():
+    """`rapid_mlx/__init__.py` must NOT import mlx or call _mlx_compat.install().
     Both would eagerly load `mlx.core`, which SIGABRTs (uncatchable from
     Python) on systems where the `mlx` package is installed but Metal is
     unavailable — breaking metadata-only callers (`__version__`, etc.).
@@ -63,21 +63,21 @@ def test_vllm_mlx_init_does_not_install_shim_or_import_mlx():
     the top of every module that imports `mlx_lm.*` instead
     (verified by `test_every_mlx_lm_consumer_installs_shim`)."""
     init_source = (
-        importlib.resources.files("vllm_mlx").joinpath("__init__.py").read_text()
+        importlib.resources.files("rapid_mlx").joinpath("__init__.py").read_text()
     )
     assert "import mlx" not in init_source, (
-        "vllm_mlx/__init__.py must not import mlx — it would break "
+        "rapid_mlx/__init__.py must not import mlx — it would break "
         "metadata-only usage on systems with broken Metal init."
     )
     assert "_mlx_compat.install()" not in init_source, (
-        "vllm_mlx/__init__.py must not call _mlx_compat.install() — that "
+        "rapid_mlx/__init__.py must not call _mlx_compat.install() — that "
         "would eagerly import mlx.core (which can SIGABRT on Metal-less "
         "systems). The shim must install at scheduler-import time instead."
     )
 
 
 def test_every_mlx_lm_consumer_installs_shim():
-    """Any vllm_mlx file that runs a ``from mlx_lm…`` / ``import mlx_lm…``
+    """Any rapid_mlx file that runs a ``from mlx_lm…`` / ``import mlx_lm…``
     *at module load time* MUST also call ``_mlx_compat.install()`` before
     the first such import.
 
@@ -92,7 +92,7 @@ def test_every_mlx_lm_consumer_installs_shim():
 
     Why AST-based and not text-based: imports inside top-level ``try /
     except ImportError`` blocks are indented but still execute at module
-    load time. ``vllm_mlx/utils/mamba_cache.py`` and ``vllm_mlx/api/
+    load time. ``rapid_mlx/utils/mamba_cache.py`` and ``rapid_mlx/api/
     guided.py`` both use that pattern for optional-dep guards, and a
     line-prefix check misses them. We walk the AST and accept any
     ``Import`` / ``ImportFrom`` whose parent chain stays inside
@@ -233,7 +233,7 @@ def test_every_mlx_lm_consumer_installs_shim():
             yield from _walk_module_level(child, parents + (child,))
 
     pkg_root = pathlib.Path(
-        str(importlib.resources.files("vllm_mlx").joinpath(""))
+        str(importlib.resources.files("rapid_mlx").joinpath(""))
     ).resolve()
     offenders = []
     for path in pkg_root.rglob("*.py"):
@@ -271,7 +271,7 @@ def test_every_mlx_lm_consumer_installs_shim():
 def test_install_is_idempotent():
     import mlx.core as mx
 
-    from vllm_mlx import _mlx_compat
+    from rapid_mlx import _mlx_compat
 
     _mlx_compat.install()
     first = mx.new_thread_local_stream
@@ -284,11 +284,11 @@ def test_install_is_noop_when_symbol_missing(monkeypatch):
     """Regression for #408: on mlx builds that predate
     ``mx.new_thread_local_stream``, ``install()`` must be a no-op rather
     than crash with AttributeError. Without this guard,
-    ``import vllm_mlx.scheduler`` aborts before the server can bind a
+    ``import rapid_mlx.scheduler`` aborts before the server can bind a
     port — every user on the affected mlx is blocked from upgrading."""
     import mlx.core as mx
 
-    from vllm_mlx import _mlx_compat
+    from rapid_mlx import _mlx_compat
 
     # If a future mlx genuinely drops the symbol, this assert fails
     # loudly so we revisit whether the compat shim still has a job to
@@ -314,7 +314,7 @@ def test_fallback_engages_when_probe_raises(monkeypatch):
     return mx.default_stream(device) instead of the unusable stream."""
     import mlx.core as mx
 
-    from vllm_mlx import _mlx_compat
+    from rapid_mlx import _mlx_compat
 
     # Make `_probe` always fail with the M5-shaped error. We poke the
     # ``mx`` namespace because the patch wires `with mx.stream(stream)`
@@ -352,7 +352,7 @@ def test_fallback_does_not_engage_on_unrelated_runtime_error(monkeypatch):
     we want unexpected failures to surface, not get silently degraded."""
     import mlx.core as mx
 
-    from vllm_mlx import _mlx_compat
+    from rapid_mlx import _mlx_compat
 
     class _BoomStream:
         def __init__(self, stream):
@@ -380,7 +380,7 @@ def test_happy_path_unchanged_on_real_hardware():
     transparent for users who don't need it."""
     import mlx.core as mx
 
-    from vllm_mlx import _mlx_compat
+    from rapid_mlx import _mlx_compat
 
     # Cleanup from prior monkeypatched tests
     if hasattr(mx, "_rapid_mlx_compat_installed"):

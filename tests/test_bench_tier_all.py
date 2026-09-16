@@ -16,7 +16,7 @@ from unittest.mock import patch
 
 import pytest
 
-from vllm_mlx.bench.tier_runner import TierResult, run_tier
+from rapid_mlx.bench.tier_runner import TierResult, run_tier
 
 
 @contextlib.contextmanager
@@ -40,10 +40,10 @@ def patch_serve_only():
 
     with (
         patch(
-            "vllm_mlx.bench.tier_runner._find_free_port_in_range",
+            "rapid_mlx.bench.tier_runner._find_free_port_in_range",
             side_effect=_free_port,
         ),
-        patch("vllm_mlx.bench._server.serve", _fake_serve),
+        patch("rapid_mlx.bench._server.serve", _fake_serve),
     ):
         yield
 
@@ -69,9 +69,9 @@ def test_all_runs_smoke_speed_harness_in_order(patch_serve_only, capsys):
         )
 
     with (
-        patch("vllm_mlx.bench.tier_runner._run_smoke", _smoke_stub),
-        patch("vllm_mlx.bench.tier_runner._run_speed", _speed_stub),
-        patch("vllm_mlx.bench.tier_runner._run_harness", _harness_stub),
+        patch("rapid_mlx.bench.tier_runner._run_smoke", _smoke_stub),
+        patch("rapid_mlx.bench.tier_runner._run_speed", _speed_stub),
+        patch("rapid_mlx.bench.tier_runner._run_harness", _harness_stub),
     ):
         rc = run_tier(model="qwen3.5-4b-4bit", tier="all")
 
@@ -113,9 +113,9 @@ def test_all_aborts_after_smoke_failure(patch_serve_only, capsys):
         )
 
     with (
-        patch("vllm_mlx.bench.tier_runner._run_smoke", _smoke_fail),
-        patch("vllm_mlx.bench.tier_runner._run_speed", _speed_should_not_run),
-        patch("vllm_mlx.bench.tier_runner._run_harness", _harness_should_not_run),
+        patch("rapid_mlx.bench.tier_runner._run_smoke", _smoke_fail),
+        patch("rapid_mlx.bench.tier_runner._run_speed", _speed_should_not_run),
+        patch("rapid_mlx.bench.tier_runner._run_harness", _harness_should_not_run),
     ):
         rc = run_tier(model="qwen3.5-4b-4bit", tier="all")
 
@@ -148,9 +148,9 @@ def test_all_continues_past_speed_failure(patch_serve_only, capsys):
         return TierResult(name="harness", passed=True, duration_s=30.0)
 
     with (
-        patch("vllm_mlx.bench.tier_runner._run_smoke", _smoke_stub),
-        patch("vllm_mlx.bench.tier_runner._run_speed", _speed_fail),
-        patch("vllm_mlx.bench.tier_runner._run_harness", _harness_stub),
+        patch("rapid_mlx.bench.tier_runner._run_smoke", _smoke_stub),
+        patch("rapid_mlx.bench.tier_runner._run_speed", _speed_fail),
+        patch("rapid_mlx.bench.tier_runner._run_harness", _harness_stub),
     ):
         rc = run_tier(model="qwen3.5-4b-4bit", tier="all")
 
@@ -189,13 +189,13 @@ def test_all_boots_server_exactly_once(capsys):
 
     with (
         patch(
-            "vllm_mlx.bench.tier_runner._find_free_port_in_range",
+            "rapid_mlx.bench.tier_runner._find_free_port_in_range",
             side_effect=_free_port,
         ),
-        patch("vllm_mlx.bench._server.serve", _counting_serve),
-        patch("vllm_mlx.bench.tier_runner._run_smoke", _smoke_stub),
-        patch("vllm_mlx.bench.tier_runner._run_speed", _speed_stub),
-        patch("vllm_mlx.bench.tier_runner._run_harness", _harness_stub),
+        patch("rapid_mlx.bench._server.serve", _counting_serve),
+        patch("rapid_mlx.bench.tier_runner._run_smoke", _smoke_stub),
+        patch("rapid_mlx.bench.tier_runner._run_speed", _speed_stub),
+        patch("rapid_mlx.bench.tier_runner._run_harness", _harness_stub),
     ):
         run_tier(model="qwen3.5-4b-4bit", tier="all")
 
@@ -240,10 +240,10 @@ def test_all_with_base_url_skips_server_boot(capsys):
         return _FakeResp()
 
     with (
-        patch("vllm_mlx.bench._server.serve", _counting_serve),
-        patch("vllm_mlx.bench.tier_runner._run_smoke", _smoke_stub),
-        patch("vllm_mlx.bench.tier_runner._run_speed", _speed_stub),
-        patch("vllm_mlx.bench.tier_runner._run_harness", _harness_stub),
+        patch("rapid_mlx.bench._server.serve", _counting_serve),
+        patch("rapid_mlx.bench.tier_runner._run_smoke", _smoke_stub),
+        patch("rapid_mlx.bench.tier_runner._run_speed", _speed_stub),
+        patch("rapid_mlx.bench.tier_runner._run_harness", _harness_stub),
         patch("urllib.request.urlopen", _fake_urlopen),
     ):
         rc = run_tier(
@@ -267,7 +267,7 @@ def test_speed_tier_fails_when_server_returns_zero_tokens(capsys):
     returned passed=True unconditionally after HTTP 200, masking the
     "server unhealthy but route reachable" silent-failure class.
     """
-    from vllm_mlx.bench.tier_runner import _run_speed
+    from rapid_mlx.bench.tier_runner import _run_speed
 
     class _FakeResp:
         def __init__(self, body):

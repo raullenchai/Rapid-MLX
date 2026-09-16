@@ -7,7 +7,7 @@ write-or-patch behaviour against that sandbox. The CLI integration
 tests use ``--dry-run`` so they exercise the dispatcher's argv-parsing
 without writing anything.
 
-See ``vllm_mlx/launch/`` for the modules under test.
+See ``rapid_mlx/launch/`` for the modules under test.
 """
 
 from __future__ import annotations
@@ -21,7 +21,7 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-from vllm_mlx.launch import (
+from rapid_mlx.launch import (
     ADAPTERS,
     _common,
     claude_code,
@@ -29,7 +29,7 @@ from vllm_mlx.launch import (
     continue_dev,
     cursor,
 )
-from vllm_mlx.launch import cli as launch_cli
+from rapid_mlx.launch import cli as launch_cli
 
 # --------------------------------------------------------------------
 # Shared fixture: pin Path.home() to a per-test tmp_path so adapter
@@ -895,7 +895,7 @@ class TestLaunchCommand:
 
 
 # --------------------------------------------------------------------
-# Top-level CLI argparse integration — invoke `python -m vllm_mlx.cli
+# Top-level CLI argparse integration — invoke `python -m rapid_mlx.cli
 # launch --help` via subprocess so we exercise the wiring from
 # main() rather than the dispatcher in isolation. We don't run a real
 # patch in subprocess (no fake_home control); the unit tests above
@@ -912,7 +912,7 @@ def test_launch_help_text_is_registered(tmp_path):
     # We don't actually run main() — just walk its argparse tree.
     parser = argparse.ArgumentParser()
     sub = parser.add_subparsers(dest="command")
-    from vllm_mlx.launch.cli import register
+    from rapid_mlx.launch.cli import register
 
     register(sub)
     # Choices populated.
@@ -927,7 +927,7 @@ def test_launch_help_lists_canonical_name_with_alias_noted():
     notes the ``continue`` alias (#2082)."""
     parser = argparse.ArgumentParser()
     sub = parser.add_subparsers(dest="command")
-    from vllm_mlx.launch.cli import register
+    from rapid_mlx.launch.cli import register
 
     register(sub)
     # argparse wraps help text at arbitrary columns; normalize whitespace
@@ -945,7 +945,7 @@ def test_launch_port_rejects_out_of_range(bad_port):
     parent had already printed "Started" and written a PID."""
     parser = argparse.ArgumentParser()
     sub = parser.add_subparsers(dest="command")
-    from vllm_mlx.launch.cli import register
+    from rapid_mlx.launch.cli import register
 
     register(sub)
     with pytest.raises(SystemExit):
@@ -955,7 +955,7 @@ def test_launch_port_rejects_out_of_range(bad_port):
 def test_launch_port_accepts_in_range():
     parser = argparse.ArgumentParser()
     sub = parser.add_subparsers(dest="command")
-    from vllm_mlx.launch.cli import register
+    from rapid_mlx.launch.cli import register
 
     register(sub)
     args = parser.parse_args(["launch", "cline", "--port", "8000"])
@@ -966,7 +966,7 @@ def test_launch_rejects_api_key_on_command_line():
     """Secrets for launch must travel via RAPID_MLX_API_KEY, never argv."""
     parser = argparse.ArgumentParser()
     sub = parser.add_subparsers(dest="command")
-    from vllm_mlx.launch.cli import register
+    from rapid_mlx.launch.cli import register
 
     register(sub)
     with pytest.raises(SystemExit):

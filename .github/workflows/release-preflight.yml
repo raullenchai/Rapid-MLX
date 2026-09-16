@@ -287,7 +287,7 @@ jobs:
     # G11 — auto-routing escape-hatch registry. Catches the class of
     # bugs in #393 (no --no-mllm), #400 (silent flag drop), #404 (no
     # user override for hardware probe). Requires MLX because the test
-    # introspects vllm_mlx.engine / vllm_mlx.server signatures.
+    # introspects rapid_mlx.engine / rapid_mlx.server signatures.
     needs: bind-bump-pr
     runs-on: macos-14
     steps:

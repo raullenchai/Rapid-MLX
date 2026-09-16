@@ -4,11 +4,17 @@ import copy
 import json
 from pathlib import Path
 
-from vllm_mlx.model_aliases import list_profiles
-from vllm_mlx.tool_parsers import ToolParserManager
-from vllm_mlx.utils.chat_template import apply_chat_template
-from vllm_mlx.utils.deepseek_v4_0731 import ASSISTANT, BOS, THINK_END, THINK_START, USER
-from vllm_mlx.utils.tokenizer import (
+from rapid_mlx.model_aliases import list_profiles
+from rapid_mlx.tool_parsers import ToolParserManager
+from rapid_mlx.utils.chat_template import apply_chat_template
+from rapid_mlx.utils.deepseek_v4_0731 import (
+    ASSISTANT,
+    BOS,
+    THINK_END,
+    THINK_START,
+    USER,
+)
+from rapid_mlx.utils.tokenizer import (
     _deepseek_v4_quantization_override,
     _special_token_text,
 )

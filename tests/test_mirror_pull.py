@@ -1,4 +1,4 @@
-"""Tests for ``vllm_mlx._mirror.download_with_mirror_fallback``.
+"""Tests for ``rapid_mlx._mirror.download_with_mirror_fallback``.
 
 Covers the seven scenarios called out in the PR #649 spec:
 
@@ -34,7 +34,7 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-from vllm_mlx import _mirror
+from rapid_mlx import _mirror
 
 
 def _sidecar_part_path(cache_root: Path, owner_repo: str, fname: str) -> Path:
@@ -2627,7 +2627,7 @@ def test_cached_hf_blob_symlink_skips_rehash(
     # we'd get a successful "cached". Either way the test only cares
     # that the hasher was NOT used — we instrument hashlib.sha256 to
     # detect any new hasher created during the call.
-    import vllm_mlx._mirror as m
+    import rapid_mlx._mirror as m
 
     router = _UrlRouter()
     router.add(
@@ -2894,7 +2894,7 @@ def test_serve_command_calls_ensure_model_downloaded():
     a bytecode-level wiring assertion that requires both the LOAD and
     a CALL following it.
     """
-    from vllm_mlx import cli
+    from rapid_mlx import cli
 
     assert _function_calls_global(cli.serve_command, "_ensure_model_downloaded"), (
         "serve_command must CALL _ensure_model_downloaded (not just "

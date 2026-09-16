@@ -10,8 +10,8 @@ import json
 
 import pytest
 
-from vllm_mlx.api.models import ResponseFormat, ResponseFormatJsonSchema
-from vllm_mlx.api.tool_calling import (
+from rapid_mlx.api.models import ResponseFormat, ResponseFormatJsonSchema
+from rapid_mlx.api.tool_calling import (
     build_json_system_prompt,
     extract_json_from_text,
     parse_json_output,
@@ -293,7 +293,7 @@ class TestInjectJsonInstruction:
 
     def test_inject_new_system_message(self):
         """Test injecting instruction when no system message exists."""
-        from vllm_mlx.server import _inject_json_instruction
+        from rapid_mlx.server import _inject_json_instruction
 
         messages = [{"role": "user", "content": "Hello"}]
         result = _inject_json_instruction(messages, "Return JSON only")
@@ -305,7 +305,7 @@ class TestInjectJsonInstruction:
 
     def test_append_to_existing_system(self):
         """Test appending to existing system message."""
-        from vllm_mlx.server import _inject_json_instruction
+        from rapid_mlx.server import _inject_json_instruction
 
         messages = [
             {"role": "system", "content": "You are helpful."},
@@ -320,7 +320,7 @@ class TestInjectJsonInstruction:
 
     def test_does_not_modify_original(self):
         """Test that original messages are not modified."""
-        from vllm_mlx.server import _inject_json_instruction
+        from rapid_mlx.server import _inject_json_instruction
 
         original = [{"role": "user", "content": "Hello"}]
         original_content = original[0]["content"]
@@ -396,12 +396,12 @@ class TestStripBackslashBeforeUnicode:
     """
 
     def test_strips_backslash_before_cjk(self):
-        from vllm_mlx.routes.chat import _strip_backslash_before_unicode
+        from rapid_mlx.routes.chat import _strip_backslash_before_unicode
 
         assert _strip_backslash_before_unicode("\\빠\\르\\게") == "빠르게"
 
     def test_preserves_valid_ascii_escapes(self):
-        from vllm_mlx.routes.chat import _strip_backslash_before_unicode
+        from rapid_mlx.routes.chat import _strip_backslash_before_unicode
 
         # ``\\n`` decodes to a newline; the helper sees an actual newline
         # (non-ASCII codepoint? no — newline is ASCII), so it must remain
@@ -410,7 +410,7 @@ class TestStripBackslashBeforeUnicode:
         assert _strip_backslash_before_unicode("path\\\\to") == "path\\\\to"
 
     def test_recurses_into_dict_and_list(self):
-        from vllm_mlx.routes.chat import _strip_backslash_before_unicode
+        from rapid_mlx.routes.chat import _strip_backslash_before_unicode
 
         nested = {
             "title": "\\안\\녕",
@@ -426,7 +426,7 @@ class TestStripBackslashBeforeUnicode:
         """Codex review round 1 finding: keys can also carry spurious
         backslashes (``lm-format-enforcer`` makes no distinction between
         JSON keys and values). The cleaner must strip both."""
-        from vllm_mlx.routes.chat import _strip_backslash_before_unicode
+        from rapid_mlx.routes.chat import _strip_backslash_before_unicode
 
         # Key with backslashes before CJK; value also dirty.
         assert _strip_backslash_before_unicode({"\\제\\목": "\\값"}) == {"제목": "값"}
@@ -436,14 +436,14 @@ class TestStripBackslashBeforeUnicode:
         }
 
     def test_non_string_scalars_pass_through(self):
-        from vllm_mlx.routes.chat import _strip_backslash_before_unicode
+        from rapid_mlx.routes.chat import _strip_backslash_before_unicode
 
         assert _strip_backslash_before_unicode(42) == 42
         assert _strip_backslash_before_unicode(True) is True
         assert _strip_backslash_before_unicode(None) is None
 
     def test_emoji_with_surrogate_pair(self):
-        from vllm_mlx.routes.chat import _strip_backslash_before_unicode
+        from rapid_mlx.routes.chat import _strip_backslash_before_unicode
 
         # Emoji past U+FFFF — the regex matches by codepoint, not by
         # UTF-16 surrogate, so the single backslash before the emoji
@@ -457,9 +457,9 @@ class TestStripBackslashBeforeUnicode:
         and log a warning."""
         import logging
 
-        from vllm_mlx.routes.chat import _strip_backslash_before_unicode
+        from rapid_mlx.routes.chat import _strip_backslash_before_unicode
 
-        with caplog.at_level(logging.WARNING, logger="vllm_mlx.routes.chat"):
+        with caplog.at_level(logging.WARNING, logger="rapid_mlx.routes.chat"):
             cleaned = _strip_backslash_before_unicode({"\\한": 1, "한": 2})
         assert cleaned == {"한": 1}
         assert any("key collision" in rec.message for rec in caplog.records)
@@ -476,8 +476,8 @@ class TestStripBackslashBeforeUnicode:
         getting accidentally dropped."""
         import json as _json
 
-        from vllm_mlx.api.tool_calling import parse_json_output
-        from vllm_mlx.routes.chat import _strip_backslash_before_unicode
+        from rapid_mlx.api.tool_calling import parse_json_output
+        from rapid_mlx.routes.chat import _strip_backslash_before_unicode
 
         # Simulated model output: looks like JSON, but every CJK char
         # carries a leading backslash (lm-format-enforcer behavior).

@@ -5,7 +5,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from vllm_mlx.cli import _available_models_json_payload
+from rapid_mlx.cli import _available_models_json_payload
 
 ROOT = Path(__file__).resolve().parents[1]
 START = "<!-- image-model-matrix:start -->"

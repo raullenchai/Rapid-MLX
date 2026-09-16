@@ -44,8 +44,8 @@ from pathlib import Path
 
 import pytest
 
-from vllm_mlx.agents import get_profile
-from vllm_mlx.agents.testing import (
+from rapid_mlx.agents import get_profile
+from rapid_mlx.agents.testing import (
     E2E_CHAT_EXPECTED,
     E2E_FIRST_LINE,
     TestStatus,
@@ -304,7 +304,7 @@ def test_an_unremovable_workspace_is_reported_not_swallowed(caplog):
     nothing.
     """
     with (
-        caplog.at_level(logging.WARNING, logger="vllm_mlx.agents.testing"),
+        caplog.at_level(logging.WARNING, logger="rapid_mlx.agents.testing"),
         _e2e_workspace() as workdir,
     ):
         _lock_and_release(workdir)

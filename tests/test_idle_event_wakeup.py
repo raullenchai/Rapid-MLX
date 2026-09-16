@@ -21,7 +21,7 @@ pytestmark = pytest.mark.requires_mlx
 import asyncio
 import time
 
-from vllm_mlx.engine_core import EngineConfig
+from rapid_mlx.engine_core import EngineConfig
 
 
 def test_default_step_interval_is_seconds_not_milliseconds():
@@ -86,7 +86,7 @@ async def test_engine_core_creates_idle_event_in_loop():
     # Build a barely-functional EngineCore that we can poke at the event
     # without actually running the full loop. We need to dodge the
     # ModelOwnership registry, which lives in the registry module.
-    from vllm_mlx.engine_core import EngineCore
+    from rapid_mlx.engine_core import EngineCore
 
     fake_model = MagicMock()
     fake_tokenizer = MagicMock()

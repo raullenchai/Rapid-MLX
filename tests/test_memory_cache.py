@@ -14,7 +14,7 @@ try:
 except ImportError:
     _has_mlx_lm = False
 
-from vllm_mlx.memory_cache import (
+from rapid_mlx.memory_cache import (
     CacheStats,
     MemoryAwarePrefixCache,
     MemoryCacheConfig,
@@ -66,7 +66,7 @@ class TestMemoryCacheConfig:
 
     def test_compute_memory_limit_auto(self):
         with patch(
-            "vllm_mlx.memory_cache._get_available_memory",
+            "rapid_mlx.memory_cache._get_available_memory",
             return_value=8 * 1024 * 1024 * 1024,  # 8GB
         ):
             config = MemoryCacheConfig(max_memory_percent=0.25)
@@ -75,7 +75,7 @@ class TestMemoryCacheConfig:
 
     def test_compute_memory_limit_fallback(self):
         with patch(
-            "vllm_mlx.memory_cache._get_available_memory",
+            "rapid_mlx.memory_cache._get_available_memory",
             return_value=0,  # Detection failed
         ):
             config = MemoryCacheConfig(max_memory_percent=0.25)
@@ -540,7 +540,7 @@ class TestCacheListTrimmability:
         import mlx.core as mx
         from mlx_lm.models.cache import CacheList, RotatingKVCache
 
-        from vllm_mlx.models.deepseek_v4_cache import PoolingCache
+        from rapid_mlx.models.deepseek_v4_cache import PoolingCache
 
         rotating = RotatingKVCache(max_size=128)
         kv = mx.zeros((1, 1, 8, 4))
@@ -571,7 +571,7 @@ class TestCacheListTrimmability:
         import mlx.core as mx
         from mlx_lm.models.cache import CacheList, RotatingKVCache
 
-        from vllm_mlx.models.deepseek_v4_cache import PoolingCache
+        from rapid_mlx.models.deepseek_v4_cache import PoolingCache
 
         rotating = RotatingKVCache(max_size=128)
         kv = mx.zeros((1, 1, 8, 4))

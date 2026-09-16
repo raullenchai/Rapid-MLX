@@ -10,7 +10,7 @@ prompt: the gate only faults a candidate the quantized cache made worse than its
 own full-precision self. (The baseline dtype is the model's native KV dtype —
 usually bf16 or fp16 — and is detected and reported, not assumed.)
 
-Today, ``vllm_mlx/kv_cache_dtype.py`` decides whether int4/int8 KV is "safe" via
+Today, ``rapid_mlx/kv_cache_dtype.py`` decides whether int4/int8 KV is "safe" via
 a hand-written empirical safelist. This harness produces the *measured* signal
 that list currently lacks.
 
@@ -25,9 +25,9 @@ it prints a full report + PASS/FAIL but exits ``0`` regardless. Pass
 ``--enforce`` to make a FAIL exit non-zero (for a future promotion to a blocking
 gate once thresholds are calibrated on fleet data).
 
-All *scoring* lives in the pure, hermetically-tested :mod:`vllm_mlx.kv_quant_gate`;
+All *scoring* lives in the pure, hermetically-tested :mod:`rapid_mlx.kv_quant_gate`;
 this file only drives inference and prints. Chip-tier gating of the optional NIAH
-metric uses :mod:`vllm_mlx.chip_tier`.
+metric uses :mod:`rapid_mlx.chip_tier`.
 
 Usage:
     python -m scripts.kv_quant_quality_gate qwen3.5-4b-4bit
@@ -50,9 +50,9 @@ import numpy as np
 # the repo root on the path.
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from vllm_mlx.chip_tier import classify_chip_tier, detect_chip_tier  # noqa: E402
-from vllm_mlx.kv_cache_dtype import dtype_to_quantization_bits  # noqa: E402
-from vllm_mlx.kv_quant_gate import (  # noqa: E402
+from rapid_mlx.chip_tier import classify_chip_tier, detect_chip_tier  # noqa: E402
+from rapid_mlx.kv_cache_dtype import dtype_to_quantization_bits  # noqa: E402
+from rapid_mlx.kv_quant_gate import (  # noqa: E402
     AgreementResult,
     LogitDivergence,
     build_report,
@@ -61,7 +61,7 @@ from vllm_mlx.kv_quant_gate import (  # noqa: E402
     logit_divergence,
     structured_output_retention,
 )
-from vllm_mlx.quantized_batch_cache import (  # noqa: E402
+from rapid_mlx.quantized_batch_cache import (  # noqa: E402
     probe_kv_head_dims,
     resolve_kv_quantization,
 )
@@ -231,7 +231,7 @@ def _kv_cache_bytes(cache) -> int:
     metadata — no lazy-eval spike) over ALL of them WITHOUT trimming to the used
     offset.
 
-    Deliberately NOT ``vllm_mlx.memory_cache.estimate_kv_cache_memory``: that
+    Deliberately NOT ``rapid_mlx.memory_cache.estimate_kv_cache_memory``: that
     helper trims a ``KVCache`` to its used ``offset`` (via ``.state``) but counts
     a ``QuantizedKVCache``'s full padded buffer, which would skew a differential
     bf16-vs-quantized comparison. Both caches here reach the SAME offset and the
@@ -464,7 +464,7 @@ def run_gate(
 
     from mlx_lm import load
 
-    from vllm_mlx.model_aliases import resolve_model
+    from rapid_mlx.model_aliases import resolve_model
 
     hf_path = resolve_model(model_arg)
     print(f"[kv-quant-gate] loading {model_arg} -> {hf_path} ...", file=sys.stderr)
@@ -525,7 +525,7 @@ def run_gate(
 
     total_ram_gb: float | None
     try:
-        from vllm_mlx.optimizations import get_system_memory_gb
+        from rapid_mlx.optimizations import get_system_memory_gb
 
         total_ram_gb = get_system_memory_gb()
     except Exception:
@@ -639,7 +639,7 @@ def run_gate(
                 file=sys.stderr,
             )
             continue
-        from vllm_mlx.kv_quant_gate import memory_delta
+        from rapid_mlx.kv_quant_gate import memory_delta
 
         niah = _maybe_run_niah(
             model,

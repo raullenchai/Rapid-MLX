@@ -5,9 +5,9 @@ import json
 import time
 from unittest.mock import MagicMock
 
-from vllm_mlx.service.postprocessor import StreamingPostProcessor
-from vllm_mlx.tool_parsers import AutoToolParser, LfmToolParser, ToolParserManager
-from vllm_mlx.tool_parsers.lfm_tool_parser import parse_lfm_tool_calls
+from rapid_mlx.service.postprocessor import StreamingPostProcessor
+from rapid_mlx.tool_parsers import AutoToolParser, LfmToolParser, ToolParserManager
+from rapid_mlx.tool_parsers.lfm_tool_parser import parse_lfm_tool_calls
 
 
 class TestLfmRegistration:

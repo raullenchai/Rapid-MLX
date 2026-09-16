@@ -7,9 +7,9 @@ mx = pytest.importorskip("mlx.core")
 pytest.importorskip("mlx_lm")
 pytestmark = pytest.mark.requires_mlx
 
-import vllm_mlx.models.qwen4_exp as qwen4_exp
-from vllm_mlx.kernels import qsa_indexed_splitk
-from vllm_mlx.models.qwen4_exp import QSAAttention, TextModelArgs
+import rapid_mlx.models.qwen4_exp as qwen4_exp
+from rapid_mlx.kernels import qsa_indexed_splitk
+from rapid_mlx.models.qwen4_exp import QSAAttention, TextModelArgs
 
 
 def _args(**overrides) -> TextModelArgs:

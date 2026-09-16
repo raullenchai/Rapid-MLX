@@ -18,11 +18,11 @@ from pathlib import Path
 
 import pytest
 
-from vllm_mlx.cli import build_parser
-from vllm_mlx.headless_service import common
-from vllm_mlx.headless_service import install as ins_mod
-from vllm_mlx.headless_service.config import SCHEMA_VERSION, ServiceConfig
-from vllm_mlx.headless_service.plist import (
+from rapid_mlx.cli import build_parser
+from rapid_mlx.headless_service import common
+from rapid_mlx.headless_service import install as ins_mod
+from rapid_mlx.headless_service.config import SCHEMA_VERSION, ServiceConfig
+from rapid_mlx.headless_service.plist import (
     build_plist_dict,
     parse_plist,
     serialize_plist,
@@ -122,7 +122,7 @@ def test_service_macos_guard():
         service_command = "status"
 
     # Simulate non-darwin by forcing sys.platform in the module check.
-    import vllm_mlx.headless_service.cli as svc_cli
+    import rapid_mlx.headless_service.cli as svc_cli
 
     real_platform = sys.platform
     try:
@@ -148,9 +148,9 @@ def test_service_macos_guard():
 def test_new_service_verbs_dispatch(monkeypatch, verb, module_name, handler_name):
     import importlib
 
-    import vllm_mlx.headless_service.cli as svc_cli
+    import rapid_mlx.headless_service.cli as svc_cli
 
-    module = importlib.import_module(f"vllm_mlx.headless_service.{module_name}")
+    module = importlib.import_module(f"rapid_mlx.headless_service.{module_name}")
     called = []
     monkeypatch.setattr(sys, "platform", "darwin")
     monkeypatch.setattr(module, handler_name, lambda args: called.append(args) or 0)
@@ -333,7 +333,7 @@ def test_uninstall_dry_run_prints_removal_and_touches_nothing(monkeypatch, capsy
 
 
 def test_status_json_shape(monkeypatch, capsys):
-    from vllm_mlx.headless_service import status as st
+    from rapid_mlx.headless_service import status as st
 
     monkeypatch.setattr(st, "_launchctl_probe", lambda *_a, **_k: (None, None))
     monkeypatch.setattr(st, "_read_installed_plist", staticmethod(lambda _label: None))
@@ -427,7 +427,7 @@ class _HttpResponder:
     ],
 )
 def test_readyz_ready_semantics(monkeypatch, status, body, expected):
-    from vllm_mlx.headless_service.install import _readyz_ready
+    from rapid_mlx.headless_service.install import _readyz_ready
 
     srv = _HttpResponder(status, body)
     try:
@@ -526,7 +526,7 @@ def test_wait_qualified_returns_false_when_model_is_not_ready(monkeypatch):
 
 @pytest.mark.parametrize("bad", ["../evil", "a b", "x/y", "x;rm", "$(x)", ""])
 def test_validate_label_rejects_unsafe(bad):
-    from vllm_mlx.headless_service.common import validate_label
+    from rapid_mlx.headless_service.common import validate_label
 
     with pytest.raises(ValueError):
         validate_label(bad)
@@ -534,13 +534,13 @@ def test_validate_label_rejects_unsafe(bad):
 
 @pytest.mark.parametrize("good", ["com.rapidmlx.server", "com.example-a1.b", "simple"])
 def test_validate_label_accepts_safe(good):
-    from vllm_mlx.headless_service.common import validate_label
+    from rapid_mlx.headless_service.common import validate_label
 
     assert validate_label(good) == good
 
 
 def test_service_dispatch_rejects_bad_label():
-    from vllm_mlx.headless_service.cli import service_command
+    from rapid_mlx.headless_service.cli import service_command
 
     class FakeArgs:
         command = "service"
@@ -561,11 +561,11 @@ def test_service_dispatch_rejects_bad_label():
 
 def test_service_dispatch_good_label_iterates_each_subcommand(monkeypatch):
     """Dispatch forwards to the right *_command for each subcommand."""
-    import vllm_mlx.headless_service.cli as svc
-    from vllm_mlx.headless_service import install as disp_ins
-    from vllm_mlx.headless_service import logs as disp_logs
-    from vllm_mlx.headless_service import restart as disp_rest
-    from vllm_mlx.headless_service import status as disp_st
+    import rapid_mlx.headless_service.cli as svc
+    from rapid_mlx.headless_service import install as disp_ins
+    from rapid_mlx.headless_service import logs as disp_logs
+    from rapid_mlx.headless_service import restart as disp_rest
+    from rapid_mlx.headless_service import status as disp_st
 
     seen = {}
 
@@ -600,7 +600,7 @@ def test_service_dispatch_good_label_iterates_each_subcommand(monkeypatch):
 
 
 def test_service_dispatch_unknown_subcommand_errors(monkeypatch, capsys):
-    import vllm_mlx.headless_service.cli as svc
+    import rapid_mlx.headless_service.cli as svc
 
     class FakeArgs:
         label = None
@@ -628,7 +628,7 @@ def test_service_dispatch_unknown_subcommand_errors(monkeypatch, capsys):
 
 def test_resolve_executable_requires_service_user_binary(monkeypatch):
     """The daemon must run the SERVICE account's binary, not the operator's."""
-    from vllm_mlx.headless_service.install import resolve_executable
+    from rapid_mlx.headless_service.install import resolve_executable
 
     # No /Users/serveuser/.local/bin/rapid-mlx exists on this machine.
     with pytest.raises(ins_mod.ServiceInstallError, match="no Rapid-MLX binary"):
@@ -636,20 +636,20 @@ def test_resolve_executable_requires_service_user_binary(monkeypatch):
 
 
 def test_serve_argv_splices_module_invocation(plist_kwargs):
-    """A ``-m vllm_mlx`` executable must be separate argv entries, never one
+    """A ``-m rapid_mlx`` executable must be separate argv entries, never one
     space-joined argv[0] (which launchd would fail to exec)."""
-    from vllm_mlx.headless_service.plist import serve_argv
+    from rapid_mlx.headless_service.plist import serve_argv
 
-    argv = serve_argv(["/opt/venv/bin/python", "-m", "vllm_mlx"], "qwen3.5-4b-4bit")
+    argv = serve_argv(["/opt/venv/bin/python", "-m", "rapid_mlx"], "qwen3.5-4b-4bit")
     assert argv[0] == "/opt/venv/bin/python"
     assert argv[1] == "-m"
-    assert argv[2] == "vllm_mlx"
+    assert argv[2] == "rapid_mlx"
 
 
 def test_install_rollback_removes_plist_on_readiness_failure(monkeypatch, tmp_path):
     """A failed readiness wait must remove the persistent plist so nothing
     auto-starts on reboot (the 'rolled back' guarantee)."""
-    import vllm_mlx.headless_service.install as ins
+    import rapid_mlx.headless_service.install as ins
 
     _valid_user_monkeypatch(monkeypatch)
     monkeypatch.setattr(ins, "_port_busy", staticmethod(lambda h, p: False))
@@ -700,7 +700,7 @@ class _FakeResult:
 
 def test_log_paths_from_installed_plist(monkeypatch, plist_kwargs, tmp_path):
     """Prefers the plist-declared StandardOut/StandardError paths."""
-    import vllm_mlx.headless_service.logs as logs
+    import rapid_mlx.headless_service.logs as logs
 
     plist = tmp_path / "com.rapidmlx.server.plist"
     plist.write_bytes(serialize_plist(build_plist_dict(**plist_kwargs)))
@@ -712,7 +712,7 @@ def test_log_paths_from_installed_plist(monkeypatch, plist_kwargs, tmp_path):
 
 def test_log_paths_fallback_to_service_default(monkeypatch, tmp_path):
     """No plist → fall back to the service account's default log dir."""
-    import vllm_mlx.headless_service.logs as logs
+    import rapid_mlx.headless_service.logs as logs
 
     monkeypatch.setattr(
         ins_mod, "_plist_path", staticmethod(lambda _l: tmp_path / "missing.plist")
@@ -729,7 +729,7 @@ def test_log_paths_fallback_to_service_default(monkeypatch, tmp_path):
 
 def test_log_paths_returns_none_when_unknown(monkeypatch, tmp_path):
     """No plist and no resolvable service default → None (→ hard error)."""
-    import vllm_mlx.headless_service.logs as logs
+    import rapid_mlx.headless_service.logs as logs
 
     monkeypatch.setattr(
         ins_mod, "_plist_path", staticmethod(lambda _l: tmp_path / "missing.plist")
@@ -739,7 +739,7 @@ def test_log_paths_returns_none_when_unknown(monkeypatch, tmp_path):
 
 
 def test_logs_no_paths_errors(monkeypatch, capsys, tmp_path):
-    import vllm_mlx.headless_service.logs as logs
+    import rapid_mlx.headless_service.logs as logs
 
     monkeypatch.setattr(logs, "_log_paths", staticmethod(lambda *a: None))
     code = logs.logs_command(_ns())
@@ -749,7 +749,7 @@ def test_logs_no_paths_errors(monkeypatch, capsys, tmp_path):
 
 def _patched_logged_files(monkeypatch, tmp_path):
     """Point _log_paths at two temp files; record subprocess.run calls."""
-    import vllm_mlx.headless_service.logs as logs
+    import rapid_mlx.headless_service.logs as logs
 
     out_f = tmp_path / "out.log"
     err_f = tmp_path / "err.log"
@@ -771,7 +771,7 @@ def _patched_logged_files(monkeypatch, tmp_path):
 
 
 def test_logs_tails_both_files(monkeypatch, tmp_path, capsys):
-    import vllm_mlx.headless_service.logs as logs
+    import rapid_mlx.headless_service.logs as logs
 
     _, _, calls = _patched_logged_files(monkeypatch, tmp_path)
     code = logs.logs_command(_ns())
@@ -785,7 +785,7 @@ def test_logs_tails_both_files(monkeypatch, tmp_path, capsys):
 
 
 def test_logs_skips_missing_log_file(monkeypatch, tmp_path, capsys):
-    import vllm_mlx.headless_service.logs as logs
+    import rapid_mlx.headless_service.logs as logs
 
     out_f, err_f, calls = _patched_logged_files(monkeypatch, tmp_path)
     # Make stderr file absent → "not present" note, only one tail call.
@@ -799,7 +799,7 @@ def test_logs_skips_missing_log_file(monkeypatch, tmp_path, capsys):
 def test_logs_tail_oserror(monkeypatch, tmp_path, capsys):
     import subprocess as sp
 
-    import vllm_mlx.headless_service.logs as logs
+    import rapid_mlx.headless_service.logs as logs
 
     out_f, err_f, _ = _patched_logged_files(monkeypatch, tmp_path)
 
@@ -813,7 +813,7 @@ def test_logs_tail_oserror(monkeypatch, tmp_path, capsys):
 
 
 def test_logs_follow_streams(monkeypatch, tmp_path, capsys):
-    import vllm_mlx.headless_service.logs as logs
+    import rapid_mlx.headless_service.logs as logs
 
     _, _, calls = _patched_logged_files(monkeypatch, tmp_path)
     code = logs.logs_command(_ns(follow=True))
@@ -830,7 +830,7 @@ def test_logs_follow_streams(monkeypatch, tmp_path, capsys):
 
 
 def test_declared_bind_parses_plist(monkeypatch, plist_kwargs, tmp_path):
-    import vllm_mlx.headless_service.restart as rest
+    import rapid_mlx.headless_service.restart as rest
 
     plist = tmp_path / "com.rapidmlx.server.plist"
     plist.write_bytes(serialize_plist(build_plist_dict(**plist_kwargs)))
@@ -839,7 +839,7 @@ def test_declared_bind_parses_plist(monkeypatch, plist_kwargs, tmp_path):
 
 
 def test_declared_bind_none_when_missing_plist(monkeypatch, tmp_path):
-    import vllm_mlx.headless_service.restart as rest
+    import rapid_mlx.headless_service.restart as rest
 
     monkeypatch.setattr(
         ins_mod, "_plist_path", staticmethod(lambda _l: tmp_path / "nope.plist")
@@ -848,7 +848,7 @@ def test_declared_bind_none_when_missing_plist(monkeypatch, tmp_path):
 
 
 def test_declared_bind_none_on_bad_plist(monkeypatch, tmp_path):
-    import vllm_mlx.headless_service.restart as rest
+    import rapid_mlx.headless_service.restart as rest
 
     plist = tmp_path / "com.rapidmlx.server.plist"
     plist.write_bytes(b"<not a plist")
@@ -857,7 +857,7 @@ def test_declared_bind_none_on_bad_plist(monkeypatch, tmp_path):
 
 
 def test_restart_dry_run(monkeypatch, capsys):
-    import vllm_mlx.headless_service.restart as rest
+    import rapid_mlx.headless_service.restart as rest
 
     monkeypatch.setattr(rest, "_declared_bind", staticmethod(lambda _l: None))
     monkeypatch.setattr(rest, "_kickstart_status", staticmethod(lambda _l: 0))
@@ -867,7 +867,7 @@ def test_restart_dry_run(monkeypatch, capsys):
 
 
 def test_restart_not_registered_errors(monkeypatch, capsys):
-    import vllm_mlx.headless_service.restart as rest
+    import rapid_mlx.headless_service.restart as rest
 
     monkeypatch.setattr(rest, "_declared_bind", staticmethod(lambda _l: None))
     monkeypatch.setattr(rest, "_kickstart_status", staticmethod(lambda _l: 1))
@@ -877,7 +877,7 @@ def test_restart_not_registered_errors(monkeypatch, capsys):
 
 
 def test_restart_happy_path(monkeypatch, capsys):
-    import vllm_mlx.headless_service.restart as rest
+    import rapid_mlx.headless_service.restart as rest
 
     monkeypatch.setattr(
         rest, "_declared_bind", staticmethod(lambda _l: ("127.0.0.1", 8123))
@@ -898,7 +898,7 @@ def test_restart_happy_path(monkeypatch, capsys):
 
 
 def test_restart_kickstart_failure(monkeypatch, capsys):
-    import vllm_mlx.headless_service.restart as rest
+    import rapid_mlx.headless_service.restart as rest
 
     monkeypatch.setattr(rest, "_declared_bind", staticmethod(lambda _l: None))
     monkeypatch.setattr(rest, "_kickstart_status", staticmethod(lambda _l: 0))
@@ -913,7 +913,7 @@ def test_restart_kickstart_failure(monkeypatch, capsys):
 
 
 def test_restart_ready_failure(monkeypatch, capsys):
-    import vllm_mlx.headless_service.restart as rest
+    import rapid_mlx.headless_service.restart as rest
 
     monkeypatch.setattr(rest, "_declared_bind", staticmethod(lambda _l: None))
     monkeypatch.setattr(rest, "_kickstart_status", staticmethod(lambda _l: 0))
@@ -925,7 +925,7 @@ def test_restart_ready_failure(monkeypatch, capsys):
 
 
 def test_kickstart_status_subprocess_error(monkeypatch):
-    import vllm_mlx.headless_service.restart as rest
+    import rapid_mlx.headless_service.restart as rest
 
     def _boom(argv, **kwargs):
         raise OSError("no launchctl")
@@ -954,7 +954,7 @@ def _fake_launchctl_print(pid=None, last_exit=None, state=None, runs=None):
 
 
 def test_parse_pid_and_last_exit():
-    import vllm_mlx.headless_service.status as st
+    import rapid_mlx.headless_service.status as st
 
     out = _fake_launchctl_print(pid=4242, last_exit=0)
     assert st._parse_pid(out) == 4242
@@ -970,7 +970,7 @@ def test_parse_pid_and_last_exit():
 
 def test_collect_status_full_branch(monkeypatch, plist_kwargs, tmp_path):
     """Registered + running + plist present + endpoint healthy."""
-    import vllm_mlx.headless_service.status as st
+    import rapid_mlx.headless_service.status as st
 
     monkeypatch.setattr(
         st,
@@ -1039,7 +1039,7 @@ def test_collect_status_full_branch(monkeypatch, plist_kwargs, tmp_path):
 
 
 def test_status_command_json_and_exit_codes(monkeypatch, capsys):
-    import vllm_mlx.headless_service.status as st
+    import rapid_mlx.headless_service.status as st
 
     monkeypatch.setattr(
         st,
@@ -1077,7 +1077,7 @@ def test_status_command_json_and_exit_codes(monkeypatch, capsys):
 
 
 def test_listener_pid_probe_distinguishes_owner_mismatch_and_errors(monkeypatch):
-    import vllm_mlx.headless_service.status as st
+    import rapid_mlx.headless_service.status as st
 
     monkeypatch.setattr(st.Path, "is_file", lambda _self: True)
     monkeypatch.setattr(
@@ -1109,7 +1109,7 @@ def test_listener_pid_probe_distinguishes_owner_mismatch_and_errors(monkeypatch)
 
 
 def test_listener_pid_probe_resolves_legacy_hostname_only_when_enabled(monkeypatch):
-    import vllm_mlx.headless_service.status as st
+    import rapid_mlx.headless_service.status as st
 
     monkeypatch.setattr(st.Path, "is_file", lambda _self: True)
     monkeypatch.setattr(
@@ -1135,7 +1135,7 @@ def test_listener_pid_probe_resolves_legacy_hostname_only_when_enabled(monkeypat
 
 
 def test_collect_status_does_not_probe_unattributed_endpoint(monkeypatch):
-    import vllm_mlx.headless_service.status as st
+    import rapid_mlx.headless_service.status as st
 
     monkeypatch.setattr(
         st,
@@ -1181,8 +1181,8 @@ def test_collect_status_does_not_probe_unattributed_endpoint(monkeypatch):
 
 
 def test_collect_status_records_invalid_legacy_definition(monkeypatch):
-    import vllm_mlx.headless_service.definition as definition
-    import vllm_mlx.headless_service.status as st
+    import rapid_mlx.headless_service.definition as definition
+    import rapid_mlx.headless_service.status as st
 
     monkeypatch.setattr(st, "_launchctl_probe", lambda *_a, **_k: (None, None))
     monkeypatch.setattr(
@@ -1200,9 +1200,9 @@ def test_collect_status_records_invalid_legacy_definition(monkeypatch):
 
 
 def test_collect_status_prefers_valid_config_backed_identity(monkeypatch, tmp_path):
-    import vllm_mlx.headless_service.config as config
-    import vllm_mlx.headless_service.definition as definition
-    import vllm_mlx.headless_service.status as st
+    import rapid_mlx.headless_service.config as config
+    import rapid_mlx.headless_service.definition as definition
+    import rapid_mlx.headless_service.status as st
 
     config_file = tmp_path / "active.json"
     pending = tmp_path / "pending.json"
@@ -1240,8 +1240,8 @@ def test_collect_status_prefers_valid_config_backed_identity(monkeypatch, tmp_pa
 
 
 def test_collect_status_bounded_probe_rejects_legacy_hostname(monkeypatch):
-    import vllm_mlx.headless_service.definition as definition
-    import vllm_mlx.headless_service.status as st
+    import rapid_mlx.headless_service.definition as definition
+    import rapid_mlx.headless_service.status as st
 
     monkeypatch.setattr(
         st,
@@ -1280,7 +1280,7 @@ def test_collect_status_bounded_probe_rejects_legacy_hostname(monkeypatch):
 
 
 def test_render_human_lines():
-    import vllm_mlx.headless_service.status as st
+    import rapid_mlx.headless_service.status as st
 
     s = {
         "label": "com.rapidmlx.server",
@@ -1384,7 +1384,7 @@ def test_is_admin_user_missing_group(monkeypatch):
 
 
 def test_logs_follow_tail_failure(monkeypatch, tmp_path, capsys):
-    import vllm_mlx.headless_service.logs as logs
+    import rapid_mlx.headless_service.logs as logs
 
     _, _, _ = _patched_logged_files(monkeypatch, tmp_path)
 
@@ -1399,7 +1399,7 @@ def test_logs_follow_tail_failure(monkeypatch, tmp_path, capsys):
 
 def test_log_paths_ignores_corrupt_plist(monkeypatch, plist_kwargs, tmp_path):
     """A corrupt installed plist must not crash _log_paths (falls through)."""
-    import vllm_mlx.headless_service.logs as logs
+    import rapid_mlx.headless_service.logs as logs
 
     plist = tmp_path / "com.rapidmlx.server.plist"
     plist.write_bytes(b"<not-a-plist")
@@ -1415,7 +1415,7 @@ def test_log_paths_ignores_corrupt_plist(monkeypatch, plist_kwargs, tmp_path):
 
 def test_declared_bind_none_when_no_port(monkeypatch, plist_kwargs, tmp_path):
     """A plist without a --port pair yields None (no reliable bind)."""
-    import vllm_mlx.headless_service.restart as rest
+    import rapid_mlx.headless_service.restart as rest
 
     cfg = build_plist_dict(**plist_kwargs)
     cfg["ProgramArguments"] = ["/bin/rapid-mlx", "serve", "qwen3.5-4b-4bit"]
@@ -1426,7 +1426,7 @@ def test_declared_bind_none_when_no_port(monkeypatch, plist_kwargs, tmp_path):
 
 
 def test_launchctl_print_returns_none_on_nonzero(monkeypatch):
-    import vllm_mlx.headless_service.status as st
+    import rapid_mlx.headless_service.status as st
 
     monkeypatch.setattr(
         subprocess,
@@ -1437,7 +1437,7 @@ def test_launchctl_print_returns_none_on_nonzero(monkeypatch):
 
 
 def test_launchctl_print_returns_none_on_error(monkeypatch):
-    import vllm_mlx.headless_service.status as st
+    import rapid_mlx.headless_service.status as st
 
     def _boom(argv, **kwargs):
         raise OSError("no launchctl")
@@ -1447,7 +1447,7 @@ def test_launchctl_print_returns_none_on_error(monkeypatch):
 
 
 def test_launchctl_probe_preserves_execution_error(monkeypatch):
-    import vllm_mlx.headless_service.status as st
+    import rapid_mlx.headless_service.status as st
 
     monkeypatch.setattr(
         subprocess,
@@ -1461,7 +1461,7 @@ def test_launchctl_probe_preserves_execution_error(monkeypatch):
 
 
 def test_launchctl_probe_distinguishes_missing_job_from_permission_failure(monkeypatch):
-    import vllm_mlx.headless_service.status as st
+    import rapid_mlx.headless_service.status as st
 
     outcomes = iter(
         [
@@ -1482,7 +1482,7 @@ def test_launchctl_probe_distinguishes_missing_job_from_permission_failure(monke
 
 
 def test_legacy_service_definition_rejects_incomplete_arguments():
-    import vllm_mlx.headless_service.status as st
+    import rapid_mlx.headless_service.status as st
 
     with pytest.raises(ValueError, match="invalid legacy serve arguments"):
         st._parse_legacy_serve(["/bin/rapid-mlx", "serve", "qwen", "--host"])
@@ -1497,14 +1497,14 @@ def test_legacy_service_definition_rejects_incomplete_arguments():
     ],
 )
 def test_legacy_service_definition_rejects_wrong_shapes(argv, message):
-    import vllm_mlx.headless_service.status as st
+    import rapid_mlx.headless_service.status as st
 
     with pytest.raises(ValueError, match=message):
         st._parse_legacy_serve(argv)
 
 
 def test_read_installed_plist_none_when_missing(monkeypatch, tmp_path):
-    import vllm_mlx.headless_service.status as st
+    import rapid_mlx.headless_service.status as st
 
     monkeypatch.setattr(
         st, "_plist_path", staticmethod(lambda _l: tmp_path / "x.plist")
@@ -1513,7 +1513,7 @@ def test_read_installed_plist_none_when_missing(monkeypatch, tmp_path):
 
 
 def test_read_installed_plist_none_when_corrupt(monkeypatch, tmp_path):
-    import vllm_mlx.headless_service.status as st
+    import rapid_mlx.headless_service.status as st
 
     plist = tmp_path / "x.plist"
     plist.write_bytes(b"<not-a-plist")
@@ -1524,7 +1524,7 @@ def test_read_installed_plist_none_when_corrupt(monkeypatch, tmp_path):
 def test_endpoint_health_connection_error(monkeypatch):
     import socket
 
-    import vllm_mlx.headless_service.status as st
+    import rapid_mlx.headless_service.status as st
 
     def _boom(*a, **k):
         raise OSError("refused")
@@ -1537,7 +1537,7 @@ def test_endpoint_health_connection_error(monkeypatch):
 
 
 def test_endpoint_health_deadlines_are_inconclusive(monkeypatch):
-    import vllm_mlx.headless_service.status as st
+    import rapid_mlx.headless_service.status as st
 
     class _Conn:
         def __enter__(self):
@@ -1563,7 +1563,7 @@ def test_endpoint_health_deadlines_are_inconclusive(monkeypatch):
 
 
 def test_endpoint_health_shared_deadline_normalizes_or_rejects_hosts(monkeypatch):
-    import vllm_mlx.headless_service.status as st
+    import rapid_mlx.headless_service.status as st
 
     seen = []
 
@@ -1584,7 +1584,7 @@ def test_endpoint_health_shared_deadline_normalizes_or_rejects_hosts(monkeypatch
 
 
 def test_listener_host_matching_special_cases(monkeypatch):
-    import vllm_mlx.headless_service.status as st
+    import rapid_mlx.headless_service.status as st
 
     assert st._listener_covers_host("*", "127.0.0.1") is True
     assert st._listener_covers_host("[::1]", "localhost") is True
@@ -1603,7 +1603,7 @@ def test_listener_host_matching_special_cases(monkeypatch):
 
 
 def test_listener_pid_probe_missing_tool_and_execution_error(monkeypatch):
-    import vllm_mlx.headless_service.status as st
+    import rapid_mlx.headless_service.status as st
 
     monkeypatch.setattr(st.Path, "is_file", lambda _self: False)
     assert st._pid_listens_on_port(42, "127.0.0.1", 8000) is None
@@ -1620,7 +1620,7 @@ def test_listener_pid_probe_missing_tool_and_execution_error(monkeypatch):
 def test_endpoint_model_status_reads_bounded_health_json(monkeypatch):
     import http.client
 
-    import vllm_mlx.headless_service.status as st
+    import rapid_mlx.headless_service.status as st
 
     class _Response:
         status = 200
@@ -1668,7 +1668,7 @@ def test_endpoint_model_status_uses_one_deadline_and_suppresses_close_error(
 ):
     import http.client
 
-    import vllm_mlx.headless_service.status as st
+    import rapid_mlx.headless_service.status as st
 
     now = iter((10.0, 10.1, 10.2, 10.3, 10.4, 10.45, 10.475, 10.49))
     socket_timeouts = []
@@ -1730,7 +1730,7 @@ def test_endpoint_model_status_hard_deadline_aborts_live_socket(monkeypatch):
     import http.client
     import socket
 
-    import vllm_mlx.headless_service.status as st
+    import rapid_mlx.headless_service.status as st
 
     shutdowns = []
     closes = []
@@ -1785,7 +1785,7 @@ def test_endpoint_model_status_hard_deadline_aborts_live_socket(monkeypatch):
 def test_endpoint_model_status_stops_after_total_deadline(monkeypatch):
     import http.client
 
-    import vllm_mlx.headless_service.status as st
+    import rapid_mlx.headless_service.status as st
 
     now = iter((10.0, 10.6))
     monkeypatch.setattr(st.time, "monotonic", lambda: next(now))
@@ -1803,7 +1803,7 @@ def test_endpoint_model_status_stops_after_total_deadline(monkeypatch):
 def test_endpoint_model_status_refuses_unbounded_dns(monkeypatch):
     import http.client
 
-    import vllm_mlx.headless_service.status as st
+    import rapid_mlx.headless_service.status as st
 
     monkeypatch.setattr(
         http.client,
@@ -1817,7 +1817,7 @@ def test_endpoint_model_status_refuses_unbounded_dns(monkeypatch):
 
 
 def test_collect_status_bounds_lifecycle_probe_to_shared_deadline(monkeypatch):
-    import vllm_mlx.headless_service.status as st
+    import rapid_mlx.headless_service.status as st
 
     observed_timeouts = []
     monkeypatch.setattr(
@@ -1861,7 +1861,7 @@ def test_collect_status_bounds_lifecycle_probe_to_shared_deadline(monkeypatch):
 def test_endpoint_model_status_rejects_unusable_responses(monkeypatch):
     import http.client
 
-    import vllm_mlx.headless_service.status as st
+    import rapid_mlx.headless_service.status as st
 
     class _Response:
         def __init__(self, status, body):
@@ -1908,7 +1908,7 @@ def test_endpoint_model_status_rejects_unusable_responses(monkeypatch):
 
 def test_status_owner_ps_error(monkeypatch, plist_kwargs, tmp_path):
     """A failing `ps` owner lookup degrades to owner=None, not a crash."""
-    import vllm_mlx.headless_service.status as st
+    import rapid_mlx.headless_service.status as st
 
     monkeypatch.setattr(
         st,
@@ -1935,7 +1935,7 @@ def test_status_owner_ps_error(monkeypatch, plist_kwargs, tmp_path):
 
 def test_status_command_human_branch(monkeypatch, capsys):
     """Non-json status prints the human table (and returns 1 when down)."""
-    import vllm_mlx.headless_service.status as st
+    import rapid_mlx.headless_service.status as st
 
     monkeypatch.setattr(
         st,
@@ -2144,7 +2144,7 @@ def test_run_forwards_to_subprocess(monkeypatch):
 
 
 def test_kickstart_status_success(monkeypatch):
-    import vllm_mlx.headless_service.restart as rest
+    import rapid_mlx.headless_service.restart as rest
 
     monkeypatch.setattr(
         subprocess,
@@ -2155,7 +2155,7 @@ def test_kickstart_status_success(monkeypatch):
 
 
 def test_launchctl_print_success_returns_stdout(monkeypatch):
-    import vllm_mlx.headless_service.status as st
+    import rapid_mlx.headless_service.status as st
 
     monkeypatch.setattr(
         subprocess,
@@ -2169,7 +2169,7 @@ def test_launchctl_print_success_returns_stdout(monkeypatch):
 
 def test_endpoint_health_live_200(monkeypatch):
     """_probe_live reads a 200 from /livez (socket sendall/recv path)."""
-    import vllm_mlx.headless_service.status as st
+    import rapid_mlx.headless_service.status as st
 
     class _Conn:
         def __init__(self):
@@ -2206,7 +2206,7 @@ def test_endpoint_health_live_200(monkeypatch):
 
 def test_endpoint_health_rejects_truncated_live_headers(monkeypatch):
     """A status line alone is not a complete HTTP response."""
-    import vllm_mlx.headless_service.status as st
+    import rapid_mlx.headless_service.status as st
 
     class _Conn:
         def __enter__(self):
@@ -2235,7 +2235,7 @@ def test_endpoint_health_rejects_truncated_live_headers(monkeypatch):
 
 
 def test_endpoint_health_treats_recursive_json_as_unverified(monkeypatch):
-    import vllm_mlx.headless_service.status as st
+    import rapid_mlx.headless_service.status as st
 
     class _Conn:
         def __init__(self):
@@ -2269,7 +2269,7 @@ def test_endpoint_health_treats_recursive_json_as_unverified(monkeypatch):
 
 
 def test_endpoint_health_accepts_split_status_line(monkeypatch):
-    import vllm_mlx.headless_service.status as st
+    import rapid_mlx.headless_service.status as st
 
     class _Conn:
         def __init__(self):
@@ -2302,7 +2302,7 @@ def test_endpoint_health_accepts_split_status_line(monkeypatch):
 
 
 def test_endpoint_health_rejects_non_http_status_line(monkeypatch):
-    import vllm_mlx.headless_service.status as st
+    import rapid_mlx.headless_service.status as st
 
     class _Conn:
         def __init__(self):
@@ -2329,7 +2329,7 @@ def test_endpoint_health_rejects_non_http_status_line(monkeypatch):
 
 
 def test_endpoint_health_probes_wildcard_bind_via_loopback(monkeypatch):
-    import vllm_mlx.headless_service.status as st
+    import rapid_mlx.headless_service.status as st
 
     seen = []
 
@@ -2362,7 +2362,7 @@ def test_endpoint_health_probes_wildcard_bind_via_loopback(monkeypatch):
 
 
 def test_endpoint_health_decodes_chunked_readiness(monkeypatch):
-    import vllm_mlx.headless_service.status as st
+    import rapid_mlx.headless_service.status as st
 
     class _Conn:
         def __init__(self):
@@ -2394,7 +2394,7 @@ def test_endpoint_health_decodes_chunked_readiness(monkeypatch):
 
 
 def test_endpoint_health_parses_transfer_encoding_whitespace(monkeypatch):
-    import vllm_mlx.headless_service.status as st
+    import rapid_mlx.headless_service.status as st
 
     class _Conn:
         def __init__(self):
@@ -2426,7 +2426,7 @@ def test_endpoint_health_parses_transfer_encoding_whitespace(monkeypatch):
 
 
 def test_endpoint_health_rejects_chunked_readiness_without_terminal_chunk(monkeypatch):
-    import vllm_mlx.headless_service.status as st
+    import rapid_mlx.headless_service.status as st
 
     class _Conn:
         def __init__(self):
@@ -2459,7 +2459,7 @@ def test_endpoint_health_rejects_chunked_readiness_without_terminal_chunk(monkey
 
 
 def test_endpoint_health_rejects_incomplete_chunk_terminator(monkeypatch):
-    import vllm_mlx.headless_service.status as st
+    import rapid_mlx.headless_service.status as st
 
     class _Conn:
         def __init__(self):
@@ -2492,7 +2492,7 @@ def test_endpoint_health_rejects_incomplete_chunk_terminator(monkeypatch):
 
 
 def test_endpoint_health_accepts_valid_chunked_trailer(monkeypatch):
-    import vllm_mlx.headless_service.status as st
+    import rapid_mlx.headless_service.status as st
 
     class _Conn:
         def __init__(self):
@@ -2525,7 +2525,7 @@ def test_endpoint_health_accepts_valid_chunked_trailer(monkeypatch):
 
 
 def test_endpoint_health_rejects_truncated_content_length(monkeypatch):
-    import vllm_mlx.headless_service.status as st
+    import rapid_mlx.headless_service.status as st
 
     class _Conn:
         def __init__(self):
@@ -2565,7 +2565,7 @@ def test_endpoint_health_rejects_truncated_content_length(monkeypatch):
     ],
 )
 def test_endpoint_health_rejects_malformed_chunk_frames(monkeypatch, chunked_body):
-    import vllm_mlx.headless_service.status as st
+    import rapid_mlx.headless_service.status as st
 
     responses = iter(
         [
@@ -2603,7 +2603,7 @@ def test_endpoint_health_rejects_malformed_chunk_frames(monkeypatch, chunked_bod
 
 @pytest.mark.parametrize("payload", [b"[]", b'{"state": "loading"}'])
 def test_endpoint_health_requires_ready_object_field(monkeypatch, payload):
-    import vllm_mlx.headless_service.status as st
+    import rapid_mlx.headless_service.status as st
 
     responses = iter(
         [
@@ -2643,7 +2643,7 @@ def test_endpoint_health_requires_ready_object_field(monkeypatch, payload):
 
 
 def test_logs_follow_keyboard_interrupt(monkeypatch, tmp_path, capsys):
-    import vllm_mlx.headless_service.logs as logs
+    import rapid_mlx.headless_service.logs as logs
 
     _, _, _ = _patched_logged_files(monkeypatch, tmp_path)
 
@@ -2656,7 +2656,7 @@ def test_logs_follow_keyboard_interrupt(monkeypatch, tmp_path, capsys):
 
 def test_readyz_ready_connection_error():
     """A refused /readyz probe is NOT ready (OSError branch)."""
-    from vllm_mlx.headless_service.install import _readyz_ready
+    from rapid_mlx.headless_service.install import _readyz_ready
 
     # Port 1 on loopback is never listening → connection refused → False.
     assert _readyz_ready("127.0.0.1", 1) is False
@@ -2667,7 +2667,7 @@ def test_readyz_ready_connection_error():
     [("0.0.0.0", "127.0.0.1"), ("::", "::1"), ("[::]", "::1")],
 )
 def test_wildcard_bind_uses_connectable_probe_address(bind, probe):
-    from vllm_mlx.headless_service.install import _probe_host
+    from rapid_mlx.headless_service.install import _probe_host
 
     assert _probe_host(bind) == probe
 
@@ -2779,7 +2779,7 @@ def test_install_rollback_unlink_oserror(monkeypatch, tmp_path, capsys):
 
 def test_install_real_path_rejects_already_loaded(monkeypatch, tmp_path, capsys):
     """A hidden loaded job must not make a new plist look successfully active."""
-    import vllm_mlx.headless_service.install as ins
+    import rapid_mlx.headless_service.install as ins
 
     _valid_user_monkeypatch(monkeypatch)
     monkeypatch.setattr(ins, "_port_busy", staticmethod(lambda h, p: False))
@@ -2813,7 +2813,7 @@ def test_install_real_path_rejects_already_loaded(monkeypatch, tmp_path, capsys)
 
 def test_install_refuses_existing_plist_before_mutation(monkeypatch, tmp_path, capsys):
     """Replacing a plist while launchd retains old argv creates split-brain."""
-    import vllm_mlx.headless_service.install as ins
+    import rapid_mlx.headless_service.install as ins
 
     _valid_user_monkeypatch(monkeypatch)
     monkeypatch.setattr(ins, "LAUNCH_DAEMONS_DIR", tmp_path)
@@ -2826,7 +2826,7 @@ def test_install_refuses_existing_plist_before_mutation(monkeypatch, tmp_path, c
 def test_stage_plist_uses_private_unpredictable_file(tmp_path, monkeypatch):
     import stat
 
-    import vllm_mlx.headless_service.install as ins
+    import rapid_mlx.headless_service.install as ins
 
     monkeypatch.setattr(ins.tempfile, "tempdir", str(tmp_path))
     first = ins._stage_plist(b"one")
@@ -2846,7 +2846,7 @@ def test_stage_plist_write_failure_closes_and_cleans(
 ):
     import os
 
-    import vllm_mlx.headless_service.install as ins
+    import rapid_mlx.headless_service.install as ins
 
     raw_path = tmp_path / "staged.plist"
     fd = os.open(raw_path, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o600)
@@ -2880,7 +2880,7 @@ def test_stage_plist_write_failure_closes_and_cleans(
 def test_install_success_cleans_secure_staging_file(monkeypatch, tmp_path, capsys):
     import shutil
 
-    import vllm_mlx.headless_service.install as ins
+    import rapid_mlx.headless_service.install as ins
 
     _valid_user_monkeypatch(monkeypatch)
     monkeypatch.setattr(ins, "_port_busy", lambda _h, _p: False)
@@ -2919,7 +2919,7 @@ def test_install_success_cleans_secure_staging_file(monkeypatch, tmp_path, capsy
 
 
 def test_install_success_tolerates_staging_cleanup_failure(monkeypatch, tmp_path):
-    import vllm_mlx.headless_service.install as ins
+    import rapid_mlx.headless_service.install as ins
 
     _valid_user_monkeypatch(monkeypatch)
     monkeypatch.setattr(ins, "_port_busy", lambda _h, _p: False)

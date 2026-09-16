@@ -16,14 +16,14 @@ from types import SimpleNamespace
 
 import pytest
 
-from vllm_mlx.api.models import AudioSpeechRequest
-from vllm_mlx.routes import audio
+from rapid_mlx.api.models import AudioSpeechRequest
+from rapid_mlx.routes import audio
 
 
 def _serve(monkeypatch, *, alias=None, name=None):
     """Stub the process config as if ``serve`` stamped these onto it."""
     monkeypatch.setattr(
-        "vllm_mlx.config.get_config",
+        "rapid_mlx.config.get_config",
         lambda: SimpleNamespace(model_alias=alias, model_name=name),
     )
 
@@ -31,9 +31,9 @@ def _serve(monkeypatch, *, alias=None, name=None):
 @pytest.fixture
 def _audio_probes_ok(monkeypatch):
     """No-op the mlx_audio / Kokoro runtime probes so the route bodies run."""
-    monkeypatch.setattr("vllm_mlx.audio.probe.require_mlx_audio_tts", lambda: None)
+    monkeypatch.setattr("rapid_mlx.audio.probe.require_mlx_audio_tts", lambda: None)
     monkeypatch.setattr(
-        "vllm_mlx.audio.probe.require_kokoro_runtime", lambda *a, **k: None
+        "rapid_mlx.audio.probe.require_kokoro_runtime", lambda *a, **k: None
     )
 
 

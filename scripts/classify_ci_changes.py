@@ -30,7 +30,7 @@ class Lanes:
 
 
 _ENGINE_ROOTS = {
-    "vllm_mlx",
+    "rapid_mlx",
     "videox_fun_mlx",
     "tests",
     "scripts",

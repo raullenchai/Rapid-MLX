@@ -48,7 +48,7 @@ and multi-tenant workloads.
 ## Module Map
 
 ```
-vllm_mlx/
+rapid_mlx/
 ├── server.py                  # App factory + model loading + CLI
 │
 ├── config/                    # ServerConfig singleton
@@ -212,8 +212,8 @@ Rapid-MLX auto-detects Apple Silicon:
 - Memory bandwidth and GPU cores (from known chip profiles)
 
 ```python
-from vllm_mlx.optimizations import detect_hardware
-from vllm_mlx.chip_tier import detect_chip_tier
+from rapid_mlx.optimizations import detect_hardware
+from rapid_mlx.chip_tier import detect_chip_tier
 
 hw = detect_hardware()
 print(f"{hw.chip_name} ({hw.total_memory_gb:.0f} GB, {hw.gpu_cores} GPU cores)")

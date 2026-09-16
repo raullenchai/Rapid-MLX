@@ -17,7 +17,7 @@ from __future__ import annotations
 import jinja2
 import pytest
 
-from vllm_mlx.utils.chat_template import (
+from rapid_mlx.utils.chat_template import (
     _template_context_facts_for_source,
     apply_chat_template,
     template_thinking_switch,
@@ -304,7 +304,7 @@ class TestTemplateThinkingSwitch:
     def test_enable_thinking_in_any_selected_source_wins(self, monkeypatch, order):
         """``_chat_template_strings`` selects one source today; should it ever
         return several, a read of ``enable_thinking`` anywhere still wins."""
-        from vllm_mlx.utils import chat_template as module
+        from rapid_mlx.utils import chat_template as module
 
         sources = [NORTH_CLAUSE, ENABLE_THINKING_TEMPLATE]
         if order == "enable-thinking-first":
@@ -315,7 +315,7 @@ class TestTemplateThinkingSwitch:
         assert template_thinking_switch({"default": "x"}) is None
 
     def test_without_jinja2_no_switch_is_reported(self, monkeypatch):
-        from vllm_mlx.utils import chat_template as module
+        from rapid_mlx.utils import chat_template as module
 
         module._template_context_facts_for_source.cache_clear()
         monkeypatch.setattr(module, "_jinja_nodes", lambda: (None, None))

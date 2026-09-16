@@ -15,7 +15,7 @@ Two bugs, shared embedding surface, one PR:
   entry now 400s with the canonical envelope + the same install hint.
 
 The probe is a lazy ``import mlx_embeddings`` inside
-``vllm_mlx.embedding.mlx_embeddings_available`` — the base install must
+``rapid_mlx.embedding.mlx_embeddings_available`` — the base install must
 never see a top-level import of ``mlx_embeddings`` (that's the bug we
 were trying to avoid). Pin that here too.
 """
@@ -50,7 +50,7 @@ class TestEmbeddingsExtraProbe:
         to load. Skip cleanly if the extra isn't installed in this
         environment so the test suite stays portable."""
         pytest.importorskip("mlx_embeddings")
-        from vllm_mlx.embedding import mlx_embeddings_available
+        from rapid_mlx.embedding import mlx_embeddings_available
 
         assert mlx_embeddings_available() is True
 
@@ -72,7 +72,7 @@ class TestEmbeddingsExtraProbe:
             return real_find_spec(name, *args, **kwargs)
 
         monkeypatch.setattr("importlib.util.find_spec", _fake_find_spec)
-        from vllm_mlx.embedding import mlx_embeddings_available
+        from rapid_mlx.embedding import mlx_embeddings_available
 
         assert mlx_embeddings_available() is False
 
@@ -92,7 +92,7 @@ class TestEmbeddingsExtraProbe:
             return real_find_spec(name, *args, **kwargs)
 
         monkeypatch.setattr("importlib.util.find_spec", _fake_find_spec)
-        from vllm_mlx.embedding import require_mlx_embeddings_or_exit
+        from rapid_mlx.embedding import require_mlx_embeddings_or_exit
 
         with pytest.raises(SystemExit) as exc:
             require_mlx_embeddings_or_exit()
@@ -109,7 +109,7 @@ class TestEmbeddingsExtraProbe:
         accidentally turns the probe into ``not is_available`` is
         caught immediately."""
         pytest.importorskip("mlx_embeddings")
-        from vllm_mlx.embedding import require_mlx_embeddings_or_exit
+        from rapid_mlx.embedding import require_mlx_embeddings_or_exit
 
         # Returns None without raising.
         assert require_mlx_embeddings_or_exit() is None
@@ -129,7 +129,7 @@ class TestEmbeddingsExtraProbe:
         BEFORE the first ``_ensure_model_downloaded`` reference AND
         BEFORE the first ``"🐆 Rapid-MLX"`` banner string.
         """
-        cli_file = Path(__file__).resolve().parents[1] / "vllm_mlx" / "cli.py"
+        cli_file = Path(__file__).resolve().parents[1] / "rapid_mlx" / "cli.py"
         source = cli_file.read_text()
         # Locate serve_command body — between ``def serve_command`` and
         # the next top-level ``def`` so we only scan the relevant function.
@@ -177,11 +177,11 @@ class TestEmbeddingsExtraProbe:
             )
 
     def test_guard_fires_before_banner_in_server_entrypoint(self):
-        """Same invariant for the standalone ``python -m vllm_mlx.server``
+        """Same invariant for the standalone ``python -m rapid_mlx.server``
         entrypoint. Pre-fix the probe lived after ``configure_logging``
         and the SECURITY CONFIGURATION header; new contract is that
         nothing prints between ``parse_args()`` and the guard."""
-        server_file = Path(__file__).resolve().parents[1] / "vllm_mlx" / "server.py"
+        server_file = Path(__file__).resolve().parents[1] / "rapid_mlx" / "server.py"
         source = server_file.read_text()
 
         # The standalone entrypoint's parse_args sits inside the same
@@ -218,7 +218,7 @@ class TestEmbeddingsExtraProbe:
         (inside a function / method) — that's the lazy form. Top-level
         bare ``import mlx_embeddings`` / ``from mlx_embeddings import``
         is the failure mode."""
-        pkg_root = Path(__file__).resolve().parents[1] / "vllm_mlx"
+        pkg_root = Path(__file__).resolve().parents[1] / "rapid_mlx"
         offenders = []
         for path in pkg_root.rglob("*.py"):
             for lineno, line in enumerate(path.read_text().splitlines(), 1):
@@ -252,9 +252,9 @@ def _build_embed_app(monkeypatch, engine, *, embedding_model_locked):
     path explicitly. Installs the OpenAI-shaped exception handlers
     so the 400 envelope matches the production wire shape (the same
     wrappers ``server.app`` mounts)."""
-    from vllm_mlx.config import get_config
-    from vllm_mlx.middleware.exception_handlers import install_exception_handlers
-    from vllm_mlx.routes import embeddings as emb_route
+    from rapid_mlx.config import get_config
+    from rapid_mlx.middleware.exception_handlers import install_exception_handlers
+    from rapid_mlx.routes import embeddings as emb_route
 
     app = FastAPI()
     app.include_router(emb_route.router)
@@ -272,7 +272,7 @@ def _build_embed_app(monkeypatch, engine, *, embedding_model_locked):
 
     # Also override the server globals so the route's "bridge" branch
     # (cfg→server fallback) doesn't reset our locked value.
-    import vllm_mlx.server as srv
+    import rapid_mlx.server as srv
 
     saved_srv = {
         "_embedding_engine": srv._embedding_engine,
@@ -282,7 +282,7 @@ def _build_embed_app(monkeypatch, engine, *, embedding_model_locked):
     srv._embedding_model_locked = embedding_model_locked
 
     monkeypatch.setattr(
-        "vllm_mlx.server.load_embedding_model",
+        "rapid_mlx.server.load_embedding_model",
         lambda *_a, **_kw: None,
         raising=False,
     )
@@ -384,8 +384,8 @@ class TestModelsListEmbeddingCapability:
     the path works."""
 
     def _mount_models_app(self, monkeypatch, *, embedding_model_locked):
-        from vllm_mlx.config import get_config
-        from vllm_mlx.routes import models as models_route
+        from rapid_mlx.config import get_config
+        from rapid_mlx.routes import models as models_route
 
         app = FastAPI()
         app.include_router(models_route.router)
@@ -407,7 +407,7 @@ class TestModelsListEmbeddingCapability:
         cfg.embedding_model_locked = embedding_model_locked
         cfg.api_key = None
 
-        import vllm_mlx.server as srv
+        import rapid_mlx.server as srv
 
         saved_srv = {"_embedding_model_locked": srv._embedding_model_locked}
         srv._embedding_model_locked = embedding_model_locked
@@ -563,7 +563,7 @@ class TestEmbeddingModelAliasResolution:
         path round-trips them. Pin the contract unconditionally — a
         future drop of either entry must turn this test red.
         """
-        from vllm_mlx.model_aliases import resolve_model
+        from rapid_mlx.model_aliases import resolve_model
 
         assert (
             resolve_model("embeddinggemma-300m-6bit")
@@ -579,7 +579,7 @@ class TestEmbeddingModelAliasResolution:
         the canonical form — ``resolve_model`` must return it
         unchanged so the embedding-model path stays a no-op for
         callers who already pass the full id."""
-        from vllm_mlx.model_aliases import resolve_model
+        from rapid_mlx.model_aliases import resolve_model
 
         hf = "mlx-community/embeddinggemma-300m-6bit"
         assert resolve_model(hf) == hf
@@ -590,7 +590,7 @@ class TestEmbeddingModelAliasResolution:
         emit the actionable error. This is the contract the CLI's
         chat-model path already relies on (cli.py ~5660); the
         embedding-model path inherits the same shape after the fix."""
-        from vllm_mlx.model_aliases import resolve_model
+        from rapid_mlx.model_aliases import resolve_model
 
         assert resolve_model("bogus-name-no-such-alias") == "bogus-name-no-such-alias"
 
@@ -603,11 +603,13 @@ class TestEmbeddingModelAliasResolution:
         path first."""
         from types import SimpleNamespace
 
-        from vllm_mlx.cli import _load_embedding_model_or_exit
+        from rapid_mlx.cli import _load_embedding_model_or_exit
 
         # Pretend the [embeddings] extra is installed so the H-08
         # probe doesn't short-circuit before the alias step.
-        monkeypatch.setattr("vllm_mlx.embedding.mlx_embeddings_available", lambda: True)
+        monkeypatch.setattr(
+            "rapid_mlx.embedding.mlx_embeddings_available", lambda: True
+        )
         captured: dict = {}
 
         def _fake_loader(name, *, lock, **kwargs):
@@ -634,9 +636,11 @@ class TestEmbeddingModelAliasResolution:
         alias map, no path mutation."""
         from types import SimpleNamespace
 
-        from vllm_mlx.cli import _load_embedding_model_or_exit
+        from rapid_mlx.cli import _load_embedding_model_or_exit
 
-        monkeypatch.setattr("vllm_mlx.embedding.mlx_embeddings_available", lambda: True)
+        monkeypatch.setattr(
+            "rapid_mlx.embedding.mlx_embeddings_available", lambda: True
+        )
         captured: dict = {}
 
         def _fake_loader(name, *, lock, **_kwargs):
@@ -661,9 +665,11 @@ class TestEmbeddingModelAliasResolution:
         local-path branch of the loader."""
         from types import SimpleNamespace
 
-        from vllm_mlx.cli import _load_embedding_model_or_exit
+        from rapid_mlx.cli import _load_embedding_model_or_exit
 
-        monkeypatch.setattr("vllm_mlx.embedding.mlx_embeddings_available", lambda: True)
+        monkeypatch.setattr(
+            "rapid_mlx.embedding.mlx_embeddings_available", lambda: True
+        )
 
         try:
             from mlx_embeddings.utils import (
@@ -699,9 +705,11 @@ class TestEmbeddingModelAliasResolution:
         binds to concrete classes only."""
         from types import SimpleNamespace
 
-        from vllm_mlx.cli import _load_embedding_model_or_exit
+        from rapid_mlx.cli import _load_embedding_model_or_exit
 
-        monkeypatch.setattr("vllm_mlx.embedding.mlx_embeddings_available", lambda: True)
+        monkeypatch.setattr(
+            "rapid_mlx.embedding.mlx_embeddings_available", lambda: True
+        )
 
         class CorruptSafetensorsError(RuntimeError):
             pass
@@ -723,9 +731,11 @@ class TestEmbeddingModelAliasResolution:
         r1 fix the wrap binds to concrete exception CLASSES only."""
         from types import SimpleNamespace
 
-        from vllm_mlx.cli import _load_embedding_model_or_exit
+        from rapid_mlx.cli import _load_embedding_model_or_exit
 
-        monkeypatch.setattr("vllm_mlx.embedding.mlx_embeddings_available", lambda: True)
+        monkeypatch.setattr(
+            "rapid_mlx.embedding.mlx_embeddings_available", lambda: True
+        )
 
         def _fake_loader(name, *, lock, **_kwargs):
             raise ValueError("config field 'rope_theta' not found in tensor map")
@@ -741,10 +751,10 @@ class TestEmbeddingModelAliasResolution:
         registry or the loader. ``sys.exit(2)`` with the install hint."""
         from types import SimpleNamespace
 
-        from vllm_mlx.cli import _load_embedding_model_or_exit
+        from rapid_mlx.cli import _load_embedding_model_or_exit
 
         monkeypatch.setattr(
-            "vllm_mlx.embedding.mlx_embeddings_available", lambda: False
+            "rapid_mlx.embedding.mlx_embeddings_available", lambda: False
         )
 
         def _fake_loader(*a, **kw):
@@ -758,7 +768,7 @@ class TestEmbeddingModelAliasResolution:
         assert "[embeddings]" in err
 
     def test_server_module_routes_through_shared_helper(self):
-        """``python -m vllm_mlx.server`` must use the SAME helper as
+        """``python -m rapid_mlx.server`` must use the SAME helper as
         the unified CLI so alias-resolution + ModelNotFoundError
         translation behave identically across both entrypoints.
 
@@ -775,7 +785,7 @@ class TestEmbeddingModelAliasResolution:
         import ast
         import inspect
 
-        from vllm_mlx import server as server_mod
+        from rapid_mlx import server as server_mod
 
         # Walk every top-level function/method in server.py looking
         # for a call site that names ``_load_embedding_model_or_exit``.
@@ -797,8 +807,8 @@ class TestEmbeddingModelAliasResolution:
 
         all_calls = _names_in_call(tree)
         assert "_load_embedding_model_or_exit" in all_calls, (
-            "vllm_mlx/server.py no longer calls _load_embedding_model_or_exit "
-            "— the standalone `python -m vllm_mlx.server` entrypoint has "
+            "rapid_mlx/server.py no longer calls _load_embedding_model_or_exit "
+            "— the standalone `python -m rapid_mlx.server` entrypoint has "
             "diverged from the CLI's alias-resolution + error-wrapping path. "
             "Either re-route through the shared helper or copy its full "
             "behaviour (alias resolve + concrete-class catch + exit-1 hint) "
@@ -809,8 +819,8 @@ class TestEmbeddingModelAliasResolution:
         # local stub of the same name inside server.py can't satisfy
         # the assertion above without ALSO satisfying this.
         assert "from .cli import _load_embedding_model_or_exit" in source, (
-            "vllm_mlx/server.py must import _load_embedding_model_or_exit "
-            "from vllm_mlx.cli so the alias-resolution + error-wrapping "
+            "rapid_mlx/server.py must import _load_embedding_model_or_exit "
+            "from rapid_mlx.cli so the alias-resolution + error-wrapping "
             "path stays single-sourced."
         )
 
@@ -834,13 +844,13 @@ class TestEmbeddingModelAliasResolution:
         import ast
         import inspect
 
-        from vllm_mlx import server as server_mod
+        from rapid_mlx import server as server_mod
 
         source = inspect.getsource(server_mod)
         tree = ast.parse(source)
 
         # Find the ``main`` function definition (the standalone
-        # ``python -m vllm_mlx.server`` entrypoint).
+        # ``python -m rapid_mlx.server`` entrypoint).
         fn = next(
             (
                 node
@@ -850,7 +860,7 @@ class TestEmbeddingModelAliasResolution:
             ),
             None,
         )
-        assert fn is not None, "vllm_mlx/server.py must define main"
+        assert fn is not None, "rapid_mlx/server.py must define main"
 
         # Find ``if args.embedding_model:`` inside main_internal. We
         # match on the test expression so a later cosmetic rename
@@ -869,7 +879,7 @@ class TestEmbeddingModelAliasResolution:
                 target_if = node
                 break
         assert target_if is not None, (
-            "vllm_mlx/server.py main_internal must contain "
+            "rapid_mlx/server.py main_internal must contain "
             "`if args.embedding_model:` — the embedding-model gating "
             "branch is gone, which would silently broaden the loader "
             "and re-introduce the D-EMBED-ALIAS regression."
@@ -923,6 +933,6 @@ class TestEmbeddingModelAliasResolution:
             isinstance(second_arg, ast.Name) and second_arg.id == "load_embedding_model"
         ), (
             "Second arg must be the module-level `load_embedding_model` "
-            "symbol from vllm_mlx/server.py — not a renamed import — so "
+            "symbol from rapid_mlx/server.py — not a renamed import — so "
             "the spy/patch path actually reaches the same loader."
         )

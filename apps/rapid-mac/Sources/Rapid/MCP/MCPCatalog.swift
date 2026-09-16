@@ -5,7 +5,7 @@ import Observation
 ///
 /// Issue #1716: the app had no way to see which servers connected, which tools
 /// they exposed, or why one failed. The engine has answered all three
-/// questions over HTTP for a while (`vllm_mlx/routes/mcp_routes.py`); nothing
+/// questions over HTTP for a while (`rapid_mlx/routes/mcp_routes.py`); nothing
 /// asked. This polls those routes and republishes the answers as observable
 /// state the Settings panel and the tool registry both read.
 ///
@@ -318,7 +318,7 @@ final class MCPCatalog {
         return try JSONDecoder().decode(T.self, from: data)
     }
 
-    // MARK: - Wire shapes (mirror vllm_mlx/api/models.py)
+    // MARK: - Wire shapes (mirror rapid_mlx/api/models.py)
 
     private struct ServersResponse: Decodable {
         struct Server: Decodable {

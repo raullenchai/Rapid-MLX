@@ -35,7 +35,7 @@ import pytest
 from fastapi import FastAPI, HTTPException
 from fastapi.testclient import TestClient
 
-from vllm_mlx.service.helpers import (
+from rapid_mlx.service.helpers import (
     _find_lone_surrogate,
     _scan_messages_for_lone_surrogates,
 )
@@ -159,7 +159,7 @@ class TestScanMessagesForLoneSurrogates:
         """``content`` as ``list[ContentPart]``: the text part of a
         multimodal message must be scanned recursively, otherwise the
         gate is bypassed by VLM clients."""
-        from vllm_mlx.api.models import ContentPart
+        from rapid_mlx.api.models import ContentPart
 
         with pytest.raises(HTTPException) as ei:
             _scan_messages_for_lone_surrogates(
@@ -229,7 +229,7 @@ class TestScanMessagesForLoneSurrogates:
 @pytest.fixture
 def patched_config():
     """Patch select fields on the global cfg singleton and restore on exit."""
-    from vllm_mlx.config import get_config
+    from rapid_mlx.config import get_config
 
     cfg = get_config()
     saved: dict = {}
@@ -246,7 +246,7 @@ def patched_config():
 
 
 def _build_chat_app(patch_cfg, monkeypatch):
-    from vllm_mlx.routes import chat as chat_route
+    from rapid_mlx.routes import chat as chat_route
 
     app = FastAPI()
     app.include_router(chat_route.router)
@@ -278,7 +278,7 @@ class TestChatRouteLoneSurrogate:
     ):
         """F-130: a bare lone surrogate in the user message returns
         400, NOT 500, and NEVER reaches the engine."""
-        from vllm_mlx.routes import chat as chat_route
+        from rapid_mlx.routes import chat as chat_route
 
         # Trip-wire: if the engine is ever invoked, the test fails.
         def _explode(*_a, **_kw):
@@ -315,7 +315,7 @@ class TestChatRouteLoneSurrogate:
         SSE stream. The pre-fix behavior was HTTP 200 followed by a
         ``data:`` chunk carrying raw Python ``TypeError`` text — both
         the status code AND the body contract were violated."""
-        from vllm_mlx.routes import chat as chat_route
+        from rapid_mlx.routes import chat as chat_route
 
         def _explode(*_a, **_kw):
             raise AssertionError(

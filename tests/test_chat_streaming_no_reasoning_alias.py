@@ -39,9 +39,9 @@ import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
-from vllm_mlx.config import reset_config
-from vllm_mlx.engine.base import GenerationOutput
-from vllm_mlx.routes.chat import router as chat_router
+from rapid_mlx.config import reset_config
+from rapid_mlx.engine.base import GenerationOutput
+from rapid_mlx.routes.chat import router as chat_router
 
 
 class _ReasoningChannelEngine:
@@ -226,7 +226,7 @@ def test_assistant_message_non_stream_emits_reasoning_content_only():
     stream and non-stream would still hit the dup on the non-stream
     surface.
     """
-    from vllm_mlx.api.models import AssistantMessage
+    from rapid_mlx.api.models import AssistantMessage
 
     msg = AssistantMessage(
         role="assistant",

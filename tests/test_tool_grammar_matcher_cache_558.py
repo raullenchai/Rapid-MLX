@@ -21,7 +21,7 @@ from contextlib import contextmanager
 
 import pytest
 
-import vllm_mlx.api.tool_grammar as tg
+import rapid_mlx.api.tool_grammar as tg
 
 
 class _FakeMatcher:

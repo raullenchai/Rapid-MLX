@@ -11,7 +11,7 @@ scheduler depends on.
 
 from types import SimpleNamespace
 
-from vllm_mlx.pflash import (
+from rapid_mlx.pflash import (
     PFlashConfig,
     compress_request_tokens,
     compress_tokens,
@@ -273,7 +273,7 @@ class TestResolvePFlashModeDefault:
         # its INFO line, so the logging call is provably exercised.
         import logging as _logging
 
-        with caplog.at_level(_logging.INFO, logger="vllm_mlx.pflash"):
+        with caplog.at_level(_logging.INFO, logger="rapid_mlx.pflash"):
             mode = resolve_pflash_mode_default(
                 self._ns(None), model_name="qwen3.5-4b-4bit"
             )
@@ -292,7 +292,7 @@ class TestResolvePFlashModeDefault:
         # message should keep the user's mental model correct instead.
         import logging as _logging
 
-        with caplog.at_level(_logging.INFO, logger="vllm_mlx.pflash"):
+        with caplog.at_level(_logging.INFO, logger="rapid_mlx.pflash"):
             mode = resolve_pflash_mode_default(
                 self._ns(None), model_name="qwen3.5-4b-4bit", is_multimodal=True
             )
@@ -364,7 +364,7 @@ class TestResolvePFlashModeDefault:
         # the qwen3.5-4b-4bit sample. Catches the case where a future
         # contributor edits the JSON-level tag but the model_auto_config
         # → pflash threading regresses.
-        from vllm_mlx.model_aliases import list_profiles
+        from rapid_mlx.model_aliases import list_profiles
 
         verified = [
             a for a, p in list_profiles().items() if p.pflash_tier == "verified"

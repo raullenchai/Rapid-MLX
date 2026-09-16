@@ -27,7 +27,7 @@ def test_protected_inventory_tracks_sidecar_pins_and_release_fleet() -> None:
         assert protected["revision"] == pin["revision"]
         assert "sidecar" in protected["sources"]
 
-    aliases = json.loads((ROOT / "vllm_mlx/aliases.json").read_text())
+    aliases = json.loads((ROOT / "rapid_mlx/aliases.json").read_text())
     fleet = json.loads((ROOT / "scripts/release_fleet.json").read_text())
     for family in fleet["families"].values():
         repository = aliases[family["coherence_model"]]["hf_path"]

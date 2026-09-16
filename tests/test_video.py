@@ -5,7 +5,7 @@ import pytest
 
 pytestmark = pytest.mark.requires_mlx
 
-from vllm_mlx.models.mllm import (
+from rapid_mlx.models.mllm import (
     FRAME_FACTOR,
     MIN_FRAMES,
     MLXMultimodalLM,

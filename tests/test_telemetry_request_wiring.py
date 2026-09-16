@@ -39,7 +39,7 @@ class _FakeChatEngine:
     tokenizer = SimpleNamespace(encode=lambda _text: [1])
 
     async def chat(self, messages, **kwargs):
-        from vllm_mlx.engine.base import GenerationOutput
+        from rapid_mlx.engine.base import GenerationOutput
 
         return GenerationOutput(
             text="hello there",
@@ -54,8 +54,8 @@ async def _await_direct(coro, *_a, **_k):
 
 
 def _patch_route(monkeypatch, engine, emit_calls):
-    from vllm_mlx.routes import chat
-    from vllm_mlx.telemetry import emit
+    from rapid_mlx.routes import chat
+    from rapid_mlx.telemetry import emit
 
     monkeypatch.setattr(emit, "request", lambda **kw: emit_calls.append(kw))
     monkeypatch.setattr(chat, "_resolve_max_tokens", lambda *a, **k: 64)
@@ -73,7 +73,7 @@ def _patch_route(monkeypatch, engine, emit_calls):
 
 
 def _request(model="test-model"):
-    from vllm_mlx.api.models import ChatCompletionRequest
+    from rapid_mlx.api.models import ChatCompletionRequest
 
     return ChatCompletionRequest(
         model=model,
@@ -85,8 +85,8 @@ def _request(model="test-model"):
 
 @pytest.mark.asyncio
 async def test_nonstreaming_completion_emits_request_event(monkeypatch):
-    from vllm_mlx.routes import chat
-    from vllm_mlx.telemetry import emit
+    from rapid_mlx.routes import chat
+    from rapid_mlx.telemetry import emit
 
     calls: list[dict] = []
     engine = _FakeChatEngine()
@@ -127,7 +127,7 @@ async def test_nonstreaming_completion_emits_request_event(monkeypatch):
 
 class _GarbageChatEngine(_FakeChatEngine):
     async def chat(self, messages, **kwargs):
-        from vllm_mlx.engine.base import GenerationOutput
+        from rapid_mlx.engine.base import GenerationOutput
 
         return GenerationOutput(
             text="aaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",  # doubled-norm collapse (#1234)
@@ -143,8 +143,8 @@ async def test_nonstreaming_flags_degenerate_output_when_enabled(monkeypatch):
     heuristic on the visible completion and emits the bool. A #1234-class
     garbage completion is flagged ``True`` — the post-release canary. Only the
     bool is passed; the garbage text never reaches ``emit.request``."""
-    from vllm_mlx.routes import chat
-    from vllm_mlx.telemetry import emit
+    from rapid_mlx.routes import chat
+    from rapid_mlx.telemetry import emit
 
     calls: list[dict] = []
     engine = _GarbageChatEngine()
@@ -169,8 +169,8 @@ async def test_nonstreaming_flags_degenerate_output_when_enabled(monkeypatch):
 async def test_nonstreaming_coherent_output_not_flagged_when_enabled(monkeypatch):
     """The enabled path does not blanket-flag: a coherent completion is
     ``False``, so the signal discriminates rather than always firing."""
-    from vllm_mlx.routes import chat
-    from vllm_mlx.telemetry import emit
+    from rapid_mlx.routes import chat
+    from rapid_mlx.telemetry import emit
 
     calls: list[dict] = []
     engine = _FakeChatEngine()  # returns "hello there"
@@ -191,7 +191,7 @@ async def test_nonstreaming_coherent_output_not_flagged_when_enabled(monkeypatch
 
 @pytest.mark.asyncio
 async def test_request_event_caller_agent_absent_header(monkeypatch):
-    from vllm_mlx.routes import chat
+    from rapid_mlx.routes import chat
 
     calls: list[dict] = []
     engine = _FakeChatEngine()

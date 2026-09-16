@@ -49,7 +49,7 @@ import pytest
 from tokenizers import Tokenizer, decoders, models, pre_tokenizers
 from transformers import AutoTokenizer, PreTrainedTokenizerFast
 
-from vllm_mlx.utils.tokenizer import (
+from rapid_mlx.utils.tokenizer import (
     _METASPACE_MARKER,
     _decoder_has_metaspace_replace,
     repair_byte_level_decoder,
@@ -395,7 +395,7 @@ class TestGate3SpacedSampleVerification:
         tok = _build_synthetic_gemma4_hybrid()
         # Neuter gate 2 — pretend the decoder has no metaspace step,
         # so the swap path will run.
-        from vllm_mlx.utils import tokenizer as _toktools
+        from rapid_mlx.utils import tokenizer as _toktools
 
         monkeypatch.setattr(
             _toktools, "_decoder_has_metaspace_replace", lambda d: False

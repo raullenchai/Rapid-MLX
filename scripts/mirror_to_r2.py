@@ -2,7 +2,7 @@
 
 This tool is the persisted, in-repo counterpart to the ad-hoc uploads that
 seeded ``https://models.rapidmlx.com``. Client-side download uses
-``vllm_mlx/_mirror.py``'s ``download_with_mirror_fallback`` which expects
+``rapid_mlx/_mirror.py``'s ``download_with_mirror_fallback`` which expects
 the bucket to hold objects at ``<hf-owner>/<hf-repo>/<filename>`` — the
 exact key layout this script writes.
 
@@ -420,7 +420,7 @@ def _public_url(public_base: str, key: str) -> str:
     ``mlx-community/repo/model card.md`` key into an unreachable URL
     (space breaks the path; ``#`` starts a fragment). Encoding per
     segment (not whole key) preserves the ``/`` separators. Matches the
-    same discipline in ``vllm_mlx/_mirror.py::_build_r2_url``.
+    same discipline in ``rapid_mlx/_mirror.py::_build_r2_url``.
     """
     encoded = "/".join(
         urllib.parse.quote(seg, safe="") for seg in key.lstrip("/").split("/") if seg

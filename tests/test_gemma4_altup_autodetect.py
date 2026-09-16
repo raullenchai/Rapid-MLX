@@ -38,7 +38,7 @@ pytestmark = pytest.mark.requires_mlx
 
 import mlx.core as mx
 
-from vllm_mlx.models.gemma4_text import (
+from rapid_mlx.models.gemma4_text import (
     _bare_fp_weight_paths,
     _path_matches_any_suffix,
 )

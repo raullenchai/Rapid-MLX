@@ -26,7 +26,7 @@ from unittest.mock import patch
 
 import pytest
 
-from vllm_mlx import cli
+from rapid_mlx import cli
 
 # ---------------------------------------------------------------------------
 # Helpers — mirror the chat-command test style: drive ``cli.main()`` and
@@ -253,15 +253,15 @@ def stub_heavy_serve_deps(monkeypatch):
     the tests below; extend this fixture rather than working around it
     so the test stays faithful to the real execution path.
     """
-    from vllm_mlx import _version_check
-    from vllm_mlx import server as server_mod
+    from rapid_mlx import _version_check
+    from rapid_mlx import server as server_mod
 
     monkeypatch.setattr(_version_check, "prompt_upgrade_if_available", lambda: False)
     monkeypatch.setattr(
         _version_check, "print_staleness_warning_if_any", lambda **_kwargs: None
     )
     # Patch the exact module object this test file calls. Earlier suites may
-    # deliberately reload ``vllm_mlx.cli`` and replace the package attribute;
+    # deliberately reload ``rapid_mlx.cli`` and replace the package attribute;
     # re-importing it here would patch that new object while the file-level
     # ``cli`` reference below still invokes the old one.
     monkeypatch.setattr(cli, "_ensure_model_downloaded", lambda model: None)
@@ -272,7 +272,7 @@ def stub_heavy_serve_deps(monkeypatch):
     # ``serve_command`` calls ``server.configure_cors`` which does an
     # ``app.add_middleware``. That fails with "Cannot add middleware
     # after an application has started" if a prior test in the suite
-    # has already booted a ``TestClient`` against ``vllm_mlx.server.app``
+    # has already booted a ``TestClient`` against ``rapid_mlx.server.app``
     # — order-dependent flake. Stub it to a no-op for these tests; the
     # CORS plumbing has its own dedicated tests.
     # ``configure_cors_from_env`` now always calls ``configure_cors`` with
@@ -281,12 +281,12 @@ def stub_heavy_serve_deps(monkeypatch):
     # the stub keeps matching the real signature.
     monkeypatch.setattr(server_mod, "configure_cors", lambda *a, **kw: None)
     # Some serve_command branches touch the rate-limiter wiring.
-    from vllm_mlx.middleware import auth as auth_mod
+    from rapid_mlx.middleware import auth as auth_mod
 
     monkeypatch.setattr(auth_mod, "configure_rate_limiter", lambda *a, **kw: None)
     # ``install_request_logging_middleware`` also calls ``app.add_middleware``
     # — same "after an application has started" failure as CORS (#1167).
-    from vllm_mlx.middleware import request_logging as reqlog_mod
+    from rapid_mlx.middleware import request_logging as reqlog_mod
 
     monkeypatch.setattr(
         reqlog_mod, "install_request_logging_middleware", lambda *a: None
@@ -351,7 +351,7 @@ def test_serve_command_dispatches_uvicorn_with_fd_when_listen_fd_set(
         f"port must NOT be passed in the listen-fd branch, got {captured!r}"
     )
     # And the Ready-banner source of truth must be wired up.
-    from vllm_mlx.config import get_config
+    from rapid_mlx.config import get_config
 
     cfg = get_config()
     assert cfg.bind_listen_fd == 7
@@ -391,16 +391,16 @@ def test_dflash_memory_check_receives_original_alias(
         lambda model, *, alias=None: calls.append((model, alias)),
     )
 
-    dflash_server = ModuleType("vllm_mlx.speculative.dflash.server")
+    dflash_server = ModuleType("rapid_mlx.speculative.dflash.server")
     dflash_server.run_dflash_server = lambda **_kwargs: None
     monkeypatch.setitem(
-        sys.modules, "vllm_mlx.speculative.dflash.server", dflash_server
+        sys.modules, "rapid_mlx.speculative.dflash.server", dflash_server
     )
 
     ns = _minimal_serve_ns()
     ns.enable_dflash = True
     ns._original_alias = "qwen3.5-27b-8bit"
-    from vllm_mlx.speculative.dflash import eligibility
+    from rapid_mlx.speculative.dflash import eligibility
 
     monkeypatch.setattr(eligibility, "have_runtime", lambda: True)
 
@@ -413,8 +413,8 @@ def test_serve_command_threads_auto_detected_hybrid_into_cache_admission(
     stub_heavy_serve_deps, monkeypatch, scheduler_config_stub
 ):
     """The unified serve entrypoint must consume its one resolved profile."""
-    from vllm_mlx import server as server_mod
-    from vllm_mlx.model_profile import ModelProfile
+    from rapid_mlx import server as server_mod
+    from rapid_mlx.model_profile import ModelProfile
 
     captured = {}
     detected_models = []
@@ -435,7 +435,7 @@ def test_serve_command_threads_auto_detected_hybrid_into_cache_admission(
         )
 
     monkeypatch.setattr(
-        "vllm_mlx.model_auto_config.detect_model_config", detect_model_config
+        "rapid_mlx.model_auto_config.detect_model_config", detect_model_config
     )
     _capture_uvicorn_run(monkeypatch)
     ns = _minimal_serve_ns(port=_free_tcp_port())
@@ -455,8 +455,8 @@ def test_serve_command_detects_defaults_from_pulled_variant_checkpoint(
     stub_heavy_serve_deps, monkeypatch, scheduler_config_stub
 ):
     """CLI defaults follow the marker-resolved checkpoint, not the repo root."""
-    from vllm_mlx import server as server_mod
-    from vllm_mlx.model_profile import ModelProfile
+    from rapid_mlx import server as server_mod
+    from rapid_mlx.model_profile import ModelProfile
 
     checkpoint = "/cache/snapshots/revision/8bit"
     resolved: list[str] = []
@@ -466,7 +466,7 @@ def test_serve_command_detects_defaults_from_pulled_variant_checkpoint(
         return checkpoint
 
     monkeypatch.setattr(
-        "vllm_mlx.utils.tokenizer._resolve_subfolder_checkpoint",
+        "rapid_mlx.utils.tokenizer._resolve_subfolder_checkpoint",
         resolve_checkpoint,
     )
     detected: list[str] = []
@@ -479,7 +479,7 @@ def test_serve_command_detects_defaults_from_pulled_variant_checkpoint(
         )
 
     monkeypatch.setattr(
-        "vllm_mlx.model_auto_config.detect_model_config", detect_model_config
+        "rapid_mlx.model_auto_config.detect_model_config", detect_model_config
     )
     monkeypatch.setattr(server_mod, "load_model", lambda *_args, **_kwargs: None)
     _capture_uvicorn_run(monkeypatch)
@@ -499,8 +499,8 @@ def test_serve_command_cache_is_first_metadata_consumer(
     stub_heavy_serve_deps, monkeypatch, scheduler_config_stub
 ):
     """Fully pinned adjacent defaults leave cache admission as first reader."""
-    from vllm_mlx import server as server_mod
-    from vllm_mlx.model_profile import ModelProfile
+    from rapid_mlx import server as server_mod
+    from rapid_mlx.model_profile import ModelProfile
 
     captured = {}
     monkeypatch.setattr(
@@ -511,7 +511,7 @@ def test_serve_command_cache_is_first_metadata_consumer(
         ),
     )
     monkeypatch.setattr(
-        "vllm_mlx.model_auto_config.detect_model_config",
+        "rapid_mlx.model_auto_config.detect_model_config",
         lambda _name: ModelProfile(is_hybrid=True, is_hybrid_explicit=True),
     )
     _capture_uvicorn_run(monkeypatch)
@@ -535,7 +535,7 @@ def test_serve_command_missing_auto_config_module_degrades_to_no_default(
     """A partial install keeps the pre-existing optional-default fallback."""
     import builtins
 
-    from vllm_mlx import server as server_mod
+    from rapid_mlx import server as server_mod
 
     captured = {}
     monkeypatch.setattr(
@@ -566,8 +566,8 @@ def test_serve_command_missing_auto_config_module_degrades_to_no_default(
 def test_serve_command_explicit_zero_wins_over_auto_detected_hybrid(
     stub_heavy_serve_deps, monkeypatch, scheduler_config_stub
 ):
-    from vllm_mlx import server as server_mod
-    from vllm_mlx.model_profile import ModelProfile
+    from rapid_mlx import server as server_mod
+    from rapid_mlx.model_profile import ModelProfile
 
     captured = {}
 
@@ -576,7 +576,7 @@ def test_serve_command_explicit_zero_wins_over_auto_detected_hybrid(
 
     monkeypatch.setattr(server_mod, "load_model", capture_load_model)
     monkeypatch.setattr(
-        "vllm_mlx.model_auto_config.detect_model_config",
+        "rapid_mlx.model_auto_config.detect_model_config",
         lambda _name: ModelProfile(
             is_hybrid=True,
             is_hybrid_explicit=True,
@@ -615,7 +615,7 @@ def test_serve_command_all_explicit_defaults_skip_model_detection(
         raise AssertionError("fully explicit serve must not detect model metadata")
 
     monkeypatch.setattr(
-        "vllm_mlx.model_auto_config.detect_model_config", unexpected_detection
+        "rapid_mlx.model_auto_config.detect_model_config", unexpected_detection
     )
     _capture_uvicorn_run(monkeypatch)
     ns = _minimal_serve_ns(port=_free_tcp_port())
@@ -653,7 +653,7 @@ def test_strict_auto_default_retries_failed_nonfatal_parser_detection(
         raise RuntimeError("broken checkpoint metadata")
 
     monkeypatch.setattr(
-        "vllm_mlx.model_auto_config.detect_model_config", broken_detection
+        "rapid_mlx.model_auto_config.detect_model_config", broken_detection
     )
     _capture_uvicorn_run(monkeypatch)
     ns = _minimal_serve_ns()
@@ -688,7 +688,7 @@ def test_serve_command_dispatches_uvicorn_with_host_port_when_listen_fd_unset(
     assert captured.get("port") == port
     assert "fd" not in captured
 
-    from vllm_mlx.config import get_config
+    from rapid_mlx.config import get_config
 
     cfg = get_config()
     assert cfg.bind_host == "127.0.0.1"
@@ -703,7 +703,7 @@ def test_serve_command_default_max_tokens_does_not_mutate_args(
     """Omitted --max-tokens should stay omitted on args, while load_model
     receives the operational default.
     """
-    from vllm_mlx import server as server_mod
+    from rapid_mlx import server as server_mod
 
     captured_load: dict = {}
 
@@ -784,7 +784,7 @@ def test_serve_command_resets_stale_bind_fields_between_invocations(
     # First call: host/port.
     port_a = _free_tcp_port()
     cli.serve_command(_minimal_serve_ns(host="127.0.0.1", port=port_a))
-    from vllm_mlx.config import get_config
+    from rapid_mlx.config import get_config
 
     cfg = get_config()
     assert (cfg.bind_host, cfg.bind_port, cfg.bind_listen_fd) == (

@@ -5,8 +5,8 @@ from collections.abc import AsyncIterator
 
 import pytest
 
-from vllm_mlx.engine.base import GenerationOutput
-from vllm_mlx.engine.batched import BatchedEngine
+from rapid_mlx.engine.base import GenerationOutput
+from rapid_mlx.engine.batched import BatchedEngine
 
 
 class FakeTokenizer:
@@ -481,7 +481,7 @@ def test_router_allowlist_tool_call_routing_declared():
     single-token-flush regression ship in v0.6.61: no test enforced that
     every router family had streaming coverage for the aggregate path.
     """
-    from vllm_mlx.engine.batched import _OUTPUT_ROUTER_ALLOWLIST
+    from rapid_mlx.engine.batched import _OUTPUT_ROUTER_ALLOWLIST
 
     declared = (
         set(_ROUTER_FAMILIES_TOOL_CALL_AGGREGATE.keys())

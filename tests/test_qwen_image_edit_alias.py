@@ -3,13 +3,13 @@
 
 from __future__ import annotations
 
-from vllm_mlx import _download_gate
-from vllm_mlx.catalog import build_catalog_bundle
-from vllm_mlx.image.engine import ImageGenerationEngine
-from vllm_mlx.model_aliases import resolve_profile
-from vllm_mlx.model_sizes import size_bytes
-from vllm_mlx.routes.models import _detect_capabilities
-from vllm_mlx.runtime.resident_models import estimate_model_bytes
+from rapid_mlx import _download_gate
+from rapid_mlx.catalog import build_catalog_bundle
+from rapid_mlx.image.engine import ImageGenerationEngine
+from rapid_mlx.model_aliases import resolve_profile
+from rapid_mlx.model_sizes import size_bytes
+from rapid_mlx.routes.models import _detect_capabilities
+from rapid_mlx.runtime.resident_models import estimate_model_bytes
 
 ALIAS = "qwen-image-edit"
 REPO = "OsaurusAI/Qwen-Image-Edit-mflux-q8"
@@ -69,7 +69,7 @@ def test_openai_model_card_advertises_editing_not_generation() -> None:
 def test_cold_load_fetches_the_pinned_revision(monkeypatch) -> None:
     engine = ImageGenerationEngine(REPO)
     monkeypatch.setattr(
-        "vllm_mlx._download_gate.mflux_local_snapshot", lambda _repo: None
+        "rapid_mlx._download_gate.mflux_local_snapshot", lambda _repo: None
     )
     monkeypatch.setattr(engine, "_verify_weights_complete", lambda: None)
     calls = []

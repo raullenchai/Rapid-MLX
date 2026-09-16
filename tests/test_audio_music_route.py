@@ -18,7 +18,7 @@ Covered:
   thread identity), and survives cancellation without releasing the lock
   or unlinking the temp file under a live worker.
 
-NOTE (CI): these import ``vllm_mlx.config``, whose import chain reaches
+NOTE (CI): these import ``rapid_mlx.config``, whose import chain reaches
 ``engine_core``'s ``import mlx.core`` — so this file belongs in the
 ``test-apple-silicon`` job, not the mlx-free Linux matrix.
 """
@@ -35,7 +35,7 @@ import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
-# This suite imports ``vllm_mlx.config``, whose import chain reaches
+# This suite imports ``rapid_mlx.config``, whose import chain reaches
 # ``engine_core`` and therefore requires MLX.  The regular Linux matrix and
 # diff-aware PR validation deliberately run without MLX; the Apple Silicon
 # job below exercises the full suite instead.
@@ -62,8 +62,8 @@ def _make_tone_wav(duration_s: float = 0.25, freq_hz: float = 440.0) -> bytes:
 
 def _mount_audio_app() -> tuple[TestClient, callable]:
     """Mount the audio router on a bare FastAPI app, bypassing auth."""
-    from vllm_mlx.config import get_config
-    from vllm_mlx.routes import audio as audio_route
+    from rapid_mlx.config import get_config
+    from rapid_mlx.routes import audio as audio_route
 
     app = FastAPI()
     app.include_router(audio_route.router)
@@ -78,7 +78,7 @@ def _mount_audio_app() -> tuple[TestClient, callable]:
 
 
 class _FakeMusicEngine:
-    """Stands in for ``vllm_mlx.audio.music.MusicEngine``.
+    """Stands in for ``rapid_mlx.audio.music.MusicEngine``.
 
     Records the call and writes a tiny WAV to ``out_path`` so the route's
     read-back-and-return path is exercised without SA3 weights.
@@ -118,14 +118,14 @@ class _FakeMusicEngine:
 def _install_engine(monkeypatch, engine_cls):
     """Swap ``MusicEngine`` for ``engine_cls`` and clear the route cache.
 
-    The route imports ``MusicEngine`` from ``vllm_mlx.audio.music`` INSIDE
+    The route imports ``MusicEngine`` from ``rapid_mlx.audio.music`` INSIDE
     the worker function, so patch the attribute on the module object as
     well as by dotted path — the former is what a late import resolves.
     """
-    from vllm_mlx.routes import audio as audio_route
+    from rapid_mlx.routes import audio as audio_route
 
-    monkeypatch.setattr("vllm_mlx.audio.music.MusicEngine", engine_cls, raising=False)
-    music_mod = sys.modules.get("vllm_mlx.audio.music")
+    monkeypatch.setattr("rapid_mlx.audio.music.MusicEngine", engine_cls, raising=False)
+    music_mod = sys.modules.get("rapid_mlx.audio.music")
     if music_mod is not None:
         monkeypatch.setattr(music_mod, "MusicEngine", engine_cls)
     audio_route._music_engine = None
@@ -133,7 +133,7 @@ def _install_engine(monkeypatch, engine_cls):
 
 @pytest.fixture
 def _stub_music_engine(monkeypatch):
-    from vllm_mlx.routes import audio as audio_route
+    from rapid_mlx.routes import audio as audio_route
 
     _FakeMusicEngine.last_call = None
     _install_engine(monkeypatch, _FakeMusicEngine)
@@ -244,7 +244,7 @@ class TestMusicRoute:
         """
         from pydantic import ValidationError
 
-        from vllm_mlx.api.models import AudioMusicRequest
+        from rapid_mlx.api.models import AudioMusicRequest
 
         with pytest.raises(ValidationError):
             AudioMusicRequest(input="track", seconds=bad)
@@ -308,7 +308,7 @@ class TestMusicEmptyOutputDetection:
     """A "successful" render with no audio must not become a 200."""
 
     def _post_with_engine(self, monkeypatch, engine_cls):
-        from vllm_mlx.routes import audio as audio_route
+        from rapid_mlx.routes import audio as audio_route
 
         _install_engine(monkeypatch, engine_cls)
         client, restore = _mount_audio_app()
@@ -405,9 +405,9 @@ class TestMusicConcurrencyShape:
         """Subprocess waiting stays on the route's blocking executor."""
         import asyncio
 
-        from vllm_mlx.api.models import AudioMusicRequest
-        from vllm_mlx.routes import audio as audio_route
-        from vllm_mlx.runtime.audio_worker import bind_audio_worker
+        from rapid_mlx.api.models import AudioMusicRequest
+        from rapid_mlx.routes import audio as audio_route
+        from rapid_mlx.runtime.audio_worker import bind_audio_worker
 
         class _RejectingModelWorker:
             async def execute_on_model_worker(self, func, *args, **kwargs):
@@ -449,8 +449,8 @@ class TestMusicConcurrencyShape:
                     fh.write(_make_tone_wav())
                 return out_path
 
-        from vllm_mlx.api.models import AudioMusicRequest
-        from vllm_mlx.routes import audio as audio_route
+        from rapid_mlx.api.models import AudioMusicRequest
+        from rapid_mlx.routes import audio as audio_route
 
         async def _drive():
             observed["loop_thread"] = threading.get_ident()
@@ -460,7 +460,7 @@ class TestMusicConcurrencyShape:
 
         saved = audio_route._music_engine
         try:
-            music_mod = sys.modules["vllm_mlx.audio.music"]
+            music_mod = sys.modules["rapid_mlx.audio.music"]
             saved_cls = music_mod.MusicEngine
             music_mod.MusicEngine = _ThreadRecordingEngine
             audio_route._music_engine = None
@@ -478,7 +478,7 @@ class TestMusicConcurrencyShape:
         """A process-global lane remains usable when request loops change."""
         import asyncio
 
-        from vllm_mlx.routes import audio as audio_route
+        from rapid_mlx.routes import audio as audio_route
 
         async def _take_once():
             async with audio_route._get_music_lock():
@@ -502,7 +502,7 @@ class TestMusicConcurrencyShape:
         import asyncio
         import threading
 
-        from vllm_mlx.routes._async_utils import run_to_completion
+        from rapid_mlx.routes._async_utils import run_to_completion
 
         started = threading.Event()
         finished = threading.Event()

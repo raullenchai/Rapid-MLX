@@ -150,7 +150,7 @@ the gating list. The classification chooses which expensive steps run.
 
 * **high** — touches scheduler / engine / cli / server / memory_cache
   / routes / pyproject.toml. Full battery.
-* **medium** — touches `vllm_mlx/` or `tests/` but not the high-blast
+* **medium** — touches `rapid_mlx/` or `tests/` but not the high-blast
   list. Skips stress.
 * **low** — only docs / examples / README. Skips full_unit + stress.
 

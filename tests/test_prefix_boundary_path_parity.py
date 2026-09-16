@@ -24,7 +24,7 @@ import asyncio
 from types import SimpleNamespace
 from typing import Any
 
-from vllm_mlx.engine.batched import BatchedEngine
+from rapid_mlx.engine.batched import BatchedEngine
 
 _SENTINEL_BOUNDARY = 42
 

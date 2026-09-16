@@ -15,18 +15,18 @@ import mlx.core as mx
 from mlx_lm.generate import BatchGenerator
 from mlx_lm.models.cache import ArraysCache, KVCache
 
-import vllm_mlx.compiled_decode as compiled_decode
-import vllm_mlx.compiled_precision as compiled_precision
-from vllm_mlx.compiled_decode import (
+import rapid_mlx.compiled_decode as compiled_decode
+import rapid_mlx.compiled_precision as compiled_precision
+from rapid_mlx.compiled_decode import (
     CompiledDecodeStep,
     ShapeStableKVCache,
     convert_cache,
 )
-from vllm_mlx.compiled_precision import (
+from rapid_mlx.compiled_precision import (
     compiled_decode_precision,
     gated_product,
 )
-from vllm_mlx.singleton_cache_fastpath import _promote_layer
+from rapid_mlx.singleton_cache_fastpath import _promote_layer
 
 
 class _ToyModel:
@@ -117,7 +117,7 @@ def test_batch_generator_installer_replays_and_cleans_up(monkeypatch) -> None:
     monkeypatch.setattr(
         compiled_decode, "install_qwen35_attention_gate_precision", lambda _: 1
     )
-    from vllm_mlx.singleton_cache_fastpath import install_singleton_cache_fastpath
+    from rapid_mlx.singleton_cache_fastpath import install_singleton_cache_fastpath
 
     install_singleton_cache_fastpath()
     generator = BatchGenerator(
@@ -151,7 +151,7 @@ def test_batch_join_promotes_compiled_cache_then_new_singleton_reattaches(
     monkeypatch.setattr(
         compiled_decode, "install_qwen35_attention_gate_precision", lambda _: 1
     )
-    from vllm_mlx.singleton_cache_fastpath import install_singleton_cache_fastpath
+    from rapid_mlx.singleton_cache_fastpath import install_singleton_cache_fastpath
 
     install_singleton_cache_fastpath()
     generator = BatchGenerator(
@@ -641,8 +641,8 @@ def test_attention_precision_installer_fails_closed(monkeypatch) -> None:
 
 
 def test_scheduler_wires_compiled_decode_only_for_plain_decode(monkeypatch) -> None:
-    import vllm_mlx.scheduler as scheduler_module
-    from vllm_mlx.request import SamplingParams
+    import rapid_mlx.scheduler as scheduler_module
+    from rapid_mlx.request import SamplingParams
 
     installed = []
     generator = SimpleNamespace()
@@ -652,7 +652,7 @@ def test_scheduler_wires_compiled_decode_only_for_plain_decode(monkeypatch) -> N
         scheduler_module, "_install_dense_sampler_fastpath", lambda _bg: None
     )
     monkeypatch.setattr(
-        "vllm_mlx.singleton_cache_fastpath.install_singleton_cache_fastpath",
+        "rapid_mlx.singleton_cache_fastpath.install_singleton_cache_fastpath",
         lambda: None,
     )
     monkeypatch.setattr(
@@ -852,13 +852,13 @@ def test_qualification_supports_nested_text_config_and_rejects_wrapper(
     assert compiled_decode.model_qualification_reason(model, "qwen3.6-35b") is None
 
     Wrapper = type("Wrapper", (), {})
-    Wrapper.__module__ = "vllm_mlx.engine.batched"
+    Wrapper.__module__ = "rapid_mlx.engine.batched"
     assert "not trace-safe" in compiled_decode.model_qualification_reason(
         Wrapper(), "qwen3.6-35b"
     )
 
 
 def test_eager_dispatch_default_compilation_probe_is_false() -> None:
-    from vllm_mlx.patches import qwen3_5_eager_dispatch
+    from rapid_mlx.patches import qwen3_5_eager_dispatch
 
     assert qwen3_5_eager_dispatch._not_compiling() is False

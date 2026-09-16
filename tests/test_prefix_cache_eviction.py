@@ -51,7 +51,7 @@ def test_env_override_takes_precedence_over_heuristic(monkeypatch):
     """``RAPID_MLX_PREFIX_CACHE_MAX_BYTES`` wins over the
     ``max_memory_percent`` heuristic so operators can bound the cache
     even on large-memory hosts where 20% of RAM is excessive."""
-    from vllm_mlx.memory_cache import MemoryCacheConfig
+    from rapid_mlx.memory_cache import MemoryCacheConfig
 
     # Use a value safely above the 100 MiB floor so the test asserts
     # the env override directly rather than the floor.
@@ -66,7 +66,7 @@ def test_env_override_takes_precedence_over_max_memory_mb(monkeypatch):
     ``max_memory_mb`` from the CLI / config plumbing must NOT override
     it. This lets operators pin a hard cap that survives across
     code changes that wire in new programmatic defaults."""
-    from vllm_mlx.memory_cache import MemoryCacheConfig
+    from rapid_mlx.memory_cache import MemoryCacheConfig
 
     monkeypatch.setenv("RAPID_MLX_PREFIX_CACHE_MAX_BYTES", str(200 * 1024 * 1024))
 
@@ -78,7 +78,7 @@ def test_env_unset_falls_back_to_legacy_max_memory_mb(monkeypatch):
     """When the env var is unset, the programmatic override still
     wins over the heuristic — keeps callers that already set
     ``max_memory_mb`` working unchanged."""
-    from vllm_mlx.memory_cache import _BYTES_PER_MB, MemoryCacheConfig
+    from rapid_mlx.memory_cache import _BYTES_PER_MB, MemoryCacheConfig
 
     monkeypatch.delenv("RAPID_MLX_PREFIX_CACHE_MAX_BYTES", raising=False)
 
@@ -90,7 +90,7 @@ def test_env_invalid_value_falls_through_silently(monkeypatch):
     """A misconfigured env var (e.g. ``"5GB"`` instead of bytes) must
     NOT crash the server — fall through to the legacy heuristic so
     a typo in the operator's env still boots a working server."""
-    from vllm_mlx.memory_cache import _BYTES_PER_MB, MemoryCacheConfig
+    from rapid_mlx.memory_cache import _BYTES_PER_MB, MemoryCacheConfig
 
     monkeypatch.setenv("RAPID_MLX_PREFIX_CACHE_MAX_BYTES", "5GB")
 
@@ -102,7 +102,7 @@ def test_env_invalid_value_falls_through_silently(monkeypatch):
 def test_env_zero_or_negative_value_falls_through(monkeypatch):
     """Zero/negative values must NOT silently disable the cache;
     they fall through so the legacy heuristic applies."""
-    from vllm_mlx.memory_cache import _BYTES_PER_MB, MemoryCacheConfig
+    from rapid_mlx.memory_cache import _BYTES_PER_MB, MemoryCacheConfig
 
     monkeypatch.setenv("RAPID_MLX_PREFIX_CACHE_MAX_BYTES", "0")
 
@@ -122,7 +122,7 @@ def test_env_value_passes_through_unclamped(monkeypatch):
     instance, deterministic test fixtures that drive eviction
     against a known cap).
     """
-    from vllm_mlx.memory_cache import MemoryCacheConfig
+    from rapid_mlx.memory_cache import MemoryCacheConfig
 
     monkeypatch.setenv("RAPID_MLX_PREFIX_CACHE_MAX_BYTES", "1024")
 
@@ -181,7 +181,7 @@ def test_lru_evictions_total_ticks_when_cache_exceeds_env_cap(monkeypatch):
     # Use a small cap so a handful of fake entries trip eviction.
     monkeypatch.setenv("RAPID_MLX_PREFIX_CACHE_MAX_BYTES", str(8 * 1024 * 1024))
 
-    from vllm_mlx.memory_cache import MemoryAwarePrefixCache, MemoryCacheConfig
+    from rapid_mlx.memory_cache import MemoryAwarePrefixCache, MemoryCacheConfig
 
     cfg = MemoryCacheConfig()
     cache = MemoryAwarePrefixCache(model=object(), config=cfg)
@@ -247,7 +247,7 @@ def _make_scheduler_with_stub_cache(stub_cache):
     BatchGenerator wiring (which needs an mlx-lm model) and only set
     the attributes ``evict_prefix_cache_under_pressure`` reads.
     """
-    from vllm_mlx.scheduler import Scheduler, SchedulerConfig
+    from rapid_mlx.scheduler import Scheduler, SchedulerConfig
 
     sched = Scheduler.__new__(Scheduler)
     sched.config = SchedulerConfig(
@@ -264,7 +264,7 @@ def _make_scheduler_with_stub_cache(stub_cache):
     # utilization-ratchet generation (#2858); pin the stub to the current
     # generation so the pre-resolved cap of 0 keeps meaning "disabled"
     # instead of tripping a re-resolve against the missing attribute.
-    from vllm_mlx.memory_budget import process_utilization_floor
+    from rapid_mlx.memory_budget import process_utilization_floor
 
     _, sched._metal_cap_floor_generation = process_utilization_floor()
     return sched
@@ -288,7 +288,7 @@ def test_pressure_evictions_total_ticks_on_cache_self_pressure():
     sched = _make_scheduler_with_stub_cache(stub_cache)
 
     # Patch mx.clear_cache so the test doesn't need a Metal device.
-    with patch("vllm_mlx.scheduler.mx.clear_cache"):
+    with patch("rapid_mlx.scheduler.mx.clear_cache"):
         evicted = sched.evict_prefix_cache_under_pressure()
 
     assert evicted >= 1, (
@@ -315,7 +315,7 @@ def test_pressure_eviction_loop_short_circuits_when_no_trigger_configured():
     trigger configured."""
     sched = _make_scheduler_with_stub_cache(stub_cache=None)
     # No cache → both triggers stay zero.
-    with patch("vllm_mlx.scheduler.mx.clear_cache") as clear_cache_mock:
+    with patch("rapid_mlx.scheduler.mx.clear_cache") as clear_cache_mock:
         assert sched.evict_prefix_cache_under_pressure() == 0
         clear_cache_mock.assert_not_called()
     assert sched.num_prefix_cache_pressure_evictions == 0
@@ -335,7 +335,7 @@ def test_pressure_eviction_max_evict_bounds_a_single_tick():
 
     sched = _make_scheduler_with_stub_cache(stub_cache)
 
-    with patch("vllm_mlx.scheduler.mx.clear_cache"):
+    with patch("rapid_mlx.scheduler.mx.clear_cache"):
         evicted = sched.evict_prefix_cache_under_pressure(max_evict=3)
 
     assert evicted == 3
@@ -357,7 +357,7 @@ def test_pressure_eviction_stops_when_cache_drops_below_threshold():
 
     sched = _make_scheduler_with_stub_cache(stub_cache)
 
-    with patch("vllm_mlx.scheduler.mx.clear_cache"):
+    with patch("rapid_mlx.scheduler.mx.clear_cache"):
         evicted = sched.evict_prefix_cache_under_pressure(max_evict=64)
 
     # The loop should stop as soon as current < 9 MiB. With per_entry=1
@@ -376,7 +376,7 @@ def test_cache_self_pressure_respects_env_override(monkeypatch):
     """
     monkeypatch.setenv("RAPID_MLX_PREFIX_CACHE_MAX_BYTES", str(8 * 1024 * 1024))
 
-    from vllm_mlx.memory_cache import MemoryAwarePrefixCache, MemoryCacheConfig
+    from rapid_mlx.memory_cache import MemoryAwarePrefixCache, MemoryCacheConfig
 
     cfg = MemoryCacheConfig()
     cache = MemoryAwarePrefixCache(model=object(), config=cfg)
@@ -396,7 +396,7 @@ def test_get_stats_surfaces_evictions(monkeypatch):
     """
     monkeypatch.setenv("RAPID_MLX_PREFIX_CACHE_MAX_BYTES", str(8 * 1024 * 1024))
 
-    from vllm_mlx.memory_cache import MemoryAwarePrefixCache, MemoryCacheConfig
+    from rapid_mlx.memory_cache import MemoryAwarePrefixCache, MemoryCacheConfig
 
     cache = MemoryAwarePrefixCache(model=object(), config=MemoryCacheConfig())
 
@@ -442,7 +442,7 @@ def test_r7_h7_near_full_cache_admits_fresh_inserts_via_lru_eviction(
     """
     monkeypatch.setenv("RAPID_MLX_PREFIX_CACHE_MAX_BYTES", str(8 * 1024 * 1024))
 
-    from vllm_mlx.memory_cache import MemoryAwarePrefixCache, MemoryCacheConfig
+    from rapid_mlx.memory_cache import MemoryAwarePrefixCache, MemoryCacheConfig
 
     cache = MemoryAwarePrefixCache(model=object(), config=MemoryCacheConfig())
 
@@ -516,7 +516,7 @@ def test_r7_h7_lru_ordering_least_recently_touched_evicted_first(
     # to make room.
     monkeypatch.setenv("RAPID_MLX_PREFIX_CACHE_MAX_BYTES", str(3 * 1024 * 1024))
 
-    from vllm_mlx.memory_cache import MemoryAwarePrefixCache, MemoryCacheConfig
+    from rapid_mlx.memory_cache import MemoryAwarePrefixCache, MemoryCacheConfig
 
     cache = MemoryAwarePrefixCache(model=object(), config=MemoryCacheConfig())
 

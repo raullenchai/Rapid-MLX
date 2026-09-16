@@ -28,11 +28,11 @@ pytestmark = pytest.mark.requires_mlx
 import sys
 from unittest import mock
 
-import vllm_mlx.cli as cli
+import rapid_mlx.cli as cli
 
 # Pre-import so any lazy ``from .engine_core import ...`` binds the REAL
-# class before a test patches ``vllm_mlx.scheduler.SchedulerConfig``.
-import vllm_mlx.engine_core as _engine_core  # noqa: E402,F401
+# class before a test patches ``rapid_mlx.scheduler.SchedulerConfig``.
+import rapid_mlx.engine_core as _engine_core  # noqa: E402,F401
 
 
 class _StopError(Exception):
@@ -45,7 +45,7 @@ def _capture_serve_scheduler_config(argv: list[str]) -> dict:
     invocation and capture the kwargs the serve path passes to
     ``SchedulerConfig(...)``.
 
-    Patching ``vllm_mlx.scheduler.SchedulerConfig`` is the correct
+    Patching ``rapid_mlx.scheduler.SchedulerConfig`` is the correct
     interception point: ``serve_command`` imports it locally via
     ``from .scheduler import SchedulerConfig`` at each call, so the patch
     is picked up at the real construction site (cli.py serve wiring). The
@@ -69,14 +69,14 @@ def _capture_serve_scheduler_config(argv: list[str]) -> dict:
             cli, "_gather_kv_cache_dtype_inputs", lambda *a, **k: ({}, None)
         ),
         mock.patch(
-            "vllm_mlx._version_check.prompt_upgrade_if_available",
+            "rapid_mlx._version_check.prompt_upgrade_if_available",
             return_value=False,
         ),
         mock.patch(
-            "vllm_mlx.utils.tokenizer.load_model_with_fallback",
+            "rapid_mlx.utils.tokenizer.load_model_with_fallback",
             return_value=(object(), object()),
         ),
-        mock.patch("vllm_mlx.scheduler.SchedulerConfig", _fake_scheduler_config),
+        mock.patch("rapid_mlx.scheduler.SchedulerConfig", _fake_scheduler_config),
         mock.patch.object(sys, "argv", ["rapid-mlx", *argv]),
         mock.patch.object(sys.stdin, "isatty", return_value=False),
         pytest.raises((_StopError, SystemExit)),
@@ -170,7 +170,7 @@ def test_non_negative_int_helper_rejects_negative_and_non_int():
     and raises ``ArgumentTypeError`` on a negative or non-integer value."""
     import argparse
 
-    from vllm_mlx.cli import non_negative_int
+    from rapid_mlx.cli import non_negative_int
 
     assert non_negative_int("0") == 0
     assert non_negative_int("16") == 16
@@ -184,7 +184,7 @@ def test_scheduler_config_still_rejects_negative_as_defense_in_depth():
     """The construction-time validation is kept even though argparse now
     rejects negatives earlier — a programmatic caller that bypasses the CLI
     still gets a clear error."""
-    from vllm_mlx.scheduler import SchedulerConfig
+    from rapid_mlx.scheduler import SchedulerConfig
 
     with pytest.raises(ValueError, match=r"response_cache_entries must be >= 0"):
         SchedulerConfig(response_cache_entries=-1)

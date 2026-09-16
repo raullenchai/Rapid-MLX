@@ -47,8 +47,8 @@ class TestResponseFormatValidation:
         ``{}``. Wrapped by ``except Exception: raise
         HTTPException(detail=str(e))`` and the raw error string
         surfaced in the response body."""
-        from vllm_mlx.api.models import ResponseFormat
-        from vllm_mlx.service.helpers import _validate_response_format
+        from rapid_mlx.api.models import ResponseFormat
+        from rapid_mlx.service.helpers import _validate_response_format
 
         with pytest.raises(HTTPException) as ei:
             _validate_response_format(ResponseFormat(type="json_schema"))
@@ -67,7 +67,7 @@ class TestResponseFormatValidation:
         through and ``extract_json_schema_for_guided`` still bailed at
         ``if not schema: return None`` — request proceeded with no
         constraint. Now → 400 naming the missing inner member."""
-        from vllm_mlx.service.helpers import _validate_response_format
+        from rapid_mlx.service.helpers import _validate_response_format
 
         with pytest.raises(HTTPException) as ei:
             _validate_response_format(
@@ -80,7 +80,7 @@ class TestResponseFormatValidation:
     def test_json_schema_type_with_empty_schema_member_raises_400(self):
         """Same shape as above but with ``schema:{}`` — an empty inner
         schema is functionally equivalent to no schema at all."""
-        from vllm_mlx.service.helpers import _validate_response_format
+        from rapid_mlx.service.helpers import _validate_response_format
 
         with pytest.raises(HTTPException) as ei:
             _validate_response_format(
@@ -100,7 +100,7 @@ class TestResponseFormatValidation:
         ``json_schema_spec.get("schema", {})`` returned ``{}`` so the
         function fell out at ``if not schema: return None`` and the
         request proceeded with no structure enforcement."""
-        from vllm_mlx.service.helpers import _validate_response_format
+        from rapid_mlx.service.helpers import _validate_response_format
 
         with pytest.raises(HTTPException) as ei:
             _validate_response_format({"type": "json_schema", "json_schema": {}})
@@ -113,7 +113,7 @@ class TestResponseFormatValidation:
         for any non-listed type) and the request was treated as
         unconstrained text — the client received plain prose with no
         signal that their format choice was unsupported."""
-        from vllm_mlx.service.helpers import _validate_response_format
+        from rapid_mlx.service.helpers import _validate_response_format
 
         with pytest.raises(HTTPException) as ei:
             _validate_response_format({"type": "xml"})
@@ -126,7 +126,7 @@ class TestResponseFormatValidation:
         """``type:""`` is a common client-side bug (env var unset →
         empty string default). Used to silent-200 via the same path
         as ``xml``."""
-        from vllm_mlx.service.helpers import _validate_response_format
+        from rapid_mlx.service.helpers import _validate_response_format
 
         with pytest.raises(HTTPException) as ei:
             _validate_response_format({"type": ""})
@@ -137,7 +137,7 @@ class TestResponseFormatValidation:
         """``response_format={}`` — no ``type`` key at all. Used to
         silent-200 because ``rf_dict.get("type", "text")`` returned
         ``"text"`` and the route proceeded as unconstrained generation."""
-        from vllm_mlx.service.helpers import _validate_response_format
+        from rapid_mlx.service.helpers import _validate_response_format
 
         with pytest.raises(HTTPException) as ei:
             _validate_response_format({})
@@ -148,8 +148,8 @@ class TestResponseFormatValidation:
         """``type:"text"`` is the documented default and is the
         explicit value Pydantic assigns when no ``type`` is provided
         to the typed path — must not raise."""
-        from vllm_mlx.api.models import ResponseFormat
-        from vllm_mlx.service.helpers import _validate_response_format
+        from rapid_mlx.api.models import ResponseFormat
+        from rapid_mlx.service.helpers import _validate_response_format
 
         # Both shapes — dict and Pydantic — must pass.
         _validate_response_format(ResponseFormat(type="text"))
@@ -157,8 +157,8 @@ class TestResponseFormatValidation:
 
     def test_valid_json_object_passes(self):
         """The OpenAI ``json_object`` JSON-mode shorthand."""
-        from vllm_mlx.api.models import ResponseFormat
-        from vllm_mlx.service.helpers import _validate_response_format
+        from rapid_mlx.api.models import ResponseFormat
+        from rapid_mlx.service.helpers import _validate_response_format
 
         _validate_response_format(ResponseFormat(type="json_object"))
         _validate_response_format({"type": "json_object"})
@@ -166,7 +166,7 @@ class TestResponseFormatValidation:
     def test_valid_json_schema_with_spec_passes(self):
         """A fully-specified ``json_schema`` request must still work —
         the gate only fires on missing/empty inner ``json_schema``."""
-        from vllm_mlx.service.helpers import _validate_response_format
+        from rapid_mlx.service.helpers import _validate_response_format
 
         _validate_response_format(
             {
@@ -181,7 +181,7 @@ class TestResponseFormatValidation:
     def test_none_response_format_passes(self):
         """``response_format`` is optional — ``None`` is the default
         and must remain a no-op."""
-        from vllm_mlx.service.helpers import _validate_response_format
+        from rapid_mlx.service.helpers import _validate_response_format
 
         _validate_response_format(None)
 
@@ -202,7 +202,7 @@ class TestImageUrlTypeValidation:
     def test_int_url_rejected_at_schema_layer(self):
         """The F-066 repro: ``image_url.url=123``. Pydantic v2 raises
         ValidationError (HTTP 422 at the FastAPI route layer)."""
-        from vllm_mlx.api.models import ChatCompletionRequest
+        from rapid_mlx.api.models import ChatCompletionRequest
 
         with pytest.raises(ValidationError) as ei:
             ChatCompletionRequest(
@@ -226,7 +226,7 @@ class TestImageUrlTypeValidation:
         types a buggy client could send. All share the same
         ``.startswith`` hazard at the parser layer — caught at the
         schema instead."""
-        from vllm_mlx.api.models import ChatCompletionRequest
+        from rapid_mlx.api.models import ChatCompletionRequest
 
         with pytest.raises(ValidationError) as ei:
             ChatCompletionRequest(
@@ -249,7 +249,7 @@ class TestImageUrlTypeValidation:
         """Sister field — ``video_url.url`` has the same parser
         hazard (``process_video_input`` calls ``is_base64_video`` →
         ``startswith``)."""
-        from vllm_mlx.api.models import ChatCompletionRequest
+        from rapid_mlx.api.models import ChatCompletionRequest
 
         with pytest.raises(ValidationError) as ei:
             ChatCompletionRequest(
@@ -265,7 +265,7 @@ class TestImageUrlTypeValidation:
 
     def test_audio_url_int_rejected(self):
         """Sister field — ``audio_url.url`` shares the same shape."""
-        from vllm_mlx.api.models import ChatCompletionRequest
+        from rapid_mlx.api.models import ChatCompletionRequest
 
         with pytest.raises(ValidationError) as ei:
             ChatCompletionRequest(
@@ -282,7 +282,7 @@ class TestImageUrlTypeValidation:
     def test_valid_string_url_dict_accepted(self):
         """A well-typed dict-shape ``image_url`` must still parse —
         the validator only rejects non-string ``url``."""
-        from vllm_mlx.api.models import ChatCompletionRequest
+        from rapid_mlx.api.models import ChatCompletionRequest
 
         req = ChatCompletionRequest(
             model="x",
@@ -325,7 +325,7 @@ class TestImageUrlTypeValidation:
         """
         from pydantic import ValidationError
 
-        from vllm_mlx.api.models import ChatCompletionRequest
+        from rapid_mlx.api.models import ChatCompletionRequest
 
         with pytest.raises(ValidationError) as ei:
             ChatCompletionRequest(
@@ -349,7 +349,7 @@ class TestImageUrlTypeValidation:
     def test_valid_text_content_unaffected(self):
         """The validator only runs on dict items with multimodal
         fields — a pure-text content list must not be affected."""
-        from vllm_mlx.api.models import ChatCompletionRequest
+        from rapid_mlx.api.models import ChatCompletionRequest
 
         req = ChatCompletionRequest(
             model="x",
@@ -379,7 +379,7 @@ class TestProcessImageInputDefenseInDepth:
     """
 
     def test_int_image_raises_clean_value_error(self):
-        from vllm_mlx.models.mllm import process_image_input
+        from rapid_mlx.models.mllm import process_image_input
 
         with pytest.raises(ValueError) as ei:
             process_image_input(123)  # type: ignore[arg-type]
@@ -395,7 +395,7 @@ class TestProcessImageInputDefenseInDepth:
         type guard catches the non-string and raises. The error
         message names the post-unwrap type (``int``), not ``dict``,
         which is the load-bearing test (codex r2 BLOCKING)."""
-        from vllm_mlx.models.mllm import process_image_input
+        from rapid_mlx.models.mllm import process_image_input
 
         with pytest.raises(ValueError) as ei:
             process_image_input({"url": 123})  # type: ignore[arg-type]
@@ -409,7 +409,7 @@ class TestProcessImageInputDefenseInDepth:
         The downstream call hits ``Path.exists()`` and raises
         ``Cannot process image`` because the path is fake — that's
         downstream behavior, not the type guard rejecting the dict."""
-        from vllm_mlx.models.mllm import process_image_input
+        from rapid_mlx.models.mllm import process_image_input
 
         # Pick a path that's <4096 chars and definitely doesn't exist
         # — proves we got past the type guard into the body of the
@@ -427,7 +427,7 @@ class TestProcessImageInputDefenseInDepth:
         """The function also handles the nested ``{"url": {"url":
         "..."}}`` shape (line ~527-528). Pin that the unwrap still
         works through both levels."""
-        from vllm_mlx.models.mllm import process_image_input
+        from rapid_mlx.models.mllm import process_image_input
 
         with pytest.raises(ValueError) as ei:
             process_image_input({"url": {"url": "/nonexistent/__nested_test__.png"}})

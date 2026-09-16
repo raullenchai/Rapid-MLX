@@ -96,7 +96,7 @@ class _CloneRecordingEngine:
             rec["ref_text"] = ref_text
         self.generate_calls.append(rec)
 
-        from vllm_mlx.audio.tts import AudioOutput
+        from rapid_mlx.audio.tts import AudioOutput
 
         return AudioOutput(
             audio=np.zeros(240, dtype=np.float32), sample_rate=24000, duration=0.01
@@ -110,11 +110,11 @@ def _mount(monkeypatch):
     from fastapi import FastAPI
     from fastapi.testclient import TestClient
 
-    from vllm_mlx.audio import probe as probe_mod
-    from vllm_mlx.audio import tts as tts_mod
-    from vllm_mlx.config import get_config
-    from vllm_mlx.middleware.exception_handlers import install_exception_handlers
-    from vllm_mlx.routes import audio as audio_route
+    from rapid_mlx.audio import probe as probe_mod
+    from rapid_mlx.audio import tts as tts_mod
+    from rapid_mlx.config import get_config
+    from rapid_mlx.middleware.exception_handlers import install_exception_handlers
+    from rapid_mlx.routes import audio as audio_route
 
     _CloneRecordingEngine.instances = []
     _CloneRecordingEngine._real_to_bytes = tts_mod.TTSEngine.to_bytes
@@ -281,7 +281,7 @@ class TestF5InlineCloneRoute:
     ],
 )
 def test_is_clone_capable_model_classification(model_name, expected):
-    from vllm_mlx.routes.audio import _is_clone_capable_model
+    from rapid_mlx.routes.audio import _is_clone_capable_model
 
     assert _is_clone_capable_model(model_name) is expected
 
@@ -292,8 +292,8 @@ def test_clone_gate_matches_engine_family_for_f5_token():
     gate says clone-capable but engine drops ref_audio. For an ``f5`` token
     that is not ``f5-tts``/``f5_tts`` the engine detects the default
     (Kokoro) family, so the gate must NOT deem it clone-capable."""
-    from vllm_mlx.audio.tts import TTSEngine
-    from vllm_mlx.routes.audio import _is_clone_capable_model
+    from rapid_mlx.audio.tts import TTSEngine
+    from rapid_mlx.routes.audio import _is_clone_capable_model
 
     name = "org/f5-foo"
     assert _is_clone_capable_model(name) is False

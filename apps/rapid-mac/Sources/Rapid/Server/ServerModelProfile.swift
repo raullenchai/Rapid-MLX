@@ -120,7 +120,7 @@ struct SpeculativeDecodingAvailability: Equatable, Sendable {
 
 /// Per-alias profile data returned by Rapid-MLX `/v1/models/{id}` as
 /// vendor-extension fields on top of the OpenAI-canonical shape.
-/// Mirrors the server's ``vllm_mlx.api.models.ModelInfo`` extension
+/// Mirrors the server's ``rapid_mlx.api.models.ModelInfo`` extension
 /// surface so a curated sampling profile (``recommended_sampling``)
 /// flows straight from ``aliases.json`` to the user's first chat —
 /// no hand-tuning sliders, no per-model docs to read.

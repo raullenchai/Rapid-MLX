@@ -16,9 +16,9 @@ reasoning parser to recover reasoning_text from the raw output.
 
 from types import SimpleNamespace
 
-from vllm_mlx.reasoning.qwen3_parser import Qwen3ReasoningParser
-from vllm_mlx.service.helpers import _finalize_content_and_reasoning
-from vllm_mlx.tool_parsers.hermes_tool_parser import HermesToolParser
+from rapid_mlx.reasoning.qwen3_parser import Qwen3ReasoningParser
+from rapid_mlx.service.helpers import _finalize_content_and_reasoning
+from rapid_mlx.tool_parsers.hermes_tool_parser import HermesToolParser
 
 
 def _make_request_stub() -> SimpleNamespace:
@@ -150,7 +150,7 @@ class TestToolTagLeakRegression:
         # reasoning parser because that is the parser that exhibits
         # the pattern, but the guard applies to any parser that
         # legitimately reports "I found no markers I understand."
-        from vllm_mlx.reasoning.harmony_parser import HarmonyReasoningParser
+        from rapid_mlx.reasoning.harmony_parser import HarmonyReasoningParser
 
         cleaned, reasoning = _finalize_content_and_reasoning(
             raw_text="4",
@@ -175,7 +175,7 @@ class TestToolTagLeakRegression:
         # which is the right outcome — but the helper's job is to
         # respect the contract "only update cleaned_text when the
         # parser explicitly produced new content.")
-        from vllm_mlx.reasoning.qwen3_parser import Qwen3ReasoningParser
+        from rapid_mlx.reasoning.qwen3_parser import Qwen3ReasoningParser
 
         raw = "<think>just thinking, no answer</think>"
         cleaned, reasoning = _finalize_content_and_reasoning(
@@ -230,7 +230,7 @@ class TestBareThinkingProcessLeakRegression:
     )
 
     def test_bare_thinking_preamble_routes_to_reasoning_not_content(self):
-        from vllm_mlx.reasoning.qwen3_parser import Qwen3ReasoningParser
+        from rapid_mlx.reasoning.qwen3_parser import Qwen3ReasoningParser
 
         cleaned, reasoning = _finalize_content_and_reasoning(
             raw_text=self._LEAKED_PREAMBLE,
@@ -275,7 +275,7 @@ class TestBareThinkingProcessLeakRegression:
             cleaned_text=answer,
             tool_calls=None,
             reasoning_parser=__import__(
-                "vllm_mlx.reasoning.qwen3_parser", fromlist=["Qwen3ReasoningParser"]
+                "rapid_mlx.reasoning.qwen3_parser", fromlist=["Qwen3ReasoningParser"]
             ).Qwen3ReasoningParser(tokenizer=None),
         )
         assert reasoning is None

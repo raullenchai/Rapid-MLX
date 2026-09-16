@@ -20,7 +20,7 @@ from urllib.parse import urlparse
 
 import httpx
 
-DEFAULT_GLOBS = ("vllm_mlx/**/*.py", "tests/**/*.py", "scripts/**/*.py")
+DEFAULT_GLOBS = ("rapid_mlx/**/*.py", "tests/**/*.py", "scripts/**/*.py")
 TURN_ACKNOWLEDGEMENT = "Snapshot chunk received."
 EXPECTED_ANSWER = TURN_ACKNOWLEDGEMENT
 TURN_CHARS = 160_000

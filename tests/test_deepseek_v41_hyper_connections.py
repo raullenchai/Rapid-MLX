@@ -9,8 +9,8 @@ pytestmark = pytest.mark.requires_mlx
 
 import mlx.core as mx
 
-from vllm_mlx.models.deepseek_v41_native import hyper_connections as hc
-from vllm_mlx.models.deepseek_v41_native import model as model_module
+from rapid_mlx.models.deepseek_v41_native import hyper_connections as hc
+from rapid_mlx.models.deepseek_v41_native import model as model_module
 
 
 def _requires_metal() -> None:

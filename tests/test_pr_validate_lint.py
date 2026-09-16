@@ -61,7 +61,7 @@ class TestForceExclude:
         # and `ruff format --check` are given `--force-exclude` so ruff
         # honors the exclude config on the explicit paths.
         cmds = _capture_ruff_cmds(monkeypatch)
-        ctx = ctx_factory(["vllm_mlx/models/deepseek_v4.py"])
+        ctx = ctx_factory(["rapid_mlx/models/deepseek_v4.py"])
 
         res = LintStep().run(ctx)
         assert res.status == "pass"
@@ -78,7 +78,7 @@ class TestForceExclude:
         # ruff treats a value after a positional path as another path; the
         # flag must sit before the file list so it's parsed as an option.
         cmds = _capture_ruff_cmds(monkeypatch)
-        ctx = ctx_factory(["vllm_mlx/models/hy_v3.py"])
+        ctx = ctx_factory(["rapid_mlx/models/hy_v3.py"])
 
         LintStep().run(ctx)
 
@@ -90,7 +90,7 @@ class TestForceExclude:
 
 class TestShouldRun:
     def test_runs_on_python_change(self, ctx_factory):
-        ctx = ctx_factory(["vllm_mlx/models/hy_v3.py"])
+        ctx = ctx_factory(["rapid_mlx/models/hy_v3.py"])
         assert LintStep().should_run(ctx) is True
 
     def test_skips_docs_only(self, ctx_factory):

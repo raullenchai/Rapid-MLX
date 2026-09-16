@@ -20,7 +20,7 @@ from unittest import mock
 
 import pytest
 
-from vllm_mlx.doctor import env_health as eh
+from rapid_mlx.doctor import env_health as eh
 
 
 @pytest.fixture(autouse=True)

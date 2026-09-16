@@ -33,12 +33,12 @@ import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
-from vllm_mlx.api import response_format_metrics
-from vllm_mlx.config import reset_config
-from vllm_mlx.engine.base import GenerationOutput
-from vllm_mlx.middleware.exception_handlers import install_exception_handlers
-from vllm_mlx.routes.chat import router as chat_router
-from vllm_mlx.routes.responses import router as responses_router
+from rapid_mlx.api import response_format_metrics
+from rapid_mlx.config import reset_config
+from rapid_mlx.engine.base import GenerationOutput
+from rapid_mlx.middleware.exception_handlers import install_exception_handlers
+from rapid_mlx.routes.chat import router as chat_router
+from rapid_mlx.routes.responses import router as responses_router
 
 # ---------------------------------------------------------------------------
 # Stubs — modelled after the constraint-matrix file but with a real
@@ -160,7 +160,7 @@ def _rate_limiter_state():
     pytest collection order. Mirrors the same fixture pattern in
     ``tests/test_response_format_json_schema_strict.py``.
     """
-    from vllm_mlx.middleware.auth import rate_limiter
+    from rapid_mlx.middleware.auth import rate_limiter
 
     saved_enabled = rate_limiter.enabled
     saved_rpm = rate_limiter.requests_per_minute
@@ -429,7 +429,7 @@ def test_repair_fits_helper_returns_true_when_engine_is_mllm():
     refactor doesn't accidentally also tighten the repair gate and
     introduce a regression on the multimodal surface.
     """
-    from vllm_mlx.service.helpers import repair_messages_fit_context
+    from rapid_mlx.service.helpers import repair_messages_fit_context
 
     class _MLLM:
         is_mllm = True
@@ -445,7 +445,7 @@ def test_repair_fits_helper_returns_true_when_build_prompt_missing():
     ``enforce_context_length_for_messages``. The downstream
     scheduler's own validation still applies.
     """
-    from vllm_mlx.service.helpers import repair_messages_fit_context
+    from rapid_mlx.service.helpers import repair_messages_fit_context
 
     class _NoBuildPrompt:
         is_mllm = False

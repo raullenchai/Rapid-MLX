@@ -31,7 +31,7 @@ from fastapi.testclient import TestClient
 
 @pytest.fixture
 def fresh_app(monkeypatch: pytest.MonkeyPatch) -> Iterator[FastAPI]:
-    """Yield a fresh ``FastAPI`` app with ``vllm_mlx.server.app`` monkey-
+    """Yield a fresh ``FastAPI`` app with ``rapid_mlx.server.app`` monkey-
     patched to point at it, so ``configure_cors`` /
     ``configure_cors_from_env`` register middleware on the test app
     rather than the production singleton.
@@ -39,7 +39,7 @@ def fresh_app(monkeypatch: pytest.MonkeyPatch) -> Iterator[FastAPI]:
     Each test also gets a clean env (no leaked ``RAPID_MLX_CORS_*`` from
     other tests).
     """
-    import vllm_mlx.server as server_mod
+    import rapid_mlx.server as server_mod
 
     # Reload to drop any state from previous tests in the same worker.
     importlib.reload(server_mod)
@@ -69,7 +69,7 @@ def fresh_app(monkeypatch: pytest.MonkeyPatch) -> Iterator[FastAPI]:
 
 
 def _server_mod():
-    import vllm_mlx.server as server_mod
+    import rapid_mlx.server as server_mod
 
     return server_mod
 
@@ -141,7 +141,7 @@ def test_default_does_not_log_wildcard_warning(
     explicitly. With the default ``*`` we log an INFO line; no WARNING."""
     import logging
 
-    caplog.set_level(logging.INFO, logger="vllm_mlx.server")
+    caplog.set_level(logging.INFO, logger="rapid_mlx.server")
     _server_mod().configure_cors_from_env(cli_origins=None)
     warnings = [r for r in caplog.records if r.levelno >= logging.WARNING]
     assert not warnings, (
@@ -261,7 +261,7 @@ def test_wildcard_logs_warning_and_works(
     operator who set it intentionally gets a sanity check, and an
     operator who copy-pasted from a stale doc notices."""
     monkeypatch.setenv("RAPID_MLX_CORS_ALLOW_ORIGINS", "*")
-    with caplog.at_level("WARNING", logger="vllm_mlx.server"):
+    with caplog.at_level("WARNING", logger="rapid_mlx.server"):
         origins = _server_mod().configure_cors_from_env(cli_origins=None)
     assert origins == ["*"]
     assert any("wildcard" in rec.message.lower() for rec in caplog.records), (
@@ -322,7 +322,7 @@ def test_malformed_max_age_falls_back_to_default(
     fallback added in PR #732."""
     monkeypatch.setenv("RAPID_MLX_CORS_ALLOW_ORIGINS", "https://chat.openai.com")
     monkeypatch.setenv("RAPID_MLX_CORS_MAX_AGE", "not-a-number")
-    with caplog.at_level("WARNING", logger="vllm_mlx.server"):
+    with caplog.at_level("WARNING", logger="rapid_mlx.server"):
         _server_mod().configure_cors_from_env(cli_origins=None)
     assert any("RAPID_MLX_CORS_MAX_AGE" in rec.message for rec in caplog.records), (
         f"Expected a malformed-max-age warning; got {[r.message for r in caplog.records]!r}"
@@ -351,7 +351,7 @@ def test_empty_csv_origin_value_fails_closed_with_warning(
     middleware → preflight 405) plus a WARNING — silent fail-open would
     hide a deployment bug behind a permissive default."""
     monkeypatch.setenv("RAPID_MLX_CORS_ALLOW_ORIGINS", " , ,, ")
-    with caplog.at_level("WARNING", logger="vllm_mlx.server"):
+    with caplog.at_level("WARNING", logger="rapid_mlx.server"):
         origins = _server_mod().configure_cors_from_env(cli_origins=None)
     assert origins == []
     assert any(
@@ -391,7 +391,7 @@ def test_empty_methods_env_warns_and_falls_back(
     """
     monkeypatch.setenv("RAPID_MLX_CORS_ALLOW_ORIGINS", "https://chat.openai.com")
     monkeypatch.setenv("RAPID_MLX_CORS_ALLOW_METHODS", " , ,, ")
-    with caplog.at_level("WARNING", logger="vllm_mlx.server"):
+    with caplog.at_level("WARNING", logger="rapid_mlx.server"):
         _server_mod().configure_cors_from_env(cli_origins=None)
     assert any(
         "RAPID_MLX_CORS_ALLOW_METHODS" in rec.message
@@ -411,7 +411,7 @@ def test_empty_headers_env_warns_and_falls_back(
     intention as the broader default."""
     monkeypatch.setenv("RAPID_MLX_CORS_ALLOW_ORIGINS", "https://chat.openai.com")
     monkeypatch.setenv("RAPID_MLX_CORS_ALLOW_HEADERS", " , ,, ")
-    with caplog.at_level("WARNING", logger="vllm_mlx.server"):
+    with caplog.at_level("WARNING", logger="rapid_mlx.server"):
         _server_mod().configure_cors_from_env(cli_origins=None)
     assert any(
         "RAPID_MLX_CORS_ALLOW_HEADERS" in rec.message

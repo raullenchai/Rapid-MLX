@@ -24,13 +24,13 @@ from unittest.mock import MagicMock
 import mlx.core as mx
 import mlx.nn as nn
 
-from vllm_mlx.mllm_batch_generator import (
+from rapid_mlx.mllm_batch_generator import (
     MLLMBatch,
     MLLMBatchGenerator,
     MLLMBatchRequest,
     _model_supports_vision_feature_cache,
 )
-from vllm_mlx.request import ClientRequestError
+from rapid_mlx.request import ClientRequestError
 
 
 class _RecordingModel:
@@ -748,7 +748,9 @@ def test_step_homogeneous_requests_call_shared_sampler_once(monkeypatch):
         make_sampler_calls.append(kwargs)
         return shared_sampler
 
-    monkeypatch.setattr("vllm_mlx.mllm_batch_generator.make_sampler", fake_make_sampler)
+    monkeypatch.setattr(
+        "rapid_mlx.mllm_batch_generator.make_sampler", fake_make_sampler
+    )
 
     gen = _make_step_stub_generator()
     requests = [
@@ -778,7 +780,9 @@ def test_step_homogeneous_requests_forward_min_p_and_top_k(monkeypatch):
         calls.append(kwargs)
         return lambda x: mx.zeros((x.shape[0],), dtype=mx.uint32)
 
-    monkeypatch.setattr("vllm_mlx.mllm_batch_generator.make_sampler", fake_make_sampler)
+    monkeypatch.setattr(
+        "rapid_mlx.mllm_batch_generator.make_sampler", fake_make_sampler
+    )
     gen = _make_step_stub_generator()
     requests = [
         MLLMBatchRequest(
@@ -852,7 +856,7 @@ def test_step_request_processor_sees_compute_ahead_token(monkeypatch):
         return constrained
 
     monkeypatch.setattr(
-        "vllm_mlx.mllm_batch_generator.make_sampler",
+        "rapid_mlx.mllm_batch_generator.make_sampler",
         lambda **_kwargs: lambda logprobs: mx.argmax(logprobs, axis=-1),
     )
     gen = _make_step_stub_generator()
@@ -889,11 +893,11 @@ def test_prefill_first_token_uses_request_logits_processor(monkeypatch):
 
     monkeypatch.setattr(cache_module, "make_prompt_cache", lambda _model: [_Cache()])
     monkeypatch.setattr(
-        "vllm_mlx.mllm_batch_generator.first_incompatible_mllm_cache_type",
+        "rapid_mlx.mllm_batch_generator.first_incompatible_mllm_cache_type",
         lambda *_args, **_kwargs: None,
     )
     monkeypatch.setattr(
-        "vllm_mlx.mllm_batch_generator.make_sampler",
+        "rapid_mlx.mllm_batch_generator.make_sampler",
         lambda **_kwargs: lambda logprobs: mx.argmax(logprobs, axis=-1),
     )
 
@@ -923,7 +927,9 @@ def test_step_caches_shared_sampler_across_calls(monkeypatch):
         make_sampler_calls.append(kwargs)
         return lambda x: mx.zeros((x.shape[0],), dtype=mx.uint32)
 
-    monkeypatch.setattr("vllm_mlx.mllm_batch_generator.make_sampler", fake_make_sampler)
+    monkeypatch.setattr(
+        "rapid_mlx.mllm_batch_generator.make_sampler", fake_make_sampler
+    )
 
     gen = _make_step_stub_generator()
     requests = [
@@ -952,7 +958,9 @@ def test_step_param_change_invalidates_cached_sampler(monkeypatch):
         make_sampler_calls.append(kwargs)
         return lambda x: mx.zeros((x.shape[0],), dtype=mx.uint32)
 
-    monkeypatch.setattr("vllm_mlx.mllm_batch_generator.make_sampler", fake_make_sampler)
+    monkeypatch.setattr(
+        "rapid_mlx.mllm_batch_generator.make_sampler", fake_make_sampler
+    )
 
     gen = _make_step_stub_generator()
 
@@ -990,7 +998,9 @@ def test_step_heterogeneous_requests_use_per_row_loop(monkeypatch):
         make_sampler_calls.append(kwargs)
         return lambda x: mx.zeros((x.shape[0],), dtype=mx.uint32)
 
-    monkeypatch.setattr("vllm_mlx.mllm_batch_generator.make_sampler", fake_make_sampler)
+    monkeypatch.setattr(
+        "rapid_mlx.mllm_batch_generator.make_sampler", fake_make_sampler
+    )
 
     gen = _make_step_stub_generator()
     req_a = _make_sampling_request(0, 0.7, 0.95)
@@ -1025,7 +1035,9 @@ def test_step_b1_homogeneous_still_uses_shared_sampler(monkeypatch):
         make_sampler_calls.append(kwargs)
         return lambda x: mx.zeros((x.shape[0],), dtype=mx.uint32)
 
-    monkeypatch.setattr("vllm_mlx.mllm_batch_generator.make_sampler", fake_make_sampler)
+    monkeypatch.setattr(
+        "rapid_mlx.mllm_batch_generator.make_sampler", fake_make_sampler
+    )
 
     gen = _make_step_stub_generator()
     MLLMBatchGenerator._step(
@@ -1050,7 +1062,9 @@ def test_step_batch_uses_dataclass_defaults(monkeypatch):
         make_sampler_calls.append(kwargs)
         return lambda x: mx.zeros((x.shape[0],), dtype=mx.uint32)
 
-    monkeypatch.setattr("vllm_mlx.mllm_batch_generator.make_sampler", fake_make_sampler)
+    monkeypatch.setattr(
+        "rapid_mlx.mllm_batch_generator.make_sampler", fake_make_sampler
+    )
 
     gen = _make_step_stub_generator()
     # Build via positional defaults only — never overriding temp/top_p.
@@ -1079,7 +1093,9 @@ def test_step_heterogeneous_then_homogeneous_populates_shared(monkeypatch):
         make_sampler_calls.append(kwargs)
         return lambda x: mx.zeros((x.shape[0],), dtype=mx.uint32)
 
-    monkeypatch.setattr("vllm_mlx.mllm_batch_generator.make_sampler", fake_make_sampler)
+    monkeypatch.setattr(
+        "rapid_mlx.mllm_batch_generator.make_sampler", fake_make_sampler
+    )
 
     gen = _make_step_stub_generator()
 
@@ -1193,7 +1209,7 @@ def test_mllm_scheduler_config_default_vision_budget_covers_screenshot():
     Post-fix the default is 8192, comfortably above the ~2200-token
     Qwen3-VL output for 1920×1080.
     """
-    from vllm_mlx.mllm_scheduler import MLLMSchedulerConfig
+    from rapid_mlx.mllm_scheduler import MLLMSchedulerConfig
 
     cfg = MLLMSchedulerConfig()
     # 1920×1080 Qwen3-VL: ~2200 vision tokens + chat-template + text.
@@ -1209,8 +1225,8 @@ def test_mllm_scheduler_config_default_vision_budget_covers_screenshot():
 
 def test_vision_admission_budget_is_independent_from_prefill_chunk():
     """A profile-tuned 512 chunk must still admit a normal screenshot."""
-    from vllm_mlx.mllm_batch_generator import _prefill_cap_violation
-    from vllm_mlx.mllm_scheduler import MLLMSchedulerConfig
+    from rapid_mlx.mllm_batch_generator import _prefill_cap_violation
+    from rapid_mlx.mllm_scheduler import MLLMSchedulerConfig
 
     cfg = MLLMSchedulerConfig(
         prefill_step_size=512,
@@ -1224,7 +1240,7 @@ def test_vision_admission_budget_is_independent_from_prefill_chunk():
 
 
 def test_vision_budget_keeps_safe_floor_and_larger_operator_value():
-    from vllm_mlx.engine.batched import _resolve_mllm_vision_prefill_token_budget
+    from rapid_mlx.engine.batched import _resolve_mllm_vision_prefill_token_budget
 
     assert (
         _resolve_mllm_vision_prefill_token_budget(
@@ -1265,9 +1281,9 @@ def test_resolve_mllm_prefill_step_size_bumps_text_default_to_mllm_default():
     """
     from types import SimpleNamespace
 
-    from vllm_mlx.engine.batched import _resolve_mllm_prefill_step_size
-    from vllm_mlx.mllm_scheduler import MLLMSchedulerConfig
-    from vllm_mlx.scheduler import SchedulerConfig
+    from rapid_mlx.engine.batched import _resolve_mllm_prefill_step_size
+    from rapid_mlx.mllm_scheduler import MLLMSchedulerConfig
+    from rapid_mlx.scheduler import SchedulerConfig
 
     text_default = SchedulerConfig.__dataclass_fields__["prefill_step_size"].default
     mllm_default = MLLMSchedulerConfig.__dataclass_fields__["prefill_step_size"].default
@@ -1802,7 +1818,7 @@ def test_prefill_cap_exempts_large_text_only_prompt():
     8192), even though the chunked text-only prefill path could handle it.
     This is the regression the issue's DNF reported.
     """
-    from vllm_mlx.mllm_batch_generator import _prefill_cap_violation
+    from rapid_mlx.mllm_batch_generator import _prefill_cap_violation
 
     req = _text_request(uid=0, token_count=20000)
     assert _prefill_cap_violation([req], prefill_step_size=8192) is None, (
@@ -1816,7 +1832,7 @@ def test_prefill_cap_still_fires_on_large_vision_request():
     (text + vision) token count exceeds ``prefill_step_size × n_vision`` is
     rejected with the actionable message (#682 preserved).
     """
-    from vllm_mlx.mllm_batch_generator import _prefill_cap_violation
+    from rapid_mlx.mllm_batch_generator import _prefill_cap_violation
 
     req = _make_vision_cap_request(uid=0, token_count=20000)
     msg = _prefill_cap_violation([req], prefill_step_size=8192)
@@ -1830,7 +1846,7 @@ def test_prefill_cap_counts_only_vision_requests_in_budget():
     requests; text-only requests are exempt and do not inflate the multiplier
     (#1848).
     """
-    from vllm_mlx.mllm_batch_generator import _prefill_cap_violation
+    from rapid_mlx.mllm_batch_generator import _prefill_cap_violation
 
     # 1 vision request + 1 huge text-only request, cap = 8192 × 1 vision.
     batch = [
@@ -1885,7 +1901,7 @@ def test_prefill_cap_exempts_batch_of_long_text_only_prompts():
     cap is vision-only by design; an all-text-only batch (any count, any
     length) must never violate it (#1848 / #682 contract preserved).
     """
-    from vllm_mlx.mllm_batch_generator import _prefill_cap_violation
+    from rapid_mlx.mllm_batch_generator import _prefill_cap_violation
 
     # 4 concurrent long text-only prompts, all > prefill_step_size.
     batch = [_text_request(uid=i, token_count=20000) for i in range(4)]
@@ -2194,8 +2210,8 @@ def test_bare_generator_without_prefix_cache_keeps_legacy_cold_path():
 
 
 def _make_cache_scheduler(*, batch_generator):
-    from vllm_mlx.mllm_scheduler import MLLMScheduler
-    from vllm_mlx.runtime.model_performance import ModelPerformanceLedger
+    from rapid_mlx.mllm_scheduler import MLLMScheduler
+    from rapid_mlx.runtime.model_performance import ModelPerformanceLedger
 
     scheduler = MLLMScheduler.__new__(MLLMScheduler)
     scheduler._step_executor = None
@@ -2338,7 +2354,7 @@ def _hybrid_cache(n_tokens: int, *, state_tag: float):
 def _store_entry_with_checkpoints(gen, token_ids, checkpoint_positions):
     """Store ``token_ids`` as an exact snapshot whose recurrent layer carries a
     checkpoint (state tagged with the position) at each requested position."""
-    from vllm_mlx.hybrid_state_checkpoints import record_checkpoints
+    from rapid_mlx.hybrid_state_checkpoints import record_checkpoints
 
     cache = _hybrid_cache(len(token_ids), state_tag=float(len(token_ids)))
     holders = [None, None]
@@ -2364,7 +2380,7 @@ def _stored_entries(gen):
 
 
 def test_exact_prefix_snap_resumes_at_checkpoint_below_divergence(monkeypatch, caplog):
-    from vllm_mlx.hybrid_state_checkpoints import collect_checkpoints
+    from rapid_mlx.hybrid_state_checkpoints import collect_checkpoints
 
     gen = _make_real_apc_generator(monkeypatch)
     _store_entry_with_checkpoints(gen, list(range(100)), [40, 80])
@@ -2375,7 +2391,7 @@ def test_exact_prefix_snap_resumes_at_checkpoint_below_divergence(monkeypatch, c
     # match, but the checkpoint at 80 is below the divergence.
     request = _make_ids_request(100)
     request.input_ids = mx.array(list(range(90)) + [999] * 10, dtype=mx.int32)
-    with caplog.at_level("INFO", logger="vllm_mlx.mllm_batch_generator"):
+    with caplog.at_level("INFO", logger="rapid_mlx.mllm_batch_generator"):
         warm = gen._lookup_exact_text_prefix(request)
 
     assert warm is not None
@@ -2448,7 +2464,7 @@ def test_exact_prefix_snap_drops_checkpoints_past_the_resume_position(monkeypatc
     # Storing the resumed prompt keeps only checkpoints the new prompt owns.
     request.full_prompt_token_ids = list(range(90)) + [999] * 10
     gen._store_exact_text_prefix(request, warm, prefix_len=100)
-    from vllm_mlx.hybrid_state_checkpoints import collect_checkpoints
+    from rapid_mlx.hybrid_state_checkpoints import collect_checkpoints
 
     stored = [e for e in _stored_entries(gen) if e.token_ids[-1] == 999]
     assert len(stored) == 1
@@ -2481,7 +2497,7 @@ def test_exact_cache_capacity_stays_at_mlx_vlm_default_without_a_byte_budget(
     """Eight unbudgeted 375 MB snapshots would be a memory-pressure bug, so a
     failed budget computation keeps mlx-vlm's own capacity (unless the
     operator asked for a count explicitly)."""
-    from vllm_mlx import memory_cache
+    from rapid_mlx import memory_cache
 
     apc = pytest.importorskip("mlx_vlm.apc")
     default = apc.from_env(
@@ -2492,7 +2508,7 @@ def test_exact_cache_capacity_stays_at_mlx_vlm_default_without_a_byte_budget(
         raise RuntimeError("no device memory info")
 
     monkeypatch.setattr(memory_cache.MemoryCacheConfig, "compute_memory_limit", _boom)
-    with caplog.at_level("WARNING", logger="vllm_mlx.mllm_batch_generator"):
+    with caplog.at_level("WARNING", logger="rapid_mlx.mllm_batch_generator"):
         gen = _make_real_apc_generator(monkeypatch)
     assert gen._prefix_cache_max_bytes == 0
     assert gen._prefix_cache._exact_cache_max == default
@@ -2506,7 +2522,7 @@ def test_exact_cache_capacity_stays_at_mlx_vlm_default_without_a_byte_budget(
         _exact_cache_max = 2
 
     foreign = _Foreign()
-    with caplog.at_level("WARNING", logger="vllm_mlx.mllm_batch_generator"):
+    with caplog.at_level("WARNING", logger="rapid_mlx.mllm_batch_generator"):
         gen._configure_exact_cache_capacity(foreign)
     assert "does not expose mlx-vlm's exact entry store" in caplog.text
     gen._configure_exact_cache_capacity(object())
@@ -2562,7 +2578,7 @@ def test_text_prefill_records_stride_checkpoints_onto_the_boundary_snapshot(
 ):
     from mlx_vlm.models.cache import ArraysCache
 
-    from vllm_mlx.hybrid_state_checkpoints import collect_checkpoints
+    from rapid_mlx.hybrid_state_checkpoints import collect_checkpoints
 
     monkeypatch.setenv("RAPID_MLX_HYBRID_CHECKPOINT_STRIDE", "10")
     monkeypatch.setenv("RAPID_MLX_HYBRID_CHECKPOINT_MAX", "4")

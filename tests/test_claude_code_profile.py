@@ -3,8 +3,8 @@
 from types import SimpleNamespace
 from unittest.mock import patch
 
-from vllm_mlx.agents import get_profile, list_profiles, load_profiles
-from vllm_mlx.agents.adapter import setup_agent_config
+from rapid_mlx.agents import get_profile, list_profiles, load_profiles
+from rapid_mlx.agents.adapter import setup_agent_config
 
 
 def setup_function():
@@ -17,7 +17,7 @@ def test_claude_code_is_listed_once_and_claude_is_an_alias():
 
     assert profile is not None
     assert get_profile("claude") is profile
-    from vllm_mlx.agents import get_profile_or_generic
+    from rapid_mlx.agents import get_profile_or_generic
 
     assert get_profile_or_generic("claude") is profile
     assert [p.name for p in list_profiles()].count("claude-code") == 1
@@ -61,32 +61,32 @@ def test_claude_code_e2e_receives_rendered_environment(tmp_path):
 
     with (
         patch(
-            "vllm_mlx.agents.testing.tempfile.TemporaryDirectory",
+            "rapid_mlx.agents.testing.tempfile.TemporaryDirectory",
             return_value=temporary_home,
         ),
         patch(
-            "vllm_mlx.agents.testing.AgentTestRunner._server_available",
+            "rapid_mlx.agents.testing.AgentTestRunner._server_available",
             return_value=True,
         ),
         patch(
-            "vllm_mlx.agents.testing.AgentTestRunner._agent_binary_available",
+            "rapid_mlx.agents.testing.AgentTestRunner._agent_binary_available",
             return_value=True,
         ),
-        patch("vllm_mlx.agents.testing._test_plain_chat") as plain_chat,
-        patch("vllm_mlx.agents.testing._test_single_tool_call"),
-        patch("vllm_mlx.agents.testing._test_tool_choice"),
-        patch("vllm_mlx.agents.testing._test_multi_turn_tool"),
-        patch("vllm_mlx.agents.testing._test_no_tool_leak"),
-        patch("vllm_mlx.agents.testing._test_no_tool_needed"),
-        patch("vllm_mlx.agents.testing._test_streaming_tool_call"),
-        patch("vllm_mlx.agents.testing._test_many_tools"),
-        patch("vllm_mlx.agents.testing._test_streaming_basic"),
-        patch("vllm_mlx.agents.testing._test_stress_no_leak"),
-        patch("vllm_mlx.agents.testing._test_e2e_chat") as e2e_chat,
-        patch("vllm_mlx.agents.testing._test_e2e_file_read"),
-        patch("vllm_mlx.agents.testing._test_e2e_terminal"),
+        patch("rapid_mlx.agents.testing._test_plain_chat") as plain_chat,
+        patch("rapid_mlx.agents.testing._test_single_tool_call"),
+        patch("rapid_mlx.agents.testing._test_tool_choice"),
+        patch("rapid_mlx.agents.testing._test_multi_turn_tool"),
+        patch("rapid_mlx.agents.testing._test_no_tool_leak"),
+        patch("rapid_mlx.agents.testing._test_no_tool_needed"),
+        patch("rapid_mlx.agents.testing._test_streaming_tool_call"),
+        patch("rapid_mlx.agents.testing._test_many_tools"),
+        patch("rapid_mlx.agents.testing._test_streaming_basic"),
+        patch("rapid_mlx.agents.testing._test_stress_no_leak"),
+        patch("rapid_mlx.agents.testing._test_e2e_chat") as e2e_chat,
+        patch("rapid_mlx.agents.testing._test_e2e_file_read"),
+        patch("rapid_mlx.agents.testing._test_e2e_terminal"),
     ):
-        from vllm_mlx.agents.testing import AgentTestRunner, TestResult, TestStatus
+        from rapid_mlx.agents.testing import AgentTestRunner, TestResult, TestStatus
 
         plain_chat.return_value = TestResult("plain_chat", TestStatus.PASS)
         e2e_chat.return_value = TestResult("e2e_chat", TestStatus.PASS)

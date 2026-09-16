@@ -19,7 +19,7 @@ import httpx
 import pytest
 
 from evals import coherence_gate
-from vllm_mlx.coherence import (
+from rapid_mlx.coherence import (
     GOLDEN,
     GoldenCase,
     evaluate_case,

@@ -7,7 +7,7 @@ at different resolutions and measures performance metrics.
 
 Usage:
     # Start the MLLM server first:
-    python -m vllm_mlx.server --model mlx-community/Qwen3-VL-4B-Instruct-3bit --port 8000
+    python -m rapid_mlx.server --model mlx-community/Qwen3-VL-4B-Instruct-3bit --port 8000
 
     # Run benchmark:
     python examples/mllm_benchmark.py
@@ -248,7 +248,7 @@ def run_benchmark(
         print(f"Error connecting to server: {e}")
         print("\nMake sure the MLLM server is running:")
         print(
-            "  python -m vllm_mlx.server --model mlx-community/Qwen3-VL-4B-Instruct-3bit --port 8000"
+            "  python -m rapid_mlx.server --model mlx-community/Qwen3-VL-4B-Instruct-3bit --port 8000"
         )
         return []
 
@@ -388,7 +388,7 @@ def main():
         epilog="""
 Examples:
     # Start the server first:
-    python -m vllm_mlx.server --model mlx-community/Qwen3-VL-4B-Instruct-3bit --port 8000
+    python -m rapid_mlx.server --model mlx-community/Qwen3-VL-4B-Instruct-3bit --port 8000
 
     # Basic benchmark
     python examples/mllm_benchmark.py

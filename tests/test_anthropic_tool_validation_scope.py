@@ -40,8 +40,8 @@ import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
-from vllm_mlx.config import reset_config
-from vllm_mlx.routes.anthropic import router
+from rapid_mlx.config import reset_config
+from rapid_mlx.routes.anthropic import router
 
 
 class _StubTokenizer:
@@ -389,8 +389,8 @@ def test_validator_only_checks_called_tools_schema():
     schema. We pass two tools but the model only called the first
     — the second tool's schema must be ignored entirely.
     """
-    from vllm_mlx.api.models import FunctionCall, ToolCall
-    from vllm_mlx.service.helpers import _validate_tool_call_params
+    from rapid_mlx.api.models import FunctionCall, ToolCall
+    from rapid_mlx.service.helpers import _validate_tool_call_params
 
     tools = [
         _tool_def("get_weather", {"location": {"type": "string"}}),
@@ -417,8 +417,8 @@ def test_validator_called_unknown_tool_skips_validation():
     schema to validate against, and the upstream parser layers own
     that failure mode.
     """
-    from vllm_mlx.api.models import FunctionCall, ToolCall
-    from vllm_mlx.service.helpers import _validate_tool_call_params
+    from rapid_mlx.api.models import FunctionCall, ToolCall
+    from rapid_mlx.service.helpers import _validate_tool_call_params
 
     tools = [_tool_def("get_weather", {"location": {"type": "string"}})]
     calls = [
@@ -437,8 +437,8 @@ def test_validator_multiple_calls_each_validated_against_own_schema():
     → no raise. Locks that the per-call loop is using each call's own
     tool spec rather than mixing schemas between calls.
     """
-    from vllm_mlx.api.models import FunctionCall, ToolCall
-    from vllm_mlx.service.helpers import _validate_tool_call_params
+    from rapid_mlx.api.models import FunctionCall, ToolCall
+    from rapid_mlx.service.helpers import _validate_tool_call_params
 
     tools = [
         _tool_def("get_weather", {"location": {"type": "string"}}),
@@ -469,8 +469,8 @@ def test_validator_multiple_calls_bad_one_raises_about_bad_one_only():
     """
     from fastapi import HTTPException
 
-    from vllm_mlx.api.models import FunctionCall, ToolCall
-    from vllm_mlx.service.helpers import _validate_tool_call_params
+    from rapid_mlx.api.models import FunctionCall, ToolCall
+    from rapid_mlx.service.helpers import _validate_tool_call_params
 
     tools = [
         _tool_def("get_weather", {"location": {"type": "string"}}),
@@ -678,7 +678,7 @@ def test_filter_returns_input_unchanged_for_non_named_tool_choice():
     no defined "wrong tool" case. The filter must pass calls through
     unchanged so the validator runs against the full set.
     """
-    from vllm_mlx.routes.anthropic import _filter_tool_calls_by_tool_choice
+    from rapid_mlx.routes.anthropic import _filter_tool_calls_by_tool_choice
 
     calls = [_call("a", {}), _call("b", {})]
     # ``None`` (unset).
@@ -707,7 +707,7 @@ def test_enforce_named_tool_choice_present_noop_for_non_named_choice():
     synthesized)`` instead of raising. The non-pinned case must
     return its input verbatim with ``synthesized=False``.
     """
-    from vllm_mlx.routes.anthropic import _enforce_named_tool_choice_present
+    from rapid_mlx.routes.anthropic import _enforce_named_tool_choice_present
 
     # Returns ``([], False)`` verbatim for ``None``, ``"auto"``, or a
     # ``{"type":"function"}`` shape without a name.
@@ -734,8 +734,8 @@ def test_enforce_named_tool_choice_present_noop_when_pinned_call_survives():
     ``synthesized=False`` (no synthesis fires because the contract is
     already met).
     """
-    from vllm_mlx.api.models import FunctionCall, ToolCall
-    from vllm_mlx.routes.anthropic import _enforce_named_tool_choice_present
+    from rapid_mlx.api.models import FunctionCall, ToolCall
+    from rapid_mlx.routes.anthropic import _enforce_named_tool_choice_present
 
     pinned_call = ToolCall(
         id="c1",
@@ -757,7 +757,7 @@ def test_enforce_named_tool_choice_present_synthesizes_when_pinned_call_missing(
     pinned call. Call sites then validate that empty input against the
     tool schema before deciding whether to ship it or surface 422.
     """
-    from vllm_mlx.routes.anthropic import _enforce_named_tool_choice_present
+    from rapid_mlx.routes.anthropic import _enforce_named_tool_choice_present
 
     calls_out, synthesized, err = _enforce_named_tool_choice_present(
         [],
@@ -777,7 +777,7 @@ def test_enforce_named_tool_choice_present_synthesizes_when_only_wrong_tool_emit
     uses ``original_call_count > 0`` only to log a different warning for
     operator debugging. Wire shape is identical to the no-calls case.
     """
-    from vllm_mlx.routes.anthropic import _enforce_named_tool_choice_present
+    from rapid_mlx.routes.anthropic import _enforce_named_tool_choice_present
 
     calls_out, synthesized, err = _enforce_named_tool_choice_present(
         [],

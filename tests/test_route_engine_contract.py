@@ -1,5 +1,5 @@
 # SPDX-License-Identifier: Apache-2.0
-"""Bug-class AST gates for ``vllm_mlx/routes/*.py`` engine access.
+"""Bug-class AST gates for ``rapid_mlx/routes/*.py`` engine access.
 
 These gates keep route code on the public ``BaseEngine`` contract instead of
 silently probing optional methods or reaching into concrete-engine internals.
@@ -25,7 +25,7 @@ import pathlib
 
 import pytest
 
-ROUTES_DIR = pathlib.Path(__file__).parent.parent / "vllm_mlx" / "routes"
+ROUTES_DIR = pathlib.Path(__file__).parent.parent / "rapid_mlx" / "routes"
 
 
 # Methods/properties the routes may legitimately ``hasattr``-guard. Keep
@@ -65,7 +65,7 @@ def _base_engine_public_attrs() -> set[str]:
     Includes ``@abstractmethod`` methods, ``@property`` declarations, and
     concrete methods with default implementations declared in this class.
     """
-    from vllm_mlx.engine import base as base_mod
+    from rapid_mlx.engine import base as base_mod
 
     return {name for name in vars(base_mod.BaseEngine) if not name.startswith("_")}
 
@@ -217,7 +217,7 @@ def test_route_engine_method_calls_are_on_base_contract(
         f"{route_file.name} calls engine methods that are NOT on the"
         f" BaseEngine contract:\n"
         + "\n".join(f"  line {ln}: engine.{name}(...)" for ln, name in illegal)
-        + "\nAdd the method to vllm_mlx/engine/base.py — either as"
+        + "\nAdd the method to rapid_mlx/engine/base.py — either as"
         " @abstractmethod (every engine must implement) or with a default"
         " body (engines opt in by overriding)."
     )

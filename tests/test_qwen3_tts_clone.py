@@ -15,8 +15,8 @@ import types
 
 import numpy as np
 
-from vllm_mlx.audio.registry import resolve_audio_alias
-from vllm_mlx.audio.tts import TTSEngine
+from rapid_mlx.audio.registry import resolve_audio_alias
+from rapid_mlx.audio.tts import TTSEngine
 
 BASE_BF16 = "mlx-community/Qwen3-TTS-12Hz-1.7B-Base-bf16"
 _UNSET = object()

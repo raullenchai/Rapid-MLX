@@ -61,35 +61,35 @@ class _Engine:
 
 def _install_lightweight_engine_modules(monkeypatch):
     """Avoid importing MLX-backed engine package in route-level HTTP tests."""
-    engine_pkg = types.ModuleType("vllm_mlx.engine")
+    engine_pkg = types.ModuleType("rapid_mlx.engine")
     engine_pkg.BaseEngine = _BaseEngine
     engine_pkg.GenerationOutput = _GenerationOutput
 
-    base_mod = types.ModuleType("vllm_mlx.engine.base")
+    base_mod = types.ModuleType("rapid_mlx.engine.base")
     base_mod.BaseEngine = _BaseEngine
     base_mod.GenerationOutput = _GenerationOutput
 
-    monkeypatch.setitem(sys.modules, "vllm_mlx.engine", engine_pkg)
-    monkeypatch.setitem(sys.modules, "vllm_mlx.engine.base", base_mod)
+    monkeypatch.setitem(sys.modules, "rapid_mlx.engine", engine_pkg)
+    monkeypatch.setitem(sys.modules, "rapid_mlx.engine.base", base_mod)
 
 
 _IMPORTED_UNDER_LIGHTWEIGHT_ENGINE = (
-    "vllm_mlx.config",
-    "vllm_mlx.config.server_config",
-    "vllm_mlx.engine",
-    "vllm_mlx.engine.base",
-    "vllm_mlx.middleware.auth",
-    "vllm_mlx.service.helpers",
-    "vllm_mlx.routes.anthropic",
+    "rapid_mlx.config",
+    "rapid_mlx.config.server_config",
+    "rapid_mlx.engine",
+    "rapid_mlx.engine.base",
+    "rapid_mlx.middleware.auth",
+    "rapid_mlx.service.helpers",
+    "rapid_mlx.routes.anthropic",
 )
 _PARENT_ATTRS_UNDER_LIGHTWEIGHT_ENGINE = (
-    ("vllm_mlx", "config"),
-    ("vllm_mlx", "engine"),
-    ("vllm_mlx.config", "server_config"),
-    ("vllm_mlx.engine", "base"),
-    ("vllm_mlx.middleware", "auth"),
-    ("vllm_mlx.service", "helpers"),
-    ("vllm_mlx.routes", "anthropic"),
+    ("rapid_mlx", "config"),
+    ("rapid_mlx", "engine"),
+    ("rapid_mlx.config", "server_config"),
+    ("rapid_mlx.engine", "base"),
+    ("rapid_mlx.middleware", "auth"),
+    ("rapid_mlx.service", "helpers"),
+    ("rapid_mlx.routes", "anthropic"),
 )
 _MISSING = object()
 
@@ -112,9 +112,9 @@ def anthropic_client(monkeypatch):
     try:
         _install_lightweight_engine_modules(monkeypatch)
 
-        from vllm_mlx.config import reset_config
-        from vllm_mlx.middleware.auth import rate_limiter
-        from vllm_mlx.routes.anthropic import router
+        from rapid_mlx.config import reset_config
+        from rapid_mlx.middleware.auth import rate_limiter
+        from rapid_mlx.routes.anthropic import router
 
         cfg = reset_config()
         cfg.api_key = "test-secret"
@@ -597,7 +597,7 @@ def test_anthropic_count_tokens_rate_limit_treats_header_forms_as_same_key(
 def test_shared_rate_limit_ignores_x_api_key_for_non_anthropic_routes(
     anthropic_client,
 ):
-    from vllm_mlx.middleware.auth import check_rate_limit
+    from rapid_mlx.middleware.auth import check_rate_limit
 
     anthropic_client.rate_limiter.enabled = True
     anthropic_client.rate_limiter.requests_per_minute = 1
@@ -620,7 +620,7 @@ def test_shared_rate_limit_ignores_x_api_key_for_non_anthropic_routes(
 def test_shared_rate_limit_uses_same_bearer_identity_for_anthropic_and_standard_routes(
     anthropic_client,
 ):
-    from vllm_mlx.middleware.auth import (
+    from rapid_mlx.middleware.auth import (
         check_rate_limit,
         check_rate_limit_or_x_api_key,
         verify_api_key,
@@ -662,7 +662,7 @@ def test_shared_rate_limit_uses_same_bearer_identity_for_anthropic_and_standard_
 def test_shared_auth_rejects_x_api_key_for_non_anthropic_routes(
     anthropic_client,
 ):
-    from vllm_mlx.middleware.auth import verify_api_key
+    from rapid_mlx.middleware.auth import verify_api_key
 
     app = FastAPI()
 
@@ -682,7 +682,7 @@ def test_shared_auth_rejects_x_api_key_for_non_anthropic_routes(
 def test_configure_rate_limiter_updates_shared_anthropic_dependency(
     anthropic_client,
 ):
-    from vllm_mlx.middleware.auth import configure_rate_limiter
+    from rapid_mlx.middleware.auth import configure_rate_limiter
 
     configured = configure_rate_limiter(requests_per_minute=1, enabled=True)
 
@@ -703,8 +703,8 @@ def test_configure_rate_limiter_updates_shared_anthropic_dependency(
 
 
 def test_server_startup_configures_shared_rate_limiter():
-    server_source = Path("vllm_mlx/server.py").read_text()
-    cli_source = Path("vllm_mlx/cli.py").read_text()
+    server_source = Path("rapid_mlx/server.py").read_text()
+    cli_source = Path("rapid_mlx/cli.py").read_text()
 
     assert "configure_rate_limiter(args.rate_limit" in server_source
     assert "configure_rate_limiter(args.rate_limit" in cli_source

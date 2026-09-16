@@ -7,7 +7,7 @@ import json
 
 import pytest
 
-from vllm_mlx.api.strict_json_schema import (
+from rapid_mlx.api.strict_json_schema import (
     build_repair_messages,
     build_violation_envelope,
     extract_json_payload,

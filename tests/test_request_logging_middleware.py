@@ -15,7 +15,7 @@ import re
 
 import pytest
 
-from vllm_mlx.middleware.request_logging import RequestLoggingMiddleware
+from rapid_mlx.middleware.request_logging import RequestLoggingMiddleware
 
 # ---------------------------------------------------------------------------
 # Helpers — minimal ASGI app + scope builders
@@ -78,11 +78,11 @@ class TestRequestLogging:
             return 1.0 if call_count == 1 else 1.234
 
         monkeypatch.setattr(
-            "vllm_mlx.middleware.request_logging.time.perf_counter", _mock_perf_counter
+            "rapid_mlx.middleware.request_logging.time.perf_counter", _mock_perf_counter
         )
 
         with caplog.at_level(
-            logging.DEBUG, logger="vllm_mlx.middleware.request_logging"
+            logging.DEBUG, logger="rapid_mlx.middleware.request_logging"
         ):
             await mw(
                 _http_scope("POST", "/v1/chat/completions"),
@@ -102,7 +102,7 @@ class TestRequestLogging:
         mw = RequestLoggingMiddleware(inner)
 
         with caplog.at_level(
-            logging.INFO, logger="vllm_mlx.middleware.request_logging"
+            logging.INFO, logger="rapid_mlx.middleware.request_logging"
         ):
             await mw(_http_scope("GET", "/v1/models"), _noop_receive, _collecting_send)
 
@@ -115,7 +115,7 @@ class TestRequestLogging:
         mw = RequestLoggingMiddleware(inner)
 
         with caplog.at_level(
-            logging.DEBUG, logger="vllm_mlx.middleware.request_logging"
+            logging.DEBUG, logger="rapid_mlx.middleware.request_logging"
         ):
             await mw(_http_scope("GET", "/health"), _noop_receive, _collecting_send)
             await mw(
@@ -131,7 +131,7 @@ class TestRequestLogging:
         mw = RequestLoggingMiddleware(inner)
 
         with caplog.at_level(
-            logging.DEBUG, logger="vllm_mlx.middleware.request_logging"
+            logging.DEBUG, logger="rapid_mlx.middleware.request_logging"
         ):
             await mw(
                 _http_scope("POST", "/v1/chat/completions"),
@@ -156,7 +156,7 @@ class TestRequestLogging:
         mw = RequestLoggingMiddleware(_tracking_app)
 
         with caplog.at_level(
-            logging.DEBUG, logger="vllm_mlx.middleware.request_logging"
+            logging.DEBUG, logger="rapid_mlx.middleware.request_logging"
         ):
             await mw({"type": "lifespan"}, _noop_receive, _collecting_send)
 
@@ -174,7 +174,7 @@ class TestRequestLogging:
 
         with (
             caplog.at_level(
-                logging.DEBUG, logger="vllm_mlx.middleware.request_logging"
+                logging.DEBUG, logger="rapid_mlx.middleware.request_logging"
             ),
             pytest.raises(ValueError, match="boom"),
         ):
@@ -192,7 +192,7 @@ class TestRequestLogging:
         mw = RequestLoggingMiddleware(inner)
 
         with caplog.at_level(
-            logging.DEBUG, logger="vllm_mlx.middleware.request_logging"
+            logging.DEBUG, logger="rapid_mlx.middleware.request_logging"
         ):
             await mw(
                 _http_scope("GET", "/v1/models\r\nInjected: evil"),

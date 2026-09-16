@@ -34,10 +34,10 @@ from fastapi.testclient import TestClient
 
 @pytest.fixture
 def fresh_app(monkeypatch: pytest.MonkeyPatch) -> Iterator[FastAPI]:
-    """Yield a fresh ``FastAPI`` app with ``vllm_mlx.server.app`` monkey-
+    """Yield a fresh ``FastAPI`` app with ``rapid_mlx.server.app`` monkey-
     patched to point at it, so the CORS resolver mounts middleware on
     the test app rather than the production singleton."""
-    import vllm_mlx.server as server_mod
+    import rapid_mlx.server as server_mod
 
     importlib.reload(server_mod)
 
@@ -62,7 +62,7 @@ def fresh_app(monkeypatch: pytest.MonkeyPatch) -> Iterator[FastAPI]:
 
 
 def _server_mod():
-    import vllm_mlx.server as server_mod
+    import rapid_mlx.server as server_mod
 
     return server_mod
 

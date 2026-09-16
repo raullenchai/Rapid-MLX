@@ -206,7 +206,7 @@ struct ExternalModelCatalogTests {
         var repository = URL(fileURLWithPath: #filePath)
         for _ in 0..<5 { repository.deleteLastPathComponent() }
         let engineSource = try? String(contentsOf: repository
-            .appendingPathComponent("vllm_mlx/cli.py"), encoding: .utf8)
+            .appendingPathComponent("rapid_mlx/cli.py"), encoding: .utf8)
         #expect(engineSource?.contains("os.environ.get(\"\(ModelCatalog.extraModelRootsEnvKey)\"") == true)
     }
 

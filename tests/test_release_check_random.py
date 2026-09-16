@@ -1,7 +1,7 @@
 # SPDX-License-Identifier: Apache-2.0
 """Tests for scripts/release_check_m3_random.py — G12 release-gauntlet
 random-coverage gate. The orchestrator script lives outside the
-``vllm_mlx`` package so we import it via importlib."""
+``rapid_mlx`` package so we import it via importlib."""
 
 from __future__ import annotations
 
@@ -171,7 +171,7 @@ def test_the_measured_agentic_failure_is_out_of_the_pool(g12):
     drawn and measured means a red gauntlet on a random calendar day, which is
     how a gate stops being read.
     """
-    real = Path(__file__).resolve().parent.parent / "vllm_mlx" / "aliases.json"
+    real = Path(__file__).resolve().parent.parent / "rapid_mlx" / "aliases.json"
     names = {name for name, _ in g12._eligible_aliases(real)}
     four_b = {n for n in names if re.search(r"(?:^|[-_.])4b(?=[-_.]|$)", n)}
     assert not four_b, f"the 4 B tier cannot run agentic profiles (#1672): {four_b}"
@@ -193,7 +193,7 @@ def test_multimodal_models_are_out_of_the_pool(g12):
     agentic harness measures nothing about a model whose whole contract is
     screenshots.
     """
-    real = SCRIPT_PATH.parent.parent / "vllm_mlx" / "aliases.json"
+    real = SCRIPT_PATH.parent.parent / "rapid_mlx" / "aliases.json"
     names = {name for name, _ in g12._eligible_aliases(real)}
     offenders = {n for n in names if "ui-tars" in n or "gemma3" in n or "-vl-" in n}
     assert not offenders, f"multimodal aliases in a text-only sweep: {offenders}"
@@ -205,7 +205,7 @@ def test_the_multimodal_mirror_still_covers_the_engines_own_list():
     a machine with no MLX at all: a family added upstream must not be able to
     reappear in the sweep silently."""
     tree = ast.parse(
-        (SCRIPT_PATH.parent.parent / "vllm_mlx" / "api" / "utils.py").read_text()
+        (SCRIPT_PATH.parent.parent / "rapid_mlx" / "api" / "utils.py").read_text()
     )
     upstream = None
     for node in ast.walk(tree):
@@ -213,7 +213,7 @@ def test_the_multimodal_mirror_still_covers_the_engines_own_list():
             getattr(t, "id", "") == "MLLM_PATTERNS" for t in node.targets
         ):
             upstream = [e.value for e in node.value.elts]
-    assert upstream, "MLLM_PATTERNS not found in vllm_mlx/api/utils.py"
+    assert upstream, "MLLM_PATTERNS not found in rapid_mlx/api/utils.py"
     mirrored = {p.lower() for p in g12_module_patterns()}
     missing = {p.lower() for p in upstream} - mirrored
     assert not missing, f"engine patterns absent from the G12 mirror: {missing}"
@@ -258,7 +258,7 @@ def test_real_aliases_json_yields_nonzero_pool(g12):
     no headroom left: the next exclusion, or an aliases prune, trips this, and
     the answer then is a gate sized for the models being excluded (#1677), not
     a lower bar here."""
-    real = Path(__file__).resolve().parent.parent / "vllm_mlx" / "aliases.json"
+    real = Path(__file__).resolve().parent.parent / "rapid_mlx" / "aliases.json"
     eligible = g12._eligible_aliases(real)
     assert len(eligible) >= 5, (
         f"need ≥5 sample-eligible aliases for meaningful G12 random "

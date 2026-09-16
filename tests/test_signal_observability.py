@@ -78,7 +78,7 @@ def _read_ready_with_timeout(proc: subprocess.Popen, *, timeout: float = 10.0) -
 def test_install_is_idempotent_and_saves_prior_handlers():
     """Repeated installs must not stack handlers (each install would
     otherwise add a layer that re-runs the dump on every signal)."""
-    from vllm_mlx import _signal_observability as so
+    from rapid_mlx import _signal_observability as so
 
     so._reset_for_tests()
     try:
@@ -121,7 +121,7 @@ def test_install_is_idempotent_and_saves_prior_handlers():
 def test_signal_chain_calls_prior_handler():
     """Receiving the signal must invoke the prior handler so uvicorn's
     graceful shutdown still fires."""
-    from vllm_mlx import _signal_observability as so
+    from rapid_mlx import _signal_observability as so
 
     so._reset_for_tests()
 
@@ -161,7 +161,7 @@ def test_install_chains_to_sig_dfl_via_restore_and_raise():
     we use it as a safe proxy that won't disturb the test runner's
     SIGTERM / SIGHUP handlers).
     """
-    from vllm_mlx import _signal_observability as so
+    from rapid_mlx import _signal_observability as so
 
     so._reset_for_tests()
 
@@ -176,7 +176,7 @@ def test_install_chains_to_sig_dfl_via_restore_and_raise():
                             format="%(levelname)s %(name)s: %(message)s")
         # Confirm we start from SIG_DFL.
         assert signal.getsignal(signal.SIGUSR1) == signal.SIG_DFL
-        from vllm_mlx._signal_observability import install_signal_observability
+        from rapid_mlx._signal_observability import install_signal_observability
         assert install_signal_observability(observed_signals=(signal.SIGUSR1,)) is True
         sys.stdout.write("READY\\n"); sys.stdout.flush()
         os.kill(os.getpid(), signal.SIGUSR1)
@@ -219,7 +219,7 @@ def test_install_returns_false_when_no_signals_could_be_installed():
     list, or all platform-rejected signals), a later legitimate install
     from a different entry point must still succeed.
     """
-    from vllm_mlx import _signal_observability as so
+    from rapid_mlx import _signal_observability as so
 
     so._reset_for_tests()
     try:
@@ -243,7 +243,7 @@ def test_per_signal_latch_does_not_block_later_default_install():
     Uses SIGUSR1 + SIGUSR2 so we never touch SIGTERM/SIGHUP (which
     pytest reserves for its own teardown signaling).
     """
-    from vllm_mlx import _signal_observability as so
+    from rapid_mlx import _signal_observability as so
 
     so._reset_for_tests()
 
@@ -282,7 +282,7 @@ def test_per_signal_latch_does_not_block_later_default_install():
 def test_install_skipped_off_main_thread():
     """Calling install from a worker thread must return False rather
     than raising — the server must still boot."""
-    from vllm_mlx import _signal_observability as so
+    from rapid_mlx import _signal_observability as so
 
     result_box: list[bool] = []
 
@@ -310,7 +310,7 @@ def test_faulthandler_is_enabled_after_install():
     """
     import faulthandler
 
-    from vllm_mlx import _signal_observability as so
+    from rapid_mlx import _signal_observability as so
 
     was_enabled = faulthandler.is_enabled()
     so._reset_for_tests()
@@ -355,7 +355,7 @@ def test_subprocess_sigterm_emits_warning_and_stack_dump():
             os._exit(0)
         signal.signal(signal.SIGTERM, _exit_handler)
 
-        from vllm_mlx._signal_observability import install_signal_observability
+        from rapid_mlx._signal_observability import install_signal_observability
         assert install_signal_observability() is True
 
         # Tell the parent we're ready to be signalled.
@@ -414,7 +414,7 @@ def test_subprocess_sighup_default_disposition_dumps_and_terminates():
         # this unrelated precondition, a full-suite ordering flake. The real
         # contract is proven below: observability keeps SIGHUP terminating.
         signal.signal(signal.SIGHUP, signal.SIG_DFL)
-        from vllm_mlx._signal_observability import install_signal_observability
+        from rapid_mlx._signal_observability import install_signal_observability
         assert install_signal_observability() is True
         sys.stdout.write("READY\\n"); sys.stdout.flush()
         # Reaching this exit means the observability hook swallowed SIGHUP.
@@ -472,7 +472,7 @@ def test_subprocess_sigterm_default_disposition_still_terminates():
         logging.basicConfig(level=logging.WARNING, stream=sys.stderr,
                             format="%(levelname)s %(name)s: %(message)s")
         assert signal.getsignal(signal.SIGUSR1) == signal.SIG_DFL
-        from vllm_mlx._signal_observability import install_signal_observability
+        from rapid_mlx._signal_observability import install_signal_observability
         assert install_signal_observability(observed_signals=(signal.SIGUSR1,)) is True
         sys.stdout.write("READY\\n"); sys.stdout.flush()
         os.kill(os.getpid(), signal.SIGUSR1)

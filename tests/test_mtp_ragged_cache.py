@@ -9,9 +9,9 @@ from types import SimpleNamespace
 
 import pytest
 
-from vllm_mlx.spec_decode.mtp import ragged_cache as ragged
-from vllm_mlx.spec_decode.mtp.continuous_engine import SelfMTPCachePair
-from vllm_mlx.spec_decode.mtp.ragged_cache import (
+from rapid_mlx.spec_decode.mtp import ragged_cache as ragged
+from rapid_mlx.spec_decode.mtp.continuous_engine import SelfMTPCachePair
+from rapid_mlx.spec_decode.mtp.ragged_cache import (
     RaggedCacheUnsupportedError,
     RapidRaggedCacheAdapter,
     install_ragged_cache_rollback,
@@ -769,11 +769,11 @@ def test_installer_discovers_default_cache_classes(monkeypatch):
     cache_module = SimpleNamespace(ArraysCache=Arrays, BatchKVCache=Batch)
     mlx_models = types.ModuleType("mlx_lm.models")
     mlx_models.cache = cache_module
-    qwen_module = types.ModuleType("vllm_mlx.models.qwen4_exp_cache")
+    qwen_module = types.ModuleType("rapid_mlx.models.qwen4_exp_cache")
     qwen_module.Qwen4ExpStateCache = Qwen
     qwen_module.QSAIndexCache = QSA
     monkeypatch.setitem(sys.modules, "mlx_lm.models", mlx_models)
-    monkeypatch.setitem(sys.modules, "vllm_mlx.models.qwen4_exp_cache", qwen_module)
+    monkeypatch.setitem(sys.modules, "rapid_mlx.models.qwen4_exp_cache", qwen_module)
 
     report = install_ragged_cache_rollback(mlx_lm_version="0.31.3", array_ops=FakeOps())
     assert report.patched

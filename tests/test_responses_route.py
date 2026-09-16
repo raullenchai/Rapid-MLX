@@ -112,35 +112,35 @@ class _Engine:
 
 
 def _install_lightweight_engine_modules(monkeypatch):
-    engine_pkg = types.ModuleType("vllm_mlx.engine")
+    engine_pkg = types.ModuleType("rapid_mlx.engine")
     engine_pkg.BaseEngine = _BaseEngine
     engine_pkg.GenerationOutput = _GenerationOutput
 
-    base_mod = types.ModuleType("vllm_mlx.engine.base")
+    base_mod = types.ModuleType("rapid_mlx.engine.base")
     base_mod.BaseEngine = _BaseEngine
     base_mod.GenerationOutput = _GenerationOutput
 
-    monkeypatch.setitem(sys.modules, "vllm_mlx.engine", engine_pkg)
-    monkeypatch.setitem(sys.modules, "vllm_mlx.engine.base", base_mod)
+    monkeypatch.setitem(sys.modules, "rapid_mlx.engine", engine_pkg)
+    monkeypatch.setitem(sys.modules, "rapid_mlx.engine.base", base_mod)
 
 
 _IMPORTED_UNDER_LIGHTWEIGHT_ENGINE = (
-    "vllm_mlx.config",
-    "vllm_mlx.config.server_config",
-    "vllm_mlx.engine",
-    "vllm_mlx.engine.base",
-    "vllm_mlx.middleware.auth",
-    "vllm_mlx.service.helpers",
-    "vllm_mlx.routes.responses",
+    "rapid_mlx.config",
+    "rapid_mlx.config.server_config",
+    "rapid_mlx.engine",
+    "rapid_mlx.engine.base",
+    "rapid_mlx.middleware.auth",
+    "rapid_mlx.service.helpers",
+    "rapid_mlx.routes.responses",
 )
 _PARENT_ATTRS_UNDER_LIGHTWEIGHT_ENGINE = (
-    ("vllm_mlx", "config"),
-    ("vllm_mlx", "engine"),
-    ("vllm_mlx.config", "server_config"),
-    ("vllm_mlx.engine", "base"),
-    ("vllm_mlx.middleware", "auth"),
-    ("vllm_mlx.service", "helpers"),
-    ("vllm_mlx.routes", "responses"),
+    ("rapid_mlx", "config"),
+    ("rapid_mlx", "engine"),
+    ("rapid_mlx.config", "server_config"),
+    ("rapid_mlx.engine", "base"),
+    ("rapid_mlx.middleware", "auth"),
+    ("rapid_mlx.service", "helpers"),
+    ("rapid_mlx.routes", "responses"),
 )
 _MISSING = object()
 
@@ -160,10 +160,10 @@ def responses_client(monkeypatch):
 
     _install_lightweight_engine_modules(monkeypatch)
 
-    from vllm_mlx.config import reset_config
-    from vllm_mlx.middleware.auth import rate_limiter
-    from vllm_mlx.middleware.exception_handlers import install_exception_handlers
-    from vllm_mlx.routes import responses as responses_route
+    from rapid_mlx.config import reset_config
+    from rapid_mlx.middleware.auth import rate_limiter
+    from rapid_mlx.middleware.exception_handlers import install_exception_handlers
+    from rapid_mlx.routes import responses as responses_route
 
     # The route tests deliberately run without MLX. Admission is covered by
     # its own contracts and otherwise imports the MLX scheduler lazily on the
@@ -321,7 +321,7 @@ class TestResponsesNonStream:
     def test_structured_output_keeps_bare_json_out_of_reasoning(
         self, responses_client, monkeypatch
     ):
-        from vllm_mlx.reasoning.cohere_command_parser import (
+        from rapid_mlx.reasoning.cohere_command_parser import (
             CohereCommand4ReasoningParser,
         )
 
@@ -399,8 +399,8 @@ class TestResponsesNonStream:
             "serving_lane_reason": "vision_hybrid_runtime_unsupported",
         }
 
-        from vllm_mlx.api.utils import UnsupportedContentBlockError
-        from vllm_mlx.routes import responses as responses_route
+        from rapid_mlx.api.utils import UnsupportedContentBlockError
+        from rapid_mlx.routes import responses as responses_route
 
         def reject_at_route(*_args, **_kwargs):
             raise UnsupportedContentBlockError(
@@ -496,7 +496,7 @@ class TestResponsesNonStream:
     def test_mllm_context_precheck_counts_text_without_image_payload(
         self, responses_client, monkeypatch
     ):
-        from vllm_mlx.routes import responses as responses_route
+        from rapid_mlx.routes import responses as responses_route
 
         client = responses_client.client
         engine = responses_client.engine
@@ -540,7 +540,7 @@ class TestResponsesNonStream:
     def test_context_precheck_unexpected_error_is_not_swallowed(
         self, responses_client, monkeypatch
     ):
-        from vllm_mlx.routes import responses as responses_route
+        from rapid_mlx.routes import responses as responses_route
 
         client = responses_client.client
 
@@ -572,8 +572,8 @@ class TestResponsesNonStream:
         clamped value to the engine instead of raising
         ``context_length_exceeded``.
         """
-        from vllm_mlx.config import get_config
-        from vllm_mlx.routes import responses as responses_route
+        from rapid_mlx.config import get_config
+        from rapid_mlx.routes import responses as responses_route
 
         client = responses_client.client
         engine = responses_client.engine
@@ -622,7 +622,7 @@ class TestResponsesNonStream:
     ):
         """Guard the real helper path: prompt render/token counting must
         return a count that the route clamps before calling the engine."""
-        from vllm_mlx.config import get_config
+        from rapid_mlx.config import get_config
 
         client = responses_client.client
         engine = responses_client.engine
@@ -652,8 +652,8 @@ class TestResponsesNonStream:
     ):
         """If the prompt estimate is unavailable, implicit-budget handling
         must fall back to the old strict completion-budget admission check."""
-        from vllm_mlx.config import get_config
-        from vllm_mlx.routes import responses as responses_route
+        from rapid_mlx.config import get_config
+        from rapid_mlx.routes import responses as responses_route
 
         client = responses_client.client
         engine = responses_client.engine
@@ -687,8 +687,8 @@ class TestResponsesNonStream:
     ):
         """An operator-provided default is a hard cap, not a clampable
         implicit fallback."""
-        from vllm_mlx.config import get_config
-        from vllm_mlx.routes import responses as responses_route
+        from rapid_mlx.config import get_config
+        from rapid_mlx.routes import responses as responses_route
 
         client = responses_client.client
         cfg = get_config()
@@ -731,7 +731,7 @@ class TestResponsesNonStream:
 
     def test_mllm_message_prepare_accepts_normalized_object_style_messages(self):
         """Responses MLLM path accepts Chat-normalized object-style messages."""
-        from vllm_mlx.routes.responses import _prepare_messages_for_engine
+        from rapid_mlx.routes.responses import _prepare_messages_for_engine
 
         msg = SimpleNamespace(
             role="user",
@@ -762,7 +762,7 @@ class TestResponsesNonStream:
         ]
 
     def test_mllm_message_prepare_rejects_raw_responses_content_blocks(self):
-        from vllm_mlx.routes.responses import _prepare_messages_for_engine
+        from rapid_mlx.routes.responses import _prepare_messages_for_engine
 
         msg = SimpleNamespace(
             role="user",
@@ -778,7 +778,7 @@ class TestResponsesNonStream:
             _prepare_messages_for_engine(engine, request)
 
     def test_message_prepare_defaults_missing_native_tool_flag(self):
-        from vllm_mlx.routes.responses import _prepare_messages_for_engine
+        from rapid_mlx.routes.responses import _prepare_messages_for_engine
 
         request = SimpleNamespace(messages=[{"role": "user", "content": "hi"}])
 
@@ -1162,7 +1162,7 @@ class TestResponsesStream:
         assert reasoning_text == ""
 
     def test_reasoning_cap_uses_command_protocol_boundary(self, responses_client):
-        from vllm_mlx.reasoning.cohere_command_parser import (
+        from rapid_mlx.reasoning.cohere_command_parser import (
             TEXT_END,
             TEXT_START,
             THINK_END,
@@ -1191,7 +1191,7 @@ class TestResponsesStream:
         assert "<|" not in output_text
 
     def test_reasoning_cap_injects_boundary_on_following_chunk(self, responses_client):
-        from vllm_mlx.reasoning.cohere_command_parser import (
+        from rapid_mlx.reasoning.cohere_command_parser import (
             TEXT_END,
             TEXT_START,
             THINK_END,
@@ -1605,8 +1605,8 @@ class TestResponsesStreamR10C3:
 
 
 def test_deepseek_codex_exec_priming_is_only_the_initial_tool_turn():
-    from vllm_mlx.api.responses_models import ResponsesRequest
-    from vllm_mlx.routes.responses import _should_prime_deepseek_codex_exec
+    from rapid_mlx.api.responses_models import ResponsesRequest
+    from rapid_mlx.routes.responses import _should_prime_deepseek_codex_exec
 
     tools = [
         {
@@ -1671,8 +1671,8 @@ def test_deepseek_codex_exec_priming_is_only_the_initial_tool_turn():
 
 
 def test_codex_progress_reminder_does_not_assume_five_reads_are_enough():
-    from vllm_mlx.api.responses_models import ResponsesRequest
-    from vllm_mlx.routes.responses import (
+    from rapid_mlx.api.responses_models import ResponsesRequest
+    from rapid_mlx.routes.responses import (
         _codex_action_command_prefix,
         _inject_codex_progress_reminder,
     )
@@ -1725,8 +1725,8 @@ def test_codex_progress_reminder_does_not_assume_five_reads_are_enough():
 
 
 def test_codex_progress_reminder_bounds_unresolved_read_only_exploration():
-    from vllm_mlx.api.responses_models import ResponsesRequest
-    from vllm_mlx.routes.responses import _inject_codex_progress_reminder
+    from rapid_mlx.api.responses_models import ResponsesRequest
+    from rapid_mlx.routes.responses import _inject_codex_progress_reminder
 
     items = []
     for index in range(8):
@@ -1757,8 +1757,8 @@ def test_codex_progress_reminder_bounds_unresolved_read_only_exploration():
 
 
 def test_codex_progress_reminder_recognizes_shell_file_creation_as_edit():
-    from vllm_mlx.api.responses_models import ResponsesRequest
-    from vllm_mlx.routes.responses import _inject_codex_progress_reminder
+    from rapid_mlx.api.responses_models import ResponsesRequest
+    from rapid_mlx.routes.responses import _inject_codex_progress_reminder
 
     items = [
         {
@@ -1794,8 +1794,8 @@ def test_codex_progress_reminder_recognizes_shell_file_creation_as_edit():
 
 
 def test_codex_progress_reminder_recognizes_interactive_write_as_edit():
-    from vllm_mlx.api.responses_models import ResponsesRequest
-    from vllm_mlx.routes.responses import _inject_codex_progress_reminder
+    from rapid_mlx.api.responses_models import ResponsesRequest
+    from rapid_mlx.routes.responses import _inject_codex_progress_reminder
 
     items = [
         {
@@ -1831,7 +1831,7 @@ def test_codex_progress_reminder_recognizes_interactive_write_as_edit():
 
 
 def test_codex_progress_reminder_ignores_dev_null_redirection():
-    from vllm_mlx.routes.responses import _codex_call_performs_edit
+    from rapid_mlx.routes.responses import _codex_call_performs_edit
 
     assert not _codex_call_performs_edit(
         "exec_command", '{"cmd":"cat source.py > /dev/null"}'
@@ -1852,8 +1852,8 @@ def test_codex_progress_reminder_ignores_dev_null_redirection():
 
 
 def test_codex_progress_does_not_mistake_prose_passed_for_test_success():
-    from vllm_mlx.api.responses_models import ResponsesRequest
-    from vllm_mlx.routes.responses import _inject_codex_progress_reminder
+    from rapid_mlx.api.responses_models import ResponsesRequest
+    from rapid_mlx.routes.responses import _inject_codex_progress_reminder
 
     request = ResponsesRequest(
         model="deepseek-v4",
@@ -1880,8 +1880,8 @@ def test_codex_progress_does_not_mistake_prose_passed_for_test_success():
 
 
 def test_codex_action_prefix_only_breaks_exact_post_edit_loop():
-    from vllm_mlx.api.responses_models import ResponsesRequest
-    from vllm_mlx.routes.responses import (
+    from rapid_mlx.api.responses_models import ResponsesRequest
+    from rapid_mlx.routes.responses import (
         _codex_action_command_prefix,
         _inject_codex_progress_reminder,
     )
@@ -1895,10 +1895,10 @@ def test_codex_action_prefix_only_breaks_exact_post_edit_loop():
             "type": "function_call",
             "name": "exec_command",
             "call_id": "edit",
-            "arguments": '{"cmd":"apply_patch <<PATCH\\n*** Update File: vllm_mlx/x.py"}',
+            "arguments": '{"cmd":"apply_patch <<PATCH\\n*** Update File: rapid_mlx/x.py"}',
         }
     )
-    for command in ("git diff", "grep -rn symbol vllm_mlx", "rg symbol vllm_mlx"):
+    for command in ("git diff", "grep -rn symbol rapid_mlx", "rg symbol rapid_mlx"):
         items.extend(
             [
                 {
@@ -1933,7 +1933,7 @@ def test_codex_action_prefix_only_breaks_exact_post_edit_loop():
                     "type": "function_call",
                     "name": "exec_command",
                     "call_id": f"repeat_{index}",
-                    "arguments": '{"cmd":"rg symbol vllm_mlx"}',
+                    "arguments": '{"cmd":"rg symbol rapid_mlx"}',
                 },
                 {
                     "type": "function_call_output",
@@ -1954,7 +1954,7 @@ def test_codex_action_prefix_only_breaks_exact_post_edit_loop():
                 "type": "function_call",
                 "name": "exec_command",
                 "call_id": f"pending_{index}",
-                "arguments": '{"cmd":"rg symbol vllm_mlx"}',
+                "arguments": '{"cmd":"rg symbol rapid_mlx"}',
             }
         )
     request = ResponsesRequest(model="m", input=pending)
@@ -1967,7 +1967,7 @@ def test_codex_action_prefix_only_breaks_exact_post_edit_loop():
                 "type": "function_call",
                 "name": "read_file",
                 "call_id": "different_tool",
-                "arguments": '{"path":"vllm_mlx/routes/responses.py"}',
+                "arguments": '{"path":"rapid_mlx/routes/responses.py"}',
             },
             {
                 "type": "function_call_output",
@@ -2005,9 +2005,9 @@ def test_codex_action_prefix_only_breaks_exact_post_edit_loop():
 
 
 def test_deepseek_codex_implicit_temperature_uses_low_entropy_default(monkeypatch):
-    from vllm_mlx.api.models import ChatCompletionRequest
-    from vllm_mlx.api.responses_models import ResponsesRequest
-    from vllm_mlx.routes.responses import _resolved_responses_sampling_kwargs
+    from rapid_mlx.api.models import ChatCompletionRequest
+    from rapid_mlx.api.responses_models import ResponsesRequest
+    from rapid_mlx.routes.responses import _resolved_responses_sampling_kwargs
 
     tools = [
         {
@@ -2025,7 +2025,7 @@ def test_deepseek_codex_implicit_temperature_uses_low_entropy_default(monkeypatc
         model="deepseek-v4-flash-0731", messages=[{"role": "user", "content": "fix it"}]
     )
     monkeypatch.setattr(
-        "vllm_mlx.routes.responses._resolve_temperature",
+        "rapid_mlx.routes.responses._resolve_temperature",
         lambda value: 1.0 if value is None else value,
     )
     assert (
@@ -2045,14 +2045,14 @@ def test_deepseek_thinking_false_suppresses_reopened_think_token(monkeypatch):
 
     import mlx.core as mx
 
-    from vllm_mlx.routes.responses import _attach_deepseek_no_think_suppression
+    from rapid_mlx.routes.responses import _attach_deepseek_no_think_suppression
 
     monkeypatch.setattr(
-        "vllm_mlx.api.reasoning_budget.resolve_think_token_ids",
+        "rapid_mlx.api.reasoning_budget.resolve_think_token_ids",
         lambda _tokenizer, _parser: (17, 18),
     )
     monkeypatch.setattr(
-        "vllm_mlx.routes.chat._engine_output_vocab_size", lambda _engine: 32
+        "rapid_mlx.routes.chat._engine_output_vocab_size", lambda _engine: 32
     )
     kwargs = {}
     _attach_deepseek_no_think_suppression(
@@ -2074,14 +2074,14 @@ def test_deepseek_thinking_false_suppresses_reopened_think_token(monkeypatch):
 def test_no_think_suppression_is_deepseek_and_explicit_false_only(monkeypatch):
     from types import SimpleNamespace
 
-    from vllm_mlx.routes.responses import _attach_deepseek_no_think_suppression
+    from rapid_mlx.routes.responses import _attach_deepseek_no_think_suppression
 
     monkeypatch.setattr(
-        "vllm_mlx.api.reasoning_budget.resolve_think_token_ids",
+        "rapid_mlx.api.reasoning_budget.resolve_think_token_ids",
         lambda _tokenizer, _parser: (17, 18),
     )
     monkeypatch.setattr(
-        "vllm_mlx.routes.chat._engine_output_vocab_size", lambda _engine: 32
+        "rapid_mlx.routes.chat._engine_output_vocab_size", lambda _engine: 32
     )
     engine = SimpleNamespace(tokenizer=object())
 
@@ -2099,9 +2099,9 @@ def test_no_think_suppression_is_deepseek_and_explicit_false_only(monkeypatch):
 def test_auto_disabled_thinking_does_not_activate_explicit_suppression(monkeypatch):
     from types import SimpleNamespace
 
-    from vllm_mlx.api.models import ChatCompletionRequest
-    from vllm_mlx.routes.responses import _attach_deepseek_no_think_suppression
-    from vllm_mlx.service.helpers import _extract_thinking_from_request
+    from rapid_mlx.api.models import ChatCompletionRequest
+    from rapid_mlx.routes.responses import _attach_deepseek_no_think_suppression
+    from rapid_mlx.service.helpers import _extract_thinking_from_request
 
     request = ChatCompletionRequest(
         model="m", messages=[{"role": "user", "content": "hello"}]
@@ -2137,8 +2137,8 @@ def test_no_think_suppression_follows_requested_registry_model(
     selected_model,
     expect_suppression,
 ):
-    from vllm_mlx.config import get_config
-    from vllm_mlx.runtime.model_registry import ModelEntry, ModelRegistry
+    from rapid_mlx.config import get_config
+    from rapid_mlx.runtime.model_registry import ModelEntry, ModelRegistry
 
     cfg = get_config()
     qwen_engine = _Engine()
@@ -2166,10 +2166,10 @@ def test_no_think_suppression_follows_requested_registry_model(
     cfg.reasoning_parser_name = "qwen3"
     cfg.model_registry = registry
     monkeypatch.setattr(
-        "vllm_mlx.routes.chat._engine_output_vocab_size", lambda _engine: 256
+        "rapid_mlx.routes.chat._engine_output_vocab_size", lambda _engine: 256
     )
     monkeypatch.setattr(
-        "vllm_mlx.api.reasoning_budget.resolve_think_token_ids",
+        "rapid_mlx.api.reasoning_budget.resolve_think_token_ids",
         lambda _tokenizer, _parser: (17, 18),
     )
 
@@ -2210,7 +2210,7 @@ def test_explicit_thinking_true_wins_over_reasoning_effort_none(responses_client
 def test_registry_engine_mismatch_fails_closed(monkeypatch):
     from types import SimpleNamespace
 
-    from vllm_mlx.routes.responses import _attach_deepseek_no_think_suppression
+    from rapid_mlx.routes.responses import _attach_deepseek_no_think_suppression
 
     selected_engine = SimpleNamespace(tokenizer=object())
     stale_entry = SimpleNamespace(
@@ -2225,11 +2225,11 @@ def test_registry_engine_mismatch_fails_closed(monkeypatch):
         model_path="DeepSeek-V4-Flash-0731",
     )
     monkeypatch.setattr(
-        "vllm_mlx.api.reasoning_budget.resolve_think_token_ids",
+        "rapid_mlx.api.reasoning_budget.resolve_think_token_ids",
         lambda _tokenizer, _parser: (17, 18),
     )
     monkeypatch.setattr(
-        "vllm_mlx.routes.chat._engine_output_vocab_size", lambda _engine: 32
+        "rapid_mlx.routes.chat._engine_output_vocab_size", lambda _engine: 32
     )
 
     kwargs = {}
@@ -2251,7 +2251,7 @@ def test_registry_engine_mismatch_fails_closed(monkeypatch):
 def test_deepseek_codex_reasoning_budget_is_narrowly_attached(
     monkeypatch, codex_surface, has_tools, is_deepseek, expected
 ):
-    from vllm_mlx.routes.responses import _attach_deepseek_codex_reasoning_budget
+    from rapid_mlx.routes.responses import _attach_deepseek_codex_reasoning_budget
 
     processor = object()
     calls = []
@@ -2261,14 +2261,14 @@ def test_deepseek_codex_reasoning_budget_is_narrowly_attached(
         return processor
 
     monkeypatch.setattr(
-        "vllm_mlx.routes.responses._uses_deepseek_v4_reasoning",
+        "rapid_mlx.routes.responses._uses_deepseek_v4_reasoning",
         lambda _cfg: is_deepseek,
     )
     monkeypatch.setattr(
-        "vllm_mlx.api.reasoning_budget.ReasoningBudgetLogitsProcessor", build
+        "rapid_mlx.api.reasoning_budget.ReasoningBudgetLogitsProcessor", build
     )
     monkeypatch.setattr(
-        "vllm_mlx.routes.chat._engine_output_vocab_size", lambda _engine: 256
+        "rapid_mlx.routes.chat._engine_output_vocab_size", lambda _engine: 256
     )
     request = SimpleNamespace(
         tools=[object()] if has_tools else [], reasoning_max_tokens=2048
@@ -2305,13 +2305,13 @@ def test_deepseek_codex_reasoning_budget_is_narrowly_attached(
 def test_deepseek_codex_reasoning_budget_rejects_unsafe_metadata(
     monkeypatch, vocab, vocab_size
 ):
-    from vllm_mlx.routes.responses import _attach_deepseek_codex_reasoning_budget
+    from rapid_mlx.routes.responses import _attach_deepseek_codex_reasoning_budget
 
     monkeypatch.setattr(
-        "vllm_mlx.routes.responses._uses_deepseek_v4_reasoning", lambda _cfg: True
+        "rapid_mlx.routes.responses._uses_deepseek_v4_reasoning", lambda _cfg: True
     )
     monkeypatch.setattr(
-        "vllm_mlx.routes.chat._engine_output_vocab_size",
+        "rapid_mlx.routes.chat._engine_output_vocab_size",
         lambda _engine: vocab_size,
     )
     engine = SimpleNamespace(tokenizer=SimpleNamespace(get_vocab=lambda: vocab))
@@ -2335,7 +2335,7 @@ def test_deepseek_codex_reasoning_budget_rejects_unsafe_metadata(
 def test_deepseek_codex_reasoning_budget_keeps_explicit_opt_outs(
     resolved_thinking, budget
 ):
-    from vllm_mlx.routes.responses import _attach_deepseek_codex_reasoning_budget
+    from rapid_mlx.routes.responses import _attach_deepseek_codex_reasoning_budget
 
     engine = SimpleNamespace(tokenizer=SimpleNamespace())
     cfg = SimpleNamespace(
@@ -2354,7 +2354,7 @@ def test_deepseek_codex_reasoning_budget_keeps_explicit_opt_outs(
 
 
 def test_deepseek_codex_reasoning_boundary_is_cached_per_engine(monkeypatch):
-    from vllm_mlx.routes.responses import _attach_deepseek_codex_reasoning_budget
+    from rapid_mlx.routes.responses import _attach_deepseek_codex_reasoning_budget
 
     calls = 0
 
@@ -2364,7 +2364,7 @@ def test_deepseek_codex_reasoning_boundary_is_cached_per_engine(monkeypatch):
         return {"<think>": 17, "</think>": 18}
 
     monkeypatch.setattr(
-        "vllm_mlx.routes.chat._engine_output_vocab_size", lambda _engine: 256
+        "rapid_mlx.routes.chat._engine_output_vocab_size", lambda _engine: 256
     )
     engine = SimpleNamespace(tokenizer=SimpleNamespace(get_vocab=get_vocab))
     cfg = SimpleNamespace(
@@ -2389,8 +2389,8 @@ def test_deepseek_codex_reasoning_boundary_is_cached_per_engine(monkeypatch):
 def test_responses_route_wires_deepseek_codex_reasoning_budget(
     monkeypatch, responses_client, stream, tool_parser, expected
 ):
-    from vllm_mlx.api.reasoning_budget import ReasoningBudgetLogitsProcessor
-    from vllm_mlx.config import get_config
+    from rapid_mlx.api.reasoning_budget import ReasoningBudgetLogitsProcessor
+    from rapid_mlx.config import get_config
 
     cfg = get_config()
     cfg.model_name = "deepseek-v4-flash-0731"
@@ -2400,7 +2400,7 @@ def test_responses_route_wires_deepseek_codex_reasoning_budget(
     engine = responses_client.engine
     engine.tokenizer.get_vocab = lambda: {"<think>": 17, "</think>": 18}
     monkeypatch.setattr(
-        "vllm_mlx.routes.chat._engine_output_vocab_size", lambda _engine: 256
+        "rapid_mlx.routes.chat._engine_output_vocab_size", lambda _engine: 256
     )
     tools = [
         {

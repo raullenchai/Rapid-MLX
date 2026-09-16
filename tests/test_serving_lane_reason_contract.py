@@ -17,14 +17,14 @@ Both survived because the Swift fixtures asserting this area used the ghost
 strings too, so the tests agreed with the app instead of with the engine.
 
 The engine now has a single source of truth: ``SERVING_LANE_REASONS`` /
-``AUTO_TEXT_FALLBACK_REASONS`` in ``vllm_mlx/api/utils.py``, enforced at
+``AUTO_TEXT_FALLBACK_REASONS`` in ``rapid_mlx/api/utils.py``, enforced at
 construction time by ``ServingLaneDecision.__post_init__``. This test imports
 that SSOT and, rather than trusting it to be right, re-scans the whole engine
 tree for the literals actually emitted and proves the SSOT is both complete (no
 emitted reason can fall outside it) and exactly matches the Swift ``case``
 labels the user actually reads.
 
-mlx-free: the ``vllm_mlx.api.utils`` import chain pulls in no MLX (verified —
+mlx-free: the ``rapid_mlx.api.utils`` import chain pulls in no MLX (verified —
 the Linux CI leg runs this with no MLX installed), and reason collection is
 pure text parsing.
 """
@@ -37,7 +37,7 @@ from pathlib import Path
 
 import pytest
 
-from vllm_mlx.api.utils import (
+from rapid_mlx.api.utils import (
     AUTO_TEXT_FALLBACK_REASONS,
     SERVING_LANE_REASONS,
     VISION_SERVING_LANE_REASONS,
@@ -48,7 +48,7 @@ REPO = Path(__file__).resolve().parents[1]
 # Scan the whole engine tree rather than naming files, so a reason introduced
 # in a fourth module (or a literal seeded outside the decision function) cannot
 # slip past this contract.
-ENGINE = REPO / "vllm_mlx"
+ENGINE = REPO / "rapid_mlx"
 
 PROFILE_SWIFT = REPO / "apps/rapid-mac/Sources/Rapid/Server/ServerModelProfile.swift"
 

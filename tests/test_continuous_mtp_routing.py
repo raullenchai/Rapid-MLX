@@ -9,23 +9,23 @@ from types import MappingProxyType, SimpleNamespace
 
 import pytest
 
-from vllm_mlx.spec_decode.config import (
+from rapid_mlx.spec_decode.config import (
     SpeculativeConfigError,
     parse_speculative_config,
 )
-from vllm_mlx.spec_decode.mtp import continuous_routing as routing_module
-from vllm_mlx.spec_decode.mtp.batched import (
+from rapid_mlx.spec_decode.mtp import continuous_routing as routing_module
+from rapid_mlx.spec_decode.mtp.batched import (
     AdmissionDecision,
     BatchedMTPRoute,
     SamplingContract,
 )
-from vllm_mlx.spec_decode.mtp.continuous_routing import (
+from rapid_mlx.spec_decode.mtp.continuous_routing import (
     ContinuousMTPAPCHit,
     ContinuousMTPIntegrationRoute,
     ContinuousMTPRequestMetadata,
     plan_router_install,
 )
-from vllm_mlx.spec_decode.mtp.prepared_state import (
+from rapid_mlx.spec_decode.mtp.prepared_state import (
     PreparedStateIdentity,
     prepare_mtp_state,
 )
@@ -372,7 +372,7 @@ def test_unsupported_sampling_falls_back_to_legacy_without_a_cohort():
 
 
 def test_scheduler_wiring_diverts_next_and_refusal_precedes_mutation():
-    tree = ast.parse((ROOT / "vllm_mlx" / "scheduler.py").read_text(encoding="utf-8"))
+    tree = ast.parse((ROOT / "rapid_mlx" / "scheduler.py").read_text(encoding="utf-8"))
     installer = next(
         node
         for node in tree.body
@@ -404,7 +404,7 @@ def test_scheduler_wiring_diverts_next_and_refusal_precedes_mutation():
         for node in assignments
     )
     source = ast.get_source_segment(
-        (ROOT / "vllm_mlx" / "scheduler.py").read_text(encoding="utf-8"),
+        (ROOT / "rapid_mlx" / "scheduler.py").read_text(encoding="utf-8"),
         installer,
     )
     assert source is not None
@@ -420,7 +420,7 @@ def test_scheduler_wiring_diverts_next_and_refusal_precedes_mutation():
         "raw = original_next()"
     )
     assert "finishing_package.target_cache" in (
-        ROOT / "vllm_mlx" / "spec_decode" / "mtp" / "continuous_driver.py"
+        ROOT / "rapid_mlx" / "spec_decode" / "mtp" / "continuous_driver.py"
     ).read_text(encoding="utf-8")
 
     scheduler_node = next(
@@ -434,7 +434,7 @@ def test_scheduler_wiring_diverts_next_and_refusal_precedes_mutation():
         if isinstance(node, ast.FunctionDef) and node.name == "_create_batch_generator"
     )
     create_source = ast.get_source_segment(
-        (ROOT / "vllm_mlx" / "scheduler.py").read_text(encoding="utf-8"),
+        (ROOT / "rapid_mlx" / "scheduler.py").read_text(encoding="utf-8"),
         create_generator,
     )
     assert create_source is not None
@@ -460,7 +460,7 @@ def test_scheduler_wiring_diverts_next_and_refusal_precedes_mutation():
     ],
 )
 def test_scheduler_config_rejects_ambiguous_continuous_mtp_policy(changes, message):
-    from vllm_mlx.scheduler import SchedulerConfig
+    from rapid_mlx.scheduler import SchedulerConfig
 
     with pytest.raises(ValueError, match=message):
         SchedulerConfig(**changes)
@@ -470,8 +470,8 @@ def test_scheduler_config_rejects_ambiguous_continuous_mtp_policy(changes, messa
 def test_live_installer_fails_closed_before_mutating_unsupported_generators(
     monkeypatch,
 ):
-    from vllm_mlx.scheduler import SchedulerConfig, _install_continuous_mtp_router
-    from vllm_mlx.spec_decode.mtp import continuous_runtime
+    from rapid_mlx.scheduler import SchedulerConfig, _install_continuous_mtp_router
+    from rapid_mlx.spec_decode.mtp import continuous_runtime
 
     enabled = SchedulerConfig(
         spec_decode="mtp",
@@ -523,10 +523,10 @@ def test_live_installer_fails_closed_before_mutating_unsupported_generators(
 
 @pytest.mark.requires_mlx
 def test_live_installer_drives_join_detach_remove_and_compat_response(monkeypatch):
-    from vllm_mlx.scheduler import SchedulerConfig, _install_continuous_mtp_router
-    from vllm_mlx.spec_decode.mtp import continuous_runtime
-    from vllm_mlx.spec_decode.mtp.continuous_driver import ContinuousMTPDriver
-    from vllm_mlx.spec_decode.mtp.continuous_engine import (
+    from rapid_mlx.scheduler import SchedulerConfig, _install_continuous_mtp_router
+    from rapid_mlx.spec_decode.mtp import continuous_runtime
+    from rapid_mlx.spec_decode.mtp.continuous_driver import ContinuousMTPDriver
+    from rapid_mlx.spec_decode.mtp.continuous_engine import (
         ContinuousSelfMTPCapabilities,
     )
 
@@ -726,10 +726,10 @@ def test_live_installer_drives_join_detach_remove_and_compat_response(monkeypatc
 
 @pytest.mark.requires_mlx
 def test_live_installer_retains_base_queue_when_initial_prepare_fails(monkeypatch):
-    from vllm_mlx.scheduler import SchedulerConfig, _install_continuous_mtp_router
-    from vllm_mlx.spec_decode.mtp import continuous_runtime
-    from vllm_mlx.spec_decode.mtp.continuous_driver import ContinuousMTPDriver
-    from vllm_mlx.spec_decode.mtp.continuous_engine import (
+    from rapid_mlx.scheduler import SchedulerConfig, _install_continuous_mtp_router
+    from rapid_mlx.spec_decode.mtp import continuous_runtime
+    from rapid_mlx.spec_decode.mtp.continuous_driver import ContinuousMTPDriver
+    from rapid_mlx.spec_decode.mtp.continuous_engine import (
         ContinuousSelfMTPCapabilities,
     )
 
@@ -778,10 +778,10 @@ def test_live_installer_retains_base_queue_when_initial_prepare_fails(monkeypatc
 
 @pytest.mark.requires_mlx
 def test_live_installer_restores_base_queue_when_deferred_join_fails(monkeypatch):
-    from vllm_mlx.scheduler import SchedulerConfig, _install_continuous_mtp_router
-    from vllm_mlx.spec_decode.mtp import continuous_runtime
-    from vllm_mlx.spec_decode.mtp.continuous_driver import ContinuousMTPDriver
-    from vllm_mlx.spec_decode.mtp.continuous_engine import (
+    from rapid_mlx.scheduler import SchedulerConfig, _install_continuous_mtp_router
+    from rapid_mlx.spec_decode.mtp import continuous_runtime
+    from rapid_mlx.spec_decode.mtp.continuous_driver import ContinuousMTPDriver
+    from rapid_mlx.spec_decode.mtp.continuous_engine import (
         ContinuousSelfMTPCapabilities,
     )
 
@@ -880,8 +880,8 @@ def test_live_installer_restores_base_queue_when_deferred_join_fails(monkeypatch
 
 @pytest.mark.requires_mlx
 def test_live_installer_handles_empty_pressure_and_optional_base_hooks(monkeypatch):
-    from vllm_mlx.scheduler import SchedulerConfig, _install_continuous_mtp_router
-    from vllm_mlx.spec_decode.mtp import continuous_runtime
+    from rapid_mlx.scheduler import SchedulerConfig, _install_continuous_mtp_router
+    from rapid_mlx.spec_decode.mtp import continuous_runtime
 
     monkeypatch.setattr(
         continuous_runtime,
@@ -935,10 +935,10 @@ def test_live_installer_forms_fixed_initial_cohort_without_dynamic_join(monkeypa
     integration contract therefore belongs on the real-MLX lane; the pure
     routing and AST contracts above remain in the hosted no-MLX matrix.
     """
-    from vllm_mlx.scheduler import SchedulerConfig, _install_continuous_mtp_router
-    from vllm_mlx.spec_decode.mtp import continuous_runtime
-    from vllm_mlx.spec_decode.mtp.continuous_driver import ContinuousMTPDriver
-    from vllm_mlx.spec_decode.mtp.continuous_engine import (
+    from rapid_mlx.scheduler import SchedulerConfig, _install_continuous_mtp_router
+    from rapid_mlx.spec_decode.mtp import continuous_runtime
+    from rapid_mlx.spec_decode.mtp.continuous_driver import ContinuousMTPDriver
+    from rapid_mlx.spec_decode.mtp.continuous_engine import (
         ContinuousSelfMTPCapabilities,
     )
 
@@ -1037,8 +1037,8 @@ def test_live_installer_forms_fixed_initial_cohort_without_dynamic_join(monkeypa
 
 
 def test_cli_resolves_artifact_auto_policy_before_default_off_scheduler_by_ast():
-    cli_source = (ROOT / "vllm_mlx" / "cli.py").read_text(encoding="utf-8")
-    scheduler_source = (ROOT / "vllm_mlx" / "scheduler.py").read_text(encoding="utf-8")
+    cli_source = (ROOT / "rapid_mlx" / "cli.py").read_text(encoding="utf-8")
+    scheduler_source = (ROOT / "rapid_mlx" / "scheduler.py").read_text(encoding="utf-8")
     assert 'continuous_tier == "verified"' in cli_source
     assert "if config.continuous_batching is None" in cli_source
     assert (

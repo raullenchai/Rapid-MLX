@@ -1,5 +1,5 @@
 # SPDX-License-Identifier: Apache-2.0
-"""Unit tests for :mod:`vllm_mlx.kv_cache_dtype` (R15 task #300).
+"""Unit tests for :mod:`rapid_mlx.kv_cache_dtype` (R15 task #300).
 
 The resolver is pure (no I/O, no model loading) — these tests pin the
 matrix of {dtype × safelist hit × reasoning override} that the CLI
@@ -10,7 +10,7 @@ from __future__ import annotations
 
 import pytest
 
-from vllm_mlx.kv_cache_dtype import (
+from rapid_mlx.kv_cache_dtype import (
     DEFAULT_KV_CACHE_DTYPE,
     KV_CACHE_DTYPES,
     REASONING_KV_CACHE_DTYPE,

@@ -2,7 +2,7 @@
 """Contract pins for the ``qwen-image`` image-gen alias.
 
 The mflux backend already understands the ``qwen-image`` family
-(``vllm_mlx/image/engine.py``); this alias is what makes
+(``rapid_mlx/image/engine.py``); this alias is what makes
 ``rapid-mlx serve qwen-image`` resolve to it without the caller having
 to type the raw Hugging Face path.
 
@@ -78,14 +78,14 @@ import struct
 
 import pytest
 
-from vllm_mlx.image.engine import (
+from rapid_mlx.image.engine import (
     ImageGenerationEngine,
     ImageRuntimeError,
     _detect_family,
     _looks_like_prequantized,
 )
-from vllm_mlx.model_aliases import resolve_profile
-from vllm_mlx.runtime.resident_models import estimate_model_bytes
+from rapid_mlx.model_aliases import resolve_profile
+from rapid_mlx.runtime.resident_models import estimate_model_bytes
 
 _GIB = 1024**3
 
@@ -149,13 +149,13 @@ def test_qwen_image_resident_estimate_is_not_the_bare_default() -> None:
 def test_model_path_for_mflux_forces_pinned_revision_on_cold_pull(
     monkeypatch,
 ) -> None:
-    from vllm_mlx._download_gate import IMAGE_MODEL_REVISIONS
+    from rapid_mlx._download_gate import IMAGE_MODEL_REVISIONS
 
     repo = "mflux-community/qwen-image-mflux-q6"
     pinned_sha = IMAGE_MODEL_REVISIONS[repo]
     engine = ImageGenerationEngine(repo)
     monkeypatch.setattr(
-        "vllm_mlx._download_gate.mflux_local_snapshot", lambda _repo: None
+        "rapid_mlx._download_gate.mflux_local_snapshot", lambda _repo: None
     )
     calls = []
 
@@ -212,7 +212,7 @@ def test_model_path_for_mflux_verifies_a_freshly_pinned_download(
     # download, so the freshly downloaded snapshot was handed straight to
     # mflux unverified. This is the passing half: a complete, unquantized
     # download must resolve normally, verification included.
-    from vllm_mlx._download_gate import IMAGE_MODEL_REVISIONS
+    from rapid_mlx._download_gate import IMAGE_MODEL_REVISIONS
 
     repo = "mflux-community/qwen-image-mflux-q6"
     pinned_sha = IMAGE_MODEL_REVISIONS[repo]
@@ -261,7 +261,7 @@ def test_model_path_for_mflux_falls_back_to_bare_repo_when_unpinned(
     engine = ImageGenerationEngine("filipstrand/Z-Image-Turbo-mflux-4bit")
     assert engine._prequantized is True
     monkeypatch.setattr(
-        "vllm_mlx._download_gate.mflux_local_snapshot", lambda _repo: None
+        "rapid_mlx._download_gate.mflux_local_snapshot", lambda _repo: None
     )
 
     def _unexpected_download(*_args, **_kwargs):
@@ -331,7 +331,7 @@ def _engine_for_family_check(monkeypatch, snapshot) -> ImageGenerationEngine:
     # from ``_download_gate`` inside the method body, so patching the
     # source module's attribute is what the late-bound import picks up.
     monkeypatch.setattr(
-        "vllm_mlx._download_gate.mflux_local_snapshot",
+        "rapid_mlx._download_gate.mflux_local_snapshot",
         lambda _repo: str(snapshot),
     )
     return engine
@@ -571,9 +571,9 @@ def test_no_verdict_completeness_skips_the_text_encoder_check(
     snapshot = _make_snapshot(tmp_path, {"shape": [152064, 672], "dtype": "U32"})
     engine = ImageGenerationEngine("mflux-community/qwen-image-mflux-q6")
     monkeypatch.setattr(
-        "vllm_mlx._download_gate.mflux_missing_weights", lambda _repo: None
+        "rapid_mlx._download_gate.mflux_missing_weights", lambda _repo: None
     )
     monkeypatch.setattr(
-        "vllm_mlx._download_gate.mflux_local_snapshot", lambda _repo: str(snapshot)
+        "rapid_mlx._download_gate.mflux_local_snapshot", lambda _repo: str(snapshot)
     )
     engine._verify_weights_complete()  # no-op, must not raise

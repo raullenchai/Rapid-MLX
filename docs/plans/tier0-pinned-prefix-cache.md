@@ -1,8 +1,8 @@
 # Tier 0 + Pinned Prefix Cache Implementation Plan
 
 **Status**: Done (statused 2026-08-18 — `gc_control` shipped in
-`vllm_mlx/config/server_config.py`, prefix pinning shipped as
-`pin_prefix()` / `unpin_prefix()` in `vllm_mlx/prefix_cache.py`)
+`rapid_mlx/config/server_config.py`, prefix pinning shipped as
+`pin_prefix()` / `unpin_prefix()` in `rapid_mlx/prefix_cache.py`)
 **Target**: MiniMax-M2.5-MLX-4bit on M3 Ultra 256GB (serving OpenClaw)
 **Branch**: `feat-minimax-parser`
 **Baseline**: MiniMax-M2.5-4bit row in [evals/SCORECARD.md](../../evals/SCORECARD.md)
@@ -23,7 +23,7 @@ Goal: measurable improvement in TTFT, throughput stability, and error resilience
 
 **Problem**: Python's GC runs unpredictably during streaming, causing latency spikes (especially with 120GB+ model).
 
-**File**: `vllm_mlx/server.py` -- `lifespan()` + `stream_chat_completion()`
+**File**: `rapid_mlx/server.py` -- `lifespan()` + `stream_chat_completion()`
 
 **Implementation**:
 - At server startup in `lifespan()`: `gc.set_threshold(100_000, 50, 50)` to dramatically reduce GC frequency (vLLM upstream uses similar approach, see [PR #33575](https://github.com/vllm-project/vllm/pull/33575))
@@ -49,7 +49,7 @@ finally:
 
 **Problem**: `mlx_lm.stream_generate()` returns text deltas, but `server.py` re-encodes the full accumulated text to count tokens on every chunk. This is O(n^2) over the response.
 
-**File**: `vllm_mlx/server.py` -- `stream_chat_completion()`
+**File**: `rapid_mlx/server.py` -- `stream_chat_completion()`
 
 **Implementation**:
 - Track `token_count` incrementally instead of re-encoding each chunk
@@ -69,8 +69,8 @@ finally:
 **Problem**: Bad JSON schemas from clients (OpenClaw sends diverse schemas) can crash the guided generation path, potentially killing the server.
 
 **Files**:
-- `vllm_mlx/api/guided.py` -- `json_schema_to_pydantic()` already has try/except but returns None
-- `vllm_mlx/server.py` -- Schema extraction and guided generation call
+- `rapid_mlx/api/guided.py` -- `json_schema_to_pydantic()` already has try/except but returns None
+- `rapid_mlx/server.py` -- Schema extraction and guided generation call
 
 **Implementation**:
 - In `server.py`: When guided generation returns None or raises, fall back to standard generation with a warning (not a 500 error)
@@ -88,9 +88,9 @@ finally:
 **Problem**: OpenClaw's system prompt (~2K tokens) gets evicted under memory pressure, causing repeated re-computation. With MiniMax-M2.5 on 256GB, the first request after eviction adds 0.5-1s TTFT.
 
 **Files**:
-- `vllm_mlx/paged_cache.py` -- `CacheBlock`, `FreeKVCacheBlockQueue.popleft()`, `_maybe_evict_cached_block()`
-- `vllm_mlx/prefix_cache.py` -- `PrefixCacheManager`, `BlockAwarePrefixCache`
-- `vllm_mlx/server.py` -- New CLI flag + auto-pin logic
+- `rapid_mlx/paged_cache.py` -- `CacheBlock`, `FreeKVCacheBlockQueue.popleft()`, `_maybe_evict_cached_block()`
+- `rapid_mlx/prefix_cache.py` -- `PrefixCacheManager`, `BlockAwarePrefixCache`
+- `rapid_mlx/server.py` -- New CLI flag + auto-pin logic
 
 ### 4a. CacheBlock pinning (`paged_cache.py`)
 
@@ -131,7 +131,7 @@ Add `pin_prefix(token_ids: list[int])` to `PrefixCacheManager` / `BlockAwarePref
 
 ## 5. CLI Flags
 
-**File**: `vllm_mlx/cli.py`
+**File**: `rapid_mlx/cli.py`
 
 New flags:
 - `--gc-control / --no-gc-control` (default: enabled)
@@ -143,11 +143,11 @@ New flags:
 
 | File | Changes |
 |------|---------|
-| `vllm_mlx/server.py` | GC control in lifespan + generation paths, schema fallback hardening, auto-pin system prompt |
-| `vllm_mlx/paged_cache.py` | `is_pinned` field, skip-pinned eviction, pin/unpin API |
-| `vllm_mlx/prefix_cache.py` | `pin_prefix()` / `unpin_prefix()` methods |
-| `vllm_mlx/cli.py` | `--gc-control`, `--pin-system-prompt` flags |
-| `vllm_mlx/api/guided.py` | Minor: ensure schema errors logged at DEBUG |
+| `rapid_mlx/server.py` | GC control in lifespan + generation paths, schema fallback hardening, auto-pin system prompt |
+| `rapid_mlx/paged_cache.py` | `is_pinned` field, skip-pinned eviction, pin/unpin API |
+| `rapid_mlx/prefix_cache.py` | `pin_prefix()` / `unpin_prefix()` methods |
+| `rapid_mlx/cli.py` | `--gc-control`, `--pin-system-prompt` flags |
+| `rapid_mlx/api/guided.py` | Minor: ensure schema errors logged at DEBUG |
 
 ---
 

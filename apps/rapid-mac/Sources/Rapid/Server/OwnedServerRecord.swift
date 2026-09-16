@@ -7,7 +7,7 @@ import Foundation
 /// alone).
 ///
 /// Before this file existed (issue #20), ``PortSweep`` relied purely on a
-/// basename match (``rapid-mlx`` / ``python -m vllm_mlx serve``). That
+/// basename match (``rapid-mlx`` / ``python -m rapid_mlx serve``). That
 /// heuristic had two failure modes:
 ///
 ///   1. **False positive**: a developer running their own

@@ -58,7 +58,7 @@ struct ServerLogNoiseTests {
         #expect(!ServerLogNoise.isAppPollAccessLine(
             "WARNING: /healthz answered slowly (2.4s) — model still loading"))
         #expect(!ServerLogNoise.isAppPollAccessLine(
-            "  File \"/app/vllm_mlx/server.py\", line 1, in healthz"))
+            "  File \"/app/rapid_mlx/server.py\", line 1, in healthz"))
         #expect(!ServerLogNoise.isAppPollAccessLine(
             "INFO: probe endpoint is /v1/models/residency"))
         #expect(!ServerLogNoise.isAppPollAccessLine(""))

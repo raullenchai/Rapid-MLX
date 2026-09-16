@@ -150,7 +150,7 @@ def _run(
     **kwargs,
 ):
     """Drive the generator, logging each delivered token into ``events``."""
-    from vllm_mlx.spec_decode.mtp.generator import mtp_generate_step
+    from rapid_mlx.spec_decode.mtp.generator import mtp_generate_step
 
     emitted = []
     stream = mtp_generate_step(
@@ -351,7 +351,7 @@ def test_a_caller_that_stops_mid_round_does_not_bank_undelivered_accepts():
     rate the server publishes, and the drafter now runs before delivery, so
     "record it while collecting" is exactly the tempting shortcut.
     """
-    from vllm_mlx.spec_decode.mtp.accept_counter import MTPAcceptCounter
+    from rapid_mlx.spec_decode.mtp.accept_counter import MTPAcceptCounter
 
     events: list = []
     counter = MTPAcceptCounter()
@@ -378,7 +378,7 @@ def test_the_round_s_counter_calls_ride_delivery_not_the_collection_pass():
     that drains the round must trigger exactly one, after its residual's
     guard restore.
     """
-    from vllm_mlx.spec_decode.mtp.accept_counter import MTPAcceptCounter
+    from rapid_mlx.spec_decode.mtp.accept_counter import MTPAcceptCounter
 
     class _SpyCounter(MTPAcceptCounter):
         def __init__(self, events):
@@ -487,7 +487,7 @@ def test_prompt_lookup_drafts_replace_the_drafter_chain_on_a_parked_round():
     draft wall time to charge the next round -- so ``mtp_forward`` staying at
     zero is the assertion that matters.
     """
-    from vllm_mlx.spec_decode.mtp.prompt_lookup import PromptLookupPolicy
+    from rapid_mlx.spec_decode.mtp.prompt_lookup import PromptLookupPolicy
 
     events: list = []
     # Round 0 emits 7, round 1 emits 20; the suffix (7, 20) then matches the
@@ -564,8 +564,8 @@ class _SoftTargetModel(_ScriptedModel):
 
 def _sampled_copy_run(*, temp, enabled_under_sampling, seed, soft=None):
     """One sampled turn whose third token is the copy-verified position."""
-    from vllm_mlx._seeded_sampler import RequestSeededRNG
-    from vllm_mlx.spec_decode.mtp.prompt_lookup import PromptLookupPolicy
+    from rapid_mlx._seeded_sampler import RequestSeededRNG
+    from rapid_mlx.spec_decode.mtp.prompt_lookup import PromptLookupPolicy
 
     events: list = []
     backbone = [7, 20, 25, 26, 27, 27, 27]

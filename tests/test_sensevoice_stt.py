@@ -10,9 +10,9 @@ import pytest
 pytestmark = pytest.mark.requires_mlx
 from fastapi import HTTPException
 
-from vllm_mlx.audio.registry import resolve_audio_alias, stt_aliases
-from vllm_mlx.audio.stt import STTEngine
-from vllm_mlx.routes.audio import (
+from rapid_mlx.audio.registry import resolve_audio_alias, stt_aliases
+from rapid_mlx.audio.stt import STTEngine
+from rapid_mlx.routes.audio import (
     _reject_non_whisper_for_translation,
     _resolve_stt_model,
 )

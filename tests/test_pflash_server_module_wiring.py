@@ -1,9 +1,9 @@
 # SPDX-License-Identifier: Apache-2.0
-"""Wiring guard for the legacy ``python -m vllm_mlx.server`` entrypoint.
+"""Wiring guard for the legacy ``python -m rapid_mlx.server`` entrypoint.
 
 ``tests/test_pflash_cli_wiring.py`` proves the ``serve``/``bench`` *commands*
-route PFlash resolution through :func:`vllm_mlx.pflash.resolve_pflash_config`.
-This file proves the THIRD serving entrypoint — ``vllm_mlx.server.main()`` —
+route PFlash resolution through :func:`rapid_mlx.pflash.resolve_pflash_config`.
+This file proves the THIRD serving entrypoint — ``rapid_mlx.server.main()`` —
 does the same, so the two paths cannot drift.
 
 Regression for #1458: ``server.main()`` used to resolve PFlash with
@@ -39,10 +39,10 @@ class _StopError(Exception):
 
 
 def _server_module():
-    """Resolve ``vllm_mlx.server`` from ``sys.modules`` at call time.
+    """Resolve ``rapid_mlx.server`` from ``sys.modules`` at call time.
 
     NOT a module-level ``import ... as server``: another test in the shared
-    process may ``sys.modules.pop("vllm_mlx.cli")`` / reimport (several route
+    process may ``sys.modules.pop("rapid_mlx.cli")`` / reimport (several route
     tests do), which swaps the live module object. A binding captured at import
     time would then be stale, so ``mock.patch.object`` on it would patch a
     different object than the one ``server.main()`` actually calls into — the
@@ -52,7 +52,7 @@ def _server_module():
     patch and the code-under-test pointed at the same object regardless of
     ordering.
     """
-    return importlib.import_module("vllm_mlx.server")
+    return importlib.import_module("rapid_mlx.server")
 
 
 # ``server.main()`` writes serving config into module-level globals (API key,
@@ -122,12 +122,12 @@ def _run_server_main_capturing_config(argv: list[str], *, lane=(False, False)):
     # we want that to fail LOUDLY here rather than be swallowed into an empty
     # ``captured`` that then trips a confusing "cfg is None" assertion.
     with (
-        mock.patch("vllm_mlx.cli._port_preflight_or_die", lambda *a, **k: None),
-        mock.patch("vllm_mlx.server._preflight_vision_runtime", lambda *a, **k: None),
-        mock.patch("vllm_mlx.server._ensure_routing_config", lambda *a, **k: None),
-        mock.patch("vllm_mlx.server.resolve_serving_lane", lambda name, **kw: lane),
-        mock.patch("vllm_mlx.pflash.validate_model_support", _capture_validate),
-        mock.patch.object(sys, "argv", ["vllm_mlx.server", *argv]),
+        mock.patch("rapid_mlx.cli._port_preflight_or_die", lambda *a, **k: None),
+        mock.patch("rapid_mlx.server._preflight_vision_runtime", lambda *a, **k: None),
+        mock.patch("rapid_mlx.server._ensure_routing_config", lambda *a, **k: None),
+        mock.patch("rapid_mlx.server.resolve_serving_lane", lambda name, **kw: lane),
+        mock.patch("rapid_mlx.pflash.validate_model_support", _capture_validate),
+        mock.patch.object(sys, "argv", ["rapid_mlx.server", *argv]),
         pytest.raises(_StopError),
     ):
         server.main()
@@ -168,19 +168,19 @@ def _run_server_main_capturing_scheduler(
     )
     with (
         import_guard,
-        mock.patch("vllm_mlx.cli._port_preflight_or_die", lambda *a, **k: None),
-        mock.patch("vllm_mlx.server._preflight_vision_runtime", lambda *a, **k: None),
-        mock.patch("vllm_mlx.server._ensure_routing_config", lambda *a, **k: None),
+        mock.patch("rapid_mlx.cli._port_preflight_or_die", lambda *a, **k: None),
+        mock.patch("rapid_mlx.server._preflight_vision_runtime", lambda *a, **k: None),
+        mock.patch("rapid_mlx.server._ensure_routing_config", lambda *a, **k: None),
         mock.patch(
-            "vllm_mlx.server.resolve_serving_lane", lambda _name, **_kw: (False, False)
+            "rapid_mlx.server.resolve_serving_lane", lambda _name, **_kw: (False, False)
         ),
         mock.patch(
-            "vllm_mlx.model_auto_config.detect_model_config",
+            "rapid_mlx.model_auto_config.detect_model_config",
             detect,
         ),
-        mock.patch("vllm_mlx.pflash.validate_model_support", lambda *a, **k: None),
-        mock.patch("vllm_mlx.server.load_model", _capture_load_model),
-        mock.patch.object(sys, "argv", ["vllm_mlx.server", *argv]),
+        mock.patch("rapid_mlx.pflash.validate_model_support", lambda *a, **k: None),
+        mock.patch("rapid_mlx.server.load_model", _capture_load_model),
+        mock.patch.object(sys, "argv", ["rapid_mlx.server", *argv]),
         pytest.raises(expected_exception),
     ):
         server.main()
@@ -226,7 +226,7 @@ def test_server_module_forwards_multimodal_lane_verdict():
 
 
 def test_server_module_applies_detected_hybrid_cache_default(scheduler_config_stub):
-    from vllm_mlx.model_profile import ModelProfile
+    from rapid_mlx.model_profile import ModelProfile
 
     scheduler, detect_calls = _run_server_main_capturing_scheduler(
         ["--model", "/models/linear-checkpoint"],
@@ -244,7 +244,7 @@ def test_server_module_applies_detected_hybrid_cache_default(scheduler_config_st
 
 
 def test_server_module_keeps_dense_cache_default_zero(scheduler_config_stub):
-    from vllm_mlx.model_profile import ModelProfile
+    from rapid_mlx.model_profile import ModelProfile
 
     scheduler, detect_calls = _run_server_main_capturing_scheduler(
         ["--model", "/models/dense-checkpoint"],
@@ -291,7 +291,7 @@ def test_server_module_keeps_dense_cache_default_zero(scheduler_config_stub):
 def test_server_module_lazy_metadata_consumers_share_one_result(
     scheduler_config_stub, argv
 ):
-    from vllm_mlx.model_profile import ModelProfile
+    from rapid_mlx.model_profile import ModelProfile
 
     scheduler, detect_calls = _run_server_main_capturing_scheduler(
         ["--model", "/models/linear-checkpoint", *argv],

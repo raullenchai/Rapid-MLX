@@ -26,7 +26,7 @@ from __future__ import annotations
 
 import pytest
 
-# Linux CI runners don't ship MLX; ``vllm_mlx.service.helpers``
+# Linux CI runners don't ship MLX; ``rapid_mlx.service.helpers``
 # transitively imports it through the engine wiring. Skip cleanly so the
 # diff-aware targeted_tests step doesn't flag the whole file as
 # regressions. Same pattern as ``tests/test_audio_upload_size_limit.py``.
@@ -41,7 +41,7 @@ pytest.importorskip(
 
 from fastapi import HTTPException  # noqa: E402
 
-from vllm_mlx.api.models import FunctionCall, ToolCall  # noqa: E402
+from rapid_mlx.api.models import FunctionCall, ToolCall  # noqa: E402
 
 
 def _tool(name: str, properties: dict) -> dict:
@@ -71,7 +71,7 @@ class TestPatternEnforcement:
     """``pattern`` (regex) — ``re.fullmatch`` per operator note."""
 
     def test_pattern_violation_raises_400(self):
-        from vllm_mlx.service.helpers import _validate_tool_call_params
+        from rapid_mlx.service.helpers import _validate_tool_call_params
 
         tools = [
             _tool(
@@ -87,7 +87,7 @@ class TestPatternEnforcement:
     def test_pattern_partial_match_is_rejected(self):
         """``re.fullmatch``, not ``re.match`` — ``"2024-01-01x"`` must
         still 400 even though the prefix matches the regex."""
-        from vllm_mlx.service.helpers import _validate_tool_call_params
+        from rapid_mlx.service.helpers import _validate_tool_call_params
 
         tools = [
             _tool(
@@ -101,7 +101,7 @@ class TestPatternEnforcement:
             )
 
     def test_pattern_valid_passes(self):
-        from vllm_mlx.service.helpers import _validate_tool_call_params
+        from rapid_mlx.service.helpers import _validate_tool_call_params
 
         tools = [
             _tool(
@@ -115,7 +115,7 @@ class TestPatternEnforcement:
         """If the *schema* ships an invalid regex (``[unclosed``), the
         bug is the schema author's, not the model's. Fall back to
         advisory pass-through rather than 400-ing on every call."""
-        from vllm_mlx.service.helpers import _validate_tool_call_params
+        from rapid_mlx.service.helpers import _validate_tool_call_params
 
         tools = [_tool("f", {"x": {"type": "string", "pattern": "[unclosed"}})]
         _validate_tool_call_params([_call("f", '{"x": "anything"}')], tools)
@@ -148,7 +148,7 @@ class TestFormatEnforcement:
         accepts the canonical good value."""
         import json as _json
 
-        from vllm_mlx.service.helpers import _validate_tool_call_params
+        from rapid_mlx.service.helpers import _validate_tool_call_params
 
         tools = [_tool("f", {"x": {"type": "string", "format": fmt}})]
 
@@ -163,7 +163,7 @@ class TestFormatEnforcement:
     def test_unknown_format_passes_through(self):
         """Operator scope: unknown ``format`` values stay loose (200)
         rather than 400-ing on every bespoke format hint in the wild."""
-        from vllm_mlx.service.helpers import _validate_tool_call_params
+        from rapid_mlx.service.helpers import _validate_tool_call_params
 
         tools = [_tool("f", {"x": {"type": "string", "format": "my-custom-format"}})]
         _validate_tool_call_params([_call("f", '{"x": "anything"}')], tools)
@@ -175,7 +175,7 @@ class TestFormatEnforcement:
         ``datetime.fromisoformat`` and pass as 200."""
         import json as _json
 
-        from vllm_mlx.service.helpers import _validate_tool_call_params
+        from rapid_mlx.service.helpers import _validate_tool_call_params
 
         tools = [_tool("f", {"x": {"type": "string", "format": "date-time"}})]
         with pytest.raises(HTTPException):
@@ -198,7 +198,7 @@ class TestFormatEnforcement:
         Strict-RFC: space separator must be rejected."""
         import json as _json
 
-        from vllm_mlx.service.helpers import _validate_tool_call_params
+        from rapid_mlx.service.helpers import _validate_tool_call_params
 
         tools = [_tool("f", {"x": {"type": "string", "format": "date-time"}})]
         with pytest.raises(HTTPException):
@@ -222,7 +222,7 @@ class TestMultipleOfEnforcement:
     """``multipleOf`` — integer / float."""
 
     def test_int_multiple_of_violation_raises_400(self):
-        from vllm_mlx.service.helpers import _validate_tool_call_params
+        from rapid_mlx.service.helpers import _validate_tool_call_params
 
         tools = [_tool("step", {"n": {"type": "integer", "multipleOf": 3}})]
         with pytest.raises(HTTPException) as exc:
@@ -231,7 +231,7 @@ class TestMultipleOfEnforcement:
         assert "not a multiple of 3" in exc.value.detail
 
     def test_int_multiple_of_pass(self):
-        from vllm_mlx.service.helpers import _validate_tool_call_params
+        from rapid_mlx.service.helpers import _validate_tool_call_params
 
         tools = [_tool("step", {"n": {"type": "integer", "multipleOf": 3}})]
         _validate_tool_call_params([_call("step", '{"n": 9}')], tools)
@@ -239,13 +239,13 @@ class TestMultipleOfEnforcement:
     def test_float_multiple_of_with_isclose_drift_pass(self):
         """0.3 = 3 * 0.1 in math, but ``0.3 % 0.1 == 0.09999...`` in
         float. Operator note: use ``math.isclose`` so this case passes."""
-        from vllm_mlx.service.helpers import _validate_tool_call_params
+        from rapid_mlx.service.helpers import _validate_tool_call_params
 
         tools = [_tool("f", {"x": {"type": "number", "multipleOf": 0.1}})]
         _validate_tool_call_params([_call("f", '{"x": 0.3}')], tools)
 
     def test_float_multiple_of_violation_raises(self):
-        from vllm_mlx.service.helpers import _validate_tool_call_params
+        from rapid_mlx.service.helpers import _validate_tool_call_params
 
         tools = [_tool("f", {"x": {"type": "number", "multipleOf": 0.5}})]
         with pytest.raises(HTTPException):
@@ -254,7 +254,7 @@ class TestMultipleOfEnforcement:
     def test_zero_multiple_of_treated_as_advisory(self):
         """``multipleOf: 0`` is invalid per JSON-schema. Bogus schema,
         fall back to advisory rather than 400-ing every call."""
-        from vllm_mlx.service.helpers import _validate_tool_call_params
+        from rapid_mlx.service.helpers import _validate_tool_call_params
 
         tools = [_tool("f", {"x": {"type": "integer", "multipleOf": 0}})]
         _validate_tool_call_params([_call("f", '{"x": 5}')], tools)
@@ -269,7 +269,7 @@ class TestUniqueItemsEnforcement:
     """``uniqueItems`` — array dedup."""
 
     def test_duplicate_strings_raises_400(self):
-        from vllm_mlx.service.helpers import _validate_tool_call_params
+        from rapid_mlx.service.helpers import _validate_tool_call_params
 
         tools = [
             _tool(
@@ -285,7 +285,7 @@ class TestUniqueItemsEnforcement:
         assert "uniqueItems" in exc.value.detail
 
     def test_unique_strings_pass(self):
-        from vllm_mlx.service.helpers import _validate_tool_call_params
+        from rapid_mlx.service.helpers import _validate_tool_call_params
 
         tools = [
             _tool(
@@ -298,7 +298,7 @@ class TestUniqueItemsEnforcement:
     def test_structurally_equal_dicts_count_as_duplicate(self):
         """JSON-schema uniqueItems uses structural equality, not Python
         identity. ``{"a": 1}`` and ``{"a": 1}`` are duplicates."""
-        from vllm_mlx.service.helpers import _validate_tool_call_params
+        from rapid_mlx.service.helpers import _validate_tool_call_params
 
         tools = [
             _tool(
@@ -312,7 +312,7 @@ class TestUniqueItemsEnforcement:
             )
 
     def test_unique_items_false_skips_check(self):
-        from vllm_mlx.service.helpers import _validate_tool_call_params
+        from rapid_mlx.service.helpers import _validate_tool_call_params
 
         tools = [
             _tool(
@@ -327,7 +327,7 @@ class TestUniqueItemsEnforcement:
         *value*, not representation. ``[1, 1.0]`` must be rejected as
         a duplicate. Previously ``json.dumps`` keying made them
         distinct and silently let it pass."""
-        from vllm_mlx.service.helpers import _validate_tool_call_params
+        from rapid_mlx.service.helpers import _validate_tool_call_params
 
         tools = [
             _tool(
@@ -340,7 +340,7 @@ class TestUniqueItemsEnforcement:
 
     def test_unique_numbers_pass(self):
         """Negative control for the above."""
-        from vllm_mlx.service.helpers import _validate_tool_call_params
+        from rapid_mlx.service.helpers import _validate_tool_call_params
 
         tools = [
             _tool(
@@ -355,7 +355,7 @@ class TestUniqueItemsEnforcement:
         float(9007199254740992)`` because IEEE-754 double can't
         represent both. The canonical-key path must use ``Decimal``
         so genuinely distinct large ints stay distinct."""
-        from vllm_mlx.service.helpers import _validate_tool_call_params
+        from rapid_mlx.service.helpers import _validate_tool_call_params
 
         tools = [
             _tool(
@@ -380,7 +380,7 @@ class TestMultipleOfPrecision:
         to 0.0 means the absolute tolerance is the only allowance."""
         import json as _json
 
-        from vllm_mlx.service.helpers import _validate_tool_call_params
+        from rapid_mlx.service.helpers import _validate_tool_call_params
 
         tools = [_tool("f", {"x": {"type": "number", "multipleOf": 0.5}})]
         # Far above the absolute tolerance, but the default relative

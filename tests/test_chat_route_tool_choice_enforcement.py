@@ -36,11 +36,11 @@ import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
-from vllm_mlx.config import reset_config
-from vllm_mlx.engine.base import GenerationOutput
-from vllm_mlx.middleware.exception_handlers import install_exception_handlers
-from vllm_mlx.routes.chat import _tool_call_name
-from vllm_mlx.routes.chat import router as chat_router
+from rapid_mlx.config import reset_config
+from rapid_mlx.engine.base import GenerationOutput
+from rapid_mlx.middleware.exception_handlers import install_exception_handlers
+from rapid_mlx.routes.chat import _tool_call_name
+from rapid_mlx.routes.chat import router as chat_router
 
 
 class _RecordingEngine:
@@ -624,7 +624,7 @@ def test_tool_choice_required_with_stream_channel_routed_bypasses_422(monkeypatc
     probe to True so we exercise the bypass deterministically without
     needing a real harmony tokenizer in the test fixture.
     """
-    from vllm_mlx.routes import chat as chat_module
+    from rapid_mlx.routes import chat as chat_module
 
     engine = _RecordingEngine()
     monkeypatch.setattr(
@@ -653,7 +653,7 @@ def test_engine_supports_channel_routed_helper_returns_false_on_no_tokenizer():
     engine has no tokenizer attribute or it is ``None`` — the gate
     must fall back to the parser-only path safely.
     """
-    from vllm_mlx.routes.chat import _engine_supports_channel_routed_tool_calls
+    from rapid_mlx.routes.chat import _engine_supports_channel_routed_tool_calls
 
     class _NoTokenizerEngine:
         tokenizer = None
@@ -671,8 +671,8 @@ def test_engine_supports_channel_routed_helper_returns_true_for_harmony_router(
     """
     from types import SimpleNamespace
 
-    from vllm_mlx.output_router import OutputRouter
-    from vllm_mlx.routes.chat import _engine_supports_channel_routed_tool_calls
+    from rapid_mlx.output_router import OutputRouter
+    from rapid_mlx.routes.chat import _engine_supports_channel_routed_tool_calls
 
     fake_router = SimpleNamespace(map=SimpleNamespace(format_tag="harmony"))
     monkeypatch.setattr(
@@ -696,8 +696,8 @@ def test_engine_supports_channel_routed_helper_returns_false_for_unsupported_for
     """
     from types import SimpleNamespace
 
-    from vllm_mlx.output_router import OutputRouter
-    from vllm_mlx.routes.chat import _engine_supports_channel_routed_tool_calls
+    from rapid_mlx.output_router import OutputRouter
+    from rapid_mlx.routes.chat import _engine_supports_channel_routed_tool_calls
 
     fake_router = SimpleNamespace(map=SimpleNamespace(format_tag="think_tag"))
     monkeypatch.setattr(
@@ -1141,7 +1141,7 @@ def test_synthesize_forced_tool_call_helper_shape():
     Stops future refactors from accidentally emitting ``arguments`` as
     a dict (the OpenAI ToolCall spec uses a JSON string).
     """
-    from vllm_mlx.routes.chat import _synthesize_forced_tool_call
+    from rapid_mlx.routes.chat import _synthesize_forced_tool_call
 
     tc = _synthesize_forced_tool_call("get_weather")
     assert tc.id.startswith("call_")
@@ -1176,7 +1176,7 @@ def test_named_function_outside_tools_returns_422(monkeypatch):
     bypass of the early 400 gate. The synthesis branch must then refuse
     rather than fabricating, surfacing as 422.
     """
-    from vllm_mlx.routes import chat as chat_module
+    from rapid_mlx.routes import chat as chat_module
 
     synth_calls: list[str] = []
     real_synth = chat_module._synthesize_forced_tool_call
@@ -1390,7 +1390,7 @@ def test_plain_str_system_content_still_appends_suffix_inline():
 def test_append_tool_use_suffix_handles_all_content_shapes():
     """Unit coverage for the ``_append_tool_use_suffix`` normalizer: every
     legal content shape must append the suffix without raising."""
-    from vllm_mlx.service.helpers import _append_tool_use_suffix
+    from rapid_mlx.service.helpers import _append_tool_use_suffix
 
     suffix = "\n\nSUFFIX"
 

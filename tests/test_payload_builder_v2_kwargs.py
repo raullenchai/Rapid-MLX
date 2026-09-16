@@ -36,8 +36,8 @@ def _stub_inputs():
     the existing ``tests/test_community_bench.py`` uses for payload tests.
     Keeping the inputs in lockstep here avoids cross-test imports.
     """
-    from vllm_mlx.community_bench.hardware import Hardware, Software
-    from vllm_mlx.community_bench.runner import (
+    from rapid_mlx.community_bench.hardware import Hardware, Software
+    from rapid_mlx.community_bench.runner import (
         BenchResult,
         BucketResult,
         RoundResult,
@@ -59,7 +59,7 @@ def _stub_inputs():
 
 
 def _build(tier=None, smoke_result=None, harness_result=None) -> dict:
-    from vllm_mlx.community_bench.submission import build_submission_payload
+    from rapid_mlx.community_bench.submission import build_submission_payload
 
     hw, sw, bench = _stub_inputs()
     return build_submission_payload(

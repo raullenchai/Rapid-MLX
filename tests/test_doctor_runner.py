@@ -10,7 +10,7 @@ from pathlib import Path
 
 import pytest
 
-from vllm_mlx.doctor.runner import (
+from rapid_mlx.doctor.runner import (
     CheckResult,
     DoctorRunner,
     Status,
@@ -115,7 +115,7 @@ class TestRunDirReservation:
     def test_back_to_back_runs_get_distinct_dirs(self, tmp_path, monkeypatch):
         """Concurrent invocations must never share a run dir, otherwise
         report.md / result.json get clobbered."""
-        from vllm_mlx.doctor import runner as runner_mod
+        from rapid_mlx.doctor import runner as runner_mod
 
         monkeypatch.setattr(runner_mod, "RUNS_DIR", tmp_path)
         r1 = DoctorRunner(tier="x")
@@ -134,7 +134,7 @@ class TestRunDirReservation:
 
 class TestReportRendering:
     def test_basic_report_renders_table(self, tmp_path, monkeypatch):
-        from vllm_mlx.doctor import runner as runner_mod
+        from rapid_mlx.doctor import runner as runner_mod
 
         monkeypatch.setattr(runner_mod, "RUNS_DIR", tmp_path)
         r = DoctorRunner(tier="test")
@@ -156,7 +156,7 @@ class TestReportRendering:
         assert result.exit_code == 0
 
     def test_report_includes_diff_sections_when_stashed(self, tmp_path, monkeypatch):
-        from vllm_mlx.doctor import runner as runner_mod
+        from rapid_mlx.doctor import runner as runner_mod
 
         monkeypatch.setattr(runner_mod, "RUNS_DIR", tmp_path)
         r = DoctorRunner(tier="test")
@@ -178,7 +178,7 @@ class TestReportRendering:
         assert "| metric | base | curr | dp | s |" in report
 
     def test_pipe_in_detail_does_not_break_table(self, tmp_path, monkeypatch):
-        from vllm_mlx.doctor import runner as runner_mod
+        from rapid_mlx.doctor import runner as runner_mod
 
         monkeypatch.setattr(runner_mod, "RUNS_DIR", tmp_path)
         r = DoctorRunner(tier="test")
@@ -218,6 +218,6 @@ class TestReportRendering:
 # Boot-timeout default — removed in the env-health refactor.
 #
 # The doctor CLI no longer owns server-boot orchestration; that moved to
-# ``vllm_mlx.bench.tier_runner`` with the rest of the model-validation
+# ``rapid_mlx.bench.tier_runner`` with the rest of the model-validation
 # logic. Any future regression test for the boot timeout should land in
 # ``tests/test_bench_*.py`` against the new owner, not here.

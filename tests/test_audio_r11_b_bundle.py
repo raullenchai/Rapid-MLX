@@ -10,7 +10,7 @@ Three findings:
   copying older sample code (early ``openai-python`` < 1.0,
   Anthropic tutorials) had no way to tell their request was
   silently being downgraded. Fix: a ``model_validator(mode="before")``
-  on :class:`vllm_mlx.api.models.AudioSpeechRequest` folds
+  on :class:`rapid_mlx.api.models.AudioSpeechRequest` folds
   ``format`` into ``response_format`` when the latter isn't
   explicitly set. Explicit ``response_format`` always wins on
   conflict so a caller using both spellings (which itself is a
@@ -22,7 +22,7 @@ Three findings:
   already advertises a ``default_voice`` for each entry — and the
   omitted-voice path (Pydantic default ``"af_heart"``) worked.
   The asymmetry was a UX trap. Fix: a
-  :func:`vllm_mlx.routes.audio._resolve_default_voice_literal`
+  :func:`rapid_mlx.routes.audio._resolve_default_voice_literal`
   pre-step maps ``voice="default"`` → ``entry.default_voice`` when
   the resolved model is registered.
 
@@ -30,7 +30,7 @@ Three findings:
   ``capabilities=["text"]`` and ``modality=null``. Drop-in OpenAI
   clients couldn't distinguish audio aliases from text models on
   the wire. Fix:
-  :func:`vllm_mlx.routes.models._resolve_audio_entry` short-circuits
+  :func:`rapid_mlx.routes.models._resolve_audio_entry` short-circuits
   audio aliases to ``capabilities=["audio.speech"]`` (TTS) or
   ``["audio.transcription"]`` (STT) and ``modality="audio"``.
 
@@ -44,7 +44,7 @@ import types
 
 import pytest
 
-# ``vllm_mlx.routes.audio`` transitively imports ``mlx.core`` via the
+# ``rapid_mlx.routes.audio`` transitively imports ``mlx.core`` via the
 # engine wiring. Linux CI runners don't install mlx, so a bare import
 # raises ``ModuleNotFoundError`` and the rest of the file looks like a
 # 13-test failure. Mirror the r8-A skip block so the file is a clean
@@ -102,9 +102,9 @@ def _mount_audio_app() -> tuple[TestClient, callable]:
     """Mount the audio router with the rapid-mlx exception handlers so the
     Pydantic validation errors surface as the OpenAI envelope (not the
     default FastAPI 422)."""
-    from vllm_mlx.config import get_config
-    from vllm_mlx.middleware.exception_handlers import install_exception_handlers
-    from vllm_mlx.routes import audio as audio_route
+    from rapid_mlx.config import get_config
+    from rapid_mlx.middleware.exception_handlers import install_exception_handlers
+    from rapid_mlx.routes import audio as audio_route
 
     app = FastAPI()
     app.include_router(audio_route.router)
@@ -128,9 +128,9 @@ def _stub_engine(monkeypatch, *, voice_observed=None, format_observed=None):
     """
     import numpy as np
 
-    from vllm_mlx.audio import probe as probe_mod
-    from vllm_mlx.audio import tts as tts_mod
-    from vllm_mlx.routes import audio as audio_route
+    from rapid_mlx.audio import probe as probe_mod
+    from rapid_mlx.audio import tts as tts_mod
+    from rapid_mlx.routes import audio as audio_route
 
     observed_models: list[str] = []
     real_to_bytes = tts_mod.TTSEngine.to_bytes
@@ -507,8 +507,8 @@ class TestVoiceDefaultFallsBackToRegistry:
 def _mount_models_app(monkeypatch, **cfg_overrides):
     """Mount the models router with controlled config state. Mirrors
     :func:`tests.test_capabilities_field._mount_models_app`."""
-    from vllm_mlx.config import get_config
-    from vllm_mlx.routes import models as models_route
+    from rapid_mlx.config import get_config
+    from rapid_mlx.routes import models as models_route
 
     app = FastAPI()
     app.include_router(models_route.router)
@@ -530,7 +530,7 @@ def _mount_models_app(monkeypatch, **cfg_overrides):
     for k, v in cfg_overrides.items():
         setattr(cfg, k, v)
 
-    import vllm_mlx.server as srv
+    import rapid_mlx.server as srv
 
     saved_srv = {
         "_embedding_model_locked": srv._embedding_model_locked,

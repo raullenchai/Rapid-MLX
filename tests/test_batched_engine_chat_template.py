@@ -9,7 +9,7 @@ fall back to the tokenizer; otherwise every request to those models returns
 zero tokens.
 """
 
-from vllm_mlx.engine.batched import BatchedEngine
+from rapid_mlx.engine.batched import BatchedEngine
 
 
 class _RecordingApplicator:

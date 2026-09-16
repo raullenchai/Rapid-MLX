@@ -48,7 +48,7 @@ from dataclasses import dataclass
 
 import pytest
 
-from vllm_mlx.output_router import OutputRouter
+from rapid_mlx.output_router import OutputRouter
 
 from ..fake_tokenizer import HARMONY_VOCAB, harmony_fake_tokenizer
 

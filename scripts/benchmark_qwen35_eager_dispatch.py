@@ -12,8 +12,8 @@ import mlx.core as mx
 from mlx_vlm import generate, load
 from mlx_vlm.utils import get_model_path
 
-from vllm_mlx.patches import qwen3_5_eager_dispatch as eager
-from vllm_mlx.speculative.native_mtp.eligibility import QWEN36_35B_4BIT
+from rapid_mlx.patches import qwen3_5_eager_dispatch as eager
+from rapid_mlx.speculative.native_mtp.eligibility import QWEN36_35B_4BIT
 
 PROMPTS = {
     "coding": (

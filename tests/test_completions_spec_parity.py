@@ -31,7 +31,7 @@ def patched_config():
     Patches select fields on the global cfg singleton and restores
     them on test exit so each test sees a clean config.
     """
-    from vllm_mlx.config import get_config
+    from rapid_mlx.config import get_config
 
     cfg = get_config()
     saved: dict = {}
@@ -54,7 +54,7 @@ def _build_completions_app(patch_cfg, monkeypatch, *, engine_factory=None):
     streaming async generator into ``stream_generate``). When omitted,
     a MagicMock with sensible defaults is used.
     """
-    from vllm_mlx.routes import completions as comp_route
+    from rapid_mlx.routes import completions as comp_route
 
     app = FastAPI()
     app.include_router(comp_route.router)
@@ -290,7 +290,7 @@ class TestLogprobsSchema:
 
     def test_logprobs_int_accepted_by_schema(self):
         """Direct pydantic-level test: ``logprobs: 5`` parses cleanly."""
-        from vllm_mlx.api.models import CompletionRequest
+        from rapid_mlx.api.models import CompletionRequest
 
         req = CompletionRequest(model="x", prompt="y", logprobs=5)
         assert req.logprobs == 5
@@ -299,7 +299,7 @@ class TestLogprobsSchema:
         """Direct pydantic-level test: ``logprobs: True`` raises."""
         from pydantic import ValidationError
 
-        from vllm_mlx.api.models import CompletionRequest
+        from rapid_mlx.api.models import CompletionRequest
 
         with pytest.raises(ValidationError) as ei:
             CompletionRequest(model="x", prompt="y", logprobs=True)
@@ -487,7 +487,7 @@ class TestLogprobsEngineCapability:
     sends ``logprobs:N`` — return a controlled 501 instead."""
 
     def test_structural_fallback_supports_non_base_engine(self):
-        from vllm_mlx.routes.completions import _engine_supports_completion_logprobs
+        from rapid_mlx.routes.completions import _engine_supports_completion_logprobs
 
         class _Engine:
             tokenizer = object()
@@ -499,7 +499,7 @@ class TestLogprobsEngineCapability:
         assert _engine_supports_completion_logprobs(_Engine()) is True
 
     def test_sync_callable_capability_is_evaluated(self):
-        from vllm_mlx.routes.completions import _engine_supports_completion_logprobs
+        from rapid_mlx.routes.completions import _engine_supports_completion_logprobs
 
         class _Engine:
             tokenizer = object()
@@ -518,7 +518,7 @@ class TestLogprobsEngineCapability:
         assert engine.called is True
 
     def test_sync_callable_false_capability_is_evaluated(self):
-        from vllm_mlx.routes.completions import _engine_supports_completion_logprobs
+        from rapid_mlx.routes.completions import _engine_supports_completion_logprobs
 
         class _Engine:
             tokenizer = object()
@@ -533,7 +533,7 @@ class TestLogprobsEngineCapability:
         assert _engine_supports_completion_logprobs(_Engine()) is False
 
     def test_non_bool_capability_attribute_is_unsupported(self):
-        from vllm_mlx.routes.completions import _engine_supports_completion_logprobs
+        from rapid_mlx.routes.completions import _engine_supports_completion_logprobs
 
         class _Engine:
             tokenizer = object()
@@ -546,7 +546,7 @@ class TestLogprobsEngineCapability:
         assert _engine_supports_completion_logprobs(_Engine()) is False
 
     def test_async_callable_capability_is_not_invoked(self):
-        from vllm_mlx.routes.completions import _engine_supports_completion_logprobs
+        from rapid_mlx.routes.completions import _engine_supports_completion_logprobs
 
         class _Engine:
             tokenizer = object()
@@ -565,7 +565,7 @@ class TestLogprobsEngineCapability:
         assert engine.called is False
 
     def test_bound_stream_generate_supports_base_capability(self):
-        from vllm_mlx.engine.base import BaseEngine
+        from rapid_mlx.engine.base import BaseEngine
 
         class _Engine(BaseEngine):
             tokenizer = object()
@@ -607,7 +607,7 @@ class TestLogprobsEngineCapability:
         assert _Engine().supports_completion_logprobs is True
 
     def test_missing_tokenizer_base_capability_returns_false(self):
-        from vllm_mlx.engine.base import BaseEngine
+        from rapid_mlx.engine.base import BaseEngine
 
         class _Engine(BaseEngine):
             @property
@@ -975,7 +975,7 @@ class TestStreamingCompletionIdStable:
         once per request we see 1. This makes the test actually
         exercise the fix instead of accidentally passing on timing.
         """
-        from vllm_mlx.routes import completions as comp_route
+        from rapid_mlx.routes import completions as comp_route
 
         _tick = iter(range(1000, 2000))
 
@@ -1011,7 +1011,7 @@ class TestFieldDeclarations:
     on parse — equivalent to the silent-compat lie F-152 closes."""
 
     def test_all_four_fields_declared(self):
-        from vllm_mlx.api.models import CompletionRequest
+        from rapid_mlx.api.models import CompletionRequest
 
         fields = CompletionRequest.model_fields
         assert "n" in fields

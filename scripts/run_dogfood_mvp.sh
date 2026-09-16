@@ -15,7 +15,7 @@
 #     PORT             local port (default: 8765)
 #     API_KEY          bearer token (default: random 24 hex bytes)
 #     RAPID_MLX_CMD    serve command (default: auto — editable `python3.12 -m
-#                      vllm_mlx.cli` if we're inside the Rapid-MLX repo,
+#                      rapid_mlx.cli` if we're inside the Rapid-MLX repo,
 #                      else system `rapid-mlx`). The editable path sees
 #                      newly-added aliases.json entries; the brew-installed
 #                      binary only knows the aliases bundled at install time.
@@ -118,9 +118,9 @@ fi
 # Rapid-MLX — the brew-installed executable may ship an older aliases.json
 # and won't see recent additions like `minimax-m2.7-mxfp4`.
 if [ -z "${RAPID_MLX_CMD:-}" ]; then
-  if [ -f "$(git rev-parse --show-toplevel 2>/dev/null)/vllm_mlx/cli.py" ] \
-       && python3.12 -c "import vllm_mlx" >/dev/null 2>&1; then
-    RAPID_MLX_CMD="python3.12 -m vllm_mlx.cli"
+  if [ -f "$(git rev-parse --show-toplevel 2>/dev/null)/rapid_mlx/cli.py" ] \
+       && python3.12 -c "import rapid_mlx" >/dev/null 2>&1; then
+    RAPID_MLX_CMD="python3.12 -m rapid_mlx.cli"
   else
     RAPID_MLX_CMD="rapid-mlx"
   fi

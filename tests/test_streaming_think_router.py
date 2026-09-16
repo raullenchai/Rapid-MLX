@@ -2,7 +2,7 @@
 
 import unittest
 
-from vllm_mlx.api.utils import StreamingThinkRouter
+from rapid_mlx.api.utils import StreamingThinkRouter
 
 
 class TestStreamingThinkRouter(unittest.TestCase):

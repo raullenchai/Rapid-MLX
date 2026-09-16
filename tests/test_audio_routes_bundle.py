@@ -110,7 +110,7 @@ def _install_fake_mlx_audio(monkeypatch):
 @pytest.fixture
 def _reset_audio_probe():
     """Clear cached probe verdicts + recorded lane statuses between tests."""
-    from vllm_mlx.audio import probe
+    from rapid_mlx.audio import probe
 
     probe._reset_probe_cache()
     yield
@@ -119,8 +119,8 @@ def _reset_audio_probe():
 
 def _mount_audio_app() -> tuple[TestClient, callable]:
     """Mount the audio router on a bare FastAPI app, bypassing auth."""
-    from vllm_mlx.config import get_config
-    from vllm_mlx.routes import audio as audio_route
+    from rapid_mlx.config import get_config
+    from rapid_mlx.routes import audio as audio_route
 
     app = FastAPI()
     app.include_router(audio_route.router)
@@ -136,8 +136,8 @@ def _mount_audio_app() -> tuple[TestClient, callable]:
 
 def _mount_models_app() -> tuple[TestClient, callable]:
     """Mount the models router on a bare FastAPI app, bypassing auth."""
-    from vllm_mlx.config import get_config
-    from vllm_mlx.routes import models as models_route
+    from rapid_mlx.config import get_config
+    from rapid_mlx.routes import models as models_route
 
     app = FastAPI()
     app.include_router(models_route.router)
@@ -164,7 +164,7 @@ class _FakeWhisperResult:
 
 
 class _FakeWhisperModel:
-    """Mimics the surface ``vllm_mlx.audio.stt.STTEngine`` touches.
+    """Mimics the surface ``rapid_mlx.audio.stt.STTEngine`` touches.
 
     Pre-fix the real mlx_audio Whisper model had ``_processor=None`` at
     load time (because mlx-community repos lack processor files), so
@@ -215,7 +215,7 @@ class TestWhisperProcessorPatch:
         the processor should be attached (via the OpenAI counterpart
         repo) and ``generate`` should succeed.
         """
-        from vllm_mlx.audio import stt as stt_mod
+        from rapid_mlx.audio import stt as stt_mod
 
         fake_model = _FakeWhisperModel()
         sentinel_processor = object()
@@ -266,7 +266,7 @@ class TestWhisperProcessorPatch:
         """If mlx_audio's post_load_hook DID attach a processor (e.g.
         a future mlx-community upload ships processor files), the
         patch helper must be a no-op — overwriting would be incorrect."""
-        from vllm_mlx.audio import stt as stt_mod
+        from rapid_mlx.audio import stt as stt_mod
 
         existing_processor = object()
         fake_model = _FakeWhisperModel()
@@ -305,7 +305,7 @@ class TestWhisperProcessorPatch:
     def test_parakeet_skipped_by_patch(self, monkeypatch, _reset_audio_probe):
         """Parakeet engines don't use ``_processor`` — the patch helper
         must skip them (no spurious network fetch)."""
-        from vllm_mlx.audio import stt as stt_mod
+        from rapid_mlx.audio import stt as stt_mod
 
         fake_model = _FakeParakeetModel()
 
@@ -354,7 +354,7 @@ class TestTranscriptionsCleanEnvelopeOnProcessorFailure:
     def test_processor_not_found_returns_clean_503(
         self, monkeypatch, _reset_audio_probe
     ):
-        from vllm_mlx.routes import audio as audio_route
+        from rapid_mlx.routes import audio as audio_route
 
         # Force a Whisper model with _processor=None to slip past the
         # integration-layer patch (e.g. the OpenAI fetch failed).
@@ -417,7 +417,7 @@ class TestTranscriptionsRouteEndToEnd:
     def test_transcriptions_returns_200_with_text(
         self, monkeypatch, _reset_audio_probe
     ):
-        from vllm_mlx.routes import audio as audio_route
+        from rapid_mlx.routes import audio as audio_route
 
         fake_model = _FakeWhisperModel()
         sentinel = object()
@@ -472,7 +472,7 @@ class TestTranslationsRoute:
         Pre-fix this 404'd at the FastAPI routing layer because the
         decorator was never written.
         """
-        from vllm_mlx.routes import audio as audio_route
+        from rapid_mlx.routes import audio as audio_route
 
         paths = {r.path for r in audio_route.router.routes}
         assert "/v1/audio/translations" in paths, (
@@ -482,7 +482,7 @@ class TestTranslationsRoute:
         )
 
     def test_translations_returns_200_with_text(self, monkeypatch, _reset_audio_probe):
-        from vllm_mlx.routes import audio as audio_route
+        from rapid_mlx.routes import audio as audio_route
 
         fake_model = _FakeWhisperModel()
 
@@ -540,7 +540,7 @@ class TestTranslationsRoute:
     ):
         """Model validation should fire on translations the same way it
         fires on transcriptions — unknown alias → clean 404."""
-        from vllm_mlx.routes import audio as audio_route
+        from rapid_mlx.routes import audio as audio_route
 
         audio_route._stt_engine = None
 
@@ -575,7 +575,7 @@ class TestTranslationsRoute:
         bypasses the alias map by passing the repo path directly still
         hits the gate.
         """
-        from vllm_mlx.routes import audio as audio_route
+        from rapid_mlx.routes import audio as audio_route
 
         audio_route._stt_engine = None
 
@@ -616,8 +616,8 @@ class TestTranslationsRoute:
         into transcriptions. /v1/audio/transcriptions has always
         accepted Parakeet (English-only source-language output is the
         contract); a regression here would break F-165."""
-        from vllm_mlx.audio import stt as stt_mod
-        from vllm_mlx.routes import audio as audio_route
+        from rapid_mlx.audio import stt as stt_mod
+        from rapid_mlx.routes import audio as audio_route
 
         fake_model = _FakeParakeetModel()
 
@@ -678,7 +678,7 @@ class TestWhisperProcessorPatchIsWhisperOnly:
         it entirely so the upstream engine's own error path fires
         without rapid-mlx stapling a Whisper processor on top.
         """
-        from vllm_mlx.audio import stt as stt_mod
+        from rapid_mlx.audio import stt as stt_mod
 
         class _FakeVoxtralModel:
             def __init__(self):
@@ -813,7 +813,7 @@ class TestKokoroMisakiGate:
         """
         import importlib.util
 
-        from vllm_mlx.audio import probe as probe_mod
+        from rapid_mlx.audio import probe as probe_mod
 
         real_find_spec = importlib.util.find_spec
 
@@ -870,8 +870,8 @@ class TestKokoroMisakiGate:
         """
         import importlib.util
 
-        from vllm_mlx.audio import probe as probe_mod
-        from vllm_mlx.audio.probe import require_kokoro_runtime
+        from rapid_mlx.audio import probe as probe_mod
+        from rapid_mlx.audio.probe import require_kokoro_runtime
 
         real_find_spec = importlib.util.find_spec
 
@@ -922,7 +922,7 @@ class TestKokoroMisakiGate:
         # first if it were going to.
         _install_fake_mlx_audio(monkeypatch)
 
-        from vllm_mlx.audio import tts as tts_mod
+        from rapid_mlx.audio import tts as tts_mod
 
         class _NoopTTSEngine:
             def __init__(self, model_name):
@@ -943,7 +943,7 @@ class TestKokoroMisakiGate:
 
         monkeypatch.setattr(tts_mod, "TTSEngine", _NoopTTSEngine)
 
-        from vllm_mlx.routes import audio as audio_route
+        from rapid_mlx.routes import audio as audio_route
 
         audio_route._tts_engine = None
 
@@ -991,8 +991,8 @@ class TestDeepProbeSurfacesDegradedLane:
     """
 
     def test_dry_run_failure_marks_lane_degraded(self, monkeypatch, _reset_audio_probe):
-        from vllm_mlx.audio import probe
-        from vllm_mlx.audio import stt as stt_mod
+        from rapid_mlx.audio import probe
+        from rapid_mlx.audio import stt as stt_mod
 
         # Stub STTEngine to raise inside transcribe (mimics
         # F-K-WHISPER-500 — model loads, generate raises).
@@ -1018,8 +1018,8 @@ class TestDeepProbeSurfacesDegradedLane:
         assert "simulated processor-missing failure" in (status["reason"] or ""), status
 
     def test_dry_run_success_marks_lane_ok(self, monkeypatch, _reset_audio_probe):
-        from vllm_mlx.audio import probe
-        from vllm_mlx.audio import stt as stt_mod
+        from rapid_mlx.audio import probe
+        from rapid_mlx.audio import stt as stt_mod
 
         class _OKEngine:
             def __init__(self, model_name):
@@ -1046,7 +1046,7 @@ class TestDeepProbeSurfacesDegradedLane:
     ):
         """/v1/models entries carry ``audio_lanes`` once the deep probe
         has recorded a verdict — pre-fix this was invisible."""
-        from vllm_mlx.audio import probe
+        from rapid_mlx.audio import probe
 
         probe._record_lane_status("stt", "degraded", "simulated")
         probe._record_lane_status("tts", "ok", None)
@@ -1091,9 +1091,9 @@ class TestDeepProbeSurfacesDegradedLane:
         report ``ok`` even when ``whisper-large-v3`` requests are
         silently 500'ing.
         """
-        from vllm_mlx.audio import probe
-        from vllm_mlx.audio import stt as stt_mod
-        from vllm_mlx.audio.stt import DEFAULT_WHISPER_MODEL
+        from rapid_mlx.audio import probe
+        from rapid_mlx.audio import stt as stt_mod
+        from rapid_mlx.audio.stt import DEFAULT_WHISPER_MODEL
 
         observed: list[str] = []
 
@@ -1133,7 +1133,7 @@ class TestDeepProbeSurfacesDegradedLane:
         """
         import importlib.util
 
-        from vllm_mlx.audio import probe
+        from rapid_mlx.audio import probe
 
         real_find_spec = importlib.util.find_spec
 
@@ -1174,7 +1174,7 @@ class TestSTTEngineSignatureAcceptsTask:
     def test_transcribe_signature_has_task_kwarg(self):
         import inspect
 
-        from vllm_mlx.audio.stt import STTEngine
+        from rapid_mlx.audio.stt import STTEngine
 
         sig = inspect.signature(STTEngine.transcribe)
         assert "task" in sig.parameters, (
@@ -1195,7 +1195,7 @@ class TestSTTEngineSignatureAcceptsTask:
         Whisper actually emits English output. Pins the integration
         between STTEngine and the broken-model fake without going
         through the route."""
-        from vllm_mlx.audio import stt as stt_mod
+        from rapid_mlx.audio import stt as stt_mod
 
         observed: dict = {}
 
@@ -1238,7 +1238,7 @@ class TestSTTEngineSignatureAcceptsTask:
     ):
         """A backend-neutral context must reach the family-specific decoder
         kwarg, while unsupported engines keep their old call shape."""
-        from vllm_mlx.audio import stt as stt_mod
+        from rapid_mlx.audio import stt as stt_mod
 
         observed: dict = {}
 
@@ -1266,7 +1266,7 @@ class TestSTTEngineSignatureAcceptsTask:
             assert hint_keys == {expected_key}
 
     def test_blank_context_keeps_generate_call_shape(self, monkeypatch):
-        from vllm_mlx.audio import stt as stt_mod
+        from rapid_mlx.audio import stt as stt_mod
 
         observed: dict = {}
 
@@ -1294,7 +1294,7 @@ class TestAudioBodyLimitCoversTranslations:
     exhaust the worker."""
 
     def test_translations_in_guarded_paths(self):
-        from vllm_mlx.routes import audio as audio_route
+        from rapid_mlx.routes import audio as audio_route
 
         guarded = audio_route.AudioBodyLimitMiddleware._GUARDED_PATHS
         assert "/v1/audio/translations" in guarded, (

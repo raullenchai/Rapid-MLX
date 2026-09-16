@@ -350,7 +350,7 @@ def test_the_ab_writes_the_artifact_the_docs_promise(monkeypatch, tmp_path):
 def _run_step(monkeypatch, tmp_path, ab_status, ab_summary="stubbed"):
     """Run StressE2EBenchStep with the matrix stubbed to one flagged bench."""
     ctx = _ctx(tmp_path)
-    ctx.files_changed = ["vllm_mlx/scheduler.py"]
+    ctx.files_changed = ["rapid_mlx/scheduler.py"]
     ctx.blast_radius = "high"
     ctx.run_log = lambda *a, **k: None
 

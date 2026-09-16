@@ -14,7 +14,7 @@ pytestmark = pytest.mark.requires_mlx
 
 import mlx.nn as nn
 
-import vllm_mlx.qwen35_moe_router as router
+import rapid_mlx.qwen35_moe_router as router
 
 
 def _stock(probs: mx.array, top_k: int = 8) -> tuple[mx.array, mx.array]:
@@ -207,9 +207,9 @@ def test_mllm_load_enrolls_qwen_moe_optimizations(monkeypatch):
     import mlx_vlm
     import mlx_vlm.utils
 
-    from vllm_mlx import moe_fusion
-    from vllm_mlx.models import mllm
-    from vllm_mlx.utils import tokenizer as tokenizer_utils
+    from rapid_mlx import moe_fusion
+    from rapid_mlx.models import mllm
+    from rapid_mlx.utils import tokenizer as tokenizer_utils
 
     model = SimpleNamespace(config=SimpleNamespace())
     processor = SimpleNamespace(tokenizer=SimpleNamespace())

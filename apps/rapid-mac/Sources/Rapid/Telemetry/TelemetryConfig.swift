@@ -108,7 +108,7 @@ enum TelemetryConfig {
     }
 
     /// Name of the process-level kill switch shared with the engine
-    /// (``vllm_mlx/telemetry/state.py`` reads the same variable).
+    /// (``rapid_mlx/telemetry/state.py`` reads the same variable).
     static let killSwitchEnvironmentKey = "RAPID_MLX_TELEMETRY"
 
     /// The cross-tool opt-out convention (https://consoledonottrack.com),

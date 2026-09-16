@@ -99,37 +99,45 @@ struct PortSweepTests {
     }
 
     // PR #26 codex meta-review finding 5 (P1): editable pip installs
-    // and dev-mode runs spawn the server as ``python -m vllm_mlx serve``
+    // and dev-mode runs spawn the server as ``python -m rapid_mlx serve``
     // (or the ``.cli`` submodule shape). Those processes ARE app-owned
     // orphans across launches and must be swept; the earlier test
     // here asserted the WRONG behavior (rejecting them) and was
     // letting them leak GPU memory across launches.
-    @Test("python -m vllm_mlx serve forms are sweep-owned")
+    @Test("current and legacy python module serve forms are sweep-owned")
     func pythonModuleServeAccepted() {
+        #expect(PortSweep.isRapidOwnedCommand(
+            "/usr/bin/python3 -m rapid_mlx serve qwen3.5-4b --port 8000"
+        ))
+        #expect(PortSweep.isRapidOwnedCommand(
+            "/usr/bin/python3 -m rapid_mlx.cli serve qwen --port 8000"
+        ))
+        #expect(PortSweep.isRapidOwnedCommand(
+            "/opt/homebrew/Cellar/python@3.12/3.12.7/bin/python3.12 -m rapid_mlx serve qwen --port 8000"
+        ))
         #expect(PortSweep.isRapidOwnedCommand(
             "/usr/bin/python3 -m vllm_mlx serve qwen3.5-4b --port 8000"
         ))
         #expect(PortSweep.isRapidOwnedCommand(
             "/usr/bin/python3 -m vllm_mlx.cli serve qwen --port 8000"
         ))
-        #expect(PortSweep.isRapidOwnedCommand(
-            "/opt/homebrew/Cellar/python@3.12/3.12.7/bin/python3.12 -m vllm_mlx serve qwen --port 8000"
-        ))
     }
 
-    @Test("python -m vllm_mlx non-server commands are not sweep-owned")
+    @Test("python -m rapid_mlx non-server commands are not sweep-owned")
     func pythonModuleNonServeRejected() {
+        #expect(!PortSweep.isRapidOwnedCommand("/usr/bin/python3 -m rapid_mlx pull qwen3.5-4b"))
+        #expect(!PortSweep.isRapidOwnedCommand("/usr/bin/python3 -m rapid_mlx.cli models"))
         #expect(!PortSweep.isRapidOwnedCommand("/usr/bin/python3 -m vllm_mlx pull qwen3.5-4b"))
         #expect(!PortSweep.isRapidOwnedCommand("/usr/bin/python3 -m vllm_mlx.cli models"))
     }
 
-    @Test("python without -m vllm_mlx is not sweep-owned")
+    @Test("python without -m rapid_mlx is not sweep-owned")
     func pythonWithoutModuleFlagRejected() {
         // A user running an unrelated python web server on :8000
         // must NOT be killed even if their argv happens to contain
         // the word "serve".
         #expect(!PortSweep.isRapidOwnedCommand("/usr/bin/python3 some_script.py serve --port 8000"))
-        // Stray ``vllm_mlx`` substring in a path (not after -m) is
+        // Stray ``rapid_mlx`` substring in a path (not after -m) is
         // not a module run.
         #expect(!PortSweep.isRapidOwnedCommand("/usr/bin/python3 /tmp/vllm_mlx_helper.py serve"))
     }
@@ -138,9 +146,9 @@ struct PortSweepTests {
     func pythonLikeExecutablesRejected() {
         // ``pythonista`` / ``python-launcher`` / ``pythonw`` are
         // common non-CPython binaries we should NOT treat as the
-        // python that runs ``-m vllm_mlx``.
-        #expect(!PortSweep.isRapidOwnedCommand("/usr/bin/pythonista -m vllm_mlx serve --port 8000"))
-        #expect(!PortSweep.isRapidOwnedCommand("/usr/bin/python-launcher -m vllm_mlx serve --port 8000"))
+        // python that runs ``-m rapid_mlx``.
+        #expect(!PortSweep.isRapidOwnedCommand("/usr/bin/pythonista -m rapid_mlx serve --port 8000"))
+        #expect(!PortSweep.isRapidOwnedCommand("/usr/bin/python-launcher -m rapid_mlx serve --port 8000"))
     }
 
     // MARK: - Issue #170: Homebrew Python-shebang console-script form
@@ -152,7 +160,7 @@ struct PortSweepTests {
     // framework binary (basename ``Python`` — capital P, hence the
     // existing ``.lowercased()`` on ``exeBase``) and argv[1] as the
     // ``rapid-mlx`` script path. Form 1 missed it (basename !=
-    // "rapid-mlx") and Form 2 missed it (no ``-m vllm_mlx``), so
+    // "rapid-mlx") and Form 2 missed it (no ``-m rapid_mlx``), so
     // Force-Quit orphans from brew installs survived PR #142 /
     // #20's cleanup chain. Form 3 closes the gap.
     //

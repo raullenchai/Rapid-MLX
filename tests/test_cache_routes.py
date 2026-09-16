@@ -21,7 +21,7 @@ pytestmark = pytest.mark.requires_mlx
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
-from vllm_mlx.cache.protocol import (
+from rapid_mlx.cache.protocol import (
     PROTOCOL_VERSION,
     InvalidExportPathError,
     MalformedManifestError,
@@ -220,7 +220,7 @@ class _FakeEngine:
         rule out). Serialize save+read under a per-engine lock so the fake has
         the same single-writer atomicity the real step thread provides.
         """
-        from vllm_mlx.cache.protocol import SaveOutcome
+        from rapid_mlx.cache.protocol import SaveOutcome
 
         with self._step_lock:
             self.save_cache_to_disk(cache_dir, should_abort=should_abort)
@@ -235,7 +235,7 @@ class _FakeEngine:
     def load_cache_with_result(self, cache_dir: str, replace: bool = False):
         """#1100 codex round 4 (#2): run the load stub then return the entries
         count + loaded bytes as a value (same step-thread capture semantics)."""
-        from vllm_mlx.cache.protocol import LoadResult
+        from rapid_mlx.cache.protocol import LoadResult
 
         with self._step_lock:
             entries = self.load_cache_from_disk(cache_dir, replace=replace)
@@ -315,8 +315,8 @@ def cache_client(monkeypatch, sandbox):
     (no prefix cache, non-empty cache, a load that skips entries) install
     their own via ``get_config().engine = _FakeEngine(...)``.
     """
-    from vllm_mlx.config import reset_config
-    from vllm_mlx.routes.cache import router
+    from rapid_mlx.config import reset_config
+    from rapid_mlx.routes.cache import router
 
     cfg = reset_config()
     cfg.api_key = "test-secret"
@@ -426,7 +426,7 @@ def test_write_manifest_failed_rename_preserves_prior_manifest(tmp_path, monkeyp
     write_manifest(tmp_path, original)
     assert (tmp_path / "manifest.json").is_file()
 
-    import vllm_mlx.cache.protocol as protocol_mod
+    import rapid_mlx.cache.protocol as protocol_mod
 
     def _boom(*args, **kwargs):
         raise OSError("simulated rename failure")
@@ -736,7 +736,7 @@ def test_import_nested_engine_replace_clears_real_cache(cache_client):
 def test_build_manifest_nested_engine(cache_client):
     """Unit-level: ``build_manifest_from_engine_state`` unwraps the nested
     BatchedEngine directly (not just through the HTTP handler)."""
-    from vllm_mlx.cache.protocol import build_manifest_from_engine_state
+    from rapid_mlx.cache.protocol import build_manifest_from_engine_state
 
     engine = cache_client.NestedFakeEngine(
         entries=12,
@@ -1351,7 +1351,7 @@ def test_export_manifest_write_failure_discards_committed_blob(
     orphaned to worsen disk exhaustion on retry."""
     from pathlib import Path as _Path
 
-    import vllm_mlx.routes.cache as cache_mod
+    import rapid_mlx.routes.cache as cache_mod
 
     engine = cache_client.FakeEngine(entries=2, current_memory=100)
 
@@ -1473,8 +1473,8 @@ async def test_export_concurrent_same_destination_serialized(cache_client):
     import httpx
     from fastapi import FastAPI
 
-    import vllm_mlx.routes.cache as cache_mod
-    from vllm_mlx.routes.cache import router
+    import rapid_mlx.routes.cache as cache_mod
+    from rapid_mlx.routes.cache import router
 
     engine = cache_client.FakeEngine(entries=3, current_memory=1024)
     state = {"in_flight": 0, "peak": 0}
@@ -1507,7 +1507,7 @@ async def test_export_concurrent_same_destination_serialized(cache_client):
     # THIS engine (no ``_step_lock``) so the ONLY lock that can hold ``peak``
     # at 1 is the route's per-destination lock we are actually testing.
     def _unsync_save_with_outcome(cache_dir, should_abort=None):
-        from vllm_mlx.cache.protocol import SaveOutcome
+        from rapid_mlx.cache.protocol import SaveOutcome
 
         engine.save_cache_to_disk(cache_dir, should_abort=should_abort)
         cache = engine.scheduler.memory_aware_cache
@@ -1579,8 +1579,8 @@ async def test_import_holds_dest_lock_against_concurrent_export(cache_client):
     import httpx
     from fastapi import FastAPI
 
-    import vllm_mlx.routes.cache as cache_mod
-    from vllm_mlx.routes.cache import router
+    import rapid_mlx.routes.cache as cache_mod
+    from rapid_mlx.routes.cache import router
 
     # A shared path holding a valid manifest the import will read+validate.
     manifest = Manifest(
@@ -1693,7 +1693,7 @@ async def test_import_holds_dest_lock_against_concurrent_export(cache_client):
     # validate->load gap (the fake's lock, not the route's, would keep the swap
     # out). Install UNSYNCHRONIZED wrappers so the ONLY thing that can keep the
     # export blocked during the load is the route's dest lock under test.
-    from vllm_mlx.cache.protocol import LoadResult, SaveOutcome
+    from rapid_mlx.cache.protocol import LoadResult, SaveOutcome
 
     def _unsync_save_with_outcome(cache_dir, should_abort=None):
         engine.save_cache_to_disk(cache_dir, should_abort=should_abort)
@@ -1778,7 +1778,7 @@ async def test_interprocess_lock_serializes_and_uses_sibling_path(tmp_path):
     would ride the export blob / count against max_bytes)."""
     import asyncio as _asyncio
 
-    from vllm_mlx.routes.cache import _InterProcessLock
+    from rapid_mlx.routes.cache import _InterProcessLock
 
     # #1100 codex round 4 (#4): the parent dir does NOT exist yet — the lock
     # must create it, not silently degrade to no-exclusion on ENOENT.
@@ -1816,8 +1816,8 @@ async def test_dest_lock_registry_evicts_idle_entries():
     waiter keeps the entry alive; it disappears only when fully idle."""
     import asyncio as _asyncio
 
-    import vllm_mlx.routes.cache as cache_mod
-    from vllm_mlx.routes.cache import _dest_lock
+    import rapid_mlx.routes.cache as cache_mod
+    from rapid_mlx.routes.cache import _dest_lock
 
     cache_mod._export_dest_locks.clear()
     cache_mod._export_locks_guard = _asyncio.Lock()
@@ -1855,7 +1855,7 @@ def test_import_missing_source_does_not_leak_lock_entry(cache_client):
     ``_InterProcessLock`` runs, so no ``<source>.txlock`` file (nor its parent
     dirs) gets created on disk — otherwise a stream of unique nonexistent
     import sources would consume unbounded inodes."""
-    import vllm_mlx.routes.cache as cache_mod
+    import rapid_mlx.routes.cache as cache_mod
 
     cache_client.cfg.engine = cache_client.FakeEngine(entries=0)
     before = dict(cache_mod._export_dest_locks)
@@ -1882,7 +1882,7 @@ def test_sweep_staging_dirs_recovers_old_snapshot(tmp_path):
     AND manifest. ``.old`` is a prior PUBLISHED snapshot so it carries both."""
     from pathlib import Path as _Path
 
-    from vllm_mlx.routes.cache import _sweep_staging_dirs
+    from rapid_mlx.routes.cache import _sweep_staging_dirs
 
     dest = _Path(tmp_path / "snap")
     old_dir = _Path(str(dest) + ".old")
@@ -1919,7 +1919,7 @@ def test_sweep_staging_dirs_does_not_promote_manifestless_new(tmp_path):
     non-importable snapshot a peer would 404 on)."""
     from pathlib import Path as _Path
 
-    from vllm_mlx.routes.cache import _sweep_staging_dirs
+    from rapid_mlx.routes.cache import _sweep_staging_dirs
 
     dest = _Path(tmp_path / "snap")
     new_dir = _Path(str(dest) + ".new")
@@ -1940,7 +1940,7 @@ def test_sweep_staging_dirs_preserves_valid_published_dest(tmp_path):
     only removes the orphaned staging siblings."""
     from pathlib import Path as _Path
 
-    from vllm_mlx.routes.cache import _sweep_staging_dirs
+    from rapid_mlx.routes.cache import _sweep_staging_dirs
 
     dest = _Path(tmp_path / "snap")
     dest.mkdir(parents=True)
@@ -1969,8 +1969,8 @@ async def test_export_outcome_isolated_across_concurrent_paths(cache_client):
     import httpx
     from fastapi import FastAPI
 
-    import vllm_mlx.routes.cache as cache_mod
-    from vllm_mlx.routes.cache import router
+    import rapid_mlx.routes.cache as cache_mod
+    from rapid_mlx.routes.cache import router
 
     engine = cache_client.FakeEngine(entries=3, current_memory=1024)
 
@@ -2059,7 +2059,7 @@ def test_export_discard_quarantines_when_delete_fails(cache_client, monkeypatch)
     over-cap blob."""
     from pathlib import Path as _Path
 
-    import vllm_mlx.routes.cache as cache_mod
+    import rapid_mlx.routes.cache as cache_mod
 
     engine = cache_client.FakeEngine(entries=1, current_memory=10)
 
@@ -2119,7 +2119,7 @@ def test_export_discard_500_when_neither_delete_nor_quarantine_works(
     an operator sees the stray blob signal."""
     from pathlib import Path as _Path
 
-    import vllm_mlx.routes.cache as cache_mod
+    import rapid_mlx.routes.cache as cache_mod
 
     engine = cache_client.FakeEngine(entries=1, current_memory=10)
 
@@ -2198,7 +2198,7 @@ def test_load_from_disk_replace_preserves_cache_on_corrupt_entry_blob(tmp_path):
     and aborts (existing cache intact) if any entry blob is corrupt."""
     import mlx.core as mx
 
-    from vllm_mlx.memory_cache import MemoryAwarePrefixCache
+    from rapid_mlx.memory_cache import MemoryAwarePrefixCache
 
     # 1. Build + save a real 1-entry snapshot to disk (valid index + blobs).
     src_cache, load_cfg = _build_cache_with_arrays_layer()
@@ -2222,7 +2222,7 @@ def test_load_from_disk_replace_preserves_cache_on_corrupt_entry_blob(tmp_path):
     dst_cache = MemoryAwarePrefixCache(model=object(), config=load_cfg)
     dst_tokens = (90, 91, 92)
     dst_kv = _second_kvcache()
-    from vllm_mlx.memory_cache import _CacheEntry
+    from rapid_mlx.memory_cache import _CacheEntry
 
     entry = _CacheEntry.create(list(dst_tokens), dst_kv)
     with dst_cache._lock:
@@ -2257,7 +2257,7 @@ def test_load_from_disk_replace_records_authoritative_loaded_bytes(tmp_path):
     recorded loaded bytes, never a half-rebuilt intermediate."""
     import mlx.core as mx
 
-    from vllm_mlx.memory_cache import MemoryAwarePrefixCache, _CacheEntry
+    from rapid_mlx.memory_cache import MemoryAwarePrefixCache, _CacheEntry
 
     # 1. Build + save a real 1-entry snapshot (valid index + blobs).
     src_cache, load_cfg = _build_cache_with_arrays_layer()
@@ -2304,7 +2304,7 @@ def test_save_to_disk_records_empty_outcome_on_empty_cache(tmp_path):
     empty export vs 500 a failed one WITHOUT sampling ``len(cache)`` before the
     op (a racy pre-write snapshot)."""
     _src, load_cfg = _build_cache_with_arrays_layer()
-    from vllm_mlx.memory_cache import MemoryAwarePrefixCache
+    from rapid_mlx.memory_cache import MemoryAwarePrefixCache
 
     empty = MemoryAwarePrefixCache(model=object(), config=load_cfg)
     assert len(empty) == 0
@@ -2495,9 +2495,9 @@ def test_info_rejects_path_traversal(cache_client):
 def test_build_manifest_from_engine_reads_config(monkeypatch):
     """The manifest builder pulls quantization/paged/turboquant off
     ``scheduler.config`` and entries/bytes off the live prefix cache."""
-    from vllm_mlx.cache.protocol import build_manifest_from_engine_state
-    from vllm_mlx.config import reset_config
-    from vllm_mlx.memory_cache import _TOKENS_FORMAT_VERSION_IN_INDEX
+    from rapid_mlx.cache.protocol import build_manifest_from_engine_state
+    from rapid_mlx.config import reset_config
+    from rapid_mlx.memory_cache import _TOKENS_FORMAT_VERSION_IN_INDEX
 
     cfg = reset_config()
     cfg.model_name = "mlx-community/Qwen3.5-9B-4bit"
@@ -2525,8 +2525,8 @@ def test_build_manifest_from_engine_reads_config(monkeypatch):
 
 def test_build_manifest_prefix_cache_none_is_empty(monkeypatch):
     """A disabled prefix cache (None) yields entries/bytes = 0, no raise."""
-    from vllm_mlx.cache.protocol import build_manifest_from_engine_state
-    from vllm_mlx.config import reset_config
+    from rapid_mlx.cache.protocol import build_manifest_from_engine_state
+    from rapid_mlx.config import reset_config
 
     cfg = reset_config()
     cfg.model_name = "test-model"
@@ -2543,8 +2543,8 @@ def test_build_manifest_prefix_cache_none_is_empty(monkeypatch):
 def test_build_manifest_falls_back_to_engine_model_id(monkeypatch):
     """When the server singleton has no ``model_name`` (embedded engine),
     fall back to the engine's own ``config.model_name``."""
-    from vllm_mlx.cache.protocol import build_manifest_from_engine_state
-    from vllm_mlx.config import reset_config
+    from rapid_mlx.cache.protocol import build_manifest_from_engine_state
+    from rapid_mlx.config import reset_config
 
     reset_config()  # model_name stays None
     try:
@@ -2575,7 +2575,7 @@ def _build_cache_with_arrays_layer():
     import mlx.core as mx
     from mlx_lm.models.cache import ArraysCache, KVCache
 
-    from vllm_mlx.memory_cache import (
+    from rapid_mlx.memory_cache import (
         MemoryAwarePrefixCache,
         MemoryCacheConfig,
         _CacheEntry,
@@ -2600,7 +2600,7 @@ def _build_cache_with_arrays_layer():
 def test_arrays_cache_layer_is_loadable_under_no_quant():
     """Unit-level proof of the frozen-design claim: ArraysCache round-trips
     (the QuantizedKVCache/TurboQuantKVCache gates do NOT apply to it)."""
-    from vllm_mlx.memory_cache import MemoryCacheConfig, _cache_classes_compatible
+    from rapid_mlx.memory_cache import MemoryCacheConfig, _cache_classes_compatible
 
     ok, reason = _cache_classes_compatible(
         ["KVCache", "ArraysCache"], MemoryCacheConfig(max_memory_percent=0.5)
@@ -2630,7 +2630,7 @@ def test_real_cache_roundtrip_survives_arrays_layer(tmp_path):
     assert "KVCache" in persisted_types, persisted_types
 
     # Load into a FRESH cache under a default (no-quant) config.
-    from vllm_mlx.memory_cache import MemoryAwarePrefixCache
+    from rapid_mlx.memory_cache import MemoryAwarePrefixCache
 
     fresh = MemoryAwarePrefixCache(model=object(), config=load_cfg)
     loaded = fresh.load_from_disk(target)
@@ -2653,8 +2653,8 @@ def test_load_from_disk_repopulates_radix_index(tmp_path):
     save/load path (real MLX arrays) into a radix-WIRED destination cache."""
     import mlx.core as mx
 
-    from vllm_mlx.memory_cache import MemoryAwarePrefixCache
-    from vllm_mlx.runtime.radix_index import RadixPrefixIndex
+    from rapid_mlx.memory_cache import MemoryAwarePrefixCache
+    from rapid_mlx.runtime.radix_index import RadixPrefixIndex
 
     # Real 1-entry snapshot on disk (KVCache + ArraysCache, real arrays).
     src_cache, load_cfg = _build_cache_with_arrays_layer()
@@ -2694,7 +2694,7 @@ def test_load_from_disk_refuses_malformed_index_without_crashing(tmp_path):
 
     import mlx.core as mx
 
-    from vllm_mlx.memory_cache import MemoryAwarePrefixCache
+    from rapid_mlx.memory_cache import MemoryAwarePrefixCache
 
     _src, load_cfg = _build_cache_with_arrays_layer()
 
@@ -2735,8 +2735,8 @@ def test_load_from_disk_rolls_back_entry_on_radix_insert_failure(tmp_path, monke
     total; rolling it back keeps ``_entries`` and the radix in lockstep."""
     import mlx.core as mx
 
-    from vllm_mlx.memory_cache import MemoryAwarePrefixCache
-    from vllm_mlx.runtime.radix_index import RadixPrefixIndex
+    from rapid_mlx.memory_cache import MemoryAwarePrefixCache
+    from rapid_mlx.runtime.radix_index import RadixPrefixIndex
 
     src_cache, load_cfg = _build_cache_with_arrays_layer()
     for entry in src_cache._entries.values():
@@ -2783,8 +2783,8 @@ def test_load_from_disk_replace_restores_prior_cache_on_radix_failure(
     loaded — the replace was atomic."""
     import mlx.core as mx
 
-    from vllm_mlx.memory_cache import MemoryAwarePrefixCache
-    from vllm_mlx.runtime.radix_index import RadixPrefixIndex
+    from rapid_mlx.memory_cache import MemoryAwarePrefixCache
+    from rapid_mlx.runtime.radix_index import RadixPrefixIndex
 
     src_cache, load_cfg = _build_cache_with_arrays_layer()
     for entry in src_cache._entries.values():
@@ -2841,8 +2841,8 @@ def test_load_from_disk_replace_aborts_on_insufficient_physical_headroom(
     existing cache intact — never OOM-ing the host mid-import."""
     import mlx.core as mx
 
-    import vllm_mlx.memory_cache as mc
-    from vllm_mlx.memory_cache import MemoryAwarePrefixCache
+    import rapid_mlx.memory_cache as mc
+    from rapid_mlx.memory_cache import MemoryAwarePrefixCache
 
     src_cache, load_cfg = _build_cache_with_arrays_layer()
     for entry in src_cache._entries.values():
@@ -2887,9 +2887,9 @@ def test_http_export_import_roundtrip_end_to_end(monkeypatch, sandbox):
     ``load_cache_from_disk`` delegate to the real cache methods, then drives
     ``POST /v1/cache/export`` followed by ``POST /v1/cache/import`` over the
     TestClient. Asserts the ArraysCache entry survives the full wire path."""
-    from vllm_mlx.config import reset_config
-    from vllm_mlx.memory_cache import MemoryAwarePrefixCache
-    from vllm_mlx.routes.cache import router
+    from rapid_mlx.config import reset_config
+    from rapid_mlx.memory_cache import MemoryAwarePrefixCache
+    from rapid_mlx.routes.cache import router
 
     export_root = sandbox
     monkeypatch.setenv("RAPID_MLX_CACHE_EXPORT_DIR", str(export_root))
@@ -2946,13 +2946,13 @@ def test_http_export_import_roundtrip_end_to_end(monkeypatch, sandbox):
         def save_cache_with_outcome(self, cache_dir, should_abort=None):
             # #1100 codex round 4 (#2): run the real save + capture the
             # authoritative outcome the SAME way the real engine wrapper does.
-            from vllm_mlx.cache.protocol import SaveOutcome
+            from rapid_mlx.cache.protocol import SaveOutcome
 
             self.save_cache_to_disk(cache_dir, should_abort=should_abort)
             return SaveOutcome(outcome=src_cache._last_save_outcome)
 
         def load_cache_with_result(self, cache_dir, replace=False):
-            from vllm_mlx.cache.protocol import LoadResult
+            from rapid_mlx.cache.protocol import LoadResult
 
             entries = self.load_cache_from_disk(cache_dir, replace=replace)
             return LoadResult(
@@ -3013,7 +3013,7 @@ def test_base_engine_save_outcome_default_distinguishes_failed_from_empty():
     500ing. The default disambiguates via authoritative ``get_cache_stats``:
     False + entries>0 → ``"failed"``; False + no entries → ``"empty"``.
     """
-    from vllm_mlx.engine.base import BaseEngine
+    from rapid_mlx.engine.base import BaseEngine
 
     # Concretize every abstract member with an inert stub so the ABC can be
     # instantiated; we only exercise the concrete ``save_cache_with_outcome``
@@ -3087,7 +3087,7 @@ def test_base_engine_load_result_default_tolerates_old_one_arg_signature():
     ``TypeError`` raised from INSIDE the method body is never mistaken for a
     signature mismatch and re-invoked (which would duplicate partial
     mutations)."""
-    from vllm_mlx.engine.base import BaseEngine
+    from rapid_mlx.engine.base import BaseEngine
 
     _stubs = {
         name: (lambda self, *a, **k: None) for name in BaseEngine.__abstractmethods__
@@ -3216,7 +3216,7 @@ def test_read_committed_cache_counts_rejects_malformed_index_fail_closed(tmp_pat
     rejects the ENTIRE index (→ ``None``); a fully well-formed index returns the
     ``(count, total_bytes)`` summed from per-entry ``memory_bytes``.
     """
-    from vllm_mlx.cache.protocol import _read_committed_cache_counts
+    from rapid_mlx.cache.protocol import _read_committed_cache_counts
 
     def _write_index(entries, version=3):
         (tmp_path / "index.json").write_text(
@@ -3285,8 +3285,8 @@ def test_batched_engine_cache_ops_raise_when_inner_engine_absent():
     advertised 503 "engine not loaded"). The bare ``save_cache_to_disk`` keeps
     its no-op-False for lifespan persistence, where "no engine, nothing to
     persist" is legitimate."""
-    from vllm_mlx.cache.protocol import EngineNotReadyError
-    from vllm_mlx.engine.batched import BatchedEngine
+    from rapid_mlx.cache.protocol import EngineNotReadyError
+    from rapid_mlx.engine.batched import BatchedEngine
 
     engine = BatchedEngine("fake-model")
     assert engine._engine is None  # not started — the finding's condition
@@ -3307,7 +3307,7 @@ def test_export_import_503_when_inner_engine_not_ready(cache_client):
     (raised when a non-None engine's inner engine hasn't started) to the SAME
     503 an absent engine gets — so "engine not loaded" is one consistent signal
     whether the OUTER engine is None or its INNER engine is down."""
-    from vllm_mlx.cache.protocol import EngineNotReadyError
+    from rapid_mlx.cache.protocol import EngineNotReadyError
 
     class _NotReadyEngine(cache_client.FakeEngine):
         def save_cache_with_outcome(self, cache_dir, should_abort=None):

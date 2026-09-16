@@ -14,14 +14,14 @@ pytestmark = pytest.mark.requires_mlx
 import mlx.core as mx
 from mlx_lm.models.cache import ArraysCache, BatchKVCache, KVCache
 
-from scripts.benchmark_qwen36_native_text_cache import _behavioral_pass
-from vllm_mlx.engine.batched import (
+from rapid_mlx.engine.batched import (
     BatchedEngine,
     Qwen36NativeCacheTextWrapper,
     _qwen36_text_arrays_cache_type,
     _should_start_qwen36_native_text_cache,
     _supports_qwen36_native_text_cache,
 )
+from scripts.benchmark_qwen36_native_text_cache import _behavioral_pass
 
 
 @pytest.mark.parametrize(
@@ -303,7 +303,7 @@ def test_request_routing_keeps_media_on_mllm_and_text_on_native_engine():
 
 @pytest.mark.asyncio
 async def test_native_text_engine_reuses_model_and_executor(monkeypatch):
-    import vllm_mlx.engine_core as engine_core
+    import rapid_mlx.engine_core as engine_core
 
     starts = []
 
@@ -368,7 +368,7 @@ async def test_native_text_engine_reuses_model_and_executor(monkeypatch):
 
 @pytest.mark.asyncio
 async def test_native_text_engine_failure_keeps_mllm_authoritative(monkeypatch):
-    import vllm_mlx.engine_core as engine_core
+    import rapid_mlx.engine_core as engine_core
 
     cleanup = []
 
@@ -429,10 +429,10 @@ async def test_native_text_engine_failure_keeps_mllm_authoritative(monkeypatch):
 async def test_mllm_start_activates_native_text_lane_only_after_qualification(
     monkeypatch,
 ):
-    from vllm_mlx import mllm_scheduler as mllm_scheduler_module
-    from vllm_mlx.engine import batched as batched_module
-    from vllm_mlx.models import mllm as mllm_module
-    from vllm_mlx.utils import chat_template_registry
+    from rapid_mlx import mllm_scheduler as mllm_scheduler_module
+    from rapid_mlx.engine import batched as batched_module
+    from rapid_mlx.models import mllm as mllm_module
+    from rapid_mlx.utils import chat_template_registry
 
     args = SimpleNamespace(
         model_type="qwen3_5_moe_text",
@@ -638,7 +638,7 @@ def test_dual_lane_does_not_enable_mllm_cache_persistence():
     assert engine.save_cache_to_disk("unused") is False
     assert engine.load_cache_from_disk("unused") == 0
 
-    from vllm_mlx.cache.protocol import EngineNotReadyError
+    from rapid_mlx.cache.protocol import EngineNotReadyError
 
     with pytest.raises(EngineNotReadyError, match="cannot export cache"):
         engine.save_cache_with_outcome("unused")

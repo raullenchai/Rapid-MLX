@@ -180,8 +180,8 @@ rounds rather than trusting a batch of edits.
 - **MTP / the official assistant drafter.** Google ships a 0.4B, 4-layer
   drafter for every Gemma 4 size, including this one
   (`gemma-4-26b-assistant`), and this repo already implements the injection
-  path in `vllm_mlx/spec_decode/mtp/gemma4_inject.py`. It is nonetheless
-  unreachable: `_SUPPORTED_MODEL_TYPES` in `vllm_mlx/spec_decode/mtp/detect.py`
+  path in `rapid_mlx/spec_decode/mtp/gemma4_inject.py`. It is nonetheless
+  unreachable: `_SUPPORTED_MODEL_TYPES` in `rapid_mlx/spec_decode/mtp/detect.py`
   admits only `qwen3_5`, `qwen3_5_moe` and `hy_v3`, and the docstring records
   that "Gemma 4 sidecar promotion remains disabled until it passes
   end-to-end greedy-lossless validation". The drafter's config does line up

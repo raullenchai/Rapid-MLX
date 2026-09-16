@@ -23,7 +23,7 @@ from __future__ import annotations
 import pytest
 from fastapi import HTTPException
 
-from vllm_mlx.audio import probe
+from rapid_mlx.audio import probe
 
 
 @pytest.fixture(autouse=True)

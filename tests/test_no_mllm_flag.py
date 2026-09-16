@@ -55,7 +55,7 @@ class RoutingFlagPair:
             auto-detected behavior on.
         force_off: ``--no-*``-style flag that forces it off.
         desc: human-readable description used in test failure messages.
-        required_files: source files (relative to ``vllm_mlx/``) where
+        required_files: source files (relative to ``rapid_mlx/``) where
             BOTH flags must appear in an ``add_argument()`` call. Every
             CLI entrypoint that takes a model name and runs the
             corresponding auto-detection is required. Adding a new
@@ -230,7 +230,7 @@ def _registered_flag_names() -> set[str]:
 
 def _pkg_root() -> pathlib.Path:
     return pathlib.Path(
-        str(importlib.resources.files("vllm_mlx").joinpath(""))
+        str(importlib.resources.files("rapid_mlx").joinpath(""))
     ).resolve()
 
 
@@ -238,7 +238,7 @@ def test_force_text_overrides_auto_detection(monkeypatch):
     """When force_text=True, BatchedEngine._is_mllm is False even if
     is_mllm_model would return True. Verifies the probe is short-
     circuited (not just overridden later) by checking it isn't called."""
-    from vllm_mlx.engine import batched as batched_mod
+    from rapid_mlx.engine import batched as batched_mod
 
     probe_calls = []
 
@@ -264,7 +264,7 @@ def test_force_text_overrides_auto_detection(monkeypatch):
 
 def test_force_mllm_still_works_when_force_text_is_false():
     """Regression: adding force_text must not break force_mllm."""
-    from vllm_mlx.engine.batched import BatchedEngine
+    from rapid_mlx.engine.batched import BatchedEngine
 
     engine = BatchedEngine(
         model_name="mlx-community/Llama-3.2-1B-Instruct-4bit",
@@ -276,18 +276,18 @@ def test_force_mllm_still_works_when_force_text_is_false():
 
 def test_load_model_alias_resolver_handles_every_import_shape():
     """Codex rounds E/F/G regression (PR #409): every scanner that
-    looks for ``vllm_mlx.server.load_model`` invocations must resolve
+    looks for ``rapid_mlx.server.load_model`` invocations must resolve
     aliases. The whack-a-mole over 3 rounds proves the literal-name
     match is bypass-prone; this test pins the shared resolver so all
     common import shapes flow through one code path.
 
     Shapes covered:
-      1. ``from vllm_mlx.server import load_model`` → ``load_model(...)``
-      2. ``from vllm_mlx.server import load_model as lm`` → ``lm(...)``
-      3. ``from vllm_mlx import server`` → ``server.load_model(...)``
-      4. ``import vllm_mlx.server as srv`` → ``srv.load_model(...)``
-      5. ``import vllm_mlx.server`` →
-         ``vllm_mlx.server.load_model(...)``
+      1. ``from rapid_mlx.server import load_model`` → ``load_model(...)``
+      2. ``from rapid_mlx.server import load_model as lm`` → ``lm(...)``
+      3. ``from rapid_mlx import server`` → ``server.load_model(...)``
+      4. ``import rapid_mlx.server as srv`` → ``srv.load_model(...)``
+      5. ``import rapid_mlx.server`` →
+         ``rapid_mlx.server.load_model(...)``
 
     Negative controls:
       6. ``from mlx_lm.utils import load_model`` then ``load_model(...)``
@@ -295,11 +295,11 @@ def test_load_model_alias_resolver_handles_every_import_shape():
       7. Bare ``load_model(...)`` with no import — must NOT be recognized
     """
     shapes = {
-        "direct": "from vllm_mlx.server import load_model\nload_model('q')\n",
-        "as-aliased": ("from vllm_mlx.server import load_model as lm\nlm('q')\n"),
-        "from-module": ("from vllm_mlx import server\nserver.load_model('q')\n"),
-        "import-as": ("import vllm_mlx.server as srv\nsrv.load_model('q')\n"),
-        "import-bare": ("import vllm_mlx.server\nvllm_mlx.server.load_model('q')\n"),
+        "direct": "from rapid_mlx.server import load_model\nload_model('q')\n",
+        "as-aliased": ("from rapid_mlx.server import load_model as lm\nlm('q')\n"),
+        "from-module": ("from rapid_mlx import server\nserver.load_model('q')\n"),
+        "import-as": ("import rapid_mlx.server as srv\nsrv.load_model('q')\n"),
+        "import-bare": ("import rapid_mlx.server\nrapid_mlx.server.load_model('q')\n"),
         # Codex round-H regression: relative imports are what cli.py
         # actually uses today. ast.ImportFrom encodes these as
         # ``module="server", level=1`` / ``module=None, level=1`` — the
@@ -307,12 +307,12 @@ def test_load_model_alias_resolver_handles_every_import_shape():
         "rel-direct": "from .server import load_model\nload_model('q')\n",
         "rel-aliased": "from .server import load_model as lm\nlm('q')\n",
         "rel-from-module": "from . import server\nserver.load_model('q')\n",
-        # DeepSeek round-3 #3: ``import vllm_mlx`` followed by
-        # ``vllm_mlx.server.load_model(...)``. The receiver is an
-        # Attribute(value=Name("vllm_mlx"), attr="server") — needs the
+        # DeepSeek round-3 #3: ``import rapid_mlx`` followed by
+        # ``rapid_mlx.server.load_model(...)``. The receiver is an
+        # Attribute(value=Name("rapid_mlx"), attr="server") — needs the
         # new pkg_aliases bucket.
-        "import-pkg": "import vllm_mlx\nvllm_mlx.server.load_model('q')\n",
-        "import-pkg-aliased": "import vllm_mlx as vm\nvm.server.load_model('q')\n",
+        "import-pkg": "import rapid_mlx\nrapid_mlx.server.load_model('q')\n",
+        "import-pkg-aliased": "import rapid_mlx as vm\nvm.server.load_model('q')\n",
     }
     for shape, source in shapes.items():
         tree = ast.parse(source)
@@ -345,15 +345,15 @@ def test_load_model_alias_resolver_handles_every_import_shape():
     )
 
 
-def test_no_star_imports_from_vllm_mlx_server():
-    """DeepSeek round-3 #2 (PR #409): ``from vllm_mlx.server import *``
+def test_no_star_imports_from_rapid_mlx_server():
+    """DeepSeek round-3 #2 (PR #409): ``from rapid_mlx.server import *``
     hides the ``load_model`` binding from the SOP §10 alias resolver —
     ``__all__`` isn't statically discoverable from source alone, so any
     star import defeats the forwarding audit. Ban it loudly at gate
     time so contributors spell their imports explicitly.
 
-    Scans every .py file under ``vllm_mlx/`` for a star ImportFrom
-    targeting ``vllm_mlx.server`` (absolute or relative form). Found
+    Scans every .py file under ``rapid_mlx/`` for a star ImportFrom
+    targeting ``rapid_mlx.server`` (absolute or relative form). Found
     → fail.
     """
     offenders: list[str] = []
@@ -374,13 +374,13 @@ def test_no_star_imports_from_vllm_mlx_server():
         for node in ast.walk(tree):
             if not isinstance(node, ast.ImportFrom):
                 continue
-            absolute_server = node.level == 0 and node.module == "vllm_mlx.server"
+            absolute_server = node.level == 0 and node.module == "rapid_mlx.server"
             relative_server = node.level >= 1 and node.module == "server"
             if (absolute_server or relative_server) and any(
                 a.name == "*" for a in node.names
             ):
                 offenders.append(
-                    f"{rel}:{node.lineno} uses `from vllm_mlx.server "
+                    f"{rel}:{node.lineno} uses `from rapid_mlx.server "
                     "import *` (or its relative form). Star imports "
                     "defeat the load_model alias resolver — spell the "
                     "imports out so the forwarding audit can verify "
@@ -398,7 +398,7 @@ def test_force_text_is_keyword_only_in_load_model():
     shifted every subsequent positional arg by one slot."""
     import inspect
 
-    from vllm_mlx.server import load_model
+    from rapid_mlx.server import load_model
 
     sig = inspect.signature(load_model)
     assert sig.parameters["force_text"].kind == inspect.Parameter.KEYWORD_ONLY, (
@@ -406,7 +406,7 @@ def test_force_text_is_keyword_only_in_load_model():
         "compatibility for downstream callers — see codex R2 on PR #407."
     )
 
-    from vllm_mlx.engine.batched import BatchedEngine
+    from rapid_mlx.engine.batched import BatchedEngine
 
     sig = inspect.signature(BatchedEngine.__init__)
     assert sig.parameters["force_text"].kind == inspect.Parameter.KEYWORD_ONLY, (
@@ -418,7 +418,7 @@ def test_cloud_parameter_removal_does_not_shift_positional_bindings():
     """Parameters after the removed cloud-routing block must be keyword-only."""
     import inspect
 
-    from vllm_mlx.server import load_model
+    from rapid_mlx.server import load_model
 
     sig = inspect.signature(load_model)
     assert sig.parameters["served_model_name"].kind == inspect.Parameter.KEYWORD_ONLY
@@ -430,7 +430,7 @@ def test_force_text_and_force_mllm_mutually_exclusive_in_load_model():
     is the second line of defense — CLI already rejects this via
     sys.exit(2), but load_model is also a public entry point so guard
     here too."""
-    from vllm_mlx.server import load_model
+    from rapid_mlx.server import load_model
 
     with pytest.raises(ValueError, match="mutually exclusive"):
         load_model(
@@ -452,8 +452,8 @@ def test_is_text_only_alias_plus_explicit_mllm_raises_loudly():
     for a text-only-pinned checkpoint. The profile's force_text must be
     applied unconditionally so the conflict surfaces.
     """
-    from vllm_mlx.model_aliases import resolve_profile
-    from vllm_mlx.server import load_model
+    from rapid_mlx.model_aliases import resolve_profile
+    from rapid_mlx.server import load_model
 
     # Precondition: the alias really pins is_text_only (else this test
     # would pass vacuously if the alias were renamed/dropped).
@@ -478,11 +478,11 @@ def test_is_text_only_alias_routes_load_model_to_text_engine(monkeypatch):
     fragile post-construction wiring is skipped — we only care that the
     routing kwargs are correct.
     """
-    from vllm_mlx.model_aliases import resolve_profile
+    from rapid_mlx.model_aliases import resolve_profile
 
     assert resolve_profile("bonsai-27b-2bit").is_text_only is True
 
-    import vllm_mlx.server as srv
+    import rapid_mlx.server as srv
 
     captured = {}
 
@@ -531,7 +531,7 @@ def test_friendly_error_on_missing_vision_tensors(monkeypatch):
     except ImportError:
         pytest.skip("mlx_vlm not installed (vision extra)")
 
-    from vllm_mlx.models import mllm as mllm_mod
+    from rapid_mlx.models import mllm as mllm_mod
 
     # Inject a fake mlx_vlm.load that raises the M5-style missing-tensor
     # ValueError. We poke sys.modules so the `from mlx_vlm import load`
@@ -605,7 +605,7 @@ def test_mixed_vision_and_language_missing_does_not_degrade(monkeypatch):
     except ImportError:
         pytest.skip("mlx_vlm not installed (vision extra)")
 
-    from vllm_mlx.models import mllm as mllm_mod
+    from rapid_mlx.models import mllm as mllm_mod
 
     real_mlx_vlm = sys.modules["mlx_vlm"]
 
@@ -654,7 +654,7 @@ def test_missing_param_name_parser_and_multimodal_partition():
     mlx's `",\\n".join(sorted(...))` + trailing-`.` format, and
     `_all_missing_are_multimodal` is True ONLY when every name is a
     vision/audio/projector tensor (empty / any-language → False, fail safe)."""
-    from vllm_mlx.models import mllm as mllm_mod
+    from rapid_mlx.models import mllm as mllm_mod
 
     pure_vision = (
         "Missing 2 parameters: \n"
@@ -949,7 +949,7 @@ def _routing_shaped_constants_in_module(source: str) -> set[str]:
 #
 # Previously the SOP checks hardcoded ("cli.py", "server.py", "benchmark.py")
 # and never noticed routing-shape flags or load_model() callers added to
-# new files. Now we walk every .py file under vllm_mlx/ and discover any
+# new files. Now we walk every .py file under rapid_mlx/ and discover any
 # file that calls add_argument() OR load_model() — that's the closure of
 # "places a contributor could regress an SOP gate". If your new file
 # starts appearing here, the gates automatically include it.
@@ -971,8 +971,8 @@ _KNOWN_ENTRYPOINTS_SEED: frozenset[str] = frozenset(
 # Codex round-G hardening (PR #409): every scanner that looks for
 # ``load_model(...)`` calls must resolve aliases. The name is
 # overloaded (mlx_lm / mlx_audio / internal workers), and rounds E/F
-# showed `from vllm_mlx.server import load_model as lm` and
-# `from vllm_mlx import server; server.load_model(...)` both slip a
+# showed `from rapid_mlx.server import load_model as lm` and
+# `from rapid_mlx import server; server.load_model(...)` both slip a
 # literal-name match. Single helper used by every scan to stop the
 # whack-a-mole.
 def _load_model_aliases_in_tree(
@@ -981,16 +981,16 @@ def _load_model_aliases_in_tree(
     """Return ``(direct_aliases, module_aliases, pkg_aliases)``:
 
     - ``direct_aliases``: local names bound to ``load_model`` (e.g.
-      ``"load_model"`` from ``from vllm_mlx.server import load_model``,
+      ``"load_model"`` from ``from rapid_mlx.server import load_model``,
       or ``"lm"`` from ``... import load_model as lm``).
-    - ``module_aliases``: local names bound to the ``vllm_mlx.server``
-      module (e.g. ``"server"`` from ``from vllm_mlx import server``,
-      ``"srv"`` from ``import vllm_mlx.server as srv``, or the
-      two-segment ``"vllm_mlx.server"`` from bare
-      ``import vllm_mlx.server``).
-    - ``pkg_aliases``: local names bound to the top-level ``vllm_mlx``
-      package (e.g. ``"vllm_mlx"`` from ``import vllm_mlx`` or
-      ``"vm"`` from ``import vllm_mlx as vm``). Used to recognize
+    - ``module_aliases``: local names bound to the ``rapid_mlx.server``
+      module (e.g. ``"server"`` from ``from rapid_mlx import server``,
+      ``"srv"`` from ``import rapid_mlx.server as srv``, or the
+      two-segment ``"rapid_mlx.server"`` from bare
+      ``import rapid_mlx.server``).
+    - ``pkg_aliases``: local names bound to the top-level ``rapid_mlx``
+      package (e.g. ``"rapid_mlx"`` from ``import rapid_mlx`` or
+      ``"vm"`` from ``import rapid_mlx as vm``). Used to recognize
       ``<pkg_alias>.server.load_model(...)`` call shapes
       (DeepSeek round-3 #3).
     """
@@ -1002,11 +1002,11 @@ def _load_model_aliases_in_tree(
     pkg_aliases: set[str] = set()
     for node in ast.walk(tree):
         if isinstance(node, ast.ImportFrom):
-            # ImportFrom shapes that reference vllm_mlx.server:
-            #   absolute:  from vllm_mlx.server import load_model
-            #              (module="vllm_mlx.server", level=0)
-            #   absolute:  from vllm_mlx import server
-            #              (module="vllm_mlx", level=0)
+            # ImportFrom shapes that reference rapid_mlx.server:
+            #   absolute:  from rapid_mlx.server import load_model
+            #              (module="rapid_mlx.server", level=0)
+            #   absolute:  from rapid_mlx import server
+            #              (module="rapid_mlx", level=0)
             #   relative:  from .server import load_model
             #              (module="server", level=1)
             #   relative:  from . import server
@@ -1018,9 +1018,9 @@ def _load_model_aliases_in_tree(
             # the forwarding-audit gate. Recognize relative forms by
             # checking ``node.level >= 1`` and matching the residual
             # module-name suffix.
-            absolute_server = node.level == 0 and node.module == "vllm_mlx.server"
+            absolute_server = node.level == 0 and node.module == "rapid_mlx.server"
             relative_server = node.level >= 1 and node.module == "server"
-            absolute_pkg = node.level == 0 and node.module == "vllm_mlx"
+            absolute_pkg = node.level == 0 and node.module == "rapid_mlx"
             relative_pkg = node.level >= 1 and node.module is None
 
             if absolute_server or relative_server:
@@ -1033,16 +1033,16 @@ def _load_model_aliases_in_tree(
                         module.add(alias.asname or "server")
         elif isinstance(node, ast.Import):
             for alias in node.names:
-                if alias.name == "vllm_mlx.server":
-                    module.add(alias.asname or "vllm_mlx.server")
-                # DeepSeek round-3 fix #3: `import vllm_mlx` lets
-                # callers write `vllm_mlx.server.load_model(...)`. We
+                if alias.name == "rapid_mlx.server":
+                    module.add(alias.asname or "rapid_mlx.server")
+                # DeepSeek round-3 fix #3: `import rapid_mlx` lets
+                # callers write `rapid_mlx.server.load_model(...)`. We
                 # track the top-level package alias separately so
                 # `_call_targets_load_model` can reach into the
                 # ``<alias>.server.load_model`` two-level attribute
                 # chain even when only the package was imported.
-                if alias.name == "vllm_mlx":
-                    pkg_aliases.add(alias.asname or "vllm_mlx")
+                if alias.name == "rapid_mlx":
+                    pkg_aliases.add(alias.asname or "rapid_mlx")
     return frozenset(direct), frozenset(module), frozenset(pkg_aliases)
 
 
@@ -1052,18 +1052,18 @@ def _call_targets_load_model(
     module_aliases: frozenset[str],
     pkg_aliases: frozenset[str] = frozenset(),
 ) -> bool:
-    """Return True iff ``call`` invokes ``vllm_mlx.server.load_model``
+    """Return True iff ``call`` invokes ``rapid_mlx.server.load_model``
     (under any of the import shapes captured by
     ``_load_model_aliases_in_tree``). Handles:
 
       - ``load_model(...)`` / ``lm(...)`` — direct alias name
       - ``server.load_model(...)`` / ``srv.load_model(...)`` —
         single-level Attribute receiver against ``module_aliases``
-      - ``vllm_mlx.server.load_model(...)`` — two-level Attribute
+      - ``rapid_mlx.server.load_model(...)`` — two-level Attribute
         receiver collapsed against ``module_aliases``
       - ``<pkg>.server.load_model(...)`` where ``<pkg>`` is in
         ``pkg_aliases`` — DeepSeek round-3 #3 fix for the
-        ``import vllm_mlx`` shape.
+        ``import rapid_mlx`` shape.
     """
     func = call.func
     if isinstance(func, ast.Name) and func.id in direct_aliases:
@@ -1076,9 +1076,9 @@ def _call_targets_load_model(
         elif (
             isinstance(receiver, ast.Attribute)
             and isinstance(receiver.value, ast.Name)
-            and f"{receiver.value.id}.{receiver.attr}" == "vllm_mlx.server"
+            and f"{receiver.value.id}.{receiver.attr}" == "rapid_mlx.server"
         ):
-            receiver_name = "vllm_mlx.server"
+            receiver_name = "rapid_mlx.server"
         if receiver_name is not None and receiver_name in module_aliases:
             return True
         # DeepSeek round-3 #3: ``<pkg_alias>.server.load_model(...)``
@@ -1094,13 +1094,13 @@ def _call_targets_load_model(
 
 
 def _discover_entrypoints() -> set[str]:
-    """Discover every file under ``vllm_mlx/`` that either calls
+    """Discover every file under ``rapid_mlx/`` that either calls
     ``add_argument(...)`` or ``load_model(...)``. Returns paths
     relative to the package root (e.g. ``"cli.py"`` or
     ``"routes/audio_route.py"``).
 
     Closes round-3 bypass: contributor adds a new entrypoint file
-    (e.g. ``vllm_mlx/serve.py`` with its own argparse) that the
+    (e.g. ``rapid_mlx/serve.py`` with its own argparse) that the
     hardcoded gate-file list would never check."""
     root = _pkg_root()
     discovered: set[str] = set()
@@ -1127,8 +1127,8 @@ def _discover_entrypoints() -> set[str]:
             continue
 
         # Codex round-G: detect ALL load_model alias shapes before the
-        # call scan, so a new entrypoint using `from vllm_mlx import
-        # server` / `import vllm_mlx.server as srv` doesn't slip
+        # call scan, so a new entrypoint using `from rapid_mlx import
+        # server` / `import rapid_mlx.server as srv` doesn't slip
         # discovery.
         direct_aliases, module_aliases, pkg_aliases = _load_model_aliases_in_tree(tree)
 
@@ -1235,7 +1235,7 @@ def test_registry_invariants():
         instead of producing cryptic AttributeError at parametrize
         execution time.
     """
-    from vllm_mlx.model_auto_config import ModelConfig
+    from rapid_mlx.model_auto_config import ModelConfig
 
     # (a) No duplicate flag pairs.
     pair_keys = [(p.force_on, p.force_off) for p in AUTO_ROUTING_FLAG_PAIRS]
@@ -1340,8 +1340,8 @@ def test_registry_forwarded_kwargs_exist_on_signatures():
     gate is allowed to skip when MLX isn't available.
     """
     try:
-        from vllm_mlx.engine.batched import BatchedEngine
-        from vllm_mlx.server import load_model
+        from rapid_mlx.engine.batched import BatchedEngine
+        from rapid_mlx.server import load_model
     except RuntimeError as exc:
         pytest.skip(
             f"MLX runtime unavailable ({exc}) — signature audit requires "
@@ -1523,7 +1523,7 @@ def test_alias_profile_has_no_routing_shaped_fields():
     """
     import dataclasses
 
-    from vllm_mlx.model_aliases import AliasProfile
+    from rapid_mlx.model_aliases import AliasProfile
 
     routing_shaped = [
         f.name
@@ -1732,7 +1732,7 @@ def test_auto_routing_flags_have_force_on_and_force_off_pair():
         every chip family we don't own.
 
     Intentionally OUT OF SCOPE for the registry:
-      - ``OutputRouter.from_tokenizer`` in vllm_mlx/output_router.py
+      - ``OutputRouter.from_tokenizer`` in rapid_mlx/output_router.py
         auto-detects Gemma 4 / Harmony channel formats by tokenizer
         vocabulary. Not a binary decision (3+ formats including None),
         already allowlisted to known-good tokens, and has a built-in
@@ -1800,7 +1800,7 @@ def test_load_model_callers_register_every_routing_flag():
     forgets to expose ``--no-mllm`` / ``--no-hybrid`` / etc. would slip
     every existing gate and ship without escape hatches.
 
-    This test scans every file under ``vllm_mlx/`` for ``load_model(``
+    This test scans every file under ``rapid_mlx/`` for ``load_model(``
     invocations (the canonical engine entrypoint). Each such file
     must EITHER (a) register all routing-pair flags via argparse,
     matching the existing parity gate's expectation, OR (b) be
@@ -1837,15 +1837,15 @@ def test_load_model_callers_register_every_routing_flag():
         # The name ``load_model`` is overloaded — mlx_lm.utils, mlx_audio.*,
         # and several internal worker classes define their own
         # ``load_model``. Use the shared alias resolver to detect
-        # invocations of OUR ``vllm_mlx.server.load_model`` under any
+        # invocations of OUR ``rapid_mlx.server.load_model`` under any
         # import shape (direct / as-aliased / module-aliased / fully-
         # qualified). The single helper closes rounds D/E/F/G bypasses
         # at once and means every other scanner in this file picks up
         # the same coverage.
         direct_aliases, module_aliases, pkg_aliases = _load_model_aliases_in_tree(tree)
         # DeepSeek round-4 fix (PR #409): include pkg_aliases in the
-        # early-exit guard. ``import vllm_mlx`` (no .server) followed
-        # by ``vllm_mlx.server.load_model(...)`` populates ONLY
+        # early-exit guard. ``import rapid_mlx`` (no .server) followed
+        # by ``rapid_mlx.server.load_model(...)`` populates ONLY
         # pkg_aliases; the previous guard would short-circuit before
         # _call_targets_load_model could consider the package-attribute
         # path, silently losing entrypoint coverage.
@@ -2055,7 +2055,7 @@ def test_routing_override_kwargs_are_forwarded_to_load_model():
 
     Walks the AST of every ``load_model(...)`` call in every file
     discovered by ``_discover_entrypoints()`` (no longer hardcoded;
-    closes round-3 bypass #4.4 where a new ``vllm_mlx/serve.py``
+    closes round-3 bypass #4.4 where a new ``rapid_mlx/serve.py``
     entrypoint would never be scanned).
 
     Also REJECTS ``load_model(**expanded_dict)`` constructs (round-3
@@ -2073,14 +2073,14 @@ def test_routing_override_kwargs_are_forwarded_to_load_model():
     def _find_load_model_calls(source: str) -> list[ast.Call]:
         # Codex round-G fix (PR #409): use the shared alias resolver so
         # this forwarding audit catches aliased load_model calls
-        # (`from vllm_mlx.server import load_model as lm`,
-        # `import vllm_mlx.server as srv`, etc.). The previous literal-
+        # (`from rapid_mlx.server import load_model as lm`,
+        # `import rapid_mlx.server as srv`, etc.). The previous literal-
         # name match let an aliased caller forward one routing kwarg
         # while omitting the rest — gate passed silently.
         tree = ast.parse(source)
         direct_aliases, module_aliases, pkg_aliases = _load_model_aliases_in_tree(tree)
         # DeepSeek round-4 fix (PR #409): include pkg_aliases in the
-        # short-circuit so `import vllm_mlx` callers aren't dropped.
+        # short-circuit so `import rapid_mlx` callers aren't dropped.
         if not (direct_aliases or module_aliases or pkg_aliases):
             return []
         calls = []
@@ -2173,11 +2173,11 @@ def test_load_model_has_no_unkeyworded_bool_or_routing_params_beyond_baseline():
     # (mirrors the pattern in test_routing_override_kwargs_are_
     # keyword_only_in_load_model and _make_engine_core_for_override_test).
     try:
-        from vllm_mlx.server import load_model
+        from rapid_mlx.server import load_model
     except RuntimeError as exc:
         pytest.skip(
             f"MLX runtime unavailable ({exc}) — load_model signature "
-            "audit requires importing vllm_mlx.server. Skipped on "
+            "audit requires importing rapid_mlx.server. Skipped on "
             "headless CI."
         )
 
@@ -2437,8 +2437,8 @@ def test_hybrid_overrides_mutually_exclusive_in_load_model(monkeypatch):
     """server.load_model raises ValueError if both --force-hybrid and
     --no-hybrid are passed. Second line of defense — CLI also rejects
     via sys.exit(2), but load_model is a public entry point too."""
-    import vllm_mlx.server as srv
-    from vllm_mlx.server import load_model
+    import rapid_mlx.server as srv
+    from rapid_mlx.server import load_model
 
     # This test drives the routing block with a placeholder repo id — stub the
     # config-materialization seam so it doesn't fail-fast on the (uncached)
@@ -2456,8 +2456,8 @@ def test_hybrid_overrides_mutually_exclusive_in_load_model(monkeypatch):
 def test_spec_decode_overrides_mutually_exclusive_in_load_model(monkeypatch):
     """server.load_model raises ValueError if both --force-spec-decode
     and --no-spec-decode are passed."""
-    import vllm_mlx.server as srv
-    from vllm_mlx.server import load_model
+    import rapid_mlx.server as srv
+    from rapid_mlx.server import load_model
 
     # Placeholder repo id — stub the config-materialization seam (see the
     # sibling hybrid test) so the fail-fast doesn't preempt the guard (#1178).
@@ -2473,8 +2473,8 @@ def test_spec_decode_overrides_mutually_exclusive_in_load_model(monkeypatch):
 
 def test_force_mllm_rejects_direct_speculative_scheduler_config():
     """Programmatic callers get a clear conflict before model resolution."""
-    from vllm_mlx.scheduler import SchedulerConfig
-    from vllm_mlx.server import load_model
+    from rapid_mlx.scheduler import SchedulerConfig
+    from rapid_mlx.server import load_model
 
     with pytest.raises(ValueError, match="vision lane cannot honour"):
         load_model(
@@ -2485,7 +2485,7 @@ def test_force_mllm_rejects_direct_speculative_scheduler_config():
 
 
 def test_server_main_no_mllm_skips_routing_config_fail_fast(monkeypatch):
-    """BLOCKING (#1178 codex r5): standalone ``python -m vllm_mlx.server`` must
+    """BLOCKING (#1178 codex r5): standalone ``python -m rapid_mlx.server`` must
     NOT run the config-materialization fail-fast when the user passes an
     explicit lane flag. ``_ensure_routing_config``'s own error advertises
     ``--no-mllm`` as the escape hatch, so running it BEFORE consulting the flag
@@ -2494,9 +2494,9 @@ def test_server_main_no_mllm_skips_routing_config_fail_fast(monkeypatch):
     short-circuits without reading config, so ``_ensure_routing_config`` must be
     skipped entirely — mirroring ``load_model()``'s flag-first order.
     """
-    from vllm_mlx import cli as _cli
-    from vllm_mlx import server
-    from vllm_mlx.config import get_config
+    from rapid_mlx import cli as _cli
+    from rapid_mlx import server
+    from rapid_mlx.config import get_config
 
     # Snapshot the globals ``main()`` mutates so the writes don't leak into
     # sibling tests (mirrors test_audio_route_registration_gate).
@@ -2547,16 +2547,16 @@ def test_server_main_no_mllm_skips_routing_config_fail_fast(monkeypatch):
 
     monkeypatch.setattr(uvicorn, "run", lambda *_a, **_kw: None)
     monkeypatch.setattr(
-        "vllm_mlx._version_check.prompt_upgrade_if_available", lambda: False
+        "rapid_mlx._version_check.prompt_upgrade_if_available", lambda: False
     )
     monkeypatch.setattr(
-        "vllm_mlx._version_check.print_staleness_warning_if_any",
+        "rapid_mlx._version_check.print_staleness_warning_if_any",
         lambda **_kwargs: None,
     )
     monkeypatch.setattr(
         "sys.argv",
         [
-            "vllm_mlx.server",
+            "rapid_mlx.server",
             "--model",
             "some/uncached-hybrid-vlm-4bit",
             "--no-mllm",
@@ -2608,8 +2608,8 @@ def test_routing_override_kwargs_are_keyword_only_in_load_model():
     # `test_registry_forwarded_kwargs_exist_on_signatures` and
     # `_make_engine_core_for_override_test`.
     try:
-        from vllm_mlx.engine.batched import BatchedEngine
-        from vllm_mlx.server import load_model
+        from rapid_mlx.engine.batched import BatchedEngine
+        from rapid_mlx.server import load_model
     except RuntimeError as exc:
         pytest.skip(
             f"MLX runtime unavailable ({exc}) — keyword-only audit "
@@ -2684,9 +2684,9 @@ def _make_engine_core_for_override_test(monkeypatch, cfg, *, base=None, detector
     # Metal (the SOP's intended audit surface), the import succeeds
     # and the gate fires.
     try:
-        from vllm_mlx import engine_core as ec
-        from vllm_mlx import model_auto_config as mac
-        from vllm_mlx.model_auto_config import ModelConfig
+        from rapid_mlx import engine_core as ec
+        from rapid_mlx import model_auto_config as mac
+        from rapid_mlx.model_auto_config import ModelConfig
     except RuntimeError as exc:
         pytest.skip(
             f"MLX runtime unavailable ({exc}) — EngineCore routing-mutation "
@@ -2778,8 +2778,8 @@ def test_engine_core_applies_routing_overrides_from_registry(
     Now we force ``base.<field> = not expected`` so the mutation MUST
     fire to flip it back to ``expected`` — the only path to success
     is the actual mutation block running."""
-    from vllm_mlx.engine_core import EngineConfig
-    from vllm_mlx.model_auto_config import ModelConfig
+    from rapid_mlx.engine_core import EngineConfig
+    from rapid_mlx.model_auto_config import ModelConfig
 
     cfg = EngineConfig(model_name="fake/model", **{kwarg: True})
     # Force base to the OPPOSITE of expected. Now the only way for the
@@ -2803,7 +2803,7 @@ def test_engine_core_no_override_leaves_model_config_unchanged(monkeypatch):
     enriched ModelConfig untouched. Pairs with the parametrized
     mutation test above — together they prove "fires when set, doesn't
     fire when not set"."""
-    from vllm_mlx.engine_core import EngineConfig
+    from rapid_mlx.engine_core import EngineConfig
 
     cfg = EngineConfig(model_name="fake/model")
     core = _make_engine_core_for_override_test(monkeypatch, cfg)
@@ -2815,8 +2815,8 @@ def test_engine_core_no_override_leaves_model_config_unchanged(monkeypatch):
 def test_engine_core_profile_log_shows_explicit_mtp(monkeypatch, caplog):
     """Runtime MTP selection must override the static profile label."""
     try:
-        from vllm_mlx.engine_core import EngineConfig
-        from vllm_mlx.scheduler import SchedulerConfig
+        from rapid_mlx.engine_core import EngineConfig
+        from rapid_mlx.scheduler import SchedulerConfig
     except (ImportError, RuntimeError) as exc:
         pytest.skip(f"MLX runtime unavailable ({exc})")
 
@@ -2824,7 +2824,7 @@ def test_engine_core_profile_log_shows_explicit_mtp(monkeypatch, caplog):
         model_name="fake/model",
         scheduler_config=SchedulerConfig(spec_decode="mtp"),
     )
-    with caplog.at_level("INFO", logger="vllm_mlx.engine_core"):
+    with caplog.at_level("INFO", logger="rapid_mlx.engine_core"):
         _make_engine_core_for_override_test(monkeypatch, cfg)
 
     assert "spec decode MTP (active)" in caplog.text
@@ -2834,9 +2834,9 @@ def test_engine_core_profile_log_shows_explicit_mtp(monkeypatch, caplog):
 def test_engine_core_profile_log_uses_alias_capabilities(monkeypatch, caplog):
     """Resolved snapshots must not erase alias-only sidecar facts in logs."""
     try:
-        from vllm_mlx.engine_core import EngineConfig
-        from vllm_mlx.model_auto_config import ModelConfig
-        from vllm_mlx.scheduler import SchedulerConfig
+        from rapid_mlx.engine_core import EngineConfig
+        from rapid_mlx.model_auto_config import ModelConfig
+        from rapid_mlx.scheduler import SchedulerConfig
     except (ImportError, RuntimeError) as exc:
         pytest.skip(f"MLX runtime unavailable ({exc})")
 
@@ -2858,7 +2858,7 @@ def test_engine_core_profile_log_uses_alias_capabilities(monkeypatch, caplog):
         scheduler_config=SchedulerConfig(spec_decode="mtp"),
     )
     monkeypatch.setenv("RAPID_MLX_PROFILE_VERBOSE", "1")
-    with caplog.at_level("INFO", logger="vllm_mlx.engine_core"):
+    with caplog.at_level("INFO", logger="rapid_mlx.engine_core"):
         _make_engine_core_for_override_test(
             monkeypatch,
             cfg,
@@ -2877,8 +2877,8 @@ def test_engine_core_profile_log_uses_alias_capabilities(monkeypatch, caplog):
 def test_engine_config_profile_name_preserves_positional_scheduler_argument():
     """Appending diagnostics must not shift the public dataclass constructor."""
     try:
-        from vllm_mlx.engine_core import EngineConfig
-        from vllm_mlx.scheduler import SchedulerConfig
+        from rapid_mlx.engine_core import EngineConfig
+        from rapid_mlx.scheduler import SchedulerConfig
     except (ImportError, RuntimeError) as exc:
         pytest.skip(f"MLX runtime unavailable ({exc})")
 
@@ -2895,9 +2895,9 @@ def test_engine_core_suffix_lane_reconciles_profile_log(monkeypatch, caplog):
     the active lane instead of the registry's default-on MTP claim
     (adversarial review round 2, #3266)."""
     try:
-        from vllm_mlx.engine_core import EngineConfig
-        from vllm_mlx.model_auto_config import ModelConfig
-        from vllm_mlx.scheduler import SchedulerConfig
+        from rapid_mlx.engine_core import EngineConfig
+        from rapid_mlx.model_auto_config import ModelConfig
+        from rapid_mlx.scheduler import SchedulerConfig
     except (ImportError, RuntimeError) as exc:
         pytest.skip(f"MLX runtime unavailable ({exc})")
 
@@ -2910,7 +2910,7 @@ def test_engine_core_suffix_lane_reconciles_profile_log(monkeypatch, caplog):
     monkeypatch.setenv("RAPID_MLX_PROFILE_VERBOSE", "1")
     # Suffix is installable only for supports_spec_decode=True profiles —
     # represent a suffix-capable model, not the harness's hybrid default.
-    with caplog.at_level("INFO", logger="vllm_mlx.engine_core"):
+    with caplog.at_level("INFO", logger="rapid_mlx.engine_core"):
         _make_engine_core_for_override_test(
             monkeypatch,
             cfg,
@@ -2928,8 +2928,8 @@ def test_engine_core_suffix_flag_without_install_gate_stays_honest(monkeypatch, 
     no_spec_decode). The lane claim must stay silent — 'active' would be
     its own registry-vs-reality lie (round 3, #3266)."""
     try:
-        from vllm_mlx.engine_core import EngineConfig
-        from vllm_mlx.scheduler import SchedulerConfig
+        from rapid_mlx.engine_core import EngineConfig
+        from rapid_mlx.scheduler import SchedulerConfig
     except (ImportError, RuntimeError) as exc:
         pytest.skip(f"MLX runtime unavailable ({exc})")
 
@@ -2941,7 +2941,7 @@ def test_engine_core_suffix_flag_without_install_gate_stays_honest(monkeypatch, 
         ),
     )
     monkeypatch.setenv("RAPID_MLX_PROFILE_VERBOSE", "1")
-    with caplog.at_level("INFO", logger="vllm_mlx.engine_core"):
+    with caplog.at_level("INFO", logger="rapid_mlx.engine_core"):
         _make_engine_core_for_override_test(monkeypatch, cfg)
 
     assert "spec decode SUFFIX" not in caplog.text
@@ -2954,8 +2954,8 @@ def test_engine_core_verbose_plain_registry_view_uses_no_runtime_override(
 ):
     """A normal boot leaves the verbose table on its registry capability view."""
     try:
-        from vllm_mlx.engine_core import EngineConfig
-        from vllm_mlx.scheduler import SchedulerConfig
+        from rapid_mlx.engine_core import EngineConfig
+        from rapid_mlx.scheduler import SchedulerConfig
     except (ImportError, RuntimeError) as exc:
         pytest.skip(f"MLX runtime unavailable ({exc})")
 
@@ -2966,7 +2966,7 @@ def test_engine_core_verbose_plain_registry_view_uses_no_runtime_override(
         ),
     )
     monkeypatch.setenv("RAPID_MLX_PROFILE_VERBOSE", "1")
-    with caplog.at_level("INFO", logger="vllm_mlx.engine_core"):
+    with caplog.at_level("INFO", logger="rapid_mlx.engine_core"):
         _make_engine_core_for_override_test(monkeypatch, cfg)
 
     assert "Spec decode" in caplog.text
@@ -2993,7 +2993,7 @@ def test_engine_core_rejects_conflicting_routing_overrides(monkeypatch, flags):
     directions of a registry-known routing-override pair are set on
     EngineConfig. Programmatic callers that bypass the CLI mutex still
     get caught. Derived from registry."""
-    from vllm_mlx.engine_core import EngineConfig
+    from rapid_mlx.engine_core import EngineConfig
 
     cfg = EngineConfig(model_name="fake/model", **flags)
     with pytest.raises(ValueError, match="mutually exclusive"):
@@ -3007,7 +3007,7 @@ def test_mtp_spec_config_install_respects_supports_spec_decode():
     import pathlib
 
     pkg_root = pathlib.Path(
-        str(importlib.resources.files("vllm_mlx").joinpath(""))
+        str(importlib.resources.files("rapid_mlx").joinpath(""))
     ).resolve()
     source = (pkg_root / "scheduler.py").read_text()
     tree = ast.parse(source)
@@ -3042,7 +3042,7 @@ def test_dflash_branch_rejects_no_spec_decode():
     import pathlib
 
     pkg_root = pathlib.Path(
-        str(importlib.resources.files("vllm_mlx").joinpath(""))
+        str(importlib.resources.files("rapid_mlx").joinpath(""))
     ).resolve()
     source = (pkg_root / "cli.py").read_text()
 
@@ -3067,7 +3067,7 @@ def test_ddtree_branch_rejects_no_spec_decode():
     """--enable-ddtree + --no-spec-decode must be a mutex error."""
     from types import SimpleNamespace
 
-    from vllm_mlx.cli import _preflight_ddtree_or_exit
+    from rapid_mlx.cli import _preflight_ddtree_or_exit
 
     args = SimpleNamespace(
         model="qwen3.5-9b-8bit",
@@ -3102,7 +3102,7 @@ def test_friendly_error_does_not_swallow_unrelated_valueerror(monkeypatch):
     if importlib.util.find_spec("mlx_vlm") is None:
         pytest.skip("mlx_vlm not installed (vision extra)")
 
-    from vllm_mlx.models import mllm as mllm_mod
+    from rapid_mlx.models import mllm as mllm_mod
 
     real_mlx_vlm = sys.modules.get("mlx_vlm")
 
@@ -3149,8 +3149,8 @@ def test_friendly_error_does_not_swallow_unrelated_valueerror(monkeypatch):
 async def test_start_mllm_degrades_to_text_on_missing_vision_tower(monkeypatch):
     """``_start_mllm`` catches ``TextOnlyCheckpointError`` and hands off to the
     text lane: ``is_mllm`` flips to False and the mllm loader is torn down."""
-    from vllm_mlx.engine import batched as batched_mod
-    from vllm_mlx.models import mllm as mllm_mod
+    from rapid_mlx.engine import batched as batched_mod
+    from rapid_mlx.models import mllm as mllm_mod
 
     class _FakeTextOnlyMLLM:
         def __init__(self, model_name, trust_remote_code=True):
@@ -3215,8 +3215,8 @@ async def test_explicit_force_mllm_does_not_degrade(monkeypatch):
     tower must HARD-FAIL for that operator (surfacing --no-mllm as the fix),
     never silently degrade behind their back — only AUTO-detected routing
     degrades. The loader thread is still torn down so nothing leaks."""
-    from vllm_mlx.engine import batched as batched_mod
-    from vllm_mlx.models import mllm as mllm_mod
+    from rapid_mlx.engine import batched as batched_mod
+    from rapid_mlx.models import mllm as mllm_mod
 
     class _FakeTextOnlyMLLM:
         def __init__(self, model_name, trust_remote_code=True):
@@ -3257,8 +3257,8 @@ async def test_start_mllm_does_not_degrade_on_unrelated_load_error(monkeypatch):
     degrade path is scoped to ``TextOnlyCheckpointError`` alone, never a bare
     RuntimeError, so genuine errors are never masked as a silent text fallback.
     """
-    from vllm_mlx.engine import batched as batched_mod
-    from vllm_mlx.models import mllm as mllm_mod
+    from rapid_mlx.engine import batched as batched_mod
+    from rapid_mlx.models import mllm as mllm_mod
 
     class _FakeBrokenMLLM:
         def __init__(self, model_name, trust_remote_code=True):
@@ -3313,7 +3313,7 @@ class TestPagedCacheLaneAdmission:
     at Scheduler construction."""
 
     def _paged_scheduler_config(self):
-        from vllm_mlx.scheduler import SchedulerConfig
+        from rapid_mlx.scheduler import SchedulerConfig
 
         return SchedulerConfig(
             max_num_seqs=4,
@@ -3327,8 +3327,8 @@ class TestPagedCacheLaneAdmission:
     def test_mllm_lane_rejects_paged_cache_before_model_load(self, monkeypatch):
         import asyncio
 
-        from vllm_mlx.engine.batched import BatchedEngine
-        from vllm_mlx.errors import PagedCacheUnsupportedLayoutError
+        from rapid_mlx.engine.batched import BatchedEngine
+        from rapid_mlx.errors import PagedCacheUnsupportedLayoutError
 
         engine = BatchedEngine(
             "unit-test/mllm-model",
@@ -3366,12 +3366,12 @@ class TestPagedCacheLaneAdmission:
 
         from mlx_lm.models.cache import KVCache, RotatingKVCache
 
-        import vllm_mlx.gdn_in_proj_fusion as gdn_fusion
-        import vllm_mlx.moe_fusion as moe_fusion
-        import vllm_mlx.runtime.cache as runtime_cache
-        import vllm_mlx.utils.tokenizer as tok_mod
-        from vllm_mlx.engine.batched import BatchedEngine
-        from vllm_mlx.errors import PagedCacheUnsupportedLayoutError
+        import rapid_mlx.gdn_in_proj_fusion as gdn_fusion
+        import rapid_mlx.moe_fusion as moe_fusion
+        import rapid_mlx.runtime.cache as runtime_cache
+        import rapid_mlx.utils.tokenizer as tok_mod
+        from rapid_mlx.engine.batched import BatchedEngine
+        from rapid_mlx.errors import PagedCacheUnsupportedLayoutError
 
         model = MagicMock()
         model.make_cache = lambda: [KVCache(), RotatingKVCache(max_size=512)]

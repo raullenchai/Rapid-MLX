@@ -18,7 +18,7 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-from vllm_mlx import _version_check as vc
+from rapid_mlx import _version_check as vc
 
 # --- _parse_version ---------------------------------------------------
 
@@ -1026,7 +1026,7 @@ def test_detect_install_method_pip_uses_sys_executable(monkeypatch):
 
 def test_detect_install_method_no_binary_falls_back_to_pip(monkeypatch):
     """When ``rapid-mlx`` isn't on PATH (e.g. invoked via
-    ``python -m vllm_mlx.cli``), default to pip so the upgrade subcommand
+    ``python -m rapid_mlx.cli``), default to pip so the upgrade subcommand
     still works."""
     monkeypatch.setattr("shutil.which", lambda _name: None)
 

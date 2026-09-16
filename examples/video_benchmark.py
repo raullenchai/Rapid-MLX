@@ -300,7 +300,7 @@ def run_benchmark(
     Returns:
         List of VideoBenchmarkResult objects
     """
-    from vllm_mlx.models.vlm import MLXVisionLanguageModel
+    from rapid_mlx.models.vlm import MLXVisionLanguageModel
 
     # Load model
     print(f"\nLoading model: {model_name}")

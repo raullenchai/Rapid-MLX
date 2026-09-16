@@ -165,7 +165,7 @@ curl http://localhost:8000/v1/chat/completions \
 ## Python API
 
 ```python
-from vllm_mlx.models import MLXMultimodalLM
+from rapid_mlx.models import MLXMultimodalLM
 
 mllm = MLXMultimodalLM("mlx-community/Qwen3-VL-4B-Instruct-3bit")
 mllm.load()
@@ -261,7 +261,7 @@ If you use the Python API directly, you can opt out or resize the cache when
 constructing the model:
 
 ```python
-from vllm_mlx.models import MLXMultimodalLM
+from rapid_mlx.models import MLXMultimodalLM
 
 mllm = MLXMultimodalLM(
     "mlx-community/Qwen3-VL-4B-Instruct-3bit",
@@ -273,7 +273,7 @@ mllm = MLXMultimodalLM(
 ### Python API
 
 ```python
-from vllm_mlx.mllm_cache import MLLMPrefixCacheManager
+from rapid_mlx.mllm_cache import MLLMPrefixCacheManager
 
 # Create cache manager (max_memory_mb defaults to 2048)
 cache = MLLMPrefixCacheManager(max_entries=50, max_memory_mb=2048)

@@ -1,6 +1,6 @@
 # SPDX-License-Identifier: Apache-2.0
 """
-Unit tests for ``vllm_mlx.runtime.radix_index.RadixPrefixIndex`` (R15-P1,
+Unit tests for ``rapid_mlx.runtime.radix_index.RadixPrefixIndex`` (R15-P1,
 task #303).
 
 These tests cover the radix-tree data structure in isolation — no model,
@@ -24,7 +24,7 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 
 import pytest
 
-from vllm_mlx.runtime.radix_index import (
+from rapid_mlx.runtime.radix_index import (
     _BYTES_PER_TOKEN_INT32,
     RadixPrefixIndex,
     RadixStats,

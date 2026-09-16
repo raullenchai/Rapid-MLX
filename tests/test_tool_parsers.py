@@ -5,6 +5,23 @@ import json
 
 import pytest
 
+from rapid_mlx.api.tool_calling import parse_tool_calls
+from rapid_mlx.tool_parsers import (
+    AutoToolParser,
+    DeepSeekToolParser,
+    DeepSeekV3ToolParser,
+    FunctionaryToolParser,
+    GraniteToolParser,
+    HermesToolParser,
+    KimiToolParser,
+    LlamaToolParser,
+    MistralToolParser,
+    NemotronToolParser,
+    QwenToolParser,
+    ToolParserManager,
+    xLAMToolParser,
+)
+
 # This file is the Linux parser-matrix entry point. Import the focused
 # malformed-call regressions so changed-line coverage exercises the full
 # parser/postprocessor feedback path on every supported Python version.
@@ -22,22 +39,6 @@ from tests.test_hermes_malformed_tool_feedback import (  # noqa: F401
     test_stream_preserves_trailing_prose_once_when_it_shares_the_close_chunk,
     test_stream_valid_call_after_malformed_call_restores_prose_suppression,
     test_stream_valid_call_does_not_preserve_same_chunk_trailing_prose,
-)
-from vllm_mlx.api.tool_calling import parse_tool_calls
-from vllm_mlx.tool_parsers import (
-    AutoToolParser,
-    DeepSeekToolParser,
-    DeepSeekV3ToolParser,
-    FunctionaryToolParser,
-    GraniteToolParser,
-    HermesToolParser,
-    KimiToolParser,
-    LlamaToolParser,
-    MistralToolParser,
-    NemotronToolParser,
-    QwenToolParser,
-    ToolParserManager,
-    xLAMToolParser,
 )
 
 
@@ -1389,7 +1390,7 @@ class TestThinkTagStripping:
 
     def test_strip_think_tags_utility(self):
         """Test the strip_think_tags static method."""
-        from vllm_mlx.tool_parsers.abstract_tool_parser import ToolParser
+        from rapid_mlx.tool_parsers.abstract_tool_parser import ToolParser
 
         # Basic stripping
         text = "<think>Let me analyze this</think>The answer is 42"
@@ -1596,7 +1597,7 @@ class TestQwen3XmlAlias:
         assert args["filePath"] == "/etc/hostname"
 
     def test_qwen3_coder_xml_still_resolves_to_coder_parser(self):
-        from vllm_mlx.tool_parsers.qwen3coder_tool_parser import Qwen3CoderToolParser
+        from rapid_mlx.tool_parsers.qwen3coder_tool_parser import Qwen3CoderToolParser
 
         parser_cls = ToolParserManager.get_tool_parser("qwen3_coder_xml")
         assert parser_cls is Qwen3CoderToolParser, (
@@ -1688,7 +1689,7 @@ class TestGemma4StreamingSignature:
     """
 
     def test_gemma4_streaming_accepts_request_kwarg(self):
-        from vllm_mlx.tool_parsers.gemma4_tool_parser import Gemma4ToolParser
+        from rapid_mlx.tool_parsers.gemma4_tool_parser import Gemma4ToolParser
 
         parser = Gemma4ToolParser(tokenizer=None)
         # Must not raise TypeError
@@ -2016,7 +2017,7 @@ class TestTextFormatToolCallFallback:
 
     @pytest.fixture
     def minimax_parser(self):
-        from vllm_mlx.tool_parsers import MiniMaxToolParser
+        from rapid_mlx.tool_parsers import MiniMaxToolParser
 
         return MiniMaxToolParser()
 
@@ -2043,7 +2044,7 @@ class TestTextFormatToolCallFallback:
     def test_variant1_simple_kv(self):
         """Test basic KV-style text-format tool call."""
         text = '[Calling tool="web_search" query="weather palo alto"]'
-        from vllm_mlx.tool_parsers.abstract_tool_parser import ToolParser
+        from rapid_mlx.tool_parsers.abstract_tool_parser import ToolParser
 
         calls = ToolParser.extract_text_format_tool_calls(text)
         assert len(calls) == 1
@@ -2052,7 +2053,7 @@ class TestTextFormatToolCallFallback:
     def test_variant1_multiple_params(self):
         """Test KV-style with multiple parameters."""
         text = '[Calling tool="exec" command="ls -la" timeout="5000"]'
-        from vllm_mlx.tool_parsers.abstract_tool_parser import ToolParser
+        from rapid_mlx.tool_parsers.abstract_tool_parser import ToolParser
 
         calls = ToolParser.extract_text_format_tool_calls(text)
         assert len(calls) == 1
@@ -2064,7 +2065,7 @@ class TestTextFormatToolCallFallback:
     def test_variant1_escaped_quotes(self):
         """Test KV-style with escaped quotes in value."""
         text = r'[Calling tool="exec" command="curl -s \"https://example.com\""]'
-        from vllm_mlx.tool_parsers.abstract_tool_parser import ToolParser
+        from rapid_mlx.tool_parsers.abstract_tool_parser import ToolParser
 
         calls = ToolParser.extract_text_format_tool_calls(text)
         assert len(calls) == 1
@@ -2075,7 +2076,7 @@ class TestTextFormatToolCallFallback:
     def test_variant1_single_param(self):
         """Test KV-style with a single parameter."""
         text = '[Calling tool="read" path="/tmp/file.txt"]'
-        from vllm_mlx.tool_parsers.abstract_tool_parser import ToolParser
+        from rapid_mlx.tool_parsers.abstract_tool_parser import ToolParser
 
         calls = ToolParser.extract_text_format_tool_calls(text)
         assert len(calls) == 1
@@ -2088,7 +2089,7 @@ class TestTextFormatToolCallFallback:
     def test_variant2_json_args(self):
         """Test function-call style with JSON arguments."""
         text = '[Calling tool: process({"action":"poll", "sessionId":"clear-haven", "timeout":5000})]'
-        from vllm_mlx.tool_parsers.abstract_tool_parser import ToolParser
+        from rapid_mlx.tool_parsers.abstract_tool_parser import ToolParser
 
         calls = ToolParser.extract_text_format_tool_calls(text)
         assert len(calls) == 1
@@ -2103,7 +2104,7 @@ class TestTextFormatToolCallFallback:
     def test_variant2_simple_json(self):
         """Test function-call style with simple JSON."""
         text = '[Calling tool: web_search({"query":"weather tonight"})]'
-        from vllm_mlx.tool_parsers.abstract_tool_parser import ToolParser
+        from rapid_mlx.tool_parsers.abstract_tool_parser import ToolParser
 
         calls = ToolParser.extract_text_format_tool_calls(text)
         assert len(calls) == 1
@@ -2112,7 +2113,7 @@ class TestTextFormatToolCallFallback:
     def test_variant2_single_key(self):
         """Test function-call style with single key."""
         text = '[Calling tool: exec({"command":"python3 --version"})]'
-        from vllm_mlx.tool_parsers.abstract_tool_parser import ToolParser
+        from rapid_mlx.tool_parsers.abstract_tool_parser import ToolParser
 
         calls = ToolParser.extract_text_format_tool_calls(text)
         assert len(calls) == 1
@@ -2125,7 +2126,7 @@ class TestTextFormatToolCallFallback:
     def test_inside_think_tags(self):
         """Text-format tool call embedded inside <think>...</think> tags."""
         text = '<think>I should search for this.\n[Calling tool="web_search" query="test"]</think>'
-        from vllm_mlx.tool_parsers.abstract_tool_parser import ToolParser
+        from rapid_mlx.tool_parsers.abstract_tool_parser import ToolParser
 
         # The raw extraction should still find it inside think tags
         calls = ToolParser.extract_text_format_tool_calls(text)
@@ -2135,7 +2136,7 @@ class TestTextFormatToolCallFallback:
     def test_content_before(self):
         """Text-format tool call with content BEFORE it."""
         text = 'Let me check the weather for you. [Calling tool="web_search" query="weather"]'
-        from vllm_mlx.tool_parsers.abstract_tool_parser import ToolParser
+        from rapid_mlx.tool_parsers.abstract_tool_parser import ToolParser
 
         calls = ToolParser.extract_text_format_tool_calls(text)
         assert len(calls) == 1
@@ -2144,7 +2145,7 @@ class TestTextFormatToolCallFallback:
     def test_content_after(self):
         """Text-format tool call with content AFTER it."""
         text = '[Calling tool="web_search" query="weather"] I will get the results.'
-        from vllm_mlx.tool_parsers.abstract_tool_parser import ToolParser
+        from rapid_mlx.tool_parsers.abstract_tool_parser import ToolParser
 
         calls = ToolParser.extract_text_format_tool_calls(text)
         assert len(calls) == 1
@@ -2156,7 +2157,7 @@ class TestTextFormatToolCallFallback:
             '[Calling tool="web_search" query="weather"]\n'
             '[Calling tool="exec" command="date"]'
         )
-        from vllm_mlx.tool_parsers.abstract_tool_parser import ToolParser
+        from rapid_mlx.tool_parsers.abstract_tool_parser import ToolParser
 
         calls = ToolParser.extract_text_format_tool_calls(text)
         assert len(calls) == 2
@@ -2171,7 +2172,7 @@ class TestTextFormatToolCallFallback:
             '<minimax:tool_call><invoke name="func1"><parameter name="a">1</parameter></invoke></minimax:tool_call>\n'
             '[Calling tool="func2" b="2"]'
         )
-        from vllm_mlx.tool_parsers.abstract_tool_parser import ToolParser
+        from rapid_mlx.tool_parsers.abstract_tool_parser import ToolParser
 
         calls = ToolParser.extract_text_format_tool_calls(text)
         assert len(calls) == 1
@@ -2180,7 +2181,7 @@ class TestTextFormatToolCallFallback:
     def test_unicode_in_arguments(self):
         """Unicode in arguments (Chinese, emoji)."""
         text = '[Calling tool="translate" text="\u4f60\u597d\u4e16\u754c"]'
-        from vllm_mlx.tool_parsers.abstract_tool_parser import ToolParser
+        from rapid_mlx.tool_parsers.abstract_tool_parser import ToolParser
 
         calls = ToolParser.extract_text_format_tool_calls(text)
         assert len(calls) == 1
@@ -2190,7 +2191,7 @@ class TestTextFormatToolCallFallback:
     def test_unicode_emoji_in_arguments(self):
         """Emoji characters in arguments."""
         text = '[Calling tool="react" emoji="\U0001f680\U0001f525"]'
-        from vllm_mlx.tool_parsers.abstract_tool_parser import ToolParser
+        from rapid_mlx.tool_parsers.abstract_tool_parser import ToolParser
 
         calls = ToolParser.extract_text_format_tool_calls(text)
         assert len(calls) == 1
@@ -2200,7 +2201,7 @@ class TestTextFormatToolCallFallback:
     def test_variant2_nested_json(self):
         """Nested JSON in variant 2."""
         text = '[Calling tool: configure({"key": {"nested": true}})]'
-        from vllm_mlx.tool_parsers.abstract_tool_parser import ToolParser
+        from rapid_mlx.tool_parsers.abstract_tool_parser import ToolParser
 
         calls = ToolParser.extract_text_format_tool_calls(text)
         assert len(calls) == 1
@@ -2209,14 +2210,14 @@ class TestTextFormatToolCallFallback:
 
     def test_has_text_format_tool_call_true(self):
         """has_text_format_tool_call() returns True for matching text."""
-        from vllm_mlx.tool_parsers.abstract_tool_parser import ToolParser
+        from rapid_mlx.tool_parsers.abstract_tool_parser import ToolParser
 
         assert ToolParser.has_text_format_tool_call('[Calling tool="web_search" q="x"]')
         assert ToolParser.has_text_format_tool_call('[Calling tool: func({"a":1})]')
 
     def test_has_text_format_tool_call_false(self):
         """has_text_format_tool_call() returns False for non-matching text."""
-        from vllm_mlx.tool_parsers.abstract_tool_parser import ToolParser
+        from rapid_mlx.tool_parsers.abstract_tool_parser import ToolParser
 
         assert not ToolParser.has_text_format_tool_call("Hello, world!")
         assert not ToolParser.has_text_format_tool_call("[Calling out to the void]")
@@ -2235,7 +2236,7 @@ class TestTextFormatToolCallFallback:
         # The pattern requires at least one key="value" param, and extract
         # also checks `if arguments:` before appending.
         text = '[Calling tool="web_search"]'
-        from vllm_mlx.tool_parsers.abstract_tool_parser import ToolParser
+        from rapid_mlx.tool_parsers.abstract_tool_parser import ToolParser
 
         calls = ToolParser.extract_text_format_tool_calls(text)
         assert len(calls) == 0
@@ -2243,7 +2244,7 @@ class TestTextFormatToolCallFallback:
     def test_partial_incomplete_should_not_match(self):
         """Partial/incomplete text-format (missing closing ']') should NOT match."""
         text = '[Calling tool="web_search" query="test"'
-        from vllm_mlx.tool_parsers.abstract_tool_parser import ToolParser
+        from rapid_mlx.tool_parsers.abstract_tool_parser import ToolParser
 
         calls = ToolParser.extract_text_format_tool_calls(text)
         assert len(calls) == 0
@@ -2254,7 +2255,7 @@ class TestTextFormatToolCallFallback:
             '[Calling tool="read" path="/tmp/data.txt"]\n'
             '[Calling tool: exec({"command":"cat /tmp/data.txt"})]'
         )
-        from vllm_mlx.tool_parsers.abstract_tool_parser import ToolParser
+        from rapid_mlx.tool_parsers.abstract_tool_parser import ToolParser
 
         calls = ToolParser.extract_text_format_tool_calls(text)
         assert len(calls) == 2
@@ -2387,7 +2388,7 @@ class TestTextFormatToolCallFallback:
     def test_variant2_empty_json_should_not_match(self):
         """Variant 2 with empty JSON object should NOT produce a tool call."""
         text = "[Calling tool: func({})]"
-        from vllm_mlx.tool_parsers.abstract_tool_parser import ToolParser
+        from rapid_mlx.tool_parsers.abstract_tool_parser import ToolParser
 
         calls = ToolParser.extract_text_format_tool_calls(text)
         # Empty dict check: `if isinstance(arguments, dict) and arguments:`
@@ -2400,7 +2401,7 @@ class TestTextFormatToolCallFallback:
             '[Calling tool="func2" b="2"]\n'
             '[Calling tool: func3({"c":"3"})]'
         )
-        from vllm_mlx.tool_parsers.abstract_tool_parser import ToolParser
+        from rapid_mlx.tool_parsers.abstract_tool_parser import ToolParser
 
         calls = ToolParser.extract_text_format_tool_calls(text)
         assert len(calls) == 3
@@ -2414,7 +2415,7 @@ class TestTextFormatToolCallFallback:
             '[Calling tool: search({"query":"hello world"})]',
             '[Calling tool="exec" command="echo hello" timeout="30"]',
         ]
-        from vllm_mlx.tool_parsers.abstract_tool_parser import ToolParser
+        from rapid_mlx.tool_parsers.abstract_tool_parser import ToolParser
 
         for text in texts:
             calls = ToolParser.extract_text_format_tool_calls(text)

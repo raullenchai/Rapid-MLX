@@ -167,7 +167,7 @@ def is_reasoning_distill_model(model: str, *, path: Path = DEFAULT_MANIFEST) -> 
         return True
 
     # Import lazily so ordinary fleet parsing stays dependency-light.
-    from vllm_mlx.model_aliases import resolve_profile
+    from rapid_mlx.model_aliases import resolve_profile
 
     profile = resolve_profile(model)
     if profile is None:
@@ -187,7 +187,7 @@ def coherence_forces_text_lane(model: str, *, path: Path = DEFAULT_MANIFEST) -> 
     if any(model == family.coherence_model for family in families):
         return True
 
-    from vllm_mlx.model_aliases import resolve_profile
+    from rapid_mlx.model_aliases import resolve_profile
 
     profile = resolve_profile(model)
     if profile is None:

@@ -28,8 +28,8 @@ import pytest
 from tokenizers import Tokenizer, decoders, models, pre_tokenizers
 from transformers import PreTrainedTokenizerFast
 
-from vllm_mlx.utils.decode import IncrementalDecoder
-from vllm_mlx.utils.tokenizer import (
+from rapid_mlx.utils.decode import IncrementalDecoder
+from rapid_mlx.utils.tokenizer import (
     _BYTE_LEVEL_MOJIBAKE_MARKERS,
     repair_byte_level_decoder,
 )
@@ -237,7 +237,7 @@ class TestRepairByteLevelDecoder:
         # verification path will fail and trigger the revert branch.
         import tokenizers.decoders as _decmod
 
-        from vllm_mlx.utils import tokenizer as _toktools
+        from rapid_mlx.utils import tokenizer as _toktools
 
         class _NoopDecoder(decoders.Decoder):
             def decode(self, tokens: list[str]) -> str:

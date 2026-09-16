@@ -22,13 +22,13 @@ import os
 from dataclasses import replace
 from unittest.mock import patch
 
-from vllm_mlx.agents.base import (
+from rapid_mlx.agents.base import (
     AgentConfigSpec,
     AgentProfile,
     AgentStreamingSpec,
     AgentTestingSpec,
 )
-from vllm_mlx.agents.testing import AgentTestRunner, TestStatus
+from rapid_mlx.agents.testing import AgentTestRunner, TestStatus
 
 
 def _make_profile(name: str, config_type: str) -> AgentProfile:
@@ -77,7 +77,9 @@ def test_run_calls_setup_agent_config_before_tests():
 
     with (
         patch.object(AgentTestRunner, "_server_available", return_value=False),
-        patch("vllm_mlx.agents.adapter.setup_agent_config", side_effect=_capture_setup),
+        patch(
+            "rapid_mlx.agents.adapter.setup_agent_config", side_effect=_capture_setup
+        ),
     ):
         runner = AgentTestRunner(
             profile,
@@ -135,11 +137,13 @@ def test_run_refreshes_config_when_server_is_available():
     with (
         patch.object(AgentTestRunner, "_server_available", return_value=True),
         patch.object(AgentTestRunner, "_agent_binary_available", return_value=False),
-        patch("vllm_mlx.agents.adapter.setup_agent_config", side_effect=_capture_setup),
-        patch("vllm_mlx.agents.testing._test_plain_chat") as mock_chat,
+        patch(
+            "rapid_mlx.agents.adapter.setup_agent_config", side_effect=_capture_setup
+        ),
+        patch("rapid_mlx.agents.testing._test_plain_chat") as mock_chat,
     ):
         # Stub each test to return a synthetic PASS so run() proceeds
-        from vllm_mlx.agents.testing import TestResult, TestStatus
+        from rapid_mlx.agents.testing import TestResult, TestStatus
 
         mock_chat.return_value = TestResult(
             "plain_chat", TestStatus.PASS, duration_ms=1.0
@@ -196,17 +200,19 @@ def test_file_config_agent_uses_an_isolated_home_for_setup_and_e2e(monkeypatch):
         observed["child_home"] = env_overrides["CODEX_HOME"]
         return TestResult("e2e_chat", TestStatus.PASS)
 
-    from vllm_mlx.agents.testing import TestResult, TestStatus
+    from rapid_mlx.agents.testing import TestResult, TestStatus
 
     with (
         patch.object(AgentTestRunner, "_server_available", return_value=True),
         patch.object(AgentTestRunner, "_agent_binary_available", return_value=True),
-        patch("vllm_mlx.agents.adapter.setup_agent_config", side_effect=_capture_setup),
         patch(
-            "vllm_mlx.agents.testing._test_plain_chat",
+            "rapid_mlx.agents.adapter.setup_agent_config", side_effect=_capture_setup
+        ),
+        patch(
+            "rapid_mlx.agents.testing._test_plain_chat",
             return_value=TestResult("plain_chat", TestStatus.PASS),
         ),
-        patch("vllm_mlx.agents.testing._test_e2e_chat", side_effect=_capture_e2e),
+        patch("rapid_mlx.agents.testing._test_e2e_chat", side_effect=_capture_e2e),
     ):
         AgentTestRunner(profile, model_id="qwen3.5-9b-4bit").run()
 
@@ -234,17 +240,19 @@ def test_agent_without_home_env_still_uses_isolated_home(monkeypatch):
         observed["child_home"] = env_overrides["HOME"]
         return TestResult("e2e_chat", TestStatus.PASS)
 
-    from vllm_mlx.agents.testing import TestResult, TestStatus
+    from rapid_mlx.agents.testing import TestResult, TestStatus
 
     with (
         patch.object(AgentTestRunner, "_server_available", return_value=True),
         patch.object(AgentTestRunner, "_agent_binary_available", return_value=True),
-        patch("vllm_mlx.agents.adapter.setup_agent_config", side_effect=_capture_setup),
         patch(
-            "vllm_mlx.agents.testing._test_plain_chat",
+            "rapid_mlx.agents.adapter.setup_agent_config", side_effect=_capture_setup
+        ),
+        patch(
+            "rapid_mlx.agents.testing._test_plain_chat",
             return_value=TestResult("plain_chat", TestStatus.PASS),
         ),
-        patch("vllm_mlx.agents.testing._test_e2e_chat", side_effect=_capture_e2e),
+        patch("rapid_mlx.agents.testing._test_e2e_chat", side_effect=_capture_e2e),
     ):
         AgentTestRunner(profile, model_id="qwen3.5-9b-4bit").run()
 
@@ -266,17 +274,17 @@ def test_claude_e2e_sets_documented_config_directory():
         observed.update(env_overrides)
         return TestResult("e2e_chat", TestStatus.PASS)
 
-    from vllm_mlx.agents.testing import TestResult, TestStatus
+    from rapid_mlx.agents.testing import TestResult, TestStatus
 
     with (
         patch.object(AgentTestRunner, "_server_available", return_value=True),
         patch.object(AgentTestRunner, "_agent_binary_available", return_value=True),
-        patch("vllm_mlx.agents.adapter.setup_agent_config", return_value="ok"),
+        patch("rapid_mlx.agents.adapter.setup_agent_config", return_value="ok"),
         patch(
-            "vllm_mlx.agents.testing._test_plain_chat",
+            "rapid_mlx.agents.testing._test_plain_chat",
             return_value=TestResult("plain_chat", TestStatus.PASS),
         ),
-        patch("vllm_mlx.agents.testing._test_e2e_chat", side_effect=_capture_e2e),
+        patch("rapid_mlx.agents.testing._test_e2e_chat", side_effect=_capture_e2e),
     ):
         AgentTestRunner(profile, model_id="qwen3.5-9b-4bit").run()
 

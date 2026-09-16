@@ -27,16 +27,16 @@ pytestmark = pytest.mark.requires_mlx
 import asyncio
 from unittest.mock import MagicMock
 
-from vllm_mlx.engine_core import EngineConfig, EngineCore
-from vllm_mlx.output_collector import RequestOutputCollector
-from vllm_mlx.request import (
+from rapid_mlx.engine_core import EngineConfig, EngineCore
+from rapid_mlx.output_collector import RequestOutputCollector
+from rapid_mlx.request import (
     InferenceAbortedError,
     Request,
     RequestOutput,
     RequestStatus,
     SamplingParams,
 )
-from vllm_mlx.scheduler import Scheduler, SchedulerConfig
+from rapid_mlx.scheduler import Scheduler, SchedulerConfig
 
 
 def _make_engine() -> EngineCore:

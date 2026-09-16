@@ -16,8 +16,8 @@ import asyncio
 import time
 from unittest.mock import MagicMock
 
-from vllm_mlx.request import Request, SamplingParams
-from vllm_mlx.scheduler import Scheduler, SchedulerConfig
+from rapid_mlx.request import Request, SamplingParams
+from rapid_mlx.scheduler import Scheduler, SchedulerConfig
 
 
 class TestContinuousBatchingBasic:
@@ -74,7 +74,7 @@ class TestContinuousBatchingIntegration:
 
     async def test_single_request(self, small_model):
         """Test single request processing."""
-        from vllm_mlx import (
+        from rapid_mlx import (
             AsyncEngineCore,
             EngineConfig,
             SamplingParams,
@@ -111,7 +111,7 @@ class TestContinuousBatchingIntegration:
 
     async def test_concurrent_requests(self, small_model):
         """Test multiple concurrent requests are batched."""
-        from vllm_mlx import (
+        from rapid_mlx import (
             AsyncEngineCore,
             EngineConfig,
             SamplingParams,
@@ -170,7 +170,7 @@ class TestContinuousBatchingIntegration:
         between the two phases is concurrent vs serial dispatch, so
         the speedup directly measures batching's benefit.
         """
-        from vllm_mlx import (
+        from rapid_mlx import (
             AsyncEngineCore,
             EngineConfig,
             SamplingParams,
@@ -279,7 +279,9 @@ if __name__ == "__main__":
     parser.add_argument(
         "--model",
         type=str,
-        default=os.environ.get("VLLM_MLX_TEST_MODEL", "mlx-community/Qwen3-8B-6bit"),
+        default=os.environ.get("RAPID_MLX_TEST_MODEL")
+        or os.environ.get("VLLM_MLX_TEST_MODEL")  # pre-rename name, still honored
+        or "mlx-community/Qwen3-8B-6bit",
         help="Model to benchmark",
     )
     args = parser.parse_args()
@@ -289,7 +291,7 @@ if __name__ == "__main__":
     async def run_benchmark():
         from mlx_lm import load
 
-        from vllm_mlx import (
+        from rapid_mlx import (
             AsyncEngineCore,
             EngineConfig,
             SamplingParams,

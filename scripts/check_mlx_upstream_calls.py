@@ -17,7 +17,7 @@ change in the PR; the release-er must read the list and either:
 
   (a) explicitly clear it in the PR description ("audited for #404
       class — none of these call into hardware-specific paths"), or
-  (b) add a ``vllm_mlx/_mlx_compat.py``-style probe-and-cache shim for
+  (b) add a ``rapid_mlx/_mlx_compat.py``-style probe-and-cache shim for
       the affected call before merging.
 
 The script does NOT auto-fail — it surfaces. Hard-failing on every

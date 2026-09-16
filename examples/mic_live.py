@@ -69,7 +69,7 @@ class LiveTranscriber:
 
     def load_model(self):
         """Load STT model."""
-        from vllm_mlx.audio.stt import STTEngine
+        from rapid_mlx.audio.stt import STTEngine
 
         print(f"Loading: {self.model_name}")
         self.engine = STTEngine(self.model_name)

@@ -33,8 +33,8 @@ from fastapi import FastAPI
 from fastapi.testclient import TestClient
 from pydantic import ValidationError
 
-from vllm_mlx.api.anthropic_models import AnthropicRequest
-from vllm_mlx.api.models import (
+from rapid_mlx.api.anthropic_models import AnthropicRequest
+from rapid_mlx.api.models import (
     ChatCompletionRequest,
     CompletionRequest,
     _enforce_max_generation_tokens_ceiling,
@@ -279,7 +279,7 @@ class TestWireShape:
     @pytest.fixture
     def app(self) -> FastAPI:
         # Build a minimal app that mounts only the three request models.
-        # Avoids pulling in ``vllm_mlx.server`` (which imports MLX) so the
+        # Avoids pulling in ``rapid_mlx.server`` (which imports MLX) so the
         # test runs on every CI matrix entry including the no-mlx Linux
         # validation runner.
         app = FastAPI()

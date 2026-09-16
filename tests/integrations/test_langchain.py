@@ -6,10 +6,10 @@ from collections.abc import Mapping
 
 import httpx as _httpx
 
-from vllm_mlx.http_auth import rapid_mlx_auth_headers
+from rapid_mlx.http_auth import rapid_mlx_auth_headers
 
 # ``results`` is read by the ``rapid-mlx bench --tier harness`` path
-# (``vllm_mlx/agents/testing.py::_run_specific_tests`` does
+# (``rapid_mlx/agents/testing.py::_run_specific_tests`` does
 # ``getattr(mod, "results", {})`` after ``spec.loader.exec_module``).
 # It MUST be defined at module level so the harness can pick it up — PR
 # #660 originally moved it inside ``if __name__ == "__main__":`` to keep

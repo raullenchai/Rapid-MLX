@@ -4,7 +4,7 @@
 ``rapid-mlx serve`` and asserts the generated text is coherent (#1247).
 
 This is the serve-path half of the coherence gate; the pure predicates and the
-garbage detector live in :mod:`vllm_mlx.coherence` and are unit-tested in
+garbage detector live in :mod:`rapid_mlx.coherence` and are unit-tested in
 ordinary CI. This script requires a server to already be listening (it does
 **not** boot one) — mirroring ``evals/run_eval.py`` and
 ``tests/integrations/test_anthropic_sdk.py``. The release gauntlet
@@ -40,7 +40,7 @@ from pathlib import Path
 
 import httpx
 
-# Make ``vllm_mlx`` importable when run as ``python evals/coherence_gate.py``
+# Make ``rapid_mlx`` importable when run as ``python evals/coherence_gate.py``
 # from a bare checkout (sys.path[0] is evals/, not the repo root). Harmless when
 # rapid-mlx is already installed — an editable/site-packages copy still resolves
 # first only if this insert is skipped, but preferring the checkout is correct
@@ -49,7 +49,7 @@ _REPO_ROOT = Path(__file__).resolve().parents[1]
 if str(_REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(_REPO_ROOT))
 
-from vllm_mlx.coherence import (  # noqa: E402
+from rapid_mlx.coherence import (  # noqa: E402
     GOLDEN,
     GoldenCase,
     evaluate_case,

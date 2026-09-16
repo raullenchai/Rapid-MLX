@@ -85,7 +85,7 @@ def _hermes_structure_info():
     realistic family. ``<tool_call>``/``</tool_call>`` are single special
     tokens in Qwen3/Hermes tokenizers, hence the ``sentinels`` entries.
     """
-    from vllm_mlx.api.tool_grammar import StructureInfo
+    from rapid_mlx.api.tool_grammar import StructureInfo
 
     def _info(name: str):
         return StructureInfo(
@@ -112,7 +112,7 @@ def test_abc_structure_info_defaults_to_none():
     # PR-1 non-breaking contract: a parser that does not override
     # ``structure_info`` returns None, so callers fall back to today's
     # free-form-then-parse behavior.
-    from vllm_mlx.tool_parsers.abstract_tool_parser import ToolParser
+    from rapid_mlx.tool_parsers.abstract_tool_parser import ToolParser
 
     class _Dummy(ToolParser):
         def extract_tool_calls(self, model_output, request=None):  # noqa: D401
@@ -127,7 +127,7 @@ def test_build_tool_grammar_none_when_parser_opts_out():
     # (free-form fallback), NOT a grammar. Requires llguidance so the opt-out
     # branch is reached rather than the ``HAS_LLGUIDANCE`` short-circuit
     # (which would make this pass for the wrong reason).
-    from vllm_mlx.api.tool_grammar import build_tool_grammar
+    from rapid_mlx.api.tool_grammar import build_tool_grammar
 
     class _OptOut:
         def structure_info(self):
@@ -140,7 +140,7 @@ def test_build_tool_grammar_none_when_parser_opts_out():
 def test_build_tool_grammar_none_on_empty_tools():
     # Empty tools -> None. Requires llguidance so the empty-tools guard is the
     # reason for None, not the availability short-circuit.
-    from vllm_mlx.api.tool_grammar import build_tool_grammar
+    from rapid_mlx.api.tool_grammar import build_tool_grammar
 
     assert build_tool_grammar([], "required", _HermesStubParser()) is None
 
@@ -148,7 +148,7 @@ def test_build_tool_grammar_none_on_empty_tools():
 @_requires_llguidance
 def test_build_tool_grammar_none_for_tool_choice_none():
     # tool_choice="none" -> no grammar at all (design §4), never a forced call.
-    from vllm_mlx.api.tool_grammar import build_tool_grammar
+    from rapid_mlx.api.tool_grammar import build_tool_grammar
 
     assert build_tool_grammar(TOOLS, "none", _HermesStubParser()) is None
 
@@ -158,7 +158,7 @@ def test_build_tool_grammar_named_choice_narrows_to_requested_tool():
     # A NAMED tool_choice (a concrete function name) must constrain to ONLY
     # that tool even when the full multi-tool list is passed — the builder
     # narrows internally, so a named call can never emit a different tool.
-    from vllm_mlx.api.tool_grammar import build_tool_grammar
+    from rapid_mlx.api.tool_grammar import build_tool_grammar
 
     grammar = build_tool_grammar(TOOLS, "get_weather", _HermesStubParser())
     assert grammar is not None
@@ -176,7 +176,7 @@ def test_build_tool_grammar_named_choice_unknown_name_degrades():
     # Requires llguidance so execution reaches the named-choice narrowing
     # branch rather than returning None via the HAS_LLGUIDANCE short-circuit
     # (which would keep this green even if the named validation were deleted).
-    from vllm_mlx.api.tool_grammar import build_tool_grammar
+    from rapid_mlx.api.tool_grammar import build_tool_grammar
 
     assert build_tool_grammar(TOOLS, "does_not_exist", _HermesStubParser()) is None
 
@@ -188,7 +188,7 @@ def test_build_tool_grammar_openai_request_shape_degrades_safely():
     # ({"type":"function","function":{...}}) has no top-level "name", so the
     # builder degrades to free-form (None) — safely, not a crash. Un-wrapping
     # request shapes is the PR-3 routing caller's job, not this builder's.
-    from vllm_mlx.api.tool_grammar import build_tool_grammar
+    from rapid_mlx.api.tool_grammar import build_tool_grammar
 
     openai_shaped = [
         {"type": "function", "function": {"name": "get_weather", "parameters": {}}}
@@ -200,7 +200,7 @@ def test_build_tool_grammar_openai_request_shape_degrades_safely():
 def test_build_tool_grammar_degrades_when_factory_raises():
     # A per-family structure_info() factory that raises on a tool name must
     # degrade to free-form (None), not crash the request.
-    from vllm_mlx.api.tool_grammar import build_tool_grammar
+    from rapid_mlx.api.tool_grammar import build_tool_grammar
 
     class _Raises:
         def structure_info(self):
@@ -216,7 +216,7 @@ def test_build_tool_grammar_degrades_when_factory_raises():
 # Lark structural output (pure Python, always runs).
 # --------------------------------------------------------------------------
 def test_lark_contains_trigger_and_schema_region():
-    from vllm_mlx.api.tool_grammar import build_tool_lark
+    from rapid_mlx.api.tool_grammar import build_tool_lark
 
     infos = [_hermes_structure_info()(t["name"]) for t in TOOLS]
     lark = build_tool_lark(TOOLS, "required", infos)
@@ -238,7 +238,7 @@ def test_lark_contains_trigger_and_schema_region():
 
 
 def test_lark_quantifier_tracks_tool_choice():
-    from vllm_mlx.api.tool_grammar import build_tool_lark
+    from rapid_mlx.api.tool_grammar import build_tool_lark
 
     infos = [_hermes_structure_info()(t["name"]) for t in TOOLS]
     # auto -> may emit zero calls -> (...)* (keeps the free prefix; unchanged).
@@ -255,7 +255,7 @@ def test_lark_single_call_forces_exactly_one_tag():
     # parallel_tool_calls=False -> single_call -> EXACTLY ONE call (no
     # quantifier). Overrides the ``required`` ``+`` so the grammar can't emit
     # multiple calls (codex #558-PR3 blocking).
-    from vllm_mlx.api.tool_grammar import build_tool_lark
+    from rapid_mlx.api.tool_grammar import build_tool_lark
 
     infos = [_hermes_structure_info()(t["name"]) for t in TOOLS]
     lark = build_tool_lark(TOOLS, "required", infos, single_call=True)
@@ -278,7 +278,7 @@ def test_named_choice_narrows_to_single_forced_tag():
     # single requested function before calling the builder (design §4). The
     # builder then emits exactly one forced tag — it never leaks the other
     # tools' alternatives into a named request.
-    from vllm_mlx.api.tool_grammar import build_tool_lark
+    from rapid_mlx.api.tool_grammar import build_tool_lark
 
     only = [TOOLS[0]]  # caller pre-filtered to the requested function
     info = [_hermes_structure_info()(only[0]["name"])]
@@ -296,7 +296,7 @@ def test_text_trigger_is_rejected_at_build_time():
     # then swallow bytes that reassemble the trigger, producing an
     # unenforceable ``auto`` grammar. A special-token trigger cannot be
     # reassembled from ordinary token pieces, so we require one here.
-    from vllm_mlx.api.tool_grammar import StructureInfo, build_tool_lark
+    from rapid_mlx.api.tool_grammar import StructureInfo, build_tool_lark
 
     text_trigger = StructureInfo(
         begin="TOOL_CALL args:", end="", trigger="TOOL_CALL", sentinels=()
@@ -308,7 +308,7 @@ def test_text_trigger_is_rejected_at_build_time():
 def test_build_tool_lark_rejects_bad_inputs():
     # Public-ish input validation raises ValueError (survives ``python -O``),
     # rather than asserting.
-    from vllm_mlx.api.tool_grammar import StructureInfo, build_tool_lark
+    from rapid_mlx.api.tool_grammar import StructureInfo, build_tool_lark
 
     good = _hermes_structure_info()("get_weather")
     with pytest.raises(ValueError):
@@ -339,7 +339,7 @@ def test_build_tool_lark_preserves_falsy_schemas():
     # A present-but-falsy JSON Schema ({} = allow-any, false = allow-none) is
     # meaningful and must be embedded verbatim, NOT replaced by the permissive
     # default (the ``... or default`` bug codex flagged).
-    from vllm_mlx.api.tool_grammar import build_tool_lark
+    from rapid_mlx.api.tool_grammar import build_tool_lark
 
     info = _hermes_structure_info()("get_weather")
     tool_empty = {"name": "get_weather", "parameters": {}}
@@ -352,7 +352,7 @@ def test_build_tool_lark_preserves_falsy_schemas():
 
 
 def test_build_tool_lark_defaults_only_when_parameters_absent():
-    from vllm_mlx.api.tool_grammar import build_tool_lark
+    from rapid_mlx.api.tool_grammar import build_tool_lark
 
     info = _hermes_structure_info()("get_weather")
     tool_missing = {"name": "get_weather"}  # no "parameters" key
@@ -543,7 +543,7 @@ def _consume(grammar, lltok, tok, text):
 
 @_requires_llguidance
 def test_valid_hermes_call_is_accepted_and_terminates(tok, lltok):
-    from vllm_mlx.api.tool_grammar import build_tool_grammar
+    from rapid_mlx.api.tool_grammar import build_tool_grammar
 
     grammar = build_tool_grammar(TOOLS, "required", _HermesStubParser())
     assert grammar is not None
@@ -563,7 +563,7 @@ def test_valid_enum_value_is_accepted(tok, lltok):
     # Positive enum control (paired with the rejection test below): a VALID
     # enum value is accepted and terminates — so the rejection test cannot pass
     # merely because the grammar forbids the optional `unit` property entirely.
-    from vllm_mlx.api.tool_grammar import build_tool_grammar
+    from rapid_mlx.api.tool_grammar import build_tool_grammar
 
     grammar = build_tool_grammar(TOOLS, "required", _HermesStubParser())
     accepted, total, accepting = _consume(
@@ -578,7 +578,7 @@ def test_valid_enum_value_is_accepted(tok, lltok):
 
 @_requires_llguidance
 def test_hallucinated_tool_name_is_rejected(tok, lltok):
-    from vllm_mlx.api.tool_grammar import build_tool_grammar
+    from rapid_mlx.api.tool_grammar import build_tool_grammar
 
     grammar = build_tool_grammar(TOOLS, "required", _HermesStubParser())
     accepted, total, _ = _consume(
@@ -589,7 +589,7 @@ def test_hallucinated_tool_name_is_rejected(tok, lltok):
 
 @_requires_llguidance
 def test_off_schema_argument_is_rejected(tok, lltok):
-    from vllm_mlx.api.tool_grammar import build_tool_grammar
+    from rapid_mlx.api.tool_grammar import build_tool_grammar
 
     grammar = build_tool_grammar(TOOLS, "required", _HermesStubParser())
     # `city` must be a string; an integer must be forbidden.
@@ -604,7 +604,7 @@ def test_off_schema_argument_is_rejected(tok, lltok):
 
 @_requires_llguidance
 def test_bad_enum_value_is_rejected(tok, lltok):
-    from vllm_mlx.api.tool_grammar import build_tool_grammar
+    from rapid_mlx.api.tool_grammar import build_tool_grammar
 
     grammar = build_tool_grammar(TOOLS, "required", _HermesStubParser())
     # `unit` enum is {c, f}; "kelvin" must be forbidden.
@@ -628,7 +628,7 @@ def test_forced_nonreasoning_rejects_prose_before_the_call(tok, lltok):
     # hermes/qwen). Contrast: AUTO KEEPS the free prefix, so the SAME
     # prose-then-call is a complete valid derivation (the fix must not leak into
     # auto — auto may legitimately preface or decline a call).
-    from vllm_mlx.api.tool_grammar import build_tool_grammar
+    from rapid_mlx.api.tool_grammar import build_tool_grammar
 
     prose_then_call = (
         "Sure, let me help with that. "
@@ -668,7 +668,7 @@ def test_forced_multi_call_newline_separated_is_accepted(tok, lltok):
     # admits exactly that gap, so a required grammar accepts two newline-separated
     # calls IN FULL and terminates — while still masking prose (the prose guard
     # above). Without ``SEP`` the second call's leading ``\n`` would be rejected.
-    from vllm_mlx.api.tool_grammar import build_tool_grammar
+    from rapid_mlx.api.tool_grammar import build_tool_grammar
 
     required = build_tool_grammar(TOOLS, "required", _HermesStubParser())
     assert required is not None
@@ -707,7 +707,7 @@ def test_auto_mode_accepts_a_structured_tool_call(tok, lltok):
     # (a) When the model DOES decide to call under auto, a well-formed tool call
     # is accepted in full and terminates — auto still structurally enforces the
     # call it chose to make.
-    from vllm_mlx.api.tool_grammar import build_tool_grammar
+    from rapid_mlx.api.tool_grammar import build_tool_grammar
 
     grammar = build_tool_grammar(TOOLS, "auto", _HermesStubParser())
     assert grammar is not None
@@ -729,7 +729,7 @@ def test_auto_mode_permits_plain_text_without_forcing_a_call(tok, lltok):
     # text that calls NO tool must be accepted AND terminal — auto lets the model
     # decline the tool. The SAME plain text must be NON-terminal under required
     # (required forces a call), proving auto != required.
-    from vllm_mlx.api.tool_grammar import build_tool_grammar
+    from rapid_mlx.api.tool_grammar import build_tool_grammar
 
     plain = "The sea is calm and wide, a mirror to the evening sky."
 
@@ -761,7 +761,7 @@ def test_auto_mode_rejects_a_malformed_tool_call(tok, lltok):
     # ``<tool_call>`` trigger) the schema is still enforced. A hallucinated tool
     # name inside an opened call is rejected — the structural guarantee holds for
     # the call the model chose to start.
-    from vllm_mlx.api.tool_grammar import build_tool_grammar
+    from rapid_mlx.api.tool_grammar import build_tool_grammar
 
     grammar = build_tool_grammar(TOOLS, "auto", _HermesStubParser())
     accepted, total, _ = _consume(
@@ -780,7 +780,7 @@ def test_auto_mode_single_call_is_zero_or_one(tok, lltok):
     # #558-PR5). This is the enforcement proof behind the string-level quantifier
     # test: the ``?`` quantifier must (a) accept zero calls, (b) accept one call,
     # and (c) REJECT a second call the client's parallel cap forbade.
-    from vllm_mlx.api.tool_grammar import build_tool_grammar
+    from rapid_mlx.api.tool_grammar import build_tool_grammar
 
     grammar = build_tool_grammar(TOOLS, "auto", _HermesStubParser(), single_call=True)
     assert grammar is not None
@@ -885,7 +885,7 @@ def test_forced_reasoning_opts_out_of_grammar():
     on the NORMALIZED reasoning pair, so a single / malformed sentinel is NOT
     treated as reasoning (see ``test_single_reasoning_marker_degrades_to_bare_
     prefix`` for the degrade)."""
-    from vllm_mlx.api.tool_grammar import build_tool_grammar
+    from rapid_mlx.api.tool_grammar import build_tool_grammar
 
     # Forced (required) + a valid reasoning pair -> opts out (None).
     assert (
@@ -931,7 +931,7 @@ def test_auto_reasoning_lark_keeps_prefill_tolerant_prefix():
     globally-at-most-one balanced block) lives on the AUTO path, unchanged by the
     #558 forced-leak fix. Structural pin so a future edit that narrows AUTO's
     reasoning prefix is caught."""
-    from vllm_mlx.api.tool_grammar import build_tool_lark
+    from rapid_mlx.api.tool_grammar import build_tool_lark
 
     infos = [_hermes_structure_info()(t["name"]) for t in TOOLS]
     auto = build_tool_lark(
@@ -997,7 +997,7 @@ def test_forced_nonreasoning_lark_forces_trigger_directly():
     prose prefix. Asserts a checked-in golden so a regression cannot hide behind
     ``default == explicit_empty``. AUTO must KEEP the free prefix (it may
     legitimately decline to call)."""
-    from vllm_mlx.api.tool_grammar import build_tool_lark
+    from rapid_mlx.api.tool_grammar import build_tool_lark
 
     infos = [_hermes_structure_info()(t["name"]) for t in TOOLS]
     default = build_tool_lark(TOOLS, "required", infos)
@@ -1032,7 +1032,7 @@ def test_reasoning_sentinels_dedup_and_drop_empty():
     two DISTINCT refs become the balanced ``(open, close)`` block. Exercised on
     the AUTO path — the reasoning grammar lives there (forced+reasoning is
     free-form)."""
-    from vllm_mlx.api.tool_grammar import build_tool_lark
+    from rapid_mlx.api.tool_grammar import build_tool_lark
 
     infos = [_hermes_structure_info()(t["name"]) for t in TOOLS]
     lark = build_tool_lark(
@@ -1050,7 +1050,7 @@ def test_single_reasoning_marker_degrades_to_bare_prefix():
     """A single reasoning marker (no distinct close) cannot form a balanced
     block, so the prefix degrades to the bare ``TAG_TEXT`` (no reasoning
     tolerance) rather than emitting a half-open block."""
-    from vllm_mlx.api.tool_grammar import build_tool_lark
+    from rapid_mlx.api.tool_grammar import build_tool_lark
 
     infos = [_hermes_structure_info()(t["name"]) for t in TOOLS]
     # AUTO path (where the reasoning grammar lives): a single marker cannot form
@@ -1067,7 +1067,7 @@ def test_malformed_reasoning_sentinel_is_dropped_not_emitted():
     ``[THINK]`` char-class shape, or one with interior whitespace/brackets) is
     DROPPED — it must never be interpolated into Lark as syntactically-invalid
     source (codex #558-PR4 nit). The remaining well-formed pair still emits."""
-    from vllm_mlx.api.tool_grammar import build_tool_lark
+    from rapid_mlx.api.tool_grammar import build_tool_lark
 
     infos = [_hermes_structure_info()(t["name"]) for t in TOOLS]
     # AUTO path (where the reasoning grammar lives). Only ``<think>``/``</think>``
@@ -1100,7 +1100,7 @@ def test_resolve_reasoning_sentinels_from_parser(tok):
     """``resolve_reasoning_sentinels`` reads the configured reasoning parser's
     boundary tokens and keeps only single-special-token markers on THIS
     tokenizer. On the Qwen3 tokenizer both ``<think>``/``</think>`` qualify."""
-    from vllm_mlx.api.tool_grammar import (
+    from rapid_mlx.api.tool_grammar import (
         are_single_special_tokens,
         resolve_reasoning_sentinels,
     )
@@ -1118,7 +1118,7 @@ def test_resolve_reasoning_sentinels_from_parser(tok):
 def test_resolve_reasoning_sentinels_degrades_safely(tok):
     """No parser / unknown parser -> ``()`` — a missing reasoning parser must NOT
     disable tool enforcement, only omit reasoning tolerance."""
-    from vllm_mlx.api.tool_grammar import resolve_reasoning_sentinels
+    from rapid_mlx.api.tool_grammar import resolve_reasoning_sentinels
 
     assert resolve_reasoning_sentinels(None, tok) == ()
     assert resolve_reasoning_sentinels("", tok) == ()
@@ -1132,7 +1132,7 @@ def test_reasoning_prefix_then_tool_call_is_accepted(tok, lltok):
     """PATH A PROOF: a ``<think>...</think>`` reasoning block followed by a valid
     hermes tool call is accepted IN FULL and terminates — the grammar tolerated
     the reasoning prefix, then enforced the tool-call schema."""
-    from vllm_mlx.api.tool_grammar import (
+    from rapid_mlx.api.tool_grammar import (
         are_single_special_tokens,
         build_tool_grammar,
     )
@@ -1175,7 +1175,7 @@ def test_reasoning_tolerant_prefix_is_what_admits_the_think_token(tok, lltok):
     match special tokens would not spuriously fail this suite (codex #558-PR4
     nit) — it would just make the reasoning-tolerant prefix redundant, which the
     positive assertion still tolerates."""
-    from vllm_mlx.api.tool_grammar import (
+    from rapid_mlx.api.tool_grammar import (
         are_single_special_tokens,
         build_tool_grammar,
     )
@@ -1220,7 +1220,7 @@ def test_reasoning_grammar_still_accepts_non_reasoning_call(tok, lltok):
     """No regression: under the reasoning-TOLERANT grammar a plain (no-reasoning)
     tool call is STILL accepted and terminates — reasoning tolerance is additive,
     it does not require a ``<think>`` block."""
-    from vllm_mlx.api.tool_grammar import (
+    from rapid_mlx.api.tool_grammar import (
         are_single_special_tokens,
         build_tool_grammar,
     )
@@ -1251,7 +1251,7 @@ def test_off_schema_argument_rejected_after_reasoning(tok, lltok):
     schema-violating argument (integer where the schema requires a string) is
     still MASKED — the reasoning tolerance did not weaken the post-reasoning
     schema enforcement."""
-    from vllm_mlx.api.tool_grammar import (
+    from rapid_mlx.api.tool_grammar import (
         are_single_special_tokens,
         build_tool_grammar,
     )
@@ -1298,7 +1298,7 @@ def test_unbalanced_think_opener_is_rejected(tok, lltok):
     forces the opener to be closed before the tool call, so a lenient reasoning
     parser can never swallow the whole ``<think>...<tool_call>...`` region as
     reasoning and drop the required call."""
-    from vllm_mlx.api.tool_grammar import (
+    from rapid_mlx.api.tool_grammar import (
         are_single_special_tokens,
         build_tool_grammar,
     )
@@ -1351,7 +1351,7 @@ def test_prefilled_think_leading_close_is_accepted_in_auto(tok, lltok):
     exactly the hole a NON-prefilled model would abuse to defer a forced call, so
     forced+reasoning degrades rather than ship it; see
     ``test_forced_reasoning_opts_out_of_grammar``)."""
-    from vllm_mlx.api.tool_grammar import (
+    from rapid_mlx.api.tool_grammar import (
         are_single_special_tokens,
         build_tool_grammar,
     )
@@ -1385,7 +1385,7 @@ def test_two_leading_closes_are_rejected(tok, lltok):
     rejected — the prefill tolerance does not degrade into accepting arbitrary
     stray closes. (FORCED + reasoning has no grammar at all — it is free-form; see
     ``test_forced_reasoning_opts_out_of_grammar``.)"""
-    from vllm_mlx.api.tool_grammar import (
+    from rapid_mlx.api.tool_grammar import (
         are_single_special_tokens,
         build_tool_grammar,
     )
@@ -1422,7 +1422,7 @@ def test_stray_close_after_call_is_rejected(tok, lltok):
     close tolerance is a one-time initial-prefix allowance, not a free stray
     close at every position. Exercised on the AUTO path (the reasoning grammar
     lives there)."""
-    from vllm_mlx.api.tool_grammar import (
+    from rapid_mlx.api.tool_grammar import (
         are_single_special_tokens,
         build_tool_grammar,
     )
@@ -1493,7 +1493,7 @@ def test_deepseek_r1_prefilled_think_template_is_tolerated(lltok):
             "prefill proof requires the pinned revision cached locally"
         )
 
-    from vllm_mlx.api.tool_grammar import (
+    from rapid_mlx.api.tool_grammar import (
         are_single_special_tokens,
         build_lltokenizer,
         build_tool_grammar,

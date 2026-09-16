@@ -6,8 +6,8 @@ Background
 The 0.7.41 hotfix (#720) swapped two ``mx.new_stream(...)`` allocations
 to ``mx.default_stream(mx.default_device())`` in:
 
-  * ``vllm_mlx/engine_core.py``   — ``_init_mlx_step_thread``
-  * ``vllm_mlx/mllm_batch_generator.py`` — ``MLLMBatchGenerator.__init__``
+  * ``rapid_mlx/engine_core.py``   — ``_init_mlx_step_thread``
+  * ``rapid_mlx/mllm_batch_generator.py`` — ``MLLMBatchGenerator.__init__``
 
 …because mlx-lm 0.31.3 made ``generation_stream`` thread-local
 (``mx.new_thread_local_stream`` in ``mlx_lm/generate.py``), and any
@@ -70,8 +70,8 @@ import inspect
 import textwrap
 from collections.abc import Iterable
 
-import vllm_mlx.engine_core as engine_core
-import vllm_mlx.mllm_batch_generator as mllm_batch_generator
+import rapid_mlx.engine_core as engine_core
+import rapid_mlx.mllm_batch_generator as mllm_batch_generator
 
 # Symbols that resolve to the forbidden upstream stream-allocation APIs
 # under any common spelling. ``mlx.core`` is the canonical import root;

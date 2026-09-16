@@ -32,7 +32,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from vllm_mlx.utils.tokenizer import _apply_chat_template_sidecar
+from rapid_mlx.utils.tokenizer import _apply_chat_template_sidecar
 
 
 @pytest.fixture

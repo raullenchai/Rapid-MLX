@@ -8,8 +8,8 @@ from pathlib import Path
 
 import pytest
 
-from vllm_mlx.reasoning import DeltaMessage, ReasoningParser, get_parser
-from vllm_mlx.reasoning.cohere_command_parser import (
+from rapid_mlx.reasoning import DeltaMessage, ReasoningParser, get_parser
+from rapid_mlx.reasoning.cohere_command_parser import (
     ACTION_START,
     TEXT_END,
     TEXT_START,
@@ -60,13 +60,13 @@ class TestRegistration:
 
     def test_aliases_use_protocol_name(self):
         aliases = json.loads(
-            (Path(__file__).parent.parent / "vllm_mlx" / "aliases.json").read_text()
+            (Path(__file__).parent.parent / "rapid_mlx" / "aliases.json").read_text()
         )
         for alias in ("north-mini-code-4bit", "north-mini-code-bf16"):
             assert aliases[alias]["reasoning_parser"] == "cohere_command4"
 
     def test_raw_checkpoint_path_uses_protocol_name(self):
-        from vllm_mlx.model_auto_config import detect_model_config
+        from rapid_mlx.model_auto_config import detect_model_config
 
         config = detect_model_config("mlx-community/North-Mini-Code-1.0-4bit")
         assert config is not None
@@ -259,7 +259,7 @@ def test_json_mode_waits_for_protocol_evidence_before_classifying_prose():
 
 
 def test_nonstream_orchestrator_passes_json_request_contract():
-    from vllm_mlx.service.helpers import _finalize_content_and_reasoning
+    from rapid_mlx.service.helpers import _finalize_content_and_reasoning
 
     document = '{"answer":4}'
     content, reasoning = _finalize_content_and_reasoning(
@@ -386,7 +386,7 @@ def test_forced_close_routes_unaccounted_marker_prefix_to_content():
 
 
 def test_prompt_priming_detects_command_markers_and_mixed_templates():
-    from vllm_mlx.service.helpers import _should_start_in_thinking
+    from rapid_mlx.service.helpers import _should_start_in_thinking
 
     template = (
         "{# historical <think></think> markers #}"
@@ -474,9 +474,9 @@ class TestChatRouteStreaming:
         from fastapi import FastAPI
         from fastapi.testclient import TestClient
 
-        from vllm_mlx.config import reset_config
-        from vllm_mlx.engine.base import GenerationOutput
-        from vllm_mlx.routes import chat as chat_route
+        from rapid_mlx.config import reset_config
+        from rapid_mlx.engine.base import GenerationOutput
+        from rapid_mlx.routes import chat as chat_route
 
         # This HTTP contract belongs to the no-MLX CI lane. Admission is
         # orthogonal to protocol parsing and imports the MLX scheduler lazily,

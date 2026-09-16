@@ -11,7 +11,7 @@ confirmation, no freed-space summary. This file pins the new contract:
 * on success a ``Freed X.Y GiB`` line is printed.
 
 The actual HF cache strategy is mocked — these tests must never delete
-real files. Size suffix matches ``vllm_mlx.cli._format_bytes`` (GiB).
+real files. Size suffix matches ``rapid_mlx.cli._format_bytes`` (GiB).
 """
 
 from __future__ import annotations
@@ -23,7 +23,7 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-from vllm_mlx import cli
+from rapid_mlx import cli
 
 # ----- helpers --------------------------------------------------------------
 

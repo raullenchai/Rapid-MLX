@@ -5,7 +5,7 @@ import os
 
 import pytest
 
-from vllm_mlx.model_aliases import (
+from rapid_mlx.model_aliases import (
     RetiredModelAliasError,
     list_aliases,
     resolve_model,
@@ -172,7 +172,7 @@ def test_suggest_similar_letter_fallback_skips_legit_looking_names():
 def test_letters_only_prefix(raw, expected):
     """Direct coverage for the letter-only family extraction. Caller
     (suggest_similar) enforces the 3-char minimum, so we don't here."""
-    from vllm_mlx.model_aliases import _letters_only_prefix
+    from rapid_mlx.model_aliases import _letters_only_prefix
 
     assert _letters_only_prefix(raw) == expected
 
@@ -181,12 +181,12 @@ def test_popular_aliases_curated_list_resolves():
     """Every entry in POPULAR_ALIASES (used as the user-facing
     'try one of these' fallback when zero fuzzy matches) must be a real
     alias in aliases.json — otherwise the error message is a lie."""
-    from vllm_mlx.model_aliases import POPULAR_ALIASES
+    from rapid_mlx.model_aliases import POPULAR_ALIASES
 
     aliases = list_aliases()
     missing = [a for a in POPULAR_ALIASES if a not in aliases]
     assert not missing, (
         f"POPULAR_ALIASES references non-existent aliases: {missing}. "
-        f"Update vllm_mlx/model_aliases.py POPULAR_ALIASES tuple after "
+        f"Update rapid_mlx/model_aliases.py POPULAR_ALIASES tuple after "
         f"removing or renaming aliases."
     )

@@ -2,8 +2,8 @@ from __future__ import annotations
 
 import pytest
 
-import vllm_mlx.quantization.glm53_rmq as rmq
-from vllm_mlx.quantization.glm53_rmq import (
+import rapid_mlx.quantization.glm53_rmq as rmq
+from rapid_mlx.quantization.glm53_rmq import (
     QuantSpec,
     TensorDescriptor,
     fusion_domain,

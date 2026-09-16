@@ -106,15 +106,43 @@ class FetchStep(Step):
         # Pull the full diff. We save to disk so the codex review and
         # supply chain steps can stream-read it without re-running gh.
         diff_path = ctx.artifact_path("pr.diff")
+        diff_source = "gh"
         try:
             diff = _gh(f"pr diff {ctx.pr_number} --repo {ctx.repo}")
         except subprocess.CalledProcessError as e:
-            return StepResult(
-                name=self.name,
-                status="error",
-                summary="`gh pr diff` failed",
-                details=f"```\n{e.stderr or e.stdout}\n```",
-            )
+            stderr = (e.stderr or "") + (e.stdout or "")
+            # GitHub's diff REST API hard-caps at 300 files ("HTTP 406:
+            # the diff exceeded the maximum number of files"). A
+            # mechanical rename PR blows past that cap long before it
+            # approaches anything review-relevant. Fall back to a local
+            # git diff — same content (merge-base→head), computed from
+            # the full clone this validator already runs in. Anything
+            # OTHER than the file-cap error stays a hard failure.
+            if "maximum number of files" not in stderr and "406" not in stderr:
+                return StepResult(
+                    name=self.name,
+                    status="error",
+                    summary="`gh pr diff` failed",
+                    details=f"```\n{e.stderr or e.stdout}\n```",
+                )
+            diff, local_files = _local_git_diff(ctx)
+            if diff is None:
+                return StepResult(
+                    name=self.name,
+                    status="error",
+                    summary=(
+                        "`gh pr diff` exceeded GitHub's 300-file cap and the "
+                        "local git fallback failed (are the PR head and "
+                        "merge-base present in this clone?)"
+                    ),
+                    details=f"```\n{e.stderr or e.stdout}\n```",
+                )
+            # ``gh pr view --json files`` is capped by the same API, so the
+            # file list derived above may be truncated too — replace it
+            # with the complete local listing.
+            if local_files is not None:
+                ctx.files_changed = local_files
+            diff_source = "local-git (GitHub 300-file diff cap)"
         diff_path.write_text(diff)
         ctx.diff_path = str(diff_path)
 
@@ -155,6 +183,8 @@ class FetchStep(Step):
         if ctx.base_sha:
             base_strat = ctx.base_strategy or "unknown"
             base_desc = f" | base {ctx.base_sha[:10]} ({base_strat})"
+        if diff_source != "gh":
+            base_desc += f" | diff={diff_source}"
         ctx.run_log(
             f"fetched: '{ctx.pr_title[:60]}' by {ctx.pr_author} "
             f"({ctx.additions}+/{ctx.deletions}- LOC, "
@@ -182,6 +212,52 @@ def _gh(cmd: str) -> str:
         check=True,
     )
     return result.stdout
+
+
+def _local_git_diff(ctx: Context) -> tuple[str | None, list[str] | None]:
+    """Compute the PR diff locally: ``merge-base → head`` via git.
+
+    Fallback for GitHub's hard 300-file diff cap (``gh pr diff`` fails
+    with HTTP 406 on huge mechanical PRs, e.g. a package-wide rename).
+    The content is equivalent to what ``gh pr diff`` would return — the
+    PR head is an ancestor of the pull_request merge ref this validator
+    checks out (``fetch-depth: 0`` in CI), so a plain two-commit diff is
+    the PR's diff. ``--find-renames`` keeps the rename metadata the
+    supply-chain step parses.
+
+    Returns ``(diff, files)``; ``(None, None)`` when git fails or the
+    SHAs needed for the diff aren't available.
+    """
+    if not ctx.base_sha or not ctx.head_sha:
+        return None, None
+    try:
+        diff = subprocess.run(
+            ["git", "diff", "--find-renames", ctx.base_sha, ctx.head_sha],
+            capture_output=True,
+            text=True,
+            check=True,
+            cwd=str(ctx.repo_root),
+        ).stdout
+        files = sorted(
+            subprocess.run(
+                [
+                    "git",
+                    "diff",
+                    "--name-only",
+                    "--find-renames",
+                    ctx.base_sha,
+                    ctx.head_sha,
+                ],
+                capture_output=True,
+                text=True,
+                check=True,
+                cwd=str(ctx.repo_root),
+            ).stdout.splitlines()
+        )
+    except (subprocess.CalledProcessError, FileNotFoundError) as e:
+        ctx.run_log(f"local git diff fallback failed: {e}")
+        return None, None
+    return diff, files
 
 
 def _derive_merge_base(ctx: Context, meta: dict) -> tuple[str, str]:

@@ -32,8 +32,8 @@ import mlx.core as mx
 from mlx_lm import load
 from mlx_lm.models import cache as mlx_cache
 
+from rapid_mlx.patches import mla_absorbed_verify as patch
 from scripts.bench_metadata import format_bench_json, write_bench_json
-from vllm_mlx.patches import mla_absorbed_verify as patch
 
 LONG_CODE_EDIT_PROMPT = """You are a code refactoring assistant. Re-emit the
 complete Python module below with one change: rename every local variable

@@ -11,8 +11,8 @@ pytestmark = pytest.mark.requires_mlx
 
 from types import SimpleNamespace
 
-from vllm_mlx import scheduler as scheduler_module
-from vllm_mlx.scheduler import Scheduler
+from rapid_mlx import scheduler as scheduler_module
+from rapid_mlx.scheduler import Scheduler
 
 
 class _Node:

@@ -82,13 +82,13 @@ struct SidecarBuildScriptTests {
             #expect(script.contains(architecture),
                     "Every Desktop-advertised vision architecture needs a bundled import smoke.")
         }
-        #expect(script.contains("from vllm_mlx.image.hidream_runtime import HiDreamO1"),
+        #expect(script.contains("from rapid_mlx.image.hidream_runtime import HiDreamO1"),
                 "The bundled sidecar must include the HiDream image adapter, not only mlx-vlm.")
-        #expect(script.contains("from vllm_mlx.image.sd35_runtime import SD35Large"),
+        #expect(script.contains("from rapid_mlx.image.sd35_runtime import SD35Large"),
                 "The bundled sidecar must include the vendored SD3.5 image adapter.")
         #expect(script.contains("import sentencepiece"),
                 "The bundled sidecar must prove SD3.5's tokenizer dependency imports.")
-        #expect(script.contains("from vllm_mlx.image.sdxl_runtime import SDXL"),
+        #expect(script.contains("from rapid_mlx.image.sdxl_runtime import SDXL"),
                 "The bundled sidecar must include the vendored SDXL image adapter.")
         #expect(script.contains(#"find_spec("cv2") is None"#))
         #expect(script.contains(#"find_spec("torch") is None"#))
@@ -133,7 +133,7 @@ struct SidecarBuildScriptTests {
                 "The Qwen Image import path must defer PiD's optional torch checkpoint converter.")
         #expect(script.contains(#"importlib.import_module("mflux.models.qwen.variants.txt2img.qwen_image")"#),
                 "The bundle build must prove qwen-image itself imports without torch.")
-        #expect(script.contains(#"importlib.import_module("vllm_mlx.image.bonsai_runtime")"#),
+        #expect(script.contains(#"importlib.import_module("rapid_mlx.image.bonsai_runtime")"#),
                 "The bundle build must prove the Desktop-advertised Bonsai adapter imports without torch.")
         #expect(script.contains("SIDECAR_IMAGE_SMOKE_MODEL"),
                 "Release-candidate builds must opt into a real image-generation model.")

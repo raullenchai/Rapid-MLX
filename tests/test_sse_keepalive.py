@@ -34,7 +34,7 @@ def _isolate_config():
     """Each test starts from a clean ServerConfig singleton so a
     previous test that monkey-patched ``sse_keepalive_seconds`` does
     not leak its value into the next case."""
-    from vllm_mlx.config.server_config import reset_config
+    from rapid_mlx.config.server_config import reset_config
 
     reset_config()
     yield
@@ -46,7 +46,7 @@ def test_sse_response_headers_constant_matches_anti_buffering_contract():
     documented anti-buffering keys. Without them, the F-073 proxy
     buffering symptom returns silently — clients see no streaming
     even though the server is emitting chunks correctly."""
-    from vllm_mlx.service.helpers import SSE_RESPONSE_HEADERS
+    from rapid_mlx.service.helpers import SSE_RESPONSE_HEADERS
 
     assert SSE_RESPONSE_HEADERS["Cache-Control"] == "no-cache, no-transform"
     assert SSE_RESPONSE_HEADERS["X-Accel-Buffering"] == "no"
@@ -62,7 +62,7 @@ def test_disconnect_guard_passes_through_chunks_unchanged():
 
     Otherwise a fast-streaming model would get its bandwidth inflated
     with no-op comments at every token boundary."""
-    from vllm_mlx.service.helpers import _disconnect_guard
+    from rapid_mlx.service.helpers import _disconnect_guard
 
     async def _generator():
         for token in ["a", "b", "c"]:
@@ -111,7 +111,7 @@ def test_disconnect_guard_emits_keepalive_when_generator_stalls():
     client 60+ s of TCP silence; post-fix the client sees a comment
     line every ~20 s by default, which keeps EventSource + nginx +
     Cloudflare from tearing the connection down."""
-    from vllm_mlx.service.helpers import _disconnect_guard
+    from rapid_mlx.service.helpers import _disconnect_guard
 
     async def _slow_generator():
         # Stall longer than the keepalive interval so the test
@@ -155,7 +155,7 @@ def test_disconnect_guard_custom_keepalive_factory_emits_parsed_sse_event():
     replace ``: keepalive`` with a real event while preserving both the
     post-first-chunk heartbeat and the long-stall cadence.
     """
-    from vllm_mlx.service.helpers import _disconnect_guard
+    from rapid_mlx.service.helpers import _disconnect_guard
 
     async def _role_then_slow_generator():
         yield 'event: response.created\ndata: {"type":"response.created"}\n\n'
@@ -200,7 +200,7 @@ def test_disconnect_guard_keepalive_can_be_disabled():
     (mapped to ``keepalive_seconds=0``) must disable the heartbeat
     entirely. Otherwise an operator with generous upstream proxy
     timeouts can't opt out of the per-stream comment-line overhead."""
-    from vllm_mlx.service.helpers import _disconnect_guard
+    from rapid_mlx.service.helpers import _disconnect_guard
 
     chunk_seen = asyncio.Event()
 
@@ -247,8 +247,8 @@ def test_disconnect_guard_keepalive_reads_serverconfig_default():
     behaviour so a future refactor that moves config-resolution
     elsewhere can't silently regress to "always 20 s".
     """
-    from vllm_mlx.config.server_config import get_config
-    from vllm_mlx.service.helpers import _disconnect_guard
+    from rapid_mlx.config.server_config import get_config
+    from rapid_mlx.service.helpers import _disconnect_guard
 
     # Pin a small but non-zero keepalive on the config singleton.
     get_config().sse_keepalive_seconds = 0.05
@@ -282,7 +282,7 @@ def test_disconnect_guard_releases_engine_admission_with_keepalives():
     ``release_admission_reservation`` flips a flag, then driving a
     full keepalive-then-data cycle.
     """
-    from vllm_mlx.service.helpers import _disconnect_guard
+    from rapid_mlx.service.helpers import _disconnect_guard
 
     released = {"value": False}
 
@@ -328,7 +328,7 @@ def test_disconnect_guard_does_not_eagerly_prefetch_after_yield():
     counter and asserting it never advances ahead of the consumer's
     pull count.
     """
-    from vllm_mlx.service.helpers import _disconnect_guard
+    from rapid_mlx.service.helpers import _disconnect_guard
 
     upstream_pulls = {"value": 0}
 
@@ -395,7 +395,7 @@ def test_disconnect_guard_emits_keepalive_immediately_after_first_chunk():
     after the first real chunk. Comments are spec no-ops, so SDK
     parsers ignore them — but TCP-level proxies / EventSource pools
     see the bytes and reset their idle timer."""
-    from vllm_mlx.service.helpers import _disconnect_guard
+    from rapid_mlx.service.helpers import _disconnect_guard
 
     role_chunk = 'data: {"choices":[{"delta":{"role":"assistant"}}]}\n\n'
     content_chunk = 'data: {"choices":[{"delta":{"content":"hi"}}]}\n\n'
@@ -455,7 +455,7 @@ def test_disconnect_guard_post_role_keepalive_respects_disable_knob():
     Otherwise an operator who explicitly opted out of heartbeats
     still pays the per-stream extra frame, contradicting the F-070
     disable contract."""
-    from vllm_mlx.service.helpers import _disconnect_guard
+    from rapid_mlx.service.helpers import _disconnect_guard
 
     async def _two_chunks():
         yield "data: a\n\n"
@@ -491,7 +491,7 @@ def test_disconnect_guard_16k_long_stall_keepalive_cadence_regression():
       * 1 post-first-chunk keepalive (R15 #291 fix)
       * >=3 stall-timeout keepalives (steady-state F-070 cadence)
     """
-    from vllm_mlx.service.helpers import _disconnect_guard
+    from rapid_mlx.service.helpers import _disconnect_guard
 
     async def _role_then_very_long_prefill():
         yield "data: role\n\n"
@@ -539,7 +539,7 @@ def test_disconnect_guard_keepalive_does_not_break_disconnect_detection():
     ordering could leave a disconnected client emitting heartbeats
     into a closed socket forever.
     """
-    from vllm_mlx.service.helpers import _disconnect_guard
+    from rapid_mlx.service.helpers import _disconnect_guard
 
     disconnect_after = 0.25
 
@@ -587,7 +587,7 @@ def test_disconnect_guard_keepalive_does_not_break_disconnect_detection():
 # "Internal error during streaming" 200 envelope.
 # --------------------------------------------------------------------------- #
 def _collect_disconnect_guard_chunks(generator):
-    from vllm_mlx.service.helpers import _disconnect_guard
+    from rapid_mlx.service.helpers import _disconnect_guard
 
     class _FakeRequest:
         async def is_disconnected(self) -> bool:
@@ -613,7 +613,7 @@ def test_disconnect_guard_surfaces_client_actionable_error_message():
     """
 
     async def _generator():
-        from vllm_mlx.request import ClientRequestError
+        from rapid_mlx.request import ClientRequestError
 
         yield 'data: {"role":"assistant"}\n\n'
         raise ClientRequestError(

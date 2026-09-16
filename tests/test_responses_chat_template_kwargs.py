@@ -41,13 +41,13 @@ import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
-from vllm_mlx.api import response_format_metrics
-from vllm_mlx.api.responses_adapter import responses_to_openai
-from vllm_mlx.api.responses_models import ResponsesRequest
-from vllm_mlx.config import reset_config
-from vllm_mlx.engine.base import GenerationOutput
-from vllm_mlx.middleware.exception_handlers import install_exception_handlers
-from vllm_mlx.service.helpers import _resolve_enable_thinking
+from rapid_mlx.api import response_format_metrics
+from rapid_mlx.api.responses_adapter import responses_to_openai
+from rapid_mlx.api.responses_models import ResponsesRequest
+from rapid_mlx.config import reset_config
+from rapid_mlx.engine.base import GenerationOutput
+from rapid_mlx.middleware.exception_handlers import install_exception_handlers
+from rapid_mlx.service.helpers import _resolve_enable_thinking
 
 # ---------------------------------------------------------------------------
 # (1) Pydantic-model parity — fields are no longer silently dropped
@@ -118,7 +118,7 @@ class TestAdapterForwarding:
         )
         chat = responses_to_openai(r)
         with patch(
-            "vllm_mlx.service.helpers.get_config",
+            "rapid_mlx.service.helpers.get_config",
             return_value=SimpleNamespace(no_thinking=False),
         ):
             assert _resolve_enable_thinking(chat) is False
@@ -127,7 +127,7 @@ class TestAdapterForwarding:
         r = ResponsesRequest(model="qwen3", input="hi", enable_thinking=True)
         chat = responses_to_openai(r)
         with patch(
-            "vllm_mlx.service.helpers.get_config",
+            "rapid_mlx.service.helpers.get_config",
             return_value=SimpleNamespace(no_thinking=False),
         ):
             assert _resolve_enable_thinking(chat) is True
@@ -137,7 +137,7 @@ class TestAdapterForwarding:
         r = ResponsesRequest(model="qwen3", input="hi")
         chat = responses_to_openai(r)
         with patch(
-            "vllm_mlx.service.helpers.get_config",
+            "rapid_mlx.service.helpers.get_config",
             return_value=SimpleNamespace(no_thinking=False),
         ):
             assert _resolve_enable_thinking(chat) is None
@@ -216,7 +216,7 @@ class _Engine:
 def _rate_limiter_state():
     """Mirror of the strict-test fixture — save/restore the global
     rate-limiter so tests don't leak disabled state across the suite."""
-    from vllm_mlx.middleware.auth import rate_limiter
+    from rapid_mlx.middleware.auth import rate_limiter
 
     saved_enabled = rate_limiter.enabled
     saved_rpm = rate_limiter.requests_per_minute
@@ -244,7 +244,7 @@ def _make_responses_client(engine: _Engine) -> TestClient:
     Note: ``cfg.no_thinking = False`` — we want to exercise the
     request-level resolution path, NOT the operator-level kill switch.
     """
-    from vllm_mlx.routes.responses import router as responses_router
+    from rapid_mlx.routes.responses import router as responses_router
 
     cfg = reset_config()
     cfg.engine = engine
@@ -415,7 +415,7 @@ class TestStrictAutoDisableThinking:
         # first, then chat_kwargs build). Snapshot the request's
         # chat_template_kwargs at the first call — that's the
         # post-merge state.
-        import vllm_mlx.routes.responses as _responses_mod
+        import rapid_mlx.routes.responses as _responses_mod
 
         original = _responses_mod._resolve_enable_thinking
 
@@ -484,7 +484,7 @@ class TestBatchedEngineGuidedHonorsEnableThinking:
         """
         from unittest.mock import MagicMock
 
-        from vllm_mlx.engine.batched import BatchedEngine
+        from rapid_mlx.engine.batched import BatchedEngine
 
         engine = BatchedEngine.__new__(BatchedEngine)
         engine._loaded = True
@@ -529,7 +529,7 @@ class TestBatchedEngineGuidedHonorsEnableThinking:
                 new_callable=lambda: property(lambda self: True),
             ),
             patch(
-                "vllm_mlx.engine.batched.shared_apply_chat_template",
+                "rapid_mlx.engine.batched.shared_apply_chat_template",
                 side_effect=_fake_render,
             ),
             patch.object(
@@ -622,7 +622,7 @@ class TestBatchedEngineGuidedHonorsEnableThinking:
                 new_callable=lambda: property(lambda self: True),
             ),
             patch(
-                "vllm_mlx.engine.batched.shared_apply_chat_template",
+                "rapid_mlx.engine.batched.shared_apply_chat_template",
                 return_value="PROMPT",
             ),
             patch.object(engine, "_run_guided_generation", return_value=None),

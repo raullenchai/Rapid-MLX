@@ -7,7 +7,7 @@ from dataclasses import replace
 
 import pytest
 
-from vllm_mlx.spec_decode.mtp.batched import (
+from rapid_mlx.spec_decode.mtp.batched import (
     BatchedMTPCapabilities,
     BatchedMTPConfig,
     BatchedMTPRoute,

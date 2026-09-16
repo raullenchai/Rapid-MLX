@@ -21,7 +21,7 @@ from __future__ import annotations
 
 from unittest.mock import patch
 
-from vllm_mlx.agents.testing import (
+from rapid_mlx.agents.testing import (
     TestStatus,
     _agent_query,
     _err_to_status,
@@ -93,9 +93,9 @@ HERMES_REFUSAL_STDOUT_WRAPPED = (
 def test_agent_query_detects_context_refusal_as_skip():
     """The Hermes-style "context window below minimum" refusal → SKIP err."""
     with (
-        patch("vllm_mlx.agents.testing.shutil.which", return_value="/fake/hermes"),
+        patch("rapid_mlx.agents.testing.shutil.which", return_value="/fake/hermes"),
         patch(
-            "vllm_mlx.agents.testing.subprocess.run",
+            "rapid_mlx.agents.testing.subprocess.run",
             return_value=_stub_completed_proc(stdout=HERMES_REFUSAL_STDOUT),
         ),
     ):
@@ -134,9 +134,9 @@ def test_agent_query_detects_context_refusal_when_phrase_is_line_wrapped():
     whitespace first so the wrapped form is recognized.
     """
     with (
-        patch("vllm_mlx.agents.testing.shutil.which", return_value="/fake/hermes"),
+        patch("rapid_mlx.agents.testing.shutil.which", return_value="/fake/hermes"),
         patch(
-            "vllm_mlx.agents.testing.subprocess.run",
+            "rapid_mlx.agents.testing.subprocess.run",
             return_value=_stub_completed_proc(stdout=HERMES_REFUSAL_STDOUT_WRAPPED),
         ),
     ):
@@ -156,9 +156,9 @@ def test_agent_query_detects_context_refusal_when_phrase_is_line_wrapped():
 def test_agent_query_passes_through_normal_output():
     """A clean subprocess success returns ``(output, None)`` as before."""
     with (
-        patch("vllm_mlx.agents.testing.shutil.which", return_value="/fake/codex"),
+        patch("rapid_mlx.agents.testing.shutil.which", return_value="/fake/codex"),
         patch(
-            "vllm_mlx.agents.testing.subprocess.run",
+            "rapid_mlx.agents.testing.subprocess.run",
             return_value=_stub_completed_proc(stdout="The answer is 4.\n"),
         ),
     ):
@@ -179,9 +179,9 @@ def test_agent_query_does_not_match_unrelated_failures():
         "Failed to initialize agent: missing OPENAI_API_KEY environment variable\n"
     )
     with (
-        patch("vllm_mlx.agents.testing.shutil.which", return_value="/fake/hermes"),
+        patch("rapid_mlx.agents.testing.shutil.which", return_value="/fake/hermes"),
         patch(
-            "vllm_mlx.agents.testing.subprocess.run",
+            "rapid_mlx.agents.testing.subprocess.run",
             return_value=_stub_completed_proc(stdout=bad_init_no_context),
         ),
     ):
@@ -202,9 +202,9 @@ def test_agent_query_does_not_match_unrelated_failures():
 
 def test_e2e_chat_routes_skip_prefix_to_skip_status():
     with (
-        patch("vllm_mlx.agents.testing.shutil.which", return_value="/fake/hermes"),
+        patch("rapid_mlx.agents.testing.shutil.which", return_value="/fake/hermes"),
         patch(
-            "vllm_mlx.agents.testing.subprocess.run",
+            "rapid_mlx.agents.testing.subprocess.run",
             return_value=_stub_completed_proc(stdout=HERMES_REFUSAL_STDOUT),
         ),
     ):
@@ -218,9 +218,9 @@ def test_e2e_chat_routes_skip_prefix_to_skip_status():
 def test_e2e_file_read_routes_skip_prefix_to_skip_status():
     """Direct regression for the gauntlet line in #655."""
     with (
-        patch("vllm_mlx.agents.testing.shutil.which", return_value="/fake/hermes"),
+        patch("rapid_mlx.agents.testing.shutil.which", return_value="/fake/hermes"),
         patch(
-            "vllm_mlx.agents.testing.subprocess.run",
+            "rapid_mlx.agents.testing.subprocess.run",
             return_value=_stub_completed_proc(stdout=HERMES_REFUSAL_STDOUT),
         ),
     ):
@@ -235,9 +235,9 @@ def test_e2e_file_read_routes_skip_prefix_to_skip_status():
 
 def test_e2e_terminal_routes_skip_prefix_to_skip_status():
     with (
-        patch("vllm_mlx.agents.testing.shutil.which", return_value="/fake/hermes"),
+        patch("rapid_mlx.agents.testing.shutil.which", return_value="/fake/hermes"),
         patch(
-            "vllm_mlx.agents.testing.subprocess.run",
+            "rapid_mlx.agents.testing.subprocess.run",
             return_value=_stub_completed_proc(stdout=HERMES_REFUSAL_STDOUT),
         ),
     ):
@@ -251,9 +251,9 @@ def test_e2e_tests_still_error_on_genuine_failure():
     """A real subprocess crash must still be ERROR, not SKIP — guards against
     over-broad SKIP routing masking regressions."""
     with (
-        patch("vllm_mlx.agents.testing.shutil.which", return_value="/fake/hermes"),
+        patch("rapid_mlx.agents.testing.shutil.which", return_value="/fake/hermes"),
         patch(
-            "vllm_mlx.agents.testing.subprocess.run",
+            "rapid_mlx.agents.testing.subprocess.run",
             side_effect=TimeoutError("simulated timeout"),
         ),
     ):

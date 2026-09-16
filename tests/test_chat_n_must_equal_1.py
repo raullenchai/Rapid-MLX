@@ -11,7 +11,7 @@ as HTTP 200 with one choice on /v1/chat/completions and
 Accepting them as 200 hid the bug; this test pins the new contract:
 omitted (``None``) or ``1`` is the only legal surface; anything
 else → 422 at parse time. The route-level ``n > 1`` reject in
-``vllm_mlx/routes/chat.py`` and ``routes/completions.py`` stays as
+``rapid_mlx/routes/chat.py`` and ``routes/completions.py`` stays as
 a belt-and-braces guard in case an in-process caller skips the
 Pydantic layer.
 """
@@ -19,7 +19,7 @@ Pydantic layer.
 import pytest
 from pydantic import ValidationError
 
-from vllm_mlx.api.models import (
+from rapid_mlx.api.models import (
     ChatCompletionRequest,
     CompletionRequest,
     _reject_non_one_n,

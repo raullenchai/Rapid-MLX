@@ -18,8 +18,8 @@ import logging
 
 import pytest
 
-from vllm_mlx.mcp.config import create_example_config, validate_config
-from vllm_mlx.mcp.types import MCPConfig, MCPTransport
+from rapid_mlx.mcp.config import create_example_config, validate_config
+from rapid_mlx.mcp.types import MCPConfig, MCPTransport
 
 _SERVER = {"command": "python3", "args": ["-m", "some_mcp_server"]}
 
@@ -35,7 +35,7 @@ def _stub_command_path_lookup(monkeypatch):
     unrelated to what's under test.
     """
     monkeypatch.setattr(
-        "vllm_mlx.mcp.security.shutil.which", lambda cmd: f"/usr/bin/{cmd}"
+        "rapid_mlx.mcp.security.shutil.which", lambda cmd: f"/usr/bin/{cmd}"
     )
 
 

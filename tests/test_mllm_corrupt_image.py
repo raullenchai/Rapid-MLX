@@ -48,7 +48,7 @@ pytestmark = pytest.mark.requires_mlx
 
 import mlx.core as mx
 
-from vllm_mlx.mllm_batch_generator import (
+from rapid_mlx.mllm_batch_generator import (
     ClientRequestError,
     MLLMBatchGenerator,
     MLLMBatchRequest,
@@ -115,7 +115,7 @@ def _bypass_process_image(monkeypatch):
     """Skip the base64/url decode step so the test exercises
     ``prepare_inputs`` directly without hitting tempfile I/O.
     """
-    from vllm_mlx.models import mllm as mllm_models
+    from rapid_mlx.models import mllm as mllm_models
 
     def _identity(img):
         return img
@@ -126,17 +126,17 @@ def _bypass_process_image(monkeypatch):
 def _install_prepare_inputs_stub(monkeypatch, raiser):
     """Patch ``prepare_inputs`` on every binding site.
 
-    ``vllm_mlx.mllm_batch_generator._preprocess_request`` re-imports
+    ``rapid_mlx.mllm_batch_generator._preprocess_request`` re-imports
     ``prepare_inputs`` from ``mlx_vlm.utils`` on every call (local
     ``from`` statement at the top of the method), so patching
     ``mlx_vlm.utils.prepare_inputs`` is the correct target *today*.
     If a future refactor hoists the import to module level, the
-    name binding shifts to ``vllm_mlx.mllm_batch_generator``; patch
+    name binding shifts to ``rapid_mlx.mllm_batch_generator``; patch
     that too so this test stays a meaningful gate either way.
     """
     import mlx_vlm.utils as mlx_vlm_utils
 
-    from vllm_mlx import mllm_batch_generator as gen_mod
+    from rapid_mlx import mllm_batch_generator as gen_mod
 
     monkeypatch.setattr(mlx_vlm_utils, "prepare_inputs", raiser)
     if hasattr(gen_mod, "prepare_inputs"):
@@ -473,7 +473,7 @@ def test_preprocess_does_not_reflect_canonical_looking_decoder_message(monkeypat
 
 def test_process_image_internal_runtime_error_is_not_made_public(monkeypatch):
     """Unexpected loader bugs remain server errors even if their text looks safe."""
-    from vllm_mlx.models import mllm as mllm_models
+    from rapid_mlx.models import mllm as mllm_models
 
     sentinel = RuntimeError("Failed to process image: /Users/private/secret.png")
 

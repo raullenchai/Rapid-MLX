@@ -431,7 +431,7 @@ final class DownloadProgress {
     @discardableResult
     func ingest(_ line: String) -> Bool {
         // Strip ANSI SGR escapes before any matching. The rapid-mlx R2
-        // puller (``vllm_mlx/_mirror.py``) wraps its `[N/M] file R2 (X
+        // puller (``rapid_mlx/_mirror.py``) wraps its `[N/M] file R2 (X
         // MB)` completion tags in ``\x1b[2m…\x1b[0m`` DIM/RESET pairs
         // when stdout is a TTY. The desktop spawns the child with a
         // pipe (no TTY), so ``_print_dim`` sees ``is_tty == False`` and
@@ -607,7 +607,7 @@ final class DownloadProgress {
     // MARK: - Parsers
 
     /// Whether ``line`` is the R2 puller's banner — emitted from
-    /// ``vllm_mlx/_mirror.py`` as either
+    /// ``rapid_mlx/_mirror.py`` as either
     /// ``  Pulling <repo> (R2 mirror, fallback: HF)`` or
     /// ``  Pulling <repo> (mirror direct-layout, fallback: HF)``.
     /// We don't care which variant — both signal that the puller has
@@ -680,7 +680,7 @@ final class DownloadProgress {
     /// cumulative bytes across ALL files (cached + R2 + HF-fallback);
     /// ``total`` is the planned snapshot size (sum of HF-advertised
     /// sizes). v0.7.11 fix for the "stuck at 83%" UX bug — see
-    /// ``_ProgressTracker`` in ``vllm_mlx/_mirror.py``.
+    /// ``_ProgressTracker`` in ``rapid_mlx/_mirror.py``.
     private func matchR2BytesHeartbeat(_ line: String) -> R2BytesHeartbeatMatch? {
         guard line.hasPrefix("[bytes]") else { return nil }
         let after = line.dropFirst("[bytes]".count)

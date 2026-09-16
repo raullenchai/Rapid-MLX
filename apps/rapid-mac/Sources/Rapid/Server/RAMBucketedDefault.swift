@@ -389,7 +389,7 @@ enum RAMBucketedDefault {
             .deletingLastPathComponent() // Sources
             .deletingLastPathComponent() // rapid-mac
             .deletingLastPathComponent() // apps
-            .appendingPathComponent("vllm_mlx/model_recommendations.json")
+            .appendingPathComponent("rapid_mlx/model_recommendations.json")
         if FileManager.default.fileExists(atPath: sourceCandidate.path) {
             return sourceCandidate
         }
@@ -398,7 +398,7 @@ enum RAMBucketedDefault {
         // against an already-nested package directory.
         var directory = URL(fileURLWithPath: FileManager.default.currentDirectoryPath)
         for _ in 0..<6 {
-            let candidate = directory.appendingPathComponent("vllm_mlx/model_recommendations.json")
+            let candidate = directory.appendingPathComponent("rapid_mlx/model_recommendations.json")
             if FileManager.default.fileExists(atPath: candidate.path) { return candidate }
             directory.deleteLastPathComponent()
         }

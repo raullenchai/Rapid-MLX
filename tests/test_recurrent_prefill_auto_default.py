@@ -4,8 +4,8 @@ from __future__ import annotations
 
 from types import SimpleNamespace
 
-import vllm_mlx.cli as cli
-from vllm_mlx.model_aliases import resolve_profile
+import rapid_mlx.cli as cli
+from rapid_mlx.model_aliases import resolve_profile
 
 
 def _profile(
@@ -47,7 +47,7 @@ def test_mamba_and_recurrent_checkpoint_markers_are_detected():
 
 def test_bench_verified_alias_auto_defaults_to_512(monkeypatch):
     monkeypatch.setattr(
-        "vllm_mlx.model_aliases.resolve_profile",
+        "rapid_mlx.model_aliases.resolve_profile",
         lambda _name: _profile(
             hybrid=False, explicit=True, recommended_prefill_step_size=512
         ),
@@ -62,7 +62,7 @@ def test_bench_verified_alias_auto_defaults_to_512(monkeypatch):
 
 def test_explicit_prefill_step_size_always_wins(monkeypatch):
     monkeypatch.setattr(
-        "vllm_mlx.model_aliases.resolve_profile",
+        "rapid_mlx.model_aliases.resolve_profile",
         lambda _name: _profile(hybrid=True, recommended_prefill_step_size=512),
     )
     assert (
@@ -75,7 +75,7 @@ def test_explicit_prefill_step_size_always_wins(monkeypatch):
 
 def test_gemma_sliding_window_keeps_dense_default(monkeypatch):
     monkeypatch.setattr(
-        "vllm_mlx.model_aliases.resolve_profile",
+        "rapid_mlx.model_aliases.resolve_profile",
         lambda _name: _profile(hybrid=False),
     )
     monkeypatch.setattr(
@@ -94,7 +94,7 @@ def test_gemma_sliding_window_keeps_dense_default(monkeypatch):
 
 
 def test_bare_linear_attention_checkpoint_keeps_general_default(monkeypatch):
-    monkeypatch.setattr("vllm_mlx.model_aliases.resolve_profile", lambda _name: None)
+    monkeypatch.setattr("rapid_mlx.model_aliases.resolve_profile", lambda _name: None)
     monkeypatch.setattr(
         cli,
         "_resolve_checkpoint_config",

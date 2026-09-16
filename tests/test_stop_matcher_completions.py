@@ -39,7 +39,7 @@ from fastapi.testclient import TestClient
 
 @pytest.fixture
 def patched_config():
-    from vllm_mlx.config import get_config
+    from rapid_mlx.config import get_config
 
     cfg = get_config()
     saved: dict = {}
@@ -95,7 +95,7 @@ class _StreamChunk:
 
 def _build_app(patch_cfg, monkeypatch, engine):
     """Mount /v1/completions wired to ``engine``."""
-    from vllm_mlx.routes import completions as comp_route
+    from rapid_mlx.routes import completions as comp_route
 
     app = FastAPI()
     app.include_router(comp_route.router)

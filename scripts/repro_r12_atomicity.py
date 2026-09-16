@@ -35,7 +35,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 import mlx.core as mx  # noqa: E402
 from mlx_lm.models.cache import KVCache  # noqa: E402
 
-from vllm_mlx.memory_cache import (  # noqa: E402
+from rapid_mlx.memory_cache import (  # noqa: E402
     _TOKENS_HEADER_FIXED_LEN,
     _TOKENS_MAGIC,
     MemoryAwarePrefixCache,

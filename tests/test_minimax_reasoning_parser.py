@@ -8,7 +8,7 @@ from unittest.mock import MagicMock
 
 import pytest
 
-from vllm_mlx.reasoning.minimax_parser import MiniMaxReasoningParser
+from rapid_mlx.reasoning.minimax_parser import MiniMaxReasoningParser
 
 
 class TestMiniMaxReasoningParserInit:

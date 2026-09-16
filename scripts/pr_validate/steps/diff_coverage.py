@@ -13,7 +13,7 @@ visible in the scorecard (which is posted as a PR comment).
 
 Mechanism:
   1. Run the same unit set ``full_unit`` runs, but under ``coverage``
-     instrumentation (``pytest --cov=vllm_mlx --cov-report=xml``). This
+     instrumentation (``pytest --cov=rapid_mlx --cov-report=xml``). This
      is a SEPARATE, self-contained run — we deliberately do NOT
      piggyback on ``full_unit``. ``full_unit`` is a merge-*gating*
      step; an advisory measurement feature must not be able to break
@@ -54,7 +54,7 @@ from ..context import Context
 
 # The package we measure. Coverage is scoped to production code only —
 # test files aren't the subject of "is this PR's new code tested".
-_COV_PACKAGE = "vllm_mlx"
+_COV_PACKAGE = "rapid_mlx"
 
 # Bounded so a hung test or a wedged diff-cover can't block the pipeline
 # — the whole point of an advisory step is that it never blocks. On
@@ -114,7 +114,7 @@ class DiffCoverageStep(Step):
             return False
         # Only meaningful when the PR touches production Python under the
         # measured package — a tests-only or config-only PR has no
-        # ``vllm_mlx`` lines for diff-cover to score.
+        # ``rapid_mlx`` lines for diff-cover to score.
         return any(
             f.startswith(f"{_COV_PACKAGE}/") and f.endswith(".py")
             for f in ctx.files_changed

@@ -47,7 +47,7 @@ from __future__ import annotations
 
 import pytest
 
-from vllm_mlx.service.helpers import _rescue_silent_drop_from_reasoning
+from rapid_mlx.service.helpers import _rescue_silent_drop_from_reasoning
 
 # ── Unit tests: the rescue helper's new harmony gate ─────────────────
 
@@ -261,8 +261,8 @@ def harmony_router():
     pytest.importorskip("openai_harmony")
     from openai_harmony import HarmonyEncodingName, load_harmony_encoding
 
-    from vllm_mlx.output_router import TokenMap
-    from vllm_mlx.output_router_harmony import HarmonyStreamingRouter
+    from rapid_mlx.output_router import TokenMap
+    from rapid_mlx.output_router_harmony import HarmonyStreamingRouter
 
     enc = load_harmony_encoding(HarmonyEncodingName.HARMONY_GPT_OSS)
 
@@ -368,7 +368,7 @@ def test_end_to_end_harmony_cut_short_keeps_content_null():
     ``finish_reason`` plus the empty content — never via byte-
     identical ``content == reasoning_content``.
     """
-    from vllm_mlx.service.helpers import _finalize_content_and_reasoning
+    from rapid_mlx.service.helpers import _finalize_content_and_reasoning
 
     raw = "<|channel|>analysis<|message|>Let me think step by step. 17 * 23 ="
     engine_reasoning = "Let me think step by step. 17 * 23 ="
@@ -407,7 +407,7 @@ def test_end_to_end_harmony_stop_match_keeps_content_null():
     length cut from the helper chain's perspective — the rescue's gate
     suppresses regardless of finish_reason.
     """
-    from vllm_mlx.service.helpers import _finalize_content_and_reasoning
+    from rapid_mlx.service.helpers import _finalize_content_and_reasoning
 
     raw = "<|channel|>analysis<|message|>Let me think about "
     engine_reasoning = "Let me think about "
@@ -462,7 +462,7 @@ class _HarmonyReasoningOnlyStreamEngine:
         return "PROMPT"
 
     async def stream_chat(self, messages, **kwargs):
-        from vllm_mlx.engine.base import GenerationOutput
+        from rapid_mlx.engine.base import GenerationOutput
 
         accumulated_reasoning = ""
         for i, delta in enumerate(self._deltas):
@@ -506,9 +506,9 @@ def _drive_streaming_harmony(finish_reason: str) -> list[dict]:
     from fastapi import FastAPI
     from fastapi.testclient import TestClient
 
-    from vllm_mlx.config import reset_config
-    from vllm_mlx.reasoning.harmony_parser import HarmonyReasoningParser
-    from vllm_mlx.routes.chat import router as chat_router
+    from rapid_mlx.config import reset_config
+    from rapid_mlx.reasoning.harmony_parser import HarmonyReasoningParser
+    from rapid_mlx.routes.chat import router as chat_router
 
     cfg = reset_config()
     cfg.engine = _HarmonyReasoningOnlyStreamEngine(
@@ -637,13 +637,13 @@ def test_production_helper_skips_synthetic_raw_when_tool_calls_detected():
     re-implementing the predicate locally — that hid any drift if the
     route stopped consulting ``tool_calls_detected``. The production
     predicate is now a module-level helper
-    ``vllm_mlx.routes.chat._is_harmony_cut_short_stream`` and the
+    ``rapid_mlx.routes.chat._is_harmony_cut_short_stream`` and the
     route imports + invokes it directly. This test imports the SAME
     code object, so dropping the ``tool_calls_detected`` argument
     from the route would break this test immediately.
     """
-    from vllm_mlx.reasoning.harmony_parser import HarmonyReasoningParser
-    from vllm_mlx.routes.chat import _is_harmony_cut_short_stream
+    from rapid_mlx.reasoning.harmony_parser import HarmonyReasoningParser
+    from rapid_mlx.routes.chat import _is_harmony_cut_short_stream
 
     rp = HarmonyReasoningParser()
     # No tool-call detected: gate fires (harmony cut-short → suppress).
@@ -702,7 +702,7 @@ def test_streaming_route_imports_production_harmony_predicate():
     """
     import inspect
 
-    from vllm_mlx.routes import chat as chat_module
+    from rapid_mlx.routes import chat as chat_module
 
     # The stream_chat_completion function specifically must use the
     # helper (the helper's own definition also has the symbol, but we
@@ -735,7 +735,7 @@ def test_streaming_route_call_site_passes_tool_calls_detected_arg():
     import ast
     import inspect
 
-    from vllm_mlx.routes import chat as chat_module
+    from rapid_mlx.routes import chat as chat_module
 
     stream_src = inspect.getsource(chat_module.stream_chat_completion)
     tree = ast.parse(stream_src)

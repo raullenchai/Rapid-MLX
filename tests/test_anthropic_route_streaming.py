@@ -8,8 +8,8 @@ import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
-from vllm_mlx.config import reset_config
-from vllm_mlx.routes.anthropic import router
+from rapid_mlx.config import reset_config
+from rapid_mlx.routes.anthropic import router
 
 
 class _ThinkingTemplateTokenizer:
@@ -230,7 +230,7 @@ def test_anthropic_stream_route_disables_thinking(request_extension):
 def test_anthropic_stream_route_tools_default_disables_thinking(monkeypatch):
     """The tools policy reaches the engine independently of casual-chat logic."""
     monkeypatch.setattr(
-        "vllm_mlx.routes.anthropic.maybe_auto_disable_thinking_for_casual_chat",
+        "rapid_mlx.routes.anthropic.maybe_auto_disable_thinking_for_casual_chat",
         lambda request: False,
     )
     engine = _StreamingEngine(["Direct answer"])
@@ -467,7 +467,7 @@ def test_anthropic_stream_no_blank_text_block_between_thinking_and_tool_use():
     must NOT stream as its own ``text`` content block. Streaming should match
     non-stream ([thinking, tool_use]); previously it emitted
     [thinking, text("\\n\\n"), tool_use]."""
-    from vllm_mlx.reasoning import get_parser
+    from rapid_mlx.reasoning import get_parser
 
     cfg = reset_config()
     cfg.engine = _ThinkThenToolEngine()

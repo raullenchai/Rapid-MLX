@@ -345,8 +345,8 @@ fi
 
 # The recommendation catalog is owned by the Python package so the CLI and
 # desktop app consume one physical source file. Copy that SSOT into the shipped
-# app; SwiftPM source-checkout tests load it directly from ../../vllm_mlx.
-RECOMMENDATIONS_SRC="$ROOT/../../vllm_mlx/model_recommendations.json"
+# app; SwiftPM source-checkout tests load it directly from ../../rapid_mlx.
+RECOMMENDATIONS_SRC="$ROOT/../../rapid_mlx/model_recommendations.json"
 if [[ -f "$RECOMMENDATIONS_SRC" ]]; then
     cp "$RECOMMENDATIONS_SRC" "$CONTENTS/Resources/model_recommendations.json"
 else
@@ -505,7 +505,7 @@ else
                 && "$(cat "$SIDECAR_CACHE_STAMP")" == "$SIDECAR_CACHE_KEY" \
                 && -x "$SIDECAR_STAGE/rapid-mlx/python/bin/python3.12" \
                 && -x "$SIDECAR_STAGE/rapid-mlx/bin/rapid-mlx" \
-                && -d "$SIDECAR_STAGE/rapid-mlx/site-packages/vllm_mlx" ]]; then
+                && -d "$SIDECAR_STAGE/rapid-mlx/site-packages/rapid_mlx" ]]; then
                 SIDECAR_CACHE_HIT=1
             fi
         fi

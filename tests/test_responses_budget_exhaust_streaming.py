@@ -12,7 +12,7 @@ item via ``openai_to_responses``. This cross-path asymmetry was
 unrecoverable by Codex CLI / openai-python clients — the streaming
 ``output[]`` was empty so nothing displayable reached the user.
 
-The fix (vllm_mlx/routes/responses.py ``_stream_responses``):
+The fix (rapid_mlx/routes/responses.py ``_stream_responses``):
   * Accumulate reasoning bytes from BOTH the channel-routed (gemma4 /
     harmony) and parser-routed (qwen3 / deepseek / glm4 / minimax) paths.
   * Emit a ``response.output_item.added`` → ``response.output_item.done``
@@ -347,37 +347,37 @@ class _ReasoningToolCallLengthEngine:
 
 
 _IMPORTED = (
-    "vllm_mlx.config",
-    "vllm_mlx.config.server_config",
-    "vllm_mlx.engine",
-    "vllm_mlx.engine.base",
-    "vllm_mlx.middleware.auth",
-    "vllm_mlx.service.helpers",
-    "vllm_mlx.routes.responses",
+    "rapid_mlx.config",
+    "rapid_mlx.config.server_config",
+    "rapid_mlx.engine",
+    "rapid_mlx.engine.base",
+    "rapid_mlx.middleware.auth",
+    "rapid_mlx.service.helpers",
+    "rapid_mlx.routes.responses",
 )
 _PARENT_ATTRS = (
-    ("vllm_mlx", "config"),
-    ("vllm_mlx", "engine"),
-    ("vllm_mlx.config", "server_config"),
-    ("vllm_mlx.engine", "base"),
-    ("vllm_mlx.middleware", "auth"),
-    ("vllm_mlx.service", "helpers"),
-    ("vllm_mlx.routes", "responses"),
+    ("rapid_mlx", "config"),
+    ("rapid_mlx", "engine"),
+    ("rapid_mlx.config", "server_config"),
+    ("rapid_mlx.engine", "base"),
+    ("rapid_mlx.middleware", "auth"),
+    ("rapid_mlx.service", "helpers"),
+    ("rapid_mlx.routes", "responses"),
 )
 _MISSING = object()
 
 
 def _install_lightweight_engine_modules(monkeypatch):
-    engine_pkg = types.ModuleType("vllm_mlx.engine")
+    engine_pkg = types.ModuleType("rapid_mlx.engine")
     engine_pkg.BaseEngine = _BaseEngine
     engine_pkg.GenerationOutput = _GenerationOutput
 
-    base_mod = types.ModuleType("vllm_mlx.engine.base")
+    base_mod = types.ModuleType("rapid_mlx.engine.base")
     base_mod.BaseEngine = _BaseEngine
     base_mod.GenerationOutput = _GenerationOutput
 
-    monkeypatch.setitem(sys.modules, "vllm_mlx.engine", engine_pkg)
-    monkeypatch.setitem(sys.modules, "vllm_mlx.engine.base", base_mod)
+    monkeypatch.setitem(sys.modules, "rapid_mlx.engine", engine_pkg)
+    monkeypatch.setitem(sys.modules, "rapid_mlx.engine.base", base_mod)
 
 
 @pytest.fixture
@@ -392,10 +392,10 @@ def responses_client(monkeypatch):
 
     _install_lightweight_engine_modules(monkeypatch)
 
-    from vllm_mlx.config import reset_config
-    from vllm_mlx.middleware.auth import rate_limiter
-    from vllm_mlx.middleware.exception_handlers import install_exception_handlers
-    from vllm_mlx.routes.responses import router
+    from rapid_mlx.config import reset_config
+    from rapid_mlx.middleware.auth import rate_limiter
+    from rapid_mlx.middleware.exception_handlers import install_exception_handlers
+    from rapid_mlx.routes.responses import router
 
     cfg = reset_config()
     cfg.api_key = "test-secret"
@@ -456,10 +456,10 @@ def reasoning_then_message_client(monkeypatch):
 
     _install_lightweight_engine_modules(monkeypatch)
 
-    from vllm_mlx.config import reset_config
-    from vllm_mlx.middleware.auth import rate_limiter
-    from vllm_mlx.middleware.exception_handlers import install_exception_handlers
-    from vllm_mlx.routes.responses import router
+    from rapid_mlx.config import reset_config
+    from rapid_mlx.middleware.auth import rate_limiter
+    from rapid_mlx.middleware.exception_handlers import install_exception_handlers
+    from rapid_mlx.routes.responses import router
 
     cfg = reset_config()
     cfg.api_key = "test-secret"
@@ -518,10 +518,10 @@ def reasoning_message_tool_client(monkeypatch):
 
     _install_lightweight_engine_modules(monkeypatch)
 
-    from vllm_mlx.config import reset_config
-    from vllm_mlx.middleware.auth import rate_limiter
-    from vllm_mlx.middleware.exception_handlers import install_exception_handlers
-    from vllm_mlx.routes.responses import router
+    from rapid_mlx.config import reset_config
+    from rapid_mlx.middleware.auth import rate_limiter
+    from rapid_mlx.middleware.exception_handlers import install_exception_handlers
+    from rapid_mlx.routes.responses import router
 
     cfg = reset_config()
     cfg.api_key = "test-secret"
@@ -580,10 +580,10 @@ def reasoning_tool_length_client(monkeypatch):
 
     _install_lightweight_engine_modules(monkeypatch)
 
-    from vllm_mlx.config import reset_config
-    from vllm_mlx.middleware.auth import rate_limiter
-    from vllm_mlx.middleware.exception_handlers import install_exception_handlers
-    from vllm_mlx.routes.responses import router
+    from rapid_mlx.config import reset_config
+    from rapid_mlx.middleware.auth import rate_limiter
+    from rapid_mlx.middleware.exception_handlers import install_exception_handlers
+    from rapid_mlx.routes.responses import router
 
     cfg = reset_config()
     cfg.api_key = "test-secret"
@@ -892,7 +892,7 @@ class TestStreamingBudgetExhaustEmitsReasoningItem:
         message_item = next(item for item in output if item["type"] == "message")
         assert message_item["content"], "rescue message must have content"
         rescue_text = message_item["content"][0]["text"]
-        from vllm_mlx.service.helpers import REASONING_CUTOFF_SENTINEL
+        from rapid_mlx.service.helpers import REASONING_CUTOFF_SENTINEL
 
         assert rescue_text.startswith(REASONING_CUTOFF_SENTINEL), (
             f"rescue message must lead with the sentinel; got {rescue_text!r}"
@@ -946,10 +946,10 @@ class TestStreamingBudgetExhaustEmitsReasoningItem:
                 getattr(module, attr, _MISSING) if module is not None else _MISSING
             )
         _install_lightweight_engine_modules(monkeypatch)
-        from vllm_mlx.config import reset_config
-        from vllm_mlx.middleware.auth import rate_limiter
-        from vllm_mlx.middleware.exception_handlers import install_exception_handlers
-        from vllm_mlx.routes.responses import router
+        from rapid_mlx.config import reset_config
+        from rapid_mlx.middleware.auth import rate_limiter
+        from rapid_mlx.middleware.exception_handlers import install_exception_handlers
+        from rapid_mlx.routes.responses import router
 
         cfg = reset_config()
         cfg.api_key = "test-secret"

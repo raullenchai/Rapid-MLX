@@ -78,19 +78,19 @@ def _clean_subprocess_env() -> dict[str, str]:
 REPO_ROOT = Path(__file__).resolve().parent.parent
 
 # Modules whose import-time side effects must succeed against a clean
-# install. ``vllm_mlx.scheduler`` was the surface that #408 broke;
+# install. ``rapid_mlx.scheduler`` was the surface that #408 broke;
 # the others cover every base ``[project.scripts]`` entrypoint
 # (``rapid-mlx``, ``vllm-mlx``, ``vllm-mlx-bench``) plus the server
 # surface that every ``rapid-mlx serve`` invocation imports before
-# binding a port. ``vllm_mlx.gradio_app`` is intentionally excluded —
+# binding a port. ``rapid_mlx.gradio_app`` is intentionally excluded —
 # it's the ``vllm-mlx-chat`` entrypoint, which lives behind the
 # ``chat`` extra and is allowed to fail-import on the base install.
 IMPORT_TARGETS = (
-    "vllm_mlx",
-    "vllm_mlx.scheduler",
-    "vllm_mlx.server",
-    "vllm_mlx.cli",
-    "vllm_mlx.benchmark",
+    "rapid_mlx",
+    "rapid_mlx.scheduler",
+    "rapid_mlx.server",
+    "rapid_mlx.cli",
+    "rapid_mlx.benchmark",
 )
 
 
@@ -122,7 +122,7 @@ def smoke(install_spec: str, *, source: str) -> None:
 
         # Run the import probes from inside the venv, NOT the repo root:
         # ``python -c`` puts cwd at sys.path[0], so if we ran from
-        # REPO_ROOT the in-tree ``vllm_mlx/`` would shadow the wheel we
+        # REPO_ROOT the in-tree ``rapid_mlx/`` would shadow the wheel we
         # just installed and the gate could pass against a broken
         # published artifact.
         print("[release-smoke] importing release surfaces in clean venv:")
@@ -203,7 +203,7 @@ def main() -> int:
     except subprocess.CalledProcessError as exc:
         print(
             f"\n[release-smoke] FAIL: command exited {exc.returncode}\n"
-            "    A release shipped from this state would crash on `import vllm_mlx.*`\n"
+            "    A release shipped from this state would crash on `import rapid_mlx.*`\n"
             "    for any user whose runtime deps differ from the dev env.",
             file=sys.stderr,
         )

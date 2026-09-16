@@ -16,10 +16,10 @@ from pathlib import Path
 
 import pytest
 
-from vllm_mlx.doctor import cli as doctor_cli
-from vllm_mlx.doctor import env_health as eh
-from vllm_mlx.doctor import json_worker
-from vllm_mlx.doctor.cli import (
+from rapid_mlx.doctor import cli as doctor_cli
+from rapid_mlx.doctor import env_health as eh
+from rapid_mlx.doctor import json_worker
+from rapid_mlx.doctor.cli import (
     _collect_report_isolated,
     _open_collector_pipes,
     _report_from_document,
@@ -240,7 +240,7 @@ def test_summary_is_one_line():
 
 
 def test_legacy_human_summary_omits_zero_skipped():
-    from vllm_mlx.doctor.cli import render
+    from rapid_mlx.doctor.cli import render
 
     output = io.StringIO()
     render(_report(), stream=output)
@@ -304,7 +304,7 @@ def test_cli_preserves_explicit_empty_only_selection(monkeypatch):
         calls.append(kwargs)
         return eh.Report()
 
-    monkeypatch.setattr("vllm_mlx.doctor.cli.run_all", capture_run_all)
+    monkeypatch.setattr("rapid_mlx.doctor.cli.run_all", capture_run_all)
     args = Namespace(
         tier=None,
         verbose=False,
@@ -322,7 +322,7 @@ def test_cli_preserves_explicit_empty_only_selection(monkeypatch):
 
 def test_redaction_respects_home_boundaries_and_benign_tokenizer_keys(monkeypatch):
     monkeypatch.setattr(
-        "vllm_mlx.doctor.cli.os.path.expanduser", lambda _: "/Users/tester"
+        "rapid_mlx.doctor.cli.os.path.expanduser", lambda _: "/Users/tester"
     )
     section = eh.Section("Paths", id="paths")
     section.add(
@@ -412,7 +412,7 @@ def test_lock_timeout_preserves_only_selection(monkeypatch):
 
 def test_doctor_json_does_not_mix_human_output(monkeypatch, capsys):
     monkeypatch.setattr(
-        "vllm_mlx.doctor.cli._collect_report_isolated", lambda **_: _report()
+        "rapid_mlx.doctor.cli._collect_report_isolated", lambda **_: _report()
     )
     args = Namespace(
         tier=None,
@@ -434,7 +434,9 @@ def test_doctor_json_collector_failure_is_schema_valid(monkeypatch, capsys):
     def fail_collection(*_args, **_kwargs):
         raise OSError("collector unavailable")
 
-    monkeypatch.setattr("vllm_mlx.doctor.cli._collect_report_isolated", fail_collection)
+    monkeypatch.setattr(
+        "rapid_mlx.doctor.cli._collect_report_isolated", fail_collection
+    )
     args = Namespace(
         tier=None,
         verbose=False,
@@ -934,7 +936,7 @@ def test_json_collector_pipe_setup_closes_partial_allocation(monkeypatch):
     ],
 )
 def test_doctor_human_output_modes(monkeypatch, capsys, summary, expected):
-    monkeypatch.setattr("vllm_mlx.doctor.cli.run_all", lambda **_: _report())
+    monkeypatch.setattr("rapid_mlx.doctor.cli.run_all", lambda **_: _report())
     args = Namespace(
         tier=None,
         verbose=False,
@@ -960,7 +962,7 @@ def test_human_summary_includes_skipped_count():
 
 
 def test_output_modes_are_mutually_exclusive():
-    from vllm_mlx.cli import build_parser
+    from rapid_mlx.cli import build_parser
 
     with pytest.raises(SystemExit) as exc:
         build_parser().parse_args(["doctor", "--json", "--verbose"])

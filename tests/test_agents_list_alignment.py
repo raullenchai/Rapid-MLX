@@ -13,7 +13,7 @@ from __future__ import annotations
 
 from types import SimpleNamespace
 
-from vllm_mlx import cli
+from rapid_mlx import cli
 
 
 def _profile(name: str, display: str) -> SimpleNamespace:
@@ -33,7 +33,7 @@ def test_agents_list_client_column_aligns_for_max_width_name(monkeypatch, capsys
         _profile("claude-code", "Claude Code"),
         _profile("deepseek-harness", "DeepSeek Harness"),
     ]
-    monkeypatch.setattr("vllm_mlx.agents.list_profiles", lambda: profiles)
+    monkeypatch.setattr("rapid_mlx.agents.list_profiles", lambda: profiles)
 
     cli.agents_command(
         SimpleNamespace(agent_name=None, base_url="http://localhost:8000")

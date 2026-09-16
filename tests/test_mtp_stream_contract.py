@@ -285,9 +285,9 @@ def test_mtp_generate_step_owns_stream_after_second_resident_pollution():
     """
     _pollute_generation_stream_from_worker()
 
+    from rapid_mlx.spec_decode.mtp.accept_counter import MTPAcceptCounter
+    from rapid_mlx.spec_decode.mtp.generator import mtp_generate_step
     from tests.test_mtp_spec_decode import _MockedQwen35Model
-    from vllm_mlx.spec_decode.mtp.accept_counter import MTPAcceptCounter
-    from vllm_mlx.spec_decode.mtp.generator import mtp_generate_step
 
     polluted = sys.modules["mlx_lm.generate"].generation_stream
     try:
@@ -326,7 +326,7 @@ def test_mtp_generate_step_owns_stream_after_second_resident_pollution():
 
 def test_mtp_generator_binds_execution_thread_default_stream():
     """The vendored generator must not consume mlx-lm's mutable global."""
-    import vllm_mlx.spec_decode.mtp.generator as generator_mod
+    import rapid_mlx.spec_decode.mtp.generator as generator_mod
 
     assert not hasattr(generator_mod, "generation_stream"), (
         "the MTP module must not cache a process-global generation stream"

@@ -23,9 +23,9 @@ from unittest.mock import MagicMock
 import mlx.core as mx
 from mlx_lm.models.cache import ArraysCache, KVCache, RotatingKVCache
 
-from vllm_mlx.engine.batched import _probe_mllm_cache_type, _resolve_mllm_cache_policy
-from vllm_mlx.mllm_cache_compat import first_incompatible_mllm_cache_type
-from vllm_mlx.mllm_scheduler import MLLMSchedulerConfig
+from rapid_mlx.engine.batched import _probe_mllm_cache_type, _resolve_mllm_cache_policy
+from rapid_mlx.mllm_cache_compat import first_incompatible_mllm_cache_type
+from rapid_mlx.mllm_scheduler import MLLMSchedulerConfig
 
 
 class _FakeArraysCache:

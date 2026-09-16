@@ -11,9 +11,9 @@ from types import FunctionType, ModuleType, SimpleNamespace
 import numpy as np
 import pytest
 
-import vllm_mlx.video.wan_diffusers as wan_diffusers
-from vllm_mlx.video.wan import WanBackendError, WanVideoEngine
-from vllm_mlx.video.wan_diffusers import (
+import rapid_mlx.video.wan_diffusers as wan_diffusers
+from rapid_mlx.video.wan import WanBackendError, WanVideoEngine
+from rapid_mlx.video.wan_diffusers import (
     _load_sharded,
     _load_t5,
     _load_transformer,

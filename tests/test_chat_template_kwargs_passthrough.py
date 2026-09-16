@@ -12,9 +12,9 @@ from __future__ import annotations
 
 import pytest
 
-from vllm_mlx.engine.base import GenerationOutput
-from vllm_mlx.engine.batched import BatchedEngine
-from vllm_mlx.utils.chat_template import apply_chat_template
+from rapid_mlx.engine.base import GenerationOutput
+from rapid_mlx.engine.batched import BatchedEngine
+from rapid_mlx.utils.chat_template import apply_chat_template
 
 
 class FakeTokenizer:
@@ -189,7 +189,7 @@ class TestBatchedEngineChatTemplateKwargs:
             return kwargs.get("chat_template_kwargs")
 
         monkeypatch.setattr(
-            "vllm_mlx.engine.batched.shared_apply_chat_template",
+            "rapid_mlx.engine.batched.shared_apply_chat_template",
             fake_shared_apply,
         )
 
@@ -267,7 +267,7 @@ async def _await_direct(coro, *_args, **_kwargs):
 
 
 def _patch_chat_route(monkeypatch, engine):
-    from vllm_mlx.routes import chat
+    from rapid_mlx.routes import chat
 
     monkeypatch.setattr(chat, "_resolve_max_tokens", lambda *_args, **_kwargs: 64)
     monkeypatch.setattr(chat, "get_engine", lambda *_args, **_kwargs: engine)
@@ -287,8 +287,8 @@ class TestChatRouteChatTemplateKwargs:
     """Chat route forwards the resolved template kwargs to the engine."""
 
     async def test_nonstreaming_route_forwards_chat_template_kwargs(self, monkeypatch):
-        from vllm_mlx.api.models import ChatCompletionRequest
-        from vllm_mlx.routes import chat
+        from rapid_mlx.api.models import ChatCompletionRequest
+        from rapid_mlx.routes import chat
 
         engine = _CapturingChatEngine()
         _patch_chat_route(monkeypatch, engine)
@@ -313,8 +313,8 @@ class TestChatRouteChatTemplateKwargs:
         }
 
     async def test_streaming_route_validates_chat_template_kwargs(self, monkeypatch):
-        from vllm_mlx.api.models import ChatCompletionRequest
-        from vllm_mlx.routes import chat
+        from rapid_mlx.api.models import ChatCompletionRequest
+        from rapid_mlx.routes import chat
 
         engine = _CapturingChatEngine()
         _patch_chat_route(monkeypatch, engine)

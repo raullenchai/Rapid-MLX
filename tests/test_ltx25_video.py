@@ -12,10 +12,10 @@ from types import SimpleNamespace
 import pytest
 from fastapi import HTTPException
 
-from vllm_mlx.model_aliases import resolve_profile
-from vllm_mlx.runtime import video_lane
-from vllm_mlx.runtime.video_lane import VideoEngine, VideoRuntimeError
-from vllm_mlx.video import ltx25
+from rapid_mlx.model_aliases import resolve_profile
+from rapid_mlx.runtime import video_lane
+from rapid_mlx.runtime.video_lane import VideoEngine, VideoRuntimeError
+from rapid_mlx.video import ltx25
 
 
 def test_ltx25_alias_routes_to_video_lane() -> None:
@@ -28,7 +28,7 @@ def test_ltx25_alias_routes_to_video_lane() -> None:
 
 
 def test_ltx25_capabilities_match_distilled_controls() -> None:
-    from vllm_mlx.routes.video import _video_capabilities
+    from rapid_mlx.routes.video import _video_capabilities
 
     capabilities = _video_capabilities(
         SimpleNamespace(model_name="MrMofer/ltx-2.5-mlx-q8", video_family="ltx-2.5")
@@ -341,7 +341,7 @@ def test_ltx25_provisioning_detail_sanitizes_stderr(
 
 
 def test_ltx25_sanitize_redacts_percent_encoded_userinfo() -> None:
-    from vllm_mlx.video.ltx25 import _sanitize_diagnostic
+    from rapid_mlx.video.ltx25 import _sanitize_diagnostic
 
     out = _sanitize_diagnostic(
         "failed to fetch https://build%40corp:s3cret@index.example/simple/"
@@ -352,7 +352,7 @@ def test_ltx25_sanitize_redacts_percent_encoded_userinfo() -> None:
 
 
 def test_ltx25_sanitize_redacts_query_tokens_and_bearer() -> None:
-    from vllm_mlx.video.ltx25 import _sanitize_diagnostic
+    from rapid_mlx.video.ltx25 import _sanitize_diagnostic
 
     out = _sanitize_diagnostic(
         "fetch https://index.example/simple?token=s3cret&x=1 failed; "
@@ -369,7 +369,7 @@ def test_ltx25_sanitize_redacts_signed_url_params() -> None:
     suffixes (codex on #2166): AWS presigned ``X-Amz-Signature``, Azure
     SAS ``sig``/``sas``, generic ``auth``/``jwt`` must all redact, since
     uv stderr can echo the full index URL query string."""
-    from vllm_mlx.video.ltx25 import _sanitize_diagnostic
+    from rapid_mlx.video.ltx25 import _sanitize_diagnostic
 
     out = _sanitize_diagnostic(
         "GET https://bucket.s3.example/wheel.whl"
@@ -388,7 +388,7 @@ def test_ltx25_sanitize_redacts_signed_url_params() -> None:
 
 
 def test_ltx25_sanitize_redacts_quoted_credential_values() -> None:
-    from vllm_mlx.video.ltx25 import _sanitize_diagnostic
+    from rapid_mlx.video.ltx25 import _sanitize_diagnostic
 
     out = _sanitize_diagnostic(
         "config error: token=\"quoted-s3cret\" password='single-s3cret' left"
@@ -399,7 +399,7 @@ def test_ltx25_sanitize_redacts_quoted_credential_values() -> None:
 
 
 def test_ltx25_sanitize_redacts_prefixed_credential_names() -> None:
-    from vllm_mlx.video.ltx25 import _sanitize_diagnostic
+    from rapid_mlx.video.ltx25 import _sanitize_diagnostic
 
     out = _sanitize_diagnostic(
         "access_token=at-s3cret client_secret=cs-s3cret "
@@ -412,7 +412,7 @@ def test_ltx25_sanitize_redacts_prefixed_credential_names() -> None:
 
 
 def test_ltx25_sanitize_redacts_basic_auth_header() -> None:
-    from vllm_mlx.video.ltx25 import _sanitize_diagnostic
+    from rapid_mlx.video.ltx25 import _sanitize_diagnostic
 
     out = _sanitize_diagnostic(
         "request failed; Authorization: Basic dXNlcjpwYXNz and "
@@ -424,7 +424,7 @@ def test_ltx25_sanitize_redacts_basic_auth_header() -> None:
 
 
 def test_ltx25_oserror_detail_is_sanitized_and_bounded() -> None:
-    from vllm_mlx.video.ltx25 import _provisioning_failure_detail
+    from rapid_mlx.video.ltx25 import _provisioning_failure_detail
 
     exc = OSError(
         "\x1b[31mdisk full\x1b[0m at https://user:tok3n@mirror.example/x " + "p" * 500
@@ -676,7 +676,7 @@ def test_ltx25_generation_uses_cache_without_rechecking_checkout(
 def test_serve_routes_ltx25_model_to_specific_preflight(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    from vllm_mlx import cli
+    from rapid_mlx import cli
 
     class PreflightReachedError(RuntimeError):
         pass
@@ -1155,7 +1155,7 @@ def test_ltx25_distilled_rejects_cfg_controls() -> None:
 async def test_ltx25_route_rejects_unsupported_cfg_before_queueing(
     monkeypatch: pytest.MonkeyPatch, unsupported: dict[str, object]
 ) -> None:
-    from vllm_mlx.routes import video
+    from rapid_mlx.routes import video
 
     engine = SimpleNamespace(
         model_name="MrMofer/ltx-2.5-mlx-q8", video_family="ltx-2.5"

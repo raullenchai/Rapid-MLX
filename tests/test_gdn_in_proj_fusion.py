@@ -21,7 +21,7 @@ import mlx.nn as nn
 from mlx_lm.models.cache import ArraysCache
 from mlx_lm.models.qwen3_5 import GatedDeltaNet, TextModelArgs
 
-from vllm_mlx import gdn_in_proj_fusion
+from rapid_mlx import gdn_in_proj_fusion
 
 
 def _bits_equal(a, b):

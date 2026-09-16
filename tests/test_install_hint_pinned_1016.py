@@ -24,7 +24,7 @@ def test_vlm_extra_install_hint_is_pinned_and_conflict_free():
     """The shared vision install hint (printed by the serve boot guard and
     the engine-side ``_require_mlx_vlm``) recommends the extra first and a
     PINNED bare mlx-vlm — not the conflict-producing ``>=0.6.3``."""
-    from vllm_mlx.models.mllm import VLM_EXTRA_INSTALL_HINT
+    from rapid_mlx.models.mllm import VLM_EXTRA_INSTALL_HINT
 
     # Primary path stays the extra.
     assert "rapid-mlx[vision]" in VLM_EXTRA_INSTALL_HINT
@@ -37,10 +37,10 @@ def test_vlm_extra_install_hint_is_pinned_and_conflict_free():
 def test_boot_guard_absent_hint_names_pinned_install(monkeypatch, capsys):
     """The ABSENT-path boot guard stderr carries the pinned hint so a user
     copy-pasting from the terminal lands in a conflict-free environment."""
-    from vllm_mlx.models.mllm import VisionRuntimeStatus, require_mlx_vlm_or_exit
+    from rapid_mlx.models.mllm import VisionRuntimeStatus, require_mlx_vlm_or_exit
 
     monkeypatch.setattr(
-        "vllm_mlx.models.mllm.vision_runtime_status",
+        "rapid_mlx.models.mllm.vision_runtime_status",
         lambda: (VisionRuntimeStatus.ABSENT, "mlx_vlm"),
     )
 
@@ -67,7 +67,7 @@ def test_gemma4_load_fallback_hint_is_pinned():
     """
     import pathlib
 
-    import vllm_mlx.cli as cli_mod
+    import rapid_mlx.cli as cli_mod
 
     source = pathlib.Path(cli_mod.__file__).read_text()
 
@@ -87,7 +87,7 @@ def test_diffusion_lane_import_error_hint_is_pinned(monkeypatch):
     """DiffusionEngine's dependency-import failure (Gemma 4 DLM path) points
     at the extra + a PINNED mlx-vlm, dropping the old ``-U 'mlx-vlm>=0.6.3'``
     upgrade that would break the transformers pin."""
-    from vllm_mlx.runtime.diffusion_lane import DiffusionEngine
+    from rapid_mlx.runtime.diffusion_lane import DiffusionEngine
 
     # Force ``from mlx_vlm.generate.diffusion import ...`` to fail so the
     # engine records its actionable ``_load_error`` — a None entry in

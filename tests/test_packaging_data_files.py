@@ -1,21 +1,21 @@
 # SPDX-License-Identifier: Apache-2.0
 """r10-I — packaging regression: data files must ship in installed wheel.
 
-Codex r10-B caught that ``vllm_mlx/audio/aliases.json`` was added under
-``vllm_mlx/audio/`` but never declared in ``[tool.setuptools.package-data]``.
+Codex r10-B caught that ``rapid_mlx/audio/aliases.json`` was added under
+``rapid_mlx/audio/`` but never declared in ``[tool.setuptools.package-data]``.
 A sdist/wheel built from that state silently dropped the file — source-tree
 tests passed (the file is right there on disk), but ``pip install rapid-mlx``
 and then ``rapid-mlx serve kokoro`` would raise ``FileNotFoundError`` inside
-``vllm_mlx/audio/registry.py::resolve_audio_alias`` before any audio engine
+``rapid_mlx/audio/registry.py::resolve_audio_alias`` before any audio engine
 loaded.
 
 This test pins two invariants:
 
-1. Every non-Python data file that ``vllm_mlx`` reads at runtime via
+1. Every non-Python data file that ``rapid_mlx`` reads at runtime via
    ``importlib.resources`` must be reachable through that API in the
    current installed/source layout.
 2. Every such file must be listed in
-   ``[tool.setuptools.package-data].vllm_mlx`` in ``pyproject.toml`` so
+   ``[tool.setuptools.package-data].rapid_mlx`` in ``pyproject.toml`` so
    it actually ends up in the built wheel and sdist.
 
 If a future contributor adds a new JSON/YAML registry file but forgets the
@@ -42,22 +42,22 @@ except ModuleNotFoundError:  # pragma: no cover
 # entry (either an exact match or a glob that covers it).
 REQUIRED_DATA_FILES: list[tuple[str, str, str]] = [
     # Text-model alias registry — has always shipped.
-    ("vllm_mlx", "aliases.json", "aliases.json"),
+    ("rapid_mlx", "aliases.json", "aliases.json"),
     # r10-A: audio alias registry. Codex r10-B caught this missing from
     # package-data; this entry locks the fix in place.
-    ("vllm_mlx", "audio/aliases.json", "audio/aliases.json"),
+    ("rapid_mlx", "audio/aliases.json", "audio/aliases.json"),
     # TurboQuant compiles this source at runtime; the fused path silently
     # falls back when an installed wheel does not contain it.
-    ("vllm_mlx", "kernels/turboquant_fused.metal", "kernels/*.metal"),
+    ("rapid_mlx", "kernels/turboquant_fused.metal", "kernels/*.metal"),
     # The adapted QSA selector's MIT license must travel with the source.
     (
-        "vllm_mlx",
+        "rapid_mlx",
         "kernels/LICENSE-QSA-STAGE1",
         "kernels/LICENSE-QSA-STAGE1",
     ),
     # Shape-stable compiled decode adapts MIT-licensed cache/replay design;
     # every redistributed wheel must retain the corresponding license text.
-    ("vllm_mlx", "COMPILED_DECODE_LICENSE", "COMPILED_DECODE_LICENSE"),
+    ("rapid_mlx", "COMPILED_DECODE_LICENSE", "COMPILED_DECODE_LICENSE"),
 ]
 
 
@@ -80,7 +80,7 @@ def _package_data_entries() -> list[str]:
         data.get("tool", {})
         .get("setuptools", {})
         .get("package-data", {})
-        .get("vllm_mlx", [])
+        .get("rapid_mlx", [])
     )
 
 
@@ -95,7 +95,7 @@ def test_required_data_file_resolvable_via_importlib_resources(
     """The file must be reachable through ``importlib.resources``.
 
     This mirrors how production code reads the registry (see
-    ``vllm_mlx/audio/registry.py`` and ``vllm_mlx/aliases.py``), so the
+    ``rapid_mlx/audio/registry.py`` and ``rapid_mlx/aliases.py``), so the
     test fails the same way a real install would if the file were
     missing.
     """
@@ -119,7 +119,7 @@ def test_required_data_file_resolvable_via_importlib_resources(
 def test_required_data_file_declared_in_pyproject_package_data(
     _package: str, _relpath: str, glob: str
 ) -> None:
-    """The file must appear in ``[tool.setuptools.package-data].vllm_mlx``.
+    """The file must appear in ``[tool.setuptools.package-data].rapid_mlx``.
 
     setuptools only bundles files explicitly listed (or matched by a glob)
     in package-data. A file that exists on disk but is missing from this
@@ -131,7 +131,7 @@ def test_required_data_file_declared_in_pyproject_package_data(
 
     entries = _package_data_entries()
     assert glob in entries, (
-        f"Expected {glob!r} in [tool.setuptools.package-data].vllm_mlx, "
+        f"Expected {glob!r} in [tool.setuptools.package-data].rapid_mlx, "
         f"got entries={entries!r}. Without this declaration the file will "
         f"be missing from the built wheel/sdist."
     )

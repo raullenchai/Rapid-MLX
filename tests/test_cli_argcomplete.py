@@ -20,13 +20,13 @@ from pathlib import Path
 
 import pytest
 
-from vllm_mlx._completion import (
+from rapid_mlx._completion import (
     _ALIASES_PATH,
     alias_completer,
     alias_csv_completer,
 )
 
-_CLI_PATH = Path(__file__).parent.parent / "vllm_mlx" / "cli.py"
+_CLI_PATH = Path(__file__).parent.parent / "rapid_mlx" / "cli.py"
 
 
 def test_python_argcomplete_ok_marker_present() -> None:
@@ -94,7 +94,7 @@ def test_alias_completer_handles_missing_aliases_file(
     as a Python traceback into the user's shell, which is worse than a
     silent no-match."""
     missing = tmp_path / "no_such_aliases.json"
-    monkeypatch.setattr("vllm_mlx._completion._ALIASES_PATH", missing)
+    monkeypatch.setattr("rapid_mlx._completion._ALIASES_PATH", missing)
 
     assert alias_completer("") == []
     assert alias_completer("gemma-4-") == []
@@ -106,7 +106,7 @@ def test_alias_completer_handles_corrupt_aliases_file(
     """Same robustness contract for a syntactically broken file."""
     corrupt = tmp_path / "broken.json"
     corrupt.write_text("not valid json {{")
-    monkeypatch.setattr("vllm_mlx._completion._ALIASES_PATH", corrupt)
+    monkeypatch.setattr("rapid_mlx._completion._ALIASES_PATH", corrupt)
 
     assert alias_completer("") == []
 
@@ -170,7 +170,7 @@ def test_load_alias_names_rejects_oversized_file(
     """A hostile multi-megabyte ``aliases.json`` (supply-chain swap, or
     a dev-machine fat-finger) must not stall every keystroke on a
     multi-second JSON decode. Cap is hard and fail-closed."""
-    from vllm_mlx import _completion
+    from rapid_mlx import _completion
 
     huge = tmp_path / "huge.json"
     payload = "{" + ",".join(f'"{i}":1' for i in range(200_000)) + "}"
@@ -189,7 +189,7 @@ def test_load_alias_names_strips_unsafe_keys(
     argcomplete's line-oriented stdout IPC into multiple bogus
     completions or corrupt the user's terminal. The loader filters
     them out before returning. Legitimate aliases pass through."""
-    from vllm_mlx import _completion
+    from rapid_mlx import _completion
 
     spiked = tmp_path / "spiked.json"
     spiked.write_text(
@@ -210,7 +210,7 @@ def test_load_alias_names_caches_by_mtime(
     fresh write invalidates automatically."""
     import os
 
-    from vllm_mlx import _completion
+    from rapid_mlx import _completion
 
     f = tmp_path / "cached.json"
     f.write_text('{"alpha":{}}')
@@ -239,7 +239,7 @@ def test_load_alias_names_caches_by_mtime(
 def test_cli_lazy_imports_argcomplete(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """``vllm_mlx.cli`` must NOT import ``argcomplete`` at module load
+    """``rapid_mlx.cli`` must NOT import ``argcomplete`` at module load
     — the minimal-deps CI lane runs without it. Regression guard for
     the lazy-import fix in the round-2 of this PR."""
     import importlib
@@ -247,8 +247,8 @@ def test_cli_lazy_imports_argcomplete(
 
     # Force-reload cli with argcomplete blocked at import time.
     monkeypatch.setitem(sys.modules, "argcomplete", None)
-    sys.modules.pop("vllm_mlx.cli", None)
-    cli = importlib.import_module("vllm_mlx.cli")
+    sys.modules.pop("rapid_mlx.cli", None)
+    cli = importlib.import_module("rapid_mlx.cli")
 
     # The module imported successfully (no ModuleNotFoundError) and
     # exports the expected entry point.
@@ -257,7 +257,7 @@ def test_cli_lazy_imports_argcomplete(
 
 def test_autocomplete_handshake_returns_aliases_on_subprocess() -> None:
     """End-to-end shell-completion handshake. Spawn ``python -m
-    vllm_mlx.cli`` with the argcomplete env vars and verify fd 8
+    rapid_mlx.cli`` with the argcomplete env vars and verify fd 8
     receives the expected alias list — proves the magic marker,
     the lazy import, and ``argcomplete.autocomplete(parser)`` all
     line up at runtime, not just in unit tests.
@@ -287,7 +287,7 @@ def test_autocomplete_handshake_returns_aliases_on_subprocess() -> None:
         [
             "bash",
             "-c",
-            f"{sys.executable} -m vllm_mlx.cli 8>&1 1>/dev/null 2>/dev/null",
+            f"{sys.executable} -m rapid_mlx.cli 8>&1 1>/dev/null 2>/dev/null",
         ],
         env=env,
         capture_output=True,

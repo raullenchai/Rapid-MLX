@@ -24,15 +24,15 @@ import sys
 from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
-SCHEDULER_PATH = REPO_ROOT / "vllm_mlx" / "scheduler.py"
+SCHEDULER_PATH = REPO_ROOT / "rapid_mlx" / "scheduler.py"
 
 # Files that parse argparse args AND construct (or should construct) an
 # engine config. Each one is a user-facing entrypoint with the same
 # silent-flag-drop risk as #400. Order: primary CLI first, then secondary
-# entries (python -m vllm_mlx.server, mise run).
+# entries (python -m rapid_mlx.server, mise run).
 CLI_ENTRY_PATHS = [
-    REPO_ROOT / "vllm_mlx" / "cli.py",
-    REPO_ROOT / "vllm_mlx" / "server.py",
+    REPO_ROOT / "rapid_mlx" / "cli.py",
+    REPO_ROOT / "rapid_mlx" / "server.py",
 ]
 
 # Helpers that RETURN a dict of ``SchedulerConfig`` kwargs and are

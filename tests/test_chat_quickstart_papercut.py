@@ -84,14 +84,14 @@ def test_installer_labels_every_web_ui_mention_with_its_extra():
 # ------------------------------------------------------- gradio_app fallback
 @pytest.fixture
 def gradio_app_without_gradio(monkeypatch):
-    """Reload vllm_mlx.gradio_app in a world where gradio is unimportable."""
+    """Reload rapid_mlx.gradio_app in a world where gradio is unimportable."""
     monkeypatch.setitem(sys.modules, "gradio", None)  # import -> ImportError
-    sys.modules.pop("vllm_mlx.gradio_app", None)
-    import vllm_mlx.gradio_app as mod
+    sys.modules.pop("rapid_mlx.gradio_app", None)
+    import rapid_mlx.gradio_app as mod
 
     mod = importlib.reload(mod)
     yield mod
-    sys.modules.pop("vllm_mlx.gradio_app", None)
+    sys.modules.pop("rapid_mlx.gradio_app", None)
 
 
 def test_import_without_gradio_has_no_side_effects(gradio_app_without_gradio, capsys):
@@ -114,7 +114,7 @@ def test_bare_invocation_falls_back_to_the_terminal_repl(
         calls["argv"] = list(sys.argv)
         return 0
 
-    import vllm_mlx.cli as cli
+    import rapid_mlx.cli as cli
 
     monkeypatch.setattr(cli, "main", fake_main)
     monkeypatch.setattr(sys, "argv", ["rapid-mlx-chat"])
@@ -144,12 +144,12 @@ def test_explicit_arguments_keep_the_hard_error(
 def test_with_gradio_present_module_exposes_it():
     """Control: in an env WITH gradio the module must bind it, not None."""
     pytest.importorskip("gradio")
-    sys.modules.pop("vllm_mlx.gradio_app", None)
-    import vllm_mlx.gradio_app as mod
+    sys.modules.pop("rapid_mlx.gradio_app", None)
+    import rapid_mlx.gradio_app as mod
 
     mod = importlib.reload(mod)
     assert mod.gr is not None
-    sys.modules.pop("vllm_mlx.gradio_app", None)
+    sys.modules.pop("rapid_mlx.gradio_app", None)
 
 
 # ----------------------------------------------------------- end to end (real)
@@ -181,7 +181,7 @@ def test_real_subprocess_bare_fallback_reaches_the_repl_path():
     code = (
         "import sys\n"
         "sys.modules['gradio'] = None\n"
-        "import vllm_mlx.cli as cli\n"
+        "import rapid_mlx.cli as cli\n"
         "def _parse_with_real_parser(argv=None):\n"
         "    args = cli.build_parser().parse_args(sys.argv[1:])\n"
         "    assert args.command == 'chat', args.command\n"
@@ -189,7 +189,7 @@ def test_real_subprocess_bare_fallback_reaches_the_repl_path():
         "    return 0\n"
         "cli.main = _parse_with_real_parser\n"
         "sys.argv = ['rapid-mlx-chat']\n"
-        "import vllm_mlx.gradio_app as g\n"
+        "import rapid_mlx.gradio_app as g\n"
         "try:\n"
         "    g.main()\n"
         "except SystemExit as e:\n"

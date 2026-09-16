@@ -21,7 +21,7 @@ The policy has to keep the second without paying the first.
 
 import pytest
 
-# Mirrors the production constants in vllm_mlx/scheduler.py.
+# Mirrors the production constants in rapid_mlx/scheduler.py.
 COOLDOWN_TRIGGER = 3
 COOLDOWN_BASE = 10
 COOLDOWN_MAX = 320

@@ -142,7 +142,7 @@ func atomicObjectDigest(_ value: Any) -> String? {
 let sourceURL = URL(fileURLWithPath: #filePath)
     .deletingLastPathComponent().deletingLastPathComponent()
     .deletingLastPathComponent().deletingLastPathComponent()
-    .appendingPathComponent("vllm_mlx/model_recommendations.json")
+    .appendingPathComponent("rapid_mlx/model_recommendations.json")
 let sourceData = try Data(contentsOf: sourceURL)
 let rawObject = try JSONSerialization.jsonObject(with: sourceData) as! [String: Any]
 let declaredDigest = rawObject["policy_digest"] as! String

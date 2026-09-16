@@ -15,7 +15,7 @@ from fastapi.testclient import TestClient
 class TestServerConfig:
     def test_default_values(self):
         """Config has sensible defaults."""
-        from vllm_mlx.config import ServerConfig
+        from rapid_mlx.config import ServerConfig
 
         cfg = ServerConfig()
         assert cfg.engine is None
@@ -32,7 +32,7 @@ class TestServerConfig:
 
     def test_get_config_singleton(self):
         """get_config returns the same instance."""
-        from vllm_mlx.config import get_config
+        from rapid_mlx.config import get_config
 
         cfg1 = get_config()
         cfg2 = get_config()
@@ -40,7 +40,7 @@ class TestServerConfig:
 
     def test_reset_config(self):
         """reset_config creates a fresh instance."""
-        from vllm_mlx.config import get_config, reset_config
+        from rapid_mlx.config import get_config, reset_config
 
         cfg1 = get_config()
         cfg1.model_name = "test-model"
@@ -52,7 +52,7 @@ class TestServerConfig:
 
     def test_mutable_fields(self):
         """Config fields are mutable."""
-        from vllm_mlx.config import reset_config
+        from rapid_mlx.config import reset_config
 
         cfg = reset_config()
         cfg.engine = "fake-engine"
@@ -76,7 +76,7 @@ class TestServerConfig:
 class TestRateLimiter:
     def test_disabled_allows_all(self):
         """Disabled rate limiter allows everything."""
-        from vllm_mlx.middleware.auth import RateLimiter
+        from rapid_mlx.middleware.auth import RateLimiter
 
         rl = RateLimiter(requests_per_minute=1, enabled=False)
         for _ in range(100):
@@ -85,7 +85,7 @@ class TestRateLimiter:
 
     def test_enabled_limits(self):
         """Enabled rate limiter blocks after limit."""
-        from vllm_mlx.middleware.auth import RateLimiter
+        from rapid_mlx.middleware.auth import RateLimiter
 
         rl = RateLimiter(requests_per_minute=3, enabled=True)
         for i in range(3):
@@ -98,7 +98,7 @@ class TestRateLimiter:
 
     def test_per_client_isolation(self):
         """Different clients have separate limits."""
-        from vllm_mlx.middleware.auth import RateLimiter
+        from rapid_mlx.middleware.auth import RateLimiter
 
         rl = RateLimiter(requests_per_minute=2, enabled=True)
         rl.is_allowed("client_a")
@@ -112,7 +112,7 @@ class TestRateLimiter:
 
     def test_window_expiry(self):
         """Requests outside window are cleaned up."""
-        from vllm_mlx.middleware.auth import RateLimiter
+        from rapid_mlx.middleware.auth import RateLimiter
 
         rl = RateLimiter(requests_per_minute=1, enabled=True)
         rl.window_size = 0.1  # 100ms window for fast test
@@ -133,7 +133,7 @@ class TestRateLimiter:
 
 class TestVerifyApiKey:
     def _make_app(self):
-        from vllm_mlx.middleware.auth import verify_api_key
+        from rapid_mlx.middleware.auth import verify_api_key
 
         app = FastAPI()
 
@@ -145,7 +145,7 @@ class TestVerifyApiKey:
 
     def test_no_key_configured(self):
         """No API key → all requests pass."""
-        from vllm_mlx.config import get_config
+        from rapid_mlx.config import get_config
 
         get_config().api_key = None
         app = self._make_app()
@@ -155,7 +155,7 @@ class TestVerifyApiKey:
 
     def test_valid_key(self):
         """Correct API key passes."""
-        from vllm_mlx.config import get_config
+        from rapid_mlx.config import get_config
 
         get_config().api_key = "test-secret"
         app = self._make_app()
@@ -166,7 +166,7 @@ class TestVerifyApiKey:
 
     def test_invalid_key(self):
         """Wrong API key returns 401."""
-        from vllm_mlx.config import get_config
+        from rapid_mlx.config import get_config
 
         get_config().api_key = "test-secret"
         app = self._make_app()
@@ -177,7 +177,7 @@ class TestVerifyApiKey:
 
     def test_missing_key_when_required(self):
         """No key header when key required returns 401."""
-        from vllm_mlx.config import get_config
+        from rapid_mlx.config import get_config
 
         get_config().api_key = "test-secret"
         app = self._make_app()
@@ -191,8 +191,8 @@ class TestVerifyApiKey:
         pytest.importorskip("mlx")
         from fastapi import HTTPException
 
-        from vllm_mlx.config import get_config
-        from vllm_mlx.middleware.auth import _verify_api_key_values
+        from rapid_mlx.config import get_config
+        from rapid_mlx.middleware.auth import _verify_api_key_values
 
         cfg = get_config()
         cfg.api_key = "test-secret"
@@ -208,8 +208,8 @@ class TestVerifyApiKey:
         pytest.importorskip("mlx")
         from fastapi import HTTPException
 
-        from vllm_mlx.config import get_config
-        from vllm_mlx.middleware import auth
+        from rapid_mlx.config import get_config
+        from rapid_mlx.middleware import auth
 
         calls = []
 
@@ -239,7 +239,7 @@ class TestVerifyApiKey:
 class TestCheckRateLimit:
     def test_rate_limit_dependency(self):
         """Rate limit dependency works in FastAPI."""
-        from vllm_mlx.middleware.auth import check_rate_limit, rate_limiter
+        from rapid_mlx.middleware.auth import check_rate_limit, rate_limiter
 
         rate_limiter.enabled = False
 
@@ -255,7 +255,7 @@ class TestCheckRateLimit:
 
     def test_rate_limit_blocks(self):
         """Rate limit returns 429 when exceeded."""
-        from vllm_mlx.middleware.auth import check_rate_limit, rate_limiter
+        from rapid_mlx.middleware.auth import check_rate_limit, rate_limiter
 
         rate_limiter.enabled = True
         rate_limiter.requests_per_minute = 1
@@ -291,7 +291,7 @@ class TestRateLimitClientId:
         """
         from starlette.requests import Request
 
-        from vllm_mlx.middleware.auth import _rate_limit_client_id
+        from rapid_mlx.middleware.auth import _rate_limit_client_id
 
         scope_1 = {
             "type": "http",
@@ -322,7 +322,7 @@ class TestRateLimitClientId:
         """IPv4 clients in the same /24 share a bucket."""
         from starlette.requests import Request
 
-        from vllm_mlx.middleware.auth import _rate_limit_client_id
+        from rapid_mlx.middleware.auth import _rate_limit_client_id
 
         scope_a = {
             "type": "http",
@@ -346,7 +346,7 @@ class TestRateLimitClientId:
         """Same key value via Bearer and x-api-key maps to same bucket."""
         from starlette.requests import Request
 
-        from vllm_mlx.middleware.auth import (
+        from rapid_mlx.middleware.auth import (
             _anthropic_rate_limit_client_id,
             _rate_limit_client_id,
         )
@@ -372,7 +372,7 @@ class TestRateLimitClientId:
 
     def test_extract_bearer_token_whitespace_normalization(self):
         """_extract_bearer_token strips leading, trailing, and tab/newline whitespace."""
-        from vllm_mlx.middleware.auth import _extract_bearer_token
+        from rapid_mlx.middleware.auth import _extract_bearer_token
 
         assert _extract_bearer_token("Bearer    my-token") == "my-token"
         assert _extract_bearer_token("Bearer \t my-token \n") == "my-token"
@@ -390,7 +390,7 @@ class TestRateLimitClientId:
         """
         from starlette.requests import Request
 
-        from vllm_mlx.middleware.auth import _rate_limit_client_id
+        from rapid_mlx.middleware.auth import _rate_limit_client_id
 
         def client_id(auth_value: str) -> str:
             scope = {
@@ -422,7 +422,7 @@ class TestRateLimitClientId:
         """
         from starlette.requests import Request
 
-        from vllm_mlx.middleware.auth import _rate_limit_client_id, _subnet_bucket
+        from rapid_mlx.middleware.auth import _rate_limit_client_id, _subnet_bucket
 
         def client_id(auth_value: str) -> str:
             scope = {
@@ -443,7 +443,7 @@ class TestRateLimitClientId:
         """Non-Bearer auth (e.g. Basic) keeps a stable per-credential bucket."""
         from starlette.requests import Request
 
-        from vllm_mlx.middleware.auth import _bucket_id, _rate_limit_client_id
+        from rapid_mlx.middleware.auth import _bucket_id, _rate_limit_client_id
 
         scope = {
             "type": "http",
@@ -582,7 +582,7 @@ class TestHTTPExceptionHandler:
     def _make_app_with_handler(self):
         from fastapi import FastAPI, HTTPException
 
-        from vllm_mlx.server import _http_exception_handler
+        from rapid_mlx.server import _http_exception_handler
 
         app = FastAPI()
         app.add_exception_handler(
@@ -652,7 +652,7 @@ class TestHTTPExceptionHandler:
 
 
 class TestHTTPExceptionHandlerOnProductionApp:
-    """End-to-end tests that hit ``vllm_mlx.server.app`` directly.
+    """End-to-end tests that hit ``rapid_mlx.server.app`` directly.
 
     The throwaway-app tests above verify the handler's *logic* but
     would still pass if the production ``@app.exception_handler(...)``
@@ -669,7 +669,7 @@ class TestHTTPExceptionHandlerOnProductionApp:
         # the fastapi class only, this still returns the default
         # {"detail": "Not Found"} shape — which would break OpenAI-SDK
         # clients that parse error.message.
-        from vllm_mlx.server import app
+        from rapid_mlx.server import app
 
         client = TestClient(app)
         r = client.get("/this-route-does-not-exist-anywhere")
@@ -685,7 +685,7 @@ class TestHTTPExceptionHandlerOnProductionApp:
 
     def test_wrong_method_returns_openai_envelope(self):
         # Same class of bug as 404 — router-emitted 405.
-        from vllm_mlx.server import app
+        from rapid_mlx.server import app
 
         client = TestClient(app)
         # /healthz is GET-only; a POST should 405 via the router

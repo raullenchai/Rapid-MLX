@@ -15,7 +15,7 @@ import os
 from types import SimpleNamespace
 from unittest.mock import patch
 
-from vllm_mlx.runtime.cache import (
+from rapid_mlx.runtime.cache import (
     _cached_model_revision,
     _resolved_model_source,
     get_cache_dir,
@@ -35,17 +35,17 @@ def _patched_cfg(name: str, kv_cache_dtype: str = "bf16"):
 
 
 def _resolve(name: str) -> str:
-    with patch("vllm_mlx.runtime.cache.get_config", return_value=_patched_cfg(name)):
+    with patch("rapid_mlx.runtime.cache.get_config", return_value=_patched_cfg(name)):
         return os.path.realpath(get_cache_dir())
 
 
 def _resolve_with_dtype(name: str, dtype: str) -> str:
     with (
         patch(
-            "vllm_mlx.runtime.cache.get_config",
+            "rapid_mlx.runtime.cache.get_config",
             return_value=_patched_cfg(name, dtype),
         ),
-        patch("vllm_mlx.runtime.cache._cached_model_revision", return_value="rev-a"),
+        patch("rapid_mlx.runtime.cache._cached_model_revision", return_value="rev-a"),
     ):
         return os.path.realpath(get_cache_dir())
 
@@ -92,8 +92,8 @@ def test_live_scheduler_dtype_wins_over_server_config_fallback():
         scheduler=SimpleNamespace(config=SimpleNamespace(kv_cache_dtype="int8"))
     )
     with (
-        patch("vllm_mlx.runtime.cache.get_config", return_value=cfg),
-        patch("vllm_mlx.runtime.cache._cached_model_revision", return_value="rev-a"),
+        patch("rapid_mlx.runtime.cache.get_config", return_value=cfg),
+        patch("rapid_mlx.runtime.cache._cached_model_revision", return_value="rev-a"),
     ):
         programmatic = get_cache_dir()
     assert os.path.basename(programmatic) == os.path.basename(
@@ -106,13 +106,13 @@ def test_live_scheduler_dtype_wins_over_server_config_fallback():
 
 def test_distinct_model_revisions_get_distinct_cache_dirs():
     cfg = _patched_cfg("org/model", "int8")
-    with patch("vllm_mlx.runtime.cache.get_config", return_value=cfg):
+    with patch("rapid_mlx.runtime.cache.get_config", return_value=cfg):
         with patch(
-            "vllm_mlx.runtime.cache._cached_model_revision", return_value="rev-a"
+            "rapid_mlx.runtime.cache._cached_model_revision", return_value="rev-a"
         ):
             first = get_cache_dir()
         with patch(
-            "vllm_mlx.runtime.cache._cached_model_revision", return_value="rev-b"
+            "rapid_mlx.runtime.cache._cached_model_revision", return_value="rev-b"
         ):
             second = get_cache_dir()
     assert first != second
@@ -124,9 +124,9 @@ def test_loaded_engine_pins_revision_identity_for_load_and_save():
         scheduler=SimpleNamespace(config=SimpleNamespace(kv_cache_dtype="int8"))
     )
     with (
-        patch("vllm_mlx.runtime.cache.get_config", return_value=cfg),
+        patch("rapid_mlx.runtime.cache.get_config", return_value=cfg),
         patch(
-            "vllm_mlx.runtime.cache._cached_model_revision",
+            "rapid_mlx.runtime.cache._cached_model_revision",
             side_effect=["revision-at-load", "revision-after-external-update"],
         ) as revision,
     ):
@@ -147,9 +147,9 @@ def test_explicit_engine_pin_never_rereads_mutable_remote_ref():
     cfg = _patched_cfg("org/model", "int8")
     cfg.engine = engine
     with (
-        patch("vllm_mlx.runtime.cache.get_config", return_value=cfg),
+        patch("rapid_mlx.runtime.cache.get_config", return_value=cfg),
         patch(
-            "vllm_mlx.runtime.cache._cached_model_revision",
+            "rapid_mlx.runtime.cache._cached_model_revision",
             side_effect=AssertionError("must use the pre-pinned identity"),
         ),
     ):
@@ -162,9 +162,9 @@ def test_new_engine_recaptures_updated_revision_identity():
         scheduler=SimpleNamespace(config=SimpleNamespace(kv_cache_dtype="int8"))
     )
     with (
-        patch("vllm_mlx.runtime.cache.get_config", return_value=cfg),
+        patch("rapid_mlx.runtime.cache.get_config", return_value=cfg),
         patch(
-            "vllm_mlx.runtime.cache._cached_model_revision",
+            "rapid_mlx.runtime.cache._cached_model_revision",
             side_effect=["revision-a", "revision-b"],
         ),
     ):

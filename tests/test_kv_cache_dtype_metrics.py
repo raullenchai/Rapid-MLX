@@ -5,7 +5,7 @@ from __future__ import annotations
 
 from types import SimpleNamespace
 
-from vllm_mlx.routes.metrics import _render_kv_cache_dtype_gauge
+from rapid_mlx.routes.metrics import _render_kv_cache_dtype_gauge
 
 
 def _cfg_with_engine(dtype: str) -> SimpleNamespace:

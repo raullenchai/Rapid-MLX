@@ -109,7 +109,7 @@ def loaded_model(baseline_tokens):
     """Load the base + inject MTP after the pristine baseline is released."""
     from mlx_lm import load
 
-    from vllm_mlx.spec_decode.mtp.qwen3_5_inject import (
+    from rapid_mlx.spec_decode.mtp.qwen3_5_inject import (
         inject_mtp_support,
         validate_mtp_support,
     )
@@ -253,8 +253,8 @@ def test_mtp_lossless_byte_equal_against_baseline(loaded_model, baseline_tokens)
     """
     import mlx.core as _mx
 
-    from vllm_mlx.spec_decode.mtp import MTPAcceptCounter
-    from vllm_mlx.spec_decode.mtp.generator import mtp_generate_step
+    from rapid_mlx.spec_decode.mtp import MTPAcceptCounter
+    from rapid_mlx.spec_decode.mtp.generator import mtp_generate_step
 
     model, tokenizer = loaded_model
     inner = model.language_model
@@ -306,8 +306,8 @@ def test_mtp_greedy_fixed_depth_real_weight_activity(loaded_model):
     """
     import mlx.core as _mx
 
-    from vllm_mlx.spec_decode.mtp import MTPAcceptCounter
-    from vllm_mlx.spec_decode.mtp.generator import mtp_generate_step
+    from rapid_mlx.spec_decode.mtp import MTPAcceptCounter
+    from rapid_mlx.spec_decode.mtp.generator import mtp_generate_step
 
     model, tokenizer = loaded_model
     inner = model.language_model
@@ -409,8 +409,8 @@ def test_mtp_nongreedy_real_sampled_smoke(loaded_model, max_k):
     """
     import mlx.core as _mx
 
-    from vllm_mlx.spec_decode.mtp import MTPAcceptCounter
-    from vllm_mlx.spec_decode.mtp.generator import mtp_generate_step
+    from rapid_mlx.spec_decode.mtp import MTPAcceptCounter
+    from rapid_mlx.spec_decode.mtp.generator import mtp_generate_step
 
     model, tokenizer = loaded_model
     inner = model.language_model

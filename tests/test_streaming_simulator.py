@@ -16,8 +16,8 @@ Each test checks both the streaming content AND the final assembled output.
 
 # Mirror SPECIAL_TOKENS_PATTERN from server.py
 
-from vllm_mlx.api.utils import SPECIAL_TOKENS_PATTERN
-from vllm_mlx.reasoning import get_parser
+from rapid_mlx.api.utils import SPECIAL_TOKENS_PATTERN
+from rapid_mlx.reasoning import get_parser
 
 
 def simulate_server_streaming_no_parser(tokens: list[str]) -> list[str]:

@@ -10,8 +10,8 @@ from unittest.mock import patch
 
 import pytest
 
-from vllm_mlx import cli
-from vllm_mlx.models.deepseek_v41_native import artifacts
+from rapid_mlx import cli
+from rapid_mlx.models.deepseek_v41_native import artifacts
 
 
 def _write_file(path: Path, size: int, byte: bytes = b"x") -> str:
@@ -45,8 +45,8 @@ def test_artifact_contract_import_does_not_load_the_model_runtime():
             "-c",
             (
                 "import sys; "
-                "import vllm_mlx.models.deepseek_v41_native.artifacts; "
-                "assert 'vllm_mlx.models.deepseek_v41_native.model' "
+                "import rapid_mlx.models.deepseek_v41_native.artifacts; "
+                "assert 'rapid_mlx.models.deepseek_v41_native.model' "
                 "not in sys.modules"
             ),
         ],
@@ -59,7 +59,7 @@ def test_artifact_contract_import_does_not_load_the_model_runtime():
 
 @pytest.mark.requires_mlx
 def test_package_lazy_exports_resolve_public_model_types():
-    from vllm_mlx.models import deepseek_v41_native
+    from rapid_mlx.models import deepseek_v41_native
 
     assert deepseek_v41_native.ModelArgs.__name__ == "ModelArgs"
     assert deepseek_v41_native.Model.__name__ == "Model"
@@ -146,7 +146,7 @@ def test_verify_mtp_snapshot_hashes_symlink_outside_repo_blobs(monkeypatch, tmp_
 
 @pytest.mark.requires_mlx
 def test_safe_shard_accepts_only_same_repo_hub_blob(tmp_path):
-    from vllm_mlx.models.deepseek_v41_native.dspark import _safe_shard
+    from rapid_mlx.models.deepseek_v41_native.dspark import _safe_shard
 
     repo = tmp_path / "models--owner--repo"
     snapshot = repo / "snapshots" / ("a" * 40)
@@ -168,7 +168,7 @@ def test_safe_shard_accepts_only_same_repo_hub_blob(tmp_path):
 
 def test_hard_memory_floor_refuses_before_load(monkeypatch):
     profile = SimpleNamespace(min_memory_gb=224, enforce_min_memory=True)
-    monkeypatch.setattr("vllm_mlx.model_aliases.resolve_profile", lambda _: profile)
+    monkeypatch.setattr("rapid_mlx.model_aliases.resolve_profile", lambda _: profile)
     monkeypatch.setattr(
         "psutil.virtual_memory", lambda: SimpleNamespace(total=192 * 1024**3)
     )
@@ -232,7 +232,7 @@ def test_implicit_download_checks_hard_memory_first(monkeypatch):
 
 
 def test_implicit_download_tolerates_profile_resolution_failure(monkeypatch):
-    import vllm_mlx.model_aliases as aliases
+    import rapid_mlx.model_aliases as aliases
 
     monkeypatch.setattr(cli.os.path, "exists", lambda _path: False)
     monkeypatch.setattr(
@@ -255,12 +255,12 @@ def test_product_alias_pulls_pinned_target_and_mixed_sidecar(monkeypatch):
     monkeypatch.setattr(
         cli, "_pull_repository", lambda args, **kw: calls.append((args.model, kw))
     )
-    monkeypatch.setattr("vllm_mlx.audio.registry.runtime_assets_for", lambda _: ())
+    monkeypatch.setattr("rapid_mlx.audio.registry.runtime_assets_for", lambda _: ())
     monkeypatch.setattr(
-        "vllm_mlx.audio.registry.runtime_requirements_for", lambda _: ()
+        "rapid_mlx.audio.registry.runtime_requirements_for", lambda _: ()
     )
     monkeypatch.setattr(
-        "vllm_mlx._download_gate.image_runtime_assets_for", lambda _: ()
+        "rapid_mlx._download_gate.image_runtime_assets_for", lambda _: ()
     )
     monkeypatch.setattr(
         "huggingface_hub.snapshot_download", lambda *a, **k: "/snapshot"
@@ -318,7 +318,7 @@ def test_product_alias_pulls_pinned_target_and_mixed_sidecar(monkeypatch):
 
 
 def test_product_alias_contract_is_ultra_only_and_greedy():
-    from vllm_mlx.model_aliases import resolve_profile
+    from rapid_mlx.model_aliases import resolve_profile
 
     profile = resolve_profile("deepseek-v41-flash-reap-2bit")
     assert profile is not None
@@ -348,7 +348,7 @@ def test_product_info_reports_dedicated_runtime_instead_of_generic_guess(capsys)
 
 
 def test_product_profile_default_caps_plain_serve_but_preserves_explicit_value():
-    from vllm_mlx.model_aliases import resolve_profile
+    from rapid_mlx.model_aliases import resolve_profile
 
     profile = resolve_profile("deepseek-v41-flash-reap-2bit")
     assert cli._resolve_v41_serve_max_tokens(None, profile) == (4096, False)
@@ -388,7 +388,7 @@ class _Tokenizer:
 
 @pytest.mark.requires_mlx
 def test_prompt_renderer_pins_release_framing_and_limits():
-    from vllm_mlx.models.deepseek_v41_native.serving import render_prompt
+    from rapid_mlx.models.deepseek_v41_native.serving import render_prompt
 
     request = SimpleNamespace(
         tools=None,
@@ -409,7 +409,7 @@ def test_prompt_renderer_pins_release_framing_and_limits():
 def test_generation_kwargs_rejects_unqualified_sampling_and_long_output():
     from fastapi import HTTPException
 
-    from vllm_mlx.models.deepseek_v41_native.serving import generation_kwargs
+    from rapid_mlx.models.deepseek_v41_native.serving import generation_kwargs
 
     with pytest.raises(HTTPException, match="greedy"):
         generation_kwargs(max_tokens=16, temperature=0.1, top_p=1.0)
@@ -430,7 +430,7 @@ def test_generation_kwargs_rejects_unqualified_sampling_and_long_output():
 def test_prompt_renderer_rejects_unqualified_protocol_shapes():
     from fastapi import HTTPException
 
-    from vllm_mlx.models.deepseek_v41_native.serving import render_prompt
+    from rapid_mlx.models.deepseek_v41_native.serving import render_prompt
 
     with pytest.raises(HTTPException, match="tool calling"):
         render_prompt(
@@ -474,7 +474,7 @@ def test_prompt_renderer_rejects_unqualified_protocol_shapes():
 def test_product_request_rejects_sampling_fields_it_cannot_honor():
     from fastapi import HTTPException
 
-    from vllm_mlx.models.deepseek_v41_native.serving import validate_request
+    from rapid_mlx.models.deepseek_v41_native.serving import validate_request
 
     request = SimpleNamespace(
         stop=["done"],
@@ -500,7 +500,7 @@ def test_product_request_rejects_sampling_fields_it_cannot_honor():
 def test_k4_stream_commits_target_authoritative_batch():
     import mlx.core as mx
 
-    from vllm_mlx.models.deepseek_v41_native.serving import (
+    from rapid_mlx.models.deepseek_v41_native.serving import (
         DSparkRuntime,
         stream_generate,
     )
@@ -552,7 +552,7 @@ def test_k4_stream_commits_target_authoritative_batch():
 def test_stream_does_not_emit_literal_eos_marker():
     import mlx.core as mx
 
-    from vllm_mlx.models.deepseek_v41_native.serving import (
+    from rapid_mlx.models.deepseek_v41_native.serving import (
         DSparkRuntime,
         stream_generate,
     )
@@ -591,7 +591,7 @@ def test_stream_does_not_emit_literal_eos_marker():
 def test_benchmark_stream_accepts_exact_ids_and_ignores_eos():
     import mlx.core as mx
 
-    from vllm_mlx.models.deepseek_v41_native.serving import (
+    from rapid_mlx.models.deepseek_v41_native.serving import (
         DSparkRuntime,
         stream_generate,
     )
@@ -649,7 +649,7 @@ def test_target_qmv_install_and_small_route_execution():
     import mlx.nn as nn
     from mlx_lm.models.switch_layers import SwitchGLU
 
-    from vllm_mlx.models.deepseek_v41_native.serving import (
+    from rapid_mlx.models.deepseek_v41_native.serving import (
         ExactDirectDownSwitchGLU,
         install_target_qmv,
     )
@@ -681,7 +681,7 @@ def test_target_qmv_install_and_small_route_execution():
 def test_vectorized_mtp_attention_executes_installed_path(monkeypatch):
     import mlx.core as mx
 
-    from vllm_mlx.models.deepseek_v41_native import serving
+    from rapid_mlx.models.deepseek_v41_native import serving
 
     config = {
         "qk_rope_head_dim": 2,
@@ -745,7 +745,7 @@ def test_vectorized_mtp_attention_executes_installed_path(monkeypatch):
 def test_packed_mtp_moe_releases_sources_and_executes(monkeypatch):
     import mlx.core as mx
 
-    from vllm_mlx.models.deepseek_v41_native import serving
+    from rapid_mlx.models.deepseek_v41_native import serving
 
     base = "mtp.0.ffn"
 
@@ -822,7 +822,7 @@ def test_packed_mtp_moe_releases_sources_and_executes(monkeypatch):
 
 @pytest.mark.requires_mlx
 def test_load_product_runtime_composes_owned_components(monkeypatch):
-    from vllm_mlx.models.deepseek_v41_native import serving
+    from rapid_mlx.models.deepseek_v41_native import serving
 
     model = SimpleNamespace(
         layers=[object()], eval_interval=0, embed=object(), head=object()
@@ -874,7 +874,7 @@ def test_load_product_runtime_composes_owned_components(monkeypatch):
 
 @pytest.mark.requires_mlx
 def test_load_product_runtime_keeps_nonindexed_target_resident(monkeypatch):
-    from vllm_mlx.models.deepseek_v41_native import serving
+    from rapid_mlx.models.deepseek_v41_native import serving
 
     model = SimpleNamespace(
         layers=[object()], eval_interval=0, embed=object(), head=object()
@@ -915,7 +915,7 @@ def test_load_product_runtime_keeps_nonindexed_target_resident(monkeypatch):
 
 @pytest.mark.requires_mlx
 def test_load_product_runtime_rejects_partial_target_qmv_install(monkeypatch):
-    from vllm_mlx.models.deepseek_v41_native import serving
+    from rapid_mlx.models.deepseek_v41_native import serving
 
     model = SimpleNamespace(layers=[object()], eval_interval=0)
     monkeypatch.setattr(serving, "load", lambda *_a, **_k: (model, object()))
@@ -933,7 +933,7 @@ def test_load_product_runtime_rejects_partial_target_qmv_install(monkeypatch):
 def test_match_and_generate_cover_rejection_eos_and_empty_paths(monkeypatch):
     import mlx.core as mx
 
-    from vllm_mlx.models.deepseek_v41_native import serving
+    from rapid_mlx.models.deepseek_v41_native import serving
 
     logits = mx.full((1, 2, 10), -1.0)
     logits[:, 0, 4] = 1
@@ -963,7 +963,7 @@ def test_match_and_generate_cover_rejection_eos_and_empty_paths(monkeypatch):
 def test_stream_rejects_short_prompt_and_rolls_back_rejected_suffix():
     import mlx.core as mx
 
-    from vllm_mlx.models.deepseek_v41_native.serving import (
+    from rapid_mlx.models.deepseek_v41_native.serving import (
         DSparkRuntime,
         stream_generate,
     )
@@ -1028,12 +1028,12 @@ def test_stream_rejects_short_prompt_and_rolls_back_rejected_suffix():
 
 @pytest.mark.requires_mlx
 def test_product_server_reuses_guarded_serial_boundary(monkeypatch):
-    from vllm_mlx.models.deepseek_v41_native import server
-    from vllm_mlx.models.deepseek_v41_native.serving import (
+    from rapid_mlx.models.deepseek_v41_native import server
+    from rapid_mlx.models.deepseek_v41_native.serving import (
         generation_kwargs,
         validate_request,
     )
-    from vllm_mlx.speculative.dflash import server as serial_server
+    from rapid_mlx.speculative.dflash import server as serial_server
 
     calls = {}
 
@@ -1087,11 +1087,11 @@ def test_product_server_reuses_guarded_serial_boundary(monkeypatch):
 def test_shared_serial_app_invokes_product_callbacks_and_generators():
     from fastapi.testclient import TestClient
 
-    from vllm_mlx.models.deepseek_v41_native.serving import (
+    from rapid_mlx.models.deepseek_v41_native.serving import (
         GenerationChunk,
         GenerationResult,
     )
-    from vllm_mlx.speculative.dflash import server as serial_server
+    from rapid_mlx.speculative.dflash import server as serial_server
 
     runtime = SimpleNamespace(
         algorithm="dspark-k4",
@@ -1158,8 +1158,8 @@ def test_shared_serial_app_invokes_product_callbacks_and_generators():
 def test_shared_serial_app_builds_legacy_draft_kwargs_when_no_callback():
     from fastapi.testclient import TestClient
 
-    from vllm_mlx.models.deepseek_v41_native.serving import GenerationResult
-    from vllm_mlx.speculative.dflash import server as serial_server
+    from rapid_mlx.models.deepseek_v41_native.serving import GenerationResult
+    from rapid_mlx.speculative.dflash import server as serial_server
 
     captured = []
     runtime = SimpleNamespace(
@@ -1206,9 +1206,9 @@ def test_shared_serial_app_builds_legacy_draft_kwargs_when_no_callback():
 def test_shared_stream_reports_deadline_when_client_stalls(monkeypatch):
     import asyncio
 
-    from vllm_mlx.api.models import ChatCompletionRequest
-    from vllm_mlx.models.deepseek_v41_native.serving import GenerationChunk
-    from vllm_mlx.speculative.dflash import server as serial_server
+    from rapid_mlx.api.models import ChatCompletionRequest
+    from rapid_mlx.models.deepseek_v41_native.serving import GenerationChunk
+    from rapid_mlx.speculative.dflash import server as serial_server
 
     monkeypatch.setattr(serial_server, "_STREAM_QUEUE_MAXSIZE", 1)
 
@@ -1251,9 +1251,9 @@ def test_shared_stream_reports_deadline_when_client_stalls(monkeypatch):
 
 @pytest.mark.requires_mlx
 def test_serve_command_runs_complete_product_owned_dispatch(monkeypatch, capsys):
-    from vllm_mlx import _version_check
-    from vllm_mlx import server as server_module
-    from vllm_mlx.models.deepseek_v41_native import server as product_server
+    from rapid_mlx import _version_check
+    from rapid_mlx import server as server_module
+    from rapid_mlx.models.deepseek_v41_native import server as product_server
 
     args = _product_serve_args()
     calls = {"memory": [], "disk": [], "downloads": [], "run": []}
@@ -1305,7 +1305,7 @@ def test_serve_command_runs_complete_product_owned_dispatch(monkeypatch, capsys)
     ],
 )
 def test_serve_command_rejects_product_limits(monkeypatch, capsys, extra, message):
-    from vllm_mlx import _version_check
+    from rapid_mlx import _version_check
 
     args = _product_serve_args(*extra)
     monkeypatch.setattr(_version_check, "prompt_upgrade_if_available", lambda: False)

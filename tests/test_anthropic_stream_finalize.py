@@ -28,7 +28,7 @@ finalize / event-builder layer:
   spec-required progressive fragments.
 
 All four are repro'd via the in-process FastAPI ``TestClient`` against
-``vllm_mlx.routes.anthropic.router`` so the SSE wire bytes the SDK
+``rapid_mlx.routes.anthropic.router`` so the SSE wire bytes the SDK
 would see are exercised end-to-end.
 """
 
@@ -39,8 +39,8 @@ import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
-from vllm_mlx.config import reset_config
-from vllm_mlx.routes.anthropic import (
+from rapid_mlx.config import reset_config
+from rapid_mlx.routes.anthropic import (
     _split_tool_input_json,
     router,
 )
@@ -324,7 +324,7 @@ def test_c08_vibethinker_preamble_length_truncation_no_duplicate_emit():
     # name; if the registry doesn't surface it on this build, fall
     # back to the deepseek_r1 base parser (which exhibits the same
     # short-no-tag finalize correction shape).
-    from vllm_mlx.reasoning import get_parser
+    from rapid_mlx.reasoning import get_parser
 
     try:
         get_parser("vibethinker")
@@ -465,7 +465,7 @@ def test_c08_special_tokens_in_thinking_dont_break_duplicate_detection():
     """
     # The qwen3 parser's streaming branch hands deltas through
     # ``strip_special_tokens`` before they become ``thinking``
-    # pieces (see ``vllm_mlx/routes/anthropic.py`` lines 2051 +
+    # pieces (see ``rapid_mlx/routes/anthropic.py`` lines 2051 +
     # 2170). The same helper runs on the finalize probe content.
     # As long as that symmetry holds, special-token-laced thinking
     # streams converge on equality and get suppressed.

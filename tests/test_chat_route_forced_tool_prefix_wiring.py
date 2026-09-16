@@ -23,9 +23,9 @@ from typing import Any
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
-from vllm_mlx.config import reset_config
-from vllm_mlx.engine.base import GenerationOutput
-from vllm_mlx.routes.chat import router as chat_router
+from rapid_mlx.config import reset_config
+from rapid_mlx.engine.base import GenerationOutput
+from rapid_mlx.routes.chat import router as chat_router
 
 
 class _RecordingEngine:
@@ -207,7 +207,7 @@ def test_channel_routed_parser_no_prefix():
 
 from unittest.mock import MagicMock  # noqa: E402
 
-from vllm_mlx.service.postprocessor import StreamingPostProcessor  # noqa: E402
+from rapid_mlx.service.postprocessor import StreamingPostProcessor  # noqa: E402
 
 
 def _swallow_cfg(**overrides):
@@ -320,7 +320,7 @@ def test_forced_prefix_no_pollution_of_accumulated_reasoning():
     bytes never pollute ``accumulated_reasoning`` (which feeds
     ``_build_usage`` reasoning-token accounting AND the silent-drop rescue
     path)."""
-    from vllm_mlx.reasoning.qwen3_parser import Qwen3ReasoningParser
+    from rapid_mlx.reasoning.qwen3_parser import Qwen3ReasoningParser
 
     cfg = _swallow_cfg(
         reasoning_parser=Qwen3ReasoningParser(),

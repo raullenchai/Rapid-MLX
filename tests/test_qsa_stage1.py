@@ -12,7 +12,7 @@ pytestmark = [
     pytest.mark.skipif(not mx.metal.is_available(), reason="requires Metal"),
 ]
 
-from vllm_mlx.kernels import qsa_stage1
+from rapid_mlx.kernels import qsa_stage1
 
 
 def _oracle(q, pooled, q_positions, *, topk, ratio):

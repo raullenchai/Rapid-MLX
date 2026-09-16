@@ -5,7 +5,7 @@ The converter is fail-closed and processes one tensor at a time. It accepts
 BF16/FP16/FP32 or the official E4M3 128x128 block-FP8 layout, but refuses an
 already-repacked integer checkpoint because a second quantization pass cannot
 restore lost information. RMQ's policy and fusion-domain constraints live in
-``vllm_mlx.quantization.glm53_rmq`` and are independently unit tested.
+``rapid_mlx.quantization.glm53_rmq`` and are independently unit tested.
 """
 
 from __future__ import annotations
@@ -25,7 +25,7 @@ from pathlib import Path
 import mlx.core as mx
 import numpy as np
 
-from vllm_mlx.quantization.glm53_rmq import (
+from rapid_mlx.quantization.glm53_rmq import (
     TensorDescriptor,
     module_paths,
     mtp_module_paths,

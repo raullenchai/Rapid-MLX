@@ -3,21 +3,21 @@
 
 import pytest
 
-from vllm_mlx.reasoning.base import DeltaMessage, ReasoningParser
-from vllm_mlx.reasoning.deepseek_r1_parser import (
+from rapid_mlx.reasoning.base import DeltaMessage, ReasoningParser
+from rapid_mlx.reasoning.deepseek_r1_parser import (
     DeepSeekR1DistillReasoningParser,
     DeepSeekR1ReasoningParser,
 )
-from vllm_mlx.reasoning.gemma4_parser import Gemma4ReasoningParser
-from vllm_mlx.reasoning.gpt_oss_parser import (
+from rapid_mlx.reasoning.gemma4_parser import Gemma4ReasoningParser
+from rapid_mlx.reasoning.gpt_oss_parser import (
     _CHANNEL_RE,
     _STRUCTURAL_TOKENS,
     GptOssReasoningParser,
     _extract_channel,
 )
-from vllm_mlx.reasoning.harmony_parser import HarmonyReasoningParser
-from vllm_mlx.reasoning.minimax_parser import MiniMaxReasoningParser
-from vllm_mlx.reasoning.qwen3_parser import Qwen3ReasoningParser
+from rapid_mlx.reasoning.harmony_parser import HarmonyReasoningParser
+from rapid_mlx.reasoning.minimax_parser import MiniMaxReasoningParser
+from rapid_mlx.reasoning.qwen3_parser import Qwen3ReasoningParser
 
 # ---------------------------------------------------------------------------
 # DeltaMessage
@@ -211,7 +211,7 @@ class TestBaseThinkExtractReasoning:
         # round-1 fuzz repro shape on phi-4-mini-reasoning-4bit.
         # CLOSED ``<think>…</think>`` blocks in content are LEFT for
         # the downstream ``strip_thinking_tags`` regex which already
-        # matches them (see ``vllm_mlx/api/utils.py::THINK_PATTERN``).
+        # matches them (see ``rapid_mlx/api/utils.py::THINK_PATTERN``).
         # This preserves pre-PR behaviour for the rare case of an
         # answer that legitimately contains literal
         # ``<think>…</think>`` text.
@@ -578,7 +578,7 @@ class TestThinkParserSSEBoundary:
     def test_qwen3_sse_boundary_inherited(self):
         """Qwen3 parser inherits the streaming machinery and must get
         the same SSE-boundary safety as deepseek_r1."""
-        from vllm_mlx.reasoning.qwen3_parser import Qwen3ReasoningParser
+        from rapid_mlx.reasoning.qwen3_parser import Qwen3ReasoningParser
 
         parser = Qwen3ReasoningParser()
         reasoning, content = self._run_stream(
@@ -732,7 +732,7 @@ class TestMultiBlockThinkStreaming:
         repro: ``<think>R1</think>answer<think>R2</think>tail``
         streamed in chunks must NOT leak ``<think>`` or ``</think>``
         bytes to ``content``."""
-        from vllm_mlx.reasoning.deepseek_r1_parser import (
+        from rapid_mlx.reasoning.deepseek_r1_parser import (
             DeepSeekR1ReasoningParser,
         )
 
@@ -763,7 +763,7 @@ class TestMultiBlockThinkStreaming:
         """Second ``<think>`` is never closed (max_tokens hit) — the
         trailing reasoning must go to ``reasoning`` channel, not
         leak into ``content``."""
-        from vllm_mlx.reasoning.deepseek_r1_parser import (
+        from rapid_mlx.reasoning.deepseek_r1_parser import (
             DeepSeekR1ReasoningParser,
         )
 
@@ -786,7 +786,7 @@ class TestMultiBlockThinkStreaming:
     def test_multi_block_qwen3_inherits(self):
         """Qwen3 inherits the multi-block fix via the base streaming
         machinery — same shape as the deepseek_r1 test above."""
-        from vllm_mlx.reasoning.qwen3_parser import Qwen3ReasoningParser
+        from rapid_mlx.reasoning.qwen3_parser import Qwen3ReasoningParser
 
         parser = Qwen3ReasoningParser()
         chunks = [
@@ -809,7 +809,7 @@ class TestMultiBlockThinkStreaming:
         """Three ``<think>…</think>`` blocks streamed back-to-back
         with intermediate content — all reasoning bytes accumulate
         on reasoning channel, all content bytes on content."""
-        from vllm_mlx.reasoning.deepseek_r1_parser import (
+        from rapid_mlx.reasoning.deepseek_r1_parser import (
             DeepSeekR1ReasoningParser,
         )
 
@@ -826,7 +826,7 @@ class TestMultiBlockThinkStreaming:
     def test_normal_single_block_streaming_unchanged(self):
         """Regression: single-block streaming (the common case) must
         behave identically to pre-fix behaviour."""
-        from vllm_mlx.reasoning.deepseek_r1_parser import (
+        from rapid_mlx.reasoning.deepseek_r1_parser import (
             DeepSeekR1ReasoningParser,
         )
 
@@ -849,7 +849,7 @@ class TestMultiBlockThinkStreaming:
         ``_held_tag_suffix_len`` so straddles span the boundary
         correctly. Symmetric to the existing single-block SSE
         boundary test."""
-        from vllm_mlx.reasoning.deepseek_r1_parser import (
+        from rapid_mlx.reasoning.deepseek_r1_parser import (
             DeepSeekR1ReasoningParser,
         )
 
@@ -884,7 +884,7 @@ class TestMultiBlockThinkStreaming:
         """Closer ``</think>`` split across the SSE boundary in a
         multi-block stream — must not leak the partial closer
         bytes into either channel."""
-        from vllm_mlx.reasoning.deepseek_r1_parser import (
+        from rapid_mlx.reasoning.deepseek_r1_parser import (
             DeepSeekR1ReasoningParser,
         )
 
@@ -926,7 +926,7 @@ class TestMultiBlockThinkStreaming:
         there means the trailing-emit segment now spans those
         withheld bytes too — they flow back to the wire as
         content phase, matching what the user sees in the answer."""
-        from vllm_mlx.reasoning.deepseek_r1_parser import (
+        from rapid_mlx.reasoning.deepseek_r1_parser import (
             DeepSeekR1ReasoningParser,
         )
 
@@ -971,7 +971,7 @@ class TestMultiBlockThinkStreaming:
         production-observed bug; literal ``<think>…</think>`` in
         content is a theoretical edge case the operator can
         observe via the existing ``strip_thinking_tags`` output."""
-        from vllm_mlx.reasoning.deepseek_r1_parser import (
+        from rapid_mlx.reasoning.deepseek_r1_parser import (
             DeepSeekR1ReasoningParser,
         )
 
@@ -1009,7 +1009,7 @@ class TestMultiBlockThinkStreaming:
         ``</think>`` does not corrupt the phase decision for a
         subsequent structural ``<think>`` block.
         """
-        from vllm_mlx.reasoning.deepseek_r1_parser import (
+        from rapid_mlx.reasoning.deepseek_r1_parser import (
             DeepSeekR1ReasoningParser,
         )
 
@@ -1062,7 +1062,7 @@ class TestMultiBlockThinkStreaming:
         the bytes back into reasoning. Symmetric seeding for the
         bare ``</think>`` after an opener.
         """
-        from vllm_mlx.reasoning.deepseek_r1_parser import (
+        from rapid_mlx.reasoning.deepseek_r1_parser import (
             DeepSeekR1ReasoningParser,
         )
 
@@ -1097,7 +1097,7 @@ class TestMultiBlockThinkStreaming:
         the delta is the BARE tag — a typical reasoning chunk that
         merely contains the tag substring elsewhere is unaffected.
         """
-        from vllm_mlx.reasoning.deepseek_r1_parser import (
+        from rapid_mlx.reasoning.deepseek_r1_parser import (
             DeepSeekR1ReasoningParser,
         )
 
@@ -1165,7 +1165,7 @@ class TestResidualThinkTagSweep:
         ``message.content``; post-fix the trailing thought is
         appended to ``reasoning`` and content stops at the second
         opener."""
-        from vllm_mlx.reasoning.deepseek_r1_parser import (
+        from rapid_mlx.reasoning.deepseek_r1_parser import (
             DeepSeekR1ReasoningParser,
         )
 
@@ -1191,7 +1191,7 @@ class TestResidualThinkTagSweep:
         in content so a literal ``<think>…</think>`` substring (rare
         but possible in answer prose) is preserved at the parser
         layer."""
-        from vllm_mlx.reasoning.deepseek_r1_parser import (
+        from rapid_mlx.reasoning.deepseek_r1_parser import (
             DeepSeekR1ReasoningParser,
         )
 
@@ -1232,7 +1232,7 @@ class TestResidualThinkTagSweep:
         was the original bug). The trade-off favours the
         production case over the theoretical literal-tag case.
         """
-        from vllm_mlx.reasoning.deepseek_r1_parser import (
+        from rapid_mlx.reasoning.deepseek_r1_parser import (
             DeepSeekR1ReasoningParser,
         )
 
@@ -1260,8 +1260,8 @@ class TestResidualThinkTagSweep:
         parser layer doing it again risked obscuring an orphan
         closer that was actually a model artefact the operator
         wanted to debug. The parser leaves it for the sanitizer."""
-        from vllm_mlx.api.utils import sanitize_output
-        from vllm_mlx.reasoning.deepseek_r1_parser import (
+        from rapid_mlx.api.utils import sanitize_output
+        from rapid_mlx.reasoning.deepseek_r1_parser import (
             DeepSeekR1ReasoningParser,
         )
 
@@ -1282,7 +1282,7 @@ class TestResidualThinkTagSweep:
         """Qwen3 parser inherits the sweep via
         ``super().extract_reasoning`` — same multi-block shape as the
         phi-4-mini-reasoning repro."""
-        from vllm_mlx.reasoning.qwen3_parser import Qwen3ReasoningParser
+        from rapid_mlx.reasoning.qwen3_parser import Qwen3ReasoningParser
 
         parser = Qwen3ReasoningParser()
         text = "<think>first thought</think>middle text<think>\nsecond truncated"
@@ -1296,7 +1296,7 @@ class TestResidualThinkTagSweep:
     def test_vibethinker_inherits_sweep(self):
         """VibeThinker parser is a thin DeepSeek-R1 subclass —
         inherits the sweep transparently."""
-        from vllm_mlx.reasoning.deepseek_r1_parser import (
+        from rapid_mlx.reasoning.deepseek_r1_parser import (
             VibeThinkerReasoningParser,
         )
 
@@ -1314,7 +1314,7 @@ class TestResidualThinkTagSweep:
         behave identically to pre-sweep behaviour — single-block
         outputs are by far the common case and the sweep must be a
         no-op for them."""
-        from vllm_mlx.reasoning.deepseek_r1_parser import (
+        from rapid_mlx.reasoning.deepseek_r1_parser import (
             DeepSeekR1ReasoningParser,
         )
 
@@ -1331,8 +1331,8 @@ class TestResidualThinkTagSweep:
         ``</think>`` later in the content — the orphan closer is
         LEFT for ``sanitize_output`` (the last-mile route filter),
         matching the codex r3-final conservative scope."""
-        from vllm_mlx.api.utils import sanitize_output
-        from vllm_mlx.reasoning.qwen3_parser import Qwen3ReasoningParser
+        from rapid_mlx.api.utils import sanitize_output
+        from rapid_mlx.reasoning.qwen3_parser import Qwen3ReasoningParser
 
         parser = Qwen3ReasoningParser()
         # Note: no leading <think> — it was injected in the prompt.
@@ -1360,10 +1360,10 @@ class TestResidualThinkTagSweep:
         fires for the single-truncated-thought case, not for
         ``<think>R1</think>answer<think>R2`` where R1 closes
         cleanly)."""
-        from vllm_mlx.reasoning.deepseek_r1_parser import (
+        from rapid_mlx.reasoning.deepseek_r1_parser import (
             DeepSeekR1ReasoningParser,
         )
-        from vllm_mlx.service.helpers import (
+        from rapid_mlx.service.helpers import (
             _finalize_content_and_reasoning,
         )
 
@@ -1763,7 +1763,7 @@ class TestQwen3:
         of a balanced pair into ``reasoning_content``.  Thinking is enabled
         here to match the served aliases from the issue report.
         """
-        from vllm_mlx.service.helpers import _finalize_content_and_reasoning
+        from rapid_mlx.service.helpers import _finalize_content_and_reasoning
 
         content, reasoning = _finalize_content_and_reasoning(
             raw_text=text,
@@ -2198,7 +2198,7 @@ class TestGlm4EnableThinking:
     silently re-routed to reasoning, diverging from streaming."""
 
     def setup_method(self):
-        from vllm_mlx.reasoning.glm4_parser import Glm4ReasoningParser
+        from rapid_mlx.reasoning.glm4_parser import Glm4ReasoningParser
 
         self.parser = Glm4ReasoningParser()
 

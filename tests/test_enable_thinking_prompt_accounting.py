@@ -5,8 +5,8 @@ Pins the systematic fix for the codex MED finding on the PR #893 review:
 the R12-T1F / R12-T2F auto-disable helpers (PRs #891 / #895) mutate
 ``request.chat_template_kwargs`` to ``{"enable_thinking": False}`` BEFORE
 the chat / responses routes call
-:func:`vllm_mlx.service.helpers.enforce_context_length_for_messages`
-and :func:`vllm_mlx.service.helpers.repair_messages_fit_context`, but
+:func:`rapid_mlx.service.helpers.enforce_context_length_for_messages`
+and :func:`rapid_mlx.service.helpers.repair_messages_fit_context`, but
 pre-fix those helpers rendered the prompt with ``enable_thinking=None``
 (template default = ``True`` on Qwen3 / DeepSeek-R1). The mismatch had
 two visible failure modes:
@@ -52,11 +52,11 @@ import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
-from vllm_mlx.api import response_format_metrics
-from vllm_mlx.config import reset_config
-from vllm_mlx.engine.base import GenerationOutput
-from vllm_mlx.middleware.exception_handlers import install_exception_handlers
-from vllm_mlx.service.helpers import (
+from rapid_mlx.api import response_format_metrics
+from rapid_mlx.config import reset_config
+from rapid_mlx.engine.base import GenerationOutput
+from rapid_mlx.middleware.exception_handlers import install_exception_handlers
+from rapid_mlx.service.helpers import (
     enforce_context_length_for_messages,
     repair_messages_fit_context,
 )
@@ -464,7 +464,7 @@ def _reset_metrics_between_tests():
 
 @pytest.fixture
 def _rate_limiter_state():
-    from vllm_mlx.middleware.auth import rate_limiter
+    from rapid_mlx.middleware.auth import rate_limiter
 
     saved_enabled = rate_limiter.enabled
     saved_rpm = rate_limiter.requests_per_minute
@@ -485,7 +485,7 @@ def _rate_limiter_state():
 
 
 def _make_chat_client(engine):
-    from vllm_mlx.routes.chat import router as chat_router
+    from rapid_mlx.routes.chat import router as chat_router
 
     cfg = reset_config()
     cfg.engine = engine
@@ -574,7 +574,7 @@ class TestChatRoutePromptAccountingThreading:
 
 
 def _make_responses_client(engine):
-    from vllm_mlx.routes.responses import router as responses_router
+    from rapid_mlx.routes.responses import router as responses_router
 
     cfg = reset_config()
     cfg.engine = engine

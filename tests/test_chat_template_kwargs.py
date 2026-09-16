@@ -22,8 +22,8 @@ from __future__ import annotations
 from types import SimpleNamespace
 from unittest.mock import patch
 
-from vllm_mlx.api.models import ChatCompletionRequest
-from vllm_mlx.service.helpers import (
+from rapid_mlx.api.models import ChatCompletionRequest
+from rapid_mlx.service.helpers import (
     _extract_thinking_from_request,
     _resolve_enable_thinking,
 )
@@ -73,7 +73,7 @@ class TestResolveEnableThinking:
             messages=[{"role": "user", "content": "hi"}],
             chat_template_kwargs={"enable_thinking": False},
         )
-        with patch("vllm_mlx.service.helpers.get_config", return_value=_fake_cfg()):
+        with patch("rapid_mlx.service.helpers.get_config", return_value=_fake_cfg()):
             assert _resolve_enable_thinking(r) is False
 
     def test_chat_template_kwargs_true_propagates(self):
@@ -81,7 +81,7 @@ class TestResolveEnableThinking:
             messages=[{"role": "user", "content": "hi"}],
             chat_template_kwargs={"enable_thinking": True},
         )
-        with patch("vllm_mlx.service.helpers.get_config", return_value=_fake_cfg()):
+        with patch("rapid_mlx.service.helpers.get_config", return_value=_fake_cfg()):
             assert _resolve_enable_thinking(r) is True
 
     def test_top_level_enable_thinking_used_when_no_ctk(self):
@@ -89,7 +89,7 @@ class TestResolveEnableThinking:
             messages=[{"role": "user", "content": "hi"}],
             enable_thinking=True,
         )
-        with patch("vllm_mlx.service.helpers.get_config", return_value=_fake_cfg()):
+        with patch("rapid_mlx.service.helpers.get_config", return_value=_fake_cfg()):
             assert _resolve_enable_thinking(r) is True
 
     def test_chat_template_kwargs_wins_over_top_level(self):
@@ -99,7 +99,7 @@ class TestResolveEnableThinking:
             chat_template_kwargs={"enable_thinking": False},
             enable_thinking=True,
         )
-        with patch("vllm_mlx.service.helpers.get_config", return_value=_fake_cfg()):
+        with patch("rapid_mlx.service.helpers.get_config", return_value=_fake_cfg()):
             assert _resolve_enable_thinking(r) is False
 
     def test_server_no_thinking_overrides_everything(self):
@@ -110,7 +110,7 @@ class TestResolveEnableThinking:
             enable_thinking=True,
         )
         with patch(
-            "vllm_mlx.service.helpers.get_config",
+            "rapid_mlx.service.helpers.get_config",
             return_value=_fake_cfg(no_thinking=True),
         ):
             assert _resolve_enable_thinking(r) is False
@@ -118,7 +118,7 @@ class TestResolveEnableThinking:
     def test_unset_returns_none(self):
         """None lets the chat template apply its own default."""
         r = ChatCompletionRequest(messages=[{"role": "user", "content": "hi"}])
-        with patch("vllm_mlx.service.helpers.get_config", return_value=_fake_cfg()):
+        with patch("rapid_mlx.service.helpers.get_config", return_value=_fake_cfg()):
             assert _resolve_enable_thinking(r) is None
 
     def test_string_form_false_tolerated(self):
@@ -127,7 +127,7 @@ class TestResolveEnableThinking:
             messages=[{"role": "user", "content": "hi"}],
             chat_template_kwargs={"enable_thinking": "false"},
         )
-        with patch("vllm_mlx.service.helpers.get_config", return_value=_fake_cfg()):
+        with patch("rapid_mlx.service.helpers.get_config", return_value=_fake_cfg()):
             assert _resolve_enable_thinking(r) is False
 
     def test_string_form_true_tolerated(self):
@@ -135,7 +135,7 @@ class TestResolveEnableThinking:
             messages=[{"role": "user", "content": "hi"}],
             chat_template_kwargs={"enable_thinking": "TRUE"},
         )
-        with patch("vllm_mlx.service.helpers.get_config", return_value=_fake_cfg()):
+        with patch("rapid_mlx.service.helpers.get_config", return_value=_fake_cfg()):
             assert _resolve_enable_thinking(r) is True
 
     def test_garbage_value_in_ctk_falls_through(self):
@@ -145,7 +145,7 @@ class TestResolveEnableThinking:
             chat_template_kwargs={"enable_thinking": 42},
             enable_thinking=True,
         )
-        with patch("vllm_mlx.service.helpers.get_config", return_value=_fake_cfg()):
+        with patch("rapid_mlx.service.helpers.get_config", return_value=_fake_cfg()):
             # ctk value rejected, fall through to top-level
             assert _resolve_enable_thinking(r) is True
 
@@ -156,7 +156,7 @@ class TestResolveEnableThinking:
             chat_template_kwargs={"some_other_key": "x"},
             enable_thinking=False,
         )
-        with patch("vllm_mlx.service.helpers.get_config", return_value=_fake_cfg()):
+        with patch("rapid_mlx.service.helpers.get_config", return_value=_fake_cfg()):
             assert _resolve_enable_thinking(r) is False
 
 
@@ -216,7 +216,7 @@ class TestExtractThinkingFromRequest:
             chat_template_kwargs={"enable_thinking": True},
         )
         with patch(
-            "vllm_mlx.service.helpers.get_config",
+            "rapid_mlx.service.helpers.get_config",
             return_value=_fake_cfg(no_thinking=True),
         ):
             assert _extract_thinking_from_request(r) is True
@@ -227,7 +227,7 @@ class TestExtractThinkingFromRequest:
 
 class TestDflashPrecedence:
     """Mirror of the dflash route's branch in
-    ``vllm_mlx/speculative/dflash/server.py`` — kept in sync via the
+    ``rapid_mlx/speculative/dflash/server.py`` — kept in sync via the
     shared ``_extract_thinking_from_request`` helper.
     """
 
@@ -269,7 +269,7 @@ class TestDflashPrecedence:
             chat_template_kwargs={"enable_thinking": True},
         )
         with patch(
-            "vllm_mlx.service.helpers.get_config",
+            "rapid_mlx.service.helpers.get_config",
             return_value=_fake_cfg(no_thinking=True),
         ):
             assert self._resolve_dflash(no_thinking=False, request=r) is True

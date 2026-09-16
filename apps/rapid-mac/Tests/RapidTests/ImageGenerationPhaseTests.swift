@@ -97,7 +97,7 @@ struct ImageGenerationPhaseTests {
         // The bar is scaled from these before the server reports a live
         // total; a turbo-sized seed on a 20-step model makes the bar slam to
         // full and sit there. Values mirror _DEFAULT_STEPS_BY_FAMILY in
-        // vllm_mlx/image/engine.py.
+        // rapid_mlx/image/engine.py.
         #expect(ImageGenViewModel.seedSteps(for: "qwen-image") == 20)
         #expect(ImageGenViewModel.seedSteps(for: "qwen-image-edit") == 20)
         #expect(ImageGenViewModel.seedSteps(for: "z-image-turbo") == 8)

@@ -30,7 +30,7 @@ def _clear_vendored_register():
 
 
 def test_module_imports():
-    from vllm_mlx.models import deepseek_v4
+    from rapid_mlx.models import deepseek_v4
 
     assert hasattr(deepseek_v4, "Model")
     assert hasattr(deepseek_v4, "ModelArgs")
@@ -40,7 +40,7 @@ def test_module_imports():
 
 
 def test_register_vendored_archs_makes_mlx_lm_loader_find_it():
-    from vllm_mlx.utils.tokenizer import _register_vendored_archs
+    from rapid_mlx.utils.tokenizer import _register_vendored_archs
 
     assert "mlx_lm.models.deepseek_v4" not in sys.modules
     _register_vendored_archs()
@@ -49,14 +49,14 @@ def test_register_vendored_archs_makes_mlx_lm_loader_find_it():
     # mlx-lm's _get_classes() does exactly this lookup.
     mod = importlib.import_module("mlx_lm.models.deepseek_v4")
     assert mod is sys.modules["mlx_lm.models.deepseek_v4"]
-    assert mod.__name__ == "vllm_mlx.models.deepseek_v4"
+    assert mod.__name__ == "rapid_mlx.models.deepseek_v4"
     assert hasattr(mod, "Model")
 
 
 def test_materialize_cache_arrays_flattens_existing_leaf_attributes(monkeypatch):
     import mlx.core as mx
 
-    from vllm_mlx.models import deepseek_v4
+    from rapid_mlx.models import deepseek_v4
 
     class Leaf:
         pass
@@ -80,7 +80,7 @@ def test_materialize_cache_arrays_flattens_existing_leaf_attributes(monkeypatch)
 
 
 def test_materialize_cache_arrays_skips_empty_cache(monkeypatch):
-    from vllm_mlx.models import deepseek_v4
+    from rapid_mlx.models import deepseek_v4
 
     eval_calls = []
     monkeypatch.setattr(deepseek_v4.mx, "eval", lambda *args: eval_calls.append(args))
@@ -89,7 +89,7 @@ def test_materialize_cache_arrays_skips_empty_cache(monkeypatch):
 
 
 def test_register_vendored_archs_is_idempotent():
-    from vllm_mlx.utils.tokenizer import _register_vendored_archs
+    from rapid_mlx.utils.tokenizer import _register_vendored_archs
 
     _register_vendored_archs()
     first = sys.modules["mlx_lm.models.deepseek_v4"]
@@ -103,7 +103,7 @@ def test_heterogeneous_routed_projection_quantization_stays_unfused():
     import mlx.core as mx
     from mlx_lm.models.switch_layers import SwitchGLU
 
-    from vllm_mlx.models import deepseek_v4
+    from rapid_mlx.models import deepseek_v4
 
     args = deepseek_v4.ModelArgs(
         hidden_size=64,
@@ -180,8 +180,8 @@ def test_heterogeneous_routed_projection_quantization_stays_unfused():
 def test_homogeneous_routed_projection_quantization_keeps_fused_fast_path():
     import mlx.core as mx
 
-    from vllm_mlx.models import deepseek_v4
-    from vllm_mlx.models.deepseek_v4_switch import FusedSwitchGLU
+    from rapid_mlx.models import deepseek_v4
+    from rapid_mlx.models.deepseek_v4_switch import FusedSwitchGLU
 
     args = deepseek_v4.ModelArgs(
         hidden_size=64,
@@ -243,7 +243,7 @@ def test_homogeneous_routed_projection_quantization_keeps_fused_fast_path():
 def test_fused_routed_projection_rejects_unpaired_quantization_metadata():
     import mlx.core as mx
 
-    from vllm_mlx.models.deepseek_v4 import _fuse_switch_gate_up_weights
+    from rapid_mlx.models.deepseek_v4 import _fuse_switch_gate_up_weights
 
     prefix = "model.layers.0.ffn.switch_mlp"
     weights = {
@@ -264,7 +264,7 @@ def test_fused_routed_projection_rejects_unpaired_quantization_metadata():
 def test_fused_routed_projection_shape_failure_does_not_mutate_weights():
     import mlx.core as mx
 
-    from vllm_mlx.models.deepseek_v4 import _fuse_switch_gate_up_weights
+    from rapid_mlx.models.deepseek_v4 import _fuse_switch_gate_up_weights
 
     prefix = "model.layers.0.ffn.switch_mlp"
     gate_key = f"{prefix}.gate_proj.weight"
@@ -291,7 +291,7 @@ def test_mtp_projection_fusion_follows_effective_quantization_layout(
 ):
     import mlx.core as mx
 
-    from vllm_mlx.models import deepseek_v4
+    from rapid_mlx.models import deepseek_v4
 
     args = deepseek_v4.ModelArgs(
         num_hidden_layers=1,
@@ -325,7 +325,7 @@ def test_restored_pooling_cache_without_legacy_undo_field_is_safe():
     """Persisted pre-rollback caches must remain inspectable after upgrade."""
     import mlx.core as mx
 
-    from vllm_mlx.models.deepseek_v4_cache import PoolingCache
+    from rapid_mlx.models.deepseek_v4_cache import PoolingCache
 
     cache = PoolingCache.__new__(PoolingCache)
     cache.pooled = mx.zeros((1, 1, 4))
@@ -337,7 +337,7 @@ def test_restored_pooling_cache_without_legacy_undo_field_is_safe():
 def test_restored_batch_pooling_cache_without_legacy_undo_field_is_safe():
     import mlx.core as mx
 
-    from vllm_mlx.models.deepseek_v4_cache import BatchPoolingCache
+    from rapid_mlx.models.deepseek_v4_cache import BatchPoolingCache
 
     cache = BatchPoolingCache.__new__(BatchPoolingCache)
     cache.pooled = mx.zeros((1, 1, 4))
@@ -350,7 +350,7 @@ def test_deepseek_v4_rope_applies_per_row_integer_offsets():
     """Continuous batches may contain caches at different positions."""
     mx = pytest.importorskip("mlx.core")
 
-    from vllm_mlx.models.deepseek_v4 import DeepseekV4RoPE
+    from rapid_mlx.models.deepseek_v4 import DeepseekV4RoPE
 
     rope = DeepseekV4RoPE(dims=4, base=10000.0)
     x = mx.arange(48, dtype=mx.float32).reshape(2, 2, 3, 4) / 10
@@ -366,7 +366,7 @@ def test_deepseek_v4_rope_applies_per_row_integer_offsets():
 def test_deepseek_v4_rope_attention_factor_scales_only_rotary_channels():
     mx = pytest.importorskip("mlx.core")
 
-    from vllm_mlx.models.deepseek_v4 import DeepseekV4RoPE
+    from rapid_mlx.models.deepseek_v4 import DeepseekV4RoPE
 
     scaling = {
         "rope_type": "yarn",
@@ -393,7 +393,7 @@ def test_deepseek_v4_rope_attention_factor_scales_only_rotary_channels():
 def test_batch_pooling_cache_restores_neutral_lengths_and_accepts_zero_padding():
     mx = pytest.importorskip("mlx.core")
 
-    from vllm_mlx.models.deepseek_v4_cache import BatchPoolingCache
+    from rapid_mlx.models.deepseek_v4_cache import BatchPoolingCache
 
     cache = BatchPoolingCache(ratio=4, left_padding=[0, 0])
     cache.prepare(lengths=[3, 3], left_padding=[0, 0])
@@ -410,7 +410,7 @@ def test_batch_pooling_cache_restores_neutral_lengths_and_accepts_zero_padding()
 def test_batch_pooling_cache_rejects_nonzero_left_padding():
     pytest.importorskip("mlx.core")
 
-    from vllm_mlx.models.deepseek_v4_cache import BatchPoolingCache
+    from rapid_mlx.models.deepseek_v4_cache import BatchPoolingCache
 
     cache = BatchPoolingCache(ratio=4, left_padding=[0, 0])
     with pytest.raises(RuntimeError, match="does not support left padding"):
@@ -420,7 +420,7 @@ def test_batch_pooling_cache_rejects_nonzero_left_padding():
 def test_extend_mask_preserves_pooled_mask_without_local_mask():
     mx = pytest.importorskip("mlx.core")
 
-    from vllm_mlx.models.deepseek_v4 import _extend_mask
+    from rapid_mlx.models.deepseek_v4 import _extend_mask
 
     pooled = mx.array([[[True, False]]])
     actual = _extend_mask(None, pooled, N=5)
@@ -433,7 +433,7 @@ def test_extend_mask_preserves_pooled_mask_without_local_mask():
 def test_extend_mask_converts_boolean_pool_mask_to_additive_semantics():
     mx = pytest.importorskip("mlx.core")
 
-    from vllm_mlx.models.deepseek_v4 import _extend_mask
+    from rapid_mlx.models.deepseek_v4 import _extend_mask
 
     local = mx.zeros((1, 1, 1, 3), dtype=mx.float32)
     pooled = mx.array([[[True, False]]])
@@ -448,7 +448,7 @@ def test_extend_mask_converts_boolean_pool_mask_to_additive_semantics():
 def test_hyper_connection_uses_ops_for_non_four_way_multiplicity(monkeypatch):
     mx = pytest.importorskip("mlx.core")
 
-    from vllm_mlx.models import deepseek_v4_hyper_connection as hc
+    from rapid_mlx.models import deepseek_v4_hyper_connection as hc
 
     class Config:
         hc_mult = 2
@@ -476,7 +476,7 @@ def test_hyper_connection_uses_ops_for_non_four_way_multiplicity(monkeypatch):
 def test_batch_pooling_cache_empty_batch_is_a_noop():
     mx = pytest.importorskip("mlx.core")
 
-    from vllm_mlx.models.deepseek_v4_cache import BatchPoolingCache
+    from rapid_mlx.models.deepseek_v4_cache import BatchPoolingCache
 
     cache = BatchPoolingCache(ratio=4, left_padding=[])
     kv = mx.zeros((0, 2, 3), dtype=mx.float16)
@@ -492,7 +492,7 @@ def test_batch_pooling_cache_empty_batch_is_a_noop():
 def test_batch_pooling_cache_merge_preserves_projection_dtypes():
     mx = pytest.importorskip("mlx.core")
 
-    from vllm_mlx.models.deepseek_v4_cache import (
+    from rapid_mlx.models.deepseek_v4_cache import (
         BatchPoolingCache,
         PoolingCache,
     )
@@ -512,8 +512,8 @@ def test_scheduler_reconstructs_vendored_cache_list_at_prefill_boundary():
 
     from mlx_lm.models.cache import CacheList, RotatingKVCache
 
-    from vllm_mlx.models.deepseek_v4_cache import DeepseekV4PoolingCache
-    from vllm_mlx.scheduler import Scheduler
+    from rapid_mlx.models.deepseek_v4_cache import DeepseekV4PoolingCache
+    from rapid_mlx.scheduler import Scheduler
 
     rotating = RotatingKVCache(max_size=128)
     keys = mx.zeros((1, 1, 3, 4))
@@ -538,7 +538,7 @@ def test_scheduler_rejects_mismatched_vendored_cache_list_metadata():
 
     from mlx_lm.models.cache import CacheList
 
-    from vllm_mlx.scheduler import Scheduler
+    from rapid_mlx.scheduler import Scheduler
 
     scheduler = Scheduler.__new__(Scheduler)
     states = [
@@ -562,7 +562,7 @@ def test_tiny_model_forward_pass():
     """
     import mlx.core as mx
 
-    from vllm_mlx.models import deepseek_v4
+    from rapid_mlx.models import deepseek_v4
 
     args = deepseek_v4.ModelArgs(
         model_type="deepseek_v4",
@@ -602,7 +602,7 @@ def test_csa_cached_decode_matches_single_prefill():
     """CSA overlap state must survive an incremental forward boundary."""
     mx = pytest.importorskip("mlx.core")
 
-    from vllm_mlx.models import deepseek_v4
+    from rapid_mlx.models import deepseek_v4
 
     args = deepseek_v4.ModelArgs(
         model_type="deepseek_v4",
@@ -648,7 +648,7 @@ def test_tiny_model_decodes_merged_caches_with_different_offsets():
     """Regression for mixed-length continuous batching on compressed layers."""
     mx = pytest.importorskip("mlx.core")
 
-    from vllm_mlx.models import deepseek_v4
+    from rapid_mlx.models import deepseek_v4
 
     args = deepseek_v4.ModelArgs(
         model_type="deepseek_v4",
@@ -698,7 +698,7 @@ if __name__ == "__main__":
 def test_deepseek_v4_dspark_drafts_checkpoint_block():
     import mlx.core as mx
 
-    from vllm_mlx.models.deepseek_v4 import Model, ModelArgs
+    from rapid_mlx.models.deepseek_v4 import Model, ModelArgs
 
     args = ModelArgs(
         vocab_size=128,
@@ -763,8 +763,8 @@ def test_dspark_verify_matches_sequential_decode_cache_views():
 
     import mlx.core as mx
 
-    from vllm_mlx.models.deepseek_v4 import Model, ModelArgs
-    from vllm_mlx.models.deepseek_v4_rollback import armed
+    from rapid_mlx.models.deepseek_v4 import Model, ModelArgs
+    from rapid_mlx.models.deepseek_v4_rollback import armed
 
     args = ModelArgs(
         vocab_size=128,

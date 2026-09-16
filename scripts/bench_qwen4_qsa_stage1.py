@@ -17,7 +17,7 @@ from importlib.metadata import version
 import mlx.core as mx
 import numpy as np
 
-from vllm_mlx.kernels.qsa_stage1 import qsa_stage1_select
+from rapid_mlx.kernels.qsa_stage1 import qsa_stage1_select
 
 try:
     from scripts.bench_metadata import format_bench_json

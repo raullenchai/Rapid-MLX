@@ -10,14 +10,14 @@ from types import SimpleNamespace
 import pytest
 from PIL import Image
 
-from vllm_mlx import _download_gate
-from vllm_mlx.image.engine import (
+from rapid_mlx import _download_gate
+from rapid_mlx.image.engine import (
     ImageGenerationCancelled,
     ImageGenerationEngine,
     ImageRuntimeError,
     _detect_family,
 )
-from vllm_mlx.model_aliases import resolve_profile
+from rapid_mlx.model_aliases import resolve_profile
 
 REPO = _download_gate.SD35_REPO
 REVISION = _download_gate.SD35_REVISION
@@ -49,11 +49,11 @@ def test_sd35_family_detection(name: str) -> None:
 
 def test_sd35_alias_has_composite_size_and_native_catalog_adapter() -> None:
     sizes = json.loads(
-        (Path(__file__).parents[1] / "vllm_mlx/model_sizes.json").read_text()
+        (Path(__file__).parents[1] / "rapid_mlx/model_sizes.json").read_text()
     )["sizes"]
     assert sizes[REPO] == 16_378_940_179
 
-    from vllm_mlx.catalog.legacy import _main_capabilities
+    from rapid_mlx.catalog.legacy import _main_capabilities
 
     capabilities = _main_capabilities(resolve_profile("sd35-large-4bit"))
     assert capabilities["runtime_adapter"] == "rapid_mlx/sd35"
@@ -200,7 +200,7 @@ def test_pinned_snapshot_fails_closed_for_unavailable_or_unsafe_cache(
 def test_pull_fetches_all_three_exact_allowlisted_snapshots(
     monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str], requested: str
 ) -> None:
-    from vllm_mlx import cli
+    from rapid_mlx import cli
 
     calls = []
     monkeypatch.setattr(
@@ -296,7 +296,7 @@ def test_engine_runtime_asset_download_is_local_noop_and_fail_closed(
 def test_direct_pull_of_an_auxiliary_repo_keeps_generic_semantics(
     monkeypatch: pytest.MonkeyPatch, repo: str
 ) -> None:
-    from vllm_mlx import cli
+    from rapid_mlx import cli
 
     calls = []
     monkeypatch.setattr(
@@ -313,7 +313,7 @@ def test_direct_pull_of_an_auxiliary_repo_keeps_generic_semantics(
 def test_runtime_accepts_only_complete_local_assets_and_forwards_generation(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
-    from vllm_mlx.image.sd35_runtime import runtime
+    from rapid_mlx.image.sd35_runtime import runtime
 
     model = tmp_path / "model"
     shared = tmp_path / "shared"
@@ -393,8 +393,8 @@ def test_runtime_accepts_hf_blob_symlinks_but_rejects_external_ones(
 ) -> None:
     import mlx.core as mx
 
-    from vllm_mlx.image.sd35_runtime import runtime
-    from vllm_mlx.image.sd35_runtime._vendor import model_io
+    from rapid_mlx.image.sd35_runtime import runtime
+    from rapid_mlx.image.sd35_runtime._vendor import model_io
 
     repo_root = tmp_path / "models--publisher--model"
     snapshot = repo_root / "snapshots" / "revision"
@@ -428,7 +428,7 @@ def test_t5_low_memory_scope_restores_the_callers_allocator_limit(
     import mlx.core as mx
     import mlx.nn as nn
 
-    from vllm_mlx.image.sd35_runtime._vendor.t5 import TransformerEncoder
+    from rapid_mlx.image.sd35_runtime._vendor.t5 import TransformerEncoder
 
     class Layer:
         def __call__(self, value, *, mask):
@@ -465,7 +465,7 @@ def test_t5_low_memory_scope_restores_the_callers_allocator_limit(
 def test_sd35_cancellation_restores_cached_modulation_weights() -> None:
     import mlx.core as mx
 
-    from vllm_mlx.image.sd35_runtime._vendor.pipeline import sample_euler
+    from rapid_mlx.image.sd35_runtime._vendor.pipeline import sample_euler
 
     class Sampler:
         @staticmethod
@@ -506,7 +506,7 @@ def test_sd35_cancellation_restores_cached_modulation_weights() -> None:
 def test_engine_build_dispatch_progress_cancel_and_validation(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    from vllm_mlx.image import sd35_runtime
+    from rapid_mlx.image import sd35_runtime
 
     built = []
 
@@ -588,7 +588,7 @@ def test_engine_build_dispatch_progress_cancel_and_validation(
 def test_sd35_preflight_uses_bundled_runtime_dependencies(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    from vllm_mlx.runtime import image_lane
+    from rapid_mlx.runtime import image_lane
 
     probes = []
     monkeypatch.setattr(
@@ -601,7 +601,7 @@ def test_sd35_preflight_uses_bundled_runtime_dependencies(
 
 
 def test_vendored_runtime_provenance_and_model_license_boundary() -> None:
-    root = Path(__file__).parents[1] / "vllm_mlx/image/sd35_runtime"
+    root = Path(__file__).parents[1] / "rapid_mlx/image/sd35_runtime"
     assert "498e5dba5fb48b0f01cb6b5c2292a6dbea67a317" in (root / "NOTICE").read_text()
     assert "MIT License" in (root / "LICENSE").read_text()
     assert not list(root.rglob("*.safetensors"))

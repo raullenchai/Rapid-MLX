@@ -30,7 +30,7 @@ Transports under test:
 Each transport is covered for BOTH streaming and non-streaming paths.
 
 The fix lives at a single source of truth
-(``vllm_mlx.service.helpers._apply_reasoning_cutoff_notice``); these
+(``rapid_mlx.service.helpers._apply_reasoning_cutoff_notice``); these
 tests pin the user-visible behaviour on every route boundary so the
 helper cannot drift between surfaces.
 """
@@ -42,7 +42,7 @@ import re
 
 import pytest
 
-from vllm_mlx.service.helpers import REASONING_CUTOFF_SENTINEL
+from rapid_mlx.service.helpers import REASONING_CUTOFF_SENTINEL
 
 # Substrings that flag synthetic truncation text. Case-insensitive.
 _TRUNCATED_SUBSTRING = "truncated"
@@ -75,7 +75,7 @@ class _LengthCutMidThinkEngine:
         return 4
 
     async def chat(self, messages, **kwargs):
-        from vllm_mlx.engine.base import GenerationOutput
+        from rapid_mlx.engine.base import GenerationOutput
 
         self.chat_calls.append({"messages": messages, "kwargs": kwargs})
         return GenerationOutput(
@@ -93,7 +93,7 @@ class _LengthCutMidThinkEngine:
         # so the streaming postprocessor exercises the per-delta path,
         # then close with ``finish_reason="length"`` without ever
         # emitting ``</think>``.
-        from vllm_mlx.engine.base import GenerationOutput
+        from rapid_mlx.engine.base import GenerationOutput
 
         deltas = [
             "<think>Reasoning ",
@@ -118,7 +118,7 @@ class _LengthCutMidThinkEngine:
 def _seed_cfg(cfg):
     """Common cfg shape for every test below: qwen3 reasoning parser +
     length-cut mock engine."""
-    from vllm_mlx.reasoning.qwen3_parser import Qwen3ReasoningParser
+    from rapid_mlx.reasoning.qwen3_parser import Qwen3ReasoningParser
 
     cfg.engine = _LengthCutMidThinkEngine()
     cfg.model_name = "test-model"
@@ -192,8 +192,8 @@ def test_chat_completions_nonstream_no_truncated_injection():
     from fastapi import FastAPI
     from fastapi.testclient import TestClient
 
-    from vllm_mlx.config import reset_config
-    from vllm_mlx.routes.chat import router as chat_router
+    from rapid_mlx.config import reset_config
+    from rapid_mlx.routes.chat import router as chat_router
 
     cfg = reset_config()
     _seed_cfg(cfg)
@@ -240,8 +240,8 @@ def test_chat_completions_stream_no_truncated_injection():
     from fastapi import FastAPI
     from fastapi.testclient import TestClient
 
-    from vllm_mlx.config import reset_config
-    from vllm_mlx.routes.chat import router as chat_router
+    from rapid_mlx.config import reset_config
+    from rapid_mlx.routes.chat import router as chat_router
 
     cfg = reset_config()
     _seed_cfg(cfg)
@@ -306,8 +306,8 @@ def test_responses_nonstream_no_truncated_injection():
     from fastapi import FastAPI
     from fastapi.testclient import TestClient
 
-    from vllm_mlx.config import reset_config
-    from vllm_mlx.routes.responses import router as responses_router
+    from rapid_mlx.config import reset_config
+    from rapid_mlx.routes.responses import router as responses_router
 
     cfg = reset_config()
     _seed_cfg(cfg)
@@ -355,8 +355,8 @@ def test_responses_stream_no_truncated_injection():
     from fastapi import FastAPI
     from fastapi.testclient import TestClient
 
-    from vllm_mlx.config import reset_config
-    from vllm_mlx.routes.responses import router as responses_router
+    from rapid_mlx.config import reset_config
+    from rapid_mlx.routes.responses import router as responses_router
 
     cfg = reset_config()
     _seed_cfg(cfg)
@@ -409,8 +409,8 @@ def test_messages_nonstream_no_truncated_injection():
     from fastapi import FastAPI
     from fastapi.testclient import TestClient
 
-    from vllm_mlx.config import reset_config
-    from vllm_mlx.routes.anthropic import router as anthropic_router
+    from rapid_mlx.config import reset_config
+    from rapid_mlx.routes.anthropic import router as anthropic_router
 
     cfg = reset_config()
     _seed_cfg(cfg)
@@ -459,8 +459,8 @@ def test_messages_stream_no_truncated_injection():
     from fastapi import FastAPI
     from fastapi.testclient import TestClient
 
-    from vllm_mlx.config import reset_config
-    from vllm_mlx.routes.anthropic import router as anthropic_router
+    from rapid_mlx.config import reset_config
+    from rapid_mlx.routes.anthropic import router as anthropic_router
 
     cfg = reset_config()
     _seed_cfg(cfg)
@@ -512,7 +512,7 @@ def test_helper_returns_none_on_opt_out_env(monkeypatch):
     default back to ON), the helper must be a strict no-op. Pins that
     no synthetic text can leak under the opt-out path even if a future
     route call site forgets to pass every predicate."""
-    from vllm_mlx.service.helpers import _apply_reasoning_cutoff_notice
+    from rapid_mlx.service.helpers import _apply_reasoning_cutoff_notice
 
     monkeypatch.setenv("RAPID_MLX_REASONING_CUTOFF_NOTICE", "disabled")
     result = _apply_reasoning_cutoff_notice(
@@ -538,16 +538,16 @@ def test_no_truncated_literal_in_route_module_call_sites():
 
     pattern = re.compile(r"\[truncated.*reasoning incomplete")
     for module_name in (
-        "vllm_mlx.routes.chat",
-        "vllm_mlx.routes.responses",
-        "vllm_mlx.routes.anthropic",
+        "rapid_mlx.routes.chat",
+        "rapid_mlx.routes.responses",
+        "rapid_mlx.routes.anthropic",
     ):
         mod = importlib.import_module(module_name)
         src = inspect.getsource(mod)
         assert not pattern.search(src), (
             f"R-01 single-source-of-truth: the truncated sentinel literal "
             f"must NOT appear inline in {module_name}; it is defined once "
-            f"in vllm_mlx.service.helpers.REASONING_CUTOFF_SENTINEL and "
+            f"in rapid_mlx.service.helpers.REASONING_CUTOFF_SENTINEL and "
             f"applied via _apply_reasoning_cutoff_notice. A literal here "
             f"indicates a regex band-aid that bypasses the helper."
         )

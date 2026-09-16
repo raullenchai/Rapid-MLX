@@ -3,7 +3,7 @@
 
 Five OpenAI-compatible sampling parameters (top_k, min_p, repetition_penalty,
 presence_penalty, frequency_penalty) are accepted by ``SamplingParams`` in
-``vllm_mlx/request.py`` and honoured by the underlying mlx-lm engine, but
+``rapid_mlx/request.py`` and honoured by the underlying mlx-lm engine, but
 were silently dropped at three API-layer boundaries:
 
   1. ``ChatCompletionRequest`` / ``CompletionRequest`` (api/models.py) —
@@ -26,8 +26,8 @@ import pytest
 
 pytestmark = pytest.mark.requires_mlx
 
-from vllm_mlx.api.models import ChatCompletionRequest, CompletionRequest
-from vllm_mlx.request import SamplingParams
+from rapid_mlx.api.models import ChatCompletionRequest, CompletionRequest
+from rapid_mlx.request import SamplingParams
 
 # A realistic payload — Qwen3.6 published coding-tuned sampling.
 QWEN36_CODING_PAYLOAD = {
@@ -115,10 +115,10 @@ def _build_chat_kwargs(req: ChatCompletionRequest) -> dict:
     """Replay the same kwargs-build logic the route handler runs, isolated
     from the route's many other dependencies (engine, cfg, multimodal, etc.).
 
-    This must stay aligned with vllm_mlx/routes/chat.py around the
+    This must stay aligned with rapid_mlx/routes/chat.py around the
     ``chat_kwargs = { ... }`` block — if that block moves, update here.
     """
-    from vllm_mlx.routes.chat import _resolve_temperature, _resolve_top_p
+    from rapid_mlx.routes.chat import _resolve_temperature, _resolve_top_p
 
     chat_kwargs: dict = {
         "max_tokens": req.max_tokens or 256,
@@ -214,7 +214,7 @@ def test_completion_route_forwards_extended_params_to_engine():
     )
 
     # Replay the route handler's extended_kwargs assembly — kept aligned with
-    # vllm_mlx/routes/completions.py. If that loop moves, update here.
+    # rapid_mlx/routes/completions.py. If that loop moves, update here.
     extended_kwargs: dict = {}
     for name in (
         "top_k",
@@ -327,7 +327,7 @@ def test_scheduler_create_batch_generator_passes_top_k(monkeypatch):
     Driven through the real production code path so a future refactor that
     bypasses _create_batch_generator won't sneak past this test.
     """
-    import vllm_mlx.scheduler as sch
+    import rapid_mlx.scheduler as sch
 
     captured = {}
 
@@ -414,7 +414,7 @@ def test_all_scheduler_make_sampler_calls_pass_top_k():
     """
     from pathlib import Path
 
-    src = Path("vllm_mlx/scheduler.py").read_text()
+    src = Path("rapid_mlx/scheduler.py").read_text()
 
     import re
 
@@ -479,7 +479,7 @@ def test_scheduler_overrides_openai_penalty_context_size():
     """
     from pathlib import Path
 
-    src = Path("vllm_mlx/scheduler.py").read_text()
+    src = Path("rapid_mlx/scheduler.py").read_text()
 
     # Find the `make_logits_processors(` call in the penalty wiring block
     # and capture its parenthesised arg list intact.

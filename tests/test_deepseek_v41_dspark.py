@@ -9,7 +9,7 @@ pytestmark = pytest.mark.requires_mlx
 
 import mlx.core as mx
 
-from vllm_mlx.models.deepseek_v41_native.dspark import (
+from rapid_mlx.models.deepseek_v41_native.dspark import (
     DSpark,
     DSparkWeights,
     Weights,

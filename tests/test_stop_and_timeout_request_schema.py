@@ -30,7 +30,7 @@ from fastapi.testclient import TestClient
 @pytest.fixture
 def patched_config():
     """Patch the global config singleton and restore on teardown."""
-    from vllm_mlx.config import get_config
+    from rapid_mlx.config import get_config
 
     cfg = get_config()
     saved: dict = {}
@@ -65,8 +65,8 @@ def _stub_engine_cfg(patch_cfg):
 
 @pytest.fixture
 def chat_client(patched_config, monkeypatch):
-    from vllm_mlx.middleware.exception_handlers import install_exception_handlers
-    from vllm_mlx.routes import chat as chat_route
+    from rapid_mlx.middleware.exception_handlers import install_exception_handlers
+    from rapid_mlx.routes import chat as chat_route
 
     engine = _stub_engine_cfg(patched_config)
     monkeypatch.setattr(chat_route, "get_engine", lambda *_a, **_kw: engine)
@@ -79,8 +79,8 @@ def chat_client(patched_config, monkeypatch):
 
 @pytest.fixture
 def completion_client(patched_config, monkeypatch):
-    from vllm_mlx.middleware.exception_handlers import install_exception_handlers
-    from vllm_mlx.routes import completions as comp_route
+    from rapid_mlx.middleware.exception_handlers import install_exception_handlers
+    from rapid_mlx.routes import completions as comp_route
 
     engine = _stub_engine_cfg(patched_config)
     monkeypatch.setattr(comp_route, "get_engine", lambda *_a, **_kw: engine)

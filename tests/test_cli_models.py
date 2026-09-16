@@ -13,8 +13,8 @@ from unittest.mock import patch
 
 import pytest
 
-from vllm_mlx import cli
-from vllm_mlx.model_aliases import (
+from rapid_mlx import cli
+from rapid_mlx.model_aliases import (
     RetiredModelAliasError,
     list_profiles,
     resolve_model,
@@ -27,7 +27,7 @@ def _capture_models_output() -> str:
     buf = io.StringIO()
     with (
         patch.object(sys, "stdout", buf),
-        patch("vllm_mlx._version_check.print_staleness_warning_if_any"),
+        patch("rapid_mlx._version_check.print_staleness_warning_if_any"),
     ):
         cli.models_command(None)
     return buf.getvalue()
@@ -58,17 +58,17 @@ def test_gemma4_load_fallback_prints_validated_runtime(monkeypatch, capsys):
     # reaches the model-load boundary.  Keep this recovery-hint test runnable
     # in the no-MLX Linux matrix by replacing only those lazy imports; none of
     # their runtime behavior is exercised because ``FailedLoad`` aborts first.
-    engine_core = ModuleType("vllm_mlx.engine_core")
+    engine_core = ModuleType("rapid_mlx.engine_core")
     engine_core.AsyncEngineCore = object
     engine_core.EngineConfig = object
     engine_core._init_mlx_step_thread = lambda: None
-    scheduler = ModuleType("vllm_mlx.scheduler")
+    scheduler = ModuleType("rapid_mlx.scheduler")
     scheduler.SchedulerConfig = object
-    tokenizer = ModuleType("vllm_mlx.utils.tokenizer")
+    tokenizer = ModuleType("rapid_mlx.utils.tokenizer")
     tokenizer.load_model_with_fallback = lambda *_args, **_kwargs: None
-    monkeypatch.setitem(sys.modules, "vllm_mlx.engine_core", engine_core)
-    monkeypatch.setitem(sys.modules, "vllm_mlx.scheduler", scheduler)
-    monkeypatch.setitem(sys.modules, "vllm_mlx.utils.tokenizer", tokenizer)
+    monkeypatch.setitem(sys.modules, "rapid_mlx.engine_core", engine_core)
+    monkeypatch.setitem(sys.modules, "rapid_mlx.scheduler", scheduler)
+    monkeypatch.setitem(sys.modules, "rapid_mlx.utils.tokenizer", tokenizer)
 
     class FailedLoad:
         def result(self):
@@ -85,10 +85,10 @@ def test_gemma4_load_fallback_prints_validated_runtime(monkeypatch, capsys):
             assert wait is False
 
     monkeypatch.setattr(
-        "vllm_mlx.community_bench.hardware.is_apple_silicon", lambda: True
+        "rapid_mlx.community_bench.hardware.is_apple_silicon", lambda: True
     )
     monkeypatch.setattr(
-        "vllm_mlx.model_aliases.resolve_profile",
+        "rapid_mlx.model_aliases.resolve_profile",
         lambda _alias: SimpleNamespace(hf_path="org/gemma-4-test"),
     )
     monkeypatch.setattr(cli, "_check_disk_space", lambda *_args, **_kwargs: None)
@@ -375,7 +375,7 @@ def test_models_cached_flag_routes_to_cached_view(monkeypatch, capsys):
 
     with (
         patch.object(sys, "argv", ["rapid-mlx", "models", "--cached"]),
-        patch("vllm_mlx._version_check.print_staleness_warning_if_any"),
+        patch("rapid_mlx._version_check.print_staleness_warning_if_any"),
     ):
         cli.main()
     out = capsys.readouterr().out
@@ -389,7 +389,7 @@ def test_models_default_view_unchanged(monkeypatch, capsys):
     --cached is opt-in. Backward-compat contract."""
     with (
         patch.object(sys, "argv", ["rapid-mlx", "models"]),
-        patch("vllm_mlx._version_check.print_staleness_warning_if_any"),
+        patch("rapid_mlx._version_check.print_staleness_warning_if_any"),
     ):
         cli.main()
     out = capsys.readouterr().out
@@ -400,7 +400,7 @@ def test_models_default_view_unchanged(monkeypatch, capsys):
 def test_cached_view_renders_alias_for_known_repo(tmp_path, monkeypatch, capsys):
     """A cached HF repo whose path matches an alias should render under
     the alias name (e.g. ``qwen3.5-4b-4bit``), not the raw HF path."""
-    from vllm_mlx.model_aliases import list_profiles
+    from rapid_mlx.model_aliases import list_profiles
 
     profiles = list_profiles()
     # Pick any alias for the test; we'll synthesize a fake cache entry
@@ -522,7 +522,7 @@ def test_runnable_recognizes_complete_pinned_wan_repo(tmp_path, monkeypatch):
     only the Wan-specific probe sees this warm cache; ``_cache_entry_is_runnable``
     must report it ready (not re-download on every start).
     """
-    from vllm_mlx.video.wan import WAN_REVISIONS
+    from rapid_mlx.video.wan import WAN_REVISIONS
 
     repo = "Anes1032/Wan2.2-TI2V-5B-mlx-q8"
     pinned_sha = WAN_REVISIONS[repo]
@@ -583,7 +583,7 @@ def test_cache_entry_not_runnable_for_metadata_only_kokoro(tmp_path, monkeypatch
 
 def test_runnable_rejects_incomplete_pinned_wan_repo(tmp_path, monkeypatch):
     """A cached Wan repo missing a verified weight is NOT runnable."""
-    from vllm_mlx.video.wan import WAN_REVISIONS
+    from rapid_mlx.video.wan import WAN_REVISIONS
 
     repo = "Anes1032/Wan2.2-TI2V-5B-mlx-q8"
     pinned_sha = WAN_REVISIONS[repo]
@@ -606,7 +606,7 @@ def test_runnable_rejects_incomplete_pinned_wan_repo(tmp_path, monkeypatch):
 
 def test_cached_view_marks_known_partial_repo_incomplete(tmp_path, monkeypatch, capsys):
     """Metadata-only cache directories must not advertise an alias as ready."""
-    from vllm_mlx.model_aliases import list_profiles
+    from rapid_mlx.model_aliases import list_profiles
 
     alias, profile = next(iter(list_profiles().items()))
     cache_root = tmp_path / "hf-cache"
@@ -713,7 +713,7 @@ def test_format_bytes_unit_selection():
     """``_format_bytes`` picks the largest unit where value >= 1.
 
     Suffixes are IEC base-1024 (KiB/MiB/GiB) — aligned with
-    ``_format_size`` in ``vllm_mlx._download_gate`` so the same byte
+    ``_format_size`` in ``rapid_mlx._download_gate`` so the same byte
     count is rendered identically by ``ls --cached`` and the B2 prompt
     (DeepSeek round-3 NIT #4)."""
     assert cli._format_bytes(0) == "0 B"
@@ -1219,7 +1219,7 @@ def test_registered_alias_resolves_to_external_hf_layout(tmp_path, monkeypatch):
     model = _write_mlx_model(root.joinpath(*profile.hf_path.split("/")))
     monkeypatch.setenv("RAPID_MLX_EXTRA_MODEL_ROOTS", str(root))
     monkeypatch.setattr(
-        "vllm_mlx.model_aliases._managed_hub_model_is_runnable", lambda _name: False
+        "rapid_mlx.model_aliases._managed_hub_model_is_runnable", lambda _name: False
     )
 
     assert resolve_model("qwen3.5-4b-4bit") == os.path.realpath(model)
@@ -1279,7 +1279,7 @@ def test_external_scan_skips_model_when_completeness_probe_races(tmp_path, monke
     def vanished(_directory):
         raise PermissionError("directory disappeared during completeness probe")
 
-    monkeypatch.setattr("vllm_mlx._download_gate._snapshot_is_complete", vanished)
+    monkeypatch.setattr("rapid_mlx._download_gate._snapshot_is_complete", vanished)
 
     assert cli._scan_external_model_dirs([str(root)]) == []
 
@@ -1334,7 +1334,7 @@ def test_registered_alias_prefers_root_level_external_directory(tmp_path, monkey
     _write_mlx_model(model)
     monkeypatch.setenv("RAPID_MLX_EXTRA_MODEL_ROOTS", str(root))
     monkeypatch.setattr(
-        "vllm_mlx.model_aliases._managed_hub_model_is_runnable", lambda _name: False
+        "rapid_mlx.model_aliases._managed_hub_model_is_runnable", lambda _name: False
     )
 
     assert resolve_model("qwen3.5-4b-4bit") == os.path.realpath(model)
@@ -1348,7 +1348,7 @@ def test_external_resolution_tolerates_completeness_race(tmp_path, monkeypatch):
     def vanished(_directory):
         raise PermissionError("drive unplugged during launch")
 
-    monkeypatch.setattr("vllm_mlx._download_gate._snapshot_is_complete", vanished)
+    monkeypatch.setattr("rapid_mlx._download_gate._snapshot_is_complete", vanished)
 
     assert resolve_model("local-model") == "local-model"
 
@@ -1358,7 +1358,7 @@ def test_runnable_managed_hub_copy_wins_over_external_copy(tmp_path, monkeypatch
     _write_mlx_model(root / "local-model")
     monkeypatch.setenv("RAPID_MLX_EXTRA_MODEL_ROOTS", str(root))
     monkeypatch.setattr(
-        "vllm_mlx.model_aliases._managed_hub_model_is_runnable", lambda _name: True
+        "rapid_mlx.model_aliases._managed_hub_model_is_runnable", lambda _name: True
     )
 
     assert resolve_model("local-model") == "local-model"
@@ -1568,7 +1568,7 @@ def test_staleness_call_site_is_invoked(command_factory, args_factory):
         raise _ReachedStalenessCallError
 
     with (
-        patch("vllm_mlx._version_check.print_staleness_warning_if_any", _fake),
+        patch("rapid_mlx._version_check.print_staleness_warning_if_any", _fake),
         pytest.raises(_ReachedStalenessCallError),
     ):
         command_factory()(args_factory())

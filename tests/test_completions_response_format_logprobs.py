@@ -32,10 +32,10 @@ import json
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
-from vllm_mlx.config import reset_config
-from vllm_mlx.engine.base import GenerationOutput
-from vllm_mlx.middleware.exception_handlers import install_exception_handlers
-from vllm_mlx.routes.completions import router as completions_router
+from rapid_mlx.config import reset_config
+from rapid_mlx.engine.base import GenerationOutput
+from rapid_mlx.middleware.exception_handlers import install_exception_handlers
+from rapid_mlx.routes.completions import router as completions_router
 
 # A fenced-JSON output that vlad r10-R1 / bo r10-R1 reproduced on the
 # wire. The fence-strip helper (``extract_json_from_response``) must

@@ -224,27 +224,27 @@ revision:
 
 ```bash
 grep -rn "endored from\|orted from\|dapted from\|derive[sd] from" \
-    vllm_mlx/ videox_fun_mlx/
+    rapid_mlx/ videox_fun_mlx/
 ```
 
 The largest and most self-contained components:
 
 | Component | Upstream | Upstream license | In-tree |
 | --- | --- | --- | --- |
-| MLX Stable Audio 3 | https://github.com/Stability-AI/stable-audio-3 | MIT | `vllm_mlx/audio/sa3/` (`LICENSE`, `NOTICE`) |
-| Bonsai Image low-bit FLUX.2 core | https://github.com/PrismML-Eng/mflux-prism (`bcd13e8`) | MIT | `vllm_mlx/image/bonsai_runtime/_vendor/` (`LICENSE`, `NOTICE`) |
+| MLX Stable Audio 3 | https://github.com/Stability-AI/stable-audio-3 | MIT | `rapid_mlx/audio/sa3/` (`LICENSE`, `NOTICE`) |
+| Bonsai Image low-bit FLUX.2 core | https://github.com/PrismML-Eng/mflux-prism (`bcd13e8`) | MIT | `rapid_mlx/image/bonsai_runtime/_vendor/` (`LICENSE`, `NOTICE`) |
 | CogVideoX-Fun MLX | https://github.com/dgrauet/VideoX-Fun-mlx | Apache-2.0 | `videox_fun_mlx/` (`LICENSE`, `NOTICE`) |
-| TurboQuant Metal kernels | https://github.com/arozanov/turboquant-mlx | Apache-2.0 | `vllm_mlx/kernels/turboquant_fused.metal` |
-| GLM-5 Next image processor | https://github.com/jundot/omlx (`c520d7e`) | Apache-2.0 | `vllm_mlx/patches/glm5_next_processor.py` |
-| GLM-5 Next text runtime | https://github.com/Blaizzy/mlx-vlm (`f9e2c50`, `bffd485`) | MIT | `vllm_mlx/patches/glm5_next_runtime.py` |
-| Cache-owned MTP transaction and GLM drafter adapter | https://github.com/Blaizzy/mlx-vlm (PR #2206) | MIT | `vllm_mlx/speculative/native_mtp/transaction.py`, `glm5_compat.py` |
-| Gemma 4 model classes | https://github.com/Blaizzy/mlx-vlm (v0.6.3) | MIT | `vllm_mlx/models/gemma4_vendored/` |
-| Hunyuan 3 model class | https://github.com/ml-explore/mlx-lm (PR #1211) | MIT | `vllm_mlx/models/hy_v3.py` |
-| DeepSeek V4 model classes | https://github.com/ml-explore/mlx-lm (`_ds4` branch, © Apple Inc.) | MIT | `vllm_mlx/models/deepseek_v4.py`, `deepseek_v4_cache.py`, `deepseek_v4_hyper_connection.py`, `deepseek_v4_switch.py` |
-| Stable Diffusion 3.5 Large MLX runtime | https://github.com/argmaxinc/DiffusionKit (`498e5db`) | MIT | `vllm_mlx/image/sd35_runtime/` (`LICENSE`, `NOTICE`) |
-| MTP speculative-decoding head + generator | https://github.com/ml-explore/mlx-lm (PR #990) | MIT | `vllm_mlx/spec_decode/mtp/head.py`, `generator.py` |
-| Request/status model, adapted | https://github.com/vllm-project/vllm | Apache-2.0 | `vllm_mlx/request.py` |
-| Several tool parsers, ported | https://github.com/vllm-project/vllm, https://github.com/sgl-project/sglang | Apache-2.0 | `vllm_mlx/tool_parsers/` |
+| TurboQuant Metal kernels | https://github.com/arozanov/turboquant-mlx | Apache-2.0 | `rapid_mlx/kernels/turboquant_fused.metal` |
+| GLM-5 Next image processor | https://github.com/jundot/omlx (`c520d7e`) | Apache-2.0 | `rapid_mlx/patches/glm5_next_processor.py` |
+| GLM-5 Next text runtime | https://github.com/Blaizzy/mlx-vlm (`f9e2c50`, `bffd485`) | MIT | `rapid_mlx/patches/glm5_next_runtime.py` |
+| Cache-owned MTP transaction and GLM drafter adapter | https://github.com/Blaizzy/mlx-vlm (PR #2206) | MIT | `rapid_mlx/speculative/native_mtp/transaction.py`, `glm5_compat.py` |
+| Gemma 4 model classes | https://github.com/Blaizzy/mlx-vlm (v0.6.3) | MIT | `rapid_mlx/models/gemma4_vendored/` |
+| Hunyuan 3 model class | https://github.com/ml-explore/mlx-lm (PR #1211) | MIT | `rapid_mlx/models/hy_v3.py` |
+| DeepSeek V4 model classes | https://github.com/ml-explore/mlx-lm (`_ds4` branch, © Apple Inc.) | MIT | `rapid_mlx/models/deepseek_v4.py`, `deepseek_v4_cache.py`, `deepseek_v4_hyper_connection.py`, `deepseek_v4_switch.py` |
+| Stable Diffusion 3.5 Large MLX runtime | https://github.com/argmaxinc/DiffusionKit (`498e5db`) | MIT | `rapid_mlx/image/sd35_runtime/` (`LICENSE`, `NOTICE`) |
+| MTP speculative-decoding head + generator | https://github.com/ml-explore/mlx-lm (PR #990) | MIT | `rapid_mlx/spec_decode/mtp/head.py`, `generator.py` |
+| Request/status model, adapted | https://github.com/vllm-project/vllm | Apache-2.0 | `rapid_mlx/request.py` |
+| Several tool parsers, ported | https://github.com/vllm-project/vllm, https://github.com/sgl-project/sglang | Apache-2.0 | `rapid_mlx/tool_parsers/` |
 
 Two notes on reading that table:
 
@@ -253,7 +253,7 @@ Two notes on reading that table:
   carry a rapid-mlx `SPDX-License-Identifier` header — that stamp reflects
   this repository's own default and does not override the upstream terms
   above.
-* The sibling files under `vllm_mlx/models/deepseek_v4_verify*.py` and
+* The sibling files under `rapid_mlx/models/deepseek_v4_verify*.py` and
   `deepseek_v4_rollback.py` are **first-party** rapid-mlx code (Apache-2.0)
   that happens to share the prefix; they are not vendored.
 

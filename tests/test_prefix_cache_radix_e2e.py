@@ -26,8 +26,8 @@ pytestmark = pytest.mark.requires_mlx
 
 from unittest.mock import MagicMock
 
-from vllm_mlx.memory_cache import MemoryAwarePrefixCache, MemoryCacheConfig
-from vllm_mlx.runtime.radix_index import RadixPrefixIndex
+from rapid_mlx.memory_cache import MemoryAwarePrefixCache, MemoryCacheConfig
+from rapid_mlx.runtime.radix_index import RadixPrefixIndex
 
 
 class _FakeCacheLayer:

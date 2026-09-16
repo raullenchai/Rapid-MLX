@@ -16,14 +16,14 @@ REPO_ROOT = Path(__file__).resolve().parent.parent
 
 
 def _run_cli(*cli_args: str) -> subprocess.CompletedProcess[str]:
-    """Drive `python -m vllm_mlx.cli` against THIS worktree's source.
+    """Drive `python -m rapid_mlx.cli` against THIS worktree's source.
 
     Forcing ``PYTHONPATH=.`` keeps the child Python from picking up an
     editable install that lives at the original (non-worktree) checkout.
     """
     env = {**os.environ, "PYTHONPATH": str(REPO_ROOT)}
     return subprocess.run(
-        [sys.executable, "-m", "vllm_mlx.cli", *cli_args],
+        [sys.executable, "-m", "rapid_mlx.cli", *cli_args],
         capture_output=True,
         text=True,
         cwd=str(REPO_ROOT),

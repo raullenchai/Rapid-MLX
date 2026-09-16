@@ -44,7 +44,7 @@ import types
 
 import pytest
 
-from vllm_mlx import cli
+from rapid_mlx import cli
 
 
 def _claim_loopback_port() -> tuple[socket.socket, int]:

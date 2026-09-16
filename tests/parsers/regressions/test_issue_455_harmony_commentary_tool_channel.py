@@ -11,7 +11,7 @@ route's handling of the tool-call channel.
 
 ## Root cause
 
-``vllm_mlx/output_router.py`` ``AWAITING_CHANNEL_TYPE`` handling for
+``rapid_mlx/output_router.py`` ``AWAITING_CHANNEL_TYPE`` handling for
 the harmony style (lines 222-238) only recognizes two channel-type
 words:
 
@@ -57,7 +57,7 @@ from dataclasses import dataclass
 
 import pytest
 
-from vllm_mlx.output_router import OutputRouter
+from rapid_mlx.output_router import OutputRouter
 
 from ..fake_tokenizer import HARMONY_VOCAB, harmony_fake_tokenizer
 

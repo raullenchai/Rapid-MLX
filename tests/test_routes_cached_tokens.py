@@ -22,10 +22,10 @@ import json
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
-from vllm_mlx.config import reset_config
-from vllm_mlx.engine.base import GenerationOutput
-from vllm_mlx.routes.chat import router as chat_router
-from vllm_mlx.routes.completions import router as completions_router
+from rapid_mlx.config import reset_config
+from rapid_mlx.engine.base import GenerationOutput
+from rapid_mlx.routes.chat import router as chat_router
+from rapid_mlx.routes.completions import router as completions_router
 
 
 class _CacheReportingChatEngine:
@@ -402,8 +402,8 @@ def test_scheduler_request_output_construction_carries_cached_tokens():
     from types import SimpleNamespace
     from unittest.mock import MagicMock
 
-    from vllm_mlx.request import Request, SamplingParams
-    from vllm_mlx.scheduler import Scheduler
+    from rapid_mlx.request import Request, SamplingParams
+    from rapid_mlx.scheduler import Scheduler
 
     # Bypass ``__init__`` — it sets up BatchGenerator, prefix cache
     # tiers, detokenizer pool, etc., none of which

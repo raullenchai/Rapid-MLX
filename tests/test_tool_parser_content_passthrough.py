@@ -21,17 +21,17 @@ also preserves recovery of a genuine call truncated by ``max_tokens``
 before ``</function>``, which a closed-only rule would have thrown away.
 
 The tool-extraction path also runs when the request declared no tools at
-all (``vllm_mlx/service/helpers.py`` does not gate on ``request.tools``),
+all (``rapid_mlx/service/helpers.py`` does not gate on ``request.tools``),
 which is why these cases pass ``request=None`` — a plain chat turn must
 not be able to lose text to the tool layer.
 """
 
 import pytest
 
-from vllm_mlx.api.models import ToolDefinition
-from vllm_mlx.config import get_config
-from vllm_mlx.service import helpers
-from vllm_mlx.tool_parsers.abstract_tool_parser import ToolParserManager
+from rapid_mlx.api.models import ToolDefinition
+from rapid_mlx.config import get_config
+from rapid_mlx.service import helpers
+from rapid_mlx.tool_parsers.abstract_tool_parser import ToolParserManager
 
 # Registered parser names, one per wire family. Aliases of the same class
 # are intentionally omitted — the invariant is per implementation.

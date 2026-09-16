@@ -7,7 +7,7 @@ server shared a single rate-limit quota.
 
 from __future__ import annotations
 
-from vllm_mlx.middleware.auth import _subnet_bucket
+from rapid_mlx.middleware.auth import _subnet_bucket
 
 
 class TestSubnetBucketIPv4Mapped:

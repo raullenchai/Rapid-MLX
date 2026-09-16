@@ -43,14 +43,14 @@ pytestmark = pytest.mark.requires_mlx
 
 from unittest.mock import MagicMock
 
-from vllm_mlx.reasoning.harmony_stop import (
+from rapid_mlx.reasoning.harmony_stop import (
     HARMONY_FINAL_MARKER,
     find_harmony_final_span,
     find_stop_in_final_channel,
     is_harmony_family_tokenizer,
 )
-from vllm_mlx.request import Request, RequestStatus, SamplingParams
-from vllm_mlx.scheduler import Scheduler, SchedulerConfig
+from rapid_mlx.request import Request, RequestStatus, SamplingParams
+from rapid_mlx.scheduler import Scheduler, SchedulerConfig
 
 # ---------------------------------------------------------------------------
 # Layer 1: pure string-matching contract
@@ -455,7 +455,7 @@ def test_literal_issue_1049_reproducer_surface():
 # the ``max_stop_len - 1`` lookback window. That reading is incorrect —
 # ``request.stop_text`` accumulates the FULL decoded surface (assigned
 # monotonically via ``request.stop_text = streamed_so_far`` at
-# ``vllm_mlx/mllm_scheduler.py:924/929``), and ``find_harmony_final_span``
+# ``rapid_mlx/mllm_scheduler.py:924/929``), and ``find_harmony_final_span``
 # scans that full text via ``rfind`` before the rolling matcher touches
 # the body substring. These tests pin that behavior explicitly so a
 # future refactor that DID turn ``stop_text`` into a rolling tail would
@@ -469,7 +469,7 @@ def test_mllm_wrapper_finds_final_marker_far_before_window():
     window (~18 chars for ``</execute_ipython>``) is dwarfed by the
     5000-char analysis prefix, but the wrapper still resolves the
     final-channel body correctly and fires the stop."""
-    from vllm_mlx.reasoning.harmony_stop import find_stop_in_final_channel
+    from rapid_mlx.reasoning.harmony_stop import find_stop_in_final_channel
 
     analysis_body = "reasoning step. " * 350  # ~5600 chars
     text = (
@@ -501,7 +501,7 @@ def test_mllm_match_user_stop_uses_full_text_span():
     span on the FULL provided ``text`` first, then delegates to the
     rolling matcher on the bounded body substring.
     """
-    from vllm_mlx.mllm_scheduler import MLLMScheduler
+    from rapid_mlx.mllm_scheduler import MLLMScheduler
 
     processor = MagicMock()
     processor.tokenizer = MagicMock()
@@ -538,7 +538,7 @@ def test_mllm_match_user_stop_ignores_analysis_only():
     """Pre-final MLLMScheduler surface: analysis body mentions the
     stop marker verbatim, no final marker yet. Wrapper returns None
     so generation continues into the (yet-unseen) final channel."""
-    from vllm_mlx.mllm_scheduler import MLLMScheduler
+    from rapid_mlx.mllm_scheduler import MLLMScheduler
 
     scheduler = MLLMScheduler.__new__(MLLMScheduler)
     scheduler._is_harmony_family = True
@@ -555,7 +555,7 @@ def test_mllm_match_user_stop_non_harmony_unchanged():
     ``_find_stop_match_in_new_window`` byte-for-byte. Regression
     parity gate — codex round-1 finding conflated non-harmony and
     harmony paths."""
-    from vllm_mlx.mllm_scheduler import (
+    from rapid_mlx.mllm_scheduler import (
         MLLMScheduler,
         _find_stop_match_in_new_window,
     )

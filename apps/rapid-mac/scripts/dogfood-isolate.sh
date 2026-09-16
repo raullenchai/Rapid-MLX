@@ -352,8 +352,8 @@ SAFETY_DIR="$TARGET_ABS/.rapid-host-safety"
 mkdir -p "$SAFETY_DIR"
 cp "$SCRIPT_DIR/dogfood-host-precheck.sh" "$SAFETY_DIR/"
 cp "$REPO_ROOT/scripts/large-model-run.py" "$SAFETY_DIR/"
-cp "$REPO_ROOT/vllm_mlx/aliases.json" "$SAFETY_DIR/"
-cp "$REPO_ROOT/vllm_mlx/model_sizes.json" "$SAFETY_DIR/"
+cp "$REPO_ROOT/rapid_mlx/aliases.json" "$SAFETY_DIR/"
+cp "$REPO_ROOT/rapid_mlx/model_sizes.json" "$SAFETY_DIR/"
 chmod +x "$SAFETY_DIR/dogfood-host-precheck.sh" "$SAFETY_DIR/large-model-run.py"
 
 # The model cache is the one thing worth SHARING by default: it is tens of

@@ -5,10 +5,10 @@ from types import SimpleNamespace
 
 import pytest
 
+from rapid_mlx.reasoning.deepseek_r1_parser import DeepSeekR1DistillReasoningParser
+from rapid_mlx.service.postprocessor import StreamingPostProcessor
+from rapid_mlx.tool_parsers.hermes_tool_parser import HermesToolParser
 from tests.test_postprocessor import _make_cfg, _make_output
-from vllm_mlx.reasoning.deepseek_r1_parser import DeepSeekR1DistillReasoningParser
-from vllm_mlx.service.postprocessor import StreamingPostProcessor
-from vllm_mlx.tool_parsers.hermes_tool_parser import HermesToolParser
 
 TOOLS = [
     {

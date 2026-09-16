@@ -18,7 +18,7 @@ class _StopServeError(Exception):
 
 def _parsed_serve_args(*argv: str):
     """Return the real parser namespace without entering the serve runtime."""
-    from vllm_mlx import cli
+    from rapid_mlx import cli
 
     captured = {}
 
@@ -44,23 +44,23 @@ def _serve_cache_policy_context(cli, *, stop_at_scheduler: bool):
             cli, "_gather_kv_cache_dtype_inputs", lambda *a, **k: ({}, None)
         ),
         mock.patch(
-            "vllm_mlx._version_check.prompt_upgrade_if_available",
+            "rapid_mlx._version_check.prompt_upgrade_if_available",
             return_value=False,
         ),
         mock.patch(
-            "vllm_mlx.utils.tokenizer.load_model_with_fallback",
+            "rapid_mlx.utils.tokenizer.load_model_with_fallback",
             return_value=(object(), object()),
         ),
         mock.patch(
-            "vllm_mlx.server.configure_cors_from_env",
+            "rapid_mlx.server.configure_cors_from_env",
             return_value=[],
         ),
         mock.patch(
-            "vllm_mlx.server.configure_trusted_hosts",
+            "rapid_mlx.server.configure_trusted_hosts",
             return_value=None,
         ),
         mock.patch(
-            "vllm_mlx.middleware.request_logging.install_request_logging_middleware",
+            "rapid_mlx.middleware.request_logging.install_request_logging_middleware",
             return_value=None,
         ),
         mock.patch.object(sys.stdin, "isatty", return_value=False),
@@ -68,7 +68,7 @@ def _serve_cache_policy_context(cli, *, stop_at_scheduler: bool):
     if stop_at_scheduler:
         patches.append(
             mock.patch.object(
-                sys.modules["vllm_mlx.scheduler"],
+                sys.modules["rapid_mlx.scheduler"],
                 "SchedulerConfig",
                 side_effect=_StopServeError,
             )
@@ -115,7 +115,7 @@ def _args(model: str, payload: str | None, *, force: bool = False) -> SimpleName
     ],
 )
 def test_catalog_records_only_exact_measured_artifacts(alias: str, tier: str) -> None:
-    from vllm_mlx.model_aliases import resolve_profile
+    from rapid_mlx.model_aliases import resolve_profile
 
     profile = resolve_profile(alias)
     assert profile is not None
@@ -123,7 +123,7 @@ def test_catalog_records_only_exact_measured_artifacts(alias: str, tier: str) ->
 
 
 def test_alias_qualification_fails_closed_when_registry_raises(monkeypatch) -> None:
-    from vllm_mlx import cli, model_aliases
+    from rapid_mlx import cli, model_aliases
 
     def _raise(_model: str):
         raise RuntimeError("broken alias registry")
@@ -134,7 +134,7 @@ def test_alias_qualification_fails_closed_when_registry_raises(monkeypatch) -> N
 
 
 def test_qwen36_35b_qualified_mtp_is_the_text_server_default() -> None:
-    from vllm_mlx import cli
+    from rapid_mlx import cli
 
     args = _args("qwen3.6-35b-4bit", None)
     args.mllm = False
@@ -146,7 +146,7 @@ def test_qwen36_35b_qualified_mtp_is_the_text_server_default() -> None:
 
 
 def test_qwen36_35b_explicit_vision_lane_suppresses_only_auto_mtp() -> None:
-    from vllm_mlx import cli
+    from rapid_mlx import cli
 
     args = _args("qwen3.6-35b-4bit", None)
     args.mllm = True
@@ -159,7 +159,7 @@ def test_qwen36_35b_explicit_vision_lane_suppresses_only_auto_mtp() -> None:
 def test_serve_rejects_continuous_mtp_cache_conflict_before_scheduler(
     scheduler_config_stub, capsys
 ) -> None:
-    from vllm_mlx import cli
+    from rapid_mlx import cli
 
     args = _parsed_serve_args(
         "qwen3.5-9b-4bit",
@@ -183,10 +183,10 @@ def test_reasoning_continuous_mtp_logs_bf16_cache_policy(
 ) -> None:
     import logging
 
-    from vllm_mlx import cli
+    from rapid_mlx import cli
 
     args = _parsed_serve_args("qwen3.5-9b-4bit", "--reasoning")
-    caplog.set_level(logging.INFO, logger="vllm_mlx.cli")
+    caplog.set_level(logging.INFO, logger="rapid_mlx.cli")
     with (
         _serve_cache_policy_context(cli, stop_at_scheduler=True),
         pytest.raises(_StopServeError),
@@ -197,7 +197,7 @@ def test_reasoning_continuous_mtp_logs_bf16_cache_policy(
 
 
 def test_verified_tier_can_request_continuous_mtp_without_force() -> None:
-    from vllm_mlx import cli
+    from rapid_mlx import cli
 
     args = _args(
         "qwen3.5-9b-4bit",
@@ -211,7 +211,7 @@ def test_verified_tier_can_request_continuous_mtp_without_force() -> None:
 
 
 def test_unknown_alias_explicit_opt_in_fails_closed(capsys) -> None:
-    from vllm_mlx.cli import _normalize_speculative_config_or_exit
+    from rapid_mlx.cli import _normalize_speculative_config_or_exit
 
     args = _args(
         "qwen3.5-9b-8bit",
@@ -226,7 +226,7 @@ def test_unknown_alias_explicit_opt_in_fails_closed(capsys) -> None:
 
 
 def test_blocked_alias_explicit_opt_in_fails_closed(monkeypatch, capsys) -> None:
-    from vllm_mlx import cli
+    from rapid_mlx import cli
 
     monkeypatch.setattr(cli, "_alias_continuous_mtp_tier", lambda _model: "blocked")
 
@@ -244,7 +244,7 @@ def test_blocked_alias_explicit_opt_in_fails_closed(monkeypatch, capsys) -> None
 
 
 def test_force_override_keeps_unqualified_artifact_experimental(monkeypatch) -> None:
-    from vllm_mlx import cli
+    from rapid_mlx import cli
 
     monkeypatch.setattr(cli, "_alias_continuous_mtp_tier", lambda _model: "blocked")
 
@@ -271,7 +271,7 @@ def test_force_override_keeps_unqualified_artifact_experimental(monkeypatch) -> 
 def test_verified_alias_defaults_to_continuous_when_mtp_is_selected(
     alias: str,
 ) -> None:
-    from vllm_mlx.cli import _normalize_speculative_config_or_exit
+    from rapid_mlx.cli import _normalize_speculative_config_or_exit
 
     args = _args(alias, '{"method":"mtp"}')
     _normalize_speculative_config_or_exit(args)
@@ -281,7 +281,7 @@ def test_verified_alias_defaults_to_continuous_when_mtp_is_selected(
 
 
 def test_verified_alias_explicit_false_keeps_ordinary_mtp() -> None:
-    from vllm_mlx.cli import _normalize_speculative_config_or_exit
+    from rapid_mlx.cli import _normalize_speculative_config_or_exit
 
     args = _args(
         "qwen3.5-9b-4bit",
@@ -294,7 +294,7 @@ def test_verified_alias_explicit_false_keeps_ordinary_mtp() -> None:
 
 
 def test_legacy_enable_mtp_uses_the_same_verified_default() -> None:
-    from vllm_mlx.cli import _normalize_speculative_config_or_exit
+    from rapid_mlx.cli import _normalize_speculative_config_or_exit
 
     args = _args("qwen3.5-9b-4bit", None)
     args.enable_mtp = True
@@ -320,7 +320,7 @@ def test_legacy_enable_mtp_uses_the_same_verified_default() -> None:
 def test_verified_alias_defaults_mtp_on_without_any_speculative_flag(
     alias: str,
 ) -> None:
-    from vllm_mlx.cli import _normalize_speculative_config_or_exit
+    from rapid_mlx.cli import _normalize_speculative_config_or_exit
 
     args = _args(alias, None)
     _normalize_speculative_config_or_exit(args)
@@ -332,7 +332,7 @@ def test_verified_alias_defaults_mtp_on_without_any_speculative_flag(
 
 
 def test_no_spec_decode_remains_an_explicit_default_off_override() -> None:
-    from vllm_mlx.cli import _normalize_speculative_config_or_exit
+    from rapid_mlx.cli import _normalize_speculative_config_or_exit
 
     args = _args("qwen3.5-9b-4bit", None)
     args.no_spec_decode = True
@@ -344,7 +344,7 @@ def test_no_spec_decode_remains_an_explicit_default_off_override() -> None:
 
 
 def test_unknown_alias_defaults_to_ordinary_mtp() -> None:
-    from vllm_mlx.cli import _normalize_speculative_config_or_exit
+    from rapid_mlx.cli import _normalize_speculative_config_or_exit
 
     args = _args("qwen3.5-9b-8bit", '{"method":"mtp"}')
     _normalize_speculative_config_or_exit(args)
@@ -373,7 +373,7 @@ def test_unknown_alias_defaults_to_ordinary_mtp() -> None:
 def test_continuous_mtp_rejects_explicit_quantized_cache(
     overrides: dict[str, object], message: str
 ) -> None:
-    from vllm_mlx.cli import continuous_mtp_cache_conflict
+    from rapid_mlx.cli import continuous_mtp_cache_conflict
 
     args = SimpleNamespace(
         mtp_continuous_batching=True,
@@ -388,7 +388,7 @@ def test_continuous_mtp_rejects_explicit_quantized_cache(
 
 
 def test_continuous_mtp_accepts_bf16_and_explicit_turboquant_off() -> None:
-    from vllm_mlx.cli import continuous_mtp_cache_conflict
+    from rapid_mlx.cli import continuous_mtp_cache_conflict
 
     args = SimpleNamespace(
         mtp_continuous_batching=True,
@@ -401,7 +401,7 @@ def test_continuous_mtp_accepts_bf16_and_explicit_turboquant_off() -> None:
 
 
 def test_ordinary_mtp_preserves_existing_cache_defaults() -> None:
-    from vllm_mlx.cli import continuous_mtp_cache_conflict
+    from rapid_mlx.cli import continuous_mtp_cache_conflict
 
     args = SimpleNamespace(
         mtp_continuous_batching=False,
@@ -414,7 +414,7 @@ def test_ordinary_mtp_preserves_existing_cache_defaults() -> None:
 
 
 def test_continuous_mtp_suppresses_alias_turboquant_auto_default() -> None:
-    from vllm_mlx.cli import _resolve_turboquant_with_mtp_policy
+    from rapid_mlx.cli import _resolve_turboquant_with_mtp_policy
 
     args = SimpleNamespace(
         mtp_continuous_batching=True,
@@ -436,7 +436,7 @@ def test_continuous_mtp_suppresses_alias_turboquant_auto_default() -> None:
 def test_ordinary_mtp_keeps_alias_turboquant_auto_default(
     scheduler_config_stub,
 ) -> None:
-    from vllm_mlx.cli import _resolve_turboquant_with_mtp_policy
+    from rapid_mlx.cli import _resolve_turboquant_with_mtp_policy
 
     args = SimpleNamespace(
         mtp_continuous_batching=False,
@@ -457,7 +457,7 @@ def test_ordinary_mtp_keeps_alias_turboquant_auto_default(
 
 @pytest.mark.parametrize("tier", ["verified", "blocked"])
 def test_non_unknown_tier_requires_an_mtp_target(tier: str) -> None:
-    from vllm_mlx.model_aliases import _coerce
+    from rapid_mlx.model_aliases import _coerce
 
     with pytest.raises(ValueError, match="requires supports_native_mtp"):
         _coerce(
@@ -470,7 +470,7 @@ def test_non_unknown_tier_requires_an_mtp_target(tier: str) -> None:
 
 
 def test_invalid_tier_fails_alias_registry_validation() -> None:
-    from vllm_mlx.model_aliases import _coerce
+    from rapid_mlx.model_aliases import _coerce
 
     with pytest.raises(ValueError, match="must be one of"):
         _coerce(
@@ -486,7 +486,7 @@ def test_invalid_tier_fails_alias_registry_validation() -> None:
 
 @pytest.mark.parametrize("tier", [[], {}, True, None])
 def test_non_string_tier_fails_alias_registry_validation(tier: object) -> None:
-    from vllm_mlx.model_aliases import _coerce
+    from rapid_mlx.model_aliases import _coerce
 
     with pytest.raises(ValueError, match="must be a string"):
         _coerce(

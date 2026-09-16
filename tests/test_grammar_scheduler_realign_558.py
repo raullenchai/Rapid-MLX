@@ -38,7 +38,7 @@ class _FakeBatchGen:
 
 def _make_scheduler_stub():
     """Bind the realign + forget methods onto a bare state object (no model)."""
-    from vllm_mlx.scheduler import Scheduler
+    from rapid_mlx.scheduler import Scheduler
 
     stub = SimpleNamespace(
         uid_to_request_processors={},

@@ -294,7 +294,7 @@ jobs:
       # is intentionally ADVISORY (#2344). The serial M3 release check runs the
       # same script without `--report` and remains the enforced timing gate.
       #
-      # PYTHONPATH=. so `from vllm_mlx.tool_parsers...` resolves
+      # PYTHONPATH=. so `from rapid_mlx.tool_parsers...` resolves
       # without installing the package — pytest auto-adds rootdir but
       # bare `python` doesn't, and we don't want a full `pip install -e .`
       # here just for the parser module.
@@ -476,7 +476,7 @@ jobs:
             --ignore=tests/headless_mlx \
             -m "not requires_mlx and not real_hf_cache and not requires_network and not slow and not integration and not needle" \
             -v --tb=short \
-            --cov=vllm_mlx \
+            --cov=rapid_mlx \
             --cov-report=term-missing
 
           # These lifecycle contracts install inert MLX modules before import.
@@ -492,7 +492,7 @@ jobs:
             tests/headless_mlx \
             "${headless_ignores[@]}" \
             -v --tb=short \
-            --cov=vllm_mlx \
+            --cov=rapid_mlx \
             --cov-append \
             --cov-report=term-missing
 
@@ -675,10 +675,11 @@ jobs:
             tests/test_sd35_alias.py \
             tests/test_diffusion_engine.py \
             tests/test_legacy_prefix_cache_flag_warnings.py \
+            tests/test_module_import_smoke.py \
             -v --tb=short \
             -m "not slow" \
             -k "not Integration" \
-            --cov=vllm_mlx \
+            --cov=rapid_mlx \
             --cov-report=term-missing
 
       - name: Upload Apple Silicon coverage data
@@ -760,7 +761,7 @@ jobs:
     # routing, and native-marker leaks (#1677).
     # Each model runs on its own runner (parallel) so lanes do not share RAM.
     # The Qwen3.5-9B (#2419 top-telemetry cover) was tried here and relocated off
-    # L1: its runtime footprint is ~8.7 GB (vllm_mlx/model_recommendations.json,
+    # L1: its runtime footprint is ~8.7 GB (rapid_mlx/model_recommendations.json,
     # SSOT — bucketed at the 18 GB floor) vs this runner's ~7 GB, and the
     # coherence serve OOMs (server unreachable, 503) under the gate. It, like the
     # 26-35B top-telemetry lanes (Qwen3.6-35B-A3B, Qwen3.8/3.6-27B, Gemma-4-26B,

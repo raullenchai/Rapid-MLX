@@ -19,7 +19,7 @@
 #     wrapper that strips the env var would still leave -s active.
 #   * `-P` (Python 3.11+) is the canonical fix for `-m` mode prepending
 #     the caller's cwd to sys.path[0]. Without it, running the bundled
-#     sidecar from a directory containing a sibling `vllm_mlx/` lets
+#     sidecar from a directory containing a sibling `rapid_mlx/` lets
 #     that sibling hijack the bundled import path. PYTHONSAFEPATH=1
 #     env var below is the static-analysis-friendly belt — a future
 #     shim rewrite that drops the -P arg still inherits the safe path
@@ -80,4 +80,4 @@ if [ -x "$ROOT/bin/ffmpeg" ]; then
 fi
 unset PYTHONSTARTUP
 
-exec "$ROOT/python/bin/python3.12" -P -u -s -m vllm_mlx.cli "$@"
+exec "$ROOT/python/bin/python3.12" -P -u -s -m rapid_mlx.cli "$@"

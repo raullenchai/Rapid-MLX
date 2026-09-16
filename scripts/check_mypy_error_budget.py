@@ -107,7 +107,7 @@ def _mypy_command() -> list[str]:
         sys.executable,
         "-m",
         "mypy",
-        "vllm_mlx/",
+        "rapid_mlx/",
         "videox_fun_mlx/",
         "--ignore-missing-imports",
         "--no-error-summary",

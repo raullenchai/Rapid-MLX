@@ -28,7 +28,7 @@ from unittest.mock import patch
 
 import pytest
 
-from vllm_mlx import cli
+from rapid_mlx import cli
 
 
 def _make_fake_snapshot(root: Path, total_bytes: int) -> Path:

@@ -1,6 +1,6 @@
-from vllm_mlx.model_aliases import AliasProfile, list_profiles
-from vllm_mlx.spec_decode.capability import REGISTERED_METHODS, assess_method
-from vllm_mlx.spec_decode.report import _quantization, build_report
+from rapid_mlx.model_aliases import AliasProfile, list_profiles
+from rapid_mlx.spec_decode.capability import REGISTERED_METHODS, assess_method
+from rapid_mlx.spec_decode.report import _quantization, build_report
 
 
 def test_report_covers_every_alias_and_method():
@@ -28,7 +28,7 @@ def test_4bit_is_recommendation_evidence_not_capability_ban():
 def test_ddtree_report_recognizes_quantized_subfolder_without_mlx():
     """Linux coverage must exercise the real gate, not only the macOS suite."""
 
-    from vllm_mlx.speculative.ddtree.eligibility import report
+    from rapid_mlx.speculative.ddtree.eligibility import report
 
     profile = AliasProfile(hf_path="user/multi-quant", subfolder="oQ4e")
     result = report(profile)

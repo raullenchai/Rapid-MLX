@@ -6,7 +6,7 @@ from types import ModuleType, SimpleNamespace
 import numpy as np
 import pytest
 
-from vllm_mlx.speculative.native_mtp import glm5_compat
+from rapid_mlx.speculative.native_mtp import glm5_compat
 
 
 def _install_fake_runtime(monkeypatch, released_type):

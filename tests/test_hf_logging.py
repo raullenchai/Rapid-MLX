@@ -5,7 +5,7 @@ huggingface_hub logs a server-sent ``X-HF-Warning`` advisory ("You are
 sending unauthenticated requests … set a HF_TOKEN …") at WARNING level
 from ``huggingface_hub.utils._http`` on the first anonymous Hub request.
 That single stray line reads like an error to a naive first-run user
-(0.11 dogfood papercut #3). ``vllm_mlx._hf_logging`` drops it with a
+(0.11 dogfood papercut #3). ``rapid_mlx._hf_logging`` drops it with a
 narrow, fail-open filter installed on the exact emitting logger.
 
 These are hermetic unit tests of that filter and its installer — no
@@ -22,7 +22,7 @@ import logging
 
 import pytest
 
-from vllm_mlx._hf_logging import (
+from rapid_mlx._hf_logging import (
     _HF_HTTP_LOGGER,
     _DropUnauthenticatedAdvisory,
     silence_hf_unauthenticated_warning,

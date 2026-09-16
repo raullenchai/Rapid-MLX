@@ -26,9 +26,9 @@ import time
 
 import pytest
 
-# No ``pytest.importorskip("mlx")`` and no module-level ``vllm_mlx`` imports:
+# No ``pytest.importorskip("mlx")`` and no module-level ``rapid_mlx`` imports:
 # like the non-streaming mirror (test_telemetry_request_wiring.py), every
-# ``vllm_mlx`` import is lazy (inside the fixtures/helpers), and the imported
+# ``rapid_mlx`` import is lazy (inside the fixtures/helpers), and the imported
 # modules (routes.chat / telemetry.emit / api.models / config.server_config)
 # are mlx-free, so this test COLLECTS AND RUNS on the no-mlx Linux
 # ``pr_validate`` gate — the gate that this streaming-telemetry regression
@@ -83,7 +83,7 @@ class _FakeEngine:
 def _patch_cfg(monkeypatch):
     """Minimal plain-text streaming config: no reasoning / tool parser so
     each delta surfaces as a ``content`` event immediately."""
-    from vllm_mlx.config import server_config
+    from rapid_mlx.config import server_config
 
     cfg = server_config.get_config()
     monkeypatch.setattr(cfg, "tool_call_parser", None, raising=False)
@@ -95,7 +95,7 @@ def _patch_cfg(monkeypatch):
 
 
 def _request(model="test-model"):
-    from vllm_mlx.api.models import ChatCompletionRequest
+    from rapid_mlx.api.models import ChatCompletionRequest
 
     return ChatCompletionRequest(
         model=model,
@@ -108,8 +108,8 @@ def _request(model="test-model"):
 def _drive_stream(engine, request, *, caller_agent, emit_calls):
     """Run ``stream_chat_completion`` to completion, capturing emit.request
     call kwargs. Returns total wall-clock seconds spent in the stream."""
-    from vllm_mlx.routes import chat
-    from vllm_mlx.telemetry import emit
+    from rapid_mlx.routes import chat
+    from rapid_mlx.telemetry import emit
 
     monkeypatch_target = emit
     orig = monkeypatch_target.request

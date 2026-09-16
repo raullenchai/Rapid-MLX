@@ -1,20 +1,26 @@
 [run]
 relative_files = True
-source = vllm_mlx
+source = rapid_mlx
 omit =
     # Third-party numerical implementation retained close to its pinned source.
     # Rapid-owned runtime.py stays measured; the adapter, engine, download, and
     # catalog contracts must still reach 100% changed-line coverage.
-    vllm_mlx/image/sdxl_runtime/caching.py
-    vllm_mlx/image/sdxl_runtime/configuration.py
-    vllm_mlx/image/sdxl_runtime/converters/*
-    vllm_mlx/image/sdxl_runtime/hub.py
-    vllm_mlx/image/sdxl_runtime/modeling.py
-    vllm_mlx/image/sdxl_runtime/models/*
-    vllm_mlx/image/sdxl_runtime/pipelines/sdxl.py
-    vllm_mlx/image/sdxl_runtime/quantization.py
-    vllm_mlx/image/sdxl_runtime/schedulers/*
-    vllm_mlx/image/sdxl_runtime/utils.py
+    rapid_mlx/image/sdxl_runtime/caching.py
+    rapid_mlx/image/sdxl_runtime/configuration.py
+    rapid_mlx/image/sdxl_runtime/converters/*
+    rapid_mlx/image/sdxl_runtime/hub.py
+    rapid_mlx/image/sdxl_runtime/modeling.py
+    rapid_mlx/image/sdxl_runtime/models/*
+    rapid_mlx/image/sdxl_runtime/pipelines/sdxl.py
+    rapid_mlx/image/sdxl_runtime/quantization.py
+    rapid_mlx/image/sdxl_runtime/schedulers/*
+    rapid_mlx/image/sdxl_runtime/utils.py
     # Exact third-party numerical core; Rapid-owned adapter remains covered.
-    vllm_mlx/image/bonsai_runtime/_vendor/*
-    vllm_mlx/image/sd35_runtime/_vendor/*
+    rapid_mlx/image/bonsai_runtime/_vendor/*
+    rapid_mlx/image/sd35_runtime/_vendor/*
+    # Test-file mirrors under the package: ``rapid_mlx/_integration_tests``
+    # is a symlink farm pointing at ``tests/integrations/``. They are test
+    # code — CI executes them via tests/integrations/, not through the
+    # package path — so changed-line coverage gates production code only.
+    rapid_mlx/_integration_tests/*
+    tests/integrations/*

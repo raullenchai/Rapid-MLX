@@ -41,7 +41,7 @@ pytest.importorskip("mlx")
 def fake_home(tmp_path, monkeypatch):
     monkeypatch.setenv("HOME", str(tmp_path))
     monkeypatch.delenv("RAPID_MLX_TELEMETRY", raising=False)
-    import vllm_mlx.telemetry.state as state
+    import rapid_mlx.telemetry.state as state
 
     importlib.reload(state)
     return tmp_path
@@ -67,7 +67,7 @@ def _run_cli(*args, env_overrides=None, home=None):
     if env_overrides:
         env.update(env_overrides)
     return subprocess.run(
-        [sys.executable, "-m", "vllm_mlx.cli", *args],
+        [sys.executable, "-m", "rapid_mlx.cli", *args],
         capture_output=True,
         text=True,
         env=env,
@@ -207,10 +207,10 @@ async def test_serve_engine_start_failure_emits_model_load_error(monkeypatch):
     the call so this asserts the wiring, not the (separately-tested) redact
     pipeline.
     """
-    import vllm_mlx._signal_observability as _sigobs
-    import vllm_mlx.server as vllm_server
-    from vllm_mlx.config import get_config
-    from vllm_mlx.telemetry import emit as _emit
+    import rapid_mlx._signal_observability as _sigobs
+    import rapid_mlx.server as vllm_server
+    from rapid_mlx.config import get_config
+    from rapid_mlx.telemetry import emit as _emit
 
     # Keep the test hermetic: don't install real SIGTERM/SIGHUP handlers on
     # the pytest process (the failure aborts startup mid-lifespan, so the
@@ -249,10 +249,10 @@ async def test_serve_shutdown_failure_emits_shutdown_traceback(monkeypatch):
     """A crash during lifespan teardown (cache save / MCP close / engine
     stop) must emit ``shutdown_traceback`` / ``shutdown`` and re-raise so
     the shutdown path is unchanged."""
-    import vllm_mlx._signal_observability as _sigobs
-    import vllm_mlx.server as vllm_server
-    from vllm_mlx.config import get_config
-    from vllm_mlx.telemetry import emit as _emit
+    import rapid_mlx._signal_observability as _sigobs
+    import rapid_mlx.server as vllm_server
+    from rapid_mlx.config import get_config
+    from rapid_mlx.telemetry import emit as _emit
 
     monkeypatch.setattr(_sigobs, "install_signal_observability", lambda: False)
 
@@ -304,10 +304,10 @@ def test_tool_parser_crash_emits_tool_parse_error(monkeypatch):
     request path falls back to the generic text parser AND emits a
     ``tool_parse`` / ``chat`` error. The fallback must still return normally
     (the crash is never surfaced to the user)."""
-    from vllm_mlx.config import get_config
-    from vllm_mlx.service import helpers
-    from vllm_mlx.telemetry import emit as _emit
-    from vllm_mlx.tool_parsers.abstract_tool_parser import ToolParserManager
+    from rapid_mlx.config import get_config
+    from rapid_mlx.service import helpers
+    from rapid_mlx.telemetry import emit as _emit
+    from rapid_mlx.tool_parsers.abstract_tool_parser import ToolParserManager
 
     calls = []
     monkeypatch.setattr(_emit, "error", lambda **kw: calls.append(kw))

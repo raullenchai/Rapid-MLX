@@ -14,13 +14,13 @@ import sys
 
 import pytest
 
-from vllm_mlx import cli
+from rapid_mlx import cli
 
 
 def _serve_help() -> str:
-    """Run ``python -m vllm_mlx.cli serve --help`` and return its stdout."""
+    """Run ``python -m rapid_mlx.cli serve --help`` and return its stdout."""
     proc = subprocess.run(
-        [sys.executable, "-m", "vllm_mlx.cli", "serve", "--help"],
+        [sys.executable, "-m", "rapid_mlx.cli", "serve", "--help"],
         capture_output=True,
         text=True,
         timeout=30,
@@ -53,7 +53,7 @@ def test_serve_parses_bf16_as_effective_default():
     # build_parser registers the share subcommand → imports websockets,
     # absent from the no-MLX CI lane.
     pytest.importorskip("websockets")
-    from vllm_mlx.cli import build_parser
+    from rapid_mlx.cli import build_parser
 
     args = build_parser().parse_args(["serve", "some/model"])
     assert args.kv_cache_dtype == "bf16"
@@ -180,7 +180,7 @@ def test_serve_rejects_the_conflict_end_to_end():
         [
             sys.executable,
             "-m",
-            "vllm_mlx.cli",
+            "rapid_mlx.cli",
             "serve",
             "qwen3-0.6b-4bit",
             "--kv-cache-quantization",

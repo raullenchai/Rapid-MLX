@@ -5,7 +5,7 @@ from __future__ import annotations
 import json
 from unittest.mock import MagicMock
 
-from vllm_mlx.api.models import (
+from rapid_mlx.api.models import (
     AssistantMessage,
     ChatCompletionChoice,
     ChatCompletionChunk,
@@ -13,10 +13,10 @@ from vllm_mlx.api.models import (
     ChatCompletionChunkDelta,
     ChatCompletionResponse,
 )
-from vllm_mlx.api.responses_adapter import openai_to_responses
-from vllm_mlx.api.responses_models import ResponsesRequest
-from vllm_mlx.engine import GenerationOutput
-from vllm_mlx.service.helpers import _build_response_metrics, _merge_response_metrics
+from rapid_mlx.api.responses_adapter import openai_to_responses
+from rapid_mlx.api.responses_models import ResponsesRequest
+from rapid_mlx.engine import GenerationOutput
+from rapid_mlx.service.helpers import _build_response_metrics, _merge_response_metrics
 
 _RAW_METRICS = {
     "verify_calls": 3,

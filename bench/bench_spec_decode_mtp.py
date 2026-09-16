@@ -396,11 +396,11 @@ def _run_once(
     import mlx.core as mx
     from mlx_lm import load
 
-    from vllm_mlx.spec_decode.mtp import (
+    from rapid_mlx.spec_decode.mtp import (
         MTPAcceptCounter,
         get_global_counter,
     )
-    from vllm_mlx.spec_decode.mtp.draft_k_controller_v2 import (
+    from rapid_mlx.spec_decode.mtp.draft_k_controller_v2 import (
         sum_across_controllers,
     )
 
@@ -408,8 +408,8 @@ def _run_once(
 
     last_response = None
     if condition == "mtp":
-        from vllm_mlx.spec_decode.mtp.generator import mtp_generate_step
-        from vllm_mlx.spec_decode.mtp.qwen3_5_inject import (
+        from rapid_mlx.spec_decode.mtp.generator import mtp_generate_step
+        from rapid_mlx.spec_decode.mtp.qwen3_5_inject import (
             inject_mtp_support,
             validate_mtp_support,
         )

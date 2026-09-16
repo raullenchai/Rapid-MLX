@@ -26,28 +26,28 @@ from types import SimpleNamespace
 import pytest
 import requests
 
-from vllm_mlx.bench import _server
-from vllm_mlx.catalog import rcj_digest
-from vllm_mlx.community_bench import (
+from rapid_mlx.bench import _server
+from rapid_mlx.catalog import rcj_digest
+from rapid_mlx.community_bench import (
     atomic_upload,
     benchmark_contracts,
     local_runner,
     run_builder,
 )
-from vllm_mlx.community_bench import cli as community_cli
-from vllm_mlx.community_bench import runner as bench_runner
-from vllm_mlx.community_bench import upload as benchmark_upload
-from vllm_mlx.community_bench import workspace as workspace_module
-from vllm_mlx.community_bench.benchmark_contracts import (
+from rapid_mlx.community_bench import cli as community_cli
+from rapid_mlx.community_bench import runner as bench_runner
+from rapid_mlx.community_bench import upload as benchmark_upload
+from rapid_mlx.community_bench import workspace as workspace_module
+from rapid_mlx.community_bench.benchmark_contracts import (
     BenchmarkRunValidator,
     registered_workload,
     registered_workload_history,
 )
-from vllm_mlx.community_bench.hardware import Hardware, Software
-from vllm_mlx.community_bench.run_builder import build_run, execution_config, utc_now
-from vllm_mlx.community_bench.runner import BenchResult, BucketResult, RoundResult
-from vllm_mlx.community_bench.upload import SubmitError
-from vllm_mlx.community_bench.workspace import (
+from rapid_mlx.community_bench.hardware import Hardware, Software
+from rapid_mlx.community_bench.run_builder import build_run, execution_config, utc_now
+from rapid_mlx.community_bench.runner import BenchResult, BucketResult, RoundResult
+from rapid_mlx.community_bench.upload import SubmitError
+from rapid_mlx.community_bench.workspace import (
     LocalRunArchive,
     benchmark_catalog,
     benchmark_runtime_readiness,
@@ -136,7 +136,7 @@ def _mock_local_context(
 def test_packaged_benchmark_contracts_are_exact_proto_copies(
     packaged: str, source: str
 ) -> None:
-    installed = resources.files("vllm_mlx.catalog.schemas").joinpath(packaged)
+    installed = resources.files("rapid_mlx.catalog.schemas").joinpath(packaged)
     proto = REPO_ROOT / "proto" / "community-benchmark" / "v1" / source
     assert installed.read_bytes() == proto.read_bytes()
 
@@ -162,8 +162,8 @@ def test_catalog_is_model_first_and_derives_protocol_from_atomic_task() -> None:
 def test_runtime_readiness_reuses_fail_fast_generation_guards(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    from vllm_mlx.models.deepseek_v41_native import artifacts
-    from vllm_mlx.runtime import image_lane, video_lane
+    from rapid_mlx.models.deepseek_v41_native import artifacts
+    from rapid_mlx.runtime import image_lane, video_lane
 
     assert benchmark_runtime_readiness("qwen3.5-4b-4bit", "text_generation") == {
         "status": "ready",
@@ -226,7 +226,7 @@ def test_runtime_readiness_reuses_fail_fast_generation_guards(
 def test_runtime_readiness_degrades_probe_faults_to_unknown(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    from vllm_mlx.runtime import image_lane
+    from rapid_mlx.runtime import image_lane
 
     def probe_fault(_alias: str) -> str | None:
         raise RuntimeError("probe fault must not escape planning")
@@ -240,7 +240,7 @@ def test_runtime_readiness_degrades_probe_faults_to_unknown(
 
 def test_memory_fit_requires_headroom_for_the_os_and_kv_cache() -> None:
     """An 18 GB Mac must not be told an 18 GB model fits."""
-    from vllm_mlx.community_bench.workspace import memory_fit
+    from rapid_mlx.community_bench.workspace import memory_fit
 
     assert memory_fit(18, 18) == "does_not_fit"
     assert memory_fit(17, 18) == "does_not_fit"
@@ -256,7 +256,7 @@ def test_memory_fit_requires_headroom_for_the_os_and_kv_cache() -> None:
 
 
 def test_memory_estimate_precedence_and_parameter_floor() -> None:
-    from vllm_mlx.community_bench.workspace import (
+    from rapid_mlx.community_bench.workspace import (
         _parameter_floor_gib,
         estimate_memory_gib,
     )
@@ -311,12 +311,12 @@ def test_memory_estimate_precedence_and_parameter_floor() -> None:
 def test_curated_footprints_degrade_to_empty_when_the_tiers_cannot_load(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    from vllm_mlx.community_bench.workspace import curated_footprints
+    from rapid_mlx.community_bench.workspace import curated_footprints
 
     def boom():
         raise RuntimeError("policy unreadable")
 
-    monkeypatch.setattr("vllm_mlx.recommendations.load_recommendation_tiers", boom)
+    monkeypatch.setattr("rapid_mlx.recommendations.load_recommendation_tiers", boom)
     assert curated_footprints() == {}
 
 
@@ -396,7 +396,7 @@ def test_execution_records_release_without_source_revision(
 
 
 def test_execution_records_v41_dspark_identity_and_block_size() -> None:
-    from vllm_mlx.models.deepseek_v41_native.artifacts import (
+    from rapid_mlx.models.deepseek_v41_native.artifacts import (
         mtp_model_identity_digest,
     )
 
@@ -1364,7 +1364,7 @@ def test_registered_text_run_rejects_actual_token_count_drift() -> None:
 
 
 def test_reported_zero_token_count_is_never_replaced_by_protocol_target() -> None:
-    from vllm_mlx.community_bench.runner import _reported_token_count
+    from rapid_mlx.community_bench.runner import _reported_token_count
 
     assert _reported_token_count(0, 512) == 0
     assert _reported_token_count(None, 512) == 512
@@ -2050,7 +2050,7 @@ def test_inherit_process_group_verification_matches_real_topology(
     script.write_text(
         textwrap.dedent(
             """
-            from vllm_mlx.community_bench.local_runner import (
+            from rapid_mlx.community_bench.local_runner import (
                 LocalBenchmarkError,
                 _is_dedicated_process_group_leader,
                 run_local,
@@ -2481,7 +2481,7 @@ def _subprocess_env_for_this_checkout() -> dict[str, str]:
 
     For script execution ``sys.path[0]`` is the script's directory, not the
     working directory, so an editable install from another checkout on the
-    interpreter's path would otherwise win the ``vllm_mlx`` import.
+    interpreter's path would otherwise win the ``rapid_mlx`` import.
     """
 
     env = dict(os.environ)
@@ -2523,7 +2523,7 @@ def test_external_group_sigterm_reaps_detached_download_worker(
             import sys
             import threading
 
-            from vllm_mlx.community_bench import local_runner
+            from rapid_mlx.community_bench import local_runner
 
 
             def main() -> None:
@@ -2611,7 +2611,7 @@ def test_external_group_sigterm_reaps_worker_descendants_and_artifact(
             import sys
             import time
 
-            from vllm_mlx.community_bench import local_runner
+            from rapid_mlx.community_bench import local_runner
 
 
             def blocked_probe_worker(
@@ -2886,9 +2886,9 @@ def test_run_local_video_deadline_archives_timeout(
 def test_run_local_converts_text_engine_result_to_atomic_measurements(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
-    from vllm_mlx import engine_core
-    from vllm_mlx.community_bench import runner
-    from vllm_mlx.utils import tokenizer as tokenizer_module
+    from rapid_mlx import engine_core
+    from rapid_mlx.community_bench import runner
+    from rapid_mlx.utils import tokenizer as tokenizer_module
 
     archive = LocalRunArchive(tmp_path)
     shutdown_calls: list[tuple[bool, bool]] = []
@@ -3296,7 +3296,7 @@ def test_cli_catalog_defaults_memory_to_this_mac(
 def test_host_memory_gib_degrades_to_none_when_probe_fails(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    from vllm_mlx.community_bench import hardware
+    from rapid_mlx.community_bench import hardware
 
     monkeypatch.setattr(hardware, "_ram_gb", lambda: 256)
     assert hardware.host_memory_gib() == 256
@@ -3804,8 +3804,8 @@ def test_top_level_cli_dispatches_community_benchmark(
     its return code — the SystemExit is the CLI's only success/failure
     signal for supervisors."""
 
-    import vllm_mlx.cli as top_cli
-    from vllm_mlx.community_bench import cli as community_module
+    import rapid_mlx.cli as top_cli
+    from rapid_mlx.community_bench import cli as community_module
 
     observed: dict[str, str] = {}
 
@@ -3965,7 +3965,7 @@ def test_catalog_excludes_image_alias_without_text_to_image(
     monkeypatch.setattr(
         workspace_module, "build_legacy_catalog_snapshot", lambda: snapshot
     )
-    monkeypatch.setattr("vllm_mlx.model_aliases.list_profiles", lambda: {})
+    monkeypatch.setattr("rapid_mlx.model_aliases.list_profiles", lambda: {})
 
     assert benchmark_catalog()["models"] == []
 
@@ -5236,10 +5236,10 @@ def test_text_measurements_reports_model_load_stage(
             else pytest.fail("loader must be asked for its source")
         )
     )
-    monkeypatch.setitem(sys.modules, "vllm_mlx.engine_core", fake_engine_core)
-    monkeypatch.setitem(sys.modules, "vllm_mlx.scheduler", fake_scheduler)
-    monkeypatch.setitem(sys.modules, "vllm_mlx.service.helpers", fake_helpers)
-    monkeypatch.setitem(sys.modules, "vllm_mlx.utils.tokenizer", fake_tokenizer)
+    monkeypatch.setitem(sys.modules, "rapid_mlx.engine_core", fake_engine_core)
+    monkeypatch.setitem(sys.modules, "rapid_mlx.scheduler", fake_scheduler)
+    monkeypatch.setitem(sys.modules, "rapid_mlx.service.helpers", fake_helpers)
+    monkeypatch.setitem(sys.modules, "rapid_mlx.utils.tokenizer", fake_tokenizer)
     monkeypatch.setattr(
         local_runner.concurrent.futures, "ThreadPoolExecutor", FakeExecutor
     )
@@ -5333,7 +5333,7 @@ def test_plan_for_alias_adds_memory_fit_and_cache_state_without_downloading(
     # The probe is the modality-aware one behind ``models --cached`` (mflux
     # image and Wan video layouts are not the text ``model*.safetensors``
     # rule), and an inconclusive probe stays inconclusive.
-    import vllm_mlx.cli as top_cli
+    import rapid_mlx.cli as top_cli
 
     probed: list[str] = []
 
@@ -5370,7 +5370,7 @@ def test_plan_for_alias_adds_memory_fit_and_cache_state_without_downloading(
 
 
 def test_benchmark_catalog_parser_accepts_all_flag() -> None:
-    from vllm_mlx.cli import build_parser
+    from rapid_mlx.cli import build_parser
 
     parser = build_parser()
     args = parser.parse_args(["benchmark", "catalog", "--all"])
@@ -5416,8 +5416,8 @@ def test_progress_sink_never_aborts_the_benchmark(
 
 
 def test_quantization_facts_projects_mlx_config_onto_the_contract() -> None:
-    from vllm_mlx.catalog.validation import ContractValidator
-    from vllm_mlx.community_bench.run_builder import quantization_facts
+    from rapid_mlx.catalog.validation import ContractValidator
+    from rapid_mlx.community_bench.run_builder import quantization_facts
 
     uniform = {"quantization": {"group_size": 64, "bits": 4, "mode": "affine"}}
     assert quantization_facts(uniform) == {
@@ -5520,8 +5520,8 @@ def test_model_identity_reads_quantization_and_revision_from_the_cache(
 ) -> None:
     import huggingface_hub
 
-    from vllm_mlx.catalog.validation import ContractValidator
-    from vllm_mlx.community_bench import run_builder
+    from rapid_mlx.catalog.validation import ContractValidator
+    from rapid_mlx.community_bench import run_builder
 
     revision = "32f3e8ecf65426fc3306969496342d504bfa13f3"
     snapshot = tmp_path / "models--org--model" / "snapshots" / revision
@@ -5559,8 +5559,8 @@ def test_model_identity_reads_the_subfolder_config_for_nested_variants(
     """``LiquidAI/LFM2.5-2.6B-MLX`` keeps ``4bit/`` and ``8bit/`` side by side."""
     import huggingface_hub
 
-    from vllm_mlx.catalog.validation import ContractValidator
-    from vllm_mlx.community_bench import run_builder
+    from rapid_mlx.catalog.validation import ContractValidator
+    from rapid_mlx.community_bench import run_builder
 
     revision = "b41f2b65685e95418f1ac809bb022d4f79e1ab27"
     snapshot = tmp_path / "snapshots" / revision
@@ -5623,7 +5623,7 @@ def test_run_local_measures_text_models_by_alias_not_bare_repo_id(
 
 
 def test_identity_is_kept_only_when_the_snapshot_did_not_move() -> None:
-    from vllm_mlx.community_bench.run_builder import consistent_model_identity
+    from rapid_mlx.community_bench.run_builder import consistent_model_identity
 
     def identity(revision: str | None, bits_x2: int = 8) -> dict:
         source = {"kind": "huggingface", "repo_id": "org/model", "subfolder": "4bit"}
@@ -5669,7 +5669,7 @@ def test_identity_is_kept_only_when_the_snapshot_did_not_move() -> None:
         "repo_id": "org/model",
         "subfolder": "4bit",
     }
-    from vllm_mlx.catalog.validation import ContractValidator
+    from rapid_mlx.catalog.validation import ContractValidator
 
     ContractValidator().validate_model_identity(degraded)
 
@@ -5710,7 +5710,7 @@ def test_run_local_prefers_the_identity_read_right_after_loading(
 
 
 def test_cached_config_reads_the_exact_snapshot_directory(tmp_path: Path) -> None:
-    from vllm_mlx.community_bench.run_builder import _cached_config
+    from rapid_mlx.community_bench.run_builder import _cached_config
 
     revision = "d" * 40
     snapshot = tmp_path / "snapshots" / revision / "4bit"
@@ -5785,7 +5785,7 @@ def test_run_local_resolves_identity_before_loading_the_model(
 
 
 def test_benchmark_catalog_exposes_the_alias_subfolder() -> None:
-    from vllm_mlx.community_bench.workspace import benchmark_catalog
+    from rapid_mlx.community_bench.workspace import benchmark_catalog
 
     by_alias = {m["alias"]: m for m in benchmark_catalog(memory_gib=18)["models"]}
     assert by_alias["lfm2.5-2.6b-4bit"]["subfolder"] == "4bit"
@@ -5797,7 +5797,7 @@ def test_model_identity_stays_unknown_when_the_cache_cannot_answer(
 ) -> None:
     import huggingface_hub
 
-    from vllm_mlx.community_bench import run_builder
+    from rapid_mlx.community_bench import run_builder
 
     monkeypatch.setattr(huggingface_hub, "try_to_load_from_cache", lambda *a, **k: None)
     component = run_builder.unresolved_model_identity("org/missing", "text_generation")[
@@ -5847,7 +5847,7 @@ def test_failed_run_after_loading_archives_the_loaded_identity(
 def test_cached_config_and_projection_degrade_on_malformed_input(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
-    from vllm_mlx.community_bench import run_builder
+    from rapid_mlx.community_bench import run_builder
 
     snapshot = tmp_path / "snapshots" / ("f" * 40)
     snapshot.mkdir(parents=True)
@@ -5867,7 +5867,7 @@ def test_cached_config_and_projection_degrade_on_malformed_input(
 def test_cached_config_reads_the_revision_after_the_last_snapshots_segment(
     tmp_path: Path,
 ) -> None:
-    from vllm_mlx.community_bench import run_builder
+    from rapid_mlx.community_bench import run_builder
 
     revision = "a" * 40
     snapshot = (
@@ -5932,7 +5932,7 @@ def test_loader_target_refuses_a_same_named_local_directory(
     """The loader prefers an existing path over the registry, so a directory
     named like a subfolder alias (or the repo id) must not be measured under
     the catalog identity (codex on #3147)."""
-    from vllm_mlx import model_aliases
+    from rapid_mlx import model_aliases
 
     monkeypatch.chdir(tmp_path)
     monkeypatch.setattr(

@@ -157,23 +157,23 @@ def _build_parsers() -> dict[str, Callable[[str], object]]:
     on every CI run (it's a soft dep)."""
     parsers: dict[str, Callable[[str], object]] = {}
 
-    from vllm_mlx.tool_parsers.hermes_tool_parser import HermesToolParser
+    from rapid_mlx.tool_parsers.hermes_tool_parser import HermesToolParser
 
     hermes = HermesToolParser()
     parsers["hermes"] = lambda text: hermes.extract_tool_calls(text, None)
 
-    from vllm_mlx.tool_parsers.minimax_tool_parser import MiniMaxToolParser
+    from rapid_mlx.tool_parsers.minimax_tool_parser import MiniMaxToolParser
 
     minimax = MiniMaxToolParser()
     parsers["minimax"] = lambda text: minimax.extract_tool_calls(text, None)
 
-    from vllm_mlx.tool_parsers.glm47_tool_parser import Glm47ToolParser
+    from rapid_mlx.tool_parsers.glm47_tool_parser import Glm47ToolParser
 
     glm47 = Glm47ToolParser()
     parsers["glm47"] = lambda text: glm47.extract_tool_calls(text, None)
 
     try:
-        from vllm_mlx.tool_parsers.harmony_tool_parser import HarmonyToolParser
+        from rapid_mlx.tool_parsers.harmony_tool_parser import HarmonyToolParser
 
         harmony = HarmonyToolParser()
         parsers["harmony"] = lambda text: harmony.extract_tool_calls(text, None)

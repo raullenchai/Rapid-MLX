@@ -11,10 +11,10 @@ import pytest
 pytest.importorskip("mlx")
 pytestmark = pytest.mark.requires_mlx
 
-from vllm_mlx import server
-from vllm_mlx.cli import build_parser
-from vllm_mlx.request import Request, RequestStatus, SamplingParams
-from vllm_mlx.scheduler import Scheduler, SchedulerConfig
+from rapid_mlx import server
+from rapid_mlx.cli import build_parser
+from rapid_mlx.request import Request, RequestStatus, SamplingParams
+from rapid_mlx.scheduler import Scheduler, SchedulerConfig
 
 
 def _request(request_id: str, tail: int, *, stop_ids=()) -> Request:
@@ -416,7 +416,7 @@ def test_standalone_server_parser_registers_admission_flags(monkeypatch, capsys)
     monkeypatch.setattr(
         sys,
         "argv",
-        ["vllm_mlx.server", "--scheduling-policy", "invalid"],
+        ["rapid_mlx.server", "--scheduling-policy", "invalid"],
     )
 
     with pytest.raises(SystemExit) as exc:

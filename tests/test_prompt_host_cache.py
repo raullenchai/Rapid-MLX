@@ -1,5 +1,5 @@
-from vllm_mlx.engine import batched
-from vllm_mlx.prompt_host_cache import PromptHostCache
+from rapid_mlx.engine import batched
+from rapid_mlx.prompt_host_cache import PromptHostCache
 
 
 class _Tokenizer:

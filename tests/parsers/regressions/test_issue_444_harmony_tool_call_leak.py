@@ -60,7 +60,7 @@ from dataclasses import dataclass
 
 import pytest
 
-from vllm_mlx.tool_parsers.harmony_tool_parser import HarmonyToolParser
+from rapid_mlx.tool_parsers.harmony_tool_parser import HarmonyToolParser
 
 from .._harmony_markers import assert_no_harmony_marker_leak
 from ..dispatch import run_tool_extraction

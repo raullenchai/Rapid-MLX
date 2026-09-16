@@ -16,7 +16,7 @@ running server. This file adds the DEEP coverage the default-on flip needs:
 * **Negative control (the constraint actually FIRES)** — the same schema is
   requested twice against the *live* guided-decode path
   (``response_format={"type":"json_schema","strict":true,...}`` → llguidance,
-  see ``vllm_mlx/api/guided.py`` + ``vllm_mlx/engine/batched.py``): once
+  see ``rapid_mlx/api/guided.py`` + ``rapid_mlx/engine/batched.py``): once
   UN-constrained (plain ``json_object`` / no schema — the model is free to
   emit an off-schema / hallucinated field) and once CONSTRAINED (strict
   schema — llguidance masks the off-schema token). The control PASSES only

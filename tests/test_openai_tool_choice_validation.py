@@ -6,7 +6,7 @@ H-16 (Pavel r3): parse-time validation of ``tool_choice`` on
 Before the fix, ``tool_choice={"foo":"bar"}`` (no ``type`` field) and
 ``tool_choice={"type":"banana"}`` HTTP 200'd as a free-form chat
 completion — the typed ``str | dict`` union accepted the dict arm and
-the chat-route ``type=='function'`` guard (``vllm_mlx/routes/chat.py``
+the chat-route ``type=='function'`` guard (``rapid_mlx/routes/chat.py``
 L756) didn't match, so the request silently degraded with no tool
 forcing. PR #766 (M-03) closed the symmetric gap on ``/v1/messages``;
 this file pins the same contract for the OpenAI surface.
@@ -22,7 +22,7 @@ from __future__ import annotations
 import pytest
 from pydantic import ValidationError
 
-from vllm_mlx.api.models import ChatCompletionRequest
+from rapid_mlx.api.models import ChatCompletionRequest
 
 
 def _base_request(**overrides):

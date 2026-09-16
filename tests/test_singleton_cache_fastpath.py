@@ -28,7 +28,7 @@ import importlib
 import mlx.core as mx
 from mlx_lm.models.cache import KVCache, RotatingKVCache
 
-from vllm_mlx.singleton_cache_fastpath import (
+from rapid_mlx.singleton_cache_fastpath import (
     _is_singleton_passthrough_layer,
     _promote_layer,
     install_singleton_cache_fastpath,

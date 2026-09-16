@@ -21,8 +21,8 @@ import pytest
 from fastapi import HTTPException
 
 # The audio route transitively pulls in ``mlx`` / ``mlx_lm`` through
-# ``vllm_mlx.config`` → engine wiring. Linux CI runners don't ship MLX,
-# so importing ``vllm_mlx.routes.audio`` raises ``ModuleNotFoundError``
+# ``rapid_mlx.config`` → engine wiring. Linux CI runners don't ship MLX,
+# so importing ``rapid_mlx.routes.audio`` raises ``ModuleNotFoundError``
 # there. Mirror ``tests/test_audio_upload_size_limit.py``: skip cleanly
 # when those deps are missing so the diff-aware ``targeted_tests`` step
 # in ``scripts/pr_validate`` doesn't flag the whole file as regressions.
@@ -61,7 +61,7 @@ class TestPathShapedRejection:
         ],
     )
     def test_rejects_path_shaped_model_strings(self, model_string: str):
-        from vllm_mlx.routes.audio import _resolve_stt_model
+        from rapid_mlx.routes.audio import _resolve_stt_model
 
         with pytest.raises(HTTPException) as exc_info:
             _resolve_stt_model(model_string)
@@ -87,7 +87,7 @@ class TestPathShapedRejection:
         """Single-slash ``<org>/<repo>`` is the canonical HuggingFace
         shape; must continue to pass through unchanged. Allowed char
         class mirrors HF's ``[A-Za-z0-9._-]`` repo-id rule (no ``+``)."""
-        from vllm_mlx.routes.audio import _resolve_stt_model
+        from rapid_mlx.routes.audio import _resolve_stt_model
 
         assert _resolve_stt_model(model_string) == model_string
 
@@ -95,7 +95,7 @@ class TestPathShapedRejection:
         """codex-r1 BLOCKING: ``+`` is not a valid HF repo-id character.
         Must be rejected as ``model_not_found_error`` rather than
         passed through to ``STTEngine.load`` (which would 500)."""
-        from vllm_mlx.routes.audio import _resolve_stt_model
+        from rapid_mlx.routes.audio import _resolve_stt_model
 
         with pytest.raises(HTTPException) as exc_info:
             _resolve_stt_model("org/repo+with+plus")
@@ -126,7 +126,7 @@ class TestPathShapedRejection:
         — surfacing as a 500 instead of the intended 404. Per-component
         structural validation matching ``huggingface_hub.utils.
         validate_repo_id``."""
-        from vllm_mlx.routes.audio import _resolve_stt_model
+        from rapid_mlx.routes.audio import _resolve_stt_model
 
         with pytest.raises(HTTPException) as exc_info:
             _resolve_stt_model(model_string)
@@ -140,7 +140,7 @@ class TestPathShapedRejection:
     def test_accepts_notebook_ipynb_repo_id(self):
         """codex r3 BLOCKING: ``.ipynb`` is NOT a HF-reserved suffix
         (only ``.git`` is). Must continue to pass through."""
-        from vllm_mlx.routes.audio import _resolve_stt_model
+        from rapid_mlx.routes.audio import _resolve_stt_model
 
         assert _resolve_stt_model("org/notebook.ipynb") == "org/notebook.ipynb"
 
@@ -148,7 +148,7 @@ class TestPathShapedRejection:
         """codex r3 BLOCKING: HF's overall repo_id length cap is 96.
         A 193-char ``namespace/repo`` previously slipped past the
         per-component bound and crashed in ``STTEngine.load``."""
-        from vllm_mlx.routes.audio import _resolve_stt_model
+        from rapid_mlx.routes.audio import _resolve_stt_model
 
         # 90 + 1 ('/') + 90 = 181 chars — over the 96-char total cap.
         over_long = "a" * 90 + "/" + "b" * 90
@@ -161,14 +161,14 @@ class TestPathShapedRejection:
 
     def test_alias_still_resolves(self):
         """F-165 contract: known aliases continue to map to repos."""
-        from vllm_mlx.routes.audio import _resolve_stt_model
+        from rapid_mlx.routes.audio import _resolve_stt_model
 
         assert _resolve_stt_model("whisper-small") == "mlx-community/whisper-small-mlx"
 
     def test_empty_string_still_400(self):
         """Empty string must remain a 400 ``invalid_request_error``,
         not get re-classified as a 404."""
-        from vllm_mlx.routes.audio import _resolve_stt_model
+        from rapid_mlx.routes.audio import _resolve_stt_model
 
         with pytest.raises(HTTPException) as exc_info:
             _resolve_stt_model("")
@@ -189,8 +189,8 @@ def _audio_client(monkeypatch):
     from fastapi import FastAPI
     from fastapi.testclient import TestClient
 
-    monkeypatch.setattr("vllm_mlx.middleware.auth.verify_api_key", lambda: None)
-    from vllm_mlx.routes.audio import router
+    monkeypatch.setattr("rapid_mlx.middleware.auth.verify_api_key", lambda: None)
+    from rapid_mlx.routes.audio import router
 
     app = FastAPI()
     app.include_router(router)

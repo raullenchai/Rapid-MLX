@@ -53,7 +53,7 @@ _NETWORK_OPT_IN_MARKER = "requires_network"
 @pytest.fixture(autouse=True)
 def _isolate_model_performance_registry():
     """Keep process-owned per-model ledgers isolated between unit tests."""
-    from vllm_mlx.runtime.model_performance import (
+    from rapid_mlx.runtime.model_performance import (
         _reset_model_performance_registry_for_tests,
     )
 
@@ -210,9 +210,9 @@ def _sync_hf_offline_with_env(monkeypatch) -> None:
 #
 # Readers, for reference (all read ``os.environ`` at call time, so a run-time
 # override takes effect):
-#   * ``RAPID_MLX_STATE_DIR``  — ``vllm_mlx/first_run.py::_state_dir``
-#   * ``RAPID_MLX_HOME``       — ``vllm_mlx/community_bench/*``
-#   * ``RAPID_MLX_DDTREE_PATCH_CACHE`` — ``vllm_mlx/speculative/ddtree/runtime.py``
+#   * ``RAPID_MLX_STATE_DIR``  — ``rapid_mlx/first_run.py::_state_dir``
+#   * ``RAPID_MLX_HOME``       — ``rapid_mlx/community_bench/*``
+#   * ``RAPID_MLX_DDTREE_PATCH_CACHE`` — ``rapid_mlx/speculative/ddtree/runtime.py``
 #   * ``RAPID_MLX_CONFIG_HOME`` — allowlisted; no current reader, kept for parity
 _RAPID_MLX_DIR_ENV_VARS = (
     "RAPID_MLX_STATE_DIR",
@@ -369,7 +369,7 @@ _SCRIPT_ONLY_MODULES = {"regression_suite.py"}
 """Files inside ``tests/`` that define ``test_*`` symbols but are
 actually standalone scripts invoked by the doctor harness via
 subprocess against a live server (see
-``vllm_mlx/doctor/checks/api.py``). pytest must not run them as
+``rapid_mlx/doctor/checks/api.py``). pytest must not run them as
 unit tests — every call would fail with ``URLError`` and the
 diff-aware ``targeted_tests`` step in ``scripts/pr_validate``
 would flag any newly-added test in such a file as a regression.
@@ -387,14 +387,14 @@ def scheduler_config_stub(monkeypatch):
     import sys
     import types
 
-    turboquant_was_loaded = "vllm_mlx.turboquant" in sys.modules
+    turboquant_was_loaded = "rapid_mlx.turboquant" in sys.modules
     if importlib.util.find_spec("mlx") is None:
         # Import the server/tool-parser surface before installing the narrow
         # array shim, otherwise optional-dependency discovery could mistake
         # the shim for a complete MLX runtime.
         import numpy as np
 
-        import vllm_mlx.server  # noqa: F401
+        import rapid_mlx.server  # noqa: F401
 
         mlx = types.ModuleType("mlx")
         mlx.__path__ = []
@@ -407,7 +407,7 @@ def scheduler_config_stub(monkeypatch):
         monkeypatch.setitem(sys.modules, "mlx", mlx)
         monkeypatch.setitem(sys.modules, "mlx.core", mlx_core)
 
-    scheduler = types.ModuleType("vllm_mlx.scheduler")
+    scheduler = types.ModuleType("rapid_mlx.scheduler")
 
     class SchedulerConfig:
         def __init__(self, **kwargs):
@@ -421,10 +421,10 @@ def scheduler_config_stub(monkeypatch):
                 self.spec_decode = "mtp"
 
     scheduler.SchedulerConfig = SchedulerConfig
-    monkeypatch.setitem(sys.modules, "vllm_mlx.scheduler", scheduler)
+    monkeypatch.setitem(sys.modules, "rapid_mlx.scheduler", scheduler)
     yield SchedulerConfig
     if not turboquant_was_loaded:
-        sys.modules.pop("vllm_mlx.turboquant", None)
+        sys.modules.pop("rapid_mlx.turboquant", None)
 
 
 @pytest.fixture(autouse=True)
@@ -432,9 +432,9 @@ def _reset_global_parser_state_after_each_test():
     """Keep the process-global parser state hermetic across tests.
 
     Effective parser resolution reads TWO process-global sources (see
-    ``vllm_mlx/routes/models.py`` ``effective_parsers_for``): the
+    ``rapid_mlx/routes/models.py`` ``effective_parsers_for``): the
     ``ServerConfig`` singleton (``cfg.tool_call_parser``) AND the
-    ``vllm_mlx.server`` module-level ``_tool_call_parser`` fallback. Several
+    ``rapid_mlx.server`` module-level ``_tool_call_parser`` fallback. Several
     suites mutate either one directly and never restore it:
 
     * ``test_orphan_tool_validation`` / ``test_r12_reasoning_sanitizer_required``
@@ -459,16 +459,16 @@ def _reset_global_parser_state_after_each_test():
 
     # Reset only the parser state a test actually loaded. Guarding on
     # ``sys.modules`` (a) skips work for a module no test imported — it cannot
-    # have leaked — and (b) avoids importing ``vllm_mlx.server`` here, which
+    # have leaked — and (b) avoids importing ``rapid_mlx.server`` here, which
     # pulls ``uvicorn``: the lightweight "no-MLX" CI test job does not install
     # it, so an unconditional import ERRORs every test's teardown.
     import sys
 
-    _config_mod = sys.modules.get("vllm_mlx.config.server_config")
+    _config_mod = sys.modules.get("rapid_mlx.config.server_config")
     if _config_mod is not None:
         _config_mod.reset_config()
 
-    _server = sys.modules.get("vllm_mlx.server")
+    _server = sys.modules.get("rapid_mlx.server")
     if _server is not None:
         _server._tool_call_parser = None
         _server._reasoning_parser = None
@@ -592,7 +592,7 @@ def server_url(request):
 @pytest.fixture
 def clean_doctor_runtime_state(monkeypatch):
     """Reset every doctor runtime selection and probe cache around a test."""
-    from vllm_mlx.doctor import env_health
+    from rapid_mlx.doctor import env_health
 
     monkeypatch.setitem(sys.modules, "psutil", None)
     monkeypatch.setattr(env_health, "_SELECTED_RUNTIME", None)
@@ -631,7 +631,7 @@ def _telemetry_tests_run_off_the_build_machine(request, monkeypatch):
     """
     if "test_telemetry" not in request.node.fspath.basename:
         return
-    from vllm_mlx.telemetry.state import CI_ENV_VARS, DO_NOT_TRACK_ENV
+    from rapid_mlx.telemetry.state import CI_ENV_VARS, DO_NOT_TRACK_ENV
 
     for name in (DO_NOT_TRACK_ENV, *CI_ENV_VARS):
         monkeypatch.delenv(name, raising=False)

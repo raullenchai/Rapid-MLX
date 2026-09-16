@@ -2517,7 +2517,7 @@ flow_settings_persistence() {
     # render exactly the smart + fast aliases selected from the same JSON the
     # CLI consumes. This catches a missing app resource, a decoder drift, and a
     # third recommendation accidentally creeping back into a tier.
-    local recommendation_json="$ROOT/../../vllm_mlx/model_recommendations.json"
+    local recommendation_json="$ROOT/../../rapid_mlx/model_recommendations.json"
     local ram_mib=$((GOLDEN_RAM_GB * 1024))
     local expected_recommendations
     expected_recommendations="$(python3 - "$recommendation_json" "$ram_mib" <<'PY'

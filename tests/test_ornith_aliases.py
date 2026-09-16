@@ -22,8 +22,8 @@ off family-wide and no ``mtp_draft_model`` is set.
 
 from __future__ import annotations
 
-from vllm_mlx.model_aliases import list_profiles, resolve_profile
-from vllm_mlx.model_auto_config import detect_model_config
+from rapid_mlx.model_aliases import list_profiles, resolve_profile
+from rapid_mlx.model_auto_config import detect_model_config
 
 ORNITH_9B = "ornith-1.5-9b-bf16"
 ORNITH_35B = "ornith-1.5-35b-a3b-bf16"

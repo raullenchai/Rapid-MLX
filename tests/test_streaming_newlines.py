@@ -11,7 +11,7 @@ These tests exercise the reasoning parser directly, independent of the HTTP serv
 
 import pytest
 
-from vllm_mlx.reasoning import get_parser
+from rapid_mlx.reasoning import get_parser
 
 
 class TestQwen3NoTagStreaming:

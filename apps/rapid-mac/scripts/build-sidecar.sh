@@ -580,7 +580,7 @@ import sys
 
 importlib.import_module("mflux.models.common.weights.loading.weight_loader")
 importlib.import_module("mflux.models.qwen.variants.txt2img.qwen_image")
-importlib.import_module("vllm_mlx.image.bonsai_runtime")
+importlib.import_module("rapid_mlx.image.bonsai_runtime")
 if "torch" in sys.modules:
     raise SystemExit("ERR: mflux still pulls torch at import time")
 print("==> mflux and Bonsai image lanes import without torch: OK")
@@ -693,7 +693,7 @@ old = '''    try:
         return None, None
 '''
 new = '''    try:
-        from vllm_mlx.video.encoding import encode_rgb_video
+        from rapid_mlx.video.encoding import encode_rgb_video
 
         encode_rgb_video(video_np, temp_video_path, fps)
         print(f"{Colors.GREEN}✅ Video encoded{Colors.RESET}")
@@ -710,7 +710,7 @@ wan.write_text('''import numpy as np
 
 def save_video(frames: np.ndarray, output_path: str, fps: int = 16):
     """Save RGB video frames through Rapid's bundled VideoToolbox bridge."""
-    from vllm_mlx.video.encoding import encode_rgb_video
+    from rapid_mlx.video.encoding import encode_rgb_video
 
     encode_rgb_video(frames, output_path, fps)
 ''')
@@ -1202,9 +1202,9 @@ from mlx_vlm.models import (
     diffusion_gemma, gemma3, gemma3n, gemma4, gemma4_unified,
     qwen3_5, qwen3_5_moe, qwen3_vl, qwen3_vl_moe,
 )
-from vllm_mlx.image.hidream_runtime import HiDreamO1
-from vllm_mlx.image.sd35_runtime import SD35Large
-from vllm_mlx.image.sdxl_runtime import SDXL
+from rapid_mlx.image.hidream_runtime import HiDreamO1
+from rapid_mlx.image.sd35_runtime import SD35Large
+from rapid_mlx.image.sdxl_runtime import SDXL
 assert importlib.util.find_spec("cv2") is None
 assert importlib.util.find_spec("torch") is None
 assert importlib.util.find_spec("torchvision") is None
@@ -1229,7 +1229,7 @@ print("mlx_vlm", mlx_vlm.__version__, "sentencepiece", sentencepiece.__version__
         PYTHONPATH="$STAGE/site-packages" \
         PYTHONNOUSERSITE=1 \
         "$STAGE/python/bin/python3.12" -s -c \
-        'from importlib.metadata import version; import numpy as np; import mlx_audio; from mlx_audio.stt.utils import load_model as load_stt_model; from transformers.models.whisper.feature_extraction_whisper import WhisperFeatureExtractor; from mlx_audio.tts.generate import load_model as load_tts_model; from mlx_audio.tts.models.qwen3_tts import Model as Qwen3TTSModel; from scipy import signal; import soundfile; from vllm_mlx.audio.tts import AudioOutput, TTSEngine; payload = TTSEngine.__new__(TTSEngine).to_bytes(AudioOutput(audio=np.zeros(8, dtype=np.float32), sample_rate=24000, duration=8/24000), format="wav"); assert payload.startswith(b"RIFF"); print("mlx_audio", version("mlx-audio"))' 2>&1)" || {
+        'from importlib.metadata import version; import numpy as np; import mlx_audio; from mlx_audio.stt.utils import load_model as load_stt_model; from transformers.models.whisper.feature_extraction_whisper import WhisperFeatureExtractor; from mlx_audio.tts.generate import load_model as load_tts_model; from mlx_audio.tts.models.qwen3_tts import Model as Qwen3TTSModel; from scipy import signal; import soundfile; from rapid_mlx.audio.tts import AudioOutput, TTSEngine; payload = TTSEngine.__new__(TTSEngine).to_bytes(AudioOutput(audio=np.zeros(8, dtype=np.float32), sample_rate=24000, duration=8/24000), format="wav"); assert payload.startswith(b"RIFF"); print("mlx_audio", version("mlx-audio"))' 2>&1)" || {
         echo "ERR: bundled audio runtime import failed — desktop Audio would be unusable:" >&2
         echo "$AUDIO_OUT" >&2
         exit 3
@@ -1260,13 +1260,13 @@ from videox_fun_mlx.models.t5_encoder import T5Encoder
 from videox_fun_mlx.models.tokenizer import T5Tokenizer
 from videox_fun_mlx.pipeline.pipeline_cogvideox_fun_inpaint import CogVideoXFunInpaintPipeline
 from videox_fun_mlx.pipeline.scheduler import DDIMScheduler
-from vllm_mlx.runtime.video_lane import VideoEngine
-from vllm_mlx.video.encoding import encode_rgb_video
+from rapid_mlx.runtime.video_lane import VideoEngine
+from rapid_mlx.video.encoding import encode_rgb_video
 assert importlib.util.find_spec("cv2") is None
 assert importlib.util.find_spec("imageio") is None
 assert importlib.metadata.version("ltx-core-mlx") == "0.14.15"
 assert importlib.metadata.version("ltx-pipelines-mlx") == "0.14.15"
-from vllm_mlx.video.ltx25 import embedded_ltx25_interpreter
+from rapid_mlx.video.ltx25 import embedded_ltx25_interpreter
 assert embedded_ltx25_interpreter() is not None, "LTX-2.5 provenance stamp rejected"
 assert {"model_dir", "prompt"} <= set(inspect.signature(generate_video).parameters)
 assert {"load_wan_model", "load_t5_encoder", "load_vae_decoder"} <= set(generate_video.__globals__)

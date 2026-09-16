@@ -16,7 +16,7 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-from vllm_mlx.bench.tier_runner import HARNESS_PROFILES, run_tier
+from rapid_mlx.bench.tier_runner import HARNESS_PROFILES, run_tier
 
 
 @contextlib.contextmanager
@@ -74,13 +74,15 @@ def patch_harness_environment():
 
     with (
         patch(
-            "vllm_mlx.bench.tier_runner._find_free_port_in_range",
+            "rapid_mlx.bench.tier_runner._find_free_port_in_range",
             side_effect=_free_port,
         ),
-        patch("vllm_mlx.bench._server.serve", _fake_serve),
-        patch("vllm_mlx.agents.get_profile", _fake_get_profile),
-        patch("vllm_mlx.agents.testing.AgentTestRunner", side_effect=_fake_runner_init),
-        patch("vllm_mlx.bench.tier_runner._health_check", return_value=True),
+        patch("rapid_mlx.bench._server.serve", _fake_serve),
+        patch("rapid_mlx.agents.get_profile", _fake_get_profile),
+        patch(
+            "rapid_mlx.agents.testing.AgentTestRunner", side_effect=_fake_runner_init
+        ),
+        patch("rapid_mlx.bench.tier_runner._health_check", return_value=True),
     ):
         yield invocations
 
@@ -122,7 +124,7 @@ def test_harness_single_failure_marks_tier_failed(capsys):
         invocations.append(profile.name)
         r = MagicMock()
         if profile.name == "hermes":
-            from vllm_mlx.agents.testing import TestStatus
+            from rapid_mlx.agents.testing import TestStatus
 
             bad_result = MagicMock()
             bad_result.name = "single_tool_call"
@@ -137,13 +139,13 @@ def test_harness_single_failure_marks_tier_failed(capsys):
 
     with (
         patch(
-            "vllm_mlx.bench.tier_runner._find_free_port_in_range",
+            "rapid_mlx.bench.tier_runner._find_free_port_in_range",
             side_effect=_free_port,
         ),
-        patch("vllm_mlx.bench._server.serve", _fake_serve),
-        patch("vllm_mlx.agents.get_profile", _fake_get_profile),
-        patch("vllm_mlx.agents.testing.AgentTestRunner", side_effect=_runner_factory),
-        patch("vllm_mlx.bench.tier_runner._health_check", return_value=True),
+        patch("rapid_mlx.bench._server.serve", _fake_serve),
+        patch("rapid_mlx.agents.get_profile", _fake_get_profile),
+        patch("rapid_mlx.agents.testing.AgentTestRunner", side_effect=_runner_factory),
+        patch("rapid_mlx.bench.tier_runner._health_check", return_value=True),
     ):
         rc = run_tier(model="qwen3.5-4b-4bit", tier="harness")
 
@@ -184,13 +186,13 @@ def test_harness_crash_in_runner_does_not_abort_sweep(capsys):
 
     with (
         patch(
-            "vllm_mlx.bench.tier_runner._find_free_port_in_range",
+            "rapid_mlx.bench.tier_runner._find_free_port_in_range",
             side_effect=_free_port,
         ),
-        patch("vllm_mlx.bench._server.serve", _fake_serve),
-        patch("vllm_mlx.agents.get_profile", _fake_get_profile),
-        patch("vllm_mlx.agents.testing.AgentTestRunner", side_effect=_runner_factory),
-        patch("vllm_mlx.bench.tier_runner._health_check", return_value=True),
+        patch("rapid_mlx.bench._server.serve", _fake_serve),
+        patch("rapid_mlx.agents.get_profile", _fake_get_profile),
+        patch("rapid_mlx.agents.testing.AgentTestRunner", side_effect=_runner_factory),
+        patch("rapid_mlx.bench.tier_runner._health_check", return_value=True),
     ):
         rc = run_tier(model="qwen3.5-4b-4bit", tier="harness")
 
@@ -222,13 +224,13 @@ def test_harness_missing_profile_marks_as_failure(capsys):
 
     with (
         patch(
-            "vllm_mlx.bench.tier_runner._find_free_port_in_range",
+            "rapid_mlx.bench.tier_runner._find_free_port_in_range",
             side_effect=_free_port,
         ),
-        patch("vllm_mlx.bench._server.serve", _fake_serve),
-        patch("vllm_mlx.agents.get_profile", _fake_get_profile),
-        patch("vllm_mlx.agents.testing.AgentTestRunner", side_effect=_runner_factory),
-        patch("vllm_mlx.bench.tier_runner._health_check", return_value=True),
+        patch("rapid_mlx.bench._server.serve", _fake_serve),
+        patch("rapid_mlx.agents.get_profile", _fake_get_profile),
+        patch("rapid_mlx.agents.testing.AgentTestRunner", side_effect=_runner_factory),
+        patch("rapid_mlx.bench.tier_runner._health_check", return_value=True),
     ):
         rc = run_tier(model="qwen3.5-4b-4bit", tier="harness")
 
@@ -301,13 +303,13 @@ def test_harness_dead_server_between_profiles_reboots(capsys):
 
     with (
         patch(
-            "vllm_mlx.bench.tier_runner._find_free_port_in_range",
+            "rapid_mlx.bench.tier_runner._find_free_port_in_range",
             side_effect=_free_port,
         ),
-        patch("vllm_mlx.bench._server.serve", _serve_recording),
-        patch("vllm_mlx.agents.get_profile", _fake_get_profile),
-        patch("vllm_mlx.agents.testing.AgentTestRunner", side_effect=_runner_factory),
-        patch("vllm_mlx.bench.tier_runner._health_check", side_effect=_stub_health),
+        patch("rapid_mlx.bench._server.serve", _serve_recording),
+        patch("rapid_mlx.agents.get_profile", _fake_get_profile),
+        patch("rapid_mlx.agents.testing.AgentTestRunner", side_effect=_runner_factory),
+        patch("rapid_mlx.bench.tier_runner._health_check", side_effect=_stub_health),
     ):
         t0 = _time.time()
         rc = run_tier(model="qwen3.5-4b-4bit", tier="harness")
@@ -380,9 +382,9 @@ def test_harness_dead_server_no_reboot_when_attached_url(capsys):
 
     with (
         patch("urllib.request.urlopen", return_value=_FakeResp()),
-        patch("vllm_mlx.agents.get_profile", _fake_get_profile),
-        patch("vllm_mlx.agents.testing.AgentTestRunner", side_effect=_runner_factory),
-        patch("vllm_mlx.bench.tier_runner._health_check", side_effect=_stub_health),
+        patch("rapid_mlx.agents.get_profile", _fake_get_profile),
+        patch("rapid_mlx.agents.testing.AgentTestRunner", side_effect=_runner_factory),
+        patch("rapid_mlx.bench.tier_runner._health_check", side_effect=_stub_health),
     ):
         rc = run_tier(
             model="qwen3.5-4b-4bit",
@@ -441,15 +443,15 @@ def test_harness_profile_timeout_does_not_block_next_profile(capsys):
 
     with (
         patch(
-            "vllm_mlx.bench.tier_runner._find_free_port_in_range",
+            "rapid_mlx.bench.tier_runner._find_free_port_in_range",
             side_effect=_free_port,
         ),
-        patch("vllm_mlx.bench._server.serve", _fake_serve),
-        patch("vllm_mlx.agents.get_profile", _fake_get_profile),
-        patch("vllm_mlx.agents.testing.AgentTestRunner", side_effect=_runner_factory),
-        patch("vllm_mlx.bench.tier_runner._health_check", return_value=True),
+        patch("rapid_mlx.bench._server.serve", _fake_serve),
+        patch("rapid_mlx.agents.get_profile", _fake_get_profile),
+        patch("rapid_mlx.agents.testing.AgentTestRunner", side_effect=_runner_factory),
+        patch("rapid_mlx.bench.tier_runner._health_check", return_value=True),
         # Cap the per-profile wall-clock at 1s so the test is fast.
-        patch("vllm_mlx.bench.tier_runner.HARNESS_PROFILE_TIMEOUT_S", 1),
+        patch("rapid_mlx.bench.tier_runner.HARNESS_PROFILE_TIMEOUT_S", 1),
     ):
         rc = run_tier(model="qwen3.5-4b-4bit", tier="harness")
 
@@ -517,16 +519,16 @@ def test_harness_timeout_forces_server_restart_isolation(capsys):
 
     with (
         patch(
-            "vllm_mlx.bench.tier_runner._find_free_port_in_range",
+            "rapid_mlx.bench.tier_runner._find_free_port_in_range",
             side_effect=_free_port,
         ),
-        patch("vllm_mlx.bench._server.serve", _serve_recording),
-        patch("vllm_mlx.agents.get_profile", _fake_get_profile),
-        patch("vllm_mlx.agents.testing.AgentTestRunner", side_effect=_runner_factory),
+        patch("rapid_mlx.bench._server.serve", _serve_recording),
+        patch("rapid_mlx.agents.get_profile", _fake_get_profile),
+        patch("rapid_mlx.agents.testing.AgentTestRunner", side_effect=_runner_factory),
         # /health stays True throughout — we're testing the FORCED
         # restart-after-timeout path, not the dead-server-detected path.
-        patch("vllm_mlx.bench.tier_runner._health_check", return_value=True),
-        patch("vllm_mlx.bench.tier_runner.HARNESS_PROFILE_TIMEOUT_S", 1),
+        patch("rapid_mlx.bench.tier_runner._health_check", return_value=True),
+        patch("rapid_mlx.bench.tier_runner.HARNESS_PROFILE_TIMEOUT_S", 1),
     ):
         run_tier(model="qwen3.5-4b-4bit", tier="harness")
 
@@ -577,10 +579,10 @@ def test_attached_harness_timeout_stops_before_next_profile(capsys):
 
     with (
         patch("urllib.request.urlopen", return_value=_FakeResp()),
-        patch("vllm_mlx.agents.get_profile", _fake_get_profile),
-        patch("vllm_mlx.agents.testing.AgentTestRunner", side_effect=_runner_factory),
-        patch("vllm_mlx.bench.tier_runner._health_check", return_value=True),
-        patch("vllm_mlx.bench.tier_runner.HARNESS_PROFILE_TIMEOUT_S", 1),
+        patch("rapid_mlx.agents.get_profile", _fake_get_profile),
+        patch("rapid_mlx.agents.testing.AgentTestRunner", side_effect=_runner_factory),
+        patch("rapid_mlx.bench.tier_runner._health_check", return_value=True),
+        patch("rapid_mlx.bench.tier_runner.HARNESS_PROFILE_TIMEOUT_S", 1),
     ):
         rc = run_tier(
             model="qwen3.5-4b-4bit",
@@ -651,13 +653,13 @@ def test_harness_restart_tears_down_old_server_before_booting_new(capsys):
 
     with (
         patch(
-            "vllm_mlx.bench.tier_runner._find_free_port_in_range",
+            "rapid_mlx.bench.tier_runner._find_free_port_in_range",
             side_effect=_free_port,
         ),
-        patch("vllm_mlx.bench._server.serve", _serve_recording),
-        patch("vllm_mlx.agents.get_profile", _fake_get_profile),
-        patch("vllm_mlx.agents.testing.AgentTestRunner", side_effect=_runner_factory),
-        patch("vllm_mlx.bench.tier_runner._health_check", side_effect=_stub_health),
+        patch("rapid_mlx.bench._server.serve", _serve_recording),
+        patch("rapid_mlx.agents.get_profile", _fake_get_profile),
+        patch("rapid_mlx.agents.testing.AgentTestRunner", side_effect=_runner_factory),
+        patch("rapid_mlx.bench.tier_runner._health_check", side_effect=_stub_health),
     ):
         run_tier(model="qwen3.5-4b-4bit", tier="harness")
 
@@ -753,13 +755,13 @@ def test_harness_restart_refuses_when_old_server_teardown_fails(capsys):
 
     with (
         patch(
-            "vllm_mlx.bench.tier_runner._find_free_port_in_range",
+            "rapid_mlx.bench.tier_runner._find_free_port_in_range",
             side_effect=_free_port,
         ),
-        patch("vllm_mlx.bench._server.serve", _serve_failing_teardown),
-        patch("vllm_mlx.agents.get_profile", _fake_get_profile),
-        patch("vllm_mlx.agents.testing.AgentTestRunner", side_effect=_runner_factory),
-        patch("vllm_mlx.bench.tier_runner._health_check", side_effect=_stub_health),
+        patch("rapid_mlx.bench._server.serve", _serve_failing_teardown),
+        patch("rapid_mlx.agents.get_profile", _fake_get_profile),
+        patch("rapid_mlx.agents.testing.AgentTestRunner", side_effect=_runner_factory),
+        patch("rapid_mlx.bench.tier_runner._health_check", side_effect=_stub_health),
     ):
         run_tier(model="qwen3.5-4b-4bit", tier="harness")
 
@@ -822,14 +824,14 @@ def test_harness_timeout_with_failed_restart_surfaces_isolation_failure(capsys):
 
     with (
         patch(
-            "vllm_mlx.bench.tier_runner._find_free_port_in_range",
+            "rapid_mlx.bench.tier_runner._find_free_port_in_range",
             side_effect=_free_port,
         ),
-        patch("vllm_mlx.bench._server.serve", _serve_failing_teardown),
-        patch("vllm_mlx.agents.get_profile", _fake_get_profile),
-        patch("vllm_mlx.agents.testing.AgentTestRunner", side_effect=_runner_factory),
-        patch("vllm_mlx.bench.tier_runner._health_check", return_value=True),
-        patch("vllm_mlx.bench.tier_runner.HARNESS_PROFILE_TIMEOUT_S", 1),
+        patch("rapid_mlx.bench._server.serve", _serve_failing_teardown),
+        patch("rapid_mlx.agents.get_profile", _fake_get_profile),
+        patch("rapid_mlx.agents.testing.AgentTestRunner", side_effect=_runner_factory),
+        patch("rapid_mlx.bench.tier_runner._health_check", return_value=True),
+        patch("rapid_mlx.bench.tier_runner.HARNESS_PROFILE_TIMEOUT_S", 1),
     ):
         run_tier(model="qwen3.5-4b-4bit", tier="harness")
 
@@ -855,7 +857,7 @@ def test_harness_profile_timeout_env_var_respected(monkeypatch):
     """
     import importlib
 
-    import vllm_mlx.bench.tier_runner as tr
+    import rapid_mlx.bench.tier_runner as tr
 
     monkeypatch.setenv("HARNESS_PROFILE_TIMEOUT_S", "42")
     importlib.reload(tr)
@@ -900,7 +902,7 @@ class TestHarnessProfilesFilter:
     def _reload():
         import importlib
 
-        import vllm_mlx.bench.tier_runner as tr
+        import rapid_mlx.bench.tier_runner as tr
 
         importlib.reload(tr)
         return tr

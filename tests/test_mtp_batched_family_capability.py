@@ -8,7 +8,7 @@ from pathlib import Path
 
 import pytest
 
-from vllm_mlx.spec_decode.mtp import qwen3_5_inject
+from rapid_mlx.spec_decode.mtp import qwen3_5_inject
 
 ROOT = Path(__file__).resolve().parents[1]
 FAMILY_MODULES = (qwen3_5_inject,)
@@ -60,7 +60,7 @@ def test_batch_forward_delegates_to_existing_recursive_hidden_path(module):
 @pytest.mark.parametrize(
     "relative_path,injected_class",
     [
-        ("vllm_mlx/spec_decode/mtp/qwen3_5_inject.py", "_Qwen3_5WithMTP"),
+        ("rapid_mlx/spec_decode/mtp/qwen3_5_inject.py", "_Qwen3_5WithMTP"),
     ],
 )
 def test_injected_class_exposes_descriptor_seam_and_separate_recursive_depth(

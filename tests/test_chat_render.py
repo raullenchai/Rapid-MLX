@@ -10,7 +10,7 @@ from unittest.mock import patch
 
 from rich.cells import cell_len
 
-from vllm_mlx.chat_render import (
+from rapid_mlx.chat_render import (
     StreamingMarkdownRenderer,
     render_markdown,
     terminal_safe_text,

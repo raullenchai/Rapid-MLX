@@ -1,5 +1,5 @@
 # SPDX-License-Identifier: Apache-2.0
-"""Tests for ``vllm_mlx.model_sizes`` and the checked-in size manifest.
+"""Tests for ``rapid_mlx.model_sizes`` and the checked-in size manifest.
 
 Pins the download-size feature behind ``rapid-mlx models`` / ``rapid-mlx info``
 (issue #1286):
@@ -21,8 +21,8 @@ import json
 
 import pytest
 
-from vllm_mlx import model_sizes
-from vllm_mlx.model_aliases import list_profiles
+from rapid_mlx import model_sizes
+from rapid_mlx.model_aliases import list_profiles
 
 
 def _raw_manifest() -> dict:
@@ -104,7 +104,7 @@ def test_every_text_alias_has_a_manifest_entry():
 
 def test_every_audio_alias_has_a_manifest_entry():
     try:
-        from vllm_mlx.audio.registry import list_audio_aliases
+        from rapid_mlx.audio.registry import list_audio_aliases
 
         entries = list_audio_aliases()
     except Exception:

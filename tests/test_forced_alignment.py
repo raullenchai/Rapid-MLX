@@ -88,7 +88,7 @@ class _RecordingAlignerModel:
 
 def _make_aligner_engine(items: list[_FakeAlignItem]):
     """Return a loaded ``STTEngine`` bound to the aligner id + stub model."""
-    from vllm_mlx.audio.stt import STTEngine
+    from rapid_mlx.audio.stt import STTEngine
 
     eng = STTEngine(_ALIGNER_ID)
     eng._loaded = True  # bypass real weight load
@@ -98,14 +98,14 @@ def _make_aligner_engine(items: list[_FakeAlignItem]):
 
 class TestAlignerDetection:
     def test_aligner_id_detected(self):
-        from vllm_mlx.audio.stt import STTEngine
+        from rapid_mlx.audio.stt import STTEngine
 
         assert STTEngine(_ALIGNER_ID)._is_aligner is True
         # The short aliases resolve to an id containing "ForcedAligner".
         assert STTEngine("some/Qwen3-ForcedAligner-thing")._is_aligner is True
 
     def test_non_aligner_not_detected(self):
-        from vllm_mlx.audio.stt import STTEngine
+        from rapid_mlx.audio.stt import STTEngine
 
         assert STTEngine("mlx-community/whisper-large-v3-mlx")._is_aligner is False
         assert STTEngine("mlx-community/parakeet-tdt-0.6b-v2")._is_aligner is False
@@ -113,7 +113,7 @@ class TestAlignerDetection:
 
 class TestTranscribeRejectsAligner:
     def test_transcribe_on_aligner_raises(self):
-        from vllm_mlx.audio.stt import STTEngine
+        from rapid_mlx.audio.stt import STTEngine
 
         eng = STTEngine(_ALIGNER_ID)
         eng._loaded = True  # skip load; the aligner guard fires first
@@ -124,7 +124,7 @@ class TestTranscribeRejectsAligner:
     def test_transcribe_guard_fires_before_load(self):
         # Codex MAJOR regression: the aligner guard must reject BEFORE
         # load() so an invalid call never downloads gigabytes of weights.
-        from vllm_mlx.audio.stt import STTEngine
+        from rapid_mlx.audio.stt import STTEngine
 
         eng = STTEngine(_ALIGNER_ID)  # _loaded is False
 
@@ -138,7 +138,7 @@ class TestTranscribeRejectsAligner:
 
 class TestAlignGuards:
     def test_align_on_non_aligner_raises(self):
-        from vllm_mlx.audio.stt import STTEngine
+        from rapid_mlx.audio.stt import STTEngine
 
         eng = STTEngine("mlx-community/whisper-large-v3-mlx")
         eng._loaded = True
@@ -155,7 +155,7 @@ class TestAlignGuards:
         # Codex MAJOR regression: both the model-kind and empty-text
         # guards must reject BEFORE load() (no weight download on an
         # invalid call).
-        from vllm_mlx.audio.stt import STTEngine
+        from rapid_mlx.audio.stt import STTEngine
 
         def _boom():
             raise AssertionError("load() must not run for an invalid call")
@@ -287,8 +287,8 @@ class _FakeRouteEngine:
 
 @pytest.fixture
 def _stub_route_engine(monkeypatch):
-    from vllm_mlx.audio import probe
-    from vllm_mlx.routes import audio as audio_route
+    from rapid_mlx.audio import probe
+    from rapid_mlx.routes import audio as audio_route
 
     fake_mlx_audio = types.ModuleType("mlx_audio")
     fake_mlx_audio.__path__ = []
@@ -312,8 +312,10 @@ def _stub_route_engine(monkeypatch):
     probe._reset_probe_cache()
     _ALIGN_CALLS.clear()
 
-    monkeypatch.setattr("vllm_mlx.audio.stt.STTEngine", _FakeRouteEngine, raising=False)
-    audio_stt_mod = sys.modules.get("vllm_mlx.audio.stt")
+    monkeypatch.setattr(
+        "rapid_mlx.audio.stt.STTEngine", _FakeRouteEngine, raising=False
+    )
+    audio_stt_mod = sys.modules.get("rapid_mlx.audio.stt")
     if audio_stt_mod is not None:
         monkeypatch.setattr(audio_stt_mod, "STTEngine", _FakeRouteEngine)
 
@@ -329,8 +331,8 @@ def _stub_route_engine(monkeypatch):
 
 
 def _mount_audio_app():
-    from vllm_mlx.config import get_config
-    from vllm_mlx.routes import audio as audio_route
+    from rapid_mlx.config import get_config
+    from rapid_mlx.routes import audio as audio_route
 
     app = FastAPI()
     app.include_router(audio_route.router)

@@ -1,7 +1,7 @@
 # SPDX-License-Identifier: Apache-2.0
 """Linux-lane lifecycle coverage for the Community Benchmark text executor.
 
-``local_runner._text_measurements`` imports ``vllm_mlx.engine_core`` and the
+``local_runner._text_measurements`` imports ``rapid_mlx.engine_core`` and the
 tokenizer loader, so the ordinary no-MLX lane cannot execute it. The inert
 MLX seam installed by this folder's conftest permits importing those engine
 modules while every tensor operation stays faked — no model is ever loaded.
@@ -18,10 +18,10 @@ from types import SimpleNamespace
 
 import pytest
 
-from vllm_mlx.community_bench import local_runner
-from vllm_mlx.community_bench.hardware import Hardware, Software
-from vllm_mlx.community_bench.runner import BenchResult, BucketResult, RoundResult
-from vllm_mlx.community_bench.workspace import LocalRunArchive
+from rapid_mlx.community_bench import local_runner
+from rapid_mlx.community_bench.hardware import Hardware, Software
+from rapid_mlx.community_bench.runner import BenchResult, BucketResult, RoundResult
+from rapid_mlx.community_bench.workspace import LocalRunArchive
 
 
 def _missing_module(name: str) -> ModuleNotFoundError:
@@ -43,8 +43,8 @@ def _bench_result() -> BenchResult:
 
 
 def test_serving_adapter_preserves_exact_tokens_and_sampling_contract() -> None:
-    from vllm_mlx.engine.base import GenerationOutput
-    from vllm_mlx.request import SamplingParams
+    from rapid_mlx.engine.base import GenerationOutput
+    from rapid_mlx.request import SamplingParams
 
     observed: dict[str, object] = {}
 
@@ -106,8 +106,8 @@ def test_serving_adapter_preserves_exact_tokens_and_sampling_contract() -> None:
 
 
 def test_serving_adapter_context_and_unbounded_stream() -> None:
-    from vllm_mlx.engine.base import GenerationOutput
-    from vllm_mlx.request import SamplingParams
+    from rapid_mlx.engine.base import GenerationOutput
+    from rapid_mlx.request import SamplingParams
 
     class Engine:
         async def stream_generate(self, _prompt, **_kwargs):
@@ -125,7 +125,7 @@ def test_serving_adapter_context_and_unbounded_stream() -> None:
 
 
 def test_serving_adapter_zero_timeout_aborts() -> None:
-    from vllm_mlx.request import SamplingParams
+    from rapid_mlx.request import SamplingParams
 
     events: list[str] = []
 
@@ -148,8 +148,8 @@ def test_serving_adapter_zero_timeout_aborts() -> None:
 
 
 def test_serving_adapter_tolerates_stream_close_error() -> None:
-    from vllm_mlx.engine.base import GenerationOutput
-    from vllm_mlx.request import SamplingParams
+    from rapid_mlx.engine.base import GenerationOutput
+    from rapid_mlx.request import SamplingParams
 
     events: list[str] = []
 
@@ -173,8 +173,8 @@ def test_serving_adapter_tolerates_stream_close_error() -> None:
 
 
 def test_serving_adapter_timeout_is_total_request_budget() -> None:
-    from vllm_mlx.engine.base import GenerationOutput
-    from vllm_mlx.request import SamplingParams
+    from rapid_mlx.engine.base import GenerationOutput
+    from rapid_mlx.request import SamplingParams
 
     events: list[str] = []
 
@@ -204,7 +204,7 @@ def test_serving_adapter_timeout_is_total_request_budget() -> None:
 
 
 def test_serving_adapter_rejects_unsupported_token_stop_ids() -> None:
-    from vllm_mlx.request import SamplingParams
+    from rapid_mlx.request import SamplingParams
 
     async def exercise() -> None:
         adapter = local_runner._ServingBenchmarkAdapter(object())
@@ -219,7 +219,7 @@ def test_serving_adapter_rejects_unsupported_token_stop_ids() -> None:
 def test_v41_adapter_preserves_registered_tokens_and_exact_length(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    from vllm_mlx.request import SamplingParams
+    from rapid_mlx.request import SamplingParams
 
     observed: dict[str, object] = {}
 
@@ -284,7 +284,7 @@ def test_v41_lazy_runtime_boundary_delegates_without_eager_mlx_import(
     )
     monkeypatch.setitem(
         sys.modules,
-        "vllm_mlx.models.deepseek_v41_native.serving",
+        "rapid_mlx.models.deepseek_v41_native.serving",
         fake_serving,
     )
 
@@ -301,7 +301,7 @@ def test_v41_lazy_runtime_boundary_delegates_without_eager_mlx_import(
 
 @pytest.mark.parametrize("prompt", ["rendered text", [1, True], [1, "2"]])
 def test_v41_adapter_rejects_nonregistered_prompt_tokens(prompt: object) -> None:
-    from vllm_mlx.request import SamplingParams
+    from rapid_mlx.request import SamplingParams
 
     executor = local_runner.concurrent.futures.ThreadPoolExecutor(max_workers=1)
 
@@ -324,7 +324,7 @@ def test_v41_adapter_rejects_nonregistered_prompt_tokens(prompt: object) -> None
 def test_v41_adapter_unbounded_empty_stream_completes(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    from vllm_mlx.request import SamplingParams
+    from rapid_mlx.request import SamplingParams
 
     monkeypatch.setattr(
         local_runner,
@@ -362,7 +362,7 @@ def test_v41_adapter_unbounded_empty_stream_completes(
 def test_v41_adapter_zero_timeout_fails_before_model_step(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    from vllm_mlx.request import SamplingParams
+    from rapid_mlx.request import SamplingParams
 
     monkeypatch.setattr(
         local_runner,
@@ -410,7 +410,7 @@ def test_v41_adapter_zero_timeout_fails_before_model_step(
     ],
 )
 def test_v41_adapter_rejects_nonregistered_sampling(params: dict) -> None:
-    from vllm_mlx.request import SamplingParams
+    from rapid_mlx.request import SamplingParams
 
     defaults = {
         "max_tokens": 2,
@@ -436,8 +436,8 @@ def test_v41_adapter_rejects_nonregistered_sampling(params: dict) -> None:
 
 
 def test_v41_model_identity_includes_the_measured_sidecar(tmp_path: Path) -> None:
-    from vllm_mlx.catalog import ContractValidator
-    from vllm_mlx.community_bench.run_builder import unresolved_model_identity
+    from rapid_mlx.catalog import ContractValidator
+    from rapid_mlx.community_bench.run_builder import unresolved_model_identity
 
     primary = unresolved_model_identity(
         "rapid-mlx/DeepSeek-V4.1-Flash-REAP-2bit-MLX", "text_generation"
@@ -455,7 +455,7 @@ def test_v41_model_identity_includes_the_measured_sidecar(tmp_path: Path) -> Non
 
 
 def test_v41_speculative_provenance_is_target_specific() -> None:
-    from vllm_mlx.models.deepseek_v41_native import artifacts
+    from rapid_mlx.models.deepseek_v41_native import artifacts
 
     assert local_runner._text_speculative_execution("other/model") is None
     assert local_runner._text_speculative_execution(artifacts.TARGET_REPO) == {
@@ -468,7 +468,7 @@ def test_v41_speculative_provenance_is_target_specific() -> None:
 def test_benchmark_loader_lane_uses_shared_architecture_probe(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    from vllm_mlx.api import utils
+    from rapid_mlx.api import utils
 
     observed: list[str] = []
     monkeypatch.setattr(
@@ -483,7 +483,7 @@ def test_benchmark_loader_lane_uses_shared_architecture_probe(
 
 
 def test_serving_wrapper_exposes_real_model_context_length() -> None:
-    from vllm_mlx.service.helpers import get_model_max_context
+    from rapid_mlx.service.helpers import get_model_max_context
 
     serving_wrapper = SimpleNamespace(
         _model=SimpleNamespace(args=SimpleNamespace(max_position_embeddings=1_048_576)),
@@ -511,8 +511,8 @@ def test_serving_fallback_is_limited_to_architecture_rejection(
 
 def test_deepseek_v4_benchmark_family_keeps_native_text_runtime() -> None:
     """DeepSeek V4 checkpoints use Rapid's vendored text model."""
-    from vllm_mlx.model_aliases import resolve_profile
-    from vllm_mlx.utils.tokenizer import _VENDORED_MODEL_TYPES
+    from rapid_mlx.model_aliases import resolve_profile
+    from rapid_mlx.utils.tokenizer import _VENDORED_MODEL_TYPES
 
     assert "deepseek_v4" in _VENDORED_MODEL_TYPES
     for alias in (
@@ -530,8 +530,8 @@ def test_deepseek_v4_benchmark_family_keeps_native_text_runtime() -> None:
 def test_unavailable_dedicated_text_runtime_fails_before_model_load(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    from vllm_mlx.community_bench import workspace
-    from vllm_mlx.utils import tokenizer as tokenizer_module
+    from rapid_mlx.community_bench import workspace
+    from rapid_mlx.utils import tokenizer as tokenizer_module
 
     monkeypatch.setattr(
         workspace,
@@ -559,8 +559,8 @@ def test_unavailable_dedicated_text_runtime_fails_before_model_load(
 def test_text_lane_uses_pinned_v41_serial_runtime(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
-    from vllm_mlx.community_bench import runner, workspace
-    from vllm_mlx.models.deepseek_v41_native import artifacts
+    from rapid_mlx.community_bench import runner, workspace
+    from rapid_mlx.models.deepseek_v41_native import artifacts
 
     target_path = tmp_path / "target" / "snapshots" / artifacts.TARGET_REVISION
     mtp_path = tmp_path / "mtp" / "snapshots" / artifacts.MTP_REVISION
@@ -637,8 +637,8 @@ def test_text_lane_uses_pinned_v41_serial_runtime(
 def test_text_lane_uses_serving_runtime_and_tolerates_shutdown_error(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    from vllm_mlx.community_bench import runner, workspace
-    from vllm_mlx.engine import batched
+    from rapid_mlx.community_bench import runner, workspace
+    from rapid_mlx.engine import batched
 
     events: list[str] = []
 
@@ -684,8 +684,8 @@ def test_text_lane_uses_serving_runtime_and_tolerates_shutdown_error(
 
 
 def test_text_lane_reaps_failed_serving_start(monkeypatch: pytest.MonkeyPatch) -> None:
-    from vllm_mlx.community_bench import workspace
-    from vllm_mlx.engine import batched
+    from rapid_mlx.community_bench import workspace
+    from rapid_mlx.engine import batched
 
     events: list[str] = []
 
@@ -717,9 +717,9 @@ def test_text_lane_reaps_failed_serving_start(monkeypatch: pytest.MonkeyPatch) -
 def test_text_lane_falls_back_only_for_exact_architecture_rejection(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    from vllm_mlx.community_bench import runner, workspace
-    from vllm_mlx.engine import batched
-    from vllm_mlx.utils import tokenizer as tokenizer_module
+    from rapid_mlx.community_bench import runner, workspace
+    from rapid_mlx.engine import batched
+    from rapid_mlx.utils import tokenizer as tokenizer_module
 
     class Engine:
         def __init__(self, *_args, **_kwargs):
@@ -776,9 +776,9 @@ def test_text_lane_falls_back_only_for_exact_architecture_rejection(
 def test_text_lane_converts_engine_result_and_reaps_executor(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
-    from vllm_mlx import engine_core
-    from vllm_mlx.community_bench import runner
-    from vllm_mlx.utils import tokenizer as tokenizer_module
+    from rapid_mlx import engine_core
+    from rapid_mlx.community_bench import runner
+    from rapid_mlx.utils import tokenizer as tokenizer_module
 
     archive = LocalRunArchive(tmp_path)
     shutdown_calls: list[tuple[bool, bool]] = []
@@ -913,8 +913,8 @@ def test_text_lane_measures_the_catalog_repo_id_not_a_same_named_directory(
 ) -> None:
     """A same-named local directory must not be measured under the catalog
     identity (codex on #3147)."""
-    from vllm_mlx import model_aliases
-    from vllm_mlx.utils import tokenizer as tokenizer_module
+    from rapid_mlx import model_aliases
+    from rapid_mlx.utils import tokenizer as tokenizer_module
 
     targets: list[str] = []
 

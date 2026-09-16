@@ -1,7 +1,7 @@
 # SPDX-License-Identifier: Apache-2.0
 """Unit tests for the fused top-p + temperature sampler fast path.
 
-Pins three properties of ``vllm_mlx._sampler_fast_path``:
+Pins three properties of ``rapid_mlx._sampler_fast_path``:
 
 1. ``is_fused_top_p_eligible`` covers the eligible knob window exactly —
    eligible iff ``temperature > 0`` AND ``min_p == 0`` AND
@@ -31,7 +31,7 @@ pytestmark = pytest.mark.requires_mlx
 import mlx.core as mx
 from mlx_lm.sample_utils import make_sampler
 
-from vllm_mlx._sampler_fast_path import (
+from rapid_mlx._sampler_fast_path import (
     is_fused_top_p_eligible,
     make_fused_top_p_temp_sampler,
 )

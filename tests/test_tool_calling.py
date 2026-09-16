@@ -4,7 +4,7 @@
 import json
 from unittest.mock import MagicMock
 
-from vllm_mlx.api.tool_calling import (
+from rapid_mlx.api.tool_calling import (
     _is_tool_call_json,
     _parse_raw_json_tool_calls,
     convert_tools_for_template,

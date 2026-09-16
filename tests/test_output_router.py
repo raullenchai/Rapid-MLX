@@ -8,7 +8,7 @@ routing correctness without any text-level matching.
 
 import pytest
 
-from vllm_mlx.output_router import Channel, OutputRouter, RouterState, TokenMap
+from rapid_mlx.output_router import Channel, OutputRouter, RouterState, TokenMap
 
 # === Gemma 4 Token IDs (from tokenizer) ===
 GEMMA4_MAP = TokenMap(
@@ -811,7 +811,7 @@ class TestStreamingFactoryEscapeHatches:
         so the test exercises the factory branches without needing a
         real tokenizer.
         """
-        import vllm_mlx.output_router_harmony as orh
+        import rapid_mlx.output_router_harmony as orh
 
         def fake_is_compat(_token_map, _tokenizer):
             return gate_returns
@@ -968,7 +968,7 @@ class TestStreamingFactoryEscapeHatches:
 
         # Make sure the no-import branch is exercised cleanly even if
         # the module is already cached from another test.
-        monkeypatch.setitem(sys.modules, "vllm_mlx.output_router_harmony", None)
+        monkeypatch.setitem(sys.modules, "rapid_mlx.output_router_harmony", None)
         # Stage a legacy router so the function has something non-None
         # to return on the force-off branch.
         self._harmony_legacy(monkeypatch)

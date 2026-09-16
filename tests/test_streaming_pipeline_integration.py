@@ -8,9 +8,9 @@ prompt_tokens tracking work together correctly.
 import json
 import unittest
 
-from vllm_mlx.api.utils import StreamingThinkRouter, StreamingToolCallFilter
-from vllm_mlx.routes.anthropic import _should_start_in_thinking
-from vllm_mlx.server import _emit_content_pieces
+from rapid_mlx.api.utils import StreamingThinkRouter, StreamingToolCallFilter
+from rapid_mlx.routes.anthropic import _should_start_in_thinking
+from rapid_mlx.server import _emit_content_pieces
 
 
 class TestEmitContentPieces(unittest.TestCase):

@@ -14,7 +14,7 @@ from fastapi.testclient import TestClient
 
 
 def test_remote_code_policy_preserves_historical_unset_default(monkeypatch):
-    from vllm_mlx.utils.tokenizer import apply_remote_code_policy
+    from rapid_mlx.utils.tokenizer import apply_remote_code_policy
 
     monkeypatch.delenv("RAPID_MLX_TRUST_REMOTE_CODE", raising=False)
     config, enabled = apply_remote_code_policy(None)
@@ -24,7 +24,7 @@ def test_remote_code_policy_preserves_historical_unset_default(monkeypatch):
 
 @pytest.mark.parametrize("value", ["0", "false", "NO", " off "])
 def test_remote_code_opt_out_is_authoritative_and_non_mutating(monkeypatch, value):
-    from vllm_mlx.utils.tokenizer import apply_remote_code_policy
+    from rapid_mlx.utils.tokenizer import apply_remote_code_policy
 
     original = {"trust_remote_code": True, "eos_token": "<eos>"}
     monkeypatch.setenv("RAPID_MLX_TRUST_REMOTE_CODE", value)
@@ -39,7 +39,7 @@ def test_mllm_remote_code_optout_reaches_model_and_config_loaders(monkeypatch):
     """The process-wide opt-out must cover every MLLM repository read."""
     import types
 
-    from vllm_mlx.models import mllm as mllm_mod
+    from rapid_mlx.models import mllm as mllm_mod
 
     calls = {}
     model = SimpleNamespace(config=SimpleNamespace())
@@ -66,15 +66,15 @@ def test_mllm_remote_code_optout_reaches_model_and_config_loaders(monkeypatch):
     # ``mlx_vlm`` module graph so the fake remains intentionally minimal.
     for module_name, installer_name in (
         (
-            "vllm_mlx.patches.glm5_next_runtime",
+            "rapid_mlx.patches.glm5_next_runtime",
             "install_glm5_next_runtime_fix",
         ),
         (
-            "vllm_mlx.patches.glm5_next_processor",
+            "rapid_mlx.patches.glm5_next_processor",
             "install_glm5_next_processor_patch",
         ),
         (
-            "vllm_mlx.patches.glm5_next_forget_gate_quant",
+            "rapid_mlx.patches.glm5_next_forget_gate_quant",
             "install_glm5_next_forget_gate_quant_fix",
         ),
     ):
@@ -84,11 +84,11 @@ def test_mllm_remote_code_optout_reaches_model_and_config_loaders(monkeypatch):
             types.SimpleNamespace(**{installer_name: lambda: None}),
         )
     monkeypatch.setattr(
-        "vllm_mlx.utils.tokenizer.augment_eos_token_ids_from_generation_config",
+        "rapid_mlx.utils.tokenizer.augment_eos_token_ids_from_generation_config",
         lambda *_args, **_kwargs: None,
     )
     monkeypatch.setattr(
-        "vllm_mlx.utils.tokenizer.repair_byte_level_decoder",
+        "rapid_mlx.utils.tokenizer.repair_byte_level_decoder",
         lambda *_args, **_kwargs: None,
     )
 
@@ -100,7 +100,7 @@ def test_mllm_remote_code_optout_reaches_model_and_config_loaders(monkeypatch):
 
 
 def test_trusted_hosts_default_off_and_cli_comma_normalization(monkeypatch):
-    import vllm_mlx.server as server
+    import rapid_mlx.server as server
 
     monkeypatch.delenv("RAPID_MLX_TRUSTED_HOSTS", raising=False)
     app = FastAPI()
@@ -133,7 +133,7 @@ def test_trusted_hosts_default_off_and_cli_comma_normalization(monkeypatch):
 
 
 def test_trusted_hosts_env_is_used_when_cli_absent(monkeypatch):
-    import vllm_mlx.server as server
+    import rapid_mlx.server as server
 
     app = FastAPI()
     monkeypatch.setattr(server, "app", app)
@@ -142,7 +142,7 @@ def test_trusted_hosts_env_is_used_when_cli_absent(monkeypatch):
 
 
 def test_sa3_checkpoint_refuses_automatic_unsafe_pickle(monkeypatch):
-    from vllm_mlx.audio.sa3.models.defs.checkpoint_security import (
+    from rapid_mlx.audio.sa3.models.defs.checkpoint_security import (
         load_torch_checkpoint,
     )
 
@@ -161,7 +161,7 @@ def test_sa3_checkpoint_refuses_automatic_unsafe_pickle(monkeypatch):
 
 
 def test_sa3_checkpoint_unsafe_fallback_requires_explicit_opt_in(monkeypatch):
-    from vllm_mlx.audio.sa3.models.defs.checkpoint_security import (
+    from rapid_mlx.audio.sa3.models.defs.checkpoint_security import (
         load_torch_checkpoint,
     )
 

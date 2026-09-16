@@ -40,7 +40,7 @@ _BATT_BATTERY = (
 
 
 def test_run_conditions_maps_every_probe_onto_the_schema_enums(monkeypatch) -> None:
-    from vllm_mlx.community_bench import hardware
+    from rapid_mlx.community_bench import hardware
 
     monkeypatch.setattr(
         hardware,
@@ -68,7 +68,7 @@ def test_run_conditions_maps_every_probe_onto_the_schema_enums(monkeypatch) -> N
 
 
 def test_run_conditions_reads_ac_and_normal_pressure(monkeypatch) -> None:
-    from vllm_mlx.community_bench import hardware
+    from rapid_mlx.community_bench import hardware
 
     monkeypatch.setattr(
         hardware,
@@ -92,8 +92,8 @@ def test_run_conditions_reads_ac_and_normal_pressure(monkeypatch) -> None:
 
 def test_run_conditions_degrades_each_field_independently(monkeypatch) -> None:
     """Every probe failing must still yield a schema-valid object."""
-    from vllm_mlx.catalog.validation import ContractValidator
-    from vllm_mlx.community_bench import hardware
+    from rapid_mlx.catalog.validation import ContractValidator
+    from rapid_mlx.community_bench import hardware
 
     monkeypatch.setattr(hardware, "_run", _fake_probe({}))
     monkeypatch.setattr(hardware, "_thermal_state", lambda: "unknown")
@@ -141,7 +141,7 @@ def test_run_conditions_degrades_each_field_independently(monkeypatch) -> None:
     sys.platform != "darwin", reason="Objective-C runtime is macOS-only"
 )
 def test_process_info_probes_read_real_values_on_macos() -> None:
-    from vllm_mlx.community_bench import hardware
+    from rapid_mlx.community_bench import hardware
 
     assert hardware._thermal_state() in {"nominal", "fair", "serious", "critical"}
     assert isinstance(hardware._low_power_mode(), bool)
@@ -150,7 +150,7 @@ def test_process_info_probes_read_real_values_on_macos() -> None:
 def test_process_info_probes_degrade_when_the_runtime_is_unavailable(
     monkeypatch,
 ) -> None:
-    from vllm_mlx.community_bench import hardware
+    from rapid_mlx.community_bench import hardware
 
     monkeypatch.setattr(hardware, "_process_info", lambda selector, restype: None)
     assert hardware._thermal_state() == "unknown"
@@ -166,7 +166,7 @@ def test_run_normalises_process_creation_failures(monkeypatch) -> None:
     Otherwise the optional post-measurement probe in ``run_local`` would
     abort after the benchmark completed and the result would be lost.
     """
-    from vllm_mlx.community_bench import hardware
+    from rapid_mlx.community_bench import hardware
 
     def cannot_spawn(*args, **kwargs):
         raise OSError(35, "Resource temporarily unavailable")
@@ -181,7 +181,7 @@ def test_run_normalises_process_creation_failures(monkeypatch) -> None:
 
 def test_pmset_is_on_the_allowlist_and_nothing_else_was_added() -> None:
     """The privacy contract enumerates every binary; pin the expansion."""
-    from vllm_mlx.community_bench import hardware
+    from rapid_mlx.community_bench import hardware
 
     expected = frozenset(
         {
@@ -200,7 +200,7 @@ def test_pmset_is_on_the_allowlist_and_nothing_else_was_added() -> None:
 def test_process_info_degrades_when_the_objc_runtime_cannot_load(monkeypatch) -> None:
     import ctypes
 
-    from vllm_mlx.community_bench import hardware
+    from rapid_mlx.community_bench import hardware
 
     def cannot_load(*args, **kwargs):
         raise OSError("dlopen failed")
@@ -222,7 +222,7 @@ def test_process_info_probes_work_in_a_fresh_interpreter() -> None:
 
     code = (
         "import json, sys; "
-        "from vllm_mlx.community_bench import hardware; "
+        "from rapid_mlx.community_bench import hardware; "
         "print(json.dumps([hardware._thermal_state(), hardware._low_power_mode()]))"
     )
     out = subprocess.run(
@@ -235,7 +235,7 @@ def test_process_info_probes_work_in_a_fresh_interpreter() -> None:
 
 
 def test_process_info_is_unavailable_off_darwin(monkeypatch) -> None:
-    from vllm_mlx.community_bench import hardware
+    from rapid_mlx.community_bench import hardware
 
     monkeypatch.setattr(hardware.sys, "platform", "linux")
     assert hardware._process_info(b"thermalState", int) is None
@@ -248,7 +248,7 @@ def test_process_info_degrades_when_the_class_cannot_be_resolved(monkeypatch) ->
     """A null NSProcessInfo (class not registered) degrades to None, not a crash."""
     import ctypes
 
-    from vllm_mlx.community_bench import hardware
+    from rapid_mlx.community_bench import hardware
 
     monkeypatch.setattr(ctypes, "cast", lambda *args, **kwargs: lambda *call: 0)
     assert hardware._process_info(b"thermalState", ctypes.c_long) is None
@@ -259,7 +259,7 @@ def test_process_info_declines_selectors_the_runtime_does_not_recognise() -> Non
     """An unknown selector degrades to ``None`` instead of an ObjC exception."""
     import ctypes
 
-    from vllm_mlx.community_bench import hardware
+    from rapid_mlx.community_bench import hardware
 
     assert hardware._process_info(b"rapidMlxNoSuchSelector", ctypes.c_long) is None
     if sys.platform == "darwin":

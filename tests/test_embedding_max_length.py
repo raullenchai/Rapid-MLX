@@ -18,7 +18,7 @@ pytestmark = pytest.mark.requires_mlx
 
 import logging
 
-from vllm_mlx.embedding import (
+from rapid_mlx.embedding import (
     _FALLBACK_MAX_LENGTH,
     _MODEL_MAX_SENTINEL_THRESHOLD,
     EmbeddingEngine,

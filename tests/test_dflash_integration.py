@@ -57,8 +57,8 @@ def _reset_dflash_shared_globals():
       (e.g. a test setting ``api_key`` must not silently authenticate — or
       reject — a later test that assumes no key).
     """
-    from vllm_mlx import server as _main_server
-    from vllm_mlx.config import get_config
+    from rapid_mlx import server as _main_server
+    from rapid_mlx.config import get_config
 
     cfg = get_config()
     _snapshot = {
@@ -75,13 +75,13 @@ def _reset_dflash_shared_globals():
     }
     # codex round-8 #3: the CORS tests here call ``configure_cors_from_env``,
     # which writes the process-global ``_last_resolved_cors_policy`` in
-    # ``vllm_mlx.server``. Snapshot + restore it too so a resolved policy from
+    # ``rapid_mlx.server``. Snapshot + restore it too so a resolved policy from
     # one test can't leak into a later one under randomized ordering.
     _cors_snapshot = _main_server._last_resolved_cors_policy
     try:
         yield
     finally:
-        from vllm_mlx.middleware.auth import configure_rate_limiter
+        from rapid_mlx.middleware.auth import configure_rate_limiter
 
         configure_rate_limiter(0, enabled=False)
         for field, value in _snapshot.items():
@@ -103,7 +103,7 @@ def test_serve_parser_exposes_speculative_config() -> None:
     import sys
 
     out = subprocess.run(
-        [sys.executable, "-m", "vllm_mlx.cli", "serve", "--help"],
+        [sys.executable, "-m", "rapid_mlx.cli", "serve", "--help"],
         capture_output=True,
         text=True,
         timeout=30,
@@ -140,7 +140,7 @@ def _resolve_dflash_cors_policy(monkeypatch, server, origins):
     """Resolve the shared policy without mutating the process-global app.
 
     These tests exercise the separate DFlash application's policy handoff.
-    Registering middleware on ``vllm_mlx.server.app`` is outside that scope and
+    Registering middleware on ``rapid_mlx.server.app`` is outside that scope and
     becomes illegal once any earlier test has started the shared FastAPI app.
     """
     from fastapi import FastAPI
@@ -156,7 +156,7 @@ def _resolve_dflash_cors_policy(monkeypatch, server, origins):
 
 
 def test_speculative_config_dflash_normalizes_to_legacy_server_flag() -> None:
-    from vllm_mlx.cli import (
+    from rapid_mlx.cli import (
         _normalize_speculative_config_or_exit,
         _preflight_dflash_mutexes_or_exit,
         _resolve_dflash_drafter_repo,
@@ -178,7 +178,7 @@ def test_speculative_config_dflash_normalizes_to_legacy_server_flag() -> None:
 
 
 def test_unverified_dflash_profile_cannot_inherit_residual_drafter() -> None:
-    from vllm_mlx.cli import _resolve_dflash_drafter_repo
+    from rapid_mlx.cli import _resolve_dflash_drafter_repo
 
     args = _dflash_cli_args()
     args._speculative_config = SimpleNamespace(method="dflash", model=None)
@@ -192,7 +192,7 @@ def test_unverified_dflash_profile_cannot_inherit_residual_drafter() -> None:
 def test_expected_algorithm_only_applies_to_exact_registry_pair() -> None:
     from types import SimpleNamespace
 
-    from vllm_mlx.cli import _resolve_dflash_expected_algorithm
+    from rapid_mlx.cli import _resolve_dflash_expected_algorithm
 
     profile = SimpleNamespace(
         dflash_draft_model="z-lab/Qwen3.8-27B-DFlash2",
@@ -210,7 +210,7 @@ def test_expected_algorithm_only_applies_to_exact_registry_pair() -> None:
 def test_dflash_revision_pins_only_apply_to_exact_registry_pair() -> None:
     from types import SimpleNamespace
 
-    from vllm_mlx.cli import _resolve_dflash_revisions
+    from rapid_mlx.cli import _resolve_dflash_revisions
 
     profile = SimpleNamespace(
         dflash_draft_model="z-lab/Qwen3.8-27B-DFlash2",
@@ -227,10 +227,12 @@ def test_dflash_revision_pins_only_apply_to_exact_registry_pair() -> None:
 
 
 def test_programmatic_4bit_requires_explicit_experimental_opt_in(monkeypatch) -> None:
-    from vllm_mlx.speculative.dflash.eligibility import DFlashUnavailable
-    from vllm_mlx.speculative.dflash.server import run_dflash_server
+    from rapid_mlx.speculative.dflash.eligibility import DFlashUnavailable
+    from rapid_mlx.speculative.dflash.server import run_dflash_server
 
-    monkeypatch.setattr("vllm_mlx.speculative.dflash.server.have_runtime", lambda: True)
+    monkeypatch.setattr(
+        "rapid_mlx.speculative.dflash.server.have_runtime", lambda: True
+    )
     with pytest.raises(DFlashUnavailable, match="experimental_opt_in=True"):
         run_dflash_server(
             main_model_repo="user/target-4bit",
@@ -247,10 +249,12 @@ def test_programmatic_4bit_requires_explicit_experimental_opt_in(monkeypatch) ->
 def test_programmatic_dflash2_identity_cannot_bypass_registry_qualification(
     monkeypatch,
 ) -> None:
-    from vllm_mlx.speculative.dflash.eligibility import DFlashUnavailable
-    from vllm_mlx.speculative.dflash.server import run_dflash_server
+    from rapid_mlx.speculative.dflash.eligibility import DFlashUnavailable
+    from rapid_mlx.speculative.dflash.server import run_dflash_server
 
-    monkeypatch.setattr("vllm_mlx.speculative.dflash.server.have_runtime", lambda: True)
+    monkeypatch.setattr(
+        "rapid_mlx.speculative.dflash.server.have_runtime", lambda: True
+    )
     with pytest.raises(DFlashUnavailable, match="experimental_opt_in=True"):
         run_dflash_server(
             main_model_repo="user/target-4bit",
@@ -271,8 +275,8 @@ def test_programmatic_experimental_4bit_logs_unverified_pair(
     import sys
     import types
 
-    from vllm_mlx.speculative.dflash import server as srv
-    from vllm_mlx.speculative.dflash.runtime import DFlashRuntime
+    from rapid_mlx.speculative.dflash import server as srv
+    from rapid_mlx.speculative.dflash.runtime import DFlashRuntime
 
     runtime = DFlashRuntime(
         drafter=MagicMock(), kind="dflash", drafter_repo="user/drafter"
@@ -304,7 +308,7 @@ def test_programmatic_experimental_4bit_logs_unverified_pair(
 
 
 def test_dflash_preflight_rejects_legacy_mtp_alias(capsys) -> None:
-    from vllm_mlx.cli import _preflight_dflash_mutexes_or_exit
+    from rapid_mlx.cli import _preflight_dflash_mutexes_or_exit
 
     args = _dflash_cli_args(enable_dflash=True, enable_mtp=True)
 
@@ -316,7 +320,7 @@ def test_dflash_preflight_rejects_legacy_mtp_alias(capsys) -> None:
 
 
 def test_dflash_preflight_ignores_compat_marker_for_dflash_config() -> None:
-    from vllm_mlx.cli import (
+    from rapid_mlx.cli import (
         _normalize_speculative_config_or_exit,
         _preflight_dflash_mutexes_or_exit,
     )
@@ -330,7 +334,7 @@ def test_dflash_preflight_ignores_compat_marker_for_dflash_config() -> None:
 
 
 def test_dflash_speculative_config_rejects_no_spec_decode(capsys) -> None:
-    from vllm_mlx.cli import (
+    from rapid_mlx.cli import (
         _normalize_speculative_config_or_exit,
     )
 
@@ -354,7 +358,7 @@ def test_dflash_speculative_config_rejects_no_spec_decode(capsys) -> None:
 
 def test_info_renders_dflash_block_for_eligible_alias(capsys) -> None:
     """``rapid-mlx info qwen3.5-27b-8bit`` shows the per-gate table."""
-    from vllm_mlx.cli import info_command
+    from rapid_mlx.cli import info_command
 
     args = type("Args", (), {"model": "qwen3.5-27b-8bit"})()
     info_command(args)
@@ -370,7 +374,7 @@ def test_info_renders_dflash_block_for_eligible_alias(capsys) -> None:
 def test_info_dflash_block_skipped_for_unknown_alias(capsys) -> None:
     """Unknown HF paths (not in aliases.json) — no DFlash block, since
     eligibility is per-alias and can't be inferred from a raw path."""
-    from vllm_mlx.cli import info_command
+    from rapid_mlx.cli import info_command
 
     args = type("Args", (), {"model": "not-a-real-alias-zzz"})()
     info_command(args)
@@ -381,7 +385,7 @@ def test_info_dflash_block_skipped_for_unknown_alias(capsys) -> None:
 def test_info_dflash_marks_4bit_alias_experimental(capsys) -> None:
     """The default ``qwen3.5-27b-4bit`` alias points at the 4-bit variant and
     must surface as explicit experimental opt-in."""
-    from vllm_mlx.cli import info_command
+    from rapid_mlx.cli import info_command
 
     args = type("Args", (), {"model": "qwen3.5-27b-4bit"})()
     info_command(args)
@@ -393,7 +397,7 @@ def test_info_dflash_marks_4bit_alias_experimental(capsys) -> None:
 def test_info_recognizes_four_bit_subfolder_in_neutral_repo(capsys) -> None:
     """The oQ4e build must not be presented as an 8-bit-or-higher target."""
 
-    from vllm_mlx.cli import info_command
+    from rapid_mlx.cli import info_command
 
     args = type("Args", (), {"model": "qwen3.8-27b-abliterated-4bit"})()
     info_command(args)
@@ -404,8 +408,8 @@ def test_info_recognizes_four_bit_subfolder_in_neutral_repo(capsys) -> None:
 
 
 def test_info_dflash_marks_pinned_4bit_dflash2_pair_qualified(capsys) -> None:
-    from vllm_mlx.cli import _print_dflash_status
-    from vllm_mlx.model_aliases import AliasProfile
+    from rapid_mlx.cli import _print_dflash_status
+    from rapid_mlx.model_aliases import AliasProfile
 
     profile = AliasProfile(
         hf_path="user/target-4bit",
@@ -423,7 +427,7 @@ def test_info_dflash_marks_pinned_4bit_dflash2_pair_qualified(capsys) -> None:
 def test_info_qwen38_exposes_exact_dflash2_experiment_without_recommending_it(
     capsys,
 ) -> None:
-    from vllm_mlx.cli import info_command
+    from rapid_mlx.cli import info_command
 
     args = type("Args", (), {"model": "qwen3.8-27b-4bit"})()
     info_command(args)
@@ -448,12 +452,12 @@ def test_info_dflash_start_with_uses_alias_not_hf_path(capsys, monkeypatch) -> N
     evaluates cleanly and the hint surface remains pinned regardless
     of which extras the test env carries.
     """
-    from vllm_mlx.cli import info_command
+    from rapid_mlx.cli import info_command
 
     # Force eligibility True at the import site that ``_print_dflash_status``
     # uses, otherwise the start-with hint is suppressed.
     monkeypatch.setattr(
-        "vllm_mlx.speculative.dflash.eligibility.have_runtime",
+        "rapid_mlx.speculative.dflash.eligibility.have_runtime",
         lambda: True,
     )
 
@@ -480,7 +484,7 @@ def test_models_listing_renders_dflash_column(capsys) -> None:
     """``rapid-mlx models`` must show a ``DFlash`` column so users can
     scan recommendation at a glance. The known-good alias renders verified;
     an unverified alias renders exp."""
-    from vllm_mlx.cli import models_command
+    from rapid_mlx.cli import models_command
 
     models_command(None)
     captured = capsys.readouterr()
@@ -520,8 +524,8 @@ def test_models_listing_renders_dflash_column(capsys) -> None:
 
 def test_build_app_returns_fastapi_app() -> None:
     """The app exposes the three OpenAI-compat routes."""
-    from vllm_mlx.speculative.dflash.runtime import DFlashRuntime
-    from vllm_mlx.speculative.dflash.server import _build_app
+    from rapid_mlx.speculative.dflash.runtime import DFlashRuntime
+    from rapid_mlx.speculative.dflash.server import _build_app
 
     runtime = DFlashRuntime(
         drafter=MagicMock(),
@@ -549,8 +553,8 @@ def test_healthz_and_models_routes() -> None:
     exercise without weights."""
     from fastapi.testclient import TestClient
 
-    from vllm_mlx.speculative.dflash.runtime import DFlashRuntime
-    from vllm_mlx.speculative.dflash.server import _build_app
+    from rapid_mlx.speculative.dflash.runtime import DFlashRuntime
+    from rapid_mlx.speculative.dflash.server import _build_app
 
     runtime = DFlashRuntime(
         drafter=MagicMock(),
@@ -603,9 +607,9 @@ def test_run_dflash_server_wires_security_configuration(monkeypatch) -> None:
 
     from fastapi.testclient import TestClient
 
-    from vllm_mlx.config import get_config
-    from vllm_mlx.speculative.dflash import server as srv
-    from vllm_mlx.speculative.dflash.runtime import DFlashRuntime
+    from rapid_mlx.config import get_config
+    from rapid_mlx.speculative.dflash import server as srv
+    from rapid_mlx.speculative.dflash.runtime import DFlashRuntime
 
     runtime = DFlashRuntime(
         drafter=MagicMock(),
@@ -693,7 +697,7 @@ def test_dflash_cli_forwards_security_and_resource_limits() -> None:
     import ast
     import inspect
 
-    from vllm_mlx import cli
+    from rapid_mlx import cli
 
     tree = ast.parse(inspect.getsource(cli.serve_command))
     call = next(
@@ -725,7 +729,7 @@ def test_dflash_cli_forks_before_batched_engine_startup() -> None:
     """DFlash startup must not advertise BatchedEngine-only features."""
     import inspect
 
-    from vllm_mlx import cli
+    from rapid_mlx import cli
 
     source = inspect.getsource(cli.serve_command)
     dflash_call = source.index("run_dflash_server(")
@@ -737,8 +741,8 @@ def test_dflash_admission_cap_rejects_before_prompt_rendering() -> None:
     """DFlash must bound its serial queue before prompt work or generation."""
     from fastapi.testclient import TestClient
 
-    from vllm_mlx.speculative.dflash.runtime import DFlashRuntime
-    from vllm_mlx.speculative.dflash.server import _build_app
+    from rapid_mlx.speculative.dflash.runtime import DFlashRuntime
+    from rapid_mlx.speculative.dflash.server import _build_app
 
     app = _build_app(
         model=MagicMock(),
@@ -780,7 +784,7 @@ def test_dflash_nonstream_timeout_keeps_gpu_slot_until_worker_finishes(
 
     from fastapi import HTTPException
 
-    from vllm_mlx.speculative.dflash import server as srv
+    from rapid_mlx.speculative.dflash import server as srv
 
     fake_mlx_vlm = types.ModuleType("mlx_vlm")
 
@@ -836,7 +840,7 @@ def test_dflash_timeout_message_reports_original_not_post_render_budget(
 
     from fastapi import HTTPException
 
-    from vllm_mlx.speculative.dflash import server as srv
+    from rapid_mlx.speculative.dflash import server as srv
 
     fake_mlx_vlm = types.ModuleType("mlx_vlm")
     fake_mlx_vlm.generate = lambda *a, **kw: (
@@ -891,8 +895,8 @@ def test_dflash_stream_uses_absolute_deadline_over_relative_timeout(
     import sys
     import types
 
-    from vllm_mlx.api.models import ChatCompletionRequest, Message
-    from vllm_mlx.speculative.dflash import server as srv
+    from rapid_mlx.api.models import ChatCompletionRequest, Message
+    from rapid_mlx.speculative.dflash import server as srv
 
     class _Gen:
         def __iter__(self):
@@ -951,7 +955,7 @@ def test_dflash_stream_uses_absolute_deadline_over_relative_timeout(
 
 def test_dflash_format_timeout_seconds_adaptive_precision() -> None:
     """codex round-6 #5: small positive timeouts keep meaningful digits."""
-    from vllm_mlx.speculative.dflash.server import _format_timeout_seconds
+    from rapid_mlx.speculative.dflash.server import _format_timeout_seconds
 
     assert _format_timeout_seconds(60.0) == "60.0 seconds"
     assert _format_timeout_seconds(1.5) == "1.5 seconds"
@@ -989,8 +993,8 @@ def test_dflash_stream_timeout_stops_after_the_inflight_worker_step(
     import time
     import types
 
-    from vllm_mlx.api.models import ChatCompletionRequest, Message
-    from vllm_mlx.speculative.dflash import server as srv
+    from rapid_mlx.api.models import ChatCompletionRequest, Message
+    from rapid_mlx.speculative.dflash import server as srv
 
     # Wide separation (codex round-4 #6): deadline 10 ms, worker 500 ms,
     # assertion threshold 200 ms. The fixed path returns the timeout in
@@ -1073,8 +1077,8 @@ def test_dflash_stream_timeout_bounds_lock_queue_wait(monkeypatch) -> None:
     import threading
     import types
 
-    from vllm_mlx.api.models import ChatCompletionRequest, Message
-    from vllm_mlx.speculative.dflash import server as srv
+    from rapid_mlx.api.models import ChatCompletionRequest, Message
+    from rapid_mlx.speculative.dflash import server as srv
 
     started = threading.Event()
     release_first = threading.Event()
@@ -1156,7 +1160,7 @@ def test_dflash_stream_cancellation_releases_admission_slot() -> None:
     """Client disconnects must not leave DFlash permanently at capacity."""
     import asyncio
 
-    from vllm_mlx.speculative.dflash import server as srv
+    from rapid_mlx.speculative.dflash import server as srv
 
     closed = False
 
@@ -1195,7 +1199,7 @@ def test_dflash_stream_claims_slot_only_when_iteration_begins() -> None:
     """
     import asyncio
 
-    from vllm_mlx.speculative.dflash import server as srv
+    from rapid_mlx.speculative.dflash import server as srv
 
     async def exercise() -> None:
         admission = srv._DFlashAdmission(max_concurrent_requests=1)
@@ -1252,7 +1256,7 @@ def test_dflash_stream_admission_released_when_aclose_is_cancelled() -> None:
     """
     import asyncio
 
-    from vllm_mlx.speculative.dflash import server as srv
+    from rapid_mlx.speculative.dflash import server as srv
 
     class _CancelOnClose:
         """An async-iterator whose ``aclose`` raises CancelledError."""
@@ -1291,8 +1295,8 @@ def test_dflash_stream_cancellation_waits_for_worker_cleanup(monkeypatch) -> Non
     import threading
     import types
 
-    from vllm_mlx.api.models import ChatCompletionRequest, Message
-    from vllm_mlx.speculative.dflash import server as srv
+    from rapid_mlx.api.models import ChatCompletionRequest, Message
+    from rapid_mlx.speculative.dflash import server as srv
 
     first_step_started = threading.Event()
     allow_first_step_to_finish = threading.Event()
@@ -1392,9 +1396,9 @@ def test_dflash_inherits_explicit_cors_policy(monkeypatch) -> None:
     """DFlash must not broaden the operator's resolved CORS settings."""
     from fastapi.testclient import TestClient
 
-    from vllm_mlx import server
-    from vllm_mlx.speculative.dflash.runtime import DFlashRuntime
-    from vllm_mlx.speculative.dflash.server import _build_app
+    from rapid_mlx import server
+    from rapid_mlx.speculative.dflash.runtime import DFlashRuntime
+    from rapid_mlx.speculative.dflash.server import _build_app
 
     monkeypatch.setenv("RAPID_MLX_CORS_ALLOW_METHODS", "POST")
     monkeypatch.setenv("RAPID_MLX_CORS_ALLOW_HEADERS", "Content-Type")
@@ -1440,9 +1444,9 @@ def test_dflash_cors_wildcard_forces_credentials_off(monkeypatch) -> None:
     """A CORS policy snapshot must retain Fetch's wildcard invariant."""
     from fastapi.testclient import TestClient
 
-    from vllm_mlx import server
-    from vllm_mlx.speculative.dflash.runtime import DFlashRuntime
-    from vllm_mlx.speculative.dflash.server import _build_app
+    from rapid_mlx import server
+    from rapid_mlx.speculative.dflash.runtime import DFlashRuntime
+    from rapid_mlx.speculative.dflash.server import _build_app
 
     monkeypatch.setenv("RAPID_MLX_CORS_ALLOW_CREDENTIALS", "true")
     policy = _resolve_dflash_cors_policy(monkeypatch, server, ["*"])
@@ -1476,7 +1480,7 @@ def test_dflash_cors_policy_resolution_does_not_touch_started_main_app(
     monkeypatch,
 ) -> None:
     """A prior global-app client must not make DFlash policy tests/order fail."""
-    from vllm_mlx import server
+    from rapid_mlx import server
 
     started_stack = object()
     monkeypatch.setattr(server.app, "middleware_stack", started_stack)
@@ -1512,8 +1516,8 @@ def test_chat_completions_rejects_unparsed_structured_output(
     """Explicit parser opt-outs must not turn structured output into raw text."""
     from fastapi.testclient import TestClient
 
-    from vllm_mlx.speculative.dflash.runtime import DFlashRuntime
-    from vllm_mlx.speculative.dflash.server import _build_app
+    from rapid_mlx.speculative.dflash.runtime import DFlashRuntime
+    from rapid_mlx.speculative.dflash.server import _build_app
 
     app = _build_app(
         model=MagicMock(),
@@ -1551,8 +1555,8 @@ def test_chat_completions_rejects_unsupported_tool_choice(tool_choice) -> None:
     """DFlash must not silently claim forced-tool semantics it cannot enforce."""
     from fastapi.testclient import TestClient
 
-    from vllm_mlx.speculative.dflash.runtime import DFlashRuntime
-    from vllm_mlx.speculative.dflash.server import _build_app
+    from rapid_mlx.speculative.dflash.runtime import DFlashRuntime
+    from rapid_mlx.speculative.dflash.server import _build_app
 
     app = _build_app(
         model=MagicMock(),
@@ -1592,8 +1596,8 @@ def test_chat_completions_parses_tool_calls(monkeypatch) -> None:
     import mlx_vlm.prompt_utils
     from fastapi.testclient import TestClient
 
-    from vllm_mlx.speculative.dflash.runtime import DFlashRuntime
-    from vllm_mlx.speculative.dflash.server import _build_app
+    from rapid_mlx.speculative.dflash.runtime import DFlashRuntime
+    from rapid_mlx.speculative.dflash.server import _build_app
 
     captured_template: dict = {}
 
@@ -1670,8 +1674,8 @@ def test_chat_completions_streams_tool_calls(monkeypatch) -> None:
     import mlx_vlm.prompt_utils
     from fastapi.testclient import TestClient
 
-    from vllm_mlx.speculative.dflash.runtime import DFlashRuntime
-    from vllm_mlx.speculative.dflash.server import _build_app
+    from rapid_mlx.speculative.dflash.runtime import DFlashRuntime
+    from rapid_mlx.speculative.dflash.server import _build_app
 
     monkeypatch.setattr(
         mlx_vlm.prompt_utils,
@@ -1755,8 +1759,8 @@ def test_chat_completions_rejects_empty_messages() -> None:
     """OpenAI-compat parity: empty messages → 400."""
     from fastapi.testclient import TestClient
 
-    from vllm_mlx.speculative.dflash.runtime import DFlashRuntime
-    from vllm_mlx.speculative.dflash.server import _build_app
+    from rapid_mlx.speculative.dflash.runtime import DFlashRuntime
+    from rapid_mlx.speculative.dflash.server import _build_app
 
     runtime = DFlashRuntime(
         drafter=MagicMock(),
@@ -1784,8 +1788,8 @@ def test_chat_completions_rejects_logprobs() -> None:
     callers think they got logprobs back. Reject with a 400 instead."""
     from fastapi.testclient import TestClient
 
-    from vllm_mlx.speculative.dflash.runtime import DFlashRuntime
-    from vllm_mlx.speculative.dflash.server import _build_app
+    from rapid_mlx.speculative.dflash.runtime import DFlashRuntime
+    from rapid_mlx.speculative.dflash.server import _build_app
 
     runtime = DFlashRuntime(
         drafter=MagicMock(),
@@ -1820,8 +1824,8 @@ def test_chat_completions_rejects_response_format() -> None:
     mean a JSON-schema request gets free-form text with no surfaced error."""
     from fastapi.testclient import TestClient
 
-    from vllm_mlx.speculative.dflash.runtime import DFlashRuntime
-    from vllm_mlx.speculative.dflash.server import _build_app
+    from rapid_mlx.speculative.dflash.runtime import DFlashRuntime
+    from rapid_mlx.speculative.dflash.server import _build_app
 
     runtime = DFlashRuntime(
         drafter=MagicMock(),
@@ -1861,8 +1865,8 @@ def _capture_enable_thinking(monkeypatch, *, no_thinking: bool, request_body: di
     """
     from fastapi.testclient import TestClient
 
-    from vllm_mlx.speculative.dflash.runtime import DFlashRuntime
-    from vllm_mlx.speculative.dflash.server import _build_app
+    from rapid_mlx.speculative.dflash.runtime import DFlashRuntime
+    from rapid_mlx.speculative.dflash.server import _build_app
 
     captured: dict = {}
 
@@ -1927,7 +1931,7 @@ def test_thinking_controls_map_to_mlx_vlm_generation_kwargs(
     reasoning_max_tokens, expected
 ) -> None:
     """The public Rapid API maps to mlx-vlm without requiring mlx at test time."""
-    from vllm_mlx.speculative.dflash.server import (
+    from rapid_mlx.speculative.dflash.server import (
         _apply_thinking_generation_kwargs,
     )
 
@@ -1953,7 +1957,7 @@ def test_thinking_controls_map_to_mlx_vlm_generation_kwargs(
 def test_serial_thinking_resolution_preserves_explicit_precedence(
     no_thinking, requested, reasoning_max_tokens, expected
 ) -> None:
-    from vllm_mlx.speculative.dflash.server import _resolve_serial_thinking
+    from rapid_mlx.speculative.dflash.server import _resolve_serial_thinking
 
     assert (
         _resolve_serial_thinking(
@@ -2064,8 +2068,8 @@ def test_explicit_thinking_is_parsed_into_reasoning_content(
     import mlx_vlm.prompt_utils
     from fastapi.testclient import TestClient
 
-    from vllm_mlx.speculative.dflash.runtime import DFlashRuntime
-    from vllm_mlx.speculative.dflash.server import _build_app
+    from rapid_mlx.speculative.dflash.runtime import DFlashRuntime
+    from rapid_mlx.speculative.dflash.server import _build_app
 
     monkeypatch.setattr(
         mlx_vlm.prompt_utils,
@@ -2163,8 +2167,8 @@ def test_stream_completion_surfaces_generator_exception(monkeypatch) -> None:
     in ``_next_chunk`` (was only catching ``StopIteration``)."""
     from fastapi.testclient import TestClient
 
-    from vllm_mlx.speculative.dflash import server as srv
-    from vllm_mlx.speculative.dflash.runtime import DFlashRuntime
+    from rapid_mlx.speculative.dflash import server as srv
+    from rapid_mlx.speculative.dflash.runtime import DFlashRuntime
 
     class _BoomGen:
         """Sync generator that yields once, then raises — mirrors the
@@ -2274,8 +2278,8 @@ def test_stream_completion_surfaces_constructor_exception(monkeypatch) -> None:
     Regression guard for round-7 review finding."""
     import asyncio
 
-    from vllm_mlx.api.models import ChatCompletionRequest, Message
-    from vllm_mlx.speculative.dflash import server as srv
+    from rapid_mlx.api.models import ChatCompletionRequest, Message
+    from rapid_mlx.speculative.dflash import server as srv
 
     def _exploding_stream_generate(*a, **kw):
         raise RuntimeError("simulated OOM at generator construction")
@@ -2322,8 +2326,8 @@ def test_stream_completion_reports_length_when_max_tokens_hit(monkeypatch) -> No
     vs budget. Regression guard for round-5 review finding."""
     import asyncio
 
-    from vllm_mlx.api.models import ChatCompletionRequest, Message
-    from vllm_mlx.speculative.dflash import server as srv
+    from rapid_mlx.api.models import ChatCompletionRequest, Message
+    from rapid_mlx.speculative.dflash import server as srv
 
     class _Chunk:
         text = "x"
@@ -2378,8 +2382,8 @@ def test_stream_completion_reports_stop_when_eos_lands_at_max_tokens(
     correctly classify this as "stop"."""
     import asyncio
 
-    from vllm_mlx.api.models import ChatCompletionRequest, Message
-    from vllm_mlx.speculative.dflash import server as srv
+    from rapid_mlx.api.models import ChatCompletionRequest, Message
+    from rapid_mlx.speculative.dflash import server as srv
 
     class _Chunk:
         text = "done"
@@ -2434,8 +2438,8 @@ def test_non_stream_completion_reports_length_when_max_tokens_hit(
     """Same length-vs-stop distinction in the non-stream path."""
     import asyncio
 
-    from vllm_mlx.api.models import ChatCompletionRequest, Message
-    from vllm_mlx.speculative.dflash import server as srv
+    from rapid_mlx.api.models import ChatCompletionRequest, Message
+    from rapid_mlx.speculative.dflash import server as srv
 
     class _Result:
         text = "xxxx"
@@ -2488,8 +2492,8 @@ def test_stream_completion_pins_to_dedicated_executor(monkeypatch) -> None:
     that routed work to the default executor would zero the counter."""
     import asyncio
 
-    from vllm_mlx.api.models import ChatCompletionRequest, Message
-    from vllm_mlx.speculative.dflash import server as srv
+    from rapid_mlx.api.models import ChatCompletionRequest, Message
+    from rapid_mlx.speculative.dflash import server as srv
 
     # Runtime spy on ``_dflash_executor.submit`` — counts the actual
     # submissions during a real ``_stream_completion`` invocation.
@@ -2549,13 +2553,15 @@ def test_dflashruntime_accept_lens_tolerates_wrong_type(caplog) -> None:
     the isinstance guard added after the round-4 review."""
     import logging
 
-    from vllm_mlx.speculative.dflash.runtime import DFlashRuntime
+    from rapid_mlx.speculative.dflash.runtime import DFlashRuntime
 
     drafter = MagicMock()
     drafter.accept_lens = 42  # not a list
     rt = DFlashRuntime(drafter=drafter, kind="dflash", drafter_repo="fake/repo")
 
-    with caplog.at_level(logging.WARNING, logger="vllm_mlx.speculative.dflash.runtime"):
+    with caplog.at_level(
+        logging.WARNING, logger="rapid_mlx.speculative.dflash.runtime"
+    ):
         rt.reset_accept_lens()
     assert any("unexpected type" in rec.message for rec in caplog.records), (
         "reset_accept_lens should warn (not crash) when accept_lens isn't a list"
@@ -2568,7 +2574,7 @@ def test_runtime_algorithm_distinguishes_dflash2_from_dispatch_kind() -> None:
     """Both generations dispatch as kind=dflash; config identity is the receipt."""
     from types import SimpleNamespace
 
-    from vllm_mlx.speculative.dflash.runtime import _runtime_algorithm
+    from rapid_mlx.speculative.dflash.runtime import _runtime_algorithm
 
     legacy = SimpleNamespace(config=SimpleNamespace(model_type="qwen3"))
     dflash2 = SimpleNamespace(config=SimpleNamespace(model_type="dflash2"))
@@ -2581,7 +2587,7 @@ def test_load_runtime_fails_closed_on_algorithm_mismatch(monkeypatch) -> None:
     import types
     from types import SimpleNamespace
 
-    from vllm_mlx.speculative.dflash import runtime as runtime_module
+    from rapid_mlx.speculative.dflash import runtime as runtime_module
 
     fake_speculative = types.ModuleType("mlx_vlm.speculative")
     fake_drafters = types.ModuleType("mlx_vlm.speculative.drafters")
@@ -2604,7 +2610,7 @@ def test_load_runtime_resolves_pinned_drafter_revision(monkeypatch) -> None:
     import types
     from types import SimpleNamespace
 
-    from vllm_mlx.speculative.dflash import runtime as runtime_module
+    from rapid_mlx.speculative.dflash import runtime as runtime_module
 
     calls: dict[str, object] = {}
     fake_speculative = types.ModuleType("mlx_vlm.speculative")
@@ -2648,7 +2654,7 @@ def test_load_runtime_resolves_pinned_drafter_revision(monkeypatch) -> None:
 def test_run_dflash_server_raises_when_mlx_vlm_missing(monkeypatch) -> None:
     """When mlx-vlm 0.5.0+ isn't importable, ``run_dflash_server``
     raises with the install hint — not a cryptic ImportError."""
-    from vllm_mlx.speculative.dflash import server as srv
+    from rapid_mlx.speculative.dflash import server as srv
 
     monkeypatch.setattr(srv, "have_runtime", lambda: False)
     with pytest.raises(RuntimeError, match=r"rapid-mlx\[dflash\]"):
@@ -2681,7 +2687,7 @@ def test_run_dflash_server_loads_models_on_executor_thread(monkeypatch) -> None:
     """
     import threading
 
-    from vllm_mlx.speculative.dflash import server as srv
+    from rapid_mlx.speculative.dflash import server as srv
 
     load_thread: dict[str, str | None] = {"load": None, "load_runtime": None}
     load_receipt: dict[str, object] = {}
@@ -2773,8 +2779,8 @@ def test_dflash_stream_cancel_during_construction_releases_lock(monkeypatch) -> 
     import threading
     import types
 
-    from vllm_mlx.api.models import ChatCompletionRequest, Message
-    from vllm_mlx.speculative.dflash import server as srv
+    from rapid_mlx.api.models import ChatCompletionRequest, Message
+    from rapid_mlx.speculative.dflash import server as srv
 
     in_construction = threading.Event()
     allow_construction_to_finish = threading.Event()
@@ -2861,7 +2867,7 @@ def test_dflash_nonstream_expired_deadline_skips_gpu_work(monkeypatch) -> None:
 
     from fastapi import HTTPException
 
-    from vllm_mlx.speculative.dflash import server as srv
+    from rapid_mlx.speculative.dflash import server as srv
 
     generate_calls = [0]
 
@@ -2937,8 +2943,8 @@ def test_dflash_zero_timeout_is_no_deadline_on_both_paths(monkeypatch) -> None:
     import sys
     import types
 
-    from vllm_mlx.api.models import ChatCompletionRequest, Message
-    from vllm_mlx.speculative.dflash import server as srv
+    from rapid_mlx.api.models import ChatCompletionRequest, Message
+    from rapid_mlx.speculative.dflash import server as srv
 
     class _OneChunk:
         text = "hi"
@@ -3015,8 +3021,8 @@ def test_dflash_stream_backpressure_does_not_hold_lock(monkeypatch) -> None:
     import sys
     import types
 
-    from vllm_mlx.api.models import ChatCompletionRequest, Message
-    from vllm_mlx.speculative.dflash import server as srv
+    from rapid_mlx.api.models import ChatCompletionRequest, Message
+    from rapid_mlx.speculative.dflash import server as srv
 
     class _TwoChunks:
         def __init__(self):
@@ -3105,8 +3111,8 @@ def test_dflash_stream_backpressure_delivers_terminal_notice(monkeypatch) -> Non
     import sys
     import types
 
-    from vllm_mlx.api.models import ChatCompletionRequest, Message
-    from vllm_mlx.speculative.dflash import server as srv
+    from rapid_mlx.api.models import ChatCompletionRequest, Message
+    from rapid_mlx.speculative.dflash import server as srv
 
     # Tiny queue + tiny backpressure window so the test triggers the cap fast.
     monkeypatch.setattr(srv, "_STREAM_QUEUE_MAXSIZE", 2)
@@ -3217,8 +3223,8 @@ def test_dflash_hung_generator_close_does_not_block_terminal_sse(monkeypatch) ->
     import threading
     import types
 
-    from vllm_mlx.api.models import ChatCompletionRequest, Message
-    from vllm_mlx.speculative.dflash import server as srv
+    from rapid_mlx.api.models import ChatCompletionRequest, Message
+    from rapid_mlx.speculative.dflash import server as srv
 
     # Tiny close grace so the test doesn't wait the real 5s to detach.
     monkeypatch.setattr(srv, "_STREAM_GENERATOR_CLOSE_GRACE_SECONDS", 0.05)
@@ -3312,8 +3318,8 @@ def test_dflash_admission_reserved_before_body_parse(monkeypatch) -> None:
     """
     from fastapi.testclient import TestClient
 
-    from vllm_mlx.speculative.dflash.runtime import DFlashRuntime
-    from vllm_mlx.speculative.dflash.server import _build_app
+    from rapid_mlx.speculative.dflash.runtime import DFlashRuntime
+    from rapid_mlx.speculative.dflash.server import _build_app
 
     app = _build_app(
         model=MagicMock(),
@@ -3366,9 +3372,9 @@ def test_dflash_slow_prompt_render_is_charged_against_deadline(monkeypatch) -> N
 
     from fastapi.testclient import TestClient
 
-    from vllm_mlx.speculative.dflash import server as srv
-    from vllm_mlx.speculative.dflash.runtime import DFlashRuntime
-    from vllm_mlx.speculative.dflash.server import _build_app
+    from rapid_mlx.speculative.dflash import server as srv
+    from rapid_mlx.speculative.dflash.runtime import DFlashRuntime
+    from rapid_mlx.speculative.dflash.server import _build_app
 
     render_may_finish = threading.Event()
 
@@ -3432,8 +3438,8 @@ def test_dflash_unauthenticated_request_does_not_reserve_slot() -> None:
     """
     from fastapi.testclient import TestClient
 
-    from vllm_mlx.speculative.dflash.runtime import DFlashRuntime
-    from vllm_mlx.speculative.dflash.server import _build_app
+    from rapid_mlx.speculative.dflash.runtime import DFlashRuntime
+    from rapid_mlx.speculative.dflash.server import _build_app
 
     model = MagicMock()
     model.config = MagicMock()
@@ -3508,9 +3514,9 @@ def test_dflash_rate_limited_request_does_not_reserve_slot() -> None:
     from a leftover route dependency)."""
     from fastapi.testclient import TestClient
 
-    from vllm_mlx.middleware.auth import configure_rate_limiter
-    from vllm_mlx.speculative.dflash.runtime import DFlashRuntime
-    from vllm_mlx.speculative.dflash.server import _build_app
+    from rapid_mlx.middleware.auth import configure_rate_limiter
+    from rapid_mlx.speculative.dflash.runtime import DFlashRuntime
+    from rapid_mlx.speculative.dflash.server import _build_app
 
     model = MagicMock()
     model.config = MagicMock()
@@ -3584,8 +3590,8 @@ def test_dflash_stream_terminal_frame_delivered_on_timeout(monkeypatch) -> None:
     import time
     import types
 
-    from vllm_mlx.api.models import ChatCompletionRequest, Message
-    from vllm_mlx.speculative.dflash import server as srv
+    from rapid_mlx.api.models import ChatCompletionRequest, Message
+    from rapid_mlx.speculative.dflash import server as srv
 
     class _SlowGenerator:
         def __next__(self):
@@ -3655,7 +3661,7 @@ def test_dflash_e2e_chat_completion_smoke() -> None:
     plausible token counts. Doesn't measure speedup here — the bench
     harness owns that — but does confirm the wiring produces a valid
     OpenAI-compat response."""
-    from vllm_mlx.speculative.dflash.eligibility import have_runtime
+    from rapid_mlx.speculative.dflash.eligibility import have_runtime
 
     if not have_runtime():
         pytest.skip("mlx-vlm 0.5.0+ not installed")
@@ -3683,8 +3689,8 @@ def test_dflash_e2e_chat_completion_smoke() -> None:
     from fastapi.testclient import TestClient
     from mlx_vlm import load
 
-    from vllm_mlx.speculative.dflash.runtime import load_runtime
-    from vllm_mlx.speculative.dflash.server import _build_app
+    from rapid_mlx.speculative.dflash.runtime import load_runtime
+    from rapid_mlx.speculative.dflash.server import _build_app
 
     model, processor = load("mlx-community/Qwen3.5-27B-8bit")
     runtime = load_runtime("z-lab/Qwen3.5-27B-DFlash")

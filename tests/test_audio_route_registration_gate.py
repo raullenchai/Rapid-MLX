@@ -9,7 +9,7 @@ misleading 404 ``model_not_found``. The route table advertised
 capabilities the server couldn't deliver.
 
 The fix splits audio-route registration into a deferred
-``register_audio_routes`` helper. ``vllm_mlx.server`` calls it only
+``register_audio_routes`` helper. ``rapid_mlx.server`` calls it only
 when:
 
 * The loaded model alias / HF id resolves through the audio registry
@@ -25,7 +25,7 @@ model load, no engine boot. The gate is exercised at three levels:
    test — no FastAPI / network).
 2. The helper :func:`register_audio_routes` against a fresh FastAPI
    app (idempotent, returns False on a second call).
-3. End-to-end via ``vllm_mlx.server.register_audio_routes_if_enabled``
+3. End-to-end via ``rapid_mlx.server.register_audio_routes_if_enabled``
    driven by the server globals the boot path writes — exercises the
    same gate ``load_model`` and ``_serve_audio_mode`` hit.
 """
@@ -65,7 +65,7 @@ class TestAudioRoutesShouldRegister:
     """Behaviour of :func:`audio_routes_should_register` in isolation."""
 
     def test_text_only_model_no_flag_returns_false(self):
-        from vllm_mlx.routes.audio import audio_routes_should_register
+        from rapid_mlx.routes.audio import audio_routes_should_register
 
         assert (
             audio_routes_should_register(
@@ -77,7 +77,7 @@ class TestAudioRoutesShouldRegister:
         )
 
     def test_text_only_model_with_flag_returns_true(self):
-        from vllm_mlx.routes.audio import audio_routes_should_register
+        from rapid_mlx.routes.audio import audio_routes_should_register
 
         assert (
             audio_routes_should_register(
@@ -89,7 +89,7 @@ class TestAudioRoutesShouldRegister:
         )
 
     def test_audio_alias_returns_true(self):
-        from vllm_mlx.routes.audio import audio_routes_should_register
+        from rapid_mlx.routes.audio import audio_routes_should_register
 
         # Bare short alias — matches the audio registry.
         assert (
@@ -102,7 +102,7 @@ class TestAudioRoutesShouldRegister:
         )
 
     def test_audio_hf_id_returns_true(self):
-        from vllm_mlx.routes.audio import audio_routes_should_register
+        from rapid_mlx.routes.audio import audio_routes_should_register
 
         # Full HF id — registry reverse-index covers it too.
         assert (
@@ -118,7 +118,7 @@ class TestAudioRoutesShouldRegister:
         """``--served-model-name foo`` + ``kokoro`` alias: model_name is
         the served-model-name, the registry-known id sits on
         model_alias. The gate must consult both fields."""
-        from vllm_mlx.routes.audio import audio_routes_should_register
+        from rapid_mlx.routes.audio import audio_routes_should_register
 
         assert (
             audio_routes_should_register(
@@ -130,7 +130,7 @@ class TestAudioRoutesShouldRegister:
         )
 
     def test_none_inputs_return_false(self):
-        from vllm_mlx.routes.audio import audio_routes_should_register
+        from rapid_mlx.routes.audio import audio_routes_should_register
 
         assert (
             audio_routes_should_register(
@@ -142,7 +142,7 @@ class TestAudioRoutesShouldRegister:
         )
 
     def test_empty_string_inputs_return_false(self):
-        from vllm_mlx.routes.audio import audio_routes_should_register
+        from rapid_mlx.routes.audio import audio_routes_should_register
 
         assert (
             audio_routes_should_register(
@@ -163,7 +163,7 @@ class TestRegisterAudioRoutes:
     """Idempotency + route-table mutation."""
 
     def test_attaches_router_on_first_call(self):
-        from vllm_mlx.routes.audio import register_audio_routes
+        from rapid_mlx.routes.audio import register_audio_routes
 
         app = FastAPI()
         attached = register_audio_routes(app)
@@ -177,7 +177,7 @@ class TestRegisterAudioRoutes:
         assert "/v1/audio/speech" in paths
 
     def test_second_call_is_noop(self):
-        from vllm_mlx.routes.audio import register_audio_routes
+        from rapid_mlx.routes.audio import register_audio_routes
 
         app = FastAPI()
         first = register_audio_routes(app)
@@ -271,7 +271,7 @@ class TestServerRegisterAudioRoutesIfEnabled:
     def fresh_app(self, monkeypatch):
         """Swap ``server.app`` for a fresh FastAPI app per test so the
         route-table mutations from one test don't bleed into the next."""
-        from vllm_mlx import server
+        from rapid_mlx import server
 
         new_app = FastAPI()
         monkeypatch.setattr(server, "app", new_app)
@@ -283,7 +283,7 @@ class TestServerRegisterAudioRoutesIfEnabled:
         )
 
     def test_text_only_no_flag_does_not_register(self, monkeypatch, fresh_app):
-        from vllm_mlx import server
+        from rapid_mlx import server
 
         monkeypatch.setattr(server, "_model_name", "Qwen/Qwen3-7B-4bit")
         monkeypatch.setattr(server, "_model_alias", None)
@@ -294,7 +294,7 @@ class TestServerRegisterAudioRoutesIfEnabled:
         assert self._has_audio_routes(fresh_app) is False
 
     def test_text_only_with_flag_registers(self, monkeypatch, fresh_app):
-        from vllm_mlx import server
+        from rapid_mlx import server
 
         monkeypatch.setattr(server, "_model_name", "Qwen/Qwen3-7B-4bit")
         monkeypatch.setattr(server, "_model_alias", None)
@@ -305,7 +305,7 @@ class TestServerRegisterAudioRoutesIfEnabled:
         assert self._has_audio_routes(fresh_app) is True
 
     def test_audio_alias_registers_without_flag(self, monkeypatch, fresh_app):
-        from vllm_mlx import server
+        from rapid_mlx import server
 
         monkeypatch.setattr(server, "_model_name", "kokoro")
         monkeypatch.setattr(server, "_model_alias", "kokoro")
@@ -316,7 +316,7 @@ class TestServerRegisterAudioRoutesIfEnabled:
         assert self._has_audio_routes(fresh_app) is True
 
     def test_audio_hf_id_registers_without_flag(self, monkeypatch, fresh_app):
-        from vllm_mlx import server
+        from rapid_mlx import server
 
         monkeypatch.setattr(server, "_model_name", "mlx-community/Kokoro-82M-bf16")
         monkeypatch.setattr(server, "_model_alias", None)
@@ -331,7 +331,7 @@ class TestServerRegisterAudioRoutesIfEnabled:
         future refactor that runs ``_sync_config`` twice). The second
         call must NOT re-register the routes — duplicate registration
         triggers a 405 response on otherwise-valid requests."""
-        from vllm_mlx import server
+        from rapid_mlx import server
 
         monkeypatch.setattr(server, "_model_name", "kokoro")
         monkeypatch.setattr(server, "_model_alias", None)
@@ -364,16 +364,16 @@ class TestModelsListingReflectsAudioGate:
 
     @pytest.fixture
     def fresh_app(self, monkeypatch):
-        from vllm_mlx import server
+        from rapid_mlx import server
 
         new_app = FastAPI()
         monkeypatch.setattr(server, "app", new_app)
         return new_app
 
     def test_audio_lane_snapshot_none_on_text_only_app(self, monkeypatch, fresh_app):
-        from vllm_mlx import server
-        from vllm_mlx.config import get_config
-        from vllm_mlx.routes.models import _audio_lane_snapshot
+        from rapid_mlx import server
+        from rapid_mlx.config import get_config
+        from rapid_mlx.routes.models import _audio_lane_snapshot
 
         # Force the routes-mounted predicate to False by ensuring the
         # gate doesn't see audio + flag + routes.
@@ -395,8 +395,8 @@ class TestModelsListingReflectsAudioGate:
         """When the audio router is attached, the snapshot returns
         EITHER ``None`` (if the deep probe never ran) or a non-empty
         dict — but never a hidden None from the gate."""
-        from vllm_mlx.routes.audio import register_audio_routes
-        from vllm_mlx.routes.models import _audio_lane_snapshot, _audio_routes_mounted
+        from rapid_mlx.routes.audio import register_audio_routes
+        from rapid_mlx.routes.models import _audio_lane_snapshot, _audio_routes_mounted
 
         register_audio_routes(fresh_app)
         assert _audio_routes_mounted() is True
@@ -420,8 +420,8 @@ class TestModelsListingReflectsAudioGate:
         advertise ``audio_lanes`` while ``/v1/audio/*`` still 404s —
         the exact contradictory state this PR was opened to eliminate.
         """
-        from vllm_mlx.config import get_config
-        from vllm_mlx.routes.models import _audio_routes_mounted
+        from rapid_mlx.config import get_config
+        from rapid_mlx.routes.models import _audio_routes_mounted
 
         cfg = get_config()
         old_flag = cfg.enable_audio_lane
@@ -440,7 +440,7 @@ class TestModelsListingReflectsAudioGate:
         check did a prefix scan on ``/v1/audio/`` which collided with
         any operator subroute under that prefix; the fix uses an
         app-local sentinel attribute instead."""
-        from vllm_mlx.routes.audio import register_audio_routes
+        from rapid_mlx.routes.audio import register_audio_routes
 
         app = FastAPI()
 
@@ -469,7 +469,7 @@ class TestModelsListingReflectsAudioGate:
 
 class TestCliServeCommandWiresEnableAudioFlag:
     """Codex r1/r2 BLOCKING regression — both ``rapid-mlx serve`` and
-    ``python -m vllm_mlx.server`` must thread ``--enable-audio`` all
+    ``python -m rapid_mlx.server`` must thread ``--enable-audio`` all
     the way through to ``register_audio_routes_if_enabled``. A future
     refactor that moves the hook out of ``load_model`` (e.g. into a
     FastAPI lifespan event) must not silently drop the flag for either
@@ -483,7 +483,7 @@ class TestCliServeCommandWiresEnableAudioFlag:
     fix that."""
 
     def test_module_form_parser_accepts_enable_audio(self, monkeypatch):
-        """``python -m vllm_mlx.server <model> --enable-audio`` is
+        """``python -m rapid_mlx.server <model> --enable-audio`` is
         accepted by the REAL ``server.main`` parser and forwarded to
         the ``_enable_audio_lane`` global before ``load_model`` runs.
 
@@ -495,8 +495,8 @@ class TestCliServeCommandWiresEnableAudioFlag:
         (``tool_call_parser``, ``reasoning_parser``, etc.) via inline
         auto-detection — snapshot+restore them so the writes don't
         leak into ``tests/test_routes.py``."""
-        from vllm_mlx import server
-        from vllm_mlx.config import get_config
+        from rapid_mlx import server
+        from rapid_mlx.config import get_config
 
         cfg = get_config()
         cfg_snapshot = {
@@ -530,7 +530,7 @@ class TestCliServeCommandWiresEnableAudioFlag:
         # from ``cli`` (``server.py`` line ~1971). Otherwise a port-8000
         # collision on the developer's host fails this test for reasons
         # unrelated to the parser wiring it exercises.
-        from vllm_mlx import cli as _cli_for_preflight
+        from rapid_mlx import cli as _cli_for_preflight
 
         monkeypatch.setattr(
             _cli_for_preflight, "_port_preflight_or_die", lambda *_a, **_kw: None
@@ -552,7 +552,7 @@ class TestCliServeCommandWiresEnableAudioFlag:
         monkeypatch.setattr(
             "sys.argv",
             [
-                "vllm_mlx.server",
+                "rapid_mlx.server",
                 "--model",
                 "Qwen/Qwen3-7B-4bit",
                 "--enable-audio",
@@ -594,8 +594,8 @@ class TestCliServeCommandWiresEnableAudioFlag:
           test).
         * ``prompt_upgrade_if_available`` → returns ``False``.
         """
-        from vllm_mlx import cli, server
-        from vllm_mlx.config import get_config
+        from rapid_mlx import cli, server
+        from rapid_mlx.config import get_config
 
         # Snapshot the globals ``main()`` / ``serve_command`` will
         # mutate so subsequent tests don't see the writes.
@@ -635,19 +635,19 @@ class TestCliServeCommandWiresEnableAudioFlag:
         monkeypatch.setattr(cli, "_resolve_audio_model_for_serve", lambda _n: None)
         # The audio extra-required guard short-circuits to no-op for
         # text models; belt-and-braces stub it.
-        from vllm_mlx.audio import probe as _audio_probe
+        from rapid_mlx.audio import probe as _audio_probe
 
         monkeypatch.setattr(_audio_probe, "is_audio_model_alias", lambda _n: False)
         # The MLLM extra-required guard short-circuits for text models;
         # belt-and-braces stub it.
-        monkeypatch.setattr("vllm_mlx.api.utils.is_mllm_model", lambda _n: False)
+        monkeypatch.setattr("rapid_mlx.api.utils.is_mllm_model", lambda _n: False)
         # Disable interactive upgrade prompt.
         monkeypatch.setattr(
-            "vllm_mlx._version_check.prompt_upgrade_if_available", lambda: False
+            "rapid_mlx._version_check.prompt_upgrade_if_available", lambda: False
         )
         # Stub staleness banner so it doesn't print to stderr.
         monkeypatch.setattr(
-            "vllm_mlx._version_check.print_staleness_warning_if_any",
+            "rapid_mlx._version_check.print_staleness_warning_if_any",
             lambda **_kwargs: None,
         )
         # The ``main()`` alias resolver writes ``args._original_alias``;
@@ -698,8 +698,8 @@ class TestCliServeCommandWiresEnableAudioFlag:
         the time uvicorn binds the port. The combined ordering
         catches both deletions (codex r1 BLOCKING) and wrong-order
         regressions."""
-        from vllm_mlx import cli, server
-        from vllm_mlx.config import get_config
+        from rapid_mlx import cli, server
+        from rapid_mlx.config import get_config
 
         cfg = get_config()
         cfg_snapshot = {
@@ -742,15 +742,15 @@ class TestCliServeCommandWiresEnableAudioFlag:
         monkeypatch.setattr(cli, "_ensure_model_downloaded", lambda *_a, **_kw: None)
         monkeypatch.setattr(cli, "_port_preflight_or_die", lambda *_a, **_kw: None)
         monkeypatch.setattr(cli, "_resolve_audio_model_for_serve", lambda _n: None)
-        from vllm_mlx.audio import probe as _audio_probe
+        from rapid_mlx.audio import probe as _audio_probe
 
         monkeypatch.setattr(_audio_probe, "is_audio_model_alias", lambda _n: False)
-        monkeypatch.setattr("vllm_mlx.api.utils.is_mllm_model", lambda _n: False)
+        monkeypatch.setattr("rapid_mlx.api.utils.is_mllm_model", lambda _n: False)
         monkeypatch.setattr(
-            "vllm_mlx._version_check.prompt_upgrade_if_available", lambda: False
+            "rapid_mlx._version_check.prompt_upgrade_if_available", lambda: False
         )
         monkeypatch.setattr(
-            "vllm_mlx._version_check.print_staleness_warning_if_any",
+            "rapid_mlx._version_check.print_staleness_warning_if_any",
             lambda **_kwargs: None,
         )
 
@@ -797,7 +797,7 @@ class TestCliServeCommandWiresEnableAudioFlag:
 
     def test_load_model_invokes_register_hook(self, monkeypatch):
         """``load_model`` is the SHARED loader between
-        ``rapid-mlx serve`` and ``python -m vllm_mlx.server``. Stub
+        ``rapid-mlx serve`` and ``python -m rapid_mlx.server``. Stub
         the engine constructors so the function returns quickly, then
         observe that ``register_audio_routes_if_enabled`` was actually
         invoked (not just mentioned in the source).
@@ -815,8 +815,8 @@ class TestCliServeCommandWiresEnableAudioFlag:
         observes ``tool_call_parser=hermes`` instead of ``None``)."""
         from unittest import mock
 
-        from vllm_mlx import server
-        from vllm_mlx.config import get_config
+        from rapid_mlx import server
+        from rapid_mlx.config import get_config
 
         # Snapshot every server global ``load_model`` and
         # ``_sync_config`` may write so we can restore at the end.
@@ -890,11 +890,11 @@ class TestCliServeCommandWiresEnableAudioFlag:
         try:
             with (
                 mock.patch(
-                    "vllm_mlx.utils.generation_config.load_generation_config_sampling",
+                    "rapid_mlx.utils.generation_config.load_generation_config_sampling",
                     return_value={},
                 ),
                 mock.patch(
-                    "vllm_mlx._mxfp4_moe_guardrail.check_from_profile",
+                    "rapid_mlx._mxfp4_moe_guardrail.check_from_profile",
                     lambda **_kw: None,
                 ),
             ):

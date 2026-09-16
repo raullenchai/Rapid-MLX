@@ -183,7 +183,7 @@ def registered_parsers() -> set[str]:
     tree is dependency-free.
     """
     sys.path.insert(0, str(REPO_ROOT))
-    from vllm_mlx.tool_parsers import (
+    from rapid_mlx.tool_parsers import (
         ToolParserManager,  # type: ignore[import-not-found]
     )
 

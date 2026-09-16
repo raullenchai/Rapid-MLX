@@ -15,7 +15,7 @@
     "chip": "Apple M2 Pro (10-core)"
   },
   "method": {
-    "serve_path": "python -m vllm_mlx.cli serve --disable-prefix-cache",
+    "serve_path": "python -m rapid_mlx.cli serve --disable-prefix-cache",
     "output_tokens": 96,
     "long_prompt_tokens": 8112,
     "models_are_sequential": true,

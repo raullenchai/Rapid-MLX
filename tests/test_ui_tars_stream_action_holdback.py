@@ -33,7 +33,7 @@ from __future__ import annotations
 
 import pytest
 
-from vllm_mlx.tool_parsers.ui_tars_tool_parser import UiTarsToolParser
+from rapid_mlx.tool_parsers.ui_tars_tool_parser import UiTarsToolParser
 
 
 @pytest.fixture
@@ -352,7 +352,7 @@ class TestCodexHighWordBoundaryGate:
         ],
     )
     def test_trailing_prefix_word_boundary(self, text, expected_held):
-        from vllm_mlx.tool_parsers.ui_tars_tool_parser import (
+        from rapid_mlx.tool_parsers.ui_tars_tool_parser import (
             _trailing_action_prefix_len,
         )
 
@@ -457,7 +457,7 @@ class TestCodexR2BareActionProseRelease:
         assert held == "Action: type("
 
     def test_safe_emit_end_helper(self):
-        from vllm_mlx.tool_parsers.ui_tars_tool_parser import _safe_emit_end
+        from rapid_mlx.tool_parsers.ui_tars_tool_parser import _safe_emit_end
 
         # No Action: anywhere → safe_end is at end (or before trailing prefix).
         assert _safe_emit_end("Hello world!") == len("Hello world!")
@@ -704,7 +704,7 @@ class TestCodexR4TrailingPrefixIsolated:
         # Direct unit-level check of the fix — verify
         # ``_trailing_action_prefix_len`` ignores earlier full tokens
         # and only inspects the tail.
-        from vllm_mlx.tool_parsers.ui_tars_tool_parser import (
+        from rapid_mlx.tool_parsers.ui_tars_tool_parser import (
             _trailing_action_prefix_len,
         )
 
@@ -717,7 +717,7 @@ class TestCodexR4TrailingPrefixIsolated:
 
     def test_trailing_prefix_with_no_earlier_token_still_works(self):
         # Pre-existing behavior preserved for the simple case.
-        from vllm_mlx.tool_parsers.ui_tars_tool_parser import (
+        from rapid_mlx.tool_parsers.ui_tars_tool_parser import (
             _trailing_action_prefix_len,
         )
 

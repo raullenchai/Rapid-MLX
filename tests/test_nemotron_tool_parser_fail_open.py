@@ -31,7 +31,7 @@ import json
 
 import pytest
 
-from vllm_mlx.tool_parsers.nemotron_tool_parser import NemotronToolParser
+from rapid_mlx.tool_parsers.nemotron_tool_parser import NemotronToolParser
 
 
 @pytest.fixture
@@ -159,7 +159,7 @@ def test_marker_present_but_unparseable_logs_and_fails_open(parser, caplog):
     unhandled shape can be captured."""
     text = "<tool_call>garbled, no function here</tool_call>"
     with caplog.at_level(
-        "WARNING", logger="vllm_mlx.tool_parsers.nemotron_tool_parser"
+        "WARNING", logger="rapid_mlx.tool_parsers.nemotron_tool_parser"
     ):
         result = parser.extract_tool_calls(text)
     assert not result.tools_called

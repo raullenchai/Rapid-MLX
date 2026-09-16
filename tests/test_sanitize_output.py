@@ -17,7 +17,7 @@ Fix history:
 
 import pytest
 
-from vllm_mlx.api.utils import sanitize_output
+from rapid_mlx.api.utils import sanitize_output
 
 # ---------------------------------------------------------------------------
 # The exact regression cases from the bug report
@@ -142,6 +142,6 @@ def test_content_channel_keeps_closer():
 
 def test_reasoning_channel_still_strips_closer():
     """A bare closer inside a reasoning trace is parser residue."""
-    from vllm_mlx.api.utils import sanitize_reasoning_content
+    from rapid_mlx.api.utils import sanitize_reasoning_content
 
     assert sanitize_reasoning_content("answer</tool_call>") == "answer"

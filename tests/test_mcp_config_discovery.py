@@ -16,7 +16,7 @@ import json
 
 import pytest
 
-from vllm_mlx.mcp import config as mcp_config
+from rapid_mlx.mcp import config as mcp_config
 
 
 @pytest.fixture(autouse=True)

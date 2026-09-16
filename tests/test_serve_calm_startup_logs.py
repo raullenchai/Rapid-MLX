@@ -35,7 +35,7 @@ def _stub_config_and_cache_dir(monkeypatch, *, entries: int = 1):
     injection seams. ``entries`` is the value ``load_cache_from_disk`` returns
     (0 selects the "No ... found on disk" branch).
     """
-    from vllm_mlx.runtime import cache as cache_mod
+    from rapid_mlx.runtime import cache as cache_mod
 
     class _StubEngine:
         def load_cache_from_disk(self, _path, *, protected_import):
@@ -62,7 +62,7 @@ def test_post_ready_prefix_cache_load_lines_are_debug_not_info(monkeypatch, capl
     after the connect card and pushed it off the terminal. They are warm-start
     detail, so they move to DEBUG.
     """
-    from vllm_mlx.runtime import cache as cache_mod
+    from rapid_mlx.runtime import cache as cache_mod
 
     cache_mod = _stub_config_and_cache_dir(monkeypatch)
 
@@ -88,7 +88,7 @@ def test_post_ready_prefix_cache_load_lines_are_debug_not_info(monkeypatch, capl
 
 def test_post_ready_prefix_cache_no_entries_branch_is_debug(monkeypatch, caplog):
     """The ``No prefix cache entries found on disk`` branch is DEBUG too."""
-    from vllm_mlx.runtime import cache as cache_mod
+    from rapid_mlx.runtime import cache as cache_mod
 
     cache_mod = _stub_config_and_cache_dir(monkeypatch, entries=0)
 
@@ -109,7 +109,7 @@ def test_post_ready_radix_rebuild_is_debug_not_info(caplog):
     deferred post-ready task, so its ``[radix] rebuilt index ...`` line used to
     bury the Ready banner.
     """
-    from vllm_mlx.runtime import cache as cache_mod
+    from rapid_mlx.runtime import cache as cache_mod
 
     class _StubRadix:
         def load(self, _path):
@@ -148,7 +148,7 @@ def test_kv_cache_dtype_decision_logged_exactly_once(caplog):
     serve showed two identical dtype lines. It must now produce a single
     emission (one INFO log record, nothing printed to stdout).
     """
-    from vllm_mlx.kv_cache_dtype import (
+    from rapid_mlx.kv_cache_dtype import (
         KVCacheDtypeDecision,
         log_kv_cache_decision,
     )

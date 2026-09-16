@@ -10,9 +10,9 @@ from unittest.mock import patch
 
 import yaml
 
-from vllm_mlx.agents import get_profile, load_profiles
-from vllm_mlx.agents.setup import apply_setup_plan, build_setup_plan
-from vllm_mlx.agents.testing import (
+from rapid_mlx.agents import get_profile, load_profiles
+from rapid_mlx.agents.setup import apply_setup_plan, build_setup_plan
+from rapid_mlx.agents.testing import (
     AgentTestRunner,
     TestResult,
     TestStatus,
@@ -231,49 +231,49 @@ def test_dsh_test_runner_supplies_only_dummy_loopback_credential(monkeypatch):
     monkeypatch.setattr(AgentTestRunner, "_server_available", lambda _self: True)
     monkeypatch.setattr(AgentTestRunner, "_agent_binary_available", lambda _self: True)
     monkeypatch.setattr(
-        "vllm_mlx.agents.adapter.setup_agent_config", lambda *_args, **_kwargs: "ok"
+        "rapid_mlx.agents.adapter.setup_agent_config", lambda *_args, **_kwargs: "ok"
     )
     monkeypatch.setattr(
-        "vllm_mlx.agents.testing._test_plain_chat",
+        "rapid_mlx.agents.testing._test_plain_chat",
         lambda *_args, **_kwargs: TestResult("plain_chat", TestStatus.PASS),
     )
-    monkeypatch.setattr("vllm_mlx.agents.testing._test_e2e_chat", capture)
-    monkeypatch.setattr("vllm_mlx.agents.testing._test_e2e_file_read", capture)
-    monkeypatch.setattr("vllm_mlx.agents.testing._test_e2e_terminal", capture)
+    monkeypatch.setattr("rapid_mlx.agents.testing._test_e2e_chat", capture)
+    monkeypatch.setattr("rapid_mlx.agents.testing._test_e2e_file_read", capture)
+    monkeypatch.setattr("rapid_mlx.agents.testing._test_e2e_terminal", capture)
     monkeypatch.setattr(
-        "vllm_mlx.agents.testing._test_single_tool_call",
+        "rapid_mlx.agents.testing._test_single_tool_call",
         lambda *_args, **_kwargs: TestResult("tool", TestStatus.PASS),
     )
     monkeypatch.setattr(
-        "vllm_mlx.agents.testing._test_tool_choice",
+        "rapid_mlx.agents.testing._test_tool_choice",
         lambda *_args, **_kwargs: TestResult("tool", TestStatus.PASS),
     )
     monkeypatch.setattr(
-        "vllm_mlx.agents.testing._test_multi_turn_tool",
+        "rapid_mlx.agents.testing._test_multi_turn_tool",
         lambda *_args, **_kwargs: TestResult("tool", TestStatus.PASS),
     )
     monkeypatch.setattr(
-        "vllm_mlx.agents.testing._test_no_tool_leak",
+        "rapid_mlx.agents.testing._test_no_tool_leak",
         lambda *_args, **_kwargs: TestResult("tool", TestStatus.PASS),
     )
     monkeypatch.setattr(
-        "vllm_mlx.agents.testing._test_no_tool_needed",
+        "rapid_mlx.agents.testing._test_no_tool_needed",
         lambda *_args, **_kwargs: TestResult("tool", TestStatus.PASS),
     )
     monkeypatch.setattr(
-        "vllm_mlx.agents.testing._test_streaming_tool_call",
+        "rapid_mlx.agents.testing._test_streaming_tool_call",
         lambda *_args, **_kwargs: TestResult("tool", TestStatus.PASS),
     )
     monkeypatch.setattr(
-        "vllm_mlx.agents.testing._test_many_tools",
+        "rapid_mlx.agents.testing._test_many_tools",
         lambda *_args, **_kwargs: TestResult("tool", TestStatus.PASS),
     )
     monkeypatch.setattr(
-        "vllm_mlx.agents.testing._test_streaming_basic",
+        "rapid_mlx.agents.testing._test_streaming_basic",
         lambda *_args, **_kwargs: TestResult("stream", TestStatus.PASS),
     )
     monkeypatch.setattr(
-        "vllm_mlx.agents.testing._test_stress_no_leak",
+        "rapid_mlx.agents.testing._test_stress_no_leak",
         lambda *_args, **_kwargs: TestResult("stress", TestStatus.PASS),
     )
 
@@ -287,11 +287,11 @@ def test_dsh_test_runner_supplies_only_dummy_loopback_credential(monkeypatch):
 def test_dsh_reports_old_node_before_opaque_plugin_boot_failure():
     with (
         patch(
-            "vllm_mlx.agents.testing.shutil.which",
+            "rapid_mlx.agents.testing.shutil.which",
             side_effect=["/fake/dsh", "/fake/node"],
         ),
         patch(
-            "vllm_mlx.agents.testing.subprocess.run",
+            "rapid_mlx.agents.testing.subprocess.run",
             return_value=SimpleNamespace(returncode=1, stdout="", stderr=""),
         ) as run,
     ):
@@ -358,7 +358,7 @@ def _dsh_provider(plan) -> dict:
 
 def test_reasoning_support_is_three_state(tmp_path, monkeypatch):
     """True / False / None must be distinguishable at the source."""
-    from vllm_mlx.agents.adapter import fetch_reasoning_support
+    from rapid_mlx.agents.adapter import fetch_reasoning_support
 
     with _serving([{"id": "m", "reasoning_parser": "qwen3"}]) as url:
         assert fetch_reasoning_support(url, "m") is True

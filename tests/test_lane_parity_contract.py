@@ -18,16 +18,16 @@ import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
-from vllm_mlx.api import utils as api_utils
-from vllm_mlx.config import reset_config
-from vllm_mlx.engine.base import GenerationOutput
-from vllm_mlx.engine.batched import (
+from rapid_mlx.api import utils as api_utils
+from rapid_mlx.config import reset_config
+from rapid_mlx.engine.base import GenerationOutput
+from rapid_mlx.engine.batched import (
     _LANE_PARITY_PROCESSOR_KEYS,
     _LANE_PARITY_SAMPLING_KEYS,
     _TEXT_ONLY_SAMPLING_KEYS,
     BatchedEngine,
 )
-from vllm_mlx.middleware.exception_handlers import (
+from rapid_mlx.middleware.exception_handlers import (
     install_exception_handlers,
 )
 
@@ -103,11 +103,11 @@ def _route_client(surface: str, engine: _RouteRecordingEngine) -> TestClient:
     cfg.tool_call_parser = None
 
     if surface == "chat":
-        from vllm_mlx.routes.chat import router
+        from rapid_mlx.routes.chat import router
     elif surface == "responses":
-        from vllm_mlx.routes.responses import router
+        from rapid_mlx.routes.responses import router
     else:
-        from vllm_mlx.routes.anthropic import router
+        from rapid_mlx.routes.anthropic import router
 
     app = FastAPI()
     install_exception_handlers(app)
@@ -336,7 +336,7 @@ def test_forced_tool_thinking_schema_bundle_is_lane_independent(
 ) -> None:
     """#2447 coupled request keeps grammar + reasoning on both lanes."""
 
-    from vllm_mlx.routes import chat as chat_route
+    from rapid_mlx.routes import chat as chat_route
 
     grammar = SimpleNamespace(reasoning_gate_id=None)
     budget = object()
@@ -356,7 +356,7 @@ def test_forced_tool_thinking_schema_bundle_is_lane_independent(
 
     engine = _RouteRecordingEngine(is_mllm=is_mllm)
     client = _route_client("chat", engine)
-    from vllm_mlx.config import get_config
+    from rapid_mlx.config import get_config
 
     get_config().tool_call_parser = "hermes"
     response = client.post(
@@ -567,7 +567,7 @@ async def test_engine_dispatch_preserves_shared_request_semantics(
     # installed, without bypassing the real admission/reservation lifecycle.
     monkeypatch.setitem(
         sys.modules,
-        "vllm_mlx.scheduler",
+        "rapid_mlx.scheduler",
         SimpleNamespace(BackpressureError=RuntimeError),
     )
 

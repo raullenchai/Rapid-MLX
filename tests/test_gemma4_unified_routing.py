@@ -45,7 +45,7 @@ import json
 import sys
 from pathlib import Path
 
-from vllm_mlx.models import gemma4_text
+from rapid_mlx.models import gemma4_text
 
 
 def _write_config(tmp_path: Path, model_type: str) -> Path:
@@ -137,8 +137,8 @@ def test_load_plan_rejects_unknown_object_config(tmp_path):
 
 
 def test_unified_shared_kv_resolver_forces_metadata_preserving_classes():
-    from vllm_mlx.models.gemma4_vendored.config import TextConfig
-    from vllm_mlx.models.gemma4_vendored.language import LanguageModel
+    from rapid_mlx.models.gemma4_vendored.config import TextConfig
+    from rapid_mlx.models.gemma4_vendored.language import LanguageModel
 
     assert gemma4_text._resolve_gemma4_unified_text_classes(
         {"num_kv_shared_layers": 1}
@@ -292,8 +292,8 @@ def test_unified_resolver_falls_back_to_vendored_without_mlx_vlm(monkeypatch):
     ``rapid-mlx serve gemma-4-12b`` died on a missing mlx-vlm."""
     _block_mlx_vlm(monkeypatch)
     tc, lm = gemma4_text._resolve_gemma4_unified_text_classes()
-    assert tc.__module__ == "vllm_mlx.models.gemma4_vendored.config"
-    assert lm.__module__ == "vllm_mlx.models.gemma4_vendored.language"
+    assert tc.__module__ == "rapid_mlx.models.gemma4_vendored.config"
+    assert lm.__module__ == "rapid_mlx.models.gemma4_vendored.language"
 
 
 def test_base_resolver_falls_back_to_vendored_without_mlx_vlm(monkeypatch):
@@ -301,8 +301,8 @@ def test_base_resolver_falls_back_to_vendored_without_mlx_vlm(monkeypatch):
     mlx-vlm (existing 0.10.1 contract, re-pinned)."""
     _block_mlx_vlm(monkeypatch)
     tc, lm = gemma4_text._resolve_gemma4_text_classes()
-    assert tc.__module__ == "vllm_mlx.models.gemma4_vendored.config"
-    assert lm.__module__ == "vllm_mlx.models.gemma4_vendored.language"
+    assert tc.__module__ == "rapid_mlx.models.gemma4_vendored.config"
+    assert lm.__module__ == "rapid_mlx.models.gemma4_vendored.language"
 
 
 def test_unified_loader_reaches_weight_check_without_mlx_vlm(tmp_path, monkeypatch):
@@ -361,7 +361,7 @@ def test_dispatch_routes_to_matching_loader(
     We force the "native mlx-lm load failed" branch (so the explicit
     loaders run) by making the ``load`` symbol the dispatch calls raise,
     and stub both loaders to record which one fired. This exercises the
-    real routing decision in ``vllm_mlx/utils/tokenizer.py`` without any
+    real routing decision in ``rapid_mlx/utils/tokenizer.py`` without any
     weight download.
 
     ``_load_model_with_fallback_impl`` rebinds ``load`` locally via
@@ -371,7 +371,7 @@ def test_dispatch_routes_to_matching_loader(
     coincidence via a native load that happened to succeed or a different
     rejection path.
     """
-    from vllm_mlx.utils import tokenizer as tok
+    from rapid_mlx.utils import tokenizer as tok
 
     d = _write_config(tmp_path, model_type)
 
@@ -428,7 +428,7 @@ def test_dispatch_shared_kv_uses_metadata_preserving_loader(
     tmp_path, monkeypatch, model_type, expected_loader
 ):
     """Shared-KV checkpoints must not enter the native loader first."""
-    from vllm_mlx.utils import tokenizer as tok
+    from rapid_mlx.utils import tokenizer as tok
 
     d = _write_config(tmp_path, model_type)
     (d / "config.json").write_text(

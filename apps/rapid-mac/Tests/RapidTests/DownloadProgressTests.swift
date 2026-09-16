@@ -124,7 +124,7 @@ struct DownloadProgressTests {
         // triggers the HF fetch. .preparing is the new resting
         // place; tqdm will overwrite if/when it arrives.
         let progress = DownloadProgress()
-        progress.ingest("INFO:vllm_mlx.server:Loading model with BatchedEngine: mlx-community/Qwen3.6-35B-A3B-4bit")
+        progress.ingest("INFO:rapid_mlx.server:Loading model with BatchedEngine: mlx-community/Qwen3.6-35B-A3B-4bit")
         guard case .preparing = progress.phase else {
             Issue.record("expected .preparing after 'Loading model with', got \(progress.phase)")
             return
@@ -141,7 +141,7 @@ struct DownloadProgressTests {
         // blocked the tqdm — so a 5-minute download showed
         // "Loading model into Metal..." with no progress.
         let progress = DownloadProgress()
-        progress.ingest("INFO:vllm_mlx.server:Loading model with BatchedEngine: mlx-community/Qwen3.5-9B-4bit")
+        progress.ingest("INFO:rapid_mlx.server:Loading model with BatchedEngine: mlx-community/Qwen3.5-9B-4bit")
         progress.ingest("Fetching 13 files: 0%| | 0/13 [00:00<?, ?it/s]")
         guard case .fetching(let done, let total, _) = progress.phase else {
             Issue.record("BUG: fetch line did not override .preparing, phase=\(progress.phase)")
@@ -154,7 +154,7 @@ struct DownloadProgressTests {
     @Test("v0.4.42: 'compiling Metal shaders' transitions to .warmingUp")
     func warmingUpFromShaders() {
         let progress = DownloadProgress()
-        progress.ingest("INFO:vllm_mlx.server:Warming up (compiling Metal shaders)...")
+        progress.ingest("INFO:rapid_mlx.server:Warming up (compiling Metal shaders)...")
         guard case .warmingUp = progress.phase else {
             Issue.record("expected .warmingUp after 'compiling Metal shaders', got \(progress.phase)")
             return
@@ -164,7 +164,7 @@ struct DownloadProgressTests {
     @Test("v0.4.42: 'Warmup complete' also transitions to .warmingUp (kept on screen until /healthz green)")
     func warmingUpFromComplete() {
         let progress = DownloadProgress()
-        progress.ingest("INFO:vllm_mlx.server:Warmup complete (12.4s)")
+        progress.ingest("INFO:rapid_mlx.server:Warmup complete (12.4s)")
         guard case .warmingUp = progress.phase else {
             Issue.record("expected .warmingUp after 'Warmup complete', got \(progress.phase)")
             return
@@ -193,7 +193,7 @@ struct DownloadProgressTests {
         // against. The invariant moved from .loading to .warmingUp
         // because .loading no longer exists.
         let progress = DownloadProgress()
-        progress.ingest("INFO:vllm_mlx.server:Warming up (compiling Metal shaders)...")
+        progress.ingest("INFO:rapid_mlx.server:Warming up (compiling Metal shaders)...")
         progress.ingest("Fetching 14 files: 100%|██████████| 14/14 [00:00<00:00, 14749.20it/s]")
         guard case .warmingUp = progress.phase else {
             Issue.record("forward-only invariant violated, phase=\(progress.phase)")
@@ -234,7 +234,7 @@ struct DownloadProgressTests {
     // ``[N/M] file R2 (X MB)``. tqdm only enters the picture if the
     // R2 phase decides to fall back to ``snapshot_download``.
     //
-    // The strings below are pasted from ``vllm_mlx/_mirror.py`` lines
+    // The strings below are pasted from ``rapid_mlx/_mirror.py`` lines
     // 1012-1046 and 1340-1343 (rapid-mlx 0.7.29 SHA c397b2d) so the
     // parser stays pinned to the production wire format.
 

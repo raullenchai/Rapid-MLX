@@ -3,7 +3,7 @@
 
 These verify that ``BatchedEngine.chat`` / ``BatchedEngine.stream_chat``
 correctly set ``has_tools`` and ``requires_prompt_integrity`` on
-downstream calls. The route in vllm_mlx/routes/chat.py also sets
+downstream calls. The route in rapid_mlx/routes/chat.py also sets
 ``requires_prompt_integrity`` explicitly for tool / response_format
 requests; these tests cover the engine-level redundancy.
 
@@ -15,8 +15,8 @@ import types
 
 import pytest
 
-from vllm_mlx.engine.base import GenerationOutput
-from vllm_mlx.engine.batched import BatchedEngine
+from rapid_mlx.engine.base import GenerationOutput
+from rapid_mlx.engine.batched import BatchedEngine
 
 
 def _engine_with_template() -> BatchedEngine:
@@ -40,7 +40,7 @@ async def test_chat_marks_tool_prompts_with_has_tools_not_integrity():
     ``PFlashConfig.skip_when_tools``. Auto-folding tools into
     ``requires_prompt_integrity`` short-circuits the skip_when_tools
     branch and makes the documented CLI flag dead (codex r6
-    BLOCKING). The route layer (``vllm_mlx/routes/chat.py``) may still
+    BLOCKING). The route layer (``rapid_mlx/routes/chat.py``) may still
     set ``requires_prompt_integrity`` explicitly for schema requests
     that also happen to have tools — that pass-through case is
     covered by the next test.

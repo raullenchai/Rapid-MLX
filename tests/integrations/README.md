@@ -63,7 +63,7 @@ the Muse note below).
 > family end-to-end and leaves Gemma 4 / DeepSeek V4 Flash / gpt-oss
 > 120B for sibling PRs (see PR-2c-1 / PR-2c-2 / PR-2c-3 in the parent
 > issue). All four aliases resolve correctly in
-> `vllm_mlx/aliases.json` today; only the pilot family is proven with
+> `rapid_mlx/aliases.json` today; only the pilot family is proven with
 > real inference in this PR.
 
 Support ≡ a real integration test that boots the server + real model + real

@@ -41,7 +41,7 @@ struct RAMBucketedDefaultTests {
         var directory = URL(fileURLWithPath: #filePath).deletingLastPathComponent()
         for _ in 0..<8 {
             let candidate = directory.appendingPathComponent(
-                "vllm_mlx/model_recommendations.json"
+                "rapid_mlx/model_recommendations.json"
             )
             if FileManager.default.fileExists(atPath: candidate.path) {
                 return try Data(contentsOf: candidate)

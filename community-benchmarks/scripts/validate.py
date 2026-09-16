@@ -17,7 +17,7 @@ Layered checks, in order:
    (draft 2020-12, ``additionalProperties: false`` everywhere). The
    const fields on ``config.rounds`` etc. are enforced here.
 3. **Whitelist** — ``model.alias`` must exist in
-   ``vllm_mlx/aliases.json`` and ``model.hf_path`` must match the
+   ``rapid_mlx/aliases.json`` and ``model.hf_path`` must match the
    value stored there. We re-check after the CLI's own whitelist
    guard because the JSON file in a PR is the authoritative artifact;
    anything else is just history.
@@ -76,7 +76,7 @@ def _has_non_finite(obj) -> bool:
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 SCHEMA_PATH = REPO_ROOT / "community-benchmarks" / "schema.json"
-ALIASES_PATH = REPO_ROOT / "vllm_mlx" / "aliases.json"
+ALIASES_PATH = REPO_ROOT / "rapid_mlx" / "aliases.json"
 SUBMISSIONS_DIR = REPO_ROOT / "community-benchmarks" / "submissions"
 
 # Sanity bounds. Wider than any realistic Apple Silicon number so a
@@ -111,7 +111,7 @@ def _load_schema() -> dict | None:
 
 
 def _load_aliases() -> dict[str, dict]:
-    """Read ``vllm_mlx/aliases.json`` directly — no engine import needed."""
+    """Read ``rapid_mlx/aliases.json`` directly — no engine import needed."""
     if not ALIASES_PATH.exists():
         return {}
     raw = json.loads(ALIASES_PATH.read_text())
@@ -214,7 +214,7 @@ def _check_alias_whitelist(payload: dict, aliases: dict[str, dict]) -> None:
     if alias not in aliases:
         raise _IssueError(
             f"alias: '{alias}' is not on the whitelist "
-            f"(vllm_mlx/aliases.json). Register it there first."
+            f"(rapid_mlx/aliases.json). Register it there first."
         )
     # Fail closed if the alias entry doesn't carry a usable ``hf_path``.
     # The previous version skipped the comparison whenever
@@ -228,7 +228,7 @@ def _check_alias_whitelist(payload: dict, aliases: dict[str, dict]) -> None:
     if not isinstance(expected_path, str) or not expected_path:
         raise _IssueError(
             f"alias: whitelist entry for '{alias}' has no usable hf_path — "
-            f"fix vllm_mlx/aliases.json before any submission for this "
+            f"fix rapid_mlx/aliases.json before any submission for this "
             f"alias can be validated."
         )
     if hf_path != expected_path:

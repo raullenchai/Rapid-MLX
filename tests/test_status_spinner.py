@@ -1,4 +1,4 @@
-"""Tests for ``vllm_mlx.cli._StatusSpinner``.
+"""Tests for ``rapid_mlx.cli._StatusSpinner``.
 
 The spinner covers the silent "Resolving…" window before a cold model
 download starts (disk-space probe + mirror metadata + catalog fetch) so a
@@ -22,7 +22,7 @@ import time
 
 import pytest
 
-from vllm_mlx.cli import _StatusSpinner
+from rapid_mlx.cli import _StatusSpinner
 
 
 class _FakeTTY:

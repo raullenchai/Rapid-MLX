@@ -9,7 +9,7 @@ works because constrained decoding bypasses the channel state machine.
 
 ## Root cause
 
-``vllm_mlx/output_router.py`` AWAITING_CHANNEL_TYPE entry is gated on
+``rapid_mlx/output_router.py`` AWAITING_CHANNEL_TYPE entry is gated on
 ``token_id == m.channel_start`` (the ``<|channel>`` special token, ID
 100 in Gemma 4's vocab). The ``thought`` / ``content`` / ``final``
 literal-word checks at lines 240-251 are INSIDE the
@@ -38,7 +38,7 @@ from dataclasses import dataclass
 
 import pytest
 
-from vllm_mlx.output_router import OutputRouter
+from rapid_mlx.output_router import OutputRouter
 
 from ..fake_tokenizer import GEMMA4_VOCAB, gemma4_fake_tokenizer
 

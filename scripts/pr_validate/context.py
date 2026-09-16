@@ -31,25 +31,25 @@ _MERGIFY_APP_LOGINS = frozenset({"app/mergify", "mergify[bot]"})
 # the heavy gate (full unit + stress + e2e + bench). Order doesn't
 # matter; we use ``startswith`` matching against repo-relative paths.
 HIGH_BLAST_PATHS = (
-    "vllm_mlx/scheduler.py",
-    "vllm_mlx/server.py",
-    "vllm_mlx/cli.py",
-    "vllm_mlx/engine_core.py",
-    "vllm_mlx/memory_cache.py",
-    "vllm_mlx/prefix_cache.py",
-    "vllm_mlx/engine/",
-    "vllm_mlx/runtime/",
-    "vllm_mlx/routes/",
-    "vllm_mlx/middleware/",
-    "vllm_mlx/turboquant.py",
-    "vllm_mlx/mllm_scheduler.py",
+    "rapid_mlx/scheduler.py",
+    "rapid_mlx/server.py",
+    "rapid_mlx/cli.py",
+    "rapid_mlx/engine_core.py",
+    "rapid_mlx/memory_cache.py",
+    "rapid_mlx/prefix_cache.py",
+    "rapid_mlx/engine/",
+    "rapid_mlx/runtime/",
+    "rapid_mlx/routes/",
+    "rapid_mlx/middleware/",
+    "rapid_mlx/turboquant.py",
+    "rapid_mlx/mllm_scheduler.py",
     "pyproject.toml",  # version, deps, build config
 )
 
 # Paths that are "code but isolated" — touching them needs unit tests
 # but not the full stress/e2e battery. Parsers, models, agents.
 MEDIUM_BLAST_PATHS = (
-    "vllm_mlx/",  # anything under vllm_mlx not caught by high
+    "rapid_mlx/",  # anything under rapid_mlx not caught by high
     "tests/",  # test changes themselves get the unit suite
 )
 

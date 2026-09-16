@@ -1,8 +1,8 @@
 # SPDX-License-Identifier: Apache-2.0
 """First-run guide — install → first-token conversion.
 
-Covers the ``vllm_mlx/first_run.py`` helpers and their three wiring points in
-``vllm_mlx/cli.py``:
+Covers the ``rapid_mlx/first_run.py`` helpers and their three wiring points in
+``rapid_mlx/cli.py``:
 
   * P0-1 — ``chat`` / ``run`` with no model → starter auto-select in
     ``main()`` (the known-good starter alias chosen, notice printed only on a
@@ -25,8 +25,8 @@ from unittest import mock
 
 import pytest
 
-import vllm_mlx.cli as cli
-import vllm_mlx.first_run as fr
+import rapid_mlx.cli as cli
+import rapid_mlx.first_run as fr
 
 
 # ======================================================================
@@ -83,11 +83,11 @@ def test_cached_known_aliases_maps_sorts_and_drops_unmapped(monkeypatch):
     }
     # String-form targets (not ``setattr(cli, ...)``): ``cached_known_aliases``
     # re-imports these from ``sys.modules`` at call time, and a sibling suite
-    # (test_cli_argcomplete) pops+reimports ``vllm_mlx.cli``, so the module-level
+    # (test_cli_argcomplete) pops+reimports ``rapid_mlx.cli``, so the module-level
     # ``cli`` reference here can go stale. Patching by dotted path re-resolves
     # the live module object and stays effective regardless of import churn.
-    monkeypatch.setattr("vllm_mlx.cli._scan_hf_cache_models", lambda: fake_rows)
-    monkeypatch.setattr("vllm_mlx.model_aliases.list_profiles", lambda: fake_profiles)
+    monkeypatch.setattr("rapid_mlx.cli._scan_hf_cache_models", lambda: fake_rows)
+    monkeypatch.setattr("rapid_mlx.model_aliases.list_profiles", lambda: fake_profiles)
 
     rows = fr.cached_known_aliases()
     assert [a for a, _ in rows] == ["qwen3.5-4b-4bit", "gpt-oss-20b-mxfp4-q8"]
@@ -98,8 +98,8 @@ def test_cached_known_aliases_fail_silent(monkeypatch):
         raise RuntimeError("broken cache dir")
 
     # Dotted-path target (see the note in the sibling test): survives the
-    # ``vllm_mlx.cli`` pop+reimport that test_cli_argcomplete performs.
-    monkeypatch.setattr("vllm_mlx.cli._scan_hf_cache_models", _boom)
+    # ``rapid_mlx.cli`` pop+reimport that test_cli_argcomplete performs.
+    monkeypatch.setattr("rapid_mlx.cli._scan_hf_cache_models", _boom)
     assert fr.cached_known_aliases() == []
 
 
@@ -116,7 +116,7 @@ class _Adapter:
 
 def test_detected_agents_prefers_claude_code(monkeypatch):
     monkeypatch.setattr(
-        "vllm_mlx.launch.ADAPTERS",
+        "rapid_mlx.launch.ADAPTERS",
         {
             "continue-dev": _Adapter(True),
             "claude-code": _Adapter(True),
@@ -132,7 +132,7 @@ def test_detected_agents_prefers_claude_code(monkeypatch):
 
 def test_cursor_is_not_recommended_for_local_first_run(monkeypatch):
     monkeypatch.setattr(
-        "vllm_mlx.launch.ADAPTERS",
+        "rapid_mlx.launch.ADAPTERS",
         {"cursor": _Adapter(True), "claude-code": _Adapter(False)},
     )
     assert fr.detected_agents() == []
@@ -144,7 +144,7 @@ def test_detected_agents_detect_error_is_safe(monkeypatch):
         def detect(self):
             raise OSError("probe blew up")
 
-    monkeypatch.setattr("vllm_mlx.launch.ADAPTERS", {"claude-code": _Raiser()})
+    monkeypatch.setattr("rapid_mlx.launch.ADAPTERS", {"claude-code": _Raiser()})
     assert fr.detected_agents() == []
 
 
@@ -236,14 +236,14 @@ def _run_main_capture_chat(argv, *, stdin_tty=True):
 
     with (
         mock.patch.object(cli, "chat_command", _capture),
-        mock.patch("vllm_mlx.telemetry.maybe_prompt_for_consent", return_value=False),
+        mock.patch("rapid_mlx.telemetry.maybe_prompt_for_consent", return_value=False),
         mock.patch(
-            "vllm_mlx._version_check.prompt_upgrade_if_available",
+            "rapid_mlx._version_check.prompt_upgrade_if_available",
             return_value=False,
         ),
         # Pretend everything is cached so the download-confirm gate never
         # blocks the test on an explicit-model run.
-        mock.patch("vllm_mlx._download_gate.is_repo_cached", return_value=True),
+        mock.patch("rapid_mlx._download_gate.is_repo_cached", return_value=True),
         mock.patch.object(sys, "argv", ["rapid-mlx", *argv]),
         mock.patch.object(sys.stdin, "isatty", return_value=stdin_tty),
     ):
@@ -253,7 +253,7 @@ def _run_main_capture_chat(argv, *, stdin_tty=True):
 
 def test_chat_no_model_auto_selects_starter(monkeypatch, capsys):
     monkeypatch.setattr(
-        "vllm_mlx.first_run.select_chat_default",
+        "rapid_mlx.first_run.select_chat_default",
         lambda: ("qwen3.5-4b-4bit", False),
     )
     args = _run_main_capture_chat(["chat"], stdin_tty=True)
@@ -270,7 +270,7 @@ def test_run_alias_no_model_auto_selects_starter(monkeypatch, capsys):
     # auto-select branch gates on {"chat", "run"}, so the alias must get the
     # same starter selection + notice, not just ``chat``.
     monkeypatch.setattr(
-        "vllm_mlx.first_run.select_chat_default",
+        "rapid_mlx.first_run.select_chat_default",
         lambda: ("qwen3.5-4b-4bit", False),
     )
     args = _run_main_capture_chat(["run"], stdin_tty=True)
@@ -285,7 +285,7 @@ def test_chat_no_model_non_tty_starter_cached_proceeds_silently(monkeypatch, cap
     # own is_repo_cached check governs (helper stubs it cached).
     monkeypatch.delenv("RAPID_MLX_AUTO_PULL", raising=False)
     monkeypatch.setattr(
-        "vllm_mlx.first_run.select_chat_default",
+        "rapid_mlx.first_run.select_chat_default",
         lambda: ("qwen3.5-4b-4bit", True),
     )
     args = _run_main_capture_chat(["chat"], stdin_tty=False)
@@ -342,21 +342,21 @@ def _run_main_gate_probe(
 
     ctx = [
         mock.patch.object(cli, "chat_command", _dispatch),
-        mock.patch("vllm_mlx.telemetry.maybe_prompt_for_consent", return_value=False),
+        mock.patch("rapid_mlx.telemetry.maybe_prompt_for_consent", return_value=False),
         mock.patch(
-            "vllm_mlx._version_check.prompt_upgrade_if_available",
+            "rapid_mlx._version_check.prompt_upgrade_if_available",
             return_value=False,
         ),
-        mock.patch("vllm_mlx._download_gate.is_repo_cached", return_value=False),
-        mock.patch("vllm_mlx._download_gate.estimate_repo_size_bytes", return_value=0),
-        mock.patch("vllm_mlx._download_gate.confirm_or_abort", confirm),
+        mock.patch("rapid_mlx._download_gate.is_repo_cached", return_value=False),
+        mock.patch("rapid_mlx._download_gate.estimate_repo_size_bytes", return_value=0),
+        mock.patch("rapid_mlx._download_gate.confirm_or_abort", confirm),
         mock.patch.object(sys, "argv", ["rapid-mlx", *argv]),
         mock.patch.object(sys.stdin, "isatty", return_value=stdin_tty),
     ]
     if auto_select_alias is not None:
         ctx.append(
             mock.patch(
-                "vllm_mlx.first_run.select_chat_default",
+                "rapid_mlx.first_run.select_chat_default",
                 lambda: (auto_select_alias, starter_cached),
             )
         )
@@ -403,7 +403,9 @@ def test_autoselected_starter_still_runs_disk_gate_in_prefetch(
     # return is naturally skipped — no need to patch os.
     monkeypatch.setattr(cli, "_check_disk_space", _fake_disk)
     monkeypatch.setattr(cli, "_try_mirror_prefetch", lambda *a, **k: True)
-    monkeypatch.setattr("vllm_mlx._download_gate.is_repo_cached", lambda *a, **k: False)
+    monkeypatch.setattr(
+        "rapid_mlx._download_gate.is_repo_cached", lambda *a, **k: False
+    )
     cli._ensure_model_downloaded("mlx-community/Qwen3.5-4B-MLX-4bit")
     assert called["disk"] is True
 
@@ -420,10 +422,10 @@ def test_explicit_uncached_model_still_confirms(hub_online_env):
 def _run_bare(*, stdout_tty, stdin_tty):
     with (
         mock.patch(
-            "vllm_mlx.first_run.build_nameplate", return_value="NAMEPLATE-OK"
+            "rapid_mlx.first_run.build_nameplate", return_value="NAMEPLATE-OK"
         ) as np,
         mock.patch(
-            "vllm_mlx._version_check.prompt_upgrade_if_available",
+            "rapid_mlx._version_check.prompt_upgrade_if_available",
             return_value=False,
         ),
         mock.patch.object(sys, "argv", ["rapid-mlx"]),

@@ -54,7 +54,7 @@ mx = pytest.importorskip("mlx.core")
 KVCache = pytest.importorskip("mlx_lm.models.cache").KVCache
 save_prompt_cache = pytest.importorskip("mlx_lm.models.cache").save_prompt_cache
 
-from vllm_mlx.memory_cache import (  # noqa: E402
+from rapid_mlx.memory_cache import (  # noqa: E402
     MemoryAwarePrefixCache,
     MemoryCacheConfig,
     _load_prompt_cache_compat,
@@ -133,7 +133,7 @@ def test_deepseek_v4_cachelist_optional_state_roundtrip(tmp_path, optional_shape
     """Vendored DeepSeek state must survive mlx safetensors limitations."""
     from mlx_lm.models.cache import CacheList, RotatingKVCache
 
-    from vllm_mlx.models.deepseek_v4_cache import DeepseekV4PoolingCache
+    from rapid_mlx.models.deepseek_v4_cache import DeepseekV4PoolingCache
 
     rotating = RotatingKVCache(max_size=128)
     values = mx.arange(12, dtype=mx.float32).reshape(1, 1, 3, 4)
@@ -160,7 +160,7 @@ def test_deepseek_v4_populated_cache_uses_vendored_class_on_load(tmp_path):
     """Unmarked upstream-format files still restore vendored cache classes."""
     from mlx_lm.models.cache import CacheList, RotatingKVCache
 
-    from vllm_mlx.models.deepseek_v4_cache import DeepseekV4PoolingCache
+    from rapid_mlx.models.deepseek_v4_cache import DeepseekV4PoolingCache
 
     rotating = RotatingKVCache(max_size=128)
     values = mx.arange(12, dtype=mx.float32).reshape(1, 1, 3, 4)
@@ -186,7 +186,7 @@ def test_qwen4_qsa_cachelist_roundtrip_preserves_side_cache_owner(tmp_path):
     """QSA raw-ring/compressed state restores through the vendored registry."""
     from mlx_lm.models.cache import CacheList, KVCache
 
-    from vllm_mlx.models.qwen4_exp_cache import QSAIndexCache
+    from rapid_mlx.models.qwen4_exp_cache import QSAIndexCache
 
     kv = KVCache()
     values = mx.arange(20, dtype=mx.float32).reshape(1, 1, 5, 4)
@@ -217,7 +217,7 @@ def test_qwen4_qsa_cachelist_roundtrip_preserves_side_cache_owner(tmp_path):
 def test_qwen4_qsa_prefix_trim_rewinds_main_and_side_cache_together():
     from mlx_lm.models.cache import CacheList, KVCache
 
-    from vllm_mlx.models.qwen4_exp_cache import QSAIndexCache
+    from rapid_mlx.models.qwen4_exp_cache import QSAIndexCache
 
     kv = KVCache()
     values = mx.arange(32, dtype=mx.float32).reshape(1, 1, 8, 4)
@@ -243,8 +243,8 @@ def test_deepseek_v4_prefix_cache_survives_real_process_restart(tmp_path):
         import json
         import mlx.core as mx
         from mlx_lm.models.cache import CacheList, RotatingKVCache
-        from vllm_mlx.memory_cache import MemoryAwarePrefixCache, MemoryCacheConfig
-        from vllm_mlx.models.deepseek_v4_cache import DeepseekV4PoolingCache
+        from rapid_mlx.memory_cache import MemoryAwarePrefixCache, MemoryCacheConfig
+        from rapid_mlx.models.deepseek_v4_cache import DeepseekV4PoolingCache
 
         def fresh():
             return MemoryAwarePrefixCache(
@@ -318,7 +318,7 @@ def test_persistence_logs_entries_at_debug_and_summaries_at_info(tmp_path, caplo
     cache = fresh_cache()
     cache.store(list(range(11)), make_kvcache(num_tokens=11))
 
-    with caplog.at_level(logging.DEBUG, logger="vllm_mlx.memory_cache"):
+    with caplog.at_level(logging.DEBUG, logger="rapid_mlx.memory_cache"):
         assert cache.save_to_disk(str(tmp_path)) is True
         assert fresh_cache().load_from_disk(str(tmp_path)) == 1
 
@@ -764,7 +764,7 @@ def test_load_dedup_check_runs_before_safetensors_load(tmp_path, monkeypatch):
         return real_load(path)
 
     monkeypatch.setattr(mlx_cache_mod, "load_prompt_cache", spy)
-    monkeypatch.setattr("vllm_mlx.memory_cache.load_prompt_cache", spy, raising=False)
+    monkeypatch.setattr("rapid_mlx.memory_cache.load_prompt_cache", spy, raising=False)
 
     runtime = fresh_cache()
     runtime.store(list(range(11)), make_kvcache(num_tokens=11))
@@ -1113,7 +1113,7 @@ def test_incompatible_skipped_does_not_count_as_corruption(tmp_path, caplog):
         model=object(),
         config=MemoryCacheConfig(max_memory_mb=64, max_entries=100, kv_quantize=False),
     )
-    with caplog.at_level(_logging.INFO, logger="vllm_mlx.memory_cache"):
+    with caplog.at_level(_logging.INFO, logger="rapid_mlx.memory_cache"):
         cache.load_from_disk(str(tmp_path))
 
     text = caplog.text
@@ -1128,7 +1128,7 @@ def test_incompatible_skipped_does_not_count_as_corruption(tmp_path, caplog):
 # --------------------------------------------------------------------------
 #
 # Tests for the three ``.shape``-on-tuple-keys crash sites in
-# ``vllm_mlx/scheduler.py``. We exercise the validators directly with
+# ``rapid_mlx/scheduler.py``. We exercise the validators directly with
 # the cache shape they receive when a QuantizedKVCache reaches them
 # (which happens for stale-cache scenarios where Bug B fix didn't fire,
 # or for in-memory mid-prefill states under quantized model paths).
@@ -1169,7 +1169,7 @@ def test_scheduler_validator_accepts_tuple_keys_without_crashing():
     array-typed in practice; their ``hasattr`` guards are defensive,
     not load-bearing, so we don't pin them with tests.
     """
-    from vllm_mlx.scheduler import Scheduler
+    from rapid_mlx.scheduler import Scheduler
 
     layer = _FakeQuantizedLayer(num_tokens=11)
     # _validate_cache is an instance method but doesn't touch self for
@@ -1214,7 +1214,7 @@ def test_save_aborts_cleanly_when_staging_dir_vanishes_completely(
     import mlx_lm.models.cache as _mc
 
     # Patching `mlx_lm.models.cache.save_prompt_cache` (not
-    # `vllm_mlx.memory_cache.save_prompt_cache`) is intentional and
+    # `rapid_mlx.memory_cache.save_prompt_cache`) is intentional and
     # correct: memory_cache.py imports it via a function-local
     # `from mlx_lm.models.cache import save_prompt_cache` *inside*
     # save_to_disk (line ~1180). That `from X import Y` re-resolves
@@ -1336,7 +1336,7 @@ def test_save_aborts_on_post_filter_dir_loss(tmp_path, monkeypatch):
     # no unrelated I/O can accidentally arm us. monkeypatch.setattr on
     # builtins.open auto-unwinds at fixture teardown, so the patch
     # never escapes this test even on assertion failure.
-    import vllm_mlx.memory_cache as _mc_mod
+    import rapid_mlx.memory_cache as _mc_mod
 
     expected_marker = os.path.join(new_dir, "entry_0_tokens.bin")
     real_open = open
@@ -1641,9 +1641,9 @@ def test_shutdown_save_prefix_cache_runs_off_event_loop(tmp_path, monkeypatch):
     import asyncio
     import time as _time
 
-    from vllm_mlx import config as _config_mod
-    from vllm_mlx import server as _server_mod
-    from vllm_mlx.runtime import cache as _cache_mod
+    from rapid_mlx import config as _config_mod
+    from rapid_mlx import server as _server_mod
+    from rapid_mlx.runtime import cache as _cache_mod
 
     class _SlowEngine:
         def save_cache_to_disk(self, cache_dir, should_abort=None):
@@ -1700,7 +1700,7 @@ def test_shutdown_save_prefix_cache_no_op_when_engine_missing(monkeypatch):
     """
     import asyncio
 
-    from vllm_mlx import server as _server_mod
+    from rapid_mlx import server as _server_mod
 
     monkeypatch.setattr(_server_mod, "_engine", None)
     asyncio.run(_server_mod._shutdown_save_prefix_cache())  # must not raise
@@ -1710,7 +1710,7 @@ def test_shutdown_save_skipped_when_autoload_disabled(monkeypatch, caplog):
     """A cold Desktop process must not replace a snapshot it never restored."""
     import asyncio
 
-    from vllm_mlx import server as _server_mod
+    from rapid_mlx import server as _server_mod
 
     class _ExplodingEngine:
         def save_cache_to_disk(self, *args, **kwargs):
@@ -1738,8 +1738,8 @@ def test_save_prefix_cache_to_disk_respects_budget(tmp_path, monkeypatch):
     """
     import time as _time
 
-    from vllm_mlx import config as _config_mod
-    from vllm_mlx.runtime import cache as _cache_mod
+    from rapid_mlx import config as _config_mod
+    from rapid_mlx.runtime import cache as _cache_mod
 
     captured = {"pred": None}
 
@@ -1780,8 +1780,8 @@ def test_save_prefix_cache_to_disk_predicate_is_forward_looking(tmp_path, monkey
     """
     import time as _time
 
-    from vllm_mlx import config as _config_mod
-    from vllm_mlx.runtime import cache as _cache_mod
+    from rapid_mlx import config as _config_mod
+    from rapid_mlx.runtime import cache as _cache_mod
 
     captured = {"pred": None}
 
@@ -1832,8 +1832,8 @@ def test_save_prefix_cache_to_disk_fallback_for_legacy_engine_signature(monkeypa
     save. The fallback retries the call with the legacy positional
     shape — losing deadline awareness, but preserving the save.
     """
-    from vllm_mlx import config as _config_mod
-    from vllm_mlx.runtime import cache as _cache_mod
+    from rapid_mlx import config as _config_mod
+    from rapid_mlx.runtime import cache as _cache_mod
 
     calls = []
 
@@ -1873,8 +1873,8 @@ def test_save_prefix_cache_to_disk_no_retry_on_internal_typeerror(monkeypatch):
     front, so an internal TypeError raised by the engine method body
     propagates without retry. We assert exactly one call.
     """
-    from vllm_mlx import config as _config_mod
-    from vllm_mlx.runtime import cache as _cache_mod
+    from rapid_mlx import config as _config_mod
+    from rapid_mlx.runtime import cache as _cache_mod
 
     calls = {"n": 0}
 
@@ -1907,8 +1907,8 @@ def test_radix_load_rebuilds_stale_index_from_authoritative_entries(tmp_path):
     import threading
     from types import SimpleNamespace
 
-    from vllm_mlx.runtime import cache as _cache_mod
-    from vllm_mlx.runtime.radix_index import RadixPrefixIndex
+    from rapid_mlx.runtime import cache as _cache_mod
+    from rapid_mlx.runtime.radix_index import RadixPrefixIndex
 
     persisted = RadixPrefixIndex()
     persisted.insert([1, 2, 3])
@@ -1929,7 +1929,7 @@ def test_failed_kv_save_does_not_publish_live_radix(tmp_path, monkeypatch):
     from types import SimpleNamespace
     from unittest.mock import MagicMock
 
-    from vllm_mlx.runtime import cache as _cache_mod
+    from rapid_mlx.runtime import cache as _cache_mod
 
     engine = SimpleNamespace(save_cache_to_disk=MagicMock(return_value=False))
     save_radix = MagicMock()
@@ -2038,7 +2038,7 @@ def test_adapt_should_abort_handles_keyword_only_and_args_kwargs():
     shape and either raise TypeError mid-save or drop the
     ``predicted_sec`` arg (re-introducing the round-1 BLOCKING-2 bug).
     """
-    from vllm_mlx.memory_cache import _adapt_should_abort
+    from rapid_mlx.memory_cache import _adapt_should_abort
 
     # None passes through.
     assert _adapt_should_abort(None) is None
@@ -2100,8 +2100,8 @@ def test_save_prefix_cache_to_disk_zero_budget_disables_deadline(tmp_path, monke
     engine should receive ``should_abort=None`` so the offline CLI path
     is unaffected.
     """
-    from vllm_mlx import config as _config_mod
-    from vllm_mlx.runtime import cache as _cache_mod
+    from rapid_mlx import config as _config_mod
+    from rapid_mlx.runtime import cache as _cache_mod
 
     captured = {"pred": "unset"}
 
@@ -2153,7 +2153,7 @@ def test_save_to_disk_returns_false_when_rename_phase_fails(tmp_path, monkeypatc
     the exception but ``save_to_disk`` itself never returned at all.
     Now the failure is captured + reported via the return value.
     """
-    import vllm_mlx.memory_cache as _mc
+    import rapid_mlx.memory_cache as _mc
 
     cache_dir = tmp_path / "snap"
     cache = fresh_cache()
@@ -2193,7 +2193,7 @@ def test_save_to_disk_recovers_when_only_first_rename_fails(tmp_path, monkeypatc
     (cache_dir absent, .new present) so load_from_disk's standard
     recovery path picks up the snapshot at next boot.
     """
-    import vllm_mlx.memory_cache as _mc
+    import rapid_mlx.memory_cache as _mc
 
     cache_dir = tmp_path / "snap"
     # Build session 1: clean save (so cache_dir exists for session 2
@@ -2253,7 +2253,7 @@ def test_save_to_disk_drops_orphan_new_when_first_rename_fails(tmp_path, monkeyp
     anyway, but during the gap between the two saves, load callers
     could see the stale snapshot AND the unrelated ``.new``.
     """
-    import vllm_mlx.memory_cache as _mc
+    import rapid_mlx.memory_cache as _mc
 
     cache_dir = tmp_path / "snap"
     # Session 1: clean save
@@ -2300,7 +2300,7 @@ def test_save_to_disk_fsync_failure_is_non_fatal(tmp_path, monkeypatch):
     rename atomicity, but a non-fsyncable fs is no worse than the
     pre-R8-M7 behaviour (which didn't fsync at all). Log + proceed.
     """
-    import vllm_mlx.memory_cache as _mc
+    import rapid_mlx.memory_cache as _mc
 
     cache_dir = tmp_path / "snap"
     cache = fresh_cache()
@@ -2327,7 +2327,7 @@ def test_fsync_dir_works_on_real_directory(tmp_path):
     but lose the rename-atomicity guarantee. The test below pins the
     happy path so a regression in helper semantics is observable.
     """
-    from vllm_mlx.memory_cache import _fsync_dir
+    from rapid_mlx.memory_cache import _fsync_dir
 
     # No exception on a real, readable directory.
     _fsync_dir(str(tmp_path))
@@ -2341,7 +2341,7 @@ def test_fsync_file_works_on_real_file(tmp_path):
     future refactor that drops one or the other (or breaks the
     fd-lifecycle in either) surfaces here.
     """
-    from vllm_mlx.memory_cache import _fsync_file
+    from rapid_mlx.memory_cache import _fsync_file
 
     p = tmp_path / "blob.bin"
     p.write_bytes(b"x" * 4096)
@@ -2356,7 +2356,7 @@ def test_save_to_disk_preserves_old_dir_when_commit_fails(tmp_path, monkeypatch)
     rmtree ran unconditionally, destroying the last known-good
     snapshot before returning False.
     """
-    import vllm_mlx.memory_cache as _mc
+    import rapid_mlx.memory_cache as _mc
 
     cache_dir = tmp_path / "snap"
     old_dir = tmp_path / "snap.old"
@@ -2534,7 +2534,7 @@ def test_r10d_length_prefix_drift_is_caught(tmp_path):
     """
     import struct
 
-    from vllm_mlx.memory_cache import _TOKENS_MAGIC
+    from rapid_mlx.memory_cache import _TOKENS_MAGIC
 
     cache_dir = tmp_path / "snap"
     c1 = fresh_cache()
@@ -2625,7 +2625,7 @@ def test_r10d_writer_stamps_v3_format_with_save_uuid(tmp_path):
     be v3 and carry a save_uuid; every tokens.bin must start with the
     RMTKBIN1 magic and embed the same uuid.
     """
-    from vllm_mlx.memory_cache import _TOKENS_HEADER_FIXED_LEN, _TOKENS_MAGIC
+    from rapid_mlx.memory_cache import _TOKENS_HEADER_FIXED_LEN, _TOKENS_MAGIC
 
     cache_dir = tmp_path / "snap"
     c1 = fresh_cache()
@@ -2830,7 +2830,7 @@ def _stomp_tokens_bin_uuid(path, new_uuid_hex: str) -> None:
     Layout: [magic 8][token_count u32][uuid_len u32][uuid bytes][payload].
     We only touch the uuid bytes, so token_count and payload are unchanged.
     """
-    from vllm_mlx.memory_cache import _TOKENS_HEADER_FIXED_LEN, _TOKENS_MAGIC
+    from rapid_mlx.memory_cache import _TOKENS_HEADER_FIXED_LEN, _TOKENS_MAGIC
 
     raw = bytearray(path.read_bytes())
     assert raw[: len(_TOKENS_MAGIC)] == _TOKENS_MAGIC
@@ -2850,7 +2850,7 @@ def _stomp_tokens_bin_uuid(path, new_uuid_hex: str) -> None:
 
 def _stomp_tokens_bin_length_prefix(path, new_count: int) -> None:
     """Overwrite just the token_count u32 in a v3 tokens.bin."""
-    from vllm_mlx.memory_cache import _TOKENS_MAGIC
+    from rapid_mlx.memory_cache import _TOKENS_MAGIC
 
     raw = bytearray(path.read_bytes())
     assert raw[: len(_TOKENS_MAGIC)] == _TOKENS_MAGIC
@@ -2961,9 +2961,9 @@ def test_r12_post_write_verify_rescues_save_uuid_drift(tmp_path, monkeypatch):
     # Patch _peek_tokens_bin_header so it reports a stale uuid for
     # entry_0 only — simulates the exact drift Talia observed without
     # having to race a real signal/mmap mechanism. We patch on the
-    # vllm_mlx.memory_cache module symbol so save_to_disk's verify pass
+    # rapid_mlx.memory_cache module symbol so save_to_disk's verify pass
     # picks up the spy.
-    import vllm_mlx.memory_cache as _mc
+    import rapid_mlx.memory_cache as _mc
 
     real_peek = _mc._peek_tokens_bin_header
     stale_uuid = "ff" * 16  # 32 hex chars, matches real width
@@ -3012,7 +3012,7 @@ def test_r12_post_write_verify_rescues_length_prefix_drift(tmp_path, monkeypatch
     for i in range(3):
         cache.store(list(range(i * 100, i * 100 + 11)), make_kvcache(num_tokens=11))
 
-    import vllm_mlx.memory_cache as _mc
+    import rapid_mlx.memory_cache as _mc
 
     real_peek = _mc._peek_tokens_bin_header
 
@@ -3053,7 +3053,7 @@ def test_r12_post_write_verify_aborts_when_all_drift(tmp_path, monkeypatch):
             list(range(i * 200, i * 200 + 11)), make_kvcache(num_tokens=11, fill=2.0)
         )
 
-    import vllm_mlx.memory_cache as _mc
+    import rapid_mlx.memory_cache as _mc
 
     real_peek = _mc._peek_tokens_bin_header
 
@@ -3095,7 +3095,7 @@ def test_r12_orphan_sweep_removes_dropped_entry_files(tmp_path, monkeypatch):
     for i in range(2):
         cache.store(list(range(i * 100, i * 100 + 11)), make_kvcache(num_tokens=11))
 
-    import vllm_mlx.memory_cache as _mc
+    import rapid_mlx.memory_cache as _mc
 
     real_peek = _mc._peek_tokens_bin_header
 
@@ -3165,7 +3165,7 @@ def test_r12_save_drift_drops_survives_clear_and_reset_stats(tmp_path, monkeypat
     for i in range(2):
         cache.store(list(range(i * 100, i * 100 + 11)), make_kvcache(num_tokens=11))
 
-    import vllm_mlx.memory_cache as _mc
+    import rapid_mlx.memory_cache as _mc
 
     real_peek = _mc._peek_tokens_bin_header
 
@@ -3195,8 +3195,8 @@ def test_r12_metrics_exposes_save_drift_drops():
     # We inspect the names emitted by the metrics module's source as
     # a cheap structural check; deep wiring is exercised in the
     # /metrics route's own tests.
-    import vllm_mlx.routes.metrics as metrics_mod
-    from vllm_mlx.routes.metrics import _coerce_number  # noqa: F401 — import probe
+    import rapid_mlx.routes.metrics as metrics_mod
+    from rapid_mlx.routes.metrics import _coerce_number  # noqa: F401 — import probe
 
     src = Path(metrics_mod.__file__).read_text()
     assert "rapid_mlx_prefix_cache_save_drift_drops_total" in src, (

@@ -2,7 +2,7 @@
 """
 Tests for Pydantic API models.
 
-Tests all request/response models in vllm_mlx/api/models.py.
+Tests all request/response models in rapid_mlx/api/models.py.
 These are pure Pydantic models with no MLX dependency.
 """
 
@@ -13,7 +13,7 @@ from types import SimpleNamespace
 import pytest
 from pydantic import ValidationError
 
-from vllm_mlx.api.models import (
+from rapid_mlx.api.models import (
     AssistantMessage,
     AudioSeparationRequest,
     AudioSpeechRequest,
@@ -970,9 +970,9 @@ class TestStreamingModels:
     @pytest.mark.asyncio
     async def test_guided_stream_helper_generates_default_response_id(self):
         """Direct helper callers retain the existing generated-ID contract."""
-        from vllm_mlx.config import reset_config
-        from vllm_mlx.engine.base import GenerationOutput
-        from vllm_mlx.routes.chat import stream_chat_completion_guided
+        from rapid_mlx.config import reset_config
+        from rapid_mlx.engine.base import GenerationOutput
+        from rapid_mlx.routes.chat import stream_chat_completion_guided
 
         class _GuidedEngine:
             async def generate_with_schema(self, **_kwargs):
@@ -1009,8 +1009,8 @@ class TestStreamingModels:
         """Buffered guided work has no public cancellation window."""
         import asyncio
 
-        from vllm_mlx.config import reset_config
-        from vllm_mlx.routes.chat import stream_chat_completion_guided
+        from rapid_mlx.config import reset_config
+        from rapid_mlx.routes.chat import stream_chat_completion_guided
 
         started = asyncio.Event()
 
@@ -1045,9 +1045,9 @@ class TestStreamingModels:
     @pytest.mark.asyncio
     async def test_strict_stream_helper_generates_default_response_id(self):
         """Strict helper direct callers also retain generated IDs."""
-        from vllm_mlx.config import reset_config
-        from vllm_mlx.engine.base import GenerationOutput
-        from vllm_mlx.routes.chat import stream_chat_completion_strict_postgen
+        from rapid_mlx.config import reset_config
+        from rapid_mlx.engine.base import GenerationOutput
+        from rapid_mlx.routes.chat import stream_chat_completion_strict_postgen
 
         class _StreamEngine:
             preserve_native_tool_format = False
@@ -1089,8 +1089,8 @@ class TestStreamingModels:
         """Synthetic tool prefixes cannot expose an unadmitted request id."""
         import asyncio
 
-        from vllm_mlx.engine.base import GenerationOutput
-        from vllm_mlx.engine.batched import BatchedEngine
+        from rapid_mlx.engine.base import GenerationOutput
+        from rapid_mlx.engine.batched import BatchedEngine
 
         engine = BatchedEngine.__new__(BatchedEngine)
         engine._loaded = True
@@ -1133,8 +1133,8 @@ class TestStreamingModels:
         """A blocked first decode cannot delay the forced tool-call envelope."""
         import asyncio
 
-        from vllm_mlx.engine.base import GenerationOutput
-        from vllm_mlx.engine.batched import BatchedEngine
+        from rapid_mlx.engine.base import GenerationOutput
+        from rapid_mlx.engine.batched import BatchedEngine
 
         engine = BatchedEngine.__new__(BatchedEngine)
         engine._loaded = True
@@ -1184,7 +1184,7 @@ class TestStreamingModels:
         """Exhaustion after admission emits only the synthetic prefix."""
         import asyncio
 
-        from vllm_mlx.engine.batched import BatchedEngine
+        from rapid_mlx.engine.batched import BatchedEngine
 
         engine = BatchedEngine.__new__(BatchedEngine)
         engine._loaded = True
@@ -1220,7 +1220,7 @@ class TestStreamingModels:
         """Engine failures after admission do not swallow the prefix or error."""
         import asyncio
 
-        from vllm_mlx.engine.batched import BatchedEngine
+        from rapid_mlx.engine.batched import BatchedEngine
 
         engine = BatchedEngine.__new__(BatchedEngine)
         engine._loaded = True
@@ -1256,8 +1256,8 @@ class TestStreamingModels:
         """A legacy engine output does not come after the synthetic prefix."""
         import asyncio
 
-        from vllm_mlx.engine.base import GenerationOutput
-        from vllm_mlx.engine.batched import BatchedEngine
+        from rapid_mlx.engine.base import GenerationOutput
+        from rapid_mlx.engine.batched import BatchedEngine
 
         engine = BatchedEngine.__new__(BatchedEngine)
         engine._loaded = True
@@ -1298,7 +1298,7 @@ class TestStreamingModels:
         """Non-forced streams retain their empty-engine behavior."""
         import asyncio
 
-        from vllm_mlx.engine.batched import BatchedEngine
+        from rapid_mlx.engine.batched import BatchedEngine
 
         engine = BatchedEngine.__new__(BatchedEngine)
         engine._loaded = True
@@ -1331,8 +1331,8 @@ class TestStreamingModels:
         """Non-forced streams retain engine output and continuation order."""
         import asyncio
 
-        from vllm_mlx.engine.base import GenerationOutput
-        from vllm_mlx.engine.batched import BatchedEngine
+        from rapid_mlx.engine.base import GenerationOutput
+        from rapid_mlx.engine.batched import BatchedEngine
 
         engine = BatchedEngine.__new__(BatchedEngine)
         engine._loaded = True
@@ -1372,7 +1372,7 @@ class TestStreamingModels:
         """Closing after the prefix retires the still-pending decode task."""
         import asyncio
 
-        from vllm_mlx.engine.batched import BatchedEngine
+        from rapid_mlx.engine.batched import BatchedEngine
 
         engine = BatchedEngine.__new__(BatchedEngine)
         engine._loaded = True
@@ -1413,9 +1413,9 @@ class TestStreamingModels:
         """Slow prefill still exposes a cancellable ID immediately after admit."""
         import asyncio
 
-        from vllm_mlx.config import reset_config
-        from vllm_mlx.engine.base import GenerationOutput
-        from vllm_mlx.routes.chat import stream_chat_completion
+        from rapid_mlx.config import reset_config
+        from rapid_mlx.engine.base import GenerationOutput
+        from rapid_mlx.routes.chat import stream_chat_completion
 
         class _SlowPrefillEngine:
             preserve_native_tool_format = False
@@ -1452,9 +1452,9 @@ class TestStreamingModels:
         """Both immediate and post-admission exhaustion close cleanly."""
         import asyncio
 
-        from vllm_mlx.config import reset_config
-        from vllm_mlx.engine.base import GenerationOutput
-        from vllm_mlx.routes.chat import stream_chat_completion
+        from rapid_mlx.config import reset_config
+        from rapid_mlx.engine.base import GenerationOutput
+        from rapid_mlx.routes.chat import stream_chat_completion
 
         cfg = reset_config()
         cfg.model_name = "test-model"
@@ -1532,13 +1532,13 @@ class TestStreamingModels:
         from fastapi import FastAPI
         from fastapi.testclient import TestClient
 
-        from vllm_mlx.config import reset_config
-        from vllm_mlx.engine.base import GenerationOutput
-        from vllm_mlx.routes import chat as chat_route
+        from rapid_mlx.config import reset_config
+        from rapid_mlx.engine.base import GenerationOutput
+        from rapid_mlx.routes import chat as chat_route
 
-        scheduler_stub = types.ModuleType("vllm_mlx.scheduler")
+        scheduler_stub = types.ModuleType("rapid_mlx.scheduler")
         scheduler_stub.BackpressureError = type("BackpressureError", (Exception,), {})
-        monkeypatch.setitem(sys.modules, "vllm_mlx.scheduler", scheduler_stub)
+        monkeypatch.setitem(sys.modules, "rapid_mlx.scheduler", scheduler_stub)
 
         class _Engine:
             is_mllm = False
@@ -1591,8 +1591,8 @@ class TestStreamingModels:
         """Cancellation while prefill is pending retires both helper tasks."""
         import asyncio
 
-        from vllm_mlx.config import reset_config
-        from vllm_mlx.routes.chat import stream_chat_completion
+        from rapid_mlx.config import reset_config
+        from rapid_mlx.routes.chat import stream_chat_completion
 
         started = asyncio.Event()
 
@@ -1624,7 +1624,7 @@ class TestStreamingModels:
 
     def test_stream_request_ids_keep_full_entropy_past_shared_prefix(self, monkeypatch):
         """Two UUIDs sharing the old 32-bit prefix remain distinct IDs."""
-        from vllm_mlx.routes import chat
+        from rapid_mlx.routes import chat
 
         values = iter(
             [
@@ -1648,7 +1648,7 @@ class TestStreamingModels:
         import queue
         import threading
 
-        from vllm_mlx.runtime.diffusion_lane import _STREAM_DONE, DiffusionEngine
+        from rapid_mlx.runtime.diffusion_lane import _STREAM_DONE, DiffusionEngine
 
         engine = DiffusionEngine.__new__(DiffusionEngine)
         engine._max_tokens = 32
@@ -1692,7 +1692,7 @@ class TestStreamingModels:
         """Stop signals every public request and resets the identity registry."""
         import threading
 
-        from vllm_mlx.runtime.diffusion_lane import DiffusionEngine
+        from rapid_mlx.runtime.diffusion_lane import DiffusionEngine
 
         engine = DiffusionEngine(model_name="test-model")
         active = threading.Event()
@@ -1714,7 +1714,7 @@ class TestStreamingModels:
         import queue
         import threading
 
-        from vllm_mlx.runtime.diffusion_lane import DiffusionEngine
+        from rapid_mlx.runtime.diffusion_lane import DiffusionEngine
 
         class _FailingJobs(queue.Queue):
             def put(self, item, *args, **kwargs):

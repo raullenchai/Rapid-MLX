@@ -1,5 +1,5 @@
 # SPDX-License-Identifier: Apache-2.0
-"""Tests for vllm_mlx.utils.generation_config.load_generation_config_sampling."""
+"""Tests for rapid_mlx.utils.generation_config.load_generation_config_sampling."""
 
 from __future__ import annotations
 
@@ -10,7 +10,7 @@ import pytest
 
 pytestmark = pytest.mark.requires_mlx
 
-from vllm_mlx.utils.generation_config import (
+from rapid_mlx.utils.generation_config import (
     load_generation_config_eos_ids,
     load_generation_config_sampling,
 )
@@ -340,7 +340,7 @@ class TestAugmentEosFromGenerationConfig:
     """
 
     def test_shape1_mutates_wrapper_set(self, tmp_path):
-        from vllm_mlx.utils.tokenizer import (
+        from rapid_mlx.utils.tokenizer import (
             augment_eos_token_ids_from_generation_config,
         )
 
@@ -359,7 +359,7 @@ class TestAugmentEosFromGenerationConfig:
         as a property descriptor that rejects non-string values.
         Instead the extras are stashed on RAPID_EXTRA_EOS_ATTR and
         the scheduler's source-4 union reads them from there."""
-        from vllm_mlx.utils.tokenizer import (
+        from rapid_mlx.utils.tokenizer import (
             RAPID_EXTRA_EOS_ATTR,
             augment_eos_token_ids_from_generation_config,
         )
@@ -376,7 +376,7 @@ class TestAugmentEosFromGenerationConfig:
         assert tok.eos_token_id == 1
 
     def test_shape2_idempotent_unions_with_prior_stash(self, tmp_path):
-        from vllm_mlx.utils.tokenizer import (
+        from rapid_mlx.utils.tokenizer import (
             RAPID_EXTRA_EOS_ATTR,
             augment_eos_token_ids_from_generation_config,
         )
@@ -394,7 +394,7 @@ class TestAugmentEosFromGenerationConfig:
     def test_no_eos_key_is_no_op(self, tmp_path):
         # Missing ``eos_token_id`` entirely → augment must not touch
         # the tokenizer at all.
-        from vllm_mlx.utils.tokenizer import (
+        from rapid_mlx.utils.tokenizer import (
             augment_eos_token_ids_from_generation_config,
         )
 
@@ -412,7 +412,7 @@ class TestAugmentEosFromGenerationConfig:
         # from the tokenizer default is the codex-round-1 regression
         # case — used to silently fall through; must now widen the
         # stop set.
-        from vllm_mlx.utils.tokenizer import (
+        from rapid_mlx.utils.tokenizer import (
             augment_eos_token_ids_from_generation_config,
         )
 
@@ -429,7 +429,7 @@ class TestAugmentEosFromGenerationConfig:
         """End-to-end union: a wrapper-shaped tokenizer with a grown
         ``_eos_token_ids`` set is correctly unioned by
         ``Scheduler._get_stop_tokens``."""
-        from vllm_mlx.scheduler import Scheduler, SchedulerConfig
+        from rapid_mlx.scheduler import Scheduler, SchedulerConfig
 
         class _WrapperStub:
             def __init__(self):
@@ -447,8 +447,8 @@ class TestAugmentEosFromGenerationConfig:
         """End-to-end union: a raw HF tokenizer with the Rapid-MLX
         extras stash on RAPID_EXTRA_EOS_ATTR is correctly unioned
         by ``MLLMScheduler._get_stop_tokens``."""
-        from vllm_mlx.mllm_scheduler import MLLMScheduler
-        from vllm_mlx.utils.tokenizer import RAPID_EXTRA_EOS_ATTR
+        from rapid_mlx.mllm_scheduler import MLLMScheduler
+        from rapid_mlx.utils.tokenizer import RAPID_EXTRA_EOS_ATTR
 
         class _HFTok:
             eos_token_id = 1

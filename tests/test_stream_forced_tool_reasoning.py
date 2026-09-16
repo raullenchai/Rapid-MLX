@@ -32,7 +32,7 @@ from __future__ import annotations
 import json
 from unittest.mock import MagicMock
 
-from vllm_mlx.service.postprocessor import StreamingPostProcessor
+from rapid_mlx.service.postprocessor import StreamingPostProcessor
 
 
 def _make_cfg(tool_call_parser="hermes", reasoning_parser_name=None):

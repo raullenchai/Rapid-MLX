@@ -12,8 +12,8 @@ from types import SimpleNamespace
 
 import pytest
 
-from vllm_mlx.engine.batched import BatchedEngine
-from vllm_mlx.runtime.audio_worker import AudioWorkerDispatcher
+from rapid_mlx.engine.batched import BatchedEngine
+from rapid_mlx.runtime.audio_worker import AudioWorkerDispatcher
 
 
 @pytest.fixture(autouse=True)
@@ -22,9 +22,9 @@ def _stub_mlx_thread_init_on_non_mlx_hosts(monkeypatch):
     if importlib.util.find_spec("mlx") is not None:
         return
 
-    engine_core = types.ModuleType("vllm_mlx.engine_core")
+    engine_core = types.ModuleType("rapid_mlx.engine_core")
     engine_core._init_mlx_step_thread = lambda: None
-    monkeypatch.setitem(sys.modules, "vllm_mlx.engine_core", engine_core)
+    monkeypatch.setitem(sys.modules, "rapid_mlx.engine_core", engine_core)
     if importlib.util.find_spec("uvicorn") is None:
         monkeypatch.setitem(sys.modules, "uvicorn", types.ModuleType("uvicorn"))
 
@@ -82,8 +82,8 @@ class _ReplacementWorker:
 
 
 def _replacement_manager(server, old_worker):
-    from vllm_mlx.runtime.model_registry import ModelEntry, ModelRegistry
-    from vllm_mlx.runtime.resident_models import ResidentModelManager
+    from rapid_mlx.runtime.model_registry import ModelEntry, ModelRegistry
+    from rapid_mlx.runtime.resident_models import ResidentModelManager
 
     registry = ModelRegistry()
     primary = ModelEntry(
@@ -166,7 +166,7 @@ def test_bind_rejects_engine_without_complete_worker_contract():
 
 
 def test_audio_worker_handoff_gates_requests_and_supports_rollback():
-    from vllm_mlx.runtime.audio_worker import AudioWorkerBusyError
+    from rapid_mlx.runtime.audio_worker import AudioWorkerBusyError
 
     dispatcher = AudioWorkerDispatcher()
     old_worker = _RecordingWorker()
@@ -187,7 +187,7 @@ def test_audio_worker_handoff_gates_requests_and_supports_rollback():
 
 
 def test_audio_worker_handoff_defensive_contracts():
-    from vllm_mlx.runtime.audio_worker import AudioWorkerBusyError
+    from rapid_mlx.runtime.audio_worker import AudioWorkerBusyError
 
     dispatcher = AudioWorkerDispatcher()
     assert dispatcher.execute_sync("stt", "whisper", "infer", lambda: "fallback") == (
@@ -212,7 +212,7 @@ def test_audio_worker_handoff_defensive_contracts():
 
 @pytest.mark.asyncio
 async def test_bind_rejects_worker_change_during_active_audio():
-    from vllm_mlx.runtime.audio_worker import AudioWorkerBusyError
+    from rapid_mlx.runtime.audio_worker import AudioWorkerBusyError
 
     dispatcher = AudioWorkerDispatcher()
     old_worker = _ReplacementWorker("chat-old")
@@ -239,7 +239,7 @@ async def test_bind_rejects_worker_change_during_active_audio():
 
 
 def test_server_selects_isolated_fallback_for_non_batched_engine():
-    from vllm_mlx import server
+    from rapid_mlx import server
 
     assert server._bind_audio_worker_for_engine(object()) is False
 
@@ -407,7 +407,7 @@ async def test_repeated_cancellation_drains_a_failing_worker():
 
 @pytest.mark.asyncio
 async def test_server_shutdown_unloads_cached_audio_engines(monkeypatch):
-    from vllm_mlx.routes import audio as audio_route
+    from rapid_mlx.routes import audio as audio_route
 
     class _Cached:
         def __init__(self, model_name: str) -> None:
@@ -438,7 +438,7 @@ async def test_server_shutdown_unloads_cached_audio_engines(monkeypatch):
 async def test_server_shutdown_continues_after_audio_unload_failure(
     monkeypatch, caplog
 ):
-    from vllm_mlx.routes import audio as audio_route
+    from rapid_mlx.routes import audio as audio_route
 
     class _Cached:
         def __init__(self, model_name: str, *, fails: bool = False) -> None:
@@ -472,7 +472,7 @@ async def test_server_shutdown_continues_after_audio_unload_failure(
 
 @pytest.mark.asyncio
 async def test_server_shutdown_ignores_cached_objects_without_unload(monkeypatch):
-    from vllm_mlx.routes import audio as audio_route
+    from rapid_mlx.routes import audio as audio_route
 
     monkeypatch.setattr(audio_route, "_stt_engine", object())
     monkeypatch.setattr(audio_route, "_aligner_engine", None)
@@ -486,8 +486,8 @@ async def test_server_shutdown_ignores_cached_objects_without_unload(monkeypatch
 
 @pytest.mark.asyncio
 async def test_async_stt_eviction_uses_async_model_worker(monkeypatch):
-    from vllm_mlx.routes import audio as audio_route
-    from vllm_mlx.runtime.audio_worker import bind_audio_worker
+    from rapid_mlx.routes import audio as audio_route
+    from rapid_mlx.runtime.audio_worker import bind_audio_worker
 
     class _CachedAligner:
         model_name = "aligner"
@@ -520,7 +520,7 @@ async def test_async_stt_eviction_uses_async_model_worker(monkeypatch):
 
 @pytest.mark.asyncio
 async def test_empty_stt_lanes_do_not_dispatch_eviction(monkeypatch):
-    from vllm_mlx.routes import audio as audio_route
+    from rapid_mlx.routes import audio as audio_route
 
     monkeypatch.setattr(audio_route, "_stt_engine", None)
     monkeypatch.setattr(audio_route, "_aligner_engine", None)
@@ -531,9 +531,9 @@ async def test_empty_stt_lanes_do_not_dispatch_eviction(monkeypatch):
 
 @pytest.mark.asyncio
 async def test_stt_load_and_inference_use_audio_worker(monkeypatch):
-    from vllm_mlx.audio import stt as stt_module
-    from vllm_mlx.routes import audio as audio_route
-    from vllm_mlx.runtime.audio_worker import bind_audio_worker
+    from rapid_mlx.audio import stt as stt_module
+    from rapid_mlx.routes import audio as audio_route
+    from rapid_mlx.runtime.audio_worker import bind_audio_worker
 
     operations: list[str] = []
 
@@ -592,9 +592,9 @@ async def test_stt_load_and_inference_use_audio_worker(monkeypatch):
 
 
 def test_alignment_load_and_inference_use_audio_worker(monkeypatch):
-    from vllm_mlx.audio import stt as stt_module
-    from vllm_mlx.routes import audio as audio_route
-    from vllm_mlx.runtime.audio_worker import bind_audio_worker
+    from rapid_mlx.audio import stt as stt_module
+    from rapid_mlx.routes import audio as audio_route
+    from rapid_mlx.runtime.audio_worker import bind_audio_worker
 
     operations: list[str] = []
 
@@ -632,7 +632,7 @@ def test_alignment_load_and_inference_use_audio_worker(monkeypatch):
 
 
 def test_sync_stt_eviction_uses_sync_model_worker(monkeypatch):
-    from vllm_mlx.routes import audio as audio_route
+    from rapid_mlx.routes import audio as audio_route
 
     class _CachedSTT:
         model_name = "whisper"
@@ -653,9 +653,9 @@ def test_sync_stt_eviction_uses_sync_model_worker(monkeypatch):
 
 
 def test_tts_replacement_and_reference_inference_use_audio_worker(monkeypatch):
-    from vllm_mlx.audio import output_format
-    from vllm_mlx.audio import tts as tts_module
-    from vllm_mlx.routes import audio as audio_route
+    from rapid_mlx.audio import output_format
+    from rapid_mlx.audio import tts as tts_module
+    from rapid_mlx.routes import audio as audio_route
 
     operations: list[str] = []
 
@@ -722,8 +722,8 @@ def test_tts_replacement_and_reference_inference_use_audio_worker(monkeypatch):
 
 @pytest.mark.asyncio
 async def test_residency_snapshot_includes_audio_lane_truth(monkeypatch):
-    from vllm_mlx.routes import residency
-    from vllm_mlx.runtime.audio_worker import audio_worker
+    from rapid_mlx.routes import residency
+    from rapid_mlx.runtime.audio_worker import audio_worker
 
     class _Manager:
         def snapshot(self):
@@ -744,8 +744,8 @@ async def test_residency_snapshot_includes_audio_lane_truth(monkeypatch):
 
 @pytest.mark.asyncio
 async def test_primary_replacement_rebinds_after_audio_work_finishes(monkeypatch):
-    import vllm_mlx.server as server
-    from vllm_mlx.runtime.audio_worker import (
+    import rapid_mlx.server as server
+    from rapid_mlx.runtime.audio_worker import (
         audio_worker,
         bind_audio_worker,
         run_audio_mlx,
@@ -814,9 +814,9 @@ async def test_primary_replacement_rejects_active_audio_without_stopping_old_wor
     monkeypatch,
     replace_mode,
 ):
-    import vllm_mlx.server as server
-    from vllm_mlx.runtime.audio_worker import bind_audio_worker, run_audio_mlx
-    from vllm_mlx.runtime.resident_models import ResidentModelBusyError
+    import rapid_mlx.server as server
+    from rapid_mlx.runtime.audio_worker import bind_audio_worker, run_audio_mlx
+    from rapid_mlx.runtime.resident_models import ResidentModelBusyError
 
     old_worker = _ReplacementWorker("chat-old")
     _configure_server_primary(monkeypatch, server, old_worker)
@@ -856,9 +856,9 @@ async def test_primary_replacement_rejects_active_audio_without_stopping_old_wor
 async def test_primary_reload_rejects_active_audio_without_stopping_worker(
     monkeypatch,
 ):
-    import vllm_mlx.server as server
-    from vllm_mlx.runtime.audio_worker import bind_audio_worker, run_audio_mlx
-    from vllm_mlx.runtime.resident_models import (
+    import rapid_mlx.server as server
+    from rapid_mlx.runtime.audio_worker import bind_audio_worker, run_audio_mlx
+    from rapid_mlx.runtime.resident_models import (
         ResidentModelBusyError,
         ResidentPerformanceConfig,
     )
@@ -897,13 +897,13 @@ async def test_primary_reload_rejects_active_audio_without_stopping_worker(
 
 @pytest.mark.asyncio
 async def test_primary_reload_commits_audio_worker_handoff(monkeypatch):
-    import vllm_mlx.server as server
-    from vllm_mlx.runtime.audio_worker import (
+    import rapid_mlx.server as server
+    from rapid_mlx.runtime.audio_worker import (
         audio_worker,
         bind_audio_worker,
         run_audio_mlx,
     )
-    from vllm_mlx.runtime.resident_models import ResidentPerformanceConfig
+    from rapid_mlx.runtime.resident_models import ResidentPerformanceConfig
 
     old_worker = _ReplacementWorker("chat-old")
     _configure_server_primary(monkeypatch, server, old_worker)
@@ -940,10 +940,10 @@ async def test_primary_reload_commits_audio_worker_handoff(monkeypatch):
 async def test_primary_reload_restores_old_config_after_publication_failure(
     monkeypatch,
 ):
-    import vllm_mlx.server as server
-    from vllm_mlx.runtime.audio_worker import bind_audio_worker, run_audio_mlx
-    from vllm_mlx.runtime.model_registry import ModelEntry, ModelRegistry
-    from vllm_mlx.runtime.resident_models import (
+    import rapid_mlx.server as server
+    from rapid_mlx.runtime.audio_worker import bind_audio_worker, run_audio_mlx
+    from rapid_mlx.runtime.model_registry import ModelEntry, ModelRegistry
+    from rapid_mlx.runtime.resident_models import (
         ResidentModelManager,
         ResidentPerformanceConfig,
     )
@@ -1008,9 +1008,9 @@ async def test_primary_reload_restores_old_config_after_publication_failure(
 
 @pytest.mark.asyncio
 async def test_primary_reload_rebuilds_handoff_when_old_stop_fails(monkeypatch):
-    import vllm_mlx.server as server
-    from vllm_mlx.runtime.audio_worker import bind_audio_worker, run_audio_mlx
-    from vllm_mlx.runtime.resident_models import ResidentPerformanceConfig
+    import rapid_mlx.server as server
+    from rapid_mlx.runtime.audio_worker import bind_audio_worker, run_audio_mlx
+    from rapid_mlx.runtime.resident_models import ResidentPerformanceConfig
 
     old_worker = _ReplacementWorker("chat-old", fail_stop=True)
     _configure_server_primary(monkeypatch, server, old_worker)
@@ -1041,10 +1041,10 @@ async def test_primary_reload_rebuilds_handoff_when_old_stop_fails(monkeypatch):
 
 @pytest.mark.asyncio
 async def test_primary_reload_restores_old_config_when_new_load_fails(monkeypatch):
-    import vllm_mlx.server as server
-    from vllm_mlx.runtime.audio_worker import bind_audio_worker, run_audio_mlx
-    from vllm_mlx.runtime.model_registry import ModelEntry, ModelRegistry
-    from vllm_mlx.runtime.resident_models import (
+    import rapid_mlx.server as server
+    from rapid_mlx.runtime.audio_worker import bind_audio_worker, run_audio_mlx
+    from rapid_mlx.runtime.model_registry import ModelEntry, ModelRegistry
+    from rapid_mlx.runtime.resident_models import (
         ResidentModelManager,
         ResidentPerformanceConfig,
     )
@@ -1104,10 +1104,10 @@ async def test_primary_reload_restores_old_config_when_new_load_fails(monkeypatc
 async def test_primary_reload_releases_handoff_when_cleanup_and_restore_fail(
     monkeypatch, caplog
 ):
-    import vllm_mlx.server as server
-    from vllm_mlx.runtime.audio_worker import bind_audio_worker, run_audio_mlx
-    from vllm_mlx.runtime.model_registry import ModelEntry, ModelRegistry
-    from vllm_mlx.runtime.resident_models import (
+    import rapid_mlx.server as server
+    from rapid_mlx.runtime.audio_worker import bind_audio_worker, run_audio_mlx
+    from rapid_mlx.runtime.model_registry import ModelEntry, ModelRegistry
+    from rapid_mlx.runtime.resident_models import (
         ResidentModelManager,
         ResidentPerformanceConfig,
     )
@@ -1173,8 +1173,8 @@ async def test_primary_reload_releases_handoff_when_cleanup_and_restore_fail(
 async def test_primary_replacement_keeps_new_worker_after_old_stop_failure(
     monkeypatch,
 ):
-    import vllm_mlx.server as server
-    from vllm_mlx.runtime.audio_worker import bind_audio_worker, run_audio_mlx
+    import rapid_mlx.server as server
+    from rapid_mlx.runtime.audio_worker import bind_audio_worker, run_audio_mlx
 
     old_worker = _ReplacementWorker("chat-old", fail_stop=True)
     _configure_server_primary(monkeypatch, server, old_worker)
@@ -1204,9 +1204,9 @@ async def test_primary_replacement_keeps_new_worker_after_old_stop_failure(
 
 @pytest.mark.asyncio
 async def test_lifespan_binds_audio_worker_when_lane_is_enabled(monkeypatch):
-    import vllm_mlx._signal_observability as signal_observability
-    import vllm_mlx.server as server
-    from vllm_mlx.routes import video as video_route
+    import rapid_mlx._signal_observability as signal_observability
+    import rapid_mlx.server as server
+    from rapid_mlx.routes import video as video_route
 
     class _Engine:
         _loaded = True
@@ -1276,7 +1276,7 @@ async def test_lifespan_binds_audio_worker_when_lane_is_enabled(monkeypatch):
 # from catalog metadata and admits it as the distinct ``alignment`` role with
 # the typed 507 contract. Entirely MLX-free: a real ResidentModelManager with
 # stubbed engines stands in for the server residency, and STTEngine is stubbed
-# via ``vllm_mlx.audio.stt.STTEngine``.
+# via ``rapid_mlx.audio.stt.STTEngine``.
 # ---------------------------------------------------------------------------
 
 
@@ -1287,8 +1287,8 @@ def _aligner_catalog_bytes() -> int:
 
 
 def _make_role_manager(limit_gib: float):
-    from vllm_mlx.runtime.model_registry import ModelEntry, ModelRegistry
-    from vllm_mlx.runtime.resident_models import ResidentModelManager
+    from rapid_mlx.runtime.model_registry import ModelEntry, ModelRegistry
+    from rapid_mlx.runtime.resident_models import ResidentModelManager
 
     registry = ModelRegistry()
     manager = ResidentModelManager(
@@ -1306,8 +1306,8 @@ def _install_role_manager(monkeypatch, manager):
     """Point the audio route's residency lookup at a real manager so it
     performs actual role admission. ``monkeypatch`` restores the config field
     and the module function after the test."""
-    from vllm_mlx.config import get_config
-    from vllm_mlx.routes import audio as audio_route
+    from rapid_mlx.config import get_config
+    from rapid_mlx.routes import audio as audio_route
 
     cfg = get_config()
     monkeypatch.setattr(cfg, "residency_manager", manager)
@@ -1322,7 +1322,7 @@ def test_noop_role_admission_commit_is_noop():
     Synchronous: no asyncio marker, as a sync test under stricter
     pytest-asyncio configs would warn."""
 
-    from vllm_mlx.routes.audio import _NoopRoleAdmission
+    from rapid_mlx.routes.audio import _NoopRoleAdmission
 
     admission = _NoopRoleAdmission()
     admission.retire_previous()
@@ -1341,7 +1341,7 @@ async def test_admitting_alignment_releases_resident_speech_input_role(
     drop the ASR engine. The sibling is RETAINED through the admission but
     CREDITED against the alignment capacity check, and retired on success."""
 
-    from vllm_mlx.routes import audio as audio_route
+    from rapid_mlx.routes import audio as audio_route
 
     manager = _make_role_manager(limit_gib=4.0)
     _install_role_manager(monkeypatch, manager)
@@ -1379,7 +1379,7 @@ async def test_admitting_alignment_restores_speech_input_on_507(monkeypatch):
 
     from fastapi import HTTPException
 
-    from vllm_mlx.routes import audio as audio_route
+    from rapid_mlx.routes import audio as audio_route
 
     class _ResidentStt:
         model_name = "whisper-large"
@@ -1420,8 +1420,8 @@ async def test_admitting_alignment_does_not_map_body_errors(monkeypatch):
     exception mapping covers only ADMISSION ENTRY. A ``ResidentModelError``
     raised by the yielded LOAD BODY must propagate unchanged (a loader/runtime
     failure), never be rewritten as a 409 ``alignment_role_conflict``."""
-    from vllm_mlx.routes import audio as audio_route
-    from vllm_mlx.runtime.resident_models import ResidentModelError
+    from rapid_mlx.routes import audio as audio_route
+    from rapid_mlx.runtime.resident_models import ResidentModelError
 
     manager = _make_role_manager(limit_gib=4.0)
     _install_role_manager(monkeypatch, manager)
@@ -1436,7 +1436,7 @@ async def test_admitting_alignment_maps_existing_role_conflict(monkeypatch):
     """An admission-entry invariant conflict is a typed 409 response."""
     from fastapi import HTTPException
 
-    from vllm_mlx.routes import audio as audio_route
+    from rapid_mlx.routes import audio as audio_route
 
     manager = _make_role_manager(limit_gib=4.0)
     _install_role_manager(monkeypatch, manager)
@@ -1459,7 +1459,7 @@ async def test_admitting_alignment_maps_existing_role_conflict(monkeypatch):
 @pytest.mark.asyncio
 async def test_admitting_alignment_drains_cancelled_rollback(monkeypatch):
     """Cancellation while rollback waits cannot strand a loading role."""
-    from vllm_mlx.routes import audio as audio_route
+    from rapid_mlx.routes import audio as audio_route
 
     manager = _make_role_manager(limit_gib=4.0)
     _install_role_manager(monkeypatch, manager)
@@ -1505,7 +1505,7 @@ async def test_admitting_alignment_drains_cancelled_rollback(monkeypatch):
 
 
 def test_canonical_model_id_resolves_default_aligner():
-    from vllm_mlx.routes import audio as audio_route
+    from rapid_mlx.routes import audio as audio_route
 
     assert (
         audio_route._canonical_model_id("default")
@@ -1517,7 +1517,7 @@ def test_canonical_model_id_resolves_default_aligner():
 async def test_admitting_alignment_resolves_footprint_before_load(monkeypatch):
     """The alignment admission resolves the aligner footprint from catalog
     metadata (not blind) and is admitted through the shared ledger."""
-    from vllm_mlx.routes import audio as audio_route
+    from rapid_mlx.routes import audio as audio_route
 
     manager = _make_role_manager(limit_gib=4.0)
     _install_role_manager(monkeypatch, manager)
@@ -1547,7 +1547,7 @@ async def test_admitting_alignment_returns_507_envelope_when_over_budget(
     raises the typed 507 HTTP envelope (no blind load)."""
     from fastapi import HTTPException
 
-    from vllm_mlx.routes import audio as audio_route
+    from rapid_mlx.routes import audio as audio_route
 
     manager = _make_role_manager(limit_gib=0.4)  # 0.4 GiB < aligner
     _install_role_manager(monkeypatch, manager)
@@ -1572,7 +1572,7 @@ async def test_admitting_alignment_returns_507_envelope_when_over_budget(
 async def test_admitting_alignment_rolls_back_on_load_failure(monkeypatch):
     """A failed load inside the admission rolls back the reservation so the
     ledger holds no leaked charge."""
-    from vllm_mlx.routes import audio as audio_route
+    from rapid_mlx.routes import audio as audio_route
 
     manager = _make_role_manager(limit_gib=4.0)
     _install_role_manager(monkeypatch, manager)
@@ -1599,8 +1599,8 @@ async def test_aligner_load_failure_after_asr_eviction_does_not_restore_phantom_
 
     from fastapi import HTTPException, UploadFile
 
-    from vllm_mlx.routes import audio as audio_route
-    from vllm_mlx.runtime.audio_worker import bind_audio_worker
+    from rapid_mlx.routes import audio as audio_route
+    from rapid_mlx.runtime.audio_worker import bind_audio_worker
 
     worker = _RecordingWorker()
     monkeypatch.setattr(audio_route, "_aligner_engine", None)
@@ -1652,7 +1652,7 @@ async def test_aligner_load_failure_after_asr_eviction_does_not_restore_phantom_
 @pytest.mark.asyncio
 async def test_admitting_alignment_rolls_back_on_cancellation(monkeypatch):
     """Cancellation inside the admission leaves no leaked reservation."""
-    from vllm_mlx.routes import audio as audio_route
+    from rapid_mlx.routes import audio as audio_route
 
     manager = _make_role_manager(limit_gib=4.0)
     _install_role_manager(monkeypatch, manager)
@@ -1669,7 +1669,7 @@ async def test_admitting_alignment_rolls_back_on_cancellation(monkeypatch):
 async def test_evicting_aligner_releases_alignment_role(monkeypatch):
     """An ASR request evicting the aligner lane releases the alignment role
     so the ledger does not keep charging a dropped engine."""
-    from vllm_mlx.routes import audio as audio_route
+    from rapid_mlx.routes import audio as audio_route
 
     manager = _make_role_manager(limit_gib=4.0)
     _install_role_manager(monkeypatch, manager)
@@ -1703,7 +1703,7 @@ async def test_evicting_aligner_releases_alignment_role(monkeypatch):
 @pytest.mark.asyncio
 async def test_shutdown_releases_alignment_role(monkeypatch):
     """Shutdown unloads the aligner and drops its role reservation."""
-    from vllm_mlx.routes import audio as audio_route
+    from rapid_mlx.routes import audio as audio_route
 
     manager = _make_role_manager(limit_gib=4.0)
     _install_role_manager(monkeypatch, manager)
@@ -1755,8 +1755,8 @@ async def test_cached_model_alignment_loads_once_and_stays_resident(monkeypatch)
 
     from fastapi import UploadFile
 
-    from vllm_mlx.routes import audio as audio_route
-    from vllm_mlx.runtime.audio_worker import bind_audio_worker
+    from rapid_mlx.routes import audio as audio_route
+    from rapid_mlx.runtime.audio_worker import bind_audio_worker
 
     operations: list[str] = []
 
@@ -1772,7 +1772,7 @@ async def test_cached_model_alignment_loads_once_and_stays_resident(monkeypatch)
             return "aligned"
 
     worker = _RecordingWorker()
-    monkeypatch.setattr("vllm_mlx.audio.stt.STTEngine", _Aligner)
+    monkeypatch.setattr("rapid_mlx.audio.stt.STTEngine", _Aligner)
     monkeypatch.setattr(audio_route, "_aligner_engine", None)
     monkeypatch.setattr(audio_route, "_stt_engine", None)
     bind_audio_worker(worker)
@@ -1838,8 +1838,8 @@ async def test_aligner_alias_and_canonical_request_reuse_same_engine(monkeypatch
 
     from fastapi import UploadFile
 
-    from vllm_mlx.routes import audio as audio_route
-    from vllm_mlx.runtime.audio_worker import bind_audio_worker
+    from rapid_mlx.routes import audio as audio_route
+    from rapid_mlx.runtime.audio_worker import bind_audio_worker
 
     operations: list[str] = []
 
@@ -1855,7 +1855,7 @@ async def test_aligner_alias_and_canonical_request_reuse_same_engine(monkeypatch
             return "aligned"
 
     worker = _RecordingWorker()
-    monkeypatch.setattr("vllm_mlx.audio.stt.STTEngine", _Aligner)
+    monkeypatch.setattr("rapid_mlx.audio.stt.STTEngine", _Aligner)
     monkeypatch.setattr(audio_route, "_aligner_engine", None)
     monkeypatch.setattr(audio_route, "_stt_engine", None)
     bind_audio_worker(worker)
@@ -1912,8 +1912,8 @@ async def test_aligner_load_retires_previous_only_after_actual_discard(monkeypat
     """pr_validate codex BLOCKING #1: the previous aligner's reservation must be
     retired only when the load has actually discarded the old engine — an
     import/ASR-unload failure BEFORE the drop must leave it restorable."""
-    from vllm_mlx.routes import audio as audio_route
-    from vllm_mlx.runtime.audio_worker import bind_audio_worker
+    from rapid_mlx.routes import audio as audio_route
+    from rapid_mlx.runtime.audio_worker import bind_audio_worker
 
     operations: list[str] = []
     retired = []
@@ -1936,7 +1936,7 @@ async def test_aligner_load_retires_previous_only_after_actual_discard(monkeypat
 
     worker = _RecordingWorker()
     previous = _OldAligner()
-    monkeypatch.setattr("vllm_mlx.audio.stt.STTEngine", _Aligner)
+    monkeypatch.setattr("rapid_mlx.audio.stt.STTEngine", _Aligner)
     monkeypatch.setattr(audio_route, "_aligner_engine", previous)
     monkeypatch.setattr(audio_route, "_stt_engine", None)
 
@@ -1964,8 +1964,8 @@ async def test_aligner_load_retires_previous_only_after_actual_discard(monkeypat
 async def test_aligner_retire_fires_after_previous_discard(monkeypatch):
     """The retire-previous callback fires only after the old aligner is
     actually discarded (set to None), before the new load publishes."""
-    from vllm_mlx.routes import audio as audio_route
-    from vllm_mlx.runtime.audio_worker import bind_audio_worker
+    from rapid_mlx.routes import audio as audio_route
+    from rapid_mlx.runtime.audio_worker import bind_audio_worker
 
     events: list[str] = []
 
@@ -1980,7 +1980,7 @@ async def test_aligner_retire_fires_after_previous_discard(monkeypatch):
             events.append("load")
 
     worker = _RecordingWorker()
-    monkeypatch.setattr("vllm_mlx.audio.stt.STTEngine", _Aligner)
+    monkeypatch.setattr("rapid_mlx.audio.stt.STTEngine", _Aligner)
     monkeypatch.setattr(audio_route, "_aligner_engine", _OldAligner())
     monkeypatch.setattr(audio_route, "_stt_engine", None)
     monkeypatch.setattr(audio_route, "_evict_other_lane_sync", lambda _k: None)
@@ -2021,7 +2021,7 @@ async def test_alignment_role_cancellation_keeps_published_engine_committed(
 
     from fastapi import UploadFile
 
-    from vllm_mlx.routes import audio as audio_route
+    from rapid_mlx.routes import audio as audio_route
 
     manager = _make_role_manager(limit_gib=4.0)
     _install_role_manager(monkeypatch, manager)

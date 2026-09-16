@@ -5,7 +5,7 @@ from __future__ import annotations
 
 import pytest
 
-from vllm_mlx.model_aliases import AliasProfile, _coerce
+from rapid_mlx.model_aliases import AliasProfile, _coerce
 
 
 def test_none_default():

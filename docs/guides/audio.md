@@ -277,7 +277,7 @@ with open("output.wav", "wb") as f:
 Isolate voice from background noise, music, or other sounds:
 
 ```python
-from vllm_mlx.audio import AudioProcessor
+from rapid_mlx.audio import AudioProcessor
 
 # Load SAM-Audio model
 processor = AudioProcessor("mlx-community/sam-audio-large-fp16")
@@ -513,7 +513,7 @@ curl http://localhost:8000/v1/audio/speech \
 
 Generate music or sound effects from a text prompt, via the MLX-native
 [Stable Audio 3](https://huggingface.co/stabilityai/stable-audio-3-optimized)
-engine vendored under `vllm_mlx/audio/sa3/`. Request-in / audio-bytes-out —
+engine vendored under `rapid_mlx/audio/sa3/`. Request-in / audio-bytes-out —
 the same shape as `/v1/audio/speech`.
 
 **Parameters (JSON body):**
@@ -708,7 +708,7 @@ python -m mlx_audio.tts.generate --model mlx-community/Kokoro-82M-bf16 \
 ### Direct Usage (without server)
 
 ```python
-from vllm_mlx.audio import STTEngine, TTSEngine, AudioProcessor
+from rapid_mlx.audio import STTEngine, TTSEngine, AudioProcessor
 
 # Speech-to-Text
 stt = STTEngine("mlx-community/whisper-large-v3-mlx")
@@ -733,7 +733,7 @@ processor.save(result.residual, "background.wav")
 ### Convenience Functions
 
 ```python
-from vllm_mlx.audio import transcribe_audio, generate_speech, separate_voice
+from rapid_mlx.audio import transcribe_audio, generate_speech, separate_voice
 
 # Quick transcription
 result = transcribe_audio("audio.mp3")

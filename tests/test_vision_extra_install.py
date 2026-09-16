@@ -18,8 +18,8 @@ transitive weight (opencv-python 120 MB, pyarrow 123 MB from datasets,
 pandas 70 MB, scipy 98 MB, mlx-audio 17 MB, ...) for text-only users
 who never touch Gemma 4. Instead we **vendor** the ~1200 lines of
 Gemma 4 text-only classes (config + language + rope_utils) into
-``vllm_mlx/models/gemma4_vendored/`` (+200 KB of repo, zero MB user
-install). ``vllm_mlx/models/gemma4_text.py`` prefers ``mlx-vlm`` when
+``rapid_mlx/models/gemma4_vendored/`` (+200 KB of repo, zero MB user
+install). ``rapid_mlx/models/gemma4_text.py`` prefers ``mlx-vlm`` when
 installed (so ``[vision]`` users get the shared code path) and falls
 back to the vendored copy otherwise.
 
@@ -300,7 +300,7 @@ def test_pyproject_requires_python_floor_matches_tomllib_fallback() -> None:
 # only in ``[vision]``, so a fresh ``pip install rapid-mlx==0.10.0``
 # followed by ``rapid-mlx serve gemma-4-12b-4bit`` crashed at import.
 # The 0.10.1 fix is to vendor the ~1200 lines of Gemma 4 text-only
-# classes into ``vllm_mlx/models/gemma4_vendored/`` so the fresh
+# classes into ``rapid_mlx/models/gemma4_vendored/`` so the fresh
 # install works without any [vision] extra pulled.
 # ──────────────────────────────────────────────────────────────────────
 
@@ -319,7 +319,7 @@ def test_gemma4_vendored_module_exists() -> None:
             repo_root = parent
             break
     assert repo_root is not None, "pyproject.toml not found above test file"
-    vendored = repo_root / "vllm_mlx" / "models" / "gemma4_vendored"
+    vendored = repo_root / "rapid_mlx" / "models" / "gemma4_vendored"
     assert vendored.is_dir(), (
         f"gemma4_vendored/ missing at {vendored}. Without it, a fresh "
         f"`pip install rapid-mlx && rapid-mlx serve gemma-4-12b-4bit` "
@@ -380,8 +380,8 @@ def test_gemma4_vendored_modules_importable_without_mlx_vlm() -> None:
     try:
         # Fresh import of the vendored modules — must succeed with
         # NO mlx_vlm on the import path.
-        cfg_mod = importlib.import_module("vllm_mlx.models.gemma4_vendored.config")
-        lang_mod = importlib.import_module("vllm_mlx.models.gemma4_vendored.language")
+        cfg_mod = importlib.import_module("rapid_mlx.models.gemma4_vendored.config")
+        lang_mod = importlib.import_module("rapid_mlx.models.gemma4_vendored.language")
         TextConfig = cfg_mod.TextConfig
         LanguageModel = lang_mod.LanguageModel
 
@@ -429,7 +429,7 @@ def test_gemma4_vendored_modules_importable_without_mlx_vlm() -> None:
 
 
 def test_gemma4_text_prefers_vendored_fallback() -> None:
-    """``vllm_mlx/models/gemma4_text.py`` must try mlx-vlm first, then
+    """``rapid_mlx/models/gemma4_text.py`` must try mlx-vlm first, then
     fall back to the vendored copy. A refactor that dropped the
     fallback would silently re-introduce the 0.10.0 regression for any
     fresh install without ``[vision]``.
@@ -451,7 +451,7 @@ def test_gemma4_text_prefers_vendored_fallback() -> None:
             repo_root = parent
             break
     assert repo_root is not None, "pyproject.toml not found above test file"
-    gemma4_text = repo_root / "vllm_mlx" / "models" / "gemma4_text.py"
+    gemma4_text = repo_root / "rapid_mlx" / "models" / "gemma4_text.py"
     assert gemma4_text.is_file(), f"gemma4_text.py missing at {gemma4_text}"
 
     tree = ast.parse(gemma4_text.read_text(encoding="utf-8"))
@@ -479,7 +479,7 @@ def test_gemma4_text_prefers_vendored_fallback() -> None:
             m.startswith("mlx_vlm.models.gemma4") for m in try_imports
         )
         wants_vendored_fallback = any(
-            any(m.startswith("vllm_mlx.models.gemma4_vendored") for m in fb)
+            any(m.startswith("rapid_mlx.models.gemma4_vendored") for m in fb)
             for fb in fallback_imports
         )
         if wants_mlx_vlm_first and wants_vendored_fallback:
@@ -487,7 +487,7 @@ def test_gemma4_text_prefers_vendored_fallback() -> None:
             break
     assert found_pattern, (
         "gemma4_text.py no longer contains a `try: from mlx_vlm.models."
-        "gemma4 import ... except ImportError: from vllm_mlx.models."
+        "gemma4 import ... except ImportError: from rapid_mlx.models."
         "gemma4_vendored import ...` block. Without it, a fresh "
         "`pip install rapid-mlx && rapid-mlx serve gemma-4-12b-4bit` "
         "re-crashes with the 0.10.0 ImportError (L-07-B). Restore the "

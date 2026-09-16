@@ -65,7 +65,7 @@ def benchmark_tts(
     model_name: str, alias: str, texts: list[str], voice: str = "af_heart"
 ):
     """Benchmark TTS model."""
-    from vllm_mlx.audio.tts import TTSEngine
+    from rapid_mlx.audio.tts import TTSEngine
 
     print(f"\n{'=' * 60}")
     print(f"TTS Benchmark: {alias}")
@@ -161,7 +161,7 @@ def get_audio_duration(audio_path: str) -> float:
 
 def benchmark_stt(model_name: str, alias: str, audio_path: str):
     """Benchmark STT model."""
-    from vllm_mlx.audio.stt import STTEngine
+    from rapid_mlx.audio.stt import STTEngine
 
     print(f"\n{'=' * 60}")
     print(f"STT Benchmark: {alias}")

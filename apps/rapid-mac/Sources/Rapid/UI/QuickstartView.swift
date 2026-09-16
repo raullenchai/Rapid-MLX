@@ -53,7 +53,7 @@ import SwiftUI
 ///   * A short install + chat path for the brand-new user.
 ///   * A dedicated "Quickstart" picker section after onboarding.
 ///
-/// The alias resolves in ``vllm_mlx/aliases.json`` (rapid-mlx submodule)
+/// The alias resolves in ``rapid_mlx/aliases.json`` (rapid-mlx submodule)
 /// so the value is pinned, not derived. Bumping it is a deliberate
 /// product decision — change the constant + re-run the model
 /// recommendation tests. Air-gapped bundled builds keep their independently
@@ -97,7 +97,7 @@ struct QuickstartModelChoice: Equatable, Identifiable, Sendable {
     }
 
     var id: String { alias }
-    /// Canonical alias resolved in ``vllm_mlx/aliases.json``.
+    /// Canonical alias resolved in ``rapid_mlx/aliases.json``.
     let alias: String
     /// Prose label for onboarding copy (for example, "Qwen 3.5 · 4B"). Hand-picked
     /// rather than catalog-derived so the copy never reads a raw alias.

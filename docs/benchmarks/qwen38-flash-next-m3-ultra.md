@@ -36,7 +36,7 @@ The later default-off native MTP experiment is documented in
 
 The publication tables come from a quiet window with no other model server
 resident. A process sweep immediately before each fresh model load confirmed
-that the new server was the only `rapid-mlx serve` or `vllm_mlx.server`
+that the new server was the only `rapid-mlx serve` or `rapid_mlx.server`
 process. The first Flash run began while four pre-existing model servers were
 still resident; those measurements are preserved separately in the contended
 appendix and are not used for the headline results.
@@ -209,7 +209,7 @@ Transformers 5.12.1. The server ran from candidate commit
 
 ```bash
 HF_HUB_OFFLINE=1 /private/tmp/rapid-flash-pypi-0131/bin/python \
-  -m vllm_mlx.cli serve \
+  -m rapid_mlx.cli serve \
   /path/to/dcf657e4acda2aae72da99cde65b6c491cd96998 \
   --served-model-name qwen3.8-flash-next-4bit \
   --host 127.0.0.1 --port 8464

@@ -3,10 +3,10 @@
 
 from __future__ import annotations
 
-from vllm_mlx import model_sizes
-from vllm_mlx.catalog import build_legacy_catalog_snapshot
-from vllm_mlx.model_aliases import list_profiles
-from vllm_mlx.model_auto_config import detect_model_config
+from rapid_mlx import model_sizes
+from rapid_mlx.catalog import build_legacy_catalog_snapshot
+from rapid_mlx.model_aliases import list_profiles
+from rapid_mlx.model_auto_config import detect_model_config
 
 ALIAS = "minicpm5-2b-4bit"
 REPO = "openbmb/MiniCPM5-2B-MLX"

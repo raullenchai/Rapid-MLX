@@ -1,7 +1,7 @@
 # SPDX-License-Identifier: Apache-2.0
 """Defect 4 — macOS UBC eviction helper regression coverage.
 
-Exercises ``vllm_mlx.runtime.ubc_evict``:
+Exercises ``rapid_mlx.runtime.ubc_evict``:
 
 * **Darwin happy path** — build a multi-MB random file, force it into
   the Unified Buffer Cache via mmap+touch, then assert that
@@ -35,8 +35,8 @@ import pytest
 
 pytestmark = pytest.mark.requires_mlx
 
-from vllm_mlx.runtime import ubc_evict as ubc_module
-from vllm_mlx.runtime.ubc_evict import (
+from rapid_mlx.runtime import ubc_evict as ubc_module
+from rapid_mlx.runtime.ubc_evict import (
     render_prometheus_lines,
     reset_for_tests,
     snapshot,
@@ -345,7 +345,7 @@ def test_render_prometheus_lines_zero_by_default():
 
 def test_route_module_render_matches_helper():
     """The routes/metrics wrapper mirrors the helper module output."""
-    from vllm_mlx.routes.metrics import _render_ubc_evict_counters
+    from rapid_mlx.routes.metrics import _render_ubc_evict_counters
 
     assert _render_ubc_evict_counters() == render_prometheus_lines()
 
@@ -417,7 +417,7 @@ def test_post_load_ubc_evict_targets_safetensors_only(monkeypatch, tmp_path):
     to ``ubc_evict_paths``. We don't actually load a model here — just
     make sure the path discovery + call routing wire up correctly.
     """
-    from vllm_mlx.utils import tokenizer as tk
+    from rapid_mlx.utils import tokenizer as tk
 
     # Lay out a fake snapshot dir: two safetensors shards + a json sidecar.
     (tmp_path / "model-00001-of-00002.safetensors").write_bytes(b"x" * 1024)
@@ -436,7 +436,7 @@ def test_post_load_ubc_evict_targets_safetensors_only(monkeypatch, tmp_path):
     # Patch BOTH the runtime symbol AND the late-bound import inside
     # _post_load_ubc_evict (which uses ``from ..runtime.ubc_evict
     # import ubc_evict_paths`` at call time).
-    import vllm_mlx.runtime.ubc_evict as runtime_module
+    import rapid_mlx.runtime.ubc_evict as runtime_module
 
     monkeypatch.setattr(runtime_module, "ubc_evict_paths", _record)
 
@@ -455,7 +455,7 @@ def test_post_load_ubc_evict_targets_safetensors_only(monkeypatch, tmp_path):
 
 def test_post_load_ubc_evict_skips_when_model_path_unresolved(monkeypatch):
     """If _resolve_model_path returns None, the shim is a silent no-op."""
-    from vllm_mlx.utils import tokenizer as tk
+    from rapid_mlx.utils import tokenizer as tk
 
     called = []
 
@@ -463,7 +463,7 @@ def test_post_load_ubc_evict_skips_when_model_path_unresolved(monkeypatch):
         called.append(True)
         return 0
 
-    import vllm_mlx.runtime.ubc_evict as runtime_module
+    import rapid_mlx.runtime.ubc_evict as runtime_module
 
     monkeypatch.setattr(runtime_module, "ubc_evict_paths", _record)
     monkeypatch.setattr(tk, "_resolve_model_path", lambda name: None)
@@ -475,7 +475,7 @@ def test_post_load_ubc_evict_skips_when_model_path_unresolved(monkeypatch):
 
 def test_post_load_ubc_evict_skips_when_no_shards(monkeypatch, tmp_path):
     """An empty directory (no .safetensors) is a silent no-op."""
-    from vllm_mlx.utils import tokenizer as tk
+    from rapid_mlx.utils import tokenizer as tk
 
     called = []
 
@@ -483,7 +483,7 @@ def test_post_load_ubc_evict_skips_when_no_shards(monkeypatch, tmp_path):
         called.append(True)
         return 0
 
-    import vllm_mlx.runtime.ubc_evict as runtime_module
+    import rapid_mlx.runtime.ubc_evict as runtime_module
 
     monkeypatch.setattr(runtime_module, "ubc_evict_paths", _record)
     monkeypatch.setattr(tk, "_resolve_model_path", lambda name: tmp_path)
@@ -500,7 +500,7 @@ def test_post_load_ubc_evict_does_not_resolve_path_on_non_darwin(monkeypatch):
     load-path ``finally`` clause, for a feature that has no effect on those
     platforms.
     """
-    from vllm_mlx.utils import tokenizer as tk
+    from rapid_mlx.utils import tokenizer as tk
 
     resolved = []
 

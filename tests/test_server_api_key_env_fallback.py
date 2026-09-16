@@ -1,17 +1,17 @@
 # SPDX-License-Identifier: Apache-2.0
 """Regression tests for dogfood-v0.8.2 finding #3 — bearer-in-argv leak.
 
-The ``vllm_mlx.server`` standalone entrypoint historically only honored
+The ``rapid_mlx.server`` standalone entrypoint historically only honored
 ``--api-key`` on argv. rapid-desktop's sidecar shim exported
 ``RAPID_MLX_API_KEY`` AND still appended ``--api-key "$KEY"`` to argv,
 so ``ps -ef`` exposed the per-launch bearer token to any local user
 (codex BLOCKER taxonomy #3 — "bearer-in-shell-history").
 
-The fix introduces ``vllm_mlx.server._resolve_api_key`` as the single
+The fix introduces ``rapid_mlx.server._resolve_api_key`` as the single
 SSOT and routes both entrypoints (``cli.py``'s ``rapid-mlx serve`` and
-``server.py``'s ``python -m vllm_mlx.server``) through it; the
+``server.py``'s ``python -m rapid_mlx.server``) through it; the
 ``rapid-mlx serve`` banner reads the same SSOT via
-``vllm_mlx.cli._auth_feature_str``. These tests call into both helpers
+``rapid_mlx.cli._auth_feature_str``. These tests call into both helpers
 directly so a refactor that drops the env-var branch fails them;
 mutation-testing the production code (removing the ``or`` clause)
 flips them red.
@@ -46,7 +46,7 @@ import pytest
 def test_api_key_env_only_resolves_to_env_value(monkeypatch):
     """Env-only is the supported rapid-desktop sidecar path. If the
     production helper drops its env-var branch, this assertion fails."""
-    from vllm_mlx.server import _resolve_api_key
+    from rapid_mlx.server import _resolve_api_key
 
     monkeypatch.setenv("RAPID_MLX_API_KEY", "ENV_SECRET")
     assert _resolve_api_key(argv_value=None) == "ENV_SECRET"
@@ -54,7 +54,7 @@ def test_api_key_env_only_resolves_to_env_value(monkeypatch):
 
 def test_api_key_argv_only_still_works(monkeypatch):
     """Inline argv is the legacy path — backwards-compat must hold."""
-    from vllm_mlx.server import _resolve_api_key
+    from rapid_mlx.server import _resolve_api_key
 
     monkeypatch.delenv("RAPID_MLX_API_KEY", raising=False)
     assert _resolve_api_key(argv_value="ARGV_SECRET") == "ARGV_SECRET"
@@ -62,7 +62,7 @@ def test_api_key_argv_only_still_works(monkeypatch):
 
 def test_api_key_both_set_argv_wins(monkeypatch):
     """Argv override is documented in --api-key help; pin the priority."""
-    from vllm_mlx.server import _resolve_api_key
+    from rapid_mlx.server import _resolve_api_key
 
     monkeypatch.setenv("RAPID_MLX_API_KEY", "ENV_VALUE")
     assert _resolve_api_key(argv_value="ARGV_VALUE") == "ARGV_VALUE"
@@ -70,7 +70,7 @@ def test_api_key_both_set_argv_wins(monkeypatch):
 
 def test_api_key_neither_set_is_none(monkeypatch):
     """No-auth dev path stays anonymous-OK."""
-    from vllm_mlx.server import _resolve_api_key
+    from rapid_mlx.server import _resolve_api_key
 
     monkeypatch.delenv("RAPID_MLX_API_KEY", raising=False)
     assert _resolve_api_key(argv_value=None) is None
@@ -80,7 +80,7 @@ def test_api_key_empty_string_argv_falls_back_to_env(monkeypatch):
     """Edge case: an empty ``--api-key ""`` should not silently disable
     auth when the env var is set. The ``or`` short-circuit means env
     wins because empty string is falsy."""
-    from vllm_mlx.server import _resolve_api_key
+    from rapid_mlx.server import _resolve_api_key
 
     monkeypatch.setenv("RAPID_MLX_API_KEY", "ENV_FALLBACK")
     assert _resolve_api_key(argv_value="") == "ENV_FALLBACK"
@@ -99,7 +99,7 @@ def test_banner_renders_auth_on_when_only_env_is_set(monkeypatch):
     renderer directly proves the banner path mirrors the enforcement
     path; if the gate regresses to ``args.api_key`` only, this flips
     red because the input ``argv_api_key=None`` produces no feature."""
-    from vllm_mlx.cli import _auth_feature_str
+    from rapid_mlx.cli import _auth_feature_str
 
     monkeypatch.setenv("RAPID_MLX_API_KEY", "ENV_SECRET")
     assert _auth_feature_str(argv_api_key=None) == "auth: on"
@@ -107,7 +107,7 @@ def test_banner_renders_auth_on_when_only_env_is_set(monkeypatch):
 
 def test_banner_renders_auth_on_when_only_argv_is_set(monkeypatch):
     """Backwards-compat: inline argv-set path also renders the line."""
-    from vllm_mlx.cli import _auth_feature_str
+    from rapid_mlx.cli import _auth_feature_str
 
     monkeypatch.delenv("RAPID_MLX_API_KEY", raising=False)
     assert _auth_feature_str(argv_api_key="ARGV_SECRET") == "auth: on"
@@ -116,7 +116,7 @@ def test_banner_renders_auth_on_when_only_argv_is_set(monkeypatch):
 def test_banner_omits_auth_line_when_neither_is_set(monkeypatch):
     """Dev path: no auth → no banner line. Mirrors the SECURITY
     CONFIGURATION block's ``Authentication: DISABLED`` warning."""
-    from vllm_mlx.cli import _auth_feature_str
+    from rapid_mlx.cli import _auth_feature_str
 
     monkeypatch.delenv("RAPID_MLX_API_KEY", raising=False)
     assert _auth_feature_str(argv_api_key=None) is None
@@ -202,7 +202,7 @@ def test_env_only_spawn_keeps_bearer_out_of_ps_and_enforces_auth():
     cmd = [
         sys.executable,
         "-m",
-        "vllm_mlx.cli",
+        "rapid_mlx.cli",
         "serve",
         model_alias,
         "--port",
@@ -269,7 +269,7 @@ def test_env_only_spawn_keeps_bearer_out_of_ps_and_enforces_auth():
         )
     finally:
         # Port-qualified pkill per memory feedback_dogfood_pkill_port_
-        # qualified. Bare ``pkill -f vllm_mlx.cli`` would kill the
+        # qualified. Bare ``pkill -f rapid_mlx.cli`` would kill the
         # user's prod sidecar at 8451.
         try:
             proc.terminate()
@@ -277,7 +277,7 @@ def test_env_only_spawn_keeps_bearer_out_of_ps_and_enforces_auth():
         except subprocess.TimeoutExpired:
             proc.kill()
         subprocess.run(
-            ["pkill", "-f", f"vllm_mlx.cli.*{port}"],
+            ["pkill", "-f", f"rapid_mlx.cli.*{port}"],
             check=False,
             capture_output=True,
         )
@@ -292,7 +292,7 @@ def test_cli_help_advertises_env_fallback():
     """``rapid-mlx serve --help`` must document the env-var so
     downstream wrappers know the safer form exists."""
     result = subprocess.run(  # noqa: S603 — controlled test argv
-        [sys.executable, "-m", "vllm_mlx.cli", "serve", "--help"],
+        [sys.executable, "-m", "rapid_mlx.cli", "serve", "--help"],
         capture_output=True,
         text=True,
         timeout=30,
@@ -305,12 +305,12 @@ def test_cli_help_advertises_env_fallback():
 
 
 def test_server_help_advertises_env_fallback():
-    """Parity check: ``python -m vllm_mlx.server`` (the standalone
+    """Parity check: ``python -m rapid_mlx.server`` (the standalone
     entry the rapid-desktop sidecar invokes) must also advertise the
-    env fallback. Pre-fix only ``vllm_mlx.cli`` did, which is the
+    env fallback. Pre-fix only ``rapid_mlx.cli`` did, which is the
     docs/code mismatch that forced the shim to argv-pass the bearer."""
     result = subprocess.run(  # noqa: S603 — controlled test argv
-        [sys.executable, "-m", "vllm_mlx.server", "--help"],
+        [sys.executable, "-m", "rapid_mlx.server", "--help"],
         capture_output=True,
         text=True,
         timeout=30,

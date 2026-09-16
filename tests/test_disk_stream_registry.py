@@ -1,5 +1,5 @@
 # SPDX-License-Identifier: Apache-2.0
-"""``vllm_mlx.registry`` — architecture lookup for disk-streaming
+"""``rapid_mlx.registry`` — architecture lookup for disk-streaming
 MoE weight loading.
 
 Ticket: ``.scratch/rapid-mlx-disk-stream/issues/01-registry-offset-reader-lfm25.md``.
@@ -16,7 +16,7 @@ import pytest
 
 pytestmark = pytest.mark.requires_mlx
 
-from vllm_mlx.registry import get_adapter
+from rapid_mlx.registry import get_adapter
 
 
 def test_get_adapter_returns_lfm2_moe_adapter():
@@ -79,12 +79,12 @@ def test_qwen2_moe_tensor_template_matches_direct_named_expert_tensors():
 
 def test_qwen2_moe_streaming_forward_resolves_and_lfm2_moe_unaffected():
     """qwen2_moe's ``streaming_forward`` resolves to the new
-    ``vllm_mlx.qwen2_moe_forward`` module, and registering it did not
+    ``rapid_mlx.qwen2_moe_forward`` module, and registering it did not
     change lfm2_moe's resolution (still ``disk_stream_patch._streaming_moe_forward``)
     — the two adapters' streaming math stays fully independent.
     """
-    from vllm_mlx.disk_stream_patch import _streaming_moe_forward
-    from vllm_mlx.qwen2_moe_forward import qwen2_moe_streaming_forward
+    from rapid_mlx.disk_stream_patch import _streaming_moe_forward
+    from rapid_mlx.qwen2_moe_forward import qwen2_moe_streaming_forward
 
     qwen_adapter = get_adapter("qwen2_moe")
     lfm2_adapter = get_adapter("lfm2_moe")
@@ -103,7 +103,7 @@ def test_get_adapter_returns_qwen3_next_adapter():
 
     from mlx_lm.models.qwen3_next import Qwen3NextSparseMoeBlock
 
-    from vllm_mlx.qwen3_next_forward import qwen3_next_streaming_forward
+    from rapid_mlx.qwen3_next_forward import qwen3_next_streaming_forward
 
     assert adapter.moe_block_cls is Qwen3NextSparseMoeBlock
     assert adapter.streaming_forward is qwen3_next_streaming_forward
@@ -151,7 +151,7 @@ def test_streaming_forward_raises_not_implemented_when_unconfigured():
     ``NotImplementedError`` from the ``streaming_forward`` property,
     rather than failing some other, less clear way.
     """
-    from vllm_mlx.registry import ExpertTensorTemplate, StreamingAdapter
+    from rapid_mlx.registry import ExpertTensorTemplate, StreamingAdapter
 
     adapter = StreamingAdapter(
         model_type="_test_unconfigured",

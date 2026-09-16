@@ -111,7 +111,7 @@ def _hy3_alias_profile():
     ``reasoning_parser``, or points them at a different parser, the
     assertions below fail instead of silently passing on a stale literal.
     """
-    from vllm_mlx.model_aliases import resolve_profile
+    from rapid_mlx.model_aliases import resolve_profile
 
     profile = resolve_profile(_HY3_ALIAS)
     assert profile is not None, f"{_HY3_ALIAS!r} alias not found in aliases.json"
@@ -129,7 +129,7 @@ def _tool_parser():
     test rather than skip it green — the exact failure mode this file
     exists to catch.
     """
-    from vllm_mlx.tool_parsers import HyV3ToolParser, ToolParserManager
+    from rapid_mlx.tool_parsers import HyV3ToolParser, ToolParserManager
 
     parser_name = _hy3_alias_profile().tool_call_parser
     assert parser_name == "hy_v3", (
@@ -150,8 +150,8 @@ def _reasoning_parser():
     alias config and the import is HARD — a missing/broken import or an
     unwired alias must fail, not skip.
     """
-    from vllm_mlx.reasoning import get_parser
-    from vllm_mlx.reasoning.hy3_parser import Hy3ReasoningParser
+    from rapid_mlx.reasoning import get_parser
+    from rapid_mlx.reasoning.hy3_parser import Hy3ReasoningParser
 
     parser_name = _hy3_alias_profile().reasoning_parser
     assert parser_name == "hy_v3", (

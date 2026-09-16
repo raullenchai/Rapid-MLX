@@ -43,7 +43,7 @@ get a chance to reject on modality grounds.
 import pytest
 from pydantic import ValidationError
 
-from vllm_mlx.api.models import ChatCompletionRequest, ContentPart
+from rapid_mlx.api.models import ChatCompletionRequest, ContentPart
 
 
 class TestContentPartBareStringMediaRejected:
@@ -96,7 +96,7 @@ class TestContentPartBareStringMediaRejected:
     def test_typed_image_url_model_accepted(self):
         """Passing an already-constructed ``ImageUrl`` instance is
         also a legal wire form (in-process callers)."""
-        from vllm_mlx.api.models import ImageUrl
+        from rapid_mlx.api.models import ImageUrl
 
         part = ContentPart(
             type="image_url",

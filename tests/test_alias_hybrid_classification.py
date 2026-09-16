@@ -34,8 +34,8 @@ from __future__ import annotations
 
 import pytest
 
-from vllm_mlx.model_aliases import list_profiles
-from vllm_mlx.model_auto_config import (
+from rapid_mlx.model_aliases import list_profiles
+from rapid_mlx.model_auto_config import (
     ModelConfig,
     detect_model_config,
     enrich_model_config,

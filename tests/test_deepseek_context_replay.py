@@ -12,9 +12,9 @@ SPEC.loader.exec_module(MODULE)
 
 
 def test_build_corpus_is_deterministic_and_bounded(tmp_path):
-    (tmp_path / "vllm_mlx").mkdir()
-    (tmp_path / "vllm_mlx" / "large.py").write_text("a" * 80)
-    (tmp_path / "vllm_mlx" / "small.py").write_text("b" * 40)
+    (tmp_path / "rapid_mlx").mkdir()
+    (tmp_path / "rapid_mlx" / "large.py").write_text("a" * 80)
+    (tmp_path / "rapid_mlx" / "small.py").write_text("b" * 40)
     first = MODULE.build_corpus(tmp_path, 75)
     second = MODULE.build_corpus(tmp_path, 75)
     assert first == second
@@ -57,7 +57,7 @@ def test_detect_repetition_finds_short_period_degradation():
 
 
 def test_detect_repetition_ignores_normal_short_answer():
-    assert MODULE.detect_repetition("vllm_mlx/model_profile.py") == (False, None)
+    assert MODULE.detect_repetition("rapid_mlx/model_profile.py") == (False, None)
 
 
 def test_build_conversation_preserves_complete_prior_turns():

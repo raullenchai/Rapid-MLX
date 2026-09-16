@@ -26,7 +26,7 @@ class TestReasoningCorrectionBeforeFinish:
 
     def test_finalize_called_on_finish_reason(self):
         """finalize_streaming() should be called when finish_reason is set."""
-        from vllm_mlx.reasoning import get_parser
+        from rapid_mlx.reasoning import get_parser
 
         parser_cls = get_parser("qwen3")
         parser = parser_cls()
@@ -46,7 +46,7 @@ class TestReasoningCorrectionBeforeFinish:
     def test_correction_content_not_empty_for_no_tag_output(self):
         """When model outputs text without <think> tags, finalize should
         produce a correction with the held-back content."""
-        from vllm_mlx.reasoning import get_parser
+        from rapid_mlx.reasoning import get_parser
 
         parser_cls = get_parser("qwen3")
         parser = parser_cls()
@@ -147,7 +147,7 @@ class TestDoctorTimeoutBytes:
 
     def test_timeout_with_bytes_stdout(self):
         """TimeoutExpired with bytes stdout should not crash."""
-        from vllm_mlx.doctor.runner import run_subprocess
+        from rapid_mlx.doctor.runner import run_subprocess
 
         # Mock subprocess.run to raise TimeoutExpired with bytes
         exc = subprocess.TimeoutExpired(
@@ -167,7 +167,7 @@ class TestDoctorTimeoutBytes:
 
     def test_timeout_with_str_stdout(self):
         """TimeoutExpired with str stdout should also work."""
-        from vllm_mlx.doctor.runner import run_subprocess
+        from rapid_mlx.doctor.runner import run_subprocess
 
         exc = subprocess.TimeoutExpired(
             cmd=["test"],
@@ -185,7 +185,7 @@ class TestDoctorTimeoutBytes:
 
     def test_timeout_with_none_stdout(self):
         """TimeoutExpired with None stdout should return empty string."""
-        from vllm_mlx.doctor.runner import run_subprocess
+        from rapid_mlx.doctor.runner import run_subprocess
 
         exc = subprocess.TimeoutExpired(cmd=["test"], timeout=1)
         exc.stdout = None

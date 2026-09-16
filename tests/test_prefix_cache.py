@@ -10,7 +10,7 @@ from unittest.mock import MagicMock
 
 import pytest
 
-from vllm_mlx.prefix_cache import (
+from rapid_mlx.prefix_cache import (
     CacheEntry,
     PrefixCacheManager,
     PrefixCacheStats,
@@ -425,7 +425,7 @@ class TestSchedulerIntegration:
 
     def test_request_cache_fields(self):
         """Test that Request has cache fields."""
-        from vllm_mlx.request import Request, SamplingParams
+        from rapid_mlx.request import Request, SamplingParams
 
         request = Request(
             request_id="test-1",
@@ -446,7 +446,7 @@ class TestSchedulerIntegration:
     @pytest.mark.requires_mlx
     def test_scheduler_config_cache_options(self):
         """Test scheduler config has cache options."""
-        from vllm_mlx.scheduler import SchedulerConfig
+        from rapid_mlx.scheduler import SchedulerConfig
 
         config = SchedulerConfig(
             enable_prefix_cache=True,
@@ -473,7 +473,9 @@ if __name__ == "__main__":
     parser.add_argument(
         "--model",
         type=str,
-        default=os.environ.get("VLLM_MLX_TEST_MODEL", "mlx-community/Qwen3-0.6B-8bit"),
+        default=os.environ.get("RAPID_MLX_TEST_MODEL")
+        or os.environ.get("VLLM_MLX_TEST_MODEL")  # pre-rename name, still honored
+        or "mlx-community/Qwen3-0.6B-8bit",
         help="Model to benchmark",
     )
     args = parser.parse_args()
@@ -534,7 +536,7 @@ if __name__ == "__main__":
     async def run_cache_test():
         from mlx_lm import load
 
-        from vllm_mlx import (
+        from rapid_mlx import (
             AsyncEngineCore,
             EngineConfig,
             SamplingParams,

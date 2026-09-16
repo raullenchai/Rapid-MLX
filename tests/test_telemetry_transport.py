@@ -1,5 +1,5 @@
 # SPDX-License-Identifier: Apache-2.0
-"""Contract pins for ``vllm_mlx.telemetry.transport``.
+"""Contract pins for ``rapid_mlx.telemetry.transport``.
 
 The transport must:
 - Refuse a non-HTTPS endpoint.
@@ -25,7 +25,7 @@ def _clean_env(monkeypatch):
 
 
 def test_empty_batch_is_success_no_network():
-    from vllm_mlx.telemetry import transport
+    from rapid_mlx.telemetry import transport
 
     with mock.patch.object(transport, "urlopen") as urlopen:
         assert transport.post_batch([]) is True
@@ -33,7 +33,7 @@ def test_empty_batch_is_success_no_network():
 
 
 def test_post_batch_returns_true_on_2xx():
-    from vllm_mlx.telemetry import transport
+    from rapid_mlx.telemetry import transport
 
     resp = mock.MagicMock()
     resp.status = 200
@@ -46,7 +46,7 @@ def test_post_batch_returns_true_on_2xx():
 
 
 def test_4xx_is_immediate_drop_no_retry():
-    from vllm_mlx.telemetry import transport
+    from rapid_mlx.telemetry import transport
 
     resp = mock.MagicMock()
     resp.status = 400
@@ -63,7 +63,7 @@ def test_4xx_is_immediate_drop_no_retry():
 
 
 def test_5xx_retries_then_gives_up():
-    from vllm_mlx.telemetry import transport
+    from rapid_mlx.telemetry import transport
 
     resp = mock.MagicMock()
     resp.status = 503
@@ -86,7 +86,7 @@ def test_url_error_treated_as_distinct_from_timeout():
     only TimeoutError, a connection-reset URLError surfaces as an
     unhandled exception and crashes the foreground.
     """
-    from vllm_mlx.telemetry import transport
+    from rapid_mlx.telemetry import transport
 
     with (
         mock.patch.object(
@@ -99,7 +99,7 @@ def test_url_error_treated_as_distinct_from_timeout():
 
 
 def test_timeout_error_caught():
-    from vllm_mlx.telemetry import transport
+    from rapid_mlx.telemetry import transport
 
     with (
         mock.patch.object(transport, "urlopen", side_effect=TimeoutError("slow")),
@@ -112,7 +112,7 @@ def test_os_error_caught():
     """DNS lookup failures and the like surface as bare OSError on some
     platforms (notably macOS during airplane-mode toggling); pin that
     they don't escape."""
-    from vllm_mlx.telemetry import transport
+    from rapid_mlx.telemetry import transport
 
     with (
         mock.patch.object(
@@ -124,7 +124,7 @@ def test_os_error_caught():
 
 
 def test_http_error_4xx_does_not_retry():
-    from vllm_mlx.telemetry import transport
+    from rapid_mlx.telemetry import transport
 
     exc = HTTPError(
         url="https://x",
@@ -146,7 +146,7 @@ def test_http_error_response_body_closed():
     object on ``e.fp``; if the handler returns/retries without an
     explicit close, the socket leaks until gc cycles it. Pin that
     ``e.close()`` is called for both 4xx and 5xx paths."""
-    from vllm_mlx.telemetry import transport
+    from rapid_mlx.telemetry import transport
 
     closed_4xx = mock.MagicMock()
     err_4xx = HTTPError(
@@ -191,7 +191,7 @@ def test_http_error_response_body_closed():
 
 
 def test_http_error_5xx_retries():
-    from vllm_mlx.telemetry import transport
+    from rapid_mlx.telemetry import transport
 
     exc = HTTPError(
         url="https://x",
@@ -210,7 +210,7 @@ def test_http_error_5xx_retries():
 
 def test_oversized_payload_dropped_locally():
     """Payloads bigger than 200KB get rejected before hitting the network."""
-    from vllm_mlx.telemetry import transport
+    from rapid_mlx.telemetry import transport
 
     # Build a payload that crosses the 200KB threshold but isn't gargantuan.
     big = {"x": "a" * (transport.MAX_BODY_BYTES + 100)}
@@ -228,7 +228,7 @@ def test_non_https_non_loopback_override_fails_closed(monkeypatch):
     when the env var is set but rejected; ``post_batch`` drops the
     batch on ``None``. Default (env var unset) still resolves to
     ``DEFAULT_ENDPOINT``."""
-    from vllm_mlx.telemetry import transport
+    from rapid_mlx.telemetry import transport
 
     monkeypatch.setenv("RAPID_MLX_TELEMETRY_ENDPOINT", "http://insecure.example/v1")
     assert transport.endpoint() is None
@@ -243,7 +243,7 @@ def test_endpoint_override_only_accepts_localhost(monkeypatch):
 
     Round 16: rejected overrides now fail closed (return ``None``)
     instead of silently falling back to the production endpoint."""
-    from vllm_mlx.telemetry import transport
+    from rapid_mlx.telemetry import transport
 
     # Localhost variants pass through.
     for ok in (
@@ -277,7 +277,7 @@ def test_post_batch_fails_closed_on_rejected_override(monkeypatch):
     ``post_batch`` must drop the batch -- NOT quietly hit production.
     Pin the full path so a future refactor that drops the ``None``
     check (or restores the silent fallback) is caught immediately."""
-    from vllm_mlx.telemetry import transport
+    from rapid_mlx.telemetry import transport
 
     monkeypatch.setenv("RAPID_MLX_TELEMETRY_ENDPOINT", "https://attacker.example/v1")
 
@@ -299,7 +299,7 @@ def test_malformed_url_request_does_not_raise(monkeypatch):
     on a malformed URL (control bytes, NULL, etc.). The never-raises
     contract was leaking that. Pin both the URL with embedded control
     char path and the empty-scheme path."""
-    from vllm_mlx.telemetry import transport
+    from rapid_mlx.telemetry import transport
 
     # Patch ``endpoint()`` to return a malformed URL that nonetheless
     # passes the prefix check (so we reach ``Request``).
@@ -324,7 +324,7 @@ def test_malformed_port_localhost_override_does_not_raise(monkeypatch):
     ``None``) instead of silently falling back to the production
     endpoint. The "never raises" property is still the contract -- the
     rejection is silent at this layer; ``post_batch`` logs + drops."""
-    from vllm_mlx.telemetry import transport
+    from rapid_mlx.telemetry import transport
 
     monkeypatch.setenv("RAPID_MLX_TELEMETRY_ENDPOINT", "http://localhost:bad/v1")
     assert transport.endpoint() is None
@@ -334,7 +334,7 @@ def test_last_attempt_5xx_log_says_giving_up_not_will_retry():
     """Round 4 codex review: stale 'will retry' log on the final
     attempt was misleading. Pin both 5xx-status and 5xx-HTTPError
     branches log ``giving up`` once retries are exhausted."""
-    from vllm_mlx.telemetry import transport
+    from rapid_mlx.telemetry import transport
 
     captured: list[str] = []
 
@@ -363,7 +363,7 @@ def test_non_serializable_payload_returns_false_not_raise():
     """Round 3 codex review: ``json.dumps`` ran outside the transport
     try, so a non-serializable payload would have raised through the
     ``never raises`` contract. Pin that it returns ``False`` instead."""
-    from vllm_mlx.telemetry import transport
+    from rapid_mlx.telemetry import transport
 
     class _NotSerializable:
         pass
@@ -381,7 +381,7 @@ def test_retry_constants_are_finite():
     the transport's own retries run inside that budget. We still pin
     the constants exist with sane types so a future change can't make
     them ``None`` or pathologically large."""
-    from vllm_mlx.telemetry import transport
+    from rapid_mlx.telemetry import transport
 
     assert isinstance(transport.TIMEOUT_S, float)
     assert 0 < transport.TIMEOUT_S < 10
@@ -404,7 +404,7 @@ def test_user_agent_is_self_identifying():
     in the docstring. Pin the exact ``rapid-mlx/<version>`` shape."""
     import re
 
-    from vllm_mlx.telemetry import transport
+    from rapid_mlx.telemetry import transport
 
     ua = transport._user_agent()
     assert re.search(r"\brapid-mlx/\S+", ua), (
@@ -418,7 +418,7 @@ def test_post_sends_self_identifying_user_agent():
     header is the self-identifying string, not the urllib default."""
     import re
 
-    from vllm_mlx.telemetry import transport
+    from rapid_mlx.telemetry import transport
 
     captured: dict = {}
 
@@ -444,7 +444,7 @@ def test_post_sends_self_identifying_user_agent():
 
 
 def test_debug_env_truthy_off_by_default(monkeypatch):
-    from vllm_mlx.telemetry import transport
+    from rapid_mlx.telemetry import transport
 
     monkeypatch.delenv("RAPID_MLX_TELEMETRY_DEBUG", raising=False)
     assert transport.debug_enabled() is False

@@ -54,7 +54,7 @@ from dataclasses import dataclass
 
 import pytest
 
-from vllm_mlx.tool_parsers.hermes_tool_parser import HermesToolParser
+from rapid_mlx.tool_parsers.hermes_tool_parser import HermesToolParser
 
 from ..dispatch import run_tool_extraction
 from ..token_delta_splitter import batch_deltas_with_stream_interval

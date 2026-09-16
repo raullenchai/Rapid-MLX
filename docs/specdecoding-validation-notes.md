@@ -49,7 +49,7 @@ Next validation targets:
 
 Qwen3.5 / Qwen3.6 native MTP has since shipped: `qwen3_5` and
 `qwen3_5_moe` are in the MTP support allowlist
-(`_SUPPORTED_MODEL_TYPES` in `vllm_mlx/spec_decode/mtp/detect.py`),
+(`_SUPPORTED_MODEL_TYPES` in `rapid_mlx/spec_decode/mtp/detect.py`),
 enabled via `--speculative-config '{"method":"mtp"}'`. The Gemma 4
 assistant-sidecar decision above still stands — it remains unsupported
 and fails closed.

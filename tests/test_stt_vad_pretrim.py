@@ -10,7 +10,7 @@ silence hallucination. The documented anti-hallucination guards
 on pure silence the model returns ``no_speech_prob ≈ 1e-11`` and
 ``avg_logprob ≈ -0.26``, and the AND-gate skip condition never fires.
 
-The fix at ``vllm_mlx/audio/stt.py`` runs the bundled Silero VAD
+The fix at ``rapid_mlx/audio/stt.py`` runs the bundled Silero VAD
 (via ``mlx_audio.vad``) before Whisper:
 
 * No speech → return an empty ``TranscriptionResult`` without invoking
@@ -134,7 +134,7 @@ def stub_engine(monkeypatch, tmp_path):
       ``engine.transcribe`` to steer the guard's branch.
     * ``fake_whisper.calls`` is the recorded generate() history.
     """
-    from vllm_mlx.audio import stt as stt_mod
+    from rapid_mlx.audio import stt as stt_mod
 
     # Reset the module-level VAD cache between tests so each fixture
     # gets a fresh singleton pinned to its own _FakeVAD.
@@ -364,7 +364,7 @@ class TestKwargOverrideDisables:
 
     def test_enable_vad_pretrim_false_kwarg_disables(self, stub_engine, monkeypatch):
         _eng, fake_vad, fake_whisper, path, _load_audio, mp = stub_engine
-        from vllm_mlx.audio import stt as stt_mod
+        from rapid_mlx.audio import stt as stt_mod
 
         eng2 = stt_mod.STTEngine(
             "mlx-community/whisper-large-v3-turbo",
@@ -391,7 +391,7 @@ class TestVADImportFailureFallsBack:
         # Rebuild a clean engine that goes through the REAL
         # ``_get_vad_model`` path, then break the ``mlx_audio.vad``
         # import so the helper hits the ``except ImportError`` branch.
-        from vllm_mlx.audio import stt as stt_mod
+        from rapid_mlx.audio import stt as stt_mod
 
         importlib.reload(stt_mod)
         monkeypatch.setattr(stt_mod, "_VAD_MODEL_CACHE", None)
@@ -483,7 +483,7 @@ class TestTransientLoadFailureRetries:
     """
 
     def test_transient_load_failure_retries_on_next_call(self, monkeypatch):
-        from vllm_mlx.audio import stt as stt_mod
+        from rapid_mlx.audio import stt as stt_mod
 
         # Fresh module state.
         monkeypatch.setattr(stt_mod, "_VAD_MODEL_CACHE", None)
@@ -521,7 +521,7 @@ class TestTransientLoadFailureRetries:
     def test_permanent_import_failure_is_cached(self, monkeypatch):
         """ImportError → cached, no retries (module isn't installed
         and can't become installed without a process restart)."""
-        from vllm_mlx.audio import stt as stt_mod
+        from rapid_mlx.audio import stt as stt_mod
 
         monkeypatch.setattr(stt_mod, "_VAD_MODEL_CACHE", None)
         monkeypatch.setattr(stt_mod, "_VAD_IMPORT_UNAVAILABLE", False)
@@ -563,7 +563,7 @@ class TestVADFalseNegativeGuard:
 
     def test_high_rms_no_speech_falls_back_to_whisper(self, stub_engine):
         eng, fake_vad, fake_whisper, path, _load_audio, mp = stub_engine
-        from vllm_mlx.audio import stt as stt_mod
+        from rapid_mlx.audio import stt as stt_mod
 
         # VAD reports no speech (empty timestamps).
         fake_vad._timestamps = []
@@ -600,7 +600,7 @@ class TestVADFalseNegativeGuard:
 
     def test_pure_silence_below_rms_floor_still_returns_empty(self, stub_engine):
         eng, fake_vad, fake_whisper, path, _load_audio, mp = stub_engine
-        from vllm_mlx.audio import stt as stt_mod
+        from rapid_mlx.audio import stt as stt_mod
 
         fake_vad._timestamps = []
         # Force RMS below floor — the #961 pure-silence path.
@@ -636,7 +636,7 @@ class TestRMSHelper:
     def test_pure_silence_below_floor(self):
         import numpy as np
 
-        from vllm_mlx.audio.stt import _rms_above_floor
+        from rapid_mlx.audio.stt import _rms_above_floor
 
         silence = np.zeros(16_000, dtype=np.float32)
         assert _rms_above_floor(silence, 1e-4) is False
@@ -644,7 +644,7 @@ class TestRMSHelper:
     def test_noisy_signal_above_floor(self):
         import numpy as np
 
-        from vllm_mlx.audio.stt import _rms_above_floor
+        from rapid_mlx.audio.stt import _rms_above_floor
 
         # Sine wave at 0.5 amplitude → RMS ~0.35, well above any
         # reasonable silence floor.
@@ -655,7 +655,7 @@ class TestRMSHelper:
     def test_helper_swallows_bad_input_conservatively(self):
         """If the RMS computation fails we assume "trust it's audio"
         so we never accidentally suppress real speech."""
-        from vllm_mlx.audio.stt import _rms_above_floor
+        from rapid_mlx.audio.stt import _rms_above_floor
 
         # Non-array, non-numpy input — both math backends should
         # fail. Contract: return True.
@@ -671,7 +671,7 @@ class TestVADLoadLock:
         import threading
         import types as _types
 
-        from vllm_mlx.audio import stt as stt_mod
+        from rapid_mlx.audio import stt as stt_mod
 
         monkeypatch.setattr(stt_mod, "_VAD_MODEL_CACHE", None)
         monkeypatch.setattr(stt_mod, "_VAD_IMPORT_UNAVAILABLE", False)
@@ -819,7 +819,7 @@ class TestParakeetEngineSkipsVAD:
 
     def test_parakeet_engine_skips_vad(self, stub_engine):
         _eng, fake_vad, fake_whisper, path, _la, _mp = stub_engine
-        from vllm_mlx.audio import stt as stt_mod
+        from rapid_mlx.audio import stt as stt_mod
 
         eng_p = stt_mod.STTEngine("mlx-community/parakeet-tdt-0.6b-v2")
         eng_p.model = fake_whisper
@@ -862,7 +862,7 @@ class TestEnvHelper:
         ],
     )
     def test_env_helper(self, monkeypatch, val, expected):
-        from vllm_mlx.audio import stt as stt_mod
+        from rapid_mlx.audio import stt as stt_mod
 
         if val is None:
             monkeypatch.delenv("RAPID_MLX_STT_VAD_PRETRIM", raising=False)
@@ -879,14 +879,14 @@ class TestEnvHelper:
 
 class TestShiftHelper:
     def test_shift_dict_segment(self):
-        from vllm_mlx.audio.stt import _shift_segment_time
+        from rapid_mlx.audio.stt import _shift_segment_time
 
         seg = {"start": 1.0, "end": 2.0, "text": "hi"}
         _shift_segment_time(seg, 3.0)
         assert seg == {"start": 4.0, "end": 5.0, "text": "hi"}
 
     def test_shift_dict_segment_with_words(self):
-        from vllm_mlx.audio.stt import _shift_segment_time
+        from rapid_mlx.audio.stt import _shift_segment_time
 
         seg = {
             "start": 1.0,
@@ -903,14 +903,14 @@ class TestShiftHelper:
         assert seg["words"][1]["end"] == 2.5
 
     def test_shift_missing_keys_is_noop(self):
-        from vllm_mlx.audio.stt import _shift_segment_time
+        from rapid_mlx.audio.stt import _shift_segment_time
 
         seg = {"text": "hi"}  # no start/end
         _shift_segment_time(seg, 5.0)
         assert seg == {"text": "hi"}
 
     def test_shift_object_segment(self):
-        from vllm_mlx.audio.stt import _shift_segment_time
+        from rapid_mlx.audio.stt import _shift_segment_time
 
         class _Seg:
             start = 1.0

@@ -20,7 +20,7 @@ import mlx.core as mx
 import mlx.nn as nn
 from mlx_vlm.models.switch_layers import SwitchGLU
 
-from vllm_mlx.moe_fusion import fuse_gate_up
+from rapid_mlx.moe_fusion import fuse_gate_up
 
 HIDDEN = 4096
 INTERMEDIATE = 2048

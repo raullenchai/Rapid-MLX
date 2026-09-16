@@ -49,13 +49,13 @@ import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
-from vllm_mlx.api.models import ChatCompletionRequest
-from vllm_mlx.config import reset_config
-from vllm_mlx.engine.base import GenerationOutput
-from vllm_mlx.routes.chat import router as chat_router
-from vllm_mlx.routes.chat import stream_chat_completion
-from vllm_mlx.service.postprocessor import StreamingPostProcessor
-from vllm_mlx.tool_parsers.abstract_tool_parser import (
+from rapid_mlx.api.models import ChatCompletionRequest
+from rapid_mlx.config import reset_config
+from rapid_mlx.engine.base import GenerationOutput
+from rapid_mlx.routes.chat import router as chat_router
+from rapid_mlx.routes.chat import stream_chat_completion
+from rapid_mlx.service.postprocessor import StreamingPostProcessor
+from rapid_mlx.tool_parsers.abstract_tool_parser import (
     ExtractedToolCallInformation,
     ToolParser,
 )
@@ -162,7 +162,7 @@ def test_public_stream_id_is_the_scheduler_request_id():
 @pytest.mark.asyncio
 async def test_engine_admission_precedes_first_public_stream_frame():
     """An immediate cancel cannot race scheduler admission after the role SSE."""
-    from vllm_mlx.routes.chat import stream_chat_completion
+    from rapid_mlx.routes.chat import stream_chat_completion
 
     engine = _PlainStreamEngine(["ok"])
     request = ChatCompletionRequest(
@@ -215,8 +215,8 @@ def test_non_guided_streaming_pins_single_created_timestamp(monkeypatch):
 
     import time as _time_mod
 
-    import vllm_mlx.api.models as _models_mod
-    import vllm_mlx.routes.chat as _chat_mod
+    import rapid_mlx.api.models as _models_mod
+    import rapid_mlx.routes.chat as _chat_mod
 
     monkeypatch.setattr(_time_mod, "time", _stepping_time)
     monkeypatch.setattr(_chat_mod.time, "time", _stepping_time, raising=False)
@@ -658,7 +658,7 @@ def test_terminal_finish_snapshot_does_not_replay_streamed_content(
     provenance and must NOT be suppressed — see
     ``test_terminal_finalize_suffix_is_not_suppressed_as_replay``.
     """
-    from vllm_mlx.service import postprocessor as pp_mod
+    from rapid_mlx.service import postprocessor as pp_mod
 
     original_process_chunk = pp_mod.StreamingPostProcessor.process_chunk
 
@@ -756,8 +756,8 @@ def test_terminal_replay_guard_suppresses_snapshot_split_across_fields(monkeypat
     terminal payload. finish ``"hello"`` + finalize ``" world"`` over a fully
     streamed ``"hello world"`` → suppressed (no ``"hello worldhello world"``).
     """
-    from vllm_mlx.domain.events import StreamEvent
-    from vllm_mlx.service import postprocessor as pp_mod
+    from rapid_mlx.domain.events import StreamEvent
+    from rapid_mlx.service import postprocessor as pp_mod
 
     original_process_chunk = pp_mod.StreamingPostProcessor.process_chunk
 
@@ -853,8 +853,8 @@ def test_terminal_finalize_flush_snapshot_does_not_replay_streamed_content(monke
     (``tool_accumulated_text == streamed_content``) the terminal flush must
     be suppressed, not replayed.
     """
-    from vllm_mlx.domain.events import StreamEvent
-    from vllm_mlx.service import postprocessor as pp_mod
+    from rapid_mlx.domain.events import StreamEvent
+    from rapid_mlx.service import postprocessor as pp_mod
 
     def finalize_flush_full_buffer(self):
         # Mirror the auto parser's stale-counter flush: buffer == everything
@@ -933,8 +933,8 @@ def test_terminal_suffix_survives_when_buffer_unavailable(monkeypatch):
     output. Streamed ``"ha"`` + finalize ``"ha"`` with an empty buffer →
     ``"haha"`` (not collapsed to ``"ha"``).
     """
-    from vllm_mlx.domain.events import StreamEvent
-    from vllm_mlx.service import postprocessor as pp_mod
+    from rapid_mlx.domain.events import StreamEvent
+    from rapid_mlx.service import postprocessor as pp_mod
 
     def finalize_empty_buffer_suffix(self):
         self.tool_accumulated_text = ""  # buffer unavailable at finalize
@@ -1009,8 +1009,8 @@ def test_terminal_replay_guard_handles_sanitizer_sensitive_content(monkeypatch):
     sanitizer-sensitive content and replay it. Streamed ``"hello"`` (buffer
     ``"hello<|im_end|>"``) + finalize flush of the raw buffer → ``"hello"``.
     """
-    from vllm_mlx.domain.events import StreamEvent
-    from vllm_mlx.service import postprocessor as pp_mod
+    from rapid_mlx.domain.events import StreamEvent
+    from rapid_mlx.service import postprocessor as pp_mod
 
     raw = "hello<|im_end|>"  # sanitizes to "hello" on the wire
 
@@ -1087,8 +1087,8 @@ def test_terminal_finalize_suffix_is_not_suppressed_as_replay(monkeypatch):
     is NOT equal to what was streamed (``"ha"``), the held tail must be
     emitted → ``"haha"``, never collapsed to ``"ha"``.
     """
-    from vllm_mlx.domain.events import StreamEvent
-    from vllm_mlx.service import postprocessor as pp_mod
+    from rapid_mlx.domain.events import StreamEvent
+    from rapid_mlx.service import postprocessor as pp_mod
 
     def finalize_release_held_tail(self):
         # Model actually produced "haha"; the parser streamed "ha" and held
@@ -1173,8 +1173,8 @@ def test_synthetic_terminal_chunk_does_not_replay_accumulated_text(monkeypatch):
     finish event (exception in middleware, new processor variant, etc.)
     would double-send the entire reply via the synthetic chunk.
     """
-    from vllm_mlx.domain.events import StreamEvent
-    from vllm_mlx.service import postprocessor as pp_mod
+    from rapid_mlx.domain.events import StreamEvent
+    from rapid_mlx.service import postprocessor as pp_mod
 
     # Force the defensive branch:
     #   * process_chunk yields ONLY content events (no finish event) →

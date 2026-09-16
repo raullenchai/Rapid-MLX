@@ -163,7 +163,7 @@
 #
 # EXTENDING
 #   To add a sequence: append to `sequences`, add any NEW alias to
-#   `top_10_aliases` (keeping it a valid alias in vllm_mlx/aliases.json), then
+#   `top_10_aliases` (keeping it a valid alias in rapid_mlx/aliases.json), then
 #   run `python3 -m pytest tests/test_top10_sequences_schema.py`.
 # ---------------------------------------------------------------------------
 

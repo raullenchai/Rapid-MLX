@@ -10,7 +10,7 @@ Agentic SDKs that route on the declared parsers (and human operators
 debugging tool-call issues) see misleading nulls.
 
 This file pins the contract directly against
-:mod:`vllm_mlx.routes.models`:
+:mod:`rapid_mlx.routes.models`:
 
   * Lookup order = explicit CLI flag > auto-detect outcome > alias
     profile default > ``null``. The runtime stores the EFFECTIVE value
@@ -27,7 +27,7 @@ This file pins the contract directly against
   * Truly-no-parser case still reports ``null``.
 
 A regression here is a wire-shape break, not a unit-level bug, so we
-mount a real :class:`FastAPI` app with the ``vllm_mlx.routes.models``
+mount a real :class:`FastAPI` app with the ``rapid_mlx.routes.models``
 router and inspect the JSON response — same shape every SDK that hits
 ``/v1/models`` sees.
 """
@@ -61,8 +61,8 @@ def _mounted(
     server-module globals the bridge fallback reads, so cases never
     leak state across each other.
     """
-    from vllm_mlx.config import get_config
-    from vllm_mlx.routes import models as models_route
+    from rapid_mlx.config import get_config
+    from rapid_mlx.routes import models as models_route
 
     app = FastAPI()
     app.include_router(models_route.router)
@@ -90,7 +90,7 @@ def _mounted(
     cfg.embedding_model_locked = embedding_model_locked
     cfg.api_key = None
 
-    import vllm_mlx.server as srv
+    import rapid_mlx.server as srv
 
     saved_srv = {
         "_tool_call_parser": srv._tool_call_parser,
@@ -112,7 +112,7 @@ def _mounted(
 
 def _make_registry(*entries):
     """Build a ``ModelRegistry`` populated with the given entries."""
-    from vllm_mlx.runtime.model_registry import ModelRegistry
+    from rapid_mlx.runtime.model_registry import ModelRegistry
 
     registry = ModelRegistry()
     for i, entry in enumerate(entries):
@@ -128,7 +128,7 @@ def _make_entry(
     tool_call_parser: str | None = None,
     reasoning_parser: str | None = None,
 ):
-    from vllm_mlx.runtime.model_registry import ModelEntry
+    from rapid_mlx.runtime.model_registry import ModelEntry
 
     return ModelEntry(
         engine=object(),  # opaque — none of these tests call into the engine
@@ -260,7 +260,7 @@ def test_alias_cli_override_beats_alias_default():
     static alias default.
     """
     # Pick a known alias from aliases.json that has a parser default.
-    from vllm_mlx.model_aliases import resolve_profile
+    from rapid_mlx.model_aliases import resolve_profile
 
     alias = "qwen3-0.6b-4bit"
     profile = resolve_profile(alias)
@@ -312,7 +312,7 @@ def test_alias_no_cli_override_keeps_alias_default():
     Tier 3 behavior is covered by
     :func:`test_effective_parsers_helper_lookup_order` Tier 3.
     """
-    from vllm_mlx.model_aliases import resolve_profile
+    from rapid_mlx.model_aliases import resolve_profile
 
     alias = "qwen3-0.6b-4bit"
     profile = resolve_profile(alias)
@@ -409,7 +409,7 @@ def test_effective_parsers_helper_lookup_order():
     branch. Order: per-entry live state > per-server live state >
     profile default > None.
     """
-    from vllm_mlx.routes.models import effective_parsers_for
+    from rapid_mlx.routes.models import effective_parsers_for
 
     # Tier 1 — per-entry live wins, even when both server-global and
     # profile would prefer something else.
@@ -488,7 +488,7 @@ def test_entry_with_none_parser_does_not_fall_back_to_profile():
     authoritative — ``None`` on the entry must surface as ``null``
     on the wire, NEVER as the alias profile default.
     """
-    from vllm_mlx.routes.models import effective_parsers_for
+    from rapid_mlx.routes.models import effective_parsers_for
 
     entry = _make_entry(
         model_name="mlx-community/Qwen3-0.6B-bf16",
@@ -529,7 +529,7 @@ def test_tier2_one_sided_live_parser_does_not_backfill_from_profile():
     state independently — the unbound side surfaces as ``null``,
     NEVER as the alias profile default.
     """
-    from vllm_mlx.routes.models import effective_parsers_for
+    from rapid_mlx.routes.models import effective_parsers_for
 
     with _mounted(
         model_name="mlx-community/Qwen3-0.6B-bf16",
@@ -579,7 +579,7 @@ def test_tier1_matches_guard_rejects_non_bool_truthy():
     sentinel must be rejected — Tier 1 must NOT engage, and the
     helper must fall through to the profile default.
     """
-    from vllm_mlx.routes.models import effective_parsers_for
+    from rapid_mlx.routes.models import effective_parsers_for
 
     class _FakeRegistryEntry:
         # Simulates a test-double / partial-init entry whose ``matches``
@@ -638,7 +638,7 @@ def test_tier2_served_with_both_sides_unbound_does_not_fall_back_to_profile():
     advertised the alias profile defaults. Now: ``_is_served_model``
     True is authoritative, including for the all-off case.
     """
-    from vllm_mlx.routes.models import effective_parsers_for
+    from rapid_mlx.routes.models import effective_parsers_for
 
     with _mounted(
         model_name="mlx-community/Qwen3-0.6B-bf16",

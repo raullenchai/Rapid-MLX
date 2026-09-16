@@ -10,7 +10,7 @@ least two spaces before UPTIME.
 
 from __future__ import annotations
 
-from vllm_mlx.cli import _elide_front
+from rapid_mlx.cli import _elide_front
 
 
 def test_short_model_is_unchanged():

@@ -51,7 +51,7 @@ import pytest
 
 pytestmark = pytest.mark.requires_mlx
 
-from vllm_mlx.memory_cache import MemoryAwarePrefixCache, MemoryCacheConfig
+from rapid_mlx.memory_cache import MemoryAwarePrefixCache, MemoryCacheConfig
 
 
 class _MockArray:
@@ -311,7 +311,7 @@ def test_hybrid_supersequence_still_skipped(cache):
     skip. We inject directly into ``_entries`` to bypass the store gate and
     exercise the fetch-side guard (legacy on-disk entry defense-in-depth).
     """
-    from vllm_mlx.memory_cache import _CacheEntry
+    from rapid_mlx.memory_cache import _CacheEntry
 
     long_stored = list(range(1000, 1200))
     entry = _CacheEntry.create(long_stored, _hybrid_cache())
@@ -420,7 +420,7 @@ def test_hybrid_exact_match_falls_back_to_longest_strict_prefix(reuse_cache):
 
 def test_radix_hybrid_exact_match_falls_back_to_longest_strict_prefix():
     """The radix fast path must walk past an unusable exact terminal."""
-    from vllm_mlx.runtime.radix_index import RadixPrefixIndex
+    from rapid_mlx.runtime.radix_index import RadixPrefixIndex
 
     config = MemoryCacheConfig(
         max_memory_mb=10, max_entries=64, hybrid_reuse_max_entries=2
@@ -567,7 +567,7 @@ def test_default_config_keeps_drop_policy():
 
 
 def test_arrayscache_state_bytes_are_counted():
-    from vllm_mlx.memory_cache import estimate_kv_cache_memory
+    from rapid_mlx.memory_cache import estimate_kv_cache_memory
 
     # 3 state arrays (not the (keys, values) pair shape) × 100 bytes.
     layer = ArraysCacheLayer(n_arrays=3, nbytes_each=100)
@@ -575,7 +575,7 @@ def test_arrayscache_state_bytes_are_counted():
 
 
 def test_cachelist_nested_state_bytes_are_counted():
-    from vllm_mlx.memory_cache import estimate_kv_cache_memory
+    from rapid_mlx.memory_cache import estimate_kv_cache_memory
 
     # CacheList wrapping two ArraysCaches: nested state lists must be
     # recursed into, not unpacked as (keys, values) and counted as 0.
@@ -1047,7 +1047,7 @@ def test_production_startup_wiring_passes_protected_import_false(tmp_path):
     from unittest.mock import MagicMock as _MagicMock
     from unittest.mock import patch
 
-    import vllm_mlx.runtime.cache as runtime_cache
+    import rapid_mlx.runtime.cache as runtime_cache
 
     fake_engine = _MagicMock()
     fake_engine.load_cache_from_disk.return_value = 0  # no entries; wiring only

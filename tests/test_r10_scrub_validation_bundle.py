@@ -47,12 +47,12 @@ from __future__ import annotations
 import pytest
 from pydantic import ValidationError
 
-from vllm_mlx.api.models import (
+from rapid_mlx.api.models import (
     ChatCompletionRequest,
     CompletionRequest,
     ToolDefinition,
 )
-from vllm_mlx.api.responses_models import ResponsesRequest
+from rapid_mlx.api.responses_models import ResponsesRequest
 
 # ---------------------------------------------------------------------------
 # R10-H5 — reasoning_effort enum on chat + responses
@@ -250,7 +250,7 @@ def test_r10_h4_completions_response_format_missing_type_rejected():
 
 def _make_postprocessor(*, tool_choice):
     """Build a StreamingPostProcessor with a minimal ServerConfig shim."""
-    from vllm_mlx.service.postprocessor import StreamingPostProcessor
+    from rapid_mlx.service.postprocessor import StreamingPostProcessor
 
     class _Cfg:
         reasoning_parser_name = None
@@ -409,7 +409,7 @@ def test_r10_h3_required_mode_allows_parallel_calls():
 
 
 def _content_chunks(events):
-    from vllm_mlx.domain.events import StreamEvent  # noqa: F401
+    from rapid_mlx.domain.events import StreamEvent  # noqa: F401
 
     return [ev.content for ev in events if ev.type == "content" and ev.content]
 
@@ -420,7 +420,7 @@ def test_r10_c8_tool_prose_prefix_is_buffered():
     discarded when a tool_call event arrives later in the same turn.
     """
     pp = _make_postprocessor(tool_choice="auto")
-    from vllm_mlx.domain.events import StreamEvent
+    from rapid_mlx.domain.events import StreamEvent
 
     # Simulate the 12 prose chunks Mira observed.
     held = pp._filter_events_for_tool_prose(
@@ -441,7 +441,7 @@ def test_r10_c8_tool_call_discards_buffered_prose():
     preamble.
     """
     pp = _make_postprocessor(tool_choice="auto")
-    from vllm_mlx.domain.events import StreamEvent
+    from rapid_mlx.domain.events import StreamEvent
 
     pp._filter_events_for_tool_prose(
         [StreamEvent(type="content", content="Tool: get_weather\n")]
@@ -471,7 +471,7 @@ def test_r10_m4_trailing_whitespace_folded_into_prose_buffer():
     buffer; when the tool_call lands, the whitespace is discarded too.
     """
     pp = _make_postprocessor(tool_choice="auto")
-    from vllm_mlx.domain.events import StreamEvent
+    from rapid_mlx.domain.events import StreamEvent
 
     pp._filter_events_for_tool_prose(
         [StreamEvent(type="content", content="Tool: get_weather\n\n")]
@@ -495,7 +495,7 @@ def test_r10_c8_non_prose_content_passes_through():
     buffer. Defense against over-eager censoring.
     """
     pp = _make_postprocessor(tool_choice="auto")
-    from vllm_mlx.domain.events import StreamEvent
+    from rapid_mlx.domain.events import StreamEvent
 
     out = pp._filter_events_for_tool_prose(
         [StreamEvent(type="content", content="Hello there!")]
@@ -509,7 +509,7 @@ def test_r10_c8_no_op_when_tools_not_requested():
     """
     pp = _make_postprocessor(tool_choice="auto")
     pp.tools_requested = False  # simulate a tool-less request
-    from vllm_mlx.domain.events import StreamEvent
+    from rapid_mlx.domain.events import StreamEvent
 
     out = pp._filter_events_for_tool_prose(
         [StreamEvent(type="content", content="Tool: foo")]
@@ -523,7 +523,7 @@ def test_r10_c8_held_buffer_released_at_stream_end_without_tool_call():
     would be wrong).
     """
     pp = _make_postprocessor(tool_choice="auto")
-    from vllm_mlx.domain.events import StreamEvent
+    from rapid_mlx.domain.events import StreamEvent
 
     pp._filter_events_for_tool_prose([StreamEvent(type="content", content="Tool:")])
     # No tool_calls_detected yet.
@@ -536,7 +536,7 @@ def test_r10_c8_held_buffer_dropped_at_stream_end_with_tool_call():
     finalize — it was the dispatch preamble.
     """
     pp = _make_postprocessor(tool_choice="auto")
-    from vllm_mlx.domain.events import StreamEvent
+    from rapid_mlx.domain.events import StreamEvent
 
     pp._filter_events_for_tool_prose(
         [StreamEvent(type="content", content="Tool: get_weather")]
@@ -551,7 +551,7 @@ def test_r10_c8_buffer_releases_when_growing_past_cap():
     discussing the word ``Tool:`` in long prose.
     """
     pp = _make_postprocessor(tool_choice="auto")
-    from vllm_mlx.domain.events import StreamEvent
+    from rapid_mlx.domain.events import StreamEvent
 
     long_text = "Tool: " + "x" * (pp._TOOL_PROSE_MAX_HOLD + 8)
     out = pp._filter_events_for_tool_prose(

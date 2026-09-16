@@ -29,13 +29,13 @@ import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
-from vllm_mlx.api.errors import GuidedGenerationCancelledError
-from vllm_mlx.api.models import ChatCompletionRequest
-from vllm_mlx.config import reset_config
-from vllm_mlx.engine.base import GenerationOutput
-from vllm_mlx.routes.chat import router as chat_router
-from vllm_mlx.routes.chat import stream_chat_completion_guided
-from vllm_mlx.routes.health import cancel_request
+from rapid_mlx.api.errors import GuidedGenerationCancelledError
+from rapid_mlx.api.models import ChatCompletionRequest
+from rapid_mlx.config import reset_config
+from rapid_mlx.engine.base import GenerationOutput
+from rapid_mlx.routes.chat import router as chat_router
+from rapid_mlx.routes.chat import stream_chat_completion_guided
+from rapid_mlx.routes.health import cancel_request
 
 
 class _GuidedEngine:
@@ -593,7 +593,7 @@ def test_mllm_streaming_schema_stays_on_scheduler_with_request_processor(
     monkeypatch,
 ):
     """Vision-capable serving keeps its lane and constrains decode in place."""
-    from vllm_mlx.api import guided
+    from rapid_mlx.api import guided
 
     marker = object()
     monkeypatch.setattr(
@@ -601,7 +601,7 @@ def test_mllm_streaming_schema_stays_on_scheduler_with_request_processor(
         "build_json_schema_logits_processor",
         lambda _tokenizer, schema: marker if schema == _SCHEMA else None,
     )
-    from vllm_mlx.routes import chat as chat_route
+    from rapid_mlx.routes import chat as chat_route
 
     monkeypatch.setattr(
         chat_route,

@@ -43,20 +43,20 @@ from fastapi import FastAPI
 from fastapi.testclient import TestClient
 from pydantic import ValidationError
 
-from vllm_mlx.api.models import (
+from rapid_mlx.api.models import (
     _VALID_REASONING_EFFORTS,
     OPENAI_REASONING_EFFORT_TO_MAX_TOKENS,
     ChatCompletionRequest,
 )
-from vllm_mlx.api.responses_models import ResponsesRequest
-from vllm_mlx.config import reset_config
-from vllm_mlx.engine.base import GenerationOutput
-from vllm_mlx.middleware.exception_handlers import install_exception_handlers
-from vllm_mlx.service.helpers import (
+from rapid_mlx.api.responses_models import ResponsesRequest
+from rapid_mlx.config import reset_config
+from rapid_mlx.engine.base import GenerationOutput
+from rapid_mlx.middleware.exception_handlers import install_exception_handlers
+from rapid_mlx.service.helpers import (
     maybe_apply_reasoning_effort,
     served_chat_template,
 )
-from vllm_mlx.utils.chat_template import (
+from rapid_mlx.utils.chat_template import (
     REASONING_EFFORT_LADDER,
     detect_native_reasoning_effort_levels,
     map_reasoning_effort_to_native,
@@ -597,7 +597,7 @@ class TestDetectionRequiresAValidationBlock:
         assert detect_native_reasoning_effort_levels(clause) is None
 
     def test_without_jinja2_detection_publishes_nothing(self, monkeypatch):
-        from vllm_mlx.utils import chat_template as module
+        from rapid_mlx.utils import chat_template as module
 
         monkeypatch.setattr(module, "_jinja_nodes", lambda: (None, None))
         module._template_parser.cache_clear()
@@ -999,7 +999,7 @@ class TestXhighSchema:
         assert "xhigh" in _VALID_REASONING_EFFORTS
 
     def test_xhigh_cap_tier_matches_anthropic(self):
-        from vllm_mlx.api.anthropic_models import (
+        from rapid_mlx.api.anthropic_models import (
             ANTHROPIC_EFFORT_TO_REASONING_MAX_TOKENS,
         )
 
@@ -1101,7 +1101,7 @@ class _RouteEngine:
 
 @pytest.fixture
 def _rate_limiter_state():
-    from vllm_mlx.middleware.auth import rate_limiter
+    from rapid_mlx.middleware.auth import rate_limiter
 
     saved_enabled = rate_limiter.enabled
     saved_rpm = rate_limiter.requests_per_minute
@@ -1129,7 +1129,7 @@ def _chat_cap_probe():
         return None
 
     with patch(
-        "vllm_mlx.routes.chat._build_reasoning_budget_processor", side_effect=_probe
+        "rapid_mlx.routes.chat._build_reasoning_budget_processor", side_effect=_probe
     ):
         yield seen
 
@@ -1138,7 +1138,7 @@ def _chat_cap_probe():
 def _responses_cap_probe():
     """Record the ``reasoning_max_tokens`` the responses route hands its
     post-hoc finalizer (the generic cap is enforced post-hoc on this surface)."""
-    import vllm_mlx.routes.responses as responses_mod
+    import rapid_mlx.routes.responses as responses_mod
 
     seen: list = []
     original = responses_mod._finalize_content_and_reasoning
@@ -1148,7 +1148,7 @@ def _responses_cap_probe():
         return original(*args, **kwargs)
 
     with patch(
-        "vllm_mlx.routes.responses._finalize_content_and_reasoning",
+        "rapid_mlx.routes.responses._finalize_content_and_reasoning",
         side_effect=_probe,
     ):
         yield seen
@@ -1156,9 +1156,9 @@ def _responses_cap_probe():
 
 def _client(engine: _RouteEngine, *, surface: str) -> TestClient:
     if surface == "chat":
-        from vllm_mlx.routes.chat import router
+        from rapid_mlx.routes.chat import router
     else:
-        from vllm_mlx.routes.responses import router
+        from rapid_mlx.routes.responses import router
 
     cfg = reset_config()
     cfg.engine = engine

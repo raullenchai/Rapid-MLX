@@ -215,9 +215,9 @@ struct HFCacheByteMonitorTests {
     func progressFractionNilIndeterminate() {
         let progress = DownloadProgress()
         #expect(progress.progressFraction == nil)
-        progress.ingest("INFO:vllm_mlx.server:Loading model with BatchedEngine: x/y")
+        progress.ingest("INFO:rapid_mlx.server:Loading model with BatchedEngine: x/y")
         #expect(progress.progressFraction == nil)
-        progress.ingest("INFO:vllm_mlx.server:Warming up (compiling Metal shaders)")
+        progress.ingest("INFO:rapid_mlx.server:Warming up (compiling Metal shaders)")
         #expect(progress.progressFraction == nil)
     }
 
@@ -257,9 +257,9 @@ struct HFCacheByteMonitorTests {
     func progressSubtitleNilIndeterminate() {
         let progress = DownloadProgress()
         #expect(progress.progressSubtitle == nil)
-        progress.ingest("INFO:vllm_mlx.server:Loading model with BatchedEngine: x/y")
+        progress.ingest("INFO:rapid_mlx.server:Loading model with BatchedEngine: x/y")
         #expect(progress.progressSubtitle == nil)
-        progress.ingest("INFO:vllm_mlx.server:Warming up (compiling Metal shaders)")
+        progress.ingest("INFO:rapid_mlx.server:Warming up (compiling Metal shaders)")
         #expect(progress.progressSubtitle == nil)
     }
 

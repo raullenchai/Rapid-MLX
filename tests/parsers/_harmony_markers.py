@@ -6,7 +6,7 @@ control marker leak into a content delta?". Each regression file needs
 the same allowlist; duplicating it inline would let a partial fix slip
 through when a sibling file forgets to add a newly-leaking marker.
 
-The canonical list is in ``vllm_mlx/tool_parsers/harmony_tool_parser.py``
+The canonical list is in ``rapid_mlx/tool_parsers/harmony_tool_parser.py``
 inside ``_strip_control_tokens``. Adding a new token there without
 updating this list would mask a downstream regression — the test
 :func:`tests/parsers/test_infra_smoke.py::test_harmony_markers_match_source`

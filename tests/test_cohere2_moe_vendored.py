@@ -17,10 +17,10 @@ pytestmark = pytest.mark.requires_mlx
 import sys
 from types import SimpleNamespace
 
-from vllm_mlx.model_aliases import resolve_model
-from vllm_mlx.model_auto_config import detect_model_config
-from vllm_mlx.models import cohere2_moe
-from vllm_mlx.utils import tokenizer
+from rapid_mlx.model_aliases import resolve_model
+from rapid_mlx.model_auto_config import detect_model_config
+from rapid_mlx.models import cohere2_moe
+from rapid_mlx.utils import tokenizer
 
 
 def test_model_args_derives_north_attention_schedule() -> None:

@@ -21,7 +21,7 @@ from pathlib import Path
 
 import pytest
 
-_ROOT = Path(__file__).resolve().parents[1] / "vllm_mlx"
+_ROOT = Path(__file__).resolve().parents[1] / "rapid_mlx"
 _PROFILES = sorted((_ROOT / "agents" / "profiles").glob("*.yaml"))
 
 

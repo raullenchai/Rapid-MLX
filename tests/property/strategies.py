@@ -16,7 +16,7 @@ import numpy as np
 from hypothesis import strategies as st
 
 # The live quantized KV cache only ever uses these (group_size, bits)
-# pairs — see ``vllm_mlx/quantized_batch_cache.py``. ``mx.quantize``
+# pairs — see ``rapid_mlx/quantized_batch_cache.py``. ``mx.quantize``
 # requires the quantized (last) dim to be an exact multiple of group_size.
 QUANT_BITS: tuple[int, ...] = (4, 8)
 QUANT_GROUP_SIZES: tuple[int, ...] = (32, 64, 128)

@@ -6,7 +6,7 @@ the RNN state snapshot reduces time-to-first-token on hybrid cache models.
 
 Usage:
     # Start server first:
-    python3.12 -m vllm_mlx.server --model <qwen3.5-model-path> --port 8000
+    python3.12 -m rapid_mlx.server --model <qwen3.5-model-path> --port 8000
     # Then run:
     python3.12 scripts/bench_snapshot.py [--port 8000] [--rounds 5]
 """

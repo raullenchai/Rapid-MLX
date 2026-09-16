@@ -15,7 +15,7 @@ from unittest.mock import patch
 
 import pytest
 
-from vllm_mlx.bench.tier_runner import (
+from rapid_mlx.bench.tier_runner import (
     HARNESS_PROFILES,
     TierResult,
     _find_free_port_in_range,
@@ -77,7 +77,7 @@ class _FakeClient:
 
 @contextlib.contextmanager
 def _fake_serve(model, port=None, **kwargs):
-    """Drop-in for vllm_mlx.bench._server.serve — no subprocess."""
+    """Drop-in for rapid_mlx.bench._server.serve — no subprocess."""
     yield {
         "base_url": f"http://127.0.0.1:{port}/v1",
         "port": port,
@@ -109,10 +109,10 @@ def patch_smoke_environment():
 
     with (
         patch(
-            "vllm_mlx.bench.tier_runner._find_free_port_in_range",
+            "rapid_mlx.bench.tier_runner._find_free_port_in_range",
             side_effect=_free_port,
         ),
-        patch("vllm_mlx.bench._server.serve", _fake_serve),
+        patch("rapid_mlx.bench._server.serve", _fake_serve),
         patch("httpx.Client", _client_factory),
     ):
         yield
@@ -174,10 +174,10 @@ def test_smoke_fail_when_no_four_in_response(capsys):
 
     with (
         patch(
-            "vllm_mlx.bench.tier_runner._find_free_port_in_range",
+            "rapid_mlx.bench.tier_runner._find_free_port_in_range",
             side_effect=_free_port,
         ),
-        patch("vllm_mlx.bench._server.serve", _fake_serve),
+        patch("rapid_mlx.bench._server.serve", _fake_serve),
         patch("httpx.Client", _client_factory),
     ):
         rc = run_tier(model="qwen3.5-4b-4bit", tier="smoke")
@@ -308,10 +308,10 @@ def test_smoke_skips_role_only_chunk_for_ttft(capsys):
 
     with (
         patch(
-            "vllm_mlx.bench.tier_runner._find_free_port_in_range",
+            "rapid_mlx.bench.tier_runner._find_free_port_in_range",
             side_effect=_free_port,
         ),
-        patch("vllm_mlx.bench._server.serve", _fake_serve),
+        patch("rapid_mlx.bench._server.serve", _fake_serve),
         patch("httpx.Client", _client_factory),
     ):
         rc = run_tier(model="qwen3.5-4b-4bit", tier="smoke")

@@ -16,13 +16,13 @@ import Foundation
 /// **Audited surface only.** The exposed set is deliberately smaller than the
 /// flag families the issue names. `--kv-bits`, `--kv-group-size`,
 /// `--draft-model` and `--num-draft-tokens` are in the engine's
-/// deprecated-no-op block (`vllm_mlx/cli.py`: "consumed-and-discarded: stored
+/// deprecated-no-op block (`rapid_mlx/cli.py`: "consumed-and-discarded: stored
 /// on ``args`` but never read"), so exposing them would ship switches wired to
 /// nothing. Speculative decoding uses the alias registry's audited preset and
 /// emits canonical `--speculative-config` JSON rather than a legacy flag.
 struct ModelPerfConfig: Codable, Equatable, Sendable {
     /// KV-cache precision / compression. One knob, not two, because the
-    /// engine treats them as one: `vllm_mlx/cli.py` resolves `--kv-cache-dtype`
+    /// engine treats them as one: `rapid_mlx/cli.py` resolves `--kv-cache-dtype`
     /// only `if not args.kv_cache_turboquant and not args.kv_cache_quantization`
     /// — with TurboQuant on, the dtype flag is silently ignored because
     /// TurboQuant owns the V cache. Modelling these as two independent

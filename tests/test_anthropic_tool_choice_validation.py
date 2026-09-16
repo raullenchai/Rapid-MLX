@@ -24,7 +24,7 @@ from __future__ import annotations
 import pytest
 from pydantic import ValidationError
 
-from vllm_mlx.api.anthropic_models import AnthropicRequest
+from rapid_mlx.api.anthropic_models import AnthropicRequest
 
 
 def _base_request(**overrides):

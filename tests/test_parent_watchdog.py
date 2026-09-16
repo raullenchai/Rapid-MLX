@@ -32,7 +32,7 @@ from unittest.mock import patch
 
 import pytest
 
-from vllm_mlx import _parent_watchdog as pwd
+from rapid_mlx import _parent_watchdog as pwd
 
 
 class TestResolveExpectedPpid:
@@ -218,7 +218,7 @@ class TestServeCommandWiring:
     def _serve_command_body(self) -> str:
         from pathlib import Path
 
-        cli_file = Path(__file__).resolve().parents[1] / "vllm_mlx" / "cli.py"
+        cli_file = Path(__file__).resolve().parents[1] / "rapid_mlx" / "cli.py"
         source = cli_file.read_text()
         start = source.index("def serve_command(")
         end = source.find("\ndef ", start + 1)
@@ -284,7 +284,7 @@ class TestInternalSpawnersStampWatchdog:
     def test_chat_spawn_stamps_watchdog_ppid(self):
         from pathlib import Path
 
-        cli_file = Path(__file__).resolve().parents[1] / "vllm_mlx" / "cli.py"
+        cli_file = Path(__file__).resolve().parents[1] / "rapid_mlx" / "cli.py"
         source = cli_file.read_text()
         # Locate _spawn_chat_server body. The function is small (~150
         # lines) so a single-window scan is enough; pin the marker on
@@ -304,7 +304,7 @@ class TestInternalSpawnersStampWatchdog:
         from pathlib import Path
 
         share_file = (
-            Path(__file__).resolve().parents[1] / "vllm_mlx" / "share" / "cli.py"
+            Path(__file__).resolve().parents[1] / "rapid_mlx" / "share" / "cli.py"
         )
         source = share_file.read_text()
         assert "RAPID_MLX_WATCHDOG_PPID" in source, (
@@ -317,12 +317,12 @@ class TestInternalSpawnersStampWatchdog:
 
     def test_bench_serve_spawn_stamps_watchdog_ppid(self):
         """Codex r2 MAJOR: ``rapid-mlx bench --tier ...`` boots a
-        serve child via ``vllm_mlx/bench/_server.py``. Same SIGKILL-of-
+        serve child via ``rapid_mlx/bench/_server.py``. Same SIGKILL-of-
         supervisor orphan story applies; pin the env stamp here too."""
         from pathlib import Path
 
         bench_file = (
-            Path(__file__).resolve().parents[1] / "vllm_mlx" / "bench" / "_server.py"
+            Path(__file__).resolve().parents[1] / "rapid_mlx" / "bench" / "_server.py"
         )
         source = bench_file.read_text()
         assert "RAPID_MLX_WATCHDOG_PPID" in source, (
@@ -350,9 +350,9 @@ class TestInternalSpawnersStampWatchdog:
         repo_root = Path(__file__).resolve().parents[1]
         offenders: list[str] = []
         for spawner in (
-            repo_root / "vllm_mlx" / "cli.py",
-            repo_root / "vllm_mlx" / "share" / "cli.py",
-            repo_root / "vllm_mlx" / "bench" / "_server.py",
+            repo_root / "rapid_mlx" / "cli.py",
+            repo_root / "rapid_mlx" / "share" / "cli.py",
+            repo_root / "rapid_mlx" / "bench" / "_server.py",
         ):
             source = spawner.read_text()
             # We only care about the watchdog stamp itself, not any

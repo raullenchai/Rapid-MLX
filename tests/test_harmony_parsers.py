@@ -14,10 +14,10 @@ import json
 
 import pytest
 
-from vllm_mlx.reasoning import get_parser
-from vllm_mlx.reasoning.harmony_parser import HarmonyReasoningParser
-from vllm_mlx.tool_parsers import ToolParserManager
-from vllm_mlx.tool_parsers.harmony_tool_parser import HarmonyToolParser
+from rapid_mlx.reasoning import get_parser
+from rapid_mlx.reasoning.harmony_parser import HarmonyReasoningParser
+from rapid_mlx.tool_parsers import ToolParserManager
+from rapid_mlx.tool_parsers.harmony_tool_parser import HarmonyToolParser
 
 # ============================================================================
 # Tool Parser Tests
@@ -505,7 +505,7 @@ class TestHarmonyEnginePipeline:
         commentary structure, parser returned 0 calls, args leaked
         into content as plain text.
         """
-        from vllm_mlx.api.utils import clean_output_text
+        from rapid_mlx.api.utils import clean_output_text
 
         raw = (
             "<|channel|>analysis<|message|>We need to call get_weather "
@@ -537,7 +537,7 @@ class TestHarmonyEnginePipeline:
         chat responses with no tool calls would otherwise leak
         channel markers all the way to the wire.
         """
-        from vllm_mlx.api.utils import clean_output_text
+        from rapid_mlx.api.utils import clean_output_text
 
         raw = (
             "<|channel|>analysis<|message|>thinking<|end|>"
@@ -552,7 +552,7 @@ class TestHarmonyEnginePipeline:
         silently drop them — both the engine-layer guard and the tool
         parser need ``[\\w-]+``.
         """
-        from vllm_mlx.api.utils import clean_output_text
+        from rapid_mlx.api.utils import clean_output_text
 
         raw = (
             "<|channel|>analysis<|message|>thinking<|end|>"
@@ -580,7 +580,7 @@ class TestHarmonyEnginePipeline:
         ``<|channel|>commentary to=functions.NAME`` and so does not
         attach prior analysis text to the tool args.
         """
-        from vllm_mlx.api.utils import clean_output_text
+        from rapid_mlx.api.utils import clean_output_text
 
         raw = (
             "<|channel|>analysis<|message|>SHOULD_NOT_LEAK<|end|>"
@@ -1137,7 +1137,7 @@ class TestHarmonyHelperFunctions:
 
     def test_strip_control_tokens_removes_all(self):
         """_strip_control_tokens removes all harmony control tokens."""
-        from vllm_mlx.tool_parsers.harmony_tool_parser import _strip_control_tokens
+        from rapid_mlx.tool_parsers.harmony_tool_parser import _strip_control_tokens
 
         text = "<|start|>Hello<|end|>"
         result = _strip_control_tokens(text)
@@ -1147,7 +1147,7 @@ class TestHarmonyHelperFunctions:
 
     def test_strip_control_tokens_all_types(self):
         """Verify all control token types are stripped."""
-        from vllm_mlx.tool_parsers.harmony_tool_parser import _strip_control_tokens
+        from rapid_mlx.tool_parsers.harmony_tool_parser import _strip_control_tokens
 
         tokens = [
             "<|start|>",
@@ -1164,7 +1164,7 @@ class TestHarmonyHelperFunctions:
 
     def test_strip_control_tokens_cleans_channel_names(self):
         """_strip_control_tokens also removes channel names like 'analysis', 'final'."""
-        from vllm_mlx.tool_parsers.harmony_tool_parser import _strip_control_tokens
+        from rapid_mlx.tool_parsers.harmony_tool_parser import _strip_control_tokens
 
         text = "<|channel|>analysis <|message|>Some reasoning<|end|>"
         result = _strip_control_tokens(text)
@@ -1173,7 +1173,7 @@ class TestHarmonyHelperFunctions:
 
     def test_strip_control_tokens_cleans_function_references(self):
         """_strip_control_tokens removes to=functions.name patterns."""
-        from vllm_mlx.tool_parsers.harmony_tool_parser import _strip_control_tokens
+        from rapid_mlx.tool_parsers.harmony_tool_parser import _strip_control_tokens
 
         text = "commentary to=functions.get_weather some text"
         result = _strip_control_tokens(text)
@@ -1182,7 +1182,7 @@ class TestHarmonyHelperFunctions:
 
     def test_strip_control_tokens_plain_text(self):
         """_strip_control_tokens on plain text returns it unchanged."""
-        from vllm_mlx.tool_parsers.harmony_tool_parser import _strip_control_tokens
+        from rapid_mlx.tool_parsers.harmony_tool_parser import _strip_control_tokens
 
         text = "Just some regular text."
         result = _strip_control_tokens(text)
@@ -1190,13 +1190,13 @@ class TestHarmonyHelperFunctions:
 
     def test_strip_control_tokens_empty(self):
         """_strip_control_tokens on empty string returns empty."""
-        from vllm_mlx.tool_parsers.harmony_tool_parser import _strip_control_tokens
+        from rapid_mlx.tool_parsers.harmony_tool_parser import _strip_control_tokens
 
         assert _strip_control_tokens("") == ""
 
     def test_is_control_token_valid_tokens(self):
         """_is_control_token returns True for all harmony tokens."""
-        from vllm_mlx.tool_parsers.harmony_tool_parser import _is_control_token
+        from rapid_mlx.tool_parsers.harmony_tool_parser import _is_control_token
 
         valid_tokens = [
             "<|start|>",
@@ -1212,14 +1212,14 @@ class TestHarmonyHelperFunctions:
 
     def test_is_control_token_with_whitespace(self):
         """_is_control_token handles surrounding whitespace."""
-        from vllm_mlx.tool_parsers.harmony_tool_parser import _is_control_token
+        from rapid_mlx.tool_parsers.harmony_tool_parser import _is_control_token
 
         assert _is_control_token("  <|start|>  ") is True
         assert _is_control_token("\n<|call|>\n") is True
 
     def test_is_control_token_non_tokens(self):
         """_is_control_token returns False for non-tokens."""
-        from vllm_mlx.tool_parsers.harmony_tool_parser import _is_control_token
+        from rapid_mlx.tool_parsers.harmony_tool_parser import _is_control_token
 
         assert _is_control_token("hello") is False
         assert _is_control_token("<|unknown|>") is False
@@ -1228,7 +1228,7 @@ class TestHarmonyHelperFunctions:
 
     def test_is_control_token_partial(self):
         """_is_control_token returns False for partial tokens."""
-        from vllm_mlx.tool_parsers.harmony_tool_parser import _is_control_token
+        from rapid_mlx.tool_parsers.harmony_tool_parser import _is_control_token
 
         assert _is_control_token("<|start") is False
         assert _is_control_token("start|>") is False
@@ -1243,7 +1243,7 @@ class TestHarmonyCLIIntegration:
     """Tests that harmony and gpt-oss are valid CLI parser choices.
 
     Pre-PR #433 these tests grepped a hardcoded ``choices=[...]`` list in
-    ``vllm_mlx/cli.py``. PR #433 removed that list in favor of validating
+    ``rapid_mlx/cli.py``. PR #433 removed that list in favor of validating
     against the live ``ToolParserManager`` registry, so the helper that
     read the source is gone — the tests now assert registry membership
     directly. Codex follow-up dead-code cleanup.
@@ -1256,14 +1256,14 @@ class TestHarmonyCLIIntegration:
         choices list was removed in favor of live-registry validation.
         This test now asserts the registry-derived path accepts the name.
         """
-        from vllm_mlx.tool_parsers import ToolParserManager
+        from rapid_mlx.tool_parsers import ToolParserManager
 
         assert "harmony" in ToolParserManager.tool_parsers
 
     def test_gpt_oss_in_cli_choices(self):
         """Verify 'gpt-oss' is accepted by CLI --tool-call-parser
         via the registry-derived validation (see test above)."""
-        from vllm_mlx.tool_parsers import ToolParserManager
+        from rapid_mlx.tool_parsers import ToolParserManager
 
         assert "gpt-oss" in ToolParserManager.tool_parsers
 
@@ -1295,7 +1295,7 @@ class TestServeLogLevelFlags:
         # Building the parser registers the share subcommand, which
         # imports ``websockets`` — absent from the no-MLX CI lane.
         pytest.importorskip("websockets")
-        from vllm_mlx.cli import build_parser
+        from rapid_mlx.cli import build_parser
 
         args = build_parser().parse_args(["serve", "m", "--log-level", "DEBUG"])
         assert args.log_level == "DEBUG"
@@ -1305,7 +1305,7 @@ class TestServeLogLevelFlags:
     def test_module_server_has_log_level_flag(self):
         from pathlib import Path
 
-        source = Path("vllm_mlx/server.py").read_text()
+        source = Path("rapid_mlx/server.py").read_text()
         assert '"--log-level"' in source
         assert 'choices=["DEBUG", "INFO", "WARNING", "ERROR"]' in source
 

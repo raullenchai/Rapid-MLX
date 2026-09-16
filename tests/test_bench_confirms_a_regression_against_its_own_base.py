@@ -294,7 +294,7 @@ def test_a_dependency_change_is_never_excused_by_the_base(
         pr,
         _base(344.0, 419.0),
         choice.model_id,
-        files_changed=["pyproject.toml", "vllm_mlx/engine.py"],
+        files_changed=["pyproject.toml", "rapid_mlx/engine.py"],
     )
 
     assert not verdict["preexisting"], verdict["finding"]
@@ -302,6 +302,6 @@ def test_a_dependency_change_is_never_excused_by_the_base(
 
     # Same numbers, ordinary source change → the base is allowed to speak.
     ordinary = stress_e2e_bench._resolve_bench_against_base(
-        pr, _base(344.0, 419.0), choice.model_id, files_changed=["vllm_mlx/engine.py"]
+        pr, _base(344.0, 419.0), choice.model_id, files_changed=["rapid_mlx/engine.py"]
     )
     assert ordinary["preexisting"], ordinary["finding"]

@@ -24,8 +24,8 @@ from benchmark_deepseek_v41_dspark import (  # noqa: E402
     _run_batched_dspark,
 )
 
-from vllm_mlx.models.deepseek_v41_native import dspark as rapid_dspark  # noqa: E402
-from vllm_mlx.models.deepseek_v41_native.load import load  # noqa: E402
+from rapid_mlx.models.deepseek_v41_native import dspark as rapid_dspark  # noqa: E402
+from rapid_mlx.models.deepseek_v41_native.load import load  # noqa: E402
 
 PROMPTS = (
     (

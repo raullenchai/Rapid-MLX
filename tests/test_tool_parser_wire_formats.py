@@ -6,7 +6,7 @@ Forcing function for the bug class surfaced by #425 (jpcarranza94, PR #426)
 and the v0.6.62 #429 meta-fix: when a new parser is added, the wire
 format(s) it handles MUST be declared as a class attribute
 ``EXPECTED_WIRE_FORMATS``, drawn from the canonical
-``WIRE_FORMAT_LABELS`` set in ``vllm_mlx/tool_parsers/abstract_tool_parser.py``.
+``WIRE_FORMAT_LABELS`` set in ``rapid_mlx/tool_parsers/abstract_tool_parser.py``.
 
 The point is to make the parser ↔ format mapping *machine-checkable*
 rather than buried in regex patterns. Three concrete consumers:
@@ -30,8 +30,8 @@ from __future__ import annotations
 
 import pytest
 
-from vllm_mlx.tool_parsers import ToolParserManager
-from vllm_mlx.tool_parsers.abstract_tool_parser import WIRE_FORMAT_LABELS
+from rapid_mlx.tool_parsers import ToolParserManager
+from rapid_mlx.tool_parsers.abstract_tool_parser import WIRE_FORMAT_LABELS
 
 # Meta-parsers that don't handle a wire format themselves — they route to
 # concrete parsers. ``EXPECTED_WIRE_FORMATS = ()`` is the correct value;
@@ -93,7 +93,7 @@ def test_every_parser_declares_wire_formats(parser_cls, names):
         f"{parser_cls.__name__} (registered as {sorted(names)!r}) does not "
         f"declare EXPECTED_WIRE_FORMATS. Set it to a tuple of one or more "
         f"labels from WIRE_FORMAT_LABELS in "
-        f"vllm_mlx/tool_parsers/abstract_tool_parser.py. If this is a "
+        f"rapid_mlx/tool_parsers/abstract_tool_parser.py. If this is a "
         f"meta/router parser with no wire format of its own, add the "
         f"class name to _META_PARSER_CLASSES in this test file."
     )

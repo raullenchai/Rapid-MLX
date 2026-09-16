@@ -39,8 +39,8 @@ import pytest
 
 pytestmark = pytest.mark.requires_mlx
 
-from vllm_mlx.engine.base import GenerationOutput
-from vllm_mlx.engine.batched import (
+from rapid_mlx.engine.base import GenerationOutput
+from rapid_mlx.engine.batched import (
     _HARMONY_NO_THINKING_SUFFIX_TOKENS,
     BatchedEngine,
 )

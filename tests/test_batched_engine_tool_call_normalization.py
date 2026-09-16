@@ -7,7 +7,7 @@ contract gives it as a JSON string. Without normalization the template render
 raises mid-batch with ``AttributeError: 'str' object has no attribute 'items'``.
 """
 
-from vllm_mlx.engine.batched import _normalize_tool_call_arguments_for_template
+from rapid_mlx.engine.batched import _normalize_tool_call_arguments_for_template
 
 
 class TestToolCallReplayNormalization:

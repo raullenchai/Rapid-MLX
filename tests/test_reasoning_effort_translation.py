@@ -29,13 +29,13 @@ from types import SimpleNamespace
 
 import pytest
 
-from vllm_mlx.api.models import (
+from rapid_mlx.api.models import (
     OPENAI_REASONING_EFFORT_TO_MAX_TOKENS,
     ChatCompletionRequest,
 )
-from vllm_mlx.api.responses_adapter import responses_to_openai
-from vllm_mlx.api.responses_models import ResponsesRequest
-from vllm_mlx.service.helpers import (
+from rapid_mlx.api.responses_adapter import responses_to_openai
+from rapid_mlx.api.responses_models import ResponsesRequest
+from rapid_mlx.service.helpers import (
     _client_signalled_reasoning_intent,
     _extract_thinking_from_request,
     _resolve_enable_thinking,
@@ -108,7 +108,7 @@ class TestMappingTable:
     def test_graded_tiers_reuse_anthropic_magnitudes(self):
         """low/medium/high reuse the Anthropic surface's tiers so the same
         effort name yields the same budget across API dialects."""
-        from vllm_mlx.api.anthropic_models import (
+        from rapid_mlx.api.anthropic_models import (
             ANTHROPIC_EFFORT_TO_REASONING_MAX_TOKENS,
         )
 

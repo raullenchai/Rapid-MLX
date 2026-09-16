@@ -3,12 +3,12 @@
 Tests for request management classes.
 
 Tests RequestStatus, SamplingParams, Request, and RequestOutput
-from vllm_mlx/request.py. No MLX dependency.
+from rapid_mlx/request.py. No MLX dependency.
 """
 
 import time
 
-from vllm_mlx.request import Request, RequestOutput, RequestStatus, SamplingParams
+from rapid_mlx.request import Request, RequestOutput, RequestStatus, SamplingParams
 
 
 class TestRequestStatus:

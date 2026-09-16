@@ -18,22 +18,22 @@ sys.path.insert(0, str(REPO_ROOT / "scripts"))
 
 from benchmark_deepseek_v41_dspark import _prompt, _run_ar  # noqa: E402
 
-from vllm_mlx.models.deepseek_v41_native.attention import (  # noqa: E402
+from rapid_mlx.models.deepseek_v41_native.attention import (  # noqa: E402
     Attention,
     window_idx_matrix,
 )
-from vllm_mlx.models.deepseek_v41_native.fakequant import (
+from rapid_mlx.models.deepseek_v41_native.fakequant import (
     fake_quant_fp8_ue8m0,  # noqa: E402
 )
-from vllm_mlx.models.deepseek_v41_native.hyper_connections import (  # noqa: E402
+from rapid_mlx.models.deepseek_v41_native.hyper_connections import (  # noqa: E402
     hc_mixes,
     hc_post,
     hc_pre,
 )
-from vllm_mlx.models.deepseek_v41_native.layers import rope_tail  # noqa: E402
-from vllm_mlx.models.deepseek_v41_native.load import load  # noqa: E402
-from vllm_mlx.models.deepseek_v41_native.model import Block  # noqa: E402
-from vllm_mlx.models.deepseek_v41_native.sparse_attention import (
+from rapid_mlx.models.deepseek_v41_native.layers import rope_tail  # noqa: E402
+from rapid_mlx.models.deepseek_v41_native.load import load  # noqa: E402
+from rapid_mlx.models.deepseek_v41_native.model import Block  # noqa: E402
+from rapid_mlx.models.deepseek_v41_native.sparse_attention import (
     sparse_attn,  # noqa: E402
 )
 

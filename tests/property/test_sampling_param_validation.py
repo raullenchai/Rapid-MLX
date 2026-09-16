@@ -34,8 +34,8 @@ from hypothesis import given
 from hypothesis import strategies as st
 from pydantic import ValidationError
 
-from vllm_mlx.api.anthropic_models import AnthropicRequest
-from vllm_mlx.api.models import ChatCompletionRequest, CompletionRequest
+from rapid_mlx.api.anthropic_models import AnthropicRequest
+from rapid_mlx.api.models import ChatCompletionRequest, CompletionRequest
 
 from .strategies import (
     in_range_floats,

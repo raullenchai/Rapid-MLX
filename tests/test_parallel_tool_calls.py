@@ -12,7 +12,7 @@ route when the client passes False. The default (None / True) preserves
 multi-call output.
 """
 
-from vllm_mlx.api.models import (
+from rapid_mlx.api.models import (
     ChatCompletionRequest,
     FunctionCall,
     Message,
@@ -131,10 +131,10 @@ class TestRouteIntegration:
         from fastapi.testclient import TestClient
 
         # Patch the tool-call parser the route uses so we control output.
-        import vllm_mlx.routes.chat as chat_module
-        from vllm_mlx.config import reset_config
-        from vllm_mlx.engine.base import GenerationOutput
-        from vllm_mlx.routes.chat import router as chat_router
+        import rapid_mlx.routes.chat as chat_module
+        from rapid_mlx.config import reset_config
+        from rapid_mlx.engine.base import GenerationOutput
+        from rapid_mlx.routes.chat import router as chat_router
 
         def _fake_parse(text, request, *, structured_tool_calls=None):
             return (

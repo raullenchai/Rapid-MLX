@@ -218,7 +218,7 @@ def test_mllm_scheduler_uses_wrap_future_pattern():
     """
     import dis
 
-    from vllm_mlx import mllm_scheduler
+    from rapid_mlx import mllm_scheduler
 
     # Walk the compiled bytecode of the coroutine. ``_process_loop`` is
     # an async function; ``dis.get_instructions`` works on the

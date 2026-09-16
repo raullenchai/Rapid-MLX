@@ -14,13 +14,13 @@ import mlx.core as mx
 from mlx_lm import load
 from mlx_lm.models.cache import make_prompt_cache
 
-from vllm_mlx.compiled_decode import CompiledDecodeStep, convert_cache
-from vllm_mlx.compiled_precision import install_qwen35_attention_gate_precision
-from vllm_mlx.gdn_in_proj_fusion import fuse_gdn_in_proj
-from vllm_mlx.moe_fusion import fuse_gate_up
-from vllm_mlx.patches.qwen3_5_eager_dispatch import install_qwen3_5_eager_dispatch
-from vllm_mlx.qwen35_fused_gdn_decode import install_qwen35_fused_gdn_decode
-from vllm_mlx.qwen35_moe_router import install_qwen35_moe_router
+from rapid_mlx.compiled_decode import CompiledDecodeStep, convert_cache
+from rapid_mlx.compiled_precision import install_qwen35_attention_gate_precision
+from rapid_mlx.gdn_in_proj_fusion import fuse_gdn_in_proj
+from rapid_mlx.moe_fusion import fuse_gate_up
+from rapid_mlx.patches.qwen3_5_eager_dispatch import install_qwen3_5_eager_dispatch
+from rapid_mlx.qwen35_fused_gdn_decode import install_qwen35_fused_gdn_decode
+from rapid_mlx.qwen35_moe_router import install_qwen35_moe_router
 
 PROMPTS = {
     "coding": (

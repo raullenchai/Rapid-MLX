@@ -177,7 +177,7 @@ mutually exclusive modes—still fail before generation.
 Generate the all-alias/all-method policy report with:
 
 ```bash
-python -m vllm_mlx.spec_decode.report
+python -m rapid_mlx.spec_decode.report
 ```
 
 #### MTP is not free — measure before you enable it
@@ -471,7 +471,7 @@ flag always wins over its env-var fallback when both are set.
 | `RAPID_MLX_DEFAULT_MODEL` | `qwen3.5-4b-4bit` | Default model alias used by `rapid-mlx launch` when `--model` is not given |
 | `RAPID_MLX_DISABLE_VERSION_CHECK` | unset | Set to any non-empty value to skip new-version checks, including the passive `serve` startup-log notice |
 | `RAPID_MLX_TRUST_REMOTE_CODE` | unset | Set `0`/`false`/`no`/`off` to force `trust_remote_code=False` process-wide for tokenizer loading |
-| `VLLM_MLX_TEST_MODEL` | unset | Default model for tests |
+| `RAPID_MLX_TEST_MODEL` | unset | Default model for tests (legacy `VLLM_MLX_TEST_MODEL` still honored) |
 | `HF_TOKEN` | unset | HuggingFace authentication token |
 
 ### Client-side (SDK) variables

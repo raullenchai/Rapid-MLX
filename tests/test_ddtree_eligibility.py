@@ -1,5 +1,5 @@
 # SPDX-License-Identifier: Apache-2.0
-"""Unit tests for ``vllm_mlx/speculative/ddtree/eligibility.py``."""
+"""Unit tests for ``rapid_mlx/speculative/ddtree/eligibility.py``."""
 
 from __future__ import annotations
 
@@ -9,8 +9,8 @@ import pytest
 
 pytestmark = pytest.mark.requires_mlx
 
-from vllm_mlx.model_aliases import AliasProfile
-from vllm_mlx.speculative.ddtree.eligibility import (
+from rapid_mlx.model_aliases import AliasProfile
+from rapid_mlx.speculative.ddtree.eligibility import (
     DDTreeUnavailable,
     check,
     report,
@@ -92,7 +92,7 @@ def test_report_collects_all_failures() -> None:
 
 
 def test_qwen3_5_9b_8bit_alias_passes_check() -> None:
-    from vllm_mlx.model_aliases import resolve_profile
+    from rapid_mlx.model_aliases import resolve_profile
 
     profile = resolve_profile("qwen3.5-9b-8bit")
     assert profile is not None, "qwen3.5-9b-8bit alias missing"
@@ -100,7 +100,7 @@ def test_qwen3_5_9b_8bit_alias_passes_check() -> None:
 
 
 def test_qwen3_5_9b_4bit_alias_fails_with_4bit_reason() -> None:
-    from vllm_mlx.model_aliases import resolve_profile
+    from rapid_mlx.model_aliases import resolve_profile
 
     profile = resolve_profile("qwen3.5-9b-4bit")
     assert profile is not None
@@ -180,7 +180,7 @@ def test_verified_target_with_any_override_is_experimental(overrides) -> None:
 def test_runtime_patches_rope_parameters_without_copying_weights(
     tmp_path, monkeypatch
 ) -> None:
-    from vllm_mlx.speculative.ddtree import runtime
+    from rapid_mlx.speculative.ddtree import runtime
 
     source = tmp_path / "source"
     source.mkdir()
@@ -212,7 +212,7 @@ def test_runtime_patches_rope_parameters_without_copying_weights(
 
 
 def test_runtime_replaces_stale_ddtree_patch_dir(tmp_path, monkeypatch) -> None:
-    from vllm_mlx.speculative.ddtree import runtime
+    from rapid_mlx.speculative.ddtree import runtime
 
     source = tmp_path / "source"
     source.mkdir()
@@ -248,7 +248,7 @@ def test_runtime_replaces_stale_ddtree_patch_dir(tmp_path, monkeypatch) -> None:
 def test_runtime_cleans_temp_patch_dir_on_write_failure(tmp_path, monkeypatch) -> None:
     import pytest
 
-    from vllm_mlx.speculative.ddtree import runtime
+    from rapid_mlx.speculative.ddtree import runtime
 
     source = tmp_path / "source"
     source.mkdir()
@@ -285,12 +285,12 @@ def test_runtime_cleans_temp_patch_dir_on_write_failure(tmp_path, monkeypatch) -
 def test_eligible_aliases_surfaces_alias_registry_errors(monkeypatch) -> None:
     import pytest
 
-    from vllm_mlx.speculative.ddtree import eligibility
+    from rapid_mlx.speculative.ddtree import eligibility
 
     def boom():
         raise RuntimeError("alias registry broken")
 
-    monkeypatch.setattr("vllm_mlx.model_aliases.list_profiles", boom)
+    monkeypatch.setattr("rapid_mlx.model_aliases.list_profiles", boom)
 
     with pytest.raises(RuntimeError, match="alias registry broken"):
         eligibility.eligible_aliases()
@@ -299,7 +299,7 @@ def test_eligible_aliases_surfaces_alias_registry_errors(monkeypatch) -> None:
 def test_runtime_patches_qwen35_split_prefill() -> None:
     import mlx.core as mx
 
-    from vllm_mlx.speculative.ddtree import runtime
+    from rapid_mlx.speculative.ddtree import runtime
 
     class Cache:
         offset = 0

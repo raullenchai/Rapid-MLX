@@ -36,7 +36,7 @@ from __future__ import annotations
 import shlex
 import sys
 
-from vllm_mlx.agents.testing import (
+from rapid_mlx.agents.testing import (
     E2E_CHAT_EXPECTED,
     E2E_CHAT_QUERY,
     E2E_FIRST_LINE,
@@ -384,7 +384,7 @@ def test_file_read_reports_the_launch_failure_instead_of_a_wrong_answer():
 def _plain_chat_verdict(content: str, monkeypatch) -> TestStatus:
     """Grade `content` as `_test_plain_chat` would, without a live server."""
     monkeypatch.setattr(
-        "vllm_mlx.agents.testing._api_call",
+        "rapid_mlx.agents.testing._api_call",
         lambda *_a, **_k: {"choices": [{"message": {"content": content}}]},
     )
     return _test_plain_chat("http://localhost:8000/v1", "model").status

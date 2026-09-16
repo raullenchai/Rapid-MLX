@@ -128,7 +128,7 @@ def get_video_info(video_path: str) -> dict:
 
 def test_frame_extraction(video_path: str):
     """Test video frame extraction."""
-    from vllm_mlx.models.vlm import extract_video_frames_smart
+    from rapid_mlx.models.vlm import extract_video_frames_smart
 
     logger.info("\n=== Testing Frame Extraction ===")
 
@@ -147,7 +147,7 @@ def test_frame_extraction(video_path: str):
 
 def test_video_generation(video_path: str, model_name: str):
     """Test video understanding with VLM."""
-    from vllm_mlx.models.vlm import MLXVisionLanguageModel
+    from rapid_mlx.models.vlm import MLXVisionLanguageModel
 
     logger.info("\n=== Testing Video Generation ===")
     logger.info(f"Model: {model_name}")
@@ -338,7 +338,7 @@ def main():
     # Test video URL if provided
     if args.video_url:
         if model is None:
-            from vllm_mlx.models.vlm import MLXVisionLanguageModel
+            from rapid_mlx.models.vlm import MLXVisionLanguageModel
 
             logger.info(f"\nLoading model for URL test: {args.model}")
             model = MLXVisionLanguageModel(args.model)

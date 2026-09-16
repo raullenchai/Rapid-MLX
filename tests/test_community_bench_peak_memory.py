@@ -4,7 +4,7 @@ installed per test), so the hosted Linux lane covers both API spellings."""
 
 from __future__ import annotations
 
-from vllm_mlx.community_bench import runner
+from rapid_mlx.community_bench import runner
 
 
 def test_peak_memory_prefers_the_undeprecated_mlx_api(monkeypatch) -> None:

@@ -11,9 +11,9 @@ from pathlib import Path
 
 import pytest
 
-from vllm_mlx.doctor import env_health as eh
-from vllm_mlx.doctor.cli import doctor_command, render, report_document
-from vllm_mlx.doctor.repairs import (
+from rapid_mlx.doctor import env_health as eh
+from rapid_mlx.doctor.cli import doctor_command, render, report_document
+from rapid_mlx.doctor.repairs import (
     RepairAction,
     RepairResult,
     apply_repairs,
@@ -97,7 +97,7 @@ def test_only_deep_enables_deep_probe(monkeypatch):
         calls.append(kwargs)
         return eh.Report()
 
-    monkeypatch.setattr("vllm_mlx.doctor.cli.run_all", run_all)
+    monkeypatch.setattr("rapid_mlx.doctor.cli.run_all", run_all)
     args = Namespace(
         tier=None,
         verbose=False,
@@ -232,11 +232,11 @@ def test_declined_interactive_repair_is_recorded(monkeypatch, capsys):
             return True
 
     monkeypatch.setattr(
-        "vllm_mlx.doctor.cli.run_all", lambda **_kwargs: _service_report()
+        "rapid_mlx.doctor.cli.run_all", lambda **_kwargs: _service_report()
     )
-    monkeypatch.setattr("vllm_mlx.doctor.cli.sys.stdin", InteractiveInput("no\n"))
+    monkeypatch.setattr("rapid_mlx.doctor.cli.sys.stdin", InteractiveInput("no\n"))
     monkeypatch.setattr(
-        "vllm_mlx.doctor.repairs.plan_repairs",
+        "rapid_mlx.doctor.repairs.plan_repairs",
         lambda _report: [
             RepairAction(
                 id="repair.test",
@@ -249,7 +249,7 @@ def test_declined_interactive_repair_is_recorded(monkeypatch, capsys):
     def must_not_apply(*_args, **_kwargs):
         raise AssertionError("declined repair was applied")
 
-    monkeypatch.setattr("vllm_mlx.doctor.repairs.apply_repairs", must_not_apply)
+    monkeypatch.setattr("rapid_mlx.doctor.repairs.apply_repairs", must_not_apply)
     args = Namespace(
         tier=None,
         verbose=True,
@@ -276,7 +276,7 @@ def test_declined_interactive_repair_is_recorded(monkeypatch, capsys):
 def test_fix_json_uses_schema_v2_even_when_no_action_is_needed(monkeypatch, capsys):
     healthy = _service_report(process=eh.CheckStatus.OK, live=eh.CheckStatus.OK)
     monkeypatch.setattr(
-        "vllm_mlx.doctor.cli._collect_report_isolated", lambda **_kwargs: healthy
+        "rapid_mlx.doctor.cli._collect_report_isolated", lambda **_kwargs: healthy
     )
     args = Namespace(
         tier=None,
@@ -300,9 +300,9 @@ def test_fix_json_uses_schema_v2_even_when_no_action_is_needed(monkeypatch, caps
 
 
 def test_noninteractive_fix_requires_yes_before_diagnosis(monkeypatch):
-    monkeypatch.setattr("vllm_mlx.doctor.cli.sys.stdin", io.StringIO())
+    monkeypatch.setattr("rapid_mlx.doctor.cli.sys.stdin", io.StringIO())
     monkeypatch.setattr(
-        "vllm_mlx.doctor.cli._collect_report_isolated",
+        "rapid_mlx.doctor.cli._collect_report_isolated",
         lambda **_kwargs: (_ for _ in ()).throw(
             AssertionError("diagnosis ran before authorization")
         ),
@@ -354,9 +354,9 @@ def test_verified_repair_triggers_fresh_deep_report(monkeypatch, capsys):
         collections.append(kwargs)
         return next(reports)
 
-    monkeypatch.setattr("vllm_mlx.doctor.cli._collect_report_isolated", collect)
+    monkeypatch.setattr("rapid_mlx.doctor.cli._collect_report_isolated", collect)
     monkeypatch.setattr(
-        "vllm_mlx.doctor.repairs.plan_repairs",
+        "rapid_mlx.doctor.repairs.plan_repairs",
         lambda _report: [
             RepairAction(
                 id="repair.test",
@@ -366,7 +366,7 @@ def test_verified_repair_triggers_fresh_deep_report(monkeypatch, capsys):
         ],
     )
     monkeypatch.setattr(
-        "vllm_mlx.doctor.repairs.apply_repairs",
+        "rapid_mlx.doctor.repairs.apply_repairs",
         lambda *_args, **_kwargs: [
             RepairResult(
                 id="repair.test",
@@ -432,7 +432,7 @@ def test_repair_is_success_only_after_verification():
 def test_repair_command_success_without_health_is_unverified(monkeypatch):
     action = plan_repairs(_service_report())
     clock = iter((0.0, 0.0, 1.0, 1.0))
-    monkeypatch.setattr("vllm_mlx.doctor.repairs.time.monotonic", lambda: next(clock))
+    monkeypatch.setattr("rapid_mlx.doctor.repairs.time.monotonic", lambda: next(clock))
 
     def run(argv, **_kwargs):
         return subprocess.CompletedProcess(argv, 0, "", "")
@@ -456,7 +456,7 @@ def test_repair_without_verifier_or_with_crashing_verifier_is_unverified(monkeyp
     assert missing[0].status == "unverified"
 
     clock = iter((0.0, 0.0, 1.0, 1.0))
-    monkeypatch.setattr("vllm_mlx.doctor.repairs.time.monotonic", lambda: next(clock))
+    monkeypatch.setattr("rapid_mlx.doctor.repairs.time.monotonic", lambda: next(clock))
     crashing = apply_repairs(
         action,
         run=run,
@@ -515,7 +515,7 @@ def test_service_verifier_requires_registration_pid_and_liveness(monkeypatch):
     healthy = {"registered": True, "pid": 42, "livez": True}
     status = dict(healthy)
     monkeypatch.setattr(
-        "vllm_mlx.headless_service.status.collect_status", lambda **_kwargs: status
+        "rapid_mlx.headless_service.status.collect_status", lambda **_kwargs: status
     )
     assert service_is_live() is True
 

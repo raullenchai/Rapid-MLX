@@ -38,7 +38,7 @@ def smoke_src() -> str:
 
 def test_dsh_is_a_first_class_harness_profile() -> None:
     """``bench --tier harness`` must actually sweep deepseek-harness."""
-    from vllm_mlx.bench.tier_runner import HARNESS_PROFILES
+    from rapid_mlx.bench.tier_runner import HARNESS_PROFILES
 
     assert "deepseek-harness" in HARNESS_PROFILES
 
@@ -50,7 +50,7 @@ def test_harness_profiles_mirror_in_release_check_is_in_lockstep() -> None:
     module load), so the mirror is copy-paste by design — and copy-paste
     is exactly what drifts. Compare the two directly.
     """
-    from vllm_mlx.bench.tier_runner import HARNESS_PROFILES
+    from rapid_mlx.bench.tier_runner import HARNESS_PROFILES
 
     mirror_src = (REPO_ROOT / "scripts" / "release_check_m3_random.py").read_text(
         encoding="utf-8"
@@ -75,7 +75,7 @@ def test_bench_submission_schema_accepts_every_harness_profile() -> None:
     """
     import json
 
-    from vllm_mlx.bench.tier_runner import HARNESS_PROFILES
+    from rapid_mlx.bench.tier_runner import HARNESS_PROFILES
 
     schema = json.loads(
         (REPO_ROOT / "community-benchmarks" / "schema.json").read_text(encoding="utf-8")
@@ -160,7 +160,7 @@ def test_release_gate_does_not_trust_dsh_exit_code(smoke_src: str) -> None:
 
 def test_dsh_profile_warns_that_exit_code_is_not_a_pass_signal() -> None:
     """The trap above must be documented where an integrator will hit it."""
-    from vllm_mlx.agents import get_profile, load_profiles
+    from rapid_mlx.agents import get_profile, load_profiles
 
     load_profiles()
     profile = get_profile("dsh")

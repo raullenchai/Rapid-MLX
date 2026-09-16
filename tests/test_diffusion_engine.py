@@ -6,7 +6,7 @@ We mock mlx-vlm at the import surface (``mlx_vlm.utils.load``,
 ``mlx_vlm.generate.diffusion.stream_diffusion_generate``, etc.) so the
 tests run without weights and without touching the GPU. The mock
 shape mirrors the actual upstream contract documented in
-``vllm_mlx/runtime/diffusion_lane.py`` so any drift between the
+``rapid_mlx/runtime/diffusion_lane.py`` so any drift between the
 expected and real surface is loud at unit-test time.
 """
 
@@ -33,7 +33,7 @@ def _reset_config_after_module():
 
     Several tests below deliberately mutate the process-wide config
     singleton (e.g. ``cfg.tool_call_parser = "hermes"`` to exercise the
-    diffusion tool-call veto) via :func:`vllm_mlx.config.reset_config`
+    diffusion tool-call veto) via :func:`rapid_mlx.config.reset_config`
     plus field assignment, but never restore it. Without this teardown
     the last such mutation escapes the module and pollutes any later
     test that reads a server-global parser without pinning it — e.g.
@@ -44,7 +44,7 @@ def _reset_config_after_module():
     ordering or state (the leak only matters at the module boundary).
     """
     yield
-    from vllm_mlx.config import reset_config
+    from rapid_mlx.config import reset_config
 
     reset_config()
 
@@ -234,7 +234,7 @@ class TestLoadAndIntrospection:
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         _install_mlx_vlm_mock(monkeypatch)
-        from vllm_mlx.runtime.diffusion_lane import DiffusionEngine
+        from rapid_mlx.runtime.diffusion_lane import DiffusionEngine
 
         engine = DiffusionEngine(model_name="x/y")
         engine._load_blocking()
@@ -246,7 +246,7 @@ class TestLoadAndIntrospection:
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         _install_mlx_vlm_mock(monkeypatch, is_diffusion=False)
-        from vllm_mlx.runtime.diffusion_lane import DiffusionEngine
+        from rapid_mlx.runtime.diffusion_lane import DiffusionEngine
 
         engine = DiffusionEngine(model_name="x/y")
         with pytest.raises(RuntimeError, match="not a block-diffusion model"):
@@ -265,7 +265,7 @@ class TestLoadAndIntrospection:
             is_diffusion=True,
             model=FakeMaskedLmDiffusionModel(),
         )
-        from vllm_mlx.runtime.diffusion_lane import DiffusionEngine
+        from rapid_mlx.runtime.diffusion_lane import DiffusionEngine
 
         engine = DiffusionEngine(model_name="x/y")
         with pytest.raises(RuntimeError, match="not a block-diffusion model"):
@@ -277,7 +277,7 @@ class TestPromptAndTokenAccounting:
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         _install_mlx_vlm_mock(monkeypatch)
-        from vllm_mlx.runtime.diffusion_lane import DiffusionEngine
+        from rapid_mlx.runtime.diffusion_lane import DiffusionEngine
 
         engine = DiffusionEngine(model_name="x/y")
         engine._load_blocking()
@@ -294,7 +294,7 @@ class TestPromptAndTokenAccounting:
         # routes/chat.py then runs the gemma4 text parser against the
         # canvas output to recover structured ``tool_calls``.
         _install_mlx_vlm_mock(monkeypatch)
-        from vllm_mlx.runtime.diffusion_lane import DiffusionEngine
+        from rapid_mlx.runtime.diffusion_lane import DiffusionEngine
 
         engine = DiffusionEngine(model_name="diffusion-gemma-26b-4bit")
         engine._load_blocking()
@@ -322,7 +322,7 @@ class TestPromptAndTokenAccounting:
         # otherwise raise ``TypeError`` and turn a frontend's
         # incidentally-attached tools list into a 500.
         _install_mlx_vlm_mock(monkeypatch)
-        from vllm_mlx.runtime.diffusion_lane import DiffusionEngine
+        from rapid_mlx.runtime.diffusion_lane import DiffusionEngine
 
         engine = DiffusionEngine(model_name="some/random-hf-path")
         engine._load_blocking()
@@ -345,11 +345,11 @@ class TestPromptAndTokenAccounting:
         # tools=None and tools=[] are the bare-chat case — no warning
         # should fire (otherwise every plain message spams serve logs).
         _install_mlx_vlm_mock(monkeypatch)
-        from vllm_mlx.runtime.diffusion_lane import DiffusionEngine
+        from rapid_mlx.runtime.diffusion_lane import DiffusionEngine
 
         engine = DiffusionEngine(model_name="x/y")
         engine._load_blocking()
-        with caplog.at_level("WARNING", logger="vllm_mlx.runtime.diffusion_lane"):
+        with caplog.at_level("WARNING", logger="rapid_mlx.runtime.diffusion_lane"):
             engine.build_prompt([{"role": "user", "content": "hi"}])
             engine.build_prompt([{"role": "user", "content": "hi"}], tools=None)
             engine.build_prompt([{"role": "user", "content": "hi"}], tools=[])
@@ -381,7 +381,7 @@ class TestStreamChatBlockCollapse:
             ),
         ]
         _install_mlx_vlm_mock(monkeypatch, stream_yields=yields)
-        from vllm_mlx.runtime.diffusion_lane import DiffusionEngine
+        from rapid_mlx.runtime.diffusion_lane import DiffusionEngine
 
         engine = DiffusionEngine(model_name="x/y")
         engine._load_blocking()
@@ -419,7 +419,7 @@ class TestStreamChatBlockCollapse:
             FakeGenerationResult(text="", finish_reason="stop"),
         ]
         _install_mlx_vlm_mock(monkeypatch, stream_yields=yields)
-        from vllm_mlx.runtime.diffusion_lane import DiffusionEngine
+        from rapid_mlx.runtime.diffusion_lane import DiffusionEngine
 
         engine = DiffusionEngine(model_name="x/y")
         engine._load_blocking()
@@ -451,7 +451,7 @@ class TestStreamChatBlockCollapse:
             FakeGenerationResult(text="world.", finish_reason="stop"),
         ]
         _install_mlx_vlm_mock(monkeypatch, stream_yields=yields)
-        from vllm_mlx.runtime.diffusion_lane import DiffusionEngine
+        from rapid_mlx.runtime.diffusion_lane import DiffusionEngine
 
         # diffusion-gemma-26b-4bit alias declares ``tool_call_parser="gemma4"``
         # → engine.supports_tool_calls is True → tools are forwarded.
@@ -489,7 +489,7 @@ class TestStreamChatBlockCollapse:
             FakeGenerationResult(text="ok.", finish_reason="stop"),
         ]
         _install_mlx_vlm_mock(monkeypatch, stream_yields=yields)
-        from vllm_mlx.runtime.diffusion_lane import DiffusionEngine
+        from rapid_mlx.runtime.diffusion_lane import DiffusionEngine
 
         # Tool-enabled alias.
         engine = DiffusionEngine(model_name="diffusion-gemma-26b-4bit")
@@ -529,7 +529,7 @@ class TestStreamChatBlockCollapse:
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         _install_mlx_vlm_mock(monkeypatch)
-        from vllm_mlx.runtime.diffusion_lane import DiffusionEngine
+        from rapid_mlx.runtime.diffusion_lane import DiffusionEngine
 
         engine = DiffusionEngine(model_name="x/y")
         engine._load_blocking()
@@ -549,7 +549,7 @@ class TestStreamChatBlockCollapse:
             FakeGenerationResult(text="part 2", finish_reason="stop"),
         ]
         _install_mlx_vlm_mock(monkeypatch, stream_yields=yields)
-        from vllm_mlx.runtime.diffusion_lane import DiffusionEngine
+        from rapid_mlx.runtime.diffusion_lane import DiffusionEngine
 
         engine = DiffusionEngine(model_name="x/y")
         engine._load_blocking()
@@ -567,7 +567,7 @@ class TestStreamChatBlockCollapse:
         # pin a future refactor could silently drop them.
         yields = [FakeGenerationResult(text="ok", finish_reason="stop")]
         _install_mlx_vlm_mock(monkeypatch, stream_yields=yields)
-        from vllm_mlx.runtime.diffusion_lane import DiffusionEngine
+        from rapid_mlx.runtime.diffusion_lane import DiffusionEngine
 
         engine = DiffusionEngine(model_name="x/y")
         engine._load_blocking()
@@ -609,7 +609,7 @@ class TestRawCompletionPath:
         # length to catch any future regression.
         yields = [FakeGenerationResult(text="rest", finish_reason="stop")]
         _install_mlx_vlm_mock(monkeypatch, stream_yields=yields)
-        from vllm_mlx.runtime.diffusion_lane import DiffusionEngine
+        from rapid_mlx.runtime.diffusion_lane import DiffusionEngine
 
         engine = DiffusionEngine(model_name="x/y")
         engine._load_blocking()
@@ -640,7 +640,7 @@ class TestRawCompletionPath:
             FakeGenerationResult(text="time.", finish_reason="stop"),
         ]
         _install_mlx_vlm_mock(monkeypatch, stream_yields=yields)
-        from vllm_mlx.runtime.diffusion_lane import DiffusionEngine
+        from rapid_mlx.runtime.diffusion_lane import DiffusionEngine
 
         engine = DiffusionEngine(model_name="x/y")
         engine._load_blocking()
@@ -665,7 +665,7 @@ class TestRawCompletionPath:
             FakeGenerationResult(text="more", finish_reason="stop"),
         ]
         _install_mlx_vlm_mock(monkeypatch, stream_yields=yields)
-        from vllm_mlx.runtime.diffusion_lane import DiffusionEngine
+        from rapid_mlx.runtime.diffusion_lane import DiffusionEngine
 
         engine = DiffusionEngine(model_name="x/y")
         engine._load_blocking()
@@ -697,7 +697,7 @@ class TestRawCompletionPath:
             FakeGenerationResult(text="more", finish_reason="stop"),
         ]
         _install_mlx_vlm_mock(monkeypatch, stream_yields=yields)
-        from vllm_mlx.runtime.diffusion_lane import DiffusionEngine
+        from rapid_mlx.runtime.diffusion_lane import DiffusionEngine
 
         engine = DiffusionEngine(model_name="x/y")
         engine._load_blocking()
@@ -727,7 +727,7 @@ class TestRawCompletionPath:
             FakeGenerationResult(text="more", finish_reason="stop"),
         ]
         _install_mlx_vlm_mock(monkeypatch, stream_yields=yields)
-        from vllm_mlx.runtime.diffusion_lane import DiffusionEngine
+        from rapid_mlx.runtime.diffusion_lane import DiffusionEngine
 
         engine = DiffusionEngine(model_name="x/y")
         engine._load_blocking()
@@ -758,7 +758,7 @@ class TestStopSequenceHandling:
             FakeGenerationResult(text="", finish_reason="stop"),
         ]
         _install_mlx_vlm_mock(monkeypatch, stream_yields=yields)
-        from vllm_mlx.runtime.diffusion_lane import DiffusionEngine
+        from rapid_mlx.runtime.diffusion_lane import DiffusionEngine
 
         engine = DiffusionEngine(model_name="x/y")
         engine._load_blocking()
@@ -792,7 +792,7 @@ class TestStopSequenceHandling:
             FakeGenerationResult(text="", finish_reason="stop"),
         ]
         _install_mlx_vlm_mock(monkeypatch, stream_yields=yields)
-        from vllm_mlx.runtime.diffusion_lane import DiffusionEngine
+        from rapid_mlx.runtime.diffusion_lane import DiffusionEngine
 
         engine = DiffusionEngine(model_name="x/y")
         engine._load_blocking()
@@ -825,7 +825,7 @@ class TestStopSequenceHandling:
             FakeGenerationResult(text="", finish_reason="stop"),
         ]
         _install_mlx_vlm_mock(monkeypatch, stream_yields=yields)
-        from vllm_mlx.runtime.diffusion_lane import DiffusionEngine
+        from rapid_mlx.runtime.diffusion_lane import DiffusionEngine
 
         engine = DiffusionEngine(model_name="x/y")
         engine._load_blocking()
@@ -851,7 +851,7 @@ class TestStopSequenceHandling:
             FakeGenerationResult(text="part2", finish_reason="stop"),
         ]
         _install_mlx_vlm_mock(monkeypatch, stream_yields=yields)
-        from vllm_mlx.runtime.diffusion_lane import DiffusionEngine
+        from rapid_mlx.runtime.diffusion_lane import DiffusionEngine
 
         engine = DiffusionEngine(model_name="x/y")
         engine._load_blocking()
@@ -879,7 +879,7 @@ class TestStopSequenceHandling:
             FakeGenerationResult(text="", finish_reason="stop"),
         ]
         _install_mlx_vlm_mock(monkeypatch, stream_yields=yields)
-        from vllm_mlx.runtime.diffusion_lane import DiffusionEngine
+        from rapid_mlx.runtime.diffusion_lane import DiffusionEngine
 
         engine = DiffusionEngine(model_name="x/y")
         engine._load_blocking()
@@ -930,7 +930,7 @@ class TestStopSequenceHandling:
             _stream_infinite
         )
 
-        from vllm_mlx.runtime.diffusion_lane import DiffusionEngine
+        from rapid_mlx.runtime.diffusion_lane import DiffusionEngine
 
         engine = DiffusionEngine(model_name="x/y")
         engine._load_blocking()
@@ -981,7 +981,7 @@ class TestTerminationEdgeCases:
             FakeGenerationResult(text="all done.", diffusion_block_complete=True),
         ]
         _install_mlx_vlm_mock(monkeypatch, stream_yields=yields)
-        from vllm_mlx.runtime.diffusion_lane import DiffusionEngine
+        from rapid_mlx.runtime.diffusion_lane import DiffusionEngine
 
         engine = DiffusionEngine(model_name="x/y")
         engine._load_blocking()
@@ -1016,7 +1016,7 @@ class TestTerminationEdgeCases:
             FakeGenerationResult(text="", finish_reason="stop"),
         ]
         _install_mlx_vlm_mock(monkeypatch, stream_yields=yields)
-        from vllm_mlx.runtime.diffusion_lane import DiffusionEngine
+        from rapid_mlx.runtime.diffusion_lane import DiffusionEngine
 
         engine = DiffusionEngine(model_name="x/y")
         engine._load_blocking()
@@ -1106,7 +1106,7 @@ class TestConcurrentRequests:
         _install_mlx_vlm_mock(monkeypatch, stream_yields=[])
         diffusion_mod = sys.modules["mlx_vlm.generate.diffusion"]
         diffusion_mod.stream_diffusion_generate = _counted_stream  # type: ignore[attr-defined]
-        from vllm_mlx.runtime.diffusion_lane import DiffusionEngine
+        from rapid_mlx.runtime.diffusion_lane import DiffusionEngine
 
         engine = DiffusionEngine(model_name="x/y")
         engine._load_blocking()
@@ -1142,7 +1142,7 @@ class TestConcurrentRequests:
         import asyncio as _aio
 
         _install_mlx_vlm_mock(monkeypatch)
-        from vllm_mlx.runtime.diffusion_lane import DiffusionEngine
+        from rapid_mlx.runtime.diffusion_lane import DiffusionEngine
 
         engine = DiffusionEngine(model_name="x/y")
         assert isinstance(engine._generation_lock, _aio.Lock)
@@ -1170,7 +1170,7 @@ class TestConcurrentRequests:
             yield from yields
 
         diffusion_mod.stream_diffusion_generate = _tracker  # type: ignore[attr-defined]
-        from vllm_mlx.runtime.diffusion_lane import (
+        from rapid_mlx.runtime.diffusion_lane import (
             DiffusionEngine,
             DiffusionGenerationConfig,
         )
@@ -1213,7 +1213,7 @@ class TestConcurrentRequests:
         # the worker DID start, _load_error would surface; instead
         # construction must complete cleanly and the worker stays
         # None.
-        from vllm_mlx.runtime.diffusion_lane import DiffusionEngine
+        from rapid_mlx.runtime.diffusion_lane import DiffusionEngine
 
         # No mlx-vlm mock — we want to prove that init doesn't
         # trigger the worker (which would import mlx_vlm + load).
@@ -1233,7 +1233,7 @@ class TestConcurrentRequests:
         # ``_engine_opts_out_of_tools`` gate and run a full canvas
         # generation that always ends in a plain-text fallback.
         _install_mlx_vlm_mock(monkeypatch)
-        from vllm_mlx.runtime.diffusion_lane import DiffusionEngine
+        from rapid_mlx.runtime.diffusion_lane import DiffusionEngine
 
         # Class default is conservative — bare HF paths with no alias
         # entry land here.
@@ -1263,7 +1263,7 @@ class TestConcurrentRequests:
         # marker as a single token; assert the helper drops exactly
         # those five ids and leaves the other special ids intact.
         _install_mlx_vlm_mock(monkeypatch)
-        from vllm_mlx.runtime.diffusion_lane import DiffusionEngine
+        from rapid_mlx.runtime.diffusion_lane import DiffusionEngine
 
         # Five marker ids the helper must remove + three unrelated
         # special ids it must preserve.
@@ -1325,7 +1325,7 @@ class TestConcurrentRequests:
         # into the client's content stream without any parser to
         # interpret them.
         _install_mlx_vlm_mock(monkeypatch)
-        from vllm_mlx.runtime.diffusion_lane import DiffusionEngine
+        from rapid_mlx.runtime.diffusion_lane import DiffusionEngine
 
         marker_ids = {
             46: "<|tool>",
@@ -1374,7 +1374,7 @@ class TestConcurrentRequests:
         parser can extract structured ``tool_calls``.
         """
         _install_mlx_vlm_mock(monkeypatch)
-        from vllm_mlx.runtime.diffusion_lane import (
+        from rapid_mlx.runtime.diffusion_lane import (
             DiffusionEngine,
             DiffusionGenerationConfig,
         )
@@ -1450,7 +1450,7 @@ class TestConcurrentRequests:
         # helper's encode-then-check-single-id guard would never fire
         # and a broken implementation could pass anyway.
         _install_mlx_vlm_mock(monkeypatch)
-        from vllm_mlx.runtime.diffusion_lane import DiffusionEngine
+        from rapid_mlx.runtime.diffusion_lane import DiffusionEngine
 
         marker_ids = {
             46: "<|tool>",
@@ -1510,9 +1510,9 @@ class TestConcurrentRequests:
         from fastapi import FastAPI
         from fastapi.testclient import TestClient
 
-        from vllm_mlx.config import reset_config
-        from vllm_mlx.engine.base import GenerationOutput
-        from vllm_mlx.routes.chat import router as chat_router
+        from rapid_mlx.config import reset_config
+        from rapid_mlx.engine.base import GenerationOutput
+        from rapid_mlx.routes.chat import router as chat_router
 
         class _DiffusionEngineStub:
             supports_tool_calls = False
@@ -1595,9 +1595,9 @@ class TestConcurrentRequests:
         from fastapi import FastAPI
         from fastapi.testclient import TestClient
 
-        from vllm_mlx.config import reset_config
-        from vllm_mlx.engine.base import GenerationOutput
-        from vllm_mlx.routes.chat import router as chat_router
+        from rapid_mlx.config import reset_config
+        from rapid_mlx.engine.base import GenerationOutput
+        from rapid_mlx.routes.chat import router as chat_router
 
         class _DiffusionEngineStub:
             supports_tool_calls = False
@@ -1668,9 +1668,9 @@ class TestConcurrentRequests:
         from fastapi import FastAPI
         from fastapi.testclient import TestClient
 
-        from vllm_mlx.config import reset_config
-        from vllm_mlx.engine.base import GenerationOutput
-        from vllm_mlx.routes.chat import router as chat_router
+        from rapid_mlx.config import reset_config
+        from rapid_mlx.engine.base import GenerationOutput
+        from rapid_mlx.routes.chat import router as chat_router
 
         class _DiffusionEngineStub:
             supports_tool_calls = False
@@ -1741,9 +1741,9 @@ class TestConcurrentRequests:
         from fastapi import FastAPI
         from fastapi.testclient import TestClient
 
-        from vllm_mlx.config import reset_config
-        from vllm_mlx.engine.base import GenerationOutput
-        from vllm_mlx.routes.chat import router as chat_router
+        from rapid_mlx.config import reset_config
+        from rapid_mlx.engine.base import GenerationOutput
+        from rapid_mlx.routes.chat import router as chat_router
 
         class _DiffusionEngineStub:
             supports_tool_calls = False
@@ -1811,10 +1811,10 @@ class TestConcurrentRequests:
         # supports_tool_calls attribute is False, regardless of
         # tokenizer shape.
         _install_mlx_vlm_mock(monkeypatch)
-        from vllm_mlx.routes.chat import (
+        from rapid_mlx.routes.chat import (
             _engine_supports_channel_routed_tool_calls,
         )
-        from vllm_mlx.runtime.diffusion_lane import DiffusionEngine
+        from rapid_mlx.runtime.diffusion_lane import DiffusionEngine
 
         engine = DiffusionEngine(model_name="x/y")
         engine._load_blocking()
@@ -1844,8 +1844,8 @@ class TestConcurrentRequests:
         # still False.
         import asyncio as _aio
 
-        from vllm_mlx.runtime.diffusion_lane import DiffusionEngine
-        from vllm_mlx.scheduler import BackpressureError
+        from rapid_mlx.runtime.diffusion_lane import DiffusionEngine
+        from rapid_mlx.scheduler import BackpressureError
 
         _install_mlx_vlm_mock(monkeypatch)
         engine = DiffusionEngine(model_name="x/y")
@@ -1901,8 +1901,8 @@ class TestConcurrentRequests:
         # next request rides onto a worker still burning GPU on the
         # abandoned job. We simulate by setting _worker_stuck directly
         # and verifying check_admission raises immediately.
-        from vllm_mlx.runtime.diffusion_lane import DiffusionEngine
-        from vllm_mlx.scheduler import BackpressureError, SchedulerConfig
+        from rapid_mlx.runtime.diffusion_lane import DiffusionEngine
+        from rapid_mlx.scheduler import BackpressureError, SchedulerConfig
 
         _install_mlx_vlm_mock(monkeypatch)
         engine = DiffusionEngine(
@@ -1934,11 +1934,11 @@ class TestConcurrentRequests:
         import queue as _queue
         import threading as _threading
 
-        from vllm_mlx.runtime.diffusion_lane import (
+        from rapid_mlx.runtime.diffusion_lane import (
             DiffusionEngine,
             DiffusionGenerationConfig,
         )
-        from vllm_mlx.scheduler import BackpressureError
+        from rapid_mlx.scheduler import BackpressureError
 
         _install_mlx_vlm_mock(monkeypatch)
         engine = DiffusionEngine(model_name="x/y")
@@ -2007,7 +2007,7 @@ class TestConcurrentRequests:
             return real_stream(*a, **k)
 
         diffusion_mod.stream_diffusion_generate = _stream_tracker  # type: ignore[attr-defined]
-        from vllm_mlx.runtime.diffusion_lane import (
+        from rapid_mlx.runtime.diffusion_lane import (
             DiffusionEngine,
             DiffusionGenerationConfig,
         )
@@ -2077,7 +2077,7 @@ class TestConcurrentRequests:
             return slow_yields()
 
         diffusion_mod.stream_diffusion_generate = _slow_stream  # type: ignore[attr-defined]
-        from vllm_mlx.runtime.diffusion_lane import DiffusionEngine
+        from rapid_mlx.runtime.diffusion_lane import DiffusionEngine
 
         engine = DiffusionEngine(model_name="x/y")
         engine._load_blocking()
@@ -2193,7 +2193,7 @@ class TestAdmissionControl:
         # default; under it, check_admission should reserve a slot
         # and NOT raise.
         _install_mlx_vlm_mock(monkeypatch)
-        from vllm_mlx.runtime.diffusion_lane import DiffusionEngine
+        from rapid_mlx.runtime.diffusion_lane import DiffusionEngine
 
         engine = DiffusionEngine(model_name="x/y")
         engine._load_blocking()
@@ -2208,8 +2208,8 @@ class TestAdmissionControl:
         # With cap=2, the 3rd reservation must raise BackpressureError.
         # The route layer catches that and emits 503 + Retry-After.
         _install_mlx_vlm_mock(monkeypatch)
-        from vllm_mlx.runtime.diffusion_lane import DiffusionEngine
-        from vllm_mlx.scheduler import BackpressureError, SchedulerConfig
+        from rapid_mlx.runtime.diffusion_lane import DiffusionEngine
+        from rapid_mlx.scheduler import BackpressureError, SchedulerConfig
 
         engine = DiffusionEngine(
             model_name="x/y",
@@ -2230,7 +2230,7 @@ class TestAdmissionControl:
         # A stray double-release must not corrupt the counter into
         # negative territory (would silently raise the cap forever).
         _install_mlx_vlm_mock(monkeypatch)
-        from vllm_mlx.runtime.diffusion_lane import DiffusionEngine
+        from rapid_mlx.runtime.diffusion_lane import DiffusionEngine
 
         engine = DiffusionEngine(model_name="x/y")
         engine.release_admission_reservation()  # extra release at 0
@@ -2395,7 +2395,7 @@ class TestAliasIntegration:
         # End-to-end pin on the actual aliases.json entry — if a
         # future edit drops the modality field, this test catches it
         # before the server boot does.
-        from vllm_mlx.model_aliases import resolve_profile
+        from rapid_mlx.model_aliases import resolve_profile
 
         profile = resolve_profile("diffusion-gemma-26b-4bit")
         assert profile is not None
@@ -2451,7 +2451,7 @@ class TestStopRace:
         _install_mlx_vlm_mock(monkeypatch, stream_yields=[])
         diff_mod = sys.modules["mlx_vlm.generate.diffusion"]
         diff_mod.stream_diffusion_generate = _long_stream  # type: ignore[attr-defined]
-        from vllm_mlx.runtime.diffusion_lane import DiffusionEngine
+        from rapid_mlx.runtime.diffusion_lane import DiffusionEngine
 
         engine = DiffusionEngine(model_name="x/y")
         engine._load_blocking()
@@ -2510,7 +2510,7 @@ class TestStopRace:
         # a subsequent ``_load_blocking`` can restart cleanly
         # (codex pr_validate r6 NIT).
         _install_mlx_vlm_mock(monkeypatch, stream_yields=[])
-        from vllm_mlx.runtime.diffusion_lane import DiffusionEngine
+        from rapid_mlx.runtime.diffusion_lane import DiffusionEngine
 
         engine = DiffusionEngine(model_name="x/y")
         engine._load_blocking()
@@ -2549,7 +2549,7 @@ class TestStopRace:
         # ``_start_worker_once`` no-op'd and the engine remained
         # permanently un-loaded after a lifecycle restart.
         _install_mlx_vlm_mock(monkeypatch, stream_yields=[])
-        from vllm_mlx.runtime.diffusion_lane import DiffusionEngine
+        from rapid_mlx.runtime.diffusion_lane import DiffusionEngine
 
         engine = DiffusionEngine(model_name="x/y")
         engine._load_blocking()
@@ -2588,7 +2588,7 @@ class TestStopRace:
         import asyncio as _aio
 
         _install_mlx_vlm_mock(monkeypatch, stream_yields=[])
-        from vllm_mlx.runtime.diffusion_lane import DiffusionEngine
+        from rapid_mlx.runtime.diffusion_lane import DiffusionEngine
 
         engine = DiffusionEngine(model_name="x/y")
         engine._load_blocking()
@@ -2630,7 +2630,7 @@ class TestStopRace:
         import time as _time
 
         _install_mlx_vlm_mock(monkeypatch, stream_yields=[])
-        from vllm_mlx.runtime.diffusion_lane import DiffusionEngine
+        from rapid_mlx.runtime.diffusion_lane import DiffusionEngine
 
         engine = DiffusionEngine(model_name="x/y")
         engine._load_blocking()
@@ -2677,7 +2677,7 @@ class TestStopRace:
         # a transient mlx-vlm import failure would be re-raised by
         # ``_ensure_loaded`` even after a successful reload.
         _install_mlx_vlm_mock(monkeypatch, stream_yields=[])
-        from vllm_mlx.runtime.diffusion_lane import DiffusionEngine
+        from rapid_mlx.runtime.diffusion_lane import DiffusionEngine
 
         engine = DiffusionEngine(model_name="x/y")
         engine._load_blocking()
@@ -2722,7 +2722,7 @@ class TestMaxTokensClamp:
         _install_mlx_vlm_mock(monkeypatch, stream_yields=[])
         diff_mod = sys.modules["mlx_vlm.generate.diffusion"]
         diff_mod.stream_diffusion_generate = _stream  # type: ignore[attr-defined]
-        from vllm_mlx.runtime.diffusion_lane import DiffusionEngine
+        from rapid_mlx.runtime.diffusion_lane import DiffusionEngine
 
         engine = DiffusionEngine(model_name="x/y", max_tokens=64)
         engine._load_blocking()
@@ -2753,7 +2753,7 @@ class TestMaxTokensClamp:
         _install_mlx_vlm_mock(monkeypatch, stream_yields=[])
         diff_mod = sys.modules["mlx_vlm.generate.diffusion"]
         diff_mod.stream_diffusion_generate = _stream  # type: ignore[attr-defined]
-        from vllm_mlx.runtime.diffusion_lane import DiffusionEngine
+        from rapid_mlx.runtime.diffusion_lane import DiffusionEngine
 
         engine = DiffusionEngine(model_name="x/y", max_tokens=4096)
         engine._load_blocking()
@@ -2801,7 +2801,7 @@ class TestTokenIdZeroNotSwallowed:
             FakeGenerationResult(text="", finish_reason="stop"),
         ]
         _install_mlx_vlm_mock(monkeypatch, stream_yields=yields)
-        from vllm_mlx.runtime.diffusion_lane import DiffusionEngine
+        from rapid_mlx.runtime.diffusion_lane import DiffusionEngine
 
         engine = DiffusionEngine(model_name="x/y")
         engine._load_blocking()
@@ -2852,7 +2852,7 @@ class TestR10Regressions:
         # this state and resets the bookkeeping (worker / ready /
         # load_error / loaded / stop flags).
         _install_mlx_vlm_mock(monkeypatch, stream_yields=[])
-        from vllm_mlx.runtime.diffusion_lane import DiffusionEngine
+        from rapid_mlx.runtime.diffusion_lane import DiffusionEngine
 
         engine = DiffusionEngine(model_name="x/y")
 
@@ -2925,7 +2925,7 @@ class TestR10Regressions:
             FakeGenerationResult(text="", finish_reason="stop"),
         ]
         _install_mlx_vlm_mock(monkeypatch, stream_yields=yields)
-        from vllm_mlx.runtime.diffusion_lane import DiffusionEngine
+        from rapid_mlx.runtime.diffusion_lane import DiffusionEngine
 
         engine = DiffusionEngine(model_name="x/y")
         engine._load_blocking()
@@ -2964,7 +2964,7 @@ class TestR10Regressions:
         # try/except that pushes ``_STREAM_DONE`` on the pump's queue
         # so it observes the sentinel and exits cleanly.
         _install_mlx_vlm_mock(monkeypatch, stream_yields=[])
-        from vllm_mlx.runtime.diffusion_lane import DiffusionEngine
+        from rapid_mlx.runtime.diffusion_lane import DiffusionEngine
 
         engine = DiffusionEngine(model_name="x/y")
         engine._load_blocking()
@@ -3034,12 +3034,12 @@ class TestChannelHeaderStrip:
     """
 
     def test_helper_strips_thought_prefix(self) -> None:
-        from vllm_mlx.runtime.diffusion_lane import _strip_leading_channel_header
+        from rapid_mlx.runtime.diffusion_lane import _strip_leading_channel_header
 
         assert _strip_leading_channel_header("thought\nHello world") == "Hello world"
 
     def test_helper_strips_final_prefix(self) -> None:
-        from vllm_mlx.runtime.diffusion_lane import _strip_leading_channel_header
+        from rapid_mlx.runtime.diffusion_lane import _strip_leading_channel_header
 
         assert (
             _strip_leading_channel_header("final\nThe answer is 42.")
@@ -3047,14 +3047,14 @@ class TestChannelHeaderStrip:
         )
 
     def test_helper_no_op_on_plain_text(self) -> None:
-        from vllm_mlx.runtime.diffusion_lane import _strip_leading_channel_header
+        from rapid_mlx.runtime.diffusion_lane import _strip_leading_channel_header
 
         assert _strip_leading_channel_header("Hello, world!\n") == "Hello, world!\n"
 
     def test_helper_does_not_strip_mid_text(self) -> None:
         # ``thought\n`` mid-string is legitimate prose, not a leaked
         # channel header — the strip must only fire at position 0.
-        from vllm_mlx.runtime.diffusion_lane import _strip_leading_channel_header
+        from rapid_mlx.runtime.diffusion_lane import _strip_leading_channel_header
 
         text = "Here is my thought\nLet's continue."
         assert _strip_leading_channel_header(text) == text
@@ -3063,7 +3063,7 @@ class TestChannelHeaderStrip:
         # The channel-header pattern requires a trailing ``\n``. A bare
         # ``thought`` at the start of legitimate content (e.g. an essay
         # titled ``thought experiments``) must pass through unchanged.
-        from vllm_mlx.runtime.diffusion_lane import _strip_leading_channel_header
+        from rapid_mlx.runtime.diffusion_lane import _strip_leading_channel_header
 
         text = "thought experiments are fun."
         assert _strip_leading_channel_header(text) == text
@@ -3091,7 +3091,7 @@ class TestChannelHeaderStrip:
             FakeGenerationResult(text="", finish_reason="stop"),
         ]
         _install_mlx_vlm_mock(monkeypatch, stream_yields=yields)
-        from vllm_mlx.runtime.diffusion_lane import DiffusionEngine
+        from rapid_mlx.runtime.diffusion_lane import DiffusionEngine
 
         engine = DiffusionEngine(model_name="x/y")
         engine._load_blocking()
@@ -3129,7 +3129,7 @@ class TestChannelHeaderStrip:
             FakeGenerationResult(text="", finish_reason="stop"),
         ]
         _install_mlx_vlm_mock(monkeypatch, stream_yields=yields)
-        from vllm_mlx.runtime.diffusion_lane import DiffusionEngine
+        from rapid_mlx.runtime.diffusion_lane import DiffusionEngine
 
         engine = DiffusionEngine(model_name="x/y")
         engine._load_blocking()
@@ -3165,7 +3165,7 @@ class TestChannelHeaderStrip:
             FakeGenerationResult(text="", finish_reason="stop"),
         ]
         _install_mlx_vlm_mock(monkeypatch, stream_yields=yields)
-        from vllm_mlx.runtime.diffusion_lane import DiffusionEngine
+        from rapid_mlx.runtime.diffusion_lane import DiffusionEngine
 
         engine = DiffusionEngine(model_name="x/y")
         engine._load_blocking()
@@ -3194,7 +3194,7 @@ class TestChannelHeaderStrip:
             FakeGenerationResult(text="thought\nYes.", token=1),
         ]
         _install_mlx_vlm_mock(monkeypatch, stream_yields=yields)
-        from vllm_mlx.runtime.diffusion_lane import DiffusionEngine
+        from rapid_mlx.runtime.diffusion_lane import DiffusionEngine
 
         engine = DiffusionEngine(model_name="x/y")
         engine._load_blocking()
@@ -3290,7 +3290,7 @@ class TestGeneratorClosedOnEveryExit:
 
         diffusion_mod.stream_diffusion_generate = _factory  # type: ignore[attr-defined]
 
-        from vllm_mlx.runtime.diffusion_lane import (
+        from rapid_mlx.runtime.diffusion_lane import (
             DiffusionEngine,
             DiffusionGenerationConfig,
         )
@@ -3470,7 +3470,7 @@ class TestEosTokenIdAliasingWorkaround:
         shared_eos = [1, 106, 50]
         self._wire_aliased_eos_tokens(monkeypatch, shared_eos)
 
-        from vllm_mlx.runtime.diffusion_lane import DiffusionEngine
+        from rapid_mlx.runtime.diffusion_lane import DiffusionEngine
 
         engine = DiffusionEngine(model_name="x/y")
         engine._load_blocking()
@@ -3514,7 +3514,7 @@ class TestEosTokenIdAliasingWorkaround:
         shared_eos = [1, 106, 50]
         self._wire_aliased_eos_tokens(monkeypatch, shared_eos)
 
-        from vllm_mlx.runtime.diffusion_lane import DiffusionEngine
+        from rapid_mlx.runtime.diffusion_lane import DiffusionEngine
 
         engine = DiffusionEngine(model_name="x/y")
         engine._load_blocking()
@@ -3544,7 +3544,7 @@ class TestEosTokenIdAliasingWorkaround:
         # Default fakes already use ``eos_token_id = 7`` (an int)
         # so the existing happy path covers this case. Just confirm
         # that load succeeds and the engine becomes ready.
-        from vllm_mlx.runtime.diffusion_lane import DiffusionEngine
+        from rapid_mlx.runtime.diffusion_lane import DiffusionEngine
 
         engine = DiffusionEngine(model_name="x/y")
         engine._load_blocking()

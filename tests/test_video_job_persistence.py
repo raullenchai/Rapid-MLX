@@ -14,8 +14,8 @@ from types import SimpleNamespace
 
 import pytest
 
-from vllm_mlx import cli, server
-from vllm_mlx.routes import video
+from rapid_mlx import cli, server
+from rapid_mlx.routes import video
 
 
 @pytest.fixture(autouse=True)
@@ -897,7 +897,7 @@ def test_standalone_server_reports_video_store_configuration_failure(
     monkeypatch.setattr(
         sys,
         "argv",
-        ["vllm_mlx.server", "--video-output-dir", "/unwritable"],
+        ["rapid_mlx.server", "--video-output-dir", "/unwritable"],
     )
 
     with pytest.raises(SystemExit) as exc:

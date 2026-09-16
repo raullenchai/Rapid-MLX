@@ -16,7 +16,7 @@ import pytest
 
 pytestmark = pytest.mark.requires_mlx
 
-from vllm_mlx.kv_quant_gate import (
+from rapid_mlx.kv_quant_gate import (
     FAIL,
     NA,
     PASS,
@@ -382,8 +382,8 @@ def test_decode_text_strips_trailing_eos_so_strict_json_holds():
     EOS control token, which fails the strict whole-output JSON parse and falsely
     scores structured retention N/A/FAIL. ``_decode_text`` must strip it.
     """
+    from rapid_mlx.kv_quant_gate import is_valid_json
     from scripts.kv_quant_quality_gate import _decode_text
-    from vllm_mlx.kv_quant_gate import is_valid_json
 
     tok = _FakeTokenizerWithEOS()
     with_eos = [1, 2, 3, 4, 9]  # JSON then the appended EOS
@@ -680,8 +680,8 @@ def test_niah_fail_closed_on_unknown_ram():
     The chip qualifies (M3 Ultra) so the RAM guard is the deciding factor;
     unknown capacity must fail closed rather than assume headroom.
     """
+    from rapid_mlx.chip_tier import classify_chip_tier
     from scripts.kv_quant_quality_gate import _maybe_run_niah
-    from vllm_mlx.chip_tier import classify_chip_tier
 
     chip = classify_chip_tier("Apple M3 Ultra")
     assert chip.is_m3_or_newer  # precondition — RAM guard is what decides
@@ -702,8 +702,8 @@ def test_niah_fail_closed_on_unknown_ram():
 
 @pytest.mark.real_hf_cache
 def test_niah_skips_when_not_requested_and_sub_m3():
+    from rapid_mlx.chip_tier import classify_chip_tier
     from scripts.kv_quant_quality_gate import _maybe_run_niah
-    from vllm_mlx.chip_tier import classify_chip_tier
 
     m3 = classify_chip_tier("Apple M3 Ultra")
     m1 = classify_chip_tier("Apple M1")

@@ -62,7 +62,7 @@ class FakeTokenizer:
 
 # Token-ID conventions for synthetic Gemma 4 vocab. Numbers are
 # arbitrary but chosen to match the ``MODEL_TOKEN_MAPS`` comments in
-# ``vllm_mlx/output_router.py`` (e.g. ``<|channel> = 100``) so that a
+# ``rapid_mlx/output_router.py`` (e.g. ``<|channel> = 100``) so that a
 # reader can pattern-match the synthetic IDs against the source.
 GEMMA4_VOCAB: dict[str, int] = {
     # Channel control

@@ -7,7 +7,7 @@ from unittest import mock
 
 import pytest
 
-from vllm_mlx import cli
+from rapid_mlx import cli
 
 
 def test_serve_without_model_is_concise_and_points_to_recipe(capsys):

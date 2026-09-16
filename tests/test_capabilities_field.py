@@ -10,7 +10,7 @@ model). Every other entry — including VLMs with ``modality="image"``
 image / tool surfaces couldn't tell a VLM from a text-only model.
 
 The fix routes every entry through a single
-:func:`vllm_mlx.routes.models._detect_capabilities` helper that emits
+:func:`rapid_mlx.routes.models._detect_capabilities` helper that emits
 the full tag list (``text``, ``vision``, ``tools``, ``embedding``) in
 a fixed order. These tests pin the new contract.
 """
@@ -23,8 +23,8 @@ from fastapi.testclient import TestClient
 
 def _mount_models_app(monkeypatch, **cfg_overrides):
     """Mount the models router with controlled config + server state."""
-    from vllm_mlx.config import get_config
-    from vllm_mlx.routes import models as models_route
+    from rapid_mlx.config import get_config
+    from rapid_mlx.routes import models as models_route
 
     app = FastAPI()
     app.include_router(models_route.router)
@@ -46,7 +46,7 @@ def _mount_models_app(monkeypatch, **cfg_overrides):
     for k, v in cfg_overrides.items():
         setattr(cfg, k, v)
 
-    import vllm_mlx.server as srv
+    import rapid_mlx.server as srv
 
     saved_srv = {
         "_embedding_model_locked": srv._embedding_model_locked,
@@ -129,7 +129,7 @@ class TestVisionModel:
         # Use an alias that's registered AND triggers the VLM detector.
         # If the alias registry doesn't have a VLM, skip — the test is
         # about the unified detector behavior, not the registry.
-        from vllm_mlx.model_aliases import resolve_profile
+        from rapid_mlx.model_aliases import resolve_profile
 
         candidates = [
             "qwen3-vl-2b-instruct-4bit",
@@ -323,8 +323,8 @@ class TestToolsCapability:
         server global is the ONLY signal."""
         from fastapi import FastAPI
 
-        from vllm_mlx.config import get_config
-        from vllm_mlx.routes import models as models_route
+        from rapid_mlx.config import get_config
+        from rapid_mlx.routes import models as models_route
 
         served_unregistered = "operator/served-custom-tools-model"
         other_unregistered = "operator/discovered-other-model"
@@ -351,7 +351,7 @@ class TestToolsCapability:
         cfg.tool_call_parser = None
         cfg.api_key = None
 
-        import vllm_mlx.server as srv
+        import rapid_mlx.server as srv
 
         saved_srv = {
             "_embedding_model_locked": srv._embedding_model_locked,
@@ -395,8 +395,8 @@ class TestToolsCapability:
         """
         from fastapi import FastAPI
 
-        from vllm_mlx.config import get_config
-        from vllm_mlx.routes import models as models_route
+        from rapid_mlx.config import get_config
+        from rapid_mlx.routes import models as models_route
 
         app = FastAPI()
         app.include_router(models_route.router)
@@ -423,7 +423,7 @@ class TestToolsCapability:
         cfg.tool_call_parser = None
         cfg.api_key = None
 
-        import vllm_mlx.server as srv
+        import rapid_mlx.server as srv
 
         saved_srv = {
             "_embedding_model_locked": srv._embedding_model_locked,
@@ -521,7 +521,7 @@ class TestIsTextOnlyOverride:
     """
 
     def test_is_vlm_false_when_text_only_even_if_detector_says_vlm(self, monkeypatch):
-        from vllm_mlx.routes import models as models_route
+        from rapid_mlx.routes import models as models_route
 
         # Force the underlying detector to claim VLM — mirrors the real
         # local-dir verdict for Ternary-Bonsai-27B.
@@ -535,7 +535,7 @@ class TestIsTextOnlyOverride:
         )
 
     def test_reported_modality_text_when_text_only(self, monkeypatch):
-        from vllm_mlx.routes import models as models_route
+        from rapid_mlx.routes import models as models_route
 
         monkeypatch.setattr(models_route, "is_mllm_model", lambda _mid: True)
         # Without the pin, a detector-True flips the wire modality to image.
@@ -552,7 +552,7 @@ class TestIsTextOnlyOverride:
         )
 
     def test_capabilities_have_no_vision_when_text_only(self, monkeypatch):
-        from vllm_mlx.routes import models as models_route
+        from rapid_mlx.routes import models as models_route
 
         monkeypatch.setattr(models_route, "is_mllm_model", lambda _mid: True)
         caps = models_route._detect_capabilities(
@@ -565,9 +565,9 @@ class TestIsTextOnlyOverride:
         assert "text" in caps and "tools" in caps
 
     def test_local_qwen4_exp_entry_emits_machine_readable_capability(self, monkeypatch):
-        from vllm_mlx.config import get_config
-        from vllm_mlx.routes import models as models_route
-        from vllm_mlx.runtime.model_registry import ModelEntry, ModelRegistry
+        from rapid_mlx.config import get_config
+        from rapid_mlx.routes import models as models_route
+        from rapid_mlx.runtime.model_registry import ModelEntry, ModelRegistry
 
         model_id = "/models/local-qwen4-exp"
         registry = ModelRegistry()
@@ -587,7 +587,7 @@ class TestIsTextOnlyOverride:
         assert info.capabilities == ["text", "experimental"]
 
     def test_published_qwen4_exp_alias_emits_experimental_capability(self, monkeypatch):
-        from vllm_mlx.routes import models as models_route
+        from rapid_mlx.routes import models as models_route
 
         monkeypatch.setattr(models_route, "is_mllm_model", lambda _mid: False)
 
@@ -606,7 +606,7 @@ class TestIsTextOnlyOverride:
         forwarding is dropped, the detector's True leaks through and this
         fails: modality flips to ``image`` and ``vision`` appears.
         """
-        from vllm_mlx.routes import models as models_route
+        from rapid_mlx.routes import models as models_route
 
         # Force the detector to claim VLM for this id — without the
         # is_text_only forwarding, the wire would advertise vision.

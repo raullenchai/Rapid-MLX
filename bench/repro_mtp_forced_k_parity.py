@@ -168,9 +168,9 @@ def main() -> int:
     from mlx_lm.generate import stream_generate
     from mlx_lm.sample_utils import make_sampler
 
-    from vllm_mlx.spec_decode.mtp import MTPAcceptCounter
-    from vllm_mlx.spec_decode.mtp.generator import mtp_generate_step
-    from vllm_mlx.spec_decode.mtp.qwen3_5_inject import (
+    from rapid_mlx.spec_decode.mtp import MTPAcceptCounter
+    from rapid_mlx.spec_decode.mtp.generator import mtp_generate_step
+    from rapid_mlx.spec_decode.mtp.qwen3_5_inject import (
         inject_mtp_support,
         validate_mtp_support,
     )

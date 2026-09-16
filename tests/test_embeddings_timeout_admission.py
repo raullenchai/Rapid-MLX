@@ -45,27 +45,27 @@ class TestEmbeddingInputFourShapes:
     """
 
     def test_str_accepted(self):
-        from vllm_mlx.api.models import EmbeddingRequest
+        from rapid_mlx.api.models import EmbeddingRequest
 
         req = EmbeddingRequest(model="x", input="hello")
         assert req.input == "hello"
 
     def test_list_str_accepted(self):
-        from vllm_mlx.api.models import EmbeddingRequest
+        from rapid_mlx.api.models import EmbeddingRequest
 
         req = EmbeddingRequest(model="x", input=["a", "b"])
         assert req.input == ["a", "b"]
 
     def test_list_int_accepted(self):
         """list[int] — single pre-tokenized input."""
-        from vllm_mlx.api.models import EmbeddingRequest
+        from rapid_mlx.api.models import EmbeddingRequest
 
         req = EmbeddingRequest(model="x", input=[101, 2023, 2003, 102])
         assert req.input == [101, 2023, 2003, 102]
 
     def test_list_list_int_accepted(self):
         """list[list[int]] — batch of pre-tokenized inputs."""
-        from vllm_mlx.api.models import EmbeddingRequest
+        from rapid_mlx.api.models import EmbeddingRequest
 
         req = EmbeddingRequest(model="x", input=[[1, 2, 3], [4, 5, 6]])
         assert req.input == [[1, 2, 3], [4, 5, 6]]
@@ -77,7 +77,7 @@ class TestEmbeddingInputFourShapes:
         silent-wrong behavior."""
         from pydantic import ValidationError
 
-        from vllm_mlx.api.models import EmbeddingRequest
+        from rapid_mlx.api.models import EmbeddingRequest
 
         with pytest.raises(ValidationError):
             EmbeddingRequest(model="x", input=[1, "a", 3])
@@ -89,7 +89,7 @@ class TestEmbeddingInputFourShapes:
         "2" the caller actually sent. Codex R1 caught this."""
         from pydantic import ValidationError
 
-        from vllm_mlx.api.models import EmbeddingRequest
+        from rapid_mlx.api.models import EmbeddingRequest
 
         with pytest.raises(ValidationError):
             EmbeddingRequest(model="x", input=[["1", "2"]])
@@ -103,7 +103,7 @@ class TestEmbeddingInputFourShapes:
         feature, not token ids."""
         from pydantic import ValidationError
 
-        from vllm_mlx.api.models import EmbeddingRequest
+        from rapid_mlx.api.models import EmbeddingRequest
 
         with pytest.raises(ValidationError):
             EmbeddingRequest(model="x", input=[True, False])
@@ -161,8 +161,8 @@ class TestEmbeddingRouteEmptyTokens:
 
 def _build_embed_app(monkeypatch, engine):
     """Mount the embeddings router with a stubbed engine."""
-    from vllm_mlx.config import get_config
-    from vllm_mlx.routes import embeddings as emb_route
+    from rapid_mlx.config import get_config
+    from rapid_mlx.routes import embeddings as emb_route
 
     app = FastAPI()
     app.include_router(emb_route.router)
@@ -184,7 +184,7 @@ def _build_embed_app(monkeypatch, engine):
     cfg.api_key = None
 
     monkeypatch.setattr(
-        "vllm_mlx.server.load_embedding_model",
+        "rapid_mlx.server.load_embedding_model",
         lambda *_a, **_kw: None,
         raising=False,
     )
@@ -264,7 +264,7 @@ class TestEmbeddingEngineEmbedTokens:
     a place to send pre-tokenized batches."""
 
     def test_embed_tokens_method_exists(self):
-        from vllm_mlx.embedding import EmbeddingEngine
+        from rapid_mlx.embedding import EmbeddingEngine
 
         assert hasattr(EmbeddingEngine, "embed_tokens"), (
             "EmbeddingEngine must expose embed_tokens(list[list[int]]) "
@@ -283,7 +283,7 @@ class TestDefaultTimeout:
     matches what vLLM and most OpenAI-compat proxies ship today."""
 
     def test_server_config_default_is_1800(self):
-        from vllm_mlx.config.server_config import ServerConfig
+        from rapid_mlx.config.server_config import ServerConfig
 
         cfg = ServerConfig()
         assert cfg.default_timeout == 1800.0, (
@@ -296,15 +296,15 @@ class TestDefaultTimeout:
         """If someone bumps one default and forgets the other, the
         CLI and the route layer disagree and timeouts get applied at
         whichever lower default the request happens to hit first."""
-        import vllm_mlx.server as srv
-        from vllm_mlx.config.server_config import ServerConfig
+        import rapid_mlx.server as srv
+        from rapid_mlx.config.server_config import ServerConfig
 
         assert srv._default_timeout == ServerConfig().default_timeout
 
     def test_cli_and_server_argparse_default_is_1800(self):
         """Codex R1 caught this: ServerConfig had been bumped to
-        1800 but BOTH CLI argparse (vllm_mlx/cli.py) AND server
-        argparse (vllm_mlx/server.py) still defaulted to 300, so
+        1800 but BOTH CLI argparse (rapid_mlx/cli.py) AND server
+        argparse (rapid_mlx/server.py) still defaulted to 300, so
         ``rapid-mlx serve`` overwrote the config default at startup
         and users still got 5min.
 
@@ -315,8 +315,8 @@ class TestDefaultTimeout:
         """
         from pathlib import Path
 
-        import vllm_mlx.cli as cli_mod
-        import vllm_mlx.server as srv_mod
+        import rapid_mlx.cli as cli_mod
+        import rapid_mlx.server as srv_mod
 
         for mod_label, mod in (("cli", cli_mod), ("server", srv_mod)):
             src = Path(mod.__file__).read_text()
@@ -343,7 +343,7 @@ class TestAdmissionControl:
     """
 
     def test_scheduler_config_has_cap(self):
-        from vllm_mlx.scheduler import SchedulerConfig
+        from rapid_mlx.scheduler import SchedulerConfig
 
         cfg = SchedulerConfig()
         assert hasattr(cfg, "max_concurrent_requests"), (
@@ -362,8 +362,8 @@ class TestAdmissionControl:
         logic; this version constructs a real ``Scheduler`` instance
         (via ``__new__`` so we skip the expensive
         tokenizer/model/engine wiring) and calls the bound method."""
-        from vllm_mlx.request import Request, SamplingParams
-        from vllm_mlx.scheduler import BackpressureError, Scheduler, SchedulerConfig
+        from rapid_mlx.request import Request, SamplingParams
+        from rapid_mlx.scheduler import BackpressureError, Scheduler, SchedulerConfig
 
         # 1) The class itself must be an ordinary Exception subclass so
         #    handlers can ``except BackpressureError`` safely.
@@ -416,9 +416,9 @@ class TestAdmissionControl:
         ceremony."""
         # Build a stub chat route that hits a stub engine; the engine's
         # generate() raises BackpressureError to simulate cap-exceeded.
-        from vllm_mlx.config import get_config
-        from vllm_mlx.routes import chat as chat_route
-        from vllm_mlx.scheduler import BackpressureError
+        from rapid_mlx.config import get_config
+        from rapid_mlx.routes import chat as chat_route
+        from rapid_mlx.scheduler import BackpressureError
 
         app = FastAPI()
         app.include_router(chat_route.router)
@@ -483,7 +483,7 @@ class TestAdmissionControl:
         """Codex R1 caught this: cap was on the LLM SchedulerConfig
         only, so MLLM requests could bypass admission entirely. Mirror
         the field on MLLMSchedulerConfig and exercise the gate."""
-        from vllm_mlx.mllm_scheduler import MLLMSchedulerConfig
+        from rapid_mlx.mllm_scheduler import MLLMSchedulerConfig
 
         cfg = MLLMSchedulerConfig()
         assert hasattr(cfg, "max_concurrent_requests")
@@ -494,11 +494,11 @@ class TestAdmissionControl:
         """Pin the actual MLLM gate: pre-populate ``requests`` up to
         the cap, then call add_request and expect BackpressureError.
         Codex R1's prior test only checked the class existed."""
-        from vllm_mlx.mllm_scheduler import (
+        from rapid_mlx.mllm_scheduler import (
             MLLMScheduler,
             MLLMSchedulerConfig,
         )
-        from vllm_mlx.scheduler import BackpressureError
+        from rapid_mlx.scheduler import BackpressureError
 
         sched = MLLMScheduler.__new__(MLLMScheduler)
         sched.config = MLLMSchedulerConfig(max_concurrent_requests=1)
@@ -515,9 +515,9 @@ class TestAdmissionControl:
         at route entry must surface 503 BEFORE StreamingResponse
         starts. Triggered by setting ``engine.check_admission`` to
         raise (simulating a saturated scheduler)."""
-        from vllm_mlx.config import get_config
-        from vllm_mlx.routes import chat as chat_route
-        from vllm_mlx.scheduler import BackpressureError
+        from rapid_mlx.config import get_config
+        from rapid_mlx.routes import chat as chat_route
+        from rapid_mlx.scheduler import BackpressureError
 
         app = FastAPI()
         app.include_router(chat_route.router)
@@ -589,8 +589,8 @@ class TestAdmissionControl:
         lock/counter, not a copy of the gate logic."""
         import threading
 
-        from vllm_mlx.engine.batched import BatchedEngine
-        from vllm_mlx.scheduler import BackpressureError, SchedulerConfig
+        from rapid_mlx.engine.batched import BatchedEngine
+        from rapid_mlx.scheduler import BackpressureError, SchedulerConfig
 
         eng = BatchedEngine.__new__(BatchedEngine)
         eng._is_mllm = False
@@ -667,11 +667,11 @@ class TestAdmissionControl:
         FastAPI test client is exercised end-to-end."""
         import threading
 
-        from vllm_mlx.config import get_config
-        from vllm_mlx.engine.batched import BatchedEngine
-        from vllm_mlx.middleware.exception_handlers import install_exception_handlers
-        from vllm_mlx.routes import chat as chat_route
-        from vllm_mlx.scheduler import SchedulerConfig
+        from rapid_mlx.config import get_config
+        from rapid_mlx.engine.batched import BatchedEngine
+        from rapid_mlx.middleware.exception_handlers import install_exception_handlers
+        from rapid_mlx.routes import chat as chat_route
+        from rapid_mlx.scheduler import SchedulerConfig
 
         app = FastAPI()
         # D-ANTHRO-VALIDATION F11: install the shared exception
@@ -787,8 +787,8 @@ class TestAdmissionControl:
         because ``cap`` would be derived from a missing scheduler."""
         import threading
 
-        from vllm_mlx.engine.batched import BatchedEngine
-        from vllm_mlx.scheduler import BackpressureError, SchedulerConfig
+        from rapid_mlx.engine.batched import BatchedEngine
+        from rapid_mlx.scheduler import BackpressureError, SchedulerConfig
 
         eng = BatchedEngine.__new__(BatchedEngine)
         eng._is_mllm = False
@@ -850,8 +850,8 @@ class TestAdmissionControl:
         lock just like the post-init path."""
         import threading
 
-        from vllm_mlx.engine.batched import BatchedEngine
-        from vllm_mlx.scheduler import BackpressureError, SchedulerConfig
+        from rapid_mlx.engine.batched import BatchedEngine
+        from rapid_mlx.scheduler import BackpressureError, SchedulerConfig
 
         eng = BatchedEngine.__new__(BatchedEngine)
         eng._is_mllm = False
@@ -880,8 +880,8 @@ class TestAdmissionControl:
         Drives the cap propagation directly: read the field off a
         ``SchedulerConfig`` instance and assert the resulting
         ``MLLMSchedulerConfig`` carries it."""
-        from vllm_mlx.mllm_scheduler import MLLMSchedulerConfig
-        from vllm_mlx.scheduler import SchedulerConfig
+        from rapid_mlx.mllm_scheduler import MLLMSchedulerConfig
+        from rapid_mlx.scheduler import SchedulerConfig
 
         configured = SchedulerConfig(max_concurrent_requests=4)
         # Mirror the propagation site in ``_start_mllm``.
@@ -914,7 +914,7 @@ class TestAdmissionControl:
         ``--max-num-seqs``. The dataclass default stays at 256 so
         existing tests that intentionally send more requests than
         ``max_num_seqs`` to exercise the queue still work."""
-        from vllm_mlx.scheduler import SchedulerConfig
+        from rapid_mlx.scheduler import SchedulerConfig
 
         # Default — cap stays at 256 even when max_num_seqs is lower.
         # This preserves queue depth for tests/deployments that count
@@ -939,8 +939,8 @@ class TestAdmissionControl:
         200 SSE error chunk."""
         import threading
 
-        from vllm_mlx.engine.batched import BatchedEngine
-        from vllm_mlx.scheduler import BackpressureError, SchedulerConfig
+        from rapid_mlx.engine.batched import BatchedEngine
+        from rapid_mlx.scheduler import BackpressureError, SchedulerConfig
 
         engine = MagicMock(spec=BatchedEngine)
         engine._admission_lock = threading.Lock()

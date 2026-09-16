@@ -26,7 +26,7 @@ import uuid
 
 import httpx
 
-from vllm_mlx.http_auth import rapid_mlx_auth_headers
+from rapid_mlx.http_auth import rapid_mlx_auth_headers
 
 BASE_URL = os.environ.get("RAPID_MLX_BASE_URL", "http://localhost:8000/v1")
 AUTH_HEADERS = rapid_mlx_auth_headers()
@@ -635,7 +635,7 @@ def test_hermes_code_review():
         # blocks 120s per cycle on absent stdin in -Q mode and runs away past
         # 600s. Giving an explicit path + forbidding clarification keeps the
         # agent on-task (same class of fix as read_file basename->abspath, #1326).
-        "Read the file vllm_mlx/model_auto_config.py and suggest one specific "
+        "Read the file rapid_mlx/model_auto_config.py and suggest one specific "
         "improvement to the code. Do not ask any clarifying questions — just "
         "give your suggestion directly.",
         timeout_sec=300,

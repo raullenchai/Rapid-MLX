@@ -137,7 +137,7 @@ def _extract_text_from_deltas(events: list[str]) -> str:
 @pytest.fixture
 def cfg_with_reasoning_parser():
     """Set up config singleton with reasoning_parser_name='qwen3'."""
-    from vllm_mlx.config import server_config
+    from rapid_mlx.config import server_config
 
     saved = {k: v for k, v in server_config._config.__dict__.items()}
     server_config.reset_config()
@@ -152,7 +152,7 @@ def cfg_with_reasoning_parser():
 @pytest.fixture
 def cfg_without_reasoning_parser():
     """Set up config singleton with reasoning_parser_name=None."""
-    from vllm_mlx.config import server_config
+    from rapid_mlx.config import server_config
 
     saved = {k: v for k, v in server_config._config.__dict__.items()}
     server_config.reset_config()
@@ -192,7 +192,7 @@ class TestAnthropicStreamingWithReasoningParser:
         default finalize returns None there, breaking the duplication
         chain.
         """
-        from vllm_mlx.routes.anthropic import (
+        from rapid_mlx.routes.anthropic import (
             AnthropicRequest,
             ChatCompletionRequest,
             _stream_anthropic_messages,
@@ -252,7 +252,7 @@ class TestAnthropicStreamingWithReasoningParser:
 
     def test_both_think_tags_emits_thinking_and_text(self, cfg_with_reasoning_parser):
         """Model outputs <think>...</think> → separated thinking + text blocks."""
-        from vllm_mlx.routes.anthropic import (
+        from rapid_mlx.routes.anthropic import (
             AnthropicRequest,
             ChatCompletionRequest,
             _stream_anthropic_messages,
@@ -312,7 +312,7 @@ class TestAnthropicStreamingWithReasoningParser:
 
     def test_only_close_tag_implicit_think(self, cfg_with_reasoning_parser):
         """Only </think> in output (think injected in prompt) → correct split."""
-        from vllm_mlx.routes.anthropic import (
+        from rapid_mlx.routes.anthropic import (
             AnthropicRequest,
             ChatCompletionRequest,
             _stream_anthropic_messages,
@@ -368,7 +368,7 @@ class TestAnthropicStreamingWithoutReasoningParser:
         everything stays as thinking — this is the *current* limitation.
         But the fallback path must still work (no crash, events emitted).
         """
-        from vllm_mlx.routes.anthropic import (
+        from rapid_mlx.routes.anthropic import (
             AnthropicRequest,
             ChatCompletionRequest,
             _stream_anthropic_messages,
@@ -418,7 +418,7 @@ class TestAnthropicStreamingChannelRouting:
         are dropped (logged at WARNING) and the loop ``continue``s,
         so the delta never reaches the client SSE stream.
         """
-        from vllm_mlx.routes.anthropic import (
+        from rapid_mlx.routes.anthropic import (
             AnthropicRequest,
             ChatCompletionRequest,
             _stream_anthropic_messages,

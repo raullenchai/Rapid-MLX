@@ -160,7 +160,7 @@ def run(args):
 
     import mlx.core as mx
 
-    from vllm_mlx.kernels.qsa_block_sparse import (
+    from rapid_mlx.kernels.qsa_block_sparse import (
         block_sparse_attention,
         block_sparse_layout_supported,
     )

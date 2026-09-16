@@ -15,7 +15,7 @@ Four findings:
   ``soundfile`` (flac/ogg/opus/mp3) / raw bytes (pcm). Unsupported
   formats raise :class:`UnsupportedAudioFormatError` which the route
   translates to a 400 envelope. Content-Type now matches the actual
-  bytes via :data:`vllm_mlx.routes.audio._TTS_CONTENT_TYPES`.
+  bytes via :data:`rapid_mlx.routes.audio._TTS_CONTENT_TYPES`.
 
 * **R8-M4** — Invalid ``voice`` (e.g. ``"alloy"`` from drop-in OpenAI
   SDK code) 500'd inside ``mlx_audio.load_safetensors``. The route
@@ -38,7 +38,7 @@ import types
 
 import pytest
 
-# ``vllm_mlx.routes.audio`` transitively imports ``mlx.core`` via the
+# ``rapid_mlx.routes.audio`` transitively imports ``mlx.core`` via the
 # engine wiring. Linux CI runners (``pr_validate``'s validate job) don't
 # install mlx, so a bare import raises ``ModuleNotFoundError`` and the
 # rest of the file looks like a 13-test failure. Mirror the r7-C skip
@@ -98,9 +98,9 @@ def _mount_audio_app() -> tuple[TestClient, callable]:
     """Mount the audio router with the rapid-mlx exception handlers so the
     Pydantic validation errors surface as the OpenAI envelope (not the
     default FastAPI 422)."""
-    from vllm_mlx.config import get_config
-    from vllm_mlx.middleware.exception_handlers import install_exception_handlers
-    from vllm_mlx.routes import audio as audio_route
+    from rapid_mlx.config import get_config
+    from rapid_mlx.middleware.exception_handlers import install_exception_handlers
+    from rapid_mlx.routes import audio as audio_route
 
     app = FastAPI()
     app.include_router(audio_route.router)
@@ -120,9 +120,9 @@ def _stub_engine(monkeypatch, *, voice_observed=None):
     and uses the REAL ``to_bytes`` so encoder smoke-checks still run."""
     import numpy as np
 
-    from vllm_mlx.audio import probe as probe_mod
-    from vllm_mlx.audio import tts as tts_mod
-    from vllm_mlx.routes import audio as audio_route
+    from rapid_mlx.audio import probe as probe_mod
+    from rapid_mlx.audio import tts as tts_mod
+    from rapid_mlx.routes import audio as audio_route
 
     observed_models: list[str] = []
     # Capture the REAL ``to_bytes`` BEFORE ``monkeypatch.setattr``
@@ -186,7 +186,7 @@ class TestFullAliasResolution:
         ],
     )
     def test_full_kokoro_alias_resolves_to_kokoro_repo(self, alias):
-        from vllm_mlx.routes.audio import _resolve_tts_model
+        from rapid_mlx.routes.audio import _resolve_tts_model
 
         resolved = _resolve_tts_model(alias)
         assert "kokoro" in resolved.lower(), (
@@ -203,7 +203,7 @@ class TestFullAliasResolution:
         """The short ``kokoro`` and full ``kokoro-82m-bf16`` MUST map to
         the same repo so both paths go through identical model init —
         the regression Bo flagged was a divergence between the two."""
-        from vllm_mlx.routes.audio import _resolve_tts_model
+        from rapid_mlx.routes.audio import _resolve_tts_model
 
         assert _resolve_tts_model("kokoro") == _resolve_tts_model("kokoro-82m-bf16")
 
@@ -211,7 +211,7 @@ class TestFullAliasResolution:
         """Pass-through behaviour for unrecognised names is preserved —
         a client opting in to a HF repo not in the alias table must
         still reach mlx_audio with the verbatim id."""
-        from vllm_mlx.routes.audio import _resolve_tts_model
+        from rapid_mlx.routes.audio import _resolve_tts_model
 
         # HF-style ids contain '/' so they're untouched (case preserved).
         hf_path = "mlx-community/Some-Future-TTS-Model"
@@ -433,8 +433,8 @@ class TestTTSContentTypeTable:
     directions so a future addition can't drift."""
 
     def test_content_type_table_covers_allowed_formats(self):
-        from vllm_mlx.api.models import _TTS_ALLOWED_RESPONSE_FORMATS
-        from vllm_mlx.routes.audio import _TTS_CONTENT_TYPES
+        from rapid_mlx.api.models import _TTS_ALLOWED_RESPONSE_FORMATS
+        from rapid_mlx.routes.audio import _TTS_CONTENT_TYPES
 
         for fmt in _TTS_ALLOWED_RESPONSE_FORMATS:
             assert fmt in _TTS_CONTENT_TYPES, (
@@ -449,7 +449,7 @@ class TestTTSContentTypeTable:
         ``audio/opus`` which are not the IANA-registered types
         (``audio/mpeg`` and ``audio/ogg`` respectively). Clients that
         follow the registry get the right type."""
-        from vllm_mlx.routes.audio import _TTS_CONTENT_TYPES
+        from rapid_mlx.routes.audio import _TTS_CONTENT_TYPES
 
         assert _TTS_CONTENT_TYPES["mp3"] == "audio/mpeg"
         assert _TTS_CONTENT_TYPES["opus"] == "audio/ogg"
@@ -578,33 +578,33 @@ class TestAllowedVoicesHelper:
         # Pin the static-fallback branch by forcing the dynamic
         # enumeration to return empty. The dynamic-success path is
         # covered by ``TestAllowedVoicesDynamicEnumeration`` below.
-        import vllm_mlx.routes.audio as audio_route
+        import rapid_mlx.routes.audio as audio_route
 
         # ``_allowed_voices_for`` calls ``_list_snapshot_voices`` via
         # a lazy ``from ..audio.tts import ...`` inside the helper, so
         # the monkeypatch lands on the source attribute.
-        from vllm_mlx.audio import tts as tts_module
+        from rapid_mlx.audio import tts as tts_module
 
         monkeypatch.setattr(tts_module, "_list_snapshot_voices", lambda _name: [])
         yield audio_route  # nothing for the tests to consume
 
     def test_kokoro_short_alias_returns_kokoro_voices(self):
-        from vllm_mlx.audio.tts import KOKORO_VOICES
-        from vllm_mlx.routes.audio import _allowed_voices_for
+        from rapid_mlx.audio.tts import KOKORO_VOICES
+        from rapid_mlx.routes.audio import _allowed_voices_for
 
         assert _allowed_voices_for("kokoro") == list(KOKORO_VOICES)
 
     def test_kokoro_hf_path_returns_kokoro_voices(self):
-        from vllm_mlx.audio.tts import KOKORO_VOICES
-        from vllm_mlx.routes.audio import _allowed_voices_for
+        from rapid_mlx.audio.tts import KOKORO_VOICES
+        from rapid_mlx.routes.audio import _allowed_voices_for
 
         assert _allowed_voices_for("mlx-community/Kokoro-82M-bf16") == list(
             KOKORO_VOICES
         )
 
     def test_chatterbox_returns_chatterbox_voices(self):
-        from vllm_mlx.audio.tts import CHATTERBOX_VOICES
-        from vllm_mlx.routes.audio import _allowed_voices_for
+        from rapid_mlx.audio.tts import CHATTERBOX_VOICES
+        from rapid_mlx.routes.audio import _allowed_voices_for
 
         assert _allowed_voices_for("chatterbox") == list(CHATTERBOX_VOICES)
 
@@ -616,7 +616,7 @@ class TestAllowedVoicesHelper:
         # before the snapshot has been downloaded — and so a request
         # carrying ``voice="en-Grace_woman"`` (the registry default)
         # passes voice validation on the first call.
-        from vllm_mlx.routes.audio import _allowed_voices_for
+        from rapid_mlx.routes.audio import _allowed_voices_for
 
         voices = _allowed_voices_for("vibevoice")
         assert "en-Grace_woman" in voices, (
@@ -632,7 +632,7 @@ class TestAllowedVoicesHelper:
         )
 
     def test_unknown_family_returns_default(self):
-        from vllm_mlx.routes.audio import _allowed_voices_for
+        from rapid_mlx.routes.audio import _allowed_voices_for
 
         assert _allowed_voices_for("some/UnknownEngine") == ["default"]
 
@@ -666,7 +666,7 @@ class TestAllowedVoicesDynamicEnumeration:
 
         monkeypatch.setattr("huggingface_hub.try_to_load_from_cache", fake_cache_lookup)
 
-        from vllm_mlx.audio.tts import _list_snapshot_voices
+        from rapid_mlx.audio.tts import _list_snapshot_voices
 
         result = _list_snapshot_voices("mlx-community/VibeVoice-Realtime-0.5B-4bit")
         assert result == ["en-Grace_woman", "en-Mike_man"], result
@@ -680,7 +680,7 @@ class TestAllowedVoicesDynamicEnumeration:
             lambda repo_id, filename: None,
         )
 
-        from vllm_mlx.audio.tts import _list_snapshot_voices
+        from rapid_mlx.audio.tts import _list_snapshot_voices
 
         assert _list_snapshot_voices("mlx-community/Nonexistent-Repo") == []
 
@@ -700,7 +700,7 @@ class TestAllowedVoicesDynamicEnumeration:
             lambda repo_id, filename: str(snapshot / "config.json"),
         )
 
-        from vllm_mlx.audio.tts import _list_snapshot_voices
+        from rapid_mlx.audio.tts import _list_snapshot_voices
 
         assert _list_snapshot_voices("mlx-community/Whatever") == []
 
@@ -721,7 +721,7 @@ class TestAllowedVoicesDynamicEnumeration:
 
         monkeypatch.setattr("huggingface_hub.try_to_load_from_cache", fake_cache_lookup)
 
-        from vllm_mlx.audio.tts import _list_snapshot_voices
+        from rapid_mlx.audio.tts import _list_snapshot_voices
 
         result = _list_snapshot_voices("vibevoice")
         assert captured["repo_id"] == "mlx-community/VibeVoice-Realtime-0.5B-4bit"
@@ -748,7 +748,7 @@ class TestVibevoiceDefaultSentinelResolves:
         # already has the VibeVoice / chatterbox snapshot. Force
         # ``_list_snapshot_voices`` to ``[]`` so the assertions pin
         # the cold-start fallback path deterministically.
-        from vllm_mlx.audio import tts as tts_module
+        from rapid_mlx.audio import tts as tts_module
 
         monkeypatch.setattr(tts_module, "_list_snapshot_voices", lambda _name: [])
 
@@ -1001,8 +1001,8 @@ class TestCliBootGuardShortAlias:
         (``kokoro``, ``whisper``, ...) must NOT print "is not a known
         alias" and exit 1 — it must fall through so the audio boot
         guard in ``serve_command`` can fire instead."""
-        from vllm_mlx.audio.probe import is_audio_model_alias
-        from vllm_mlx.model_aliases import resolve_model
+        from rapid_mlx.audio.probe import is_audio_model_alias
+        from rapid_mlx.model_aliases import resolve_model
 
         # Confirm the precondition: these names are NOT in aliases.json
         # (the resolver returns them verbatim) AND they DO trip the
@@ -1021,7 +1021,7 @@ class TestCliBootGuardShortAlias:
     def test_full_alias_kokoro_82m_8bit_also_recognised(self):
         """The brief's literal ``kokoro-82m-8bit`` is recognised by the
         boot-guard probe (substring match on ``kokoro``)."""
-        from vllm_mlx.audio.probe import is_audio_model_alias
+        from rapid_mlx.audio.probe import is_audio_model_alias
 
         assert is_audio_model_alias("kokoro-82m-8bit")
         assert is_audio_model_alias("kokoro-82m-bf16")
@@ -1030,7 +1030,7 @@ class TestCliBootGuardShortAlias:
         """A genuinely-unknown alias (``gemma4-27b``) must STILL trip
         the fail-fast — the fix's bypass only opens the door for
         names that look like audio aliases."""
-        from vllm_mlx.audio.probe import is_audio_model_alias
+        from rapid_mlx.audio.probe import is_audio_model_alias
 
         assert not is_audio_model_alias("gemma4-27b")
         assert not is_audio_model_alias("some-future-llm-9b")
@@ -1048,7 +1048,7 @@ class TestCliBootGuardShortAlias:
         """
         import importlib.util
 
-        from vllm_mlx import cli
+        from rapid_mlx import cli
 
         real_find_spec = importlib.util.find_spec
 
@@ -1064,7 +1064,7 @@ class TestCliBootGuardShortAlias:
         # The audio boot guard fires before the version check so this
         # never matters in the failing path; we patch it as defense for
         # the (unlikely) future where the guard is moved.
-        from vllm_mlx import _version_check
+        from rapid_mlx import _version_check
 
         monkeypatch.setattr(
             _version_check, "prompt_upgrade_if_available", lambda: False

@@ -2,7 +2,7 @@
 """H-07: streaming + json_mode must NOT leak ```json ... ``` markdown fence.
 
 The non-streaming chat response builder peels a markdown ``` ```json ```
-wrapper via ``extract_json_from_response`` (vllm_mlx/api/utils.py) AFTER
+wrapper via ``extract_json_from_response`` (rapid_mlx/api/utils.py) AFTER
 assembling the full text. The streaming path concatenated raw model
 tokens WITHOUT the same scrub — joined SSE deltas decoded as
 ``` ```json\\n{...}\\n``` ``` and ``json.loads`` failed for any SDK
@@ -38,8 +38,8 @@ from __future__ import annotations
 import json
 from unittest.mock import MagicMock
 
-from vllm_mlx.api.utils import extract_json_from_response
-from vllm_mlx.service.postprocessor import StreamingPostProcessor
+from rapid_mlx.api.utils import extract_json_from_response
+from rapid_mlx.service.postprocessor import StreamingPostProcessor
 
 
 def _make_cfg(**overrides):
@@ -491,7 +491,7 @@ class TestJsonObjectFenceStripping:
         # Pass-through: matches what non-stream returns on the same
         # text. Clients who want strict JSON-only must still call
         # json.loads; this matches non-stream behaviour bit-for-bit.
-        from vllm_mlx.api.utils import extract_json_from_response
+        from rapid_mlx.api.utils import extract_json_from_response
 
         non_stream = extract_json_from_response(
             '{"k": 1}\n\nAnd more content the model emitted.'
@@ -565,7 +565,7 @@ class TestStreamEventMetadataPreservation:
         exercises an already-in-stream rewrite (not the trivial
         ``"scan"``-then-find-``{`` path which doesn't touch the
         rewrite code path most of the time)."""
-        from vllm_mlx.domain.events import StreamEvent
+        from rapid_mlx.domain.events import StreamEvent
 
         cfg = _make_cfg()
         pp = StreamingPostProcessor(cfg, json_mode=True)
@@ -597,7 +597,7 @@ class TestStreamEventMetadataPreservation:
     def test_finish_event_fields_preserved(self):
         """A finish event carrying finish_reason + tool_calls_detected
         must keep them after the filter rewrites content."""
-        from vllm_mlx.domain.events import StreamEvent
+        from rapid_mlx.domain.events import StreamEvent
 
         cfg = _make_cfg()
         pp = StreamingPostProcessor(cfg, json_mode=True)
@@ -624,7 +624,7 @@ class TestJsonSchemaFenceStripping:
         ``json_object`` — the route layer passes the same
         ``json_mode=True`` flag for both ``json_object`` and
         ``json_schema`` (see ``stream_chat_completion`` in
-        vllm_mlx/routes/chat.py around the ``json_mode=`` kwarg)."""
+        rapid_mlx/routes/chat.py around the ``json_mode=`` kwarg)."""
         cfg = _make_cfg()
         pp = StreamingPostProcessor(cfg, json_mode=True)
         pp.reset()
@@ -686,7 +686,7 @@ class TestReasoningParserPath:
     """When a reasoning parser is active, the fence-strip still applies.
 
     The existing ``_json_preamble_buffer`` path is SKIPPED when a
-    reasoning parser is wired (vllm_mlx/service/postprocessor.py:
+    reasoning parser is wired (rapid_mlx/service/postprocessor.py:
     ``_process_standard`` gate ``not self.reasoning_parser``), so a
     reasoning model emitting ``` ```json ``` after ``</think>`` would
     previously leak the fence into ``delta.content``. The new state

@@ -50,14 +50,14 @@ import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
-from vllm_mlx.api import response_format_metrics
-from vllm_mlx.api.models import ChatCompletionRequest
-from vllm_mlx.api.responses_adapter import responses_to_openai
-from vllm_mlx.api.responses_models import ResponsesRequest
-from vllm_mlx.config import reset_config
-from vllm_mlx.engine.base import GenerationOutput
-from vllm_mlx.middleware.exception_handlers import install_exception_handlers
-from vllm_mlx.service.helpers import (
+from rapid_mlx.api import response_format_metrics
+from rapid_mlx.api.models import ChatCompletionRequest
+from rapid_mlx.api.responses_adapter import responses_to_openai
+from rapid_mlx.api.responses_models import ResponsesRequest
+from rapid_mlx.config import reset_config
+from rapid_mlx.engine.base import GenerationOutput
+from rapid_mlx.middleware.exception_handlers import install_exception_handlers
+from rapid_mlx.service.helpers import (
     _resolve_enable_thinking,
     maybe_auto_disable_thinking_for_tools,
 )
@@ -319,7 +319,7 @@ def _reset_metrics_between_tests():
 def _rate_limiter_state():
     """Mirror of the M-2 sibling — save/restore the global rate-limiter
     so tests don't leak disabled state across the suite."""
-    from vllm_mlx.middleware.auth import rate_limiter
+    from rapid_mlx.middleware.auth import rate_limiter
 
     saved_enabled = rate_limiter.enabled
     saved_rpm = rate_limiter.requests_per_minute
@@ -338,7 +338,7 @@ def _make_chat_client(engine: _ChatEngine) -> TestClient:
     """Mount /v1/chat/completions with cfg.no_thinking=False so the
     request-level resolution path is the one under test (not the
     operator kill switch)."""
-    from vllm_mlx.routes.chat import router as chat_router
+    from rapid_mlx.routes.chat import router as chat_router
 
     cfg = reset_config()
     cfg.engine = engine
@@ -495,7 +495,7 @@ class TestChatRouteAutoDisableForTools:
         client = _make_chat_client(engine)
 
         captured_ctk: list[dict | None] = []
-        import vllm_mlx.routes.chat as _chat_mod
+        import rapid_mlx.routes.chat as _chat_mod
 
         original = _chat_mod._resolve_enable_thinking
 
@@ -571,7 +571,7 @@ class _ResponsesEngine:
 
 
 def _make_responses_client(engine: _ResponsesEngine) -> TestClient:
-    from vllm_mlx.routes.responses import router as responses_router
+    from rapid_mlx.routes.responses import router as responses_router
 
     cfg = reset_config()
     cfg.engine = engine
@@ -737,7 +737,7 @@ class TestCombinedTriggersHelperLevel:
             "enable_thinking": False,
         }
         with patch(
-            "vllm_mlx.service.helpers.get_config",
+            "rapid_mlx.service.helpers.get_config",
             return_value=SimpleNamespace(no_thinking=False),
         ):
             assert _resolve_enable_thinking(req) is False
@@ -813,7 +813,7 @@ class TestM2StrictPathStillFires:
         the predicate the route relies on still answers ``None`` for
         a vanilla request — so the strict json_schema branch still
         fires its own merge."""
-        from vllm_mlx.service.helpers import _extract_thinking_from_request
+        from rapid_mlx.service.helpers import _extract_thinking_from_request
 
         req = SimpleNamespace(
             tools=None,

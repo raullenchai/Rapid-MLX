@@ -5,7 +5,7 @@ from __future__ import annotations
 
 import json
 
-from vllm_mlx.tool_parsers import MiniCPMToolParser, ToolParserManager
+from rapid_mlx.tool_parsers import MiniCPMToolParser, ToolParserManager
 
 
 def _request() -> dict:

@@ -13,8 +13,8 @@ from typing import cast
 
 import pytest
 
-from vllm_mlx.audio import probe, runtime_requirements
-from vllm_mlx.audio.probe import (
+from rapid_mlx.audio import probe, runtime_requirements
+from rapid_mlx.audio.probe import (
     _KOKORO_G2P_SPACY_MODEL,
     _ensure_kokoro_g2p_model_ready,
     _kokoro_voice_needs_en_g2p,
@@ -22,11 +22,11 @@ from vllm_mlx.audio.probe import (
     _reset_g2p_model_state,
     require_kokoro_runtime,
 )
-from vllm_mlx.audio.registry import (
+from rapid_mlx.audio.registry import (
     AudioRuntimeRequirement,
     AudioRuntimeRequirementKind,
 )
-from vllm_mlx.audio.runtime_requirements import (
+from rapid_mlx.audio.runtime_requirements import (
     AudioRuntimePreparationError,
     _installer_env,
     prepare_runtime_requirement,
@@ -315,15 +315,15 @@ def test_require_kokoro_runtime_propagates_model_503(monkeypatch):
 
 
 def test_is_kokoro_family_covers_explicit_and_default():
-    from vllm_mlx.audio.tts import is_kokoro_family_model
+    from rapid_mlx.audio.tts import is_kokoro_family_model
 
     assert is_kokoro_family_model("mlx-community/Kokoro-82M-bf16") is True
     assert is_kokoro_family_model("acme/MysteryTTS-v2") is True
 
 
 def test_gate_matches_engine_family_for_every_registered_tts_model():
-    from vllm_mlx.audio.registry import tts_aliases
-    from vllm_mlx.audio.tts import TTSEngine, is_kokoro_family_model
+    from rapid_mlx.audio.registry import tts_aliases
+    from rapid_mlx.audio.tts import TTSEngine, is_kokoro_family_model
 
     for alias, hf_id in tts_aliases().items():
         expect_gated = TTSEngine(hf_id)._detect_family(hf_id) == "kokoro"
@@ -332,7 +332,7 @@ def test_gate_matches_engine_family_for_every_registered_tts_model():
 
 
 def test_detect_family_method_matches_module_ssot():
-    from vllm_mlx.audio.tts import TTSEngine, detect_tts_family
+    from rapid_mlx.audio.tts import TTSEngine, detect_tts_family
 
     for name in (
         "mlx-community/Kokoro-82M-bf16",
@@ -343,7 +343,7 @@ def test_detect_family_method_matches_module_ssot():
 
 
 def test_dry_run_tts_contains_systemexit(monkeypatch):
-    from vllm_mlx.audio import tts as tts_mod
+    from rapid_mlx.audio import tts as tts_mod
 
     class _FakeEngine:
         def __init__(self, name):

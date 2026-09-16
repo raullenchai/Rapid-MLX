@@ -27,7 +27,7 @@ pytestmark = pytest.mark.requires_mlx
 @pytest.fixture
 def engine_core(monkeypatch):
     """Build an EngineCore with mocked model/registry/scheduler."""
-    from vllm_mlx import engine_core as ec
+    from rapid_mlx import engine_core as ec
 
     # Avoid the real model registry (which expects a real MLX model).
     fake_registry = MagicMock()
@@ -54,7 +54,7 @@ class TestStepThread:
         """start() creates a single-thread executor with the mlx-step name."""
         # Stub out _init_mlx_step_thread so the test doesn't try to talk to
         # Metal — we only care about thread-naming + executor lifecycle here.
-        from vllm_mlx import engine_core as ec
+        from rapid_mlx import engine_core as ec
 
         monkeypatch.setattr(ec, "_init_mlx_step_thread", lambda: None)
 
@@ -90,7 +90,7 @@ class TestStepThread:
     @pytest.mark.asyncio
     async def test_save_cache_to_disk_routes_to_worker(self, engine_core, monkeypatch):
         """The shutdown save MUST execute on the mlx-step worker thread."""
-        from vllm_mlx import engine_core as ec
+        from rapid_mlx import engine_core as ec
 
         monkeypatch.setattr(ec, "_init_mlx_step_thread", lambda: None)
 
@@ -124,7 +124,7 @@ class TestStepThread:
         happens on this same worker thread. ``fake_load`` therefore accepts
         AND records ``replace`` — and the routing assertion (thread name)
         still holds, which is the contract this test guards."""
-        from vllm_mlx import engine_core as ec
+        from rapid_mlx import engine_core as ec
 
         monkeypatch.setattr(ec, "_init_mlx_step_thread", lambda: None)
 
@@ -179,7 +179,7 @@ class TestStepThread:
     ):
         """Worker-thread exceptions must propagate to the caller — silent
         failure here would mean we save half the cache and never log why."""
-        from vllm_mlx import engine_core as ec
+        from rapid_mlx import engine_core as ec
 
         monkeypatch.setattr(ec, "_init_mlx_step_thread", lambda: None)
 
@@ -212,7 +212,7 @@ class TestStepThread:
         prefix cache (e.g. --pin-system-prompt loaded entries from disk,
         or a prior request's system prompt) breaks on the next request.
         """
-        from vllm_mlx import engine_core as ec
+        from rapid_mlx import engine_core as ec
 
         monkeypatch.setattr(ec, "_init_mlx_step_thread", lambda: None)
 
@@ -269,7 +269,7 @@ class TestBatchedEngineWarmup:
 
     def test_warmup_runs_on_mlx_step_thread(self, monkeypatch):
         """generate_warmup() routes the model forward through _run_on_step_thread."""
-        from vllm_mlx.engine.batched import BatchedEngine
+        from rapid_mlx.engine.batched import BatchedEngine
 
         captured: dict = {}
 
@@ -322,7 +322,7 @@ class TestBatchedEngineWarmup:
 
     def test_warmup_falls_back_when_executor_missing(self, monkeypatch):
         """Without a step-thread executor, warmup runs inline (legacy path)."""
-        from vllm_mlx.engine.batched import BatchedEngine
+        from rapid_mlx.engine.batched import BatchedEngine
 
         captured: dict = {}
 
@@ -358,7 +358,7 @@ class TestBatchedEngineGetStats:
     """
 
     def _make_engine(self, mllm_stats):
-        from vllm_mlx.engine.batched import BatchedEngine
+        from rapid_mlx.engine.batched import BatchedEngine
 
         engine = BatchedEngine.__new__(BatchedEngine)
         engine._model_name = "test-model"
@@ -420,7 +420,7 @@ class TestGuidedGenerationStepThread:
         """generate_with_schema must dispatch via _model_load_executor."""
         import concurrent.futures
 
-        from vllm_mlx.engine.batched import BatchedEngine
+        from rapid_mlx.engine.batched import BatchedEngine
 
         executor = concurrent.futures.ThreadPoolExecutor(
             max_workers=1, thread_name_prefix="mlx-step-test"
@@ -439,7 +439,7 @@ class TestGuidedGenerationStepThread:
             engine._guided_abort_events = {}
 
             # Force HAS_GUIDED True so supports_guided_generation passes.
-            from vllm_mlx.engine import batched as batched_mod
+            from rapid_mlx.engine import batched as batched_mod
 
             monkeypatch.setattr(batched_mod, "HAS_GUIDED", True)
 
@@ -474,7 +474,7 @@ class TestGuidedGenerationStepThread:
     @pytest.mark.asyncio
     async def test_guided_generation_falls_back_without_executor(self, monkeypatch):
         """No executor available → fall back to asyncio.to_thread (best-effort)."""
-        from vllm_mlx.engine.batched import BatchedEngine
+        from rapid_mlx.engine.batched import BatchedEngine
 
         engine = BatchedEngine.__new__(BatchedEngine)
         engine._loaded = True
@@ -488,7 +488,7 @@ class TestGuidedGenerationStepThread:
         engine._guided_requests_lock = threading.Lock()
         engine._guided_abort_events = {}
 
-        from vllm_mlx.engine import batched as batched_mod
+        from rapid_mlx.engine import batched as batched_mod
 
         monkeypatch.setattr(batched_mod, "HAS_GUIDED", True)
 
@@ -524,7 +524,7 @@ class TestGuidedGenerationStepThread:
         Default (False): falls back via ``self.chat`` — no raise.
         Opt-in (True): raises RuntimeError, never calls ``self.chat``.
         """
-        from vllm_mlx.engine.batched import BatchedEngine
+        from rapid_mlx.engine.batched import BatchedEngine
 
         engine = BatchedEngine.__new__(BatchedEngine)
         engine._loaded = True
@@ -538,8 +538,8 @@ class TestGuidedGenerationStepThread:
         engine._guided_requests_lock = threading.Lock()
         engine._guided_abort_events = {}
 
-        from vllm_mlx.engine import batched as batched_mod
-        from vllm_mlx.engine.base import GenerationOutput
+        from rapid_mlx.engine import batched as batched_mod
+        from rapid_mlx.engine.base import GenerationOutput
 
         monkeypatch.setattr(batched_mod, "HAS_GUIDED", True)
 
@@ -590,9 +590,9 @@ class TestGuidedGenerationStepThread:
         import concurrent.futures
         import time
 
-        from vllm_mlx.api.errors import GuidedGenerationCancelledError
-        from vllm_mlx.engine import batched as batched_mod
-        from vllm_mlx.engine.batched import BatchedEngine
+        from rapid_mlx.api.errors import GuidedGenerationCancelledError
+        from rapid_mlx.engine import batched as batched_mod
+        from rapid_mlx.engine.batched import BatchedEngine
 
         executor = concurrent.futures.ThreadPoolExecutor(max_workers=1)
         try:
@@ -656,9 +656,9 @@ class TestGuidedGenerationStepThread:
         import concurrent.futures
         import time
 
-        from vllm_mlx.api.errors import GuidedGenerationCancelledError
-        from vllm_mlx.engine import batched as batched_mod
-        from vllm_mlx.engine.batched import BatchedEngine
+        from rapid_mlx.api.errors import GuidedGenerationCancelledError
+        from rapid_mlx.engine import batched as batched_mod
+        from rapid_mlx.engine.batched import BatchedEngine
 
         executor = concurrent.futures.ThreadPoolExecutor(max_workers=1)
         try:
@@ -712,9 +712,9 @@ class TestGuidedGenerationStepThread:
         """An accepted cancel wins the worker-complete/result-commit race."""
         import concurrent.futures
 
-        from vllm_mlx.api.errors import GuidedGenerationCancelledError
-        from vllm_mlx.engine import batched as batched_mod
-        from vllm_mlx.engine.batched import BatchedEngine
+        from rapid_mlx.api.errors import GuidedGenerationCancelledError
+        from rapid_mlx.engine import batched as batched_mod
+        from rapid_mlx.engine.batched import BatchedEngine
 
         executor = concurrent.futures.ThreadPoolExecutor(max_workers=1)
         try:
@@ -755,8 +755,8 @@ class TestGuidedGenerationStepThread:
         self, monkeypatch
     ):
         """Best-effort SSE has no unowned id window before admission."""
-        from vllm_mlx.engine import batched as batched_mod
-        from vllm_mlx.engine.batched import BatchedEngine
+        from rapid_mlx.engine import batched as batched_mod
+        from rapid_mlx.engine.batched import BatchedEngine
 
         engine = BatchedEngine.__new__(BatchedEngine)
         engine._loaded = True
@@ -815,7 +815,7 @@ class TestMLLMSchedulerStepThread:
         decode-only iteration ran inline on the loop thread; post-fix
         every iteration must land on mllm-step.
         """
-        from vllm_mlx.mllm_scheduler import MLLMScheduler
+        from rapid_mlx.mllm_scheduler import MLLMScheduler
 
         scheduler = MLLMScheduler.__new__(MLLMScheduler)
         scheduler._running = True
@@ -866,7 +866,7 @@ class TestMLLMSchedulerStepThread:
         """
         import concurrent.futures
 
-        from vllm_mlx.mllm_scheduler import MLLMScheduler
+        from rapid_mlx.mllm_scheduler import MLLMScheduler
 
         injected = concurrent.futures.ThreadPoolExecutor(
             max_workers=1, thread_name_prefix="mllm-step-injected"

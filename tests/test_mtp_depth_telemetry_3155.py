@@ -10,7 +10,7 @@ from __future__ import annotations
 
 import pytest
 
-from vllm_mlx.spec_decode.mtp.accept_counter import (
+from rapid_mlx.spec_decode.mtp.accept_counter import (
     MTPAcceptCounter,
     MTPAcceptCounterGroup,
     get_global_counter,
@@ -101,7 +101,7 @@ def test_reset_clears_depth_state():
 
 
 def test_snapshot_defaults_keep_old_constructor_sites_working():
-    from vllm_mlx.spec_decode.mtp.accept_counter import MTPAcceptSnapshot
+    from rapid_mlx.spec_decode.mtp.accept_counter import MTPAcceptSnapshot
 
     snap = MTPAcceptSnapshot(attempts=4, accepts=3, tokens_saved=3)
     assert snap.verify_calls == 0
@@ -109,7 +109,7 @@ def test_snapshot_defaults_keep_old_constructor_sites_working():
 
 
 def test_metrics_render_per_depth_families(monkeypatch):
-    from vllm_mlx.routes.metrics import _render_spec_decode_mtp_counters
+    from rapid_mlx.routes.metrics import _render_spec_decode_mtp_counters
 
     reset_global_counter_for_tests()
     try:
@@ -143,7 +143,7 @@ def test_metrics_render_per_depth_families(monkeypatch):
 
 
 def test_metrics_render_cold_start_has_no_depth_samples():
-    from vllm_mlx.routes.metrics import _render_spec_decode_mtp_counters
+    from rapid_mlx.routes.metrics import _render_spec_decode_mtp_counters
 
     reset_global_counter_for_tests()
 
@@ -213,7 +213,7 @@ def test_metrics_accepted_family_zero_filled_when_nothing_accepted():
     zero sample for every drafted depth."""
     from prometheus_client.parser import text_string_to_metric_families
 
-    from vllm_mlx.routes.metrics import _render_spec_decode_mtp_counters
+    from rapid_mlx.routes.metrics import _render_spec_decode_mtp_counters
 
     reset_global_counter_for_tests()
     try:

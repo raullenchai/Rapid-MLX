@@ -5,7 +5,7 @@ Status: **implemented** (statused 2026-08-18) · Author: raullen + Claude · Dat
 This doc covers Phase 2 of the opt-in telemetry pipeline first sketched
 in [Issue #236](https://github.com/raullenchai/Rapid-MLX/issues/236).
 Phase 1 (consent + redaction + schema) already landed in
-`vllm_mlx/telemetry/` and the Cloudflare Worker at
+`rapid_mlx/telemetry/` and the Cloudflare Worker at
 `~/work/Rapid-MLX-telemetry-worker/`. This doc is **only** about wiring
 client transport, event call sites, server DNS, and the downstream
 Golden Profile aggregation. Re-litigating the consent UX or schema
@@ -34,7 +34,7 @@ What we explicitly do **not** want:
 
 ## 2 · Current state (what's already done)
 
-### 2.1 Client (`vllm_mlx/telemetry/`) — Phase 1 complete
+### 2.1 Client (`rapid_mlx/telemetry/`) — Phase 1 complete
 
 | File | Owns |
 |---|---|
@@ -46,8 +46,8 @@ What we explicitly do **not** want:
 
 Phase 1 originally shipped with **no event call sites** — the package
 compiled, had tests, and shipped dark. That is no longer true: emission
-is live. `vllm_mlx/telemetry/emit.py` provides the emit path and it is
-wired from `vllm_mlx/routes/chat.py` (request/error events behind the
+is live. `rapid_mlx/telemetry/emit.py` provides the emit path and it is
+wired from `rapid_mlx/routes/chat.py` (request/error events behind the
 consent gate).
 
 ### 2.2 Server (`~/work/Rapid-MLX-telemetry-worker/`) — deployed
@@ -81,14 +81,14 @@ cadences. Different blast radius if a route is misconfigured. Keep
 
 ## 3 · Phase 2 client work
 
-### 3.1 New module: `vllm_mlx/telemetry/transport.py`
+### 3.1 New module: `rapid_mlx/telemetry/transport.py`
 
 Single responsibility: take a list of `TelemetryPayload` dicts, ship
 them to the Worker, fail silently on error. Nothing about consent or
 event construction lives here.
 
 ```python
-# vllm_mlx/telemetry/transport.py — sketch
+# rapid_mlx/telemetry/transport.py — sketch
 
 DEFAULT_ENDPOINT = "https://telemetry.rapidmlx.com/v1/events"
 TIMEOUT_S = 3.0  # short — telemetry must NEVER slow a real request
@@ -124,14 +124,14 @@ Notes:
   `URLError` is **NOT** a `TimeoutError` subclass; this code already
   catches both explicitly).
 
-### 3.2 New module: `vllm_mlx/telemetry/queue.py`
+### 3.2 New module: `rapid_mlx/telemetry/queue.py`
 
 A bounded in-process queue + flush daemon. Events accumulate locally;
 a background thread flushes either when the queue hits N events, when
 T seconds elapse, or on graceful shutdown.
 
 ```python
-# vllm_mlx/telemetry/queue.py — sketch
+# rapid_mlx/telemetry/queue.py — sketch
 
 MAX_QUEUE_LEN = 100   # match Worker batch cap
 FLUSH_INTERVAL_S = 60 # idle flush
@@ -168,23 +168,23 @@ Surgical instrumentation only. Every site touches:
 
 | Stream | File | Hook | Notes |
 |---|---|---|---|
-| **session_start** | `vllm_mlx/cli.py` `main()` | After argparse, before subcommand dispatch | Captures subcommand + redacted `flag_names` from `sys.argv`. |
-| **session_end** | `vllm_mlx/cli.py` `main()` | `atexit` / `finally` | Carries `duration_seconds`. For `serve`, this fires at server shutdown so `models_loaded` is final. |
-| **request** | `vllm_mlx/routes/chat.py` (and embeddings/audio mirrors) | After response sent, before context exit | Bucket ttft, tps, prompt/completion tokens. `tool_call_used` from response inspection. **Skip streaming partials** — emit once per completed request. |
-| **error** (model load) | `vllm_mlx/engine/loader.py` exception handler | On any load exception | `category="model_load_failure"`, `phase="startup"`. |
-| **error** (oom) | `vllm_mlx/scheduler.py` `MemoryError` handler | On OOM | `category="oom"`, `phase="request"`. |
-| **error** (tool parse) | `vllm_mlx/parsers/*.py` failure paths | When a parser falls back to text | `category="tool_parse"`. Carries fingerprint of the parser path, not the offending input. |
-| **error** (shutdown traceback) | `vllm_mlx/api/server.py` lifespan exit handler | On exception during shutdown | `category="shutdown_traceback"`, `phase="shutdown"`. |
+| **session_start** | `rapid_mlx/cli.py` `main()` | After argparse, before subcommand dispatch | Captures subcommand + redacted `flag_names` from `sys.argv`. |
+| **session_end** | `rapid_mlx/cli.py` `main()` | `atexit` / `finally` | Carries `duration_seconds`. For `serve`, this fires at server shutdown so `models_loaded` is final. |
+| **request** | `rapid_mlx/routes/chat.py` (and embeddings/audio mirrors) | After response sent, before context exit | Bucket ttft, tps, prompt/completion tokens. `tool_call_used` from response inspection. **Skip streaming partials** — emit once per completed request. |
+| **error** (model load) | `rapid_mlx/engine/loader.py` exception handler | On any load exception | `category="model_load_failure"`, `phase="startup"`. |
+| **error** (oom) | `rapid_mlx/scheduler.py` `MemoryError` handler | On OOM | `category="oom"`, `phase="request"`. |
+| **error** (tool parse) | `rapid_mlx/parsers/*.py` failure paths | When a parser falls back to text | `category="tool_parse"`. Carries fingerprint of the parser path, not the offending input. |
+| **error** (shutdown traceback) | `rapid_mlx/api/server.py` lifespan exit handler | On exception during shutdown | `category="shutdown_traceback"`, `phase="shutdown"`. |
 
 ### 3.4 Threading + lifecycle integration
 
-- `vllm_mlx/cli.py` `main()` instantiates a process-singleton
+- `rapid_mlx/cli.py` `main()` instantiates a process-singleton
   `TelemetryQueue` after consent check. The instance is also held by
-  `vllm_mlx/api/server.py` `lifespan()` (FastAPI) and surfaced via
+  `rapid_mlx/api/server.py` `lifespan()` (FastAPI) and surfaced via
   request-state for the route layer.
 - One flush daemon per CLI invocation. Daemon thread, `daemon=True`,
   joined with 2 s budget on `atexit`.
-- `vllm_mlx/api/server.py` `lifespan()` enqueues `session_start` on
+- `rapid_mlx/api/server.py` `lifespan()` enqueues `session_start` on
   startup, `session_end` on shutdown; route layer enqueues `request`.
 
 ## 4 · Server-side: DNS + Worker deploy
@@ -415,7 +415,7 @@ reviewer can grep the binary's actual wire shape without strace.
 ## Appendix A · File layout after Phase 2
 
 ```
-vllm_mlx/telemetry/
+rapid_mlx/telemetry/
 ├── __init__.py          # Phase 1, exports
 ├── consent.py           # Phase 1, first-run prompt
 ├── schema.py            # Phase 1, wire shape
@@ -426,8 +426,8 @@ vllm_mlx/telemetry/
 └── emit.py              # Phase 2.1+, event constructor helpers
 ```
 
-`vllm_mlx/cli.py:main()` calls into `telemetry.emit.session_start()` /
-`session_end()`. `vllm_mlx/routes/chat.py` calls `emit.request()`.
+`rapid_mlx/cli.py:main()` calls into `telemetry.emit.session_start()` /
+`session_end()`. `rapid_mlx/routes/chat.py` calls `emit.request()`.
 Parsers + scheduler + loader call `emit.error(...)`.
 
 ## Appendix B · Reusable patterns this lands

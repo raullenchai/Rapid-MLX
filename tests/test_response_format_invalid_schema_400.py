@@ -48,17 +48,17 @@ from fastapi.testclient import TestClient
 
 # Import from the DEPENDENCY-FREE errors module — and assert it is the SAME
 # class the guided module re-exports, so the whole chain agrees on identity.
-from vllm_mlx.api.errors import (
+from rapid_mlx.api.errors import (
     CHAT_RESPONSE_FORMAT_PARAM,
     RESPONSES_TEXT_FORMAT_PARAM,
     GuidedSchemaCompileError,
     guided_schema_compile_error_detail,
 )
-from vllm_mlx.api.guided import GuidedSchemaCompileError as _GuidedErrFromGuided
-from vllm_mlx.config import reset_config
-from vllm_mlx.engine.base import GenerationOutput
-from vllm_mlx.middleware.exception_handlers import install_exception_handlers
-from vllm_mlx.routes.chat import router as chat_router
+from rapid_mlx.api.guided import GuidedSchemaCompileError as _GuidedErrFromGuided
+from rapid_mlx.config import reset_config
+from rapid_mlx.engine.base import GenerationOutput
+from rapid_mlx.middleware.exception_handlers import install_exception_handlers
+from rapid_mlx.routes.chat import router as chat_router
 
 assert _GuidedErrFromGuided is GuidedSchemaCompileError  # re-export identity
 
@@ -193,13 +193,13 @@ def _assert_invalid_schema_400(resp) -> None:
 
 # ---------------------------------------------------------------------------
 # Dependency-free errors module (Round-3 NIT #4): the envelope builder lives in
-# ``vllm_mlx.api.errors`` with NO mlx/llguidance import, so the exception
+# ``rapid_mlx.api.errors`` with NO mlx/llguidance import, so the exception
 # handlers and routes can build the 400 body without triggering engine init.
 # ---------------------------------------------------------------------------
 
 
 def test_errors_module_is_dependency_free():
-    """``vllm_mlx.api.errors`` must not drag in the heavy engine stack — that
+    """``rapid_mlx.api.errors`` must not drag in the heavy engine stack — that
     is the whole point of splitting it out of ``api.guided`` (which imports
     mlx/llguidance). If either becomes importable-through-errors, importing the
     module for the envelope builder would boot the engine on every handler.
@@ -214,7 +214,7 @@ def test_errors_module_is_dependency_free():
     import sys
 
     code = (
-        "import sys; import vllm_mlx.api.errors as e;"
+        "import sys; import rapid_mlx.api.errors as e;"
         "assert hasattr(e, 'GuidedSchemaCompileError');"
         "assert hasattr(e, 'guided_schema_compile_error_detail');"
         "assert 'mlx.core' not in sys.modules, sorted(m for m in sys.modules "
@@ -251,7 +251,7 @@ def test_nonstrict_json_schema_boundary_error_helper():
     validator returns the 400 detail for a structurally-invalid NON-strict
     json_schema, ``None`` for valid / strict / non-json_schema, and honors the
     per-surface ``param``. Both chat and responses call THIS one function."""
-    from vllm_mlx.api.tool_calling import nonstrict_json_schema_boundary_error
+    from rapid_mlx.api.tool_calling import nonstrict_json_schema_boundary_error
 
     rf_invalid = {
         "type": "json_schema",
@@ -565,7 +565,7 @@ def test_decode_constrained_raises_on_matcher_get_error(monkeypatch):
     load-bearing guided-decoder regression must never silently skip — reverting
     the raise to ``return None`` (or a broken llguidance import) turns it red.
     """
-    from vllm_mlx.api import guided as guided_mod
+    from rapid_mlx.api import guided as guided_mod
 
     monkeypatch.setattr(
         guided_mod, "LLMatcher", lambda _lltok, _grammar: _StubMatcher("Invalid type")
@@ -585,7 +585,7 @@ def test_generate_json_has_no_inengine_structural_validation():
     ``_schema_invalid_reason`` structural check is REMOVED, so ``generate_json``
     does NOT re-validate the schema (no duplicate work, nothing on the
     executor/event-loop thread twice)."""
-    from vllm_mlx.api import guided as guided_mod
+    from rapid_mlx.api import guided as guided_mod
 
     assert not hasattr(guided_mod, "_schema_invalid_reason"), (
         "the in-generator structural validation must be removed — the route "
@@ -600,7 +600,7 @@ def test_generate_json_treats_any_llguidance_reject_as_operational_none(monkeypa
     200), NEVER a raised 400. It must NOT raise even for a structurally-INVALID
     schema (which the boundary normally rejects first) — proving the in-generator
     layer does no structural gate."""
-    from vllm_mlx.api import guided as guided_mod
+    from rapid_mlx.api import guided as guided_mod
 
     monkeypatch.setattr(
         guided_mod.LLMatcher,
@@ -625,7 +625,7 @@ def test_generate_json_operational_runtime_error_degrades_to_none(monkeypatch):
     """Operational arm: an INTERNAL failure (e.g. a ``RuntimeError`` /  eager
     ``ValueError`` from ``grammar_from_json_schema``) degrades to ``None`` (the
     operational path), never a 400."""
-    from vllm_mlx.api import guided as guided_mod
+    from rapid_mlx.api import guided as guided_mod
 
     def _internal_boom(*_a, **_k):
         raise RuntimeError("internal resource failure / OOM")
@@ -653,7 +653,7 @@ def _bare_engine(monkeypatch, gen_exc: Exception):
     raises ``gen_exc`` from ``generate_json``. Constructed via ``__new__`` so
     no model load happens; only the attributes the guided path reads are set.
     """
-    from vllm_mlx.engine import batched as batched_mod
+    from rapid_mlx.engine import batched as batched_mod
 
     class _FakeGuidedGenerator:
         def __init__(self, model, tokenizer):
@@ -696,7 +696,7 @@ async def test_generate_with_schema_operational_none_raises_no_chat_fallback(
     ``None``, then assert the wrapper RAISES (the route maps this to 502) and NEVER
     calls unconstrained ``chat()``. Without ``raise_on_failure`` this same ``None``
     is the best-effort fallback; with it (strict), the silent degrade is refused."""
-    from vllm_mlx.engine import batched as batched_mod
+    from rapid_mlx.engine import batched as batched_mod
 
     eng = batched_mod.BatchedEngine.__new__(batched_mod.BatchedEngine)
     eng._model = object()
@@ -745,7 +745,7 @@ async def test_generate_with_schema_operational_none_raises_no_chat_fallback(
 def _rate_limiter_state():
     """Save/restore the global rate-limiter so disabling it for the responses
     route does not leak into other tests."""
-    from vllm_mlx.middleware.auth import rate_limiter
+    from rapid_mlx.middleware.auth import rate_limiter
 
     saved_enabled = rate_limiter.enabled
     saved_rpm = rate_limiter.requests_per_minute
@@ -761,7 +761,7 @@ def _rate_limiter_state():
 
 
 def _make_responses_client(engine: _Engine) -> TestClient:
-    from vllm_mlx.routes.responses import router as responses_router
+    from rapid_mlx.routes.responses import router as responses_router
 
     cfg = reset_config()
     cfg.engine = engine
@@ -879,7 +879,7 @@ def test_responses_strict_valid_schema_operational_failure_returns_502(
 
 
 def _make_completions_client(engine: _Engine) -> TestClient:
-    from vllm_mlx.routes.completions import router as completions_router
+    from rapid_mlx.routes.completions import router as completions_router
 
     cfg = reset_config()
     cfg.engine = engine

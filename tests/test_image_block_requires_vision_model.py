@@ -6,7 +6,7 @@ Bug (Quincy 0.8.1 dogfood)
 ``POST /v1/messages`` to a text-only model with an Anthropic ``image``
 content block returned HTTP 200 with the image silently dropped. The
 Anthropic adapter
-(``vllm_mlx/api/anthropic_adapter._convert_message_to_openai``) only
+(``rapid_mlx/api/anthropic_adapter._convert_message_to_openai``) only
 forwards ``text``/``tool_use``/``tool_result`` blocks to the OpenAI-shape
 request — every other block type (``image``, ``document``) is silently
 discarded. The caller sees a confident-but-empty answer about the
@@ -14,7 +14,7 @@ missing media.
 
 Fix
 ---
-At the route boundary in ``vllm_mlx/routes/anthropic.py``, before the
+At the route boundary in ``rapid_mlx/routes/anthropic.py``, before the
 adapter runs, inspect every block in every message. If ``engine.is_mllm``
 is False and we see ``image`` or ``document``, raise HTTP 400 naming the
 model/incompatibility. Mirrors the same R9P1 guard the OpenAI
@@ -32,10 +32,10 @@ import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
-from vllm_mlx.config import reset_config
-from vllm_mlx.engine.base import GenerationOutput
-from vllm_mlx.routes.anthropic import router as anthropic_router
-from vllm_mlx.routes.chat import router as chat_router
+from rapid_mlx.config import reset_config
+from rapid_mlx.engine.base import GenerationOutput
+from rapid_mlx.routes.anthropic import router as anthropic_router
+from rapid_mlx.routes.chat import router as chat_router
 
 
 class _TextOnlyEngine:

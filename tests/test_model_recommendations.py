@@ -10,9 +10,9 @@ from types import SimpleNamespace
 
 import pytest
 
-from vllm_mlx import cli
-from vllm_mlx.model_aliases import list_aliases
-from vllm_mlx.recommendations import (
+from rapid_mlx import cli
+from rapid_mlx.model_aliases import list_aliases
+from rapid_mlx.recommendations import (
     is_recommended_alias,
     load_recommendation_tiers,
     recommendation_footprint_gb,
@@ -69,8 +69,8 @@ def _set_first_floor(policy: dict, value: object) -> None:
 def test_atomic_policy_rejects_desktop_unrepresentable_values(
     monkeypatch, mutate, match: str
 ) -> None:
-    from vllm_mlx import recommendations
-    from vllm_mlx.catalog import load_product_recommendation_policy
+    from rapid_mlx import recommendations
+    from rapid_mlx.catalog import load_product_recommendation_policy
 
     policy = deepcopy(load_product_recommendation_policy())
     mutate(policy)
@@ -88,8 +88,8 @@ def test_atomic_policy_rejects_desktop_unrepresentable_values(
 def test_atomic_policy_rejects_multiple_unrepresentable_limitations(
     monkeypatch,
 ) -> None:
-    from vllm_mlx import recommendations
-    from vllm_mlx.catalog import load_product_recommendation_policy
+    from rapid_mlx import recommendations
+    from rapid_mlx.catalog import load_product_recommendation_policy
 
     policy = deepcopy(load_product_recommendation_policy())
     policy["tiers"][0]["picks"][0]["limitation_ids"] = [
@@ -108,8 +108,8 @@ def test_atomic_policy_rejects_multiple_unrepresentable_limitations(
 
 
 def test_atomic_policy_requires_strictly_increasing_ram_floors(monkeypatch) -> None:
-    from vllm_mlx import recommendations
-    from vllm_mlx.catalog import load_product_recommendation_policy
+    from rapid_mlx import recommendations
+    from rapid_mlx.catalog import load_product_recommendation_policy
 
     policy = deepcopy(load_product_recommendation_policy())
     policy["tiers"][1]["minimum_memory_mib"] = policy["tiers"][0]["minimum_memory_mib"]
@@ -125,8 +125,8 @@ def test_atomic_policy_requires_strictly_increasing_ram_floors(monkeypatch) -> N
 
 
 def test_atomic_policy_requires_display_capability_score(monkeypatch) -> None:
-    from vllm_mlx import recommendations
-    from vllm_mlx.catalog import load_product_recommendation_policy
+    from rapid_mlx import recommendations
+    from rapid_mlx.catalog import load_product_recommendation_policy
 
     policy = deepcopy(load_product_recommendation_policy())
     del policy["tiers"][0]["picks"][0]["capability_score_x100"]
@@ -178,7 +178,7 @@ def test_repeated_aliases_have_one_working_set_footprint() -> None:
 
 
 def test_conflicting_repeated_footprints_fail_closed(monkeypatch) -> None:
-    from vllm_mlx import recommendations
+    from rapid_mlx import recommendations
 
     tiers = list(load_recommendation_tiers())
     repeated = tiers[0].picks[1]
@@ -336,7 +336,7 @@ def test_recipe_unknown_disk_space_does_not_hide_commands(monkeypatch, capsys) -
 
 
 def test_recipe_unknown_download_size_does_not_claim_fit(monkeypatch, capsys) -> None:
-    from vllm_mlx import model_sizes
+    from rapid_mlx import model_sizes
 
     monkeypatch.setattr(cli, "_scan_hf_cache_models", lambda: [])
     monkeypatch.setattr(cli, "_recipe_free_disk_gb", lambda: 1.0)

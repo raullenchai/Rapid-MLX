@@ -4,7 +4,7 @@ import Testing
 
 /// #342 follow-up — exhaustive coverage check for ``ToolUseCapability``
 /// across every alias currently shipped by the bundled rapid-mlx
-/// catalog. Pre-fix audit of ``third_party/rapid-mlx/vllm_mlx/aliases.json``
+/// catalog. Pre-fix audit of ``third_party/rapid-mlx/rapid_mlx/aliases.json``
 /// at HEAD (commit ``232e63a``) found 21 ``.known`` / 3 ``.broken`` /
 /// 68 ``.unknown`` out of 92 aliases — 74% over-classified as
 /// ``.unknown`` because the original ``knownPrefixes`` list was a
@@ -551,14 +551,14 @@ struct ToolUseCapabilityCatalogCoverageTests {
 
     /// Load every alias key from the bundled ``aliases.json`` snapshot
     /// at submodule commit ``4ba7053989cd``. The JSON lives at
-    /// ``third_party/rapid-mlx/vllm_mlx/aliases.json``; we resolve
+    /// ``third_party/rapid-mlx/rapid_mlx/aliases.json``; we resolve
     /// the path via ``#filePath`` so the test runs from any cwd.
     static func loadCatalogAliases() throws -> [String] {
         let url = URL(fileURLWithPath: #filePath)
             .deletingLastPathComponent()  // RapidTests
             .deletingLastPathComponent()  // Tests
             .deletingLastPathComponent()  // repo root
-            .appendingPathComponent("third_party/rapid-mlx/vllm_mlx/aliases.json")
+            .appendingPathComponent("third_party/rapid-mlx/rapid_mlx/aliases.json")
         let data = try Data(contentsOf: url)
         guard let obj = try JSONSerialization.jsonObject(with: data) as? [String: Any] else {
             throw NSError(domain: "ToolUseCapabilityCatalogCoverageTests", code: 1, userInfo: [NSLocalizedDescriptionKey: "aliases.json did not decode as object"])

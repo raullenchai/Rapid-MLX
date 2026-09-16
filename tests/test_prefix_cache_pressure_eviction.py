@@ -36,8 +36,8 @@ pytestmark = pytest.mark.requires_mlx
 
 from unittest.mock import MagicMock, patch
 
-from vllm_mlx.prefix_cache import BlockCacheEntry
-from vllm_mlx.scheduler import Scheduler, SchedulerConfig
+from rapid_mlx.prefix_cache import BlockCacheEntry
+from rapid_mlx.scheduler import Scheduler, SchedulerConfig
 
 
 def _kv_layer_states(num_tokens, layers=1, heads=2, head_dim=4, base=0.0):
@@ -311,7 +311,7 @@ class TestPressureEvictionMetric:
         ``--gpu-memory-utilization`` for the workload."""
         import types
 
-        from vllm_mlx.routes.metrics import _render_prometheus
+        from rapid_mlx.routes.metrics import _render_prometheus
 
         sched = _make_scheduler_with_legacy_cache(gpu_memory_utilization=0.5)
         for i in range(3):
@@ -354,7 +354,7 @@ class TestEngineCoreInvokesPressureEvict:
         registry / executor setup so the tick helper can be driven
         without booting a real MLX engine. Only attributes touched by
         ``_run_pressure_evict_tick`` are populated."""
-        from vllm_mlx.engine_core import EngineCore
+        from rapid_mlx.engine_core import EngineCore
 
         ec = EngineCore.__new__(EngineCore)
         ec.scheduler = scheduler_stub
@@ -400,7 +400,7 @@ class TestEngineCoreInvokesPressureEvict:
         scheduler.release_paged_cache_blocks_under_pressure = MagicMock(return_value=0)
         ec = self._build_minimal_engine_core(scheduler)
 
-        with caplog.at_level(logging.WARNING, logger="vllm_mlx.engine_core"):
+        with caplog.at_level(logging.WARNING, logger="rapid_mlx.engine_core"):
             for _ in range(5):
                 # Helper must NOT re-raise — engine loop continues.
                 ec._run_pressure_evict_tick()
@@ -433,7 +433,7 @@ class TestEngineCoreInvokesPressureEvict:
         scheduler.release_paged_cache_blocks_under_pressure = MagicMock(return_value=0)
         ec = self._build_minimal_engine_core(scheduler)
 
-        with caplog.at_level(logging.WARNING, logger="vllm_mlx.engine_core"):
+        with caplog.at_level(logging.WARNING, logger="rapid_mlx.engine_core"):
             for _ in range(3):
                 ec._run_pressure_evict_tick()
 
@@ -1196,9 +1196,9 @@ class TestBlockAwareCacheEviction:
         with (
             patch.object(sched, "_resolve_metal_cap_bytes", return_value=0),
             patch.object(sched, "_current_metal_active_bytes", return_value=95),
-            patch("vllm_mlx.scheduler.mx.metal.is_available", return_value=True),
+            patch("rapid_mlx.scheduler.mx.metal.is_available", return_value=True),
             patch(
-                "vllm_mlx.scheduler.mx.device_info",
+                "rapid_mlx.scheduler.mx.device_info",
                 return_value={"max_recommended_working_set_size": 100},
             ),
             patch("mlx.core.clear_cache"),

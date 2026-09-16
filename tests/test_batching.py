@@ -19,13 +19,13 @@ import types
 from types import SimpleNamespace
 from unittest.mock import MagicMock
 
-from vllm_mlx.request import (
+from rapid_mlx.request import (
     Request,
     RequestOutput,
     RequestStatus,
     SamplingParams,
 )
-from vllm_mlx.scheduler import (
+from rapid_mlx.scheduler import (
     Scheduler,
     SchedulerConfig,
 )
@@ -118,8 +118,8 @@ class TestRequest:
 
 
 def test_batched_engine_routes_cache_operations_to_active_backend():
-    from vllm_mlx.engine.batched import BatchedEngine
-    from vllm_mlx.prompt_host_cache import PromptHostCache
+    from rapid_mlx.engine.batched import BatchedEngine
+    from rapid_mlx.prompt_host_cache import PromptHostCache
 
     engine = BatchedEngine.__new__(BatchedEngine)
     engine._prompt_host_cache = PromptHostCache(enabled=True)
@@ -151,8 +151,8 @@ def test_batched_engine_routes_cache_operations_to_active_backend():
 
 
 def test_prompt_host_cache_covers_engine_lifecycle_and_stats(monkeypatch):
-    from vllm_mlx.engine.batched import BatchedEngine
-    from vllm_mlx.prompt_host_cache import PromptHostCache
+    from rapid_mlx.engine.batched import BatchedEngine
+    from rapid_mlx.prompt_host_cache import PromptHostCache
 
     engine = BatchedEngine.__new__(BatchedEngine)
     engine._model_name = "test-model"
@@ -188,7 +188,7 @@ def test_prompt_host_cache_covers_engine_lifecycle_and_stats(monkeypatch):
 
 
 def test_scheduler_prompt_encoding_cache_and_fallbacks():
-    from vllm_mlx.prompt_host_cache import PromptHostCache
+    from rapid_mlx.prompt_host_cache import PromptHostCache
 
     class _Tokenizer:
         init_kwargs = {"_commit_hash": "revision-v1"}
@@ -225,14 +225,14 @@ def test_scheduler_prompt_encoding_cache_and_fallbacks():
 
 @pytest.mark.asyncio
 async def test_text_and_shared_engine_paths_bind_prompt_host_cache(monkeypatch):
-    import vllm_mlx.engine_core as engine_core
-    import vllm_mlx.gdn_in_proj_fusion as gdn_fusion
-    import vllm_mlx.moe_fusion as moe_fusion
-    import vllm_mlx.qwen35_fused_gdn_decode as fused_gdn
-    import vllm_mlx.qwen35_moe_router as moe_router
-    import vllm_mlx.runtime.cache as runtime_cache
-    import vllm_mlx.utils.tokenizer as tokenizer_utils
-    from vllm_mlx.engine.batched import BatchedEngine
+    import rapid_mlx.engine_core as engine_core
+    import rapid_mlx.gdn_in_proj_fusion as gdn_fusion
+    import rapid_mlx.moe_fusion as moe_fusion
+    import rapid_mlx.qwen35_fused_gdn_decode as fused_gdn
+    import rapid_mlx.qwen35_moe_router as moe_router
+    import rapid_mlx.runtime.cache as runtime_cache
+    import rapid_mlx.utils.tokenizer as tokenizer_utils
+    from rapid_mlx.engine.batched import BatchedEngine
 
     starts = []
 
@@ -739,7 +739,7 @@ class TestEngineThreading:
         default and the captured `with mx.stream(...)` context converge on
         the same stream object.
         """
-        from vllm_mlx import engine_core
+        from rapid_mlx import engine_core
 
         fake_generate = types.SimpleNamespace(generation_stream="old-stream")
         monkeypatch.setitem(sys.modules, "mlx_lm.generate", fake_generate)
@@ -762,14 +762,14 @@ class TestMetalCacheLimit:
     """
 
     def test_caps_at_32gb_on_big_machines(self):
-        from vllm_mlx.engine.batched import _compute_metal_cache_limit
+        from rapid_mlx.engine.batched import _compute_metal_cache_limit
 
         # M3 Ultra 256GB: max_rec=239GB, soft=215GB → 25% would be 54GB → cap 32GB
         soft = 215 * 1024**3
         assert _compute_metal_cache_limit(soft) == 32 * 1024**3
 
     def test_scales_down_on_m2_max_96gb(self):
-        from vllm_mlx.engine.batched import _compute_metal_cache_limit
+        from rapid_mlx.engine.batched import _compute_metal_cache_limit
 
         # M2 Max 96GB: max_rec=72GB, soft=65GB → 25% = 16.25GB (was 32GB hardcoded)
         soft = 65 * 1024**3
@@ -780,7 +780,7 @@ class TestMetalCacheLimit:
         assert cache < 32 * 1024**3
 
     def test_scales_down_on_m3_max_64gb(self):
-        from vllm_mlx.engine.batched import _compute_metal_cache_limit
+        from rapid_mlx.engine.batched import _compute_metal_cache_limit
 
         # M3 Max 64GB: max_rec=48GB, soft=43GB → 25% = 10.75GB
         soft = 43 * 1024**3
@@ -788,7 +788,7 @@ class TestMetalCacheLimit:
         assert 10 * 1024**3 <= cache <= 11 * 1024**3
 
     def test_floors_at_2gb_on_tiny_machines(self):
-        from vllm_mlx.engine.batched import _compute_metal_cache_limit
+        from rapid_mlx.engine.batched import _compute_metal_cache_limit
 
         # Hypothetical 4GB machine: 25% = 1GB, floor 2GB
         soft = 4 * 1024**3
@@ -798,7 +798,7 @@ class TestMetalCacheLimit:
         """Even with the 2 GiB floor, never exceed soft_limit (MLX implicit
         invariant: cache_limit defaults to memory_limit, suggesting cache ≤ memory).
         """
-        from vllm_mlx.engine.batched import _compute_metal_cache_limit
+        from rapid_mlx.engine.batched import _compute_metal_cache_limit
 
         # 1 GiB soft limit (no real Apple Silicon device — paranoid edge case)
         soft = 1 * 1024**3
@@ -824,8 +824,8 @@ class TestEngineAsync:
         self, mock_model_and_tokenizer
     ):
         """Prefill and decode steps must run on the same MLX worker thread."""
-        from vllm_mlx import engine_core
-        from vllm_mlx.engine import EngineConfig, EngineCore
+        from rapid_mlx import engine_core
+        from rapid_mlx.engine import EngineConfig, EngineCore
 
         model, tokenizer = mock_model_and_tokenizer
         engine = EngineCore(model, tokenizer, EngineConfig(step_interval=0.001))
@@ -890,9 +890,9 @@ class TestEngineAsync:
         and asserts the buffer + flush invariants on all three delta fields.
         A finished=True step must always trigger a flush.
         """
-        from vllm_mlx import engine_core
-        from vllm_mlx.engine import EngineConfig, EngineCore
-        from vllm_mlx.output_collector import RequestStreamState
+        from rapid_mlx import engine_core
+        from rapid_mlx.engine import EngineConfig, EngineCore
+        from rapid_mlx.output_collector import RequestStreamState
 
         model, tokenizer = mock_model_and_tokenizer
         engine = EngineCore(
@@ -1063,7 +1063,7 @@ class TestEngineAsync:
 
     async def test_engine_lifecycle(self, mock_model_and_tokenizer):
         """Test engine start/stop lifecycle."""
-        from vllm_mlx.engine import AsyncEngineCore, EngineConfig
+        from rapid_mlx.engine import AsyncEngineCore, EngineConfig
 
         model, tokenizer = mock_model_and_tokenizer
 
@@ -1080,7 +1080,7 @@ class TestEngineAsync:
 
     async def test_engine_context_manager(self, mock_model_and_tokenizer):
         """Test engine as async context manager."""
-        from vllm_mlx.engine import AsyncEngineCore
+        from rapid_mlx.engine import AsyncEngineCore
 
         model, tokenizer = mock_model_and_tokenizer
 

@@ -1,5 +1,5 @@
 # SPDX-License-Identifier: Apache-2.0
-"""``vllm_mlx.disk_stream_patch`` — install-time glue tying tickets 01/02
+"""``rapid_mlx.disk_stream_patch`` — install-time glue tying tickets 01/02
 into an end-to-end disk-streaming generation run.
 
 Tickets: ``.scratch/rapid-mlx-disk-stream/issues/03-patch-glue-lfm25-e2e.md``
@@ -42,8 +42,8 @@ import gc
 import inspect
 from pathlib import Path
 
-from vllm_mlx import registry
-from vllm_mlx.disk_stream_patch import (
+from rapid_mlx import registry
+from rapid_mlx.disk_stream_patch import (
     DiskStreamInstallError,
     UnsupportedModelTypeError,
     install,
@@ -220,9 +220,9 @@ def test_install_rejects_zero_matching_layers_and_duplicate_install():
 
 def test_streaming_forwards_use_each_projections_quantization_parameters():
     """Mixed-quantization checkpoints must not reuse gate settings."""
-    from vllm_mlx.disk_stream_patch import _streaming_moe_forward
-    from vllm_mlx.qwen2_moe_forward import qwen2_moe_streaming_forward
-    from vllm_mlx.qwen3_next_forward import qwen3_next_streaming_forward
+    from rapid_mlx.disk_stream_patch import _streaming_moe_forward
+    from rapid_mlx.qwen2_moe_forward import qwen2_moe_streaming_forward
+    from rapid_mlx.qwen3_next_forward import qwen3_next_streaming_forward
 
     for forward in (
         _streaming_moe_forward,

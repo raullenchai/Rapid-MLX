@@ -33,7 +33,7 @@ from __future__ import annotations
 
 import json
 
-from vllm_mlx.tool_parsers.qwen3coder_tool_parser import Qwen3CoderToolParser
+from rapid_mlx.tool_parsers.qwen3coder_tool_parser import Qwen3CoderToolParser
 
 
 def _request_with_tool(name: str, properties: dict) -> dict:

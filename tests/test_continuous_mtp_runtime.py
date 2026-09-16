@@ -7,11 +7,11 @@ from types import ModuleType, SimpleNamespace
 
 import pytest
 
-from vllm_mlx.spec_decode.mtp import continuous_runtime as runtime_module
-from vllm_mlx.spec_decode.mtp.continuous_engine import (
+from rapid_mlx.spec_decode.mtp import continuous_runtime as runtime_module
+from rapid_mlx.spec_decode.mtp.continuous_engine import (
     ContinuousSelfMTPUnsupportedError,
 )
-from vllm_mlx.spec_decode.mtp.ragged_cache import (
+from rapid_mlx.spec_decode.mtp.ragged_cache import (
     preflight_ragged_cache,
     trim_ragged_cache,
 )
@@ -108,7 +108,7 @@ def ragged_install_stub(monkeypatch):
         calls.append(kwargs)
 
     monkeypatch.setattr(
-        "vllm_mlx.spec_decode.mtp.ragged_cache.install_ragged_cache_rollback",
+        "rapid_mlx.spec_decode.mtp.ragged_cache.install_ragged_cache_rollback",
         install,
     )
     return calls

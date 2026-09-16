@@ -9,8 +9,8 @@ from pathlib import Path
 
 import pytest
 
-from vllm_mlx.cli import build_parser
-from vllm_mlx.headless_service.config import (
+from rapid_mlx.cli import build_parser
+from rapid_mlx.headless_service.config import (
     SCHEMA_VERSION,
     ServiceConfig,
     ServiceConfigError,
@@ -22,7 +22,7 @@ from vllm_mlx.headless_service.config import (
     pending_config_path,
     private_file_present,
 )
-from vllm_mlx.headless_service.plist import build_plist_dict
+from rapid_mlx.headless_service.plist import build_plist_dict
 
 
 def _config(**updates) -> ServiceConfig:
@@ -151,7 +151,7 @@ def test_configure_cli_parses_candidate_fields():
 
 
 def test_runtime_loads_private_credential_and_supervises(monkeypatch, tmp_path):
-    from vllm_mlx.headless_service import runtime
+    from rapid_mlx.headless_service import runtime
 
     credential = tmp_path / "api-key"
     credential.write_text("sk-test\n")
@@ -181,7 +181,7 @@ def test_runtime_loads_private_credential_and_supervises(monkeypatch, tmp_path):
 
 
 def test_rotating_log_bounds_backups(tmp_path):
-    from vllm_mlx.headless_service.rotating_logs import RotatingLog
+    from rapid_mlx.headless_service.rotating_logs import RotatingLog
 
     path = tmp_path / "server.stdout.log"
     sink = RotatingLog(path, max_bytes=8, backup_count=2, retention_days=7)
@@ -195,7 +195,7 @@ def test_rotating_log_bounds_backups(tmp_path):
 
 
 def test_runtime_refuses_world_readable_credential(monkeypatch, tmp_path, capsys):
-    from vllm_mlx.headless_service import runtime
+    from rapid_mlx.headless_service import runtime
 
     credential = tmp_path / "api-key"
     credential.write_text("sk-test\n")
@@ -213,8 +213,8 @@ def test_runtime_refuses_world_readable_credential(monkeypatch, tmp_path, capsys
 
 
 def _installed_config(monkeypatch, tmp_path):
-    from vllm_mlx.headless_service import config as config_module
-    from vllm_mlx.headless_service import configure
+    from rapid_mlx.headless_service import config as config_module
+    from rapid_mlx.headless_service import configure
 
     home = tmp_path / "home"
     home.mkdir(parents=True)
@@ -351,7 +351,7 @@ def test_credential_set_never_prints_secret(monkeypatch, tmp_path, capsys):
     ],
 )
 def test_upgrade_target_is_constrained(version, extras, expected):
-    from vllm_mlx.headless_service.upgrade import _target
+    from rapid_mlx.headless_service.upgrade import _target
 
     assert _target(version, extras) == expected
     with pytest.raises(ServiceConfigError):
@@ -359,7 +359,7 @@ def test_upgrade_target_is_constrained(version, extras, expected):
 
 
 def test_upgrade_success_snapshots_before_mutation(monkeypatch, tmp_path):
-    from vllm_mlx.headless_service import upgrade
+    from rapid_mlx.headless_service import upgrade
 
     configure, home, current_path, current = _installed_config(monkeypatch, tmp_path)
     current = current.updated(serve_args=("--lazy-load", "--max-num-seqs", "4"))
@@ -415,7 +415,7 @@ def test_upgrade_success_snapshots_before_mutation(monkeypatch, tmp_path):
 
 
 def test_upgrade_rolls_back_after_readiness_failure(monkeypatch, tmp_path, capsys):
-    from vllm_mlx.headless_service import upgrade
+    from rapid_mlx.headless_service import upgrade
 
     configure, home, _, _ = _installed_config(monkeypatch, tmp_path)
     python = home / ".rapid-mlx" / "bin" / "python"
@@ -453,7 +453,7 @@ def test_upgrade_rolls_back_after_readiness_failure(monkeypatch, tmp_path, capsy
 def test_upgrade_never_restores_from_transient_config_when_definition_writes_fail(
     monkeypatch, tmp_path, capsys
 ):
-    from vllm_mlx.headless_service import upgrade
+    from rapid_mlx.headless_service import upgrade
 
     configure, home, _, _ = _installed_config(monkeypatch, tmp_path)
     python = home / ".rapid-mlx" / "bin" / "python"
@@ -524,7 +524,7 @@ def test_load_config_rejects_invalid_json_shapes(tmp_path, payload):
 
 
 def test_atomic_write_owner_and_cleanup_paths(monkeypatch, tmp_path):
-    from vllm_mlx.headless_service import config as config_module
+    from rapid_mlx.headless_service import config as config_module
 
     path = tmp_path / "owned"
     ownership = []
@@ -549,7 +549,7 @@ def test_atomic_write_owner_and_cleanup_paths(monkeypatch, tmp_path):
 
 
 def test_definition_and_secret_directory_helpers(monkeypatch, tmp_path):
-    from vllm_mlx.headless_service import config as config_module
+    from rapid_mlx.headless_service import config as config_module
 
     monkeypatch.setattr(config_module, "SERVICE_CONFIG_ROOT", tmp_path / "definitions")
     monkeypatch.setattr(config_module.os, "geteuid", lambda: 0)
@@ -583,7 +583,7 @@ def test_definition_and_secret_directory_helpers(monkeypatch, tmp_path):
 
 
 def test_credential_directory_symlink_is_refused_without_touching_target(tmp_path):
-    from vllm_mlx.headless_service import config as config_module
+    from rapid_mlx.headless_service import config as config_module
 
     home = tmp_path / "home"
     home.mkdir()
@@ -609,7 +609,7 @@ def test_credential_directory_symlink_is_refused_without_touching_target(tmp_pat
 def test_credential_directory_fd_validation_closes_rejected_fd(
     monkeypatch, tmp_path, fake_mode, fake_uid, message
 ):
-    from vllm_mlx.headless_service import config as config_module
+    from rapid_mlx.headless_service import config as config_module
 
     home = tmp_path / "home"
     home.mkdir()
@@ -633,7 +633,7 @@ def test_credential_directory_fd_validation_closes_rejected_fd(
 def test_credential_write_closes_temp_fd_and_cleans_up_on_setup_failure(
     monkeypatch, tmp_path
 ):
-    from vllm_mlx.headless_service import config as config_module
+    from rapid_mlx.headless_service import config as config_module
 
     home = tmp_path / "home"
     home.mkdir()
@@ -665,7 +665,7 @@ def test_credential_write_closes_temp_fd_and_cleans_up_on_setup_failure(
 def test_credential_write_detects_directory_swap_and_never_writes_victim(
     monkeypatch, tmp_path
 ):
-    from vllm_mlx.headless_service import config as config_module
+    from rapid_mlx.headless_service import config as config_module
 
     home = tmp_path / "home"
     home.mkdir()
@@ -697,7 +697,7 @@ def test_credential_write_detects_directory_swap_and_never_writes_victim(
 def test_credential_write_cleans_up_when_directory_name_disappears(
     monkeypatch, tmp_path
 ):
-    from vllm_mlx.headless_service import config as config_module
+    from rapid_mlx.headless_service import config as config_module
 
     home = tmp_path / "home"
     home.mkdir()
@@ -723,7 +723,7 @@ def test_credential_write_cleans_up_when_directory_name_disappears(
 
 
 def test_remove_credential_covers_present_and_missing_file(tmp_path):
-    from vllm_mlx.headless_service import config as config_module
+    from rapid_mlx.headless_service import config as config_module
 
     home = tmp_path / "home"
     home.mkdir()
@@ -745,7 +745,7 @@ def test_remove_credential_covers_present_and_missing_file(tmp_path):
 
 
 def test_credential_unset_refuses_symlinked_directory(tmp_path):
-    from vllm_mlx.headless_service import config as config_module
+    from rapid_mlx.headless_service import config as config_module
 
     home = tmp_path / "home"
     home.mkdir()
@@ -807,7 +807,7 @@ def _configure_args(**updates):
 
 
 def test_configure_dry_run_clear_and_error_paths(monkeypatch, tmp_path, capsys):
-    from vllm_mlx.headless_service import configure
+    from rapid_mlx.headless_service import configure
 
     module, _, _, _ = _installed_config(monkeypatch, tmp_path)
     assert (
@@ -831,7 +831,7 @@ def test_configure_dry_run_clear_and_error_paths(monkeypatch, tmp_path, capsys):
 
 
 def test_configure_launchctl_wrappers(monkeypatch):
-    from vllm_mlx.headless_service import configure
+    from rapid_mlx.headless_service import configure
 
     calls = []
     monkeypatch.setattr(
@@ -957,7 +957,7 @@ def test_credential_rejects_tty_and_write_failure(monkeypatch, tmp_path):
 
 
 def test_runtime_stream_copy_success_and_log_failure(monkeypatch, capsys):
-    from vllm_mlx.headless_service import runtime
+    from rapid_mlx.headless_service import runtime
 
     class Source:
         def __init__(self, chunks):
@@ -995,7 +995,7 @@ def test_runtime_stream_copy_success_and_log_failure(monkeypatch, capsys):
 
 
 def test_runtime_supervisor_forwards_signals_and_closes(monkeypatch, tmp_path):
-    from vllm_mlx.headless_service import runtime
+    from rapid_mlx.headless_service import runtime
 
     monkeypatch.setattr(runtime, "log_dir_for", lambda _user: tmp_path)
     logs = []
@@ -1060,7 +1060,7 @@ def test_runtime_supervisor_forwards_signals_and_closes(monkeypatch, tmp_path):
 
 
 def test_runtime_supervisor_requires_log_home(monkeypatch):
-    from vllm_mlx.headless_service import runtime
+    from rapid_mlx.headless_service import runtime
 
     monkeypatch.setattr(runtime, "log_dir_for", lambda _user: None)
     with pytest.raises(ServiceConfigError, match="log directory"):
@@ -1069,7 +1069,7 @@ def test_runtime_supervisor_requires_log_home(monkeypatch):
 
 @pytest.mark.parametrize("credential", [None, "bad\nvalue\n"])
 def test_runtime_rejects_uid_or_bad_credential(monkeypatch, tmp_path, credential):
-    from vllm_mlx.headless_service import runtime
+    from rapid_mlx.headless_service import runtime
 
     path = tmp_path / "credential"
     if credential is not None:
@@ -1088,7 +1088,7 @@ def test_runtime_rejects_uid_or_bad_credential(monkeypatch, tmp_path, credential
 
 
 def test_rotating_log_defensive_paths(monkeypatch, tmp_path):
-    from vllm_mlx.headless_service import rotating_logs
+    from rapid_mlx.headless_service import rotating_logs
 
     sink = rotating_logs.RotatingLog(
         tmp_path / "server.log", max_bytes=8, backup_count=1, retention_days=1
@@ -1137,7 +1137,7 @@ def test_rotating_log_defensive_paths(monkeypatch, tmp_path):
     ],
 )
 def test_installed_identity_variants(monkeypatch, plist, home, expected):
-    from vllm_mlx.headless_service import definition
+    from rapid_mlx.headless_service import definition
 
     monkeypatch.setattr(definition, "installed_plist", lambda _label: plist)
     monkeypatch.setattr(definition, "home_for_user", lambda _user: home)
@@ -1146,19 +1146,19 @@ def test_installed_identity_variants(monkeypatch, plist, home, expected):
 
 
 def test_restart_reads_config_backed_bind(monkeypatch, tmp_path):
-    from vllm_mlx.headless_service import restart
+    from rapid_mlx.headless_service import restart
 
     path = tmp_path / "service.json"
     atomic_write(path, config_bytes(_config(host="127.0.0.2", port=9000)))
     monkeypatch.setattr(
-        "vllm_mlx.headless_service.definition.installed_identity",
+        "rapid_mlx.headless_service.definition.installed_identity",
         lambda _label: ("runner", tmp_path, path),
     )
     assert restart._declared_bind("com.rapidmlx.server") == ("127.0.0.2", 9000)
 
 
 def test_configure_remaining_error_paths(monkeypatch, tmp_path):
-    from vllm_mlx.headless_service import configure
+    from rapid_mlx.headless_service import configure
 
     monkeypatch.setattr(
         configure.pwd, "getpwnam", lambda _user: (_ for _ in ()).throw(KeyError())
@@ -1267,8 +1267,8 @@ def test_credential_mutation_reports_disappeared_service_account(
 
 
 def test_install_service_config_helper(monkeypatch, tmp_path):
-    from vllm_mlx.headless_service import config as config_module
-    from vllm_mlx.headless_service import install
+    from rapid_mlx.headless_service import config as config_module
+    from rapid_mlx.headless_service import install
 
     monkeypatch.setattr(config_module, "SERVICE_CONFIG_ROOT", tmp_path / "definitions")
     monkeypatch.setattr(
@@ -1281,8 +1281,8 @@ def test_install_service_config_helper(monkeypatch, tmp_path):
 
 
 def test_status_config_and_human_diagnostics(monkeypatch, tmp_path):
-    from vllm_mlx.headless_service import config as config_module
-    from vllm_mlx.headless_service import definition, status
+    from rapid_mlx.headless_service import config as config_module
+    from rapid_mlx.headless_service import definition, status
 
     monkeypatch.setattr(config_module, "SERVICE_CONFIG_ROOT", tmp_path)
 
@@ -1337,7 +1337,7 @@ def test_status_config_and_human_diagnostics(monkeypatch, tmp_path):
 
 
 def _upgrade_fixture(monkeypatch, tmp_path):
-    from vllm_mlx.headless_service import upgrade
+    from rapid_mlx.headless_service import upgrade
 
     configure, home, _, _ = _installed_config(monkeypatch, tmp_path)
     python = home / ".rapid-mlx" / "bin" / "python"
@@ -1491,7 +1491,7 @@ def test_upgrade_snapshot_write_and_doctor_warning(monkeypatch, tmp_path, capsys
 
 
 def test_atomic_write_cleanup_tolerates_unlink_failure(monkeypatch, tmp_path):
-    from vllm_mlx.headless_service import config as config_module
+    from rapid_mlx.headless_service import config as config_module
 
     monkeypatch.setattr(
         config_module.os,
@@ -1506,7 +1506,7 @@ def test_atomic_write_cleanup_tolerates_unlink_failure(monkeypatch, tmp_path):
 
 
 def test_rotating_log_purge_tolerates_filesystem_error(monkeypatch, tmp_path):
-    from vllm_mlx.headless_service.rotating_logs import RotatingLog
+    from rapid_mlx.headless_service.rotating_logs import RotatingLog
 
     sink = RotatingLog(tmp_path / "log", max_bytes=1, backup_count=1, retention_days=1)
     backup = tmp_path / "log.old"
@@ -1519,7 +1519,7 @@ def test_rotating_log_purge_tolerates_filesystem_error(monkeypatch, tmp_path):
 
 
 def test_install_rejects_invalid_generated_definition(monkeypatch):
-    from vllm_mlx.headless_service import common, install
+    from rapid_mlx.headless_service import common, install
 
     monkeypatch.setattr(install, "validate_service_account", lambda _user: None)
     monkeypatch.setattr(common, "home_for_user", lambda _user: Path("/Users/runner"))

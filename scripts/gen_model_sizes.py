@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 # SPDX-License-Identifier: Apache-2.0
-"""Regenerate ``vllm_mlx/model_sizes.json`` — the checked-in download-size
+"""Regenerate ``rapid_mlx/model_sizes.json`` — the checked-in download-size
 manifest that powers the ``Size`` column in ``rapid-mlx models`` and the
 size line in ``rapid-mlx info <alias>``.
 
@@ -39,10 +39,10 @@ from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
-MANIFEST_PATH = REPO_ROOT / "vllm_mlx" / "model_sizes.json"
+MANIFEST_PATH = REPO_ROOT / "rapid_mlx" / "model_sizes.json"
 
 # Running ``python3.12 scripts/gen_model_sizes.py`` puts ``scripts/`` on
-# sys.path[0], so a bare ``import vllm_mlx`` would resolve to an OLDER
+# sys.path[0], so a bare ``import rapid_mlx`` would resolve to an OLDER
 # pip-installed copy in site-packages (silently sizing a stale alias set and
 # dropping newly-added models). Force the local checkout to win.
 sys.path.insert(0, str(REPO_ROOT))
@@ -65,14 +65,14 @@ _REPAIR_ATTEMPTS = 2
 
 def _collect_hf_paths() -> list[str]:
     """Every distinct repo id referenced by the text and audio registries."""
-    from vllm_mlx.model_aliases import list_profiles
+    from rapid_mlx.model_aliases import list_profiles
 
     paths: set[str] = {p.hf_path for p in list_profiles().values()}
 
     # Audio registry is optional (import may fail on a text-only checkout);
     # a missing audio section must not abort the text manifest.
     try:
-        from vllm_mlx.audio.registry import list_audio_aliases
+        from rapid_mlx.audio.registry import list_audio_aliases
 
         paths.update(e.hf_id for e in list_audio_aliases())
     except Exception as exc:  # pragma: no cover - env-dependent
@@ -82,7 +82,7 @@ def _collect_hf_paths() -> list[str]:
 
 
 def _size_one(repo_id: str) -> tuple[str, int | None]:
-    from vllm_mlx._download_gate import (
+    from rapid_mlx._download_gate import (
         IMAGE_MODEL_DATA_FILES,
         IMAGE_MODEL_REVISIONS,
         estimate_repo_size_bytes,

@@ -11,7 +11,7 @@ representative workloads:
     tool_loop   — agentic tool-call loop (high repetition)
     code_edit   — code editing diff (high repetition)
 
-The classifier in ``vllm_mlx.model_auto_config.classify_suffix_decoding_tier``
+The classifier in ``rapid_mlx.model_auto_config.classify_suffix_decoding_tier``
 turns the resulting ``{workload: speedup}`` dict into one of:
 
     agent / structured / neutral / avoid / unknown
@@ -24,7 +24,7 @@ Workflow:
     5. Compute median TPS per (workload, mode); ratio = ON / OFF.
     6. Classify; print summary; optionally write tier + speedup_dict
        into the corresponding ``ModelConfig`` entry in
-       ``vllm_mlx/model_auto_config.py`` via ``--update-profile``.
+       ``rapid_mlx/model_auto_config.py`` via ``--update-profile``.
 
 Sequential server lifecycles avoid GPU contention; total wall-clock is
 ~10-20 min per model on M3 Ultra.
@@ -69,7 +69,7 @@ try:
     from scripts.bench_metadata import write_bench_json  # noqa: E402
 except ModuleNotFoundError:  # Direct execution outside the repository root.
     from bench_metadata import write_bench_json  # noqa: E402
-from vllm_mlx.model_auto_config import (  # noqa: E402
+from rapid_mlx.model_auto_config import (  # noqa: E402
     classify_suffix_decoding_tier,
 )
 
@@ -251,7 +251,7 @@ def start_server(model: str, port: int, suffix_decoding: bool) -> ServerHandle:
     cmd = [
         sys.executable,
         "-m",
-        "vllm_mlx.cli",
+        "rapid_mlx.cli",
         "serve",
         model,
         "--port",
@@ -362,7 +362,7 @@ def run_workload(
     caller persist raw data for forensic debugging without re-running.
     """
     # Greedy sampling is mandatory and non-negotiable.
-    # ``_install_suffix_decoding`` in ``vllm_mlx/scheduler.py`` only fires
+    # ``_install_suffix_decoding`` in ``rapid_mlx/scheduler.py`` only fires
     # when ``_is_greedy_for_uid`` returns True, which checks
     # **temperature == 0** specifically (mlx-lm's ``make_sampler``
     # short-circuits to argmax at temp=0, so top_p/top_k don't matter in
@@ -637,7 +637,7 @@ def main(argv: list[str] | None = None) -> int:
             {"suffix_decoding_tier": tier, "suffix_bench_speedup": speedup},
             indent=2,
         )
-        logger.info("\nPatch for vllm_mlx/aliases.json (alias %s):", args.model)
+        logger.info("\nPatch for rapid_mlx/aliases.json (alias %s):", args.model)
         for line in snippet.splitlines():
             logger.info("  %s", line)
 

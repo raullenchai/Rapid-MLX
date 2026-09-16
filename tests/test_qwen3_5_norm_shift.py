@@ -1,7 +1,7 @@
 # SPDX-License-Identifier: Apache-2.0
 """Regression tests for the Qwen3.5/3.6 norm-shift correction.
 
-Pins the surgical fix in ``vllm_mlx.patches.qwen3_5_norm_shift`` that undoes
+Pins the surgical fix in ``rapid_mlx.patches.qwen3_5_norm_shift`` that undoes
 mlx-lm's spurious ``+1.0`` RMSNorm-weight shift on mtp-bundled VLM checkpoints
 like ``mlx-community/Qwen3.6-35B-A3B-*`` (ml-explore/mlx-lm#1197).
 
@@ -30,7 +30,7 @@ import types
 
 import mlx.core as mx
 
-from vllm_mlx.patches import qwen3_5_norm_shift as nsf
+from rapid_mlx.patches import qwen3_5_norm_shift as nsf
 
 # mlx-lm's real norm-key suffixes (kept identical to the module under test).
 _NORM_KEYS = (
@@ -296,9 +296,9 @@ def test_install_fires_on_real_serve_import_path():
         import sys
 
         # Import a SERVE-path module (NOT the patch module directly).
-        import vllm_mlx.utils.tokenizer  # noqa: F401
+        import rapid_mlx.utils.tokenizer  # noqa: F401
 
-        from vllm_mlx.patches.qwen3_5_norm_shift import is_installed
+        from rapid_mlx.patches.qwen3_5_norm_shift import is_installed
 
         if not is_installed():
             print("FAIL: is_installed() False after serve-path import")

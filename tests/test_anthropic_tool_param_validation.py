@@ -24,8 +24,8 @@ import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
-from vllm_mlx.config import reset_config
-from vllm_mlx.routes.anthropic import router
+from rapid_mlx.config import reset_config
+from rapid_mlx.routes.anthropic import router
 
 
 class _StubTokenizer:

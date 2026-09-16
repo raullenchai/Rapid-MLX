@@ -22,7 +22,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
-from vllm_mlx import AsyncEngineCore, EngineConfig, SamplingParams, SchedulerConfig
+from rapid_mlx import AsyncEngineCore, EngineConfig, SamplingParams, SchedulerConfig
 
 
 async def run_single_request(

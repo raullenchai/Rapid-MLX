@@ -63,7 +63,7 @@ never become dirty again without failing CI.
 ### Changed-lines coverage
 
 Engine pull requests enforce 100% coverage for executable lines newly added or
-modified under `vllm_mlx/`. The Python 3.11 Linux unit-test leg already produces
+modified under `rapid_mlx/`. The Python 3.11 Linux unit-test leg already produces
 `coverage.xml`; `diff-cover` compares that report with the pull request's
 immutable base SHA and blocks the stable `tests` aggregate when a measurable
 changed line was not exercised. Comments, blank lines, deletions, tests, docs,

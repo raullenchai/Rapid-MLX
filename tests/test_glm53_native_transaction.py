@@ -6,7 +6,7 @@ from types import ModuleType, SimpleNamespace
 import numpy as np
 import pytest
 
-from vllm_mlx.speculative.native_mtp import transaction
+from rapid_mlx.speculative.native_mtp import transaction
 
 
 class _AppendCache:

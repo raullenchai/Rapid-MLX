@@ -24,7 +24,7 @@ def patched_config():
     Mirrors the pattern in test_routes.py — avoids the ``setattr``/``leak
     into next test`` hazard of touching the singleton directly.
     """
-    from vllm_mlx.config import get_config
+    from rapid_mlx.config import get_config
 
     cfg = get_config()
     saved: dict = {}
@@ -49,7 +49,7 @@ class TestValidateModelName:
     def test_empty_string_raises_400(self):
         """``model: ""`` used to short-circuit to the default model,
         masking client bugs (typos, unset env vars)."""
-        from vllm_mlx.service.helpers import _validate_model_name
+        from rapid_mlx.service.helpers import _validate_model_name
 
         with pytest.raises(HTTPException) as ei:
             _validate_model_name("")
@@ -59,7 +59,7 @@ class TestValidateModelName:
     def test_none_still_passes_through(self):
         """``None`` continues to be a no-op so callers that pass an
         unset request.model field don't break."""
-        from vllm_mlx.service.helpers import _validate_model_name
+        from rapid_mlx.service.helpers import _validate_model_name
 
         # Should not raise.
         _validate_model_name(None)
@@ -70,7 +70,7 @@ class TestValidateModelName:
         """The OpenAI chat route must still reject unknown model names with 404.
         This confirms that removing _validate_model_name from the Anthropic
         route did NOT affect the OpenAI route."""
-        from vllm_mlx.routes import chat as chat_route
+        from rapid_mlx.routes import chat as chat_route
 
         engine = MagicMock()
         engine.is_mllm = False
@@ -110,7 +110,7 @@ class TestValidateModelName:
 def _build_chat_app(patch_cfg, monkeypatch):
     """Mount the chat router with a stub engine so we can hit the
     validation block without touching mlx weights."""
-    from vllm_mlx.routes import chat as chat_route
+    from rapid_mlx.routes import chat as chat_route
 
     app = FastAPI()
     app.include_router(chat_route.router)
@@ -250,14 +250,14 @@ def _build_embed_app(patch_cfg, monkeypatch, embed_return):
     import sys
     from types import ModuleType
 
-    from vllm_mlx.routes import embeddings as emb_route
+    from rapid_mlx.routes import embeddings as emb_route
 
-    embedding_stub = ModuleType("vllm_mlx.embedding")
+    embedding_stub = ModuleType("rapid_mlx.embedding")
     embedding_stub.EMBEDDINGS_EXTRA_INSTALL_HINT = ""
     embedding_stub.EmbeddingInputTooLongError = type(
         "EmbeddingInputTooLongError", (ValueError,), {}
     )
-    monkeypatch.setitem(sys.modules, "vllm_mlx.embedding", embedding_stub)
+    monkeypatch.setitem(sys.modules, "rapid_mlx.embedding", embedding_stub)
 
     app = FastAPI()
     app.include_router(emb_route.router)
@@ -276,7 +276,7 @@ def _build_embed_app(patch_cfg, monkeypatch, embed_return):
     )
 
     monkeypatch.setattr(
-        "vllm_mlx.server.load_embedding_model",
+        "rapid_mlx.server.load_embedding_model",
         lambda *_a, **_kw: None,
         raising=False,
     )
@@ -420,14 +420,14 @@ class TestEmbeddingsEncodingFormatLiteral:
         they all silently returned a float list."""
         from pydantic import ValidationError
 
-        from vllm_mlx.api.models import EmbeddingRequest
+        from rapid_mlx.api.models import EmbeddingRequest
 
         for bogus in ["base65", "BASE64", "json", "raw"]:
             with pytest.raises(ValidationError):
                 EmbeddingRequest(input="hi", model="x", encoding_format=bogus)
 
     def test_valid_encoding_formats_accepted(self):
-        from vllm_mlx.api.models import EmbeddingRequest
+        from rapid_mlx.api.models import EmbeddingRequest
 
         for ok in ["float", "base64"]:
             req = EmbeddingRequest(input="hi", model="x", encoding_format=ok)
@@ -442,7 +442,7 @@ class TestEmbeddingsEncodingFormatLiteral:
 class TestLogLevelLowercase:
     def _make_parser(self):
         """Mirror the same ``type`` contract used by serve_parser in
-        vllm_mlx/cli.py and vllm_mlx/server.py."""
+        rapid_mlx/cli.py and rapid_mlx/server.py."""
         parser = argparse.ArgumentParser()
         parser.add_argument(
             "--log-level",
@@ -556,7 +556,7 @@ class TestGuidedArrayOfObjectsSchema:
     user's own schema (R10 sweep finding)."""
 
     def test_array_of_objects_maps_to_list_dict(self):
-        from vllm_mlx.api.guided import json_schema_to_pydantic
+        from rapid_mlx.api.guided import json_schema_to_pydantic
 
         schema = {
             "type": "object",
@@ -574,7 +574,7 @@ class TestGuidedArrayOfObjectsSchema:
         assert instance.items == [{"a": 1}, {"b": 2}]
 
     def test_array_of_arrays_maps_to_list_list(self):
-        from vllm_mlx.api.guided import json_schema_to_pydantic
+        from rapid_mlx.api.guided import json_schema_to_pydantic
 
         schema = {
             "type": "object",
@@ -590,7 +590,7 @@ class TestGuidedArrayOfObjectsSchema:
 
     def test_array_of_strings_still_works(self):
         """Sanity: the historical happy path is unchanged."""
-        from vllm_mlx.api.guided import json_schema_to_pydantic
+        from rapid_mlx.api.guided import json_schema_to_pydantic
 
         schema = {
             "type": "object",
@@ -676,7 +676,7 @@ class TestPsCommandServedNameDisplay:
         from types import SimpleNamespace
         from unittest.mock import patch
 
-        from vllm_mlx import cli
+        from rapid_mlx import cli
 
         class _Proc:
             info = {
@@ -715,7 +715,7 @@ class TestPsCommandServedNameDisplay:
 
 class TestCompletionsSuffixRejection:
     def _build_completions_app(self, patch_cfg, monkeypatch):
-        from vllm_mlx.routes import completions as comp_route
+        from rapid_mlx.routes import completions as comp_route
 
         app = FastAPI()
         app.include_router(comp_route.router)
@@ -803,9 +803,9 @@ class TestMLLMBatchGeneratorFailsLoud:
     def _source(self):
         from pathlib import Path
 
-        import vllm_mlx
+        import rapid_mlx
 
-        return Path(vllm_mlx.__file__).with_name("mllm_batch_generator.py").read_text()
+        return Path(rapid_mlx.__file__).with_name("mllm_batch_generator.py").read_text()
 
     def setup_method(self):
         # MLLM batch-generator error paths touch mlx multimodal preprocessing;
@@ -842,9 +842,9 @@ class TestMLLMBatchGeneratorFailsLoud:
         C2 fix silently regresses to "client hangs"."""
         from pathlib import Path
 
-        import vllm_mlx
+        import rapid_mlx
 
-        src = Path(vllm_mlx.__file__).with_name("mllm_scheduler.py").read_text()
+        src = Path(rapid_mlx.__file__).with_name("mllm_scheduler.py").read_text()
         # Find the next() call and assert the surrounding catch.
         idx = src.find("self.batch_generator.next()")
         assert idx != -1, "MLLMScheduler no longer calls batch_generator.next()"

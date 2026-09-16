@@ -24,19 +24,19 @@ from unittest.mock import MagicMock
 import pytest
 from pydantic import ValidationError
 
-from vllm_mlx.api.anthropic_adapter import (
+from rapid_mlx.api.anthropic_adapter import (
     _resolve_reasoning_max_tokens,
     anthropic_to_openai,
 )
-from vllm_mlx.api.anthropic_models import (
+from rapid_mlx.api.anthropic_models import (
     ANTHROPIC_EFFORT_TO_REASONING_MAX_TOKENS,
     AnthropicOutputConfig,
     AnthropicRequest,
 )
-from vllm_mlx.api.models import ChatCompletionRequest
-from vllm_mlx.api.responses_models import ResponsesRequest
-from vllm_mlx.service.helpers import _finalize_content_and_reasoning
-from vllm_mlx.service.postprocessor import StreamingPostProcessor
+from rapid_mlx.api.models import ChatCompletionRequest
+from rapid_mlx.api.responses_models import ResponsesRequest
+from rapid_mlx.service.helpers import _finalize_content_and_reasoning
+from rapid_mlx.service.postprocessor import StreamingPostProcessor
 
 # ---------------------------------------------------------------------------
 # 1) Request-shape validation
@@ -396,7 +396,7 @@ class TestTextParserReasoningCap:
         def _extract(previous, current, delta):
             # State-consistency invariants. ``current = previous + delta``
             # is the parser contract — every real parser in
-            # ``vllm_mlx/reasoning/`` reads ``current`` for backtracking.
+            # ``rapid_mlx/reasoning/`` reads ``current`` for backtracking.
             assert current.endswith(delta), (
                 f"current does not end with delta — splice bug? "
                 f"previous={previous!r} current={current!r} delta={delta!r}"
@@ -454,7 +454,7 @@ class TestTextParserReasoningCap:
         suffix spill to content before the real post-closer answer.  A final
         engine chunk must keep all three pieces in source order.
         """
-        from vllm_mlx.reasoning.qwen3_parser import Qwen3ReasoningParser
+        from rapid_mlx.reasoning.qwen3_parser import Qwen3ReasoningParser
 
         parser = Qwen3ReasoningParser(None)
         cfg = _make_cfg(reasoning_parser=parser, reasoning_parser_name=None)
@@ -481,7 +481,7 @@ class TestTextParserReasoningCap:
         the cap, its overflow must stay after the tool block rather than being
         unconditionally prepended to all parser content.
         """
-        from vllm_mlx.reasoning.qwen3_parser import Qwen3ReasoningParser
+        from rapid_mlx.reasoning.qwen3_parser import Qwen3ReasoningParser
 
         tool_call = '<tool_call>{"name":"x","arguments":{}}</tool_call>'
         parser = Qwen3ReasoningParser(None)
@@ -500,7 +500,7 @@ class TestTextParserReasoningCap:
 
     def test_cap_spill_stays_after_cross_chunk_promoted_tool_call(self):
         """Promotion provenance survives a tool call buffered across SSE chunks."""
-        from vllm_mlx.reasoning.qwen3_parser import Qwen3ReasoningParser
+        from rapid_mlx.reasoning.qwen3_parser import Qwen3ReasoningParser
 
         parser = Qwen3ReasoningParser(None)
         cfg = _make_cfg(reasoning_parser=parser, reasoning_parser_name=None)
@@ -522,7 +522,7 @@ class TestTextParserReasoningCap:
 
     def test_single_delta_inserts_cap_spill_between_tool_call_and_answer(self):
         """Whole-output deltas retain tool -> spill -> answer source order."""
-        from vllm_mlx.reasoning.qwen3_parser import Qwen3ReasoningParser
+        from rapid_mlx.reasoning.qwen3_parser import Qwen3ReasoningParser
 
         tool_call = '<tool_call>{"name":"x","arguments":{}}</tool_call>'
         parser = Qwen3ReasoningParser(None)
@@ -541,7 +541,7 @@ class TestTextParserReasoningCap:
 
     def test_cap_crossing_before_tool_call_preserves_all_interleaved_segments(self):
         """A cap split before a promoted tool does not move overflow after it."""
-        from vllm_mlx.reasoning.qwen3_parser import Qwen3ReasoningParser
+        from rapid_mlx.reasoning.qwen3_parser import Qwen3ReasoningParser
 
         tool_call = '<tool_call>{"name":"x","arguments":{}}</tool_call>'
         parser = Qwen3ReasoningParser(None)
@@ -560,7 +560,7 @@ class TestTextParserReasoningCap:
 
     def test_cap_preserves_source_order_across_multiple_think_blocks(self):
         """Multi-block routing passes ordered segments through promotion."""
-        from vllm_mlx.reasoning.qwen3_parser import Qwen3ReasoningParser
+        from rapid_mlx.reasoning.qwen3_parser import Qwen3ReasoningParser
 
         parser = Qwen3ReasoningParser(None)
         cfg = _make_cfg(reasoning_parser=parser, reasoning_parser_name=None)
@@ -577,7 +577,7 @@ class TestTextParserReasoningCap:
 
     def test_cap_preserves_content_first_delta_without_source_segments(self):
         """Parsers without provenance retain content before later overflow."""
-        from vllm_mlx.reasoning.deepseek_v4_parser import DeepSeekV4ReasoningParser
+        from rapid_mlx.reasoning.deepseek_v4_parser import DeepSeekV4ReasoningParser
 
         parser = DeepSeekV4ReasoningParser(None)
         cfg = _make_cfg(reasoning_parser=parser, reasoning_parser_name=None)
@@ -1119,7 +1119,7 @@ class TestTextParserReasoningCap:
         Codex round-7 NIT #3 — single source of truth for the
         chars-÷4 contract.
         """
-        from vllm_mlx.service.helpers import _apply_reasoning_cap
+        from rapid_mlx.service.helpers import _apply_reasoning_cap
 
         # Non-streaming: 5 chars > 4 (cap*4) → 4 reasoning + 1 content.
         ns_cleaned, ns_reasoning = _apply_reasoning_cap(

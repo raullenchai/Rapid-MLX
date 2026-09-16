@@ -8,7 +8,7 @@ from pathlib import Path
 
 import pytest
 
-from vllm_mlx.utils.model_file_guard import validate_local_model_file
+from rapid_mlx.utils.model_file_guard import validate_local_model_file
 
 
 def _model_dir(tmp_path: Path, model_file: str | None) -> Path:
@@ -99,7 +99,7 @@ def test_rejects_non_python_model_file(tmp_path: Path) -> None:
 def test_shared_loader_validates_before_dispatch(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    from vllm_mlx.utils import tokenizer
+    from rapid_mlx.utils import tokenizer
 
     events = []
     expected = (object(), object())
@@ -127,7 +127,7 @@ def test_shared_loader_validates_before_dispatch(
 def test_shared_loader_pins_concrete_snapshot_on_loaded_model(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
-    from vllm_mlx.utils import tokenizer
+    from rapid_mlx.utils import tokenizer
 
     snapshot = tmp_path / "snapshots" / "immutable-revision"
     snapshot.mkdir(parents=True)

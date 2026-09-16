@@ -3,7 +3,7 @@
 
 Mirrors ``tests/test_metrics_route.py`` — no real engine, just the
 metrics router mounted on a throwaway FastAPI app. The counters live in
-the ``vllm_mlx.response_cache`` module singleton (NOT the engine), so
+the ``rapid_mlx.response_cache`` module singleton (NOT the engine), so
 they must render even when the engine is absent.
 """
 
@@ -18,9 +18,9 @@ from fastapi.testclient import TestClient
 
 @pytest.fixture
 def metrics_client():
-    from vllm_mlx.config import reset_config
-    from vllm_mlx.response_cache import reset_response_cache_for_tests
-    from vllm_mlx.routes.metrics import _reset_accumulator_for_tests, router
+    from rapid_mlx.config import reset_config
+    from rapid_mlx.response_cache import reset_response_cache_for_tests
+    from rapid_mlx.routes.metrics import _reset_accumulator_for_tests, router
 
     cfg = reset_config()
     cfg.model_name = "qwen3.5-4b"
@@ -58,7 +58,7 @@ def test_response_cache_counters_present_even_without_engine(metrics_client):
 
 def test_response_cache_counters_reflect_singleton_state(metrics_client):
     """Driving the singleton's counters must surface on the scrape."""
-    from vllm_mlx.response_cache import get_response_cache
+    from rapid_mlx.response_cache import get_response_cache
 
     c = get_response_cache()
     c.configure(4)

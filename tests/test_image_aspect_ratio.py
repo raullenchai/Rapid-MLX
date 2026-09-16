@@ -44,7 +44,7 @@ from pathlib import Path
 
 from PIL import Image
 
-from vllm_mlx.mllm_batch_generator import MLLMBatchGenerator, MLLMBatchRequest
+from rapid_mlx.mllm_batch_generator import MLLMBatchGenerator, MLLMBatchRequest
 
 
 class _StubModel:
@@ -95,7 +95,7 @@ def _bypass_process_image(monkeypatch):
     a pre-materialized PNG path directly without going through base64
     decode / tempfile registration.
     """
-    from vllm_mlx.models import mllm as mllm_models
+    from rapid_mlx.models import mllm as mllm_models
 
     def _identity(img):
         return img
@@ -111,7 +111,7 @@ def _install_no_op_prepare_inputs(monkeypatch):
     """
     import mlx_vlm.utils as mlx_vlm_utils
 
-    from vllm_mlx import mllm_batch_generator as gen_mod
+    from rapid_mlx import mllm_batch_generator as gen_mod
 
     def _passthrough(*args, **kwargs):
         # Mimic mlx_vlm.utils.prepare_inputs return shape so the
@@ -220,7 +220,7 @@ def test_unreadable_image_does_not_short_circuit_guard(monkeypatch, tmp_path):
     # what mlx_vlm does for undecodable bytes.
     import mlx_vlm.utils as mlx_vlm_utils
 
-    from vllm_mlx import mllm_batch_generator as gen_mod
+    from rapid_mlx import mllm_batch_generator as gen_mod
 
     def _raise_oserror(*args, **kwargs):
         raise OSError("broken data stream when reading image file")

@@ -1,5 +1,5 @@
 # SPDX-License-Identifier: Apache-2.0
-"""Tests for ``vllm_mlx._download_gate``.
+"""Tests for ``rapid_mlx._download_gate``.
 
 Pins the auto-pull confirmation flow:
 
@@ -23,7 +23,7 @@ from unittest.mock import MagicMock, patch
 import numpy as np
 import pytest
 
-from vllm_mlx import _download_gate as gate
+from rapid_mlx import _download_gate as gate
 
 # ---------------------------------------------------------------------------
 # estimate_repo_size_bytes
@@ -106,7 +106,7 @@ def test_estimate_download_size_prefers_live_estimate():
     not shadow a fresher online footprint."""
     with (
         patch.object(gate, "estimate_repo_size_bytes", return_value=123456),
-        patch("vllm_mlx.model_sizes.size_bytes", return_value=999999),
+        patch("rapid_mlx.model_sizes.size_bytes", return_value=999999),
     ):
         assert gate.estimate_download_size_bytes("org/Big") == 123456
 
@@ -117,7 +117,7 @@ def test_estimate_download_size_falls_back_to_manifest_when_live_none():
     still confirmed instead of silently proceeding (issue #2350)."""
     with (
         patch.object(gate, "estimate_repo_size_bytes", return_value=None),
-        patch("vllm_mlx.model_sizes.size_bytes", return_value=470_632_354_731),
+        patch("rapid_mlx.model_sizes.size_bytes", return_value=470_632_354_731),
     ):
         assert gate.estimate_download_size_bytes("org/Big") == 470_632_354_731
 
@@ -127,7 +127,7 @@ def test_estimate_download_size_none_when_both_unavailable():
     today's "proceed with an unknown size" behavior for an unknown repo)."""
     with (
         patch.object(gate, "estimate_repo_size_bytes", return_value=None),
-        patch("vllm_mlx.model_sizes.size_bytes", return_value=None),
+        patch("rapid_mlx.model_sizes.size_bytes", return_value=None),
     ):
         assert gate.estimate_download_size_bytes("org/Unlisted") is None
 
@@ -138,7 +138,7 @@ def test_estimate_download_size_survives_manifest_error():
     with (
         patch.object(gate, "estimate_repo_size_bytes", return_value=None),
         patch(
-            "vllm_mlx.model_sizes.size_bytes",
+            "rapid_mlx.model_sizes.size_bytes",
             side_effect=RuntimeError("manifest corrupt"),
         ),
     ):
@@ -151,7 +151,7 @@ def test_offline_catalog_alias_still_gates_via_manifest():
     HF lookup is unavailable (offline reproduce), the gate must still see the
     manifest size — well above the 10 GiB confirm threshold — instead of
     ``None`` ("size unknown, proceeding without confirmation")."""
-    from vllm_mlx.model_aliases import resolve_model
+    from rapid_mlx.model_aliases import resolve_model
 
     alias = "kimi-k2.6"
     resolved = resolve_model(alias)
@@ -161,7 +161,7 @@ def test_offline_catalog_alias_still_gates_via_manifest():
         size = gate.estimate_download_size_bytes(resolved)
     assert size is not None and size > 10 * 1024**3
     # Sanity: the manifest actually records this alias's repo as large.
-    from vllm_mlx import model_sizes
+    from rapid_mlx import model_sizes
 
     assert model_sizes.size_bytes(resolved) == size
 
@@ -716,7 +716,7 @@ def test_audio_family_exception_is_not_runnable(monkeypatch):
 
 def _wan_pinned_pair() -> tuple[str, str]:
     """A real WAN_REVISIONS-pinned checkpoint (repo_id, pinned commit sha)."""
-    from vllm_mlx.video.wan import WAN_REVISIONS
+    from rapid_mlx.video.wan import WAN_REVISIONS
 
     repo_id = "Anes1032/Wan2.2-TI2V-5B-mlx-q8"
     return repo_id, WAN_REVISIONS[repo_id]
@@ -986,7 +986,7 @@ def _wan21_diffusers_files() -> dict[str, bytes]:
 
 
 def test_wan_cache_accepts_complete_21_diffusers_layout(tmp_path, monkeypatch):
-    from vllm_mlx.video.wan import WAN_REVISIONS
+    from rapid_mlx.video.wan import WAN_REVISIONS
 
     repo_id = "Wan-AI/Wan2.1-T2V-1.3B-Diffusers"
     cache_root = tmp_path / "hf-cache"
@@ -998,7 +998,7 @@ def test_wan_cache_accepts_complete_21_diffusers_layout(tmp_path, monkeypatch):
 
 
 def test_wan_cache_rejects_incomplete_21_diffusers_layout(tmp_path, monkeypatch):
-    from vllm_mlx.video.wan import WAN_REVISIONS
+    from rapid_mlx.video.wan import WAN_REVISIONS
 
     repo_id = "Wan-AI/Wan2.1-T2V-1.3B-Diffusers"
     files = _wan21_diffusers_files()
@@ -1027,7 +1027,7 @@ def test_wan_cache_rejects_21_diffusers_malformed_index(
     gate must send it back through repair/download instead of reporting cached
     — otherwise the cache skips the gate and fails forever at runtime.
     """
-    from vllm_mlx.video.wan import WAN_REVISIONS
+    from rapid_mlx.video.wan import WAN_REVISIONS
 
     repo_id = "Wan-AI/Wan2.1-T2V-1.3B-Diffusers"
     files = _wan21_diffusers_files()
@@ -1043,7 +1043,7 @@ def test_wan_cache_rejects_21_diffusers_malformed_index(
 def test_wan_cache_rejects_21_diffusers_wrong_index_cardinality(tmp_path, monkeypatch):
     """A parseable transformer index with 824 keys instead of the pinned 825
     fails the runtime cardinality contract, so the gate must reject it too."""
-    from vllm_mlx.video.wan import WAN_REVISIONS
+    from rapid_mlx.video.wan import WAN_REVISIONS
 
     repo_id = "Wan-AI/Wan2.1-T2V-1.3B-Diffusers"
     files = _wan21_diffusers_files()
@@ -1074,7 +1074,7 @@ def test_wan_cache_rejects_21_diffusers_mismatched_component_config(
     """A component config that contradicts the pinned architecture contract
     (wrong pipeline class, layer count, width, ...) is not the audited
     checkpoint and must not count as cached."""
-    from vllm_mlx.video.wan import WAN_REVISIONS
+    from rapid_mlx.video.wan import WAN_REVISIONS
 
     repo_id = "Wan-AI/Wan2.1-T2V-1.3B-Diffusers"
     files = _wan21_diffusers_files()
@@ -1097,7 +1097,7 @@ def test_wan_cache_rejects_21_diffusers_unmappable_index_keys(tmp_path, monkeypa
     production mapper rejects every one of these keys, so generation would
     fail inside ``_read_index`` after the gate had skipped repair.
     """
-    from vllm_mlx.video.wan import WAN_REVISIONS
+    from rapid_mlx.video.wan import WAN_REVISIONS
 
     repo_id = "Wan-AI/Wan2.1-T2V-1.3B-Diffusers"
     files = _wan21_diffusers_files()
@@ -1134,7 +1134,7 @@ def test_wan_cache_rejects_21_diffusers_malformed_safetensors(
     to detect it from the header alone and send the snapshot back through
     repair/download.
     """
-    from vllm_mlx.video.wan import WAN_REVISIONS
+    from rapid_mlx.video.wan import WAN_REVISIONS
 
     repo_id = "Wan-AI/Wan2.1-T2V-1.3B-Diffusers"
     files = _wan21_diffusers_files()
@@ -1149,7 +1149,7 @@ def test_wan_cache_rejects_21_diffusers_malformed_safetensors(
 
 def test_wan_cache_rejects_21_diffusers_index_shard_mismatch(tmp_path, monkeypatch):
     """An index that points a tensor at the wrong (valid) shard must not pass."""
-    from vllm_mlx.video.wan import WAN_REVISIONS
+    from rapid_mlx.video.wan import WAN_REVISIONS
 
     repo_id = "Wan-AI/Wan2.1-T2V-1.3B-Diffusers"
     files = _wan21_diffusers_files()
@@ -1189,7 +1189,7 @@ def test_wan_cache_rejects_21_diffusers_wrong_vae_tensor_set(
     tmp_path, monkeypatch, dropped, replacement
 ):
     """A valid VAE container without the exact decoder tensor set must not pass."""
-    from vllm_mlx.video.wan import WAN_REVISIONS
+    from rapid_mlx.video.wan import WAN_REVISIONS
 
     repo_id = "Wan-AI/Wan2.1-T2V-1.3B-Diffusers"
     files = _wan21_diffusers_files()
@@ -1232,7 +1232,7 @@ def test_wan_cache_accepts_5b_single_transformer_layout(tmp_path, monkeypatch):
 def test_wan_cache_accepts_a14b_dual_noise_layout(tmp_path, monkeypatch):
     """A pinned Wan A14B checkpoint (high+low_noise + t5_encoder + vae) is runnable."""
     # A real pinned A14B repo exercises the dual-noise transformer contract.
-    from vllm_mlx.video.wan import WAN_REVISIONS
+    from rapid_mlx.video.wan import WAN_REVISIONS
 
     repo_id = "rickylin20260522/Wan2.2-T2V-A14B-mlx"
     pinned_sha = WAN_REVISIONS[repo_id]
@@ -1261,7 +1261,7 @@ def test_wan_cache_rejects_a14b_with_stray_single_model_file(tmp_path, monkeypat
     repo's A14B family, so an incomplete A14B snapshot carrying a stray single
     ``model.safetensors`` (with no high/low noise files) must NOT be accepted.
     """
-    from vllm_mlx.video.wan import WAN_REVISIONS
+    from rapid_mlx.video.wan import WAN_REVISIONS
 
     repo_id = "rickylin20260522/Wan2.2-T2V-A14B-mlx"
     pinned_sha = WAN_REVISIONS[repo_id]
@@ -1307,7 +1307,7 @@ def test_wan_cache_rejects_incomplete_5b_layout(tmp_path, monkeypatch, missing):
 
 def test_wan_cache_rejects_dual_layout_missing_one_noise_model(tmp_path, monkeypatch):
     """Dual-noise A14B needs BOTH high and low noise models (no partial credit)."""
-    from vllm_mlx.video.wan import WAN_REVISIONS
+    from rapid_mlx.video.wan import WAN_REVISIONS
 
     repo_id = "rickylin20260522/Wan2.2-T2V-A14B-mlx"
     pinned_sha = WAN_REVISIONS[repo_id]
@@ -1361,7 +1361,7 @@ def test_wan_cache_rejects_unclassifiable_family_repo(tmp_path, monkeypatch):
     A pinned repo whose id carries neither marker is unclassifiable and must be
     rejected (fail closed) rather than guessing which files to require.
     """
-    from vllm_mlx.video.wan import WAN_REVISIONS
+    from rapid_mlx.video.wan import WAN_REVISIONS
 
     cache_root = tmp_path / "hf-cache"
     repo_root = cache_root / "models--some-org--mystery-wan"

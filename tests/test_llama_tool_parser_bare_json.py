@@ -22,7 +22,7 @@ import json
 
 import pytest
 
-from vllm_mlx.tool_parsers import LlamaToolParser
+from rapid_mlx.tool_parsers import LlamaToolParser
 
 
 @pytest.fixture
@@ -204,7 +204,7 @@ class TestNoFalsePositives:
         With no ``{``/``<`` anchors, it should not enter the JSON
         scanner at all; otherwise ordinary long text becomes O(n^2).
         """
-        import vllm_mlx.tool_parsers.llama_tool_parser as llama_mod
+        import rapid_mlx.tool_parsers.llama_tool_parser as llama_mod
 
         parser = LlamaToolParser()
 

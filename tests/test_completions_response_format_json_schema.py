@@ -34,10 +34,10 @@ from __future__ import annotations
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
-from vllm_mlx.config import reset_config
-from vllm_mlx.engine.base import GenerationOutput
-from vllm_mlx.middleware.exception_handlers import install_exception_handlers
-from vllm_mlx.routes.completions import router as completions_router
+from rapid_mlx.config import reset_config
+from rapid_mlx.engine.base import GenerationOutput
+from rapid_mlx.middleware.exception_handlers import install_exception_handlers
+from rapid_mlx.routes.completions import router as completions_router
 
 _FENCED_TEXT = 'Just the JSON.\n```json\n{"answer": 42}\n```'
 _CLEAN_TEXT = '{"answer": 42}'

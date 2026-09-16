@@ -4,7 +4,7 @@
 
 This guards the tool-call *plumbing*, not the small model's discretion to call
 a tool. A named ``tool_choice`` forces the call via a grammar-constrained
-forced-function prefix (see ``vllm_mlx/routes/chat.py``), so
+forced-function prefix (see ``rapid_mlx/routes/chat.py``), so
 the result is deterministic at temperature 0 — the check measures whether the
 server emits a structurally valid ``tool_calls`` entry and can render that call
 plus its ``role=tool`` result on the next turn in both non-streaming and

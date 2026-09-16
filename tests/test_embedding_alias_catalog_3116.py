@@ -15,15 +15,15 @@ from types import SimpleNamespace
 
 import pytest
 
-from vllm_mlx import cli
-from vllm_mlx.catalog.legacy import build_legacy_catalog_snapshot
-from vllm_mlx.catalog.validation import (
+from rapid_mlx import cli
+from rapid_mlx.catalog.legacy import build_legacy_catalog_snapshot
+from rapid_mlx.catalog.validation import (
     _TASK_OPERATIONS,
     CatalogValidationError,
     ContractValidator,
 )
-from vllm_mlx.model_aliases import resolve_profile
-from vllm_mlx.routes import models as models_route
+from rapid_mlx.model_aliases import resolve_profile
+from rapid_mlx.routes import models as models_route
 
 ROOT = Path(__file__).resolve().parents[1]
 EMBEDDING_ALIASES = ("embeddinggemma-300m-6bit", "embeddinggemma-300m-8bit")
@@ -64,7 +64,7 @@ def test_embedding_task_only_pairs_with_the_embed_operation():
 def test_alias_schema_and_proto_admit_the_embedding_vocabulary():
     for path in (
         ROOT / "proto" / "model-catalog" / "v2" / "model-alias.schema.json",
-        ROOT / "vllm_mlx" / "catalog" / "schemas" / "model-alias.schema.json",
+        ROOT / "rapid_mlx" / "catalog" / "schemas" / "model-alias.schema.json",
     ):
         schema = json.loads(path.read_text())
         capabilities = schema["properties"]["capabilities"]["properties"]
@@ -108,7 +108,7 @@ def test_serve_command_exits_before_any_model_work_for_embedding_alias(
     """
     from argparse import Namespace
 
-    from vllm_mlx import _version_check
+    from rapid_mlx import _version_check
 
     def _past_the_guard(*_a, **_kw):
         raise AssertionError("serve_command ran past the embedding guard")

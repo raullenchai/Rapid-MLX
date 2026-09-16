@@ -1,5 +1,5 @@
 # SPDX-License-Identifier: Apache-2.0
-"""Tests for the load-time fp8 -> mxfp8 repack (``vllm_mlx/fp8_repack.py``).
+"""Tests for the load-time fp8 -> mxfp8 repack (``rapid_mlx/fp8_repack.py``).
 
 Pins:
 
@@ -30,7 +30,7 @@ pytestmark = pytest.mark.requires_mlx
 
 import mlx.core as mx  # noqa: E402
 
-from vllm_mlx.fp8_repack import (  # noqa: E402
+from rapid_mlx.fp8_repack import (  # noqa: E402
     _repack_fp8,
     is_fp8_block_checkpoint,
     load_fp8_model_online,
@@ -301,7 +301,7 @@ def test_repack_rejects_payload_and_scale_shape_mismatches():
 
 
 def test_online_load_repacks_and_runs(fp8_bailing_checkpoint):
-    from vllm_mlx.utils.tokenizer import _register_vendored_archs
+    from rapid_mlx.utils.tokenizer import _register_vendored_archs
 
     _register_vendored_archs()
     src, kept = fp8_bailing_checkpoint
@@ -333,7 +333,7 @@ def test_online_load_repacks_and_runs(fp8_bailing_checkpoint):
 
 def test_opt_in_lm_head_affine8(fp8_bailing_checkpoint, monkeypatch):
     """RAPID_MLX_FP8_LM_HEAD_AFFINE8=1 quantizes ONLY the lm_head."""
-    from vllm_mlx.utils.tokenizer import _register_vendored_archs
+    from rapid_mlx.utils.tokenizer import _register_vendored_archs
 
     _register_vendored_archs()
     src, _ = fp8_bailing_checkpoint

@@ -13,7 +13,7 @@ error-location contract (D-ENVELOPE-FIELD-LEAK), so every string ``loc``
 component collapsed to ``<field>`` and no schema-owned field reached
 ``error.param``.
 
-Fix: :mod:`vllm_mlx.routes.residency` registers ``ModelLoadRequest`` and
+Fix: :mod:`rapid_mlx.routes.residency` registers ``ModelLoadRequest`` and
 binds ``/v1/models/load`` at import time (plugin-style, keeping the
 middleware module import-light). The envelope now surfaces the real
 schema-owned field path — matching how the chat endpoints name fields —
@@ -39,11 +39,11 @@ from fastapi.testclient import TestClient
 
 # Importing the residency route module runs its module-scope registration
 # of ModelLoadRequest + the /v1/models/load path binding (same as production).
-from vllm_mlx.middleware.exception_handlers import install_exception_handlers
+from rapid_mlx.middleware.exception_handlers import install_exception_handlers
 
 # Defines the route's request model AND triggers the registry registration.
-from vllm_mlx.routes import residency  # noqa: F401
-from vllm_mlx.routes.residency import ModelLoadRequest
+from rapid_mlx.routes import residency  # noqa: F401
+from rapid_mlx.routes.residency import ModelLoadRequest
 
 
 @pytest.fixture(scope="module")
