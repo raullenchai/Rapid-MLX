@@ -576,6 +576,8 @@ async def _main() -> None:
         parser.error("--pairs 0 is valid only with --lifecycle")
     if args.max_tokens is not None and args.max_tokens <= 0:
         parser.error("--max-tokens must be positive")
+    if args.abort_iterations <= 0:
+        parser.error("--abort-iterations must be positive")
 
     from rapid_mlx.engine.batched import BatchedEngine
     from rapid_mlx.scheduler import SchedulerConfig

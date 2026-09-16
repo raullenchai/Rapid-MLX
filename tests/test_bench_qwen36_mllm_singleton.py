@@ -143,6 +143,25 @@ def test_nonpositive_max_tokens_is_rejected() -> None:
     assert "must be positive" in result.stderr
 
 
+def test_nonpositive_abort_iterations_is_rejected() -> None:
+    result = subprocess.run(
+        [
+            sys.executable,
+            "-m",
+            "scripts.bench_qwen36_mllm_singleton",
+            "--model",
+            "unused",
+            "--abort-iterations",
+            "0",
+        ],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert result.returncode == 2
+    assert "--abort-iterations must be positive" in result.stderr
+
+
 def test_unknown_case_id_is_rejected() -> None:
     result = subprocess.run(
         [
