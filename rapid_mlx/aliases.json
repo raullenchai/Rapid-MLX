@@ -1300,6 +1300,7 @@
     "native_mtp_draft_model": "rapid-mlx/GLM-5.3-Flash-MTP-4bit",
     "mtp_speculative_tokens": 1,
     "mtp_default_enabled": true,
+    "recommended_prefill_step_size": 1024,
     "supports_dflash": false,
     "min_memory_gb": 192,
     "experimental": true,

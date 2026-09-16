@@ -436,6 +436,7 @@ def test_serve_native_mtp_helper_routes_exact_pair(monkeypatch) -> None:
         enable_auto_tool_choice=True,
         tool_call_parser="qwen3_coder_xml",
         reasoning_parser="qwen3",
+        prefill_step_size=2048,
     )
 
     assert cli._serve_native_mtp_if_requested(
@@ -454,6 +455,7 @@ def test_serve_native_mtp_helper_routes_exact_pair(monkeypatch) -> None:
     assert preflight_calls == [args]
     assert captured["pair"] == QWEN36_35B_4BIT
     assert captured["served_model_name"] == "qwen3.6-35b-4bit"
+    assert captured["prefill_step_size"] == 2048
 
 
 def test_native_mtp_preflight_rejects_wrong_alias_before_runtime_probe(
@@ -652,6 +654,7 @@ def test_native_mtp_server_builds_qualified_serial_app(monkeypatch) -> None:
         "max_tokens": 9,
         "temperature": 0.0,
         "top_p": 1.0,
+        "prefill_step_size": 2048,
         "draft_model": drafter,
         "draft_kind": "mtp",
         "draft_block_size": 3,
@@ -662,6 +665,7 @@ def test_native_mtp_server_builds_qualified_serial_app(monkeypatch) -> None:
         "max_tokens": 9,
         "temperature": 0.7,
         "top_p": 0.9,
+        "prefill_step_size": 2048,
     }
     assert run_calls == [
         (
@@ -757,3 +761,60 @@ def test_native_mtp_server_reports_missing_optional_runtime(monkeypatch) -> None
             cors_origins=[],
             uvicorn_log_level="warning",
         )
+
+
+@pytest.mark.requires_mlx
+def test_native_mtp_prefill_accumulates_chunk_hidden_states() -> None:
+    import mlx.core as mx
+
+    from vllm_mlx.speculative.native_mtp.transaction import SpeculativePrefill
+
+    prefill = SpeculativePrefill("mtp", object())
+    prefill.append(SimpleNamespace(hidden_states=[mx.ones((1, 2, 4))]))
+    output = SimpleNamespace(hidden_states=[mx.full((1, 1, 4), 2.0)])
+
+    result = prefill.finish(output)
+    mx.eval(result.hidden_states)
+
+    assert result.hidden_states[0].shape == (1, 3, 4)
+    assert result.hidden_states[0][0, :, 0].tolist() == [1.0, 1.0, 2.0]
+
+
+@pytest.mark.requires_mlx
+def test_native_mtp_chunked_rounds_restore_full_prompt_tokens(monkeypatch) -> None:
+    import mlx.core as mx
+
+    from vllm_mlx.speculative.native_mtp import transaction
+
+    captured = {}
+
+    def fake_rounds(*_args, **kwargs):
+        captured.update(kwargs)
+        return iter(())
+
+    monkeypatch.setattr(transaction, "mtp_rounds", fake_rounds)
+    token = transaction._LEGACY_TOKEN_CONTEXT.set([[10, 20, 30]])
+    try:
+        result = list(
+            transaction.run_speculative_rounds(
+                SimpleNamespace(
+                    language_model=SimpleNamespace(
+                        config=SimpleNamespace(eos_token_id=None)
+                    )
+                ),
+                object(),
+                [],
+                mx.array([[30]], dtype=mx.int32),
+                mx.array([7], dtype=mx.int32),
+                None,
+                SimpleNamespace(hidden_states=[mx.ones((1, 3, 4))]),
+                draft_kind="mtp",
+                max_tokens=2,
+                sampler_is_greedy=True,
+            )
+        )
+    finally:
+        transaction._LEGACY_TOKEN_CONTEXT.reset(token)
+
+    assert result == [(7, None)]
+    assert captured["prompt_tokens"].tolist() == [[10, 20, 30]]

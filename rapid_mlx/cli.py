@@ -2975,6 +2975,14 @@ def _serve_native_mtp_if_requested(
     _check_disk_space(pair.drafter_repo, force=getattr(args, "force_disk_check", False))
     _check_memory_capacity(pair.target_repo, alias=alias_name)
     server_module._sync_config()
+    prefill_user_set_explicit = "--prefill-step-size" in sys.argv or any(
+        value.startswith("--prefill-step-size=") for value in sys.argv
+    )
+    prefill_step_size = _resolve_prefill_step_size(
+        model_name=alias_name,
+        configured=args.prefill_step_size,
+        user_set_explicit=prefill_user_set_explicit,
+    )
     run_native_mtp_server(
         pair=pair,
         host=args.host,
@@ -2995,6 +3003,7 @@ def _serve_native_mtp_if_requested(
             args.tool_call_parser if args.enable_auto_tool_choice else None
         ),
         reasoning_parser_name=args.reasoning_parser,
+        prefill_step_size=prefill_step_size,
     )
     return True
 
