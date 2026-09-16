@@ -806,7 +806,7 @@
       ],
       "turns": [
         {
-          "prompt": "Output a single ```json fenced code block containing only JSON, nothing else: {\"model\": <model name>, \"status\": <status chip>, \"action\": <rightmost button label>}.",
+          "prompt": "Output JSON only, inside a single ```json fenced code block: {\"model\": <model name>, \"status\": <status chip>, \"action\": <rightmost button label>}.",
           "max_tokens": 64,
           "sampling": {
             "temperature": 0.0,
@@ -883,6 +883,9 @@
               ],
               [
                 [
+                  "information"
+                ],
+                [
                   "info"
                 ],
                 [
@@ -903,7 +906,7 @@
       ],
       "turns": [
         {
-          "prompt": "Output a single ```json fenced code block containing only JSON, nothing else: {\"title\": <sidebar title>, \"buttons\": [<visible button labels>]}.",
+          "prompt": "Output JSON only, inside a single ```json fenced code block: {\"title\": <sidebar title>, \"buttons\": [<all visible button labels>]}.",
           "max_tokens": 96,
           "sampling": {
             "temperature": 0.0,
@@ -1126,7 +1129,7 @@
       ],
       "turns": [
         {
-          "prompt": "Output a single ```json fenced code block containing only JSON, nothing else: {\"bars\": [{\"model\": <first bar model>, \"status\": <first bar status>}, {\"model\": <second bar model>, \"status\": <second bar status>]}.",
+          "prompt": "Output JSON only, inside a single ```json fenced code block: {\"bars\": [{\"model\": <first bar model>, \"status\": <first bar status>}, {\"model\": <second bar model>, \"status\": <second bar status>]}.",
           "max_tokens": 96,
           "sampling": {
             "temperature": 0.0,
