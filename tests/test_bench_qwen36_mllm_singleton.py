@@ -40,14 +40,14 @@ def test_lifecycle_gate_requires_every_contract() -> None:
 
 def test_hash_gate_requires_within_phase_determinism() -> None:
     off = [
-        {"send": 1, "sha256": "cold"},
-        {"send": 1, "sha256": "cold"},
-        {"send": 2, "sha256": "warm"},
+        {"pair": 1, "send": 1, "sha256": "cold"},
+        {"pair": 2, "send": 1, "sha256": "cold"},
+        {"pair": 1, "send": 2, "sha256": "warm"},
     ]
     auto = [
-        {"send": 1, "sha256": "cold"},
-        {"send": 1, "sha256": "cold"},
-        {"send": 2, "sha256": "warm"},
+        {"pair": 1, "send": 1, "sha256": "cold"},
+        {"pair": 2, "send": 1, "sha256": "cold"},
+        {"pair": 1, "send": 2, "sha256": "warm"},
     ]
     assert _hash_streams_exact(off, auto)
 
@@ -56,8 +56,14 @@ def test_hash_gate_requires_within_phase_determinism() -> None:
 
 
 def test_hash_gate_requires_corresponding_send_streams() -> None:
-    off = [{"send": 1, "sha256": "same"}]
-    auto = [{"send": 2, "sha256": "same"}]
+    off = [{"pair": 1, "send": 1, "sha256": "same"}]
+    auto = [{"pair": 1, "send": 2, "sha256": "same"}]
+    assert not _hash_streams_exact(off, auto)
+
+    auto = [
+        {"pair": 1, "send": 1, "sha256": "same"},
+        {"pair": 2, "send": 1, "sha256": "same"},
+    ]
     assert not _hash_streams_exact(off, auto)
 
 

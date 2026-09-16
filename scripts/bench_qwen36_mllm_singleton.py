@@ -160,23 +160,20 @@ def _lifecycle_passes(lifecycle: dict[str, Any], abort_iterations: int) -> bool:
 def _hash_streams_exact(
     off_samples: list[dict[str, Any]], auto_samples: list[dict[str, Any]]
 ) -> bool:
-    """Require deterministic, corresponding output for every send stream."""
+    """Require one-to-one deterministic output for every measured pair/send."""
 
-    send_indexes = sorted(
-        {int(sample["send"]) for sample in off_samples + auto_samples}
-    )
-    if not send_indexes:
+    def keyed(samples: list[dict[str, Any]]) -> dict[tuple[int, int], str] | None:
+        mapped = {
+            (int(sample["pair"]), int(sample["send"])): str(sample["sha256"])
+            for sample in samples
+        }
+        return mapped if len(mapped) == len(samples) else None
+
+    off_by_key = keyed(off_samples)
+    auto_by_key = keyed(auto_samples)
+    if not off_by_key or not auto_by_key or off_by_key.keys() != auto_by_key.keys():
         return False
-    for send in send_indexes:
-        off_hashes = {
-            sample["sha256"] for sample in off_samples if sample["send"] == send
-        }
-        auto_hashes = {
-            sample["sha256"] for sample in auto_samples if sample["send"] == send
-        }
-        if len(off_hashes) != 1 or len(auto_hashes) != 1 or off_hashes != auto_hashes:
-            return False
-    return True
+    return all(off_by_key[key] == auto_by_key[key] for key in off_by_key)
 
 
 def _warm_phase_qualified(phase: dict[str, Any], require_singleton: bool) -> bool:

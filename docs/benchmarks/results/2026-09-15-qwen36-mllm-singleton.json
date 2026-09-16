@@ -1031,13 +1031,13 @@
   },
   "cancellation": {
    "accepted": true,
-   "elapsed_s": 0.24010812499909662,
+   "elapsed_s": 0.2403444590017898,
    "request_id_published": true,
    "tokens_before_abort": 12
   },
   "queued_concurrency": {
    "both_nonempty": true,
-   "elapsed_s": 0.45079249999980675,
+   "elapsed_s": 0.4466069170011906,
    "max_running_observed": 1,
    "max_waiting_observed": 1,
    "num_requests_processed": 26,
@@ -1049,7 +1049,7 @@
    "exact": true
   }
  },
- "lifecycle_methodology_hash": "d7ed46c653d27483c76b7d384472189f5952b19731d06fbd8d0f2e4fde326ab2",
+ "lifecycle_methodology_hash": "0c1ddde046af915bbd7abca09d9bb7d33af54184e3d8b886ba15eefc364b5c67",
  "lifecycle_rerun_date": "2026-09-16",
  "machine": "Mac Studio M3 Ultra, 256 GB unified memory",
  "manifest": "evals/prompts/qwen36_mllm_runtime.json",
