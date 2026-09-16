@@ -535,14 +535,18 @@ def _hard_exit_after_serve() -> None:
     In-process test harnesses (pytest suites drive ``serve_command``
     through to ``uvicorn.run`` with everything stubbed) must NOT
     terminate the pytest process here, so the exit is skipped when
-    ``PYTEST_CURRENT_TEST`` is set — the same guard
-    ``service/postprocessor.py`` uses. The explicit per-suite stubs of
+    ``pytest`` is already imported in THIS process. The module check —
+    rather than a ``PYTEST_CURRENT_TEST`` env check — matters: the env
+    var is inherited by subprocesses, so a pytest-spawned
+    ``rapid-mlx serve`` CHILD process must still take the production
+    hard-exit path (it is a real server, and the hard exit is exactly
+    what protects it on macOS 15). The explicit per-suite stubs of
     this helper remain the primary defense; this is the safety net for
     the suite that forgets one (an ``os._exit(0)`` mid-suite would end
     the run with a green exit code while silently skipping every test
     after it).
     """
-    if os.environ.get("PYTEST_CURRENT_TEST"):
+    if "pytest" in sys.modules:
         return
     try:
         sys.stdout.flush()
