@@ -83,6 +83,26 @@ except ImportError:  # direct-script execution fallback
     from bench_metadata import write_bench_json
 
 
+def _media_root_from_manifest(manifest_path: Path, manifest: dict[str, Any]) -> Path:
+    """Resolve the manifest's media root, anchored to this repository.
+
+    ``images_root`` comes from the caller-controlled manifest, so it is not
+    itself trustworthy: the containment anchor is the repository the harness
+    ships in. A manifest may relocate the media root within the repo (shared
+    image directories) but never outside it — ``images_root: "/"`` with
+    arbitrary readable files is rejected here rather than defeating the
+    per-image path checks in ``_conversation_messages``.
+    """
+    repo_root = (
+        manifest_path.resolve().parent / manifest.get("images_root", ".")
+    ).resolve()
+    if repo_root != ROOT and ROOT not in repo_root.parents:
+        raise ValueError(
+            f"manifest images_root must resolve inside the repository: {repo_root}"
+        )
+    return repo_root
+
+
 def _conversation_messages(
     conversation: dict[str, Any],
     repo_root: Path,
@@ -202,6 +222,18 @@ def _term_matches(text_tokens: list[str], term: str, *, guard_negation: bool) ->
         if guard_negation:
             window = text_tokens[max(0, start - 3) : start]
             if any(token in _NEGATORS for token in window):
+                continue
+            # Negation after the phrase inverts it too: "ready is not the
+            # status" asserts the chip is anything but ready. Only a
+            # copula-linked pattern counts — "ready, not idle" contrasts
+            # the term against another and stays a positive claim about
+            # ``ready``.
+            after = text_tokens[start + width : start + width + 3]
+            if (
+                after
+                and after[0] in {"is", "are", "was", "were"}
+                and any(token in _NEGATORS for token in after[1:])
+            ):
                 continue
         return True
     return False
@@ -684,9 +716,7 @@ async def _main() -> None:
     from vllm_mlx.scheduler import SchedulerConfig
 
     manifest = json.loads(args.manifest.read_text())
-    repo_root = (
-        args.manifest.resolve().parent / manifest.get("images_root", ".")
-    ).resolve()
+    repo_root = _media_root_from_manifest(args.manifest, manifest)
     conversations = [
         conversation
         for conversation in manifest["conversations"]

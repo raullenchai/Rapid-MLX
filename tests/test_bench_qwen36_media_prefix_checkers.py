@@ -9,6 +9,8 @@ present, so fluent-but-unrelated output fails.
 
 from __future__ import annotations
 
+from pathlib import Path
+
 from scripts.bench_qwen36_media_prefix import _checker_pass
 
 
@@ -456,3 +458,35 @@ def test_manifest_images_cannot_escape_the_media_root(tmp_path):
         _conversation_messages(
             {**conversation, "images": ["img/absent.png"]}, media_root, 0, []
         )
+
+
+def test_post_term_copula_negation_rejects_false_answers():
+    # Negation after the phrase inverts it when a copula links them: an
+    # explicitly false answer must not satisfy the gate. A post-phrase
+    # contrast ("ready, not idle") stays a positive claim about the term.
+    checker = {"type": "terms", "required": ["ready"]}
+    assert not _checker_pass(checker, "Ready is not the status.")
+    assert not _checker_pass(checker, "Ready was never the chip label.")
+    assert _checker_pass(checker, "Ready, not idle, is what the chip says.")
+    assert _checker_pass(checker, "Ready")
+
+
+def test_images_root_cannot_relocate_outside_the_repository(tmp_path):
+    # images_root comes from the caller-controlled manifest, so it is not a
+    # trusted containment anchor: the harness pins the media root beneath
+    # the repository itself.
+    import pytest
+
+    from scripts.bench_qwen36_media_prefix import ROOT, _media_root_from_manifest
+
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    manifest = tmp_path / "m.json"
+    manifest.write_text("{}")
+    with pytest.raises(ValueError, match="inside the repository"):
+        _media_root_from_manifest(manifest, {"images_root": "outside"})
+    # Relocating within the repository stays allowed.
+    inside = _media_root_from_manifest(
+        Path(ROOT) / "evals" / "prompts" / "m.json", {"images_root": "../.."}
+    )
+    assert inside == ROOT
