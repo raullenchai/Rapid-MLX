@@ -763,35 +763,57 @@ def test_native_mtp_server_reports_missing_optional_runtime(monkeypatch) -> None
         )
 
 
-@pytest.mark.requires_mlx
-def test_native_mtp_prefill_accumulates_chunk_hidden_states() -> None:
-    import mlx.core as mx
+def test_native_mtp_prefill_accumulates_chunk_hidden_states(monkeypatch) -> None:
+    from rapid_mlx.speculative.native_mtp import transaction
 
-    from vllm_mlx.speculative.native_mtp.transaction import SpeculativePrefill
+    first = object()
+    final = object()
+    evaluated = []
+    fake_mx = SimpleNamespace(
+        async_eval=lambda value: evaluated.append(value),
+        concatenate=lambda parts, *, axis: (tuple(parts), axis),
+    )
+    monkeypatch.setattr(transaction, "_mx", lambda: fake_mx)
 
-    prefill = SpeculativePrefill("mtp", object())
-    prefill.append(SimpleNamespace(hidden_states=[mx.ones((1, 2, 4))]))
-    output = SimpleNamespace(hidden_states=[mx.full((1, 1, 4), 2.0)])
+    prefill = transaction.SpeculativePrefill("mtp", object())
+    prefill.append(SimpleNamespace(hidden_states=[first]))
+    output = SimpleNamespace(hidden_states=[final])
 
     result = prefill.finish(output)
-    mx.eval(result.hidden_states)
 
-    assert result.hidden_states[0].shape == (1, 3, 4)
-    assert result.hidden_states[0][0, :, 0].tolist() == [1.0, 1.0, 2.0]
+    assert evaluated == [[first]]
+    assert result.hidden_states == [((first, final), 1)]
+    assert prefill.chunks == []
 
 
-@pytest.mark.requires_mlx
 def test_native_mtp_chunked_rounds_restore_full_prompt_tokens(monkeypatch) -> None:
-    import mlx.core as mx
-
-    from vllm_mlx.speculative.native_mtp import transaction
+    from rapid_mlx.speculative.native_mtp import transaction
 
     captured = {}
+
+    class FakeArray:
+        def __init__(self, values, *, shape, dtype="int32"):
+            self.values = values
+            self.shape = shape
+            self.dtype = dtype
+
+        def item(self):
+            return self.values
+
+        def tolist(self):
+            return self.values
+
+    fake_mx = SimpleNamespace(
+        array=lambda values, *, dtype=None: FakeArray(
+            values, shape=(1, len(values[0])), dtype=dtype
+        )
+    )
 
     def fake_rounds(*_args, **kwargs):
         captured.update(kwargs)
         return iter(())
 
+    monkeypatch.setattr(transaction, "_mx", lambda: fake_mx)
     monkeypatch.setattr(transaction, "mtp_rounds", fake_rounds)
     token = transaction._LEGACY_TOKEN_CONTEXT.set([[10, 20, 30]])
     try:
@@ -804,10 +826,10 @@ def test_native_mtp_chunked_rounds_restore_full_prompt_tokens(monkeypatch) -> No
                 ),
                 object(),
                 [],
-                mx.array([[30]], dtype=mx.int32),
-                mx.array([7], dtype=mx.int32),
+                FakeArray([[30]], shape=(1, 1)),
+                FakeArray(7, shape=(1,)),
                 None,
-                SimpleNamespace(hidden_states=[mx.ones((1, 3, 4))]),
+                SimpleNamespace(hidden_states=[SimpleNamespace(shape=(1, 3, 4))]),
                 draft_kind="mtp",
                 max_tokens=2,
                 sampler_is_greedy=True,

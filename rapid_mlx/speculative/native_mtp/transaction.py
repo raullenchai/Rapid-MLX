@@ -595,7 +595,9 @@ def run_speculative_rounds(
         for tokens, _metadata in rounds:
             yield tokens[0], None
     finally:
-        rounds.close()
+        close = getattr(rounds, "close", None)
+        if close is not None:
+            close()
 
 
 def speculative_prefill_kwargs(draft_kind, _drafter):
