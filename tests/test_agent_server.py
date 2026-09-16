@@ -703,6 +703,14 @@ def test_web_search_query_excludes_unrelated_prompt_context():
         )
         == "the latest Rapid-MLX release"
     )
+    assert (
+        _planned_web_search_query("For Rapid-MLX, what is the latest release?")
+        == "For Rapid-MLX, what is the latest release"
+    )
+    assert (
+        _planned_web_search_query("In the Lakers game, who won yesterday?")
+        == "In the Lakers game, who won yesterday"
+    )
 
 
 def test_output_counts_do_not_request_multiple_web_sources():

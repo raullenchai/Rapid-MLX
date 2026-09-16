@@ -190,6 +190,11 @@ _TEMPORAL_WEB_LOOKUP = re.compile(
     r"(?:谁|什么|何时|哪里|怎么|如何|赢|结果)",
     re.IGNORECASE,
 )
+_PRIVATE_SEARCH_PREFIX = re.compile(
+    r"\b(?:private|confidential|secret|sensitive|codename|password|token|"
+    r"do\s+not\s+share|don't\s+share)\b|(?:私密|保密|机密|敏感|代号|密码|令牌)",
+    re.IGNORECASE,
+)
 _WEB_PROHIBITION = re.compile(
     r"\b(?:do\s+not|don't|dont|never|without)\s+"
     r"(?:look(?:ing)?(?:\s+anything)?\s+up|search(?:ing)?(?:\s+(?:the\s+)?"
@@ -672,9 +677,14 @@ def _planned_web_search_query(goal: str) -> str:
             clause
         )
         if live_match is not None:
-            # Text before the lookup verb may contain unrelated private context.
-            # Forward only the matched lookup portion to the external provider.
-            query = clause[live_match.start() :]
+            prefix = clause[: live_match.start()]
+            # Preserve ordinary public subjects before "what/who/find" while
+            # excluding prefixes the user explicitly labels as private.
+            query = (
+                clause[live_match.start() :]
+                if _PRIVATE_SEARCH_PREFIX.search(prefix) is not None
+                else clause
+            )
             break
     if not query:
         explicit = _EXPLICIT_SEARCH_QUERY.search(goal)
