@@ -156,19 +156,21 @@ def test_warm_gate_requires_measured_hit_and_candidate_singleton() -> None:
     baseline = {
         "per_case": {
             "text-warm-01": [
-                {"send": 2, "prefix_cache_hit_delta": 1, "singleton_batch_delta": 0}
+                {"send": 1, "prefix_cache_hit_delta": 0, "singleton_batch_delta": 0},
+                {"send": 2, "prefix_cache_hit_delta": 1, "singleton_batch_delta": 0},
             ]
         }
     }
     candidate = {
         "per_case": {
             "text-warm-01": [
-                {"send": 2, "prefix_cache_hit_delta": 1, "singleton_batch_delta": 1}
+                {"send": 1, "prefix_cache_hit_delta": 0, "singleton_batch_delta": 1},
+                {"send": 2, "prefix_cache_hit_delta": 1, "singleton_batch_delta": 1},
             ]
         }
     }
     assert _warm_phase_qualified(baseline, False)
     assert _warm_phase_qualified(candidate, True)
 
-    candidate["per_case"]["text-warm-01"][0]["prefix_cache_hit_delta"] = 0
+    candidate["per_case"]["text-warm-01"][1]["prefix_cache_hit_delta"] = 0
     assert not _warm_phase_qualified(candidate, True)

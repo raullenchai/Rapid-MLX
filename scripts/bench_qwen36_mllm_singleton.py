@@ -183,14 +183,19 @@ def _warm_phase_qualified(phase: dict[str, Any], require_singleton: bool) -> boo
     """Require each measured warm send to hit APC on the designated case."""
 
     samples = phase.get("per_case", {}).get("text-warm-01", [])
+    cold_samples = [sample for sample in samples if int(sample.get("send", 0)) == 1]
     warm_samples = [sample for sample in samples if int(sample.get("send", 0)) > 1]
-    if not warm_samples:
+    if not cold_samples or not warm_samples:
         return False
-    return all(
+    cold_is_cold = all(
+        int(sample.get("prefix_cache_hit_delta", 0)) == 0 for sample in cold_samples
+    )
+    warm_is_warm = all(
         int(sample.get("prefix_cache_hit_delta", 0)) > 0
         and (not require_singleton or int(sample.get("singleton_batch_delta", 0)) > 0)
         for sample in warm_samples
     )
+    return cold_is_cold and warm_is_warm
 
 
 async def _run_case(
@@ -284,6 +289,9 @@ async def _run_phase(
 
     by_case: dict[str, list[dict[str, Any]]] = {case["id"]: [] for case in cases}
     for pair in range(1, pairs + 1):
+        # Warmup primes model/kernel state, not APC. Reset prompt state before
+        # every pair so send 1 is cold and only send 2 can qualify a warm hit.
+        engine.clear_prefix_cache(reset_stats=True)
         for case in cases:
             for send in range(1, sends + 1):
                 sample = await _run_case(
