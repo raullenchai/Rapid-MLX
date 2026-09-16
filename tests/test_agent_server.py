@@ -17,6 +17,7 @@ from vllm_mlx.agent_runtime import (
     resolve_agent_profile,
 )
 from vllm_mlx.agent_runtime.server import (
+    _MULTI_SOURCE_INTENT,
     AgentApprovalRequest,
     AgentRunCapacityError,
     AgentRunConflictError,
@@ -681,6 +682,16 @@ def test_web_search_query_excludes_unrelated_prompt_context():
         )
         == "the latest Rapid version"
     )
+
+
+def test_output_counts_do_not_request_multiple_web_sources():
+    assert (
+        _MULTI_SOURCE_INTENT.search(
+            "Find the latest release and summarize it in two sentences"
+        )
+        is None
+    )
+    assert _MULTI_SOURCE_INTENT.search("Compare two release reports") is not None
 
 
 def test_underspecified_weather_keeps_automatic_tool_choice():

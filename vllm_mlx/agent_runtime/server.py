@@ -225,8 +225,10 @@ _EXPLICIT_SEARCH_QUERY = re.compile(
     re.IGNORECASE,
 )
 _MULTI_SOURCE_INTENT = re.compile(
-    r"\b(?:compare|comparison|both|two|multiple|several|across)\b|"
-    r"比较|对比|分别|多个|两个|多篇|多条",
+    r"\b(?:compare|comparison|both|across)\b|"
+    r"\b(?:two|multiple|several)\s+"
+    r"(?:sources?|results?|reports?|articles?|pages?|links?)\b|"
+    r"比较|对比|分别|(?:多个|两个)(?:来源|结果|报告|网页|链接|文章)|多篇|多条",
     re.IGNORECASE,
 )
 _SENTENCE_COUNT_INTENT = re.compile(
