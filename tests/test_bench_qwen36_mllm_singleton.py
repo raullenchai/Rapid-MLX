@@ -8,6 +8,7 @@ from scripts.bench_qwen36_mllm_singleton import (
     _hash_streams_exact,
     _lifecycle_passes,
     _percent_change,
+    _warm_phase_qualified,
 )
 
 
@@ -70,6 +71,24 @@ def test_regex_checker_requires_the_complete_shortcut() -> None:
     assert not _checker_pass(checker, "n")
 
 
+def test_json_checker_requires_types_and_semantic_values() -> None:
+    checker = {
+        "type": "json_shape",
+        "keys": ["status", "buttons"],
+        "types": {"status": "str", "buttons": "list"},
+        "field_terms": {"status": ["ready"], "buttons": ["start"]},
+    }
+    assert _checker_pass(checker, '{"status":"Ready","buttons":["Start"]}')
+    assert not _checker_pass(checker, '{"status":null,"buttons":[]}')
+    assert not _checker_pass(checker, '{"status":"Idle","buttons":["Stop"]}')
+
+
+def test_terms_checker_enforces_minimum_word_count() -> None:
+    checker = {"type": "terms", "required": ["ready"], "min_words": 3}
+    assert _checker_pass(checker, "system is ready")
+    assert not _checker_pass(checker, "ready now")
+
+
 def test_percent_change_handles_zero_or_missing_baselines() -> None:
     assert _percent_change(15.0, 10.0) == 50.0
     assert _percent_change(0.0, 0.0) is None
@@ -93,3 +112,25 @@ def test_zero_pairs_requires_explicit_lifecycle_mode() -> None:
     )
     assert result.returncode == 2
     assert "valid only with --lifecycle" in result.stderr
+
+
+def test_warm_gate_requires_measured_hit_and_candidate_singleton() -> None:
+    baseline = {
+        "per_case": {
+            "text-warm-01": [
+                {"send": 2, "prefix_cache_hit_delta": 1, "singleton_batch_delta": 0}
+            ]
+        }
+    }
+    candidate = {
+        "per_case": {
+            "text-warm-01": [
+                {"send": 2, "prefix_cache_hit_delta": 1, "singleton_batch_delta": 1}
+            ]
+        }
+    }
+    assert _warm_phase_qualified(baseline, False)
+    assert _warm_phase_qualified(candidate, True)
+
+    candidate["per_case"]["text-warm-01"][0]["prefix_cache_hit_delta"] = 0
+    assert not _warm_phase_qualified(candidate, True)

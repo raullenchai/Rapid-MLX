@@ -72,6 +72,8 @@ def _checker_pass(checker: dict[str, Any], text: str) -> bool:
     lowered = text.casefold()
     kind = checker.get("type", "any")
     if kind == "terms":
+        if len(text.split()) < int(checker.get("min_words", 0)):
+            return False
         if not all(term.casefold() in lowered for term in checker.get("required", [])):
             return False
         return not any(
@@ -89,9 +91,25 @@ def _checker_pass(checker: dict[str, Any], text: str) -> bool:
             payload = json.loads(stripped[start:])
         except (ValueError, json.JSONDecodeError):
             return False
-        return isinstance(payload, dict) and all(
-            key in payload for key in checker.get("keys", [])
-        )
+        if not isinstance(payload, dict) or not all(
+            key in payload and payload[key] is not None
+            for key in checker.get("keys", [])
+        ):
+            return False
+        expected_types = {"str": str, "list": list, "dict": dict}
+        for key, type_name in checker.get("types", {}).items():
+            expected = expected_types.get(type_name)
+            if expected is None:
+                raise ValueError(f"unknown json checker type name: {type_name}")
+            if key not in payload or not isinstance(payload[key], expected):
+                return False
+        for key, terms in checker.get("field_terms", {}).items():
+            if key not in payload:
+                return False
+            rendered = json.dumps(payload[key], ensure_ascii=False).casefold()
+            if not all(str(term).casefold() in rendered for term in terms):
+                return False
+        return True
     if kind == "regex":
         pattern = checker.get("pattern")
         if not isinstance(pattern, str) or not pattern:
@@ -161,6 +179,20 @@ def _hash_streams_exact(
     return True
 
 
+def _warm_phase_qualified(phase: dict[str, Any], require_singleton: bool) -> bool:
+    """Require each measured warm send to hit APC on the designated case."""
+
+    samples = phase.get("per_case", {}).get("text-warm-01", [])
+    warm_samples = [sample for sample in samples if int(sample.get("send", 0)) > 1]
+    if not warm_samples:
+        return False
+    return all(
+        int(sample.get("prefix_cache_hit_delta", 0)) > 0
+        and (not require_singleton or int(sample.get("singleton_batch_delta", 0)) > 0)
+        for sample in warm_samples
+    )
+
+
 async def _run_case(
     engine: Any,
     case: dict[str, Any],
@@ -170,7 +202,9 @@ async def _run_case(
 ) -> dict[str, Any]:
     max_tokens = max_tokens_override or int(case["max_tokens"])
     sampling = case.get("sampling", {})
-    before = dict(engine.get_stats().get("batch_generator", {}))
+    stats_before = engine.get_stats()
+    before = dict(stats_before.get("batch_generator", {}))
+    prefix_hits_before = int((stats_before.get("prefix_cache") or {}).get("hits", 0))
     started = time.perf_counter()
     first_token_at: float | None = None
     final = None
@@ -185,7 +219,9 @@ async def _run_case(
             first_token_at = time.perf_counter()
         final = output
     ended = time.perf_counter()
-    after = dict(engine.get_stats()["batch_generator"])
+    stats_after = engine.get_stats()
+    after = dict(stats_after["batch_generator"])
+    prefix_hits_after = int((stats_after.get("prefix_cache") or {}).get("hits", 0))
     if final is None:
         raise RuntimeError(f"case {case['id']} produced no output")
     text = final.raw_text or final.text or ""
@@ -205,6 +241,9 @@ async def _run_case(
         "generation_tps": (generation_tokens / generation_time)
         if generation_time > 0
         else 0.0,
+        "prefix_cache_hit_delta": prefix_hits_after - prefix_hits_before,
+        "singleton_batch_delta": int(after.get("singleton_batches", 0))
+        - int(before.get("singleton_batches", 0)),
     }
 
 
@@ -392,11 +431,15 @@ async def _run_lifecycle(
         asyncio.create_task(queued(media_cases[1])),
     ]
     max_running_observed = 0
+    max_waiting_observed = 0
+    observed_running_with_waiter = False
     while not all(task.done() for task in queued_tasks):
-        max_running_observed = max(
-            max_running_observed,
-            int(engine.get_stats().get("num_running", 0)),
-        )
+        stats = engine.get_stats()
+        running = int(stats.get("num_running", 0))
+        waiting = int(stats.get("num_waiting", 0))
+        max_running_observed = max(max_running_observed, running)
+        max_waiting_observed = max(max_waiting_observed, waiting)
+        observed_running_with_waiter |= running == 1 and waiting >= 1
         await asyncio.sleep(0.001)
     first, second = await asyncio.gather(*queued_tasks)
     result["queued_concurrency"] = {
@@ -404,7 +447,9 @@ async def _run_lifecycle(
         "num_requests_processed": engine.get_stats().get("num_requests_processed"),
         "both_nonempty": bool(first) and bool(second),
         "max_running_observed": max_running_observed,
-        "serialized": max_running_observed <= 1,
+        "max_waiting_observed": max_waiting_observed,
+        "observed_running_with_waiter": observed_running_with_waiter,
+        "serialized": max_running_observed == 1 and observed_running_with_waiter,
     }
 
     # 4. Randomized abort/recovery soak: abort at a random token count, then
@@ -442,10 +487,15 @@ async def _run_lifecycle(
             seen = output.completion_tokens
             if seen >= abort_at:
                 break
-        if holder[0]:
-            await engine.abort_request(holder[0])
+        abort_id = holder[0]
+        abort_accepted = bool(abort_id) and await engine.abort_request(abort_id)
         await stream.aclose()
         await asyncio.sleep(0)
+
+        if not abort_id:
+            soak_failures.append(f"iteration-{iteration}:missing-request-id")
+        elif not abort_accepted:
+            soak_failures.append(f"iteration-{iteration}:abort-rejected")
 
         probe = await engine.chat(
             messages=recovery_messages,
@@ -612,7 +662,8 @@ async def _main() -> None:
             for phase in ("off", "auto")
         }
         result["warm_qualified"] = args.apc == "off" or (
-            result["apc_hits"]["off"] > 0 and result["apc_hits"]["auto"] > 0
+            _warm_phase_qualified(result["phases"]["off"], False)
+            and _warm_phase_qualified(result["phases"]["auto"], True)
         )
 
         result["summary_change_pct"] = {

@@ -188,11 +188,17 @@
       },
       "checker": {
         "type": "json_shape",
-        "keys": [
-          "model",
-          "status",
-          "action"
-        ]
+    "keys": [
+      "model",
+      "status",
+      "action"
+    ],
+    "types": {"model": "str", "status": "str", "action": "str"},
+    "field_terms": {
+      "model": ["qwen3.6-27b"],
+      "status": ["ready"],
+      "action": ["start"]
+    }
       }
     },
     {
@@ -209,10 +215,15 @@
       },
       "checker": {
         "type": "json_shape",
-        "keys": [
-          "title",
-          "buttons"
-        ]
+    "keys": [
+      "title",
+      "buttons"
+    ],
+    "types": {"title": "str", "buttons": "list"},
+    "field_terms": {
+      "title": ["rapid-mlx desktop"],
+      "buttons": ["new chat", "start chatting"]
+    }
       }
     },
     {
@@ -229,10 +240,15 @@
       },
       "checker": {
         "type": "json_shape",
-        "keys": [
-          "heading",
-          "primary_action"
-        ]
+    "keys": [
+      "heading",
+      "primary_action"
+    ],
+    "types": {"heading": "str", "primary_action": "str"},
+    "field_terms": {
+      "heading": ["pick a model"],
+      "primary_action": ["next"]
+    }
       }
     },
     {
@@ -250,9 +266,11 @@
       },
       "checker": {
         "type": "json_shape",
-        "keys": [
-          "bars"
-        ]
+    "keys": [
+      "bars"
+    ],
+    "types": {"bars": "list"},
+    "field_terms": {"bars": ["ready", "idle"]}
       }
     },
     {
@@ -267,9 +285,10 @@
         "temperature": 0.0,
         "top_p": 1.0
       },
-      "checker": {
-        "type": "terms",
-        "required": [
+    "checker": {
+      "type": "terms",
+      "min_words": 200,
+      "required": [
           "pick a model",
           "next",
           "skip"
@@ -288,9 +307,10 @@
         "temperature": 0.0,
         "top_p": 1.0
       },
-      "checker": {
-        "type": "terms",
-        "required": [
+    "checker": {
+      "type": "terms",
+      "min_words": 200,
+      "required": [
           "pick a model"
         ]
       }
@@ -307,9 +327,10 @@
         "temperature": 0.0,
         "top_p": 1.0
       },
-      "checker": {
-        "type": "terms",
-        "required": [
+    "checker": {
+      "type": "terms",
+      "min_words": 200,
+      "required": [
           "new chat",
           "start chatting"
         ]
@@ -327,9 +348,10 @@
         "temperature": 0.0,
         "top_p": 1.0
       },
-      "checker": {
-        "type": "terms",
-        "required": [
+    "checker": {
+      "type": "terms",
+      "min_words": 200,
+      "required": [
           "ready"
         ]
       }
