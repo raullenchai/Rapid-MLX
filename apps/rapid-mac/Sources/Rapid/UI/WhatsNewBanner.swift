@@ -84,9 +84,28 @@ struct WhatsNewBanner: View {
                                 // banner cannot come back, because
                                 // `lastSeenVersion` already rolled forward.
                                 // Same shape as `GitHubStarPrompt`.
+                                //
+                                // The completion is NOT called on the main
+                                // thread: `OpenURLAction._defaultAction`
+                                // forwards it from `NSWorkspace`'s
+                                // `com.apple.launchservices.open-queue`.
+                                // `InstallTracker` is `@MainActor`, so
+                                // touching it inline trips the Swift runtime
+                                // isolation check and traps (EXC_BREAKPOINT).
+                                // The package builds in Swift 5 language
+                                // mode, so the compiler does not catch it.
+                                //
+                                // Hop FIRST, before reading anything: the
+                                // whole body is then main-actor-isolated by
+                                // construction, and a later edit that adds a
+                                // statement at the top cannot silently
+                                // reintroduce the crash. Pinned by
+                                // `OpenURLCompletionMainActorTests`.
                                 openURL(url) { accepted in
-                                    guard accepted else { return }
-                                    installTracker.dismissUpgradeNotice()
+                                    Task { @MainActor in
+                                        guard accepted else { return }
+                                        installTracker.dismissUpgradeNotice()
+                                    }
                                 }
                             }
                             .buttonStyle(.borderedProminent)
