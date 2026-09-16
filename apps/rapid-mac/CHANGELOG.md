@@ -17,6 +17,14 @@ can actually understand.
 
 ## [Unreleased]
 
+### Fixed
+- **"See what's new" no longer quits the app.** Clicking the link on the
+  "Updated to vX.Y.Z" notice opened the release notes and then crashed
+  Rapid-MLX Desktop. The app was doing its bookkeeping — remembering that the
+  notice had been read — on whichever thread macOS happened to finish opening
+  the browser on, which is not allowed. The same latent fault in the "Star on
+  GitHub" prompt is fixed with it.
+
 ## [0.14.2] — 2026-09-14
 
 Rapid-MLX 0.14.2 focuses on faster local inference and a safer first Agent

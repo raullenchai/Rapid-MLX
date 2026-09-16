@@ -89,9 +89,17 @@ struct GitHubStarPromptCard: View {
 
                             guard prompt.isPresented, !prompt.isStarring else { return }
 
+                            // The completion arrives on LaunchServices'
+                            // open-queue, not the main thread, and
+                            // `GitHubStarPromptCoordinator` is `@MainActor`.
+                            // Hop FIRST so the whole body is isolated by
+                            // construction — see the long note in
+                            // `WhatsNewBanner` for the crash this prevents.
                             openURL(GitHubCommunity.repositoryURL) { accepted in
-                                guard accepted else { return }
-                                prompt.repositoryOpened()
+                                Task { @MainActor in
+                                    guard accepted else { return }
+                                    prompt.repositoryOpened()
+                                }
                             }
                         }
                     } label: {
