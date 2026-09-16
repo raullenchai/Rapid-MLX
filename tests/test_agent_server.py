@@ -653,6 +653,19 @@ def test_multiple_weather_targets_are_planned_individually():
     assert _planned_weather_requests(
         "What's the current weather in Tokyo and latest news?"
     ) == ({"location": "Tokyo"},)
+    assert _planned_weather_requests(
+        "Compare the weather in Paris, London, and Tokyo"
+    ) == (
+        {"location": "Paris"},
+        {"location": "London"},
+        {"location": "Tokyo"},
+    )
+    assert _planned_weather_requests(
+        "Compare the weather in Paris, France, and Tokyo"
+    ) == ({"location": "Paris, France"}, {"location": "Tokyo"})
+    assert _planned_weather_requests(
+        "Compare the weather in Springfield, IL, and Boston"
+    ) == ({"location": "Springfield, IL"}, {"location": "Boston"})
 
 
 def test_web_search_query_excludes_unrelated_prompt_context():

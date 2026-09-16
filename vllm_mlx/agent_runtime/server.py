@@ -299,6 +299,32 @@ _COMPOUND_WEATHER_LOCATIONS = frozenset(
         "wallis and futuna",
     }
 )
+_WEATHER_REGION_QUALIFIERS = frozenset(
+    {
+        "australia",
+        "brazil",
+        "california",
+        "canada",
+        "china",
+        "d.c.",
+        "france",
+        "germany",
+        "illinois",
+        "india",
+        "italy",
+        "japan",
+        "mexico",
+        "new york",
+        "oregon",
+        "spain",
+        "texas",
+        "uk",
+        "united kingdom",
+        "united states",
+        "usa",
+        "washington",
+    }
+)
 _NONTERMINAL_ABBREVIATION = re.compile(
     r"\b(?:mr|mrs|ms|dr|prof|sr|jr|st|mt|ft|vs|etc)\.$", re.IGNORECASE
 )
@@ -594,10 +620,22 @@ def _planned_weather_requests(goal: str) -> tuple[dict[str, Any], ...]:
     locations = [raw_location]
     if separators and raw_location.casefold() not in _COMPOUND_WEATHER_LOCATIONS:
         separator = separators[-1]
-        parts = [
-            raw_location[: separator.start()],
-            raw_location[separator.end() :],
+        left = raw_location[: separator.start()].strip().rstrip(",，")
+        right = raw_location[separator.end() :].strip()
+        comma_parts = [
+            part.strip() for part in re.split(r"\s*[,，]\s*", left) if part.strip()
         ]
+        qualifier = comma_parts[-1].casefold() if len(comma_parts) == 2 else ""
+        qualifier_is_region = (
+            qualifier in _WEATHER_REGION_QUALIFIERS
+            or re.fullmatch(r"[A-Z]{2}", comma_parts[-1] if comma_parts else "")
+            is not None
+        )
+        parts = (
+            [left, right]
+            if len(comma_parts) < 2 or qualifier_is_region
+            else [*comma_parts, right]
+        )
         if all(part.strip() for part in parts):
             locations = parts
 
