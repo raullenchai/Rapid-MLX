@@ -99,12 +99,14 @@ _DESKTOP_CLIENT_TOOL_SPECS = (
             "Search the web and return titles, URLs, and snippets for current "
             "information. Use weather for current weather."
         ),
-        parameters={
-            "type": "object",
-            "properties": {"query": {"type": "string"}},
-            "required": ["query"],
-            "additionalProperties": False,
-        },
+        parameters_json=json.dumps(
+            {
+                "type": "object",
+                "properties": {"query": {"type": "string"}},
+                "required": ["query"],
+                "additionalProperties": False,
+            }
+        ),
         risk=ToolRisk.READ_ONLY,
     ),
     ToolSpec(
@@ -113,32 +115,36 @@ _DESKTOP_CLIENT_TOOL_SPECS = (
             "Read an absolute HTTP(S) URL. Long pages can be continued with "
             "the returned offset; refresh bypasses a cached copy."
         ),
-        parameters={
-            "type": "object",
-            "properties": {
-                "url": {"type": "string"},
-                "offset": {"type": "integer"},
-                "refresh": {"type": "boolean"},
-            },
-            "required": ["url"],
-            "additionalProperties": False,
-        },
+        parameters_json=json.dumps(
+            {
+                "type": "object",
+                "properties": {
+                    "url": {"type": "string"},
+                    "offset": {"type": "integer"},
+                    "refresh": {"type": "boolean"},
+                },
+                "required": ["url"],
+                "additionalProperties": False,
+            }
+        ),
         risk=ToolRisk.READ_ONLY,
     ),
     ToolSpec(
         name="weather",
         description="Get current weather for a city or place.",
-        parameters={
-            "type": "object",
-            "properties": {
-                "location": {"type": "string"},
-                "country": {"type": "string"},
-                "admin1": {"type": "string"},
-                "units": {"type": "string", "enum": ["metric", "imperial"]},
-            },
-            "required": ["location"],
-            "additionalProperties": False,
-        },
+        parameters_json=json.dumps(
+            {
+                "type": "object",
+                "properties": {
+                    "location": {"type": "string"},
+                    "country": {"type": "string"},
+                    "admin1": {"type": "string"},
+                    "units": {"type": "string", "enum": ["metric", "imperial"]},
+                },
+                "required": ["location"],
+                "additionalProperties": False,
+            }
+        ),
         risk=ToolRisk.READ_ONLY,
     ),
 )
