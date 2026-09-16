@@ -405,18 +405,20 @@ struct ChatView: View {
             guard request != 0 else { return }
             composeFocusToken &+= 1
         }
+        .onChange(of: viewModel.conversations.map(\.id)) { _, _ in pruneAttachmentDrafts() }
         .onChange(of: viewModel.conversations.map(\.id)) { _, _ in
-            pruneAttachmentDrafts()
             reconcilePersonalIntelligenceStates()
         }
         .onChange(of: viewModel.activeConversationID) { _, _ in
             pruneAttachmentDrafts()
+            photoCapabilityNotice.dismiss()
+        }
+        .onChange(of: viewModel.activeConversationID) { _, _ in
             let activeID = viewModel.activeConversationID
             reconcilePersonalIntelligenceStates(
                 newlyCreatedConversationIDs:
                     viewModel.locallyCreatedConversationID == activeID ? [activeID] : []
             )
-            photoCapabilityNotice.dismiss()
         }
         .onChange(of: alias) { _, _ in photoCapabilityNotice.dismiss() }
         .onChange(of: personalIntelligenceBinding) { oldBinding, newBinding in
