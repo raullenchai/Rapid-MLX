@@ -348,6 +348,10 @@ def test_line_expect_pins_image_order():
     assert not _checker_pass(checker, "Ready")
     assert _checker_pass(checker, "Ready\nIdle and download available")
     assert not _checker_pass(checker, "Idle and download available\nReady")
+    # line_expect indexes the same non-blank sequence _structural_pass
+    # counts: blank padding must not shift which line carries which terms.
+    assert _checker_pass(checker, "Ready\n\nIdle")
+    assert not _checker_pass(checker, "\nIdle\nReady")
 
 
 def test_line_counts_ignore_blank_padding():
@@ -420,3 +424,35 @@ def test_json_shape_still_parses_fenced_payload():
     # An unsupported fence label is not the requested "JSON only" markup.
     assert not _checker_pass(checker, '```text\n{"a": "x"}\n```')
     assert not _checker_pass(checker, '```python\n{"a": "x"}\n```')
+
+
+def test_manifest_images_cannot_escape_the_media_root(tmp_path):
+    # A caller-supplied manifest must not aim the engine at arbitrary local
+    # files: references are relative to the media root and must resolve
+    # inside it.
+    import pytest
+
+    from scripts.bench_qwen36_media_prefix import _conversation_messages
+
+    media_root = tmp_path / "repo"
+    (media_root / "img").mkdir(parents=True)
+    image = media_root / "img" / "shot.png"
+    image.write_bytes(b"png")
+    conversation = {
+        "images": ["img/shot.png"],
+        "turns": [{"prompt": "p"}],
+    }
+    messages = _conversation_messages(conversation, media_root, 0, [])
+    assert messages[0]["content"][1]["image_url"]["url"] == str(image)
+    with pytest.raises(ValueError, match="relative"):
+        _conversation_messages(
+            {**conversation, "images": [str(image)]}, media_root, 0, []
+        )
+    with pytest.raises(ValueError, match="escapes"):
+        _conversation_messages(
+            {**conversation, "images": ["../outside.png"]}, media_root, 0, []
+        )
+    with pytest.raises(FileNotFoundError):
+        _conversation_messages(
+            {**conversation, "images": ["img/absent.png"]}, media_root, 0, []
+        )

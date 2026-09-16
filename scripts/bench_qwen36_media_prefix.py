@@ -100,10 +100,23 @@ def _conversation_messages(
     into the resumed suffix (whose forward intentionally carries
     ``pixel_values=None``).
     """
-    image_paths = [(repo_root / image).resolve() for image in conversation["images"]]
-    for image_path in image_paths:
-        if not image_path.exists():
-            raise FileNotFoundError(f"manifest image missing: {image_path}")
+    # A caller-supplied manifest must not aim the engine at arbitrary local
+    # files: image references are relative to the manifest's media root and
+    # their resolved location must stay inside it (absolute paths and
+    # ``..`` escapes are rejected, and symlinks are resolved before the
+    # containment check so they cannot point out either).
+    media_root = repo_root.resolve()
+    image_paths = []
+    for image in conversation["images"]:
+        supplied = Path(image)
+        if supplied.is_absolute():
+            raise ValueError(f"manifest image must be a relative path: {image}")
+        resolved = (repo_root / supplied).resolve()
+        if resolved != media_root and media_root not in resolved.parents:
+            raise ValueError(f"manifest image escapes the media root: {image}")
+        if not resolved.exists():
+            raise FileNotFoundError(f"manifest image missing: {resolved}")
+        image_paths.append(resolved)
     messages: list[dict[str, Any]] = []
     for index in range(turn_index + 1):
         content: list[dict[str, Any]] = [
@@ -249,7 +262,9 @@ def _checker_pass(checker: dict[str, Any], text: str) -> bool:
         # one-line-per-bar shape too.
         line_expect = checker.get("line_expect", [])
         if line_expect:
-            lines = text.splitlines()
+            # The same non-blank-line sequence _structural_pass counts:
+            # blank padding must not shift which line carries which terms.
+            lines = [line for line in text.splitlines() if line.strip()]
             for line_index, alternative in enumerate(line_expect):
                 terms = alternative if isinstance(alternative, list) else [alternative]
                 line_tokens = (
