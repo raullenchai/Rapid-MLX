@@ -501,6 +501,60 @@ def _run_uvicorn(app, args, log_level: str) -> None:
         raise
 
 
+def _hard_exit_after_serve() -> None:
+    """Terminate the ``serve`` process without interpreter finalization.
+
+    Issue #3495: on macOS the graceful-shutdown path that lets
+    ``uvicorn.run`` return flows straight into CPython interpreter
+    finalization (``Py_FinalizeEx``) — module teardown, ``atexit``, GC of
+    every object. Native worker threads spawned by our native deps (the
+    rayon pool inside ``tokenizers``/``llguidance``, MLX/Metal internal
+    threads) do NOT participate in that teardown: on some macOS dyld
+    versions the TLS finalization pass then dereferences pool state the
+    interpreter has already freed, and the process dies with SIGSEGV
+    *after* a fully clean shutdown ("Python quit unexpectedly" crash
+    dialog on every Ctrl+C). Newer uvicorn (>=0.34) avoids the exposed
+    path for SIGTERM by re-raising the signal after graceful shutdown
+    (die-by-signal skips interpreter finalization entirely), but the
+    Ctrl+C path still returns through here, and older uvicorns return
+    through here for both signals.
+
+    ``os._exit`` skips interpreter finalization altogether: the kernel
+    tears down every thread atomically, so the race window cannot open.
+    Everything the graceful shutdown needs to persist (prefix cache,
+    memory cache, telemetry session_end) is already flushed by the
+    FastAPI lifespan shutdown handler BEFORE uvicorn.run returns; the
+    only atexit work skipped is best-effort (the opt-in RAPID_PYSAMPLE
+    report's final snapshot, the tempfile-reap safety net whose entries
+    are normally unlinked on context exit).
+
+    Only the SUCCESS path calls this. Bind failures and other
+    ``SystemExit``/exception paths keep their normal propagation so
+    supervisors can detect a failed boot.
+
+    In-process test harnesses (pytest suites drive ``serve_command``
+    through to ``uvicorn.run`` with everything stubbed) must NOT
+    terminate the pytest process here, so the exit is skipped when
+    ``PYTEST_CURRENT_TEST`` is set — the same guard
+    ``service/postprocessor.py`` uses. The explicit per-suite stubs of
+    this helper remain the primary defense; this is the safety net for
+    the suite that forgets one (an ``os._exit(0)`` mid-suite would end
+    the run with a green exit code while silently skipping every test
+    after it).
+    """
+    if os.environ.get("PYTEST_CURRENT_TEST"):
+        return
+    try:
+        sys.stdout.flush()
+    except Exception:  # pragma: no cover — stderr may already be gone
+        pass
+    try:
+        sys.stderr.flush()
+    except Exception:  # pragma: no cover
+        pass
+    os._exit(0)
+
+
 def _serve_startup_message(args) -> str:
     """Render the pre-bind status without importing the inference stack."""
 
@@ -916,6 +970,7 @@ def _serve_audio_mode(args, entry) -> None:
     sys.stdout.flush()
 
     _run_uvicorn(app, args, uvicorn_log_level)
+    _hard_exit_after_serve()
 
 
 def _load_embedding_model_or_exit(args, load_fn) -> None:
@@ -5599,6 +5654,7 @@ def serve_command(args):
         _cfg.bind_listen_fd = listen_fd
 
     _run_uvicorn(app, args, uvicorn_log_level)
+    _hard_exit_after_serve()
 
 
 def _run_tier_submit_flow(args) -> int:
