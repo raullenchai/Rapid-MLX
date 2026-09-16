@@ -245,3 +245,52 @@ def test_negation_window_catches_split_negation():
     # Four tokens away is outside the window: no longer a negation of the
     # matched phrase ("not X Y Z ready" reads as a new clause).
     assert _checker_pass(checker, "not installed yet, though ready")
+
+
+def _pass(turn, ttft_s, cached_tokens):
+    return {"turn": turn, "ttft_s": ttft_s, "cached_tokens": cached_tokens}
+
+
+def test_resume_gate_counts_expected_samples_per_pass():
+    from scripts.bench_qwen36_media_prefix import _resume_gate_samples
+
+    # Turn 1 is the documented store turn; turns 2+ are resume slots.
+    # Gating is per measured sample: a slot whose cached_tokens median is
+    # positive because only one of two passes resumed is still a miss for
+    # the cold pass (with slots+medians this would falsely count as
+    # covered).
+    auto_passes = [
+        [_pass(0, 1.0, 0), _pass(1, 1.0, 0), _pass(2, 0.5, 64), _pass(3, 0.4, 64)],
+        [_pass(0, 1.0, 0), _pass(1, 1.0, 0), _pass(2, 0.9, 0), _pass(3, 0.4, 64)],
+    ]
+    expected, resumed, misses = _resume_gate_samples(auto_passes)
+    assert (expected, resumed) == (4, 3)
+    assert misses == [{"pass": 1, "turn": 2}]
+
+
+def test_resume_regressions_compare_each_resumed_sample_to_baseline():
+    from scripts.bench_qwen36_media_prefix import _resume_regressions
+
+    # Baseline median TTFT per turn (from the off phase).
+    baseline = {2: 0.5, 3: 0.5}
+    auto_passes = [
+        [_pass(1, 9.9, 0), _pass(2, 0.54, 64), _pass(3, 0.9, 64)],
+        [_pass(1, 9.9, 0), _pass(2, 0.46, 64), _pass(3, 0.2, 64)],
+    ]
+    flagged = _resume_regressions(auto_passes, baseline, margin=1.15)
+    # Pass 0's turn-3 sample (0.9s) is 1.8x the baseline median; the same
+    # slot's other pass (0.2s) is fine — per-sample gating flags the slow
+    # one instead of letting the median hide it. Turn-2 samples straddle
+    # the margin without crossing it. Store-turn samples (turn 1) never
+    # count regardless of latency, and cold samples are never compared.
+    assert flagged == [
+        {
+            "pass": 0,
+            "turn": 3,
+            "ttft_s": 0.9,
+            "baseline_median_ttft_s": 0.5,
+            "cached_tokens": 64,
+        }
+    ]
+    # A resume slower than a missing baseline entry cannot be judged.
+    assert _resume_regressions([[_pass(7, 9.9, 64)]], {}, margin=1.15) == []

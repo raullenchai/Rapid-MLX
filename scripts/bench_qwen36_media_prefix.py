@@ -26,12 +26,13 @@ The primary deterministic gates are:
   the baseline does neither, else the A/B compares off against off;
 * **resume coverage** — the turns that are supposed to resume (turn 2+;
   turn 1 is the documented store turn) must actually resume in at least
-  75% of their slots (exit 4 otherwise), with every miss reported;
-* **no resume-turn regression** — every turn that actually served a media
-  resume (auto ``cached_tokens > 0``) must not exceed the baseline median
-  TTFT by more than a 15% stall margin (exit 3 otherwise). Turns that
-  store (or miss) pay the documented bounded snapshot cost and are
-  excluded.
+  75% of their measured samples (exit 4 otherwise), with every miss
+  reported;
+* **no resume-turn regression** — every measured sample that actually
+  served a media resume (auto ``cached_tokens > 0``) must not exceed the
+  baseline median TTFT for its (conversation, turn) by more than a 15%
+  stall margin (exit 3 otherwise). Samples that store (or miss) pay the
+  documented bounded snapshot cost and are excluded.
 
 Scope: this harness gates determinism, semantics, engagement, and
 warm-turn latency on the qualified model. The remaining design-note gates
@@ -365,6 +366,73 @@ def _median(samples: list[dict[str, Any]], key: str) -> float:
     return statistics.median(float(sample[key]) for sample in samples)
 
 
+WARM_REGRESSION_MARGIN = 1.15
+RESUME_COVERAGE_FLOOR = 0.75
+
+
+def _resume_gate_samples(
+    auto_passes: list[list[dict[str, Any]]],
+) -> tuple[int, int, list[dict[str, Any]]]:
+    """Per-sample resume accounting for one conversation.
+
+    Turn 1 is the documented store turn (turn-0 prompts fall below the
+    boundary min-tokens floor, so turn 1 snapshots instead of resuming);
+    turns 2+ are the expected resume slots. Returns
+    ``(expected_samples, resumed_samples, misses)`` where each miss names
+    the measured pass and turn whose ``cached_tokens`` was 0. Gating per
+    measured sample — not per-slot median — so a slot where only one pass
+    resumed cannot hide behind the other pass's cold miss.
+    """
+    expected = 0
+    resumed = 0
+    misses: list[dict[str, Any]] = []
+    for pass_index, passes in enumerate(auto_passes):
+        for sample in passes:
+            if sample["turn"] < 2:
+                continue
+            expected += 1
+            if int(sample["cached_tokens"]) > 0:
+                resumed += 1
+            else:
+                misses.append({"pass": pass_index, "turn": sample["turn"]})
+    return expected, resumed, misses
+
+
+def _resume_regressions(
+    auto_passes: list[list[dict[str, Any]]],
+    baseline_median_by_turn: dict[int, float],
+    margin: float = WARM_REGRESSION_MARGIN,
+) -> list[dict[str, Any]]:
+    """Per-sample warm-regression check for one conversation.
+
+    Every measured sample that actually resumed (``cached_tokens > 0``) is
+    compared against the baseline median TTFT for its turn; medians never
+    mix cold and resumed executions. Turn 1 (the store turn) is excluded —
+    its bounded snapshot cost is documented in the design note.
+    """
+    flagged: list[dict[str, Any]] = []
+    for pass_index, passes in enumerate(auto_passes):
+        for sample in passes:
+            turn = sample["turn"]
+            if turn < 1 or int(sample["cached_tokens"]) <= 0:
+                continue
+            baseline = baseline_median_by_turn.get(turn)
+            if baseline is None or baseline <= 0:
+                continue
+            ttft = float(sample["ttft_s"])
+            if ttft / baseline > margin:
+                flagged.append(
+                    {
+                        "pass": pass_index,
+                        "turn": turn,
+                        "ttft_s": ttft,
+                        "baseline_median_ttft_s": baseline,
+                        "cached_tokens": int(sample["cached_tokens"]),
+                    }
+                )
+    return flagged
+
+
 async def _run_turn(
     engine: Any,
     conversation: dict[str, Any],
@@ -687,40 +755,31 @@ async def _main() -> None:
                 )
             result["summary_change_pct"][conversation_id] = per_turn
 
-        # Hard gate: a warm turn (the pure resume turn) must not be slower
-        # than the cold baseline by more than the stall margin. The storing
-        # turn's bounded snapshot cost is documented in the design note and
-        # deliberately excluded here.
-        warm_regression_margin = 1.15
+        # Hard gate: a resume sample must not be slower than the cold
+        # baseline by more than the stall margin. Gated per measured
+        # sample — not per-slot median — so a slot where one pass resumed
+        # slowly and another resumed fast cannot average its way under the
+        # margin, and a slot whose cached_tokens median is positive only
+        # because a minority of passes resumed cannot drag cold samples
+        # into the comparison. Each resumed sample (``cached_tokens > 0``)
+        # is compared against the baseline (off-phase) median TTFT for its
+        # (conversation, turn). The storing turn's bounded snapshot cost is
+        # documented in the design note and deliberately excluded here.
         regressions = {}
-        for conversation_id, per_turn in result["summary_change_pct"].items():
-            auto_summary = result["phases"]["auto"]["summary"][conversation_id]
-            cached = auto_summary["median_cached_tokens"]
-            flagged = []
-            for turn_index in range(1, len(per_turn)):
-                # Gate exactly the turns that actually resumed (the media
-                # resume stamps ``cached_tokens`` with the boundary length):
-                # a resume must never be slower than the cold baseline by
-                # more than the stall margin. Turns that stored (or missed)
-                # pay the documented bounded snapshot cost instead and are
-                # excluded here.
-                if turn_index >= len(cached) or cached[turn_index] <= 0:
-                    continue
-                if per_turn[turn_index]["ttft"] / 100.0 > warm_regression_margin - 1.0:
-                    flagged.append(
-                        {
-                            "turn": turn_index,
-                            "ttft_pct": per_turn[turn_index]["ttft"],
-                            "cached_tokens": cached[turn_index],
-                        }
-                    )
+        for conversation_id, auto_passes in result["phases"]["auto"][
+            "per_conversation"
+        ].items():
+            off_passes = result["phases"]["off"]["per_conversation"][conversation_id]
+            baseline_median_by_turn = {
+                turn_index: _median(list(passes), "ttft_s")
+                for turn_index, passes in enumerate(zip(*off_passes))
+            }
+            flagged = _resume_regressions(
+                auto_passes, baseline_median_by_turn, WARM_REGRESSION_MARGIN
+            )
             if flagged:
                 regressions[conversation_id] = flagged
-        result["warm_turn_regressions"] = {
-            conversation_id: turns
-            for conversation_id, turns in regressions.items()
-            if turns
-        }
+        result["warm_turn_regressions"] = regressions
 
         # Hard gate: the turns that are SUPPOSED to resume must resume.
         # The engagement gate demands only one aggregate hit, so a feature
@@ -729,30 +788,31 @@ async def _main() -> None:
         # store turn (turn-0 prompts fall below the boundary min-tokens
         # floor, so turn 1 is where the snapshot is taken — it pays the
         # bounded snapshot cost and does not resume); the expected resume
-        # slots are the follow-up turns from turn 2 on. Each such slot
-        # whose median cached_tokens is 0 across all measured passes is an
-        # unexpected miss and is reported; below the declared minimum hit
+        # slots are the follow-up turns from turn 2 on. Gated per measured
+        # sample — a slot whose cached_tokens median is positive because
+        # only one of two passes resumed is still a miss for the cold
+        # pass. Every miss is reported; below the declared minimum hit
         # rate the run fails.
-        expected_slots = 0
-        resumed_slots = 0
-        resume_misses: dict[str, list[int]] = {}
-        for conversation_id, summary in result["phases"]["auto"]["summary"].items():
-            cached = summary["median_cached_tokens"]
-            slot_turns = list(range(2, len(cached)))
-            expected_slots += len(slot_turns)
-            misses = [i for i in slot_turns if cached[i] <= 0]
-            resumed_slots += len(slot_turns) - len(misses)
+        expected_samples = 0
+        resumed_samples = 0
+        resume_misses: dict[str, list[dict[str, Any]]] = {}
+        for conversation_id, auto_passes in result["phases"]["auto"][
+            "per_conversation"
+        ].items():
+            slot_expected, slot_resumed, misses = _resume_gate_samples(auto_passes)
+            expected_samples += slot_expected
+            resumed_samples += slot_resumed
             if misses:
                 resume_misses[conversation_id] = misses
         result["resume_misses"] = resume_misses
         result["resume_coverage"] = (
-            resumed_slots / expected_slots if expected_slots else 0.0
+            resumed_samples / expected_samples if expected_samples else 0.0
         )
-        # Declared minimum hit rate: 75% of expected resume slots. The
-        # qualified run measured 85% (17/20 turn-2 slots; the misses are
+        # Declared minimum hit rate: 75% of expected resume samples. The
+        # qualified run measured 85% (17/20 turn-2 samples; the misses are
         # strict-prefix template mismatches reported as clean misses).
         result["resume_coverage_ok"] = (
-            expected_slots > 0 and result["resume_coverage"] >= 0.75
+            expected_samples > 0 and result["resume_coverage"] >= RESUME_COVERAGE_FLOOR
         )
     finally:
         pass

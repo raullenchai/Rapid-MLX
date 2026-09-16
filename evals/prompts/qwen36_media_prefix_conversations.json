@@ -206,8 +206,10 @@
             "type": "terms",
             "required": [
               "fake-alias",
-              "starting"
+              "starting",
+              "spinning up rapid-mlx"
             ],
+            "min_lines": 3,
             "max_lines": 3,
             "max_words": 12
           }
@@ -459,7 +461,8 @@
           "checker": {
             "type": "terms",
             "required": [
-              "next"
+              "next",
+              "bottom right"
             ],
             "max_words": 6
           }
@@ -1254,7 +1257,13 @@
           "checker": {
             "type": "terms",
             "required": [
-              "pick a model"
+              "pick a model",
+              "dark",
+              "skip",
+              "next",
+              "dots",
+              "checkmark",
+              "button"
             ],
             "min_words": 200
           }
@@ -1347,7 +1356,10 @@
             "type": "terms",
             "required": [
               "new chat",
-              "start chatting"
+              "start chatting",
+              "search chats",
+              "empty",
+              "rapid-mlx desktop"
             ],
             "min_words": 200
           }
@@ -1436,7 +1448,9 @@
           "checker": {
             "type": "terms",
             "required": [
-              "ready"
+              "ready",
+              "qwen3.6-27b",
+              "stop"
             ],
             "min_words": 200
           }
