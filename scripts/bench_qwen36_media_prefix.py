@@ -267,17 +267,27 @@ def _checker_pass(checker: dict[str, Any], text: str) -> bool:
         # "Output JSON only": the stripped response must parse as one JSON
         # object — searching for the first ``{`` would let prose wrapped
         # around an all-null payload pass ("JSON only" with entirely wrong
-        # field values). A fenced response passes only when the fence
-        # wraps exactly one JSON object and nothing else: the qualified
-        # model deterministically formats its JSON-only answers as a
-        # single fenced code block, so the fence is that model's markup
-        # for "JSON only", not prose — prose outside the fence still
-        # fails the whole-payload parse.
+        # field values). A fenced response passes only when the fence is
+        # well-formed — a supported label on the opening fence, a matching
+        # terminal fence, and nothing but the JSON object between them:
+        # the qualified model deterministically formats its JSON-only
+        # answers as a single fenced code block, so the fence is that
+        # model's markup for "JSON only", not prose — prose outside the
+        # fence still fails the whole-payload parse, and an unclosed or
+        # mislabeled fence is malformed output, not markup.
         stripped = text.strip()
         if stripped.startswith("```"):
-            stripped = stripped.split("\n", 1)[-1]
-            if stripped.endswith("```"):
-                stripped = stripped[:-3]
+            first_newline = stripped.find("\n")
+            if first_newline == -1:
+                return False
+            label = stripped[3:first_newline].strip()
+            if label not in ("", "json"):
+                return False
+            body = stripped[first_newline + 1 :]
+            closing = body.rfind("\n```")
+            if closing == -1 or body[closing + 4 :].strip():
+                return False
+            stripped = body[:closing]
         try:
             payload = json.loads(stripped)
         except (ValueError, json.JSONDecodeError):

@@ -820,9 +820,6 @@
                 "icon"
               ],
               [
-                "stop"
-              ],
-              [
                 "button"
               ],
               [
@@ -1041,9 +1038,6 @@
                 "icon"
               ],
               [
-                "next"
-              ],
-              [
                 "button"
               ],
               [
@@ -1158,9 +1152,6 @@
             "required_any": [
               [
                 "download"
-              ],
-              [
-                "idle"
               ],
               [
                 "button"
@@ -1437,23 +1428,17 @@
                 ],
                 [
                   "checkmark"
-                ],
-                [
-                  "dark"
                 ]
               ],
               [
                 [
-                  "dark"
+                  "dot"
                 ],
                 [
-                  "mode"
+                  "dots"
                 ],
                 [
-                  "light"
-                ],
-                [
-                  "contrast"
+                  "filled"
                 ],
                 [
                   "rounded"
@@ -1463,12 +1448,6 @@
                 ],
                 [
                   "primary"
-                ],
-                [
-                  "dots"
-                ],
-                [
-                  "filled"
                 ]
               ]
             ]
@@ -1525,9 +1504,6 @@
               ],
               [
                 "search"
-              ],
-              [
-                "empty"
               ],
               [
                 "title"
@@ -1707,9 +1683,6 @@
                 "white"
               ],
               [
-                "dark"
-              ],
-              [
                 "light"
               ],
               [
@@ -1835,9 +1808,6 @@
                 "orange"
               ],
               [
-                "idle"
-              ],
-              [
                 "icon"
               ],
               [
@@ -1931,12 +1901,6 @@
             "required_any": [
               [
                 "spinning"
-              ],
-              [
-                "starting"
-              ],
-              [
-                "ready"
               ],
               [
                 "dot"

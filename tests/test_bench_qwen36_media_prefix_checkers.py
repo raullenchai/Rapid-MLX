@@ -391,10 +391,17 @@ def test_any_required_any_groups_require_every_answer():
 
 
 def test_json_shape_still_parses_fenced_payload():
-    # The JSON turns ask for a fenced code block, so a fence wrapping
-    # exactly one JSON object is the requested markup, not prose.
+    # The JSON turns ask for a fenced code block, so a well-formed fence
+    # wrapping exactly one JSON object is the requested markup, not prose.
     checker = {"type": "json_shape", "keys": ["a"], "required": ["x"]}
     assert _checker_pass(checker, '```json\n{"a": "x"}\n```')
+    assert _checker_pass(checker, '```\n{"a": "x"}\n```')
     # Prose outside the fence still fails the whole-payload parse.
     assert not _checker_pass(checker, 'Here you go:\n```json\n{"a": "x"}\n```')
     assert not _checker_pass(checker, '```json\n{"a": "x"}\n```\nHope that helps!')
+    # An unclosed fence is malformed output, not markup.
+    assert not _checker_pass(checker, '```json\n{"a": "x"}')
+    assert not _checker_pass(checker, "```json")
+    # An unsupported fence label is not the requested "JSON only" markup.
+    assert not _checker_pass(checker, '```text\n{"a": "x"}\n```')
+    assert not _checker_pass(checker, '```python\n{"a": "x"}\n```')
