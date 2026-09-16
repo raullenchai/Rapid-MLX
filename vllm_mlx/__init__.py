@@ -44,6 +44,12 @@ import rapid_mlx as _rapid_mlx
 
 __version__ = _rapid_mlx.__version__
 
+# ``from vllm_mlx import *`` must keep yielding the same engine names as
+# before the rename (the pre-rename package defined the identical
+# ``__all__``). Star-import resolves each name through ``__getattr__``,
+# triggering the same lazy loads the old package performed.
+__all__ = list(_rapid_mlx.__all__)
+
 _DEPRECATION_MESSAGE = (
     "The 'vllm_mlx' package has been renamed to 'rapid_mlx'; this import "
     "shim is deprecated and will be removed in a future release. "
@@ -91,7 +97,11 @@ class _RapidMlxModuleAliasLoader:
         #     ``get_code`` recurse into itself.
         # ``__name__``/``__file__`` survive on their own (already set on
         # the module); ``__spec__``/``__loader__``/``__package__`` are
-        # unconditionally rewritten and must be restored here.
+        # unconditionally rewritten and must be restored here. A concurrent
+        # ``reload()`` racing the brief clobber window (between
+        # ``module_from_spec`` and this hook) is theoretically observable
+        # but requires timing the first-ever alias import of that module;
+        # the restore makes the steady state correct.
         original = self._original_spec
         if original is not None:
             module.__spec__ = original

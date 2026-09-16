@@ -66,6 +66,25 @@ def test_shim_forwards_attributes_to_rapid_mlx(monkeypatch):
         _ = shim.definitely_not_a_real_attribute_12345
 
 
+@pytest.mark.requires_mlx
+def test_shim_star_import_matches_pre_rename_contract(monkeypatch):
+    """``from vllm_mlx import *`` yields the pre-rename engine names.
+
+    Without the shim's own ``__all__``, star-import would fall back to the
+    module dict and leak the shim's private imports (``sys``,
+    ``warnings``, ...) instead of the engine names the old package
+    exported.
+    """
+    shim = _fresh_import_vllm_mlx(monkeypatch)
+    assert shim.__all__ == list(rapid_mlx.__all__)
+    star_names: dict = {}
+    exec("from vllm_mlx import *", star_names)
+    for name in rapid_mlx.__all__:
+        assert name in star_names, f"star import lost {name!r}"
+    for leaked in ("sys", "warnings", "importlib", "importlib_util"):
+        assert leaked not in star_names, f"star import leaked {leaked!r}"
+
+
 def test_shim_submodule_aliases_same_module_object():
     # Top-level submodule (chip_tier is stdlib-only — safe on no-MLX CI).
     legacy = importlib.import_module("vllm_mlx.chip_tier")
