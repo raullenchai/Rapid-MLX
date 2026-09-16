@@ -483,8 +483,8 @@ async def _main() -> None:
     parser.add_argument("--summary-only", action="store_true")
     args = parser.parse_args()
 
-    from vllm_mlx.engine.batched import BatchedEngine
-    from vllm_mlx.scheduler import SchedulerConfig
+    from rapid_mlx.engine.batched import BatchedEngine
+    from rapid_mlx.scheduler import SchedulerConfig
 
     manifest = json.loads(args.manifest.read_text())
     # Image paths resolve against <manifest-dir>/<images_root> so a manifest
