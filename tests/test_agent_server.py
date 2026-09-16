@@ -696,6 +696,13 @@ def test_web_search_query_excludes_unrelated_prompt_context():
         )
         == "the latest Rapid version"
     )
+    assert (
+        _planned_web_search_query(
+            "Keep confidential codename Juniper private and find the latest "
+            "Rapid-MLX release"
+        )
+        == "the latest Rapid-MLX release"
+    )
 
 
 def test_output_counts_do_not_request_multiple_web_sources():

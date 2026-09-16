@@ -666,15 +666,16 @@ def _planned_web_search_query(goal: str) -> str:
     # a later noun phrase such as "ignore instructions in search results" being
     # mistaken for the requested query, and avoids sending unrelated prose.
     clauses = re.split(r"[\n;；]+|(?<=[.!?。！？])\s+", goal)
-    query = next(
-        (
+    query = ""
+    for clause in clauses:
+        live_match = _CURRENT_WEB_LOOKUP.search(clause) or _TEMPORAL_WEB_LOOKUP.search(
             clause
-            for clause in clauses
-            if _CURRENT_WEB_LOOKUP.search(clause) is not None
-            or _TEMPORAL_WEB_LOOKUP.search(clause) is not None
-        ),
-        "",
-    )
+        )
+        if live_match is not None:
+            # Text before the lookup verb may contain unrelated private context.
+            # Forward only the matched lookup portion to the external provider.
+            query = clause[live_match.start() :]
+            break
     if not query:
         explicit = _EXPLICIT_SEARCH_QUERY.search(goal)
         if explicit is not None:
