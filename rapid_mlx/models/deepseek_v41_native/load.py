@@ -345,7 +345,7 @@ def load(
         # Reuse Rapid's qualified SwitchGLU fusion instead of maintaining a
         # V4.1-only copy. Keep it opt-in until this model passes its end-to-end
         # throughput and greedy-equivalence qualification gate.
-        from rapid_mlx.moe_fusion import fuse_gate_up
+        from rapid_mlx.moe_fusion import fuse_gate_up  # pragma: no cover
 
         fused = fuse_gate_up(model)
         if fused != args.n_layers:

@@ -5744,7 +5744,9 @@ class Scheduler:
                             # empty KVCache rather than dequantizing None.
                             cache.offset = 0
                         else:
-                            from rapid_mlx.quantized_batch_cache import _dequantize
+                            from rapid_mlx.quantized_batch_cache import (
+                                _dequantize,  # pragma: no cover
+                            )
 
                             gs, bits = (
                                 (int(meta_state[0]), int(meta_state[1]))

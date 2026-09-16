@@ -18,3 +18,9 @@ omit =
     # Exact third-party numerical core; Rapid-owned adapter remains covered.
     rapid_mlx/image/bonsai_runtime/_vendor/*
     rapid_mlx/image/sd35_runtime/_vendor/*
+    # Test-file mirrors under the package: ``rapid_mlx/_integration_tests``
+    # is a symlink farm pointing at ``tests/integrations/``. They are test
+    # code — CI executes them via tests/integrations/, not through the
+    # package path — so changed-line coverage gates production code only.
+    rapid_mlx/_integration_tests/*
+    tests/integrations/*

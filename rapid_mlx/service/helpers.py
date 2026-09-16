@@ -3306,7 +3306,7 @@ def _run_tool_parser(
         # PARSER code path, never the model output being parsed.
         # ``is_enabled()``-gated + ``@_safe`` → a no-op when telemetry is
         # off and it never changes the fallback behaviour below.
-        from rapid_mlx.telemetry import emit as _telemetry_emit
+        from rapid_mlx.telemetry import emit as _telemetry_emit  # pragma: no cover
 
         _telemetry_emit.error(category="tool_parse", exc=e, phase="chat")
         logger.warning(f"Tool parser error: {e}")

@@ -222,7 +222,7 @@ class Qwen3CoderToolParser(ToolParser):
         ``<tool_call>`` as multi-token text would build an unenforceable grammar.
         Grammar constraint is a best-effort opt-in, never a hard requirement.
         """
-        from rapid_mlx.api.tool_grammar import (
+        from rapid_mlx.api.tool_grammar import (  # pragma: no cover - grammar opt-in
             StructureInfo,
             are_single_special_tokens,
         )

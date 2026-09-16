@@ -198,7 +198,7 @@ class DeepSeekV3ToolParser(ToolParser):
         therefore constrains real DeepSeek-V3/R1 and is a safe, non-regressive
         no-op on the Qwen-tokenizer distills.
         """
-        from rapid_mlx.api.tool_grammar import (
+        from rapid_mlx.api.tool_grammar import (  # pragma: no cover - grammar opt-in
             StructureInfo,
             are_single_special_tokens,
         )

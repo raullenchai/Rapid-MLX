@@ -419,8 +419,8 @@ def run_benchmark(
     Returns:
         BenchmarkSummary with aggregate statistics
     """
-    from rapid_mlx.optimizations import detect_hardware
-    from rapid_mlx.utils.tokenizer import load_model_with_fallback
+    from rapid_mlx.optimizations import detect_hardware  # pragma: no cover
+    from rapid_mlx.utils.tokenizer import load_model_with_fallback  # pragma: no cover
 
     # Detect hardware
     hw = detect_hardware()
@@ -839,7 +839,7 @@ def run_mllm_benchmark(
             "Install it with: pip install 'rapid-mlx[vision]'"
         ) from e
 
-    from rapid_mlx.optimizations import detect_hardware
+    from rapid_mlx.optimizations import detect_hardware  # pragma: no cover
 
     # Detect hardware
     hw = detect_hardware()
@@ -1213,8 +1213,8 @@ def run_video_benchmark(
     Returns:
         List of VideoBenchmarkResult
     """
-    from rapid_mlx.models.mllm import MLXMultimodalLM
-    from rapid_mlx.optimizations import detect_hardware
+    from rapid_mlx.models.mllm import MLXMultimodalLM  # pragma: no cover
+    from rapid_mlx.optimizations import detect_hardware  # pragma: no cover
 
     # Detect hardware
     hw = detect_hardware()

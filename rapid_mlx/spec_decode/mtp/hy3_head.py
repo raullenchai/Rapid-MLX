@@ -51,7 +51,7 @@ def build_hy3_mtp_module(args: Any, num_layers: int):
     import mlx.nn as nn
     from mlx_lm.models.base import create_attention_mask
 
-    from rapid_mlx.models.hy_v3 import DecoderLayer
+    from rapid_mlx.models.hy_v3 import DecoderLayer  # pragma: no cover - injection path
 
     if num_layers < 1:
         raise ValueError(

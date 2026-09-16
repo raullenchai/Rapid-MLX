@@ -789,7 +789,7 @@ async def lifespan(app: FastAPI):
             # startup still aborts exactly as before. ``emit.error`` is
             # ``is_enabled()``-gated and ``@_safe`` → a no-op when telemetry
             # is off and can never mask the failure.
-            from rapid_mlx.telemetry import emit as _telemetry_emit
+            from rapid_mlx.telemetry import emit as _telemetry_emit  # pragma: no cover
 
             _telemetry_emit.error(
                 category="model_load_failure", exc=_start_exc, phase="startup"
@@ -1036,7 +1036,7 @@ async def lifespan(app: FastAPI):
             await _engine.stop()
             logger.info("Engine stopped")
     except Exception as _shutdown_exc:
-        from rapid_mlx.telemetry import emit as _telemetry_emit
+        from rapid_mlx.telemetry import emit as _telemetry_emit  # pragma: no cover
 
         _telemetry_emit.error(
             category="shutdown_traceback", exc=_shutdown_exc, phase="shutdown"

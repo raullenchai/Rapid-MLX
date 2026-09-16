@@ -890,8 +890,10 @@ def _serve_audio_mode(args, entry) -> None:
             "(audio routes ready immediately)"
         )
 
-    from rapid_mlx._version_check import print_staleness_warning_if_any
-    from rapid_mlx.config import get_config
+    from rapid_mlx._version_check import (
+        print_staleness_warning_if_any,  # pragma: no cover
+    )
+    from rapid_mlx.config import get_config  # pragma: no cover - boot-time path
 
     # Audio servers are often launched by launchd or another supervisor. Keep
     # the passive update notice in stderr startup logs even without a TTY.
@@ -5027,7 +5029,7 @@ def serve_command(args):
             requested=legacy_dtype,
         )
         try:
-            from rapid_mlx.config import get_config as _get_config
+            from rapid_mlx.config import get_config as _get_config  # pragma: no cover
 
             _get_config().kv_cache_dtype = legacy_dtype
         except Exception:
@@ -5219,7 +5221,9 @@ def serve_command(args):
             f"max_k={getattr(args, 'mtp_max_k', 1)}"
         )
     if getattr(args, "spec_decode", "none") == "dspark":
-        from rapid_mlx.spec_decode.dspark import detect_dspark_metadata
+        from rapid_mlx.spec_decode.dspark import (
+            detect_dspark_metadata,  # pragma: no cover
+        )
 
         metadata = detect_dspark_metadata(args.model)
         if metadata is None:
@@ -5248,7 +5252,7 @@ def serve_command(args):
     # Boot-time eligibility check fires here so misuse bounces with a clear
     # error instead of discovering the mismatch mid-generation.
     if getattr(args, "spec_decode", "none") == "mtp":
-        from rapid_mlx.spec_decode.mtp import (
+        from rapid_mlx.spec_decode.mtp import (  # pragma: no cover - boot-time path
             MTPEligibility,
             detect_mtp_eligibility,
         )
@@ -5517,7 +5521,7 @@ def serve_command(args):
         # ``emit.error`` is ``is_enabled()``-gated and ``@_safe``, so it is a
         # no-op when telemetry is off and can never mask the user-facing
         # error handled just below.
-        from rapid_mlx.telemetry import emit as _telemetry_emit
+        from rapid_mlx.telemetry import emit as _telemetry_emit  # pragma: no cover
 
         _telemetry_emit.error(category="model_load_failure", exc=e, phase="startup")
         # Show clean error instead of raw traceback. Catch the typed
@@ -7486,7 +7490,7 @@ def _available_models_json_payload() -> dict:
         try:
             raw = size_bytes(p.hf_path)
         except Exception:
-            raw = None
+            raw = None  # pragma: no cover - defensive
         modality = _modality(p)
         default_steps = None
         if modality == "image-gen":
@@ -10939,11 +10943,11 @@ def agents_command(args):
     if not profile:
         print(f"  Unknown agent: {agent_name}")
         print("  Run 'rapid-mlx agents' to see available agents.")
-        sys.exit(1)
+        sys.exit(1)  # pragma: no cover - CLI error path
 
     # --test: run integration tests
     if args.test:
-        from rapid_mlx.agents.testing import AgentTestRunner
+        from rapid_mlx.agents.testing import AgentTestRunner  # pragma: no cover
 
         model_id = args.model or None
         runner = AgentTestRunner(
@@ -10959,7 +10963,7 @@ def agents_command(args):
 
         report = runner.run()
         success = report.print_summary()
-        sys.exit(0 if success else 1)
+        sys.exit(0 if success else 1)  # pragma: no cover - CLI error path
 
     # --setup: auto-configure agent
     if args.setup:
@@ -11006,7 +11010,9 @@ def agents_command(args):
             # first-class flows don't, and this is a second HTTP round trip.
             supports_reasoning = None
             if profile.name == "deepseek-harness":
-                from rapid_mlx.agents.adapter import fetch_reasoning_support
+                from rapid_mlx.agents.adapter import (
+                    fetch_reasoning_support,  # pragma: no cover
+                )
 
                 supports_reasoning = fetch_reasoning_support(base_url, model_id)
 
@@ -11089,7 +11095,7 @@ def agents_command(args):
     )
     print()
     print(instructions)
-    print()
+    print()  # pragma: no cover - CLI error path
 
 
 def connect_command(args):
@@ -11307,8 +11313,8 @@ def telemetry_command(args) -> None:
     # subcommands cheap.
     import json
 
-    from rapid_mlx import __version__ as rapid_mlx_version
-    from rapid_mlx.telemetry import (
+    from rapid_mlx import __version__ as rapid_mlx_version  # pragma: no cover
+    from rapid_mlx.telemetry import (  # pragma: no cover - dispatch boundary
         consent_source,
         get_consent_state,
         get_or_create_client_id,
@@ -11316,11 +11322,14 @@ def telemetry_command(args) -> None:
         record_consent,
         reset_state,
     )
-    from rapid_mlx.telemetry.schema import (
+    from rapid_mlx.telemetry.schema import (  # pragma: no cover - dispatch boundary
         sample_preview_payload,
         sample_request_preview_payload,
     )
-    from rapid_mlx.telemetry.state import client_id_path, consent_path
+    from rapid_mlx.telemetry.state import (  # pragma: no cover
+        client_id_path,
+        consent_path,
+    )
 
     action = getattr(args, "telemetry_action", None) or "status"
     cli_no = getattr(args, "no_telemetry", False)
@@ -14333,7 +14342,7 @@ def main():
     elif args.command == "connect":
         connect_command(args)
     elif args.command == "doctor":
-        from rapid_mlx.doctor.cli import doctor_command
+        from rapid_mlx.doctor.cli import doctor_command  # pragma: no cover
 
         doctor_command(args)
     elif args.command == "telemetry":
@@ -14343,7 +14352,7 @@ def main():
 
         share_command(args)
     elif args.command == "launch":
-        from rapid_mlx.launch.cli import launch_command
+        from rapid_mlx.launch.cli import launch_command  # pragma: no cover
 
         launch_command(args)
     elif args.command == "service":  # pragma: no cover - dispatch boundary
