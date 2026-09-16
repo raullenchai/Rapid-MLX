@@ -134,7 +134,7 @@ def _conversation_messages(
         resolved = (repo_root / supplied).resolve()
         if resolved != media_root and media_root not in resolved.parents:
             raise ValueError(f"manifest image escapes the media root: {image}")
-        if not resolved.exists():
+        if not resolved.is_file():
             raise FileNotFoundError(f"manifest image missing: {resolved}")
         image_paths.append(resolved)
     messages: list[dict[str, Any]] = []

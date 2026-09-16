@@ -134,10 +134,13 @@ def test_structural_constraints_enforce_prompt_wording():
     assert not _checker_pass(long_ask, filler)
     grounded = filler + "The primary heading asks the user to pick a model."
     assert _checker_pass(long_ask, grounded)
-    # Line/word bounds apply to json_shape and any checkers too.
+    # Line/word bounds apply to json_shape and any checkers too. The
+    # multi-line payload is valid JSON, so only the line bound can reject
+    # it — a malformed payload would pass for the wrong reason.
     assert not _checker_pass(
-        {"type": "json_shape", "keys": ["a"], "max_lines": 1}, '{"a": 1}\nextra'
+        {"type": "json_shape", "keys": ["a"], "max_lines": 1}, '{\n"a": 1\n}'
     )
+    assert _checker_pass({"type": "json_shape", "keys": ["a"]}, '{\n"a": 1\n}')
     assert not _checker_pass({"type": "any", "min_words": 3, "max_lines": 1}, "a\nb\nc")
 
 
