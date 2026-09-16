@@ -137,3 +137,111 @@ def test_structural_constraints_enforce_prompt_wording():
         {"type": "json_shape", "keys": ["a"], "max_lines": 1}, '{"a": 1}\nextra'
     )
     assert not _checker_pass({"type": "any", "min_words": 3, "max_lines": 1}, "a\nb\nc")
+
+
+def test_json_shape_requires_whole_response_to_parse():
+    # Prose wrapped around an all-null payload must not satisfy a
+    # "JSON only" ask: the stripped response itself must parse.
+    checker = {
+        "type": "json_shape",
+        "keys": ["model", "status", "action"],
+        "required": ["qwen3.6-27b", "ready", "stop"],
+    }
+    assert _checker_pass(
+        checker, '{"model": "qwen3.6-27b", "status": "Ready", "action": "Stop"}'
+    )
+    assert not _checker_pass(
+        checker,
+        'qwen3.6 ready stop\n{"model": null, "status": null, "action": null}',
+    )
+    assert not _checker_pass(checker, 'Sure! {"model": "qwen3.6-27b"}')
+    # Fenced JSON still parses.
+    assert _checker_pass(
+        checker,
+        '```json\n{"model": "qwen3.6-27b", "status": "Ready", "action": "Stop"}\n```',
+    )
+
+
+def test_json_shape_field_terms_pin_designated_values():
+    # ``required`` alone accepts wrong values scattered in prose; the
+    # designated fields must carry the values.
+    checker = {
+        "type": "json_shape",
+        "keys": ["model", "status"],
+        "field_terms": {"model": ["qwen3.6-27b"], "status": ["ready"]},
+    }
+    assert _checker_pass(checker, '{"model": "qwen3.6-27b", "status": "Ready"}')
+    assert not _checker_pass(checker, '{"model": null, "status": "Ready"}')
+    assert not _checker_pass(
+        checker, '{"model": "some-other-model", "status": "Ready"}'
+    )
+    assert not _checker_pass(checker, '{"status": "Ready"}')
+
+
+def test_json_shape_list_expect_validates_items_in_order():
+    # Buttons: exactly the three visible labels, in order.
+    buttons = {
+        "type": "json_shape",
+        "keys": ["title", "buttons"],
+        "list_keys": ["buttons"],
+        "list_expect": {
+            "buttons": [["new chat"], ["search chats"], ["start chatting"]]
+        },
+    }
+    assert _checker_pass(
+        buttons,
+        '{"title": "T", "buttons": ["New chat", "Search chats", "Start chatting"]}',
+    )
+    assert not _checker_pass(buttons, '{"title": "T", "buttons": ["garbage"]}')
+    assert not _checker_pass(
+        buttons, '{"title": "T", "buttons": ["New chat", "Search chats"]}'
+    )
+    assert not _checker_pass(
+        buttons,
+        '{"title": "T", "buttons": ["Search chats", "New chat", "Start chatting"]}',
+    )
+
+
+def test_json_shape_list_len_and_bars_in_order():
+    # Two model bars, each with its expected model and status in order.
+    bars = {
+        "type": "json_shape",
+        "keys": ["bars"],
+        "list_keys": ["bars"],
+        "item_keys": {"bars": ["model", "status"]},
+        "list_len": {"bars": 2},
+        "list_expect": {
+            "bars": [
+                {"model": ["qwen3.6-27b"], "status": ["ready"]},
+                {"model": ["fake-alias"], "status": ["idle"]},
+            ]
+        },
+    }
+    good = '{"bars": [{"model": "qwen3.6-27b", "status": "Ready"}, {"model": "fake-alias", "status": "Idle"}]}'
+    assert _checker_pass(bars, good)
+    # Missing the second bar.
+    assert not _checker_pass(
+        bars, '{"bars": [{"model": "qwen3.6-27b", "status": "Ready"}]}'
+    )
+    # Wrong status on the second bar.
+    assert not _checker_pass(
+        bars,
+        '{"bars": [{"model": "qwen3.6-27b", "status": "Ready"}, {"model": "fake-alias", "status": "Starting"}]}',
+    )
+    # Null values fail.
+    assert not _checker_pass(
+        bars,
+        '{"bars": [{"model": null, "status": null}, {"model": null, "status": null}]}',
+    )
+
+
+def test_negation_window_catches_split_negation():
+    # Negation across a clause: "not currently ready" must not satisfy
+    # "ready" (the guard scans the three tokens before the match).
+    checker = {"type": "terms", "required": ["ready"]}
+    assert _checker_pass(checker, "The chip is Ready.")
+    assert not _checker_pass(checker, "The chip is not currently ready.")
+    assert not _checker_pass(checker, "It does not say ready anywhere.")
+    # Four tokens away is outside the window: no longer a negation of the
+    # matched phrase ("not X Y Z ready" reads as a new clause).
+    assert _checker_pass(checker, "not installed yet, though ready")

@@ -727,7 +727,18 @@
               "qwen3.6-27b",
               "ready",
               "stop"
-            ]
+            ],
+            "field_terms": {
+              "model": [
+                "qwen3.6-27b"
+              ],
+              "status": [
+                "ready"
+              ],
+              "action": [
+                "stop"
+              ]
+            }
           }
         },
         {
@@ -816,7 +827,25 @@
             ],
             "required": [
               "rapid-mlx desktop"
-            ]
+            ],
+            "field_terms": {
+              "title": [
+                "rapid-mlx desktop"
+              ]
+            },
+            "list_expect": {
+              "buttons": [
+                [
+                  "new chat"
+                ],
+                [
+                  "search chats"
+                ],
+                [
+                  "start chatting"
+                ]
+              ]
+            }
           }
         },
         {
@@ -915,7 +944,15 @@
             "required": [
               "pick a model",
               "next"
-            ]
+            ],
+            "field_terms": {
+              "heading": [
+                "pick a model"
+              ],
+              "primary_action": [
+                "next"
+              ]
+            }
           }
         },
         {
@@ -1013,7 +1050,30 @@
             },
             "required": [
               "qwen3.6-27b"
-            ]
+            ],
+            "list_expect": {
+              "bars": [
+                {
+                  "model": [
+                    "qwen3.6-27b"
+                  ],
+                  "status": [
+                    "ready"
+                  ]
+                },
+                {
+                  "model": [
+                    "fake-alias"
+                  ],
+                  "status": [
+                    "idle"
+                  ]
+                }
+              ]
+            },
+            "list_len": {
+              "bars": 2
+            }
           }
         },
         {

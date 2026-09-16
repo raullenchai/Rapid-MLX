@@ -24,6 +24,9 @@ The primary deterministic gates are:
 * **engagement** — the candidate phase must actually store boundary
   snapshots and serve warm resumes (``stores > 0`` and ``hits > 0``) while
   the baseline does neither, else the A/B compares off against off;
+* **resume coverage** — the turns that are supposed to resume (turn 2+;
+  turn 1 is the documented store turn) must actually resume in at least
+  75% of their slots (exit 4 otherwise), with every miss reported;
 * **no resume-turn regression** — every turn that actually served a media
   resume (auto ``cached_tokens > 0``) must not exceed the baseline median
   TTFT by more than a 15% stall margin (exit 3 otherwise). Turns that
@@ -170,7 +173,8 @@ def _term_matches(text_tokens: list[str], term: str, *, guard_negation: bool) ->
     Substring matching admits wrong answers ("bright side" for "right",
     "not ready" for "ready"); matching on normalized token sequences fixes
     both — the phrase must appear as a contiguous token run, and with
-    ``guard_negation`` a negator directly before the run does not count.
+    ``guard_negation`` a negator in the three tokens before the run does
+    not count ("not currently ready", "is not the ready state").
     """
     phrase = _tokens(term)
     if not phrase:
@@ -179,8 +183,10 @@ def _term_matches(text_tokens: list[str], term: str, *, guard_negation: bool) ->
     for start in range(len(text_tokens) - width + 1):
         if text_tokens[start : start + width] != phrase:
             continue
-        if guard_negation and start > 0 and text_tokens[start - 1] in _NEGATORS:
-            continue
+        if guard_negation:
+            window = text_tokens[max(0, start - 3) : start]
+            if any(token in _NEGATORS for token in window):
+                continue
         return True
     return False
 
@@ -235,14 +241,17 @@ def _checker_pass(checker: dict[str, Any], text: str) -> bool:
             for term in checker.get("forbidden", [])
         )
     if kind == "json_shape":
+        # "Output JSON only": the stripped response itself must parse as one
+        # JSON object — searching for the first ``{`` would let prose
+        # wrapped around an all-null payload pass ("JSON only" with
+        # entirely wrong field values).
         stripped = text.strip()
         if stripped.startswith("```"):
             stripped = stripped.split("\n", 1)[-1]
             if stripped.endswith("```"):
                 stripped = stripped[:-3]
         try:
-            start = stripped.index("{")
-            payload = json.loads(stripped[start:])
+            payload = json.loads(stripped)
         except (ValueError, json.JSONDecodeError):
             return False
         if not isinstance(payload, dict):
@@ -251,11 +260,19 @@ def _checker_pass(checker: dict[str, Any], text: str) -> bool:
             return False
         # ``list_keys`` must be non-empty lists; ``item_keys`` requires
         # these keys on every item — key presence alone lets any value
-        # qualify. ``required`` terms must appear in the serialized payload.
+        # qualify. ``list_len`` pins exact lengths and ``list_expect``
+        # validates each item's designated values in order (a bars list
+        # missing its second bar, or with null/wrong statuses, fails).
+        # ``field_terms`` pins the value of a designated field (a bare
+        # ``{"model": null, ...}`` no longer satisfies ``required``).
         item_keys = checker.get("item_keys", {})
+        list_len = checker.get("list_len", {})
+        list_expect = checker.get("list_expect", {})
         for key in checker.get("list_keys", []):
             value = payload.get(key)
             if not isinstance(value, list) or not value:
+                return False
+            if key in list_len and len(value) != int(list_len[key]):
                 return False
             # ``item_keys`` applies to object lists (``{"model", "status"}``
             # bars); plain string lists (buttons) only need to be non-empty.
@@ -265,6 +282,43 @@ def _checker_pass(checker: dict[str, Any], text: str) -> bool:
                         item_key in item for item_key in item_keys[key]
                     ):
                         return False
+            if key in list_expect:
+                expected_items = list_expect[key]
+                if len(value) != len(expected_items):
+                    return False
+                for item, expected in zip(value, expected_items):
+                    if isinstance(expected, dict):
+                        if not isinstance(item, dict):
+                            return False
+                        for field, terms in expected.items():
+                            field_tokens = _tokens(str(item.get(field, "")))
+                            if not isinstance(terms, list):
+                                terms = [terms]
+                            if not any(
+                                _term_matches(field_tokens, term, guard_negation=True)
+                                for term in terms
+                            ):
+                                return False
+                    else:
+                        alternatives = (
+                            expected if isinstance(expected, list) else [expected]
+                        )
+                        item_tokens = _tokens(str(item))
+                        if not any(
+                            _term_matches(item_tokens, term, guard_negation=True)
+                            for term in alternatives
+                        ):
+                            return False
+        for key, terms in checker.get("field_terms", {}).items():
+            if key not in payload:
+                return False
+            field_tokens = _tokens(json.dumps(payload.get(key), default=str))
+            if not isinstance(terms, list):
+                terms = [terms]
+            if not all(
+                _term_matches(field_tokens, term, guard_negation=True) for term in terms
+            ):
+                return False
         if not _structural_pass(checker, text):
             return False
         return not any(
@@ -667,6 +721,39 @@ async def _main() -> None:
             for conversation_id, turns in regressions.items()
             if turns
         }
+
+        # Hard gate: the turns that are SUPPOSED to resume must resume.
+        # The engagement gate demands only one aggregate hit, so a feature
+        # that resumed a single lucky turn while every other follow-up
+        # missed silently would still qualify. Turn 1 is the documented
+        # store turn (turn-0 prompts fall below the boundary min-tokens
+        # floor, so turn 1 is where the snapshot is taken — it pays the
+        # bounded snapshot cost and does not resume); the expected resume
+        # slots are the follow-up turns from turn 2 on. Each such slot
+        # whose median cached_tokens is 0 across all measured passes is an
+        # unexpected miss and is reported; below the declared minimum hit
+        # rate the run fails.
+        expected_slots = 0
+        resumed_slots = 0
+        resume_misses: dict[str, list[int]] = {}
+        for conversation_id, summary in result["phases"]["auto"]["summary"].items():
+            cached = summary["median_cached_tokens"]
+            slot_turns = list(range(2, len(cached)))
+            expected_slots += len(slot_turns)
+            misses = [i for i in slot_turns if cached[i] <= 0]
+            resumed_slots += len(slot_turns) - len(misses)
+            if misses:
+                resume_misses[conversation_id] = misses
+        result["resume_misses"] = resume_misses
+        result["resume_coverage"] = (
+            resumed_slots / expected_slots if expected_slots else 0.0
+        )
+        # Declared minimum hit rate: 75% of expected resume slots. The
+        # qualified run measured 85% (17/20 turn-2 slots; the misses are
+        # strict-prefix template mismatches reported as clean misses).
+        result["resume_coverage_ok"] = (
+            expected_slots > 0 and result["resume_coverage"] >= 0.75
+        )
     finally:
         pass
 
@@ -683,6 +770,8 @@ async def _main() -> None:
             "within_phase_deterministic",
             "checkers_pass",
             "media_engaged",
+            "resume_coverage",
+            "resume_misses",
             "warm_turn_regressions",
             "summary_change_pct",
             "phases",
@@ -703,6 +792,8 @@ async def _main() -> None:
         raise SystemExit(1)
     if result.get("warm_turn_regressions"):
         raise SystemExit(3)
+    if not result.get("resume_coverage_ok", False):
+        raise SystemExit(4)
     if not result.get("media_engaged", False):
         raise SystemExit(2)
 

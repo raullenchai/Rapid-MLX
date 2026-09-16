@@ -1651,7 +1651,10 @@ class MLLMBatchGenerator:
                 suffix_ids, cache=cache, pixel_values=None, rope_deltas=rope_delta
             )
         emb = self.model.get_input_embeddings(suffix_ids, pixel_values=None)
-        return self.language_model(
+        # mlx stubs type child modules as ``Any | dict`` — the probe above
+        # already verified ``__call__`` exists.
+        lm_call = cast("Any", self.language_model)
+        return lm_call(
             suffix_ids,
             inputs_embeds=emb.inputs_embeds,
             mask=None,
@@ -1966,8 +1969,12 @@ class MLLMBatchGenerator:
         """Install a boundary delta for the active request's decode."""
         if self._media_mrope_saved is None:
             self._media_mrope_save()
-        self.language_model._position_ids = None
-        self.language_model._rope_deltas = rope_delta
+        # mlx stubs type child modules as ``Any | dict``; the attribute
+        # writes below are the documented contract (sentinel-aware save
+        # above, restore below).
+        lm = cast("Any", self.language_model)
+        lm._position_ids = None
+        lm._rope_deltas = rope_delta
 
     def _media_mrope_restore(self) -> None:
         """Restore the model's prior MRoPE bookkeeping before the next prefill.
@@ -1982,7 +1989,9 @@ class MLLMBatchGenerator:
         if saved is None:
             return
         self._media_mrope_saved = None
-        lm = self.language_model
+        # Same mlx-stub union as ``_media_mrope_install``: the writes below
+        # are the restore half of the documented transaction.
+        lm = cast("Any", self.language_model)
         _, position_ids, _, rope_deltas = saved
         # ``delattr`` (not ``lm.__dict__.pop``): nn.Module subclasses may not
         # keep a plain attribute in the instance ``__dict__``, but type-level
