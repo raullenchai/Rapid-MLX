@@ -751,7 +751,7 @@
       ],
       "turns": [
         {
-          "prompt": "Output a single fenced ```json code block and nothing else. Output JSON only: {\"model\": <model name>, \"status\": <status chip>, \"action\": <rightmost button label>}.",
+          "prompt": "Output JSON only: {\"model\": <model name>, \"status\": <status chip>, \"action\": <rightmost button label>}.",
           "max_tokens": 64,
           "sampling": {
             "temperature": 0.0,
@@ -858,7 +858,7 @@
       ],
       "turns": [
         {
-          "prompt": "Output a single fenced ```json code block and nothing else. Output JSON only: {\"title\": <sidebar title>, \"buttons\": [<visible button labels>]}.",
+          "prompt": "Output JSON only: {\"title\": <sidebar title>, \"buttons\": [<visible button labels>]}.",
           "max_tokens": 96,
           "sampling": {
             "temperature": 0.0,
@@ -981,7 +981,7 @@
       ],
       "turns": [
         {
-          "prompt": "Output a single fenced ```json code block and nothing else. Output JSON only: {\"heading\": <page heading>, \"primary_action\": <bottom-right button label>}.",
+          "prompt": "Output JSON only: {\"heading\": <page heading>, \"primary_action\": <bottom-right button label>}.",
           "max_tokens": 64,
           "sampling": {
             "temperature": 0.0,
@@ -1084,7 +1084,7 @@
       ],
       "turns": [
         {
-          "prompt": "Output a single fenced ```json code block and nothing else. Output JSON only: {\"bars\": [{\"model\": <first bar model>, \"status\": <first bar status>}, {\"model\": <second bar model>, \"status\": <second bar status>}]}.",
+          "prompt": "Output JSON only: {\"bars\": [{\"model\": <first bar model>, \"status\": <first bar status>}, {\"model\": <second bar model>, \"status\": <second bar status>}]}.",
           "max_tokens": 96,
           "sampling": {
             "temperature": 0.0,
@@ -1304,7 +1304,13 @@
                   "dots"
                 ],
                 [
+                  "dot"
+                ],
+                [
                   "indicator"
+                ],
+                [
+                  "indicators"
                 ]
               ]
             ]
@@ -1399,12 +1405,12 @@
                 ],
                 [
                   "next"
-                ],
-                [
-                  "dark"
                 ]
               ],
               [
+                [
+                  "dark"
+                ],
                 [
                   "mode"
                 ],
@@ -1607,7 +1613,7 @@
                   "black"
                 ],
                 [
-                  "edge"
+                  "edges"
                 ]
               ]
             ]
@@ -2002,6 +2008,9 @@
               [
                 [
                   "download"
+                ],
+                [
+                  "orange"
                 ]
               ]
             ]

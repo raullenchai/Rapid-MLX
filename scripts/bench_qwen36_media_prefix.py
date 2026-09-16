@@ -25,14 +25,16 @@ The primary deterministic gates are:
   snapshots and serve warm resumes (``stores > 0`` and ``hits > 0``) while
   the baseline does neither, else the A/B compares off against off;
 * **resume coverage** — the turns that are supposed to resume (turn 2+;
-  turn 1 is the documented store turn) must actually resume in at least
-  75% of their measured samples (exit 4 otherwise), with every miss
-  reported;
+  turn 1 is the documented store turn) must actually serve a media
+  resume in at least 75% of their measured samples (exit 4 otherwise),
+  with every miss reported. The per-sample signal is the engine's media
+  hit-counter delta around that one request — ``cached_tokens`` alone
+  conflates the text exact-cache path with the media resume path;
 * **no resume-turn regression** — every measured sample that actually
-  served a media resume (auto ``cached_tokens > 0``) must not exceed the
-  baseline median TTFT for its (conversation, turn) by more than a 15%
-  stall margin (exit 3 otherwise). Samples that store (or miss) pay the
-  documented bounded snapshot cost and are excluded.
+  served a media resume must not exceed the baseline median TTFT for its
+  (conversation, turn) by more than a 15% stall margin (exit 3
+  otherwise). Samples that store (or miss) pay the documented bounded
+  snapshot cost and are excluded.
 
 Scope: this harness gates determinism, semantics, engagement, and
 warm-turn latency on the qualified model. The remaining design-note gates
@@ -266,11 +268,11 @@ def _checker_pass(checker: dict[str, Any], text: str) -> bool:
         # object — searching for the first ``{`` would let prose wrapped
         # around an all-null payload pass ("JSON only" with entirely wrong
         # field values). A fenced response passes only when the fence
-        # wraps exactly one JSON object and nothing else: the manifest's
-        # JSON turns ask for the answer as a fenced ```json code block
-        # (the contract the qualified model deterministically follows),
-        # so the fence is requested markup, not prose — prose outside the
-        # fence still fails the whole-payload parse.
+        # wraps exactly one JSON object and nothing else: the qualified
+        # model deterministically formats its JSON-only answers as a
+        # single fenced code block, so the fence is that model's markup
+        # for "JSON only", not prose — prose outside the fence still
+        # fails the whole-payload parse.
         stripped = text.strip()
         if stripped.startswith("```"):
             stripped = stripped.split("\n", 1)[-1]
@@ -406,6 +408,12 @@ def _median(samples: list[dict[str, Any]], key: str) -> float:
     return statistics.median(float(sample[key]) for sample in samples)
 
 
+def _media_hits(engine: Any) -> int:
+    """Media-resume hit counter, 0 when the engine reports no media stats."""
+    media = engine.get_stats().get("media_prefix_cache") or {}
+    return int(media.get("hits", 0) or 0)
+
+
 WARM_REGRESSION_MARGIN = 1.15
 RESUME_COVERAGE_FLOOR = 0.75
 
@@ -419,9 +427,12 @@ def _resume_gate_samples(
     boundary min-tokens floor, so turn 1 snapshots instead of resuming);
     turns 2+ are the expected resume slots. Returns
     ``(expected_samples, resumed_samples, misses)`` where each miss names
-    the measured pass and turn whose ``cached_tokens`` was 0. Gating per
-    measured sample — not per-slot median — so a slot where only one pass
-    resumed cannot hide behind the other pass's cold miss.
+    the measured pass and turn whose media counter did not move. Gating
+    per measured sample — not per-slot median — so a slot where only one
+    pass resumed cannot hide behind the other pass's cold miss. The
+    signal is the per-sample media-hit delta, not ``cached_tokens``: that
+    field is stamped by the text exact-cache path too, and a text warm
+    hit would otherwise pass the media coverage gate.
     """
     expected = 0
     resumed = 0
@@ -431,7 +442,7 @@ def _resume_gate_samples(
             if sample["turn"] < 2:
                 continue
             expected += 1
-            if int(sample["cached_tokens"]) > 0:
+            if sample["media_hit"]:
                 resumed += 1
             else:
                 misses.append({"pass": pass_index, "turn": sample["turn"]})
@@ -445,16 +456,18 @@ def _resume_regressions(
 ) -> list[dict[str, Any]]:
     """Per-sample warm-regression check for one conversation.
 
-    Every measured sample that actually resumed (``cached_tokens > 0``) is
-    compared against the baseline median TTFT for its turn; medians never
-    mix cold and resumed executions. Turn 1 (the store turn) is excluded —
+    Every measured sample that actually served a media resume (per-sample
+    media-hit delta; ``cached_tokens`` alone would also count text
+    exact-cache warm hits, which are not this feature's latency to
+    defend) is compared against the baseline median TTFT for its turn;
+    medians never mix cold and resumed executions. Turn 1 (the store turn) is excluded —
     its bounded snapshot cost is documented in the design note.
     """
     flagged: list[dict[str, Any]] = []
     for pass_index, passes in enumerate(auto_passes):
         for sample in passes:
             turn = sample["turn"]
-            if turn < 1 or int(sample["cached_tokens"]) <= 0:
+            if turn < 1 or not sample["media_hit"]:
                 continue
             baseline = baseline_median_by_turn.get(turn)
             if baseline is None or baseline <= 0:
@@ -485,6 +498,13 @@ async def _run_turn(
     started = time.perf_counter()
     first_token_at: float | None = None
     final = None
+    # Per-sample media attribution: ``cached_tokens`` conflates the text
+    # exact-cache path with the media resume path (both stamp the same
+    # field), so the gates cannot tell a media resume from a text warm hit
+    # off it. Snapshot the media hit counter around this one request — the
+    # serialized lane runs exactly one request per turn, so the delta is
+    # this sample's media-resume boolean.
+    media_hits_before = _media_hits(engine)
     async for output in engine.stream_chat(
         messages=_conversation_messages(conversation, repo_root, turn_index, replies),
         max_tokens=int(turn["max_tokens"]),
@@ -504,6 +524,7 @@ async def _run_turn(
     return {
         "ttft_s": first_token_at - started if first_token_at else 0.0,
         "elapsed_s": ended - started,
+        "media_hit": _media_hits(engine) - media_hits_before > 0,
         "text": text,
         "sha256": hashlib.sha256(text.encode()).hexdigest(),
         "checker_pass": _checker_pass(turn.get("checker", {}), text),

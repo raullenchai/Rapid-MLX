@@ -247,8 +247,18 @@ def test_negation_window_catches_split_negation():
     assert _checker_pass(checker, "not installed yet, though ready")
 
 
-def _pass(turn, ttft_s, cached_tokens):
-    return {"turn": turn, "ttft_s": ttft_s, "cached_tokens": cached_tokens}
+def _pass(turn, ttft_s, cached_tokens, media_hit=None):
+    # media_hit defaults to the cached_tokens>0 shape for legibility; the
+    # gates read the media counter delta, which can disagree with
+    # cached_tokens (the text exact-cache stamps that field too).
+    if media_hit is None:
+        media_hit = cached_tokens > 0
+    return {
+        "turn": turn,
+        "ttft_s": ttft_s,
+        "cached_tokens": cached_tokens,
+        "media_hit": media_hit,
+    }
 
 
 def test_resume_gate_counts_expected_samples_per_pass():
@@ -266,6 +276,12 @@ def test_resume_gate_counts_expected_samples_per_pass():
     expected, resumed, misses = _resume_gate_samples(auto_passes)
     assert (expected, resumed) == (4, 3)
     assert misses == [{"pass": 1, "turn": 2}]
+    # A text warm hit (cached_tokens > 0, media counter silent) is NOT a
+    # media resume and counts as a miss.
+    auto_passes[0][2] = dict(auto_passes[0][2], media_hit=False)
+    expected, resumed, misses = _resume_gate_samples(auto_passes)
+    assert (expected, resumed) == (4, 2)
+    assert {"pass": 0, "turn": 2} in misses and {"pass": 1, "turn": 2} in misses
 
 
 def test_resume_regressions_compare_each_resumed_sample_to_baseline():
@@ -282,7 +298,18 @@ def test_resume_regressions_compare_each_resumed_sample_to_baseline():
     # slot's other pass (0.2s) is fine — per-sample gating flags the slow
     # one instead of letting the median hide it. Turn-2 samples straddle
     # the margin without crossing it. Store-turn samples (turn 1) never
-    # count regardless of latency, and cold samples are never compared.
+    # count regardless of latency, cold samples are never compared, and a
+    # text warm hit (cached_tokens > 0 without a media hit) is not this
+    # feature's latency to defend:
+    text_warm = dict(_pass(2, 9.9, 64), media_hit=False)
+    assert (
+        _resume_regressions(
+            [[dict(_pass(1, 9.9, 0), media_hit=False), text_warm]],
+            {2: 0.5},
+            margin=1.15,
+        )
+        == []
+    )
     assert flagged == [
         {
             "pass": 0,
