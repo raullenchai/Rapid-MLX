@@ -659,8 +659,10 @@ class MLLMBatch:
         """
         # Regular ``KVCache`` leaves expose no ``filter`` at all, so a
         # singleton-regular batch would silently keep its KV state untouched;
-        # that is only correct for the B=1 identity filter, and anything else
-        # is a caller bug — fail loudly before any state is rewritten.
+        # that is only correct for the B=1 identity filter. Terminal removal
+        # never calls ``filter([])``: both ``remove`` and ``_next`` dispose of
+        # ``active_batch`` directly when no rows remain. Anything else is a
+        # caller bug — fail loudly before any state is rewritten.
         if self.cache_layout == "singleton_regular" and keep_idx != [0]:
             raise ValueError(
                 "cannot filter a singleton-regular MLLM batch to anything "

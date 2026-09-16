@@ -8,8 +8,9 @@ Paired A/B on one machine, one model revision, one process:
 * candidate phase — ``"auto"`` (the shipped default).
 
 Cases come from the tracked manifest
-``evals/prompts/qwen36_mllm_runtime.json`` (20 media cases + 1 text-only
-fallback case). The primary deterministic gate is per-case output equality
+``evals/prompts/qwen36_mllm_runtime.json`` (20 media cases + 2 text-only
+fallback cases: one warm-prefix case and one routing-boundary case). The
+primary deterministic gate is per-case output equality
 (SHA-256) between the two phases on the same exact build; the manifest's
 machine-readable checkers guard against two equally wrong outputs passing.
 ``--lifecycle`` additionally exercises cancellation, recovery, queued
