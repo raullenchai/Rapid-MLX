@@ -191,12 +191,23 @@ _NEGATORS = frozenset(
 def _tokens(text: str) -> list[str]:
     """Whitespace tokens, casefolded, edge punctuation stripped, empties out.
 
+    Curly apostrophes normalize to ASCII first: contractions written with
+    typographic quotes ("isn’t") must hit the same negator forms as their
+    ASCII spellings, or an explicitly false answer slips past the negation
+    guard.
+
     Slash/hyphen runs are broken into separate tokens first so compound
     forms ("skip"/"next", "dark-themed") tokenize the same on the term and
     text sides.
     """
     tokens = []
-    for raw in text.casefold().translate(_INNER_BREAKS).split():
+    for raw in (
+        text.replace("\u2019", "'")
+        .replace("\u2018", "'")
+        .casefold()
+        .translate(_INNER_BREAKS)
+        .split()
+    ):
         token = raw.strip(_PUNCT)
         if token:
             tokens.append(token)
@@ -750,6 +761,13 @@ async def _main() -> None:
         return engine
 
     try:
+        # Baseline runs first: the candidate phase then executes on a
+        # thermally warmer machine, so any ordering bias works AGAINST the
+        # candidate — the headline saving understates and the 15%
+        # resume-regression gate is measured against a cooler-machine
+        # baseline (stricter). Alternating phase order would need one
+        # engine per phase per pair (load/unload dominates the run) for a
+        # bias the fixed order already points the safe way.
         # Baseline: cold lane, no boundary snapshots.
         baseline = await engine_for("off")
         try:
@@ -771,6 +789,34 @@ async def _main() -> None:
         # Per-turn hashes across phases and passes. A turn is "exact" only
         # when every pass in both phases produced the identical hash
         # (reported; see module docstring for why this is not gated).
+        # Turn completeness: every conversation must produce exactly its
+        # declared turn count in every pass of both phases. Deriving the
+        # count from the observed minimum would silently omit a missing or
+        # zero-turn conversation while determinism and checker gates stay
+        # green over the surviving turns.
+        for conversation, phase_streams in (
+            (
+                c,
+                (
+                    result["phases"]["off"]["per_conversation"].get(c["id"]),
+                    result["phases"]["auto"]["per_conversation"].get(c["id"]),
+                ),
+            )
+            for c in conversations
+        ):
+            declared = len(conversation["turns"])
+            for phase_name, streams in zip(("off", "auto"), phase_streams):
+                if streams is None:
+                    raise SystemExit(
+                        f"{conversation['id']}: phase {phase_name} produced no samples"
+                    )
+                for pass_index, passes in enumerate(streams):
+                    if len(passes) != declared:
+                        raise SystemExit(
+                            f"{conversation['id']}: phase {phase_name} pass "
+                            f"{pass_index} produced {len(passes)} of {declared} "
+                            "declared turns"
+                        )
         exact_by_turn: dict[str, list[bool]] = {}
         within_phase_deterministic: dict[str, bool] = {}
         checker_pass_both: dict[str, list[bool]] = {}
@@ -778,12 +824,9 @@ async def _main() -> None:
             "per_conversation"
         ].items():
             auto_streams = result["phases"]["auto"]["per_conversation"][conversation_id]
-            # Conversation's own turn count — manifests need not be uniform,
-            # and an all()-over-empty would vacuously pass the gates.
-            turn_count = (
-                min(len(passes) for passes in turn_streams + auto_streams if passes)
-                if (turn_streams or auto_streams)
-                else 0
+            # Completeness was validated above; the count is the manifest's.
+            turn_count = len(
+                next(c["turns"] for c in conversations if c["id"] == conversation_id)
             )
             flags = []
             checker_flags = []

@@ -490,3 +490,12 @@ def test_images_root_cannot_relocate_outside_the_repository(tmp_path):
         Path(ROOT) / "evals" / "prompts" / "m.json", {"images_root": "../.."}
     )
     assert inside == ROOT
+
+
+def test_curly_apostrophe_contracts_hit_the_negation_guard():
+    # "isn’t" with a typographic apostrophe must negate like "isn't", or an
+    # explicitly false answer satisfies the required term.
+    checker = {"type": "terms", "required": ["ready"]}
+    assert not _checker_pass(checker, "The chip isn’t ready at all.")
+    assert not _checker_pass(checker, "The chip isn't ready at all.")
+    assert _checker_pass(checker, "The chip is ready.")

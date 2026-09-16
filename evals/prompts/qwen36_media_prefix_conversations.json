@@ -1,6 +1,6 @@
 {
   "schema_version": 1,
-  "description": "Serialized-MLLM-lane multi-turn media corpus for the media prefix cache qualification. 20 conversations (one per tracked Desktop snapshot image, mirroring the qwen36_mllm_runtime media cases), 3 user turns each, same image across all turns of a conversation. The primary deterministic gate is paired baseline/candidate per-turn token equality on the same exact build; the machine-readable checkers prevent two equally wrong outputs from passing. No natural-language golden responses are committed.",
+  "description": "Serialized-MLLM-lane multi-turn media corpus for the media prefix cache qualification. 20 conversations (one per tracked Desktop snapshot image, mirroring the qwen36_mllm_runtime media cases), 3 user turns each, same image across all turns of a conversation. The gated determinism contract is within-phase per-turn SHA-256 equality (every pass inside a phase) plus the machine-readable per-turn checkers in both phases; cross-phase per-turn token equality is reported, not gated — the warm suffix's GEMM tiling regime makes one-ULP drift inherent to splitting a prefill. No natural-language golden responses are committed.",
   "images_root": "../..",
   "sampled_ab_conversation_ids": [
     "conv-01",
