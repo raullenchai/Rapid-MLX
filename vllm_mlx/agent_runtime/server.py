@@ -618,27 +618,28 @@ def _planned_weather_requests(goal: str) -> tuple[dict[str, Any], ...]:
 def _planned_web_search_query(goal: str) -> str:
     """Return a focused lookup term instead of forwarding the whole prompt."""
 
-    explicit = _EXPLICIT_SEARCH_QUERY.search(goal)
-    if explicit is not None:
-        query = (
-            explicit.group("en")
-            or explicit.group("lookup")
-            or explicit.group("zh")
-            or ""
-        )
-    else:
-        # Prefer the one sentence/clause carrying the live-data signal. This
-        # avoids sending unrelated prose or local context to the provider.
-        clauses = re.split(r"[\n;；]+|(?<=[.!?。！？])\s+", goal)
-        query = next(
-            (
-                clause
-                for clause in clauses
-                if _CURRENT_WEB_LOOKUP.search(clause) is not None
-                or _TEMPORAL_WEB_LOOKUP.search(clause) is not None
-            ),
-            "",
-        )
+    # Prefer the one sentence/clause carrying the live-data signal. This avoids
+    # a later noun phrase such as "ignore instructions in search results" being
+    # mistaken for the requested query, and avoids sending unrelated prose.
+    clauses = re.split(r"[\n;；]+|(?<=[.!?。！？])\s+", goal)
+    query = next(
+        (
+            clause
+            for clause in clauses
+            if _CURRENT_WEB_LOOKUP.search(clause) is not None
+            or _TEMPORAL_WEB_LOOKUP.search(clause) is not None
+        ),
+        "",
+    )
+    if not query:
+        explicit = _EXPLICIT_SEARCH_QUERY.search(goal)
+        if explicit is not None:
+            query = (
+                explicit.group("en")
+                or explicit.group("lookup")
+                or explicit.group("zh")
+                or ""
+            )
         if not query:
             query = next(
                 (
