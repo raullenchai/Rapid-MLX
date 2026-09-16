@@ -16,12 +16,26 @@ These tests pin:
     re-opens the #3495 crash on macOS 15.
 """
 
+import sys
+import types
+
 import pytest
 
 from rapid_mlx import cli
 
 
-def test_hard_exit_flushes_streams_and_exits_zero(monkeypatch):
+@pytest.fixture
+def production_exit_context(monkeypatch):
+    """Force the helper's production path: the guard keys on ``pytest``
+    being imported in THIS process, so hide it (a real serve subprocess
+    never has it imported — including pytest-spawned children, whose
+    inherited ``PYTEST_CURRENT_TEST`` env must NOT disable the hard
+    exit).
+    """
+    monkeypatch.delitem(sys.modules, "pytest", raising=False)
+
+
+def test_hard_exit_flushes_streams_and_exits_zero(monkeypatch, production_exit_context):
     """Success path: flush stdout/stderr, then ``os._exit(0)``."""
     exit_calls: list[int] = []
 
@@ -36,8 +50,6 @@ def test_hard_exit_flushes_streams_and_exits_zero(monkeypatch):
     monkeypatch.setattr(cli.sys, "stdout", out)
     monkeypatch.setattr(cli.sys, "stderr", err)
     monkeypatch.setattr(cli.os, "_exit", lambda code: exit_calls.append(code))
-    # The production path must not take the pytest guard.
-    monkeypatch.delenv("PYTEST_CURRENT_TEST", raising=False)
 
     cli._hard_exit_after_serve()
 
@@ -46,7 +58,7 @@ def test_hard_exit_flushes_streams_and_exits_zero(monkeypatch):
     assert exit_calls == [0], f"expected exactly one os._exit(0), got {exit_calls!r}"
 
 
-def test_hard_exit_is_skipped_under_pytest(monkeypatch):
+def test_hard_exit_is_skipped_when_pytest_is_imported(monkeypatch):
     """In-process suites drive serve through stubbed uvicorn runs; the
     guard must keep ``os._exit`` away from the pytest process (an
     ``os._exit(0)`` mid-suite would end the run green while skipping
@@ -54,14 +66,16 @@ def test_hard_exit_is_skipped_under_pytest(monkeypatch):
     """
     exit_calls: list[int] = []
     monkeypatch.setattr(cli.os, "_exit", lambda code: exit_calls.append(code))
-    monkeypatch.setenv("PYTEST_CURRENT_TEST", "tests/test_serve_hard_exit.py::t")
+    # Simulate the in-process harness even if this suite runs in a
+    # pytest-less runner: the guard keys on module presence, not env.
+    monkeypatch.setitem(sys.modules, "pytest", types.ModuleType("pytest"))
 
     cli._hard_exit_after_serve()
 
     assert exit_calls == []
 
 
-def test_hard_exit_swallows_flush_failures(monkeypatch):
+def test_hard_exit_swallows_flush_failures(monkeypatch, production_exit_context):
     """A dead stream (closed stderr at teardown) must not convert the
     clean exit into a traceback-driven non-zero exit.
     """
@@ -74,7 +88,6 @@ def test_hard_exit_swallows_flush_failures(monkeypatch):
     monkeypatch.setattr(cli.sys, "stdout", _Broken())
     monkeypatch.setattr(cli.sys, "stderr", _Broken())
     monkeypatch.setattr(cli.os, "_exit", lambda code: exit_calls.append(code))
-    monkeypatch.delenv("PYTEST_CURRENT_TEST", raising=False)
 
     cli._hard_exit_after_serve()
 
