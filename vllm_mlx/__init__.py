@@ -10,13 +10,20 @@ against pre-rename releases.
 What still works through this shim:
 
 - ``import vllm_mlx`` / ``from vllm_mlx import SamplingParams``
-- ``import vllm_mlx.<anything>`` — submodules resolve to the
-  corresponding ``rapid_mlx`` module (same objects, no duplicate import)
-- ``python -m vllm_mlx.server`` (see ``vllm_mlx/server.py``)
+- ``import vllm_mlx.<anything>`` — submodules (at any depth) resolve to
+  the corresponding ``rapid_mlx`` module: the SAME module object, no
+  duplicate import, so ``isinstance`` identity survives across both names
+- ``python -m vllm_mlx.server`` / ``python -m vllm_mlx.cli``
 
-Every entry emits a ``DeprecationWarning`` pointing at the ``rapid_mlx``
-name. The shim will be retired after a deprecation window (at least one
-minor series); move your imports now::
+Note on warning visibility: the ``DeprecationWarning`` fires on
+``import vllm_mlx`` and is shown by default for scripts (anything run as
+``__main__``), which is the primary migration audience. Under the
+default warning filter it is hidden for imports that happen inside
+installed libraries — pass ``-W default::DeprecationWarning`` to see it
+everywhere.
+
+The shim will be retired after a deprecation window (at least one minor
+series); move your imports now::
 
     from rapid_mlx import SamplingParams   # instead of vllm_mlx
     python -m rapid_mlx.server             # instead of vllm_mlx.server
@@ -49,77 +56,118 @@ _TARGET_PREFIX = "rapid_mlx."
 
 
 class _RapidMlxModuleAliasLoader:
-    """Loader that reuses an already-imported ``rapid_mlx`` module object.
+    """Loader that makes ``vllm_mlx.<sub>`` resolve to ``rapid_mlx.<sub>``.
 
-    ``create_module`` returns the target module itself, so the import
-    system registers the *same* module instance under the legacy
+    ``create_module`` imports the target module and returns it, so the
+    import system registers the *same* module instance under the legacy
     ``vllm_mlx.*`` name — no duplicate module objects, no double
     execution, and ``isinstance`` checks keep working across both names.
+    ``get_code``/``get_source`` serve ``python -m vllm_mlx.<mod>`` (runpy
+    pulls the code object through this loader) without importing the
+    target first, so a legacy ``-m`` invocation executes the module file
+    exactly once, as ``__main__`` — same as before the rename.
     """
 
-    def __init__(self, target_module):
-        self._target = target_module
+    def __init__(self, target_name, target_spec):
+        self._target_name = target_name
+        self._target_spec = target_spec  # real spec of the rapid_mlx target
+        self._target = None
 
     def create_module(self, spec):
-        return self._target
+        module = importlib.import_module(self._target_name)
+        self._target = module
+        # Snapshot the target's real spec BEFORE the import machinery's
+        # ``_init_module_attrs`` stamps our alias spec onto the shared
+        # module object (see ``exec_module``).
+        self._original_spec = module.__spec__
+        return module
 
     def exec_module(self, module):
-        pass  # already executed as rapid_mlx.<sub>
-
-    def is_package(self, fullname):
-        return hasattr(self._target, "__path__")
+        # ``_init_module_attrs`` just stamped OUR alias spec onto the
+        # shared module object. Restore the real metadata, otherwise:
+        #   - ``importlib.reload(rapid_mlx.<sub>)`` would silently no-op
+        #     (it re-uses ``__spec__``, whose exec_module is a no-op), and
+        #   - ``__spec__.loader`` would be this alias loader, making
+        #     ``get_code`` recurse into itself.
+        # ``__name__``/``__file__`` survive on their own (already set on
+        # the module); ``__spec__``/``__loader__``/``__package__`` are
+        # unconditionally rewritten and must be restored here.
+        original = self._original_spec
+        if original is not None:
+            module.__spec__ = original
+            module.__loader__ = original.loader
+            module.__package__ = original.parent
+            search = original.submodule_search_locations
+            if search is not None:
+                module.__path__ = list(search)
 
     def get_filename(self, fullname):
-        return getattr(self._target, "__file__", None)
+        return getattr(self._target_spec, "origin", None)
 
     def get_code(self, fullname):
-        # Lets ``python -m vllm_mlx.cli`` (and any other legacy -m
-        # invocation) work: runpy pulls the code object through the
-        # aliased module's real loader.
-        target_loader = getattr(self._target, "__spec__", None)
-        target_loader = target_loader.loader if target_loader else None
-        if target_loader is None:
-            return None
-        return target_loader.get_code(self._target.__name__)
+        loader = self._target_spec.loader if self._target_spec else None
+        return None if loader is None else loader.get_code(self._target_name)
 
     def get_source(self, fullname):
-        target_loader = getattr(self._target, "__spec__", None)
-        target_loader = target_loader.loader if target_loader else None
-        if target_loader is None:
-            return None
-        return target_loader.get_source(self._target.__name__)
+        loader = self._target_spec.loader if self._target_spec else None
+        return None if loader is None else loader.get_source(self._target_name)
 
 
 class _RapidMlxModuleAliasFinder:
     """Resolve ``import vllm_mlx.<sub>`` to ``rapid_mlx.<sub>``.
 
-    Registered at the END of ``sys.meta_path`` so a physical file inside
-    this shim package (e.g. ``vllm_mlx/server.py``) always wins, and the
-    finder only fills in the names this shim does not ship itself.
+    Registered at the FRONT of ``sys.meta_path``: nested names such as
+    ``vllm_mlx.launch.cli`` resolve through the parent package's
+    ``__path__`` — which, for an aliased parent, is the real
+    ``rapid_mlx/launch`` directory — so the regular PathFinder would find
+    the target FILE and execute it a second time as a duplicate
+    ``vllm_mlx.launch.cli`` module. Intercepting first guarantees every
+    ``vllm_mlx.*`` name aliases the ``rapid_mlx.*`` module object.
+
+    Bare ``vllm_mlx`` (this package's own ``__init__``) and any name this
+    finder declines are returned as ``None`` so the normal machinery
+    handles them.
     """
 
     def find_spec(self, fullname, path=None, target=None):
         if not fullname.startswith(_PREFIX):
             return None
         target_name = _TARGET_PREFIX + fullname[len(_PREFIX) :]
+        # Locate the target WITHOUT executing it. A missing target returns
+        # None so the real ``ModuleNotFoundError: vllm_mlx.<sub>`` surfaces
+        # untouched; a target whose own dependencies fail imports AFTER
+        # this check, so the honest error (e.g. ``No module named 'yaml'``)
+        # propagates instead of being masked as a missing shim submodule.
         try:
-            target_module = importlib.import_module(target_name)
-        except ImportError:
-            return None  # propagate the real ImportError for unknown names
-        loader = _RapidMlxModuleAliasLoader(target_module)
-        return importlib.util.spec_from_loader(
+            target_spec = importlib.util.find_spec(target_name)
+        except (ImportError, AttributeError, ValueError):
+            return None
+        if target_spec is None or target_spec.loader is None:
+            return None
+        loader = _RapidMlxModuleAliasLoader(target_name, target_spec)
+        is_package = target_spec.submodule_search_locations is not None
+        spec = importlib.util.spec_from_loader(
             fullname,
             loader,
-            origin=getattr(target_module, "__file__", None),
-            is_package=hasattr(target_module, "__path__"),
+            origin=target_spec.origin,
+            is_package=is_package,
         )
+        if spec is not None and is_package:
+            # Keep the alias spec introspectable (pkgutil.iter_modules and
+            # friends walk submodule_search_locations). Safe to point at the
+            # real directory: this finder intercepts all vllm_mlx.* names
+            # before PathFinder can scan it and double-execute a file.
+            spec.submodule_search_locations = list(
+                target_spec.submodule_search_locations
+            )
+        return spec
 
 
 def _install_alias_finder() -> None:
     for finder in sys.meta_path:
         if isinstance(finder, _RapidMlxModuleAliasFinder):
             return  # idempotent (e.g. interpreter reload scenarios)
-    sys.meta_path.append(_RapidMlxModuleAliasFinder())
+    sys.meta_path.insert(0, _RapidMlxModuleAliasFinder())
 
 
 _install_alias_finder()
