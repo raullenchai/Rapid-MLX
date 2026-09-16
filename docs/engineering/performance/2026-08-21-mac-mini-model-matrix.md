@@ -141,7 +141,7 @@ This closes the VLM-plus-MTP checkpoint-layout case for the dependency move;
 it does not claim that upstream issue #1197 itself is resolved.
 
 ```bash
-python -m rapid_mlx.cli serve "$SNAPSHOT" --port 8403 \
+python -m vllm_mlx.cli serve "$SNAPSHOT" --port 8403 \
   --no-mllm --disable-prefix-cache --no-thinking
 RAPID_MLX_BASE_URL=http://127.0.0.1:8403/v1 \
   python evals/coherence_gate.py

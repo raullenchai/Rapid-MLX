@@ -708,9 +708,9 @@ enum PortSweep {
     }
 
     private static func containsModuleFlag(_ argv: String) -> Bool {
-        // Match ``-m rapid_mlx`` or ``-m rapid_mlx.<submodule>``
-        // (e.g. ``rapid_mlx.cli``, ``rapid_mlx.main``) as adjacent
-        // tokens — guards against a stray ``rapid_mlx`` substring
+        // Match both the current ``-m rapid_mlx[.<submodule>]`` form and
+        // the deprecated-but-supported ``-m vllm_mlx[.<submodule>]`` form
+        // as adjacent tokens — guards against a stray package-name substring
         // in a file path. Both the top-level package run shape
         // and the submodule run shape are reachable depending on
         // how rapid-mlx was installed.
@@ -735,8 +735,10 @@ enum PortSweep {
         // Verified: repro trapped at this line with exit 133 (SIGTRAP).
         for (flag, modName) in zip(tokens, tokens.dropFirst()) {
             guard flag == "-m" else { continue }
-            if modName == "rapid_mlx" || modName.hasPrefix("rapid_mlx.") {
-                return true
+            for package in ["rapid_mlx", "vllm_mlx"] {
+                if modName == package || modName.hasPrefix("\(package).") {
+                    return true
+                }
             }
         }
         return false

@@ -104,7 +104,7 @@ struct PortSweepTests {
     // orphans across launches and must be swept; the earlier test
     // here asserted the WRONG behavior (rejecting them) and was
     // letting them leak GPU memory across launches.
-    @Test("python -m rapid_mlx serve forms are sweep-owned")
+    @Test("current and legacy python module serve forms are sweep-owned")
     func pythonModuleServeAccepted() {
         #expect(PortSweep.isRapidOwnedCommand(
             "/usr/bin/python3 -m rapid_mlx serve qwen3.5-4b --port 8000"
@@ -115,12 +115,20 @@ struct PortSweepTests {
         #expect(PortSweep.isRapidOwnedCommand(
             "/opt/homebrew/Cellar/python@3.12/3.12.7/bin/python3.12 -m rapid_mlx serve qwen --port 8000"
         ))
+        #expect(PortSweep.isRapidOwnedCommand(
+            "/usr/bin/python3 -m vllm_mlx serve qwen3.5-4b --port 8000"
+        ))
+        #expect(PortSweep.isRapidOwnedCommand(
+            "/usr/bin/python3 -m vllm_mlx.cli serve qwen --port 8000"
+        ))
     }
 
     @Test("python -m rapid_mlx non-server commands are not sweep-owned")
     func pythonModuleNonServeRejected() {
         #expect(!PortSweep.isRapidOwnedCommand("/usr/bin/python3 -m rapid_mlx pull qwen3.5-4b"))
         #expect(!PortSweep.isRapidOwnedCommand("/usr/bin/python3 -m rapid_mlx.cli models"))
+        #expect(!PortSweep.isRapidOwnedCommand("/usr/bin/python3 -m vllm_mlx pull qwen3.5-4b"))
+        #expect(!PortSweep.isRapidOwnedCommand("/usr/bin/python3 -m vllm_mlx.cli models"))
     }
 
     @Test("python without -m rapid_mlx is not sweep-owned")

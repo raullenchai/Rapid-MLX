@@ -158,7 +158,7 @@ The paired servers used the following command; add
 
 ```bash
 HF_HUB_OFFLINE=1 TRANSFORMERS_OFFLINE=1 \
-python -m rapid_mlx.cli serve \
+python -m vllm_mlx.cli serve \
   "$HF_HUB_CACHE/models--Vontra--GLM-5.3-Flash-MLX-4bit-MTP/snapshots/76add2a341a1cd90ad0e86bb69839ea9c35827c6" \
   --served-model-name glm5.3-flash-4bit \
   --host 127.0.0.1 --port 8465 --no-thinking

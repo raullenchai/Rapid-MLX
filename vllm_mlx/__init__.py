@@ -22,8 +22,8 @@ default warning filter it is hidden for imports that happen inside
 installed libraries — pass ``-W default::DeprecationWarning`` to see it
 everywhere.
 
-The shim will be retired after a deprecation window (at least one minor
-series); move your imports now::
+The shim will remain available across multiple minor releases and can only be
+retired in a separately announced breaking release; move your imports now::
 
     from rapid_mlx import SamplingParams   # instead of vllm_mlx
     python -m rapid_mlx.server             # instead of vllm_mlx.server
