@@ -15,9 +15,9 @@
 - Qualification checks the public identity, backing repository identity, live
   parser, and expected harness. Parser opt-out/override and alias reuse fail
   closed.
-- Q4 and Q8 MiniCPM artifacts have distinct, versioned, evidence-backed
-  qualification records even though they share one harness. Q8 is a 16 GB
-  candidate and does not inherit Q4's 8 GB recommendation.
+- MiniCPM Q4 has a versioned, evidence-backed qualification record; MiniCPM Q8
+  is a 16 GB candidate and must not inherit Q4's 8 GB recommendation or Q4's
+  receipt. Q8 remains held out until it is requalified on a committed revision.
 - Desktop now executes the three existing read-only built-ins (`web_search`,
   `browse`, `weather`) for client-owned Agent runs and returns results under the
   exact opaque call ID. Schemas and risk labels remain server-owned.

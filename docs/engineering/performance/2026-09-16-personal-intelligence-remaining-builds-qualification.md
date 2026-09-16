@@ -13,10 +13,11 @@ quantization's receipt are not evidence.
 
 All runs used the same Mac Studio checkout at source revision
 `54c72e437e33d98643ff449197468f01a0f9337c`, port `18950`, and the reproduction
-metadata embedded in each JSON receipt. MiniCPM5-2B Q8 also required a
-small qualification-table fix: the short alias must be treated as a known
-MiniCPM catalog identity so that the public alias resolves to the exact Q8
-record instead of falling back to the conservative local profile.
+metadata embedded in each JSON receipt. MiniCPM5-2B Q8 also exposed a
+qualification-table issue: a future short alias would need to be treated as a
+known MiniCPM catalog identity so that the public alias resolves to the exact
+Q8 record instead of falling back to the conservative local profile. That
+record and alias are deliberately deferred here.
 
 ## Qualified builds
 
@@ -70,7 +71,7 @@ ship. Each annotated receipt carries a `review_note` explaining that edit.
 
 | Model | Receipt | Stable failure |
 |---|---|---|
-| Qwen3-Coder 30B Q4 | `reports/benchmarks/personal-intelligence-qwen3-coder-30b-4bit.json` | Seed 33 emits `Rrapid-MLX` in the source URL for the open-ended search/browse case. Seed 22 repeated the same typo on the retry; seed 11 passed. |
+| Qwen3-Coder 30B Q4 | `reports/benchmarks/personal-intelligence-qwen3-coder-30b-4bit.json` | Seed 33 emits `Rrapid-MLX` in the source URL for the open-ended search/browse case. Seed 22 exhibited the same typo but also included the expected URL and passed the harness; seed 11 passed. |
 | GPT-OSS 20B MXFP4 Q8 | `reports/benchmarks/personal-intelligence-gpt-oss-20b.json` | Seed 33 ends the open-ended search/browse case with a Harmony citation (`【2†source】`) instead of the required source URL. Seeds 11 and 22 passed. |
 
 Both failures are model-output instability on the non-“only” search/browse
