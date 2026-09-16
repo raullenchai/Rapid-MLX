@@ -79,7 +79,9 @@ def patch_harness_environment():
         ),
         patch("rapid_mlx.bench._server.serve", _fake_serve),
         patch("rapid_mlx.agents.get_profile", _fake_get_profile),
-        patch("rapid_mlx.agents.testing.AgentTestRunner", side_effect=_fake_runner_init),
+        patch(
+            "rapid_mlx.agents.testing.AgentTestRunner", side_effect=_fake_runner_init
+        ),
         patch("rapid_mlx.bench.tier_runner._health_check", return_value=True),
     ):
         yield invocations

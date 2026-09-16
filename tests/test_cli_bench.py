@@ -260,7 +260,9 @@ def _capture_bench_lane_signals(monkeypatch, cli):
     def _capture_validate(config, *, model_name, is_mllm):
         seen["validate_is_mllm"] = is_mllm
 
-    monkeypatch.setattr("rapid_mlx.pflash.resolve_pflash_mode_default", _capture_default)
+    monkeypatch.setattr(
+        "rapid_mlx.pflash.resolve_pflash_mode_default", _capture_default
+    )
     monkeypatch.setattr("rapid_mlx.pflash.validate_model_support", _capture_validate)
     monkeypatch.setattr(cli, "_check_disk_space", lambda *a, **kw: None)
     monkeypatch.setattr(cli, "_check_memory_capacity", lambda *a, **kw: None)

@@ -1103,7 +1103,14 @@ def install_service(
     log_dir = _state_dir()
     home = Path.home()
 
-    argv = [sys.executable, "-m", "rapid_mlx.cli", "share", serve_alias, "--quicksilver"]
+    argv = [
+        sys.executable,
+        "-m",
+        "rapid_mlx.cli",
+        "share",
+        serve_alias,
+        "--quicksilver",
+    ]
     argv += ["--worker", worker]
     if catalog_id != serve_alias:
         argv += ["--quicksilver-model", catalog_id]

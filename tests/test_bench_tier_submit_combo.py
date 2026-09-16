@@ -155,7 +155,9 @@ def test_run_tier_returns_payload_when_requested():
     with contextlib.ExitStack() as stack:
         for p in _patch_serve_boot():
             stack.enter_context(p)
-        stack.enter_context(patch("rapid_mlx.bench.tier_runner._run_smoke", _smoke_stub))
+        stack.enter_context(
+            patch("rapid_mlx.bench.tier_runner._run_smoke", _smoke_stub)
+        )
         stack.enter_context(
             patch("rapid_mlx.bench.tier_runner._run_harness", _harness_stub)
         )
@@ -189,7 +191,9 @@ def test_run_tier_default_signature_unchanged():
     with contextlib.ExitStack() as stack:
         for p in _patch_serve_boot():
             stack.enter_context(p)
-        stack.enter_context(patch("rapid_mlx.bench.tier_runner._run_smoke", _smoke_stub))
+        stack.enter_context(
+            patch("rapid_mlx.bench.tier_runner._run_smoke", _smoke_stub)
+        )
 
         result = run_tier(model="qwen3.5-4b-4bit", tier="smoke")
 
@@ -218,7 +222,9 @@ def test_run_tier_returns_payload_with_none_for_missing_tiers():
     with contextlib.ExitStack() as stack:
         for p in _patch_serve_boot():
             stack.enter_context(p)
-        stack.enter_context(patch("rapid_mlx.bench.tier_runner._run_smoke", _smoke_stub))
+        stack.enter_context(
+            patch("rapid_mlx.bench.tier_runner._run_smoke", _smoke_stub)
+        )
 
         rc, payload = run_tier(
             model="qwen3.5-4b-4bit",
@@ -269,8 +275,12 @@ def test_run_tier_skip_speed_avoids_lightweight_probe():
     with contextlib.ExitStack() as stack:
         for p in _patch_serve_boot():
             stack.enter_context(p)
-        stack.enter_context(patch("rapid_mlx.bench.tier_runner._run_smoke", _smoke_stub))
-        stack.enter_context(patch("rapid_mlx.bench.tier_runner._run_speed", _speed_stub))
+        stack.enter_context(
+            patch("rapid_mlx.bench.tier_runner._run_smoke", _smoke_stub)
+        )
+        stack.enter_context(
+            patch("rapid_mlx.bench.tier_runner._run_speed", _speed_stub)
+        )
         stack.enter_context(
             patch("rapid_mlx.bench.tier_runner._run_harness", _harness_stub)
         )
@@ -307,7 +317,9 @@ def test_run_tier_skip_speed_ignored_for_non_all_tier():
     with contextlib.ExitStack() as stack:
         for p in _patch_serve_boot():
             stack.enter_context(p)
-        stack.enter_context(patch("rapid_mlx.bench.tier_runner._run_speed", _speed_stub))
+        stack.enter_context(
+            patch("rapid_mlx.bench.tier_runner._run_speed", _speed_stub)
+        )
 
         run_tier(
             model="qwen3.5-4b-4bit",

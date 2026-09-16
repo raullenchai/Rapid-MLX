@@ -489,7 +489,9 @@ class TestRelocationIsOptInAndOffByDefault:
         class _Cfg:
             relocate_mid_conversation_system = True
 
-        monkeypatch.setattr("rapid_mlx.config.get_config", lambda: _Cfg(), raising=False)
+        monkeypatch.setattr(
+            "rapid_mlx.config.get_config", lambda: _Cfg(), raising=False
+        )
         assert anthropic_adapter._relocate_mid_system_enabled() is True
 
         _Cfg.relocate_mid_conversation_system = False

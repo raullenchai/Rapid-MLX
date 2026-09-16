@@ -607,7 +607,9 @@ class TestEmbeddingModelAliasResolution:
 
         # Pretend the [embeddings] extra is installed so the H-08
         # probe doesn't short-circuit before the alias step.
-        monkeypatch.setattr("rapid_mlx.embedding.mlx_embeddings_available", lambda: True)
+        monkeypatch.setattr(
+            "rapid_mlx.embedding.mlx_embeddings_available", lambda: True
+        )
         captured: dict = {}
 
         def _fake_loader(name, *, lock, **kwargs):
@@ -636,7 +638,9 @@ class TestEmbeddingModelAliasResolution:
 
         from rapid_mlx.cli import _load_embedding_model_or_exit
 
-        monkeypatch.setattr("rapid_mlx.embedding.mlx_embeddings_available", lambda: True)
+        monkeypatch.setattr(
+            "rapid_mlx.embedding.mlx_embeddings_available", lambda: True
+        )
         captured: dict = {}
 
         def _fake_loader(name, *, lock, **_kwargs):
@@ -663,7 +667,9 @@ class TestEmbeddingModelAliasResolution:
 
         from rapid_mlx.cli import _load_embedding_model_or_exit
 
-        monkeypatch.setattr("rapid_mlx.embedding.mlx_embeddings_available", lambda: True)
+        monkeypatch.setattr(
+            "rapid_mlx.embedding.mlx_embeddings_available", lambda: True
+        )
 
         try:
             from mlx_embeddings.utils import (
@@ -701,7 +707,9 @@ class TestEmbeddingModelAliasResolution:
 
         from rapid_mlx.cli import _load_embedding_model_or_exit
 
-        monkeypatch.setattr("rapid_mlx.embedding.mlx_embeddings_available", lambda: True)
+        monkeypatch.setattr(
+            "rapid_mlx.embedding.mlx_embeddings_available", lambda: True
+        )
 
         class CorruptSafetensorsError(RuntimeError):
             pass
@@ -725,7 +733,9 @@ class TestEmbeddingModelAliasResolution:
 
         from rapid_mlx.cli import _load_embedding_model_or_exit
 
-        monkeypatch.setattr("rapid_mlx.embedding.mlx_embeddings_available", lambda: True)
+        monkeypatch.setattr(
+            "rapid_mlx.embedding.mlx_embeddings_available", lambda: True
+        )
 
         def _fake_loader(name, *, lock, **_kwargs):
             raise ValueError("config field 'rope_theta' not found in tensor map")

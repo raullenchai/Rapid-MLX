@@ -434,7 +434,9 @@ def test_doctor_json_collector_failure_is_schema_valid(monkeypatch, capsys):
     def fail_collection(*_args, **_kwargs):
         raise OSError("collector unavailable")
 
-    monkeypatch.setattr("rapid_mlx.doctor.cli._collect_report_isolated", fail_collection)
+    monkeypatch.setattr(
+        "rapid_mlx.doctor.cli._collect_report_isolated", fail_collection
+    )
     args = Namespace(
         tier=None,
         verbose=False,

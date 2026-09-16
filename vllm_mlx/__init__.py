@@ -154,10 +154,7 @@ class _RapidMlxModuleAliasFinder:
             # anything else is a real failure and must propagate.
             if not (
                 exc.name
-                and (
-                    exc.name == target_name
-                    or exc.name.startswith(_TARGET_PREFIX)
-                )
+                and (exc.name == target_name or exc.name.startswith(_TARGET_PREFIX))
             ):
                 raise
             return None

@@ -230,7 +230,9 @@ def test_programmatic_4bit_requires_explicit_experimental_opt_in(monkeypatch) ->
     from rapid_mlx.speculative.dflash.eligibility import DFlashUnavailable
     from rapid_mlx.speculative.dflash.server import run_dflash_server
 
-    monkeypatch.setattr("rapid_mlx.speculative.dflash.server.have_runtime", lambda: True)
+    monkeypatch.setattr(
+        "rapid_mlx.speculative.dflash.server.have_runtime", lambda: True
+    )
     with pytest.raises(DFlashUnavailable, match="experimental_opt_in=True"):
         run_dflash_server(
             main_model_repo="user/target-4bit",
@@ -250,7 +252,9 @@ def test_programmatic_dflash2_identity_cannot_bypass_registry_qualification(
     from rapid_mlx.speculative.dflash.eligibility import DFlashUnavailable
     from rapid_mlx.speculative.dflash.server import run_dflash_server
 
-    monkeypatch.setattr("rapid_mlx.speculative.dflash.server.have_runtime", lambda: True)
+    monkeypatch.setattr(
+        "rapid_mlx.speculative.dflash.server.have_runtime", lambda: True
+    )
     with pytest.raises(DFlashUnavailable, match="experimental_opt_in=True"):
         run_dflash_server(
             main_model_repo="user/target-4bit",
@@ -2555,7 +2559,9 @@ def test_dflashruntime_accept_lens_tolerates_wrong_type(caplog) -> None:
     drafter.accept_lens = 42  # not a list
     rt = DFlashRuntime(drafter=drafter, kind="dflash", drafter_repo="fake/repo")
 
-    with caplog.at_level(logging.WARNING, logger="rapid_mlx.speculative.dflash.runtime"):
+    with caplog.at_level(
+        logging.WARNING, logger="rapid_mlx.speculative.dflash.runtime"
+    ):
         rt.reset_accept_lens()
     assert any("unexpected type" in rec.message for rec in caplog.records), (
         "reset_accept_lens should warn (not crash) when accept_lens isn't a list"

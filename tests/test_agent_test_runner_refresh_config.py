@@ -77,7 +77,9 @@ def test_run_calls_setup_agent_config_before_tests():
 
     with (
         patch.object(AgentTestRunner, "_server_available", return_value=False),
-        patch("rapid_mlx.agents.adapter.setup_agent_config", side_effect=_capture_setup),
+        patch(
+            "rapid_mlx.agents.adapter.setup_agent_config", side_effect=_capture_setup
+        ),
     ):
         runner = AgentTestRunner(
             profile,
@@ -135,7 +137,9 @@ def test_run_refreshes_config_when_server_is_available():
     with (
         patch.object(AgentTestRunner, "_server_available", return_value=True),
         patch.object(AgentTestRunner, "_agent_binary_available", return_value=False),
-        patch("rapid_mlx.agents.adapter.setup_agent_config", side_effect=_capture_setup),
+        patch(
+            "rapid_mlx.agents.adapter.setup_agent_config", side_effect=_capture_setup
+        ),
         patch("rapid_mlx.agents.testing._test_plain_chat") as mock_chat,
     ):
         # Stub each test to return a synthetic PASS so run() proceeds
@@ -201,7 +205,9 @@ def test_file_config_agent_uses_an_isolated_home_for_setup_and_e2e(monkeypatch):
     with (
         patch.object(AgentTestRunner, "_server_available", return_value=True),
         patch.object(AgentTestRunner, "_agent_binary_available", return_value=True),
-        patch("rapid_mlx.agents.adapter.setup_agent_config", side_effect=_capture_setup),
+        patch(
+            "rapid_mlx.agents.adapter.setup_agent_config", side_effect=_capture_setup
+        ),
         patch(
             "rapid_mlx.agents.testing._test_plain_chat",
             return_value=TestResult("plain_chat", TestStatus.PASS),
@@ -239,7 +245,9 @@ def test_agent_without_home_env_still_uses_isolated_home(monkeypatch):
     with (
         patch.object(AgentTestRunner, "_server_available", return_value=True),
         patch.object(AgentTestRunner, "_agent_binary_available", return_value=True),
-        patch("rapid_mlx.agents.adapter.setup_agent_config", side_effect=_capture_setup),
+        patch(
+            "rapid_mlx.agents.adapter.setup_agent_config", side_effect=_capture_setup
+        ),
         patch(
             "rapid_mlx.agents.testing._test_plain_chat",
             return_value=TestResult("plain_chat", TestStatus.PASS),

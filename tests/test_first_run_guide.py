@@ -403,7 +403,9 @@ def test_autoselected_starter_still_runs_disk_gate_in_prefetch(
     # return is naturally skipped — no need to patch os.
     monkeypatch.setattr(cli, "_check_disk_space", _fake_disk)
     monkeypatch.setattr(cli, "_try_mirror_prefetch", lambda *a, **k: True)
-    monkeypatch.setattr("rapid_mlx._download_gate.is_repo_cached", lambda *a, **k: False)
+    monkeypatch.setattr(
+        "rapid_mlx._download_gate.is_repo_cached", lambda *a, **k: False
+    )
     cli._ensure_model_downloaded("mlx-community/Qwen3.5-4B-MLX-4bit")
     assert called["disk"] is True
 

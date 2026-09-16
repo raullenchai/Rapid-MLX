@@ -104,9 +104,7 @@ def test_shim_nested_submodule_aliases_same_module_object():
     legacy_cli = importlib.import_module("vllm_mlx.launch.cli")
     modern_cli = importlib.import_module("rapid_mlx.launch.cli")
     assert legacy_cli is modern_cli
-    assert (
-        sys.modules["vllm_mlx.launch.cli"] is sys.modules["rapid_mlx.launch.cli"]
-    )
+    assert sys.modules["vllm_mlx.launch.cli"] is sys.modules["rapid_mlx.launch.cli"]
 
 
 def test_shim_preserves_target_module_import_metadata():

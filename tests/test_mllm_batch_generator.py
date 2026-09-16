@@ -748,7 +748,9 @@ def test_step_homogeneous_requests_call_shared_sampler_once(monkeypatch):
         make_sampler_calls.append(kwargs)
         return shared_sampler
 
-    monkeypatch.setattr("rapid_mlx.mllm_batch_generator.make_sampler", fake_make_sampler)
+    monkeypatch.setattr(
+        "rapid_mlx.mllm_batch_generator.make_sampler", fake_make_sampler
+    )
 
     gen = _make_step_stub_generator()
     requests = [
@@ -778,7 +780,9 @@ def test_step_homogeneous_requests_forward_min_p_and_top_k(monkeypatch):
         calls.append(kwargs)
         return lambda x: mx.zeros((x.shape[0],), dtype=mx.uint32)
 
-    monkeypatch.setattr("rapid_mlx.mllm_batch_generator.make_sampler", fake_make_sampler)
+    monkeypatch.setattr(
+        "rapid_mlx.mllm_batch_generator.make_sampler", fake_make_sampler
+    )
     gen = _make_step_stub_generator()
     requests = [
         MLLMBatchRequest(
@@ -923,7 +927,9 @@ def test_step_caches_shared_sampler_across_calls(monkeypatch):
         make_sampler_calls.append(kwargs)
         return lambda x: mx.zeros((x.shape[0],), dtype=mx.uint32)
 
-    monkeypatch.setattr("rapid_mlx.mllm_batch_generator.make_sampler", fake_make_sampler)
+    monkeypatch.setattr(
+        "rapid_mlx.mllm_batch_generator.make_sampler", fake_make_sampler
+    )
 
     gen = _make_step_stub_generator()
     requests = [
@@ -952,7 +958,9 @@ def test_step_param_change_invalidates_cached_sampler(monkeypatch):
         make_sampler_calls.append(kwargs)
         return lambda x: mx.zeros((x.shape[0],), dtype=mx.uint32)
 
-    monkeypatch.setattr("rapid_mlx.mllm_batch_generator.make_sampler", fake_make_sampler)
+    monkeypatch.setattr(
+        "rapid_mlx.mllm_batch_generator.make_sampler", fake_make_sampler
+    )
 
     gen = _make_step_stub_generator()
 
@@ -990,7 +998,9 @@ def test_step_heterogeneous_requests_use_per_row_loop(monkeypatch):
         make_sampler_calls.append(kwargs)
         return lambda x: mx.zeros((x.shape[0],), dtype=mx.uint32)
 
-    monkeypatch.setattr("rapid_mlx.mllm_batch_generator.make_sampler", fake_make_sampler)
+    monkeypatch.setattr(
+        "rapid_mlx.mllm_batch_generator.make_sampler", fake_make_sampler
+    )
 
     gen = _make_step_stub_generator()
     req_a = _make_sampling_request(0, 0.7, 0.95)
@@ -1025,7 +1035,9 @@ def test_step_b1_homogeneous_still_uses_shared_sampler(monkeypatch):
         make_sampler_calls.append(kwargs)
         return lambda x: mx.zeros((x.shape[0],), dtype=mx.uint32)
 
-    monkeypatch.setattr("rapid_mlx.mllm_batch_generator.make_sampler", fake_make_sampler)
+    monkeypatch.setattr(
+        "rapid_mlx.mllm_batch_generator.make_sampler", fake_make_sampler
+    )
 
     gen = _make_step_stub_generator()
     MLLMBatchGenerator._step(
@@ -1050,7 +1062,9 @@ def test_step_batch_uses_dataclass_defaults(monkeypatch):
         make_sampler_calls.append(kwargs)
         return lambda x: mx.zeros((x.shape[0],), dtype=mx.uint32)
 
-    monkeypatch.setattr("rapid_mlx.mllm_batch_generator.make_sampler", fake_make_sampler)
+    monkeypatch.setattr(
+        "rapid_mlx.mllm_batch_generator.make_sampler", fake_make_sampler
+    )
 
     gen = _make_step_stub_generator()
     # Build via positional defaults only — never overriding temp/top_p.
@@ -1079,7 +1093,9 @@ def test_step_heterogeneous_then_homogeneous_populates_shared(monkeypatch):
         make_sampler_calls.append(kwargs)
         return lambda x: mx.zeros((x.shape[0],), dtype=mx.uint32)
 
-    monkeypatch.setattr("rapid_mlx.mllm_batch_generator.make_sampler", fake_make_sampler)
+    monkeypatch.setattr(
+        "rapid_mlx.mllm_batch_generator.make_sampler", fake_make_sampler
+    )
 
     gen = _make_step_stub_generator()
 
