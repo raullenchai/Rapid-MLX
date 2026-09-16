@@ -296,19 +296,6 @@ PERSONAL_INTELLIGENCE_QUALIFICATIONS = (
             "docs/engineering/performance/2026-09-13-minicpm5-small-agent-harness-ab.md"
         ),
     ),
-    PersonalIntelligenceQualification(
-        id="minicpm5-2b-q8-v1",
-        public_identities=frozenset(
-            {"minicpm5-2b-8bit", "mlx-community/MiniCPM5-2B-8bit"}
-        ),
-        backing_identities=frozenset({"mlx-community/MiniCPM5-2B-8bit"}),
-        profile=MINICPM5_2B_PROFILE,
-        tool_call_parser="minicpm",
-        evidence=(
-            "docs/engineering/performance/"
-            "2026-09-16-personal-intelligence-remaining-builds-qualification.md"
-        ),
-    ),
 )
 
 
@@ -334,7 +321,6 @@ _PERSONAL_INTELLIGENCE_BY_PUBLIC_ID = _qualification_index()
 _MINICPM5_2B_CATALOG_IDENTITIES = frozenset(
     {
         "minicpm5-2b-4bit",
-        "minicpm5-2b-8bit",
         "openbmb/minicpm5-2b",
         "openbmb/minicpm5-2b-mlx",
         "mlx-community/minicpm5-2b-8bit",

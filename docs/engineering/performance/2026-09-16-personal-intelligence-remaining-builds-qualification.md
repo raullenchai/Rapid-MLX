@@ -32,7 +32,6 @@ record instead of falling back to the conservative local profile.
 | Qwen3.8-27B FP16 MTP | `qwen3.8-27b-fp16-mtp-v1` | `qwen3_coder_xml` | 15/15 |
 | Bonsai 27B 2-bit | `bonsai-27b-2bit-v1` | `hermes` | 15/15 |
 | Ling 3.0 Tiny Q4 | `ling-3.0-tiny-4bit-v1` | `glm47` | 15/15 |
-| MiniCPM5-2B Q8 | `minicpm5-2b-q8-v1` | `minicpm` | 15/15 |
 
 The Qwen3.8 upstream checkpoint must be served with both
 `--enable-auto-tool-choice` and `--tool-call-parser qwen3_coder_xml`. With the
@@ -51,7 +50,15 @@ Evidence files:
 - `reports/benchmarks/personal-intelligence-qwen3.8-27b-4bit-fp16.json`
 - `reports/benchmarks/personal-intelligence-bonsai-27b-2bit.json`
 - `reports/benchmarks/personal-intelligence-ling-3.0-tiny-4bit.json`
-- `reports/benchmarks/personal-intelligence-minicpm5-2b-8bit.json`
+
+## Held-out MiniCPM5-2B Q8
+
+The MiniCPM5-2B Q8 receipt is 15/15, but its declared source revision precedes
+the PR that introduces `minicpm5-2b-q8-v1`; the model card therefore could only
+have observed an uncommitted candidate record. Reproducibility cannot be
+established from that receipt, so Q8 remains held out under fail-closed rules.
+Remove the receipt from this document and requalify the exact alias/backing
+artifact against a committed revision before adding the Q8 record or alias.
 
 ## Failed builds, held out
 

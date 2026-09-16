@@ -118,34 +118,22 @@ def test_usage_union_has_an_explicit_candidate_profile(model, profile_name):
 
 
 def test_personal_intelligence_requires_a_qualified_model_profile():
-    for model, backing_model in (
-        ("openbmb/MiniCPM5-2B-MLX", "openbmb/MiniCPM5-2B-MLX"),
-        ("minicpm5-2b-4bit", "openbmb/MiniCPM5-2B-MLX"),
-        ("mlx-community/MiniCPM5-2B-8bit", "mlx-community/MiniCPM5-2B-8bit"),
-        ("minicpm5-2b-8bit", "mlx-community/MiniCPM5-2B-8bit"),
+    for model in (
+        "minicpm5-2b-4bit",
+        "openbmb/MiniCPM5-2B-MLX",
     ):
         profile = resolve_personal_intelligence_profile(
             model,
-            backing_model=backing_model,
+            backing_model="openbmb/MiniCPM5-2B-MLX",
             tool_call_parser="minicpm",
         )
         assert profile is not None
         assert profile.name == "minicpm5-2b"
 
-    # The alias cannot borrow the Q4 record when it points at Q8.
+    # Q8 shares the parser and harness, but not Q4's strict receipt.
     assert (
         resolve_personal_intelligence_profile(
-            "minicpm5-2b-8bit",
-            backing_model="openbmb/MiniCPM5-2B-MLX",
-            tool_call_parser="minicpm",
-        )
-        is None
-    )
-    assert (
-        resolve_personal_intelligence_profile(
-            "minicpm5-2b-4bit",
-            backing_model="mlx-community/MiniCPM5-2B-8bit",
-            tool_call_parser="minicpm",
+            "mlx-community/MiniCPM5-2B-8bit", tool_call_parser="minicpm"
         )
         is None
     )

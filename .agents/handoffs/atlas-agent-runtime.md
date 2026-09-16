@@ -28,7 +28,7 @@
   tool surface and remove mechanical argument generation from small models.
 - Live 15/15 receipts now qualify Qwen3.5 4B Q8, Qwen3.5 9B Q8, Qwen3.6 35B Q4,
   Qwen3.6 27B Q4, all four Qwen3.8 27B variants, Bonsai 27B, Ling 3.0 Tiny,
-  and MiniCPM5-2B Q8 in addition to the prior support set.
+  in addition to the prior support set.
 - Codex review found and closed parser, backing-weight, cross-quant,
   repository-evidence, explicit no-network, pagination, multi-source, and
   ranked-URL selection gaps.

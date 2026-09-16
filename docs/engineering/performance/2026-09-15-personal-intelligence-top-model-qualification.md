@@ -58,7 +58,7 @@ normalized, but extra content is still rejected.
 
 | Model | Build(s) in scope | Parser | Status |
 |---|---|---|---|
-| MiniCPM5-2B | `minicpm5-2b-4bit` / `openbmb/MiniCPM5-2B-MLX`; separately `mlx-community/MiniCPM5-2B-8bit` | `minicpm` | Q4 passed 15/15 locally; Q8 passed 15/15 on Mac Studio |
+| MiniCPM5-2B | `minicpm5-2b-4bit` / `openbmb/MiniCPM5-2B-MLX`; separately `mlx-community/MiniCPM5-2B-8bit` | `minicpm` | Q4 passed 15/15 locally; Q8 remains held out pending a committed-revision requalification |
 | Qwen3.5-4B | `qwen3.5-4b-4bit`; `qwen3.5-4b-8bit` | `hermes` | both builds passed 15/15; see the 2026-09-16 remaining-build matrix |
 | Qwen3.5-9B | `qwen3.5-9b-4bit`; `qwen3.5-9b-8bit` | `hermes` | both builds passed 15/15 on Mac Studio |
 | Qwen3.8-27B | `qwen3.8-27b-4bit` (Rapid MTP); raw `mlx-community/Qwen3.8-27B-4bit`; `qwen3.8-27b-mixed-3.5bpw`; `qwen3.8-27b-4bit-fp16` | `qwen3_coder_xml` | all four builds passed 15/15 on Mac Studio; see the 2026-09-16 remaining-build matrix |
