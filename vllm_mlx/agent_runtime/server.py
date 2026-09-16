@@ -217,7 +217,8 @@ _EXPLICIT_SEARCH_ACTION = re.compile(
     re.IGNORECASE,
 )
 _EXPLICIT_SEARCH_QUERY = re.compile(
-    r"\b(?:search|browse)(?:\s+(?:the\s+)?(?:web|internet|online))?\s+"
+    r"(?<!using\s)\b(?:search|browse)"
+    r"(?:\s+(?:the\s+)?(?:web|internet|online))?\s+"
     r"(?:for\s+)?(?P<en>[^\n;]+)|"
     r"\b(?:look\s+up|find\s+online)\s+(?P<lookup>[^\n;]+)|"
     r"(?:搜索|上网查|联网查)(?:一下|下)?(?:关于)?(?P<zh>[^\n；]+)",
@@ -642,8 +643,9 @@ def _planned_web_search_query(goal: str) -> str:
         flags=re.IGNORECASE,
     )
     query = re.split(
-        r",\s*(?:then\s+)?(?:answer|respond|reply|summari[sz]e|write|"
-        r"format|include|use)\b|(?:，|；)(?:然后)?(?:回答|回复|总结|写|格式|包含|使用)",
+        r",\s*(?:then\s+)?(?:answer|respond|reply|summari[sz]e|write|open|"
+        r"report|format|include|use)\b|(?:，|；)(?:然后)?"
+        r"(?:回答|回复|总结|写|打开|报告|格式|包含|使用)",
         query,
         maxsplit=1,
         flags=re.IGNORECASE,
