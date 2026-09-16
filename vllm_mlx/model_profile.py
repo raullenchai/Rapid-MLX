@@ -232,6 +232,11 @@ class ModelProfile:
     # loaded drafter's normalized config and fails closed on mismatch, avoiding
     # a misleading "DFlash enabled" server that loaded a different algorithm.
     dflash_algorithm: str | None = None
+    # Bench-qualified total verify width for this exact target/drafter pair.
+    # ``None`` retains the drafter's adaptive policy.  This is profile data,
+    # not a family inference: Apple-GPU verifier cost can make a narrower
+    # block faster even when the checkpoint was trained at a wider ceiling.
+    dflash_block_size: int | None = None
     # Recommended sampling defaults — curated per-family overrides that
     # sit above HF ``generation_config.json`` in the resolve chain (see
     # ``service/helpers.py``). Tuple-of-pairs (not dict) because the

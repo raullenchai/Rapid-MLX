@@ -2564,6 +2564,23 @@ def test_dflashruntime_accept_lens_tolerates_wrong_type(caplog) -> None:
     assert rt.accept_lens_snapshot() == []
 
 
+def test_dflashruntime_speculative_stats_snapshot() -> None:
+    from types import SimpleNamespace
+
+    from vllm_mlx.speculative.dflash.runtime import DFlashRuntime
+
+    drafter = SimpleNamespace(accept_lens=[2, 3], draft_lens=[4, 4])
+    rt = DFlashRuntime(drafter=drafter, kind="dflash", drafter_repo="fake/repo")
+
+    assert rt.speculative_stats_snapshot() == {
+        "rounds": 2,
+        "accepted_drafts": 5,
+        "drafted_tokens": 8,
+        "accepted_drafts_per_round": 2.5,
+        "acceptance_rate": 0.625,
+    }
+
+
 def test_runtime_algorithm_distinguishes_dflash2_from_dispatch_kind() -> None:
     """Both generations dispatch as kind=dflash; config identity is the receipt."""
     from types import SimpleNamespace
@@ -2597,6 +2614,37 @@ def test_load_runtime_fails_closed_on_algorithm_mismatch(monkeypatch) -> None:
     assert loaded.algorithm == "dflash2"
     with pytest.raises(RuntimeError, match="architecture mismatch"):
         runtime_module.load_runtime("known/drafter", expected_algorithm="dflash")
+
+
+def test_load_runtime_applies_qualified_fixed_block_size(monkeypatch) -> None:
+    import sys
+    import types
+    from types import SimpleNamespace
+
+    from vllm_mlx.speculative.dflash import runtime as runtime_module
+
+    drafter = SimpleNamespace(
+        config=SimpleNamespace(model_type="dflash2", block_size=8),
+        prefer_requested_block_size=False,
+    )
+    fake_speculative = types.ModuleType("mlx_vlm.speculative")
+    fake_drafters = types.ModuleType("mlx_vlm.speculative.drafters")
+    fake_drafters.load_drafter = lambda _repo, kind: (drafter, kind)
+    monkeypatch.setitem(sys.modules, "mlx_vlm.speculative", fake_speculative)
+    monkeypatch.setitem(sys.modules, "mlx_vlm.speculative.drafters", fake_drafters)
+    monkeypatch.setattr(runtime_module, "have_runtime", lambda: True)
+
+    runtime_module.load_runtime(
+        "known/drafter", expected_algorithm="dflash2", block_size=4
+    )
+
+    assert drafter.config.runtime_block_size == 4
+    assert drafter.prefer_requested_block_size is True
+
+    with pytest.raises(ValueError, match="between 2 and the trained width 8"):
+        runtime_module.load_runtime(
+            "known/drafter", expected_algorithm="dflash2", block_size=9
+        )
 
 
 def test_load_runtime_resolves_pinned_drafter_revision(monkeypatch) -> None:
@@ -2735,6 +2783,7 @@ def test_run_dflash_server_loads_models_on_executor_thread(monkeypatch) -> None:
             "target_revision": "d49462a9487464de69e2240d2bd65e50bb7d1cbc",
             "drafter_revision": "25ee0025ff950496a634e100b75c2db4515e9824",
             "expected_algorithm": "dflash",
+            "block_size": None,
         },
     )
     assert load_thread["load"].startswith("dflash-worker"), (

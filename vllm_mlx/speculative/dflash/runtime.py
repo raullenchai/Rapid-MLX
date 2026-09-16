@@ -17,6 +17,7 @@ Public surface:
 from __future__ import annotations
 
 import logging
+import os
 from dataclasses import dataclass
 from typing import Any
 
@@ -68,6 +69,24 @@ class DFlashRuntime:
             return []
         return list(accept_lens)
 
+    def speculative_stats_snapshot(self) -> dict[str, float | int]:
+        """Return the current request's draft acceptance diagnostics."""
+        accepted = self.accept_lens_snapshot()
+        drafted = getattr(self.drafter, "draft_lens", None)
+        drafted = list(drafted) if isinstance(drafted, list) else []
+        rounds = len(accepted)
+        accepted_total = float(sum(accepted))
+        drafted_total = int(sum(drafted)) if len(drafted) == rounds else 0
+        return {
+            "rounds": rounds,
+            "accepted_drafts": int(accepted_total),
+            "drafted_tokens": drafted_total,
+            "accepted_drafts_per_round": (accepted_total / rounds if rounds else 0.0),
+            "acceptance_rate": (
+                accepted_total / drafted_total if drafted_total else 0.0
+            ),
+        }
+
 
 def _runtime_algorithm(drafter: Any) -> str:
     """Return the concrete DFlash architecture loaded by mlx-vlm.
@@ -95,6 +114,7 @@ def load_runtime(
     target_revision: str | None = None,
     drafter_revision: str | None = None,
     expected_algorithm: str | None = None,
+    block_size: int | None = None,
 ) -> DFlashRuntime:
     """Lazy-import mlx-vlm's drafter loader and return a ``DFlashRuntime``.
 
@@ -123,6 +143,27 @@ def load_runtime(
         kind,
     )
     drafter, resolved_kind = load_drafter(load_source, kind=kind)
+    qualification_block_size = os.environ.get(
+        "RAPID_MLX_DFLASH_QUALIFICATION_BLOCK_SIZE"
+    )
+    requested_block_size = (
+        block_size if block_size is not None else qualification_block_size
+    )
+    if requested_block_size is not None:
+        requested = int(requested_block_size)
+        trained = int(drafter.config.block_size)
+        if not 2 <= requested <= trained:
+            raise ValueError(
+                "qualification DFlash block size must be between 2 and "
+                f"the trained width {trained}, got {requested}"
+            )
+        drafter.config.runtime_block_size = requested
+        # A qualification override is an explicit fixed-width experiment.
+        # DFlash2 otherwise starts at three tokens and adapts downward/upward,
+        # which makes an advertised width=5 run measure a different policy.
+        drafter.prefer_requested_block_size = True
+        log = logger.info if block_size is not None else logger.warning
+        log("Fixed DFlash runtime block size=%d", requested)
     algorithm = _runtime_algorithm(drafter)
     if expected_algorithm is not None and algorithm != expected_algorithm:
         raise RuntimeError(

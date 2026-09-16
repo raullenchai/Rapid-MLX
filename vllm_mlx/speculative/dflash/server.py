@@ -37,6 +37,7 @@ import atexit
 import concurrent.futures
 import json
 import logging
+import os
 import threading
 import time
 import uuid
@@ -804,7 +805,7 @@ def _build_app(
 
     @app.get("/healthz")
     async def healthz() -> dict[str, Any]:
-        return {
+        health = {
             "status": "ok",
             "engine": backend_name.lower().replace(" ", "-"),
             "algorithm": runtime.algorithm,
@@ -813,6 +814,9 @@ def _build_app(
             "target_revision": runtime.target_revision,
             "drafter_revision": runtime.drafter_revision,
         }
+        if os.environ.get("RAPID_MLX_DFLASH_QUALIFICATION_DIAGNOSTICS") == "1":
+            health["speculative"] = runtime.speculative_stats_snapshot()
+        return health
 
     @app.get(
         "/v1/models",
@@ -2176,6 +2180,7 @@ def run_dflash_server(
     reasoning_parser_name: str | None = "qwen3",
     experimental_opt_in: bool = False,
     expected_algorithm: str | None = None,
+    block_size: int | None = None,
 ) -> None:
     """Load the model + DFlash drafter via mlx-vlm and start uvicorn.
 
@@ -2249,6 +2254,18 @@ def run_dflash_server(
     # streams stay reachable for the lifetime of the process.
     def _load_all():
         t0 = time.perf_counter()
+        # Install Rapid's narrow GLM runtime compatibility before model
+        # construction. GLM-5.3 Q4 checkpoints need it to remap the
+        # quantized lm_head weight, scales, and biases into mlx-vlm's
+        # language_model namespace. Do not import the GLM implementation for
+        # unrelated target families (or test doubles).
+        normalized_repo = str(main_model_repo).lower().replace("-", "")
+        if "glm5.3" in normalized_repo or "glm53" in normalized_repo:
+            from vllm_mlx.patches.glm5_next_runtime import (
+                install_glm5_next_runtime_fix,
+            )
+
+            install_glm5_next_runtime_fix()
         load_kwargs = (
             {"revision": main_model_revision} if main_model_revision is not None else {}
         )
@@ -2259,6 +2276,7 @@ def run_dflash_server(
             target_revision=main_model_revision,
             drafter_revision=drafter_revision,
             expected_algorithm=expected_algorithm,
+            block_size=block_size,
         )
         return m, p, rt
 

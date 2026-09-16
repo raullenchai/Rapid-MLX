@@ -209,6 +209,7 @@ def _coerce(alias: str, value: object) -> AliasProfile:
             "dflash_target_revision",
             "dflash_draft_revision",
             "dflash_algorithm",
+            "dflash_block_size",
             "supports_ddtree",
             "ddtree_draft_model",
             "ddtree_speculative_tokens",
@@ -396,6 +397,17 @@ def _coerce(alias: str, value: object) -> AliasProfile:
         raise ValueError(
             f"alias {alias!r}: dflash_algorithm={dflash_algorithm!r} not in "
             f"{sorted(VALID_DFLASH_ALGORITHMS)}"
+        )
+    dflash_block_size = value.get("dflash_block_size")
+    if dflash_block_size is not None and (
+        isinstance(dflash_block_size, bool)
+        or not isinstance(dflash_block_size, int)
+        or dflash_block_size < 2
+    ):
+        raise ValueError(f"alias {alias!r}: dflash_block_size must be an integer >= 2")
+    if dflash_block_size is not None and not dflash_draft_model:
+        raise ValueError(
+            f"alias {alias!r}: dflash_block_size requires dflash_draft_model"
         )
     dflash_target_revision = value.get("dflash_target_revision")
     dflash_draft_revision = value.get("dflash_draft_revision")
@@ -729,6 +741,7 @@ def _coerce(alias: str, value: object) -> AliasProfile:
         dflash_target_revision=dflash_target_revision,
         dflash_draft_revision=dflash_draft_revision,
         dflash_algorithm=dflash_algorithm,
+        dflash_block_size=dflash_block_size,
         supports_ddtree=supports_ddtree,
         ddtree_draft_model=ddtree_draft_model,
         ddtree_speculative_tokens=ddtree_speculative_tokens,
