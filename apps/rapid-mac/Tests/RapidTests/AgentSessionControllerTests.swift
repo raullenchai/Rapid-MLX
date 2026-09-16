@@ -125,7 +125,7 @@ struct AgentSessionControllerTests {
             isError: true,
             executed: true
         ))
-        await Task.yield()
+        await controller._testingWaitForDriver()
 
         #expect(controller.phase == .cancelled)
         #expect(transport.toolSubmissions.isEmpty)

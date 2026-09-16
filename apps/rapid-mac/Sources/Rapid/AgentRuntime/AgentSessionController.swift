@@ -85,6 +85,7 @@ final class AgentSessionController {
     private var transport: (any AgentRuntimeTransport)?
     private var bearerToken: String?
     private var driverTask: Task<Void, Never>?
+    private var recentlyCancelledDriverTask: Task<Void, Never>?
     private var activeRunID: String?
     private var activeClientToolExecutor: ClientToolExecutor?
     private var generation = 0
@@ -168,6 +169,7 @@ final class AgentSessionController {
         errorMessage = nil
         activeRunID = nil
         activeClientToolExecutor = clientToolExecutor
+        recentlyCancelledDriverTask = nil
 
         let owner = WeakOwner(self)
         let task = Task {
@@ -337,7 +339,9 @@ final class AgentSessionController {
         let cancelledRunID = activeRunID ?? run?.id
         let cancelledBearer = bearerToken
         generation &+= 1
-        driverTask?.cancel()
+        let cancelledDriverTask = driverTask
+        cancelledDriverTask?.cancel()
+        recentlyCancelledDriverTask = cancelledDriverTask
         driverTask = nil
         lifetimeCleanup.clear()
         phase = .cancelled
@@ -364,11 +368,12 @@ final class AgentSessionController {
         bearerToken = nil
         activeRunID = nil
         activeClientToolExecutor = nil
+        recentlyCancelledDriverTask = nil
         lifetimeCleanup.clear()
     }
 
     func _testingWaitForDriver() async {
-        await driverTask?.value
+        await (driverTask ?? recentlyCancelledDriverTask)?.value
     }
 
     private static func drive(
