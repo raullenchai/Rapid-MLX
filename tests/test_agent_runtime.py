@@ -119,24 +119,16 @@ def test_usage_union_has_an_explicit_candidate_profile(model, profile_name):
 
 def test_personal_intelligence_requires_a_qualified_model_profile():
     for model in (
-        "minicpm5-2b-4bit",
         "openbmb/MiniCPM5-2B-MLX",
+        "mlx-community/MiniCPM5-2B-8bit",
     ):
         profile = resolve_personal_intelligence_profile(
             model,
-            backing_model="openbmb/MiniCPM5-2B-MLX",
+            backing_model=None,
             tool_call_parser="minicpm",
         )
         assert profile is not None
         assert profile.name == "minicpm5-2b"
-
-    # Q8 shares the parser and harness, but not Q4's strict receipt.
-    assert (
-        resolve_personal_intelligence_profile(
-            "mlx-community/MiniCPM5-2B-8bit", tool_call_parser="minicpm"
-        )
-        is None
-    )
 
     # Tool-capable and generic-runtime-compatible are not product qualification.
     assert resolve_personal_intelligence_profile("minicpm5-2b-4bit") is None

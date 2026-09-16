@@ -2451,5 +2451,14 @@
     "is_hybrid": true,
     "is_moe": true,
     "supports_spec_decode": false
+  },
+  "minicpm5-2b-8bit": {
+    "hf_path": "mlx-community/MiniCPM5-2B-8bit",
+    "is_text_only": true,
+    "tool_call_parser": "minicpm",
+    "reasoning_parser": "qwen3",
+    "is_hybrid": false,
+    "is_moe": false,
+    "supports_spec_decode": false
   }
 }
