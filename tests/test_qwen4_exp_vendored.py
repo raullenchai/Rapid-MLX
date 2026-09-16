@@ -16,8 +16,6 @@ from mlx_lm.models.gated_delta import gated_delta_update
 
 import rapid_mlx.models.qwen4_exp as qwen4_exp
 import rapid_mlx.models.qwen4_exp_cache as qwen4_exp_cache
-from scripts import qwen38_streaming_convert as converter
-from scripts.qwen38_streaming_convert import quantized_tensor_names
 from rapid_mlx.kernels import qwen4_fused_gdn_decode as fused_gdn
 from rapid_mlx.models.qwen4_exp import (
     GatedDeltaNet,
@@ -37,6 +35,8 @@ from rapid_mlx.models.qwen4_exp import (
     build_layer_multipliers,
 )
 from rapid_mlx.models.qwen4_exp_cache import QSAIndexCache
+from scripts import qwen38_streaming_convert as converter
+from scripts.qwen38_streaming_convert import quantized_tensor_names
 
 
 def _args(**overrides):

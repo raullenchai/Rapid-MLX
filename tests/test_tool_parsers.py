@@ -5,6 +5,23 @@ import json
 
 import pytest
 
+from rapid_mlx.api.tool_calling import parse_tool_calls
+from rapid_mlx.tool_parsers import (
+    AutoToolParser,
+    DeepSeekToolParser,
+    DeepSeekV3ToolParser,
+    FunctionaryToolParser,
+    GraniteToolParser,
+    HermesToolParser,
+    KimiToolParser,
+    LlamaToolParser,
+    MistralToolParser,
+    NemotronToolParser,
+    QwenToolParser,
+    ToolParserManager,
+    xLAMToolParser,
+)
+
 # This file is the Linux parser-matrix entry point. Import the focused
 # malformed-call regressions so changed-line coverage exercises the full
 # parser/postprocessor feedback path on every supported Python version.
@@ -22,22 +39,6 @@ from tests.test_hermes_malformed_tool_feedback import (  # noqa: F401
     test_stream_preserves_trailing_prose_once_when_it_shares_the_close_chunk,
     test_stream_valid_call_after_malformed_call_restores_prose_suppression,
     test_stream_valid_call_does_not_preserve_same_chunk_trailing_prose,
-)
-from rapid_mlx.api.tool_calling import parse_tool_calls
-from rapid_mlx.tool_parsers import (
-    AutoToolParser,
-    DeepSeekToolParser,
-    DeepSeekV3ToolParser,
-    FunctionaryToolParser,
-    GraniteToolParser,
-    HermesToolParser,
-    KimiToolParser,
-    LlamaToolParser,
-    MistralToolParser,
-    NemotronToolParser,
-    QwenToolParser,
-    ToolParserManager,
-    xLAMToolParser,
 )
 
 

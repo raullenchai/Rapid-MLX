@@ -67,7 +67,7 @@ def mtp_model_identity_digest() -> str:
     file by size and SHA-256, so this digest binds the same pinned revision and
     allow-list without reading or downloading the files.
     """
-    from vllm_mlx.catalog import rcj_digest
+    from rapid_mlx.catalog import rcj_digest
 
     components = [
         {

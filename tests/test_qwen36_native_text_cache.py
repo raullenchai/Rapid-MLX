@@ -14,7 +14,6 @@ pytestmark = pytest.mark.requires_mlx
 import mlx.core as mx
 from mlx_lm.models.cache import ArraysCache, BatchKVCache, KVCache
 
-from scripts.benchmark_qwen36_native_text_cache import _behavioral_pass
 from rapid_mlx.engine.batched import (
     BatchedEngine,
     Qwen36NativeCacheTextWrapper,
@@ -22,6 +21,7 @@ from rapid_mlx.engine.batched import (
     _should_start_qwen36_native_text_cache,
     _supports_qwen36_native_text_cache,
 )
+from scripts.benchmark_qwen36_native_text_cache import _behavioral_pass
 
 
 @pytest.mark.parametrize(

@@ -1006,21 +1006,21 @@ def _deepseek_v41_stream_generate(*args: Any, **kwargs: Any) -> Any:
     implementation.  A real benchmark still resolves the exact product
     runtime here before its first token.
     """
-    from vllm_mlx.models.deepseek_v41_native.serving import stream_generate
+    from rapid_mlx.models.deepseek_v41_native.serving import stream_generate
 
     return stream_generate(*args, **kwargs)
 
 
 def _deepseek_v41_load_product_runtime(*args: Any, **kwargs: Any) -> Any:
     """Load the pinned product runtime behind the same no-MLX boundary."""
-    from vllm_mlx.models.deepseek_v41_native.serving import load_product_runtime
+    from rapid_mlx.models.deepseek_v41_native.serving import load_product_runtime
 
     return load_product_runtime(*args, **kwargs)
 
 
 def _deepseek_v41_input_limit() -> int:
     """Return the qualified product limit without importing MLX on Linux."""
-    from vllm_mlx.models.deepseek_v41_native.serving import MAX_INPUT_TOKENS
+    from rapid_mlx.models.deepseek_v41_native.serving import MAX_INPUT_TOKENS
 
     return MAX_INPUT_TOKENS
 
@@ -1078,7 +1078,7 @@ class _DeepSeekV41BenchmarkAdapter:
     async def stream_outputs(
         self, request_id: str, timeout: float | None = None
     ) -> AsyncIterator[Any]:
-        from vllm_mlx.request import RequestOutput
+        from rapid_mlx.request import RequestOutput
 
         prompt, sampling = self._requests.pop(request_id)
         iterator = _deepseek_v41_stream_generate(
@@ -1125,7 +1125,7 @@ class _DeepSeekV41BenchmarkAdapter:
 
 
 def _is_deepseek_v41_benchmark_target(repo_id: str) -> bool:
-    from vllm_mlx.models.deepseek_v41_native.artifacts import is_product_target
+    from rapid_mlx.models.deepseek_v41_native.artifacts import is_product_target
 
     return is_product_target(repo_id)
 
@@ -1133,7 +1133,7 @@ def _is_deepseek_v41_benchmark_target(repo_id: str) -> bool:
 def _text_speculative_execution(repo_id: str) -> dict[str, Any] | None:
     if not _is_deepseek_v41_benchmark_target(repo_id):
         return None
-    from vllm_mlx.models.deepseek_v41_native.artifacts import (
+    from rapid_mlx.models.deepseek_v41_native.artifacts import (
         mtp_model_identity_digest,
     )
 
@@ -1148,7 +1148,7 @@ def _with_v41_sidecar_identity(
     primary: dict[str, Any], mtp_snapshot_path: str
 ) -> dict[str, Any]:
     """Record the external DSpark sidecar beside the target checkpoint."""
-    from vllm_mlx.models.deepseek_v41_native.artifacts import MTP_REPO
+    from rapid_mlx.models.deepseek_v41_native.artifacts import MTP_REPO
 
     combined = copy.deepcopy(primary)
     sidecar = unresolved_model_identity(
@@ -1253,7 +1253,7 @@ async def _text_measurements(
             return candidate, tokenizer
 
         if use_v41_runtime:
-            from vllm_mlx.models.deepseek_v41_native.artifacts import (
+            from rapid_mlx.models.deepseek_v41_native.artifacts import (
                 MTP_REPO,
                 MTP_REVISION,
                 TARGET_REVISION,

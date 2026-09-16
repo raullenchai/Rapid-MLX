@@ -285,9 +285,9 @@ def test_mtp_generate_step_owns_stream_after_second_resident_pollution():
     """
     _pollute_generation_stream_from_worker()
 
-    from tests.test_mtp_spec_decode import _MockedQwen35Model
     from rapid_mlx.spec_decode.mtp.accept_counter import MTPAcceptCounter
     from rapid_mlx.spec_decode.mtp.generator import mtp_generate_step
+    from tests.test_mtp_spec_decode import _MockedQwen35Model
 
     polluted = sys.modules["mlx_lm.generate"].generation_stream
     try:

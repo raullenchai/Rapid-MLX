@@ -179,7 +179,10 @@ class TestVideoFrameExtraction:
     def test_save_frames_to_temp(self, test_video_path):
         """Test saving frames to temp files."""
         pytest.importorskip("cv2")
-        from rapid_mlx.models.mllm import extract_video_frames_smart, save_frames_to_temp
+        from rapid_mlx.models.mllm import (
+            extract_video_frames_smart,
+            save_frames_to_temp,
+        )
 
         frames = extract_video_frames_smart(test_video_path, fps=1.0, max_frames=2)
         paths = save_frames_to_temp(frames)

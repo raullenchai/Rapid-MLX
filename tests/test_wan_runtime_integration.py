@@ -30,13 +30,13 @@ import mlx.nn as nn
 import mlx_video.generate_wan as wan_generator
 
 import rapid_mlx.video.wan_diffusers as wan_diffusers
-from tests.test_wan_diffusers import _layout
 from rapid_mlx.video.wan import WanVideoEngine
 from rapid_mlx.video.wan_diffusers import (
     _load_sharded,
     _scoped_generate_function,
     _transformer_key,
 )
+from tests.test_wan_diffusers import _layout
 
 _WAN_ENV_KEYS = (
     "RAPID_MLX_WAN_MODEL_DIR",
