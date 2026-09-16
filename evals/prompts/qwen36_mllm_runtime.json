@@ -1,6 +1,6 @@
 {
   "schema_version": 1,
-  "description": "Serialized-MLLM-lane runtime corpus for the singleton no-rebatch qualification. 21 cases (4 per category) built from tracked Desktop snapshot images. The primary deterministic gate is paired baseline/candidate token equality on the same exact build; the machine-readable checkers prevent two equally wrong outputs from passing. No natural-language golden responses are committed.",
+  "description": "Serialized-MLLM-lane runtime corpus for the singleton no-rebatch qualification. 22 cases: 20 media cases (4 per category) built from tracked Desktop snapshot images plus 2 text-only fallback cases. The primary deterministic gate is paired baseline/candidate token equality on the same exact build; the machine-readable checkers prevent two equally wrong outputs from passing. No natural-language golden responses are committed.",
   "images_root": "../..",
   "sampled_ab_case_ids": [
     "ocr-01",

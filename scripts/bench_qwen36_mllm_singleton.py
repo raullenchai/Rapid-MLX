@@ -103,6 +103,49 @@ def _delta(after: dict[str, Any], before: dict[str, Any], key: str) -> float:
     return float(after.get(key, 0.0)) - float(before.get(key, 0.0))
 
 
+def _lifecycle_passes(lifecycle: dict[str, Any], abort_iterations: int) -> bool:
+    """Return whether every requested lifecycle qualification succeeded."""
+
+    cancellation = lifecycle.get("cancellation", {})
+    recovery = lifecycle.get("recovery", {})
+    queued = lifecycle.get("queued_concurrency", {})
+    soak = lifecycle.get("abort_soak", {})
+    return bool(
+        cancellation.get("request_id_published")
+        and cancellation.get("accepted")
+        and cancellation.get("tokens_before_abort", 0) > 0
+        and recovery.get("exact")
+        and recovery.get("completion_tokens", 0) > 0
+        and queued.get("both_nonempty")
+        and queued.get("serialized")
+        and soak.get("pass")
+        and not soak.get("failures")
+        and soak.get("iterations") == abort_iterations
+    )
+
+
+def _hash_streams_exact(
+    off_samples: list[dict[str, Any]], auto_samples: list[dict[str, Any]]
+) -> bool:
+    """Require deterministic, corresponding output for every send stream."""
+
+    send_indexes = sorted(
+        {int(sample["send"]) for sample in off_samples + auto_samples}
+    )
+    if not send_indexes:
+        return False
+    for send in send_indexes:
+        off_hashes = {
+            sample["sha256"] for sample in off_samples if sample["send"] == send
+        }
+        auto_hashes = {
+            sample["sha256"] for sample in auto_samples if sample["send"] == send
+        }
+        if len(off_hashes) != 1 or len(auto_hashes) != 1 or off_hashes != auto_hashes:
+            return False
+    return True
+
+
 async def _run_case(
     engine: Any,
     case: dict[str, Any],
@@ -184,12 +227,13 @@ async def _run_phase(
         )
 
     by_case: dict[str, list[dict[str, Any]]] = {case["id"]: [] for case in cases}
-    for _ in range(pairs):
+    for pair in range(1, pairs + 1):
         for case in cases:
             for send in range(1, sends + 1):
                 sample = await _run_case(
                     engine, case, repo_root, max_tokens_override=max_tokens_override
                 )
+                sample["pair"] = pair
                 sample["send"] = send
                 by_case[case["id"]].append(sample)
     memory = await _memory_snapshot(engine)
@@ -246,6 +290,20 @@ async def _run_lifecycle(
     )
     result: dict[str, Any] = {}
 
+    # Capture the deterministic reference before cancellation. Comparing two
+    # post-abort requests could let persistent corruption make both outputs
+    # identically wrong.
+    recovery_case = by_id.get("ocr-01", cases[0])
+    recovery_messages = _messages(recovery_case, repo_root)
+    reference = await engine.chat(
+        messages=recovery_messages,
+        max_tokens=int(recovery_case["max_tokens"]),
+        temperature=0.0,
+        top_p=1.0,
+        enable_thinking=False,
+    )
+    reference_text = reference.raw_text or reference.text or ""
+
     # 1. Cancellation mid-generation.
     holder: list[str | None] = [None]
     stream = engine.stream_chat(
@@ -286,9 +344,8 @@ async def _run_lifecycle(
         "elapsed_s": time.perf_counter() - started,
     }
 
-    # 2. Recovery after cancellation, byte-compared against a fresh run.
-    recovery_case = by_id.get("ocr-01", cases[0])
-    recovery_messages = _messages(recovery_case, repo_root)
+    # 2. Recovery after cancellation, byte-compared against the clean
+    # pre-cancellation reference above.
     recovered = await engine.chat(
         messages=recovery_messages,
         max_tokens=int(recovery_case["max_tokens"]),
@@ -296,15 +353,7 @@ async def _run_lifecycle(
         top_p=1.0,
         enable_thinking=False,
     )
-    reference = await engine.chat(
-        messages=recovery_messages,
-        max_tokens=int(recovery_case["max_tokens"]),
-        temperature=0.0,
-        top_p=1.0,
-        enable_thinking=False,
-    )
     recovered_text = recovered.raw_text or recovered.text or ""
-    reference_text = reference.raw_text or reference.text or ""
     result["recovery"] = {
         "exact": recovered_text == reference_text,
         "completion_tokens": recovered.completion_tokens,
@@ -323,11 +372,24 @@ async def _run_lifecycle(
 
     media_cases = [case for case in cases if case.get("images")][:2]
     queued_started = time.perf_counter()
-    first, second = await asyncio.gather(queued(media_cases[0]), queued(media_cases[1]))
+    queued_tasks = [
+        asyncio.create_task(queued(media_cases[0])),
+        asyncio.create_task(queued(media_cases[1])),
+    ]
+    max_running_observed = 0
+    while not all(task.done() for task in queued_tasks):
+        max_running_observed = max(
+            max_running_observed,
+            int(engine.get_stats().get("num_running", 0)),
+        )
+        await asyncio.sleep(0.001)
+    first, second = await asyncio.gather(*queued_tasks)
     result["queued_concurrency"] = {
         "elapsed_s": time.perf_counter() - queued_started,
         "num_requests_processed": engine.get_stats().get("num_requests_processed"),
         "both_nonempty": bool(first) and bool(second),
+        "max_running_observed": max_running_observed,
+        "serialized": max_running_observed <= 1,
     }
 
     # 4. Randomized abort/recovery soak: abort at a random token count, then
@@ -497,26 +559,7 @@ async def _main() -> None:
                 continue
             # Compare cold and warm send streams separately so a warm-hit
             # divergence cannot hide behind the cold stream's hashes.
-            send_indexes = sorted(
-                {int(sample["send"]) for sample in off_samples + auto_samples}
-            )
-            exact = True
-            for send in send_indexes:
-                off_hashes = {
-                    sample["sha256"] for sample in off_samples if sample["send"] == send
-                }
-                auto_hashes = {
-                    sample["sha256"]
-                    for sample in auto_samples
-                    if sample["send"] == send
-                }
-                if (
-                    len(off_hashes) != 1
-                    or len(auto_hashes) != 1
-                    or off_hashes != auto_hashes
-                ):
-                    exact = False
-            per_case_exact[case_id] = exact
+            per_case_exact[case_id] = _hash_streams_exact(off_samples, auto_samples)
         result["exact_by_case"] = per_case_exact
         result["exact_cases"] = sum(per_case_exact.values())
         result["total_cases"] = len(per_case_exact)
@@ -618,6 +661,10 @@ async def _main() -> None:
         raise SystemExit(2)
     if args.pairs > 0 and not result.get("warm_qualified", True):
         raise SystemExit(3)
+    if args.lifecycle and not _lifecycle_passes(
+        result.get("lifecycle", {}), args.abort_iterations
+    ):
+        raise SystemExit(5)
 
 
 if __name__ == "__main__":
