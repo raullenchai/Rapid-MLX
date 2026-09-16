@@ -55,7 +55,11 @@ Evidence files:
 
 ## Failed builds, held out
 
-Two builds repeatedly passed 14/15 and remain disabled.
+Two builds repeatedly passed 14/15 and remain disabled. Their committed
+receipts preserve the full behavior results, but the model-card identity fields
+and qualification check were annotated after the run because those runs
+temporarily observed candidate records that this PR deliberately does not
+ship. Each annotated receipt carries a `review_note` explaining that edit.
 
 | Model | Receipt | Stable failure |
 |---|---|---|

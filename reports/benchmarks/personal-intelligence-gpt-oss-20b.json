@@ -8,8 +8,8 @@
     "os": "macOS 26.5.2 (25F84)",
     "runtime": "rapid-mlx 0.14.2 source 54c72e437e33d98643ff449197468f01a0f9337c; MLX 0.32.2; mlx-lm 0.31.3; Python 3.12.14",
     "source_revision": "54c72e437e33d98643ff449197468f01a0f9337c",
-    "server_command": "CHECKOUT=/Users/raullenstudio/work/rapid-mlx-pi-qual; git -C \"\" checkout 54c72e437e33d98643ff449197468f01a0f9337c; cd \"\"; RAPID_MLX_DISABLE_VERSION_CHECK=1 PYTHONPATH=$PWD .venv-pi/bin/rapid-mlx serve gpt-oss-20b --served-model-name gpt-oss-20b --host 127.0.0.1 --port 18950",
-    "suite_command": "python scripts/qualify_personal_intelligence.py gpt-oss-20b --base-url http://127.0.0.1:18950 --seeds 11,22,33 --timeout 120.0 --hardware 'Mac Studio Mac15,14, M3 Ultra, 256 GB' --os 'macOS 26.5.2 (25F84)' --runtime 'rapid-mlx 0.14.2 source 54c72e437e33d98643ff449197468f01a0f9337c; MLX 0.32.2; mlx-lm 0.31.3; Python 3.12.14' --source-revision 54c72e437e33d98643ff449197468f01a0f9337c --server-command 'CHECKOUT=/Users/raullenstudio/work/rapid-mlx-pi-qual; git -C \"\" checkout 54c72e437e33d98643ff449197468f01a0f9337c; cd \"\"; RAPID_MLX_DISABLE_VERSION_CHECK=1 PYTHONPATH=$PWD .venv-pi/bin/rapid-mlx serve gpt-oss-20b --served-model-name gpt-oss-20b --host 127.0.0.1 --port 18950' --expected-profile gpt-oss-20b --expected-parser harmony --expected-qualification gpt-oss-20b-mxfp4-q8-v1 --output reports/benchmarks/personal-intelligence-gpt-oss-20b.json"
+    "server_command": "CHECKOUT=/Users/raullenstudio/work/rapid-mlx-pi-qual; git -C \"$CHECKOUT\" checkout 54c72e437e33d98643ff449197468f01a0f9337c; cd \"$CHECKOUT\"; RAPID_MLX_DISABLE_VERSION_CHECK=1 PYTHONPATH=$PWD .venv-pi/bin/rapid-mlx serve gpt-oss-20b --served-model-name gpt-oss-20b --host 127.0.0.1 --port 18950",
+    "suite_command": "python scripts/qualify_personal_intelligence.py gpt-oss-20b --base-url http://127.0.0.1:18950 --seeds 11,22,33 --timeout 120.0 --hardware 'Mac Studio Mac15,14, M3 Ultra, 256 GB' --os 'macOS 26.5.2 (25F84)' --runtime 'rapid-mlx 0.14.2 source 54c72e437e33d98643ff449197468f01a0f9337c; MLX 0.32.2; mlx-lm 0.31.3; Python 3.12.14' --source-revision 54c72e437e33d98643ff449197468f01a0f9337c --server-command 'CHECKOUT=/Users/raullenstudio/work/rapid-mlx-pi-qual; git -C \"$CHECKOUT\" checkout 54c72e437e33d98643ff449197468f01a0f9337c; cd \"$CHECKOUT\"; RAPID_MLX_DISABLE_VERSION_CHECK=1 PYTHONPATH=$PWD .venv-pi/bin/rapid-mlx serve gpt-oss-20b --served-model-name gpt-oss-20b --host 127.0.0.1 --port 18950' --expected-profile gpt-oss-20b --expected-parser harmony --expected-qualification gpt-oss-20b-mxfp4-q8-v1 --output reports/benchmarks/personal-intelligence-gpt-oss-20b.json"
   },
   "tasks": [
     {
@@ -122,7 +122,7 @@
       "public_model": true,
       "profile": true,
       "parser": true,
-      "qualification": true
+      "qualification": false
     },
     "model_card": {
       "id": "gpt-oss-20b",
@@ -134,8 +134,8 @@
       "is_moe": true,
       "tool_call_parser": "harmony",
       "reasoning_parser": "harmony",
-      "personal_intelligence_profile": "gpt-oss-20b",
-      "personal_intelligence_qualification": "gpt-oss-20b-mxfp4-q8-v1",
+      "personal_intelligence_profile": null,
+      "personal_intelligence_qualification": null,
       "modality": "text",
       "serving_lane": "text",
       "serving_lane_reason": "text_checkpoint",
@@ -600,5 +600,6 @@
       "failure_code": null,
       "wall_seconds": 0.774
     }
-  ]
+  ],
+  "review_note": "Post-run identity annotation: the original run captured a model card while a temporary candidate qualification record was still installed. The shipped PR deliberately omits that record, so personal_intelligence_profile, personal_intelligence_qualification, and identity.checks.qualification are annotated to the shipped fail-closed state. The 14/15 behavior results and hold-out decision are unchanged; the original suite invocation is preserved in environment.suite_command."
 }
