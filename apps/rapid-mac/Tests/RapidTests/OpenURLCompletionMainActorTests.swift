@@ -187,6 +187,13 @@ struct OpenURLCompletionMainActorTests {
             file: "fixture.swift"
         )
         #expect(escapedMutation.first?.hopsFirst == false)
+
+        let parenthesizedCompletion = Self.openURLCompletionSites(
+            inCanonical:
+                "openURL(url,completion:{acceptedinTask{@MainActorin}})",
+            file: "fixture.swift"
+        )
+        #expect(parenthesizedCompletion.first?.hopsFirst == false)
     }
 
     // MARK: - Scanner
@@ -252,6 +259,12 @@ struct OpenURLCompletionMainActorTests {
             of: "openURL(", range: cursor..<canonical.endIndex
         ) {
             cursor = call.upperBound
+            if call.lowerBound > canonical.startIndex {
+                let previous = canonical[canonical.index(before: call.lowerBound)]
+                if previous.isLetter || previous.isNumber || previous == "_" {
+                    continue
+                }
+            }
             occurrence += 1
 
             // `openURL(` — the `(` is the last character of the match.
@@ -267,6 +280,15 @@ struct OpenURLCompletionMainActorTests {
             }
             let afterCall = canonical.index(after: closeParen)
             guard afterCall < canonical.endIndex, canonical[afterCall] == "{" else {
+                let arguments = canonical[canonical.index(after: openParen)..<closeParen]
+                if arguments.contains("completion:") || arguments.contains("{") {
+                    let unsupported =
+                        "<unsupported: use openURL's trailing-completion form so the actor guard can prove the hop>"
+                    sites.append(CallSite(
+                        file: file, occurrence: occurrence, raw: unsupported,
+                        hopsFirst: false, mainActorBody: nil
+                    ))
+                }
                 continue  // no trailing closure: nothing to schedule wrongly
             }
             // `balancedBlock` fails closed on unresolved `/` (regex vs
