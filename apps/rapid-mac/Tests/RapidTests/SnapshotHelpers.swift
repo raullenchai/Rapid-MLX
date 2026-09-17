@@ -49,13 +49,30 @@ func assertSnapshot<V: View>(
     host.frame = CGRect(origin: .zero, size: size)
     host.layoutSubtreeIfNeeded()
 
-    guard let rep = host.bitmapImageRepForCachingDisplay(in: host.bounds) else {
+    // Keep snapshots deterministic when tests run without an attached Retina
+    // window. `bitmapImageRepForCachingDisplay` otherwise inherits an implicit
+    // 1x scale in headless shells, while the same view renders at 2x from a
+    // normal developer session. All committed baselines use the documented
+    // 2x scale, so construct that backing store explicitly.
+    guard let rep = NSBitmapImageRep(
+        bitmapDataPlanes: nil,
+        pixelsWide: Int(size.width * 2),
+        pixelsHigh: Int(size.height * 2),
+        bitsPerSample: 8,
+        samplesPerPixel: 4,
+        hasAlpha: true,
+        isPlanar: false,
+        colorSpaceName: .calibratedRGB,
+        bytesPerRow: 0,
+        bitsPerPixel: 0
+    ) else {
         Issue.record(
-            "snapshot: NSHostingView produced no bitmap rep for \(name) at \(size)",
+            "snapshot: could not allocate a 2x bitmap rep for \(name) at \(size)",
             sourceLocation: sourceLocation
         )
         return
     }
+    rep.size = size
     host.cacheDisplay(in: host.bounds, to: rep)
 
     let snapshotDir = snapshotsDirectory()
