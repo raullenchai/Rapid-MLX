@@ -9,9 +9,45 @@ present, so fluent-but-unrelated output fails.
 
 from __future__ import annotations
 
+import json
 from pathlib import Path
 
 from scripts.bench_qwen36_media_prefix import _checker_pass
+
+
+def _summary_checker(conversation_id: str) -> dict:
+    manifest = json.loads(
+        (
+            Path(__file__).resolve().parents[1]
+            / "evals/prompts/qwen36_media_prefix_conversations.json"
+        ).read_text()
+    )
+    conversation = next(
+        item for item in manifest["conversations"] if item["id"] == conversation_id
+    )
+    return conversation["turns"][-1]["checker"]
+
+
+def test_sidebar_summaries_require_each_prior_answer() -> None:
+    conv04 = _summary_checker("conv-04")
+    assert not _checker_pass(
+        conv04, "New Chat, Search Chats, and Start Chatting have a press hint."
+    )
+    assert _checker_pass(
+        conv04, "New Chat, Search Chats, and Start Chatting sit beside a tiger mascot."
+    )
+
+    conv10 = _summary_checker("conv-10")
+    assert not _checker_pass(
+        conv10, "New Chat, Search Chats, and Start Chatting show a press hint."
+    )
+    assert not _checker_pass(
+        conv10, "New Chat, Search Chats, and Start Chatting use Command+N."
+    )
+    assert _checker_pass(
+        conv10,
+        "New Chat, Search Chats, and Start Chatting use Command+N beside a cartoon cat.",
+    )
 
 
 def test_any_requires_min_words():
