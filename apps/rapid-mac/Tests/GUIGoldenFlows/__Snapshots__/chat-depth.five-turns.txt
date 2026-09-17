@@ -13,13 +13,12 @@ AXApplication title="Rapid-MLX"
             AXButton id="Sidebar.Conversation.Pin.<uuid>" desc="Pin conversation" help="Pin conversation" enabled=true
             AXPopUpButton id="Sidebar.Conversation.Menu.<uuid>" desc="Conversation actions" enabled=true
             AXButton id="Sidebar.Conversation.<uuid>" desc="shape:prose write the opening of a story a…" enabled=true
-          AXImage id="Sidebar.Residency" desc="memorychip" enabled=true
           AXStaticText id="Sidebar.Residency" value=text enabled=true
-          AXStaticText id="Sidebar.Residency" value=text enabled=true
-          AXProgressIndicator id="Sidebar.Residency" value=number enabled=true
-          AXImage id="Sidebar.Residency" desc="Lock" enabled=true
-          AXStaticText id="Sidebar.Residency" value=text enabled=true
-          AXStaticText id="Sidebar.Residency" value=text enabled=true
+          AXProgressIndicator value=number enabled=true
+          AXButton id="Sidebar.Residency.Unload" desc="Unload model and free <size>" help="Unload model and free <size>" enabled=true
+          AXImage id="Sidebar.ResidentModel.<model>" desc="Lock" enabled=true
+          AXStaticText id="Sidebar.ResidentModel.<model>" value=text enabled=true
+          AXStaticText id="Sidebar.ResidentModel.<model>" value=text enabled=true
         AXSplitter value=number enabled=false
         AXGroup subrole=AXHostingView
           AXScrollArea
@@ -128,6 +127,7 @@ AXApplication title="Rapid-MLX"
             AXTextArea id="rapid.chat.compose" desc="Message compose field" value=empty
           AXButton id="ChatView.AddAttachments" desc="Add attachments" help="Add photos or files" enabled=true
           AXButton id="ChatView.ConversationInstructions" desc="Conversation system prompt" help="Conversation system prompt" enabled=true
+          AXButton id="ChatView.PersonalIntelligence.Toggle" desc="Personal Intelligence" value=text enabled=true
           AXPopUpButton id="ModelPickerBar.ModelMenu" desc="Model" help="Choose which model to run" value=text enabled=true
           AXButton id="ModelPickerBar.ModelInfo" desc="Show model details" help="Show model details" enabled=true
           AXButton id="ChatView.SendOrStopButton" desc="Send message" enabled=false
