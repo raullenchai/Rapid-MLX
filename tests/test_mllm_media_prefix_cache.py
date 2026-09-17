@@ -841,9 +841,9 @@ class TestStorePath:
             )
         digest = gen._media_identity_digest(req)
         assert digest not in gen._media_boundary_entries
-        # The publish decremented again: a request that never completes
-        # leaves no boundary behind, in the entries or the counters.
-        assert gen._media_boundary_stores == 0
+        # ``stores`` stays monotonic — it counts publishes, not live
+        # entries; the failed request leaves no reusable boundary.
+        assert gen._media_boundary_stores == 1
 
     def test_promotion_after_concurrent_clear_does_not_raise(self):
         gen = _stub_generator()
@@ -864,6 +864,41 @@ class TestStorePath:
         # promotion: no KeyError, no promotion.
         gen._media_boundary_entries.clear()
         gen._media_promote_entry(digest)
+
+    def test_clear_during_resume_clone_forces_a_cold_miss(self, monkeypatch):
+        import rapid_mlx.mllm_batch_generator as mlbg
+
+        gen = _stub_generator()
+        full_ids = _full_ids()
+        req = _make_request(
+            prompt="a" * 24,
+            pixel_values=mx.zeros((1, 2)),
+            prefix_boundary=20,
+            max_tokens=8,
+        )
+        gen._media_store(
+            req, _kv_leaves(), _ids(full_ids), len(full_ids) - 4, mx.array([3])
+        )
+        gen.language_model._rope_deltas = mx.array([3])
+        gen.language_model.layers = []
+        real_clone = mlbg._media_clone_leaves
+
+        def clearing_clone(source, **kwargs):
+            # A concurrent clear lands between the plan and the install.
+            gen.clear_prefix_cache(reset_stats=False)
+            return real_clone(source, **kwargs)
+
+        monkeypatch.setattr(mlbg, "_media_clone_leaves", clearing_clone)
+        out = gen._media_forward(
+            req, _ids(full_ids), _kv_leaves(), {"pixel_values": req.pixel_values}
+        )
+        assert out is not None
+        # The stale-generation resume degraded to a counted cold miss: the
+        # plan's hit was rolled back and the request ran one full forward.
+        assert gen._media_boundary_hits == 0
+        assert gen._media_boundary_misses == 1
+        assert len(gen.model.calls) == 1
+        assert gen.model.calls[0] == (full_ids[0], len(full_ids), True)
 
     def test_rope_probe_requires_a_real_consumption_operation(self):
         consume = MLLMBatchGenerator._media_rope_consumes_key

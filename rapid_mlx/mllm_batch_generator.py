@@ -1038,6 +1038,9 @@ class MLLMBatchGenerator:
         self._media_boundary_stores = 0
         self._media_boundary_budget_evictions = 0
         self._media_boundary_max_bytes = 0
+        # Bumped on every clear so an in-flight resume can detect that the
+        # store it planned against was emptied before it could install.
+        self._media_store_generation = 0
         # Request-owned MRoPE transaction: ``(had_position_ids, value,
         # had_rope_deltas, value)`` captured from the model before a media
         # request installs its boundary delta, restored before the next
@@ -1718,9 +1721,11 @@ class MLLMBatchGenerator:
     ) -> tuple[str, Any, int] | None:
         """Decide the media boundary action for one image-bearing request.
 
-        Returns ``("resume", entry, boundary)`` on a verified warm prefix,
-        ``("store", None, boundary)`` when this prefill should snapshot its
-        boundary, or None for the cold single forward. Every gate fails
+        Returns ``("resume", entry, boundary, generation)`` on a verified
+        warm prefix, ``("store", None, boundary, None)`` when this prefill
+        should snapshot its boundary, or None for the cold single forward.
+        The generation is the store's incarnation at lookup time: a caller
+        that finds it changed was planned against a since-cleared store. Every gate fails
         closed. At most one miss is counted per planned request: a stored
         candidate that fails strict verification counts the miss even when
         this request's own boundary turns out to be storable.
@@ -1767,10 +1772,13 @@ class MLLMBatchGenerator:
             self._media_boundary_misses += 1
             return None
         counted_miss = False
-        # Take the entry under the guard: ``clear_prefix_cache`` mutates the
-        # store from other threads and must not observe a half-read lookup.
+        # Take the entry and the store generation under the guard:
+        # ``clear_prefix_cache`` mutates the store from other threads and
+        # must not observe a half-read lookup. The generation lets the
+        # caller detect a clear that landed between this plan and install.
         with self._media_entries_guard():
             entry = self._media_boundary_entries.get(digest)
+            generation = getattr(self, "_media_store_generation", 0)
         if entry is not None:
             boundary = len(entry.token_ids)
             placeholder_ids = self._media_placeholder_token_ids()
@@ -1788,7 +1796,7 @@ class MLLMBatchGenerator:
                 # Promote on hit: frequently resumed media must not be
                 # evicted ahead of colder entries (LRU, not FIFO).
                 self._media_promote_entry(digest)
-                return ("resume", entry, boundary)
+                return ("resume", entry, boundary, generation)
             # A stored candidate that fails the strict prefix or placeholder
             # check is a clean miss — never a trim or a partial resume. This
             # request's own boundary may still be storable below.
@@ -1832,7 +1840,7 @@ class MLLMBatchGenerator:
             if not counted_miss:
                 self._media_boundary_misses += 1
             return None
-        return ("store", None, boundary)
+        return ("store", None, boundary, None)
 
     def _media_store(
         self,
@@ -1914,9 +1922,9 @@ class MLLMBatchGenerator:
         if digest is None:
             return
         with self._media_entries_guard():
+            # ``stores`` stays monotonic — it counts publishes, not live
+            # entries; the gauges report the live footprint.
             removed = self._media_boundary_entries.pop(digest, None)
-            if removed is not None:
-                self._media_boundary_stores -= 1
         if removed is not None:
             self._media_enforce_budget()
 
@@ -2476,6 +2484,12 @@ class MLLMBatchGenerator:
         if media_entries is not None:
             with self._media_entries_guard():
                 media_entries.clear()
+                # Invalidate resumes planned against the pre-clear store:
+                # an in-flight request re-checks this generation before it
+                # installs a snapshot's leaves.
+                self._media_store_generation = (
+                    getattr(self, "_media_store_generation", 0) + 1
+                )
             self._media_enforce_budget()
         if reset_stats:
             self._prefix_cache_hits = 0
@@ -2905,7 +2919,7 @@ class MLLMBatchGenerator:
         plan = self._media_boundary_plan(request, input_ids, cache)
         if plan is None:
             return self.model(input_ids, cache=cache, **kwargs)
-        action, entry, boundary = plan
+        action, entry, boundary, generation = plan
         full_ids = [int(v) for v in input_ids.reshape(-1).tolist()]
         if action == "resume":
             try:
@@ -2923,6 +2937,14 @@ class MLLMBatchGenerator:
                 # The plan counted a verified prefix, but the detached
                 # re-clone failed — degrade to a counted cold miss instead
                 # of an impossible hit.
+                self._media_boundary_hits -= 1
+                self._media_boundary_misses += 1
+                return self.model(input_ids, cache=cache, **kwargs)
+            if generation != getattr(self, "_media_store_generation", 0):
+                # A clear_prefix_cache landed between the plan and this
+                # install: the caller asked for an empty store, so the
+                # planned-against snapshot must not be revived. Degrade to
+                # a counted cold miss on the still-fresh cache.
                 self._media_boundary_hits -= 1
                 self._media_boundary_misses += 1
                 return self.model(input_ids, cache=cache, **kwargs)
@@ -2965,6 +2987,8 @@ class MLLMBatchGenerator:
                 self._media_mrope_restore()
                 from mlx_lm.models.cache import make_prompt_cache
 
+                # The same construction ``_process_prompts`` uses for a cold
+                # per-request cache — no other factory exists for this lane.
                 cache[:] = make_prompt_cache(self.language_model)
                 return self.model(input_ids, cache=cache, **prefix_kwargs)
             # Snapshot published: continue the suffix on the same live cache
