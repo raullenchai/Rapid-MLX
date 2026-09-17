@@ -899,8 +899,11 @@ final class DictationController {
     /// hear that a pull landed.
     ///
     /// Called by the view when the pull reaches `.completed`.
-    func modelDownloadDidFinish() async {
+    func modelDownloadDidFinish(alias completedAlias: String? = nil) async {
+        let completedAlias = completedAlias ?? modelAlias
+        guard completedAlias == modelAlias else { return }
         await refreshModelCacheState()
+        guard completedAlias == modelAlias else { return }
         if isEnabled {
             // DownloadManager retains its completed job. A recreated view can
             // replay that completion, but a hot same-alias session must keep

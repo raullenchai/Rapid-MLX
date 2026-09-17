@@ -42,6 +42,10 @@ struct AudioView: View {
         viewModel.audioModels.first { $0.alias == selectedAlias }
     }
 
+    private var catalogRefreshKey: String {
+        "\(downloads.cacheGeneration)#\(selectedAlias)"
+    }
+
     /// One reducer owns precedence between catalog, pull, load, lane-ready and
     /// active-operation facts. Both Audio tabs use the same lifecycle as the
     /// Dictation setup surface, including stale-alias rejection.
@@ -57,16 +61,25 @@ struct AudioView: View {
         }
         let isLoading = runtimeModelLoadsInFlight[selectedAlias]?.isEmpty == false
             || server.isResidentLoadInFlight(selectedAlias)
+        var download = AudioReadinessState.downloadSnapshot(
+            alias: selectedAlias,
+            job: downloads.job(for: selectedAlias)
+        )
+        if download == nil,
+           modelLoadsInFlight.contains(selectedAlias),
+           selectedEntry?.cached == false {
+            download = .init(
+                alias: selectedAlias,
+                status: .running(detail: "Starting the download…", fraction: nil)
+            )
+        }
 
         return .resolve(.init(
             alias: selectedAlias,
             catalogLoaded: viewModel.catalogLoaded,
             cached: selectedEntry?.cached,
             sizeText: selectedEntry?.sizeOnDisk,
-            download: AudioReadinessState.downloadSnapshot(
-                alias: selectedAlias,
-                job: downloads.job(for: selectedAlias)
-            ),
+            download: download,
             loading: isLoading ? .init(
                 alias: selectedAlias,
                 detail: "Downloading or loading the audio model…"
@@ -118,11 +131,14 @@ struct AudioView: View {
         // Settings is a separate window, so this view can remain mounted
         // while an audio pull finishes. Refresh on the shared disk-cache
         // generation instead of keeping the pre-download catalog snapshot.
-        .task(id: downloads.cacheGeneration) {
+        .task(id: catalogRefreshKey) {
+            let refreshedAlias = selectedAlias
+            let completedBeforeRefresh =
+                downloads.job(for: refreshedAlias)?.status == .completed
             await viewModel.refreshCatalog()
-            clearUnverifiedCompletedDownload()
+            guard !Task.isCancelled, completedBeforeRefresh else { return }
+            clearUnverifiedCompletedDownload(alias: refreshedAlias)
         }
-        .onChange(of: selectedAlias) { _, _ in clearUnverifiedCompletedDownload() }
         .onChange(of: viewModel.mode) { _, _ in cancelVoicePreview() }
         .onDisappear { cancelVoicePreview() }
     }
@@ -622,12 +638,16 @@ struct AudioView: View {
         await viewModel.refreshCatalog()
     }
 
-    private func clearUnverifiedCompletedDownload() {
-        guard !selectedAlias.isEmpty,
-              downloads.job(for: selectedAlias)?.status == .completed,
-              selectedEntry?.cached == false else { return }
-        downloads.dismissJob(alias: selectedAlias)
-        viewModel.errorMessage = "The download finished, but Rapid couldn't find the model on disk. Try downloading it again."
+    private func clearUnverifiedCompletedDownload(alias: String) {
+        guard !alias.isEmpty,
+              downloads.job(for: alias)?.status == .completed,
+              viewModel.audioModels.first(where: { $0.alias == alias })?.cached == false else {
+            return
+        }
+        downloads.dismissJob(alias: alias)
+        if selectedAlias == alias {
+            viewModel.errorMessage = "The download finished, but Rapid couldn't find the model on disk. Try downloading it again."
+        }
     }
 
     @ViewBuilder

@@ -55,11 +55,13 @@ struct DictationView: View {
         // re-read the catalog so the row flips to "Ready on disk" and the
         // model warms without another visit to the pane.
         .task(id: modelDownloadStatusKey) {
-            guard case .completed = downloads.job(for: controller.modelAlias)?.status else { return }
-            await controller.modelDownloadDidFinish()
+            let completedAlias = controller.modelAlias
+            guard case .completed = downloads.job(for: completedAlias)?.status else { return }
+            await controller.modelDownloadDidFinish(alias: completedAlias)
             await viewModel.refreshCatalog()
-            if selectedModelEntry?.cached != true {
-                downloads.dismissJob(alias: controller.modelAlias)
+            guard !Task.isCancelled else { return }
+            if viewModel.audioModels.first(where: { $0.alias == completedAlias })?.cached != true {
+                downloads.dismissJob(alias: completedAlias)
             }
         }
         // TCC grants happen outside the app and emit no notification, so the

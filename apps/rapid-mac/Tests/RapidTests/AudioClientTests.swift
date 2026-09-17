@@ -400,6 +400,8 @@ struct AudioClientTests {
 }
 
 private final class AudioStubProtocol: URLProtocol, @unchecked Sendable {
+    // The containing suite is serialized. The request semaphore also provides
+    // the happens-before edge between the URL-loading callback and assertions.
     nonisolated(unsafe) static var requests: [URLRequest] = []
     nonisolated(unsafe) static var bodies: [Data] = []
     nonisolated(unsafe) static var response: (Int, [String: String], Data) = (200, [:], Data())
