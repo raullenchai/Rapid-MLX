@@ -392,6 +392,7 @@ class SpeculativePrefill:
         self.tokens = tokens
         self.state = None
         self.consumed = 0
+        self.chunks = []
 
     def start(self, model, target_cache, drafter, *, state=None, **_kwargs) -> None:
         self.forward = partial(
@@ -403,6 +404,14 @@ class SpeculativePrefill:
         if not self.kwargs:
             return
         mx = _mx()
+        if self.state is None:
+            # Speculative verification consumes only the target model's final
+            # hidden state. Retaining every layer for every bounded prefill
+            # chunk defeats the memory bound on long prompts.
+            hidden = output.hidden_states[-1]
+            mx.async_eval(hidden)
+            self.chunks.append(hidden)
+            return
         hidden = output.hidden_states[-1]
         end = self.consumed + hidden.shape[1]
         self.state.bonus = self.tokens[:, end : end + 1]
@@ -417,12 +426,18 @@ class SpeculativePrefill:
     def finish(self, output, first_bonus=None):
         if not self.kwargs:
             return output
-        # mlx-vlm 0.7.1 constructs this helper without prompt tokens and does
-        # not call ``start``. Its GLM policy consequently disables chunked MTP
-        # prefill; ``run_speculative_rounds`` below receives the complete
-        # prompt/hidden pair and creates request-owned state in one pass.
-        # A future upstream shell that supplies tokens and calls ``start``
-        # retains the incremental path without another compatibility fork.
+        if self.state is None and self.chunks:
+            mx = _mx()
+            combined = mx.concatenate([*self.chunks, output.hidden_states[-1]], axis=1)
+            output.hidden_states = [*output.hidden_states[:-1], combined]
+            self.chunks.clear()
+            return output
+        # mlx-vlm constructs this helper without prompt tokens and does not
+        # call ``start``. The chunk accumulator above therefore preserves the
+        # complete target-hidden sequence; ``run_speculative_rounds`` restores
+        # the original prompt tokens and creates request-owned state once.
+        # A future shell that supplies tokens and calls ``start`` retains the
+        # incremental path without another compatibility fork.
         if self.state is None:
             return output
         self.state.bonus = first_bonus.reshape(-1, 1)
@@ -554,6 +569,12 @@ def run_speculative_rounds(
         logits_processors = list(_LEGACY_PROCESSORS.get())
     if token_context is None:
         token_context = _LEGACY_TOKEN_CONTEXT.get()
+    prompt_tokens = input_ids
+    hidden = last_outputs.hidden_states[-1]
+    if token_context is not None and hidden.shape[1] != input_ids.shape[1]:
+        full_prompt = _mx().array(token_context, dtype=input_ids.dtype)
+        if full_prompt.shape[:2] == hidden.shape[:2]:
+            prompt_tokens = full_prompt
     target = getattr(model, "language_model", model)
     eos = getattr(target.config, "eos_token_id", None)
     eos = {eos} if isinstance(eos, int) else set(eos or [])
@@ -561,8 +582,8 @@ def run_speculative_rounds(
         model,
         draft_model,
         prompt_cache,
-        last_outputs.hidden_states[-1],
-        prompt_tokens=input_ids,
+        hidden,
+        prompt_tokens=prompt_tokens,
         first_bonus=first_token,
         max_tokens=max_tokens,
         draft_block_size=draft_block_size,
@@ -575,7 +596,9 @@ def run_speculative_rounds(
         for tokens, _metadata in rounds:
             yield tokens[0], None
     finally:
-        rounds.close()
+        close = getattr(rounds, "close", None)
+        if close is not None:
+            close()
 
 
 def speculative_prefill_kwargs(draft_kind, _drafter):

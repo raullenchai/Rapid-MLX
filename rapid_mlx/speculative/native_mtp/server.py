@@ -65,6 +65,7 @@ def run_native_mtp_server(
     cors_policy: Any | None = None,
     tool_call_parser: str | None = "qwen3_coder_xml",
     reasoning_parser_name: str | None = "qwen3",
+    prefill_step_size: int = 2048,
 ) -> None:
     """Load the immutable target/drafter pair and run the serial API server."""
 
@@ -119,6 +120,7 @@ def run_native_mtp_server(
             "max_tokens": max_tokens,
             "temperature": temperature,
             "top_p": top_p,
+            "prefill_step_size": prefill_step_size,
         }
         if temperature in (0, 0.0):
             kwargs.update(

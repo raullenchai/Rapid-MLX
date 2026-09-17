@@ -2975,6 +2975,14 @@ def _serve_native_mtp_if_requested(
     _check_disk_space(pair.drafter_repo, force=getattr(args, "force_disk_check", False))
     _check_memory_capacity(pair.target_repo, alias=alias_name)
     server_module._sync_config()
+    prefill_user_set_explicit = bool(
+        getattr(args, "_prefill_step_size_explicit", False)
+    )
+    prefill_step_size = _resolve_prefill_step_size(
+        model_name=alias_name,
+        configured=args.prefill_step_size,
+        user_set_explicit=prefill_user_set_explicit,
+    )
     run_native_mtp_server(
         pair=pair,
         host=args.host,
@@ -2995,6 +3003,7 @@ def _serve_native_mtp_if_requested(
             args.tool_call_parser if args.enable_auto_tool_choice else None
         ),
         reasoning_parser_name=args.reasoning_parser,
+        prefill_step_size=prefill_step_size,
     )
     return True
 
@@ -5168,8 +5177,8 @@ def serve_command(args):
     )
     for _dropped_flag in _legacy_prefix_cache_dropped_flags(args, sys.argv):
         print(f"  Warning: with --no-memory-aware-cache, {_dropped_flag}")
-    _prefill_user_set_explicit = "--prefill-step-size" in sys.argv or any(
-        a.startswith("--prefill-step-size=") for a in sys.argv
+    _prefill_user_set_explicit = bool(
+        getattr(args, "_prefill_step_size_explicit", False)
     )
     _prefill_step_size = _resolve_prefill_step_size(
         model_name=getattr(args, "_original_alias", None) or args.model,
@@ -11618,6 +11627,9 @@ def _parse_args_with_share_passthrough(
                 # share's authoritative parsed args (model + share flags); the
                 # denylist in share.cli then vets the passthrough.
                 probed._passthrough = passthrough_argv
+                probed._prefill_step_size_explicit = _argv_sets_prefill_step_size(
+                    head_argv
+                )
                 return probed
 
     # Everything else — non-share commands, ``share`` with no passthrough
@@ -11626,7 +11638,16 @@ def _parse_args_with_share_passthrough(
     # hard errors on unrecognized flags.
     args = parser.parse_args(raw_argv)
     args._passthrough = []
+    args._prefill_step_size_explicit = _argv_sets_prefill_step_size(raw_argv)
     return args
+
+
+def _argv_sets_prefill_step_size(raw_argv: list[str]) -> bool:
+    """Whether the argv actually parsed an explicit prefill chunk size."""
+
+    return "--prefill-step-size" in raw_argv or any(
+        value.startswith("--prefill-step-size=") for value in raw_argv
+    )
 
 
 def _resolve_cli_version() -> str:
