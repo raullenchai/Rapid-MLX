@@ -76,6 +76,49 @@ struct AudioReadinessStateTests {
         #expect(state == .failed(alias: Self.alias, message: "network lost"))
     }
 
+    @Test("runtime loading blocks model selection even before catalog refresh")
+    func runtimeLoadBlocksSelection() {
+        let state = AudioReadinessState.resolve(
+            Self.snapshot(
+                cached: false,
+                loading: .init(alias: Self.alias, detail: "Loading the audio model…")
+            ))
+
+        #expect(state == .loading(alias: Self.alias, detail: "Loading the audio model…"))
+        #expect(!state.allowsModelSelection)
+    }
+
+    @Test("disk download progress remains selectable during a download-and-start task")
+    func diskDownloadOutranksCombinedTask() {
+        let state = AudioReadinessState.resolve(
+            Self.snapshot(
+                cached: false,
+                download: .init(
+                    alias: Self.alias,
+                    status: .running(detail: "30%", fraction: 0.3)
+                ),
+                loading: .init(alias: Self.alias, detail: "Downloading or loading…")
+            ))
+
+        #expect(state == .downloading(alias: Self.alias, detail: "30%", fraction: 0.3))
+        #expect(state.allowsModelSelection)
+    }
+
+    @Test("catalog proof prevents a stale running download from regressing readiness")
+    func cachedModelIgnoresStaleDownloadProgress() {
+        let state = AudioReadinessState.resolve(
+            Self.snapshot(
+                cached: true,
+                download: .init(
+                    alias: Self.alias,
+                    status: .running(detail: "99%", fraction: 0.99)
+                ),
+                readyAlias: Self.alias
+            ))
+
+        #expect(state == .ready(alias: Self.alias))
+    }
+
     @Test("cancelled downloads return to a retryable not-downloaded state")
     func cancelledDownloadIsRetryable() {
         let state = AudioReadinessState.resolve(

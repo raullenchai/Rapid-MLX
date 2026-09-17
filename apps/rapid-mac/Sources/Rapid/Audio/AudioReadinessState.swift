@@ -106,8 +106,14 @@ enum AudioReadinessState: Equatable {
         if isReady, let matchingActivity {
             return .active(alias: alias, activity: matchingActivity)
         }
-        if case .running(let detail, let fraction) = matchingDownload {
+        if !cached, case .failed(let message) = matchingDownload {
+            return .failed(alias: alias, message: message)
+        }
+        if !cached, case .running(let detail, let fraction) = matchingDownload {
             return .downloading(alias: alias, detail: detail, fraction: fraction)
+        }
+        if let matchingLoad {
+            return .loading(alias: alias, detail: matchingLoad.detail)
         }
         if !cached {
             if case .completed = matchingDownload {
@@ -115,14 +121,6 @@ enum AudioReadinessState: Equatable {
                 // catalog refresh owns the transition to `downloaded`.
                 return .verifyingDownload(alias: alias)
             }
-            if case .failed(let message) = matchingDownload {
-                return .failed(alias: alias, message: message)
-            }
-        }
-        if let matchingLoad {
-            return cached
-                ? .loading(alias: alias, detail: matchingLoad.detail)
-                : .downloading(alias: alias, detail: "Starting the download…", fraction: nil)
         }
         if isReady, cached { return .ready(alias: alias) }
 

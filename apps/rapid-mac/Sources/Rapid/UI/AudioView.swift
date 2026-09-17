@@ -54,15 +54,6 @@ struct AudioView: View {
         } else {
             nil
         }
-        let activity: AudioReadinessState.Activity? = if viewModel.isSynthesizing {
-            .synthesizing
-        } else if viewModel.isLoadingVoices {
-            .loadingVoices
-        } else if viewModel.previewingVoice != nil {
-            .previewingVoice
-        } else {
-            nil
-        }
         let isLoading = modelLoadsInFlight.contains(selectedAlias)
             || server.isResidentLoadInFlight(selectedAlias)
 
@@ -80,7 +71,7 @@ struct AudioView: View {
                 detail: "Downloading or loading the audio model…"
             ) : nil,
             readyAlias: readyAlias,
-            activity: activity.map { .init(alias: selectedAlias, activity: $0) }
+            activity: viewModel.activeOperation
         ))
     }
 

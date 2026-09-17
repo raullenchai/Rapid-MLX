@@ -315,6 +315,7 @@ struct DictationView: View {
 
     private var audioReadinessState: AudioReadinessState {
         let alias = controller.modelAlias
+        let activeAlias = controller.activeModelAlias
         let activity: AudioReadinessState.Activity? = switch controller.phase {
         case .starting: .startingCapture
         case .recording: .recording
@@ -336,10 +337,14 @@ struct DictationView: View {
                 job: downloads.job(for: alias)
             ),
             loading: controller.phase == .preparingModel
-                ? .init(alias: alias, detail: "The local model is warming up…")
+                ? activeAlias.map {
+                    .init(alias: $0, detail: "The local model is warming up…")
+                }
                 : nil,
-            readyAlias: isRuntimeReady ? alias : nil,
-            activity: activity.map { .init(alias: alias, activity: $0) }
+            readyAlias: isRuntimeReady ? activeAlias : nil,
+            activity: activity.flatMap { activity in
+                activeAlias.map { .init(alias: $0, activity: activity) }
+            }
         ))
     }
 
