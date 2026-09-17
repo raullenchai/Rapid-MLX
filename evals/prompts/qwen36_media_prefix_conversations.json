@@ -1658,11 +1658,21 @@
             "required": [
               "ready",
               "qwen3.6-27b",
-              "stop",
-              "question"
+              "stop"
             ],
             "min_words": 200,
             "required_any_groups": [
+              [
+                [
+                  "question"
+                ],
+                [
+                  "help"
+                ],
+                [
+                  "details"
+                ]
+              ],
               [
                 [
                   "information"
