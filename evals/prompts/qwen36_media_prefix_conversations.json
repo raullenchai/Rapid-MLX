@@ -1226,19 +1226,15 @@
             "required_any_groups": [
               [
                 [
+                  "qwen3.6-27b",
+                  "ready"
+                ]
+              ],
+              [
+                [
+                  "fake",
+                  "alias",
                   "idle"
-                ],
-                [
-                  "fake"
-                ],
-                [
-                  "models"
-                ],
-                [
-                  "statuses"
-                ],
-                [
-                  "qwen3.6"
                 ]
               ],
               [
@@ -1251,10 +1247,6 @@
                 [
                   "dark",
                   "gray"
-                ],
-                [
-                  "gray",
-                  "square"
                 ]
               ]
             ]
@@ -1475,10 +1467,9 @@
             "required_any_groups": [
               [
                 [
-                  "skip"
-                ],
-                [
-                  "checkmark"
+                  "pick a model",
+                  "skip",
+                  "next"
                 ]
               ],
               [
@@ -1584,9 +1575,6 @@
                 ],
                 [
                   "mascot"
-                ],
-                [
-                  "search"
                 ]
               ]
             ]

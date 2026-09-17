@@ -1694,27 +1694,6 @@ class MLLMBatchGenerator:
         cached[key] = result
         return result
 
-    def _media_target_consumes_rope(self, target: Any) -> bool:
-        """Whether ``target.__call__`` accepts ``**kwargs`` and consumes
-        ``rope_deltas`` in obviously-live code. Memoized per class."""
-        cached = getattr(self, "_media_rope_targets", None)
-        if cached is None:
-            cached = self._media_rope_targets = {}
-        key = type(target)
-        if key in cached:
-            return cached[key]
-        result = False
-        call = getattr(type(target), "__call__", None)
-        if call is not None and _accepts_var_kwargs(call):
-            try:
-                src = inspect.getsource(call)
-            except (OSError, TypeError, SyntaxError):
-                src = None
-            if src is not None:
-                result = self._media_rope_consumes_key(src)
-        cached[key] = result
-        return result
-
     def _media_target_plumbs_rope(self, target: Any) -> bool:
         """Whether a suffix through ``target`` can carry ``rope_deltas``.
 
