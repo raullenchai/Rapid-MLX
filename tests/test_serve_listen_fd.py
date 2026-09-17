@@ -241,6 +241,7 @@ def test_run_uvicorn_passes_host_port_when_listen_fd_unset(monkeypatch):
     assert captured_kwargs.get("timeout_keep_alive") == 30
 
 
+@pytest.mark.requires_mlx
 def test_serve_command_hard_exits_immediately_after_uvicorn_returns(
     stub_heavy_serve_deps,
 ):
