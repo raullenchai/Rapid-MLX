@@ -1691,15 +1691,16 @@ class MLLMBatchGenerator:
                 return live(node.body, True)
             if isinstance(node, ast.Lambda):
                 return False
-            if isinstance(node, (ast.Try, ast.TryStar)):
+            if isinstance(node, ast.Try) or type(node).__name__ == "TryStar":
                 # Only the success path (try body, orelse, finally) proves
                 # live behavior: an access confined to an exception handler
                 # runs after forwarding has already failed, so a rope delta
                 # consumed only there would never position a real suffix.
+                try_node = cast("Any", node)
                 return (
-                    live(node.body, in_scope)
-                    or live(node.orelse, in_scope)
-                    or live(node.finalbody, in_scope)
+                    live(try_node.body, in_scope)
+                    or live(try_node.orelse, in_scope)
+                    or live(try_node.finalbody, in_scope)
                 )
             return any(visit(child, in_scope) for child in ast.iter_child_nodes(node))
 
@@ -1743,7 +1744,7 @@ class MLLMBatchGenerator:
         cached = getattr(self, "_media_wrapper_attrs_probe", None)
         key = type(self.model)
         if cached is not None and cached[0] == key:
-            return cached[1]
+            return cast("set[str] | None", cached[1])
         src = self._media_wrapper_call_source()
         attrs: set[str] | None = None
         if src is not None:
