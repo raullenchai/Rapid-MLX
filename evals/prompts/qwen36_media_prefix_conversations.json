@@ -1593,6 +1593,12 @@
                   "sidebar",
                   "creating",
                   "searching"
+                ],
+                [
+                  "sidebar",
+                  "new",
+                  "chat",
+                  "search"
                 ]
               ],
               [
@@ -1804,14 +1810,6 @@
                 [
                   "darker",
                   "blue"
-                ]
-              ],
-              [
-                [
-                  "differ"
-                ],
-                [
-                  "versus"
                 ]
               ]
             ]

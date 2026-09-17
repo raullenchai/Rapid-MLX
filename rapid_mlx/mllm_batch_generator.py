@@ -703,6 +703,23 @@ def _is_type_checking(test: ast.AST) -> bool:
     )
 
 
+def _is_lm_callee(func: ast.AST) -> bool:
+    """Whether a call's callee expression names the language model.
+
+    ``self.language_model(...)``, ``self.lm(...)``, or a deeper attribute
+    chain carrying the language-model attribute — the recipients a
+    ``**kwargs`` spread must reach for an installed delta to be consumed
+    by the model the suffix ultimately relies on."""
+    attrs: list[str] = []
+    node = func
+    while isinstance(node, ast.Attribute):
+        attrs.append(node.attr)
+        node = node.value
+    if isinstance(node, ast.Name):
+        attrs.append(node.id)
+    return any(attr == "lm" or "language_model" in attr for attr in attrs)
+
+
 class _MediaSplitUnsupportedError(Exception):
     """A structural probe mis-judged the wrapper: the split cannot serve
     this request. Callers fail closed to a rebuilt cold full forward."""
@@ -1624,14 +1641,13 @@ class MLLMBatchGenerator:
         return result
 
     @staticmethod
-    def _media_live_nodes(src: str) -> list[ast.AST] | None:
-        """AST nodes reachable under obviously-live control flow.
+    def _media_live_tree(src: str) -> tuple[list[ast.AST], ast.Module] | None:
+        """Live nodes plus the parsed tree they belong to.
 
-        Constant-false branches are skipped toward their taken side,
-        ``while False`` loops are dropped, nothing after an unconditional
-        ``return``/``raise``/``break``/``continue`` in a block is visited,
-        and function bodies are walked through the same statement-level
-        rules. None when the source cannot be parsed.
+        Returning the tree lets data-flow probes relate nodes to each
+        other (parents, bindings) without a second parse whose node
+        identities would not match the live set. None when the source
+        cannot be parsed.
         """
 
         def visit(node: ast.AST, in_scope: bool = False) -> bool:
@@ -1688,19 +1704,50 @@ class MLLMBatchGenerator:
         except (SyntaxError, ValueError):
             return None
         live(tree.body)
-        return found
+        return found, tree
+
+    @staticmethod
+    def _media_live_nodes(src: str) -> list[ast.AST] | None:
+        """AST nodes reachable under obviously-live control flow.
+
+        Constant-false branches are skipped toward their taken side,
+        ``while False`` loops are dropped, nothing after an unconditional
+        ``return``/``raise``/``break``/``continue`` in a block is visited,
+        and function bodies are walked through the same statement-level
+        rules. None when the source cannot be parsed.
+        """
+        parsed = MLLMBatchGenerator._media_live_tree(src)
+        return None if parsed is None else parsed[0]
 
     @staticmethod
     def _media_rope_consumes_key(src: str) -> bool:
         """Whether live code really consumes ``kwargs["rope_deltas"]``.
 
-        A real ``kwargs.pop("rope_deltas", ...)`` / ``kwargs.get(
-        "rope_deltas", ...)`` call or a ``kwargs["rope_deltas"]`` subscript
-        in obviously-live code opens the gate; comments, log lines, and
-        dead branches prove nothing.
+        A consumption site (``kwargs.pop/get("rope_deltas")`` call or a
+        ``kwargs["rope_deltas"]`` subscript) opens the gate only when the
+        value demonstrably flows onward on a live path: nested in a
+        non-logging call's arguments, returned, or bound — directly or
+        through intermediate assignments — to a name a later call or
+        return consumes. A lookup whose result is logged, asserted, or
+        dropped proves nothing about positioning; comments, log lines, and
+        dead branches never counted.
         """
-        nodes = MLLMBatchGenerator._media_live_nodes(src)
-        for node in nodes or []:
+        parsed = MLLMBatchGenerator._media_live_tree(src)
+        if parsed is None:
+            return False
+        nodes, tree = parsed
+        log_funcs = (
+            "info",
+            "debug",
+            "warning",
+            "error",
+            "exception",
+            "critical",
+            "log",
+            "print",
+        )
+
+        def is_rope_access(node: ast.AST) -> bool:
             if (
                 isinstance(node, ast.Call)
                 and isinstance(node.func, ast.Attribute)
@@ -1712,14 +1759,69 @@ class MLLMBatchGenerator:
                 and node.args[0].value == "rope_deltas"
             ):
                 return True
-            if (
+            return (
                 isinstance(node, ast.Subscript)
                 and isinstance(node.value, ast.Name)
                 and node.value.id == "kwargs"
                 and isinstance(node.slice, ast.Constant)
                 and node.slice.value == "rope_deltas"
-            ):
-                return True
+            )
+
+        consumed = {id(node) for node in nodes if is_rope_access(node)}
+        if not consumed:
+            return False
+
+        def touches(subtree: ast.AST, ids: set[int]) -> bool:
+            return any(id(sub) in ids for sub in ast.walk(subtree))
+
+        # Names bound to a consumed value, propagated through intermediate
+        # assignments to a fixpoint (``offset = rope_deltas[0]`` keeps the
+        # flow alive for a later ``forward(position_ids + offset)``).
+        bound: set[str] = set()
+        changed = True
+        while changed:
+            changed = False
+            for node in nodes:
+                if not isinstance(node, ast.Assign):
+                    continue
+                if len(node.targets) != 1 or not isinstance(node.targets[0], ast.Name):
+                    continue
+                target = node.targets[0].id
+                if target in bound:
+                    continue
+                flows_in = touches(node.value, consumed) or any(
+                    isinstance(sub, ast.Name)
+                    and isinstance(sub.ctx, ast.Load)
+                    and sub.id in bound
+                    for sub in ast.walk(node.value)
+                )
+                if flows_in:
+                    bound.add(target)
+                    changed = True
+
+        def name_flow(subtree: ast.AST) -> bool:
+            return any(
+                isinstance(sub, ast.Name)
+                and isinstance(sub.ctx, ast.Load)
+                and sub.id in bound
+                for sub in ast.walk(subtree)
+            )
+
+        for node in nodes:
+            if isinstance(node, ast.Call):
+                func = node.func
+                if (isinstance(func, ast.Attribute) and func.attr in log_funcs) or (
+                    isinstance(func, ast.Name) and func.id in log_funcs
+                ):
+                    continue
+                for arg in list(node.args) + [
+                    keyword.value for keyword in node.keywords
+                ]:
+                    if touches(arg, consumed) or name_flow(arg):
+                        return True
+            elif isinstance(node, ast.Return) and node.value is not None:
+                if touches(node.value, consumed) or name_flow(node.value):
+                    return True
         return False
 
     def _media_wrapper_call_attrs(self) -> set[str] | None:
@@ -1816,8 +1918,14 @@ class MLLMBatchGenerator:
                     src = None
                 nodes = self._media_live_nodes(src) if src is not None else None
                 if nodes is not None:
+                    # The ``**kwargs`` spread must land on the language
+                    # model itself, not an unrelated helper: only a call
+                    # whose callee names the LM (``self.language_model``,
+                    # ``self.lm``) hands the delta to the consumer the
+                    # suffix ultimately relies on.
                     spreads = any(
                         isinstance(node, ast.Call)
+                        and _is_lm_callee(node.func)
                         and any(
                             keyword.arg is None
                             and isinstance(keyword.value, ast.Name)
@@ -2157,11 +2265,20 @@ class MLLMBatchGenerator:
             # shared ceiling cannot be known, so refuse the store — the
             # caller redoes the request as one cold full forward.
             return None
+        # The leaves are not the whole snapshot: charge the stored delta
+        # array and the retained Python token list too (a conservative 8
+        # bytes per retained token id), or every entry's uncounted state
+        # erodes the advertised shared ceiling.
+        cache_bytes = (
+            leaves_bytes
+            + int(getattr(delta, "nbytes", 0) or 0)
+            + 8 * len(full_ids[:boundary])
+        )
         entry = MLLMMediaBoundaryEntry(
             token_ids=full_ids[:boundary],
             leaves=cloned,
             rope_delta=delta,
-            cache_bytes=leaves_bytes,
+            cache_bytes=cache_bytes,
         )
         # Admission cap: a single entry larger than the whole shared ceiling
         # can never fit beside anything, and holding it makes every budget

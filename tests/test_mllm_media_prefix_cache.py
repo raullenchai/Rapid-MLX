@@ -117,7 +117,13 @@ class _RecordingModel:
         rope_deltas = kwargs.pop("rope_deltas", None)
         start = int(ids[0, 0]) if ids.size else -1
         self.calls.append((start, start + int(ids.shape[1]), pixel_values is not None))
+        # The consumption probe requires the value to flow onward — thread
+        # it into a call, the way a real model feeds positioning.
+        self._consume(rope_deltas)
         return _Output(mx.zeros((1, int(ids.shape[1]), self.vocab)))
+
+    def _consume(self, rope_delta):
+        self.last_rope_delta = rope_delta
 
 
 class _NoRopeModel:
@@ -196,14 +202,29 @@ class _DroppingKwargsModel:
 
 
 class _SpreadingKwargsModel(_DroppingKwargsModel):
-    """Forwards ``**kwargs`` into an inner call, so a passed delta reaches
-    the (consuming) language model."""
+    """Forwards ``**kwargs`` into its language model call, so a passed
+    delta reaches the (consuming) language model."""
 
     def __call__(self, ids, cache=None, pixel_values=None, **kwargs):
-        forwarded = dict(**kwargs)
-        start = int(ids[0, 0]) if ids.size else -1
-        self.calls.append((start, start + int(ids.shape[1]), pixel_values is not None))
-        return _Output(mx.zeros((1, int(ids.shape[1]), self.vocab)))
+        return self.language_model(ids, **kwargs)
+
+
+def _unrelated_helper(ids, **kwargs):
+    """A non-LM helper the spread-to-helper fake forwards kwargs into."""
+    return ids
+
+
+class _SpreadToHelperModel:
+    """Spreads ``**kwargs`` into an unrelated helper: the delta never
+    reaches the language model, so the plumbs gate stays closed."""
+
+    def __init__(self, vocab: int = VOCAB):
+        self.vocab = vocab
+        self.calls: list[tuple[int, int, bool]] = []
+        self.config = type("Config", (), {"model_type": "qwen3_5_moe"})()
+
+    def __call__(self, ids, cache=None, pixel_values=None, **kwargs):
+        return _unrelated_helper(ids, **kwargs)
 
 
 class _EmbedFeatures:
@@ -436,11 +457,18 @@ class TestRopeKwargGate:
         assert gen._media_model_supports_rope_kwarg() is False
 
     def test_kwargs_spreading_wrapper_opens_the_gate_with_consuming_lm(self):
-        # A wrapper that forwards **kwargs into an inner call hands the
-        # delta to the consuming language model.
+        # A wrapper that forwards **kwargs into its language model call
+        # hands the delta to the consuming language model.
         gen = _stub_generator(model=_SpreadingKwargsModel())
         gen.language_model = _DirectLanguageModel()
         assert gen._media_model_supports_rope_kwarg() is True
+
+    def test_kwargs_spread_into_a_helper_fails_closed(self):
+        # **kwargs spread into an unrelated helper leaves the delta short
+        # of the language model — the plumbs gate must not open.
+        gen = _stub_generator(model=_SpreadToHelperModel())
+        gen.language_model = _DirectLanguageModel()
+        assert gen._media_model_supports_rope_kwarg() is False
 
     def test_comment_mention_without_kwargs_fails_closed(self):
         # A quoted "rope_deltas" in a comment must not open the gate when
@@ -1049,13 +1077,35 @@ class TestStorePath:
 
     def test_rope_probe_requires_a_real_consumption_operation(self):
         consume = MLLMBatchGenerator._media_rope_consumes_key
+        # The consumed value must flow onward — returned or fed into a call.
         assert consume(
+            "def f(**kwargs):\n"
+            "    rope_deltas = kwargs.pop('rope_deltas', None)\n"
+            "    return rope_deltas\n"
+        )
+        assert consume(
+            "def f(**kwargs):\n"
+            '    rope_deltas = kwargs.get("rope_deltas")\n'
+            "    forward(rope_deltas)\n"
+        )
+        assert consume("def f(**kwargs):\n    return kwargs['rope_deltas']\n")
+        # A bare lookup that is never used proves nothing.
+        assert not consume(
             "def f(**kwargs):\n    rope_deltas = kwargs.pop('rope_deltas', None)\n"
         )
-        assert consume(
-            'def f(**kwargs):\n    rope_deltas = kwargs.get("rope_deltas")\n'
+        # Logging the value is not consumption.
+        assert not consume(
+            "def f(**kwargs):\n"
+            "    rope_deltas = kwargs.pop('rope_deltas', None)\n"
+            "    logger.info(rope_deltas)\n"
         )
-        assert consume("def f(**kwargs):\n    d = kwargs['rope_deltas']\n")
+        # The flow survives intermediate assignments.
+        assert consume(
+            "def f(**kwargs):\n"
+            "    rope_deltas = kwargs.pop('rope_deltas', None)\n"
+            "    offset = rope_deltas[0]\n"
+            "    forward(position + offset)\n"
+        )
         # Comments, log lines, and dead mentions prove nothing.
         assert not consume(
             "def f(**kwargs):\n"
@@ -1345,10 +1395,12 @@ class TestMropeTransaction:
 class TestBudget:
     def test_oldest_evicted_newest_kept(self, monkeypatch):
         gen = _stub_generator()
-        # Ceiling = exactly one entry's bytes: the admission cap lets every
-        # store through (entry == ceiling), and enforcement keeps only the
-        # newest.
-        gen._media_boundary_max_bytes = _media_leaves_bytes(_kv_leaves())
+        # Ceiling = exactly one entry's charged bytes (leaves + delta array
+        # + retained token list): the admission cap lets every store
+        # through (entry == ceiling), and enforcement keeps only the newest.
+        gen._media_boundary_max_bytes = (
+            _media_leaves_bytes(_kv_leaves()) + int(mx.array([1]).nbytes) + 8 * 26
+        )
         full_ids = _full_ids()
 
         def fake_clone(leaves, *, min_capacity_tokens):
