@@ -718,7 +718,7 @@ def image_to_base64(img: "Image.Image", format: str = "JPEG") -> str:
     return f"data:{mime};base64,{b64}"
 
 
-def _build_bench_generator(model, processor, max_tokens: int):
+def build_bench_generator(model, processor, max_tokens: int):
     """Build the serialized-lane generator shared by the MLLM benchmarks.
 
     Mirrors the server's MLLMScheduler construction: sampling is derived
@@ -817,7 +817,7 @@ def _run_native_mllm_request(
     return text, len(token_ids), prompt_tokens
 
 
-def _benchmark_mllm_resolution_native(
+def benchmark_mllm_resolution_native(
     generator,
     processor,
     config,
@@ -830,7 +830,7 @@ def _benchmark_mllm_resolution_native(
     """Run MLLM benchmark for a specific resolution on the serialized lane.
 
     ``generator`` is the serialized-lane generator from
-    :func:`_build_bench_generator` (the loaded model rides inside it).
+    :func:`build_bench_generator` (the loaded model rides inside it).
     """
     from mlx_vlm.prompt_utils import apply_chat_template, get_chat_template
 
@@ -923,24 +923,24 @@ def benchmark_mllm_resolution(
     max_tokens: int = 256,
     warmup: bool = False,
 ) -> MLLMBenchmarkResult:
-    """Deprecated call shape for :func:`_benchmark_mllm_resolution_native`.
+    """Deprecated call shape for :func:`benchmark_mllm_resolution_native`.
 
     External callers of the pre-native-lane signature keep working: the
     serialized-lane generator is built internally and the request still
     runs on the native lane (never mlx-vlm's generation runtime). New code
-    should build the generator once via :func:`_build_bench_generator` and
+    should build the generator once via :func:`build_bench_generator` and
     pass it as the first argument instead.
     """
     warnings.warn(
         "benchmark_mllm_resolution's (model, processor, config, ...) call "
         "shape is deprecated; build the serialized-lane generator via "
-        "_build_bench_generator and call _benchmark_mllm_resolution_native "
+        "build_bench_generator and call benchmark_mllm_resolution_native "
         "instead.",
         DeprecationWarning,
         stacklevel=2,
     )
-    generator = _build_bench_generator(model, processor, max_tokens)
-    return _benchmark_mllm_resolution_native(
+    generator = build_bench_generator(model, processor, max_tokens)
+    return benchmark_mllm_resolution_native(
         generator, processor, config, base_image, width, height, max_tokens, warmup
     )
 
@@ -1019,7 +1019,7 @@ def run_mllm_benchmark(
     load_start = time.perf_counter()
     model, processor = load(model_name)
     config = load_config(model_name)
-    generator = _build_bench_generator(model, processor, max_tokens)
+    generator = build_bench_generator(model, processor, max_tokens)
     load_time = time.perf_counter() - load_start
     print(f"Model loaded in {load_time:.2f}s\n")
 
@@ -1036,7 +1036,7 @@ def run_mllm_benchmark(
     if warmup_runs > 0:
         print(f"Running {warmup_runs} warmup run(s)...")
         for _ in range(warmup_runs):
-            _benchmark_mllm_resolution_native(
+            benchmark_mllm_resolution_native(
                 generator,
                 processor,
                 config,
@@ -1063,7 +1063,7 @@ def run_mllm_benchmark(
     results = []
     for width, height in resolutions:
         try:
-            result = _benchmark_mllm_resolution_native(
+            result = benchmark_mllm_resolution_native(
                 generator, processor, config, base_image, width, height, max_tokens
             )
             results.append(result)
@@ -1264,7 +1264,7 @@ def get_video_info(video_path: str) -> dict:
     return info
 
 
-def _benchmark_video_config_native(
+def benchmark_video_config_native(
     generator,
     processor,
     config,
@@ -1279,7 +1279,7 @@ def _benchmark_video_config_native(
     """Run a single video benchmark configuration on the serialized lane.
 
     ``generator`` is the serialized-lane generator from
-    :func:`_build_bench_generator` (the loaded model rides inside it). The
+    :func:`build_bench_generator` (the loaded model rides inside it). The
     prompt is templated with ``num_images=0`` — the same convention the
     engine uses for video-only chat requests; the lane extracts the video
     frames itself from ``video_fps``/``video_max_frames``.
@@ -1357,6 +1357,78 @@ def _benchmark_video_config_native(
     )
 
 
+def _benchmark_video_config_via_model_generate(
+    model,
+    video_path: str,
+    fps: float,
+    max_frames: int,
+    config_name: str,
+    video_info: dict,
+    max_tokens: int = 150,
+    warmup: bool = False,
+) -> VideoBenchmarkResult:
+    """Pre-native duck-typed path: time the model's own generate().
+
+    Kept for the deprecation window so callers that passed any object
+    exposing ``generate(prompt=..., videos=...)`` keep their exact
+    previous behavior — this body is the pre-native implementation,
+    unchanged. Removed together with :func:`benchmark_video_config`.
+    """
+    reset_mlx_peak_memory()
+
+    if not warmup:
+        print(f"  {config_name:>25} |", end=" ", flush=True)
+
+    start_time = time.perf_counter()
+
+    output = model.generate(
+        prompt="Describe what happens in this video. What do you see?",
+        videos=[video_path],
+        video_fps=fps,
+        video_max_frames=max_frames,
+        max_tokens=max_tokens,
+        temperature=0.7,
+    )
+
+    elapsed = time.perf_counter() - start_time
+
+    prompt_tokens = output.prompt_tokens
+    completion_tokens = output.completion_tokens
+    tps = completion_tokens / elapsed if elapsed > 0 else 0
+
+    # Estimate frames extracted
+    duration = video_info["duration"]
+    frames_from_fps = int(duration * fps)
+    frames_extracted = min(frames_from_fps, max_frames, video_info["total_frames"])
+
+    # Get memory metrics
+    mlx_info = get_mlx_memory_info()
+    process_mem = get_process_memory()
+
+    if not warmup:
+        mem_str = f"{mlx_info.get('peak_memory_gb', 0):.1f} GB" if mlx_info else "-"
+        print(
+            f"{frames_extracted:>2} frames | {elapsed:>5.2f}s | {completion_tokens:>3} tok | {tps:>6.1f} tok/s | {mem_str}"
+        )
+
+    return VideoBenchmarkResult(
+        config_name=config_name,
+        fps=fps,
+        max_frames=max_frames,
+        frames_extracted=frames_extracted,
+        video_duration=duration,
+        time_seconds=elapsed,
+        prompt_tokens=prompt_tokens,
+        completion_tokens=completion_tokens,
+        tokens_per_second=tps,
+        response_preview=(
+            output.text[:100] + "..." if len(output.text) > 100 else output.text
+        ),
+        memory_gb=process_mem,
+        mlx_memory_gb=mlx_info.get("peak_memory_gb", 0.0),
+    )
+
+
 def benchmark_video_config(
     model,
     video_path: str,
@@ -1367,45 +1439,58 @@ def benchmark_video_config(
     max_tokens: int = 150,
     warmup: bool = False,
 ) -> VideoBenchmarkResult:
-    """Deprecated call shape for :func:`_benchmark_video_config_native`.
+    """Deprecated call shape for :func:`benchmark_video_config_native`.
 
-    Preserves the exact pre-native-lane positional signature — the loaded
-    wrapper model carries ``.model`` / ``.processor`` / ``.config``. The
-    serialized-lane generator is built internally and the request still
-    runs on the native lane (never mlx-vlm's generation runtime). New code
-    should build the generator once via :func:`_build_bench_generator` and
-    call :func:`_benchmark_video_config_native` instead.
-
-    The legacy path also accepted any duck-typed object exposing
-    ``generate(prompt=..., videos=...)``; the native lane cannot drive
-    those (the model lives inside them), so they are rejected with a
-    ``TypeError`` naming the migration instead of failing with a bare
-    ``AttributeError``.
+    Preserves the exact pre-native-lane positional signature. An
+    MLXMultimodalLM (exposing ``.model`` / ``.processor``) runs on the
+    serialized lane via :func:`benchmark_video_config_native` — never
+    mlx-vlm's generation runtime. Any other legacy duck-typed model
+    exposing ``generate(prompt=..., videos=...)`` keeps riding its own
+    generation runtime, unchanged, until this wrapper is removed; the
+    deprecation warning is the notice to migrate. New code should build
+    the generator once via :func:`build_bench_generator` and call
+    :func:`benchmark_video_config_native` instead.
     """
     warnings.warn(
         "benchmark_video_config's (model, video_path, fps, ...) call shape "
         "is deprecated; build the serialized-lane generator via "
-        "_build_bench_generator and call _benchmark_video_config_native "
+        "build_bench_generator and call benchmark_video_config_native "
         "instead.",
         DeprecationWarning,
         stacklevel=2,
     )
     if not (hasattr(model, "model") and hasattr(model, "processor")):
-        raise TypeError(
-            "benchmark_video_config now runs on the serialized MLLM lane and "
-            "requires an MLXMultimodalLM (exposing .model/.processor); got "
-            f"{type(model).__name__}, which only exposes generate(). Migrate "
-            "duck-typed models to the native lane: build a generator via "
-            "_build_bench_generator(model, processor, max_tokens) and call "
-            "_benchmark_video_config_native(generator, processor, config, ...)."
+        # Legacy duck-typed contract: any object exposing generate(...)
+        # worked. Keep that behavior for the deprecation window — the
+        # native lane cannot drive those (the model lives inside them) —
+        # and reject objects with neither shape loudly.
+        if not hasattr(model, "generate"):
+            raise TypeError(
+                "benchmark_video_config accepts an MLXMultimodalLM "
+                "(exposing .model/.processor) or a legacy duck-typed model "
+                f"exposing generate(); got {type(model).__name__} with "
+                "neither. Migrate to the native lane: build a generator via "
+                "build_bench_generator(model, processor, max_tokens) and "
+                "call benchmark_video_config_native(generator, processor, "
+                "config, ...)."
+            )
+        return _benchmark_video_config_via_model_generate(
+            model,
+            video_path,
+            fps,
+            max_frames,
+            config_name,
+            video_info,
+            max_tokens,
+            warmup,
         )
     # The legacy path lazily loaded an unloaded wrapper on first use
     # (model.generate → if not self._loaded: self.load()); preserve that
     # contract so previously valid callers do not crash on None parts.
     if hasattr(model, "load") and not getattr(model, "_loaded", True):
         model.load()
-    generator = _build_bench_generator(model.model, model.processor, max_tokens)
-    return _benchmark_video_config_native(
+    generator = build_bench_generator(model.model, model.processor, max_tokens)
+    return benchmark_video_config_native(
         generator,
         model.processor,
         getattr(model, "config", None) or {},
@@ -1497,7 +1582,7 @@ def run_video_benchmark(
     load_start = time.perf_counter()
     model, processor = load(model_name)
     config = load_config(model_name)
-    generator = _build_bench_generator(model, processor, max_tokens)
+    generator = build_bench_generator(model, processor, max_tokens)
     load_time = time.perf_counter() - load_start
     print(f"Model loaded in {load_time:.2f}s\n")
 
@@ -1521,7 +1606,7 @@ def run_video_benchmark(
     if warmup_runs > 0:
         print(f"Running {warmup_runs} warmup run(s)...")
         for _ in range(warmup_runs):
-            _benchmark_video_config_native(
+            benchmark_video_config_native(
                 generator,
                 processor,
                 config,
@@ -1550,7 +1635,7 @@ def run_video_benchmark(
     results = []
     for config_name, fps, max_frames in configs:
         try:
-            result = _benchmark_video_config_native(
+            result = benchmark_video_config_native(
                 generator,
                 processor,
                 config,

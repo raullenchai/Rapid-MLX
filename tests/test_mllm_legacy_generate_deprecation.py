@@ -95,7 +95,7 @@ class _FakeLegacyModel:
     """The pre-native-lane first argument: a loaded wrapper model."""
 
     def __init__(self):
-        self.model = object()  # Unused: _build_bench_generator is stubbed
+        self.model = object()  # Unused: build_bench_generator is stubbed
         self.processor = _FakeProcessor()
         self.config = {}
 
@@ -235,7 +235,7 @@ def test_legacy_signature_wrappers_warn_and_delegate(monkeypatch):
         generators.append(generator)
         return generator
 
-    monkeypatch.setattr(bench, "_build_bench_generator", _fake_build)
+    monkeypatch.setattr(bench, "build_bench_generator", _fake_build)
 
     PILImage = pytest.importorskip("PIL.Image")
     image = PILImage.new("RGB", (224, 224))
@@ -302,7 +302,7 @@ def test_video_wrapper_lazily_loads_an_unloaded_model(monkeypatch):
     model = _UnloadedModel()
     monkeypatch.setattr(
         bench,
-        "_build_bench_generator",
+        "build_bench_generator",
         lambda m, p, max_tokens: _FakeGenerator(
             [
                 [
@@ -328,22 +328,55 @@ def test_video_wrapper_lazily_loads_an_unloaded_model(monkeypatch):
     assert model.load_calls == 0
 
 
-def test_video_wrapper_rejects_duck_typed_generate_only_models():
-    # The legacy path accepted any object exposing
-    # generate(prompt=..., videos=...); the native lane cannot drive those
-    # (the model lives inside them), so the wrapper rejects them with a
-    # TypeError naming the migration instead of a bare AttributeError on
-    # .model — and the deprecation warning still fires first.
+def test_video_wrapper_routes_duck_typed_models_through_generate():
+    # The pre-native contract accepted any object exposing
+    # generate(prompt=..., videos=...); during the deprecation window
+    # those keep their exact previous behavior — the warning is the
+    # migration notice — instead of being cut off early.
     from rapid_mlx import benchmark as bench
 
+    class _LegacyOutput:
+        prompt_tokens = 11
+        completion_tokens = 7
+        text = "a preview"
+
     class _DuckTyped:
+        def __init__(self):
+            self.calls = []
+
         def generate(self, **kwargs):
-            raise AssertionError("generate() must not be called")
+            self.calls.append(kwargs)
+            return _LegacyOutput()
+
+    duck = _DuckTyped()
+    with pytest.warns(DeprecationWarning, match="deprecated"):
+        result = bench.benchmark_video_config(
+            duck, "/tmp/v.mp4", 2.0, 8, "cfg", {"duration": 2.0, "total_frames": 16}
+        )
+    assert duck.calls == [
+        {
+            "prompt": "Describe what happens in this video. What do you see?",
+            "videos": ["/tmp/v.mp4"],
+            "video_fps": 2.0,
+            "video_max_frames": 8,
+            "max_tokens": 150,
+            "temperature": 0.7,
+        }
+    ]
+    assert (result.prompt_tokens, result.completion_tokens) == (11, 7)
+    assert result.response_preview == "a preview"
+    # min(duration * fps, max_frames, total_frames) = min(4, 8, 16)
+    assert result.frames_extracted == 4
+
+
+def test_video_wrapper_rejects_objects_with_no_supported_shape():
+    # Neither an MLXMultimodalLM (.model/.processor) nor a legacy
+    # duck-typed generate(): nothing the wrapper can drive — fail loud
+    # with the migration path instead of a bare AttributeError.
+    from rapid_mlx import benchmark as bench
 
     with (
         pytest.warns(DeprecationWarning, match="deprecated"),
-        pytest.raises(TypeError, match="Migrate duck-typed models"),
+        pytest.raises(TypeError, match="Migrate to the native lane"),
     ):
-        bench.benchmark_video_config(
-            _DuckTyped(), "/tmp/v.mp4", 1.0, 4, "cfg", {"duration": 1.0}
-        )
+        bench.benchmark_video_config(object(), "/tmp/v.mp4", 1.0, 4, "cfg", {})
