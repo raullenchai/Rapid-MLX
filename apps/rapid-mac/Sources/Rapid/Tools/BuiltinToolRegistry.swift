@@ -11,11 +11,11 @@ import Foundation
 ///     SSRF-guarded, byte-capped
 ///   * ``read_document`` — no approval, reads only documents the user
 ///     already attached (see below)
+///   * ``local_*`` — explicit-consent access to a bounded local workspace
 ///
 /// One instance is constructed by ``RapidApp`` and shared by the chat
-/// view model. Filesystem / shell tools are deliberately absent: this
-/// build has no ``SandboxManager``, and a tool that touches the user's
-/// disk must not ship without one.
+/// view model. Local workspace actions are path-confined, approval-gated,
+/// size-bounded, and never execute through a shell.
 ///
 /// ``read_document`` is not an exception to that rule. It accepts no
 /// path — only an attachment UUID minted when the user dropped or picked
@@ -44,6 +44,7 @@ final class BuiltinToolRegistry: ToolRegistry {
     /// the registry so the chat loop doesn't need to thread a separate
     /// environment value through every tool call.
     let webSearch: WebSearchConfig
+    let localApproval: LocalToolApprovalStore
     /// Injected at the service boundary so the state transition can be tested
     /// without a live provider. Production always uses ``WebSearchTool/run``.
     private let webSearchRunner: WebSearchRunner
@@ -61,6 +62,7 @@ final class BuiltinToolRegistry: ToolRegistry {
     init(
         browseApproval: BrowseApprovalStore = BrowseApprovalStore(),
         webSearch: WebSearchConfig = WebSearchConfig(),
+        localApproval: LocalToolApprovalStore = LocalToolApprovalStore(),
         webSearchRunner: @escaping WebSearchRunner = { arguments, provider, apiKey in
             await WebSearchTool.run(
                 arguments: arguments,
@@ -71,6 +73,7 @@ final class BuiltinToolRegistry: ToolRegistry {
     ) {
         self.browseApproval = browseApproval
         self.webSearch = webSearch
+        self.localApproval = localApproval
         self.webSearchRunner = webSearchRunner
     }
 
@@ -80,7 +83,7 @@ final class BuiltinToolRegistry: ToolRegistry {
             BrowseTool.definition,
             WeatherTool.definition,
             ReadDocumentTool.definition,
-        ]
+        ] + LocalWorkspaceTools.definitions
     }
 
     func run(_ call: ToolCall) async -> ToolCallResult {
@@ -97,13 +100,15 @@ final class BuiltinToolRegistry: ToolRegistry {
             result = await WeatherTool.run(arguments: call.function.arguments)
         case "read_document":
             result = await ReadDocumentTool.run(arguments: call.function.arguments)
+        case "local_search", "local_read", "local_write", "local_trash", "local_run":
+            result = await LocalWorkspaceTools.run(call, approval: localApproval)
         default:
             // The model invented a tool name we don't ship — return an
             // error result so it gets a chance to recover instead of
             // throwing and tearing the chat loop down.
             result = ToolCallResult(
                 toolCallID: call.id,
-                content: "unknown tool '\(call.function.name)' — available: web_search, browse, weather, read_document",
+                content: "unknown tool '\(call.function.name)' — available: web_search, browse, weather, read_document, local_search, local_read, local_write, local_trash, local_run",
                 isError: true,
                 executed: false
             )

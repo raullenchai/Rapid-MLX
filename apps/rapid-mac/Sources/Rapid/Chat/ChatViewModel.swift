@@ -399,7 +399,10 @@ final class ChatViewModel {
     /// out until their permission/context contracts are represented by that
     /// loop. The snapshot is frozen by ChatView for the lifetime of one run.
     var personalIntelligenceDefinitions: [ToolDefinition] {
-        let supported: Set<String> = ["web_search", "browse", "weather"]
+        let supported: Set<String> = [
+            "web_search", "browse", "weather",
+            "local_search", "local_read", "local_write", "local_trash", "local_run",
+        ]
         return builtinDefinitions.filter {
             supported.contains($0.function.name)
                 && !disabledTools.contains($0.function.name)
