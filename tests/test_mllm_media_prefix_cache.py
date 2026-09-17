@@ -262,6 +262,7 @@ def _stub_generator(model=None, *, media_prefix_cache: str = "auto"):
     gen.allow_arrays_cache = True
     gen.singleton_fastpath = "auto"
     gen.media_prefix_cache = media_prefix_cache
+    gen._media_structural_singleton = True
     gen._media_singleton_turn = True
     gen._media_boundary_entries = {}
     gen._media_boundary_hits = 0

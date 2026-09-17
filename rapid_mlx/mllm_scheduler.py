@@ -598,6 +598,11 @@ class MLLMScheduler:
                 enable_prefix_cache=self.config.enable_prefix_cache,
                 singleton_fastpath=self.config.mllm_singleton_fastpath,
                 media_prefix_cache=self.config.mllm_media_prefix_cache,
+                structural_singleton=(
+                    self.config.max_num_seqs == 1
+                    and self.config.prefill_batch_size == 1
+                    and self.config.completion_batch_size == 1
+                ),
             )
 
     # ========== Sync API (step-based) ==========

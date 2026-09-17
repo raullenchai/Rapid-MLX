@@ -1091,6 +1091,7 @@ class MLLMBatchGenerator:
         enable_prefix_cache: bool = True,
         singleton_fastpath: str = "auto",
         media_prefix_cache: str = "auto",
+        structural_singleton: bool = False,
     ):
         """
         Initialize MLLM batch generator.
@@ -1122,6 +1123,9 @@ class MLLMBatchGenerator:
                 :func:`_media_boundary_plan`); ``"off"`` disables both the
                 store and the lookup so the lane behaves exactly like the
                 cold image path. Operator rollback only.
+            structural_singleton: Proof from the scheduler configuration that
+                max sequences, prefill batch, and completion batch are all 1.
+                Media-boundary reuse stays disabled without this proof.
         """
         if singleton_fastpath not in ("auto", "off"):
             raise ValueError(
@@ -1135,6 +1139,7 @@ class MLLMBatchGenerator:
                 f"got {media_prefix_cache!r}"
             )
         self.media_prefix_cache = media_prefix_cache
+        self._media_structural_singleton = bool(structural_singleton)
         # Media boundary store: keyed by identity digest, LRU-evicted under
         # the engine-wide prefix-cache byte budget (entries are tens to
         # hundreds of MiB and there is no per-session identity).
@@ -3647,7 +3652,11 @@ class MLLMBatchGenerator:
         # the batch, so a store/resume inside a wider batch would corrupt
         # the neighbours. (The serialized lane is structurally B=1; this
         # keeps the gate honest if that ever changes.)
-        self._media_singleton_turn = len(requests) == 1
+        active_batch = getattr(self, "active_batch", None)
+        no_active_batch = active_batch is None or len(active_batch) == 0
+        self._media_singleton_turn = (
+            self._media_structural_singleton and no_active_batch and len(requests) == 1
+        )
 
         # Preprocess all requests
         for req in requests:
