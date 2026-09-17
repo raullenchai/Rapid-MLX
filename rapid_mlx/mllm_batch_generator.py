@@ -3252,10 +3252,10 @@ class MLLMBatchGenerator:
                 self._media_mrope_restore()
                 self._media_boundary_misses += 1
                 return self._media_cold_redo(input_ids, cache, kwargs)
-            except Exception:
+            except BaseException:
                 # The installed delta is model-global state: a failing
-                # suffix forward must not leave it behind for the next
-                # request's prefill.
+                # or cancelled suffix forward must not leave it behind for
+                # the next request's prefill.
                 self._media_mrope_restore()
                 raise
             # The resume served the request: only now is this a counted,
@@ -3303,9 +3303,9 @@ class MLLMBatchGenerator:
             self._media_discard_boundary(request, digest=digest)
             self._media_boundary_misses += 1
             return self._media_cold_redo(input_ids, cache, prefix_kwargs)
-        except Exception:
+        except BaseException:
             # Same model-global-state contract: the save transaction spans
-            # the whole request, so a failing store or suffix forward
+            # the whole request, so a failing or cancelled store/suffix forward
             # restores the prior state before the exception propagates.
             self._media_mrope_restore()
             # The boundary was published before the suffix ran; a request

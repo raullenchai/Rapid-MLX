@@ -26,6 +26,8 @@ Pins the first media-prefix milestone on the serialized MLLM lane:
 Design note: docs/engineering/design/2026-09-15-mllm-media-prefix-cache.md.
 """
 
+import asyncio
+
 import pytest
 
 pytest.importorskip("mlx")
@@ -987,7 +989,13 @@ class TestStorePath:
         assert entry.rope_delta is not lazy
         assert mx.array_equal(entry.rope_delta, mx.array([5, 5]))
 
-    def test_store_suffix_failure_discards_the_published_boundary(self, monkeypatch):
+    @pytest.mark.parametrize(
+        "failure",
+        [RuntimeError("suffix exploded"), asyncio.CancelledError("suffix exploded")],
+    )
+    def test_store_suffix_failure_discards_the_published_boundary(
+        self, monkeypatch, failure
+    ):
         gen = _stub_generator()
         full_ids = _full_ids()
         req = _make_request(
@@ -999,10 +1007,10 @@ class TestStorePath:
         gen.language_model._rope_deltas = mx.array([3])
 
         def broken_suffix(*args, **kwargs):
-            raise RuntimeError("suffix exploded")
+            raise failure
 
         monkeypatch.setattr(gen, "_media_suffix_forward", broken_suffix)
-        with pytest.raises(RuntimeError, match="suffix exploded"):
+        with pytest.raises(type(failure), match="suffix exploded"):
             gen._media_forward(
                 req,
                 _ids(full_ids),
@@ -1232,7 +1240,11 @@ class TestMropeTransaction:
             gen._media_forward(req, _ids(_full_ids()), _kv_leaves(), {})
         assert lm._rope_deltas is prior_delta
 
-    def test_resume_suffix_failure_restores_mrope_state(self, monkeypatch):
+    @pytest.mark.parametrize(
+        "failure",
+        [RuntimeError("suffix exploded"), asyncio.CancelledError("suffix exploded")],
+    )
+    def test_resume_suffix_failure_restores_mrope_state(self, monkeypatch, failure):
         gen = _stub_generator()
         full_ids = _full_ids()
         req = _make_request(
@@ -1250,10 +1262,10 @@ class TestMropeTransaction:
         assert gen._media_boundary_stores == 1
 
         def broken_suffix(*args, **kwargs):
-            raise RuntimeError("suffix exploded")
+            raise failure
 
         monkeypatch.setattr(gen, "_media_suffix_forward", broken_suffix)
-        with pytest.raises(RuntimeError, match="suffix exploded"):
+        with pytest.raises(type(failure), match="suffix exploded"):
             gen._media_forward(req, _ids(full_ids), _kv_leaves(), {})
         assert gen.language_model._rope_deltas is prior_delta
 
