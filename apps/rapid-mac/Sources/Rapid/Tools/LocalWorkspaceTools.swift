@@ -6,6 +6,15 @@ import Foundation
 /// paths stay inside the current user's home directory, and mutations require
 /// per-call approval.
 enum LocalWorkspaceTools {
+    private static let allowedCommands = Set([
+        "clang", "cc", "gcc", "go", "swift", "python3", "node", "ruby", "make",
+    ])
+
+    private struct FileIdentity: Equatable, Sendable {
+        let device: dev_t
+        let inode: ino_t
+    }
+
     private final class BoundedOutputBuffer: @unchecked Sendable {
         private let lock = NSLock()
         private var storage = Data()
@@ -187,6 +196,14 @@ enum LocalWorkspaceTools {
         if let rejected = preflight(name, arguments: call.function.arguments) {
             return rejected
         }
+        let approvedTrashIdentity: FileIdentity?
+        if name == "local_trash",
+           let args = decode(PathArgs.self, call.function.arguments),
+           let url = try? safeURL(args.path) {
+            approvedTrashIdentity = try? fileIdentity(at: url)
+        } else {
+            approvedTrashIdentity = nil
+        }
         let grantScope = persistent ? approvalScope(name, arguments: call.function.arguments) : nil
 
         switch await approval.requestApproval(
@@ -208,7 +225,10 @@ enum LocalWorkspaceTools {
             case "local_search": return search(call.function.arguments)
             case "local_read": return read(call.function.arguments)
             case "local_write": return write(call.function.arguments)
-            case "local_trash": return trash(call.function.arguments)
+            case "local_trash":
+                return trash(
+                    call.function.arguments, expectedIdentity: approvedTrashIdentity
+                )
             case "local_run": return runCommand(call.function.arguments)
             default: return failure("Unknown local tool \(name)", executed: false)
             }
@@ -256,9 +276,11 @@ enum LocalWorkspaceTools {
                 guard let args = decode(RunArgs.self, arguments) else {
                     return failure("local_run arguments are invalid", executed: false)
                 }
-                _ = try safeURL(args.workingDirectory ?? args.cwd ?? "~/Rapid Workspace", mustExist: false)
-                let allowed = Set(["clang", "cc", "gcc", "go", "swift", "python3", "node", "ruby"])
-                if !allowed.contains(args.command) {
+                _ = try safeWorkingDirectory(
+                    args.workingDirectory ?? args.cwd ?? "~/Rapid Workspace",
+                    mustExist: false
+                )
+                if !allowedCommands.contains(args.command) {
                     let executable = try safeURL(args.command)
                     guard FileManager.default.isExecutableFile(atPath: executable.path) else {
                         return failure("local_run command is not in the allowlist or is not a local executable", executed: false)
@@ -326,6 +348,30 @@ enum LocalWorkspaceTools {
             throw LocalError("path does not exist")
         }
         return url
+    }
+
+    private static func safeWorkingDirectory(
+        _ path: String, mustExist: Bool = true
+    ) throws -> URL {
+        let url = try safeURL(path, mustExist: mustExist)
+        let candidate = url.path.lowercased()
+        let home = FileManager.default.homeDirectoryForCurrentUser
+            .standardizedFileURL.resolvingSymlinksInPath()
+        let protected = [".ssh", ".gnupg", "Library/Keychains"].map {
+            home.appendingPathComponent($0).standardizedFileURL.path.lowercased()
+        }
+        let prefix = candidate.hasSuffix("/") ? candidate : candidate + "/"
+        guard !protected.contains(where: { $0 == candidate || $0.hasPrefix(prefix) }) else {
+            throw LocalError("working directory would expose a protected location")
+        }
+        return url
+    }
+
+    private static func fileIdentity(at url: URL) throws -> FileIdentity {
+        var metadata = stat()
+        let status = url.path.withCString { Darwin.lstat($0, &metadata) }
+        guard status == 0 else { throw posixError("could not inspect the approved file") }
+        return FileIdentity(device: metadata.st_dev, inode: metadata.st_ino)
     }
 
     /// Keep the approved filename as the filename that is actually opened.
@@ -419,10 +465,30 @@ enum LocalWorkspaceTools {
         guard let args = decode(PathArgs.self, arguments) else { return failure("local_read arguments are invalid") }
         do {
             let url = try safeURL(args.path)
-            let values = try url.resourceValues(forKeys: [.isRegularFileKey, .fileSizeKey])
-            guard values.isRegularFile == true else { return failure("local_read only reads regular files") }
-            guard (values.fileSize ?? 0) <= 512_000 else { return failure("local_read file exceeds 512 KB") }
-            let data = try Data(contentsOf: url)
+            let descriptor = Darwin.open(url.path, O_RDONLY | O_NOFOLLOW | O_CLOEXEC)
+            guard descriptor >= 0 else { return failure("local_read could not open the file") }
+            defer { Darwin.close(descriptor) }
+            var metadata = stat()
+            guard fstat(descriptor, &metadata) == 0, metadata.st_mode & S_IFMT == S_IFREG else {
+                return failure("local_read only reads regular files")
+            }
+            guard metadata.st_size <= 512_000 else {
+                return failure("local_read file exceeds 512 KB")
+            }
+            var data = Data()
+            var buffer = [UInt8](repeating: 0, count: 16_384)
+            while data.count <= 512_000 {
+                let count = Darwin.read(descriptor, &buffer, buffer.count)
+                if count == 0 { break }
+                if count < 0 {
+                    if errno == EINTR { continue }
+                    return failure("local_read could not read the file")
+                }
+                data.append(contentsOf: buffer.prefix(count))
+            }
+            guard data.count <= 512_000 else {
+                return failure("local_read file exceeds 512 KB")
+            }
             guard let text = String(data: data, encoding: .utf8) else { return failure("local_read supports UTF-8 text files only") }
             return ToolCallResult(toolCallID: "", content: "Path: \(url.path)\n\(text)")
         } catch { return failure("local_read error: \(error.localizedDescription)") }
@@ -509,13 +575,15 @@ enum LocalWorkspaceTools {
         LocalError("\(context): \(String(cString: strerror(errno)))")
     }
 
-    private static func trash(_ arguments: String) -> ToolCallResult {
+    private static func trash(
+        _ arguments: String, expectedIdentity: FileIdentity?
+    ) -> ToolCallResult {
         guard let args = decode(PathArgs.self, arguments) else { return failure("local_trash arguments are invalid") }
         do {
             let url = try safeURL(args.path)
-            let values = try url.resourceValues(forKeys: [.isRegularFileKey, .isDirectoryKey])
-            guard values.isRegularFile == true, values.isDirectory != true else {
-                return failure("local_trash only moves regular files, never folders")
+            guard let expectedIdentity,
+                  try fileIdentity(at: url) == expectedIdentity else {
+                return failure("local_trash refused because the approved file changed")
             }
             var resultingURL: NSURL?
             try FileManager.default.trashItem(at: url, resultingItemURL: &resultingURL)
@@ -527,7 +595,7 @@ enum LocalWorkspaceTools {
         guard let args = decode(RunArgs.self, arguments) else { return failure("local_run arguments are invalid") }
         do {
             let requestedWorkingDirectory = args.workingDirectory ?? args.cwd ?? "~/Rapid Workspace"
-            let cwd = try safeURL(requestedWorkingDirectory, mustExist: false)
+            let cwd = try safeWorkingDirectory(requestedWorkingDirectory, mustExist: false)
             var isDirectory: ObjCBool = false
             if !FileManager.default.fileExists(atPath: cwd.path, isDirectory: &isDirectory),
                requestedWorkingDirectory == "~/Rapid Workspace" {
@@ -537,10 +605,9 @@ enum LocalWorkspaceTools {
             guard FileManager.default.fileExists(atPath: cwd.path, isDirectory: &isDirectory), isDirectory.boolValue else {
                 return failure("local_run working_directory is not a folder")
             }
-            let allowed = Set(["clang", "cc", "gcc", "go", "swift", "python3", "node", "ruby", "make"])
             let executable: URL
             var processArguments = args.arguments ?? []
-            if allowed.contains(args.command) {
+            if allowedCommands.contains(args.command) {
                 if ["clang", "cc", "gcc"].contains(args.command) {
                     let compilerCandidates = [
                         "/Applications/Xcode.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/bin/clang",
@@ -562,6 +629,18 @@ enum LocalWorkspaceTools {
                     }) {
                         processArguments.insert(contentsOf: ["-isysroot", sdk], at: 0)
                     }
+                } else if args.command == "make" {
+                    let makeCandidates = [
+                        "/Applications/Xcode.app/Contents/Developer/usr/bin/make",
+                        "/Library/Developer/CommandLineTools/usr/bin/make",
+                        "/usr/bin/make",
+                    ]
+                    guard let make = makeCandidates.first(where: {
+                        FileManager.default.isExecutableFile(atPath: $0)
+                    }) else {
+                        return failure("local_run could not find an installed make executable")
+                    }
+                    executable = URL(fileURLWithPath: make)
                 } else {
                     executable = URL(fileURLWithPath: "/usr/bin/env")
                     processArguments.insert(args.command, at: 0)
@@ -698,7 +777,12 @@ enum LocalWorkspaceTools {
                 reaped = true
                 break
             }
-            if waited == -1, errno != EINTR { throw posixError("could not monitor the approved command") }
+            if waited == -1, errno != EINTR {
+                let monitorError = posixError("could not monitor the approved command")
+                _ = kill(-pid, SIGKILL)
+                while waitpid(pid, &status, 0) == -1, errno == EINTR {}
+                throw monitorError
+            }
             Thread.sleep(forTimeInterval: 0.02)
         }
         let timedOut = !reaped

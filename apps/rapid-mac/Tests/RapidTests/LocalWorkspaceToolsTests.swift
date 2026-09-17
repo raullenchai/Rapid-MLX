@@ -161,6 +161,38 @@ final class LocalWorkspaceToolsTests {
         #expect(result.content.contains("RAPID_LOCAL_OK"))
     }
 
+    @Test("run uses the same make allowlist during preflight and execution")
+    func commandAllowsMake() async throws {
+        let root = try fixtureDirectory()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let arguments = try #require(String(data: JSONSerialization.data(withJSONObject: [
+            "command": "make",
+            "arguments": ["--version"],
+            "working_directory": root.path,
+        ]), encoding: .utf8))
+
+        let result = await runApproved(name: "local_run", arguments: arguments, store: approval())
+
+        #expect(!result.isError, Comment(rawValue: result.content))
+    }
+
+    @Test("run refuses a workspace that contains protected folders")
+    func commandCannotExposeHomeAsWorkspace() async {
+        let store = approval()
+        let result = await LocalWorkspaceTools.run(
+            ToolCall(
+                id: "home",
+                name: "local_run",
+                arguments: #"{"command":"python3","working_directory":"~"}"#
+            ),
+            approval: store
+        )
+
+        #expect(result.isError)
+        #expect(result.content.contains("protected"))
+        #expect(store.pendingRequest == nil)
+    }
+
     @Test("run drains output written immediately before process exit")
     func commandPreservesTrailingOutput() async throws {
         let root = try fixtureDirectory()
@@ -332,6 +364,52 @@ final class LocalWorkspaceToolsTests {
         #expect(store.pendingRequest?.toolName == "local_read")
         store.answer(.deny)
         #expect((await retargeted.value).failureKind == .userDeclined)
+    }
+
+    @Test("trash refuses a symlink retargeted while approval is open")
+    func trashDoesNotFollowRetargetedSymlink() async throws {
+        let root = try fixtureDirectory()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let first = root.appendingPathComponent("first.txt")
+        let second = root.appendingPathComponent("second.txt")
+        let link = root.appendingPathComponent("current.txt")
+        try "one".write(to: first, atomically: true, encoding: .utf8)
+        try "two".write(to: second, atomically: true, encoding: .utf8)
+        try FileManager.default.createSymbolicLink(at: link, withDestinationURL: first)
+        let store = approval()
+        let task = Task {
+            await LocalWorkspaceTools.run(
+                ToolCall(
+                    id: "trash", name: "local_trash",
+                    arguments: #"{"path":"\#(link.path)"}"#
+                ),
+                approval: store
+            )
+        }
+        while store.pendingRequest == nil { await Task.yield() }
+        try FileManager.default.removeItem(at: link)
+        try FileManager.default.createSymbolicLink(at: link, withDestinationURL: second)
+        store.answer(.allowOnce)
+
+        let result = await task.value
+        #expect(result.isError)
+        #expect(result.content.contains("approved file changed"))
+        #expect(FileManager.default.fileExists(atPath: first.path))
+        #expect(FileManager.default.fileExists(atPath: second.path))
+    }
+
+    @Test("read rejects files over its hard byte limit")
+    func readRejectsOversizedFiles() async throws {
+        let root = try fixtureDirectory()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let file = root.appendingPathComponent("large.txt")
+        try Data(repeating: 65, count: 512_001).write(to: file)
+        let arguments = #"{"path":"\#(file.path)"}"#
+
+        let result = await runApproved(name: "local_read", arguments: arguments, store: approval())
+
+        #expect(result.isError)
+        #expect(result.content.contains("exceeds 512 KB"))
     }
 
     @Test("run captures at most 64 KB per output stream")

@@ -494,9 +494,12 @@ def test_local_workspace_default_path_is_harness_owned_and_user_path_is_preserve
             )
         ]
     )
-    assert _normalize_local_workspace_turn(
-        "Write a note", invalid_filename
-    ).tool_calls[0].arguments["path"] == "~/Rapid Workspace/generated.txt"
+    assert (
+        _normalize_local_workspace_turn("Write a note", invalid_filename)
+        .tool_calls[0]
+        .arguments["path"]
+        == "~/Rapid Workspace/generated.txt"
+    )
 
     missing_filename = AgentModelTurn(
         tool_calls=[
@@ -505,9 +508,12 @@ def test_local_workspace_default_path_is_harness_owned_and_user_path_is_preserve
             )
         ]
     )
-    assert _normalize_local_workspace_turn(
-        "Write a note", missing_filename
-    ).tool_calls[0].arguments["path"] == "~/Rapid Workspace/generated.txt"
+    assert (
+        _normalize_local_workspace_turn("Write a note", missing_filename)
+        .tool_calls[0]
+        .arguments["path"]
+        == "~/Rapid Workspace/generated.txt"
+    )
 
     quoted_separator = AgentModelTurn(
         tool_calls=[
@@ -518,9 +524,12 @@ def test_local_workspace_default_path_is_harness_owned_and_user_path_is_preserve
             )
         ]
     )
-    assert _normalize_local_workspace_turn(
-        "Run this code", quoted_separator
-    ).tool_calls[0].arguments["command"] == "python3"
+    assert (
+        _normalize_local_workspace_turn("Run this code", quoted_separator)
+        .tool_calls[0]
+        .arguments["command"]
+        == "python3"
+    )
 
     malformed_recipe = AgentModelTurn(
         tool_calls=[
@@ -531,9 +540,12 @@ def test_local_workspace_default_path_is_harness_owned_and_user_path_is_preserve
             )
         ]
     )
-    assert _normalize_local_workspace_turn(
-        "Run this code", malformed_recipe
-    ).tool_calls[0].arguments["command"] == "'unterminated"
+    assert (
+        _normalize_local_workspace_turn("Run this code", malformed_recipe)
+        .tool_calls[0]
+        .arguments["command"]
+        == "'unterminated"
+    )
 
 
 def test_url_trimming_preserves_balanced_closing_delimiters():
