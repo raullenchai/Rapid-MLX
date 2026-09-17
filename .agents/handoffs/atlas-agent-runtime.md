@@ -37,9 +37,10 @@
 
 ## Remaining qualification work
 
-The September usage-table union is complete. Qwen3-Coder 30B and GPT-OSS 20B
-repeatedly reached 14/15 and are deliberately disabled; their failure receipts
-are committed, but no qualification record was added.
+The September usage-table union is complete. Qwen3-Coder 30B reached 13/15
+after the contradictory-URL gate, GPT-OSS 20B reached 14/15, and both are
+deliberately disabled; their failure receipts are committed, but no
+qualification record was added.
 
 ## Next concrete action
 
