@@ -730,8 +730,62 @@ def _media_clone_leaves(
     return cloned
 
 
-def _media_leaves_bytes(leaves: list[Any]) -> int:
-    return sum(int(getattr(leaf, "nbytes", 0) or 0) for leaf in leaves)
+def _media_leaf_bytes(leaf: Any) -> int | None:
+    """Bytes held by one cloned cache leaf, measured from its arrays.
+
+    mlx_lm caches expose ``state`` tuples (arrays with ``None``
+    placeholders and scalar offsets); snapshot-contract clones may only
+    expose ``nbytes`` or plain array attributes. ``None`` means the leaf
+    could not be measured at all — the caller must refuse the store
+    rather than charge the leaf as zero and let an oversized snapshot
+    bypass the shared ceiling."""
+    if isinstance(leaf, mx.array):
+        return int(leaf.nbytes)
+    if isinstance(leaf, (tuple, list)):
+        total = 0
+        measured = False
+        for part in leaf:
+            size = _media_leaf_bytes(part)
+            if size is not None:
+                total += size
+                measured = True
+        return total if measured else None
+    try:
+        state = getattr(leaf, "state", None)
+    except Exception:
+        state = None
+    if state is not None:
+        size = _media_leaf_bytes(state)
+        if size is not None:
+            return size
+    try:
+        nbytes = getattr(leaf, "nbytes", None)
+    except Exception:
+        nbytes = None
+    if isinstance(nbytes, int) and not isinstance(nbytes, bool):
+        return int(nbytes)
+    try:
+        values = list(vars(leaf).values())
+    except Exception:
+        return None
+    total = 0
+    measured = False
+    for value in values:
+        size = _media_leaf_bytes(value)
+        if size is not None:
+            total += size
+            measured = True
+    return total if measured else None
+
+
+def _media_leaves_bytes(leaves: list[Any]) -> int | None:
+    total = 0
+    for leaf in leaves:
+        size = _media_leaf_bytes(leaf)
+        if size is None:
+            return None
+        total += size
+    return total
 
 
 @dataclass
@@ -2064,11 +2118,17 @@ class MLLMBatchGenerator:
             mx.eval(delta)
         except Exception:
             return None
+        leaves_bytes = _media_leaves_bytes(cloned)
+        if leaves_bytes is None:
+            # An unmeasurable leaf: the snapshot's footprint against the
+            # shared ceiling cannot be known, so refuse the store — the
+            # caller redoes the request as one cold full forward.
+            return None
         entry = MLLMMediaBoundaryEntry(
             token_ids=full_ids[:boundary],
             leaves=cloned,
             rope_delta=delta,
-            cache_bytes=_media_leaves_bytes(cloned),
+            cache_bytes=leaves_bytes,
         )
         # Admission cap: a single entry larger than the whole shared ceiling
         # can never fit beside anything, and holding it makes every budget

@@ -41,6 +41,7 @@ from vllm_mlx.mllm_batch_generator import (  # noqa: E402
     MLLMBatchRequest,
     MLLMBatchStats,
     _media_clone_leaves,
+    _media_leaf_bytes,
     _media_leaves_bytes,
 )
 from vllm_mlx.mllm_scheduler import MLLMSchedulerConfig  # noqa: E402
@@ -832,6 +833,44 @@ class TestStorePath:
         assert gen._media_boundary_stores == 0
         assert gen._media_boundary_misses == 1
         assert gen.model.calls[-1] == (full_ids[0], len(full_ids), True)
+
+    def test_unmeasurable_snapshot_refuses_the_store(self, monkeypatch):
+        import vllm_mlx.mllm_batch_generator as mlbg
+
+        gen = _stub_generator()
+        full_ids = _full_ids()
+        req = _make_request(
+            prompt="a" * 24,
+            pixel_values=mx.zeros((1, 2)),
+            prefix_boundary=20,
+            max_tokens=8,
+        )
+        gen.language_model._rope_deltas = mx.array([3])
+        gen.language_model.layers = []
+        # A cloned leaf that exposes neither state, nbytes, nor array
+        # attributes: its footprint against the shared ceiling is unknown,
+        # so the store must refuse it rather than charge it as zero bytes.
+        monkeypatch.setattr(mlbg, "_media_clone_leaves", lambda *a, **k: [object()])
+        out = gen._media_forward(
+            req, _ids(full_ids), _kv_leaves(), {"pixel_values": req.pixel_values}
+        )
+        assert out is not None
+        assert not gen._media_boundary_entries
+        assert gen._media_boundary_stores == 0
+        assert gen._media_boundary_misses == 1
+        assert gen.model.calls[-1] == (full_ids[0], len(full_ids), True)
+
+    def test_media_leaves_bytes_measures_arrays_not_wrapper_truthiness(self):
+        leaf = _kv_leaves()[0]
+        nbytes_only = type("SnapshotLeaf", (), {"nbytes": 777})()
+        assert _media_leaf_bytes(leaf) is not None and _media_leaf_bytes(leaf) > 0
+        assert _media_leaf_bytes(nbytes_only) == 777
+        # No state, no nbytes, no array attributes: unmeasurable.
+        assert _media_leaf_bytes(object()) is None
+        assert _media_leaves_bytes([leaf, nbytes_only]) == (
+            _media_leaf_bytes(leaf) + 777
+        )
+        assert _media_leaves_bytes([leaf, object()]) is None
 
     def test_store_without_rope_delta_redoes_a_cold_full_forward(self):
         gen = _stub_generator()
