@@ -41,7 +41,7 @@ permissions:
 
 jobs:
   finalization:
-    name: ${{ matrix.os }} :: ${{ matrix.leg }}
+    name: "${{ matrix.os }} :: ${{ matrix.leg }}"
     runs-on: ${{ matrix.os }}
     timeout-minutes: 75
     strategy:
