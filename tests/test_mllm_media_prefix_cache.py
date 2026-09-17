@@ -805,15 +805,17 @@ class TestResumePlaceholderGate:
 
 
 class TestMediaIdentity:
-    def test_digest_falls_back_to_image_content_hash(self):
+    def test_digest_requires_the_post_preprocess_content_stamp(self):
         gen = _stub_generator()
-        same_a = _make_request(vision_feature_key=None, images=["shot-a.png"])
-        same_b = _make_request(vision_feature_key=None, images=["shot-a.png"])
-        other = _make_request(vision_feature_key=None, images=["shot-b.png"])
-        digest_a = gen._media_identity_digest(same_a)
-        assert digest_a is not None
-        assert digest_a == gen._media_identity_digest(same_b)
-        assert digest_a != gen._media_identity_digest(other)
+        assert (
+            gen._media_identity_digest(
+                _make_request(
+                    vision_feature_key=None,
+                    images=["https://example.invalid/mutable.png"],
+                )
+            )
+            is None
+        )
 
     def test_effective_pixel_cap_rides_in_the_digest(self):
         # Identical image bytes preprocessed under different effective pixel
@@ -849,7 +851,7 @@ class TestMediaIdentity:
             f"#{int(getattr(gen, 'vision_max_pixels', 0) or 0)}"
         )
         # A different media identity never collides with the stamped one.
-        other = _make_request(images=["other.png"], vision_feature_key=None)
+        other = _make_request(images=["other.png"], vision_feature_key="other-key")
         assert gen._media_identity_digest(other) != digest
 
 
@@ -1039,9 +1041,7 @@ class TestStorePath:
         assert entry.rope_delta is not lazy
         assert mx.array_equal(entry.rope_delta, mx.array([5, 5]))
 
-    def test_store_suffix_failure_falls_back_cold_and_discards_boundary(
-        self, monkeypatch
-    ):
+    def test_store_suffix_failure_propagates_and_discards_boundary(self, monkeypatch):
         gen = _stub_generator()
         full_ids = _full_ids()
         req = _make_request(
@@ -1056,20 +1056,18 @@ class TestStorePath:
             raise RuntimeError("suffix exploded")
 
         monkeypatch.setattr(gen, "_media_suffix_forward", broken_suffix)
-        monkeypatch.setattr(gen, "_media_cold_redo", lambda *args: "cold-redo")
-        out = gen._media_forward(
-            req,
-            _ids(full_ids),
-            _kv_leaves(),
-            {"pixel_values": req.pixel_values},
-        )
-        assert out == "cold-redo"
+        with pytest.raises(RuntimeError, match="suffix exploded"):
+            gen._media_forward(
+                req,
+                _ids(full_ids),
+                _kv_leaves(),
+                {"pixel_values": req.pixel_values},
+            )
         digest = gen._media_identity_digest(req)
         assert digest not in gen._media_boundary_entries
         # ``stores`` stays monotonic — it counts publishes, not live
         # entries; the failed request leaves no reusable boundary.
         assert gen._media_boundary_stores == 1
-        assert gen._media_boundary_misses == 1
 
     def test_store_suffix_cancellation_discards_boundary_without_retry(
         self, monkeypatch
@@ -1338,15 +1336,10 @@ class TestMropeTransaction:
             raise RuntimeError("suffix exploded")
 
         monkeypatch.setattr(gen, "_media_suffix_forward", broken_suffix)
-        if cancelled:
-            with pytest.raises(asyncio.CancelledError, match="suffix exploded"):
-                gen._media_forward(req, _ids(full_ids), _kv_leaves(), {})
-        else:
-            monkeypatch.setattr(gen, "_media_cold_redo", lambda *args: "cold-redo")
-            assert gen._media_forward(req, _ids(full_ids), _kv_leaves(), {}) == "cold-redo"
+        failure_type = asyncio.CancelledError if cancelled else RuntimeError
+        with pytest.raises(failure_type, match="suffix exploded"):
+            gen._media_forward(req, _ids(full_ids), _kv_leaves(), {})
         assert gen.language_model._rope_deltas is prior_delta
-        if not cancelled:
-            assert gen._media_identity_digest(req) not in gen._media_boundary_entries
 
     def test_restore_deletes_absent_attributes(self):
         gen = _stub_generator()

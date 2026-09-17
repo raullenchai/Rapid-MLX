@@ -1596,10 +1596,10 @@ class MLLMBatchGenerator:
     def _media_identity_digest(self, request: MLLMBatchRequest) -> str | None:
         """Cache key: ordered media content plus the semantic salt.
 
-        ``vision_feature_key`` is only stamped for models honouring the
-        vision-feature-cache contract, so fall back to hashing the request's
-        own image references (``compute_images_hash`` is content-keyed for
-        file paths). Identity MUST be content-keyed: two turns rendering the
+        ``vision_feature_key`` is stamped after image/video inputs have been
+        materialized into local files, so it hashes the exact bytes that were
+        preprocessed even when the original request used a mutable URL.
+        Identity MUST be content-keyed: two turns rendering the
         same token prefix with different image bytes must never share an
         entry — the strict token-prefix check cannot tell them apart. The
         digest folds ``_media_semantics_salt`` so stored KV/MRoPE state is
@@ -1611,13 +1611,10 @@ class MLLMBatchGenerator:
         """
         key = request.vision_feature_key
         if not key:
-            images = list(getattr(request, "images", None) or [])
-            if not images:
-                return None
-            try:
-                key = compute_images_hash(images)
-            except Exception:
-                return None
+            # Never hash raw references here: a stable URL can serve different
+            # bytes over time.  Missing the post-preprocess content stamp keeps
+            # this request on the canonical cold path.
+            return None
         if not isinstance(key, str):
             return None
         # The request's effective pixel cap rides in the key: identical
@@ -3007,7 +3004,7 @@ class MLLMBatchGenerator:
         # Consumed in ``_run_vision_encoding`` to let the model reuse projected
         # image features on a repeat (#1854). Content order is preserved, so
         # ``[a, b]`` and ``[b, a]`` get distinct keys.
-        if self._supports_vision_feature_cache and all_images:
+        if all_images:
             request.vision_feature_key = compute_images_hash(all_images)
 
         # Check pixel cache first
@@ -3285,17 +3282,6 @@ class MLLMBatchGenerator:
                 self._media_mrope_restore()
                 self._media_boundary_misses += 1
                 return self._media_cold_redo(input_ids, cache, kwargs)
-            except Exception:
-                # A wrapper may accept the canonical full prompt but reject a
-                # resumed/split invocation for reasons other than a signature
-                # mismatch.  Restore the model-global transaction and retry
-                # once through the ordinary cold path.  BaseException
-                # subclasses (notably cancellation) deliberately bypass this
-                # recovery and continue to the cleanup-only handler below.
-                self._media_mrope_restore()
-                self._media_discard_boundary(request, digest=digest)
-                self._media_boundary_misses += 1
-                return self._media_cold_redo(input_ids, cache, kwargs)
             except BaseException:
                 # The installed delta is model-global state: a failing
                 # or cancelled suffix forward must not leave it behind for
@@ -3343,16 +3329,6 @@ class MLLMBatchGenerator:
             # The suffix path the probes picked cannot serve this request.
             # Restore, discard the published boundary, and redo cold — the
             # published snapshot is worthless without a usable suffix.
-            self._media_mrope_restore()
-            self._media_discard_boundary(request, digest=digest)
-            self._media_boundary_misses += 1
-            return self._media_cold_redo(input_ids, cache, prefix_kwargs)
-        except Exception:
-            # The split is an optimization, not a new compatibility
-            # requirement.  If either split forward rejects a shape that the
-            # canonical full forward accepts, discard the speculative
-            # boundary and retry cold.  Cancellation/system exceptions remain
-            # fail-fast in the BaseException cleanup path below.
             self._media_mrope_restore()
             self._media_discard_boundary(request, digest=digest)
             self._media_boundary_misses += 1
