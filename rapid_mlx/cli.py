@@ -5215,6 +5215,7 @@ def serve_command(args):
         max_num_seqs=args.max_num_seqs,
         max_concurrent_requests=args.max_concurrent_requests,
         mllm_singleton_fastpath=args.mllm_singleton_fastpath,
+        mllm_media_prefix_cache=args.mllm_media_prefix_cache,
         prefill_batch_size=args.prefill_batch_size,
         completion_batch_size=args.completion_batch_size,
         scheduling_policy=args.scheduling_policy,
@@ -12043,6 +12044,20 @@ Examples:
             "lane only; dense lanes keep the merge); 'off' always takes the "
             "legacy merge/rebatch path. Operator rollback for the singleton "
             "fast path."
+        ),
+    )
+    serve_parser.add_argument(
+        "--mllm-media-prefix-cache",
+        type=str,
+        default="auto",
+        choices=["auto", "off"],
+        help=(
+            "Prior-turn media boundary reuse on the serialized MLLM lane "
+            "(default: auto). 'auto' snapshots each eligible media prefill's "
+            "stable turn boundary and resumes it when the next turn verifies "
+            "as a strict token prefix; 'off' disables store and lookup and "
+            "keeps the cold image path. Operator rollback for the media "
+            "boundary cache."
         ),
     )
     # KV cache quantization options

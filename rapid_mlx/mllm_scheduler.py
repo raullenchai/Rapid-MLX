@@ -108,11 +108,20 @@ class MLLMSchedulerConfig:
     # operator rollback that always takes the legacy merge/rebatch path.
     mllm_singleton_fastpath: str = "auto"
 
+    # Prior-turn media boundary store/lookup (default ``"auto"``); ``"off"``
+    # disables both directions and keeps the cold image path.
+    mllm_media_prefix_cache: str = "auto"
+
     def __post_init__(self) -> None:
         if self.mllm_singleton_fastpath not in ("auto", "off"):
             raise ValueError(
                 "mllm_singleton_fastpath must be 'auto' or 'off', "
                 f"got {self.mllm_singleton_fastpath!r}"
+            )
+        if self.mllm_media_prefix_cache not in ("auto", "off"):
+            raise ValueError(
+                "mllm_media_prefix_cache must be 'auto' or 'off', "
+                f"got {self.mllm_media_prefix_cache!r}"
             )
         if self.vision_prefill_token_budget is None:
             self.vision_prefill_token_budget = self.prefill_step_size
@@ -588,6 +597,12 @@ class MLLMScheduler:
                 vision_max_pixels=self.config.vision_max_pixels,
                 enable_prefix_cache=self.config.enable_prefix_cache,
                 singleton_fastpath=self.config.mllm_singleton_fastpath,
+                media_prefix_cache=self.config.mllm_media_prefix_cache,
+                structural_singleton=(
+                    self.config.max_num_seqs == 1
+                    and self.config.prefill_batch_size == 1
+                    and self.config.completion_batch_size == 1
+                ),
             )
 
     # ========== Sync API (step-based) ==========
@@ -2317,6 +2332,7 @@ class MLLMScheduler:
             prefix_stats = self.batch_generator.get_prefix_cache_stats()
             if prefix_stats is not None:
                 stats["prefix_cache"] = prefix_stats
+            stats["media_prefix_cache"] = self.batch_generator.get_media_prefix_stats()
 
         if self.vision_cache:
             stats["vision_cache"] = self.vision_cache.get_stats()
