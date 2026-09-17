@@ -1681,7 +1681,7 @@ class MLLMBatchGenerator:
         cannot be parsed.
         """
 
-        def visit(node: ast.AST, in_scope: bool = False) -> bool:
+        def visit(node: ast.AST, in_scope: bool = False) -> None:
             if isinstance(node, ast.If):
                 # Constant-false branches (and typing.TYPE_CHECKING, which
                 # is false at runtime by definition) are skipped toward
@@ -1689,44 +1689,45 @@ class MLLMBatchGenerator:
                 test = node.test
                 if isinstance(test, ast.Constant):
                     branch = node.body if test.value else node.orelse
-                    return live(branch, in_scope)
+                    live(branch, in_scope)
+                    return
                 if _is_type_checking(test):
-                    return live(node.orelse, in_scope)
+                    live(node.orelse, in_scope)
+                    return
             if (
                 isinstance(node, ast.While)
                 and isinstance(node.test, ast.Constant)
                 and not node.test.value
             ):
-                return False
+                return
             found.append(node)
             if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
                 # The outermost inspected function body is the probed scope;
                 # functions nested inside it never run in that scope.
                 if in_scope:
-                    return False
-                return live(node.body, True)
+                    return
+                live(node.body, True)
+                return
             if isinstance(node, ast.Lambda):
-                return False
+                return
             if isinstance(node, ast.Try) or type(node).__name__ == "TryStar":
                 # Only the success path (try body, orelse, finally) proves
                 # live behavior: an access confined to an exception handler
                 # runs after forwarding has already failed, so a rope delta
                 # consumed only there would never position a real suffix.
                 try_node = cast("Any", node)
-                return (
-                    live(try_node.body, in_scope)
-                    or live(try_node.orelse, in_scope)
-                    or live(try_node.finalbody, in_scope)
-                )
-            return any(visit(child, in_scope) for child in ast.iter_child_nodes(node))
+                live(try_node.body, in_scope)
+                live(try_node.orelse, in_scope)
+                live(try_node.finalbody, in_scope)
+                return
+            for child in ast.iter_child_nodes(node):
+                visit(child, in_scope)
 
-        def live(stmts: list[ast.stmt], in_scope: bool = False) -> bool:
+        def live(stmts: list[ast.stmt], in_scope: bool = False) -> None:
             for stmt in stmts:
-                if visit(stmt, in_scope):
-                    return True
+                visit(stmt, in_scope)
                 if isinstance(stmt, (ast.Return, ast.Raise, ast.Break, ast.Continue)):
-                    return False
-            return False
+                    return
 
         found: list[ast.AST] = []
         try:
@@ -2013,14 +2014,6 @@ class MLLMBatchGenerator:
         # cache would corrupt the neighbours. Fail closed (silent — a
         # structural gate, not a modeling miss).
         if not getattr(self, "_media_singleton_turn", False):
-            return None
-        # A position-override wrapper can only split when the LM-direct
-        # suffix path exists; otherwise the suffix forward would run with a
-        # freshly recomputed 0-based position ids (Finding: qwen3-vl
-        # to_dict() merge) — positionally corrupt output.
-        if self._media_wrapper_overrides_positions() and (
-            not self._media_lm_direct_available()
-        ):
             return None
         # Sequence-aligned kwargs cannot be dropped or re-sliced across a
         # split (same contract as the text chunked path): a non-empty
@@ -3066,6 +3059,18 @@ class MLLMBatchGenerator:
         # Consumed in ``_run_vision_encoding`` to let the model reuse projected
         # image features on a repeat (#1854). Content order is preserved, so
         # ``[a, b]`` and ``[b, a]`` get distinct keys.
+        #
+        # Digest/decode single-source invariant: every ``all_images`` entry
+        # is a per-request temp file written exactly once by
+        # ``process_image_input``/``process_video_input`` — a URL is
+        # downloaded to a temp file, a base64 payload is saved to a temp
+        # file, and an as-supplied local path is copied to a temp file
+        # through an O_NOFOLLOW fd (``_resolve_local_media``). The original
+        # artifact is never re-read afterwards: this hash and the
+        # processor's decode (``prepare_inputs``) both open the same
+        # immutable snapshot, so a mutable file/URL changing on disk
+        # between hashing and decoding cannot key pixels of content B
+        # under the digest of content A.
         if all_images and self._should_stamp_media_content_key():
             request.vision_feature_key = compute_images_hash(all_images)
 

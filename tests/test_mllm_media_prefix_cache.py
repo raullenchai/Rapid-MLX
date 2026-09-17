@@ -34,16 +34,19 @@ pytest.importorskip("mlx")
 pytestmark = pytest.mark.requires_mlx
 
 from collections import OrderedDict  # noqa: E402
+from types import SimpleNamespace  # noqa: E402
 from typing import Any  # noqa: E402
 
 import mlx.core as mx  # noqa: E402
 import mlx.nn as nn  # noqa: E402
 from vllm_mlx.mllm_batch_generator import (  # noqa: E402
     _MEDIA_ROPE_CONSUMING_LM_IMPLEMENTATIONS,
+    _MEDIA_ROPE_MISSING,
     _MEDIA_ROPE_PLUMBING_WRAPPER_IMPLEMENTATIONS,
     MLLMBatchGenerator,
     MLLMBatchRequest,
     MLLMBatchStats,
+    _is_type_checking,
     _media_clone_leaves,
     _media_leaf_bytes,
     _media_leaves_bytes,
@@ -1752,7 +1755,7 @@ class TestStatsSurface:
         assert not errors
 
 
-class TestMediaBudgetFailClosed:
+class TestMediaBudgetAccounting:
     def test_unresolved_budget_disables_media_admission(self, monkeypatch):
         # A failed memory-limit discovery must disable the media store, not
         # unbound it: with no ceiling neither the admission cap nor the
@@ -1822,3 +1825,333 @@ class TestMediaBudgetFailClosed:
         assert stored is None
         assert not gen._media_boundary_entries
         assert gen._media_boundary_stores == 0
+
+
+class TestMediaPrefixDefensiveBranches:
+    """Pin fail-closed paths that are easy for happy-path MLX runs to miss."""
+
+    def test_type_checking_shapes_and_live_tree_control_flow(self):
+        import ast
+
+        assert _is_type_checking(ast.parse("TYPE_CHECKING").body[0].value)
+        assert _is_type_checking(ast.parse("typing.TYPE_CHECKING").body[0].value)
+        assert not _is_type_checking(ast.parse("runtime_flag").body[0].value)
+
+        source = """
+def probe():
+    if False:
+        dead()
+    if TYPE_CHECKING:
+        typed_only()
+    while False:
+        loop_dead()
+    try:
+        live_call()
+    except Exception:
+        handler_only()
+    def nested():
+        nested_only()
+    ignored = lambda: lambda_only()
+    return live_call()
+    after_return()
+"""
+        nodes = MLLMBatchGenerator._media_live_nodes(source)
+        assert nodes is not None
+        names = {
+            node.func.id
+            for node in nodes
+            if isinstance(node, ast.Call) and isinstance(node.func, ast.Name)
+        }
+        assert "live_call" in names
+        assert not {"dead", "typed_only", "loop_dead", "handler_only"} & names
+        assert not {"nested_only", "lambda_only", "after_return"} & names
+        assert MLLMBatchGenerator._media_live_nodes("def broken(:") is None
+
+    def test_clone_and_leaf_measurement_fail_closed(self, monkeypatch):
+        import builtins
+
+        real_import = builtins.__import__
+
+        def guarded_import(name, *args, **kwargs):
+            if name == "mlx_vlm.apc_adapters":
+                raise ImportError("held out")
+            return real_import(name, *args, **kwargs)
+
+        monkeypatch.setattr(builtins, "__import__", guarded_import)
+        assert _media_clone_leaves([], min_capacity_tokens=1) is None
+
+        class RaisingState:
+            @property
+            def state(self):
+                raise RuntimeError("no state")
+
+            @property
+            def nbytes(self):
+                raise RuntimeError("no nbytes")
+
+        assert _media_leaf_bytes(RaisingState()) is None
+        holder = SimpleNamespace(first=mx.zeros((2,)), second=[mx.zeros((3,))])
+        assert _media_leaf_bytes(holder) == 5 * mx.zeros((1,)).itemsize
+
+    def test_tokenizer_boundary_and_semantics_fallbacks(self, monkeypatch):
+        gen = _stub_generator()
+        gen.processor = SimpleNamespace(tokenizer=None)
+        nested = SimpleNamespace(tokenizer=_FakeTokenizer())
+        gen.language_model.tokenizer = nested
+        assert isinstance(gen._media_resolve_tokenizer(), _FakeTokenizer)
+
+        request = _make_request(prompt="", prefix_boundary=1)
+        assert gen._media_boundary_marker_width(request) is None
+        gen.processor = SimpleNamespace(tokenizer=SimpleNamespace())
+        del gen.language_model.tokenizer
+        assert gen._media_boundary_marker_width(_make_request(prompt="abc")) is None
+
+        class BrokenTokenizer:
+            def encode(self, _text):
+                raise RuntimeError("cannot encode")
+
+        gen.processor = SimpleNamespace(tokenizer=BrokenTokenizer())
+        assert gen._media_boundary_marker_width(_make_request(prompt="abc")) is None
+        gen.processor = _FakeProcessor()
+        assert (
+            gen._media_boundary_marker_width(
+                _make_request(prompt="abc", prefix_boundary=3)
+            )
+            is None
+        )
+
+        import mlx_vlm.apc as apc
+
+        monkeypatch.setattr(
+            apc,
+            "semantic_extra_hash",
+            lambda **_kwargs: (_ for _ in ()).throw(RuntimeError()),
+        )
+        gen._media_semantics_salt_cache = None
+        assert type(gen.model).__name__ in gen._media_semantics_salt()
+        assert gen._media_identity_digest(_make_request(vision_feature_key=123)) is None
+
+    def test_signature_and_suffix_contract_failures(self, monkeypatch):
+        import vllm_mlx.mllm_batch_generator as module
+
+        monkeypatch.setattr(
+            module.inspect,
+            "signature",
+            lambda _call: (_ for _ in ()).throw(ValueError("opaque")),
+        )
+        assert MLLMBatchGenerator._media_call_accepts(object())
+
+        gen = _stub_generator(_PositionOverrideModel())
+        gen.language_model = _DirectLanguageModel()
+        monkeypatch.setattr(gen, "_media_wrapper_overrides_positions", lambda: True)
+        gen.model.get_input_embeddings = lambda *_args, **_kwargs: SimpleNamespace()
+        with pytest.raises(_MediaSplitUnsupportedError, match="no inputs_embeds"):
+            gen._media_suffix_forward(_ids([1]), [], mx.array([1]))
+
+        gen.model.config = None
+        gen.language_model.config = None
+        assert gen._media_placeholder_token_ids() == []
+
+    def test_plan_defensive_rejections(self, monkeypatch):
+        gen = _stub_generator(_PositionOverrideModel())
+        gen.language_model = _DirectLanguageModel()
+        monkeypatch.setattr(gen, "_media_wrapper_overrides_positions", lambda: True)
+        monkeypatch.setattr(gen, "_media_lm_direct_available", lambda: False)
+        request = _make_request(pixel_values=mx.zeros((1, 2)))
+        assert (
+            gen._media_boundary_plan(request, _ids(_full_ids()), _kv_leaves()) is None
+        )
+
+        gen = _stub_generator()
+        assert gen._media_boundary_plan(request, _ids([1]), _kv_leaves()) is None
+        request.vision_feature_key = None
+        assert (
+            gen._media_boundary_plan(request, _ids(_full_ids()), _kv_leaves()) is None
+        )
+        assert gen._media_boundary_misses == 1
+
+        gen = _stub_generator()
+        monkeypatch.setattr(gen, "_media_boundary_marker_width", lambda _request: None)
+        assert (
+            gen._media_boundary_plan(
+                _make_request(pixel_values=mx.zeros((1, 2))),
+                _ids(_full_ids()),
+                _kv_leaves(),
+            )
+            is None
+        )
+        assert gen._media_boundary_misses == 1
+
+    def test_store_fail_closed_edges(self, monkeypatch):
+        import vllm_mlx.mllm_batch_generator as module
+
+        gen = _stub_generator()
+        request = _make_request()
+        ids = _ids(_full_ids())
+        monkeypatch.setattr(module, "_media_leaves_bytes", lambda _leaves: None)
+        assert gen._media_store(request, _kv_leaves(), ids, 64, mx.array([1])) is None
+
+        monkeypatch.setattr(module, "_media_leaves_bytes", _media_leaves_bytes)
+        monkeypatch.setattr(
+            module,
+            "_media_clone_leaves",
+            lambda *_args, **_kwargs: (_ for _ in ()).throw(RuntimeError("clone")),
+        )
+        assert gen._media_store(request, _kv_leaves(), ids, 64, mx.array([1])) is None
+
+        class Uncopyable:
+            def __deepcopy__(self, _memo):
+                raise RuntimeError("copy")
+
+        monkeypatch.setattr(
+            module, "_media_clone_leaves", lambda *_a, **_k: _kv_leaves()
+        )
+        assert gen._media_store(request, _kv_leaves(), ids, 64, Uncopyable()) is None
+
+        monkeypatch.setattr(
+            module.mx,
+            "eval",
+            lambda *_a, **_k: (_ for _ in ()).throw(RuntimeError("eval")),
+        )
+        assert gen._media_store(request, _kv_leaves(), ids, 64, [1]) is None
+
+    def test_store_generation_budget_promotion_and_discard_edges(self, monkeypatch):
+        import vllm_mlx.mllm_batch_generator as module
+
+        gen = _stub_generator()
+        request = _make_request()
+        ids = _ids(_full_ids())
+        monkeypatch.setattr(
+            module, "_media_clone_leaves", lambda *_a, **_k: _kv_leaves()
+        )
+
+        budgets = iter((1 << 30, 1))
+        monkeypatch.setattr(gen, "_media_resolved_budget", lambda: next(budgets))
+        assert gen._media_store(request, _kv_leaves(), ids, 64, [1]) is None
+
+        gen = _stub_generator()
+
+        def clone_and_clear(*_args, **_kwargs):
+            gen._media_store_generation = 1
+            return _kv_leaves()
+
+        monkeypatch.setattr(module, "_media_clone_leaves", clone_and_clear)
+        assert gen._media_store(request, _kv_leaves(), ids, 64, [1]) is None
+
+        gen._media_boundary_entries = OrderedDict(
+            [("key", SimpleNamespace(cache_bytes=1))]
+        )
+        gen._media_promote_entry("key")
+        assert list(gen._media_boundary_entries) == ["key"]
+
+        gen._media_boundary_entries.clear()
+        monkeypatch.setattr(gen, "_media_identity_digest", lambda _request: None)
+        gen._media_discard_boundary(request)
+        gen._prefix_cache = None
+        assert gen._evict_text_exact_to_fit(0) == (0, 0, 0)
+        gen._media_boundary_max_bytes = 0
+        monkeypatch.setattr(gen, "_media_resolved_budget", lambda: 0)
+        gen._media_enforce_budget()
+
+    def test_budget_and_mrope_exception_edges(self, monkeypatch):
+        import threading
+
+        gen = _stub_generator()
+        gen._prefix_cache = object()
+        monkeypatch.setattr(
+            gen,
+            "_exact_entries",
+            lambda _cache: (
+                threading.Lock(),
+                OrderedDict([("x", SimpleNamespace(prompt_cache=[]))]),
+            ),
+        )
+        monkeypatch.setattr(
+            gen,
+            "_exact_entry_bytes",
+            lambda _cache: (_ for _ in ()).throw(RuntimeError("measure")),
+        )
+        assert gen._exact_cache_footprint_bytes() == gen._media_resolved_budget()
+
+        gen.language_model = SimpleNamespace()
+        gen._media_mrope_saved = (
+            False,
+            _MEDIA_ROPE_MISSING,
+            False,
+            _MEDIA_ROPE_MISSING,
+        )
+        gen._media_mrope_restore()
+        assert gen._media_mrope_saved is None
+
+    def test_resume_clone_and_split_fail_closed(self, monkeypatch):
+        import vllm_mlx.mllm_batch_generator as module
+
+        gen = _stub_generator()
+        request = _make_request(pixel_values=mx.zeros((1, 2)))
+        ids = _ids(_full_ids())
+        plan = (
+            "resume",
+            SimpleNamespace(leaves=[], rope_delta=mx.array([1])),
+            64,
+            0,
+            "key",
+        )
+        monkeypatch.setattr(gen, "_media_boundary_plan", lambda *_args: plan)
+        monkeypatch.setattr(
+            module,
+            "_media_clone_leaves",
+            lambda *_args, **_kwargs: (_ for _ in ()).throw(RuntimeError("clone")),
+        )
+        gen.model = lambda *_args, **_kwargs: "cold"
+        assert gen._media_forward(request, ids, [], {}) == "cold"
+
+        monkeypatch.setattr(module, "_media_clone_leaves", lambda *_a, **_k: [])
+        monkeypatch.setattr(
+            gen,
+            "_media_suffix_forward",
+            lambda *_args: (_ for _ in ()).throw(_MediaSplitUnsupportedError()),
+        )
+        monkeypatch.setattr(gen, "_media_cold_redo", lambda *_args: "redo")
+        assert gen._media_forward(request, ids, [], {}) == "redo"
+
+
+class TestMediaMaterializationContract:
+    def test_local_file_input_is_materialized_to_immutable_bytes(
+        self, tmp_path, monkeypatch
+    ):
+        # The media digest and the pixels prepare_inputs decodes must come
+        # from the same bytes: process_image_input snapshots an as-supplied
+        # local file into a per-request temp copy written once, so a file
+        # rewritten on disk between hashing and decoding can never key
+        # pixels of content B under the digest of content A.
+        monkeypatch.setenv("RAPID_MLX_MEDIA_ROOT", str(tmp_path))
+        from pathlib import Path as _Path
+
+        from vllm_mlx.models.mllm import process_image_input
+
+        source = _Path(tmp_path) / "in.png"
+        source.write_bytes(b"\x89PNG\r\n\x1a\n" + b"payload")
+        resolved = process_image_input(str(source))
+        try:
+            assert _Path(resolved) != source
+            assert _Path(resolved).read_bytes() == source.read_bytes()
+        finally:
+            _Path(resolved).unlink(missing_ok=True)
+
+    def test_local_file_input_does_not_track_later_writes(self, tmp_path, monkeypatch):
+        # The snapshot is written once: rewriting the original after
+        # materialization must not change the bytes the digest and the
+        # processor see.
+        monkeypatch.setenv("RAPID_MLX_MEDIA_ROOT", str(tmp_path))
+        from pathlib import Path as _Path
+
+        from vllm_mlx.models.mllm import process_image_input
+
+        source = _Path(tmp_path) / "in.png"
+        source.write_bytes(b"\x89PNG\r\n\x1a\n" + b"payload")
+        resolved = process_image_input(str(source))
+        try:
+            source.write_bytes(b"\x89PNG\r\n\x1a\n" + b"REWRITTEN")
+            assert _Path(resolved).read_bytes() == b"\x89PNG\r\n\x1a\n" + b"payload"
+        finally:
+            _Path(resolved).unlink(missing_ok=True)
