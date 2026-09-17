@@ -169,6 +169,55 @@ def test_hard_exit_swallows_flush_failures(monkeypatch, production_exit_context)
     assert events == ["atexit", "exit:0"]
 
 
+def test_legacy_server_main_hard_exits_after_uvicorn(monkeypatch):
+    """Behavioral pin for the legacy ``python -m rapid_mlx.server``
+    entrypoint (codex round-4 NIT): its ``main()`` runs its own
+    ``uvicorn.run`` and must actually invoke ``_hard_exit_after_serve``
+    afterwards — otherwise that documented entrypoint keeps the
+    unfixed #3495 finalization crash path. Mirrors the stubbing shape
+    of ``test_server_main_no_mllm_skips_routing_config_fail_fast``.
+    """
+    from rapid_mlx import server as server_mod
+
+    events: list[str] = []
+
+    monkeypatch.setattr(server_mod, "_ensure_routing_config", lambda *_a, **_kw: None)
+    monkeypatch.setattr(server_mod, "load_model", lambda *_a, **_kw: None)
+    monkeypatch.setattr("rapid_mlx.cli._port_preflight_or_die", lambda *_a, **_kw: None)
+    import uvicorn as _uvicorn
+
+    monkeypatch.setattr(_uvicorn, "run", lambda *_a, **_kw: events.append("uvicorn"))
+    monkeypatch.setattr(
+        "rapid_mlx.cli._hard_exit_after_serve",
+        lambda: events.append("hard_exit"),
+    )
+    monkeypatch.setattr(
+        "rapid_mlx._version_check.prompt_upgrade_if_available", lambda: False
+    )
+    monkeypatch.setattr(
+        "rapid_mlx._version_check.print_staleness_warning_if_any",
+        lambda **_kwargs: None,
+    )
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            "rapid_mlx.server",
+            "--model",
+            "some/uncached-hybrid-vlm-4bit",
+            "--no-mllm",
+        ],
+    )
+
+    server_mod.main()
+
+    assert events == ["uvicorn", "hard_exit"], (
+        f"expected exactly ['uvicorn', 'hard_exit'], got {events!r} — "
+        "the legacy server entrypoint must hard-exit after the uvicorn "
+        "dispatch returns (#3495)"
+    )
+
+
 def _entrypoint_call_sequence(entrypoint_name: str) -> list[str]:
     """Statement-level call sequence of a serve entrypoint's TOP-LEVEL body.
 
