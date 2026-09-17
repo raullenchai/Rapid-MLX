@@ -1,6 +1,7 @@
 # SPDX-License-Identifier: Apache-2.0
 
 import gc
+import json
 import weakref
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
@@ -219,6 +220,24 @@ def test_personal_intelligence_qualifications_are_unique_and_evidence_backed():
         resolved_evidence.relative_to(root / "docs" / "engineering" / "performance")
         assert resolved_evidence.suffix == ".md"
         assert resolved_evidence.is_file()
+        receipt = Path(qualification.receipt)
+        assert not receipt.is_absolute()
+        resolved_receipt = (root / receipt).resolve()
+        resolved_receipt.relative_to(root / "reports" / "benchmarks")
+        assert resolved_receipt.suffix == ".json"
+        receipt_data = json.loads(resolved_receipt.read_text())
+        receipt_model = receipt_data["model"].casefold().replace("_", "-")
+        assert receipt_model in {
+            identity.casefold().replace("_", "-")
+            for identity in qualification.public_identities
+        }
+        assert receipt_data["qualified"] is True
+        assert receipt_data["passed"] == receipt_data["total"] == 15
+        assert all(receipt_data["identity"]["checks"].values())
+        model_card = receipt_data["identity"]["model_card"]
+        assert model_card["personal_intelligence_profile"] == qualification.profile.name
+        assert model_card["tool_call_parser"] == qualification.tool_call_parser
+        assert model_card["personal_intelligence_qualification"] == qualification.id
         public_identities.extend(
             identity.casefold().replace("_", "-")
             for identity in qualification.public_identities

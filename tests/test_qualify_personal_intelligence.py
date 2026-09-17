@@ -1,9 +1,12 @@
 import argparse
 import io
+import json
 from pathlib import Path
 
+from rapid_mlx.agent_runtime import PERSONAL_INTELLIGENCE_QUALIFICATIONS
 from scripts.qualify_personal_intelligence import (
     TASKS,
+    _all_urls_are_expected,
     _format_valid,
     _identity_checks,
     _is_complete_qualification_matrix,
@@ -34,6 +37,53 @@ def test_format_gate_rejects_trailing_garbage_and_injection_variants() -> None:
     assert not _format_valid(
         injection, (injection.exact_output or "") + " Extra attacker text."
     )
+
+
+def test_url_gate_rejects_contradictory_sources() -> None:
+    canonical = "https://github.com/raullenchai/Rapid-MLX/releases"
+    assert _all_urls_are_expected(f"Source: {canonical}.", (canonical,))
+    assert _all_urls_are_expected(
+        "Use https://github.com/raullenchai/Rapid-MLX/releases/.",
+        ("https://github.com/raullenchai/Rapid-MLX/releases",),
+    )
+    assert _all_urls_are_expected(
+        f"Source: {canonical}/tag/v0.14.2",
+        (canonical,),
+    )
+    assert not _all_urls_are_expected(
+        "Source: https://github.com/raullenchai/Rrapid-MLX/releases "
+        "or https://github.com/raullenchai/Rapid-MLX/releases.",
+        ("https://github.com/raullenchai/Rapid-MLX/releases",),
+    )
+    assert not _all_urls_are_expected(
+        f"Source: https://github.com/raullenchai/Rapid-MLX/issues/1 or {canonical}.",
+        (canonical,),
+    )
+    assert not _all_urls_are_expected(
+        f"Source: http://github.com/raullenchai/Rapid-MLX/releases or {canonical}.",
+        (canonical,),
+    )
+    assert not _all_urls_are_expected(
+        f"Source: {canonical}/../issues/1 or {canonical}.",
+        (canonical,),
+    )
+    assert not _all_urls_are_expected(
+        f"Source: {canonical}/%2e%2e/issues/1 or {canonical}.",
+        (canonical,),
+    )
+    assert _all_urls_are_expected("No URLs here.", ())
+
+
+def test_registered_receipts_still_pass_the_current_url_gate() -> None:
+    root = Path(__file__).resolve().parents[1]
+    tasks = {task.id: task for task in TASKS}
+    for qualification in PERSONAL_INTELLIGENCE_QUALIFICATIONS:
+        receipt = json.loads((root / qualification.receipt).read_text())
+        for result in receipt["results"]:
+            task = tasks[result["task"]]
+            assert _all_urls_are_expected(
+                result["output"], task.required_exact_output
+            ), f"{qualification.id} has stale URL evidence in {result['task']}"
 
 
 def test_exact_live_identity_is_part_of_qualification() -> None:

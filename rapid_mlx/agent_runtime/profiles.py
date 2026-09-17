@@ -102,6 +102,7 @@ class PersonalIntelligenceQualification:
     backing_identities: frozenset[str]
     profile: AgentProfile
     tool_call_parser: str
+    receipt: str
     evidence: str
 
 
@@ -114,9 +115,22 @@ PERSONAL_INTELLIGENCE_QUALIFICATIONS = (
         backing_identities=frozenset({"mlx-community/Qwen3.5-4B-MLX-4bit"}),
         profile=QWEN35_4B_PROFILE,
         tool_call_parser="hermes",
+        receipt="reports/benchmarks/personal-intelligence-qwen3.5-4b-4bit.json",
         evidence=(
             "docs/engineering/performance/"
             "2026-09-15-personal-intelligence-top-model-qualification.md"
+        ),
+    ),
+    PersonalIntelligenceQualification(
+        id="qwen3.5-4b-q8-v1",
+        public_identities=frozenset({"mlx-community/Qwen3.5-4B-8bit"}),
+        backing_identities=frozenset({"mlx-community/Qwen3.5-4B-8bit"}),
+        profile=QWEN35_4B_PROFILE,
+        tool_call_parser="hermes",
+        receipt="reports/benchmarks/personal-intelligence-qwen3.5-4b-8bit.json",
+        evidence=(
+            "docs/engineering/performance/"
+            "2026-09-16-personal-intelligence-remaining-builds-qualification.md"
         ),
     ),
     PersonalIntelligenceQualification(
@@ -127,9 +141,22 @@ PERSONAL_INTELLIGENCE_QUALIFICATIONS = (
         backing_identities=frozenset({"mlx-community/Qwen3.5-9B-4bit"}),
         profile=QWEN35_9B_PROFILE,
         tool_call_parser="hermes",
+        receipt="reports/benchmarks/personal-intelligence-qwen3.5-9b-4bit.json",
         evidence=(
             "docs/engineering/performance/"
             "2026-09-15-personal-intelligence-top-model-qualification.md"
+        ),
+    ),
+    PersonalIntelligenceQualification(
+        id="qwen3.5-9b-q8-v1",
+        public_identities=frozenset({"mlx-community/Qwen3.5-9B-8bit"}),
+        backing_identities=frozenset({"mlx-community/Qwen3.5-9B-8bit"}),
+        profile=QWEN35_9B_PROFILE,
+        tool_call_parser="hermes",
+        receipt="reports/benchmarks/personal-intelligence-qwen3.5-9b-8bit.json",
+        evidence=(
+            "docs/engineering/performance/"
+            "2026-09-16-personal-intelligence-remaining-builds-qualification.md"
         ),
     ),
     PersonalIntelligenceQualification(
@@ -140,9 +167,110 @@ PERSONAL_INTELLIGENCE_QUALIFICATIONS = (
         backing_identities=frozenset({"mlx-community/Qwen3.6-35B-A3B-8bit"}),
         profile=QWEN36_35B_PROFILE,
         tool_call_parser="qwen3_coder_xml",
+        receipt="reports/benchmarks/personal-intelligence-qwen3.6-35b-8bit.json",
         evidence=(
             "docs/engineering/performance/"
             "2026-09-15-personal-intelligence-top-model-qualification.md"
+        ),
+    ),
+    PersonalIntelligenceQualification(
+        id="qwen3.6-35b-q4-v1",
+        public_identities=frozenset({"mlx-community/Qwen3.6-35B-A3B-4bit"}),
+        backing_identities=frozenset({"mlx-community/Qwen3.6-35B-A3B-4bit"}),
+        profile=QWEN36_35B_PROFILE,
+        tool_call_parser="qwen3_coder_xml",
+        receipt="reports/benchmarks/personal-intelligence-qwen3.6-35b-4bit.json",
+        evidence=(
+            "docs/engineering/performance/"
+            "2026-09-16-personal-intelligence-remaining-builds-qualification.md"
+        ),
+    ),
+    PersonalIntelligenceQualification(
+        id="qwen3.6-27b-q4-v1",
+        public_identities=frozenset({"mlx-community/Qwen3.6-27B-4bit"}),
+        backing_identities=frozenset({"mlx-community/Qwen3.6-27B-4bit"}),
+        profile=QWEN36_27B_PROFILE,
+        tool_call_parser="qwen3_coder_xml",
+        receipt="reports/benchmarks/personal-intelligence-qwen3.6-27b-4bit.json",
+        evidence=(
+            "docs/engineering/performance/"
+            "2026-09-16-personal-intelligence-remaining-builds-qualification.md"
+        ),
+    ),
+    PersonalIntelligenceQualification(
+        id="qwen3.8-27b-upstream-q4-v1",
+        public_identities=frozenset({"mlx-community/Qwen3.8-27B-4bit"}),
+        backing_identities=frozenset({"mlx-community/Qwen3.8-27B-4bit"}),
+        profile=QWEN38_27B_PROFILE,
+        tool_call_parser="qwen3_coder_xml",
+        receipt=(
+            "reports/benchmarks/personal-intelligence-qwen3.8-27b-upstream-q4.json"
+        ),
+        evidence=(
+            "docs/engineering/performance/"
+            "2026-09-16-personal-intelligence-remaining-builds-qualification.md"
+        ),
+    ),
+    PersonalIntelligenceQualification(
+        id="qwen3.8-27b-rapid-mtp-q4-v1",
+        public_identities=frozenset({"qwen3.8-27b-4bit"}),
+        backing_identities=frozenset({"rapid-mlx/Qwen3.8-27B-4bit-MTP-MLX"}),
+        profile=QWEN38_27B_PROFILE,
+        tool_call_parser="qwen3_coder_xml",
+        receipt="reports/benchmarks/personal-intelligence-qwen3.8-27b-4bit.json",
+        evidence=(
+            "docs/engineering/performance/"
+            "2026-09-16-personal-intelligence-remaining-builds-qualification.md"
+        ),
+    ),
+    PersonalIntelligenceQualification(
+        id="qwen3.8-27b-mixed-3.5bpw-v1",
+        public_identities=frozenset({"qwen3.8-27b-mixed-3.5bpw"}),
+        backing_identities=frozenset({"rapid-mlx/Qwen3.8-27B-mixed-3.5bpw-MLX"}),
+        profile=QWEN38_27B_PROFILE,
+        tool_call_parser="qwen3_coder_xml",
+        receipt=(
+            "reports/benchmarks/personal-intelligence-qwen3.8-27b-mixed-3.5bpw.json"
+        ),
+        evidence=(
+            "docs/engineering/performance/"
+            "2026-09-16-personal-intelligence-remaining-builds-qualification.md"
+        ),
+    ),
+    PersonalIntelligenceQualification(
+        id="qwen3.8-27b-fp16-mtp-v1",
+        public_identities=frozenset({"qwen3.8-27b-4bit-fp16"}),
+        backing_identities=frozenset({"rapid-mlx/Qwen3.8-27B-4bit-MTP-fp16-MLX"}),
+        profile=QWEN38_27B_PROFILE,
+        tool_call_parser="qwen3_coder_xml",
+        receipt=("reports/benchmarks/personal-intelligence-qwen3.8-27b-4bit-fp16.json"),
+        evidence=(
+            "docs/engineering/performance/"
+            "2026-09-16-personal-intelligence-remaining-builds-qualification.md"
+        ),
+    ),
+    PersonalIntelligenceQualification(
+        id="bonsai-27b-2bit-v1",
+        public_identities=frozenset({"bonsai-27b-2bit"}),
+        backing_identities=frozenset({"prism-ml/Ternary-Bonsai-27B-mlx-2bit"}),
+        profile=BONSAI_27B_PROFILE,
+        tool_call_parser="hermes",
+        receipt="reports/benchmarks/personal-intelligence-bonsai-27b-2bit.json",
+        evidence=(
+            "docs/engineering/performance/"
+            "2026-09-16-personal-intelligence-remaining-builds-qualification.md"
+        ),
+    ),
+    PersonalIntelligenceQualification(
+        id="ling-3.0-tiny-4bit-v1",
+        public_identities=frozenset({"ling-3.0-tiny-4bit"}),
+        backing_identities=frozenset({"rapid-mlx/Ling-3.0-tiny-MLX-4bit"}),
+        profile=LING3_TINY_PROFILE,
+        tool_call_parser="glm47",
+        receipt="reports/benchmarks/personal-intelligence-ling-3.0-tiny-4bit.json",
+        evidence=(
+            "docs/engineering/performance/"
+            "2026-09-16-personal-intelligence-remaining-builds-qualification.md"
         ),
     ),
     PersonalIntelligenceQualification(
@@ -153,6 +281,7 @@ PERSONAL_INTELLIGENCE_QUALIFICATIONS = (
         backing_identities=frozenset({"mlx-community/LFM2.5-1.2B-Instruct-4bit"}),
         profile=LFM25_1B_PROFILE,
         tool_call_parser="lfm",
+        receipt="reports/benchmarks/personal-intelligence-lfm2.5-1b-4bit.json",
         evidence=(
             "docs/engineering/performance/"
             "2026-09-15-personal-intelligence-top-model-qualification.md"
@@ -164,6 +293,7 @@ PERSONAL_INTELLIGENCE_QUALIFICATIONS = (
         backing_identities=frozenset({"openbmb/minicpm5-2b-mlx"}),
         profile=MINICPM5_2B_PROFILE,
         tool_call_parser="minicpm",
+        receipt="reports/benchmarks/personal-intelligence-minicpm5-2b-4bit.json",
         evidence=(
             "docs/engineering/performance/2026-09-13-minicpm5-small-agent-harness-ab.md"
         ),

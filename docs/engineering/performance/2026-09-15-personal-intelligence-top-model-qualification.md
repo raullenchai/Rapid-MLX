@@ -58,16 +58,16 @@ normalized, but extra content is still rejected.
 
 | Model | Build(s) in scope | Parser | Status |
 |---|---|---|---|
-| MiniCPM5-2B | `minicpm5-2b-4bit` / `openbmb/MiniCPM5-2B-MLX`; separately `mlx-community/MiniCPM5-2B-8bit` | `minicpm` | Q4 passed 15/15 locally; Q8 pending this strict matrix and remains disabled |
-| Qwen3.5-4B | `qwen3.5-4b-4bit`; `qwen3.5-4b-8bit` | `hermes` | Q4 passed 15/15 locally; Q8 pending exact-build run |
-| Qwen3.5-9B | `qwen3.5-9b-4bit`; `qwen3.5-9b-8bit` | `hermes` | Q4 passed 15/15 on Mac Studio; Q8 pending |
-| Qwen3.8-27B | `qwen3.8-27b-4bit` (Rapid MTP); raw `mlx-community/Qwen3.8-27B-4bit`; `qwen3.8-27b-mixed-3.5bpw`; `qwen3.8-27b-4bit-fp16` | `qwen3_coder_xml` | pending; M2 32 GB attempt was stopped before load when the runtime projected 140% memory use. No unsafe receipt was accepted |
-| Qwen3.6-35B-A3B | `qwen3.6-35b-4bit`; `qwen3.6-35b-8bit` | `qwen3_coder_xml` | 8-bit passed 15/15 on Mac Studio; Q4 pending |
-| Bonsai 27B | `bonsai-27b-2bit` | `hermes` | pending |
-| Qwen3-Coder 30B | `qwen3-coder-30b-4bit` | `hermes` | pending |
-| Ling 3.0 Tiny | `ling-3.0-tiny-4bit` | `glm47` | pending |
-| Qwen3.6-27B | `qwen3.6-27b-4bit` | `qwen3_coder_xml` | pending (the cached Studio 8-bit build is not a substitute) |
-| GPT-OSS 20B | `gpt-oss-20b` (`mlx-community/gpt-oss-20b-MXFP4-Q8`) | `harmony` | pending |
+| MiniCPM5-2B | `minicpm5-2b-4bit` / `openbmb/MiniCPM5-2B-MLX`; separately `mlx-community/MiniCPM5-2B-8bit` | `minicpm` | Q4 passed 15/15 locally; Q8 remains held out pending a committed-revision requalification |
+| Qwen3.5-4B | `qwen3.5-4b-4bit`; `qwen3.5-4b-8bit` | `hermes` | both builds passed 15/15; see the 2026-09-16 remaining-build matrix |
+| Qwen3.5-9B | `qwen3.5-9b-4bit`; `qwen3.5-9b-8bit` | `hermes` | both builds passed 15/15 on Mac Studio |
+| Qwen3.8-27B | `qwen3.8-27b-4bit` (Rapid MTP); raw `mlx-community/Qwen3.8-27B-4bit`; `qwen3.8-27b-mixed-3.5bpw`; `qwen3.8-27b-4bit-fp16` | `qwen3_coder_xml` | all four builds passed 15/15 on Mac Studio; see the 2026-09-16 remaining-build matrix |
+| Qwen3.6-35B-A3B | `qwen3.6-35b-4bit`; `qwen3.6-35b-8bit` | `qwen3_coder_xml` | both builds passed 15/15; see the 2026-09-16 remaining-build matrix |
+| Bonsai 27B | `bonsai-27b-2bit` | `hermes` | passed 15/15 on Mac Studio; see the 2026-09-16 remaining-build matrix |
+| Qwen3-Coder 30B | `qwen3-coder-30b-4bit` | `hermes` | failed 13/15 after the contradictory-URL recheck on the 2026-09-16 canonical matrix and remains disabled |
+| Ling 3.0 Tiny | `ling-3.0-tiny-4bit` | `glm47` | passed 15/15 on Mac Studio; see the 2026-09-16 remaining-build matrix |
+| Qwen3.6-27B | `qwen3.6-27b-4bit` | `qwen3_coder_xml` | passed 15/15 on Mac Studio; see the 2026-09-16 remaining-build matrix |
+| GPT-OSS 20B | `gpt-oss-20b` (`mlx-community/gpt-oss-20b-MXFP4-Q8`) | `harmony` | failed 14/15 on the 2026-09-16 canonical matrix and remains disabled |
 | LFM2.5 1.2B | `lfm2.5-1b-4bit` | `lfm` | passed 15/15 locally after deterministic search/browse staging |
 
 The missing fourth Qwen3.8 build in the aggregate table is treated as the
@@ -109,7 +109,7 @@ its own receipt before exposure.
 - `reports/benchmarks/personal-intelligence-qwen3.5-9b-4bit.json`
 - `reports/benchmarks/personal-intelligence-qwen3.6-35b-8bit.json`
 - `reports/benchmarks/personal-intelligence-lfm2.5-1b-4bit.json`
-- Further receipts are added only after the exact live build reaches 15/15.
+- Further receipts are added only after the exact live build reaches 15/15. The 2026-09-16 remaining-build matrix and the two held-out failures are recorded in `2026-09-16-personal-intelligence-remaining-builds-qualification.md`.
 - `--tasks` and non-canonical seed runs are diagnostic only: they always write
   `qualified: false`. Only all five tasks across seeds `11,22,33` can issue a
   qualification receipt.
