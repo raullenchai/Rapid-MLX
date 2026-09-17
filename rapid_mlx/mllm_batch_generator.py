@@ -1886,6 +1886,28 @@ class MLLMBatchGenerator:
             and callable(getattr(self.language_model, "__call__", None))
         )
 
+    @staticmethod
+    def _media_call_accepts(call: Any, /, *args: Any, **kwargs: Any) -> bool:
+        """Fail closed on a demonstrable call-signature mismatch.
+
+        A ``TypeError`` raised *inside* model execution is a real backend
+        failure and must propagate.  Binding before invocation lets the split
+        path classify only argument-contract drift as unsupported without
+        swallowing model bugs.
+        """
+        try:
+            signature = inspect.signature(call)
+        except (TypeError, ValueError):
+            # Some extension callables expose no inspectable signature.  The
+            # structural qualification gate admitted them; execute normally
+            # and preserve any resulting exception.
+            return True
+        try:
+            signature.bind(*args, **kwargs)
+        except TypeError:
+            return False
+        return True
+
     def _media_suffix_forward(
         self, suffix_ids: Any, cache: list[Any], rope_delta: Any
     ) -> Any:
@@ -1901,15 +1923,16 @@ class MLLMBatchGenerator:
             return self.model(
                 suffix_ids, cache=cache, pixel_values=None, rope_deltas=rope_delta
             )
-        try:
-            emb = self.model.get_input_embeddings(suffix_ids, pixel_values=None)
-        except (AttributeError, TypeError) as exc:
+        embedding_call = getattr(self.model, "get_input_embeddings", None)
+        if not callable(embedding_call) or not self._media_call_accepts(
+            embedding_call, suffix_ids, pixel_values=None
+        ):
             # A dependency upgrade can preserve the source shape admitted by
             # the structural gate while changing this invocation contract.
-            # Treat that as an unsupported split, never as a request failure.
             raise _MediaSplitUnsupportedError(
                 "get_input_embeddings is incompatible with LM-direct resume"
-            ) from exc
+            )
+        emb = embedding_call(suffix_ids, pixel_values=None)
         inputs_embeds = getattr(emb, "inputs_embeds", None)
         if inputs_embeds is None:
             # The wrapper's embedding result does not carry the payload the
@@ -1921,18 +1944,17 @@ class MLLMBatchGenerator:
         # mlx stubs type child modules as ``Any | dict`` — the probe above
         # already verified ``__call__`` exists.
         lm_call = cast("Any", self.language_model)
-        try:
-            return lm_call(
-                suffix_ids,
-                inputs_embeds=inputs_embeds,
-                mask=None,
-                cache=cache,
-                rope_deltas=rope_delta,
-            )
-        except (AttributeError, TypeError) as exc:
+        lm_kwargs = {
+            "inputs_embeds": inputs_embeds,
+            "mask": None,
+            "cache": cache,
+            "rope_deltas": rope_delta,
+        }
+        if not self._media_call_accepts(lm_call, suffix_ids, **lm_kwargs):
             raise _MediaSplitUnsupportedError(
                 "language model is incompatible with LM-direct resume"
-            ) from exc
+            )
+        return lm_call(suffix_ids, **lm_kwargs)
 
     def _media_placeholder_token_ids(self) -> list[int]:
         """Vision placeholder token ids from the model config, when resolvable.

@@ -560,10 +560,10 @@ class TestWrapperPositionOverride:
         full_ids = _full_ids()
         original = gen.model.get_input_embeddings
 
-        def changed_signature(input_ids, pixel_values=None, **kwargs):
-            if pixel_values is None:
-                raise TypeError("suffix signature changed")
-            return original(input_ids, pixel_values=pixel_values, **kwargs)
+        def changed_signature(
+            input_ids, required_dependency_argument, pixel_values=None
+        ):
+            return original(input_ids, pixel_values=pixel_values)
 
         monkeypatch.setattr(gen.model, "get_input_embeddings", changed_signature)
         gen.language_model._rope_deltas = mx.array([3])
@@ -591,6 +591,24 @@ class TestWrapperPositionOverride:
         with pytest.raises(
             _MediaSplitUnsupportedError, match="language model is incompatible"
         ):
+            gen._media_suffix_forward(_ids([1, 2]), _kv_leaves(), mx.array([3]))
+
+    def test_lm_direct_internal_type_error_is_not_hidden_as_incompatibility(self):
+        class BrokenLanguageModel:
+            def __call__(
+                self,
+                tokens,
+                inputs_embeds=None,
+                mask=None,
+                cache=None,
+                rope_deltas=None,
+            ):
+                raise TypeError("backend kernel failed")
+
+        gen = _stub_generator(model=_PositionOverrideModel())
+        gen.language_model = BrokenLanguageModel()
+
+        with pytest.raises(TypeError, match="backend kernel failed"):
             gen._media_suffix_forward(_ids([1, 2]), _kv_leaves(), mx.array([3]))
 
     def test_store_suffix_routes_through_language_model(self):

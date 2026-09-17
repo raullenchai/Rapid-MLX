@@ -83,14 +83,11 @@
                 ]
               ],
               [
-                [
-                  "circular"
-                ],
-                [
-                  "stop"
-                ],
-                [
-                  "info"
+              [
+                "circular"
+              ],
+              [
+                "info"
                 ]
               ]
             ]
@@ -612,17 +609,11 @@
                 ]
               ],
               [
-                [
-                  "cartoon"
-                ],
-                [
-                  "rapid-mlx"
-                ],
-                [
-                  "mascot"
-                ],
-                [
-                  "chat"
+              [
+                "mascot"
+              ],
+              [
+                "tiger"
                 ]
               ]
             ]
@@ -2054,24 +2045,12 @@
                 ]
               ],
               [
-                [
-                  "icon"
-                ],
-                [
-                  "download"
-                ],
-                [
-                  "orange"
-                ],
-                [
-                  "grey"
-                ],
-                [
-                  "gray"
-                ],
-                [
-                  "button"
-                ]
+              [
+                "question"
+              ],
+              [
+                "circular"
+              ]
               ]
             ]
           }
