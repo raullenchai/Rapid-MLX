@@ -600,6 +600,7 @@ jobs:
             tests/test_mllm_batch_generator.py \
             tests/test_mllm_sampling_parity.py \
             tests/test_mllm_singleton_fastpath.py \
+            tests/test_mllm_media_prefix_cache.py \
             tests/test_bench_qwen36_mllm_singleton.py \
             tests/test_mllm_corrupt_image.py \
             tests/test_mllm_penalty_passthrough.py \
