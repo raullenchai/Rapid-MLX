@@ -513,18 +513,15 @@
                 ]
               ],
               [
-                [
-                  "checkmark"
-                ],
-                [
-                  "skip"
-                ],
-                [
-                  "blue"
-                ],
-                [
-                  "dot"
-                ]
+              [
+                "checkmark"
+              ],
+              [
+                "blue"
+              ],
+              [
+                "circular"
+              ]
               ]
             ]
           }

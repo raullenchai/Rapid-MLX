@@ -1313,6 +1313,32 @@ class TestResumePath:
 
 
 class TestMropeTransaction:
+    def test_store_prefix_failure_keeps_an_older_valid_boundary(self, monkeypatch):
+        gen = _stub_generator()
+        req = _make_request(
+            prompt="a" * 24,
+            pixel_values=mx.zeros((1, 2)),
+            prefix_boundary=20,
+            max_tokens=8,
+        )
+        digest = "existing-media-boundary"
+        sentinel = object()
+        gen._media_boundary_entries[digest] = sentinel
+        monkeypatch.setattr(
+            gen,
+            "_media_boundary_plan",
+            lambda *args: ("store", None, 20, None, digest),
+        )
+
+        def broken_forward(*args, **kwargs):
+            raise RuntimeError("prefill exploded")
+
+        gen.model = type("Broken", (), {"__call__": staticmethod(broken_forward)})()
+        with pytest.raises(RuntimeError, match="prefill exploded"):
+            gen._media_forward(req, _ids(_full_ids()), _kv_leaves(), {})
+
+        assert gen._media_boundary_entries[digest] is sentinel
+
     def test_store_path_failure_restores_mrope_state(self, monkeypatch):
         # The save transaction spans the whole request: a failing prefix
         # forward must restore the prior model-global position state

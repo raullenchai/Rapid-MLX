@@ -3338,6 +3338,7 @@ class MLLMBatchGenerator:
         # would be misaligned (models slice the LAST n tokens), and the
         # droppable contract proves dropping equals the single forward.
         prefix_kwargs = {k: v for k, v in kwargs.items() if k != "attention_mask"}
+        published = False
         self._media_mrope_save()
         try:
             self.model(input_ids[:, :boundary], cache=cache, **prefix_kwargs)
@@ -3356,6 +3357,7 @@ class MLLMBatchGenerator:
                 self._media_boundary_misses += 1
                 self._media_mrope_restore()
                 return self._media_cold_redo(input_ids, cache, prefix_kwargs)
+            published = True
             # Snapshot published: continue the suffix on the same live cache
             # with the delta this forward already installed on the model.
             return self._media_suffix_forward(
@@ -3366,7 +3368,8 @@ class MLLMBatchGenerator:
             # Restore, discard the published boundary, and redo cold — the
             # published snapshot is worthless without a usable suffix.
             self._media_mrope_restore()
-            self._media_discard_boundary(request, digest=digest)
+            if published:
+                self._media_discard_boundary(request, digest=digest)
             self._media_boundary_misses += 1
             return self._media_cold_redo(input_ids, cache, prefix_kwargs)
         except BaseException:
@@ -3374,9 +3377,11 @@ class MLLMBatchGenerator:
             # the whole request, so a failing or cancelled store/suffix forward
             # restores the prior state before the exception propagates.
             self._media_mrope_restore()
-            # The boundary was published before the suffix ran; a request
-            # that never completes must never leave a reusable entry.
-            self._media_discard_boundary(request, digest=digest)
+            # A boundary published by this invocation must not survive a
+            # failed request.  If the prefix failed before publication, keep
+            # any older valid entry for the same media identity intact.
+            if published:
+                self._media_discard_boundary(request, digest=digest)
             raise
 
     def _run_vision_encoding(
