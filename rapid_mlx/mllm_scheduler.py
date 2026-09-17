@@ -751,11 +751,21 @@ class MLLMScheduler:
     def _record_queue_depth_observation(self) -> None:
         """Record queue depth at the exact lifecycle transition."""
 
-        waiting = len(self.waiting)
-        running = len(self.running)
-        self._max_num_waiting_observed = max(self._max_num_waiting_observed, waiting)
-        self._max_num_running_observed = max(self._max_num_running_observed, running)
-        self._observed_running_with_waiter |= running > 0 and waiting > 0
+        # Several lifecycle/error tests intentionally construct a defensive
+        # partial scheduler with ``__new__``. Keep instrumentation inert for
+        # that supported shape instead of changing request publication.
+        waiting = len(getattr(self, "waiting", ()))
+        running = len(getattr(self, "running", {}))
+        self._max_num_waiting_observed = max(
+            getattr(self, "_max_num_waiting_observed", 0), waiting
+        )
+        self._max_num_running_observed = max(
+            getattr(self, "_max_num_running_observed", 0), running
+        )
+        self._observed_running_with_waiter = bool(
+            getattr(self, "_observed_running_with_waiter", False)
+            or (running > 0 and waiting > 0)
+        )
 
     def set_generation_paused(self, paused: bool, *, add_allowance: int = 0) -> None:
         """Close or reopen scheduler admission for model replacement."""
