@@ -754,10 +754,110 @@ class TestStorePath:
         )
         ids = _ids(_full_ids())
         cache = _kv_leaves()
+        # A recorded delta keeps the split positionally valid: the request
+        # completes cold-split even though nothing was stored.
+        gen.language_model._rope_deltas = mx.array([3])
         out = gen._media_forward(req, ids, cache, {"pixel_values": req.pixel_values})
         assert gen._media_boundary_stores == 0
         assert not gen._media_boundary_entries
+        assert len(gen.model.calls) == 2
         assert out is not None
+
+    def test_store_without_rope_delta_redoes_a_cold_full_forward(self):
+        gen = _stub_generator()
+        full_ids = _full_ids()
+        req = _make_request(
+            prompt="a" * 24,
+            pixel_values=mx.zeros((1, 2)),
+            prefix_boundary=20,
+            max_tokens=8,
+        )
+        # No delta lands on the language model: the split suffix cannot be
+        # positioned (and _media_store refuses to snapshot it), so the
+        # request must restart as one cold full forward on a fresh cache.
+        gen.language_model.layers = []
+        out = gen._media_forward(
+            req, _ids(full_ids), _kv_leaves(), {"pixel_values": req.pixel_values}
+        )
+        assert out is not None
+        assert not gen._media_boundary_entries
+        assert gen._media_boundary_stores == 0
+        assert gen._media_boundary_misses == 1
+        model = gen.model
+        assert len(model.calls) == 2
+        # First call: the split prefix. Last call: the cold redo over the
+        # whole sequence, vision inputs included.
+        assert model.calls[0][1] < len(full_ids)
+        assert model.calls[-1] == (full_ids[0], len(full_ids), True)
+
+    def test_store_suffix_failure_discards_the_published_boundary(self, monkeypatch):
+        gen = _stub_generator()
+        full_ids = _full_ids()
+        req = _make_request(
+            prompt="a" * 24,
+            pixel_values=mx.zeros((1, 2)),
+            prefix_boundary=20,
+            max_tokens=8,
+        )
+        gen.language_model._rope_deltas = mx.array([3])
+
+        def broken_suffix(*args, **kwargs):
+            raise RuntimeError("suffix exploded")
+
+        monkeypatch.setattr(gen, "_media_suffix_forward", broken_suffix)
+        with pytest.raises(RuntimeError, match="suffix exploded"):
+            gen._media_forward(
+                req,
+                _ids(full_ids),
+                _kv_leaves(),
+                {"pixel_values": req.pixel_values},
+            )
+        digest = gen._media_identity_digest(req)
+        assert digest not in gen._media_boundary_entries
+        # The publish decremented again: a request that never completes
+        # leaves no boundary behind, in the entries or the counters.
+        assert gen._media_boundary_stores == 0
+
+    def test_promotion_after_concurrent_clear_does_not_raise(self):
+        gen = _stub_generator()
+        full_ids = _full_ids()
+        req = _make_request(
+            prompt="a" * 24,
+            pixel_values=mx.zeros((1, 2)),
+            prefix_boundary=20,
+            max_tokens=8,
+        )
+        gen._media_store(
+            req, _kv_leaves(), _ids(full_ids), len(full_ids) - 4, mx.array([3])
+        )
+        digest = gen._media_identity_digest(req)
+        gen._media_promote_entry(digest)
+        assert list(gen._media_boundary_entries)[-1] == digest
+        # A concurrent clear removed the key between the lookup and the
+        # promotion: no KeyError, no promotion.
+        gen._media_boundary_entries.clear()
+        gen._media_promote_entry(digest)
+
+    def test_rope_probe_requires_a_real_consumption_operation(self):
+        consume = MLLMBatchGenerator._media_rope_consumes_key
+        assert consume(
+            "def f(**kwargs):\n    rope_deltas = kwargs.pop('rope_deltas', None)\n"
+        )
+        assert consume(
+            'def f(**kwargs):\n    rope_deltas = kwargs.get("rope_deltas")\n'
+        )
+        assert consume("def f(**kwargs):\n    d = kwargs['rope_deltas']\n")
+        # Comments, log lines, and dead mentions prove nothing.
+        assert not consume(
+            "def f(**kwargs):\n"
+            '    # kwargs.pop("rope_deltas", None) used to happen here\n'
+            "    return None\n"
+        )
+        assert not consume(
+            "def f(**kwargs):\n"
+            '    logger.info("rope_deltas = kwargs is the legacy shape")\n'
+            "    return None\n"
+        )
 
     def test_below_min_tokens_boundary_never_stores(self):
         gen = _stub_generator()

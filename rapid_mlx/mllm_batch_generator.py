@@ -16,11 +16,13 @@ Architecture:
 3. Language model generation is batched using BatchKVCache (like LLM batching)
 """
 
+import ast
 import contextlib
 import copy
 import inspect
 import logging
 import os
+import textwrap
 import threading
 import time
 from collections import OrderedDict
@@ -1530,6 +1532,43 @@ class MLLMBatchGenerator:
         self._media_family_probe = (key, result)
         return result
 
+    @staticmethod
+    def _media_rope_consumes_key(src: str) -> bool:
+        """AST check that a call body *consumes* ``kwargs["rope_deltas"]``.
+
+        A substring probe matches comments, log lines, and dead branches;
+        consuming the key means the AST contains a real
+        ``kwargs.pop("rope_deltas", ...)`` / ``kwargs.get("rope_deltas",
+        ...)`` call or a ``kwargs["rope_deltas"]`` subscript.
+        """
+        try:
+            # ``inspect.getsource`` of a method returns the indented block;
+            # ``ast.parse`` needs it dedented to module level.
+            tree = ast.parse(textwrap.dedent(src))
+        except (SyntaxError, ValueError):
+            return False
+        for node in ast.walk(tree):
+            if (
+                isinstance(node, ast.Call)
+                and isinstance(node.func, ast.Attribute)
+                and node.func.attr in ("get", "pop")
+                and isinstance(node.func.value, ast.Name)
+                and node.func.value.id == "kwargs"
+                and node.args
+                and isinstance(node.args[0], ast.Constant)
+                and node.args[0].value == "rope_deltas"
+            ):
+                return True
+            if (
+                isinstance(node, ast.Subscript)
+                and isinstance(node.value, ast.Name)
+                and node.value.id == "kwargs"
+                and isinstance(node.slice, ast.Constant)
+                and node.slice.value == "rope_deltas"
+            ):
+                return True
+        return False
+
     def _media_model_supports_rope_kwarg(self) -> bool:
         """The split boundary forward needs ``rope_deltas`` through the call.
 
@@ -1539,13 +1578,13 @@ class MLLMBatchGenerator:
         probe never opens the gate. Detected structurally, mirroring
         ``_model_supports_vision_feature_cache``: the callee must accept
         ``**kwargs`` (so the extra kwarg can never raise ``TypeError``) and
-        its body must *consume* the key — one of the consumption shapes
-        ``kwargs.pop("rope_deltas"`` / ``kwargs.get("rope_deltas"`` /
-        ``rope_deltas = kwargs...`` — not merely mention it (a comment, log
-        line, or dead reference proves nothing and would route resumes
-        through a model that recomputes positions). Probed on both the VLM
-        wrapper and the language model; families without either fail closed
-        to the single cold forward.
+        its body must *consume* the key (a real ``kwargs.pop`` /
+        ``kwargs.get`` / ``kwargs["rope_deltas"]`` operation in the AST) —
+        not merely mention it (a comment, log line, or dead reference
+        proves nothing and would route resumes through a model that
+        recomputes positions). Probed on both the VLM wrapper and the
+        language model; families without either fail closed to the single
+        cold forward.
         """
         cached = getattr(self, "_media_rope_probe", None)
         key = (type(self.model), type(self.language_model))
@@ -1561,14 +1600,7 @@ class MLLMBatchGenerator:
                 src = inspect.getsource(call)
             except (OSError, TypeError, SyntaxError):
                 continue
-            if (
-                'kwargs.pop("rope_deltas"' in src
-                or "kwargs.pop('rope_deltas'" in src
-                or 'kwargs.get("rope_deltas"' in src
-                or "kwargs.get('rope_deltas'" in src
-                or "rope_deltas = kwargs" in src
-                or "rope_deltas = kwargs" in src
-            ):
+            if self._media_rope_consumes_key(src):
                 result = True
                 break
         self._media_rope_probe = (key, result)
@@ -1735,7 +1767,10 @@ class MLLMBatchGenerator:
             self._media_boundary_misses += 1
             return None
         counted_miss = False
-        entry = self._media_boundary_entries.get(digest)
+        # Take the entry under the guard: ``clear_prefix_cache`` mutates the
+        # store from other threads and must not observe a half-read lookup.
+        with self._media_entries_guard():
+            entry = self._media_boundary_entries.get(digest)
         if entry is not None:
             boundary = len(entry.token_ids)
             placeholder_ids = self._media_placeholder_token_ids()
@@ -1751,15 +1786,9 @@ class MLLMBatchGenerator:
             ):
                 self._media_boundary_hits += 1
                 # Promote on hit: frequently resumed media must not be
-                # evicted ahead of colder entries (LRU, not FIFO). The
-                # store is an OrderedDict in production; plain-dict stand-ins
-                # simply skip the promotion.
-                with self._media_entries_guard():
-                    move_to_end = getattr(
-                        self._media_boundary_entries, "move_to_end", None
-                    )
-                    if move_to_end is not None:
-                        move_to_end(digest)
+                # evicted ahead of colder entries (LRU, not FIFO).
+                self._media_promote_entry(digest)
+                return ("resume", entry, boundary)
                 return ("resume", entry, boundary)
             # A stored candidate that fails the strict prefix or placeholder
             # check is a clean miss — never a trim or a partial resume. This
@@ -1858,6 +1887,39 @@ class MLLMBatchGenerator:
             self._media_boundary_stores += 1
         self._media_enforce_budget()
         return entry
+
+    def _media_promote_entry(self, digest: Any) -> None:
+        """LRU-promote ``digest`` after a verified resume.
+
+        The store is an ``OrderedDict`` in production; plain-dict stand-ins
+        simply skip the promotion. A concurrent ``clear_prefix_cache`` may
+        drop the key between the guarded lookup and this promotion — a bare
+        ``move_to_end`` would raise ``KeyError`` in the inference path.
+        """
+        with self._media_entries_guard():
+            entries = self._media_boundary_entries
+            move_to_end = getattr(entries, "move_to_end", None)
+            if move_to_end is not None and digest in entries:
+                move_to_end(digest)
+
+    def _media_discard_boundary(self, request: MLLMBatchRequest) -> None:
+        """Drop this request's boundary snapshot after a failed request.
+
+        The store publishes the boundary before the suffix forward and the
+        decode run, so a failing or cancelled request would otherwise leave
+        a reusable entry behind — the store contract says a request that
+        never completes must never leave a boundary. Best effort: an
+        unknown digest has nothing to drop.
+        """
+        digest = self._media_identity_digest(request)
+        if digest is None:
+            return
+        with self._media_entries_guard():
+            removed = self._media_boundary_entries.pop(digest, None)
+            if removed is not None:
+                self._media_boundary_stores -= 1
+        if removed is not None:
+            self._media_enforce_budget()
 
     def _exact_cache_footprint_bytes(self) -> int:
         """Current byte footprint of the text exact cache, best effort.
@@ -2891,7 +2953,19 @@ class MLLMBatchGenerator:
             self.model(input_ids[:, :boundary], cache=cache, **prefix_kwargs)
             rope_delta = getattr(self.language_model, "_rope_deltas", None)
             mx.eval([c.state for c in cache])
-            stored = self._media_store(request, cache, input_ids, boundary, rope_delta)
+            self._media_store(request, cache, input_ids, boundary, rope_delta)
+            if rope_delta is None:
+                # The prefix forward left no MRoPE delta on the model, so
+                # the suffix cannot be positioned (``_media_store`` already
+                # refused to snapshot it). Restart the request as one cold
+                # full forward on a fresh cache — the plan gates proved a
+                # dropped mask equals the single forward, so the redo is
+                # exactly the cold path this request would have taken.
+                from mlx_lm.models.cache import make_prompt_cache
+
+                self._media_boundary_misses += 1
+                cache[:] = make_prompt_cache(self.language_model)
+                return self.model(input_ids, cache=cache, **prefix_kwargs)
             # No snapshot: continue the suffix on the same live cache with
             # the delta this forward already installed on the model.
             return self._media_suffix_forward(
@@ -2902,6 +2976,9 @@ class MLLMBatchGenerator:
             # the whole request, so a failing store or suffix forward
             # restores the prior state before the exception propagates.
             self._media_mrope_restore()
+            # The boundary was published before the suffix ran; a request
+            # that never completes must never leave a reusable entry.
+            self._media_discard_boundary(request)
             raise
 
     def _run_vision_encoding(
