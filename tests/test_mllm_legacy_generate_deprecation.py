@@ -151,11 +151,14 @@ def test_native_request_helper_drains_to_finish():
     assert (request.max_tokens, request.temperature) == (16, 0.7)
 
 
-def test_native_request_helper_stops_when_the_lane_goes_idle():
+def test_native_request_helper_raises_when_the_lane_goes_idle():
+    # An empty next() batch without a terminal finish_reason means the lane
+    # stopped making progress: returning here would silently truncate the
+    # benchmark run and leave the request active in the reused generator.
+    # The helper must fail loud instead.
     from rapid_mlx.benchmark import _run_native_mllm_request
 
     generator = _FakeGenerator([[_response(5)]])
-    text, completion, _ = _run_native_mllm_request(generator, "p", max_tokens=4)
-    assert text == "<5>"
-    assert completion == 1
-    assert generator.batches == []  # Drained: next() returned an empty batch
+    with pytest.raises(RuntimeError, match="idle"):
+        _run_native_mllm_request(generator, "p", max_tokens=4)
+    assert generator.batches == []  # The idle batch is what stopped it

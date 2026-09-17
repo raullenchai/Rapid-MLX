@@ -778,7 +778,16 @@ def _run_native_mllm_request(
     while not finished:
         responses = generator.next()
         if not responses:
-            break
+            # The lane went idle without a terminal response: draining
+            # further cannot make progress, and returning here would
+            # silently truncate the run AND leave the request active in
+            # the reused generator, contaminating every later config.
+            raise RuntimeError(
+                "serialized MLLM lane went idle before the benchmark "
+                f"request finished ({len(token_ids)} tokens generated, "
+                "no finish_reason); the benchmark run would be silently "
+                "truncated"
+            )
         for response in responses:
             if response.request_id != request.request_id:
                 continue
