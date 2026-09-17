@@ -12,7 +12,9 @@ because it nearly passes; family resemblance, parser capability, and a lower
 quantization's receipt are not evidence.
 
 All qualification runs used the same Mac Studio checkout, port `18950`, and the
-reproduction metadata embedded in each JSON receipt. The initially submitted
+reproduction metadata embedded in each JSON receipt. The table records the
+canonical public model ID used for each run; a separate short alias is enabled
+only when it has a receipt validating that exact public identity. The initially submitted
 receipts used base revision `54c72e437...` while the qualification records were
 still uncommitted; after adversarial review, all ten builds below were rerun
 from committed PR revision `fc3807015`, whose receipts replace the earlier
