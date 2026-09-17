@@ -590,11 +590,15 @@ def _hard_exit_after_serve() -> None:
         pass
     try:
         sys.stdout.flush()
-    except Exception:  # pragma: no cover — stderr may already be gone
+    except BaseException:  # noqa: BLE001, S110 — pragma: no cover
+        # BaseException, not Exception: a second SIGINT landing during
+        # the flush raises KeyboardInterrupt, which must not skip the
+        # os._exit below and re-enter the interpreter-finalization
+        # crash path (codex round-4 BLOCKING).
         pass
     try:
         sys.stderr.flush()
-    except Exception:  # pragma: no cover
+    except BaseException:  # noqa: BLE001, S110 — pragma: no cover
         pass
     os._exit(0)
 
