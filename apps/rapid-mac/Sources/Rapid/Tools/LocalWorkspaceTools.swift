@@ -1,3 +1,4 @@
+import Darwin
 import Foundation
 
 /// A deliberately small local-computer surface for conversational work.
@@ -5,6 +6,24 @@ import Foundation
 /// paths stay inside the current user's home directory, and mutations require
 /// per-call approval.
 enum LocalWorkspaceTools {
+    private final class BoundedOutputBuffer: @unchecked Sendable {
+        private let lock = NSLock()
+        private var storage = Data()
+
+        func append(_ data: Data) {
+            lock.lock()
+            defer { lock.unlock() }
+            guard storage.count < 65_536 else { return }
+            storage.append(data.prefix(65_536 - storage.count))
+        }
+
+        func snapshot() -> Data {
+            lock.lock()
+            defer { lock.unlock() }
+            return storage
+        }
+    }
+
     static let searchDefinition = ToolDefinition(
         name: "local_search",
         description: "Search filenames and UTF-8 text inside a local folder. Use this—not web_search—when the user asks to find something on this Mac. Results include matching paths and short text snippets.",
@@ -243,7 +262,9 @@ enum LocalWorkspaceTools {
             guard FileManager.default.fileExists(atPath: root.path, isDirectory: &isDirectory), isDirectory.boolValue else {
                 return failure("local_search path is not a folder")
             }
-            let keys: [URLResourceKey] = [.isRegularFileKey, .isSymbolicLinkKey, .fileSizeKey]
+            let keys: [URLResourceKey] = [
+                .isDirectoryKey, .isRegularFileKey, .isSymbolicLinkKey, .fileSizeKey,
+            ]
             guard let enumerator = FileManager.default.enumerator(
                 at: root,
                 includingPropertiesForKeys: keys,
@@ -254,12 +275,21 @@ enum LocalWorkspaceTools {
             let needle = query.lowercased()
             while let url = enumerator.nextObject() as? URL, scanned < 500, matches.count < 20 {
                 let values = try? url.resourceValues(forKeys: Set(keys))
-                guard values?.isRegularFile == true, values?.isSymbolicLink != true else { continue }
+                if values?.isDirectory == true {
+                    if values?.isSymbolicLink == true || (try? safeURL(url.path)) == nil {
+                        enumerator.skipDescendants()
+                    }
+                    continue
+                }
+                guard values?.isRegularFile == true,
+                      values?.isSymbolicLink != true,
+                      let safeFile = try? safeURL(url.path)
+                else { continue }
                 scanned += 1
-                let filenameMatch = url.lastPathComponent.lowercased().contains(needle)
+                let filenameMatch = safeFile.lastPathComponent.lowercased().contains(needle)
                 var snippet: String?
                 if (values?.fileSize ?? 0) <= 1_000_000,
-                   let data = try? Data(contentsOf: url, options: [.mappedIfSafe]),
+                   let data = try? Data(contentsOf: safeFile, options: [.mappedIfSafe]),
                    let text = String(data: data, encoding: .utf8),
                    let range = text.range(of: query, options: [.caseInsensitive]) {
                     let lower = text.index(range.lowerBound, offsetBy: -80, limitedBy: text.startIndex) ?? text.startIndex
@@ -267,7 +297,7 @@ enum LocalWorkspaceTools {
                     snippet = String(text[lower..<upper]).replacingOccurrences(of: "\n", with: " ")
                 }
                 if filenameMatch || snippet != nil {
-                    var item = ["path": url.path]
+                    var item = ["path": safeFile.path]
                     if let snippet { item["snippet"] = snippet }
                     matches.append(item)
                 }
@@ -308,7 +338,10 @@ enum LocalWorkspaceTools {
             if FileManager.default.fileExists(atPath: url.path), args.overwrite != true {
                 return failure("local_write refused to replace an existing file without overwrite=true")
             }
-            try Data(args.content.utf8).write(to: url, options: [.atomic])
+            let options: Data.WritingOptions = args.overwrite == true
+                ? [.atomic]
+                : [.withoutOverwriting]
+            try Data(args.content.utf8).write(to: url, options: options)
             return ToolCallResult(toolCallID: "", content: "Wrote \(args.content.utf8.count) bytes to \(url.path)")
         } catch { return failure("local_write error: \(error.localizedDescription)") }
     }
@@ -354,25 +387,38 @@ enum LocalWorkspaceTools {
                 }
             }
 
-            let temporary = FileManager.default.temporaryDirectory
-            let stdoutURL = temporary.appendingPathComponent("rapid-local-stdout-\(UUID().uuidString)")
-            let stderrURL = temporary.appendingPathComponent("rapid-local-stderr-\(UUID().uuidString)")
-            FileManager.default.createFile(atPath: stdoutURL.path, contents: nil)
-            FileManager.default.createFile(atPath: stderrURL.path, contents: nil)
-            defer {
-                try? FileManager.default.removeItem(at: stdoutURL)
-                try? FileManager.default.removeItem(at: stderrURL)
+            let temporary = FileManager.default.temporaryDirectory.resolvingSymlinksInPath()
+            let stdoutPipe = Pipe()
+            let stderrPipe = Pipe()
+            let stdoutBuffer = BoundedOutputBuffer()
+            let stderrBuffer = BoundedOutputBuffer()
+            stdoutPipe.fileHandleForReading.readabilityHandler = { handle in
+                stdoutBuffer.append(handle.availableData)
             }
-            let stdout = try FileHandle(forWritingTo: stdoutURL)
-            let stderr = try FileHandle(forWritingTo: stderrURL)
-            defer { try? stdout.close(); try? stderr.close() }
+            stderrPipe.fileHandleForReading.readabilityHandler = { handle in
+                stderrBuffer.append(handle.availableData)
+            }
+            defer {
+                stdoutPipe.fileHandleForReading.readabilityHandler = nil
+                stderrPipe.fileHandleForReading.readabilityHandler = nil
+                try? stdoutPipe.fileHandleForReading.close()
+                try? stderrPipe.fileHandleForReading.close()
+            }
 
             let process = Process()
-            process.executableURL = executable
-            process.arguments = processArguments
+            process.executableURL = URL(fileURLWithPath: "/usr/bin/sandbox-exec")
+            process.arguments = [
+                "-p", sandboxProfile(
+                    home: FileManager.default.homeDirectoryForCurrentUser.resolvingSymlinksInPath(),
+                    workingDirectory: cwd,
+                    temporaryDirectory: temporary,
+                    executable: executable
+                ),
+                executable.path,
+            ] + processArguments
             process.currentDirectoryURL = cwd
-            process.standardOutput = stdout
-            process.standardError = stderr
+            process.standardOutput = stdoutPipe
+            process.standardError = stderrPipe
             process.environment = [
                 "HOME": FileManager.default.homeDirectoryForCurrentUser.path,
                 "PATH": "/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin",
@@ -380,21 +426,56 @@ enum LocalWorkspaceTools {
                 "LANG": "en_US.UTF-8",
             ]
             try process.run()
+            // Put the sandbox wrapper and any compiler children in a private
+            // process group so a timeout can stop the entire approved action.
+            _ = setpgid(process.processIdentifier, process.processIdentifier)
             let timeout = min(max(args.timeoutSeconds ?? 15, 1), 30)
             let deadline = Date().addingTimeInterval(TimeInterval(timeout))
             while process.isRunning, Date() < deadline { Thread.sleep(forTimeInterval: 0.05) }
             let timedOut = process.isRunning
             if timedOut {
                 process.terminate()
-                process.waitUntilExit()
+                let grace = Date().addingTimeInterval(0.5)
+                while process.isRunning, Date() < grace { Thread.sleep(forTimeInterval: 0.02) }
+                if process.isRunning {
+                    _ = kill(-process.processIdentifier, SIGKILL)
+                    let killDeadline = Date().addingTimeInterval(1)
+                    while process.isRunning, Date() < killDeadline {
+                        Thread.sleep(forTimeInterval: 0.02)
+                    }
+                }
             }
-            try? stdout.synchronize()
-            try? stderr.synchronize()
-            let out = String(decoding: (try? Data(contentsOf: stdoutURL).prefix(65_536)) ?? Data(), as: UTF8.self)
-            let err = String(decoding: (try? Data(contentsOf: stderrURL).prefix(65_536)) ?? Data(), as: UTF8.self)
-            let content = "exit_code: \(process.terminationStatus)\(timedOut ? " (timed out)" : "")\nstdout:\n\(out)\nstderr:\n\(err)"
-            return ToolCallResult(toolCallID: "", content: content, isError: timedOut || process.terminationStatus != 0)
+            let out = String(decoding: stdoutBuffer.snapshot(), as: UTF8.self)
+            let err = String(decoding: stderrBuffer.snapshot(), as: UTF8.self)
+            let exitCode = process.isRunning ? -1 : process.terminationStatus
+            let content = "exit_code: \(exitCode)\(timedOut ? " (timed out)" : "")\nstdout:\n\(out)\nstderr:\n\(err)"
+            return ToolCallResult(toolCallID: "", content: content, isError: timedOut || exitCode != 0)
         } catch { return failure("local_run error: \(error.localizedDescription)") }
+    }
+
+    private static func sandboxProfile(
+        home: URL,
+        workingDirectory: URL,
+        temporaryDirectory: URL,
+        executable: URL
+    ) -> String {
+        func quoted(_ path: String) -> String {
+            "\"" + path.replacingOccurrences(of: "\\", with: "\\\\")
+                .replacingOccurrences(of: "\"", with: "\\\"") + "\""
+        }
+        return """
+        (version 1)
+        (allow default)
+        (deny network*)
+        (deny mach-lookup)
+        (deny file-read* (subpath \(quoted(home.path))))
+        (allow file-read* (subpath \(quoted(workingDirectory.path))) (literal \(quoted(executable.path))))
+        (deny file-write*)
+        (allow file-write* (subpath \(quoted(workingDirectory.path))) (subpath \(quoted(temporaryDirectory.path))))
+        (deny process-exec
+            (literal "/bin/sh") (literal "/bin/zsh") (literal "/bin/bash")
+            (literal "/usr/bin/osascript") (literal "/usr/bin/open"))
+        """
     }
 
     private static func failure(_ message: String, executed: Bool = true) -> ToolCallResult {
