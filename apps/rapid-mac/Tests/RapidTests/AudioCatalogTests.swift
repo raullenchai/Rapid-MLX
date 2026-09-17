@@ -253,8 +253,9 @@ struct AudioCatalogTests {
         let source = try String(contentsOf: Self.audioViewURL, encoding: .utf8)
 
         #expect(source.contains("@Environment(DownloadManager.self) private var downloads"))
-        #expect(source.contains(".task(id: downloads.cacheGeneration)"),
-                "The Audio view may stay mounted while Settings downloads a model.")
+        #expect(source.contains("\"\\(downloads.cacheGeneration)#\\(selectedAlias)\""))
+        #expect(source.contains(".task(id: catalogRefreshKey)"),
+                "The Audio view may stay mounted while Settings downloads a model, and a selection change must refresh the matching alias.")
     }
 
     @Test("audio model rows use the shared cache icons instead of status suffixes")
