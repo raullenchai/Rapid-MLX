@@ -169,6 +169,7 @@ def test_hard_exit_swallows_flush_failures(monkeypatch, production_exit_context)
     assert events == ["atexit", "exit:0"]
 
 
+@pytest.mark.requires_mlx
 def test_legacy_server_main_hard_exits_after_uvicorn(monkeypatch):
     """Behavioral pin for the legacy ``python -m rapid_mlx.server``
     entrypoint (codex round-4 NIT): its ``main()`` runs its own
