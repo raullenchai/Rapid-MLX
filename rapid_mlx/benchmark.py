@@ -771,7 +771,7 @@ def _run_native_mllm_request(
         max_tokens=max_tokens,
         temperature=temperature,
     )
-    generator.insert([request])
+    uids = generator.insert([request])
     token_ids: list[int] = []
     prompt_tokens = 0
     finished = False
@@ -782,6 +782,9 @@ def _run_native_mllm_request(
             # further cannot make progress, and returning here would
             # silently truncate the run AND leave the request active in
             # the reused generator, contaminating every later config.
+            # Remove the stale request before failing loud so the
+            # caller's generator stays clean for the remaining configs.
+            generator.remove(list(uids))
             raise RuntimeError(
                 "serialized MLLM lane went idle before the benchmark "
                 f"request finished ({len(token_ids)} tokens generated, "
@@ -819,8 +822,10 @@ def benchmark_mllm_resolution(
 
     ``generator`` is the serialized-lane generator from
     :func:`_build_bench_generator` (the loaded model rides inside it).
+    Benchmark-harness helper: the call shape is internal to this module
+    and may change between releases without a compatibility shim.
     """
-    from mlx_vlm.prompt_utils import apply_chat_template
+    from mlx_vlm.prompt_utils import apply_chat_template, get_chat_template
 
     # Reset MLX peak memory before this run
     reset_mlx_peak_memory()
@@ -850,11 +855,14 @@ def benchmark_mllm_resolution(
             prompt,
             num_images=1,
         )
+        if not isinstance(formatted_prompt, str):
+            # Some processors return a structured message list; render it
+            # through the processor's chat template rather than discarding
+            # the model-specific formatting for the raw prompt.
+            formatted_prompt = get_chat_template(
+                processor, formatted_prompt, add_generation_prompt=True
+            )
     except Exception:
-        formatted_prompt = prompt
-    if not isinstance(formatted_prompt, str):
-        # Some templates return a message list; the lane takes the
-        # rendered string.
         formatted_prompt = prompt
 
     # Generate on the native serialized lane — the same MLLMBatchGenerator
@@ -1237,8 +1245,10 @@ def benchmark_video_config(
     prompt is templated with ``num_images=0`` — the same convention the
     engine uses for video-only chat requests; the lane extracts the video
     frames itself from ``video_fps``/``video_max_frames``.
+    Benchmark-harness helper: the call shape is internal to this module
+    and may change between releases without a compatibility shim.
     """
-    from mlx_vlm.prompt_utils import apply_chat_template
+    from mlx_vlm.prompt_utils import apply_chat_template, get_chat_template
 
     # Reset MLX peak memory before this run
     reset_mlx_peak_memory()
@@ -1256,9 +1266,11 @@ def benchmark_video_config(
             prompt,
             num_images=0,
         )
+        if not isinstance(formatted_prompt, str):
+            formatted_prompt = get_chat_template(
+                processor, formatted_prompt, add_generation_prompt=True
+            )
     except Exception:
-        formatted_prompt = prompt
-    if not isinstance(formatted_prompt, str):
         formatted_prompt = prompt
 
     text, completion_tokens, prompt_tokens = _run_native_mllm_request(

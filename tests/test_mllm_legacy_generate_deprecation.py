@@ -58,9 +58,12 @@ def test_deprecation_message_names_the_native_lane():
     # after (an ImportError without mlx-vlm, or an AttributeError on the
     # unloaded stub) is not this test's concern.
     model._loaded = True
+    # Post-warning the call fails deterministically on the unloaded stub:
+    # ImportError when mlx-vlm is absent, AttributeError on the None
+    # processor/model when it is present. Anything else is a regression.
     with (
         pytest.warns(DeprecationWarning, match="BatchedEngine"),
-        pytest.raises(Exception),
+        pytest.raises((ImportError, AttributeError)),
     ):
         model.generate(prompt="hi")
 
@@ -95,6 +98,7 @@ class _FakeGenerator:
         self.batches = list(batches)
         self.processor = _FakeProcessor()
         self.inserted = None
+        self.removed = []
 
     def insert(self, requests):
         self.inserted = requests[0]
@@ -104,6 +108,9 @@ class _FakeGenerator:
         if not self.batches:
             return []
         return self.batches.pop(0)
+
+    def remove(self, uids):
+        self.removed.extend(uids)
 
 
 def _response(token, finish_reason=None, prompt_tokens=0):
@@ -162,3 +169,6 @@ def test_native_request_helper_raises_when_the_lane_goes_idle():
     with pytest.raises(RuntimeError, match="idle"):
         _run_native_mllm_request(generator, "p", max_tokens=4)
     assert generator.batches == []  # The idle batch is what stopped it
+    # The stale request must be removed from the reused generator before
+    # the helper raises — otherwise every later config inherits it.
+    assert generator.removed == [7]
