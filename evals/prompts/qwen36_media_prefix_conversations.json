@@ -488,10 +488,12 @@
                   "checkmark"
                 ],
                 [
-                  "next"
+                  "blue",
+                  "icon"
                 ],
                 [
-                  "blue"
+                  "blue",
+                  "circular"
                 ]
               ]
             ]
@@ -1801,8 +1803,10 @@
                   "filled"
                 ],
                 [
-                  "darker",
-                  "blue"
+                  "dot"
+                ],
+                [
+                  "dots"
                 ]
               ]
             ]
@@ -2102,22 +2106,22 @@
               ],
               [
                 [
-                  "orange"
-                ],
-                [
-                  "screenshot"
-                ],
-                [
-                  "question"
+                  "icon"
                 ],
                 [
                   "download"
+                ],
+                [
+                  "orange"
                 ],
                 [
                   "grey"
                 ],
                 [
                   "gray"
+                ],
+                [
+                  "button"
                 ]
               ]
             ]
