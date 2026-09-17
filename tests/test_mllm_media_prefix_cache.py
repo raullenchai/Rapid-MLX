@@ -805,6 +805,19 @@ class TestResumePlaceholderGate:
 
 
 class TestMediaIdentity:
+    def test_content_hash_work_is_skipped_on_the_rollback_path(self):
+        off = _stub_generator(media_prefix_cache="off")
+        off._supports_vision_feature_cache = False
+        assert not off._should_stamp_media_content_key()
+
+        qualified = _stub_generator(media_prefix_cache="auto")
+        qualified._supports_vision_feature_cache = False
+        assert qualified._should_stamp_media_content_key()
+
+        feature_cache = _stub_generator(media_prefix_cache="off")
+        feature_cache._supports_vision_feature_cache = True
+        assert feature_cache._should_stamp_media_content_key()
+
     def test_digest_requires_the_post_preprocess_content_stamp(self):
         gen = _stub_generator()
         assert (

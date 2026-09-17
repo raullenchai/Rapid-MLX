@@ -1626,6 +1626,20 @@ class MLLMBatchGenerator:
             f"#{int(getattr(request, 'media_pixel_cap', 0) or 0)}"
         )
 
+    def _should_stamp_media_content_key(self) -> bool:
+        """Whether preprocessing has a consumer for a media byte digest.
+
+        The feature cache needs it directly.  The boundary cache needs it
+        only while its qualified auto lane is enabled.  Keeping this predicate
+        explicit preserves the byte-for-byte rollback path when both caches
+        are off and avoids otherwise-unused file reads for unqualified models.
+        """
+        return bool(getattr(self, "_supports_vision_feature_cache", False)) or (
+            getattr(self, "media_prefix_cache", "off") == "auto"
+            and getattr(self, "_prefix_cache_enabled", True)
+            and self._media_family_qualified()
+        )
+
     def _media_family_qualified(self) -> bool:
         """Whether the loaded model belongs to a qualified family.
 
@@ -3004,7 +3018,7 @@ class MLLMBatchGenerator:
         # Consumed in ``_run_vision_encoding`` to let the model reuse projected
         # image features on a repeat (#1854). Content order is preserved, so
         # ``[a, b]`` and ``[b, a]`` get distinct keys.
-        if all_images:
+        if all_images and self._should_stamp_media_content_key():
             request.vision_feature_key = compute_images_hash(all_images)
 
         # Check pixel cache first
