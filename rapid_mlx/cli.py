@@ -588,19 +588,23 @@ def _hard_exit_after_serve() -> None:
         atexit._run_exitfuncs()  # noqa: SLF001 — see comment above
     except BaseException:  # noqa: BLE001 — see comment above
         pass
+    # Flush failures must not be silently promoted to success: CPython's
+    # own finalization reports a failed stdout/stderr flush as exit
+    # status 120, so mirror that instead of always exiting 0 (codex
+    # round-5 BLOCKING). BaseException, not Exception: a second SIGINT
+    # landing during the flush raises KeyboardInterrupt, which must not
+    # skip the os._exit below and re-enter the interpreter-finalization
+    # crash path (codex round-4 BLOCKING).
+    exit_code = 0
     try:
         sys.stdout.flush()
-    except BaseException:  # noqa: BLE001, S110 — pragma: no cover
-        # BaseException, not Exception: a second SIGINT landing during
-        # the flush raises KeyboardInterrupt, which must not skip the
-        # os._exit below and re-enter the interpreter-finalization
-        # crash path (codex round-4 BLOCKING).
-        pass
+    except BaseException:  # noqa: BLE001
+        exit_code = 120
     try:
         sys.stderr.flush()
-    except BaseException:  # noqa: BLE001, S110 — pragma: no cover
-        pass
-    os._exit(0)
+    except BaseException:  # noqa: BLE001
+        exit_code = 120
+    os._exit(exit_code)
 
 
 def _serve_startup_message(args) -> str:
