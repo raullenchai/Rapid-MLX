@@ -1292,8 +1292,6 @@ def _benchmark_video_config_native(
     if not warmup:
         print(f"  {config_name:>25} |", end=" ", flush=True)
 
-    start_time = time.perf_counter()
-
     # Apply chat template (video-only requests use num_images=0 — the lane
     # extracts the frames itself). Templating errors propagate: the run
     # loop reports per-config failures, and silently benchmarking the raw
@@ -1310,6 +1308,10 @@ def _benchmark_video_config_native(
             processor, formatted_prompt, add_generation_prompt=True
         )
 
+    # Start the clock after templating — the image path measures
+    # generation only, and the two throughput numbers must stay
+    # comparable.
+    start_time = time.perf_counter()
     text, completion_tokens, prompt_tokens = _run_native_mllm_request(
         generator,
         formatted_prompt,
@@ -1373,6 +1375,12 @@ def benchmark_video_config(
     runs on the native lane (never mlx-vlm's generation runtime). New code
     should build the generator once via :func:`_build_bench_generator` and
     call :func:`_benchmark_video_config_native` instead.
+
+    The legacy path also accepted any duck-typed object exposing
+    ``generate(prompt=..., videos=...)``; the native lane cannot drive
+    those (the model lives inside them), so they are rejected with a
+    ``TypeError`` naming the migration instead of failing with a bare
+    ``AttributeError``.
     """
     warnings.warn(
         "benchmark_video_config's (model, video_path, fps, ...) call shape "
@@ -1382,6 +1390,15 @@ def benchmark_video_config(
         DeprecationWarning,
         stacklevel=2,
     )
+    if not (hasattr(model, "model") and hasattr(model, "processor")):
+        raise TypeError(
+            "benchmark_video_config now runs on the serialized MLLM lane and "
+            "requires an MLXMultimodalLM (exposing .model/.processor); got "
+            f"{type(model).__name__}, which only exposes generate(). Migrate "
+            "duck-typed models to the native lane: build a generator via "
+            "_build_bench_generator(model, processor, max_tokens) and call "
+            "_benchmark_video_config_native(generator, processor, config, ...)."
+        )
     # The legacy path lazily loaded an unloaded wrapper on first use
     # (model.generate → if not self._loaded: self.load()); preserve that
     # contract so previously valid callers do not crash on None parts.

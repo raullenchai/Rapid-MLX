@@ -326,3 +326,24 @@ def test_video_wrapper_lazily_loads_an_unloaded_model(monkeypatch):
             model, "/tmp/v.mp4", 1.0, 4, "cfg", {"duration": 1.0, "total_frames": 4}
         )
     assert model.load_calls == 0
+
+
+def test_video_wrapper_rejects_duck_typed_generate_only_models():
+    # The legacy path accepted any object exposing
+    # generate(prompt=..., videos=...); the native lane cannot drive those
+    # (the model lives inside them), so the wrapper rejects them with a
+    # TypeError naming the migration instead of a bare AttributeError on
+    # .model — and the deprecation warning still fires first.
+    from rapid_mlx import benchmark as bench
+
+    class _DuckTyped:
+        def generate(self, **kwargs):
+            raise AssertionError("generate() must not be called")
+
+    with (
+        pytest.warns(DeprecationWarning, match="deprecated"),
+        pytest.raises(TypeError, match="Migrate duck-typed models"),
+    ):
+        bench.benchmark_video_config(
+            _DuckTyped(), "/tmp/v.mp4", 1.0, 4, "cfg", {"duration": 1.0}
+        )
