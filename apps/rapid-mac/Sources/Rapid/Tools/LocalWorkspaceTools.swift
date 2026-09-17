@@ -24,6 +24,57 @@ enum LocalWorkspaceTools {
         }
     }
 
+    private final class BoundedPipeCapture: @unchecked Sendable {
+        let pipe = Pipe()
+        private let buffer = BoundedOutputBuffer()
+        private let finished = DispatchGroup()
+        private let finishLock = NSLock()
+        private var didFinish = false
+
+        init() {
+            finished.enter()
+            let reader = Thread { [self] in
+                let descriptor = pipe.fileHandleForReading.fileDescriptor
+                var chunk = [UInt8](repeating: 0, count: 8_192)
+                while true {
+                    let count = Darwin.read(descriptor, &chunk, chunk.count)
+                    if count > 0 {
+                        buffer.append(Data(chunk.prefix(count)))
+                    } else if count == 0 {
+                        break
+                    } else if errno != EINTR {
+                        break
+                    }
+                }
+                markFinished()
+            }
+            reader.name = "Rapid local command output"
+            reader.qualityOfService = .userInitiated
+            reader.start()
+        }
+
+        func closeParentWriter() {
+            try? pipe.fileHandleForWriting.close()
+        }
+
+        func finish() -> Data {
+            _ = finished.wait(timeout: .now() + 1)
+            try? pipe.fileHandleForReading.close()
+            return buffer.snapshot()
+        }
+
+        private func markFinished() {
+            finishLock.lock()
+            guard !didFinish else {
+                finishLock.unlock()
+                return
+            }
+            didFinish = true
+            finishLock.unlock()
+            finished.leave()
+        }
+    }
+
     static let searchDefinition = ToolDefinition(
         name: "local_search",
         description: "Search filenames and UTF-8 text inside a local folder. Use this—not web_search—when the user asks to find something on this Mac. Results include matching paths and short text snippets.",
@@ -67,7 +118,7 @@ enum LocalWorkspaceTools {
 
     static let runDefinition = ToolDefinition(
         name: "local_run",
-        description: "Run a development command without a shell, for example clang, cc, go, swift, python3, node, make, or a compiled executable inside the user's home directory. Pass arguments separately. working_directory is optional and defaults to ~/Rapid Workspace. The user approves every command; execution times out after at most 30 seconds.",
+        description: "Run a development command without a shell, for example clang, cc, go, swift, python3, node, ruby, or a compiled executable inside the user's home directory. Pass arguments separately. working_directory is optional and defaults to ~/Rapid Workspace. The user approves every command; execution times out after at most 30 seconds.",
         parameters: .object([
             "type": .string("object"),
             "properties": .object([
@@ -189,7 +240,7 @@ enum LocalWorkspaceTools {
                 guard args.content.utf8.count <= 512_000 else {
                     return failure("local_write content exceeds 512 KB", executed: false)
                 }
-                _ = try safeURL(args.path, mustExist: false)
+                _ = try validatedLexicalURL(args.path)
             case "local_trash":
                 guard let args = decode(PathArgs.self, arguments) else {
                     return failure("local_trash arguments are invalid", executed: false)
@@ -204,7 +255,7 @@ enum LocalWorkspaceTools {
                     return failure("local_run arguments are invalid", executed: false)
                 }
                 _ = try safeURL(args.workingDirectory ?? args.cwd ?? "~/Rapid Workspace", mustExist: false)
-                let allowed = Set(["clang", "cc", "gcc", "go", "swift", "python3", "node", "ruby", "make"])
+                let allowed = Set(["clang", "cc", "gcc", "go", "swift", "python3", "node", "ruby"])
                 if !allowed.contains(args.command) {
                     let executable = try safeURL(args.command)
                     guard FileManager.default.isExecutableFile(atPath: executable.path) else {
@@ -225,7 +276,7 @@ enum LocalWorkspaceTools {
         return try? JSONDecoder().decode(type, from: data)
     }
 
-    private static func safeURL(_ path: String, mustExist: Bool = true) throws -> URL {
+    private static func validatedLexicalURL(_ path: String) throws -> URL {
         let home = FileManager.default.homeDirectoryForCurrentUser.standardizedFileURL.resolvingSymlinksInPath()
         let expanded: String
         if path == "~" {
@@ -236,7 +287,7 @@ enum LocalWorkspaceTools {
             guard path.hasPrefix("/") else { throw LocalError("path must be absolute or begin with ~/") }
             expanded = path
         }
-        let url = URL(fileURLWithPath: expanded).standardizedFileURL.resolvingSymlinksInPath()
+        let url = URL(fileURLWithPath: expanded).standardizedFileURL
         let homePrefix = home.path.hasSuffix("/") ? home.path : home.path + "/"
         guard url.path == home.path || url.path.hasPrefix(homePrefix) else {
             throw LocalError("path must stay inside \(home.path)")
@@ -246,10 +297,36 @@ enum LocalWorkspaceTools {
         guard !protected.contains(where: { relative == $0 || relative.hasPrefix($0 + "/") }) else {
             throw LocalError("that protected location is unavailable")
         }
+        return url
+    }
+
+    private static func safeURL(_ path: String, mustExist: Bool = true) throws -> URL {
+        let lexicalURL = try validatedLexicalURL(path)
+        let url = lexicalURL.resolvingSymlinksInPath()
+        _ = try validatedLexicalURL(url.path)
         if mustExist, !FileManager.default.fileExists(atPath: url.path) {
             throw LocalError("path does not exist")
         }
         return url
+    }
+
+    /// Keep the approved filename as the filename that is actually opened.
+    /// Writes reject symlinked parent paths rather than silently resolving the
+    /// approval to a different destination.
+    private static func safeWriteURL(_ path: String) throws -> URL {
+        let lexicalURL = try validatedLexicalURL(path)
+        let lexicalParent = lexicalURL.deletingLastPathComponent()
+        var isDirectory: ObjCBool = false
+        if !FileManager.default.fileExists(atPath: lexicalParent.path, isDirectory: &isDirectory) {
+            try FileManager.default.createDirectory(at: lexicalParent, withIntermediateDirectories: true)
+            isDirectory = true
+        }
+        guard isDirectory.boolValue else { throw LocalError("local_write parent path is not a folder") }
+        let resolvedParent = try safeURL(lexicalParent.path)
+        guard resolvedParent.path == lexicalParent.path else {
+            throw LocalError("local_write parent path may not contain symbolic links")
+        }
+        return resolvedParent.appendingPathComponent(lexicalURL.lastPathComponent, isDirectory: false)
     }
 
     private static func search(_ arguments: String) -> ToolCallResult {
@@ -270,10 +347,15 @@ enum LocalWorkspaceTools {
                 includingPropertiesForKeys: keys,
                 options: [.skipsHiddenFiles, .skipsPackageDescendants]
             ) else { return failure("local_search could not open the folder") }
+            var visitedEntries = 0
             var scanned = 0
             var matches: [[String: String]] = []
             let needle = query.lowercased()
-            while let url = enumerator.nextObject() as? URL, scanned < 500, matches.count < 20 {
+            while visitedEntries < 2_000,
+                  scanned < 500,
+                  matches.count < 20,
+                  let url = enumerator.nextObject() as? URL {
+                visitedEntries += 1
                 let values = try? url.resourceValues(forKeys: Set(keys))
                 if values?.isDirectory == true {
                     if values?.isSymbolicLink == true || (try? safeURL(url.path)) == nil {
@@ -302,7 +384,14 @@ enum LocalWorkspaceTools {
                     matches.append(item)
                 }
             }
-            let payload: [String: Any] = ["root": root.path, "query": query, "scanned_files": scanned, "matches": matches]
+            let payload: [String: Any] = [
+                "root": root.path,
+                "query": query,
+                "visited_entries": visitedEntries,
+                "scanned_files": scanned,
+                "truncated": visitedEntries >= 2_000 || scanned >= 500 || matches.count >= 20,
+                "matches": matches,
+            ]
             let data = try JSONSerialization.data(withJSONObject: payload, options: [.sortedKeys])
             return ToolCallResult(toolCallID: "", content: String(decoding: data, as: UTF8.self))
         } catch { return failure("local_search error: \(error.localizedDescription)") }
@@ -325,25 +414,81 @@ enum LocalWorkspaceTools {
         guard let args = decode(WriteArgs.self, arguments) else { return failure("local_write arguments are invalid") }
         guard args.content.utf8.count <= 512_000 else { return failure("local_write content exceeds 512 KB") }
         do {
-            let url = try safeURL(args.path, mustExist: false)
+            let url = try safeWriteURL(args.path)
             let parent = url.deletingLastPathComponent()
             var isDirectory: ObjCBool = false
-            if !FileManager.default.fileExists(atPath: parent.path, isDirectory: &isDirectory) {
-                try FileManager.default.createDirectory(at: parent, withIntermediateDirectories: true)
-                isDirectory = true
-            }
+            _ = FileManager.default.fileExists(atPath: parent.path, isDirectory: &isDirectory)
             guard isDirectory.boolValue else {
                 return failure("local_write parent path is not a folder")
             }
-            if FileManager.default.fileExists(atPath: url.path), args.overwrite != true {
-                return failure("local_write refused to replace an existing file without overwrite=true")
-            }
-            let options: Data.WritingOptions = args.overwrite == true
-                ? [.atomic]
-                : [.withoutOverwriting]
-            try Data(args.content.utf8).write(to: url, options: options)
+            try secureWrite(Data(args.content.utf8), to: url, overwrite: args.overwrite == true)
             return ToolCallResult(toolCallID: "", content: "Wrote \(args.content.utf8.count) bytes to \(url.path)")
         } catch { return failure("local_write error: \(error.localizedDescription)") }
+    }
+
+    private static func secureWrite(_ data: Data, to url: URL, overwrite: Bool) throws {
+        let parent = url.deletingLastPathComponent()
+        let parentFD = Darwin.open(parent.path, O_RDONLY | O_DIRECTORY | O_CLOEXEC)
+        guard parentFD >= 0 else { throw posixError("could not open the destination folder") }
+        defer { Darwin.close(parentFD) }
+
+        let finalName = url.lastPathComponent
+        guard !finalName.isEmpty, finalName != ".", finalName != "..", !finalName.contains("/") else {
+            throw LocalError("destination filename is invalid")
+        }
+        let temporaryName = ".rapid-write-\(UUID().uuidString).tmp"
+        let openedName = overwrite ? temporaryName : finalName
+        let descriptor = openedName.withCString {
+            Darwin.openat(
+                parentFD,
+                $0,
+                O_WRONLY | O_CREAT | O_EXCL | O_NOFOLLOW | O_CLOEXEC,
+                mode_t(0o600)
+            )
+        }
+        guard descriptor >= 0 else {
+            if errno == EEXIST, !overwrite {
+                throw LocalError("refused to replace an existing file without overwrite=true")
+            }
+            throw posixError("could not create the destination file")
+        }
+        var shouldRemoveTemporary = overwrite
+        defer {
+            Darwin.close(descriptor)
+            if shouldRemoveTemporary {
+                temporaryName.withCString { _ = Darwin.unlinkat(parentFD, $0, 0) }
+            }
+        }
+
+        try data.withUnsafeBytes { rawBuffer in
+            guard let base = rawBuffer.baseAddress else { return }
+            var written = 0
+            while written < rawBuffer.count {
+                let count = Darwin.write(
+                    descriptor,
+                    base.advanced(by: written),
+                    rawBuffer.count - written
+                )
+                guard count > 0 else { throw posixError("could not write the destination file") }
+                written += count
+            }
+        }
+        guard Darwin.fsync(descriptor) == 0 else {
+            throw posixError("could not sync the destination file")
+        }
+        if overwrite {
+            let renamed = temporaryName.withCString { temporaryPointer in
+                finalName.withCString { finalPointer in
+                    Darwin.renameat(parentFD, temporaryPointer, parentFD, finalPointer)
+                }
+            }
+            guard renamed == 0 else { throw posixError("could not replace the destination file") }
+            shouldRemoveTemporary = false
+        }
+    }
+
+    private static func posixError(_ context: String) -> LocalError {
+        LocalError("\(context): \(String(cString: strerror(errno)))")
     }
 
     private static func trash(_ arguments: String) -> ToolCallResult {
@@ -412,27 +557,8 @@ enum LocalWorkspaceTools {
 
             let temporary = cwd.appendingPathComponent(".rapid-tmp-\(UUID().uuidString)")
             try FileManager.default.createDirectory(at: temporary, withIntermediateDirectories: false)
-            let stdoutPipe = Pipe()
-            let stderrPipe = Pipe()
-            let stdoutBuffer = BoundedOutputBuffer()
-            let stderrBuffer = BoundedOutputBuffer()
-            stdoutPipe.fileHandleForReading.readabilityHandler = { handle in
-                stdoutBuffer.append(handle.availableData)
-            }
-            stderrPipe.fileHandleForReading.readabilityHandler = { handle in
-                stderrBuffer.append(handle.availableData)
-            }
-            defer {
-                stdoutPipe.fileHandleForReading.readabilityHandler = nil
-                stderrPipe.fileHandleForReading.readabilityHandler = nil
-                try? stdoutPipe.fileHandleForReading.close()
-                try? stderrPipe.fileHandleForReading.close()
-                try? FileManager.default.removeItem(at: temporary)
-            }
-
-            let process = Process()
-            process.executableURL = URL(fileURLWithPath: "/usr/bin/sandbox-exec")
-            process.arguments = [
+            defer { try? FileManager.default.removeItem(at: temporary) }
+            let sandboxArguments = [
                 "-p", sandboxProfile(
                     home: FileManager.default.homeDirectoryForCurrentUser.resolvingSymlinksInPath(),
                     workingDirectory: cwd,
@@ -441,41 +567,163 @@ enum LocalWorkspaceTools {
                 ),
                 executable.path,
             ] + processArguments
-            process.currentDirectoryURL = cwd
-            process.standardOutput = stdoutPipe
-            process.standardError = stderrPipe
-            process.environment = [
+            let environment = [
                 "HOME": FileManager.default.homeDirectoryForCurrentUser.path,
                 "PATH": "/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin",
                 "TMPDIR": temporary.path,
                 "LANG": "en_US.UTF-8",
             ]
-            try process.run()
-            // Put the sandbox wrapper and any compiler children in a private
-            // process group so a timeout can stop the entire approved action.
-            _ = setpgid(process.processIdentifier, process.processIdentifier)
             let timeout = min(max(args.timeoutSeconds ?? 15, 1), 30)
-            let deadline = Date().addingTimeInterval(TimeInterval(timeout))
-            while process.isRunning, Date() < deadline { Thread.sleep(forTimeInterval: 0.05) }
-            let timedOut = process.isRunning
-            if timedOut {
-                process.terminate()
-                let grace = Date().addingTimeInterval(0.5)
-                while process.isRunning, Date() < grace { Thread.sleep(forTimeInterval: 0.02) }
-                if process.isRunning {
-                    _ = kill(-process.processIdentifier, SIGKILL)
-                    let killDeadline = Date().addingTimeInterval(1)
-                    while process.isRunning, Date() < killDeadline {
-                        Thread.sleep(forTimeInterval: 0.02)
+            let outcome = try spawnSandboxed(
+                arguments: sandboxArguments,
+                environment: environment,
+                workingDirectory: cwd,
+                timeout: TimeInterval(timeout)
+            )
+            let out = String(decoding: outcome.stdout, as: UTF8.self)
+            let err = String(decoding: outcome.stderr, as: UTF8.self)
+            let content = "exit_code: \(outcome.exitCode)\(outcome.timedOut ? " (timed out)" : "")\nstdout:\n\(out)\nstderr:\n\(err)"
+            return ToolCallResult(
+                toolCallID: "",
+                content: content,
+                isError: outcome.timedOut || outcome.exitCode != 0
+            )
+        } catch { return failure("local_run error: \(error.localizedDescription)") }
+    }
+
+    private struct CommandOutcome {
+        let exitCode: Int32
+        let timedOut: Bool
+        let stdout: Data
+        let stderr: Data
+    }
+
+    private static func spawnSandboxed(
+        arguments: [String],
+        environment: [String: String],
+        workingDirectory: URL,
+        timeout: TimeInterval
+    ) throws -> CommandOutcome {
+        let stdout = BoundedPipeCapture()
+        let stderr = BoundedPipeCapture()
+        defer {
+            stdout.closeParentWriter()
+            stderr.closeParentWriter()
+        }
+        var actions: posix_spawn_file_actions_t?
+        var attributes: posix_spawnattr_t?
+        guard posix_spawn_file_actions_init(&actions) == 0,
+              posix_spawnattr_init(&attributes) == 0 else {
+            throw LocalError("could not initialize the command launcher")
+        }
+        defer {
+            posix_spawn_file_actions_destroy(&actions)
+            posix_spawnattr_destroy(&attributes)
+        }
+        guard posix_spawn_file_actions_adddup2(
+            &actions, stdout.pipe.fileHandleForWriting.fileDescriptor, STDOUT_FILENO
+        ) == 0,
+        posix_spawn_file_actions_adddup2(
+            &actions, stderr.pipe.fileHandleForWriting.fileDescriptor, STDERR_FILENO
+        ) == 0,
+        posix_spawn_file_actions_addclose(
+            &actions, stdout.pipe.fileHandleForReading.fileDescriptor
+        ) == 0,
+        posix_spawn_file_actions_addclose(
+            &actions, stderr.pipe.fileHandleForReading.fileDescriptor
+        ) == 0,
+        posix_spawn_file_actions_addclose(
+            &actions, stdout.pipe.fileHandleForWriting.fileDescriptor
+        ) == 0,
+        posix_spawn_file_actions_addclose(
+            &actions, stderr.pipe.fileHandleForWriting.fileDescriptor
+        ) == 0,
+        posix_spawn_file_actions_addchdir_np(&actions, workingDirectory.path) == 0,
+        posix_spawnattr_setflags(&attributes, Int16(POSIX_SPAWN_SETPGROUP)) == 0,
+        posix_spawnattr_setpgroup(&attributes, 0) == 0 else {
+            throw LocalError("could not configure the command launcher")
+        }
+
+        let argvStrings = ["sandbox-exec"] + arguments
+        let environmentStrings = environment.map { "\($0.key)=\($0.value)" }.sorted()
+        var argv = argvStrings.map { strdup($0) } + [nil]
+        var envp = environmentStrings.map { strdup($0) } + [nil]
+        defer {
+            argv.dropLast().forEach { free($0) }
+            envp.dropLast().forEach { free($0) }
+        }
+        var pid: pid_t = 0
+        let spawnStatus = argv.withUnsafeMutableBufferPointer { argvBuffer in
+            envp.withUnsafeMutableBufferPointer { environmentBuffer in
+                posix_spawn(
+                    &pid,
+                    "/usr/bin/sandbox-exec",
+                    &actions,
+                    &attributes,
+                    argvBuffer.baseAddress,
+                    environmentBuffer.baseAddress
+                )
+            }
+        }
+        guard spawnStatus == 0, pid > 0 else {
+            throw LocalError("could not start the approved command: \(String(cString: strerror(spawnStatus)))")
+        }
+        stdout.closeParentWriter()
+        stderr.closeParentWriter()
+
+        var status: Int32 = 0
+        var reaped = false
+        let deadline = Date().addingTimeInterval(timeout)
+        while Date() < deadline {
+            let waited = waitpid(pid, &status, WNOHANG)
+            if waited == pid {
+                reaped = true
+                break
+            }
+            if waited == -1, errno != EINTR { throw posixError("could not monitor the approved command") }
+            Thread.sleep(forTimeInterval: 0.02)
+        }
+        let timedOut = !reaped
+        if timedOut {
+            _ = kill(-pid, SIGTERM)
+            let grace = Date().addingTimeInterval(0.5)
+            while Date() < grace {
+                let waited = waitpid(pid, &status, WNOHANG)
+                if waited == pid {
+                    reaped = true
+                    break
+                }
+                Thread.sleep(forTimeInterval: 0.02)
+            }
+            if !reaped {
+                _ = kill(-pid, SIGKILL)
+                let killDeadline = Date().addingTimeInterval(1)
+                while Date() < killDeadline {
+                    let waited = waitpid(pid, &status, WNOHANG)
+                    if waited == pid {
+                        reaped = true
+                        break
                     }
+                    Thread.sleep(forTimeInterval: 0.02)
                 }
             }
-            let out = String(decoding: stdoutBuffer.snapshot(), as: UTF8.self)
-            let err = String(decoding: stderrBuffer.snapshot(), as: UTF8.self)
-            let exitCode = process.isRunning ? -1 : process.terminationStatus
-            let content = "exit_code: \(exitCode)\(timedOut ? " (timed out)" : "")\nstdout:\n\(out)\nstderr:\n\(err)"
-            return ToolCallResult(toolCallID: "", content: content, isError: timedOut || exitCode != 0)
-        } catch { return failure("local_run error: \(error.localizedDescription)") }
+        }
+        let exitCode: Int32
+        if !reaped {
+            exitCode = -1
+        } else if status & 0x7f == 0 {
+            exitCode = (status >> 8) & 0xff
+        } else if status & 0x7f != 0x7f {
+            exitCode = 128 + (status & 0x7f)
+        } else {
+            exitCode = -1
+        }
+        return CommandOutcome(
+            exitCode: exitCode,
+            timedOut: timedOut,
+            stdout: stdout.finish(),
+            stderr: stderr.finish()
+        )
     }
 
     private static func sandboxProfile(

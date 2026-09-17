@@ -119,6 +119,30 @@ final class LocalWorkspaceToolsTests {
         #expect(try String(contentsOf: output, encoding: .utf8) == "original")
     }
 
+    @Test("overwrite replaces a symlink instead of writing through it")
+    func writeDoesNotFollowDestinationSymlink() async throws {
+        let root = try fixtureDirectory()
+        let outside = try fixtureDirectory()
+        defer {
+            try? FileManager.default.removeItem(at: root)
+            try? FileManager.default.removeItem(at: outside)
+        }
+        let target = outside.appendingPathComponent("target.txt")
+        let output = root.appendingPathComponent("output.txt")
+        try "outside-original".write(to: target, atomically: true, encoding: .utf8)
+        try FileManager.default.createSymbolicLink(at: output, withDestinationURL: target)
+        let arguments = try #require(String(data: JSONSerialization.data(withJSONObject: [
+            "path": output.path, "content": "approved-output", "overwrite": true,
+        ]), encoding: .utf8))
+
+        let result = await runApproved(name: "local_write", arguments: arguments, store: approval())
+
+        #expect(!result.isError, Comment(rawValue: result.content))
+        #expect(try String(contentsOf: output, encoding: .utf8) == "approved-output")
+        #expect(try String(contentsOf: target, encoding: .utf8) == "outside-original")
+        #expect((try output.resourceValues(forKeys: [.isSymbolicLinkKey])).isSymbolicLink != true)
+    }
+
     @Test("run uses argv without a shell and captures output")
     func commandRunsWithoutShell() async throws {
         let root = try fixtureDirectory()
@@ -135,6 +159,22 @@ final class LocalWorkspaceToolsTests {
         #expect(!result.isError)
         #expect(result.content.contains("exit_code: 0"))
         #expect(result.content.contains("RAPID_LOCAL_OK"))
+    }
+
+    @Test("run drains output written immediately before process exit")
+    func commandPreservesTrailingOutput() async throws {
+        let root = try fixtureDirectory()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let arguments = try #require(String(data: JSONSerialization.data(withJSONObject: [
+            "command": "python3",
+            "arguments": ["-c", "import os;os.write(1,b'RAPID_TRAILING_BYTES')"],
+            "working_directory": root.path,
+        ]), encoding: .utf8))
+
+        let result = await runApproved(name: "local_run", arguments: arguments, store: approval())
+
+        #expect(!result.isError)
+        #expect(result.content.contains("RAPID_TRAILING_BYTES"))
     }
 
     @Test("run compiles C inside the approved workspace sandbox")
@@ -216,6 +256,28 @@ final class LocalWorkspaceToolsTests {
         #expect(result.isError)
         #expect(result.content.contains("timed out"))
         #expect(Date().timeIntervalSince(started) < 3)
+    }
+
+    @Test("run timeout stops child processes in the approved process group")
+    func commandTimeoutStopsChildren() async throws {
+        let root = try fixtureDirectory()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let marker = root.appendingPathComponent("escaped-child.txt")
+        let child = "import time;time.sleep(2);open('escaped-child.txt','w').write('escaped')"
+        let parent = "import signal,subprocess,time;subprocess.Popen(['python3','-c',\"\(child)\"]);signal.signal(signal.SIGTERM,signal.SIG_IGN);time.sleep(10)"
+        let arguments = try #require(String(data: JSONSerialization.data(withJSONObject: [
+            "command": "python3",
+            "arguments": ["-c", parent],
+            "working_directory": root.path,
+            "timeout_seconds": 1,
+        ]), encoding: .utf8))
+
+        let result = await runApproved(name: "local_run", arguments: arguments, store: approval())
+        try await Task.sleep(for: .seconds(2))
+
+        #expect(result.isError)
+        #expect(result.content.contains("timed out"))
+        #expect(!FileManager.default.fileExists(atPath: marker.path))
     }
 
     @Test("paths outside the user's home fail closed before approval")
