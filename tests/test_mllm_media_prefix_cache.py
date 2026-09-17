@@ -36,7 +36,6 @@ from typing import Any  # noqa: E402
 
 import mlx.core as mx  # noqa: E402
 import mlx.nn as nn  # noqa: E402
-
 from vllm_mlx.mllm_batch_generator import (  # noqa: E402
     MLLMBatchGenerator,
     MLLMBatchRequest,
