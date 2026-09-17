@@ -150,23 +150,36 @@ def test_hard_exit_still_fires_without_full_harness_shape(
     )
 
 
-def test_hard_exit_swallows_flush_failures(monkeypatch, production_exit_context):
-    """A dead stream (closed stderr at teardown) must not convert the
-    clean exit into a traceback-driven non-zero exit.
+@pytest.mark.parametrize("broken_stream", ["stdout", "stderr"])
+def test_hard_exit_reports_flush_failure_as_exit_120(
+    monkeypatch, production_exit_context, broken_stream
+):
+    """A dead stream (closed stderr at teardown, broken pipe on stdout)
+    must not become a traceback-driven crash, but it also must not be
+    silently promoted to a successful exit: mirror CPython's
+    finalization convention and report 120 (codex round-5 BLOCKING).
     """
 
     class _Broken:
         def flush(self) -> None:
             raise ValueError("stream closed")
 
+    class _Null:
+        def flush(self) -> None:
+            pass
+
     events = production_exit_context
-    monkeypatch.setattr(cli.sys, "stdout", _Broken())
-    monkeypatch.setattr(cli.sys, "stderr", _Broken())
+    monkeypatch.setattr(
+        cli.sys, "stdout", _Broken() if broken_stream == "stdout" else _Null()
+    )
+    monkeypatch.setattr(
+        cli.sys, "stderr", _Broken() if broken_stream == "stderr" else _Null()
+    )
     monkeypatch.setattr(cli.os, "_exit", lambda code: events.append(f"exit:{code}"))
 
     cli._hard_exit_after_serve()
 
-    assert events == ["atexit", "exit:0"]
+    assert events == ["atexit", "exit:120"]
 
 
 @pytest.mark.requires_mlx
