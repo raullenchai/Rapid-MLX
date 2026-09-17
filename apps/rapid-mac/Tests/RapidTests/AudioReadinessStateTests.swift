@@ -104,6 +104,22 @@ struct AudioReadinessStateTests {
         #expect(state.allowsModelSelection)
     }
 
+    @Test("disk download outranks an operation that has not reached runtime")
+    func diskDownloadOutranksPrematureActivity() {
+        let state = AudioReadinessState.resolve(
+            Self.snapshot(
+                cached: false,
+                download: .init(
+                    alias: Self.alias,
+                    status: .running(detail: "30%", fraction: 0.3)
+                ),
+                activity: .init(alias: Self.alias, activity: .loadingVoices)
+            ))
+
+        #expect(state == .downloading(alias: Self.alias, detail: "30%", fraction: 0.3))
+        #expect(state.allowsModelSelection)
+    }
+
     @Test("catalog proof prevents a stale running download from regressing readiness")
     func cachedModelIgnoresStaleDownloadProgress() {
         let state = AudioReadinessState.resolve(

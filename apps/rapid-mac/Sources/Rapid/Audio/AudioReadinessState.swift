@@ -97,13 +97,10 @@ enum AudioReadinessState: Equatable {
         }
         let isReady = snapshot.readyAlias == alias
 
-        // A matching operation is request-owned evidence that this lane is in
-        // use. Keep selection blocked even if process readiness briefly drops
-        // during a server transition; alias matching still rejects work left
-        // behind by a previously selected model.
-        if let matchingActivity {
-            return .active(alias: alias, activity: matchingActivity)
-        }
+        // Audio operations begin before their lane is guaranteed ready. While
+        // a known-uncached model is still pulling or being verified, preserve
+        // the disk-owned state (and its selectable-model contract) instead of
+        // presenting the operation as active runtime work.
         if snapshot.catalogLoaded, snapshot.cached == false {
             if case .failed(let message) = matchingDownload {
                 return .failed(alias: alias, message: message)
@@ -111,6 +108,16 @@ enum AudioReadinessState: Equatable {
             if case .running(let detail, let fraction) = matchingDownload {
                 return .downloading(alias: alias, detail: detail, fraction: fraction)
             }
+            if case .completed = matchingDownload {
+                return .verifyingDownload(alias: alias)
+            }
+        }
+        // Otherwise a matching operation is request-owned evidence that this
+        // lane is in use. It keeps selection blocked if process readiness or
+        // the catalog briefly transitions, while alias matching rejects stale
+        // work from a previously selected model.
+        if let matchingActivity {
+            return .active(alias: alias, activity: matchingActivity)
         }
         if let matchingLoad {
             return .loading(alias: alias, detail: matchingLoad.detail)
@@ -119,13 +126,6 @@ enum AudioReadinessState: Equatable {
         guard snapshot.catalogLoaded else { return .catalogPending }
         guard let cached = snapshot.cached else { return .unknownModel(alias: alias) }
 
-        if !cached {
-            if case .completed = matchingDownload {
-                // A successful pull is not proof of a usable checkpoint. The
-                // catalog refresh owns the transition to `downloaded`.
-                return .verifyingDownload(alias: alias)
-            }
-        }
         if isReady, cached { return .ready(alias: alias) }
 
         if !cached {
