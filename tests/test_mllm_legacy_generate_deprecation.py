@@ -122,7 +122,7 @@ class _FakeGenerator:
         self.removed.extend(uids)
 
 
-def _response(token, finish_reason=None, prompt_tokens=0):
+def _response(token, finish_reason=None, prompt_tokens=0, token_is_stop_token=False):
     from rapid_mlx.mllm_batch_generator import MLLMBatchResponse
 
     return MLLMBatchResponse(
@@ -131,6 +131,7 @@ def _response(token, finish_reason=None, prompt_tokens=0):
         token=token,
         logprobs=None,
         finish_reason=finish_reason,
+        token_is_stop_token=token_is_stop_token,
         prompt_tokens=prompt_tokens,
     )
 
@@ -141,7 +142,10 @@ def test_native_request_helper_drains_to_finish():
     generator = _FakeGenerator(
         [
             [_response(5, prompt_tokens=42)],
-            [_response(6), _response(7, finish_reason="stop")],
+            [
+                _response(6),
+                _response(7, finish_reason="stop", token_is_stop_token=True),
+            ],
             # Never reached: the helper stops at the finish_reason above.
             [_response(9)],
         ]
@@ -156,8 +160,10 @@ def test_native_request_helper_drains_to_finish():
         max_tokens=16,
         temperature=0.7,
     )
-    assert text == "<5><6><7>"
-    assert (completion, prompt_tokens) == (3, 42)
+    # The terminal stop token is a control sentinel, not generated text:
+    # it is decoded neither into the text nor into the token count.
+    assert text == "<5><6>"
+    assert (completion, prompt_tokens) == (2, 42)
     request = generator.inserted
     assert request.uid == -1  # Generator assigns the real uid on insert
     assert request.prompt == "formatted<image>prompt"
@@ -183,11 +189,33 @@ def test_native_request_helper_raises_when_the_lane_goes_idle():
     assert generator.removed == [7]
 
 
+def test_native_request_helper_counts_a_length_terminal_token():
+    # A finish_reason="length" cutoff's final token is a real emitted
+    # token (token_is_stop_token=False): it stays in the text and count —
+    # only the stop sentinel is excluded.
+    from rapid_mlx.benchmark import _run_native_mllm_request
+
+    generator = _FakeGenerator([[_response(5), _response(6, finish_reason="length")]])
+    text, completion, _ = _run_native_mllm_request(generator, "p", max_tokens=2)
+    assert text == "<5><6>"
+    assert completion == 2
+
+
 def test_legacy_signature_wrappers_warn_and_delegate(monkeypatch):
     # The pre-native-lane signatures keep working through a deprecated
     # wrapper: it builds the serialized-lane generator internally and
     # never touches mlx-vlm's generation runtime.
+    # Templating is out of scope here (the wrappers delegate to it); the
+    # fakes carry a bare config that real templating would reject, and
+    # templating failures now propagate after the blanket fallback's
+    # removal.
+    import mlx_vlm.prompt_utils as prompt_utils
+
     from rapid_mlx import benchmark as bench
+
+    monkeypatch.setattr(
+        prompt_utils, "apply_chat_template", lambda *args, **kwargs: "formatted"
+    )
 
     generators = []
     built = []
@@ -197,7 +225,12 @@ def test_legacy_signature_wrappers_warn_and_delegate(monkeypatch):
         # One fresh generator per build — the real benchmark builds one per
         # run and reuses it across configs that each drain to completion.
         generator = _FakeGenerator(
-            [[_response(1, prompt_tokens=3), _response(2, finish_reason="stop")]]
+            [
+                [
+                    _response(1, prompt_tokens=3),
+                    _response(2, finish_reason="stop", token_is_stop_token=True),
+                ]
+            ]
         )
         generators.append(generator)
         return generator
@@ -211,7 +244,7 @@ def test_legacy_signature_wrappers_warn_and_delegate(monkeypatch):
         result = bench.benchmark_mllm_resolution(
             object(), _FakeProcessor(), {}, image, 224, 224, max_tokens=8
         )
-    assert result.tokens_generated == 2
+    assert result.tokens_generated == 1  # Stop sentinel excluded
     assert built == [("object", 8)]
 
     with pytest.warns(DeprecationWarning, match="deprecated"):
@@ -224,7 +257,7 @@ def test_legacy_signature_wrappers_warn_and_delegate(monkeypatch):
             {"duration": 1.0, "total_frames": 4, "width": 64, "height": 64, "fps": 2.0},
             max_tokens=8,
         )
-    assert video_result.completion_tokens == 2
+    assert video_result.completion_tokens == 1
     assert len(built) == 2
     # The video wrapper preserves the exact legacy positional shape:
     # (model, video_path, fps, max_frames, config_name, video_info, ...).
@@ -238,14 +271,21 @@ def test_legacy_signature_wrappers_warn_and_delegate(monkeypatch):
             "cfg",
             {"duration": 2.0, "total_frames": 8},
         )
-    assert positional.completion_tokens == 2
+    assert positional.completion_tokens == 1
 
 
 def test_video_wrapper_lazily_loads_an_unloaded_model(monkeypatch):
     # The legacy path lazily loaded an unloaded MLXMultimodalLM on first
     # use; the compatibility wrapper must preserve that contract, or
     # previously valid callers crash on None components.
+    # Templating is out of scope here — stub it before the wrapper call.
+    import mlx_vlm.prompt_utils as prompt_utils
+
     from rapid_mlx import benchmark as bench
+
+    monkeypatch.setattr(
+        prompt_utils, "apply_chat_template", lambda *args, **kwargs: "formatted"
+    )
 
     class _UnloadedModel:
         def __init__(self):
@@ -264,7 +304,12 @@ def test_video_wrapper_lazily_loads_an_unloaded_model(monkeypatch):
         bench,
         "_build_bench_generator",
         lambda m, p, max_tokens: _FakeGenerator(
-            [[_response(1, prompt_tokens=1), _response(2, finish_reason="stop")]]
+            [
+                [
+                    _response(1, prompt_tokens=1),
+                    _response(2, finish_reason="stop", token_is_stop_token=True),
+                ]
+            ]
         ),
     )
     with pytest.warns(DeprecationWarning, match="deprecated"):

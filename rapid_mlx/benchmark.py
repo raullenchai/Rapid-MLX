@@ -758,6 +758,10 @@ def _run_native_mllm_request(
     Returns ``(text, generated_token_count, prompt_token_count)``. Insert →
     drain, decoding the accumulated token ids at the end — the same shape
     the scheduler's detokenizer pool produces for streamed server requests.
+    The terminal stop token is a control sentinel, not generated text, and
+    is counted in neither the decoded output nor the token count (a
+    ``finish_reason="length"`` cutoff's final token is a real emitted token
+    and stays counted).
     """
     from rapid_mlx.mllm_batch_generator import MLLMBatchRequest
 
@@ -792,7 +796,8 @@ def _run_native_mllm_request(
             for response in responses:
                 if response.request_id != request.request_id:
                     continue
-                token_ids.append(response.token)
+                if not response.token_is_stop_token:
+                    token_ids.append(response.token)
                 if response.prompt_tokens:
                     prompt_tokens = response.prompt_tokens
                 if response.finish_reason is not None:
@@ -848,24 +853,23 @@ def _benchmark_mllm_resolution_native(
     if not warmup:
         print(f"  {resolution_name:>10} | {pixels:>12,} |", end=" ", flush=True)
 
-    # Apply chat template
+    # Apply chat template. Templating errors propagate: the run loop
+    # reports per-config failures, and silently benchmarking the raw
+    # prompt would produce plausible numbers for unformatted input.
     prompt = "What animal is in this image? Describe it briefly."
-    try:
-        formatted_prompt = apply_chat_template(
-            processor,
-            config,
-            prompt,
-            num_images=1,
+    formatted_prompt = apply_chat_template(
+        processor,
+        config,
+        prompt,
+        num_images=1,
+    )
+    if not isinstance(formatted_prompt, str):
+        # Some processors return a structured message list; render it
+        # through the processor's chat template rather than discarding
+        # the model-specific formatting for the raw prompt.
+        formatted_prompt = get_chat_template(
+            processor, formatted_prompt, add_generation_prompt=True
         )
-        if not isinstance(formatted_prompt, str):
-            # Some processors return a structured message list; render it
-            # through the processor's chat template rather than discarding
-            # the model-specific formatting for the raw prompt.
-            formatted_prompt = get_chat_template(
-                processor, formatted_prompt, add_generation_prompt=True
-            )
-    except Exception:
-        formatted_prompt = prompt
 
     # Generate on the native serialized lane — the same MLLMBatchGenerator
     # components the server's MLLMScheduler drives, not mlx-vlm's legacy
@@ -1290,20 +1294,21 @@ def _benchmark_video_config_native(
 
     start_time = time.perf_counter()
 
+    # Apply chat template (video-only requests use num_images=0 — the lane
+    # extracts the frames itself). Templating errors propagate: the run
+    # loop reports per-config failures, and silently benchmarking the raw
+    # prompt would produce plausible numbers for unformatted input.
     prompt = "Describe what happens in this video. What do you see?"
-    try:
-        formatted_prompt = apply_chat_template(
-            processor,
-            config,
-            prompt,
-            num_images=0,
+    formatted_prompt = apply_chat_template(
+        processor,
+        config,
+        prompt,
+        num_images=0,
+    )
+    if not isinstance(formatted_prompt, str):
+        formatted_prompt = get_chat_template(
+            processor, formatted_prompt, add_generation_prompt=True
         )
-        if not isinstance(formatted_prompt, str):
-            formatted_prompt = get_chat_template(
-                processor, formatted_prompt, add_generation_prompt=True
-            )
-    except Exception:
-        formatted_prompt = prompt
 
     text, completion_tokens, prompt_tokens = _run_native_mllm_request(
         generator,
