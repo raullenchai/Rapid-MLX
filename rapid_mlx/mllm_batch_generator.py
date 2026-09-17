@@ -1537,20 +1537,21 @@ class MLLMBatchGenerator:
 
     @staticmethod
     def _media_rope_consumes_key(src: str) -> bool:
-        """AST check that a call body *consumes* ``kwargs["rope_deltas"]``.
+        """Control-flow-aware AST check that a call body *consumes*
+        ``kwargs["rope_deltas"]``.
 
-        A substring probe matches comments, log lines, and dead branches;
-        consuming the key means the AST contains a real
-        ``kwargs.pop("rope_deltas", ...)`` / ``kwargs.get("rope_deltas",
-        ...)`` call or a ``kwargs["rope_deltas"]`` subscript.
+        A substring probe matches comments and log lines; a flat AST walk
+        also matches consumption hidden in dead code (``if False:``,
+        ``while False:``, statements after an unconditional ``return``).
+        This walk visits only obviously-live statements: constant-false
+        branches are skipped toward their live side, and nothing after an
+        unconditional ``return``/``raise``/``break``/``continue`` in a
+        block is considered. A real ``kwargs.pop("rope_deltas", ...)`` /
+        ``kwargs.get("rope_deltas", ...)`` call or a
+        ``kwargs["rope_deltas"]`` subscript in live code opens the gate.
         """
-        try:
-            # ``inspect.getsource`` of a method returns the indented block;
-            # ``ast.parse`` needs it dedented to module level.
-            tree = ast.parse(textwrap.dedent(src))
-        except (SyntaxError, ValueError):
-            return False
-        for node in ast.walk(tree):
+
+        def is_consumption(node: ast.AST) -> bool:
             if (
                 isinstance(node, ast.Call)
                 and isinstance(node.func, ast.Attribute)
@@ -1562,15 +1563,44 @@ class MLLMBatchGenerator:
                 and node.args[0].value == "rope_deltas"
             ):
                 return True
-            if (
+            return (
                 isinstance(node, ast.Subscript)
                 and isinstance(node.value, ast.Name)
                 and node.value.id == "kwargs"
                 and isinstance(node.slice, ast.Constant)
                 and node.slice.value == "rope_deltas"
+            )
+
+        def visit(node: ast.AST) -> bool:
+            if isinstance(node, ast.If) and isinstance(node.test, ast.Constant):
+                # Only the taken side of a constant branch is live.
+                branch = node.body if node.test.value else node.orelse
+                return any(visit(stmt) for stmt in branch)
+            if (
+                isinstance(node, ast.While)
+                and isinstance(node.test, ast.Constant)
+                and not node.test.value
             ):
+                return False
+            if is_consumption(node):
                 return True
-        return False
+            return any(visit(child) for child in ast.iter_child_nodes(node))
+
+        def live(stmts: list[ast.stmt]) -> bool:
+            for stmt in stmts:
+                if visit(stmt):
+                    return True
+                if isinstance(stmt, (ast.Return, ast.Raise, ast.Break, ast.Continue)):
+                    return False
+            return False
+
+        try:
+            # ``inspect.getsource`` of a method returns the indented block;
+            # ``ast.parse`` needs it dedented to module level.
+            tree = ast.parse(textwrap.dedent(src))
+        except (SyntaxError, ValueError):
+            return False
+        return live(tree.body)
 
     def _media_model_supports_rope_kwarg(self) -> bool:
         """The split boundary forward needs ``rope_deltas`` through the call.
@@ -1718,7 +1748,7 @@ class MLLMBatchGenerator:
 
     def _media_boundary_plan(
         self, request: MLLMBatchRequest, input_ids: Any, cache: list[Any]
-    ) -> tuple[str, Any, int] | None:
+    ) -> tuple[str, Any, int, int | None] | None:
         """Decide the media boundary action for one image-bearing request.
 
         Returns ``("resume", entry, boundary, generation)`` on a verified
@@ -1792,10 +1822,9 @@ class MLLMBatchGenerator:
                 and placeholder_ids
                 and not any(token in placeholder_ids for token in full_ids[boundary:])
             ):
-                self._media_boundary_hits += 1
-                # Promote on hit: frequently resumed media must not be
-                # evicted ahead of colder entries (LRU, not FIFO).
-                self._media_promote_entry(digest)
+                # No hit is counted here: the caller installs the snapshot
+                # after re-cloning it, and the hit (plus the LRU promotion)
+                # only lands once that install actually succeeded.
                 return ("resume", entry, boundary, generation)
             # A stored candidate that fails the strict prefix or placeholder
             # check is a clean miss — never a trim or a partial resume. This
@@ -1856,11 +1885,16 @@ class MLLMBatchGenerator:
         evaluated on the worker stream: clones the leaves (detached,
         capacity-bounded), records the MRoPE delta, and inserts the entry
         under the request's identity digest. Returns None when anything is
-        uncloneable — the caller continues the suffix without storing.
+        uncloneable, over-budget, or the store was cleared mid-clone — the
+        caller redoes the request as one cold full forward.
         """
         digest = self._media_identity_digest(request)
         if digest is None or rope_delta is None:
             return None
+        # Pin the store incarnation before the (lock-free) clone: a clear
+        # that lands while cloning must not be undone by this publish.
+        with self._media_entries_guard():
+            generation = getattr(self, "_media_store_generation", 0)
         full_ids = [int(v) for v in input_ids.reshape(-1).tolist()]
         try:
             cloned = _media_clone_leaves(
@@ -1895,14 +1929,19 @@ class MLLMBatchGenerator:
         )
         # Admission cap: a single entry larger than the whole shared ceiling
         # can never fit beside anything, and holding it makes every budget
-        # calculation degenerate. Discard the snapshot — the caller continues
-        # the suffix on the live cache, exactly like an uncloneable store.
+        # calculation degenerate. Discard the snapshot — the caller redoes
+        # the request as one cold full forward, like an uncloneable store.
         budget = self._media_resolved_budget()
         if budget > 0 and entry.cache_bytes > budget:
             return None
         # Replacing an existing entry for the same digest: drop the old
-        # bytes first so the budget sees the net footprint.
+        # bytes first so the budget sees the net footprint. The generation
+        # recheck shares the publish's critical section: a clear_prefix_cache
+        # completing during the clone wins — this snapshot is discarded and
+        # the caller rides the cold path.
         with self._media_entries_guard():
+            if generation != getattr(self, "_media_store_generation", 0):
+                return None
             self._media_boundary_entries.pop(digest, None)
             self._media_boundary_entries[digest] = entry
             self._media_boundary_stores += 1
@@ -1947,9 +1986,9 @@ class MLLMBatchGenerator:
 
         The media store and the text exact cache share one engine-wide
         ceiling, so the media budget must charge for what the text cache
-        already holds. Returns 0 when the store cannot be walked (the text
-        budget is then simply not credited — same conservative direction
-        as ``_enforce_exact_cache_budget``'s own accounting).
+        already holds. A store that cannot be walked (exception under the
+        text lock) is charged the WHOLE ceiling — fail closed, so no media
+        admission can rely on unaccounted room.
         """
         cache = getattr(self, "_prefix_cache", None)
         if cache is None:
@@ -1965,7 +2004,7 @@ class MLLMBatchGenerator:
                     for entry in list(entries.values())
                 )
         except Exception:
-            return 0
+            return self._media_resolved_budget()
 
     def _media_entries_guard(self) -> contextlib.AbstractContextManager:
         """Lock guarding the media store against cross-thread mutation.
@@ -2948,10 +2987,9 @@ class MLLMBatchGenerator:
             except Exception:
                 cloned = None
             if cloned is None or entry.rope_delta is None:
-                # The plan counted a verified prefix, but the detached
-                # re-clone failed — degrade to a counted cold miss instead
-                # of an impossible hit.
-                self._media_boundary_hits -= 1
+                # The plan verified the prefix, but the detached re-clone
+                # failed — degrade to a counted cold miss instead of an
+                # impossible resume.
                 self._media_boundary_misses += 1
                 return self.model(input_ids, cache=cache, **kwargs)
             # Validate the generation and install the snapshot in one
@@ -2963,9 +3001,13 @@ class MLLMBatchGenerator:
                 if not stale:
                     cache[:] = cloned
             if stale:
-                self._media_boundary_hits -= 1
                 self._media_boundary_misses += 1
                 return self.model(input_ids, cache=cache, **kwargs)
+            # The install succeeded: only now is this a counted, promoted
+            # hit — frequently resumed media must not be evicted ahead of
+            # colder entries (LRU, not FIFO).
+            self._media_boundary_hits += 1
+            self._media_promote_entry(self._media_identity_digest(request))
             cache[:] = cloned
             try:
                 self._media_mrope_install(entry.rope_delta)
