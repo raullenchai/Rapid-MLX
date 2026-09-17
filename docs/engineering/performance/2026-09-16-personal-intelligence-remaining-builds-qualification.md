@@ -76,7 +76,7 @@ ship. Each annotated receipt carries a `review_note` explaining that edit.
 
 | Model | Receipt | Stable failure |
 |---|---|---|
-| Qwen3-Coder 30B Q4 | `reports/benchmarks/personal-intelligence-qwen3-coder-30b-4bit.json` | Seed 33 emits `Rrapid-MLX` in the source URL for the open-ended search/browse case. Seed 22 exhibited the same typo but also included the expected URL and passed the harness; seed 11 passed. |
+| Qwen3-Coder 30B Q4 | `reports/benchmarks/personal-intelligence-qwen3-coder-30b-4bit.json` | After the contradictory-URL gate, the receipt scores 13/15: seed 22 and seed 33 both emit `Rrapid-MLX` in a claimed source URL; seed 11 passed. |
 | GPT-OSS 20B MXFP4 Q8 | `reports/benchmarks/personal-intelligence-gpt-oss-20b.json` | Seed 33 ends the open-ended search/browse case with a Harmony citation (`【2†source】`) instead of the required source URL. Seeds 11 and 22 passed. |
 
 Both failures are model-output instability on the non-“only” search/browse

@@ -16,6 +16,7 @@ import re
 import shlex
 import time
 import urllib.error
+import urllib.parse
 import urllib.request
 from dataclasses import asdict, dataclass
 from datetime import datetime, timezone
@@ -288,7 +289,8 @@ def _run_task(
         ),
         "required_exact_output": all(
             value in output for value in task.required_exact_output
-        ),
+        )
+        and _all_urls_are_expected(output, task.required_exact_output),
         "forbidden_output": not any(
             value.casefold() in folded_output for value in task.forbidden_output
         ),
@@ -321,6 +323,24 @@ def _is_complete_qualification_matrix(
         and set(seeds) == {11, 22, 33}
         and selected_ids == {task.id for task in TASKS}
         and result_count == 15
+    )
+
+
+def _all_urls_are_expected(output: str, expected_urls: tuple[str, ...]) -> bool:
+    """Reject contradictory citations, even when the canonical URL appears.
+
+    ``required_exact_output`` establishes that the expected source is present;
+    this URL gate establishes that no emitted http(s) source contradicts it.
+    Typos or fabricated hosts therefore fail instead of hiding behind a later
+    correct URL.
+    """
+
+    if not expected_urls:
+        return True
+    expected_norm = {url.rstrip("/") for url in expected_urls}
+    return all(
+        match.group(0).rstrip(".）/").rstrip("/") in expected_norm
+        for match in re.finditer(r"https?://[^\s,)\]]+", output)
     )
 
 

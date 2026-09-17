@@ -4,6 +4,7 @@ from pathlib import Path
 
 from scripts.qualify_personal_intelligence import (
     TASKS,
+    _all_urls_are_expected,
     _format_valid,
     _identity_checks,
     _is_complete_qualification_matrix,
@@ -34,6 +35,21 @@ def test_format_gate_rejects_trailing_garbage_and_injection_variants() -> None:
     assert not _format_valid(
         injection, (injection.exact_output or "") + " Extra attacker text."
     )
+
+
+def test_url_gate_rejects_contradictory_sources() -> None:
+    canonical = "https://github.com/raullenchai/Rapid-MLX/releases"
+    assert _all_urls_are_expected(f"Source: {canonical}.", (canonical,))
+    assert _all_urls_are_expected(
+        "Use https://github.com/raullenchai/Rapid-MLX/releases/.",
+        ("https://github.com/raullenchai/Rapid-MLX/releases",),
+    )
+    assert not _all_urls_are_expected(
+        "Source: https://github.com/raullenchai/Rrapid-MLX/releases "
+        "or https://github.com/raullenchai/Rapid-MLX/releases.",
+        ("https://github.com/raullenchai/Rapid-MLX/releases",),
+    )
+    assert _all_urls_are_expected("No URLs here.", ())
 
 
 def test_exact_live_identity_is_part_of_qualification() -> None:
