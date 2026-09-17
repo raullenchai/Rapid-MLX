@@ -56,28 +56,30 @@ def production_exit_context(monkeypatch):
 
 def test_hard_exit_flushes_streams_and_exits_zero(monkeypatch, production_exit_context):
     """Success path: run the atexit pass, flush stdout/stderr, then
-    ``os._exit(0)`` — in that order (codex round-3 BLOCKING #1).
+    ``os._exit(0)`` — in that exact order (codex round-3 BLOCKING #1;
+    round-6 BLOCKING: the flushes must be recorded INTO the same event
+    stream as the exit, otherwise a refactor moving both flushes after
+    the mocked ``os._exit`` — unreachable in a real process — would
+    still pass on flushed booleans alone).
     """
     events = production_exit_context
 
     class _FlushRecorder:
-        def __init__(self) -> None:
-            self.flushed = False
+        def __init__(self, event: str) -> None:
+            self._event = event
 
         def flush(self) -> None:
-            self.flushed = True
+            events.append(self._event)
 
-    out, err = _FlushRecorder(), _FlushRecorder()
-    monkeypatch.setattr(cli.sys, "stdout", out)
-    monkeypatch.setattr(cli.sys, "stderr", err)
+    monkeypatch.setattr(cli.sys, "stdout", _FlushRecorder("stdout_flush"))
+    monkeypatch.setattr(cli.sys, "stderr", _FlushRecorder("stderr_flush"))
     monkeypatch.setattr(cli.os, "_exit", lambda code: events.append(f"exit:{code}"))
 
     cli._hard_exit_after_serve()
 
-    assert out.flushed, "stdout must be flushed before os._exit"
-    assert err.flushed, "stderr must be flushed before os._exit"
-    assert events == ["atexit", "exit:0"], (
-        f"expected [atexit pass] then exactly one os._exit(0), got {events!r}"
+    assert events == ["atexit", "stdout_flush", "stderr_flush", "exit:0"], (
+        f"expected [atexit pass, stdout flush, stderr flush, one os._exit(0)], "
+        f"got {events!r}"
     )
 
 
