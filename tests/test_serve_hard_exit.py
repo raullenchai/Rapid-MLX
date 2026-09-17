@@ -262,6 +262,65 @@ def test_legacy_server_main_hard_exits_after_uvicorn(monkeypatch):
     )
 
 
+def test_audio_serve_mode_hard_exits_immediately_after_uvicorn(
+    monkeypatch, production_exit_context
+):
+    """Behavioral pin for ``_serve_audio_mode`` (``rapid-mlx serve kokoro``):
+    it must invoke ``_hard_exit_after_serve`` immediately after
+    ``_run_uvicorn`` returns — same contract as the text entrypoints.
+
+    Hermetic on purpose: ``rapid_mlx.server`` is replaced in
+    ``sys.modules`` with a stub so this test stays runnable on the
+    no-MLX CI lane (the audio alias suite covers the same contract
+    through the real module graph on MLX machines — and is skipped
+    there, which is exactly why the changed-lines gate needs this
+    Linux-runnable twin).
+    """
+    import rapid_mlx
+
+    events = production_exit_context
+    stub_server = types.ModuleType("rapid_mlx.server")
+    stub_server.app = object()
+    stub_server.configure_logging = lambda _level: "info"
+    stub_server._resolve_api_key = lambda _key: None
+    stub_server.configure_cors_from_env = lambda _origins: None
+    stub_server.configure_trusted_hosts = lambda _hosts: None
+    stub_server.register_audio_routes_if_enabled = lambda: None
+    stub_server._sync_config = lambda: None
+    monkeypatch.setitem(sys.modules, "rapid_mlx.server", stub_server)
+    monkeypatch.setattr(rapid_mlx, "server", stub_server, raising=False)
+    monkeypatch.setattr(cli, "_port_preflight_or_die", lambda *_a, **_kw: None)
+    monkeypatch.setattr(
+        cli, "_run_uvicorn", lambda *_a, **_kw: events.append("uvicorn")
+    )
+    monkeypatch.setattr(
+        cli, "_hard_exit_after_serve", lambda: events.append("hard_exit")
+    )
+
+    args = types.SimpleNamespace(
+        model="kokoro",
+        host="127.0.0.1",
+        port=8900,
+        log_level="info",
+        api_key=None,
+        timeout=300,
+        rate_limit=0,
+        cors_origins=None,
+        embedding_model=None,
+    )
+    entry = types.SimpleNamespace(
+        type="tts", alias="kokoro", hf_id="dummy/kokoro-tts", default_voice=None
+    )
+
+    cli._serve_audio_mode(args, entry)
+
+    assert events == ["uvicorn", "hard_exit"], (
+        f"expected exactly ['uvicorn', 'hard_exit'], got {events!r} — "
+        "the audio serve mode must hard-exit after the uvicorn dispatch "
+        "returns (#3495)"
+    )
+
+
 def _entrypoint_call_sequence(entrypoint_name: str) -> list[str]:
     """Statement-level call sequence of a serve entrypoint's TOP-LEVEL body.
 
