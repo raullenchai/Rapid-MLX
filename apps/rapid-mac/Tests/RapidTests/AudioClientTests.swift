@@ -212,7 +212,7 @@ struct AudioClientTests {
         viewModel.selectedSpeechAlias = "speech-a"
 
         let operation = Task { await viewModel.loadVoices() }
-        await AudioStubProtocol.waitForRequest()
+        #expect(await AudioStubProtocol.waitForRequest())
 
         viewModel.selectSpeechModel("speech-b")
         #expect(
@@ -431,11 +431,12 @@ private final class AudioStubProtocol: URLProtocol, @unchecked Sendable {
         finishLoading()
     }
 
-    static func waitForRequest() async {
+    static func waitForRequest() async -> Bool {
         await withCheckedContinuation { continuation in
             DispatchQueue.global().async {
-                requestArrived.wait()
-                continuation.resume()
+                continuation.resume(
+                    returning: requestArrived.wait(timeout: .now() + 5) == .success
+                )
             }
         }
     }

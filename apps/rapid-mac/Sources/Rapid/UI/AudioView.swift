@@ -22,7 +22,7 @@ struct AudioView: View {
     @State private var voicePreviewTask: Task<Void, Never>?
     @State private var voicePreviewRequestID: UUID?
     @State private var modelLoadsInFlight: Set<String> = []
-    @State private var runtimeModelLoadsInFlight: Set<String> = []
+    @State private var runtimeModelLoadsInFlight: [String: Set<UUID>] = [:]
 
     private let contentMaxWidth = RapidTheme.Layout.contentMaxWidth
     /// One control width across the Audio tabs — same as the Dictation
@@ -55,7 +55,7 @@ struct AudioView: View {
         } else {
             nil
         }
-        let isLoading = runtimeModelLoadsInFlight.contains(selectedAlias)
+        let isLoading = runtimeModelLoadsInFlight[selectedAlias]?.isEmpty == false
             || server.isResidentLoadInFlight(selectedAlias)
 
         return .resolve(.init(
@@ -604,8 +604,14 @@ struct AudioView: View {
         // instead of tearing it down to run the voice model alone. Only when
         // nothing is running does this spin the voice model up as its own
         // server — see AudioViewModel.ensureVoiceLane for the branch.
-        runtimeModelLoadsInFlight.insert(alias)
-        defer { runtimeModelLoadsInFlight.remove(alias) }
+        let runtimeLoadID = UUID()
+        runtimeModelLoadsInFlight[alias, default: []].insert(runtimeLoadID)
+        defer {
+            runtimeModelLoadsInFlight[alias]?.remove(runtimeLoadID)
+            if runtimeModelLoadsInFlight[alias]?.isEmpty == true {
+                runtimeModelLoadsInFlight.removeValue(forKey: alias)
+            }
+        }
         _ = await viewModel.ensureVoiceLane(
             alias: alias,
             hfPath: entry?.hfRepo

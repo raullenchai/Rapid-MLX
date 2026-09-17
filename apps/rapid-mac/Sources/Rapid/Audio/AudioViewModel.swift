@@ -4,6 +4,11 @@ import Observation
 @MainActor
 @Observable
 final class AudioViewModel {
+    private struct ActiveOperation {
+        let id: UUID
+        let snapshot: AudioReadinessState.ActivitySnapshot
+    }
+
     struct TranscriptionModelDetails: Equatable, Sendable {
         let displayName: String
         let badge: String
@@ -47,10 +52,12 @@ final class AudioViewModel {
     var speed = 1.0
     var synthesizedAudio: SynthesizedAudio?
 
-    private(set) var activeOperation: AudioReadinessState.ActivitySnapshot?
+    var activeOperation: AudioReadinessState.ActivitySnapshot? {
+        activeOperations.last?.snapshot
+    }
     private(set) var previewingVoice: String?
     var errorMessage: String?
-    private var activeOperationID: UUID?
+    private var activeOperations: [ActiveOperation] = []
 
     private let server: ServerManager
     private let client: AudioClient
@@ -245,15 +252,15 @@ final class AudioViewModel {
         activity: AudioReadinessState.Activity
     ) -> UUID {
         let id = UUID()
-        activeOperationID = id
-        activeOperation = .init(alias: alias, activity: activity)
+        activeOperations.append(.init(
+            id: id,
+            snapshot: .init(alias: alias, activity: activity)
+        ))
         return id
     }
 
     private func finishOperation(_ id: UUID) {
-        guard activeOperationID == id else { return }
-        activeOperationID = nil
-        activeOperation = nil
+        activeOperations.removeAll { $0.id == id }
     }
 
     /// Product-facing guidance for the Speech to Text picker. The engine's
