@@ -268,7 +268,10 @@ def _stub_generator(model=None, *, media_prefix_cache: str = "auto"):
     gen._media_boundary_misses = 0
     gen._media_boundary_stores = 0
     gen._media_boundary_budget_evictions = 0
-    gen._media_boundary_max_bytes = 0
+    # A resolved positive ceiling: an unresolved (<=0) budget now means
+    # media caching is disabled (admission refuses), so the stand-in pins a
+    # generous budget and individual tests override it to exercise caps.
+    gen._media_boundary_max_bytes = 1 << 30
     gen._media_mrope_saved = None
     gen.model = model if model is not None else _RecordingModel()
     gen.language_model = _FakeLanguageModel()
@@ -1663,3 +1666,45 @@ class TestStatsSurface:
             stop.set()
             worker.join(timeout=5)
         assert not errors
+
+
+class TestMediaBudgetFailClosed:
+    def test_unresolved_budget_disables_media_admission(self, monkeypatch):
+        # A failed memory-limit discovery must disable the media store, not
+        # unbound it: with no ceiling neither the admission cap nor the
+        # budget enforcement can bound the snapshot footprint.
+        gen = _stub_generator()
+        gen._media_boundary_max_bytes = 0
+        assert not hasattr(gen, "_prefix_cache_max_bytes")
+
+        def _boom(*args, **kwargs):
+            raise RuntimeError("no memory discovery")
+
+        monkeypatch.setattr("vllm_mlx.memory_cache.MemoryCacheConfig", _boom)
+        full_ids = _full_ids()
+        req = _make_request(
+            prompt="a" * 24,
+            pixel_values=mx.zeros((1, 2)),
+            prefix_boundary=20,
+            max_tokens=8,
+        )
+        gen._media_mrope_save()
+        stored = gen._media_store(req, _kv_leaves(), _ids(full_ids), 26, mx.array([1]))
+        assert stored is None
+        assert not gen._media_boundary_entries
+        assert gen._media_boundary_stores == 0
+
+    def test_enforce_sheds_media_when_text_store_cannot_be_evicted(self):
+        # A present but un-introspectable text store is charged the whole
+        # ceiling and cannot be evicted: the only way to honor the shared
+        # hard limit is to empty the media side entirely.
+        gen = _stub_generator()
+        gen._media_boundary_max_bytes = 12
+        gen._prefix_cache_max_bytes = 12
+        gen._prefix_cache = type(
+            "Cache", (), {"_exact_cache": ["not", "an", "ordereddict"], "lock": None}
+        )()
+        gen._media_boundary_entries["media"] = type("Entry", (), {"cache_bytes": 10})()
+        gen._media_enforce_budget()
+        assert not gen._media_boundary_entries
+        assert gen._media_boundary_budget_evictions == 1

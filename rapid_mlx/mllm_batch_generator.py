@@ -2142,12 +2142,16 @@ class MLLMBatchGenerator:
             rope_delta=delta,
             cache_bytes=cache_bytes,
         )
-        # Admission cap: a single entry larger than the whole shared ceiling
-        # can never fit beside anything, and holding it makes every budget
-        # calculation degenerate. Discard the snapshot — the caller redoes
-        # the request as one cold full forward, like an uncloneable store.
+        # Admission gate: an unresolved (non-positive) budget means media
+        # caching is disabled, never unbounded — without a ceiling neither
+        # the entry cap nor the budget enforcement can bound the store, and
+        # a failed memory-limit discovery would let snapshots grow until
+        # OOM. Fail closed: refuse the store and the caller redoes the
+        # request as one cold full forward, like an uncloneable store. A
+        # single entry larger than the whole resolved ceiling can likewise
+        # never fit beside anything, so it is discarded too.
         budget = self._media_resolved_budget()
-        if budget > 0 and entry.cache_bytes > budget:
+        if budget <= 0 or entry.cache_bytes > budget:
             return None
         # Replacing an existing entry for the same digest: drop the old
         # bytes first so the budget sees the net footprint. The generation
@@ -2297,9 +2301,12 @@ class MLLMBatchGenerator:
         frees the ceiling fastest; a true global LRU would need comparable
         recency tracking across two independent stores for no measured
         benefit. No side admits a single entry larger than the whole
-        ceiling (admission cap in ``_media_store``), so the surviving state
+        ceiling (admission gate in ``_media_store``), so the surviving state
         — the media newest plus whatever text fits beside it — always fits
-        the ceiling strictly.
+        the ceiling strictly; the one exception is a text store that cannot
+        be inspected (charged the whole ceiling, impossible to evict), where
+        the media side sheds everything rather than retain an entry that
+        keeps the combined cache unverifiably over budget.
         """
         budget = self._media_resolved_budget()
         if budget <= 0:
@@ -2321,6 +2328,18 @@ class MLLMBatchGenerator:
                 # at the ceiling) is the entry that survives the overage, so
                 # the combined footprint fits the ceiling strictly.
                 self._evict_text_exact_to_fit(budget - media_bytes, allow_empty=True)
+                # Re-measure: an un-introspectable text store is charged the
+                # whole ceiling yet cannot be evicted, so the shared hard
+                # limit leaves the media side no verifiable room at all —
+                # shed it entirely instead of retaining an entry that keeps
+                # the combined cache unverifiably over budget.
+                total = self._exact_cache_footprint_bytes() + media_bytes
+                while total > budget and self._media_boundary_entries:
+                    oldest = next(iter(self._media_boundary_entries))
+                    evicted = self._media_boundary_entries.pop(oldest)
+                    media_bytes -= evicted.cache_bytes
+                    total -= evicted.cache_bytes
+                    self._media_boundary_budget_evictions += 1
 
     def _media_mrope_save(self) -> None:
         """Capture the model's current MRoPE bookkeeping (sentinel-aware)."""
