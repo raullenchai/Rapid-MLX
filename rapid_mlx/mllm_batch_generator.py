@@ -1987,11 +1987,15 @@ class MLLMBatchGenerator:
         """Decide the media boundary action for one image-bearing request.
 
         Returns ``("resume", entry, boundary, generation, digest)`` on a
-        verified warm prefix, ``("store", None, boundary, None, digest)``
-        when this prefill should snapshot its boundary, or None for the
-        cold single forward. The digest rides in the plan so the hit path
-        never re-derives it (a recompute can re-hash image files on the
-        latency-sensitive resume).
+        verified warm prefix, ``("store", None, boundary, generation,
+        digest)`` when this prefill should snapshot its boundary, or None
+        for the cold single forward. The digest rides in the plan so the
+        hit path never re-derives it (a recompute can re-hash image files
+        on the latency-sensitive resume). The generation rides in the
+        store plan too: the store must reject publication when a
+        ``clear_prefix_cache`` lands between planning and the post-prefix
+        snapshot, so it compares against the incarnation captured here —
+        not one re-read after the forward.
         The generation is the store's incarnation at lookup time: a caller
         that finds it changed was planned against a since-cleared store. Every gate fails
         closed. At most one miss is counted per planned request: a stored
@@ -2099,7 +2103,7 @@ class MLLMBatchGenerator:
             if not counted_miss:
                 self._media_boundary_misses += 1
             return None
-        return ("store", None, boundary, None, digest)
+        return ("store", None, boundary, generation, digest)
 
     def _media_store(
         self,
@@ -2109,6 +2113,7 @@ class MLLMBatchGenerator:
         boundary: int,
         rope_delta: Any,
         digest: Any = None,
+        generation: int | None = None,
     ) -> MLLMMediaBoundaryEntry | None:
         """Snapshot the boundary state of a live media prefill.
 
@@ -2118,16 +2123,28 @@ class MLLMBatchGenerator:
         under the request's identity digest. Returns None when anything is
         uncloneable, over-budget, or the store was cleared mid-clone — the
         caller redoes the request as one cold full forward.
+        ``generation`` is the store incarnation the PLAN captured before
+        the prefix forward ran: a ``clear_prefix_cache`` landing between
+        planning and this snapshot must republish nothing into the cleared
+        store, so publication is rejected unless the incarnation still
+        matches. Direct callers that omit it pin against the incarnation
+        read at store time (tests, and the no-plan legacy path).
         """
         if digest is None:
             digest = self._media_identity_digest(request)
         if digest is None or rope_delta is None:
             return None
-        # Pin the store incarnation before the (lock-free) clone: a clear
-        # that lands while cloning must not be undone by this publish.
-        with self._media_entries_guard():
-            generation = getattr(self, "_media_store_generation", 0)
+        if generation is None:
+            # Pin the store incarnation before the (lock-free) clone: a
+            # clear that lands while cloning must not be undone by this
+            # publish.
+            with self._media_entries_guard():
+                generation = getattr(self, "_media_store_generation", 0)
         full_ids = [int(v) for v in input_ids.reshape(-1).tolist()]
+        # Stale before allocating anything: the plan ran against a store
+        # that has since been cleared — the split bought nothing reusable.
+        if generation != getattr(self, "_media_store_generation", 0):
+            return None
         # Pre-clone admission estimate: measure the live boundary state and
         # scale it by the clone's capacity ratio BEFORE materializing the
         # snapshot — an ineligible long-context request must not transiently
@@ -3376,7 +3393,13 @@ class MLLMBatchGenerator:
             rope_delta = getattr(self.language_model, "_rope_deltas", None)
             mx.eval([c.state for c in cache])
             stored = self._media_store(
-                request, cache, input_ids, boundary, rope_delta, digest=digest
+                request,
+                cache,
+                input_ids,
+                boundary,
+                rope_delta,
+                digest=digest,
+                generation=generation,
             )
             if stored is None:
                 # The snapshot was refused (no delta, uncloneable leaves,

@@ -83,11 +83,11 @@
                 ]
               ],
               [
-              [
-                "circular"
-              ],
-              [
-                "info"
+                [
+                  "circular"
+                ],
+                [
+                  "info"
                 ]
               ]
             ]
@@ -513,17 +513,17 @@
                 ]
               ],
               [
-              [
-                "checkmark"
-              ],
-              [
-                "blue",
-                "circular"
-              ],
-              [
-                "white",
-                "checkmark"
-              ]
+                [
+                  "checkmark"
+                ],
+                [
+                  "blue",
+                  "circular"
+                ],
+                [
+                  "white",
+                  "checkmark"
+                ]
               ]
             ]
           }
@@ -608,11 +608,11 @@
                 ]
               ],
               [
-              [
-                "mascot"
-              ],
-              [
-                "tiger"
+                [
+                  "mascot"
+                ],
+                [
+                  "tiger"
                 ]
               ]
             ]
@@ -788,20 +788,25 @@
             "required_any_groups": [
               [
                 [
-                  "qwen3.6-27b",
-                  "ready"
-                ],
+                  "qwen3.6-27b"
+                ]
+              ],
+              [
                 [
-                  "qwen3.6-27b",
+                  "ready"
+                ]
+              ],
+              [
+                [
                   "stop"
                 ]
               ],
               [
-              [
-                "question"
-              ],
-              [
-                "circular"
+                [
+                  "question"
+                ],
+                [
+                  "circular"
                 ]
               ]
             ]
@@ -1017,16 +1022,16 @@
                 ]
               ],
               [
-              [
-                "checkmark"
-              ],
-              [
-                "blue",
-                "circle"
-              ],
-              [
-                "blue",
-                "circular"
+                [
+                  "checkmark"
+                ],
+                [
+                  "blue",
+                  "circle"
+                ],
+                [
+                  "blue",
+                  "circular"
                 ]
               ]
             ]
@@ -1151,21 +1156,21 @@
                 ]
               ],
               [
-              [
-                "cloud"
-              ],
-              [
-                "arrow"
-              ],
-              [
-                "dark",
-                "gray"
-              ],
-              [
-                "square"
-              ],
-              [
-                "stop"
+                [
+                  "cloud"
+                ],
+                [
+                  "arrow"
+                ],
+                [
+                  "dark",
+                  "gray"
+                ],
+                [
+                  "square"
+                ],
+                [
+                  "stop"
                 ]
               ]
             ]
@@ -1845,17 +1850,17 @@
                 ]
               ],
               [
-              [
-                "filled"
-              ],
-              [
-                "blue"
-              ],
-              [
-                "hollow"
-              ],
-              [
-                "darker"
+                [
+                  "filled"
+                ],
+                [
+                  "blue"
+                ],
+                [
+                  "hollow"
+                ],
+                [
+                  "darker"
                 ]
               ]
             ]
@@ -1942,14 +1947,14 @@
                 ]
               ],
               [
-              [
-                "orange"
-              ],
-              [
-                "cloud"
-              ],
-              [
-                "arrow"
+                [
+                  "orange"
+                ],
+                [
+                  "cloud"
+                ],
+                [
+                  "arrow"
                 ]
               ]
             ]
@@ -2136,12 +2141,12 @@
                 ]
               ],
               [
-              [
-                "question"
-              ],
-              [
-                "circular"
-              ]
+                [
+                  "question"
+                ],
+                [
+                  "circular"
+                ]
               ]
             ]
           }

@@ -2155,3 +2155,55 @@ class TestMediaMaterializationContract:
             assert _Path(resolved).read_bytes() == b"\x89PNG\r\n\x1a\n" + b"payload"
         finally:
             _Path(resolved).unlink(missing_ok=True)
+
+
+class TestMediaStoreGeneration:
+    def test_store_rejects_publication_after_a_clear_landed(self):
+        # The plan captures the store incarnation BEFORE the prefix
+        # forward; a clear_prefix_cache landing between planning and the
+        # snapshot must not be repopulated by the in-flight request.
+        gen = _stub_generator()
+        full_ids = _full_ids()
+        req = _make_request(
+            prompt="a" * 24,
+            pixel_values=mx.zeros((1, 2)),
+            prefix_boundary=20,
+            max_tokens=8,
+        )
+        gen._media_mrope_save()
+        gen._media_boundary_entries["seed"] = type("Entry", (), {"cache_bytes": 1})()
+        # The clear lands after the plan: bump the incarnation, then the
+        # in-flight store still publishes under the planned generation 0.
+        gen._media_store_generation = getattr(gen, "_media_store_generation", 0) + 1
+        stale = gen._media_store(
+            req,
+            _kv_leaves(),
+            _ids(full_ids),
+            26,
+            mx.array([1]),
+            generation=0,
+        )
+        assert stale is None
+        assert "seed" in gen._media_boundary_entries
+        assert not any(k != "seed" for k in gen._media_boundary_entries)
+
+    def test_store_accepts_publication_at_the_planned_generation(self):
+        gen = _stub_generator()
+        full_ids = _full_ids()
+        req = _make_request(
+            prompt="a" * 24,
+            pixel_values=mx.zeros((1, 2)),
+            prefix_boundary=20,
+            max_tokens=8,
+        )
+        gen._media_mrope_save()
+        stored = gen._media_store(
+            req,
+            _kv_leaves(),
+            _ids(full_ids),
+            26,
+            mx.array([1]),
+            generation=getattr(gen, "_media_store_generation", 0),
+        )
+        assert stored is not None
+        assert gen._media_boundary_entries
