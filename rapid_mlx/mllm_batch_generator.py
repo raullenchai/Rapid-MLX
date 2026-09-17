@@ -468,6 +468,13 @@ class MLLMBatchRequest:
     # no images or the model does not support feature caching. Appended last so
     # inserting it never shifts the meaning of any positional constructor arg.
     vision_feature_key: str | None = None
+    # Effective vision pixel cap this request was preprocessed under (the
+    # configured ceiling folded with the per-request auto ceiling and the
+    # budget-driven retry reductions). 0 when no cap bound the request.
+    # Part of the media identity digest: identical image bytes resized
+    # under different caps produce different pixel tensors, so their KV
+    # state must never share an entry. Stamped in ``_process_prompts``.
+    media_pixel_cap: int = 0
     # Request-owned sampler state. The key also includes vocabulary width,
     # because an otherwise identical top-k setting may normalize differently
     # across models.
@@ -1514,9 +1521,11 @@ class MLLMBatchGenerator:
         APC's ``semantic_extra_hash`` when the manager exists, a structural
         fallback otherwise) and the engine's vision pixel bounds.
         Process-fixed settings (chat template, model revision, adapter) die
-        with the process and need no keying; a per-request pixel cap that
-        actually binds changes the expanded token stream and is caught by
-        the strict token-prefix check."""
+        with the process and need no keying; the per-request effective
+        pixel cap (which folds this configured bound with the auto ceiling
+        and budget reductions) is keyed separately on each request's
+        digest, since it can change resized pixels without changing token
+        IDs."""
         cached = getattr(self, "_media_semantics_salt_cache", None)
         if cached is not None:
             hit: str = cached
@@ -1579,7 +1588,14 @@ class MLLMBatchGenerator:
                 return None
         if not isinstance(key, str):
             return None
-        return f"{key}#{self._media_semantics_salt()}"
+        # The request's effective pixel cap rides in the key: identical
+        # image bytes resized under different caps (the auto ceiling varies
+        # with image count; the budget loop reduces it further) yield
+        # different pixel tensors and must never share an entry.
+        return (
+            f"{key}#{self._media_semantics_salt()}"
+            f"#{int(getattr(request, 'media_pixel_cap', 0) or 0)}"
+        )
 
     def _media_family_qualified(self) -> bool:
         """Whether the loaded model belongs to a qualified family.
@@ -1644,10 +1660,13 @@ class MLLMBatchGenerator:
                 return live(node.body, True)
             if isinstance(node, ast.Lambda):
                 return False
-            if isinstance(node, ast.Try):
+            if isinstance(node, (ast.Try, ast.TryStar)):
+                # Only the success path (try body, orelse, finally) proves
+                # live behavior: an access confined to an exception handler
+                # runs after forwarding has already failed, so a rope delta
+                # consumed only there would never position a real suffix.
                 return (
                     live(node.body, in_scope)
-                    or any(live(h.body, in_scope) for h in node.handlers)
                     or live(node.orelse, in_scope)
                     or live(node.finalbody, in_scope)
                 )
@@ -1773,9 +1792,23 @@ class MLLMBatchGenerator:
             except (TypeError, ValueError):
                 sig = None
             if sig is not None and "rope_deltas" in sig.parameters:
-                # Declared parameters are plumbed to the language model,
-                # whose consumption the suffix ultimately relies on.
-                result = self._media_target_consumes_rope(self.language_model)
+                # Declared parameters count only when the wrapper body
+                # actually passes them onward on a live path — a wrapper
+                # that accepts and silently ignores the argument must not
+                # ride on its language model's consumption.
+                try:
+                    src = inspect.getsource(call)
+                except (OSError, TypeError, SyntaxError):
+                    src = None
+                nodes = self._media_live_nodes(src) if src is not None else None
+                plumbs = nodes is not None and any(
+                    (isinstance(node, ast.Name) and node.id == "rope_deltas")
+                    or (isinstance(node, ast.keyword) and node.arg == "rope_deltas")
+                    for node in nodes
+                )
+                result = plumbs and self._media_target_consumes_rope(
+                    self.language_model
+                )
             elif _accepts_var_kwargs(call):
                 try:
                     src = inspect.getsource(call)
@@ -2213,17 +2246,23 @@ class MLLMBatchGenerator:
         if cache is None:
             return 0
         found = self._exact_entries(cache)
-        if found is None:
-            return 0
-        lock, entries = found
-        try:
-            with lock:
-                return sum(
-                    self._exact_entry_bytes(entry.prompt_cache)
-                    for entry in list(entries.values())
-                )
-        except Exception:
+        if found is not None:
+            lock, entries = found
+            try:
+                with lock:
+                    return sum(
+                        self._exact_entry_bytes(entry.prompt_cache)
+                        for entry in list(entries.values())
+                    )
+            except Exception:
+                return self._media_resolved_budget()
+        if hasattr(cache, "_exact_cache"):
+            # A present but un-introspectable store is charged the WHOLE
+            # ceiling — fail closed, no media admission on unaccounted room.
             return self._media_resolved_budget()
+        # The manager has no exact-entry store at all: the text side holds
+        # nothing chargeable.
+        return 0
 
     def _media_entries_guard(self) -> contextlib.AbstractContextManager:
         """Lock guarding the media store against cross-thread mutation.
@@ -3137,6 +3176,11 @@ class MLLMBatchGenerator:
         request.input_ids = inputs.get("input_ids")
         request.pixel_values = inputs.get("pixel_values")
         request.attention_mask = inputs.get("attention_mask")
+        # Identity-relevant geometry: the media digest keys on the cap this
+        # request's pixels were actually produced under, not just the
+        # configured bounds (which fold a per-request auto ceiling and the
+        # budget-driven reductions above).
+        request.media_pixel_cap = int(pixel_cap or 0)
 
         # Extract extra kwargs
         request.extra_kwargs = {

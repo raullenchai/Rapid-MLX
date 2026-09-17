@@ -121,8 +121,8 @@ class _RecordingModel:
 
 
 class _NoRopeModel:
-    """A wrapper whose call neither accepts ``**kwargs`` nor references
-    ``"rope_deltas"`` — the structural gate must never open for it."""
+    """A wrapper that declares ``rope_deltas`` and plumbs it onward, but
+    accepts no ``**kwargs`` — the gate opens only with a consuming LM."""
 
     def __init__(self, vocab: int = VOCAB):
         self.vocab = vocab
@@ -130,6 +130,7 @@ class _NoRopeModel:
         self.config = type("Config", (), {"model_type": "qwen3_5_moe"})()
 
     def __call__(self, ids, cache=None, pixel_values=None, rope_deltas=None):
+        forwarded = {"rope_deltas": rope_deltas}
         start = int(ids[0, 0]) if ids.size else -1
         self.calls.append((start, start + int(ids.shape[1]), pixel_values is not None))
         return _Output(mx.zeros((1, int(ids.shape[1]), self.vocab)))
@@ -141,6 +142,22 @@ class _CommentRopeModel(_NoRopeModel):
 
     def __call__(self, ids, cache=None, pixel_values=None, rope_deltas=None):
         # legacy callers used to pass "rope_deltas" positionally
+        start = int(ids[0, 0]) if ids.size else -1
+        self.calls.append((start, start + int(ids.shape[1]), pixel_values is not None))
+        return _Output(mx.zeros((1, int(ids.shape[1]), self.vocab)))
+
+
+class _IgnoringExplicitRopeModel:
+    """Declares a ``rope_deltas`` parameter and silently ignores it: the
+    gate must not ride on the language model's consumption when the
+    wrapper itself never plumbs the value."""
+
+    def __init__(self, vocab: int = VOCAB):
+        self.vocab = vocab
+        self.calls: list[tuple[int, int, bool]] = []
+        self.config = type("Config", (), {"model_type": "qwen3_5_moe"})()
+
+    def __call__(self, ids, cache=None, pixel_values=None, rope_deltas=None):
         start = int(ids[0, 0]) if ids.size else -1
         self.calls.append((start, start + int(ids.shape[1]), pixel_values is not None))
         return _Output(mx.zeros((1, int(ids.shape[1]), self.vocab)))
@@ -401,6 +418,14 @@ class TestRopeKwargGate:
         gen = _stub_generator(model=_NoRopeModel())
         gen.language_model = _DirectLanguageModel()
         assert gen._media_model_supports_rope_kwarg() is True
+
+    def test_declared_but_ignored_rope_param_fails_closed(self):
+        # Declaring the parameter proves nothing: a wrapper that accepts
+        # rope_deltas and silently drops it must stay closed even with a
+        # consuming language model behind it.
+        gen = _stub_generator(model=_IgnoringExplicitRopeModel())
+        gen.language_model = _DirectLanguageModel()
+        assert gen._media_model_supports_rope_kwarg() is False
 
     def test_kwargs_dropping_wrapper_fails_closed_despite_consuming_lm(self):
         # A wrapper that accepts **kwargs and drops them cannot ride on its
@@ -714,6 +739,25 @@ class TestMediaIdentity:
         assert digest_a is not None
         assert digest_a == gen._media_identity_digest(same_b)
         assert digest_a != gen._media_identity_digest(other)
+
+    def test_effective_pixel_cap_rides_in_the_digest(self):
+        # Identical image bytes preprocessed under different effective pixel
+        # caps (the auto ceiling varies with image count; the budget loop
+        # reduces it further) resize to different pixel tensors — their KV
+        # state must never share an entry.
+        gen = _stub_generator()
+        low = _make_request(vision_feature_key="stamped-key", media_pixel_cap=1024)
+        high = _make_request(vision_feature_key="stamped-key", media_pixel_cap=4096)
+        uncapped = _make_request(vision_feature_key="stamped-key")
+        digest_low = gen._media_identity_digest(low)
+        assert digest_low is not None
+        assert digest_low != gen._media_identity_digest(high)
+        assert digest_low == gen._media_identity_digest(
+            _make_request(vision_feature_key="stamped-key", media_pixel_cap=1024)
+        )
+        # A request that never went through preprocessing (cap 0) keys
+        # distinctly from any capped one.
+        assert digest_low != gen._media_identity_digest(uncapped)
 
     def test_stamped_feature_key_wins(self):
         gen = _stub_generator()
@@ -1047,6 +1091,24 @@ class TestStorePath:
             "    if TYPE_CHECKING:\n"
             "        d = kwargs.pop('rope_deltas', None)\n"
             "    return None\n"
+        )
+        # An access confined to an exception handler runs only after
+        # forwarding has already failed — the success path never consumes.
+        assert not consume(
+            "def f(**kwargs):\n"
+            "    try:\n"
+            "        return forward(**kwargs)\n"
+            "    except Exception:\n"
+            "        return kwargs.pop('rope_deltas', None)\n"
+        )
+        # Consumption on the success path (try body) still counts.
+        assert consume(
+            "def f(**kwargs):\n"
+            "    try:\n"
+            "        d = kwargs.pop('rope_deltas', None)\n"
+            "        return forward(d, **kwargs)\n"
+            "    except Exception:\n"
+            "        d = None\n"
         )
 
     def test_below_min_tokens_boundary_never_stores(self):
@@ -1440,6 +1502,23 @@ class TestBudget:
 
     def test_footprint_zero_without_text_cache(self):
         gen = _stub_generator()
+        assert gen._exact_cache_footprint_bytes() == 0
+
+    def test_footprint_charges_the_ceiling_for_an_unintrospectable_store(self):
+        # A present but malformed exact-entry store cannot be walked; the
+        # media side must assume the text side holds the whole ceiling —
+        # never admit media against unaccounted room.
+        gen = _stub_generator()
+        gen._prefix_cache_max_bytes = 1 << 20
+        gen._prefix_cache = type(
+            "Cache", (), {"_exact_cache": ["not", "an", "ordereddict"], "lock": None}
+        )()
+        assert gen._exact_cache_footprint_bytes() == gen._media_resolved_budget()
+
+    def test_footprint_zero_for_a_manager_without_an_exact_store(self):
+        # No exact-entry store at all: the text side holds nothing chargeable.
+        gen = _stub_generator()
+        gen._prefix_cache = type("Cache", (), {})()
         assert gen._exact_cache_footprint_bytes() == 0
 
 
