@@ -616,13 +616,13 @@ struct AudioView: View {
 
         // A download may finish after the user selects a different audio
         // model. Keep the completed cache, but do not start the stale choice.
-        guard selectedAlias == alias else { return }
         let entry = viewModel.audioModels.first { $0.alias == alias }
         // Voice co-loading: when the app is already serving a chat LLM/VLM,
         // reuse that process (the engine lazy-loads on the /v1/audio/* lane)
         // instead of tearing it down to run the voice model alone. Only when
         // nothing is running does this spin the voice model up as its own
         // server — see AudioViewModel.ensureVoiceLane for the branch.
+        guard selectedAlias == alias else { return }
         let runtimeLoadID = UUID()
         runtimeModelLoadsInFlight[alias, default: []].insert(runtimeLoadID)
         defer {
