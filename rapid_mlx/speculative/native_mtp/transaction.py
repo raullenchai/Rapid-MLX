@@ -405,7 +405,10 @@ class SpeculativePrefill:
             return
         mx = _mx()
         if self.state is None:
-            hidden = output.hidden_states
+            # Speculative verification consumes only the target model's final
+            # hidden state. Retaining every layer for every bounded prefill
+            # chunk defeats the memory bound on long prompts.
+            hidden = output.hidden_states[-1]
             mx.async_eval(hidden)
             self.chunks.append(hidden)
             return
@@ -425,10 +428,8 @@ class SpeculativePrefill:
             return output
         if self.state is None and self.chunks:
             mx = _mx()
-            self.chunks.append(output.hidden_states)
-            output.hidden_states = [
-                mx.concatenate(parts, axis=1) for parts in zip(*self.chunks)
-            ]
+            combined = mx.concatenate([*self.chunks, output.hidden_states[-1]], axis=1)
+            output.hidden_states = [*output.hidden_states[:-1], combined]
             self.chunks.clear()
             return output
         # mlx-vlm constructs this helper without prompt tokens and does not

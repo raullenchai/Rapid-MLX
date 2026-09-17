@@ -380,7 +380,16 @@ def test_native_mtp_stats_ignore_non_list_counters() -> None:
     assert runtime.accept_lens_snapshot() == []
 
 
-def test_serve_native_mtp_helper_routes_exact_pair(monkeypatch) -> None:
+@pytest.mark.parametrize(
+    ("pair", "alias", "expected_prefill_step_size"),
+    [
+        (QWEN36_35B_4BIT, "qwen3.6-35b-4bit", 2048),
+        (GLM53_FLASH_4BIT, "glm5.3-flash-4bit", 1024),
+    ],
+)
+def test_serve_native_mtp_helper_routes_exact_pair(
+    monkeypatch, pair, alias: str, expected_prefill_step_size: int
+) -> None:
     from rapid_mlx import cli
     from rapid_mlx.speculative.native_mtp import server as native_server
 
@@ -404,7 +413,7 @@ def test_serve_native_mtp_helper_routes_exact_pair(monkeypatch) -> None:
     monkeypatch.setattr(
         cli,
         "_preflight_native_mtp_or_exit",
-        lambda args: preflight_calls.append(args) or QWEN36_35B_4BIT,
+        lambda args: preflight_calls.append(args) or pair,
     )
     sync_calls = []
     server_stub = SimpleNamespace(
@@ -422,10 +431,10 @@ def test_serve_native_mtp_helper_routes_exact_pair(monkeypatch) -> None:
         enable_disk_stream=False,
         mllm=False,
         mtp_continuous_batching=False,
-        _original_alias="qwen3.6-35b-4bit",
-        model=QWEN36_35B_4BIT.target_repo,
-        mtp_sidecar=QWEN36_35B_4BIT.drafter_repo,
-        mtp_max_k=2,
+        _original_alias=alias,
+        model=pair.target_repo,
+        mtp_sidecar=pair.drafter_repo,
+        mtp_max_k=pair.draft_tokens,
         force_disk_check=False,
         host="127.0.0.1",
         port=8766,
@@ -447,15 +456,15 @@ def test_serve_native_mtp_helper_routes_exact_pair(monkeypatch) -> None:
         uvicorn_log_level="warning",
     )
     assert disk_checks == [
-        QWEN36_35B_4BIT.target_repo,
-        QWEN36_35B_4BIT.drafter_repo,
+        pair.target_repo,
+        pair.drafter_repo,
     ]
-    assert capacity_checks == [(QWEN36_35B_4BIT.target_repo, "qwen3.6-35b-4bit")]
+    assert capacity_checks == [(pair.target_repo, alias)]
     assert sync_calls == [True]
     assert preflight_calls == [args]
-    assert captured["pair"] == QWEN36_35B_4BIT
-    assert captured["served_model_name"] == "qwen3.6-35b-4bit"
-    assert captured["prefill_step_size"] == 2048
+    assert captured["pair"] == pair
+    assert captured["served_model_name"] == alias
+    assert captured["prefill_step_size"] == expected_prefill_step_size
 
 
 def test_native_mtp_preflight_rejects_wrong_alias_before_runtime_probe(
@@ -781,7 +790,7 @@ def test_native_mtp_prefill_accumulates_chunk_hidden_states(monkeypatch) -> None
 
     result = prefill.finish(output)
 
-    assert evaluated == [[first]]
+    assert evaluated == [first]
     assert result.hidden_states == [((first, final), 1)]
     assert prefill.chunks == []
 
