@@ -454,19 +454,11 @@
             "min_words": 3,
             "required_any": [
               [
-                "next"
-              ],
-              [
                 "checkmark"
               ],
               [
+                "blue",
                 "icon"
-              ],
-              [
-                "button"
-              ],
-              [
-                "blue"
               ]
             ],
             "max_lines": 1,
@@ -1742,7 +1734,8 @@
           "checker": {
             "type": "terms",
             "required": [
-              "dark"
+              "dark",
+              "light"
             ],
             "max_lines": 1
           }

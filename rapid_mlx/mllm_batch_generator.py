@@ -703,21 +703,33 @@ def _is_type_checking(test: ast.AST) -> bool:
     )
 
 
-def _is_lm_callee(func: ast.AST) -> bool:
-    """Whether a call's callee expression names the language model.
-
-    ``self.language_model(...)``, ``self.lm(...)``, or a deeper attribute
-    chain carrying the language-model attribute — the recipients a
-    ``**kwargs`` spread must reach for an installed delta to be consumed
-    by the model the suffix ultimately relies on."""
-    attrs: list[str] = []
-    node = func
-    while isinstance(node, ast.Attribute):
-        attrs.append(node.attr)
-        node = node.value
-    if isinstance(node, ast.Name):
-        attrs.append(node.id)
-    return any(attr == "lm" or "language_model" in attr for attr in attrs)
+# Explicit rope-deltas capability contract for the media prefix cache.
+#
+# The structural source probes this contract replaces grew one heuristic
+# per review round — substring match, AST shapes, control-flow awareness,
+# data-flow tracing — and every approximation stayed unfalsifiable: a
+# rope_deltas lookup can always hide behind a shape the walker does not
+# model. Only implementations whose source was verified by hand to
+# consume (respectively plumb onward) ``rope_deltas`` for position
+# computation are admitted; everything else fails closed to the cold
+# single forward. Extend these sets deliberately, with source
+# verification, never structurally.
+_MEDIA_ROPE_CONSUMING_LM_IMPLEMENTATIONS = frozenset(
+    {
+        # mlx_vlm/models/qwen3_5_moe/language.py, LanguageModel.__call__:
+        # pops ``rope_deltas`` from **kwargs and folds it into the MRoPE
+        # position offsets (``delta = (offsets + rope_deltas...)``).
+        ("mlx_vlm.models.qwen3_5_moe.language", "LanguageModel"),
+    }
+)
+_MEDIA_ROPE_PLUMBING_WRAPPER_IMPLEMENTATIONS = frozenset(
+    {
+        # mlx_vlm/models/qwen3_5_moe/qwen3_5_moe.py, Model: the Qwen3VL
+        # wrapper recomputes/merges ``rope_deltas`` through
+        # InputEmbeddingsFeatures and forwards it to the consuming LM.
+        ("mlx_vlm.models.qwen3_5_moe.qwen3_5_moe", "Model"),
+    }
+)
 
 
 class _MediaSplitUnsupportedError(Exception):
@@ -1719,111 +1731,6 @@ class MLLMBatchGenerator:
         parsed = MLLMBatchGenerator._media_live_tree(src)
         return None if parsed is None else parsed[0]
 
-    @staticmethod
-    def _media_rope_consumes_key(src: str) -> bool:
-        """Whether live code really consumes ``kwargs["rope_deltas"]``.
-
-        A consumption site (``kwargs.pop/get("rope_deltas")`` call or a
-        ``kwargs["rope_deltas"]`` subscript) opens the gate only when the
-        value demonstrably flows onward on a live path: nested in a
-        non-logging call's arguments, returned, or bound — directly or
-        through intermediate assignments — to a name a later call or
-        return consumes. A lookup whose result is logged, asserted, or
-        dropped proves nothing about positioning; comments, log lines, and
-        dead branches never counted.
-        """
-        parsed = MLLMBatchGenerator._media_live_tree(src)
-        if parsed is None:
-            return False
-        nodes, tree = parsed
-        log_funcs = (
-            "info",
-            "debug",
-            "warning",
-            "error",
-            "exception",
-            "critical",
-            "log",
-            "print",
-        )
-
-        def is_rope_access(node: ast.AST) -> bool:
-            if (
-                isinstance(node, ast.Call)
-                and isinstance(node.func, ast.Attribute)
-                and node.func.attr in ("get", "pop")
-                and isinstance(node.func.value, ast.Name)
-                and node.func.value.id == "kwargs"
-                and node.args
-                and isinstance(node.args[0], ast.Constant)
-                and node.args[0].value == "rope_deltas"
-            ):
-                return True
-            return (
-                isinstance(node, ast.Subscript)
-                and isinstance(node.value, ast.Name)
-                and node.value.id == "kwargs"
-                and isinstance(node.slice, ast.Constant)
-                and node.slice.value == "rope_deltas"
-            )
-
-        consumed = {id(node) for node in nodes if is_rope_access(node)}
-        if not consumed:
-            return False
-
-        def touches(subtree: ast.AST, ids: set[int]) -> bool:
-            return any(id(sub) in ids for sub in ast.walk(subtree))
-
-        # Names bound to a consumed value, propagated through intermediate
-        # assignments to a fixpoint (``offset = rope_deltas[0]`` keeps the
-        # flow alive for a later ``forward(position_ids + offset)``).
-        bound: set[str] = set()
-        changed = True
-        while changed:
-            changed = False
-            for node in nodes:
-                if not isinstance(node, ast.Assign):
-                    continue
-                if len(node.targets) != 1 or not isinstance(node.targets[0], ast.Name):
-                    continue
-                target = node.targets[0].id
-                if target in bound:
-                    continue
-                flows_in = touches(node.value, consumed) or any(
-                    isinstance(sub, ast.Name)
-                    and isinstance(sub.ctx, ast.Load)
-                    and sub.id in bound
-                    for sub in ast.walk(node.value)
-                )
-                if flows_in:
-                    bound.add(target)
-                    changed = True
-
-        def name_flow(subtree: ast.AST) -> bool:
-            return any(
-                isinstance(sub, ast.Name)
-                and isinstance(sub.ctx, ast.Load)
-                and sub.id in bound
-                for sub in ast.walk(subtree)
-            )
-
-        for node in nodes:
-            if isinstance(node, ast.Call):
-                func = node.func
-                if (isinstance(func, ast.Attribute) and func.attr in log_funcs) or (
-                    isinstance(func, ast.Name) and func.id in log_funcs
-                ):
-                    continue
-                for arg in list(node.args) + [
-                    keyword.value for keyword in node.keywords
-                ]:
-                    if touches(arg, consumed) or name_flow(arg):
-                        return True
-            elif isinstance(node, ast.Return) and node.value is not None:
-                if touches(node.value, consumed) or name_flow(node.value):
-                    return True
-        return False
-
     def _media_wrapper_call_attrs(self) -> set[str] | None:
         """Attribute names invoked in the wrapper ``__call__``'s live code.
 
@@ -1849,97 +1756,31 @@ class MLLMBatchGenerator:
         return attrs
 
     def _media_target_consumes_rope(self, target: Any) -> bool:
-        """Whether ``target.__call__`` accepts ``**kwargs`` and consumes
-        ``rope_deltas`` in obviously-live code. Memoized per class."""
-        cached = getattr(self, "_media_rope_targets", None)
-        if cached is None:
-            cached = self._media_rope_targets = {}
+        """Whether ``target`` is a contract-pinned rope-deltas consumer.
+
+        An explicit capability contract supersedes the source-shape
+        heuristics: no AST approximation can
+        distinguish a positioning consumer from a lookup that only logs,
+        validates, or drops the value. Only implementations whose source
+        was verified by hand to fold a passed delta into position
+        computation are admitted; everything else fails closed to the
+        cold single forward."""
         key = type(target)
-        if key in cached:
-            return cached[key]
-        result = False
-        call = getattr(type(target), "__call__", None)
-        if call is not None and _accepts_var_kwargs(call):
-            try:
-                src = inspect.getsource(call)
-            except (OSError, TypeError, SyntaxError):
-                src = None
-            if src is not None:
-                result = self._media_rope_consumes_key(src)
-        cached[key] = result
-        return result
+        return (key.__module__, key.__qualname__) in (
+            _MEDIA_ROPE_CONSUMING_LM_IMPLEMENTATIONS
+        )
 
     def _media_target_plumbs_rope(self, target: Any) -> bool:
         """Whether a suffix through ``target`` can carry ``rope_deltas``.
 
-        The call must plumb the value onward — an explicit ``rope_deltas``
-        parameter backed by a consuming language model (mlx-vlm wrappers
-        declare one and forward it), live consumption of the ``**kwargs``
-        key, or a ``**kwargs`` spread into an inner call whose target
-        consumes the key. A wrapper that accepts ``**kwargs`` and drops
-        them fails, no matter what its inner language model does. Memoized
-        per class.
-        """
-        cached = getattr(self, "_media_rope_plumb_targets", None)
-        if cached is None:
-            cached = self._media_rope_plumb_targets = {}
+        Contract-pinned wrapper implementations only: their plumbing was
+        verified by hand to hand the delta to the consuming language
+        model, whose presence on this generator the gate also requires."""
         key = type(target)
-        if key in cached:
-            return cached[key]
-        result = False
-        call = getattr(type(target), "__call__", None)
-        if call is not None:
-            try:
-                sig = inspect.signature(call)
-            except (TypeError, ValueError):
-                sig = None
-            if sig is not None and "rope_deltas" in sig.parameters:
-                # Declared parameters count only when the wrapper body
-                # actually passes them onward on a live path — a wrapper
-                # that accepts and silently ignores the argument must not
-                # ride on its language model's consumption.
-                try:
-                    src = inspect.getsource(call)
-                except (OSError, TypeError, SyntaxError):
-                    src = None
-                nodes = self._media_live_nodes(src) if src is not None else None
-                plumbs = nodes is not None and any(
-                    (isinstance(node, ast.Name) and node.id == "rope_deltas")
-                    or (isinstance(node, ast.keyword) and node.arg == "rope_deltas")
-                    for node in nodes
-                )
-                result = plumbs and self._media_target_consumes_rope(
-                    self.language_model
-                )
-            elif _accepts_var_kwargs(call):
-                try:
-                    src = inspect.getsource(call)
-                except (OSError, TypeError, SyntaxError):
-                    src = None
-                nodes = self._media_live_nodes(src) if src is not None else None
-                if nodes is not None:
-                    # The ``**kwargs`` spread must land on the language
-                    # model itself, not an unrelated helper: only a call
-                    # whose callee names the LM (``self.language_model``,
-                    # ``self.lm``) hands the delta to the consumer the
-                    # suffix ultimately relies on.
-                    spreads = any(
-                        isinstance(node, ast.Call)
-                        and _is_lm_callee(node.func)
-                        and any(
-                            keyword.arg is None
-                            and isinstance(keyword.value, ast.Name)
-                            and keyword.value.id == "kwargs"
-                            for keyword in node.keywords
-                        )
-                        for node in nodes
-                    )
-                    if spreads:
-                        result = self._media_target_consumes_rope(self.language_model)
-                    else:
-                        result = self._media_rope_consumes_key(src)
-        cached[key] = result
-        return result
+        return (
+            (key.__module__, key.__qualname__)
+            in _MEDIA_ROPE_PLUMBING_WRAPPER_IMPLEMENTATIONS
+        ) and self._media_target_consumes_rope(self.language_model)
 
     def _media_model_supports_rope_kwarg(self) -> bool:
         """The selected suffix call path must plumb ``rope_deltas``.

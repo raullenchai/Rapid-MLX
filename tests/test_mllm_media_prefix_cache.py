@@ -40,6 +40,8 @@ from vllm_mlx.mllm_batch_generator import (  # noqa: E402
     MLLMBatchGenerator,
     MLLMBatchRequest,
     MLLMBatchStats,
+    _MEDIA_ROPE_CONSUMING_LM_IMPLEMENTATIONS,
+    _MEDIA_ROPE_PLUMBING_WRAPPER_IMPLEMENTATIONS,
     _media_clone_leaves,
     _media_leaf_bytes,
     _media_leaves_bytes,
@@ -140,91 +142,6 @@ class _NoRopeModel:
         start = int(ids[0, 0]) if ids.size else -1
         self.calls.append((start, start + int(ids.shape[1]), pixel_values is not None))
         return _Output(mx.zeros((1, int(ids.shape[1]), self.vocab)))
-
-
-class _CommentRopeModel(_NoRopeModel):
-    """False-positive shape: the call body *mentions* ``"rope_deltas"`` in
-    a comment but consumes nothing — no ``**kwargs`` to carry it through."""
-
-    def __call__(self, ids, cache=None, pixel_values=None, rope_deltas=None):
-        # legacy callers used to pass "rope_deltas" positionally
-        start = int(ids[0, 0]) if ids.size else -1
-        self.calls.append((start, start + int(ids.shape[1]), pixel_values is not None))
-        return _Output(mx.zeros((1, int(ids.shape[1]), self.vocab)))
-
-
-class _IgnoringExplicitRopeModel:
-    """Declares a ``rope_deltas`` parameter and silently ignores it: the
-    gate must not ride on the language model's consumption when the
-    wrapper itself never plumbs the value."""
-
-    def __init__(self, vocab: int = VOCAB):
-        self.vocab = vocab
-        self.calls: list[tuple[int, int, bool]] = []
-        self.config = type("Config", (), {"model_type": "qwen3_5_moe"})()
-
-    def __call__(self, ids, cache=None, pixel_values=None, rope_deltas=None):
-        start = int(ids[0, 0]) if ids.size else -1
-        self.calls.append((start, start + int(ids.shape[1]), pixel_values is not None))
-        return _Output(mx.zeros((1, int(ids.shape[1]), self.vocab)))
-
-
-class _KwargsCommentRopeModel:
-    """Worst false-positive shape: the call *accepts* ``**kwargs`` and the
-    body only *mentions* ``"rope_deltas"`` (comment/log line) without ever
-    consuming it — an installed delta would be silently ignored, so the
-    gate must stay closed for consumption-shaped matching."""
-
-    def __init__(self, vocab: int = VOCAB):
-        self.vocab = vocab
-        self.calls: list[tuple[int, int, bool]] = []
-
-    def __call__(self, ids, cache=None, pixel_values=None, **kwargs):
-        # historical note: "rope_deltas" used to arrive positionally here
-        start = int(ids[0, 0]) if ids.size else -1
-        self.calls.append((start, start + int(ids.shape[1]), pixel_values is not None))
-        return _Output(mx.zeros((1, int(ids.shape[1]), self.vocab)))
-
-
-class _DroppingKwargsModel:
-    """Accepts ``**kwargs`` and drops them; declares no rope_deltas
-    parameter — an installed delta would silently vanish."""
-
-    def __init__(self, vocab: int = VOCAB):
-        self.vocab = vocab
-        self.calls: list[tuple[int, int, bool]] = []
-        self.config = type("Config", (), {"model_type": "qwen3_5_moe"})()
-
-    def __call__(self, ids, cache=None, pixel_values=None, **kwargs):
-        start = int(ids[0, 0]) if ids.size else -1
-        self.calls.append((start, start + int(ids.shape[1]), pixel_values is not None))
-        return _Output(mx.zeros((1, int(ids.shape[1]), self.vocab)))
-
-
-class _SpreadingKwargsModel(_DroppingKwargsModel):
-    """Forwards ``**kwargs`` into its language model call, so a passed
-    delta reaches the (consuming) language model."""
-
-    def __call__(self, ids, cache=None, pixel_values=None, **kwargs):
-        return self.language_model(ids, **kwargs)
-
-
-def _unrelated_helper(ids, **kwargs):
-    """A non-LM helper the spread-to-helper fake forwards kwargs into."""
-    return ids
-
-
-class _SpreadToHelperModel:
-    """Spreads ``**kwargs`` into an unrelated helper: the delta never
-    reaches the language model, so the plumbs gate stays closed."""
-
-    def __init__(self, vocab: int = VOCAB):
-        self.vocab = vocab
-        self.calls: list[tuple[int, int, bool]] = []
-        self.config = type("Config", (), {"model_type": "qwen3_5_moe"})()
-
-    def __call__(self, ids, cache=None, pixel_values=None, **kwargs):
-        return _unrelated_helper(ids, **kwargs)
 
 
 class _EmbedFeatures:
@@ -361,6 +278,37 @@ def _ids(values: list[int]):
     return mx.array([values], dtype=mx.uint32)
 
 
+@pytest.fixture(autouse=True)
+def _pin_test_fakes_into_rope_contract(monkeypatch):
+    """Pin the test fakes into the rope capability contract.
+
+    The mechanics tests (resume, store, budget, mrope) need a gate that is
+    open for the fakes; the gate-level tests below restore the production
+    contract explicitly. Without this fixture every fake stays
+    contract-unpinned and the split path would never engage.
+    """
+    import vllm_mlx.mllm_batch_generator as mlbg
+
+    module = _RecordingModel.__module__
+    monkeypatch.setattr(
+        mlbg,
+        "_MEDIA_ROPE_CONSUMING_LM_IMPLEMENTATIONS",
+        frozenset(
+            (module, cls.__qualname__)
+            for cls in (_FakeLanguageModel, _DirectLanguageModel, _RealLanguageModel)
+        ),
+    )
+    monkeypatch.setattr(
+        mlbg,
+        "_MEDIA_ROPE_PLUMBING_WRAPPER_IMPLEMENTATIONS",
+        # _PositionOverrideModel is deliberately absent: the override path
+        # never consults the wrapper contract, and pinning it would open
+        # the gate for source-read-failure tests that expect it closed.
+        frozenset((module, cls.__qualname__) for cls in (_RecordingModel,)),
+    )
+    yield
+
+
 class TestConfigValidation:
     def test_scheduler_config_rejects_unknown_values(self):
         with pytest.raises(ValueError, match="mllm_media_prefix_cache"):
@@ -432,56 +380,107 @@ class TestRopeKwargGate:
             type(gen.language_model),
         )
 
-    def test_unsupported_wrapper_with_supporting_lm_opens_the_gate(self):
-        # The production qwen3-vl shape: the wrapper declares rope_deltas as
-        # an explicit parameter and plumbs it onward, and the language model
-        # that ultimately consumes it pops it from **kwargs.
-        gen = _stub_generator(model=_NoRopeModel())
+    def test_rope_gate_fails_closed_without_contract_membership(self, monkeypatch):
+        # The explicit capability contract gates both suffix paths: the
+        # fakes are real-shaped models (the recording wrapper even pops
+        # and threads the delta like a real consumer), but with the
+        # production contract restored — the fixture pins the fakes for
+        # the mechanics tests — nothing is pinned, so the gate stays
+        # closed regardless of what the source shape looks like.
+        import vllm_mlx.mllm_batch_generator as mlbg
+
+        monkeypatch.setattr(
+            mlbg,
+            "_MEDIA_ROPE_CONSUMING_LM_IMPLEMENTATIONS",
+            _MEDIA_ROPE_CONSUMING_LM_IMPLEMENTATIONS,
+        )
+        monkeypatch.setattr(
+            mlbg,
+            "_MEDIA_ROPE_PLUMBING_WRAPPER_IMPLEMENTATIONS",
+            _MEDIA_ROPE_PLUMBING_WRAPPER_IMPLEMENTATIONS,
+        )
+        gen = _stub_generator(model=_RecordingModel())
         gen.language_model = _DirectLanguageModel()
+        assert gen._media_model_supports_rope_kwarg() is False
+        override = _stub_generator(model=_PositionOverrideModel())
+        override.language_model = _DirectLanguageModel()
+        assert override._media_model_supports_rope_kwarg() is False
+
+    def test_rope_gate_opens_for_a_pinned_override_pair(self, monkeypatch):
+        # The production shape: a position-override wrapper whose LM-direct
+        # escape is validated, with the language model pinned as a
+        # rope-deltas consumer.
+        gen = _stub_generator(model=_PositionOverrideModel())
+        gen.language_model = _DirectLanguageModel()
+        monkeypatch.setattr(
+            "vllm_mlx.mllm_batch_generator._MEDIA_ROPE_CONSUMING_LM_IMPLEMENTATIONS",
+            frozenset(
+                {
+                    (
+                        type(gen.language_model).__module__,
+                        type(gen.language_model).__qualname__,
+                    )
+                }
+            ),
+        )
         assert gen._media_model_supports_rope_kwarg() is True
 
-    def test_declared_but_ignored_rope_param_fails_closed(self):
-        # Declaring the parameter proves nothing: a wrapper that accepts
-        # rope_deltas and silently drops it must stay closed even with a
-        # consuming language model behind it.
-        gen = _stub_generator(model=_IgnoringExplicitRopeModel())
+    def test_rope_gate_opens_for_a_pinned_wrapper_pair(self, monkeypatch):
+        # The wrapper path: the wrapper implementation must itself be
+        # pinned, and its language model must be a pinned consumer —
+        # pinning only one side stays closed.
+        gen = _stub_generator(model=_RecordingModel())
         gen.language_model = _DirectLanguageModel()
+        wrapper_key = (type(gen.model).__module__, type(gen.model).__qualname__)
+        lm_key = (
+            type(gen.language_model).__module__,
+            type(gen.language_model).__qualname__,
+        )
+        monkeypatch.setattr(
+            "vllm_mlx.mllm_batch_generator._MEDIA_ROPE_PLUMBING_WRAPPER_IMPLEMENTATIONS",
+            frozenset({wrapper_key}),
+        )
+        # The fixture pins the fake LM as a consumer; drop that pin so
+        # only the wrapper side is pinned first.
+        monkeypatch.setattr(
+            "vllm_mlx.mllm_batch_generator._MEDIA_ROPE_CONSUMING_LM_IMPLEMENTATIONS",
+            frozenset(),
+        )
         assert gen._media_model_supports_rope_kwarg() is False
-
-    def test_kwargs_dropping_wrapper_fails_closed_despite_consuming_lm(self):
-        # A wrapper that accepts **kwargs and drops them cannot ride on its
-        # inner language model's consumption: the installed delta would
-        # never reach the LM and the resumed suffix would be mispositioned.
-        gen = _stub_generator(model=_DroppingKwargsModel())
-        gen.language_model = _DirectLanguageModel()
-        assert gen._media_model_supports_rope_kwarg() is False
-
-    def test_kwargs_spreading_wrapper_opens_the_gate_with_consuming_lm(self):
-        # A wrapper that forwards **kwargs into its language model call
-        # hands the delta to the consuming language model.
-        gen = _stub_generator(model=_SpreadingKwargsModel())
-        gen.language_model = _DirectLanguageModel()
+        monkeypatch.setattr(
+            "vllm_mlx.mllm_batch_generator._MEDIA_ROPE_CONSUMING_LM_IMPLEMENTATIONS",
+            frozenset({lm_key}),
+        )
         assert gen._media_model_supports_rope_kwarg() is True
 
-    def test_kwargs_spread_into_a_helper_fails_closed(self):
-        # **kwargs spread into an unrelated helper leaves the delta short
-        # of the language model — the plumbs gate must not open.
-        gen = _stub_generator(model=_SpreadToHelperModel())
-        gen.language_model = _DirectLanguageModel()
-        assert gen._media_model_supports_rope_kwarg() is False
+    def test_rope_contract_matches_the_installed_implementations(self):
+        # The contract pins exact production implementations; this test
+        # re-verifies their source so an mlx-vlm upgrade that changes the
+        # rope plumbing cannot silently ride on a stale pin.
+        pytest.importorskip("mlx_vlm")
+        import inspect
 
-    def test_comment_mention_without_kwargs_fails_closed(self):
-        # A quoted "rope_deltas" in a comment must not open the gate when
-        # the call has no **kwargs to carry it.
-        gen = _stub_generator(model=_CommentRopeModel())
-        assert gen._media_model_supports_rope_kwarg() is False
+        from mlx_vlm.models.qwen3_5_moe import language as moe_language
+        from mlx_vlm.models.qwen3_5_moe import qwen3_5_moe as moe_wrapper
 
-    def test_comment_mention_with_kwargs_fails_closed(self):
-        # **kwargs alone is not enough: a call that never *consumes*
-        # rope_deltas would silently drop an installed delta on resume.
-        # The probe matches consumption shapes, not a bare mention.
-        gen = _stub_generator(model=_KwargsCommentRopeModel())
-        assert gen._media_model_supports_rope_kwarg() is False
+        assert (
+            moe_language.__name__,
+            moe_language.LanguageModel.__qualname__,
+        ) in _MEDIA_ROPE_CONSUMING_LM_IMPLEMENTATIONS
+        assert (
+            moe_wrapper.__name__,
+            moe_wrapper.Model.__qualname__,
+        ) in _MEDIA_ROPE_PLUMBING_WRAPPER_IMPLEMENTATIONS
+        lm_src = inspect.getsource(moe_language.LanguageModel.__call__)
+        assert 'kwargs.pop("rope_deltas"' in lm_src
+        # The wrapper call is inherited from the Qwen3VL position-override
+        # wrapper: rope_deltas reaches the language model inside the
+        # merged InputEmbeddingsFeatures.to_dict() payload, never as a
+        # literal in the wrapper body.
+        wrapper_src = inspect.getsource(moe_wrapper.Model.__call__)
+        assert "input_embeddings_features" in wrapper_src
+        assert "to_dict()" in wrapper_src
+        assert "self.language_model(" in wrapper_src
 
     def test_source_read_failure_fails_closed(self, monkeypatch):
         # inspect.getsource can raise SyntaxError from a stale linecache;
@@ -527,10 +526,6 @@ class TestWrapperPositionOverride:
         assert first is second is True
         # The source probe ran once: the memo survives further calls.
         assert gen._media_wrapper_source[0] is type(gen.model)
-        rope_first = gen._media_model_supports_rope_kwarg()
-        rope_second = gen._media_model_supports_rope_kwarg()
-        assert rope_first is rope_second is True
-        assert gen._media_rope_targets[type(gen.language_model)] is True
 
     def test_plan_fails_closed_without_lm_direct_escape(self):
         # The corrupting wrapper shape without get_input_embeddings: the
@@ -1074,92 +1069,6 @@ class TestStorePath:
         assert gen._media_boundary_misses == 1
         assert len(gen.model.calls) == 1
         assert gen.model.calls[0] == (full_ids[0], len(full_ids), True)
-
-    def test_rope_probe_requires_a_real_consumption_operation(self):
-        consume = MLLMBatchGenerator._media_rope_consumes_key
-        # The consumed value must flow onward — returned or fed into a call.
-        assert consume(
-            "def f(**kwargs):\n"
-            "    rope_deltas = kwargs.pop('rope_deltas', None)\n"
-            "    return rope_deltas\n"
-        )
-        assert consume(
-            "def f(**kwargs):\n"
-            '    rope_deltas = kwargs.get("rope_deltas")\n'
-            "    forward(rope_deltas)\n"
-        )
-        assert consume("def f(**kwargs):\n    return kwargs['rope_deltas']\n")
-        # A bare lookup that is never used proves nothing.
-        assert not consume(
-            "def f(**kwargs):\n    rope_deltas = kwargs.pop('rope_deltas', None)\n"
-        )
-        # Logging the value is not consumption.
-        assert not consume(
-            "def f(**kwargs):\n"
-            "    rope_deltas = kwargs.pop('rope_deltas', None)\n"
-            "    logger.info(rope_deltas)\n"
-        )
-        # The flow survives intermediate assignments.
-        assert consume(
-            "def f(**kwargs):\n"
-            "    rope_deltas = kwargs.pop('rope_deltas', None)\n"
-            "    offset = rope_deltas[0]\n"
-            "    forward(position + offset)\n"
-        )
-        # Comments, log lines, and dead mentions prove nothing.
-        assert not consume(
-            "def f(**kwargs):\n"
-            '    # kwargs.pop("rope_deltas", None) used to happen here\n'
-            "    return None\n"
-        )
-        assert not consume(
-            "def f(**kwargs):\n"
-            '    logger.info("rope_deltas = kwargs is the legacy shape")\n'
-            "    return None\n"
-        )
-        # Dead code never consumes: constant-false branches and statements
-        # after an unconditional return are not live.
-        assert not consume(
-            "def f(**kwargs):\n"
-            "    if False:\n"
-            "        d = kwargs.pop('rope_deltas', None)\n"
-            "    return None\n"
-        )
-        assert not consume(
-            "def f(**kwargs):\n    return None\n    d = kwargs['rope_deltas']\n"
-        )
-        # A nested function's body never runs in the probed scope.
-        assert not consume(
-            "def f(**kwargs):\n"
-            "    def g(**inner):\n"
-            "        return kwargs.pop('rope_deltas', None)\n"
-            "    return None\n"
-        )
-        # typing.TYPE_CHECKING blocks are dead at runtime.
-        assert not consume(
-            "def f(**kwargs):\n"
-            "    if TYPE_CHECKING:\n"
-            "        d = kwargs.pop('rope_deltas', None)\n"
-            "    return None\n"
-        )
-        # An access confined to an exception handler runs only after
-        # forwarding has already failed — the success path never consumes.
-        assert not consume(
-            "def f(**kwargs):\n"
-            "    try:\n"
-            "        return forward(**kwargs)\n"
-            "    except Exception:\n"
-            "        return kwargs.pop('rope_deltas', None)\n"
-        )
-        # Consumption on the success path (try body) still counts.
-        assert consume(
-            "def f(**kwargs):\n"
-            "    try:\n"
-            "        d = kwargs.pop('rope_deltas', None)\n"
-            "        return forward(d, **kwargs)\n"
-            "    except Exception:\n"
-            "        d = None\n"
-        )
 
     def test_below_min_tokens_boundary_never_stores(self):
         gen = _stub_generator()
