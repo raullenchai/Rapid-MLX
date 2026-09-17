@@ -11,9 +11,12 @@ across seeds `11`, `22`, and `33` (15/15). A borderline model is never admitted
 because it nearly passes; family resemblance, parser capability, and a lower
 quantization's receipt are not evidence.
 
-All runs used the same Mac Studio checkout at source revision
-`54c72e437e33d98643ff449197468f01a0f9337c`, port `18950`, and the reproduction
-metadata embedded in each JSON receipt. MiniCPM5-2B Q8 also exposed a
+All qualification runs used the same Mac Studio checkout, port `18950`, and the
+reproduction metadata embedded in each JSON receipt. The initially submitted
+receipts used base revision `54c72e437...` while the qualification records were
+still uncommitted; after adversarial review, all ten builds below were rerun
+from committed PR revision `fc3807015`, whose receipts replace the earlier
+evidence. MiniCPM5-2B Q8 also exposed a
 qualification-table issue: a future short alias would need to be treated as a
 known MiniCPM catalog identity so that the public alias resolves to the exact
 Q8 record instead of falling back to the conservative local profile. That
