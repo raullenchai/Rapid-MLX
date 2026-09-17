@@ -1873,10 +1873,24 @@ class MLLMBatchGenerator:
             cloned = None
         if cloned is None:
             return None
+        # Evaluated detached copy: the model owns the original and may keep
+        # mutating or lazily extending it; a stale delta would make the
+        # snapshot positionally invalid. Uncopyable deltas refuse the store.
+        if isinstance(rope_delta, mx.array):
+            delta: Any = mx.array(rope_delta)
+        else:
+            try:
+                delta = copy.deepcopy(rope_delta)
+            except Exception:
+                return None
+        try:
+            mx.eval(delta)
+        except Exception:
+            return None
         entry = MLLMMediaBoundaryEntry(
             token_ids=full_ids[:boundary],
             leaves=cloned,
-            rope_delta=rope_delta,
+            rope_delta=delta,
             cache_bytes=_media_leaves_bytes(cloned),
         )
         # Admission cap: a single entry larger than the whole shared ceiling
@@ -2940,11 +2954,15 @@ class MLLMBatchGenerator:
                 self._media_boundary_hits -= 1
                 self._media_boundary_misses += 1
                 return self.model(input_ids, cache=cache, **kwargs)
-            if generation != getattr(self, "_media_store_generation", 0):
-                # A clear_prefix_cache landed between the plan and this
-                # install: the caller asked for an empty store, so the
-                # planned-against snapshot must not be revived. Degrade to
-                # a counted cold miss on the still-fresh cache.
+            # Validate the generation and install the snapshot in one
+            # critical section: a clear_prefix_cache landing between the
+            # plan and here must not have its emptied store revived by a
+            # half-finished resume.
+            with self._media_entries_guard():
+                stale = generation != getattr(self, "_media_store_generation", 0)
+                if not stale:
+                    cache[:] = cloned
+            if stale:
                 self._media_boundary_hits -= 1
                 self._media_boundary_misses += 1
                 return self.model(input_ids, cache=cache, **kwargs)

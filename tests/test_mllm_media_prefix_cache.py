@@ -475,7 +475,8 @@ class TestWrapperPositionOverride:
         suffix_call = gen.language_model.calls[-1]
         assert suffix_call[0] == full_ids[len(full_ids) - 4]
         assert suffix_call[1] == len(full_ids)
-        assert suffix_call[2] is rope_delta
+        # The install passes the entry's own detached delta copy.
+        assert mx.array_equal(suffix_call[2], rope_delta)
 
     def test_resume_suffix_routes_through_language_model(self):
         full_ids = _full_ids()
@@ -498,7 +499,8 @@ class TestWrapperPositionOverride:
         assert gen.model.calls == []
         suffix_call = gen.language_model.calls[-1]
         assert suffix_call[0] == full_ids[boundary]
-        assert suffix_call[2] is rope_delta
+        # The install passes the entry's own detached delta copy.
+        assert mx.array_equal(suffix_call[2], rope_delta)
         assert req.cached_tokens == boundary
 
 
@@ -736,7 +738,9 @@ class TestStorePath:
         digest = gen._media_identity_digest(req)
         entry = gen._media_boundary_entries[digest]
         assert entry.token_ids == full_ids[:boundary]
-        assert entry.rope_delta is rope_delta
+        # Stored as an evaluated detached copy, not the model-owned array.
+        assert entry.rope_delta is not rope_delta
+        assert mx.array_equal(entry.rope_delta, rope_delta)
         assert entry.cache_bytes > 0
         assert gen._media_boundary_stores == 1
         assert out is not None
@@ -816,6 +820,25 @@ class TestStorePath:
         assert model.calls[-1] == (full_ids[0], len(full_ids), True)
         # The redo restored the transaction the prefix opened.
         assert gen._media_mrope_saved is None
+
+    def test_store_snapshots_an_evaluated_detached_delta(self):
+        gen = _stub_generator()
+        full_ids = _full_ids()
+        req = _make_request(
+            prompt="a" * 24,
+            pixel_values=mx.zeros((1, 2)),
+            prefix_boundary=20,
+            max_tokens=8,
+        )
+        # A lazily-computed delta: the model owns it and its graph is still
+        # pending when the snapshot is taken.
+        lazy = mx.ones((2,)) * 5
+        entry = gen._media_store(
+            req, _kv_leaves(), _ids(full_ids), len(full_ids) - 4, lazy
+        )
+        assert entry is not None
+        assert entry.rope_delta is not lazy
+        assert mx.array_equal(entry.rope_delta, mx.array([5, 5]))
 
     def test_store_suffix_failure_discards_the_published_boundary(self, monkeypatch):
         gen = _stub_generator()
