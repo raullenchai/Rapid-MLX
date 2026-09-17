@@ -1889,7 +1889,15 @@ class MLLMBatchGenerator:
             return self.model(
                 suffix_ids, cache=cache, pixel_values=None, rope_deltas=rope_delta
             )
-        emb = self.model.get_input_embeddings(suffix_ids, pixel_values=None)
+        try:
+            emb = self.model.get_input_embeddings(suffix_ids, pixel_values=None)
+        except (AttributeError, TypeError) as exc:
+            # A dependency upgrade can preserve the source shape admitted by
+            # the structural gate while changing this invocation contract.
+            # Treat that as an unsupported split, never as a request failure.
+            raise _MediaSplitUnsupportedError(
+                "get_input_embeddings is incompatible with LM-direct resume"
+            ) from exc
         inputs_embeds = getattr(emb, "inputs_embeds", None)
         if inputs_embeds is None:
             # The wrapper's embedding result does not carry the payload the
@@ -1901,13 +1909,18 @@ class MLLMBatchGenerator:
         # mlx stubs type child modules as ``Any | dict`` — the probe above
         # already verified ``__call__`` exists.
         lm_call = cast("Any", self.language_model)
-        return lm_call(
-            suffix_ids,
-            inputs_embeds=inputs_embeds,
-            mask=None,
-            cache=cache,
-            rope_deltas=rope_delta,
-        )
+        try:
+            return lm_call(
+                suffix_ids,
+                inputs_embeds=inputs_embeds,
+                mask=None,
+                cache=cache,
+                rope_deltas=rope_delta,
+            )
+        except (AttributeError, TypeError) as exc:
+            raise _MediaSplitUnsupportedError(
+                "language model is incompatible with LM-direct resume"
+            ) from exc
 
     def _media_placeholder_token_ids(self) -> list[int]:
         """Vision placeholder token ids from the model config, when resolvable.

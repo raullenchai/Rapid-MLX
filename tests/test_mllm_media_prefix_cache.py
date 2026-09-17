@@ -47,6 +47,7 @@ from vllm_mlx.mllm_batch_generator import (  # noqa: E402
     _media_clone_leaves,
     _media_leaf_bytes,
     _media_leaves_bytes,
+    _MediaSplitUnsupportedError,
 )
 from vllm_mlx.mllm_scheduler import MLLMSchedulerConfig  # noqa: E402
 from vllm_mlx.scheduler import SchedulerConfig  # noqa: E402
@@ -542,6 +543,52 @@ class TestWrapperPositionOverride:
         )
         assert gen._media_boundary_plan(req, _ids(_full_ids()), _kv_leaves()) is None
         assert gen._media_boundary_misses == 0
+
+    def test_lm_direct_embedding_incompatibility_redoes_cold(self, monkeypatch):
+        gen = _stub_generator(model=_PositionOverrideModel())
+        gen.language_model = _DirectLanguageModel()
+        gen.language_model.layers = []
+        req = _make_request(
+            prompt="a" * 24,
+            pixel_values=mx.zeros((1, 2)),
+            prefix_boundary=20,
+            max_tokens=8,
+        )
+        full_ids = _full_ids()
+        original = gen.model.get_input_embeddings
+
+        def changed_signature(input_ids, pixel_values=None, **kwargs):
+            if pixel_values is None:
+                raise TypeError("suffix signature changed")
+            return original(input_ids, pixel_values=pixel_values, **kwargs)
+
+        monkeypatch.setattr(gen.model, "get_input_embeddings", changed_signature)
+        gen.language_model._rope_deltas = mx.array([3])
+
+        output = gen._media_forward(
+            req,
+            _ids(full_ids),
+            _kv_leaves(),
+            {"pixel_values": req.pixel_values},
+        )
+
+        assert output is not None
+        assert gen._media_boundary_misses == 1
+        assert not gen._media_boundary_entries
+        assert len(gen.model.calls) == 2  # split prefix, then unsplit cold redo
+
+    def test_lm_direct_call_incompatibility_is_classified_unsupported(self):
+        class IncompatibleLanguageModel:
+            def __call__(self, tokens, cache=None):
+                raise AssertionError("the incompatible signature must not run")
+
+        gen = _stub_generator(model=_PositionOverrideModel())
+        gen.language_model = IncompatibleLanguageModel()
+
+        with pytest.raises(
+            _MediaSplitUnsupportedError, match="language model is incompatible"
+        ):
+            gen._media_suffix_forward(_ids([1, 2]), _kv_leaves(), mx.array([3]))
 
     def test_store_suffix_routes_through_language_model(self):
         gen = _stub_generator(model=_PositionOverrideModel())
