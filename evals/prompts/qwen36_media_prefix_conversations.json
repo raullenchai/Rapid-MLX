@@ -1395,18 +1395,65 @@
               "button"
             ],
             "min_words": 200,
-            "required_any": [
+            "required_any_groups": [
               [
-                "dots"
+                [
+                  "dots"
+                ],
+                [
+                  "dot"
+                ],
+                [
+                  "indicator"
+                ],
+                [
+                  "indicators"
+                ]
               ],
               [
-                "dot"
+                [
+                  "picker"
+                ],
+                [
+                  "models"
+                ],
+                [
+                  "model list"
+                ]
               ],
               [
-                "indicator"
+                [
+                  "lower-left"
+                ],
+                [
+                  "lower left"
+                ],
+                [
+                  "bottom-left"
+                ],
+                [
+                  "bottom left"
+                ],
+                [
+                  "left edge"
+                ]
               ],
               [
-                "indicators"
+                [
+                  "lower-right"
+                ],
+                [
+                  "lower right"
+                ],
+                [
+                  "bottom-right"
+                ],
+                [
+                  "bottom right"
+                ],
+                [
+                  "right edge"
+                ]
               ]
             ]
           }
@@ -1606,9 +1653,47 @@
             "required": [
               "ready",
               "qwen3.6-27b",
-              "stop"
+              "stop",
+              "question"
             ],
-            "min_words": 200
+            "min_words": 200,
+            "required_any_groups": [
+              [
+                [
+                  "information"
+                ],
+                [
+                  "info"
+                ]
+              ],
+              [
+                [
+                  "left"
+                ],
+                [
+                  "left-hand"
+                ]
+              ],
+              [
+                [
+                  "center"
+                ],
+                [
+                  "centre"
+                ],
+                [
+                  "middle"
+                ]
+              ],
+              [
+                [
+                  "right"
+                ],
+                [
+                  "right-hand"
+                ]
+              ]
+            ]
           }
         },
         {
