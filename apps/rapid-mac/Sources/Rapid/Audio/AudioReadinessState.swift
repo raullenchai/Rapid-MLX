@@ -111,6 +111,9 @@ enum AudioReadinessState: Equatable {
             if case .completed = matchingDownload {
                 return .verifyingDownload(alias: alias)
             }
+            if case .cancelled = matchingDownload {
+                return .notDownloaded(alias: alias, sizeText: snapshot.sizeText)
+            }
         }
         // Otherwise a matching operation is request-owned evidence that this
         // lane is in use. It keeps selection blocked if process readiness or

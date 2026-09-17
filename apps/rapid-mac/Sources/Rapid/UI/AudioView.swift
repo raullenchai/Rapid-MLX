@@ -85,7 +85,7 @@ struct AudioView: View {
                 detail: "Downloading or loading the audio model…"
             ) : nil,
             readyAlias: readyAlias,
-            activity: viewModel.activeOperation
+            activity: viewModel.activeOperation(for: selectedAlias)
         ))
     }
 

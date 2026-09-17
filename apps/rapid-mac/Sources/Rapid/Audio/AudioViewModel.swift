@@ -55,6 +55,10 @@ final class AudioViewModel {
     var activeOperation: AudioReadinessState.ActivitySnapshot? {
         activeOperations.last?.snapshot
     }
+
+    func activeOperation(for alias: String) -> AudioReadinessState.ActivitySnapshot? {
+        activeOperations.reversed().first { $0.snapshot.alias == alias }?.snapshot
+    }
     private(set) var previewingVoice: String?
     var errorMessage: String?
     private var activeOperations: [ActiveOperation] = []

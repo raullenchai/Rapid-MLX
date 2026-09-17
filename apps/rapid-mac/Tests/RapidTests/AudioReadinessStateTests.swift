@@ -186,6 +186,19 @@ struct AudioReadinessStateTests {
                 ))
     }
 
+    @Test("cancelled download outranks an operation that has not reached runtime")
+    func cancelledDownloadOutranksPrematureActivity() {
+        let state = AudioReadinessState.resolve(
+            Self.snapshot(
+                cached: false,
+                download: .init(alias: Self.alias, status: .cancelled),
+                activity: .init(alias: Self.alias, activity: .loadingVoices)
+            ))
+
+        #expect(state == .notDownloaded(alias: Self.alias, sizeText: "1.5 GiB"))
+        #expect(state.allowsModelSelection)
+    }
+
     @Test("events for a previous selection cannot advance the current model")
     func staleEventsAreRejected() {
         let previous = "qwen3-tts-4bit"
