@@ -16,10 +16,14 @@ Architecture:
 3. Language model generation is batched using BatchKVCache (like LLM batching)
 """
 
+import ast
+import contextlib
 import copy
 import inspect
 import logging
 import os
+import textwrap
+import threading
 import time
 from collections import OrderedDict
 from collections.abc import Callable
@@ -464,6 +468,13 @@ class MLLMBatchRequest:
     # no images or the model does not support feature caching. Appended last so
     # inserting it never shifts the meaning of any positional constructor arg.
     vision_feature_key: str | None = None
+    # Effective vision pixel cap this request was preprocessed under (the
+    # configured ceiling folded with the per-request auto ceiling and the
+    # budget-driven retry reductions). 0 when no cap bound the request.
+    # Part of the media identity digest: identical image bytes resized
+    # under different caps produce different pixel tensors, so their KV
+    # state must never share an entry. Stamped in ``_process_prompts``.
+    media_pixel_cap: int = 0
     # Request-owned sampler state. The key also includes vocabulary width,
     # because an otherwise identical top-k setting may normalize differently
     # across models.
@@ -627,6 +638,193 @@ def _extract_detached_singleton_leaf(leaf: Any, idx: int) -> Any:
         detached.offset = leaf.offset
         mx.eval(detached.keys, detached.values)
     return detached
+
+
+# A media boundary below this many processor-expanded tokens is never
+# stored: a snapshot that small costs an LRU slot to save a prefill that
+# is cheaper to redo. Mirrors the role of mlx-vlm's ``APC_EXACT_MIN_TOKENS``
+# (default 16) on the text APC.
+_MEDIA_BOUNDARY_MIN_TOKENS = 16
+
+# Decode headroom cloned beyond the live sequence on both the store and the
+# resume snapshot paths — one constant so the two capacities stay identical.
+_MEDIA_SNAPSHOT_HEADROOM_TOKENS = 64
+
+# Media boundaries are aligned DOWN to this grid (a multiple of it). The
+# hybrid GatedDeltaNet prefill scans tokens in fixed-size chunk tiles that
+# start at each forward's beginning (``gated_delta_chunked`` C=64); a split
+# whose boundary sits inside a tile re-tiling the tail produces last-ULP
+# state differences that compound through the recurrence (measured ~1.5
+# logits of drift, same argmax) and can flip near-tie tokens a turn or two
+# later. With the boundary on the grid, the split's tiles coincide with the
+# single forward's and the split eliminates the recurrent tile
+# re-alignment drift. GEMM batch-size differences between the split and
+# single forwards remain and still produce small cross-phase float
+# divergence (same argmax; reported, not gated — see the design note).
+_MEDIA_BOUNDARY_ALIGN_TOKENS = 64
+
+# Model families qualified for the split media boundary, by ``config.model_type``.
+# Structural gates (rope-deltas consumption, cloneable leaves, singleton turn)
+# prove a model *can* be split; only qualification proves the split is
+# *correct* for it — the 64-token alignment is tuned to this family's hybrid
+# recurrent scan, and position/MRoPE handling differs per family. Everything
+# else stays on the cold single forward until it is qualified on real
+# hardware (the design note's non-goal: no unqualified families ship).
+_MEDIA_QUALIFIED_MODEL_TYPES = frozenset({"qwen3_5_moe", "qwen3_5_moe_text"})
+
+_MEDIA_ROPE_MISSING = object()
+
+
+@dataclass
+class MLLMMediaBoundaryEntry:
+    """One stored prior-turn media boundary.
+
+    ``token_ids`` are the processor-expanded token IDs of the strict prefix
+    (everything up to and excluding the chat template's generation marker).
+    ``leaves`` are fully materialized clones of the hybrid cache at exactly
+    that position — never lazy slices of live state. ``rope_delta`` is the
+    MRoPE delta recorded at the boundary so the resumed suffix and its
+    decode continue at the right absolute positions.
+    """
+
+    token_ids: list[int]
+    leaves: list[Any]
+    rope_delta: Any
+    cache_bytes: int
+
+
+def _is_type_checking(test: ast.AST) -> bool:
+    """``typing.TYPE_CHECKING`` in either binding shape — always false at
+    runtime, so its guarded block is dead for probe purposes."""
+    if isinstance(test, ast.Name):
+        return test.id == "TYPE_CHECKING"
+    return (
+        isinstance(test, ast.Attribute)
+        and test.attr == "TYPE_CHECKING"
+        and isinstance(test.value, ast.Name)
+        and test.value.id in ("typing", "t")
+    )
+
+
+# Explicit rope-deltas capability contract for the media prefix cache.
+#
+# The structural source probes this contract replaces grew one heuristic
+# per review round — substring match, AST shapes, control-flow awareness,
+# data-flow tracing — and every approximation stayed unfalsifiable: a
+# rope_deltas lookup can always hide behind a shape the walker does not
+# model. Only implementations whose source was verified by hand to
+# consume (respectively plumb onward) ``rope_deltas`` for position
+# computation are admitted; everything else fails closed to the cold
+# single forward. Extend these sets deliberately, with source
+# verification, never structurally.
+_MEDIA_ROPE_CONSUMING_LM_IMPLEMENTATIONS = frozenset(
+    {
+        # mlx_vlm/models/qwen3_5_moe/language.py, LanguageModel.__call__:
+        # pops ``rope_deltas`` from **kwargs and folds it into the MRoPE
+        # position offsets (``delta = (offsets + rope_deltas...)``).
+        ("mlx_vlm.models.qwen3_5_moe.language", "LanguageModel"),
+    }
+)
+_MEDIA_ROPE_PLUMBING_WRAPPER_IMPLEMENTATIONS = frozenset(
+    {
+        # mlx_vlm/models/qwen3_5_moe/qwen3_5_moe.py, Model: the Qwen3VL
+        # wrapper recomputes/merges ``rope_deltas`` through
+        # InputEmbeddingsFeatures and forwards it to the consuming LM.
+        ("mlx_vlm.models.qwen3_5_moe.qwen3_5_moe", "Model"),
+    }
+)
+
+
+class _MediaSplitUnsupportedError(Exception):
+    """A structural probe mis-judged the wrapper: the split cannot serve
+    this request. Callers fail closed to a rebuilt cold full forward."""
+
+
+def _media_clone_leaves(
+    leaves: list[Any], *, min_capacity_tokens: int
+) -> list[Any] | None:
+    """Deep-clone regular cache leaves for a media boundary snapshot.
+
+    Returns None when any leaf is not a cloneable regular cache — the caller
+    must then skip the store entirely (fail closed, cold path continues).
+    Clones are evaluated synchronously so the stored arrays stay valid no
+    matter what the live batch does afterwards (same detachment contract as
+    :func:`_extract_detached_singleton_leaf`).
+    """
+    try:
+        from mlx_vlm.apc_adapters import clone_cache_entry
+    except ImportError:
+        return None
+    eval_targets: list[Any] = []
+    cloned = [
+        clone_cache_entry(
+            leaf, min_capacity_tokens=min_capacity_tokens, eval_targets=eval_targets
+        )
+        for leaf in leaves
+    ]
+    if any(leaf is None for leaf in cloned):
+        return None
+    if eval_targets:
+        mx.eval(eval_targets)
+    return cloned
+
+
+def _media_leaf_bytes(leaf: Any) -> int | None:
+    """Bytes held by one cloned cache leaf, measured from its arrays.
+
+    mlx_lm caches expose ``state`` tuples (arrays with ``None``
+    placeholders and scalar offsets); snapshot-contract clones may only
+    expose ``nbytes`` or plain array attributes. ``None`` means the leaf
+    could not be measured at all — the caller must refuse the store
+    rather than charge the leaf as zero and let an oversized snapshot
+    bypass the shared ceiling."""
+    if isinstance(leaf, mx.array):
+        return int(leaf.nbytes)
+    if isinstance(leaf, (tuple, list)):
+        total = 0
+        measured = False
+        for part in leaf:
+            size = _media_leaf_bytes(part)
+            if size is not None:
+                total += size
+                measured = True
+        return total if measured else None
+    try:
+        state = getattr(leaf, "state", None)
+    except Exception:
+        state = None
+    if state is not None:
+        size = _media_leaf_bytes(state)
+        if size is not None:
+            return size
+    try:
+        nbytes = getattr(leaf, "nbytes", None)
+    except Exception:
+        nbytes = None
+    if isinstance(nbytes, int) and not isinstance(nbytes, bool):
+        return int(nbytes)
+    try:
+        values = list(vars(leaf).values())
+    except Exception:
+        return None
+    total = 0
+    measured = False
+    for value in values:
+        size = _media_leaf_bytes(value)
+        if size is not None:
+            total += size
+            measured = True
+    return total if measured else None
+
+
+def _media_leaves_bytes(leaves: list[Any]) -> int | None:
+    total = 0
+    for leaf in leaves:
+        size = _media_leaf_bytes(leaf)
+        if size is None:
+            return None
+        total += size
+    return total
 
 
 @dataclass
@@ -892,6 +1090,8 @@ class MLLMBatchGenerator:
         vision_prefill_token_budget: int = 8192,
         enable_prefix_cache: bool = True,
         singleton_fastpath: str = "auto",
+        media_prefix_cache: str = "auto",
+        structural_singleton: bool = False,
     ):
         """
         Initialize MLLM batch generator.
@@ -918,6 +1118,14 @@ class MLLMBatchGenerator:
                 cache merge for structural B=1 batches whose leaves qualify
                 (see :func:`_singleton_regular_cache_leaves`); ``"off"`` always
                 takes the legacy merge/rebatch path. Operator rollback only.
+            media_prefix_cache: ``"auto"`` (default) stores and resumes
+                prior-turn media boundaries on the serialized lane (see
+                :func:`_media_boundary_plan`); ``"off"`` disables both the
+                store and the lookup so the lane behaves exactly like the
+                cold image path. Operator rollback only.
+            structural_singleton: Proof from the scheduler configuration that
+                max sequences, prefill batch, and completion batch are all 1.
+                Media-boundary reuse stays disabled without this proof.
         """
         if singleton_fastpath not in ("auto", "off"):
             raise ValueError(
@@ -925,6 +1133,36 @@ class MLLMBatchGenerator:
                 f"got {singleton_fastpath!r}"
             )
         self.singleton_fastpath = singleton_fastpath
+        if media_prefix_cache not in ("auto", "off"):
+            raise ValueError(
+                f"media_prefix_cache must be 'auto' or 'off', "
+                f"got {media_prefix_cache!r}"
+            )
+        self.media_prefix_cache = media_prefix_cache
+        self._media_structural_singleton = bool(structural_singleton)
+        # Media boundary store: keyed by identity digest, LRU-evicted under
+        # the engine-wide prefix-cache byte budget (entries are tens to
+        # hundreds of MiB and there is no per-session identity).
+        self._media_boundary_entries: OrderedDict[str, MLLMMediaBoundaryEntry] = (
+            OrderedDict()
+        )
+        # Guards the store against cross-thread iteration: stats are served
+        # off the worker thread while the step executor inserts/evicts.
+        self._media_boundary_lock = threading.Lock()
+        self._media_boundary_hits = 0
+        self._media_boundary_misses = 0
+        self._media_boundary_stores = 0
+        self._media_boundary_budget_evictions = 0
+        self._media_boundary_max_bytes = 0
+        # Bumped on every clear so an in-flight resume can detect that the
+        # store it planned against was emptied before it could install.
+        self._media_store_generation = 0
+        # Request-owned MRoPE transaction: ``(had_position_ids, value,
+        # had_rope_deltas, value)`` captured from the model before a media
+        # request installs its boundary delta, restored before the next
+        # request's prefill. ``_MEDIA_ROPE_MISSING`` marks an attribute that
+        # was absent and must be deleted again rather than set to None.
+        self._media_mrope_saved: tuple[Any, Any, Any, Any] | None = None
         self.model = model
         self.processor = processor
         self.mm_processor = mm_processor
@@ -950,6 +1188,9 @@ class MLLMBatchGenerator:
         self._prefix_cache_tokens_saved = 0
         self._prefix_cache_max_bytes = 0
         self._prefix_cache_budget_evictions = 0
+        # The user's explicit prefix-cache opt-out covers every form of
+        # prefix reuse on this lane, media boundary resume included.
+        self._prefix_cache_enabled = bool(enable_prefix_cache)
         if enable_prefix_cache:
             try:
                 from mlx_vlm import apc as _apc
@@ -1261,6 +1502,987 @@ class MLLMBatchGenerator:
         )
         self._enforce_exact_cache_budget(cache)
 
+    # -- media-aware boundary store/lookup ------------------------------------
+    #
+    # The text APC deliberately bypasses image-bearing requests (see
+    # ``_lookup_exact_text_prefix``): media placeholders depend on pixel
+    # content. The media lane instead stores a prior-turn boundary keyed on
+    # the processor-expanded tokens — verified as a strict token prefix on
+    # the next turn, with a request-owned MRoPE transaction. Spike evidence
+    # (docs/engineering/design/2026-09-15-mllm-media-prefix-cache.md):
+    # terminal-history reuse is never a strict prefix (0/6), but the stable
+    # boundary below the generation marker resumed 9/9 byte-exact and
+    # −58.6% turn-two TTFT. Everything here fails closed to the cold image
+    # path on any surprise.
+
+    def _media_resolve_tokenizer(self) -> Any:
+        """Best-effort plain tokenizer resolution; None means fail closed."""
+        tok = getattr(self.processor, "tokenizer", None)
+        if tok is None:
+            tok = getattr(self.language_model, "tokenizer", None)
+        inner = getattr(tok, "tokenizer", None)
+        if inner is not None and callable(getattr(inner, "encode", None)):
+            tok = inner
+        encode = getattr(tok, "encode", None)
+        return tok if callable(encode) else None
+
+    def _media_boundary_marker_width(self, request: MLLMBatchRequest) -> int | None:
+        """Rendered tokens from the engine's stable boundary to the prompt end.
+
+        The engine computes ``prefix_boundary`` as the end of the rendered
+        stable prefix *minus a small replay margin*
+        (``_PREFIX_BOUNDARY_REPLAY_TOKENS``), in *rendered* token space — so
+        this width covers the replay margin plus the trailing generation
+        marker, not just the literal chat marker. The processor-expanded
+        token count differs by the image-patch expansion, which sits before
+        the stable boundary — so the expanded-space boundary is
+        ``len(expanded_ids) - marker_width``. Anything unexpected returns
+        None and the request stays on the cold path.
+        """
+        if request.prefix_boundary <= 0 or not request.prompt:
+            return None
+        tok = self._media_resolve_tokenizer()
+        if tok is None:
+            return None
+        try:
+            rendered_tokens = len(tok.encode(request.prompt))
+        except Exception:
+            return None
+        if not 0 < request.prefix_boundary < rendered_tokens:
+            return None
+        return rendered_tokens - request.prefix_boundary
+
+    def _media_semantics_salt(self) -> str:
+        """Stable salt over semantic inputs that change KV meaning without
+        changing image bytes: the model/processor dependency set (the text
+        APC's ``semantic_extra_hash`` when the manager exists, a structural
+        fallback otherwise) and the engine's vision pixel bounds.
+        Process-fixed settings (chat template, model revision, adapter) die
+        with the process and need no keying; the per-request effective
+        pixel cap (which folds this configured bound with the auto ceiling
+        and budget reductions) is keyed separately on each request's
+        digest, since it can change resized pixels without changing token
+        IDs."""
+        cached = getattr(self, "_media_semantics_salt_cache", None)
+        if cached is not None:
+            hit: str = cached
+            return hit
+        try:
+            from mlx_vlm import apc as _apc
+
+            salt = str(
+                _apc.semantic_extra_hash(model=self.model, processor=self.processor)
+            )
+        except Exception:
+            salt = "|".join(
+                (
+                    type(self.model).__name__,
+                    type(self.processor).__name__,
+                    str(
+                        int(
+                            getattr(
+                                getattr(self.model, "config", None),
+                                "image_token_id",
+                                0,
+                            )
+                            or 0
+                        )
+                    ),
+                )
+            )
+        salt = (
+            f"{salt}#{int(getattr(self, 'vision_min_pixels', 0) or 0)}"
+            f"#{int(getattr(self, 'vision_max_pixels', 0) or 0)}"
+        )
+        cached_salt: str = salt
+        self._media_semantics_salt_cache = cached_salt
+        return cached_salt
+
+    def _media_identity_digest(self, request: MLLMBatchRequest) -> str | None:
+        """Cache key: ordered media content plus the semantic salt.
+
+        ``vision_feature_key`` is stamped after image/video inputs have been
+        materialized into local files, so it hashes the exact bytes that were
+        preprocessed even when the original request used a mutable URL.
+        Identity MUST be content-keyed: two turns rendering the
+        same token prefix with different image bytes must never share an
+        entry — the strict token-prefix check cannot tell them apart. The
+        digest folds ``_media_semantics_salt`` so stored KV/MRoPE state is
+        never reused across a semantics-changing configuration. The full
+        key string (not a truncated hash) keys the OrderedDict: the strict
+        token-prefix gate already guards collisions for *stored* tokens,
+        but keying on the digest itself keeps distinct media sets from ever
+        sharing an entry.
+        """
+        key = request.vision_feature_key
+        if not key:
+            # Never hash raw references here: a stable URL can serve different
+            # bytes over time.  Missing the post-preprocess content stamp keeps
+            # this request on the canonical cold path.
+            return None
+        if not isinstance(key, str):
+            return None
+        # The request's effective pixel cap rides in the key: identical
+        # image bytes resized under different caps (the auto ceiling varies
+        # with image count; the budget loop reduces it further) yield
+        # different pixel tensors and must never share an entry.
+        return (
+            f"{key}#{self._media_semantics_salt()}"
+            f"#{int(getattr(request, 'media_pixel_cap', 0) or 0)}"
+        )
+
+    def _should_stamp_media_content_key(self) -> bool:
+        """Whether preprocessing has a consumer for a media byte digest.
+
+        The feature cache needs it directly.  The boundary cache needs it
+        only while its qualified auto lane is enabled.  Keeping this predicate
+        explicit preserves the byte-for-byte rollback path when both caches
+        are off and avoids otherwise-unused file reads for unqualified models.
+        """
+        return bool(getattr(self, "_supports_vision_feature_cache", False)) or (
+            getattr(self, "media_prefix_cache", "off") == "auto"
+            and getattr(self, "_prefix_cache_enabled", True)
+            and self._media_family_qualified()
+        )
+
+    def _media_family_qualified(self) -> bool:
+        """Whether the loaded model belongs to a qualified family.
+
+        Structural gates prove a model can be split; this gate proves the
+        split is known-correct for it — the boundary alignment and MRoPE
+        transaction were qualified on exactly one family (Qwen3.6 hybrid,
+        ``config.model_type`` ``qwen3_5_moe``/``qwen3_5_moe_text``), and
+        the design note ships no unqualified families. Any other model —
+        or one without a resolvable ``model_type`` — stays on the cold
+        single forward. Memoized per model-class pair like the other
+        structural probes.
+        """
+        cached = getattr(self, "_media_family_probe", None)
+        key = (type(self.model), type(self.language_model))
+        if cached is not None and cached[0] == key:
+            result: bool = cached[1]
+            return result
+        result = False
+        for target in (self.model, self.language_model):
+            model_type = getattr(getattr(target, "config", None), "model_type", None)
+            if model_type in _MEDIA_QUALIFIED_MODEL_TYPES:
+                result = True
+                break
+        self._media_family_probe = (key, result)
+        return result
+
+    @staticmethod
+    def _media_live_tree(src: str) -> tuple[list[ast.AST], ast.Module] | None:
+        """Live nodes plus the parsed tree they belong to.
+
+        Returning the tree lets data-flow probes relate nodes to each
+        other (parents, bindings) without a second parse whose node
+        identities would not match the live set. None when the source
+        cannot be parsed.
+        """
+
+        def visit(node: ast.AST, in_scope: bool = False) -> None:
+            if isinstance(node, ast.If):
+                # Constant-false branches (and typing.TYPE_CHECKING, which
+                # is false at runtime by definition) are skipped toward
+                # their taken side; an undecidable test keeps both sides.
+                test = node.test
+                if isinstance(test, ast.Constant):
+                    branch = node.body if test.value else node.orelse
+                    live(branch, in_scope)
+                    return
+                if _is_type_checking(test):
+                    live(node.orelse, in_scope)
+                    return
+            if (
+                isinstance(node, ast.While)
+                and isinstance(node.test, ast.Constant)
+                and not node.test.value
+            ):
+                return
+            found.append(node)
+            if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                # The outermost inspected function body is the probed scope;
+                # functions nested inside it never run in that scope.
+                if in_scope:
+                    return
+                live(node.body, True)
+                return
+            if isinstance(node, ast.Lambda):
+                return
+            if isinstance(node, ast.Try) or type(node).__name__ == "TryStar":
+                # Only the success path (try body, orelse, finally) proves
+                # live behavior: an access confined to an exception handler
+                # runs after forwarding has already failed, so a rope delta
+                # consumed only there would never position a real suffix.
+                try_node = cast("Any", node)
+                live(try_node.body, in_scope)
+                live(try_node.orelse, in_scope)
+                live(try_node.finalbody, in_scope)
+                return
+            for child in ast.iter_child_nodes(node):
+                visit(child, in_scope)
+
+        def live(stmts: list[ast.stmt], in_scope: bool = False) -> None:
+            for stmt in stmts:
+                visit(stmt, in_scope)
+                if isinstance(stmt, (ast.Return, ast.Raise, ast.Break, ast.Continue)):
+                    return
+
+        found: list[ast.AST] = []
+        try:
+            # ``inspect.getsource`` of a method returns the indented block;
+            # ``ast.parse`` needs it dedented to module level.
+            tree = ast.parse(textwrap.dedent(src))
+        except (SyntaxError, ValueError):
+            return None
+        live(tree.body)
+        return found, tree
+
+    @staticmethod
+    def _media_live_nodes(src: str) -> list[ast.AST] | None:
+        """AST nodes reachable under obviously-live control flow.
+
+        Constant-false branches are skipped toward their taken side,
+        ``while False`` loops are dropped, nothing after an unconditional
+        ``return``/``raise``/``break``/``continue`` in a block is visited,
+        and function bodies are walked through the same statement-level
+        rules. None when the source cannot be parsed.
+        """
+        parsed = MLLMBatchGenerator._media_live_tree(src)
+        return None if parsed is None else parsed[0]
+
+    def _media_wrapper_call_attrs(self) -> set[str] | None:
+        """Attribute names invoked in the wrapper ``__call__``'s live code.
+
+        None when the source cannot be read or parsed. Probed once per
+        model: parsing per request would be pure overhead.
+        """
+        cached = getattr(self, "_media_wrapper_attrs_probe", None)
+        key = type(self.model)
+        if cached is not None and cached[0] == key:
+            return cast("set[str] | None", cached[1])
+        src = self._media_wrapper_call_source()
+        attrs: set[str] | None = None
+        if src is not None:
+            nodes = self._media_live_nodes(src)
+            if nodes is not None:
+                attrs = {
+                    node.func.attr
+                    for node in nodes
+                    if isinstance(node, ast.Call)
+                    and isinstance(node.func, ast.Attribute)
+                }
+        self._media_wrapper_attrs_probe = (key, attrs)
+        return attrs
+
+    def _media_target_consumes_rope(self, target: Any) -> bool:
+        """Whether ``target`` is a contract-pinned rope-deltas consumer.
+
+        An explicit capability contract supersedes the source-shape
+        heuristics: no AST approximation can
+        distinguish a positioning consumer from a lookup that only logs,
+        validates, or drops the value. Only implementations whose source
+        was verified by hand to fold a passed delta into position
+        computation are admitted; everything else fails closed to the
+        cold single forward."""
+        key = type(target)
+        return (key.__module__, key.__qualname__) in (
+            _MEDIA_ROPE_CONSUMING_LM_IMPLEMENTATIONS
+        )
+
+    def _media_target_plumbs_rope(self, target: Any) -> bool:
+        """Whether a suffix through ``target`` can carry ``rope_deltas``.
+
+        Contract-pinned wrapper implementations only: their plumbing was
+        verified by hand to hand the delta to the consuming language
+        model, whose presence on this generator the gate also requires."""
+        key = type(target)
+        return (
+            (key.__module__, key.__qualname__)
+            in _MEDIA_ROPE_PLUMBING_WRAPPER_IMPLEMENTATIONS
+        ) and self._media_target_consumes_rope(self.language_model)
+
+    def _media_model_supports_rope_kwarg(self) -> bool:
+        """The selected suffix call path must plumb ``rope_deltas``.
+
+        mlx-vlm models consume ``rope_deltas`` via ``kwargs.pop("rope_deltas",
+        ...)`` inside a ``**kwargs``-accepting ``__call__`` body — the kwarg
+        is almost never an explicit signature parameter, so a signature-only
+        probe never opens the gate. The check is path-specific: a suffix
+        routed through the language model (position-override wrapper with a
+        validated LM-direct escape) needs the LM to consume the delta, and
+        a suffix through the wrapper needs the WRAPPER to plumb the value
+        onward — a wrapper that accepts ``**kwargs`` but drops them cannot
+        ride on its inner LM's consumption. Probed structurally on live
+        code only; families without a plumbing selected path fail closed
+        to the single cold forward.
+        """
+        if self._media_wrapper_overrides_positions():
+            if not self._media_lm_direct_available():
+                return False
+            return self._media_target_consumes_rope(self.language_model)
+        return self._media_target_plumbs_rope(self.model)
+
+    def _media_wrapper_call_source(self) -> str | None:
+        """Source of the VLM wrapper's ``__call__``, probed once per model.
+
+        Best-effort input for the structural probes: any failure to read
+        the source (``OSError``/``TypeError``, or a stale-linecache
+        ``SyntaxError`` raised by ``inspect.getblock``) yields ``None`` and
+        every source-derived gate fails closed.
+        """
+        cached = getattr(self, "_media_wrapper_source", None)
+        if cached is not None and cached[0] is type(self.model):
+            source: str | None = cached[1]
+            return source
+        call = getattr(type(self.model), "__call__", None)
+        src = None
+        if call is not None and _accepts_var_kwargs(call):
+            try:
+                src = inspect.getsource(call)
+            except (OSError, TypeError, SyntaxError):
+                src = None
+        self._media_wrapper_source = (type(self.model), src)
+        return src
+
+    def _media_wrapper_overrides_positions(self) -> bool:
+        """Whether the VLM wrapper recomputes positions on a suffix forward.
+
+        qwen3-vl-family wrappers (``qwen3_vl``, ``qwen3_vl_moe``, ``qwen3_5``,
+        ``qwen3_5_moe``, ``minimax_m3_vl``) merge the full
+        ``InputEmbeddingsFeatures.to_dict()`` — including freshly recomputed
+        ``position_ids``/``rope_deltas`` — into the LM call whenever
+        ``get_input_embeddings`` runs. On a ``pixel_values=None`` suffix
+        forward that recomputation is 0-based over the suffix only, and the
+        merged ``position_ids`` override the delta the boundary forward
+        installed — positionally corrupting the suffix. ``qwen2_vl`` /
+        ``qwen2_5_vl`` forward ``inputs_embeds`` only and are safe. Detected
+        structurally: the wrapper's ``__call__`` both calls
+        ``get_input_embeddings`` and merges ``to_dict()`` into the LM kwargs.
+        """
+        attrs = self._media_wrapper_call_attrs()
+        return (
+            attrs is not None and "get_input_embeddings" in attrs and "to_dict" in attrs
+        )
+
+    def _media_lm_direct_available(self) -> bool:
+        """Whether the LM-direct suffix path can bypass the wrapper.
+
+        Requires the wrapper to expose ``get_input_embeddings`` (returning an
+        ``InputEmbeddingsFeatures`` with ``inputs_embeds``) and a callable
+        language model. mlx-vlm's LM ``__call__`` accepts ``inputs_embeds``/
+        ``rope_deltas`` and computes positions from the cache offset plus the
+        passed delta when none are provided — exactly the suffix semantics.
+        Thinker/talker wrappers (``qwen3_omni_moe``) do wrapper-side
+        bookkeeping a direct LM call would skip, so they never bypass.
+        """
+        src = self._media_wrapper_call_source()
+        attrs = self._media_wrapper_call_attrs()
+        return (
+            attrs is not None
+            and src is not None
+            and "get_input_embeddings" in attrs
+            and "to_dict" in attrs
+            # Thinker/talker wrappers do wrapper-side bookkeeping a direct
+            # LM call would skip; a comment naming one must not re-open the
+            # bypass, so the whole source is checked (fail closed).
+            and "talker" not in src.casefold()
+            and callable(getattr(type(self.model), "get_input_embeddings", None))
+            and callable(getattr(self.language_model, "__call__", None))
+        )
+
+    @staticmethod
+    def _media_call_accepts(call: Any, /, *args: Any, **kwargs: Any) -> bool:
+        """Fail closed on a demonstrable call-signature mismatch.
+
+        A ``TypeError`` raised *inside* model execution is a real backend
+        failure and must propagate.  Binding before invocation lets the split
+        path classify only argument-contract drift as unsupported without
+        swallowing model bugs.
+        """
+        try:
+            signature = inspect.signature(call)
+        except (TypeError, ValueError):
+            # Some extension callables expose no inspectable signature.  The
+            # structural qualification gate admitted them; execute normally
+            # and preserve any resulting exception.
+            return True
+        try:
+            signature.bind(*args, **kwargs)
+        except TypeError:
+            return False
+        return True
+
+    def _media_suffix_forward(
+        self, suffix_ids: Any, cache: list[Any], rope_delta: Any
+    ) -> Any:
+        """Forward the suffix tokens with the boundary's installed delta.
+
+        Default: the wrapper with ``pixel_values=None`` + ``rope_deltas``.
+        Position-override wrappers (qwen3-vl family) bypass the wrapper —
+        embedding the suffix directly and calling the language model, which
+        derives positions from the cache offset and the passed delta instead
+        of a 0-based suffix recomputation.
+        """
+        if not self._media_wrapper_overrides_positions():
+            return self.model(
+                suffix_ids, cache=cache, pixel_values=None, rope_deltas=rope_delta
+            )
+        embedding_call = getattr(self.model, "get_input_embeddings", None)
+        if not callable(embedding_call) or not self._media_call_accepts(
+            embedding_call, suffix_ids, pixel_values=None
+        ):
+            # A dependency upgrade can preserve the source shape admitted by
+            # the structural gate while changing this invocation contract.
+            raise _MediaSplitUnsupportedError(
+                "get_input_embeddings is incompatible with LM-direct resume"
+            )
+        emb = embedding_call(suffix_ids, pixel_values=None)
+        inputs_embeds = getattr(emb, "inputs_embeds", None)
+        if inputs_embeds is None:
+            # The wrapper's embedding result does not carry the payload the
+            # LM-direct path needs — the structural probe mis-judged this
+            # wrapper. Fail closed; the caller redoes the request cold.
+            raise _MediaSplitUnsupportedError(
+                "get_input_embeddings returned no inputs_embeds"
+            )
+        # mlx stubs type child modules as ``Any | dict`` — the probe above
+        # already verified ``__call__`` exists.
+        lm_call = cast("Any", self.language_model)
+        lm_kwargs = {
+            "inputs_embeds": inputs_embeds,
+            "mask": None,
+            "cache": cache,
+            "rope_deltas": rope_delta,
+        }
+        if not self._media_call_accepts(lm_call, suffix_ids, **lm_kwargs):
+            raise _MediaSplitUnsupportedError(
+                "language model is incompatible with LM-direct resume"
+            )
+        return lm_call(suffix_ids, **lm_kwargs)
+
+    def _media_placeholder_token_ids(self) -> list[int]:
+        """Vision placeholder token ids from the model config, when resolvable.
+
+        The split's correctness invariant is that every processor-expanded
+        placeholder token lies inside the ``[:boundary]`` prefix; without
+        the ids that invariant is unverifiable, so callers must fail closed.
+        """
+        config = getattr(self.model, "config", None)
+        if config is None:
+            config = getattr(self.language_model, "config", None)
+        if config is None:
+            return []
+        ids = []
+        for name in ("image_token_id", "video_token_id"):
+            value = getattr(config, name, None)
+            if isinstance(value, int) and value >= 0:
+                ids.append(value)
+        return ids
+
+    def _media_boundary_plan(
+        self, request: MLLMBatchRequest, input_ids: Any, cache: list[Any]
+    ) -> tuple[str, Any, int, int | None, Any] | None:
+        """Decide the media boundary action for one image-bearing request.
+
+        Returns ``("resume", entry, boundary, generation, digest)`` on a
+        verified warm prefix, ``("store", None, boundary, generation,
+        digest)`` when this prefill should snapshot its boundary, or None
+        for the cold single forward. The digest rides in the plan so the
+        hit path never re-derives it (a recompute can re-hash image files
+        on the latency-sensitive resume). The generation rides in the
+        store plan too: the store must reject publication when a
+        ``clear_prefix_cache`` lands between planning and the post-prefix
+        snapshot, so it compares against the incarnation captured here —
+        not one re-read after the forward.
+        The generation is the store's incarnation at lookup time: a caller
+        that finds it changed was planned against a since-cleared store. Every gate fails
+        closed. At most one miss is counted per planned request: a stored
+        candidate that fails strict verification counts the miss even when
+        this request's own boundary turns out to be storable.
+        """
+        if (
+            getattr(self, "media_prefix_cache", "auto") != "auto"
+            or not getattr(self, "_prefix_cache_enabled", True)
+            or request.pixel_values is None
+            or request.prefix_boundary <= 0
+            or not self._media_family_qualified()
+            or not self._media_model_supports_rope_kwarg()
+            or not _singleton_regular_cache_leaves(cache, self.allow_arrays_cache)
+        ):
+            return None
+        # The serialized lane is structurally B=1, but the plan is keyed to
+        # the actual batch: a wider ``_process_prompts`` batch shares one
+        # cache list across requests, and a store/resume against a shared
+        # cache would corrupt the neighbours. Fail closed (silent — a
+        # structural gate, not a modeling miss).
+        if not getattr(self, "_media_singleton_turn", False):
+            return None
+        # Sequence-aligned kwargs cannot be dropped or re-sliced across a
+        # split (same contract as the text chunked path): a non-empty
+        # extra_kwargs payload or a partial attention mask keeps the single
+        # cold forward.
+        if request.extra_kwargs or not _attention_mask_is_droppable(
+            request.attention_mask
+        ):
+            self._media_boundary_misses += 1
+            return None
+        full_ids = [int(v) for v in input_ids.reshape(-1).tolist()]
+        if len(full_ids) < 2:
+            return None
+        digest = self._media_identity_digest(request)
+        if digest is None:
+            self._media_boundary_misses += 1
+            return None
+        counted_miss = False
+        # Take the entry and the store generation under the guard:
+        # ``clear_prefix_cache`` mutates the store from other threads and
+        # must not observe a half-read lookup. The generation lets the
+        # caller detect a clear that landed between this plan and install.
+        with self._media_entries_guard():
+            entry = self._media_boundary_entries.get(digest)
+            generation = getattr(self, "_media_store_generation", 0)
+        if entry is not None:
+            boundary = len(entry.token_ids)
+            placeholder_ids = self._media_placeholder_token_ids()
+            if (
+                len(full_ids) > boundary
+                and full_ids[:boundary] == entry.token_ids
+                # The resumed suffix forwards with ``pixel_values=None``:
+                # any placeholder token in the suffix means this prompt's
+                # vision payload was re-expanded below the boundary (e.g.
+                # the image re-sent on a later turn). Never resume those.
+                and placeholder_ids
+                and not any(token in placeholder_ids for token in full_ids[boundary:])
+            ):
+                # No hit is counted here: the caller installs the snapshot
+                # after re-cloning it, and the hit (plus the LRU promotion)
+                # only lands once that install actually succeeded.
+                return ("resume", entry, boundary, generation, digest)
+            # A stored candidate that fails the strict prefix or placeholder
+            # check is a clean miss — never a trim or a partial resume. This
+            # request's own boundary may still be storable below.
+            self._media_boundary_misses += 1
+            counted_miss = True
+        marker_width = self._media_boundary_marker_width(request)
+        if marker_width is None:
+            if not counted_miss:
+                self._media_boundary_misses += 1
+            return None
+        boundary = len(full_ids) - marker_width
+        # Align the boundary DOWN to the recurrent-scan tile grid so the
+        # split's chunking coincides with the single forward's (see
+        # ``_MEDIA_BOUNDARY_ALIGN_TOKENS``). The suffix only grows, so the
+        # engine's stable-boundary semantics are preserved; anything that
+        # cannot keep the aligned boundary above the placeholders (or the
+        # minimum) stays cold.
+        boundary = (boundary // _MEDIA_BOUNDARY_ALIGN_TOKENS) * (
+            _MEDIA_BOUNDARY_ALIGN_TOKENS
+        )
+        if boundary < _MEDIA_BOUNDARY_MIN_TOKENS or boundary >= len(full_ids):
+            if not counted_miss:
+                self._media_boundary_misses += 1
+            return None
+        # The suffix is forwarded with ``pixel_values=None``: every vision
+        # placeholder token must sit inside the prefix. The engine's
+        # boundary semantics cannot guarantee that for all request shapes
+        # (transient-message boundaries, dummy-user LCP fallbacks), so the
+        # invariant is verified here against the model's placeholder ids —
+        # and a model without resolvable placeholder ids never stores.
+        placeholder_ids = self._media_placeholder_token_ids()
+        if not placeholder_ids:
+            if not counted_miss:
+                self._media_boundary_misses += 1
+            return None
+        last_placeholder = max(
+            (i for i, token in enumerate(full_ids) if token in placeholder_ids),
+            default=-1,
+        )
+        if last_placeholder >= boundary:
+            if not counted_miss:
+                self._media_boundary_misses += 1
+            return None
+        return ("store", None, boundary, generation, digest)
+
+    def _media_store(
+        self,
+        request: MLLMBatchRequest,
+        cache: list[Any],
+        input_ids: Any,
+        boundary: int,
+        rope_delta: Any,
+        digest: Any = None,
+        generation: int | None = None,
+    ) -> MLLMMediaBoundaryEntry | None:
+        """Snapshot the boundary state of a live media prefill.
+
+        Called right after the ``[:boundary]`` prefix forward has been
+        evaluated on the worker stream: clones the leaves (detached,
+        capacity-bounded), records the MRoPE delta, and inserts the entry
+        under the request's identity digest. Returns None when anything is
+        uncloneable, over-budget, or the store was cleared mid-clone — the
+        caller redoes the request as one cold full forward.
+        ``generation`` is the store incarnation the PLAN captured before
+        the prefix forward ran: a ``clear_prefix_cache`` landing between
+        planning and this snapshot must republish nothing into the cleared
+        store, so publication is rejected unless the incarnation still
+        matches. Direct callers that omit it pin against the incarnation
+        read at store time (tests, and the no-plan legacy path).
+        """
+        if digest is None:
+            digest = self._media_identity_digest(request)
+        if digest is None or rope_delta is None:
+            return None
+        if generation is None:
+            # Pin the store incarnation before the (lock-free) clone: a
+            # clear that lands while cloning must not be undone by this
+            # publish.
+            with self._media_entries_guard():
+                generation = getattr(self, "_media_store_generation", 0)
+        full_ids = [int(v) for v in input_ids.reshape(-1).tolist()]
+        # Stale before allocating anything: the plan ran against a store
+        # that has since been cleared — the split bought nothing reusable.
+        if generation != getattr(self, "_media_store_generation", 0):
+            return None
+        # Pre-clone admission estimate: measure the live boundary state and
+        # scale it by the clone's capacity ratio BEFORE materializing the
+        # snapshot — an ineligible long-context request must not transiently
+        # allocate the full clone only to be rejected as over-budget and
+        # OOM the worker. The clone allocates at least
+        # ``min_capacity_tokens`` of KV per layer, so the live footprint
+        # scales by the capacity ratio; an underestimate only defers to the
+        # authoritative post-clone checks below.
+        live_bytes = _media_leaves_bytes(cache)
+        if live_bytes is None:
+            # An unmeasurable live leaf: the snapshot's footprint against
+            # the shared ceiling cannot be known, so refuse the store —
+            # the caller redoes the request as one cold full forward.
+            return None
+        budget = self._media_resolved_budget()
+        min_capacity_tokens = (
+            len(full_ids) + request.max_tokens + _MEDIA_SNAPSHOT_HEADROOM_TOKENS
+        )
+        capacity_ratio = max(1, -(-min_capacity_tokens // max(boundary, 1)))
+        if budget <= 0 or live_bytes * capacity_ratio > budget:
+            return None
+        try:
+            cloned = _media_clone_leaves(
+                cache,
+                min_capacity_tokens=len(full_ids)
+                + request.max_tokens
+                + _MEDIA_SNAPSHOT_HEADROOM_TOKENS,
+            )
+        except Exception:
+            cloned = None
+        if cloned is None:
+            return None
+        # Evaluated detached copy: the model owns the original and may keep
+        # mutating or lazily extending it; a stale delta would make the
+        # snapshot positionally invalid. Uncopyable deltas refuse the store.
+        if isinstance(rope_delta, mx.array):
+            delta: Any = mx.array(rope_delta)
+        else:
+            try:
+                delta = copy.deepcopy(rope_delta)
+            except Exception:
+                return None
+        try:
+            mx.eval(delta)
+        except Exception:
+            return None
+        leaves_bytes = _media_leaves_bytes(cloned)
+        if leaves_bytes is None:
+            # An unmeasurable leaf: the snapshot's footprint against the
+            # shared ceiling cannot be known, so refuse the store — the
+            # caller redoes the request as one cold full forward.
+            return None
+        # The leaves are not the whole snapshot: charge the stored delta
+        # array and the retained Python token list too (a conservative 8
+        # bytes per retained token id), or every entry's uncounted state
+        # erodes the advertised shared ceiling.
+        cache_bytes = (
+            leaves_bytes
+            + int(getattr(delta, "nbytes", 0) or 0)
+            + 8 * len(full_ids[:boundary])
+        )
+        entry = MLLMMediaBoundaryEntry(
+            token_ids=full_ids[:boundary],
+            leaves=cloned,
+            rope_delta=delta,
+            cache_bytes=cache_bytes,
+        )
+        # Admission gate: an unresolved (non-positive) budget means media
+        # caching is disabled, never unbounded — without a ceiling neither
+        # the entry cap nor the budget enforcement can bound the store, and
+        # a failed memory-limit discovery would let snapshots grow until
+        # OOM. Fail closed: refuse the store and the caller redoes the
+        # request as one cold full forward, like an uncloneable store. A
+        # single entry larger than the whole resolved ceiling can likewise
+        # never fit beside anything, so it is discarded too.
+        budget = self._media_resolved_budget()
+        if budget <= 0 or entry.cache_bytes > budget:
+            return None
+        # Replacing an existing entry for the same digest: drop the old
+        # bytes first so the budget sees the net footprint. The generation
+        # recheck shares the publish's critical section: a clear_prefix_cache
+        # completing during the clone wins — this snapshot is discarded and
+        # the caller rides the cold path.
+        with self._media_entries_guard():
+            if generation != getattr(self, "_media_store_generation", 0):
+                return None
+            self._media_boundary_entries.pop(digest, None)
+            self._media_boundary_entries[digest] = entry
+            self._media_boundary_stores += 1
+        self._media_enforce_budget()
+        return entry
+
+    def _media_promote_entry(self, digest: Any) -> None:
+        """LRU-promote ``digest`` after a verified resume.
+
+        The store is an ``OrderedDict`` in production; plain-dict stand-ins
+        simply skip the promotion. A concurrent ``clear_prefix_cache`` may
+        drop the key between the guarded lookup and this promotion — a bare
+        ``move_to_end`` would raise ``KeyError`` in the inference path.
+        """
+        with self._media_entries_guard():
+            entries = self._media_boundary_entries
+            move_to_end = getattr(entries, "move_to_end", None)
+            if move_to_end is not None and digest in entries:
+                move_to_end(digest)
+
+    def _media_cold_redo(
+        self, input_ids: Any, cache: list[Any], kwargs: dict[str, Any]
+    ) -> Any:
+        """One cold full forward on a rebuilt fresh cache.
+
+        The canonical fallback for any split that cannot serve the request:
+        the cache is rebuilt through the same construction
+        ``_process_prompts`` uses for a cold per-request cache — no other
+        factory exists on this lane — and the dropped-mask equivalence the
+        plan gates proved carries over to the redo.
+        """
+        from mlx_lm.models.cache import make_prompt_cache
+
+        cache[:] = make_prompt_cache(self.language_model)
+        return self.model(input_ids, cache=cache, **kwargs)
+
+    def _media_discard_boundary(
+        self, request: MLLMBatchRequest, digest: Any = None
+    ) -> None:
+        """Drop this request's boundary snapshot after a failed request.
+
+        The store publishes the boundary before the suffix forward and the
+        decode run, so a failing or cancelled request would otherwise leave
+        a reusable entry behind — the store contract says a request that
+        never completes must never leave a boundary. Best effort: an
+        unknown digest has nothing to drop. Callers that hold the plan's
+        precomputed digest pass it: re-deriving the identity re-hashes the
+        image files, and if a file changed between plan and failure the
+        recomputed digest would target a different (or no) entry — the
+        published snapshot must be dropped under the exact key it was
+        stored under.
+        """
+        if digest is None:
+            digest = self._media_identity_digest(request)
+        if digest is None:
+            return
+        with self._media_entries_guard():
+            # ``stores`` stays monotonic — it counts publishes, not live
+            # entries; the gauges report the live footprint.
+            removed = self._media_boundary_entries.pop(digest, None)
+        if removed is not None:
+            self._media_enforce_budget()
+
+    def _exact_cache_footprint_bytes(self) -> int:
+        """Current byte footprint of the text exact cache, best effort.
+
+        The media store and the text exact cache share one engine-wide
+        ceiling, so the media budget must charge for what the text cache
+        already holds. A store that cannot be walked (exception under the
+        text lock) is charged the WHOLE ceiling — fail closed, so no media
+        admission can rely on unaccounted room.
+        """
+        cache = getattr(self, "_prefix_cache", None)
+        if cache is None:
+            return 0
+        found = self._exact_entries(cache)
+        if found is not None:
+            lock, entries = found
+            try:
+                with lock:
+                    return sum(
+                        self._exact_entry_bytes(entry.prompt_cache)
+                        for entry in list(entries.values())
+                    )
+            except Exception:
+                return self._media_resolved_budget()
+        if hasattr(cache, "_exact_cache"):
+            # A present but un-introspectable store is charged the WHOLE
+            # ceiling — fail closed, no media admission on unaccounted room.
+            return self._media_resolved_budget()
+        # The manager has no exact-entry store at all: the text side holds
+        # nothing chargeable.
+        return 0
+
+    def _media_entries_guard(self) -> contextlib.AbstractContextManager:
+        """Lock guarding the media store against cross-thread mutation.
+
+        Legacy/bare generators predate the lock (``__new__``-built test
+        stand-ins); they get a no-op guard. Lock order is always
+        media → text: the media enforcement holds this guard while the
+        coordinated eviction takes the text exact-cache lock, and the text
+        budget takes the media guard only for its credit read before any
+        text lock."""
+        lock = getattr(self, "_media_boundary_lock", None)
+        guard: contextlib.AbstractContextManager = (
+            lock if lock is not None else contextlib.nullcontext()
+        )
+        return guard
+
+    def _media_resolved_budget(self) -> int:
+        """The engine-wide byte ceiling the media store shares with the text
+        exact cache, resolved from the explicit setting, the text ceiling,
+        or the memory-cache fraction (in that order)."""
+        if self._media_boundary_max_bytes <= 0:
+            self._media_boundary_max_bytes = int(
+                getattr(self, "_prefix_cache_max_bytes", 0) or 0
+            )
+        if self._media_boundary_max_bytes <= 0:
+            try:
+                from .memory_cache import MemoryCacheConfig
+
+                self._media_boundary_max_bytes = max(
+                    0, int(MemoryCacheConfig().compute_memory_limit())
+                )
+            except Exception:
+                self._media_boundary_max_bytes = 0
+        return self._media_boundary_max_bytes
+
+    def _media_enforce_budget(self) -> None:
+        """Keep the media store inside the shared engine-wide byte budget.
+
+        This is a **media-preferred** eviction order, not a global LRU
+        across the two stores: media's own entries go first (oldest-first),
+        then — only once one media entry remains — TEXT exact entries
+        oldest-first (coordinated eviction), emptying the text store if
+        needed. Media snapshots are the far larger objects (tens to
+        hundreds of MiB vs KB-scale text entries), so shedding media first
+        frees the ceiling fastest; a true global LRU would need comparable
+        recency tracking across two independent stores for no measured
+        benefit. No side admits a single entry larger than the whole
+        ceiling (admission gate in ``_media_store``), so the surviving state
+        — the media newest plus whatever text fits beside it — always fits
+        the ceiling strictly; the one exception is a text store that cannot
+        be inspected (charged the whole ceiling, impossible to evict), where
+        the media side sheds everything rather than retain an entry that
+        keeps the combined cache unverifiably over budget.
+        """
+        budget = self._media_resolved_budget()
+        if budget <= 0:
+            return
+        with self._media_entries_guard():
+            media_bytes = sum(
+                entry.cache_bytes for entry in self._media_boundary_entries.values()
+            )
+            total = self._exact_cache_footprint_bytes() + media_bytes
+            while len(self._media_boundary_entries) > 1 and total > budget:
+                oldest = next(iter(self._media_boundary_entries))
+                evicted = self._media_boundary_entries.pop(oldest)
+                media_bytes -= evicted.cache_bytes
+                total -= evicted.cache_bytes
+                self._media_boundary_budget_evictions += 1
+            if total > budget:
+                # Own entries exhausted: reclaim room from the text side,
+                # emptying it if needed — the media newest (admission-capped
+                # at the ceiling) is the entry that survives the overage, so
+                # the combined footprint fits the ceiling strictly.
+                self._evict_text_exact_to_fit(budget - media_bytes, allow_empty=True)
+                # Re-measure: an un-introspectable text store is charged the
+                # whole ceiling yet cannot be evicted, so the shared hard
+                # limit leaves the media side no verifiable room at all —
+                # shed it entirely instead of retaining an entry that keeps
+                # the combined cache unverifiably over budget.
+                total = self._exact_cache_footprint_bytes() + media_bytes
+                while total > budget and self._media_boundary_entries:
+                    oldest = next(iter(self._media_boundary_entries))
+                    evicted = self._media_boundary_entries.pop(oldest)
+                    media_bytes -= evicted.cache_bytes
+                    total -= evicted.cache_bytes
+                    self._media_boundary_budget_evictions += 1
+
+    def _media_mrope_save(self) -> None:
+        """Capture the model's current MRoPE bookkeeping (sentinel-aware)."""
+        lm = self.language_model
+        self._media_mrope_saved = (
+            hasattr(lm, "_position_ids"),
+            getattr(lm, "_position_ids", _MEDIA_ROPE_MISSING),
+            hasattr(lm, "_rope_deltas"),
+            getattr(lm, "_rope_deltas", _MEDIA_ROPE_MISSING),
+        )
+
+    def _media_mrope_install(self, rope_delta: Any) -> None:
+        """Install a boundary delta for the active request's decode."""
+        if self._media_mrope_saved is None:
+            self._media_mrope_save()
+        # mlx stubs type child modules as ``Any | dict``; the attribute
+        # writes below are the documented contract (sentinel-aware save
+        # above, restore below).
+        lm = cast("Any", self.language_model)
+        lm._position_ids = None
+        lm._rope_deltas = rope_delta
+
+    def _media_mrope_restore(self) -> None:
+        """Restore the model's prior MRoPE bookkeeping before the next prefill.
+
+        The transaction spans the whole request: decode reads the installed
+        delta from model state, so the saved values can only be restored
+        once the request is done. ``_process_prompts`` calls this before its
+        first forward, which covers success, error, and cancellation alike —
+        an aborted media request never leaves its position state behind.
+        """
+        saved = getattr(self, "_media_mrope_saved", None)
+        if saved is None:
+            return
+        self._media_mrope_saved = None
+        # Same mlx-stub union as ``_media_mrope_install``: the writes below
+        # are the restore half of the documented transaction.
+        lm = cast("Any", self.language_model)
+        _, position_ids, _, rope_deltas = saved
+        # ``delattr`` (not ``lm.__dict__.pop``): nn.Module subclasses may not
+        # keep a plain attribute in the instance ``__dict__``, but type-level
+        # ``__delattr__`` removes it wherever ``__setattr__`` stored it.
+        if position_ids is _MEDIA_ROPE_MISSING:
+            try:
+                delattr(lm, "_position_ids")
+            except AttributeError:
+                pass
+        else:
+            lm._position_ids = position_ids
+        if rope_deltas is _MEDIA_ROPE_MISSING:
+            try:
+                delattr(lm, "_rope_deltas")
+            except AttributeError:
+                pass
+        else:
+            lm._rope_deltas = rope_deltas
+
+    def get_media_prefix_stats(self) -> dict[str, Any]:
+        # Snapshot under the store lock: stats are served off the worker
+        # thread while the step executor inserts/evicts concurrently.
+        with self._media_entries_guard():
+            entries = list(self._media_boundary_entries.values())
+            entry_count = len(self._media_boundary_entries)
+        return {
+            "hits": self._media_boundary_hits,
+            "misses": self._media_boundary_misses,
+            "stores": self._media_boundary_stores,
+            "budget_evictions": self._media_boundary_budget_evictions,
+            "entries": entry_count,
+            "bytes": sum(entry.cache_bytes for entry in entries),
+            "budget_bytes": self._media_boundary_max_bytes,
+        }
+
     # -- recurrent-state checkpoints on exact snapshots -----------------------
     #
     # mlx-vlm's exact APC resumes a hybrid (GatedDeltaNet) prompt only at the
@@ -1531,24 +2753,43 @@ class MLLMBatchGenerator:
             total += int(getattr(layer, "nbytes", 0) or 0)
         return total
 
-    def _enforce_exact_cache_budget(self, cache: Any) -> None:
-        """Evict the oldest exact entries until the retained snapshots fit
-        the prefix-cache byte budget; the newest entry always survives."""
-        budget = int(getattr(self, "_prefix_cache_max_bytes", 0) or 0)
+    def _evict_text_exact_to_fit(
+        self, allowance: int, cache: Any = None, allow_empty: bool = False
+    ) -> tuple[int, int, int]:
+        """Evict oldest text exact entries until their footprint fits
+        ``allowance`` bytes. With ``allow_empty`` (the shared-ceiling
+        enforcement paths) the store may empty completely — the combined
+        text+media footprint must fit the ceiling strictly, and two
+        individually admissible newest entries can still jointly exceed it.
+        Without it the newest entry always survives. Returns
+        ``(freed_bytes, evicted_count, retained_bytes)``.
+
+        Shared eviction primitive for both stores on the one engine-wide
+        ceiling: the text budget calls it with its own allowance, and a
+        media insertion whose own entries are exhausted calls it to reclaim
+        room from the text side (coordinated eviction)."""
+        if cache is None:
+            cache = getattr(self, "_prefix_cache", None)
+        if cache is None:
+            return 0, 0, 0
         found = self._exact_entries(cache)
-        if budget <= 0 or found is None:
-            return
+        if found is None:
+            return 0, 0, 0
         lock, entries = found
+        freed = 0
         evicted = 0
+        floor = 0 if allow_empty else 1
         with lock:
             sizes = {
                 key: self._exact_entry_bytes(entry.prompt_cache)
                 for key, entry in entries.items()
             }
             total = sum(sizes.values())
-            while total > budget and len(entries) > 1:
+            while total > allowance and len(entries) > floor:
                 key, _ = entries.popitem(last=False)
-                total -= sizes.pop(key, 0)
+                size = sizes.pop(key, 0)
+                total -= size
+                freed += size
                 evicted += 1
                 stats = getattr(cache, "stats", None)
                 if stats is not None and hasattr(stats, "evictions"):
@@ -1560,8 +2801,34 @@ class MLLMBatchGenerator:
                 evicted,
                 "y" if evicted == 1 else "ies",
                 total >> 20,
-                budget >> 20,
+                allowance >> 20,
             )
+        return freed, evicted, total
+
+    def _enforce_exact_cache_budget(self, cache: Any) -> None:
+        """Evict the oldest exact entries until the retained snapshots fit
+        the prefix-cache byte budget.
+
+        The media boundary store shares this ceiling and already credits the
+        text footprint in its own enforcement, so symmetrically the text
+        eviction credits the media bytes. When media entries hold room the
+        text side may empty completely (``allow_empty``): two individually
+        admissible newest entries can jointly exceed the ceiling, and the
+        shared footprint must fit strictly — the surviving state is then the
+        media newest, which the admission cap in ``_media_store`` bounds at
+        the ceiling. With no media entries this is PR#2's text-only contract
+        unchanged: the newest text entry always survives, even one that
+        alone exceeds the budget (a lone oversize entry is preferred over
+        store/evict churn every turn)."""
+        max_bytes = int(getattr(self, "_prefix_cache_max_bytes", 0) or 0)
+        if max_bytes <= 0:
+            return
+        with self._media_entries_guard():
+            media_entries = list(getattr(self, "_media_boundary_entries", {}).values())
+        media_bytes = sum(entry.cache_bytes for entry in media_entries)
+        self._evict_text_exact_to_fit(
+            max_bytes - media_bytes, cache, allow_empty=bool(media_entries)
+        )
 
     def get_prefix_cache_stats(self) -> dict[str, Any] | None:
         """Return the common prefix-cache counter shape for APIs/metrics."""
@@ -1580,21 +2847,46 @@ class MLLMBatchGenerator:
     def clear_prefix_cache(self, *, reset_stats: bool = True) -> bool:
         """Drop reusable MLLM APC state while retaining model weights."""
         cache = getattr(self, "_prefix_cache", None)
-        if cache is None:
-            return False
-        if reset_stats:
-            self._prefix_cache_evictions_offset = 0
-        else:
-            snapshot = cache.stats_snapshot()
-            self._prefix_cache_evictions_offset = getattr(
-                self, "_prefix_cache_evictions_offset", 0
-            ) + int(snapshot.get("evictions", 0))
-        cache.clear()
+        if cache is not None:
+            if reset_stats:
+                self._prefix_cache_evictions_offset = 0
+            else:
+                snapshot = cache.stats_snapshot()
+                self._prefix_cache_evictions_offset = getattr(
+                    self, "_prefix_cache_evictions_offset", 0
+                ) + int(snapshot.get("evictions", 0))
+            cache.clear()
+        # Media boundary snapshots hold detached clones of KV state from this
+        # same model instance: once the APC state is dropped they have no
+        # reuse contract left, and pinning tens-to-hundreds of MiB against a
+        # cleared budget is pure leak. Drop the entries unconditionally;
+        # this runs even without a text-APC manager. ``getattr`` —
+        # legacy/bare generators predate the media store. Counters follow
+        # ``reset_stats`` like the text counters: zeroed on a stats reset,
+        # preserved as lifetime totals otherwise.
+        media_entries = getattr(self, "_media_boundary_entries", None)
+        # True when any reusable state was actually held — a media-only
+        # generator drops real MiB even without a text-APC manager.
+        had_media = bool(media_entries)
+        if media_entries is not None:
+            with self._media_entries_guard():
+                media_entries.clear()
+                # Invalidate resumes planned against the pre-clear store:
+                # an in-flight request re-checks this generation before it
+                # installs a snapshot's leaves.
+                self._media_store_generation = (
+                    getattr(self, "_media_store_generation", 0) + 1
+                )
+            self._media_enforce_budget()
         if reset_stats:
             self._prefix_cache_hits = 0
             self._prefix_cache_misses = 0
             self._prefix_cache_tokens_saved = 0
-        return True
+            self._media_boundary_hits = 0
+            self._media_boundary_misses = 0
+            self._media_boundary_stores = 0
+            self._media_boundary_budget_evictions = 0
+        return cache is not None or had_media
 
     def close(self) -> None:
         """Release resources and reset wired limit."""
@@ -1784,7 +3076,19 @@ class MLLMBatchGenerator:
         # Consumed in ``_run_vision_encoding`` to let the model reuse projected
         # image features on a repeat (#1854). Content order is preserved, so
         # ``[a, b]`` and ``[b, a]`` get distinct keys.
-        if self._supports_vision_feature_cache and all_images:
+        #
+        # Digest/decode single-source invariant: every ``all_images`` entry
+        # is a per-request temp file written exactly once by
+        # ``process_image_input``/``process_video_input`` — a URL is
+        # downloaded to a temp file, a base64 payload is saved to a temp
+        # file, and an as-supplied local path is copied to a temp file
+        # through an O_NOFOLLOW fd (``_resolve_local_media``). The original
+        # artifact is never re-read afterwards: this hash and the
+        # processor's decode (``prepare_inputs``) both open the same
+        # immutable snapshot, so a mutable file/URL changing on disk
+        # between hashing and decoding cannot key pixels of content B
+        # under the digest of content A.
+        if all_images and self._should_stamp_media_content_key():
             request.vision_feature_key = compute_images_hash(all_images)
 
         # Check pixel cache first
@@ -1960,6 +3264,11 @@ class MLLMBatchGenerator:
         request.input_ids = inputs.get("input_ids")
         request.pixel_values = inputs.get("pixel_values")
         request.attention_mask = inputs.get("attention_mask")
+        # Identity-relevant geometry: the media digest keys on the cap this
+        # request's pixels were actually produced under, not just the
+        # configured bounds (which fold a per-request auto ceiling and the
+        # budget-driven reductions above).
+        request.media_pixel_cap = int(pixel_cap or 0)
 
         # Extract extra kwargs
         request.extra_kwargs = {
@@ -1992,6 +3301,142 @@ class MLLMBatchGenerator:
             f"{len(all_images)} images, {request.input_ids.size if request.input_ids is not None else 0} tokens "
             f"({processing_time:.2f}s)"
         )
+
+    def _media_forward(
+        self,
+        request: MLLMBatchRequest,
+        input_ids: Any,
+        cache: list[Any],
+        kwargs: dict[str, Any],
+    ) -> Any:
+        """The media single forward, with boundary store/resume when eligible.
+
+        Cold path (plan None): exactly the historical single forward. Store
+        path: run the prefix ``[:boundary]`` forward with full vision inputs,
+        snapshot the boundary (clone + delta), then run the suffix with
+        ``pixel_values=None`` and the recorded delta — the spike-proven
+        partition. Resume path: replace the fresh cache with a detached
+        re-clone of the stored boundary, install its delta, and forward only
+        the strict suffix. Any failure above the plan gates falls back to the
+        cold forward.
+        """
+        plan = self._media_boundary_plan(request, input_ids, cache)
+        if plan is None:
+            return self.model(input_ids, cache=cache, **kwargs)
+        action, entry, boundary, generation, digest = plan
+        full_ids = [int(v) for v in input_ids.reshape(-1).tolist()]
+        if action == "resume":
+            try:
+                # Re-clone the STORED boundary leaves — the live cache is a
+                # fresh empty one; cloning it would install empty state.
+                cloned = _media_clone_leaves(
+                    entry.leaves,
+                    min_capacity_tokens=len(full_ids)
+                    + request.max_tokens
+                    + _MEDIA_SNAPSHOT_HEADROOM_TOKENS,
+                )
+            except Exception:
+                cloned = None
+            if cloned is None or entry.rope_delta is None:
+                # The plan verified the prefix, but the detached re-clone
+                # failed — degrade to a counted cold miss instead of an
+                # impossible resume.
+                self._media_boundary_misses += 1
+                return self.model(input_ids, cache=cache, **kwargs)
+            # Validate the generation and install the snapshot in one
+            # critical section: a clear_prefix_cache landing between the
+            # plan and here must not have its emptied store revived by a
+            # half-finished resume.
+            with self._media_entries_guard():
+                stale = generation != getattr(self, "_media_store_generation", 0)
+                if not stale:
+                    cache[:] = cloned
+            if stale:
+                self._media_boundary_misses += 1
+                return self.model(input_ids, cache=cache, **kwargs)
+            try:
+                self._media_mrope_install(entry.rope_delta)
+                output = self._media_suffix_forward(
+                    input_ids[:, boundary:], cache, entry.rope_delta
+                )
+            except _MediaSplitUnsupportedError:
+                # The installed snapshot is fine but the suffix path is not
+                # usable: restore, count the miss, and redo the request as
+                # one cold full forward on a rebuilt fresh cache.
+                self._media_mrope_restore()
+                self._media_boundary_misses += 1
+                return self._media_cold_redo(input_ids, cache, kwargs)
+            except BaseException:
+                # The installed delta is model-global state: a failing
+                # or cancelled suffix forward must not leave it behind for
+                # the next request's prefill.
+                self._media_mrope_restore()
+                raise
+            # The resume served the request: only now is this a counted,
+            # promoted hit — frequently resumed media must not be evicted
+            # ahead of colder entries (LRU, not FIFO).
+            self._media_boundary_hits += 1
+            self._media_promote_entry(digest)
+            request.cached_tokens = boundary
+            return output
+        # Store path: prefix forward with the full vision kwargs (the plan
+        # gate proved every placeholder lies inside the prefix and the
+        # mask is droppable), then the suffix cold. The mask is dropped,
+        # not re-sliced: a full-length mask beside boundary-length ids
+        # would be misaligned (models slice the LAST n tokens), and the
+        # droppable contract proves dropping equals the single forward.
+        prefix_kwargs = {k: v for k, v in kwargs.items() if k != "attention_mask"}
+        published = False
+        self._media_mrope_save()
+        try:
+            self.model(input_ids[:, :boundary], cache=cache, **prefix_kwargs)
+            rope_delta = getattr(self.language_model, "_rope_deltas", None)
+            mx.eval([c.state for c in cache])
+            stored = self._media_store(
+                request,
+                cache,
+                input_ids,
+                boundary,
+                rope_delta,
+                digest=digest,
+                generation=generation,
+            )
+            if stored is None:
+                # The snapshot was refused (no delta, uncloneable leaves,
+                # over budget): the split bought nothing reusable, so the
+                # request rides the canonical cold path. Restore the
+                # model-global state the prefix forward mutated, then redo
+                # the unsplit forward — exactly the cold path a failed
+                # plan gate takes.
+                self._media_boundary_misses += 1
+                self._media_mrope_restore()
+                return self._media_cold_redo(input_ids, cache, prefix_kwargs)
+            published = True
+            # Snapshot published: continue the suffix on the same live cache
+            # with the delta this forward already installed on the model.
+            return self._media_suffix_forward(
+                input_ids[:, boundary:], cache, rope_delta
+            )
+        except _MediaSplitUnsupportedError:
+            # The suffix path the probes picked cannot serve this request.
+            # Restore, discard the published boundary, and redo cold — the
+            # published snapshot is worthless without a usable suffix.
+            self._media_mrope_restore()
+            if published:
+                self._media_discard_boundary(request, digest=digest)
+            self._media_boundary_misses += 1
+            return self._media_cold_redo(input_ids, cache, prefix_kwargs)
+        except BaseException:
+            # Same model-global-state contract: the save transaction spans
+            # the whole request, so a failing or cancelled store/suffix forward
+            # restores the prior state before the exception propagates.
+            self._media_mrope_restore()
+            # A boundary published by this invocation must not survive a
+            # failed request.  If the prefix failed before publication, keep
+            # any older valid entry for the same media identity intact.
+            if published:
+                self._media_discard_boundary(request, digest=digest)
+            raise
 
     def _run_vision_encoding(
         self, request: MLLMBatchRequest, cache: list[Any] | None = None
@@ -2202,7 +3647,14 @@ class MLLMBatchGenerator:
                 cache=cache,
             )
         else:
-            output = self.model(input_ids, cache=cache, **kwargs)
+            # The media plan gates on live cache leaves; a None cache (the
+            # unit-test call sites) keeps the exact historical single
+            # forward, which is the media cold path with no snapshot.
+            output = (
+                self._media_forward(request, input_ids, cache, kwargs)
+                if cache is not None
+                else self.model(input_ids, cache=cache, **kwargs)
+            )
         request.vision_encoded = True
 
         # Release preprocessed vision inputs now that they have been encoded
@@ -2237,6 +3689,25 @@ class MLLMBatchGenerator:
         from mlx_lm.models.cache import make_prompt_cache
 
         tic = time.perf_counter()
+
+        # Close the previous media request's MRoPE transaction before this
+        # prefill computes its own position state: a stale installed delta
+        # would suppress the fresh computation and corrupt this request.
+        # Covers success, error, and cancellation exits alike (see
+        # ``_media_mrope_restore``).
+        self._media_mrope_restore()
+        # The media boundary plan must only fire on a genuine B=1 turn: the
+        # plan is checked per request, but the cache list is shared across
+        # the batch, so a store/resume inside a wider batch would corrupt
+        # the neighbours. (The serialized lane is structurally B=1; this
+        # keeps the gate honest if that ever changes.)
+        active_batch = getattr(self, "active_batch", None)
+        no_active_batch = active_batch is None or len(active_batch) == 0
+        self._media_singleton_turn = (
+            getattr(self, "_media_structural_singleton", False)
+            and no_active_batch
+            and len(requests) == 1
+        )
 
         # Preprocess all requests
         for req in requests:

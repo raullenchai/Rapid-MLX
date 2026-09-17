@@ -1,0 +1,2157 @@
+{
+  "schema_version": 1,
+  "description": "Serialized-MLLM-lane multi-turn media corpus for the media prefix cache qualification. 20 conversations (one per tracked Desktop snapshot image, mirroring the qwen36_mllm_runtime media cases), 3 user turns each, same image across all turns of a conversation. The gated determinism contract is within-phase per-turn SHA-256 equality (every pass inside a phase) plus the machine-readable per-turn checkers in both phases; cross-phase per-turn token equality is reported, not gated — the warm suffix's GEMM tiling regime makes one-ULP drift inherent to splitting a prefill. No natural-language golden responses are committed.",
+  "images_root": "../..",
+  "sampled_ab_conversation_ids": [
+    "conv-01",
+    "conv-03",
+    "conv-05",
+    "conv-07",
+    "conv-09",
+    "conv-11",
+    "conv-13",
+    "conv-15",
+    "conv-17",
+    "conv-19"
+  ],
+  "conversations": [
+    {
+      "id": "conv-01",
+      "category": "ocr_extraction",
+      "source_case": "ocr-01",
+      "images": [
+        "apps/rapid-mac/Tests/RapidTests/__Snapshots__/model-picker-bar-ready.png"
+      ],
+      "turns": [
+        {
+          "prompt": "Report the exact model name and the status chip text visible in this toolbar. Two short lines, nothing else.",
+          "max_tokens": 48,
+          "sampling": {
+            "temperature": 0.0,
+            "top_p": 1.0
+          },
+          "checker": {
+            "type": "terms",
+            "required": [
+              "qwen3.6-27b",
+              "ready"
+            ],
+            "max_lines": 2,
+            "max_words": 8,
+            "min_lines": 2
+          }
+        },
+        {
+          "prompt": "Name one additional visible detail you have not mentioned yet. One short line.",
+          "max_tokens": 32,
+          "sampling": {
+            "temperature": 0.0,
+            "top_p": 1.0
+          },
+          "checker": {
+            "type": "any",
+            "min_words": 3,
+            "required_any": [
+              [
+                "circular"
+              ],
+              [
+                "information"
+              ]
+            ],
+            "max_lines": 1,
+            "max_words": 25,
+            "novel": true
+          }
+        },
+        {
+          "prompt": "Summarize your previous two answers in one short sentence.",
+          "max_tokens": 64,
+          "sampling": {
+            "temperature": 0.0,
+            "top_p": 1.0
+          },
+          "checker": {
+            "type": "any",
+            "min_words": 5,
+            "max_lines": 1,
+            "required_any_groups": [
+              [
+                [
+                  "qwen3.6-27b",
+                  "ready"
+                ]
+              ],
+              [
+                [
+                  "circular"
+                ],
+                [
+                  "info"
+                ]
+              ]
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "id": "conv-02",
+      "category": "ocr_extraction",
+      "source_case": "ocr-02",
+      "images": [
+        "apps/rapid-mac/Tests/RapidTests/__Snapshots__/model-picker-bar-missing.png"
+      ],
+      "turns": [
+        {
+          "prompt": "Report the exact title text and the grey chip text visible in this toolbar. Two short lines, nothing else.",
+          "max_tokens": 48,
+          "sampling": {
+            "temperature": 0.0,
+            "top_p": 1.0
+          },
+          "checker": {
+            "type": "terms",
+            "required": [
+              "pick a model",
+              "not installed"
+            ],
+            "forbidden": [
+              "ready"
+            ],
+            "max_lines": 2,
+            "max_words": 8,
+            "min_lines": 2
+          }
+        },
+        {
+          "prompt": "Name one additional visible detail you have not mentioned yet. One short line.",
+          "max_tokens": 32,
+          "sampling": {
+            "temperature": 0.0,
+            "top_p": 1.0
+          },
+          "checker": {
+            "type": "any",
+            "min_words": 3,
+            "required_any": [
+              [
+                "cloud"
+              ],
+              [
+                "download",
+                "start"
+              ]
+            ],
+            "max_lines": 1,
+            "max_words": 25,
+            "novel": true
+          }
+        },
+        {
+          "prompt": "Summarize your previous two answers in one short sentence.",
+          "max_tokens": 64,
+          "sampling": {
+            "temperature": 0.0,
+            "top_p": 1.0
+          },
+          "checker": {
+            "type": "any",
+            "min_words": 5,
+            "max_lines": 1,
+            "required_any_groups": [
+              [
+                [
+                  "pick a model",
+                  "not installed"
+                ]
+              ],
+              [
+                [
+                  "cloud"
+                ],
+                [
+                  "download"
+                ],
+                [
+                  "start"
+                ]
+              ]
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "id": "conv-03",
+      "category": "ocr_extraction",
+      "source_case": "ocr-03",
+      "images": [
+        "apps/rapid-mac/Tests/RapidTests/__Snapshots__/model-picker-bar-starting.png"
+      ],
+      "turns": [
+        {
+          "prompt": "Report the alias name, the status chip text, and the smaller status subtitle visible in this toolbar. Three short lines, nothing else.",
+          "max_tokens": 48,
+          "sampling": {
+            "temperature": 0.0,
+            "top_p": 1.0
+          },
+          "checker": {
+            "type": "terms",
+            "required": [
+              "fake-alias",
+              "starting",
+              "spinning up rapid-mlx"
+            ],
+            "min_lines": 3,
+            "max_lines": 3,
+            "max_words": 12
+          }
+        },
+        {
+          "prompt": "Name one additional visible detail you have not mentioned yet. One short line.",
+          "max_tokens": 32,
+          "sampling": {
+            "temperature": 0.0,
+            "top_p": 1.0
+          },
+          "checker": {
+            "type": "any",
+            "min_words": 3,
+            "required_any": [
+              [
+                "orange"
+              ],
+              [
+                "dot"
+              ],
+              [
+                "subtitle"
+              ]
+            ],
+            "max_lines": 1,
+            "max_words": 25,
+            "novel": true
+          }
+        },
+        {
+          "prompt": "Summarize your previous two answers in one short sentence.",
+          "max_tokens": 64,
+          "sampling": {
+            "temperature": 0.0,
+            "top_p": 1.0
+          },
+          "checker": {
+            "type": "any",
+            "min_words": 5,
+            "max_lines": 1,
+            "required_any_groups": [
+              [
+                [
+                  "fake-alias",
+                  "starting",
+                  "spinning up rapid-mlx"
+                ]
+              ],
+              [
+                [
+                  "orange"
+                ],
+                [
+                  "dot"
+                ],
+                [
+                  "subtitle"
+                ]
+              ]
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "id": "conv-04",
+      "category": "ocr_extraction",
+      "source_case": "ocr-04",
+      "images": [
+        "apps/rapid-mac/Tests/RapidTests/__Snapshots__/sessions-sidebar-empty.png"
+      ],
+      "turns": [
+        {
+          "prompt": "List the three labelled controls in this sidebar, one per line, using their exact visible labels.",
+          "max_tokens": 64,
+          "sampling": {
+            "temperature": 0.0,
+            "top_p": 1.0
+          },
+          "checker": {
+            "type": "terms",
+            "required": [
+              "new chat",
+              "search chats",
+              "start chatting"
+            ],
+            "min_lines": 3,
+            "max_lines": 3
+          }
+        },
+        {
+          "prompt": "Name one additional visible detail you have not mentioned yet anywhere in your earlier answers, and describe it precisely in your own words without naming any control you already listed. Answer with exactly one short line.",
+          "max_tokens": 32,
+          "sampling": {
+            "temperature": 0.0,
+            "top_p": 1.0
+          },
+          "checker": {
+            "type": "any",
+            "min_words": 3,
+            "required_any": [
+              [
+                "tiger"
+              ],
+              [
+                "mascot"
+              ],
+              [
+                "rapid-mlx"
+              ]
+            ],
+            "max_lines": 1,
+            "max_words": 25,
+            "novel": true
+          }
+        },
+        {
+          "prompt": "Summarize your previous two answers in one short sentence.",
+          "max_tokens": 64,
+          "sampling": {
+            "temperature": 0.0,
+            "top_p": 1.0
+          },
+          "checker": {
+            "type": "any",
+            "min_words": 5,
+            "max_lines": 1,
+            "required_any_groups": [
+              [
+                [
+                  "new chat",
+                  "search chats",
+                  "start chatting"
+                ]
+              ],
+              [
+                [
+                  "mascot"
+                ],
+                [
+                  "tiger"
+                ],
+                [
+                  "cartoon"
+                ],
+                [
+                  "rapid-mlx"
+                ]
+              ]
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "id": "conv-05",
+      "category": "grounded_control",
+      "source_case": "control-01",
+      "images": [
+        "apps/rapid-mac/Tests/RapidTests/__Snapshots__/onboarding-tour-light.png"
+      ],
+      "turns": [
+        {
+          "prompt": "Which control exits the tour without advancing? Reply with only its exact label.",
+          "max_tokens": 24,
+          "sampling": {
+            "temperature": 0.0,
+            "top_p": 1.0
+          },
+          "checker": {
+            "type": "terms",
+            "required": [
+              "skip"
+            ],
+            "max_words": 1
+          }
+        },
+        {
+          "prompt": "Name one additional visible detail you have not mentioned yet. One short line.",
+          "max_tokens": 32,
+          "sampling": {
+            "temperature": 0.0,
+            "top_p": 1.0
+          },
+          "checker": {
+            "type": "any",
+            "min_words": 3,
+            "required_any": [
+              [
+                "checkmark"
+              ],
+              [
+                "blue",
+                "icon"
+              ]
+            ],
+            "max_lines": 1,
+            "max_words": 25,
+            "novel": true
+          }
+        },
+        {
+          "prompt": "Summarize your previous two answers in one short sentence.",
+          "max_tokens": 64,
+          "sampling": {
+            "temperature": 0.0,
+            "top_p": 1.0
+          },
+          "checker": {
+            "type": "any",
+            "min_words": 5,
+            "max_lines": 1,
+            "required_any_groups": [
+              [
+                [
+                  "skip"
+                ]
+              ],
+              [
+                [
+                  "checkmark"
+                ],
+                [
+                  "blue",
+                  "icon"
+                ],
+                [
+                  "blue",
+                  "circular"
+                ]
+              ]
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "id": "conv-06",
+      "category": "grounded_control",
+      "source_case": "control-02",
+      "images": [
+        "apps/rapid-mac/Tests/RapidTests/__Snapshots__/onboarding-tour-light.png"
+      ],
+      "turns": [
+        {
+          "prompt": "Which button advances to the next tour page? Reply with only its exact label and the screen corner it sits in.",
+          "max_tokens": 24,
+          "sampling": {
+            "temperature": 0.0,
+            "top_p": 1.0
+          },
+          "checker": {
+            "type": "terms",
+            "required": [
+              "next",
+              "bottom right"
+            ],
+            "max_words": 6
+          }
+        },
+        {
+          "prompt": "Name one additional visible detail you have not mentioned yet. One short line.",
+          "max_tokens": 32,
+          "sampling": {
+            "temperature": 0.0,
+            "top_p": 1.0
+          },
+          "checker": {
+            "type": "any",
+            "min_words": 3,
+            "required_any": [
+              [
+                "checkmark"
+              ],
+              [
+                "blue",
+                "circular"
+              ],
+              [
+                "white",
+                "checkmark"
+              ]
+            ],
+            "max_lines": 1,
+            "max_words": 25,
+            "novel": true
+          }
+        },
+        {
+          "prompt": "Summarize your previous two answers in one short sentence.",
+          "max_tokens": 64,
+          "sampling": {
+            "temperature": 0.0,
+            "top_p": 1.0
+          },
+          "checker": {
+            "type": "any",
+            "min_words": 5,
+            "max_lines": 1,
+            "required_any_groups": [
+              [
+                [
+                  "next",
+                  "bottom right"
+                ]
+              ],
+              [
+                [
+                  "checkmark"
+                ],
+                [
+                  "blue",
+                  "circular"
+                ],
+                [
+                  "white",
+                  "checkmark"
+                ]
+              ]
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "id": "conv-07",
+      "category": "grounded_control",
+      "source_case": "control-03",
+      "images": [
+        "apps/rapid-mac/Tests/RapidTests/__Snapshots__/sessions-sidebar-empty.png"
+      ],
+      "turns": [
+        {
+          "prompt": "What keyboard shortcut does the sidebar hint at for starting a chat? Reply with only the shortcut.",
+          "max_tokens": 24,
+          "sampling": {
+            "temperature": 0.0,
+            "top_p": 1.0
+          },
+          "checker": {
+            "type": "terms",
+            "required_any": [
+              [
+                "⌘n"
+              ],
+              [
+                "cmd+n"
+              ],
+              [
+                "command+n"
+              ]
+            ],
+            "max_words": 3
+          }
+        },
+        {
+          "prompt": "Name one additional visible detail you have not mentioned yet anywhere in your earlier answers, and describe it precisely in your own words without naming any control you already listed. Answer with exactly one short line. Do not add any introduction, explanation, or extra formatting.",
+          "max_tokens": 32,
+          "sampling": {
+            "temperature": 0.0,
+            "top_p": 1.0
+          },
+          "checker": {
+            "type": "any",
+            "min_words": 3,
+            "required_any": [
+              [
+                "tiger"
+              ],
+              [
+                "mascot"
+              ]
+            ],
+            "max_lines": 1,
+            "max_words": 25,
+            "novel": true
+          }
+        },
+        {
+          "prompt": "Summarize your previous two answers in one short sentence.",
+          "max_tokens": 64,
+          "sampling": {
+            "temperature": 0.0,
+            "top_p": 1.0
+          },
+          "checker": {
+            "type": "any",
+            "min_words": 5,
+            "max_lines": 1,
+            "required_any_groups": [
+              [
+                [
+                  "⌘n"
+                ],
+                [
+                  "cmd+n"
+                ],
+                [
+                  "command+n"
+                ]
+              ],
+              [
+                [
+                  "mascot"
+                ],
+                [
+                  "tiger"
+                ]
+              ]
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "id": "conv-08",
+      "category": "grounded_control",
+      "source_case": "control-04",
+      "images": [
+        "apps/rapid-mac/Tests/RapidTests/__Snapshots__/model-picker-bar-starting.png"
+      ],
+      "turns": [
+        {
+          "prompt": "Is the Stop button on the left or the right side of this toolbar? One short line.",
+          "max_tokens": 24,
+          "sampling": {
+            "temperature": 0.0,
+            "top_p": 1.0
+          },
+          "checker": {
+            "type": "terms",
+            "required": [
+              "right"
+            ],
+            "max_lines": 1
+          }
+        },
+        {
+          "prompt": "Name one additional visible detail you have not mentioned yet. One short line.",
+          "max_tokens": 32,
+          "sampling": {
+            "temperature": 0.0,
+            "top_p": 1.0
+          },
+          "checker": {
+            "type": "any",
+            "min_words": 3,
+            "required_any": [
+              [
+                "orange"
+              ],
+              [
+                "starting"
+              ],
+              [
+                "spinning"
+              ]
+            ],
+            "max_lines": 1,
+            "max_words": 25,
+            "novel": true
+          }
+        },
+        {
+          "prompt": "Summarize your previous two answers in one short sentence.",
+          "max_tokens": 64,
+          "sampling": {
+            "temperature": 0.0,
+            "top_p": 1.0
+          },
+          "checker": {
+            "type": "any",
+            "min_words": 5,
+            "max_lines": 1,
+            "required_any_groups": [
+              [
+                [
+                  "right"
+                ]
+              ],
+              [
+                [
+                  "spinning"
+                ],
+                [
+                  "dot"
+                ],
+                [
+                  "dots"
+                ],
+                [
+                  "orange"
+                ],
+                [
+                  "starting"
+                ],
+                [
+                  "qwen"
+                ]
+              ]
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "id": "conv-09",
+      "category": "structured_json",
+      "source_case": "json-01",
+      "images": [
+        "apps/rapid-mac/Tests/RapidTests/__Snapshots__/model-picker-bar-ready.png"
+      ],
+      "turns": [
+        {
+          "prompt": "Output JSON only, inside a single ```json fenced code block: {\"model\": <model name>, \"status\": <status chip>, \"action\": <rightmost button label>}.",
+          "max_tokens": 64,
+          "sampling": {
+            "temperature": 0.0,
+            "top_p": 1.0
+          },
+          "checker": {
+            "type": "json_shape",
+            "keys": [
+              "model",
+              "status",
+              "action"
+            ],
+            "required": [
+              "qwen3.6-27b",
+              "ready",
+              "stop"
+            ],
+            "field_terms": {
+              "model": [
+                "qwen3.6-27b"
+              ],
+              "status": [
+                "ready"
+              ],
+              "action": [
+                "stop"
+              ]
+            }
+          }
+        },
+        {
+          "prompt": "Name one additional visible detail you have not mentioned yet anywhere in your earlier answers, and describe it precisely in your own words. Answer with exactly one short line.",
+          "max_tokens": 32,
+          "sampling": {
+            "temperature": 0.0,
+            "top_p": 1.0
+          },
+          "checker": {
+            "type": "any",
+            "min_words": 3,
+            "required_any": [
+              [
+                "question"
+              ],
+              [
+                "circular"
+              ]
+            ],
+            "max_lines": 1,
+            "max_words": 25,
+            "novel": true
+          }
+        },
+        {
+          "prompt": "Summarize your previous two answers in one short sentence.",
+          "max_tokens": 64,
+          "sampling": {
+            "temperature": 0.0,
+            "top_p": 1.0
+          },
+          "checker": {
+            "type": "any",
+            "min_words": 5,
+            "max_lines": 1,
+            "required_any_groups": [
+              [
+                [
+                  "qwen3.6-27b"
+                ]
+              ],
+              [
+                [
+                  "ready"
+                ]
+              ],
+              [
+                [
+                  "stop"
+                ]
+              ],
+              [
+                [
+                  "question"
+                ],
+                [
+                  "circular"
+                ]
+              ]
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "id": "conv-10",
+      "category": "structured_json",
+      "source_case": "json-02",
+      "images": [
+        "apps/rapid-mac/Tests/RapidTests/__Snapshots__/sessions-sidebar-empty.png"
+      ],
+      "turns": [
+        {
+          "prompt": "Output JSON only, inside a single ```json fenced code block: {\"title\": <sidebar title>, \"buttons\": [<all visible button labels>], \"shortcut\": <the exact wording of the keyboard shortcut hint, or null if none>}.",
+          "max_tokens": 96,
+          "sampling": {
+            "temperature": 0.0,
+            "top_p": 1.0
+          },
+          "checker": {
+            "type": "json_shape",
+            "keys": [
+              "title",
+              "buttons",
+              "shortcut"
+            ],
+            "list_keys": [
+              "buttons"
+            ],
+            "required": [
+              "rapid-mlx desktop"
+            ],
+            "field_terms": {
+              "title": [
+                "rapid-mlx desktop"
+              ],
+              "shortcut": [
+                "⌘n"
+              ]
+            },
+            "list_expect": {
+              "buttons": [
+                [
+                  "new chat"
+                ],
+                [
+                  "search chats"
+                ],
+                [
+                  "start chatting"
+                ]
+              ]
+            }
+          }
+        },
+        {
+          "prompt": "Name one additional visible detail you have not mentioned yet. One short line.",
+          "max_tokens": 32,
+          "sampling": {
+            "temperature": 0.0,
+            "top_p": 1.0
+          },
+          "checker": {
+            "type": "any",
+            "min_words": 3,
+            "required_any": [
+              [
+                "cartoon"
+              ],
+              [
+                "cat"
+              ],
+              [
+                "character"
+              ]
+            ],
+            "max_lines": 1,
+            "max_words": 25,
+            "novel": true
+          }
+        },
+        {
+          "prompt": "Summarize your previous two answers in one short sentence, naming the specific button labels and the shortcut wording.",
+          "max_tokens": 64,
+          "sampling": {
+            "temperature": 0.0,
+            "top_p": 1.0
+          },
+          "checker": {
+            "type": "any",
+            "min_words": 5,
+            "max_lines": 1,
+            "required_any_groups": [
+              [
+                [
+                  "new",
+                  "chat",
+                  "search",
+                  "chats",
+                  "start",
+                  "chatting"
+                ]
+              ],
+              [
+                [
+                  "⌘n"
+                ],
+                [
+                  "cmd+n"
+                ],
+                [
+                  "command+n"
+                ]
+              ],
+              [
+                [
+                  "cartoon"
+                ],
+                [
+                  "cat"
+                ],
+                [
+                  "character"
+                ]
+              ]
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "id": "conv-11",
+      "category": "structured_json",
+      "source_case": "json-03",
+      "images": [
+        "apps/rapid-mac/Tests/RapidTests/__Snapshots__/onboarding-tour-dark.png"
+      ],
+      "turns": [
+        {
+          "prompt": "Output JSON only: {\"heading\": <page heading>, \"primary_action\": <bottom-right button label>}.",
+          "max_tokens": 64,
+          "sampling": {
+            "temperature": 0.0,
+            "top_p": 1.0
+          },
+          "checker": {
+            "type": "json_shape",
+            "keys": [
+              "heading",
+              "primary_action"
+            ],
+            "required": [
+              "pick a model",
+              "next"
+            ],
+            "field_terms": {
+              "heading": [
+                "pick a model"
+              ],
+              "primary_action": [
+                "next"
+              ]
+            }
+          }
+        },
+        {
+          "prompt": "Name one additional visible detail you have not mentioned yet. One short line.",
+          "max_tokens": 32,
+          "sampling": {
+            "temperature": 0.0,
+            "top_p": 1.0
+          },
+          "checker": {
+            "type": "any",
+            "min_words": 3,
+            "required_any": [
+              [
+                "checkmark"
+              ],
+              [
+                "blue",
+                "circle"
+              ],
+              [
+                "blue",
+                "circular"
+              ]
+            ],
+            "max_lines": 1,
+            "max_words": 25,
+            "novel": true
+          }
+        },
+        {
+          "prompt": "Summarize your previous two answers in one short sentence.",
+          "max_tokens": 64,
+          "sampling": {
+            "temperature": 0.0,
+            "top_p": 1.0
+          },
+          "checker": {
+            "type": "any",
+            "min_words": 5,
+            "max_lines": 1,
+            "required_any_groups": [
+              [
+                [
+                  "pick a model",
+                  "next"
+                ]
+              ],
+              [
+                [
+                  "checkmark"
+                ],
+                [
+                  "blue",
+                  "circle"
+                ],
+                [
+                  "blue",
+                  "circular"
+                ]
+              ]
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "id": "conv-12",
+      "category": "structured_json",
+      "source_case": "json-04",
+      "images": [
+        "apps/rapid-mac/Tests/RapidTests/__Snapshots__/model-picker-bar-ready.png",
+        "apps/rapid-mac/Tests/RapidTests/__Snapshots__/model-picker-bar-idle.png"
+      ],
+      "turns": [
+        {
+          "prompt": "Output JSON only, inside a single ```json fenced code block: {\"bars\": [{\"model\": <first bar model>, \"status\": <first bar status>}, {\"model\": <second bar model>, \"status\": <second bar status>]}.",
+          "max_tokens": 96,
+          "sampling": {
+            "temperature": 0.0,
+            "top_p": 1.0
+          },
+          "checker": {
+            "type": "json_shape",
+            "keys": [
+              "bars"
+            ],
+            "list_keys": [
+              "bars"
+            ],
+            "item_keys": {
+              "bars": [
+                "model",
+                "status"
+              ]
+            },
+            "required": [
+              "qwen3.6-27b"
+            ],
+            "list_expect": {
+              "bars": [
+                {
+                  "model": [
+                    "qwen3.6-27b"
+                  ],
+                  "status": [
+                    "ready"
+                  ]
+                },
+                {
+                  "model": [
+                    "fake-alias"
+                  ],
+                  "status": [
+                    "idle"
+                  ]
+                }
+              ]
+            },
+            "list_len": {
+              "bars": 2
+            }
+          }
+        },
+        {
+          "prompt": "Name one additional visible detail you have not mentioned yet. One short line.",
+          "max_tokens": 32,
+          "sampling": {
+            "temperature": 0.0,
+            "top_p": 1.0
+          },
+          "checker": {
+            "type": "any",
+            "min_words": 3,
+            "required_any": [
+              [
+                "cloud"
+              ],
+              [
+                "arrow"
+              ],
+              [
+                "dark",
+                "gray"
+              ],
+              [
+                "square"
+              ],
+              [
+                "stop"
+              ]
+            ],
+            "max_lines": 1,
+            "max_words": 25,
+            "novel": true
+          }
+        },
+        {
+          "prompt": "Summarize your previous two answers in one short sentence.",
+          "max_tokens": 64,
+          "sampling": {
+            "temperature": 0.0,
+            "top_p": 1.0
+          },
+          "checker": {
+            "type": "any",
+            "min_words": 5,
+            "max_lines": 1,
+            "required_any_groups": [
+              [
+                [
+                  "qwen3.6-27b",
+                  "ready"
+                ]
+              ],
+              [
+                [
+                  "fake",
+                  "alias",
+                  "idle"
+                ]
+              ],
+              [
+                [
+                  "cloud"
+                ],
+                [
+                  "arrow"
+                ],
+                [
+                  "dark",
+                  "gray"
+                ],
+                [
+                  "square"
+                ],
+                [
+                  "stop"
+                ]
+              ]
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "id": "conv-13",
+      "category": "accessibility_description",
+      "source_case": "acc-01",
+      "images": [
+        "apps/rapid-mac/Tests/RapidTests/__Snapshots__/onboarding-tour-light.png"
+      ],
+      "turns": [
+        {
+          "prompt": "Write an accessibility description of this screen of at least 200 words: heading, body summary, and every interactive control with its position.",
+          "max_tokens": 320,
+          "sampling": {
+            "temperature": 0.0,
+            "top_p": 1.0
+          },
+          "checker": {
+            "type": "terms",
+            "required": [
+              "pick a model",
+              "next",
+              "skip"
+            ],
+            "required_any_groups": [
+              [
+                [
+                  "body"
+                ],
+                [
+                  "summary"
+                ],
+                [
+                  "explains"
+                ],
+                [
+                  "explaining"
+                ],
+                [
+                  "describes"
+                ]
+              ],
+              [
+                [
+                  "picker"
+                ],
+                [
+                  "curated"
+                ],
+                [
+                  "list of models"
+                ],
+                [
+                  "models"
+                ]
+              ],
+              [
+                [
+                  "dot"
+                ],
+                [
+                  "dots"
+                ],
+                [
+                  "indicator"
+                ],
+                [
+                  "indicators"
+                ]
+              ],
+              [
+                [
+                  "lower-left"
+                ],
+                [
+                  "lower left"
+                ],
+                [
+                  "bottom-left"
+                ],
+                [
+                  "bottom left"
+                ],
+                [
+                  "left edge"
+                ],
+                [
+                  "left-hand"
+                ]
+              ],
+              [
+                [
+                  "lower-right"
+                ],
+                [
+                  "lower right"
+                ],
+                [
+                  "bottom-right"
+                ],
+                [
+                  "bottom right"
+                ],
+                [
+                  "right edge"
+                ],
+                [
+                  "right-hand"
+                ]
+              ]
+            ],
+            "min_words": 200
+          }
+        },
+        {
+          "prompt": "Name one additional visible detail you have not mentioned yet. One short line.",
+          "max_tokens": 32,
+          "sampling": {
+            "temperature": 0.0,
+            "top_p": 1.0
+          },
+          "checker": {
+            "type": "any",
+            "min_words": 3,
+            "required_any": [
+              [
+                "background"
+              ],
+              [
+                "padding"
+              ],
+              [
+                "white"
+              ],
+              [
+                "minimalist"
+              ]
+            ],
+            "max_lines": 1,
+            "max_words": 25,
+            "novel": true
+          }
+        },
+        {
+          "prompt": "Summarize your previous two answers in one short sentence.",
+          "max_tokens": 64,
+          "sampling": {
+            "temperature": 0.0,
+            "top_p": 1.0
+          },
+          "checker": {
+            "type": "any",
+            "min_words": 5,
+            "max_lines": 1,
+            "required_any_groups": [
+              [
+                [
+                  "next",
+                  "skip"
+                ]
+              ],
+              [
+                [
+                  "dots"
+                ],
+                [
+                  "dot"
+                ],
+                [
+                  "indicator"
+                ],
+                [
+                  "filled"
+                ],
+                [
+                  "minimalist"
+                ],
+                [
+                  "background"
+                ],
+                [
+                  "padding"
+                ],
+                [
+                  "layout"
+                ],
+                [
+                  "checkmark"
+                ],
+                [
+                  "white"
+                ]
+              ]
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "id": "conv-14",
+      "category": "accessibility_description",
+      "source_case": "acc-02",
+      "images": [
+        "apps/rapid-mac/Tests/RapidTests/__Snapshots__/onboarding-tour-dark.png"
+      ],
+      "turns": [
+        {
+          "prompt": "Write an accessibility description of this screen of at least 200 words: heading, body summary, and every interactive control with its position.",
+          "max_tokens": 320,
+          "sampling": {
+            "temperature": 0.0,
+            "top_p": 1.0
+          },
+          "checker": {
+            "type": "terms",
+            "required": [
+              "pick a model",
+              "dark",
+              "skip",
+              "next",
+              "checkmark",
+              "button"
+            ],
+            "min_words": 200,
+            "required_any_groups": [
+              [
+                [
+                  "dots"
+                ],
+                [
+                  "dot"
+                ],
+                [
+                  "indicator"
+                ],
+                [
+                  "indicators"
+                ]
+              ],
+              [
+                [
+                  "picker"
+                ],
+                [
+                  "models"
+                ],
+                [
+                  "model list"
+                ]
+              ],
+              [
+                [
+                  "lower-left"
+                ],
+                [
+                  "lower left"
+                ],
+                [
+                  "bottom-left"
+                ],
+                [
+                  "bottom left"
+                ],
+                [
+                  "left edge"
+                ]
+              ],
+              [
+                [
+                  "lower-right"
+                ],
+                [
+                  "lower right"
+                ],
+                [
+                  "bottom-right"
+                ],
+                [
+                  "bottom right"
+                ],
+                [
+                  "right edge"
+                ]
+              ]
+            ]
+          }
+        },
+        {
+          "prompt": "Name one additional visible detail you have not mentioned yet. One short line.",
+          "max_tokens": 32,
+          "sampling": {
+            "temperature": 0.0,
+            "top_p": 1.0
+          },
+          "checker": {
+            "type": "any",
+            "min_words": 3,
+            "required_any": [
+              [
+                "rounded"
+              ],
+              [
+                "corners"
+              ],
+              [
+                "fill"
+              ],
+              [
+                "blue"
+              ]
+            ],
+            "max_lines": 1,
+            "max_words": 25,
+            "novel": true
+          }
+        },
+        {
+          "prompt": "Summarize your previous two answers in one short sentence.",
+          "max_tokens": 64,
+          "sampling": {
+            "temperature": 0.0,
+            "top_p": 1.0
+          },
+          "checker": {
+            "type": "any",
+            "min_words": 5,
+            "max_lines": 1,
+            "required_any_groups": [
+              [
+                [
+                  "pick a model",
+                  "skip",
+                  "next"
+                ]
+              ],
+              [
+                [
+                  "dot"
+                ],
+                [
+                  "dots"
+                ],
+                [
+                  "filled"
+                ],
+                [
+                  "rounded"
+                ],
+                [
+                  "blue"
+                ],
+                [
+                  "primary"
+                ],
+                [
+                  "dark"
+                ],
+                [
+                  "contrast"
+                ]
+              ]
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "id": "conv-15",
+      "category": "accessibility_description",
+      "source_case": "acc-03",
+      "images": [
+        "apps/rapid-mac/Tests/RapidTests/__Snapshots__/sessions-sidebar-empty.png"
+      ],
+      "turns": [
+        {
+          "prompt": "Write an accessibility description of this sidebar of at least 200 words: title, every control, and the empty-state message.",
+          "max_tokens": 320,
+          "sampling": {
+            "temperature": 0.0,
+            "top_p": 1.0
+          },
+          "checker": {
+            "type": "terms",
+            "required": [
+              "new chat",
+              "start chatting",
+              "search chats",
+              "empty",
+              "rapid-mlx desktop"
+            ],
+            "min_words": 200
+          }
+        },
+        {
+          "prompt": "Name one additional visible detail you have not mentioned yet. One short line.",
+          "max_tokens": 32,
+          "sampling": {
+            "temperature": 0.0,
+            "top_p": 1.0
+          },
+          "checker": {
+            "type": "any",
+            "min_words": 3,
+            "required_any": [
+              [
+                "mascot"
+              ],
+              [
+                "tiger"
+              ]
+            ],
+            "max_lines": 1,
+            "max_words": 25,
+            "novel": true
+          }
+        },
+        {
+          "prompt": "Summarize your previous two answers in one short sentence.",
+          "max_tokens": 64,
+          "sampling": {
+            "temperature": 0.0,
+            "top_p": 1.0
+          },
+          "checker": {
+            "type": "any",
+            "min_words": 5,
+            "max_lines": 1,
+            "required_any_groups": [
+              [
+                [
+                  "sidebar",
+                  "creating",
+                  "searching"
+                ],
+                [
+                  "sidebar",
+                  "new",
+                  "chat",
+                  "search"
+                ]
+              ],
+              [
+                [
+                  "tiger"
+                ],
+                [
+                  "mascot"
+                ]
+              ],
+              [
+                [
+                  "empty"
+                ],
+                [
+                  "shortcut"
+                ]
+              ]
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "id": "conv-16",
+      "category": "accessibility_description",
+      "source_case": "acc-04",
+      "images": [
+        "apps/rapid-mac/Tests/RapidTests/__Snapshots__/model-picker-bar-ready.png"
+      ],
+      "turns": [
+        {
+          "prompt": "Write an accessibility description of this toolbar of at least 200 words: model name, status, and every control with its position.",
+          "max_tokens": 320,
+          "sampling": {
+            "temperature": 0.0,
+            "top_p": 1.0
+          },
+          "checker": {
+            "type": "terms",
+            "required": [
+              "ready",
+              "qwen3.6-27b",
+              "stop",
+              "question"
+            ],
+            "min_words": 200,
+            "required_any_groups": [
+              [
+                [
+                  "information"
+                ],
+                [
+                  "info"
+                ]
+              ],
+              [
+                [
+                  "left"
+                ],
+                [
+                  "left-hand"
+                ]
+              ],
+              [
+                [
+                  "center"
+                ],
+                [
+                  "centre"
+                ],
+                [
+                  "middle"
+                ]
+              ],
+              [
+                [
+                  "right"
+                ],
+                [
+                  "right-hand"
+                ]
+              ]
+            ]
+          }
+        },
+        {
+          "prompt": "Name one additional visible detail you have not mentioned yet. One short line.",
+          "max_tokens": 32,
+          "sampling": {
+            "temperature": 0.0,
+            "top_p": 1.0
+          },
+          "checker": {
+            "type": "any",
+            "min_words": 3,
+            "required_any": [
+              [
+                "border"
+              ],
+              [
+                "black"
+              ],
+              [
+                "edge"
+              ]
+            ],
+            "max_lines": 1,
+            "max_words": 25,
+            "novel": true
+          }
+        },
+        {
+          "prompt": "Summarize your previous two answers in one short sentence.",
+          "max_tokens": 64,
+          "sampling": {
+            "temperature": 0.0,
+            "top_p": 1.0
+          },
+          "checker": {
+            "type": "any",
+            "min_words": 5,
+            "max_lines": 1,
+            "required_any_groups": [
+              [
+                [
+                  "ready",
+                  "qwen3.6-27b",
+                  "stop"
+                ]
+              ],
+              [
+                [
+                  "border"
+                ],
+                [
+                  "black"
+                ],
+                [
+                  "edges"
+                ],
+                [
+                  "frame"
+                ],
+                [
+                  "gray"
+                ],
+                [
+                  "grey"
+                ],
+                [
+                  "edge"
+                ],
+                [
+                  "green"
+                ]
+              ]
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "id": "conv-17",
+      "category": "two_image_comparison",
+      "source_case": "cmp-01",
+      "images": [
+        "apps/rapid-mac/Tests/RapidTests/__Snapshots__/onboarding-tour-light.png",
+        "apps/rapid-mac/Tests/RapidTests/__Snapshots__/onboarding-tour-dark.png"
+      ],
+      "turns": [
+        {
+          "prompt": "These two screenshots show the same page. Name the visual difference between them in one short line.",
+          "max_tokens": 48,
+          "sampling": {
+            "temperature": 0.0,
+            "top_p": 1.0
+          },
+          "checker": {
+            "type": "terms",
+            "required": [
+              "dark",
+              "light"
+            ],
+            "max_lines": 1
+          }
+        },
+        {
+          "prompt": "Name one additional visible detail you have not mentioned yet anywhere in your earlier answers, and describe it precisely in your own words without naming any control you already listed. Answer with exactly one short line.",
+          "max_tokens": 32,
+          "sampling": {
+            "temperature": 0.0,
+            "top_p": 1.0
+          },
+          "checker": {
+            "type": "any",
+            "min_words": 3,
+            "required_any": [
+              [
+                "filled"
+              ],
+              [
+                "blue"
+              ],
+              [
+                "hollow"
+              ],
+              [
+                "darker"
+              ]
+            ],
+            "max_lines": 1,
+            "max_words": 25,
+            "novel": true
+          }
+        },
+        {
+          "prompt": "Summarize your previous two answers in one short sentence.",
+          "max_tokens": 64,
+          "sampling": {
+            "temperature": 0.0,
+            "top_p": 1.0
+          },
+          "checker": {
+            "type": "any",
+            "min_words": 5,
+            "max_lines": 1,
+            "required_any_groups": [
+              [
+                [
+                  "dark",
+                  "light"
+                ]
+              ],
+              [
+                [
+                  "filled"
+                ],
+                [
+                  "blue"
+                ],
+                [
+                  "hollow"
+                ],
+                [
+                  "darker"
+                ]
+              ]
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "id": "conv-18",
+      "category": "two_image_comparison",
+      "source_case": "cmp-02",
+      "images": [
+        "apps/rapid-mac/Tests/RapidTests/__Snapshots__/model-picker-bar-ready.png",
+        "apps/rapid-mac/Tests/RapidTests/__Snapshots__/model-picker-bar-idle.png"
+      ],
+      "turns": [
+        {
+          "prompt": "Two toolbar screenshots. Report the status chip text of the first bar and of the second bar, one line each.",
+          "max_tokens": 48,
+          "sampling": {
+            "temperature": 0.0,
+            "top_p": 1.0
+          },
+          "checker": {
+            "type": "terms",
+            "required": [
+              "ready",
+              "idle"
+            ],
+            "min_lines": 2,
+            "max_lines": 2,
+            "line_expect": [
+              [
+                "ready"
+              ],
+              [
+                "idle"
+              ]
+            ]
+          }
+        },
+        {
+          "prompt": "Name one additional visible detail you have not mentioned yet anywhere in your earlier answers, and describe it precisely in your own words without naming any control you already listed. Answer with exactly one short line.",
+          "max_tokens": 32,
+          "sampling": {
+            "temperature": 0.0,
+            "top_p": 1.0
+          },
+          "checker": {
+            "type": "any",
+            "min_words": 3,
+            "required_any": [
+              [
+                "orange"
+              ],
+              [
+                "cloud"
+              ],
+              [
+                "arrow"
+              ]
+            ],
+            "max_lines": 1,
+            "max_words": 25,
+            "novel": true
+          }
+        },
+        {
+          "prompt": "Summarize your previous two answers in one short sentence.",
+          "max_tokens": 64,
+          "sampling": {
+            "temperature": 0.0,
+            "top_p": 1.0
+          },
+          "checker": {
+            "type": "any",
+            "min_words": 5,
+            "max_lines": 1,
+            "required_any_groups": [
+              [
+                [
+                  "ready",
+                  "idle"
+                ]
+              ],
+              [
+                [
+                  "orange"
+                ],
+                [
+                  "cloud"
+                ],
+                [
+                  "arrow"
+                ]
+              ]
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "id": "conv-19",
+      "category": "two_image_comparison",
+      "source_case": "cmp-03",
+      "images": [
+        "apps/rapid-mac/Tests/RapidTests/__Snapshots__/model-picker-bar-starting.png",
+        "apps/rapid-mac/Tests/RapidTests/__Snapshots__/model-picker-bar-ready.png"
+      ],
+      "turns": [
+        {
+          "prompt": "Two toolbar screenshots. Report the status chip text of the first bar and of the second bar, one line each.",
+          "max_tokens": 48,
+          "sampling": {
+            "temperature": 0.0,
+            "top_p": 1.0
+          },
+          "checker": {
+            "type": "terms",
+            "required": [
+              "starting",
+              "ready"
+            ],
+            "min_lines": 2,
+            "max_lines": 2,
+            "line_expect": [
+              [
+                "starting"
+              ],
+              [
+                "ready"
+              ]
+            ]
+          }
+        },
+        {
+          "prompt": "Name one additional visible detail you have not mentioned yet anywhere in your earlier answers, and describe it precisely in your own words without naming any control you already listed. Answer with exactly one short line.",
+          "max_tokens": 32,
+          "sampling": {
+            "temperature": 0.0,
+            "top_p": 1.0
+          },
+          "checker": {
+            "type": "any",
+            "min_words": 3,
+            "required_any": [
+              [
+                "orange"
+              ],
+              [
+                "green"
+              ],
+              [
+                "spinning"
+              ],
+              [
+                "dot"
+              ]
+            ],
+            "max_lines": 1,
+            "max_words": 25,
+            "novel": true
+          }
+        },
+        {
+          "prompt": "Summarize your previous two answers in one short sentence.",
+          "max_tokens": 64,
+          "sampling": {
+            "temperature": 0.0,
+            "top_p": 1.0
+          },
+          "checker": {
+            "type": "any",
+            "min_words": 5,
+            "max_lines": 1,
+            "required_any_groups": [
+              [
+                [
+                  "starting",
+                  "ready"
+                ]
+              ],
+              [
+                [
+                  "spinning"
+                ],
+                [
+                  "dot"
+                ],
+                [
+                  "dots"
+                ],
+                [
+                  "orange"
+                ],
+                [
+                  "green"
+                ]
+              ]
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "id": "conv-20",
+      "category": "two_image_comparison",
+      "source_case": "cmp-04",
+      "images": [
+        "apps/rapid-mac/Tests/RapidTests/__Snapshots__/model-picker-bar-missing.png",
+        "apps/rapid-mac/Tests/RapidTests/__Snapshots__/model-picker-bar-idle.png"
+      ],
+      "turns": [
+        {
+          "prompt": "Two toolbar screenshots. Report the leftmost text of each bar, one line each.",
+          "max_tokens": 48,
+          "sampling": {
+            "temperature": 0.0,
+            "top_p": 1.0
+          },
+          "checker": {
+            "type": "terms",
+            "required": [
+              "pick a model",
+              "fake-alias"
+            ],
+            "min_lines": 2,
+            "max_lines": 2,
+            "line_expect": [
+              [
+                "pick a model"
+              ],
+              [
+                "fake-alias"
+              ]
+            ]
+          }
+        },
+        {
+          "prompt": "Name one additional visible detail you have not mentioned yet anywhere in your earlier answers, and describe it precisely in your own words without naming any control you already listed. Answer with exactly one short line.",
+          "max_tokens": 32,
+          "sampling": {
+            "temperature": 0.0,
+            "top_p": 1.0
+          },
+          "checker": {
+            "type": "any",
+            "min_words": 3,
+            "required_any": [
+              [
+                "question"
+              ],
+              [
+                "circular"
+              ]
+            ],
+            "max_lines": 1,
+            "max_words": 25,
+            "novel": true
+          }
+        },
+        {
+          "prompt": "Summarize your previous two answers in one short sentence.",
+          "max_tokens": 64,
+          "sampling": {
+            "temperature": 0.0,
+            "top_p": 1.0
+          },
+          "checker": {
+            "type": "any",
+            "min_words": 5,
+            "max_lines": 1,
+            "required_any_groups": [
+              [
+                [
+                  "pick a model",
+                  "fake-alias"
+                ]
+              ],
+              [
+                [
+                  "question"
+                ],
+                [
+                  "circular"
+                ]
+              ]
+            ]
+          }
+        }
+      ]
+    }
+  ]
+}

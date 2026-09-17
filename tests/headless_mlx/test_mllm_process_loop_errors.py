@@ -218,6 +218,7 @@ def test_batch_generator_prefill_enters_owned_stream(monkeypatch) -> None:
     generator._stream = owned_stream
     generator.vision_prefill_token_budget = 8192
     generator.allow_arrays_cache = False
+    generator._media_structural_singleton = False
     generator._stats = SimpleNamespace(prompt_tokens=0)
     generator._preprocess_request = lambda _request: None
     generator._run_vision_encoding = lambda *_args, **_kwargs: (_ for _ in ()).throw(
