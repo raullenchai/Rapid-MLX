@@ -741,7 +741,7 @@ class TestStorePath:
         assert gen._media_boundary_stores == 1
         assert out is not None
 
-    def test_clone_failure_stores_nothing(self, monkeypatch):
+    def test_clone_failure_redoes_a_cold_full_forward(self, monkeypatch):
         import mlx_vlm.apc_adapters as apc_adapters
 
         monkeypatch.setattr(apc_adapters, "clone_cache_entry", lambda *a, **k: None)
@@ -752,16 +752,41 @@ class TestStorePath:
             prefix_boundary=20,
             max_tokens=8,
         )
-        ids = _ids(_full_ids())
+        full_ids = _full_ids()
+        ids = _ids(full_ids)
         cache = _kv_leaves()
-        # A recorded delta keeps the split positionally valid: the request
-        # completes cold-split even though nothing was stored.
         gen.language_model._rope_deltas = mx.array([3])
+        gen.language_model.layers = []
         out = gen._media_forward(req, ids, cache, {"pixel_values": req.pixel_values})
         assert gen._media_boundary_stores == 0
         assert not gen._media_boundary_entries
+        assert gen._media_boundary_misses == 1
         assert len(gen.model.calls) == 2
+        # Second call: the cold redo over the whole sequence — never a
+        # snapshotless split suffix.
+        assert gen.model.calls[-1] == (full_ids[0], len(full_ids), True)
         assert out is not None
+
+    def test_over_budget_snapshot_redoes_a_cold_full_forward(self):
+        gen = _stub_generator()
+        gen._media_boundary_max_bytes = 1
+        full_ids = _full_ids()
+        req = _make_request(
+            prompt="a" * 24,
+            pixel_values=mx.zeros((1, 2)),
+            prefix_boundary=20,
+            max_tokens=8,
+        )
+        gen.language_model._rope_deltas = mx.array([3])
+        gen.language_model.layers = []
+        out = gen._media_forward(
+            req, _ids(full_ids), _kv_leaves(), {"pixel_values": req.pixel_values}
+        )
+        assert out is not None
+        assert not gen._media_boundary_entries
+        assert gen._media_boundary_stores == 0
+        assert gen._media_boundary_misses == 1
+        assert gen.model.calls[-1] == (full_ids[0], len(full_ids), True)
 
     def test_store_without_rope_delta_redoes_a_cold_full_forward(self):
         gen = _stub_generator()
@@ -789,6 +814,8 @@ class TestStorePath:
         # whole sequence, vision inputs included.
         assert model.calls[0][1] < len(full_ids)
         assert model.calls[-1] == (full_ids[0], len(full_ids), True)
+        # The redo restored the transaction the prefix opened.
+        assert gen._media_mrope_saved is None
 
     def test_store_suffix_failure_discards_the_published_boundary(self, monkeypatch):
         gen = _stub_generator()

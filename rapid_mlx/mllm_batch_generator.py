@@ -1789,7 +1789,6 @@ class MLLMBatchGenerator:
                 # evicted ahead of colder entries (LRU, not FIFO).
                 self._media_promote_entry(digest)
                 return ("resume", entry, boundary)
-                return ("resume", entry, boundary)
             # A stored candidate that fails the strict prefix or placeholder
             # check is a clean miss — never a trim or a partial resume. This
             # request's own boundary may still be storable below.
@@ -2953,21 +2952,23 @@ class MLLMBatchGenerator:
             self.model(input_ids[:, :boundary], cache=cache, **prefix_kwargs)
             rope_delta = getattr(self.language_model, "_rope_deltas", None)
             mx.eval([c.state for c in cache])
-            self._media_store(request, cache, input_ids, boundary, rope_delta)
-            if rope_delta is None:
-                # The prefix forward left no MRoPE delta on the model, so
-                # the suffix cannot be positioned (``_media_store`` already
-                # refused to snapshot it). Restart the request as one cold
-                # full forward on a fresh cache — the plan gates proved a
-                # dropped mask equals the single forward, so the redo is
-                # exactly the cold path this request would have taken.
+            stored = self._media_store(request, cache, input_ids, boundary, rope_delta)
+            if stored is None:
+                # The snapshot was refused (no delta, uncloneable leaves,
+                # over budget): the split bought nothing reusable, so the
+                # request rides the canonical cold path. Restore the
+                # model-global state the prefix forward mutated, rebuild a
+                # fresh cache, and rerun the unsplit forward — the plan
+                # gates proved a dropped mask equals the single forward, so
+                # the redo is exactly the cold path a failed gate takes.
+                self._media_boundary_misses += 1
+                self._media_mrope_restore()
                 from mlx_lm.models.cache import make_prompt_cache
 
-                self._media_boundary_misses += 1
                 cache[:] = make_prompt_cache(self.language_model)
                 return self.model(input_ids, cache=cache, **prefix_kwargs)
-            # No snapshot: continue the suffix on the same live cache with
-            # the delta this forward already installed on the model.
+            # Snapshot published: continue the suffix on the same live cache
+            # with the delta this forward already installed on the model.
             return self._media_suffix_forward(
                 input_ids[:, boundary:], cache, rope_delta
             )
