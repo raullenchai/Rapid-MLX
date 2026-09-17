@@ -34,6 +34,7 @@ os.environ["TOKENIZERS_PARALLELISM"] = "false"
 import argparse
 import base64
 import io
+import itertools
 import json
 import statistics
 import tempfile
@@ -742,6 +743,9 @@ def build_bench_generator(model, processor, max_tokens: int):
     )
 
 
+_native_request_seq = itertools.count()
+
+
 def _run_native_mllm_request(
     generator,
     prompt: str,
@@ -765,9 +769,13 @@ def _run_native_mllm_request(
     """
     from rapid_mlx.mllm_batch_generator import MLLMBatchRequest
 
+    # Correlate responses by the UID returned from insert() and give each
+    # request a unique id: the generator is reused across configs, and a
+    # constant id could let a stale response from an earlier request be
+    # counted toward — or terminate — this one.
     request = MLLMBatchRequest(
         uid=-1,  # Assigned by the generator on insert
-        request_id="rapid-mlx-bench",
+        request_id=f"rapid-mlx-bench-{next(_native_request_seq)}",
         prompt=prompt,
         images=images,
         videos=videos,
@@ -777,6 +785,7 @@ def _run_native_mllm_request(
         temperature=temperature,
     )
     uids = generator.insert([request])
+    uid = uids[0]
     token_ids: list[int] = []
     prompt_tokens = 0
     finished = False
@@ -794,7 +803,7 @@ def _run_native_mllm_request(
                     "truncated"
                 )
             for response in responses:
-                if response.request_id != request.request_id:
+                if response.uid != uid:
                     continue
                 if not response.token_is_stop_token:
                     token_ids.append(response.token)
@@ -1459,17 +1468,20 @@ def benchmark_video_config(
         DeprecationWarning,
         stacklevel=2,
     )
-    if not (hasattr(model, "model") and hasattr(model, "processor")):
+    from rapid_mlx.models.mllm import MLXMultimodalLM
+
+    if not isinstance(model, MLXMultimodalLM):
         # Legacy duck-typed contract: any object exposing generate(...)
-        # worked. Keep that behavior for the deprecation window — the
-        # native lane cannot drive those (the model lives inside them) —
-        # and reject objects with neither shape loudly.
+        # worked — including ones that happen to carry .model/.processor.
+        # Keep that behavior for the deprecation window — the native lane
+        # can only drive an MLXMultimodalLM — and reject objects with no
+        # supported shape loudly.
         if not hasattr(model, "generate"):
             raise TypeError(
                 "benchmark_video_config accepts an MLXMultimodalLM "
-                "(exposing .model/.processor) or a legacy duck-typed model "
-                f"exposing generate(); got {type(model).__name__} with "
-                "neither. Migrate to the native lane: build a generator via "
+                "or a legacy duck-typed model exposing generate(); got "
+                f"{type(model).__name__} with neither. Migrate to the "
+                "native lane: build a generator via "
                 "build_bench_generator(model, processor, max_tokens) and "
                 "call benchmark_video_config_native(generator, processor, "
                 "config, ...)."

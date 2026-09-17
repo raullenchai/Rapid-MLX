@@ -100,6 +100,14 @@ class _FakeLegacyModel:
         self.config = {}
 
 
+def _bench_mllm(monkeypatch):
+    """A real MLXMultimodalLM with load() stubbed for wrapper tests."""
+    monkeypatch.setattr(
+        MLXMultimodalLM, "load", lambda self: setattr(self, "_loaded", True)
+    )
+    return MLXMultimodalLM("test-model")
+
+
 class _FakeGenerator:
     """Minimal serialized-lane generator: insert() → next() batches."""
 
@@ -122,11 +130,17 @@ class _FakeGenerator:
         self.removed.extend(uids)
 
 
-def _response(token, finish_reason=None, prompt_tokens=0, token_is_stop_token=False):
+def _response(
+    token,
+    finish_reason=None,
+    prompt_tokens=0,
+    token_is_stop_token=False,
+    uid=7,
+):
     from rapid_mlx.mllm_batch_generator import MLLMBatchResponse
 
     return MLLMBatchResponse(
-        uid=7,
+        uid=uid,
         request_id="rapid-mlx-bench",
         token=token,
         logprobs=None,
@@ -201,6 +215,34 @@ def test_native_request_helper_counts_a_length_terminal_token():
     assert completion == 2
 
 
+def test_native_request_helper_ignores_foreign_uids_and_makes_unique_ids():
+    from rapid_mlx.benchmark import _run_native_mllm_request
+
+    # The generator is reused across configs: a stale response from an
+    # earlier request (different uid) must not be counted toward — or
+    # terminate — this one.
+    generator = _FakeGenerator(
+        [
+            [
+                _response(9, uid=99),
+                _response(5, prompt_tokens=1),
+            ],
+            [_response(6, finish_reason="stop", token_is_stop_token=True)],
+        ]
+    )
+    text, completion, _ = _run_native_mllm_request(generator, "p", max_tokens=4)
+    assert text == "<5>"  # the uid=99 token is ignored
+    assert completion == 1
+
+    # Each request also carries a unique id so stale responses cannot
+    # alias across reuse, even if a uid collided.
+    generator_b = _FakeGenerator(
+        [[_response(1, finish_reason="stop", token_is_stop_token=True)]]
+    )
+    _run_native_mllm_request(generator_b, "p", max_tokens=1)
+    assert generator_b.inserted.request_id != generator.inserted.request_id
+
+
 def test_legacy_signature_wrappers_warn_and_delegate(monkeypatch):
     # The pre-native-lane signatures keep working through a deprecated
     # wrapper: it builds the serialized-lane generator internally and
@@ -249,7 +291,7 @@ def test_legacy_signature_wrappers_warn_and_delegate(monkeypatch):
 
     with pytest.warns(DeprecationWarning, match="deprecated"):
         video_result = bench.benchmark_video_config(
-            _FakeLegacyModel(),
+            _bench_mllm(monkeypatch),
             "/tmp/nonexistent.mp4",
             1.0,
             4,
@@ -261,10 +303,9 @@ def test_legacy_signature_wrappers_warn_and_delegate(monkeypatch):
     assert len(built) == 2
     # The video wrapper preserves the exact legacy positional shape:
     # (model, video_path, fps, max_frames, config_name, video_info, ...).
-    legacy_model = _FakeLegacyModel()
     with pytest.warns(DeprecationWarning, match="deprecated"):
         positional = bench.benchmark_video_config(
-            legacy_model,
+            _bench_mllm(monkeypatch),
             "/tmp/v.mp4",
             2.0,
             8,
@@ -287,19 +328,14 @@ def test_video_wrapper_lazily_loads_an_unloaded_model(monkeypatch):
         prompt_utils, "apply_chat_template", lambda *args, **kwargs: "formatted"
     )
 
-    class _UnloadedModel:
-        def __init__(self):
-            self._loaded = False
-            self.load_calls = 0
-            self.model = object()
-            self.processor = _FakeProcessor()
-            self.config = {}
+    load_calls = []
 
-        def load(self):
-            self.load_calls += 1
-            self._loaded = True
+    def _fake_load(self):
+        self._loaded = True
+        load_calls.append(1)
 
-    model = _UnloadedModel()
+    monkeypatch.setattr(MLXMultimodalLM, "load", _fake_load)
+    model = MLXMultimodalLM("test-model")
     monkeypatch.setattr(
         bench,
         "build_bench_generator",
@@ -316,16 +352,14 @@ def test_video_wrapper_lazily_loads_an_unloaded_model(monkeypatch):
         bench.benchmark_video_config(
             model, "/tmp/v.mp4", 1.0, 4, "cfg", {"duration": 1.0, "total_frames": 4}
         )
-    assert model.load_calls == 1
+    assert len(load_calls) == 1
 
     # An already-loaded wrapper is not loaded twice.
-    model.load_calls = 0
-    model._loaded = True
     with pytest.warns(DeprecationWarning, match="deprecated"):
         bench.benchmark_video_config(
             model, "/tmp/v.mp4", 1.0, 4, "cfg", {"duration": 1.0, "total_frames": 4}
         )
-    assert model.load_calls == 0
+    assert len(load_calls) == 1
 
 
 def test_video_wrapper_routes_duck_typed_models_through_generate():
@@ -367,6 +401,38 @@ def test_video_wrapper_routes_duck_typed_models_through_generate():
     assert result.response_preview == "a preview"
     # min(duration * fps, max_frames, total_frames) = min(4, 8, 16)
     assert result.frames_extracted == 4
+
+
+def test_video_wrapper_prefers_generate_for_foreign_models_with_attributes():
+    # A foreign object that happens to carry .model/.processor but is not
+    # an MLXMultimodalLM keeps its legacy generate() path — attribute
+    # sniffing would silently reroute it onto the native lane, which can
+    # only drive an MLXMultimodalLM.
+    from rapid_mlx import benchmark as bench
+
+    class _LegacyOutput:
+        prompt_tokens = 1
+        completion_tokens = 2
+        text = "x"
+
+    class _ForeignModel:
+        model = object()
+        processor = _FakeProcessor()
+
+        def __init__(self):
+            self.calls = []
+
+        def generate(self, **kwargs):
+            self.calls.append(kwargs)
+            return _LegacyOutput()
+
+    foreign = _ForeignModel()
+    with pytest.warns(DeprecationWarning, match="deprecated"):
+        result = bench.benchmark_video_config(
+            foreign, "/tmp/v.mp4", 1.0, 4, "cfg", {"duration": 1.0, "total_frames": 4}
+        )
+    assert foreign.calls  # generate() ran, not the native lane
+    assert result.completion_tokens == 2
 
 
 def test_video_wrapper_rejects_objects_with_no_supported_shape():
