@@ -132,6 +132,27 @@ struct AudioReadinessStateTests {
         #expect(!state.allowsModelSelection)
     }
 
+    @Test("runtime-owned work outranks transient catalog uncertainty")
+    func runtimeWorkBlocksSelectionAcrossCatalogRefresh() {
+        let active = AudioReadinessState.resolve(.init(
+            alias: Self.alias,
+            catalogLoaded: false,
+            cached: nil,
+            activity: .init(alias: Self.alias, activity: .recording)
+        ))
+        let loading = AudioReadinessState.resolve(.init(
+            alias: Self.alias,
+            catalogLoaded: true,
+            cached: nil,
+            loading: .init(alias: Self.alias, detail: "Warming up…")
+        ))
+
+        #expect(active == .active(alias: Self.alias, activity: .recording))
+        #expect(loading == .loading(alias: Self.alias, detail: "Warming up…"))
+        #expect(!active.allowsModelSelection)
+        #expect(!loading.allowsModelSelection)
+    }
+
     @Test("cancelled downloads return to a retryable not-downloaded state")
     func cancelledDownloadIsRetryable() {
         let state = AudioReadinessState.resolve(

@@ -86,17 +86,14 @@ enum AudioReadinessState: Equatable {
     static func resolve(_ snapshot: Snapshot) -> Self {
         let alias = snapshot.alias
         guard !alias.isEmpty else { return .noModel }
-        guard snapshot.catalogLoaded else { return .catalogPending }
-        guard let cached = snapshot.cached else { return .unknownModel(alias: alias) }
-
-        let matchingDownload = snapshot.download.flatMap {
-            $0.alias == alias ? $0.status : nil
-        }
         let matchingActivity = snapshot.activity.flatMap {
             $0.alias == alias ? $0.activity : nil
         }
         let matchingLoad = snapshot.loading.flatMap {
             $0.alias == alias ? $0 : nil
+        }
+        let matchingDownload = snapshot.download.flatMap {
+            $0.alias == alias ? $0.status : nil
         }
         let isReady = snapshot.readyAlias == alias
 
@@ -107,15 +104,21 @@ enum AudioReadinessState: Equatable {
         if let matchingActivity {
             return .active(alias: alias, activity: matchingActivity)
         }
-        if !cached, case .failed(let message) = matchingDownload {
-            return .failed(alias: alias, message: message)
-        }
-        if !cached, case .running(let detail, let fraction) = matchingDownload {
-            return .downloading(alias: alias, detail: detail, fraction: fraction)
+        if snapshot.catalogLoaded, snapshot.cached == false {
+            if case .failed(let message) = matchingDownload {
+                return .failed(alias: alias, message: message)
+            }
+            if case .running(let detail, let fraction) = matchingDownload {
+                return .downloading(alias: alias, detail: detail, fraction: fraction)
+            }
         }
         if let matchingLoad {
             return .loading(alias: alias, detail: matchingLoad.detail)
         }
+
+        guard snapshot.catalogLoaded else { return .catalogPending }
+        guard let cached = snapshot.cached else { return .unknownModel(alias: alias) }
+
         if !cached {
             if case .completed = matchingDownload {
                 // A successful pull is not proof of a usable checkpoint. The
