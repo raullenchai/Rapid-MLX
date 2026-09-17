@@ -1647,7 +1647,7 @@
       ],
       "turns": [
         {
-          "prompt": "Write an accessibility description of this toolbar of at least 200 words: the model name, the status, and every control with its position, naming each icon explicitly (including the leftmost and middle icons) and which side of the toolbar each control sits on.",
+          "prompt": "Write an accessibility description of this toolbar of at least 200 words: the model name, the status, and every control with its position, describing what each icon is for and which side of the toolbar it sits on.",
           "max_tokens": 320,
           "sampling": {
             "temperature": 0.0,
