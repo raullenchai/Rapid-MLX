@@ -381,14 +381,33 @@ def test_native_mtp_stats_ignore_non_list_counters() -> None:
 
 
 @pytest.mark.parametrize(
-    ("pair", "alias", "expected_prefill_step_size"),
+    ("argv", "expected"),
     [
-        (QWEN36_35B_4BIT, "qwen3.6-35b-4bit", 2048),
-        (GLM53_FLASH_4BIT, "glm5.3-flash-4bit", 1024),
+        (["serve", "glm5.3-flash-4bit"], False),
+        (["serve", "glm5.3-flash-4bit", "--prefill-step-size", "2048"], True),
+        (["serve", "glm5.3-flash-4bit", "--prefill-step-size=2048"], True),
+    ],
+)
+def test_prefill_option_provenance_uses_parsed_argv(argv, expected: bool) -> None:
+    from rapid_mlx import cli
+
+    assert cli._argv_sets_prefill_step_size(argv) is expected
+
+
+@pytest.mark.parametrize(
+    ("pair", "alias", "prefill_explicit", "expected_prefill_step_size"),
+    [
+        (QWEN36_35B_4BIT, "qwen3.6-35b-4bit", False, 2048),
+        (GLM53_FLASH_4BIT, "glm5.3-flash-4bit", False, 1024),
+        (GLM53_FLASH_4BIT, "glm5.3-flash-4bit", True, 2048),
     ],
 )
 def test_serve_native_mtp_helper_routes_exact_pair(
-    monkeypatch, pair, alias: str, expected_prefill_step_size: int
+    monkeypatch,
+    pair,
+    alias: str,
+    prefill_explicit: bool,
+    expected_prefill_step_size: int,
 ) -> None:
     from rapid_mlx import cli
     from rapid_mlx.speculative.native_mtp import server as native_server
@@ -446,6 +465,7 @@ def test_serve_native_mtp_helper_routes_exact_pair(
         tool_call_parser="qwen3_coder_xml",
         reasoning_parser="qwen3",
         prefill_step_size=2048,
+        _prefill_step_size_explicit=prefill_explicit,
     )
 
     assert cli._serve_native_mtp_if_requested(
