@@ -68,7 +68,7 @@ artifact against a committed revision before adding the Q8 record or alias.
 
 ## Failed builds, held out
 
-Two builds repeatedly passed 14/15 and remain disabled. Their committed
+Two builds failed under the canonical harness and remain disabled. Their committed
 receipts preserve the full behavior results, but the model-card identity fields
 and qualification check were annotated after the run because those runs
 temporarily observed candidate records that this PR deliberately does not
@@ -90,4 +90,4 @@ contract.
 Qwen3-Coder 30B and GPT-OSS 20B need another full canonical matrix after the
 upstream model or serving prompt behavior changes. Any future retry must use
 the same exact identity/backing/parser/profile checks and cannot reuse these
-14/15 receipts as qualification evidence.
+failure receipts as qualification evidence.

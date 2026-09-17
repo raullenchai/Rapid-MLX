@@ -67,7 +67,7 @@ normalized, but extra content is still rejected.
 | Qwen3-Coder 30B | `qwen3-coder-30b-4bit` | `hermes` | failed 13/15 after the contradictory-URL recheck on the 2026-09-16 canonical matrix and remains disabled |
 | Ling 3.0 Tiny | `ling-3.0-tiny-4bit` | `glm47` | passed 15/15 on Mac Studio; see the 2026-09-16 remaining-build matrix |
 | Qwen3.6-27B | `qwen3.6-27b-4bit` | `qwen3_coder_xml` | passed 15/15 on Mac Studio; see the 2026-09-16 remaining-build matrix |
-| GPT-OSS 20B | `gpt-oss-20b` (`mlx-community/gpt-oss-20b-MXFP4-Q8`) | `harmony` | failed 13/15 after the contradictory-URL recheck on the 2026-09-16 canonical matrix and remains disabled |
+| GPT-OSS 20B | `gpt-oss-20b` (`mlx-community/gpt-oss-20b-MXFP4-Q8`) | `harmony` | failed 14/15 on the 2026-09-16 canonical matrix and remains disabled |
 | LFM2.5 1.2B | `lfm2.5-1b-4bit` | `lfm` | passed 15/15 locally after deterministic search/browse staging |
 
 The missing fourth Qwen3.8 build in the aggregate table is treated as the
