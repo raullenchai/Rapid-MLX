@@ -182,6 +182,34 @@ def test_hard_exit_reports_flush_failure_as_exit_120(
     assert events == ["atexit", "exit:120"]
 
 
+def test_hard_exit_survives_a_crashing_exit_hook(monkeypatch, production_exit_context):
+    """A misbehaving atexit hook (raise SystemExit mid-drain, e.g.) must
+    not skip the os._exit below and re-enter the interpreter-finalization
+    crash path this helper exists to prevent — the hard exit is the
+    invariant, the atexit pass is best-effort (see the helper's
+    BaseException rationale).
+    """
+
+    def _boom() -> None:
+        raise SystemExit("telemetry drain failed")
+
+    class _Null:
+        def flush(self) -> None:
+            pass
+
+    events = production_exit_context
+    monkeypatch.setattr(cli.atexit, "_run_exitfuncs", _boom)
+    monkeypatch.setattr(cli.sys, "stdout", _Null())
+    monkeypatch.setattr(cli.sys, "stderr", _Null())
+    monkeypatch.setattr(cli.os, "_exit", lambda code: events.append(f"exit:{code}"))
+
+    cli._hard_exit_after_serve()
+
+    assert events == ["exit:0"], (
+        f"a crashing exit hook must still end in the hard exit, got {events!r}"
+    )
+
+
 @pytest.mark.requires_mlx
 def test_legacy_server_main_hard_exits_after_uvicorn(monkeypatch):
     """Behavioral pin for the legacy ``python -m rapid_mlx.server``
