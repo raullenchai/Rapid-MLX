@@ -1351,8 +1351,6 @@ def _benchmark_video_config_native(
 
 def benchmark_video_config(
     model,
-    processor,
-    config,
     video_path: str,
     fps: float,
     max_frames: int,
@@ -1363,24 +1361,25 @@ def benchmark_video_config(
 ) -> VideoBenchmarkResult:
     """Deprecated call shape for :func:`_benchmark_video_config_native`.
 
-    External callers of the pre-native-lane signature keep working: the
+    Preserves the exact pre-native-lane positional signature — the loaded
+    wrapper model carries ``.model`` / ``.processor`` / ``.config``. The
     serialized-lane generator is built internally and the request still
     runs on the native lane (never mlx-vlm's generation runtime). New code
     should build the generator once via :func:`_build_bench_generator` and
-    pass it as the first argument instead.
+    call :func:`_benchmark_video_config_native` instead.
     """
     warnings.warn(
         "benchmark_video_config now takes the serialized-lane generator "
         "from _build_bench_generator as its first argument; the legacy "
-        "(model, processor, config, ...) call shape is deprecated.",
+        "(model, video_path, fps, ...) call shape is deprecated.",
         DeprecationWarning,
         stacklevel=2,
     )
-    generator = _build_bench_generator(model, processor, max_tokens)
+    generator = _build_bench_generator(model.model, model.processor, max_tokens)
     return _benchmark_video_config_native(
         generator,
-        processor,
-        config,
+        model.processor,
+        getattr(model, "config", None) or {},
         video_path,
         fps,
         max_frames,

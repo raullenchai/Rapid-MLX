@@ -91,6 +91,15 @@ class _FakeProcessor:
         self.tokenizer = _FakeTokenizer()
 
 
+class _FakeLegacyModel:
+    """The pre-native-lane first argument: a loaded wrapper model."""
+
+    def __init__(self):
+        self.model = object()  # Unused: _build_bench_generator is stubbed
+        self.processor = _FakeProcessor()
+        self.config = {}
+
+
 class _FakeGenerator:
     """Minimal serialized-lane generator: insert() → next() batches."""
 
@@ -207,9 +216,7 @@ def test_legacy_signature_wrappers_warn_and_delegate(monkeypatch):
 
     with pytest.warns(DeprecationWarning, match="serialized-lane generator"):
         video_result = bench.benchmark_video_config(
-            object(),
-            _FakeProcessor(),
-            {},
+            _FakeLegacyModel(),
             "/tmp/nonexistent.mp4",
             1.0,
             4,
@@ -219,3 +226,16 @@ def test_legacy_signature_wrappers_warn_and_delegate(monkeypatch):
         )
     assert video_result.completion_tokens == 2
     assert len(built) == 2
+    # The video wrapper preserves the exact legacy positional shape:
+    # (model, video_path, fps, max_frames, config_name, video_info, ...).
+    legacy_model = _FakeLegacyModel()
+    with pytest.warns(DeprecationWarning, match="legacy"):
+        positional = bench.benchmark_video_config(
+            legacy_model,
+            "/tmp/v.mp4",
+            2.0,
+            8,
+            "cfg",
+            {"duration": 2.0, "total_frames": 8},
+        )
+    assert positional.completion_tokens == 2
