@@ -291,7 +291,9 @@ def _structural_pass(checker: dict[str, Any], text: str) -> bool:
     return not (max_lines and lines > max_lines)
 
 
-def _checker_pass(checker: dict[str, Any], text: str) -> bool:
+def _checker_pass(
+    checker: dict[str, Any], text: str, earlier_texts: tuple[str, ...] = ()
+) -> bool:
     text_tokens = _tokens(text)
     kind = checker.get("type", "any")
     if kind == "terms":
@@ -467,16 +469,31 @@ def _checker_pass(checker: dict[str, Any], text: str) -> bool:
         required_any = checker.get("required_any", [])
         if required_any:
             required_min = int(checker.get("required_any_min", 1) or 1)
-            matched = sum(
-                1
+            satisfied = [
+                alternative
                 for alternative in required_any
                 if all(
                     _term_matches(text_tokens, term, guard_negation=True)
                     for term in alternative
                 )
-            )
-            if matched < required_min:
+            ]
+            if len(satisfied) < required_min:
                 return False
+            # ``novel``: the prompt asked for a detail "not mentioned yet",
+            # so an alternative whose every term already appears in the
+            # earlier turns of this pass cannot count — an answer that only
+            # repeats an already-mentioned anchor fails even though the
+            # anchor itself is required vocabulary.
+            if checker.get("novel") and earlier_texts:
+                earlier_tokens = _tokens("\n".join(earlier_texts))
+                if not any(
+                    not all(
+                        _term_matches(earlier_tokens, term, guard_negation=True)
+                        for term in alternative
+                    )
+                    for alternative in satisfied
+                ):
+                    return False
         # ``required_any_groups``: AND over groups of OR-alternatives — the
         # summary turns use one group per prior answer, so a response that
         # drops an entire answer fails even though its anchors also occur
@@ -623,7 +640,9 @@ async def _run_turn(
         "media_hit": _media_hits(engine) - media_hits_before > 0,
         "text": text,
         "sha256": hashlib.sha256(text.encode()).hexdigest(),
-        "checker_pass": _checker_pass(turn.get("checker", {}), text),
+        "checker_pass": _checker_pass(
+            turn.get("checker", {}), text, earlier_texts=tuple(replies)
+        ),
         "prompt_tokens": int(final.prompt_tokens),
         "completion_tokens": int(final.completion_tokens),
         "cached_tokens": int(final.cached_tokens),

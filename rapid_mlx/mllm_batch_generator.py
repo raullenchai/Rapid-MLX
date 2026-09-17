@@ -1759,9 +1759,9 @@ class MLLMBatchGenerator:
         them fails, no matter what its inner language model does. Memoized
         per class.
         """
-        cached = getattr(self, "_media_rope_targets", None)
+        cached = getattr(self, "_media_rope_plumb_targets", None)
         if cached is None:
-            cached = self._media_rope_targets = {}
+            cached = self._media_rope_plumb_targets = {}
         key = type(target)
         if key in cached:
             return cached[key]

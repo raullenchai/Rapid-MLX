@@ -69,7 +69,8 @@
               ]
             ],
             "max_lines": 1,
-            "max_words": 25
+            "max_words": 25,
+            "novel": true
           }
         },
         {
@@ -163,7 +164,8 @@
               ]
             ],
             "max_lines": 1,
-            "max_words": 25
+            "max_words": 25,
+            "novel": true
           }
         },
         {
@@ -252,7 +254,8 @@
               ]
             ],
             "max_lines": 1,
-            "max_words": 25
+            "max_words": 25,
+            "novel": true
           }
         },
         {
@@ -356,7 +359,8 @@
               ]
             ],
             "max_lines": 1,
-            "max_words": 25
+            "max_words": 25,
+            "novel": true
           }
         },
         {
@@ -466,7 +470,8 @@
               ]
             ],
             "max_lines": 1,
-            "max_words": 25
+            "max_words": 25,
+            "novel": true
           }
         },
         {
@@ -557,7 +562,8 @@
               ]
             ],
             "max_lines": 1,
-            "max_words": 25
+            "max_words": 25,
+            "novel": true
           }
         },
         {
@@ -656,7 +662,8 @@
               ]
             ],
             "max_lines": 1,
-            "max_words": 25
+            "max_words": 25,
+            "novel": true
           }
         },
         {
@@ -752,7 +759,8 @@
               ]
             ],
             "max_lines": 1,
-            "max_words": 25
+            "max_words": 25,
+            "novel": true
           }
         },
         {
@@ -859,7 +867,8 @@
               ]
             ],
             "max_lines": 1,
-            "max_words": 25
+            "max_words": 25,
+            "novel": true
           }
         },
         {
@@ -976,7 +985,8 @@
               ]
             ],
             "max_lines": 1,
-            "max_words": 25
+            "max_words": 25,
+            "novel": true
           }
         },
         {
@@ -1086,7 +1096,8 @@
               ]
             ],
             "max_lines": 1,
-            "max_words": 25
+            "max_words": 25,
+            "novel": true
           }
         },
         {
@@ -1209,7 +1220,8 @@
               ]
             ],
             "max_lines": 1,
-            "max_words": 25
+            "max_words": 25,
+            "novel": true
           }
         },
         {
@@ -1316,7 +1328,8 @@
               ]
             ],
             "max_lines": 1,
-            "max_words": 25
+            "max_words": 25,
+            "novel": true
           }
         },
         {
@@ -1447,10 +1460,20 @@
               ],
               [
                 "checkmark"
+              ],
+              [
+                "rounded"
+              ],
+              [
+                "corners"
+              ],
+              [
+                "fill"
               ]
             ],
             "max_lines": 1,
-            "max_words": 25
+            "max_words": 25,
+            "novel": true
           }
         },
         {
@@ -1549,7 +1572,8 @@
               ]
             ],
             "max_lines": 1,
-            "max_words": 25
+            "max_words": 25,
+            "novel": true
           }
         },
         {
@@ -1639,7 +1663,8 @@
               ]
             ],
             "max_lines": 1,
-            "max_words": 25
+            "max_words": 25,
+            "novel": true
           }
         },
         {
@@ -1750,7 +1775,8 @@
               ]
             ],
             "max_lines": 1,
-            "max_words": 25
+            "max_words": 25,
+            "novel": true
           }
         },
         {
@@ -1855,7 +1881,8 @@
               ]
             ],
             "max_lines": 1,
-            "max_words": 25
+            "max_words": 25,
+            "novel": true
           }
         },
         {
@@ -1951,7 +1978,8 @@
               ]
             ],
             "max_lines": 1,
-            "max_words": 25
+            "max_words": 25,
+            "novel": true
           }
         },
         {
@@ -2059,7 +2087,8 @@
               ]
             ],
             "max_lines": 1,
-            "max_words": 25
+            "max_words": 25,
+            "novel": true
           }
         },
         {

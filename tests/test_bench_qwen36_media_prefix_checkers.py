@@ -37,6 +37,50 @@ def test_any_default_has_no_floor():
     assert _checker_pass({}, "ok")
 
 
+def test_novel_rejects_a_fully_repeated_anchor():
+    checker = {
+        "type": "any",
+        "min_words": 3,
+        "required_any": [["orange"], ["icon"]],
+        "novel": True,
+    }
+    # "orange" and "icon" both appear in the earlier turn: the answer only
+    # repeats already-mentioned anchors, so it fails despite satisfying
+    # required_any.
+    assert not _checker_pass(
+        checker, "the orange icon glows", earlier_texts=("an orange icon is round",)
+    )
+    # A partially-overlapping alternative ("orange" absent earlier) is novel.
+    assert _checker_pass(checker, "the orange dot", earlier_texts=("an icon row",))
+    # An unrelated earlier turn does not block the anchor.
+    assert _checker_pass(
+        checker, "the orange icon glows", earlier_texts=("a blue button",)
+    )
+    # No earlier texts (first turn): nothing to be novel against.
+    assert _checker_pass(checker, "the orange icon glows")
+    # Without earlier_texts the checker behaves as before.
+    assert _checker_pass(checker, "the orange icon glows")
+
+
+def test_novel_requires_one_satisfied_alternative_to_be_new():
+    checker = {
+        "type": "any",
+        "min_words": 3,
+        "required_any": [["chip"], ["led"]],
+        "novel": True,
+    }
+    # One satisfied alternative ("led") is absent from the earlier turn:
+    # the answer names something new, so it passes even though "chip"
+    # repeats.
+    assert _checker_pass(
+        checker, "a small led beside the chip", earlier_texts=("the status chip",)
+    )
+    # Both satisfied alternatives repeat: fail.
+    assert not _checker_pass(
+        checker, "the chip and its led", earlier_texts=("the chip led",)
+    )
+
+
 def test_any_distinct_floor_scales_with_min_words():
     # Floor is max(2, min_words // 2) distinct words: 4 distinct words pass
     # a min_words=8 checker even with repeats, 3 do not.
