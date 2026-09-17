@@ -378,8 +378,31 @@ enum LocalWorkspaceTools {
             let executable: URL
             var processArguments = args.arguments ?? []
             if allowed.contains(args.command) {
-                executable = URL(fileURLWithPath: "/usr/bin/env")
-                processArguments.insert(args.command, at: 0)
+                if ["clang", "cc", "gcc"].contains(args.command) {
+                    let compilerCandidates = [
+                        "/Applications/Xcode.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/bin/clang",
+                        "/Library/Developer/CommandLineTools/usr/bin/clang",
+                        "/usr/bin/clang",
+                    ]
+                    guard let compiler = compilerCandidates.first(where: {
+                        FileManager.default.isExecutableFile(atPath: $0)
+                    }) else {
+                        return failure("local_run could not find an installed C compiler")
+                    }
+                    executable = URL(fileURLWithPath: compiler)
+                    let sdkCandidates = [
+                        "/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX.sdk",
+                        "/Library/Developer/CommandLineTools/SDKs/MacOSX.sdk",
+                    ]
+                    if let sdk = sdkCandidates.first(where: {
+                        FileManager.default.fileExists(atPath: $0)
+                    }) {
+                        processArguments.insert(contentsOf: ["-isysroot", sdk], at: 0)
+                    }
+                } else {
+                    executable = URL(fileURLWithPath: "/usr/bin/env")
+                    processArguments.insert(args.command, at: 0)
+                }
             } else {
                 executable = try safeURL(args.command)
                 guard FileManager.default.isExecutableFile(atPath: executable.path) else {
