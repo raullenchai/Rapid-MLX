@@ -657,7 +657,10 @@ _MEDIA_SNAPSHOT_HEADROOM_TOKENS = 64
 # state differences that compound through the recurrence (measured ~1.5
 # logits of drift, same argmax) and can flip near-tie tokens a turn or two
 # later. With the boundary on the grid, the split's tiles coincide with the
-# single forward's and the store/resume paths are bit-exact end to end.
+# single forward's and the split eliminates the recurrent tile
+# re-alignment drift. GEMM batch-size differences between the split and
+# single forwards remain and still produce small cross-phase float
+# divergence (same argmax; reported, not gated — see the design note).
 _MEDIA_BOUNDARY_ALIGN_TOKENS = 64
 
 # Model families qualified for the split media boundary, by ``config.model_type``.
