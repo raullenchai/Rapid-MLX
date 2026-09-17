@@ -1447,12 +1447,16 @@ class TestBudget:
     def test_oldest_evicted_newest_kept(self, monkeypatch):
         gen = _stub_generator()
         # Ceiling = exactly one entry's charged bytes (leaves + delta array
-        # + retained token list): the admission cap lets every store
+        # + retained token list): the admission gate lets every store
         # through (entry == ceiling), and enforcement keeps only the newest.
+        # The boundary covers the clone's whole capacity (full_ids +
+        # max_tokens + headroom), so the pre-clone estimate's capacity ratio
+        # is 1 and admission sees the same bytes enforcement charges.
+        full_ids = _full_ids(n=256)
+        boundary = 256 + 64
         gen._media_boundary_max_bytes = (
-            _media_leaves_bytes(_kv_leaves()) + int(mx.array([1]).nbytes) + 8 * 26
+            _media_leaves_bytes(_kv_leaves()) + int(mx.array([1]).nbytes) + 8 * 256
         )
-        full_ids = _full_ids()
 
         def fake_clone(leaves, *, min_capacity_tokens):
             return _kv_leaves()
@@ -1467,10 +1471,10 @@ class TestBudget:
                 vision_feature_key=f"hash-{image}",
                 pixel_values=mx.zeros((1, 2)),
                 prefix_boundary=20,
-                max_tokens=8,
+                max_tokens=0,
             )
             gen._media_mrope_save()
-            gen._media_store(req, _kv_leaves(), _ids(full_ids), 26, mx.array([1]))
+            gen._media_store(req, _kv_leaves(), _ids(full_ids), boundary, mx.array([1]))
         stats = gen.get_media_prefix_stats()
         # Budget is tiny: only the newest entry survives.
         assert stats["entries"] == 1
@@ -1788,3 +1792,33 @@ class TestMediaBudgetFailClosed:
         gen._media_enforce_budget()
         assert not gen._media_boundary_entries
         assert gen._media_boundary_budget_evictions == 1
+
+
+class TestMediaBudgetFailClosed:
+    def test_preclone_estimate_refuses_overbudget_snapshot_without_cloning(
+        self, monkeypatch
+    ):
+        # An ineligible long-context request must be refused BEFORE the
+        # clone materializes: measuring and rejecting after the full clone
+        # transiently allocates the whole snapshot and can OOM the worker.
+        gen = _stub_generator()
+        gen._media_boundary_max_bytes = _media_leaves_bytes(_kv_leaves()) - 1
+        full_ids = _full_ids()
+
+        def forbidden_clone(leaves, *, min_capacity_tokens):
+            raise AssertionError("clone must not run for a refused snapshot")
+
+        monkeypatch.setattr(
+            "vllm_mlx.mllm_batch_generator._media_clone_leaves", forbidden_clone
+        )
+        req = _make_request(
+            prompt="a" * 24,
+            pixel_values=mx.zeros((1, 2)),
+            prefix_boundary=20,
+            max_tokens=8,
+        )
+        gen._media_mrope_save()
+        stored = gen._media_store(req, _kv_leaves(), _ids(full_ids), 26, mx.array([1]))
+        assert stored is None
+        assert not gen._media_boundary_entries
+        assert gen._media_boundary_stores == 0

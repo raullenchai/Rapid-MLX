@@ -2135,6 +2135,27 @@ class MLLMBatchGenerator:
         with self._media_entries_guard():
             generation = getattr(self, "_media_store_generation", 0)
         full_ids = [int(v) for v in input_ids.reshape(-1).tolist()]
+        # Pre-clone admission estimate: measure the live boundary state and
+        # scale it by the clone's capacity ratio BEFORE materializing the
+        # snapshot — an ineligible long-context request must not transiently
+        # allocate the full clone only to be rejected as over-budget and
+        # OOM the worker. The clone allocates at least
+        # ``min_capacity_tokens`` of KV per layer, so the live footprint
+        # scales by the capacity ratio; an underestimate only defers to the
+        # authoritative post-clone checks below.
+        live_bytes = _media_leaves_bytes(cache)
+        if live_bytes is None:
+            # An unmeasurable live leaf: the snapshot's footprint against
+            # the shared ceiling cannot be known, so refuse the store —
+            # the caller redoes the request as one cold full forward.
+            return None
+        budget = self._media_resolved_budget()
+        min_capacity_tokens = (
+            len(full_ids) + request.max_tokens + _MEDIA_SNAPSHOT_HEADROOM_TOKENS
+        )
+        capacity_ratio = max(1, -(-min_capacity_tokens // max(boundary, 1)))
+        if budget <= 0 or live_bytes * capacity_ratio > budget:
+            return None
         try:
             cloned = _media_clone_leaves(
                 cache,
