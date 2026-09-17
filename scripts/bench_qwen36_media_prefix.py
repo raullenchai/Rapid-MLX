@@ -780,9 +780,13 @@ async def _main() -> None:
         # thermally warmer machine, so any ordering bias works AGAINST the
         # candidate — the headline saving understates and the 15%
         # resume-regression gate is measured against a cooler-machine
-        # baseline (stricter). Alternating phase order would need one
-        # engine per phase per pair (load/unload dominates the run) for a
-        # bias the fixed order already points the safe way.
+        # baseline (stricter). Compilation, allocator, and filesystem
+        # warmth are per-engine and already absorbed by each phase's own
+        # warmup pass, so the measured comparison is warm-vs-warm; only
+        # residual thermal drift remains, and it points the safe way.
+        # Alternating phase order would need one engine per phase per pair
+        # (load/unload dominates the run) for a bias the fixed order
+        # already points the safe way.
         # Baseline: cold lane, no boundary snapshots.
         baseline = await engine_for("off")
         try:

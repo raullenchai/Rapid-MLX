@@ -162,6 +162,32 @@ class _KwargsCommentRopeModel:
         return _Output(mx.zeros((1, int(ids.shape[1]), self.vocab)))
 
 
+class _DroppingKwargsModel:
+    """Accepts ``**kwargs`` and drops them; declares no rope_deltas
+    parameter — an installed delta would silently vanish."""
+
+    def __init__(self, vocab: int = VOCAB):
+        self.vocab = vocab
+        self.calls: list[tuple[int, int, bool]] = []
+        self.config = type("Config", (), {"model_type": "qwen3_5_moe"})()
+
+    def __call__(self, ids, cache=None, pixel_values=None, **kwargs):
+        start = int(ids[0, 0]) if ids.size else -1
+        self.calls.append((start, start + int(ids.shape[1]), pixel_values is not None))
+        return _Output(mx.zeros((1, int(ids.shape[1]), self.vocab)))
+
+
+class _SpreadingKwargsModel(_DroppingKwargsModel):
+    """Forwards ``**kwargs`` into an inner call, so a passed delta reaches
+    the (consuming) language model."""
+
+    def __call__(self, ids, cache=None, pixel_values=None, **kwargs):
+        forwarded = dict(**kwargs)
+        start = int(ids[0, 0]) if ids.size else -1
+        self.calls.append((start, start + int(ids.shape[1]), pixel_values is not None))
+        return _Output(mx.zeros((1, int(ids.shape[1]), self.vocab)))
+
+
 class _EmbedFeatures:
     def __init__(self, inputs_embeds, rope_deltas=None):
         self.inputs_embeds = inputs_embeds
@@ -368,10 +394,25 @@ class TestRopeKwargGate:
         )
 
     def test_unsupported_wrapper_with_supporting_lm_opens_the_gate(self):
-        # The production qwen3-vl shape: the VLM wrapper itself never touches
-        # rope_deltas, but the language model pops it from **kwargs. The
-        # probe must scan both targets.
+        # The production qwen3-vl shape: the wrapper declares rope_deltas as
+        # an explicit parameter and plumbs it onward, and the language model
+        # that ultimately consumes it pops it from **kwargs.
         gen = _stub_generator(model=_NoRopeModel())
+        gen.language_model = _DirectLanguageModel()
+        assert gen._media_model_supports_rope_kwarg() is True
+
+    def test_kwargs_dropping_wrapper_fails_closed_despite_consuming_lm(self):
+        # A wrapper that accepts **kwargs and drops them cannot ride on its
+        # inner language model's consumption: the installed delta would
+        # never reach the LM and the resumed suffix would be mispositioned.
+        gen = _stub_generator(model=_DroppingKwargsModel())
+        gen.language_model = _DirectLanguageModel()
+        assert gen._media_model_supports_rope_kwarg() is False
+
+    def test_kwargs_spreading_wrapper_opens_the_gate_with_consuming_lm(self):
+        # A wrapper that forwards **kwargs into an inner call hands the
+        # delta to the consuming language model.
+        gen = _stub_generator(model=_SpreadingKwargsModel())
         gen.language_model = _DirectLanguageModel()
         assert gen._media_model_supports_rope_kwarg() is True
 
@@ -435,7 +476,7 @@ class TestWrapperPositionOverride:
         rope_first = gen._media_model_supports_rope_kwarg()
         rope_second = gen._media_model_supports_rope_kwarg()
         assert rope_first is rope_second is True
-        assert gen._media_rope_probe[0] == (type(gen.model), type(gen.language_model))
+        assert gen._media_rope_targets[type(gen.language_model)] is True
 
     def test_plan_fails_closed_without_lm_direct_escape(self):
         # The corrupting wrapper shape without get_input_embeddings: the
@@ -953,6 +994,20 @@ class TestStorePath:
         )
         assert not consume(
             "def f(**kwargs):\n    return None\n    d = kwargs['rope_deltas']\n"
+        )
+        # A nested function's body never runs in the probed scope.
+        assert not consume(
+            "def f(**kwargs):\n"
+            "    def g(**inner):\n"
+            "        return kwargs.pop('rope_deltas', None)\n"
+            "    return None\n"
+        )
+        # typing.TYPE_CHECKING blocks are dead at runtime.
+        assert not consume(
+            "def f(**kwargs):\n"
+            "    if TYPE_CHECKING:\n"
+            "        d = kwargs.pop('rope_deltas', None)\n"
+            "    return None\n"
         )
 
     def test_below_min_tokens_boundary_never_stores(self):

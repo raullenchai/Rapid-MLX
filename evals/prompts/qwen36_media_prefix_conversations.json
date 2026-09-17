@@ -1341,10 +1341,8 @@
             "required_any_groups": [
               [
                 [
-                  "indicators"
-                ],
-                [
-                  "hierarchy"
+                  "next",
+                  "skip"
                 ]
               ],
               [

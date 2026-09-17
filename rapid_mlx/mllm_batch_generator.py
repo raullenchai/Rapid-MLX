@@ -683,6 +683,24 @@ class MLLMMediaBoundaryEntry:
     cache_bytes: int
 
 
+def _is_type_checking(test: ast.AST) -> bool:
+    """``typing.TYPE_CHECKING`` in either binding shape — always false at
+    runtime, so its guarded block is dead for probe purposes."""
+    if isinstance(test, ast.Name):
+        return test.id == "TYPE_CHECKING"
+    return (
+        isinstance(test, ast.Attribute)
+        and test.attr == "TYPE_CHECKING"
+        and isinstance(test.value, ast.Name)
+        and test.value.id in ("typing", "t")
+    )
+
+
+class _MediaSplitUnsupportedError(Exception):
+    """A structural probe mis-judged the wrapper: the split cannot serve
+    this request. Callers fail closed to a rebuilt cold full forward."""
+
+
 def _media_clone_leaves(
     leaves: list[Any], *, min_capacity_tokens: int
 ) -> list[Any] | None:
@@ -1546,11 +1564,17 @@ class MLLMBatchGenerator:
         rules. None when the source cannot be parsed.
         """
 
-        def visit(node: ast.AST) -> bool:
-            if isinstance(node, ast.If) and isinstance(node.test, ast.Constant):
-                # Only the taken side of a constant branch is live.
-                branch = node.body if node.test.value else node.orelse
-                return live(branch)
+        def visit(node: ast.AST, in_scope: bool = False) -> bool:
+            if isinstance(node, ast.If):
+                # Constant-false branches (and typing.TYPE_CHECKING, which
+                # is false at runtime by definition) are skipped toward
+                # their taken side; an undecidable test keeps both sides.
+                test = node.test
+                if isinstance(test, ast.Constant):
+                    branch = node.body if test.value else node.orelse
+                    return live(branch, in_scope)
+                if _is_type_checking(test):
+                    return live(node.orelse, in_scope)
             if (
                 isinstance(node, ast.While)
                 and isinstance(node.test, ast.Constant)
@@ -1559,21 +1583,25 @@ class MLLMBatchGenerator:
                 return False
             found.append(node)
             if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
-                return live(node.body)
+                # The outermost inspected function body is the probed scope;
+                # functions nested inside it never run in that scope.
+                if in_scope:
+                    return False
+                return live(node.body, True)
             if isinstance(node, ast.Lambda):
-                return visit(node.body)
+                return False
             if isinstance(node, ast.Try):
                 return (
-                    live(node.body)
-                    or any(live(handler.body) for handler in node.handlers)
-                    or live(node.orelse)
-                    or live(node.finalbody)
+                    live(node.body, in_scope)
+                    or any(live(h.body, in_scope) for h in node.handlers)
+                    or live(node.orelse, in_scope)
+                    or live(node.finalbody, in_scope)
                 )
-            return any(visit(child) for child in ast.iter_child_nodes(node))
+            return any(visit(child, in_scope) for child in ast.iter_child_nodes(node))
 
-        def live(stmts: list[ast.stmt]) -> bool:
+        def live(stmts: list[ast.stmt], in_scope: bool = False) -> bool:
             for stmt in stmts:
-                if visit(stmt):
+                if visit(stmt, in_scope):
                     return True
                 if isinstance(stmt, (ast.Return, ast.Raise, ast.Break, ast.Continue)):
                     return False
@@ -1645,42 +1673,120 @@ class MLLMBatchGenerator:
         self._media_wrapper_attrs_probe = (key, attrs)
         return attrs
 
+    def _media_target_consumes_rope(self, target: Any) -> bool:
+        """Whether ``target.__call__`` accepts ``**kwargs`` and consumes
+        ``rope_deltas`` in obviously-live code. Memoized per class."""
+        cached = getattr(self, "_media_rope_targets", None)
+        if cached is None:
+            cached = self._media_rope_targets = {}
+        key = type(target)
+        if key in cached:
+            return cached[key]
+        result = False
+        call = getattr(type(target), "__call__", None)
+        if call is not None and _accepts_var_kwargs(call):
+            try:
+                src = inspect.getsource(call)
+            except (OSError, TypeError, SyntaxError):
+                src = None
+            if src is not None:
+                result = self._media_rope_consumes_key(src)
+        cached[key] = result
+        return result
+
+    def _media_target_consumes_rope(self, target: Any) -> bool:
+        """Whether ``target.__call__`` accepts ``**kwargs`` and consumes
+        ``rope_deltas`` in obviously-live code. Memoized per class."""
+        cached = getattr(self, "_media_rope_targets", None)
+        if cached is None:
+            cached = self._media_rope_targets = {}
+        key = type(target)
+        if key in cached:
+            return cached[key]
+        result = False
+        call = getattr(type(target), "__call__", None)
+        if call is not None and _accepts_var_kwargs(call):
+            try:
+                src = inspect.getsource(call)
+            except (OSError, TypeError, SyntaxError):
+                src = None
+            if src is not None:
+                result = self._media_rope_consumes_key(src)
+        cached[key] = result
+        return result
+
+    def _media_target_plumbs_rope(self, target: Any) -> bool:
+        """Whether a suffix through ``target`` can carry ``rope_deltas``.
+
+        The call must plumb the value onward — an explicit ``rope_deltas``
+        parameter backed by a consuming language model (mlx-vlm wrappers
+        declare one and forward it), live consumption of the ``**kwargs``
+        key, or a ``**kwargs`` spread into an inner call whose target
+        consumes the key. A wrapper that accepts ``**kwargs`` and drops
+        them fails, no matter what its inner language model does. Memoized
+        per class.
+        """
+        cached = getattr(self, "_media_rope_targets", None)
+        if cached is None:
+            cached = self._media_rope_targets = {}
+        key = type(target)
+        if key in cached:
+            return cached[key]
+        result = False
+        call = getattr(type(target), "__call__", None)
+        if call is not None:
+            try:
+                sig = inspect.signature(call)
+            except (TypeError, ValueError):
+                sig = None
+            if sig is not None and "rope_deltas" in sig.parameters:
+                # Declared parameters are plumbed to the language model,
+                # whose consumption the suffix ultimately relies on.
+                result = self._media_target_consumes_rope(self.language_model)
+            elif _accepts_var_kwargs(call):
+                try:
+                    src = inspect.getsource(call)
+                except (OSError, TypeError, SyntaxError):
+                    src = None
+                nodes = self._media_live_nodes(src) if src is not None else None
+                if nodes is not None:
+                    spreads = any(
+                        isinstance(node, ast.Call)
+                        and any(
+                            keyword.arg is None
+                            and isinstance(keyword.value, ast.Name)
+                            and keyword.value.id == "kwargs"
+                            for keyword in node.keywords
+                        )
+                        for node in nodes
+                    )
+                    if spreads:
+                        result = self._media_target_consumes_rope(self.language_model)
+                    else:
+                        result = self._media_rope_consumes_key(src)
+        cached[key] = result
+        return result
+
     def _media_model_supports_rope_kwarg(self) -> bool:
-        """The split boundary forward needs ``rope_deltas`` through the call.
+        """The selected suffix call path must plumb ``rope_deltas``.
 
         mlx-vlm models consume ``rope_deltas`` via ``kwargs.pop("rope_deltas",
         ...)`` inside a ``**kwargs``-accepting ``__call__`` body — the kwarg
         is almost never an explicit signature parameter, so a signature-only
-        probe never opens the gate. Detected structurally, mirroring
-        ``_model_supports_vision_feature_cache``: the callee must accept
-        ``**kwargs`` (so the extra kwarg can never raise ``TypeError``) and
-        its body must *consume* the key (a real ``kwargs.pop`` /
-        ``kwargs.get`` / ``kwargs["rope_deltas"]`` operation in the AST) —
-        not merely mention it (a comment, log line, or dead reference
-        proves nothing and would route resumes through a model that
-        recomputes positions). Probed on both the VLM wrapper and the
-        language model; families without either fail closed to the single
-        cold forward.
+        probe never opens the gate. The check is path-specific: a suffix
+        routed through the language model (position-override wrapper with a
+        validated LM-direct escape) needs the LM to consume the delta, and
+        a suffix through the wrapper needs the WRAPPER to plumb the value
+        onward — a wrapper that accepts ``**kwargs`` but drops them cannot
+        ride on its inner LM's consumption. Probed structurally on live
+        code only; families without a plumbing selected path fail closed
+        to the single cold forward.
         """
-        cached = getattr(self, "_media_rope_probe", None)
-        key = (type(self.model), type(self.language_model))
-        if cached is not None and cached[0] == key:
-            result: bool = cached[1]
-            return result
-        result = False
-        for target in (self.model, self.language_model):
-            call = getattr(type(target), "__call__", None)
-            if call is None or not _accepts_var_kwargs(call):
-                continue
-            try:
-                src = inspect.getsource(call)
-            except (OSError, TypeError, SyntaxError):
-                continue
-            if self._media_rope_consumes_key(src):
-                result = True
-                break
-        self._media_rope_probe = (key, result)
-        return result
+        if self._media_wrapper_overrides_positions():
+            if not self._media_lm_direct_available():
+                return False
+            return self._media_target_consumes_rope(self.language_model)
+        return self._media_target_plumbs_rope(self.model)
 
     def _media_wrapper_call_source(self) -> str | None:
         """Source of the VLM wrapper's ``__call__``, probed once per model.
@@ -1766,12 +1872,20 @@ class MLLMBatchGenerator:
                 suffix_ids, cache=cache, pixel_values=None, rope_deltas=rope_delta
             )
         emb = self.model.get_input_embeddings(suffix_ids, pixel_values=None)
+        inputs_embeds = getattr(emb, "inputs_embeds", None)
+        if inputs_embeds is None:
+            # The wrapper's embedding result does not carry the payload the
+            # LM-direct path needs — the structural probe mis-judged this
+            # wrapper. Fail closed; the caller redoes the request cold.
+            raise _MediaSplitUnsupportedError(
+                "get_input_embeddings returned no inputs_embeds"
+            )
         # mlx stubs type child modules as ``Any | dict`` — the probe above
         # already verified ``__call__`` exists.
         lm_call = cast("Any", self.language_model)
         return lm_call(
             suffix_ids,
-            inputs_embeds=emb.inputs_embeds,
+            inputs_embeds=inputs_embeds,
             mask=None,
             cache=cache,
             rope_deltas=rope_delta,
@@ -2011,6 +2125,22 @@ class MLLMBatchGenerator:
             move_to_end = getattr(entries, "move_to_end", None)
             if move_to_end is not None and digest in entries:
                 move_to_end(digest)
+
+    def _media_cold_redo(
+        self, input_ids: Any, cache: list[Any], kwargs: dict[str, Any]
+    ) -> Any:
+        """One cold full forward on a rebuilt fresh cache.
+
+        The canonical fallback for any split that cannot serve the request:
+        the cache is rebuilt through the same construction
+        ``_process_prompts`` uses for a cold per-request cache — no other
+        factory exists on this lane — and the dropped-mask equivalence the
+        plan gates proved carries over to the redo.
+        """
+        from mlx_lm.models.cache import make_prompt_cache
+
+        cache[:] = make_prompt_cache(self.language_model)
+        return self.model(input_ids, cache=cache, **kwargs)
 
     def _media_discard_boundary(self, request: MLLMBatchRequest) -> None:
         """Drop this request's boundary snapshot after a failed request.
@@ -3058,6 +3188,13 @@ class MLLMBatchGenerator:
                 output = self._media_suffix_forward(
                     input_ids[:, boundary:], cache, entry.rope_delta
                 )
+            except _MediaSplitUnsupportedError:
+                # The installed snapshot is fine but the suffix path is not
+                # usable: restore, count the miss, and redo the request as
+                # one cold full forward on a rebuilt fresh cache.
+                self._media_mrope_restore()
+                self._media_boundary_misses += 1
+                return self._media_cold_redo(input_ids, cache, kwargs)
             except Exception:
                 # The installed delta is model-global state: a failing
                 # suffix forward must not leave it behind for the next
@@ -3088,23 +3225,25 @@ class MLLMBatchGenerator:
                 # The snapshot was refused (no delta, uncloneable leaves,
                 # over budget): the split bought nothing reusable, so the
                 # request rides the canonical cold path. Restore the
-                # model-global state the prefix forward mutated, rebuild a
-                # fresh cache, and rerun the unsplit forward — the plan
-                # gates proved a dropped mask equals the single forward, so
-                # the redo is exactly the cold path a failed gate takes.
+                # model-global state the prefix forward mutated, then redo
+                # the unsplit forward — exactly the cold path a failed
+                # plan gate takes.
                 self._media_boundary_misses += 1
                 self._media_mrope_restore()
-                from mlx_lm.models.cache import make_prompt_cache
-
-                # The same construction ``_process_prompts`` uses for a cold
-                # per-request cache — no other factory exists for this lane.
-                cache[:] = make_prompt_cache(self.language_model)
-                return self.model(input_ids, cache=cache, **prefix_kwargs)
+                return self._media_cold_redo(input_ids, cache, prefix_kwargs)
             # Snapshot published: continue the suffix on the same live cache
             # with the delta this forward already installed on the model.
             return self._media_suffix_forward(
                 input_ids[:, boundary:], cache, rope_delta
             )
+        except _MediaSplitUnsupportedError:
+            # The suffix path the probes picked cannot serve this request.
+            # Restore, discard the published boundary, and redo cold — the
+            # published snapshot is worthless without a usable suffix.
+            self._media_mrope_restore()
+            self._media_discard_boundary(request)
+            self._media_boundary_misses += 1
+            return self._media_cold_redo(input_ids, cache, prefix_kwargs)
         except Exception:
             # Same model-global-state contract: the save transaction spans
             # the whole request, so a failing store or suffix forward
