@@ -58,6 +58,9 @@ struct DictationView: View {
             guard case .completed = downloads.job(for: controller.modelAlias)?.status else { return }
             await controller.modelDownloadDidFinish()
             await viewModel.refreshCatalog()
+            if selectedModelEntry?.cached != true {
+                downloads.dismissJob(alias: controller.modelAlias)
+            }
         }
         // TCC grants happen outside the app and emit no notification, so the
         // only reliable moment to re-check is when the window comes back.

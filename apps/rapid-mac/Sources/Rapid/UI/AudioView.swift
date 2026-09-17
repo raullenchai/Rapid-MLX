@@ -120,7 +120,9 @@ struct AudioView: View {
         // generation instead of keeping the pre-download catalog snapshot.
         .task(id: downloads.cacheGeneration) {
             await viewModel.refreshCatalog()
+            clearUnverifiedCompletedDownload()
         }
+        .onChange(of: selectedAlias) { _, _ in clearUnverifiedCompletedDownload() }
         .onChange(of: viewModel.mode) { _, _ in cancelVoicePreview() }
         .onDisappear { cancelVoicePreview() }
     }
@@ -590,6 +592,7 @@ struct AudioView: View {
             // usable. Never turn the audio server's lazy health response into
             // a false Ready state when that proof is absent.
             guard viewModel.audioModels.first(where: { $0.alias == alias })?.cached == true else {
+                downloads.dismissJob(alias: alias)
                 viewModel.errorMessage = "The download finished, but Rapid couldn't find the model on disk. Try downloading it again."
                 return
             }
@@ -617,6 +620,14 @@ struct AudioView: View {
             hfPath: entry?.hfRepo
         )
         await viewModel.refreshCatalog()
+    }
+
+    private func clearUnverifiedCompletedDownload() {
+        guard !selectedAlias.isEmpty,
+              downloads.job(for: selectedAlias)?.status == .completed,
+              selectedEntry?.cached == false else { return }
+        downloads.dismissJob(alias: selectedAlias)
+        viewModel.errorMessage = "The download finished, but Rapid couldn't find the model on disk. Try downloading it again."
     }
 
     @ViewBuilder
