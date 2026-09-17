@@ -847,7 +847,7 @@
       ],
       "turns": [
         {
-          "prompt": "Output JSON only, inside a single ```json fenced code block: {\"title\": <sidebar title>, \"buttons\": [<all visible button labels>]}.",
+          "prompt": "Output JSON only, inside a single ```json fenced code block: {\"title\": <sidebar title>, \"buttons\": [<all visible button labels>], \"shortcut\": <the exact wording of the keyboard shortcut hint, or null if none>}.",
           "max_tokens": 96,
           "sampling": {
             "temperature": 0.0,
@@ -857,7 +857,8 @@
             "type": "json_shape",
             "keys": [
               "title",
-              "buttons"
+              "buttons",
+              "shortcut"
             ],
             "list_keys": [
               "buttons"
@@ -868,6 +869,9 @@
             "field_terms": {
               "title": [
                 "rapid-mlx desktop"
+              ],
+              "shortcut": [
+                "⌘n"
               ]
             },
             "list_expect": {

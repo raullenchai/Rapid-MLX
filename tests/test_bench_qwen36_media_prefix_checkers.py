@@ -574,3 +574,19 @@ def test_terms_required_any_groups_are_enforced():
     assert not _checker_pass(
         checker, "Pick a model, then Skip and Next, with four dot indicators."
     )
+
+
+def test_json_shape_field_terms_match_non_ascii_values():
+    # Field values are re-tokenized through json.dumps; the default ASCII
+    # escaping would rewrite a shortcut glyph as a backslash-unicode escape
+    # and a term written as the on-screen text could never match its own
+    # designated field.
+    checker = {
+        "type": "json_shape",
+        "keys": ["shortcut"],
+        "field_terms": {"shortcut": ["⌘n"]},
+    }
+    assert _checker_pass(checker, '```json\n{"shortcut": "or press ⌘N anywhere"}\n```')
+    assert _checker_pass(checker, '```json\n{"shortcut": "⌘N"}\n```')
+    assert not _checker_pass(checker, '```json\n{"shortcut": "press ctrl+N"}\n```')
+    assert not _checker_pass(checker, '```json\n{"shortcut": null}\n```')

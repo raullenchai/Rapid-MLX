@@ -2180,16 +2180,24 @@ class MLLMBatchGenerator:
         cache[:] = make_prompt_cache(self.language_model)
         return self.model(input_ids, cache=cache, **kwargs)
 
-    def _media_discard_boundary(self, request: MLLMBatchRequest) -> None:
+    def _media_discard_boundary(
+        self, request: MLLMBatchRequest, digest: Any = None
+    ) -> None:
         """Drop this request's boundary snapshot after a failed request.
 
         The store publishes the boundary before the suffix forward and the
         decode run, so a failing or cancelled request would otherwise leave
         a reusable entry behind — the store contract says a request that
         never completes must never leave a boundary. Best effort: an
-        unknown digest has nothing to drop.
+        unknown digest has nothing to drop. Callers that hold the plan's
+        precomputed digest pass it: re-deriving the identity re-hashes the
+        image files, and if a file changed between plan and failure the
+        recomputed digest would target a different (or no) entry — the
+        published snapshot must be dropped under the exact key it was
+        stored under.
         """
-        digest = self._media_identity_digest(request)
+        if digest is None:
+            digest = self._media_identity_digest(request)
         if digest is None:
             return
         with self._media_entries_guard():
@@ -3269,7 +3277,9 @@ class MLLMBatchGenerator:
             self.model(input_ids[:, :boundary], cache=cache, **prefix_kwargs)
             rope_delta = getattr(self.language_model, "_rope_deltas", None)
             mx.eval([c.state for c in cache])
-            stored = self._media_store(request, cache, input_ids, boundary, rope_delta)
+            stored = self._media_store(
+                request, cache, input_ids, boundary, rope_delta, digest=digest
+            )
             if stored is None:
                 # The snapshot was refused (no delta, uncloneable leaves,
                 # over budget): the split bought nothing reusable, so the
@@ -3290,7 +3300,7 @@ class MLLMBatchGenerator:
             # Restore, discard the published boundary, and redo cold — the
             # published snapshot is worthless without a usable suffix.
             self._media_mrope_restore()
-            self._media_discard_boundary(request)
+            self._media_discard_boundary(request, digest=digest)
             self._media_boundary_misses += 1
             return self._media_cold_redo(input_ids, cache, prefix_kwargs)
         except Exception:
@@ -3300,7 +3310,7 @@ class MLLMBatchGenerator:
             self._media_mrope_restore()
             # The boundary was published before the suffix ran; a request
             # that never completes must never leave a reusable entry.
-            self._media_discard_boundary(request)
+            self._media_discard_boundary(request, digest=digest)
             raise
 
     def _run_vision_encoding(

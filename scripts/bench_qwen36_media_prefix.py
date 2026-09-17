@@ -453,7 +453,14 @@ def _checker_pass(
         for key, terms in checker.get("field_terms", {}).items():
             if key not in payload:
                 return False
-            field_tokens = _tokens(json.dumps(payload.get(key), default=str))
+            # ``ensure_ascii=False``: the default JSON escaping rewrites
+            # non-ASCII characters as backslash-unicode escapes before
+            # tokenizing, so a field term written as the on-screen text
+            # (e.g. a keyboard-shortcut glyph) could never match its own
+            # designated field.
+            field_tokens = _tokens(
+                json.dumps(payload.get(key), default=str, ensure_ascii=False)
+            )
             if not isinstance(terms, list):
                 terms = [terms]
             if not all(
