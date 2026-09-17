@@ -485,6 +485,56 @@ def test_local_workspace_default_path_is_harness_owned_and_user_path_is_preserve
         "rapid_ok",
     ]
 
+    invalid_filename = AgentModelTurn(
+        tool_calls=[
+            AgentToolCall(
+                id="write-invalid",
+                name="local_write",
+                arguments={"path": "../not safe", "content": "text"},
+            )
+        ]
+    )
+    assert _normalize_local_workspace_turn(
+        "Write a note", invalid_filename
+    ).tool_calls[0].arguments["path"] == "~/Rapid Workspace/generated.txt"
+
+    missing_filename = AgentModelTurn(
+        tool_calls=[
+            AgentToolCall(
+                id="write-missing", name="local_write", arguments={"content": "text"}
+            )
+        ]
+    )
+    assert _normalize_local_workspace_turn(
+        "Write a note", missing_filename
+    ).tool_calls[0].arguments["path"] == "~/Rapid Workspace/generated.txt"
+
+    quoted_separator = AgentModelTurn(
+        tool_calls=[
+            AgentToolCall(
+                id="quoted-separator",
+                name="local_run",
+                arguments={"command": "python3 -c 'print(\"a;b\")'"},
+            )
+        ]
+    )
+    assert _normalize_local_workspace_turn(
+        "Run this code", quoted_separator
+    ).tool_calls[0].arguments["command"] == "python3"
+
+    malformed_recipe = AgentModelTurn(
+        tool_calls=[
+            AgentToolCall(
+                id="malformed-recipe",
+                name="local_run",
+                arguments={"command": "'unterminated"},
+            )
+        ]
+    )
+    assert _normalize_local_workspace_turn(
+        "Run this code", malformed_recipe
+    ).tool_calls[0].arguments["command"] == "'unterminated"
+
 
 def test_url_trimming_preserves_balanced_closing_delimiters():
     assert (
@@ -3947,6 +3997,48 @@ async def test_client_desktop_tool_retries_one_rejected_pinned_turn():
     assert retry_messages[-1]["content"].startswith("Call local_write now.")
     assert waiting.pending_action is not None
     assert waiting.pending_action.arguments["path"] == "~/Rapid Workspace/from-model.c"
+
+
+@pytest.mark.asyncio
+async def test_client_desktop_compile_flow_can_offer_local_run_twice():
+    driver = ScriptedDriver(
+        AgentModelTurn(
+            tool_calls=[
+                AgentToolCall(
+                    id="compile",
+                    name="local_run",
+                    arguments={"command": "gcc", "arguments": ["main.c", "-o", "main"]},
+                )
+            ]
+        ),
+        AgentModelTurn(content="Compiled and ran the program."),
+    )
+    service = AgentServerService(registry=FakeRegistry(()), chat_driver=driver)
+    created = await service.create(
+        AgentRunCreateRequest(
+            goal="Compile main.c and run it",
+            execution="client",
+            tool_names=["local_run"],
+        ),
+        model="minicpm5-2b-4bit",
+    )
+
+    waiting = await wait_for_status(
+        service, created.id, AgentRunStatus.AWAITING_TOOL_RESULT
+    )
+    assert waiting.pending_action is not None
+    await service.submit_result(
+        created.id,
+        AgentToolResultRequest(
+            call_id=waiting.pending_action.call_id,
+            content="exit_code: 0",
+            executed=True,
+        ),
+    )
+
+    done = await wait_for_status(service, created.id, AgentRunStatus.COMPLETED)
+    assert done.output == "Compiled and ran the program."
+    assert [tool.name for tool in driver.requests[1][2]] == ["local_run"]
 
 
 @pytest.mark.asyncio

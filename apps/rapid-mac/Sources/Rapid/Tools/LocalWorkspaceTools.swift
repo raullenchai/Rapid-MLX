@@ -187,11 +187,13 @@ enum LocalWorkspaceTools {
         if let rejected = preflight(name, arguments: call.function.arguments) {
             return rejected
         }
+        let grantScope = persistent ? approvalScope(name, arguments: call.function.arguments) : nil
 
         switch await approval.requestApproval(
             toolName: name,
             title: title,
             argumentsJSON: call.function.arguments,
+            grantScope: grantScope,
             allowsPersistentGrant: persistent
         ) {
         case .allowOnce, .alwaysAllowTool: break
@@ -276,6 +278,17 @@ enum LocalWorkspaceTools {
         return try? JSONDecoder().decode(type, from: data)
     }
 
+    private static func approvalScope(_ name: String, arguments: String) -> String? {
+        let rawPath: String?
+        switch name {
+        case "local_search": rawPath = decode(SearchArgs.self, arguments)?.path
+        case "local_read": rawPath = decode(PathArgs.self, arguments)?.path
+        default: rawPath = nil
+        }
+        guard let rawPath else { return nil }
+        return try? safeURL(rawPath).path
+    }
+
     private static func validatedLexicalURL(_ path: String) throws -> URL {
         let home = FileManager.default.homeDirectoryForCurrentUser.standardizedFileURL.resolvingSymlinksInPath()
         let expanded: String
@@ -293,8 +306,13 @@ enum LocalWorkspaceTools {
             throw LocalError("path must stay inside \(home.path)")
         }
         let relative = String(url.path.dropFirst(homePrefix.count))
+        let comparisonRelative = relative.lowercased()
         let protected = [".ssh", ".gnupg", "Library/Keychains"]
-        guard !protected.contains(where: { relative == $0 || relative.hasPrefix($0 + "/") }) else {
+        guard !protected.contains(where: {
+            let comparisonProtected = $0.lowercased()
+            return comparisonRelative == comparisonProtected
+                || comparisonRelative.hasPrefix(comparisonProtected + "/")
+        }) else {
             throw LocalError("that protected location is unavailable")
         }
         return url
@@ -741,8 +759,17 @@ enum LocalWorkspaceTools {
         (allow default)
         (deny network*)
         (deny mach-lookup)
+        ; Keep runtimes and toolchains usable, but deny data-bearing locations
+        ; outside the exact approved workspace. The more-specific workspace
+        ; allow is the only exception within the user's home directory.
         (deny file-read* (subpath \(quoted(home.path))))
-        (allow file-read* (subpath \(quoted(workingDirectory.path))) (literal \(quoted(executable.path))))
+        (deny file-read* (subpath "/Users"))
+        (deny file-read* (subpath "/Volumes"))
+        (deny file-read* (subpath "/private/etc"))
+        (allow file-read*
+            (subpath \(quoted(workingDirectory.path)))
+            (subpath \(quoted(temporaryDirectory.path)))
+            (literal \(quoted(executable.path))))
         (deny file-write*)
         (allow file-write*
             (subpath \(quoted(workingDirectory.path)))

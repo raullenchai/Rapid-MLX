@@ -26,6 +26,7 @@ final class LocalToolApprovalStore {
     private var sessionGrants: Set<String> = []
     private(set) var pendingRequest: PendingApproval?
     private var pendingContinuation: CheckedContinuation<Decision, Never>?
+    private var pendingGrantKey: String?
     private var pendingToken = 0
 
     init(defaults: UserDefaults = .standard) {
@@ -35,16 +36,21 @@ final class LocalToolApprovalStore {
     }
 
     func isGranted(_ toolName: String) -> Bool {
-        sessionGrants.contains(toolName)
+        sessionGrants.contains { $0.hasPrefix(toolName + "\u{0}") }
     }
 
     func requestApproval(
         toolName: String,
         title: String,
         argumentsJSON: String,
+        grantScope: String? = nil,
         allowsPersistentGrant: Bool
     ) async -> Decision {
-        if allowsPersistentGrant, isGranted(toolName) { return .allowOnce }
+        // The caller supplies a canonical, symlink-resolved scope after
+        // preflight. Never remember an untrusted raw path: a symlink could be
+        // retargeted after the user approves it.
+        let grantKey = allowsPersistentGrant ? grantScope.map { toolName + "\u{0}" + $0 } : nil
+        if let grantKey, sessionGrants.contains(grantKey) { return .allowOnce }
         if pendingRequest != nil { return .unavailable }
 
         let token = pendingToken &+ 1
@@ -57,6 +63,7 @@ final class LocalToolApprovalStore {
                     return
                 }
                 pendingContinuation = continuation
+                pendingGrantKey = grantKey
                 pendingRequest = PendingApproval(
                     toolName: toolName,
                     title: BrowseApprovalStore.displaySafe(title),
@@ -69,6 +76,7 @@ final class LocalToolApprovalStore {
                 guard let self, self.pendingToken == token else { return }
                 let continuation = self.pendingContinuation
                 self.pendingContinuation = nil
+                self.pendingGrantKey = nil
                 self.pendingRequest = nil
                 continuation?.resume(returning: .unavailable)
             }
@@ -77,10 +85,13 @@ final class LocalToolApprovalStore {
 
     func answer(_ decision: Decision) {
         guard let pending = pendingRequest else { return }
-        if decision == .alwaysAllowTool, pending.allowsPersistentGrant {
-            sessionGrants.insert(pending.toolName)
+        if decision == .alwaysAllowTool,
+           pending.allowsPersistentGrant,
+           let pendingGrantKey {
+            sessionGrants.insert(pendingGrantKey)
         }
         pendingRequest = nil
+        pendingGrantKey = nil
         pendingContinuation?.resume(returning: decision)
         pendingContinuation = nil
     }

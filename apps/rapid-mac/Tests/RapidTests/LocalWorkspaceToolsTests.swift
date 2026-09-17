@@ -220,6 +220,120 @@ final class LocalWorkspaceToolsTests {
         #expect(!result.content.contains("RAPID_SANDBOX_SECRET"))
     }
 
+    @Test("run sandbox blocks reads outside the home and approved workspace")
+    func commandCannotReadMachineFiles() async throws {
+        let root = try fixtureDirectory()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let arguments = try #require(String(data: JSONSerialization.data(withJSONObject: [
+            "command": "python3",
+            "arguments": ["-c", "print(open('/etc/hosts').read())"],
+            "working_directory": root.path,
+        ]), encoding: .utf8))
+
+        let result = await runApproved(name: "local_run", arguments: arguments, store: approval())
+
+        #expect(result.isError)
+        #expect(!result.content.contains("localhost"))
+    }
+
+    @Test("protected paths are rejected case-insensitively before approval")
+    func protectedPathCaseDoesNotBypassGuard() async {
+        let store = approval()
+        let result = await LocalWorkspaceTools.run(
+            ToolCall(
+                id: "test-call",
+                name: "local_read",
+                arguments: #"{"path":"~/.SSH/id_rsa"}"#
+            ),
+            approval: store
+        )
+        #expect(result.isError)
+        #expect(result.content.contains("protected"))
+        #expect(store.pendingRequest == nil)
+    }
+
+    @Test("session read grants stay scoped to the approved path")
+    func readGrantDoesNotAuthorizeAnotherFile() async throws {
+        let root = try fixtureDirectory()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let first = root.appendingPathComponent("first.txt")
+        let second = root.appendingPathComponent("second.txt")
+        try "one".write(to: first, atomically: true, encoding: .utf8)
+        try "two".write(to: second, atomically: true, encoding: .utf8)
+        let store = approval()
+        let firstArguments = #"{"path":"\#(first.path)"}"#
+
+        let initial = Task {
+            await LocalWorkspaceTools.run(
+                ToolCall(id: "first", name: "local_read", arguments: firstArguments),
+                approval: store
+            )
+        }
+        while store.pendingRequest == nil { await Task.yield() }
+        store.answer(.alwaysAllowTool)
+        #expect(!(await initial.value).isError)
+
+        // The exact file is session-approved and returns without prompting.
+        let repeated = await LocalWorkspaceTools.run(
+            ToolCall(id: "repeat", name: "local_read", arguments: firstArguments),
+            approval: store
+        )
+        #expect(!repeated.isError)
+        #expect(store.pendingRequest == nil)
+
+        // A different file must still stop at a fresh consent sheet.
+        let secondTask = Task {
+            await LocalWorkspaceTools.run(
+                ToolCall(
+                    id: "second",
+                    name: "local_read",
+                    arguments: #"{"path":"\#(second.path)"}"#
+                ),
+                approval: store
+            )
+        }
+        while store.pendingRequest == nil { await Task.yield() }
+        store.answer(.deny)
+        #expect((await secondTask.value).isError)
+    }
+
+    @Test("session read grants cannot follow a retargeted symlink")
+    func readGrantDoesNotFollowRetargetedSymlink() async throws {
+        let root = try fixtureDirectory()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let first = root.appendingPathComponent("first.txt")
+        let second = root.appendingPathComponent("second.txt")
+        let link = root.appendingPathComponent("current.txt")
+        try "one".write(to: first, atomically: true, encoding: .utf8)
+        try "two".write(to: second, atomically: true, encoding: .utf8)
+        try FileManager.default.createSymbolicLink(at: link, withDestinationURL: first)
+        let store = approval()
+        let arguments = #"{"path":"\#(link.path)"}"#
+
+        let initial = Task {
+            await LocalWorkspaceTools.run(
+                ToolCall(id: "first", name: "local_read", arguments: arguments),
+                approval: store
+            )
+        }
+        while store.pendingRequest == nil { await Task.yield() }
+        store.answer(.alwaysAllowTool)
+        #expect(!(await initial.value).isError)
+
+        try FileManager.default.removeItem(at: link)
+        try FileManager.default.createSymbolicLink(at: link, withDestinationURL: second)
+        let retargeted = Task {
+            await LocalWorkspaceTools.run(
+                ToolCall(id: "second", name: "local_read", arguments: arguments),
+                approval: store
+            )
+        }
+        while store.pendingRequest == nil { await Task.yield() }
+        #expect(store.pendingRequest?.toolName == "local_read")
+        store.answer(.deny)
+        #expect((await retargeted.value).failureKind == .userDeclined)
+    }
+
     @Test("run captures at most 64 KB per output stream")
     func commandOutputIsBounded() async throws {
         let root = try fixtureDirectory()

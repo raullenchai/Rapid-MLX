@@ -958,7 +958,10 @@ def _normalize_local_workspace_turn(goal: str, turn: AgentModelTurn) -> AgentMod
     if _LOCAL_PATH.search(goal) is not None or len(turn.tool_calls) != 1:
         return turn
     call = turn.tool_calls[0]
-    arguments = dict(call.arguments)
+    # The wire model exposes recursive ``JsonValue`` entries. Normalization
+    # deliberately rebuilds a plain mutable object before Pydantic validates
+    # the copied turn, so concrete argv lists are safe to assign here.
+    arguments: dict[str, Any] = dict(call.arguments)
     if call.name == "local_write":
         raw_path = arguments.get("path")
         if isinstance(raw_path, str):
