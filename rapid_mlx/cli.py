@@ -574,11 +574,19 @@ def _hard_exit_after_serve() -> None:
     # Run the atexit pass explicitly — os._exit would otherwise skip it
     # (see docstring: the hooks are load-bearing). Registered hooks are
     # idempotent and budgeted (telemetry drain caps its join; the
-    # reapers are rmtree/unlink passes), and atexit swallows hook
-    # exceptions so a failing hook cannot block the exit.
+    # reapers are rmtree/unlink passes). ``_run_exitfuncs`` is a private
+    # CPython API, but it is the exact pass interpreter finalization
+    # would run and has been stable across every CPython release that
+    # ships this project's floor; the BaseException guard below makes
+    # the failure mode of that assumption changing safe (skip the
+    # hooks, still hard-exit — the pre-#3495 crash window stays closed).
+    # Catch BaseException, not Exception: a hook re-raising SystemExit
+    # or KeyboardInterrupt must not skip the os._exit below, or the
+    # process falls back into the exact interpreter-finalization crash
+    # path this helper exists to prevent (codex round-3 BLOCKING).
     try:
-        atexit._run_exitfuncs()  # noqa: SLF001 — the documented escape hatch
-    except Exception:  # pragma: no cover — never block the hard exit
+        atexit._run_exitfuncs()  # noqa: SLF001 — see comment above
+    except BaseException:  # noqa: BLE001 — see comment above
         pass
     try:
         sys.stdout.flush()

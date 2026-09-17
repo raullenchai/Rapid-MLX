@@ -28,23 +28,37 @@ from rapid_mlx import cli
 
 @pytest.fixture
 def production_exit_context(monkeypatch):
-    """Force the helper's production path.
+    """Force the helper's production path, with the atexit pass recorded.
 
-    The guard fires only when BOTH pytest is imported in this process
-    AND ``PYTEST_CURRENT_TEST`` is set (the in-process harness shape).
-    Removing the module from ``sys.modules`` alone is sufficient at the
-    call phase: pytest re-sets ``PYTEST_CURRENT_TEST`` when the call
-    phase starts, so any setup-phase ``delenv`` would be undone anyway
-    (verified with a spy plugin — codex round-2). A real serve process
-    — including a pytest-spawned child that inherits the env var —
-    never has pytest imported, so the guard stays false for it.
+    Two jobs:
+
+    * The guard fires only when BOTH pytest is imported in this process
+      AND ``PYTEST_CURRENT_TEST`` is set (the in-process harness shape).
+      Removing the module from ``sys.modules`` alone is sufficient at
+      the call phase: pytest re-sets ``PYTEST_CURRENT_TEST`` when the
+      call phase starts, so any setup-phase ``delenv`` would be undone
+      anyway (verified with a spy plugin — codex round-2). A real serve
+      process — including a pytest-spawned child that inherits the env
+      var — never has pytest imported, so the guard stays false for it.
+    * ``atexit._run_exitfuncs`` is replaced with a recorder (codex
+      round-3 BLOCKING #1): letting the helper execute the REAL atexit
+      pass mid-suite permanently consumes every exit handler registered
+      by pytest and its plugins, breaking teardown for the rest of the
+      session (and aborting the interpreter at exit — observed as a
+      SIGABRT'd full-unit run). Returns the event list so tests can
+      assert hook/exit ordering.
     """
     monkeypatch.delitem(sys.modules, "pytest", raising=False)
+    events: list[str] = []
+    monkeypatch.setattr(cli.atexit, "_run_exitfuncs", lambda: events.append("atexit"))
+    return events
 
 
 def test_hard_exit_flushes_streams_and_exits_zero(monkeypatch, production_exit_context):
-    """Success path: flush stdout/stderr, then ``os._exit(0)``."""
-    exit_calls: list[int] = []
+    """Success path: run the atexit pass, flush stdout/stderr, then
+    ``os._exit(0)`` — in that order (codex round-3 BLOCKING #1).
+    """
+    events = production_exit_context
 
     class _FlushRecorder:
         def __init__(self) -> None:
@@ -56,30 +70,35 @@ def test_hard_exit_flushes_streams_and_exits_zero(monkeypatch, production_exit_c
     out, err = _FlushRecorder(), _FlushRecorder()
     monkeypatch.setattr(cli.sys, "stdout", out)
     monkeypatch.setattr(cli.sys, "stderr", err)
-    monkeypatch.setattr(cli.os, "_exit", lambda code: exit_calls.append(code))
+    monkeypatch.setattr(cli.os, "_exit", lambda code: events.append(f"exit:{code}"))
 
     cli._hard_exit_after_serve()
 
     assert out.flushed, "stdout must be flushed before os._exit"
     assert err.flushed, "stderr must be flushed before os._exit"
-    assert exit_calls == [0], f"expected exactly one os._exit(0), got {exit_calls!r}"
+    assert events == ["atexit", "exit:0"], (
+        f"expected [atexit pass] then exactly one os._exit(0), got {events!r}"
+    )
 
 
 def test_hard_exit_is_skipped_in_inprocess_pytest_harness(monkeypatch):
     """In-process suites drive serve through stubbed uvicorn runs; the
-    guard must keep ``os._exit`` away from the pytest process (an
-    ``os._exit(0)`` mid-suite would end the run green while skipping
-    every later test). The guard requires BOTH the imported module and
-    the pytest-owned env var — the in-process harness shape.
+    guard must keep ``os._exit`` — and the atexit pass — away from the
+    pytest process (an ``os._exit(0)`` mid-suite would end the run green
+    while skipping every later test; a consumed atexit registry breaks
+    teardown for the rest of the session). The guard requires BOTH the
+    imported module and the pytest-owned env var — the in-process
+    harness shape.
     """
-    exit_calls: list[int] = []
-    monkeypatch.setattr(cli.os, "_exit", lambda code: exit_calls.append(code))
+    events: list[str] = []
+    monkeypatch.setattr(cli.os, "_exit", lambda code: events.append(f"exit:{code}"))
+    monkeypatch.setattr(cli.atexit, "_run_exitfuncs", lambda: events.append("atexit"))
     monkeypatch.setitem(sys.modules, "pytest", types.ModuleType("pytest"))
     monkeypatch.setenv("PYTEST_CURRENT_TEST", "tests/test_serve_hard_exit.py::t")
 
     cli._hard_exit_after_serve()
 
-    assert exit_calls == []
+    assert events == []
 
 
 @pytest.mark.parametrize(
@@ -98,7 +117,7 @@ def test_hard_exit_still_fires_without_full_harness_shape(
     server process never matches both (codex round-1 NIT — an env-only
     or module-only process must take the production exit path).
     """
-    exit_calls: list[int] = []
+    events = production_exit_context
 
     class _NullStream:
         def flush(self) -> None:
@@ -106,7 +125,7 @@ def test_hard_exit_still_fires_without_full_harness_shape(
 
     monkeypatch.setattr(cli.sys, "stdout", _NullStream())
     monkeypatch.setattr(cli.sys, "stderr", _NullStream())
-    monkeypatch.setattr(cli.os, "_exit", lambda code: exit_calls.append(code))
+    monkeypatch.setattr(cli.os, "_exit", lambda code: events.append(f"exit:{code}"))
     if scenario == "env_only":
         # The fixture already removed the module; pytest guarantees
         # PYTEST_CURRENT_TEST is set at the call phase, matching the
@@ -125,9 +144,9 @@ def test_hard_exit_still_fires_without_full_harness_shape(
 
     cli._hard_exit_after_serve()
 
-    assert exit_calls == [0], (
-        f"{scenario}: hard exit must fire when only one harness signal "
-        "is present — production processes never match both"
+    assert events == ["atexit", "exit:0"], (
+        f"{scenario}: hard exit (after the atexit pass) must fire when only "
+        "one harness signal is present — production processes never match both"
     )
 
 
@@ -140,14 +159,14 @@ def test_hard_exit_swallows_flush_failures(monkeypatch, production_exit_context)
         def flush(self) -> None:
             raise ValueError("stream closed")
 
-    exit_calls: list[int] = []
+    events = production_exit_context
     monkeypatch.setattr(cli.sys, "stdout", _Broken())
     monkeypatch.setattr(cli.sys, "stderr", _Broken())
-    monkeypatch.setattr(cli.os, "_exit", lambda code: exit_calls.append(code))
+    monkeypatch.setattr(cli.os, "_exit", lambda code: events.append(f"exit:{code}"))
 
     cli._hard_exit_after_serve()
 
-    assert exit_calls == [0]
+    assert events == ["atexit", "exit:0"]
 
 
 def _entrypoint_call_sequence(entrypoint_name: str) -> list[str]:
