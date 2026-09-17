@@ -1922,6 +1922,9 @@ class BatchedEngine(BaseEngine):
             enable_prefix_cache=getattr(
                 self._scheduler_config, "enable_prefix_cache", True
             ),
+            mllm_singleton_fastpath=getattr(
+                self._scheduler_config, "mllm_singleton_fastpath", "auto"
+            ),
             vision_min_pixels=vision_min_pixels,
             vision_max_pixels=vision_max_pixels,
         )
@@ -4311,6 +4314,9 @@ class BatchedEngine(BaseEngine):
                 "num_running",
                 "num_finished",
                 "num_requests_processed",
+                "max_num_waiting_observed",
+                "max_num_running_observed",
+                "observed_running_with_waiter",
                 "total_prompt_tokens",
                 "total_completion_tokens",
                 "num_requests_cancelled",

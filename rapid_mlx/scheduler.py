@@ -591,7 +591,21 @@ class SchedulerConfig:
     # forced into the next available slot. Only used by the opt-in policy.
     scheduling_max_deferrals: int = 8
 
+    # Singleton no-rebatch fast path for the serialized MLLM lane (default
+    # ``"auto"``). ``"auto"`` skips the per-request cache merge for
+    # structural B=1 batches whose cache leaves qualify under the
+    # eligibility contract enforced in ``MLLMBatchGenerator``; ``"off"`` is
+    # the operator rollback that always takes the legacy merge/rebatch
+    # path. Typed config value on purpose — the decode hot path never
+    # consults an environment variable. Appended for positional callers.
+    mllm_singleton_fastpath: str = "auto"
+
     def __post_init__(self) -> None:
+        if self.mllm_singleton_fastpath not in ("auto", "off"):
+            raise ValueError(
+                "mllm_singleton_fastpath must be 'auto' or 'off', "
+                f"got {self.mllm_singleton_fastpath!r}"
+            )
         if self.scheduling_policy not in ("fcfs", "shortest_validated_tail"):
             raise ValueError(
                 "scheduling_policy must be 'fcfs' or 'shortest_validated_tail'"

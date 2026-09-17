@@ -102,8 +102,18 @@ class MLLMSchedulerConfig:
     allow_arrays_cache: bool = False
     # Reuse language prefixes inside the MLLM lane via mlx-vlm APC.
     enable_prefix_cache: bool = True
+    # Singleton no-rebatch fast path (default ``"auto"``): skip the
+    # per-request cache merge for structural B=1 batches whose leaves
+    # qualify under the generator's eligibility contract. ``"off"`` is the
+    # operator rollback that always takes the legacy merge/rebatch path.
+    mllm_singleton_fastpath: str = "auto"
 
     def __post_init__(self) -> None:
+        if self.mllm_singleton_fastpath not in ("auto", "off"):
+            raise ValueError(
+                "mllm_singleton_fastpath must be 'auto' or 'off', "
+                f"got {self.mllm_singleton_fastpath!r}"
+            )
         if self.vision_prefill_token_budget is None:
             self.vision_prefill_token_budget = self.prefill_step_size
         elif self.vision_prefill_token_budget <= 0:
@@ -312,6 +322,12 @@ class MLLMScheduler:
         # Request management - following vLLM's design
         self.waiting: deque[MLLMRequest] = deque()  # Waiting queue (FCFS)
         self.running: dict[str, MLLMRequest] = {}  # Running requests by ID
+        # Transition-owned queue-depth evidence. Unlike event-loop polling,
+        # these counters cannot miss a short-lived admission while Metal work
+        # blocks the observer. They are also useful in operational stats.
+        self._max_num_waiting_observed = 0
+        self._max_num_running_observed = 0
+        self._observed_running_with_waiter = False
         self.requests: dict[str, MLLMRequest] = {}  # All requests by ID
         self._generation_paused = False
         self._paused_add_allowance = 0
@@ -571,6 +587,7 @@ class MLLMScheduler:
                 vision_min_pixels=self.config.vision_min_pixels,
                 vision_max_pixels=self.config.vision_max_pixels,
                 enable_prefix_cache=self.config.enable_prefix_cache,
+                singleton_fastpath=self.config.mllm_singleton_fastpath,
             )
 
     # ========== Sync API (step-based) ==========
@@ -729,6 +746,26 @@ class MLLMScheduler:
             self._disconnect_abort_ids.discard(request.request_id)
             self.requests[request.request_id] = request
             self.waiting.append(request)
+            self._record_queue_depth_observation()
+
+    def _record_queue_depth_observation(self) -> None:
+        """Record queue depth at the exact lifecycle transition."""
+
+        # Several lifecycle/error tests intentionally construct a defensive
+        # partial scheduler with ``__new__``. Keep instrumentation inert for
+        # that supported shape instead of changing request publication.
+        waiting = len(getattr(self, "waiting", ()))
+        running = len(getattr(self, "running", {}))
+        self._max_num_waiting_observed = max(
+            getattr(self, "_max_num_waiting_observed", 0), waiting
+        )
+        self._max_num_running_observed = max(
+            getattr(self, "_max_num_running_observed", 0), running
+        )
+        self._observed_running_with_waiter = bool(
+            getattr(self, "_observed_running_with_waiter", False)
+            or (running > 0 and waiting > 0)
+        )
 
     def set_generation_paused(self, paused: bool, *, add_allowance: int = 0) -> None:
         """Close or reopen scheduler admission for model replacement."""
@@ -971,6 +1008,7 @@ class MLLMScheduler:
 
             request.status = RequestStatus.RUNNING
             self.running[request.request_id] = request
+            self._record_queue_depth_observation()
             scheduled.append(request)
 
         # Insert into batch generator
@@ -2244,6 +2282,11 @@ class MLLMScheduler:
             "num_running": len(self.running),
             "num_finished": len(self.finished_req_ids),
             "num_requests_processed": self.num_requests_processed,
+            "max_num_waiting_observed": getattr(self, "_max_num_waiting_observed", 0),
+            "max_num_running_observed": getattr(self, "_max_num_running_observed", 0),
+            "observed_running_with_waiter": getattr(
+                self, "_observed_running_with_waiter", False
+            ),
             "total_prompt_tokens": self.total_prompt_tokens,
             "total_completion_tokens": self.total_completion_tokens,
             # M-01: cancellation observability — mirror of the text

@@ -1,0 +1,478 @@
+{
+  "schema_version": 1,
+  "description": "Serialized-MLLM-lane runtime corpus for the singleton no-rebatch qualification. 22 cases: 20 media cases (4 per category) built from tracked Desktop snapshot images plus 2 text-only fallback cases. The primary deterministic gate is paired baseline/candidate token equality on the same exact build; the machine-readable checkers prevent two equally wrong outputs from passing. No natural-language golden responses are committed.",
+  "images_root": "../..",
+  "sampled_ab_case_ids": [
+    "ocr-01",
+    "ocr-03",
+    "control-01",
+    "control-03",
+    "json-01",
+    "json-03",
+    "acc-01",
+    "acc-03",
+    "cmp-01",
+    "cmp-03",
+    "text-warm-01"
+  ],
+  "cases": [
+    {
+      "id": "ocr-01",
+      "category": "ocr_extraction",
+      "images": [
+        "apps/rapid-mac/Tests/RapidTests/__Snapshots__/model-picker-bar-ready.png"
+      ],
+      "prompt": "Report the exact model name and the status chip text visible in this toolbar. Two short lines, nothing else.",
+      "max_tokens": 48,
+      "sampling": {
+        "temperature": 0.0,
+        "top_p": 1.0
+      },
+      "checker": {
+        "type": "terms",
+        "required": [
+          "qwen3.6-27b",
+          "ready"
+        ]
+      }
+    },
+    {
+      "id": "ocr-02",
+      "category": "ocr_extraction",
+      "images": [
+        "apps/rapid-mac/Tests/RapidTests/__Snapshots__/model-picker-bar-missing.png"
+      ],
+      "prompt": "Report the exact title text and the grey chip text visible in this toolbar. Two short lines, nothing else.",
+      "max_tokens": 48,
+      "sampling": {
+        "temperature": 0.0,
+        "top_p": 1.0
+      },
+      "checker": {
+        "type": "terms",
+        "required": [
+          "pick a model",
+          "not installed"
+        ],
+        "forbidden": [
+          "ready"
+        ]
+      }
+    },
+    {
+      "id": "ocr-03",
+      "category": "ocr_extraction",
+      "images": [
+        "apps/rapid-mac/Tests/RapidTests/__Snapshots__/model-picker-bar-starting.png"
+      ],
+      "prompt": "Report the alias name, the status chip text, and the smaller status subtitle visible in this toolbar. Three short lines, nothing else.",
+      "max_tokens": 48,
+      "sampling": {
+        "temperature": 0.0,
+        "top_p": 1.0
+      },
+      "checker": {
+        "type": "terms",
+        "required": [
+          "fake-alias",
+          "starting"
+        ]
+      }
+    },
+    {
+      "id": "ocr-04",
+      "category": "ocr_extraction",
+      "images": [
+        "apps/rapid-mac/Tests/RapidTests/__Snapshots__/sessions-sidebar-empty.png"
+      ],
+      "prompt": "List the three labelled controls in this sidebar, one per line, using their exact visible labels.",
+      "max_tokens": 64,
+      "sampling": {
+        "temperature": 0.0,
+        "top_p": 1.0
+      },
+      "checker": {
+        "type": "terms",
+        "required": [
+          "new chat",
+          "search chats",
+          "start chatting"
+        ]
+      }
+    },
+    {
+      "id": "control-01",
+      "category": "grounded_control",
+      "images": [
+        "apps/rapid-mac/Tests/RapidTests/__Snapshots__/onboarding-tour-light.png"
+      ],
+      "prompt": "Which control exits the tour without advancing? Reply with only its exact label.",
+      "max_tokens": 24,
+      "sampling": {
+        "temperature": 0.0,
+        "top_p": 1.0
+      },
+      "checker": {
+        "type": "terms",
+        "required": [
+          "skip"
+        ]
+      }
+    },
+    {
+      "id": "control-02",
+      "category": "grounded_control",
+      "images": [
+        "apps/rapid-mac/Tests/RapidTests/__Snapshots__/onboarding-tour-light.png"
+      ],
+      "prompt": "Which button advances to the next tour page? Reply with only its exact label and the screen corner it sits in.",
+      "max_tokens": 24,
+      "sampling": {
+        "temperature": 0.0,
+        "top_p": 1.0
+      },
+      "checker": {
+        "type": "terms",
+        "required": [
+          "next"
+        ]
+      }
+    },
+    {
+      "id": "control-03",
+      "category": "grounded_control",
+      "images": [
+        "apps/rapid-mac/Tests/RapidTests/__Snapshots__/sessions-sidebar-empty.png"
+      ],
+      "prompt": "What keyboard shortcut does the sidebar hint at for starting a chat? Reply with only the shortcut.",
+      "max_tokens": 24,
+      "sampling": {
+        "temperature": 0.0,
+        "top_p": 1.0
+      },
+    "checker": {
+      "type": "regex",
+      "pattern": "(?i)(?:⌘\\s*n|(?:command|cmd)\\s*\\+?\\s*n)"
+    }
+    },
+    {
+      "id": "control-04",
+      "category": "grounded_control",
+      "images": [
+        "apps/rapid-mac/Tests/RapidTests/__Snapshots__/model-picker-bar-starting.png"
+      ],
+      "prompt": "Is the Stop button on the left or the right side of this toolbar? One short line.",
+      "max_tokens": 24,
+      "sampling": {
+        "temperature": 0.0,
+        "top_p": 1.0
+      },
+      "checker": {
+        "type": "terms",
+        "required": [
+          "right"
+        ]
+      }
+    },
+    {
+      "id": "json-01",
+      "category": "structured_json",
+      "images": [
+        "apps/rapid-mac/Tests/RapidTests/__Snapshots__/model-picker-bar-ready.png"
+      ],
+      "prompt": "Output JSON only: {\"model\": <model name>, \"status\": <status chip>, \"action\": <rightmost button label>}.",
+      "max_tokens": 64,
+      "sampling": {
+        "temperature": 0.0,
+        "top_p": 1.0
+      },
+      "checker": {
+        "type": "json_shape",
+    "keys": [
+      "model",
+      "status",
+      "action"
+    ],
+    "types": {"model": "str", "status": "str", "action": "str"},
+    "field_terms": {
+      "model": ["qwen3.6-27b"],
+      "status": ["ready"],
+      "action": ["start"]
+    }
+      }
+    },
+    {
+      "id": "json-02",
+      "category": "structured_json",
+      "images": [
+        "apps/rapid-mac/Tests/RapidTests/__Snapshots__/sessions-sidebar-empty.png"
+      ],
+      "prompt": "Output JSON only: {\"title\": <sidebar title>, \"buttons\": [<visible button labels>]}.",
+      "max_tokens": 96,
+      "sampling": {
+        "temperature": 0.0,
+        "top_p": 1.0
+      },
+      "checker": {
+        "type": "json_shape",
+    "keys": [
+      "title",
+      "buttons"
+    ],
+    "types": {"title": "str", "buttons": "list"},
+    "field_terms": {
+      "title": ["rapid-mlx desktop"],
+      "buttons": ["new chat", "start chatting"]
+    }
+      }
+    },
+    {
+      "id": "json-03",
+      "category": "structured_json",
+      "images": [
+        "apps/rapid-mac/Tests/RapidTests/__Snapshots__/onboarding-tour-dark.png"
+      ],
+      "prompt": "Output JSON only: {\"heading\": <page heading>, \"primary_action\": <bottom-right button label>}.",
+      "max_tokens": 64,
+      "sampling": {
+        "temperature": 0.0,
+        "top_p": 1.0
+      },
+      "checker": {
+        "type": "json_shape",
+    "keys": [
+      "heading",
+      "primary_action"
+    ],
+    "types": {"heading": "str", "primary_action": "str"},
+    "field_terms": {
+      "heading": ["pick a model"],
+      "primary_action": ["next"]
+    }
+      }
+    },
+    {
+      "id": "json-04",
+      "category": "structured_json",
+      "images": [
+        "apps/rapid-mac/Tests/RapidTests/__Snapshots__/model-picker-bar-ready.png",
+        "apps/rapid-mac/Tests/RapidTests/__Snapshots__/model-picker-bar-idle.png"
+      ],
+      "prompt": "Output JSON only: {\"bars\": [{\"model\": <first bar model>, \"status\": <first bar status>}, {\"model\": <second bar model>, \"status\": <second bar status>}]}.",
+      "max_tokens": 96,
+      "sampling": {
+        "temperature": 0.0,
+        "top_p": 1.0
+      },
+      "checker": {
+        "type": "json_shape",
+    "keys": [
+      "bars"
+    ],
+    "types": {"bars": "list"},
+    "field_terms": {"bars": ["ready", "idle"]}
+      }
+    },
+    {
+      "id": "acc-01",
+      "category": "accessibility_description",
+      "images": [
+        "apps/rapid-mac/Tests/RapidTests/__Snapshots__/onboarding-tour-light.png"
+      ],
+      "prompt": "Write an accessibility description of this screen of at least 200 words: heading, body summary, and every interactive control with its position.",
+      "max_tokens": 320,
+      "sampling": {
+        "temperature": 0.0,
+        "top_p": 1.0
+      },
+    "checker": {
+      "type": "terms",
+      "min_words": 200,
+      "required": [
+          "pick a model",
+          "next",
+          "skip"
+        ]
+      }
+    },
+    {
+      "id": "acc-02",
+      "category": "accessibility_description",
+      "images": [
+        "apps/rapid-mac/Tests/RapidTests/__Snapshots__/onboarding-tour-dark.png"
+      ],
+      "prompt": "Write an accessibility description of this screen of at least 200 words: heading, body summary, and every interactive control with its position.",
+      "max_tokens": 320,
+      "sampling": {
+        "temperature": 0.0,
+        "top_p": 1.0
+      },
+    "checker": {
+      "type": "terms",
+      "min_words": 200,
+      "required": [
+          "pick a model"
+        ]
+      }
+    },
+    {
+      "id": "acc-03",
+      "category": "accessibility_description",
+      "images": [
+        "apps/rapid-mac/Tests/RapidTests/__Snapshots__/sessions-sidebar-empty.png"
+      ],
+      "prompt": "Write an accessibility description of this sidebar of at least 200 words: title, every control, and the empty-state message.",
+      "max_tokens": 320,
+      "sampling": {
+        "temperature": 0.0,
+        "top_p": 1.0
+      },
+    "checker": {
+      "type": "terms",
+      "min_words": 200,
+      "required": [
+          "new chat",
+          "start chatting"
+        ]
+      }
+    },
+    {
+      "id": "acc-04",
+      "category": "accessibility_description",
+      "images": [
+        "apps/rapid-mac/Tests/RapidTests/__Snapshots__/model-picker-bar-ready.png"
+      ],
+      "prompt": "Write an accessibility description of this toolbar of at least 200 words: model name, status, and every control with its position.",
+      "max_tokens": 320,
+      "sampling": {
+        "temperature": 0.0,
+        "top_p": 1.0
+      },
+    "checker": {
+      "type": "terms",
+      "min_words": 200,
+      "required": [
+          "ready"
+        ]
+      }
+    },
+    {
+      "id": "cmp-01",
+      "category": "two_image_comparison",
+      "images": [
+        "apps/rapid-mac/Tests/RapidTests/__Snapshots__/onboarding-tour-light.png",
+        "apps/rapid-mac/Tests/RapidTests/__Snapshots__/onboarding-tour-dark.png"
+      ],
+      "prompt": "These two screenshots show the same page. Name the visual difference between them in one short line.",
+      "max_tokens": 48,
+      "sampling": {
+        "temperature": 0.0,
+        "top_p": 1.0
+      },
+      "checker": {
+        "type": "terms",
+        "required": [
+          "dark"
+        ]
+      }
+    },
+    {
+      "id": "cmp-02",
+      "category": "two_image_comparison",
+      "images": [
+        "apps/rapid-mac/Tests/RapidTests/__Snapshots__/model-picker-bar-ready.png",
+        "apps/rapid-mac/Tests/RapidTests/__Snapshots__/model-picker-bar-idle.png"
+      ],
+      "prompt": "Two toolbar screenshots. Report the status chip text of the first bar and of the second bar, one line each.",
+      "max_tokens": 48,
+      "sampling": {
+        "temperature": 0.0,
+        "top_p": 1.0
+      },
+      "checker": {
+        "type": "terms",
+        "required": [
+          "ready",
+          "idle"
+        ]
+      }
+    },
+    {
+      "id": "cmp-03",
+      "category": "two_image_comparison",
+      "images": [
+        "apps/rapid-mac/Tests/RapidTests/__Snapshots__/model-picker-bar-starting.png",
+        "apps/rapid-mac/Tests/RapidTests/__Snapshots__/model-picker-bar-ready.png"
+      ],
+      "prompt": "Two toolbar screenshots. Report the status chip text of the first bar and of the second bar, one line each.",
+      "max_tokens": 48,
+      "sampling": {
+        "temperature": 0.0,
+        "top_p": 1.0
+      },
+      "checker": {
+        "type": "terms",
+        "required": [
+          "starting",
+          "ready"
+        ]
+      }
+    },
+    {
+      "id": "cmp-04",
+      "category": "two_image_comparison",
+      "images": [
+        "apps/rapid-mac/Tests/RapidTests/__Snapshots__/model-picker-bar-missing.png",
+        "apps/rapid-mac/Tests/RapidTests/__Snapshots__/model-picker-bar-idle.png"
+      ],
+      "prompt": "Two toolbar screenshots. Report the leftmost text of each bar, one line each.",
+      "max_tokens": 48,
+      "sampling": {
+        "temperature": 0.0,
+        "top_p": 1.0
+      },
+      "checker": {
+        "type": "terms",
+        "required": [
+          "pick a model",
+          "fake-alias"
+        ]
+      }
+    },
+    {
+      "id": "text-warm-01",
+      "category": "text_only_fallback",
+      "images": [],
+      "prompt": "You are a deterministic echo assistant. First restate the following six words in order: alpha bravo charlie delta echo foxtrot. Then state how many words you restated. Then reply with the exact token warm-prefix-engage-ok. Do not add anything else.",
+      "max_tokens": 48,
+      "sampling": {
+        "temperature": 0.0,
+        "top_p": 1.0
+      },
+      "checker": {
+        "type": "terms",
+        "required": [
+          "alpha bravo charlie delta echo foxtrot",
+          "warm-prefix-engage-ok"
+        ]
+      }
+    },
+    {
+      "id": "text-fallback-01",
+      "category": "text_only_fallback",
+      "images": [],
+      "prompt": "Reply with exactly the string: singleton-text-fallback-ok",
+      "max_tokens": 16,
+      "sampling": {
+        "temperature": 0.0,
+        "top_p": 1.0
+      },
+      "checker": {
+        "type": "terms",
+        "required": [
+          "singleton-text-fallback-ok"
+        ]
+      }
+    }
+  ]
+}

@@ -5205,6 +5205,7 @@ def serve_command(args):
     scheduler_config = SchedulerConfig(
         max_num_seqs=args.max_num_seqs,
         max_concurrent_requests=args.max_concurrent_requests,
+        mllm_singleton_fastpath=args.mllm_singleton_fastpath,
         prefill_batch_size=args.prefill_batch_size,
         completion_batch_size=args.completion_batch_size,
         scheduling_policy=args.scheduling_policy,
@@ -12007,6 +12008,20 @@ Examples:
             "token trie for O(prefix_len) lookups and surfaces dedup-bytes-"
             "saved on /metrics; 'hash' falls back to the legacy bisect-over-"
             "sorted-keys path."
+        ),
+    )
+    serve_parser.add_argument(
+        "--mllm-singleton-fastpath",
+        type=str,
+        default="auto",
+        choices=["auto", "off"],
+        help=(
+            "Serialized MLLM lane cache handling (default: auto). 'auto' "
+            "skips repacking a single eligible request's cache leaves into "
+            "batched form (structural B=1 batches on the serialized hybrid "
+            "lane only; dense lanes keep the merge); 'off' always takes the "
+            "legacy merge/rebatch path. Operator rollback for the singleton "
+            "fast path."
         ),
     )
     # KV cache quantization options
