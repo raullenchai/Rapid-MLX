@@ -202,6 +202,9 @@ struct AudioClientTests {
             ["Content-Type": "application/json"],
             Data(#"{"voices":["Vivian"]}"#.utf8)
         )
+        // AudioStubProtocol is process-global test state; this enclosing suite
+        // is deliberately `.serialized`, so no sibling test can intercept or
+        // overwrite the held request while this operation is suspended.
         AudioStubProtocol.holdResponse = true
         let server = ServerManager(testingState: .ready(alias: "speech-a"))
         let viewModel = AudioViewModel(server: server, client: client)
