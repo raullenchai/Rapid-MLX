@@ -387,7 +387,8 @@ enum LocalWorkspaceTools {
                 }
             }
 
-            let temporary = FileManager.default.temporaryDirectory.resolvingSymlinksInPath()
+            let temporary = cwd.appendingPathComponent(".rapid-tmp-\(UUID().uuidString)")
+            try FileManager.default.createDirectory(at: temporary, withIntermediateDirectories: false)
             let stdoutPipe = Pipe()
             let stderrPipe = Pipe()
             let stdoutBuffer = BoundedOutputBuffer()
@@ -403,6 +404,7 @@ enum LocalWorkspaceTools {
                 stderrPipe.fileHandleForReading.readabilityHandler = nil
                 try? stdoutPipe.fileHandleForReading.close()
                 try? stderrPipe.fileHandleForReading.close()
+                try? FileManager.default.removeItem(at: temporary)
             }
 
             let process = Process()
@@ -422,7 +424,7 @@ enum LocalWorkspaceTools {
             process.environment = [
                 "HOME": FileManager.default.homeDirectoryForCurrentUser.path,
                 "PATH": "/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin",
-                "TMPDIR": NSTemporaryDirectory(),
+                "TMPDIR": temporary.path,
                 "LANG": "en_US.UTF-8",
             ]
             try process.run()
@@ -471,7 +473,9 @@ enum LocalWorkspaceTools {
         (deny file-read* (subpath \(quoted(home.path))))
         (allow file-read* (subpath \(quoted(workingDirectory.path))) (literal \(quoted(executable.path))))
         (deny file-write*)
-        (allow file-write* (subpath \(quoted(workingDirectory.path))) (subpath \(quoted(temporaryDirectory.path))))
+        (allow file-write*
+            (subpath \(quoted(workingDirectory.path)))
+            (subpath \(quoted(temporaryDirectory.path))))
         (deny process-exec
             (literal "/bin/sh") (literal "/bin/zsh") (literal "/bin/bash")
             (literal "/usr/bin/osascript") (literal "/usr/bin/open"))

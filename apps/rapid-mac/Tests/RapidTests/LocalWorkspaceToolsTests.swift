@@ -137,6 +137,27 @@ final class LocalWorkspaceToolsTests {
         #expect(result.content.contains("RAPID_LOCAL_OK"))
     }
 
+    @Test("run compiles C inside the approved workspace sandbox")
+    func commandCompilesC() async throws {
+        let root = try fixtureDirectory()
+        defer { try? FileManager.default.removeItem(at: root) }
+        try "#include <stdio.h>\nint main(void){puts(\"RAPID_C_OK\");return 0;}\n".write(
+            to: root.appendingPathComponent("main.c"),
+            atomically: true,
+            encoding: .utf8
+        )
+        let arguments = try #require(String(data: JSONSerialization.data(withJSONObject: [
+            "command": "gcc",
+            "arguments": ["main.c", "-o", "main"],
+            "working_directory": root.path,
+        ]), encoding: .utf8))
+
+        let result = await runApproved(name: "local_run", arguments: arguments, store: approval())
+
+        #expect(!result.isError, Comment(rawValue: result.content))
+        #expect(FileManager.default.isExecutableFile(atPath: root.appendingPathComponent("main").path))
+    }
+
     @Test("run sandbox blocks reads elsewhere in the home folder")
     func commandCannotReadOutsideWorkingDirectory() async throws {
         let root = try fixtureDirectory()
