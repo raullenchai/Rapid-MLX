@@ -95,15 +95,15 @@ final class AudioViewModel {
     }
 
     var isBusy: Bool {
-        activeOperation != nil
+        !activeOperations.isEmpty
     }
 
     var isLoadingVoices: Bool {
-        activeOperation?.activity == .loadingVoices
+        activeOperations.contains { $0.snapshot.activity == .loadingVoices }
     }
 
     var isSynthesizing: Bool {
-        activeOperation?.activity == .synthesizing
+        activeOperations.contains { $0.snapshot.activity == .synthesizing }
     }
 
     func refreshCatalog() async {
