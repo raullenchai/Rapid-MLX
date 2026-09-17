@@ -29,6 +29,7 @@ import stat
 import sys
 import tempfile
 import threading
+import warnings
 from collections.abc import Iterator
 from dataclasses import dataclass, field
 from enum import Enum
@@ -1486,6 +1487,25 @@ def save_frames_to_temp(frames: list[np.ndarray]) -> list[str]:
     return paths
 
 
+def _warn_legacy_generation(method: str) -> None:
+    """Flag one of the legacy mlx-vlm generation entry points.
+
+    These methods ride mlx-vlm's ``generate``/``stream_generate`` runtime.
+    The serving path (BatchedEngine → MLLMScheduler → MLLMBatchGenerator)
+    loads models through this class but generates exclusively on the native
+    serialized lane, so the only remaining callers are direct embedders and
+    scripts. Deprecated with a full minor release of notice before removal.
+    """
+    warnings.warn(
+        f"MLXMultimodalLM.{method}() uses mlx-vlm's legacy generation "
+        "runtime and is deprecated. Serve vision models through the native "
+        "BatchedEngine lane (rapid_mlx.server), which does not use this "
+        "path. The method will be removed in an upcoming release.",
+        DeprecationWarning,
+        stacklevel=3,
+    )
+
+
 class MLXMultimodalLM:
     """
     Wrapper around mlx-vlm for multimodal inference.
@@ -2125,7 +2145,12 @@ class MLXMultimodalLM:
 
             # With base64 video
             output = model.generate("Describe", videos=["data:video/mp4;base64,AAAA..."])
+
+        Deprecated:
+            Rides mlx-vlm's legacy generation runtime. Serve vision models
+            through the native BatchedEngine lane instead.
         """
+        _warn_legacy_generation("generate")
         if not self._loaded:
             self.load()
 
@@ -2260,7 +2285,12 @@ class MLXMultimodalLM:
 
         Yields:
             Generated text chunks
+
+        Deprecated:
+            Rides mlx-vlm's legacy generation runtime. Serve vision models
+            through the native BatchedEngine lane instead.
         """
+        _warn_legacy_generation("stream_generate")
         if not self._loaded:
             self.load()
 
@@ -2340,7 +2370,12 @@ class MLXMultimodalLM:
 
         Returns:
             MLLMOutput with assistant's response
+
+        Deprecated:
+            Rides mlx-vlm's legacy generation runtime. Serve vision models
+            through the native BatchedEngine lane instead.
         """
+        _warn_legacy_generation("chat")
         if not self._loaded:
             self.load()
 
@@ -2728,7 +2763,12 @@ class MLXMultimodalLM:
 
         Yields:
             MLLMOutput with incremental text chunks
+
+        Deprecated:
+            Rides mlx-vlm's legacy generation runtime. Serve vision models
+            through the native BatchedEngine lane instead.
         """
+        _warn_legacy_generation("stream_chat")
         if not self._loaded:
             self.load()
 

@@ -717,8 +717,87 @@ def image_to_base64(img: "Image.Image", format: str = "JPEG") -> str:
     return f"data:{mime};base64,{b64}"
 
 
+def _build_bench_generator(model, processor, max_tokens: int):
+    """Build the serialized-lane generator shared by the MLLM benchmarks.
+
+    Mirrors the server's MLLMScheduler construction: sampling is derived
+    per request from the request fields, and the stop-token set is the
+    processor tokenizer's EOS.
+    """
+    from mlx_lm.sample_utils import make_sampler
+
+    from rapid_mlx.mllm_batch_generator import MLLMBatchGenerator
+
+    stop_tokens = set()
+    eos = getattr(getattr(processor, "tokenizer", None), "eos_token_id", None)
+    if eos is not None:
+        stop_tokens.add(eos)
+    return MLLMBatchGenerator(
+        model=model,
+        processor=processor,
+        stop_tokens=stop_tokens,
+        sampler=make_sampler(temp=0.7, top_p=0.9),
+        max_tokens=max_tokens,
+    )
+
+
+def _run_native_mllm_request(
+    generator,
+    prompt: str,
+    *,
+    images: list[str] | None = None,
+    videos: list[str] | None = None,
+    video_fps: float | None = None,
+    video_max_frames: int | None = None,
+    max_tokens: int = 256,
+    temperature: float = 0.7,
+) -> tuple[str, int, int]:
+    """Run one request to completion on the serialized MLLM lane.
+
+    Returns ``(text, generated_token_count, prompt_token_count)``. Insert →
+    drain, decoding the accumulated token ids at the end — the same shape
+    the scheduler's detokenizer pool produces for streamed server requests.
+    """
+    from rapid_mlx.mllm_batch_generator import MLLMBatchRequest
+
+    request = MLLMBatchRequest(
+        uid=-1,  # Assigned by the generator on insert
+        request_id="rapid-mlx-bench",
+        prompt=prompt,
+        images=images,
+        videos=videos,
+        video_fps=video_fps,
+        video_max_frames=video_max_frames,
+        max_tokens=max_tokens,
+        temperature=temperature,
+    )
+    generator.insert([request])
+    token_ids: list[int] = []
+    prompt_tokens = 0
+    finished = False
+    while not finished:
+        responses = generator.next()
+        if not responses:
+            break
+        for response in responses:
+            if response.request_id != request.request_id:
+                continue
+            token_ids.append(response.token)
+            if response.prompt_tokens:
+                prompt_tokens = response.prompt_tokens
+            if response.finish_reason is not None:
+                finished = True
+                break
+    tokenizer = getattr(generator.processor, "tokenizer", None)
+    if tokenizer is not None:
+        text = tokenizer.decode(token_ids, skip_special_tokens=True)
+    else:  # pragma: no cover - processors always carry a tokenizer
+        text = " ".join(str(t) for t in token_ids)
+    return text, len(token_ids), prompt_tokens
+
+
 def benchmark_mllm_resolution(
-    model,
+    generator,
     processor,
     config,
     base_image: "Image.Image",
@@ -727,8 +806,11 @@ def benchmark_mllm_resolution(
     max_tokens: int = 256,
     warmup: bool = False,
 ) -> MLLMBenchmarkResult:
-    """Run MLLM benchmark for a specific resolution."""
-    from mlx_vlm import generate
+    """Run MLLM benchmark for a specific resolution.
+
+    ``generator`` is the serialized-lane generator from
+    :func:`_build_bench_generator` (the loaded model rides inside it).
+    """
     from mlx_vlm.prompt_utils import apply_chat_template
 
     # Reset MLX peak memory before this run
@@ -761,27 +843,23 @@ def benchmark_mllm_resolution(
         )
     except Exception:
         formatted_prompt = prompt
+    if not isinstance(formatted_prompt, str):
+        # Some templates return a message list; the lane takes the
+        # rendered string.
+        formatted_prompt = prompt
 
-    # Generate
+    # Generate on the native serialized lane — the same MLLMBatchGenerator
+    # components the server's MLLMScheduler drives, not mlx-vlm's legacy
+    # generate() runtime.
     start_time = time.perf_counter()
-    result = generate(
-        model,
-        processor,
+    text, tokens, _prompt_tokens = _run_native_mllm_request(
+        generator,
         formatted_prompt,
-        [image_path],
+        images=[image_path],
         max_tokens=max_tokens,
-        temp=0.7,
-        verbose=False,
+        temperature=0.7,
     )
     elapsed = time.perf_counter() - start_time
-
-    # Extract text
-    if hasattr(result, "text"):
-        text = result.text
-        tokens = getattr(result, "generation_tokens", len(text.split()))
-    else:
-        text = str(result)
-        tokens = len(text.split())
 
     tps = tokens / elapsed if elapsed > 0 else 0
 
@@ -886,6 +964,7 @@ def run_mllm_benchmark(
     load_start = time.perf_counter()
     model, processor = load(model_name)
     config = load_config(model_name)
+    generator = _build_bench_generator(model, processor, max_tokens)
     load_time = time.perf_counter() - load_start
     print(f"Model loaded in {load_time:.2f}s\n")
 
@@ -903,7 +982,14 @@ def run_mllm_benchmark(
         print(f"Running {warmup_runs} warmup run(s)...")
         for _ in range(warmup_runs):
             benchmark_mllm_resolution(
-                model, processor, config, base_image, 224, 224, max_tokens, warmup=True
+                generator,
+                processor,
+                config,
+                base_image,
+                224,
+                224,
+                max_tokens,
+                warmup=True,
             )
 
         # Show model memory after warmup (MLX uses lazy evaluation)
@@ -923,7 +1009,7 @@ def run_mllm_benchmark(
     for width, height in resolutions:
         try:
             result = benchmark_mllm_resolution(
-                model, processor, config, base_image, width, height, max_tokens
+                generator, processor, config, base_image, width, height, max_tokens
             )
             results.append(result)
         except Exception as e:
@@ -1124,7 +1210,9 @@ def get_video_info(video_path: str) -> dict:
 
 
 def benchmark_video_config(
-    model,
+    generator,
+    processor,
+    config,
     video_path: str,
     fps: float,
     max_frames: int,
@@ -1133,7 +1221,15 @@ def benchmark_video_config(
     max_tokens: int = 150,
     warmup: bool = False,
 ) -> VideoBenchmarkResult:
-    """Run a single video benchmark configuration."""
+    """Run a single video benchmark configuration.
+
+    ``generator`` is the serialized-lane generator from
+    :func:`_build_bench_generator` (the loaded model rides inside it). The
+    prompt is templated with ``num_images=0`` — the same convention the
+    engine uses for video-only chat requests; the lane extracts the video
+    frames itself from ``video_fps``/``video_max_frames``.
+    """
+    from mlx_vlm.prompt_utils import apply_chat_template
 
     # Reset MLX peak memory before this run
     reset_mlx_peak_memory()
@@ -1143,8 +1239,22 @@ def benchmark_video_config(
 
     start_time = time.perf_counter()
 
-    output = model.generate(
-        prompt="Describe what happens in this video. What do you see?",
+    prompt = "Describe what happens in this video. What do you see?"
+    try:
+        formatted_prompt = apply_chat_template(
+            processor,
+            config,
+            prompt,
+            num_images=0,
+        )
+    except Exception:
+        formatted_prompt = prompt
+    if not isinstance(formatted_prompt, str):
+        formatted_prompt = prompt
+
+    text, completion_tokens, prompt_tokens = _run_native_mllm_request(
+        generator,
+        formatted_prompt,
         videos=[video_path],
         video_fps=fps,
         video_max_frames=max_frames,
@@ -1154,8 +1264,6 @@ def benchmark_video_config(
 
     elapsed = time.perf_counter() - start_time
 
-    prompt_tokens = output.prompt_tokens
-    completion_tokens = output.completion_tokens
     tps = completion_tokens / elapsed if elapsed > 0 else 0
 
     # Estimate frames extracted
@@ -1183,9 +1291,7 @@ def benchmark_video_config(
         prompt_tokens=prompt_tokens,
         completion_tokens=completion_tokens,
         tokens_per_second=tps,
-        response_preview=(
-            output.text[:100] + "..." if len(output.text) > 100 else output.text
-        ),
+        response_preview=(text[:100] + "..." if len(text) > 100 else text),
         memory_gb=process_mem,
         mlx_memory_gb=mlx_info.get("peak_memory_gb", 0.0),
     )
@@ -1213,7 +1319,15 @@ def run_video_benchmark(
     Returns:
         List of VideoBenchmarkResult
     """
-    from rapid_mlx.models.mllm import MLXMultimodalLM  # pragma: no cover
+    try:
+        from mlx_vlm import load
+        from mlx_vlm.utils import load_config
+    except ImportError as e:  # pragma: no cover
+        raise ImportError(
+            "Vision benchmarks require the optional `mlx-vlm` dependency.\n"
+            "Install it with: pip install 'rapid-mlx[vision]'"
+        ) from e
+
     from rapid_mlx.optimizations import detect_hardware  # pragma: no cover
 
     # Detect hardware
@@ -1259,8 +1373,9 @@ def run_video_benchmark(
     # Load model
     print(f"Loading MLLM model: {model_name}...")
     load_start = time.perf_counter()
-    model = MLXMultimodalLM(model_name)
-    model.load()
+    model, processor = load(model_name)
+    config = load_config(model_name)
+    generator = _build_bench_generator(model, processor, max_tokens)
     load_time = time.perf_counter() - load_start
     print(f"Model loaded in {load_time:.2f}s\n")
 
@@ -1285,7 +1400,16 @@ def run_video_benchmark(
         print(f"Running {warmup_runs} warmup run(s)...")
         for _ in range(warmup_runs):
             benchmark_video_config(
-                model, video_path, 1.0, 4, "warmup", video_info, max_tokens, warmup=True
+                generator,
+                processor,
+                config,
+                video_path,
+                1.0,
+                4,
+                "warmup",
+                video_info,
+                max_tokens,
+                warmup=True,
             )
 
         # Show model memory after warmup (MLX uses lazy evaluation)
@@ -1305,7 +1429,15 @@ def run_video_benchmark(
     for config_name, fps, max_frames in configs:
         try:
             result = benchmark_video_config(
-                model, video_path, fps, max_frames, config_name, video_info, max_tokens
+                generator,
+                processor,
+                config,
+                video_path,
+                fps,
+                max_frames,
+                config_name,
+                video_info,
+                max_tokens,
             )
             results.append(result)
         except Exception as e:
