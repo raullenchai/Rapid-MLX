@@ -241,6 +241,39 @@ def test_run_uvicorn_passes_host_port_when_listen_fd_unset(monkeypatch):
     assert captured_kwargs.get("timeout_keep_alive") == 30
 
 
+def test_serve_command_hard_exits_immediately_after_uvicorn_returns(
+    stub_heavy_serve_deps,
+):
+    """Behavioral pin for #3495 (codex round-1 BLOCKING): the hard exit
+    must actually RUN, AFTER the uvicorn dispatch returns — not merely
+    be referenced (a co_names/AST check cannot see reachability or
+    ordering). Drive the real ``serve_command`` through its stubbed
+    prologue and record the event order.
+    """
+    import uvicorn
+
+    events: list[str] = []
+    captured: dict = {}
+
+    def fake_run(app, **kwargs):
+        events.append("uvicorn")
+        captured["app"] = app
+        captured.update(kwargs)
+
+    stub_heavy_serve_deps.setattr(uvicorn, "run", fake_run)
+    stub_heavy_serve_deps.setattr(
+        cli, "_hard_exit_after_serve", lambda: events.append("hard_exit")
+    )
+
+    ns = _minimal_serve_ns(port=_free_tcp_port())
+    cli.serve_command(ns)
+
+    assert events == ["uvicorn", "hard_exit"], (
+        f"expected exactly ['uvicorn', 'hard_exit'], got {events!r} — "
+        "the #3495 hard exit must run after the uvicorn dispatch returns"
+    )
+
+
 @pytest.fixture
 def stub_heavy_serve_deps(monkeypatch):
     """Stub the heavyweight prologue of ``serve_command`` so a behavioral

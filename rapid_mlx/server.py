@@ -4016,6 +4016,13 @@ Examples:
     # Start server
     uvicorn.run(app, host=args.host, port=args.port, log_level=uvicorn_log_level)
 
+    # Issue #3495: same contract as the CLI serve entrypoints — after a
+    # graceful shutdown, skip interpreter finalization (the native-thread
+    # TLS race on macOS 15 lives there) and exit deterministically.
+    from .cli import _hard_exit_after_serve
+
+    _hard_exit_after_serve()
+
 
 if __name__ == "__main__":
     main()

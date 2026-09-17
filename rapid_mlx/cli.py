@@ -16,6 +16,7 @@ Usage:
 """
 
 import argparse
+import atexit
 import os
 import shlex
 import sys
@@ -513,20 +514,36 @@ def _hard_exit_after_serve() -> None:
     versions the TLS finalization pass then dereferences pool state the
     interpreter has already freed, and the process dies with SIGSEGV
     *after* a fully clean shutdown ("Python quit unexpectedly" crash
-    dialog on every Ctrl+C). Newer uvicorn (>=0.34) avoids the exposed
-    path for SIGTERM by re-raising the signal after graceful shutdown
-    (die-by-signal skips interpreter finalization entirely), but the
-    Ctrl+C path still returns through here, and older uvicorns return
-    through here for both signals.
+    dialog on every Ctrl+C).
+
+    Which paths reach finalization depends on the uvicorn version
+    (pyproject floor is ``>=0.23``; uvicorn >=0.34 re-raises every
+    captured signal after the graceful shutdown). Empirically, on the
+    real serve process with uvicorn 0.53:
+
+      * SIGTERM → uvicorn re-raises it after graceful shutdown and the
+        process dies by signal (exit 143) — no interpreter finalization,
+        no crash, helper never runs;
+      * SIGINT (Ctrl+C) → ``uvicorn.run`` RETURNS and the pre-fix process
+        walked into finalization — exactly the #3495 crash path this
+        helper closes;
+      * uvicorn <0.34 returns for both signals → both paths flow through
+        here.
 
     ``os._exit`` skips interpreter finalization altogether: the kernel
     tears down every thread atomically, so the race window cannot open.
-    Everything the graceful shutdown needs to persist (prefix cache,
-    memory cache, telemetry session_end) is already flushed by the
-    FastAPI lifespan shutdown handler BEFORE uvicorn.run returns; the
-    only atexit work skipped is best-effort (the opt-in RAPID_PYSAMPLE
-    report's final snapshot, the tempfile-reap safety net whose entries
-    are normally unlinked on context exit).
+
+    ``os._exit`` also skips the atexit pass, and that inventory is
+    load-bearing, not best-effort: the telemetry queue drain +
+    ``session_end`` hook (``telemetry/queue.py`` and the CLI session
+    atexit), the vision media tempfile reaper
+    (``models/mllm.py::TempFileManager``), the ephemeral video job-store
+    rmtree (``routes/video.py``), and the opt-in ``RAPID_PYSAMPLE``
+    report. So the atexit pass is run EXPLICITLY right before exiting —
+    same hooks, same LIFO order, while the process state is still fully
+    intact. Everything that must be persisted by the graceful shutdown
+    itself (prefix cache, memory cache) is already flushed by the
+    FastAPI lifespan shutdown handler BEFORE ``uvicorn.run`` returns.
 
     Only the SUCCESS path calls this. Bind failures and other
     ``SystemExit``/exception paths keep their normal propagation so
@@ -534,20 +551,35 @@ def _hard_exit_after_serve() -> None:
 
     In-process test harnesses (pytest suites drive ``serve_command``
     through to ``uvicorn.run`` with everything stubbed) must NOT
-    terminate the pytest process here, so the exit is skipped when
-    ``pytest`` is already imported in THIS process. The module check —
-    rather than a ``PYTEST_CURRENT_TEST`` env check — matters: the env
-    var is inherited by subprocesses, so a pytest-spawned
-    ``rapid-mlx serve`` CHILD process must still take the production
-    hard-exit path (it is a real server, and the hard exit is exactly
-    what protects it on macOS 15). The explicit per-suite stubs of
-    this helper remain the primary defense; this is the safety net for
-    the suite that forgets one (an ``os._exit(0)`` mid-suite would end
-    the run with a green exit code while silently skipping every test
-    after it).
+    terminate the pytest process here, so the exit is skipped when BOTH
+    ``pytest`` is imported in THIS process AND the pytest-owned
+    ``PYTEST_CURRENT_TEST`` env var is set. Requiring both signals
+    keeps the two false-positive shapes on the production path:
+
+      * a REAL ``rapid-mlx serve`` subprocess spawned by a pytest suite
+        inherits ``PYTEST_CURRENT_TEST`` but never imports ``pytest`` —
+        it must hard-exit (it is exactly the process the macOS 15 fix
+        protects);
+      * an embedded/instrumented server that happens to import
+        ``pytest`` (profiler plugin, debug REPL) without pytest driving
+        the process — it must hard-exit too.
+
+    The explicit per-suite stubs of this helper remain the primary
+    defense; this is the safety net for the suite that forgets one (an
+    ``os._exit(0)`` mid-suite would end the run with a green exit code
+    while silently skipping every test after it).
     """
-    if "pytest" in sys.modules:
+    if "pytest" in sys.modules and os.environ.get("PYTEST_CURRENT_TEST"):
         return
+    # Run the atexit pass explicitly — os._exit would otherwise skip it
+    # (see docstring: the hooks are load-bearing). Registered hooks are
+    # idempotent and budgeted (telemetry drain caps its join; the
+    # reapers are rmtree/unlink passes), and atexit swallows hook
+    # exceptions so a failing hook cannot block the exit.
+    try:
+        atexit._run_exitfuncs()  # noqa: SLF001 — the documented escape hatch
+    except Exception:  # pragma: no cover — never block the hard exit
+        pass
     try:
         sys.stdout.flush()
     except Exception:  # pragma: no cover — stderr may already be gone
