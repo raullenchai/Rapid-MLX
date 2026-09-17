@@ -928,9 +928,10 @@ def benchmark_mllm_resolution(
     pass it as the first argument instead.
     """
     warnings.warn(
-        "benchmark_mllm_resolution now takes the serialized-lane generator "
-        "from _build_bench_generator as its first argument; the legacy "
-        "(model, processor, config, ...) call shape is deprecated.",
+        "benchmark_mllm_resolution's (model, processor, config, ...) call "
+        "shape is deprecated; build the serialized-lane generator via "
+        "_build_bench_generator and call _benchmark_mllm_resolution_native "
+        "instead.",
         DeprecationWarning,
         stacklevel=2,
     )
@@ -1369,12 +1370,18 @@ def benchmark_video_config(
     call :func:`_benchmark_video_config_native` instead.
     """
     warnings.warn(
-        "benchmark_video_config now takes the serialized-lane generator "
-        "from _build_bench_generator as its first argument; the legacy "
-        "(model, video_path, fps, ...) call shape is deprecated.",
+        "benchmark_video_config's (model, video_path, fps, ...) call shape "
+        "is deprecated; build the serialized-lane generator via "
+        "_build_bench_generator and call _benchmark_video_config_native "
+        "instead.",
         DeprecationWarning,
         stacklevel=2,
     )
+    # The legacy path lazily loaded an unloaded wrapper on first use
+    # (model.generate → if not self._loaded: self.load()); preserve that
+    # contract so previously valid callers do not crash on None parts.
+    if hasattr(model, "load") and not getattr(model, "_loaded", True):
+        model.load()
     generator = _build_bench_generator(model.model, model.processor, max_tokens)
     return _benchmark_video_config_native(
         generator,

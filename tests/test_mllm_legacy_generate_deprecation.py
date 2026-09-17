@@ -207,14 +207,14 @@ def test_legacy_signature_wrappers_warn_and_delegate(monkeypatch):
     PILImage = pytest.importorskip("PIL.Image")
     image = PILImage.new("RGB", (224, 224))
 
-    with pytest.warns(DeprecationWarning, match="serialized-lane generator"):
+    with pytest.warns(DeprecationWarning, match="deprecated"):
         result = bench.benchmark_mllm_resolution(
             object(), _FakeProcessor(), {}, image, 224, 224, max_tokens=8
         )
     assert result.tokens_generated == 2
     assert built == [("object", 8)]
 
-    with pytest.warns(DeprecationWarning, match="serialized-lane generator"):
+    with pytest.warns(DeprecationWarning, match="deprecated"):
         video_result = bench.benchmark_video_config(
             _FakeLegacyModel(),
             "/tmp/nonexistent.mp4",
@@ -229,7 +229,7 @@ def test_legacy_signature_wrappers_warn_and_delegate(monkeypatch):
     # The video wrapper preserves the exact legacy positional shape:
     # (model, video_path, fps, max_frames, config_name, video_info, ...).
     legacy_model = _FakeLegacyModel()
-    with pytest.warns(DeprecationWarning, match="legacy"):
+    with pytest.warns(DeprecationWarning, match="deprecated"):
         positional = bench.benchmark_video_config(
             legacy_model,
             "/tmp/v.mp4",
@@ -239,3 +239,45 @@ def test_legacy_signature_wrappers_warn_and_delegate(monkeypatch):
             {"duration": 2.0, "total_frames": 8},
         )
     assert positional.completion_tokens == 2
+
+
+def test_video_wrapper_lazily_loads_an_unloaded_model(monkeypatch):
+    # The legacy path lazily loaded an unloaded MLXMultimodalLM on first
+    # use; the compatibility wrapper must preserve that contract, or
+    # previously valid callers crash on None components.
+    from rapid_mlx import benchmark as bench
+
+    class _UnloadedModel:
+        def __init__(self):
+            self._loaded = False
+            self.load_calls = 0
+            self.model = object()
+            self.processor = _FakeProcessor()
+            self.config = {}
+
+        def load(self):
+            self.load_calls += 1
+            self._loaded = True
+
+    model = _UnloadedModel()
+    monkeypatch.setattr(
+        bench,
+        "_build_bench_generator",
+        lambda m, p, max_tokens: _FakeGenerator(
+            [[_response(1, prompt_tokens=1), _response(2, finish_reason="stop")]]
+        ),
+    )
+    with pytest.warns(DeprecationWarning, match="deprecated"):
+        bench.benchmark_video_config(
+            model, "/tmp/v.mp4", 1.0, 4, "cfg", {"duration": 1.0, "total_frames": 4}
+        )
+    assert model.load_calls == 1
+
+    # An already-loaded wrapper is not loaded twice.
+    model.load_calls = 0
+    model._loaded = True
+    with pytest.warns(DeprecationWarning, match="deprecated"):
+        bench.benchmark_video_config(
+            model, "/tmp/v.mp4", 1.0, 4, "cfg", {"duration": 1.0, "total_frames": 4}
+        )
+    assert model.load_calls == 0
