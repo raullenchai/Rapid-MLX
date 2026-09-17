@@ -892,7 +892,7 @@
           }
         },
         {
-          "prompt": "Summarize your previous two answers in one short sentence, naming the specific button labels, the shortcut wording, and the additional visible detail you named.",
+          "prompt": "Summarize your previous two answers in one short sentence, naming the specific button labels, the shortcut wording, and the mascot detail you named.",
           "max_tokens": 64,
           "sampling": {
             "temperature": 0.0,
@@ -1670,7 +1670,7 @@
                   "help"
                 ],
                 [
-                  "details"
+                  "details trigger"
                 ]
               ],
               [
