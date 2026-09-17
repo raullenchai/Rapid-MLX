@@ -582,6 +582,37 @@ class TestAudioServeModeSyncsServerConfig:
 
         assert get_config().max_request_bytes == 16 * 1024 * 1024
 
+    def test_audio_mode_hard_exits_immediately_after_uvicorn(self):
+        """Behavioral pin for #3495 (codex round-4 BLOCKING): the audio
+        serve fork must actually RUN ``_hard_exit_after_serve`` AFTER
+        the uvicorn dispatch returns — not merely reference it (an
+        AST/co_names check cannot see reachability or ordering; an
+        unconditional early return would silently re-open the macOS 15
+        shutdown SIGSEGV for audio serving). The pytest guard keeps the
+        real ``os._exit`` away from this in-process harness.
+        """
+        from rapid_mlx import cli
+
+        events: list[str] = []
+
+        with (
+            patch.object(
+                cli, "_run_uvicorn", lambda *_a, **_kw: events.append("uvicorn")
+            ),
+            patch.object(
+                cli, "_hard_exit_after_serve", lambda: events.append("hard_exit")
+            ),
+            patch.object(cli, "_port_preflight_or_die"),
+        ):
+            args = _make_serve_args("kokoro")
+            cli.serve_command(args)
+
+        assert events == ["uvicorn", "hard_exit"], (
+            f"expected exactly ['uvicorn', 'hard_exit'], got {events!r} — "
+            "the #3495 hard exit must run after the audio uvicorn dispatch "
+            "returns"
+        )
+
 
 # ---------------------------------------------------------------------------
 # G) rapid-mlx models advertises the audio surface
