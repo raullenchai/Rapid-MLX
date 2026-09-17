@@ -12,6 +12,7 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import posixpath
 import re
 import shlex
 import time
@@ -331,17 +332,58 @@ def _all_urls_are_expected(output: str, expected_urls: tuple[str, ...]) -> bool:
 
     ``required_exact_output`` establishes that the expected source is present;
     this URL gate establishes that no emitted http(s) source contradicts it.
-    Typos or fabricated hosts therefore fail instead of hiding behind a later
-    correct URL.
+    A more specific path below an expected canonical source is valid (for
+    example, ``/releases/tag/v1.2.3`` below ``/releases``), while typoed
+    repositories, foreign hosts, sibling paths, and scheme changes fail.
     """
 
     if not expected_urls:
         return True
-    expected_norm = {url.rstrip("/") for url in expected_urls}
-    return all(
-        match.group(0).rstrip(".）/").rstrip("/") in expected_norm
-        for match in re.finditer(r"https?://[^\s,)\]]+", output)
+
+    def source_scope(value: str) -> tuple[str, str, int | None, str] | None:
+        candidate = value.rstrip('.!?,;:)]}）/"')
+        try:
+            parsed = urllib.parse.urlsplit(candidate)
+            port = parsed.port
+        except ValueError:
+            return None
+        if (
+            parsed.scheme.casefold() not in {"http", "https"}
+            or not parsed.hostname
+            or parsed.username is not None
+            or parsed.password is not None
+        ):
+            return None
+        decoded_path = urllib.parse.unquote(parsed.path)
+        if "\\" in decoded_path:
+            return None
+        path = f"/{posixpath.normpath(decoded_path).lstrip('/')}".rstrip("/") or "/"
+        return parsed.scheme.casefold(), parsed.hostname.casefold(), port, path
+
+    expected_scopes = tuple(
+        scope for url in expected_urls if (scope := source_scope(url)) is not None
     )
+    if len(expected_scopes) != len(expected_urls):
+        return False
+
+    for match in re.finditer(r"https?://[^\s<>,)\]]+", output):
+        observed = source_scope(match.group(0))
+        if observed is None:
+            return False
+        scheme, host, port, path = observed
+        if not any(
+            scheme == expected_scheme
+            and host == expected_host
+            and port == expected_port
+            and (
+                expected_path == "/"
+                or path == expected_path
+                or path.startswith(f"{expected_path}/")
+            )
+            for expected_scheme, expected_host, expected_port, expected_path in expected_scopes
+        ):
+            return False
+    return True
 
 
 def _live_model_identity(base_url: str, model: str) -> dict[str, Any]:
