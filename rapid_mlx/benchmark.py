@@ -38,6 +38,7 @@ import json
 import statistics
 import tempfile
 import time
+import warnings
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -775,31 +776,34 @@ def _run_native_mllm_request(
     token_ids: list[int] = []
     prompt_tokens = 0
     finished = False
-    while not finished:
-        responses = generator.next()
-        if not responses:
-            # The lane went idle without a terminal response: draining
-            # further cannot make progress, and returning here would
-            # silently truncate the run AND leave the request active in
-            # the reused generator, contaminating every later config.
-            # Remove the stale request before failing loud so the
-            # caller's generator stays clean for the remaining configs.
+    try:
+        while not finished:
+            responses = generator.next()
+            if not responses:
+                # The lane went idle without a terminal response: draining
+                # further cannot make progress, and returning here would
+                # silently truncate the run.
+                raise RuntimeError(
+                    "serialized MLLM lane went idle before the benchmark "
+                    f"request finished ({len(token_ids)} tokens generated, "
+                    "no finish_reason); the benchmark run would be silently "
+                    "truncated"
+                )
+            for response in responses:
+                if response.request_id != request.request_id:
+                    continue
+                token_ids.append(response.token)
+                if response.prompt_tokens:
+                    prompt_tokens = response.prompt_tokens
+                if response.finish_reason is not None:
+                    finished = True
+                    break
+    finally:
+        if not finished:
+            # An exception from next() or the idle abort above must not
+            # leave the stale request active in the reused generator —
+            # the benchmark loops catch per config and keep going.
             generator.remove(list(uids))
-            raise RuntimeError(
-                "serialized MLLM lane went idle before the benchmark "
-                f"request finished ({len(token_ids)} tokens generated, "
-                "no finish_reason); the benchmark run would be silently "
-                "truncated"
-            )
-        for response in responses:
-            if response.request_id != request.request_id:
-                continue
-            token_ids.append(response.token)
-            if response.prompt_tokens:
-                prompt_tokens = response.prompt_tokens
-            if response.finish_reason is not None:
-                finished = True
-                break
     tokenizer = getattr(generator.processor, "tokenizer", None)
     if tokenizer is not None:
         text = tokenizer.decode(token_ids, skip_special_tokens=True)
@@ -808,7 +812,7 @@ def _run_native_mllm_request(
     return text, len(token_ids), prompt_tokens
 
 
-def benchmark_mllm_resolution(
+def _benchmark_mllm_resolution_native(
     generator,
     processor,
     config,
@@ -818,12 +822,10 @@ def benchmark_mllm_resolution(
     max_tokens: int = 256,
     warmup: bool = False,
 ) -> MLLMBenchmarkResult:
-    """Run MLLM benchmark for a specific resolution.
+    """Run MLLM benchmark for a specific resolution on the serialized lane.
 
     ``generator`` is the serialized-lane generator from
     :func:`_build_bench_generator` (the loaded model rides inside it).
-    Benchmark-harness helper: the call shape is internal to this module
-    and may change between releases without a compatibility shim.
     """
     from mlx_vlm.prompt_utils import apply_chat_template, get_chat_template
 
@@ -904,6 +906,37 @@ def benchmark_mllm_resolution(
         response_preview=text[:150] + "..." if len(text) > 150 else text,
         memory_gb=process_mem,
         mlx_memory_gb=mlx_info.get("peak_memory_gb", 0.0),
+    )
+
+
+def benchmark_mllm_resolution(
+    model,
+    processor,
+    config,
+    base_image: "Image.Image",
+    width: int,
+    height: int,
+    max_tokens: int = 256,
+    warmup: bool = False,
+) -> MLLMBenchmarkResult:
+    """Deprecated call shape for :func:`_benchmark_mllm_resolution_native`.
+
+    External callers of the pre-native-lane signature keep working: the
+    serialized-lane generator is built internally and the request still
+    runs on the native lane (never mlx-vlm's generation runtime). New code
+    should build the generator once via :func:`_build_bench_generator` and
+    pass it as the first argument instead.
+    """
+    warnings.warn(
+        "benchmark_mllm_resolution now takes the serialized-lane generator "
+        "from _build_bench_generator as its first argument; the legacy "
+        "(model, processor, config, ...) call shape is deprecated.",
+        DeprecationWarning,
+        stacklevel=2,
+    )
+    generator = _build_bench_generator(model, processor, max_tokens)
+    return _benchmark_mllm_resolution_native(
+        generator, processor, config, base_image, width, height, max_tokens, warmup
     )
 
 
@@ -998,7 +1031,7 @@ def run_mllm_benchmark(
     if warmup_runs > 0:
         print(f"Running {warmup_runs} warmup run(s)...")
         for _ in range(warmup_runs):
-            benchmark_mllm_resolution(
+            _benchmark_mllm_resolution_native(
                 generator,
                 processor,
                 config,
@@ -1025,7 +1058,7 @@ def run_mllm_benchmark(
     results = []
     for width, height in resolutions:
         try:
-            result = benchmark_mllm_resolution(
+            result = _benchmark_mllm_resolution_native(
                 generator, processor, config, base_image, width, height, max_tokens
             )
             results.append(result)
@@ -1226,7 +1259,7 @@ def get_video_info(video_path: str) -> dict:
     return info
 
 
-def benchmark_video_config(
+def _benchmark_video_config_native(
     generator,
     processor,
     config,
@@ -1238,15 +1271,13 @@ def benchmark_video_config(
     max_tokens: int = 150,
     warmup: bool = False,
 ) -> VideoBenchmarkResult:
-    """Run a single video benchmark configuration.
+    """Run a single video benchmark configuration on the serialized lane.
 
     ``generator`` is the serialized-lane generator from
     :func:`_build_bench_generator` (the loaded model rides inside it). The
     prompt is templated with ``num_images=0`` — the same convention the
     engine uses for video-only chat requests; the lane extracts the video
     frames itself from ``video_fps``/``video_max_frames``.
-    Benchmark-harness helper: the call shape is internal to this module
-    and may change between releases without a compatibility shim.
     """
     from mlx_vlm.prompt_utils import apply_chat_template, get_chat_template
 
@@ -1315,6 +1346,48 @@ def benchmark_video_config(
         response_preview=(text[:100] + "..." if len(text) > 100 else text),
         memory_gb=process_mem,
         mlx_memory_gb=mlx_info.get("peak_memory_gb", 0.0),
+    )
+
+
+def benchmark_video_config(
+    model,
+    processor,
+    config,
+    video_path: str,
+    fps: float,
+    max_frames: int,
+    config_name: str,
+    video_info: dict,
+    max_tokens: int = 150,
+    warmup: bool = False,
+) -> VideoBenchmarkResult:
+    """Deprecated call shape for :func:`_benchmark_video_config_native`.
+
+    External callers of the pre-native-lane signature keep working: the
+    serialized-lane generator is built internally and the request still
+    runs on the native lane (never mlx-vlm's generation runtime). New code
+    should build the generator once via :func:`_build_bench_generator` and
+    pass it as the first argument instead.
+    """
+    warnings.warn(
+        "benchmark_video_config now takes the serialized-lane generator "
+        "from _build_bench_generator as its first argument; the legacy "
+        "(model, processor, config, ...) call shape is deprecated.",
+        DeprecationWarning,
+        stacklevel=2,
+    )
+    generator = _build_bench_generator(model, processor, max_tokens)
+    return _benchmark_video_config_native(
+        generator,
+        processor,
+        config,
+        video_path,
+        fps,
+        max_frames,
+        config_name,
+        video_info,
+        max_tokens,
+        warmup,
     )
 
 
@@ -1420,7 +1493,7 @@ def run_video_benchmark(
     if warmup_runs > 0:
         print(f"Running {warmup_runs} warmup run(s)...")
         for _ in range(warmup_runs):
-            benchmark_video_config(
+            _benchmark_video_config_native(
                 generator,
                 processor,
                 config,
@@ -1449,7 +1522,7 @@ def run_video_benchmark(
     results = []
     for config_name, fps, max_frames in configs:
         try:
-            result = benchmark_video_config(
+            result = _benchmark_video_config_native(
                 generator,
                 processor,
                 config,

@@ -172,3 +172,50 @@ def test_native_request_helper_raises_when_the_lane_goes_idle():
     # The stale request must be removed from the reused generator before
     # the helper raises — otherwise every later config inherits it.
     assert generator.removed == [7]
+
+
+def test_legacy_signature_wrappers_warn_and_delegate(monkeypatch):
+    # The pre-native-lane signatures keep working through a deprecated
+    # wrapper: it builds the serialized-lane generator internally and
+    # never touches mlx-vlm's generation runtime.
+    from rapid_mlx import benchmark as bench
+
+    generators = []
+    built = []
+
+    def _fake_build(model, processor, max_tokens):
+        built.append((type(model).__name__, max_tokens))
+        # One fresh generator per build — the real benchmark builds one per
+        # run and reuses it across configs that each drain to completion.
+        generator = _FakeGenerator(
+            [[_response(1, prompt_tokens=3), _response(2, finish_reason="stop")]]
+        )
+        generators.append(generator)
+        return generator
+
+    monkeypatch.setattr(bench, "_build_bench_generator", _fake_build)
+
+    PILImage = pytest.importorskip("PIL.Image")
+    image = PILImage.new("RGB", (224, 224))
+
+    with pytest.warns(DeprecationWarning, match="serialized-lane generator"):
+        result = bench.benchmark_mllm_resolution(
+            object(), _FakeProcessor(), {}, image, 224, 224, max_tokens=8
+        )
+    assert result.tokens_generated == 2
+    assert built == [("object", 8)]
+
+    with pytest.warns(DeprecationWarning, match="serialized-lane generator"):
+        video_result = bench.benchmark_video_config(
+            object(),
+            _FakeProcessor(),
+            {},
+            "/tmp/nonexistent.mp4",
+            1.0,
+            4,
+            "cfg",
+            {"duration": 1.0, "total_frames": 4, "width": 64, "height": 64, "fps": 2.0},
+            max_tokens=8,
+        )
+    assert video_result.completion_tokens == 2
+    assert len(built) == 2
