@@ -517,10 +517,12 @@
                 "checkmark"
               ],
               [
-                "blue"
+                "blue",
+                "circular"
               ],
               [
-                "circular"
+                "white",
+                "checkmark"
               ]
               ]
             ]
@@ -795,15 +797,11 @@
                 ]
               ],
               [
-                [
-                  "information"
-                ],
-                [
-                  "info"
-                ],
-                [
-                  "question",
-                  "mark"
+              [
+                "question"
+              ],
+              [
+                "circular"
                 ]
               ]
             ]
@@ -1019,14 +1017,16 @@
                 ]
               ],
               [
-                [
-                  "checkmark"
-                ],
-                [
-                  "dot"
-                ],
-                [
-                  "dots"
+              [
+                "checkmark"
+              ],
+              [
+                "blue",
+                "circle"
+              ],
+              [
+                "blue",
+                "circular"
                 ]
               ]
             ]
@@ -1151,15 +1151,21 @@
                 ]
               ],
               [
-                [
-                  "cloud"
-                ],
-                [
-                  "upload"
-                ],
-                [
-                  "dark",
-                  "gray"
+              [
+                "cloud"
+              ],
+              [
+                "arrow"
+              ],
+              [
+                "dark",
+                "gray"
+              ],
+              [
+                "square"
+              ],
+              [
+                "stop"
                 ]
               ]
             ]
@@ -1754,14 +1760,17 @@
                 ]
               ],
               [
-                [
-                  "filled"
-                ],
-                [
-                  "dot"
-                ],
-                [
-                  "dots"
+              [
+                "filled"
+              ],
+              [
+                "blue"
+              ],
+              [
+                "hollow"
+              ],
+              [
+                "darker"
                 ]
               ]
             ]
@@ -1848,14 +1857,14 @@
                 ]
               ],
               [
-                [
-                  "orange"
-                ],
-                [
-                  "download"
-                ],
-                [
-                  "cloud"
+              [
+                "orange"
+              ],
+              [
+                "cloud"
+              ],
+              [
+                "arrow"
                 ]
               ]
             ]
