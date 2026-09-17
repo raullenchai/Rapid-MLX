@@ -1536,22 +1536,70 @@ class MLLMBatchGenerator:
         return result
 
     @staticmethod
-    def _media_rope_consumes_key(src: str) -> bool:
-        """Control-flow-aware AST check that a call body *consumes*
-        ``kwargs["rope_deltas"]``.
+    def _media_live_nodes(src: str) -> list[ast.AST] | None:
+        """AST nodes reachable under obviously-live control flow.
 
-        A substring probe matches comments and log lines; a flat AST walk
-        also matches consumption hidden in dead code (``if False:``,
-        ``while False:``, statements after an unconditional ``return``).
-        This walk visits only obviously-live statements: constant-false
-        branches are skipped toward their live side, and nothing after an
-        unconditional ``return``/``raise``/``break``/``continue`` in a
-        block is considered. A real ``kwargs.pop("rope_deltas", ...)`` /
-        ``kwargs.get("rope_deltas", ...)`` call or a
-        ``kwargs["rope_deltas"]`` subscript in live code opens the gate.
+        Constant-false branches are skipped toward their taken side,
+        ``while False`` loops are dropped, nothing after an unconditional
+        ``return``/``raise``/``break``/``continue`` in a block is visited,
+        and function bodies are walked through the same statement-level
+        rules. None when the source cannot be parsed.
         """
 
-        def is_consumption(node: ast.AST) -> bool:
+        def visit(node: ast.AST) -> bool:
+            if isinstance(node, ast.If) and isinstance(node.test, ast.Constant):
+                # Only the taken side of a constant branch is live.
+                branch = node.body if node.test.value else node.orelse
+                return live(branch)
+            if (
+                isinstance(node, ast.While)
+                and isinstance(node.test, ast.Constant)
+                and not node.test.value
+            ):
+                return False
+            found.append(node)
+            if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                return live(node.body)
+            if isinstance(node, ast.Lambda):
+                return visit(node.body)
+            if isinstance(node, ast.Try):
+                return (
+                    live(node.body)
+                    or any(live(handler.body) for handler in node.handlers)
+                    or live(node.orelse)
+                    or live(node.finalbody)
+                )
+            return any(visit(child) for child in ast.iter_child_nodes(node))
+
+        def live(stmts: list[ast.stmt]) -> bool:
+            for stmt in stmts:
+                if visit(stmt):
+                    return True
+                if isinstance(stmt, (ast.Return, ast.Raise, ast.Break, ast.Continue)):
+                    return False
+            return False
+
+        found: list[ast.AST] = []
+        try:
+            # ``inspect.getsource`` of a method returns the indented block;
+            # ``ast.parse`` needs it dedented to module level.
+            tree = ast.parse(textwrap.dedent(src))
+        except (SyntaxError, ValueError):
+            return None
+        live(tree.body)
+        return found
+
+    @staticmethod
+    def _media_rope_consumes_key(src: str) -> bool:
+        """Whether live code really consumes ``kwargs["rope_deltas"]``.
+
+        A real ``kwargs.pop("rope_deltas", ...)`` / ``kwargs.get(
+        "rope_deltas", ...)`` call or a ``kwargs["rope_deltas"]`` subscript
+        in obviously-live code opens the gate; comments, log lines, and
+        dead branches prove nothing.
+        """
+        nodes = MLLMBatchGenerator._media_live_nodes(src)
+        for node in nodes or []:
             if (
                 isinstance(node, ast.Call)
                 and isinstance(node.func, ast.Attribute)
@@ -1563,44 +1611,39 @@ class MLLMBatchGenerator:
                 and node.args[0].value == "rope_deltas"
             ):
                 return True
-            return (
+            if (
                 isinstance(node, ast.Subscript)
                 and isinstance(node.value, ast.Name)
                 and node.value.id == "kwargs"
                 and isinstance(node.slice, ast.Constant)
                 and node.slice.value == "rope_deltas"
-            )
-
-        def visit(node: ast.AST) -> bool:
-            if isinstance(node, ast.If) and isinstance(node.test, ast.Constant):
-                # Only the taken side of a constant branch is live.
-                branch = node.body if node.test.value else node.orelse
-                return any(visit(stmt) for stmt in branch)
-            if (
-                isinstance(node, ast.While)
-                and isinstance(node.test, ast.Constant)
-                and not node.test.value
             ):
-                return False
-            if is_consumption(node):
                 return True
-            return any(visit(child) for child in ast.iter_child_nodes(node))
+        return False
 
-        def live(stmts: list[ast.stmt]) -> bool:
-            for stmt in stmts:
-                if visit(stmt):
-                    return True
-                if isinstance(stmt, (ast.Return, ast.Raise, ast.Break, ast.Continue)):
-                    return False
-            return False
+    def _media_wrapper_call_attrs(self) -> set[str] | None:
+        """Attribute names invoked in the wrapper ``__call__``'s live code.
 
-        try:
-            # ``inspect.getsource`` of a method returns the indented block;
-            # ``ast.parse`` needs it dedented to module level.
-            tree = ast.parse(textwrap.dedent(src))
-        except (SyntaxError, ValueError):
-            return False
-        return live(tree.body)
+        None when the source cannot be read or parsed. Probed once per
+        model: parsing per request would be pure overhead.
+        """
+        cached = getattr(self, "_media_wrapper_attrs_probe", None)
+        key = type(self.model)
+        if cached is not None and cached[0] == key:
+            return cached[1]
+        src = self._media_wrapper_call_source()
+        attrs: set[str] | None = None
+        if src is not None:
+            nodes = self._media_live_nodes(src)
+            if nodes is not None:
+                attrs = {
+                    node.func.attr
+                    for node in nodes
+                    if isinstance(node, ast.Call)
+                    and isinstance(node.func, ast.Attribute)
+                }
+        self._media_wrapper_attrs_probe = (key, attrs)
+        return attrs
 
     def _media_model_supports_rope_kwarg(self) -> bool:
         """The split boundary forward needs ``rope_deltas`` through the call.
@@ -1676,8 +1719,10 @@ class MLLMBatchGenerator:
         structurally: the wrapper's ``__call__`` both calls
         ``get_input_embeddings`` and merges ``to_dict()`` into the LM kwargs.
         """
-        src = self._media_wrapper_call_source()
-        return src is not None and "get_input_embeddings" in src and ".to_dict()" in src
+        attrs = self._media_wrapper_call_attrs()
+        return (
+            attrs is not None and "get_input_embeddings" in attrs and "to_dict" in attrs
+        )
 
     def _media_lm_direct_available(self) -> bool:
         """Whether the LM-direct suffix path can bypass the wrapper.
@@ -1691,10 +1736,15 @@ class MLLMBatchGenerator:
         bookkeeping a direct LM call would skip, so they never bypass.
         """
         src = self._media_wrapper_call_source()
+        attrs = self._media_wrapper_call_attrs()
         return (
-            src is not None
-            and "get_input_embeddings" in src
-            and ".to_dict()" in src
+            attrs is not None
+            and src is not None
+            and "get_input_embeddings" in attrs
+            and "to_dict" in attrs
+            # Thinker/talker wrappers do wrapper-side bookkeeping a direct
+            # LM call would skip; a comment naming one must not re-open the
+            # bypass, so the whole source is checked (fail closed).
             and "talker" not in src.casefold()
             and callable(getattr(type(self.model), "get_input_embeddings", None))
             and callable(getattr(self.language_model, "__call__", None))
@@ -3003,12 +3053,6 @@ class MLLMBatchGenerator:
             if stale:
                 self._media_boundary_misses += 1
                 return self.model(input_ids, cache=cache, **kwargs)
-            # The install succeeded: only now is this a counted, promoted
-            # hit — frequently resumed media must not be evicted ahead of
-            # colder entries (LRU, not FIFO).
-            self._media_boundary_hits += 1
-            self._media_promote_entry(self._media_identity_digest(request))
-            cache[:] = cloned
             try:
                 self._media_mrope_install(entry.rope_delta)
                 output = self._media_suffix_forward(
@@ -3020,6 +3064,11 @@ class MLLMBatchGenerator:
                 # request's prefill.
                 self._media_mrope_restore()
                 raise
+            # The resume served the request: only now is this a counted,
+            # promoted hit — frequently resumed media must not be evicted
+            # ahead of colder entries (LRU, not FIFO).
+            self._media_boundary_hits += 1
+            self._media_promote_entry(self._media_identity_digest(request))
             request.cached_tokens = boundary
             return output
         # Store path: prefix forward with the full vision kwargs (the plan

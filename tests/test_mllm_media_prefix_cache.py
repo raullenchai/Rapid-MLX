@@ -943,6 +943,17 @@ class TestStorePath:
             '    logger.info("rope_deltas = kwargs is the legacy shape")\n'
             "    return None\n"
         )
+        # Dead code never consumes: constant-false branches and statements
+        # after an unconditional return are not live.
+        assert not consume(
+            "def f(**kwargs):\n"
+            "    if False:\n"
+            "        d = kwargs.pop('rope_deltas', None)\n"
+            "    return None\n"
+        )
+        assert not consume(
+            "def f(**kwargs):\n    return None\n    d = kwargs['rope_deltas']\n"
+        )
 
     def test_below_min_tokens_boundary_never_stores(self):
         gen = _stub_generator()
