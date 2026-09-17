@@ -114,6 +114,13 @@ enum AudioReadinessState: Equatable {
             if case .cancelled = matchingDownload {
                 return .notDownloaded(alias: alias, sizeText: snapshot.sizeText)
             }
+            // Activity is created before the lane is guaranteed to have
+            // reached runtime.  Without either disk work or a distinct
+            // runtime-load signal, an uncached model remains selectable and
+            // retryable rather than becoming a false active state.
+            if matchingDownload == nil, matchingLoad == nil {
+                return .notDownloaded(alias: alias, sizeText: snapshot.sizeText)
+            }
         }
         // Otherwise a matching operation is request-owned evidence that this
         // lane is in use. It keeps selection blocked if process readiness or

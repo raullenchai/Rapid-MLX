@@ -120,6 +120,18 @@ struct AudioReadinessStateTests {
         #expect(state.allowsModelSelection)
     }
 
+    @Test("an uncached operation without disk or runtime work stays retryable")
+    func prematureActivityWithoutDownloadStaysRetryable() {
+        let state = AudioReadinessState.resolve(
+            Self.snapshot(
+                cached: false,
+                activity: .init(alias: Self.alias, activity: .loadingVoices)
+            ))
+
+        #expect(state == .notDownloaded(alias: Self.alias, sizeText: "1.5 GiB"))
+        #expect(state.allowsModelSelection)
+    }
+
     @Test("catalog proof prevents a stale running download from regressing readiness")
     func cachedModelIgnoresStaleDownloadProgress() {
         let state = AudioReadinessState.resolve(
