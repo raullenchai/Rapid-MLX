@@ -16,6 +16,8 @@ detachment transaction (handoff §7) for the serialized MLLM lane:
   live state.
 """
 
+import builtins
+
 import pytest
 
 pytest.importorskip("mlx")
@@ -28,6 +30,7 @@ from rapid_mlx.mllm_batch_generator import (  # noqa: E402
     MLLMBatchGenerator,
     MLLMBatchRequest,
     MLLMBatchStats,
+    _extract_detached_singleton_leaf,
     _singleton_regular_cache_leaves,
 )
 from rapid_mlx.mllm_scheduler import MLLMSchedulerConfig  # noqa: E402
@@ -124,6 +127,14 @@ def _stub_generator(leaves, singleton_fastpath: str = "auto"):
 
 
 class TestConfigValidation:
+    def test_generator_rejects_unknown_values(self):
+        with pytest.raises(ValueError, match="singleton_fastpath"):
+            MLLMBatchGenerator(
+                model=object(),
+                processor=object(),
+                singleton_fastpath="on",
+            )
+
     def test_scheduler_config_rejects_unknown_values(self):
         with pytest.raises(ValueError, match="mllm_singleton_fastpath"):
             SchedulerConfig(mllm_singleton_fastpath="on")
@@ -180,6 +191,31 @@ class TestEligibilityHelper:
 
         assert not _singleton_regular_cache_leaves([NotACache()], True)
 
+    def test_missing_mlx_vlm_cache_module_fails_closed(self, monkeypatch):
+        real_import = builtins.__import__
+
+        def fail_cache_import(name, *args, **kwargs):
+            if name == "mlx_vlm.models.cache":
+                raise ImportError("mlx-vlm unavailable")
+            return real_import(name, *args, **kwargs)
+
+        monkeypatch.setattr(builtins, "__import__", fail_cache_import)
+
+        assert not _singleton_regular_cache_leaves([object()], True)
+
+    def test_missing_optional_mlx_lm_cache_module_keeps_vlm_support(self, monkeypatch):
+        real_import = builtins.__import__
+
+        def fail_cache_import(name, *args, **kwargs):
+            if name == "mlx_lm.models.cache":
+                raise ImportError("mlx-lm cache unavailable")
+            return real_import(name, *args, **kwargs)
+
+        leaves = _arrays_leaves()
+        monkeypatch.setattr(builtins, "__import__", fail_cache_import)
+
+        assert _singleton_regular_cache_leaves(leaves, True)
+
 
 class TestProcessPromptsPathSelection:
     def test_single_qualified_request_skips_merge(self, monkeypatch):
@@ -234,6 +270,18 @@ class TestProcessPromptsPathSelection:
 
         assert merges == [1, 1]
         assert batch.cache_layout == "batched"
+
+    def test_merge_failure_is_propagated(self, monkeypatch):
+        from mlx_vlm.models.cache import ArraysCache
+
+        def fail_merge(cls, caches):
+            raise RuntimeError("merge failed")
+
+        monkeypatch.setattr(ArraysCache, "merge", classmethod(fail_merge))
+
+        gen = _stub_generator(_arrays_leaves(), singleton_fastpath="off")
+        with pytest.raises(RuntimeError, match="merge failed"):
+            gen._process_prompts([_make_request(0)])
 
     def test_subclass_leaf_takes_merge_path(self, monkeypatch):
         from mlx_vlm.models.cache import KVCache
@@ -538,6 +586,38 @@ class TestSingletonExtractionDetachment:
             # mx.contiguous materialization: evaluating the copy cannot be
             # affected by later writes into the live arrays.
             assert detached_state.shape == live_state.shape
+
+    def test_arrays_extract_copies_optional_metadata(self):
+        leaf = _arrays_leaves(1)[0]
+        leaf.left_padding = mx.array([1])
+        leaf.lengths = mx.array([3])
+        leaf.offset = 5
+
+        detached = _extract_detached_singleton_leaf(leaf, 0)
+
+        assert mx.array_equal(detached.left_padding, mx.array([1]))
+        assert mx.array_equal(detached.lengths, mx.array([3]))
+        assert detached.offset == 5
+
+    def test_extract_without_optional_mlx_lm_cache_module(self, monkeypatch):
+        real_import = builtins.__import__
+
+        def fail_cache_import(name, *args, **kwargs):
+            if name == "mlx_lm.models.cache":
+                raise ImportError("mlx-lm cache unavailable")
+            return real_import(name, *args, **kwargs)
+
+        leaf = _kv_leaves(1)[0]
+        monkeypatch.setattr(builtins, "__import__", fail_cache_import)
+
+        detached = _extract_detached_singleton_leaf(leaf, 0)
+
+        assert detached.offset == leaf.offset
+        assert mx.array_equal(detached.keys, leaf.keys)
+
+    def test_extract_rejects_an_unqualified_leaf(self):
+        with pytest.raises(TypeError, match="unsupported singleton-regular"):
+            _extract_detached_singleton_leaf(object(), 0)
 
 
 class TestLegacySemanticsAlignment:
