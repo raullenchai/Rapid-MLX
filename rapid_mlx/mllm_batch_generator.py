@@ -3412,8 +3412,14 @@ class MLLMBatchGenerator:
                 self._media_mrope_restore()
                 return self._media_cold_redo(input_ids, cache, prefix_kwargs)
             published = True
-            # Snapshot published: continue the suffix on the same live cache
-            # with the delta this forward already installed on the model.
+            # Snapshot published: continue the suffix on the same live
+            # cache. Install the captured delta exactly like the resume
+            # path — the prefix forward leaves its own ``_position_ids``
+            # installed on the model, and a suffix forward must not
+            # consume the prefix's full-sequence positions on
+            # position-overriding wrappers (install clears them and
+            # re-arms the boundary delta consistently).
+            self._media_mrope_install(rope_delta)
             return self._media_suffix_forward(
                 input_ids[:, boundary:], cache, rope_delta
             )

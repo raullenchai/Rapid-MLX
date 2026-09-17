@@ -2207,3 +2207,36 @@ class TestMediaStoreGeneration:
         )
         assert stored is not None
         assert gen._media_boundary_entries
+
+
+class TestStoreSuffixRopeInstall:
+    def test_store_suffix_installs_delta_and_clears_prefix_positions(self):
+        # The store path's suffix forward must install the captured delta
+        # exactly like the resume path: the prefix forward leaves its own
+        # ``_position_ids`` on the model, and a suffix forward consuming
+        # the prefix's full-sequence positions corrupts positioning on
+        # position-overriding wrappers.
+        gen = _stub_generator()
+        req = _make_request(
+            prompt="a" * 24,
+            pixel_values=mx.zeros((1, 2)),
+            prefix_boundary=20,
+            max_tokens=8,
+        )
+        full_ids = _full_ids()
+        ids = _ids(full_ids)
+        cache = _kv_leaves()
+        plan = gen._media_boundary_plan(req, ids, cache)
+        assert plan is not None and plan[0] == "store"
+        boundary = plan[2]
+
+        rope_delta = mx.array([3])
+        gen.language_model._rope_deltas = rope_delta
+        # Leftover state the prefix forward would have installed.
+        gen.language_model._position_ids = mx.array([[1, 2, 3]])
+        out = gen._media_forward(req, ids, cache, {"pixel_values": req.pixel_values})
+        assert out is not None
+        assert gen._media_boundary_stores == 1
+        assert gen.language_model._position_ids is None
+        assert mx.array_equal(gen.language_model._rope_deltas, rope_delta)
+        assert gen.model.calls[1] == (full_ids[boundary], len(full_ids), False)
