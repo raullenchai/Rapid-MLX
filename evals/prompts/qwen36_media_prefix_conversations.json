@@ -1566,7 +1566,9 @@
             "required_any_groups": [
               [
                 [
-                  "sidebar"
+                  "sidebar",
+                  "creating",
+                  "searching"
                 ]
               ],
               [
@@ -1575,6 +1577,14 @@
                 ],
                 [
                   "mascot"
+                ]
+              ],
+              [
+                [
+                  "empty"
+                ],
+                [
+                  "shortcut"
                 ]
               ]
             ]
@@ -1757,36 +1767,25 @@
             "required_any_groups": [
               [
                 [
-                  "dark"
-                ],
-                [
+                  "dark",
                   "light"
                 ]
               ],
               [
                 [
-                  "color"
-                ],
-                [
-                  "blue"
-                ],
-                [
-                  "white"
-                ],
-                [
-                  "dot"
-                ],
-                [
-                  "dots"
-                ],
-                [
                   "filled"
                 ],
                 [
-                  "colour"
+                  "darker",
+                  "blue"
+                ]
+              ],
+              [
+                [
+                  "differ"
                 ],
                 [
-                  "mode"
+                  "versus"
                 ]
               ]
             ]
