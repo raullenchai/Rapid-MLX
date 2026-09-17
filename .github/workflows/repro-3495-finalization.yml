@@ -16,8 +16,8 @@
 #   * postfix-verify — the same two experiments on the PR head: expect
 #     clean exit 0 always, zero crash reports.
 #
-# Results land in the job summary as an exit-code matrix and any .ips
-# files are uploaded as artifacts. Delete this file once #3495 is closed.
+# Results land in the job summary as an exit-code matrix; new .ips files
+# files are uploaded as artifacts. Delete this file once #3495 is closed.  
 name: repro-3495-finalization
 
 on:
