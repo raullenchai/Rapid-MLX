@@ -41,6 +41,10 @@ final class DictationController {
     }
 
     private(set) var phase: Phase = .off
+    /// The model that owns ``phase``. It intentionally does not follow the
+    /// picker: a stale preparation or capture for model A must not make a
+    /// newly selected model B appear ready or active.
+    private(set) var activeModelAlias: String?
     private(set) var lastError: String?
     private(set) var lastLatency: TimeInterval?
     /// Phase split of ``lastLatency`` ("model 1.2 s · asr 0.3 s"), present
@@ -89,7 +93,7 @@ final class DictationController {
             refreshReadiness()
             if isEnabled {
                 cancelActiveSessionForModelChange()
-                phase = .preparingModel
+                transition(to: .preparingModel, alias: modelAlias)
             }
             scheduleLifecycleTask { controller in
                 await controller.refreshModelCacheState()
@@ -268,8 +272,11 @@ final class DictationController {
         self.trigger = DictationHotkey.Trigger(
             rawValue: defaults.string(forKey: Keys.trigger) ?? ""
         ) ?? .rightCommand
-        self.modelAlias = testingModelAlias ?? defaults.string(forKey: Keys.model) ?? ""
-        self.phase = testingPhase ?? .off
+        let restoredModelAlias = testingModelAlias ?? defaults.string(forKey: Keys.model) ?? ""
+        let initialPhase = testingPhase ?? .off
+        self.modelAlias = restoredModelAlias
+        self.phase = initialPhase
+        self.activeModelAlias = initialPhase == .off ? nil : restoredModelAlias
         // Raw microphone recordings are more sensitive than the transcript.
         // Keep them only after the user explicitly opts in from the Recent
         // section; existing explicit preferences continue to be respected.
@@ -278,6 +285,11 @@ final class DictationController {
         hotkey.trigger = trigger
         hotkey.onTap = { [weak self] in self?.handleHotkey() }
 
+    }
+
+    private func transition(to nextPhase: Phase, alias: String?) {
+        phase = nextPhase
+        activeModelAlias = nextPhase == .off ? nil : alias
     }
 
     // MARK: - Readiness
@@ -394,11 +406,11 @@ final class DictationController {
             guard alias != modelAlias || prewarmTask == nil else { break }
             cancelActiveSessionForModelChange()
             cancelModelPreparation()
-            phase = .preparingModel
+            transition(to: .preparingModel, alias: modelAlias)
         case .ready(let alias):
             guard alias != modelAlias || prewarmTask == nil else { break }
             cancelActiveSessionForModelChange()
-            phase = .preparingModel
+            transition(to: .preparingModel, alias: modelAlias)
             scheduleModelPreparation(replacingCurrentPrewarm: true)
         case .crashed, .stopped, .idle, .missing:
             cancelActiveSessionForModelChange()
@@ -407,7 +419,7 @@ final class DictationController {
             // non-ready phase. Keep the feature-owned event tap registered:
             // the next explicit hotkey press or a later server transition can
             // retry the model without asking the user to arm dictation again.
-            phase = .off
+            transition(to: .off, alias: nil)
         }
     }
 
@@ -463,7 +475,7 @@ final class DictationController {
         ))
         if case .reject(let message, let disableIntent) = decision {
             lastError = message
-            phase = .off
+            transition(to: .off, alias: nil)
             stopHotkey()
             // Missing local model/recording prerequisites make the persisted
             // intent invalid. Accessibility is different: the user already
@@ -483,8 +495,8 @@ final class DictationController {
             return
         }
         modelPreparationDeferred = false
-        phase = .preparingModel
         let preparingAlias = modelAlias
+        transition(to: .preparingModel, alias: preparingAlias)
         let prewarmSucceeded = await prewarmModel(
             replacingCurrent: replacingCurrentPrewarm
         )
@@ -508,7 +520,7 @@ final class DictationController {
         )) else {
             if isEnabled, enableRequestID == requestID, modelAlias == preparingAlias {
                 lastError = "\(preparingAlias) couldn't finish preparing for dictation. Try again."
-                phase = .off
+                transition(to: .off, alias: nil)
             }
             return
         }
@@ -520,7 +532,7 @@ final class DictationController {
     private func registerHotkey(phaseOnSuccess: Phase = .idle) -> Bool {
         guard !isHotkeyArmed else {
             lastError = nil
-            phase = phaseOnSuccess
+            transition(to: phaseOnSuccess, alias: modelAlias)
             return true
         }
         guard testingHotkeyStart?() ?? hotkey.start() else {
@@ -532,13 +544,13 @@ final class DictationController {
             lastError = accessibilityNeedsRelaunch
                 ? "Accessibility is granted, but this running copy hasn't picked it up. Relaunch Rapid to finish."
                 : "The dictation hotkey couldn't be registered."
-            phase = .off
+            transition(to: .off, alias: nil)
             return false
         }
         accessibilityNeedsRelaunch = false
         isHotkeyArmed = true
         lastError = nil
-        phase = phaseOnSuccess
+        transition(to: phaseOnSuccess, alias: modelAlias)
         return true
     }
 
@@ -578,7 +590,7 @@ final class DictationController {
         stopTicking()
         recorderStorage?.shutdown()
         hud.hide()
-        phase = .off
+        transition(to: .off, alias: nil)
     }
 
     /// A model change cannot safely preserve an in-flight utterance: after
@@ -887,8 +899,11 @@ final class DictationController {
     /// hear that a pull landed.
     ///
     /// Called by the view when the pull reaches `.completed`.
-    func modelDownloadDidFinish() async {
+    func modelDownloadDidFinish(alias completedAlias: String? = nil) async {
+        let completedAlias = completedAlias ?? modelAlias
+        guard completedAlias == modelAlias else { return }
         await refreshModelCacheState()
+        guard completedAlias == modelAlias else { return }
         if isEnabled {
             // DownloadManager retains its completed job. A recreated view can
             // replay that completion, but a hot same-alias session must keep
@@ -924,7 +939,7 @@ final class DictationController {
             // releases its model. Only this explicit action owns loading it
             // again; app activation merely repairs the event tap.
             guard isEnabled else { return }
-            phase = .preparingModel
+            transition(to: .preparingModel, alias: modelAlias)
             scheduleModelPreparation(replacingCurrentPrewarm: true)
         case .preparingModel, .transcribing: break
         }
@@ -944,7 +959,7 @@ final class DictationController {
             return
         }
         guard server.isVoiceLaneReady(for: requestedAlias) else {
-            phase = .preparingModel
+            transition(to: .preparingModel, alias: requestedAlias)
             beginRecordingTask = nil
             beginRecordingRequestID = nil
             scheduleModelPreparation(replacingCurrentPrewarm: true)
@@ -986,7 +1001,7 @@ final class DictationController {
         recordingStart = nil
         elapsed = 0
         level = 0
-        phase = .starting
+        transition(to: .starting, alias: requestedAlias)
         hud.show(.starting)
         startTicking()
         startRecordStartWarmup()
@@ -1006,7 +1021,7 @@ final class DictationController {
     private func markRecordingStarted() {
         guard phase == .starting else { return }
         recordingStart = Date()
-        phase = .recording
+        transition(to: .recording, alias: activeModelAlias)
         hud.update(.recording(seconds: 0, level: level))
         NSSound(named: "Tink")?.play()
     }
@@ -1019,16 +1034,16 @@ final class DictationController {
 
         guard let audio else {
             hud.hide()
-            phase = .idle
+            transition(to: .idle, alias: activeModelAlias)
             lastError = "No audio was captured."
             return
         }
 
-        phase = .transcribing
+        let alias = activeModelAlias ?? modelAlias
+        transition(to: .transcribing, alias: alias)
         hud.update(.transcribing)
 
         let app = capturingApp
-        let alias = modelAlias
         let requestID = UUID()
         transcribeRequestID = requestID
         transcribeTask = Task { [weak self] in
@@ -1052,7 +1067,7 @@ final class DictationController {
         defer {
             if transcribeRequestID == requestID {
                 hud.hide()
-                phase = .idle
+                transition(to: .idle, alias: alias)
                 transcribeTask = nil
                 transcribeRequestID = nil
             }

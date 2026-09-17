@@ -253,8 +253,9 @@ struct AudioCatalogTests {
         let source = try String(contentsOf: Self.audioViewURL, encoding: .utf8)
 
         #expect(source.contains("@Environment(DownloadManager.self) private var downloads"))
-        #expect(source.contains(".task(id: downloads.cacheGeneration)"),
-                "The Audio view may stay mounted while Settings downloads a model.")
+        #expect(source.contains("\"\\(downloads.cacheGeneration)#\\(selectedAlias)\""))
+        #expect(source.contains(".task(id: catalogRefreshKey)"),
+                "The Audio view may stay mounted while Settings downloads a model, and a selection change must refresh the matching alias.")
     }
 
     @Test("audio model rows use the shared cache icons instead of status suffixes")
@@ -270,13 +271,12 @@ struct AudioCatalogTests {
     @Test("uncached audio ignores the lazy server's early ready signal")
     @MainActor
     func uncachedAudioNeedsARealDownload() {
-        let readiness = AudioView.audioDownloadReadiness(
+        let readiness = AudioReadinessState.resolve(.init(
             alias: "qwen3-tts-4bit",
+            catalogLoaded: true,
             cached: false,
-            sizeText: "1.1 GiB",
-            job: nil,
-            activationInFlight: false
-        )
+            sizeText: "1.1 GiB"
+        )).modelReadinessOverride
 
         #expect(readiness == .needsDownload(alias: "qwen3-tts-4bit", sizeText: "1.1 GiB"))
         #expect(readiness?.sendAllowed == false)
@@ -293,13 +293,14 @@ struct AudioCatalogTests {
             line: "Fetching 10 files:  30%|███       | 3/10 [00:03<00:07, 1.00it/s]"
         )
 
-        let downloading = AudioView.audioDownloadReadiness(
+        let downloading = AudioReadinessState.resolve(.init(
             alias: alias,
+            catalogLoaded: true,
             cached: false,
             sizeText: "1.5 GiB",
-            job: job,
-            activationInFlight: true
-        )
+            download: AudioReadinessState.downloadSnapshot(alias: alias, job: job),
+            loading: .init(alias: alias, detail: "Downloading or loading the audio model…")
+        )).modelReadinessOverride
         guard case .downloading(let model, _, let fraction) = downloading else {
             Issue.record("Expected the live pull to own audio readiness")
             return
@@ -308,13 +309,13 @@ struct AudioCatalogTests {
         #expect(fraction == 0.3)
 
         downloads._testingFinish(alias: alias, status: 1, reason: .exit)
-        let failed = AudioView.audioDownloadReadiness(
+        let failed = AudioReadinessState.resolve(.init(
             alias: alias,
+            catalogLoaded: true,
             cached: false,
             sizeText: "1.5 GiB",
-            job: job,
-            activationInFlight: false
-        )
+            download: AudioReadinessState.downloadSnapshot(alias: alias, job: job)
+        )).modelReadinessOverride
         guard case .failed(let model, _, let action) = failed else {
             Issue.record("Expected a failed pull to offer retry")
             return

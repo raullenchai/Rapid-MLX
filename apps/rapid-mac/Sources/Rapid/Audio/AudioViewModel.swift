@@ -4,6 +4,11 @@ import Observation
 @MainActor
 @Observable
 final class AudioViewModel {
+    private struct ActiveOperation {
+        let id: UUID
+        let snapshot: AudioReadinessState.ActivitySnapshot
+    }
+
     struct TranscriptionModelDetails: Equatable, Sendable {
         let displayName: String
         let badge: String
@@ -47,10 +52,16 @@ final class AudioViewModel {
     var speed = 1.0
     var synthesizedAudio: SynthesizedAudio?
 
-    var isLoadingVoices = false
-    var isSynthesizing = false
-    var previewingVoice: String?
+    var activeOperation: AudioReadinessState.ActivitySnapshot? {
+        activeOperations.last?.snapshot
+    }
+
+    func activeOperation(for alias: String) -> AudioReadinessState.ActivitySnapshot? {
+        activeOperations.reversed().first { $0.snapshot.alias == alias }?.snapshot
+    }
+    private(set) var previewingVoice: String?
     var errorMessage: String?
+    private var activeOperations: [ActiveOperation] = []
 
     private let server: ServerManager
     private let client: AudioClient
@@ -84,7 +95,15 @@ final class AudioViewModel {
     }
 
     var isBusy: Bool {
-        isLoadingVoices || isSynthesizing || previewingVoice != nil
+        !activeOperations.isEmpty
+    }
+
+    var isLoadingVoices: Bool {
+        activeOperations.contains { $0.snapshot.activity == .loadingVoices }
+    }
+
+    var isSynthesizing: Bool {
+        activeOperations.contains { $0.snapshot.activity == .synthesizing }
     }
 
     func refreshCatalog() async {
@@ -112,9 +131,9 @@ final class AudioViewModel {
               let entry = speechModels.first(where: { $0.alias == selectedSpeechAlias }) else {
             return false
         }
-        isLoadingVoices = true
+        let operationID = beginOperation(alias: entry.alias, activity: .loadingVoices)
         errorMessage = nil
-        defer { isLoadingVoices = false }
+        defer { finishOperation(operationID) }
         guard await ensureVoiceLane(
             alias: entry.alias,
             hfPath: entry.hfRepo
@@ -152,10 +171,10 @@ final class AudioViewModel {
         }
         guard !selectedVoice.isEmpty else { return }
 
-        isSynthesizing = true
+        let operationID = beginOperation(alias: entry.alias, activity: .synthesizing)
         errorMessage = nil
         synthesizedAudio = nil
-        defer { isSynthesizing = false }
+        defer { finishOperation(operationID) }
         guard await ensureVoiceLane(
             alias: entry.alias,
             hfPath: entry.hfRepo
@@ -184,8 +203,12 @@ final class AudioViewModel {
         }
 
         previewingVoice = voice
+        let operationID = beginOperation(alias: entry.alias, activity: .previewingVoice)
         errorMessage = nil
-        defer { previewingVoice = nil }
+        defer {
+            previewingVoice = nil
+            finishOperation(operationID)
+        }
 
         guard await ensureVoiceLane(
                   alias: entry.alias,
@@ -226,6 +249,22 @@ final class AudioViewModel {
         case "sohee": return "Korean · Female"
         default: return "Multilingual"
         }
+    }
+
+    private func beginOperation(
+        alias: String,
+        activity: AudioReadinessState.Activity
+    ) -> UUID {
+        let id = UUID()
+        activeOperations.append(.init(
+            id: id,
+            snapshot: .init(alias: alias, activity: activity)
+        ))
+        return id
+    }
+
+    private func finishOperation(_ id: UUID) {
+        activeOperations.removeAll { $0.id == id }
     }
 
     /// Product-facing guidance for the Speech to Text picker. The engine's

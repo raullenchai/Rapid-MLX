@@ -1067,6 +1067,7 @@ struct DictationTests {
 
         #expect(cancellationCount == 1)
         #expect(controller.phase == .preparingModel)
+        #expect(controller.activeModelAlias == "qwen3-asr")
     }
 
     @MainActor
@@ -1086,6 +1087,7 @@ struct DictationTests {
 
         #expect(cancellationCount == 1)
         #expect(controller.phase == .preparingModel)
+        #expect(controller.activeModelAlias == "qwen3-asr")
     }
 
     @MainActor

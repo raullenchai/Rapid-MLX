@@ -22,6 +22,7 @@ struct AudioView: View {
     @State private var voicePreviewTask: Task<Void, Never>?
     @State private var voicePreviewRequestID: UUID?
     @State private var modelLoadsInFlight: Set<String> = []
+    @State private var runtimeModelLoadsInFlight: [String: Set<UUID>] = [:]
 
     private let contentMaxWidth = RapidTheme.Layout.contentMaxWidth
     /// One control width across the Audio tabs — same as the Dictation
@@ -41,40 +42,57 @@ struct AudioView: View {
         viewModel.audioModels.first { $0.alias == selectedAlias }
     }
 
+    private var catalogRefreshKey: String {
+        "\(downloads.cacheGeneration)#\(selectedAlias)"
+    }
+
+    /// One reducer owns precedence between catalog, pull, load, lane-ready and
+    /// active-operation facts. Both Audio tabs use the same lifecycle as the
+    /// Dictation setup surface, including stale-alias rejection.
+    private var audioReadinessState: AudioReadinessState {
+        let readyAlias: String? = if server.voiceCoLoadsOnPrimary,
+                                    selectedEntry?.cached == true,
+                                    !selectedAlias.isEmpty {
+            selectedAlias
+        } else if case .ready = server.readinessState(for: selectedAlias) {
+            selectedAlias
+        } else {
+            nil
+        }
+        let isLoading = runtimeModelLoadsInFlight[selectedAlias]?.isEmpty == false
+            || server.isResidentLoadInFlight(selectedAlias)
+        var download = AudioReadinessState.downloadSnapshot(
+            alias: selectedAlias,
+            job: downloads.job(for: selectedAlias)
+        )
+        if download == nil,
+           modelLoadsInFlight.contains(selectedAlias),
+           selectedEntry?.cached == false {
+            download = .init(
+                alias: selectedAlias,
+                status: .running(detail: "Starting the download…", fraction: nil)
+            )
+        }
+
+        return .resolve(.init(
+            alias: selectedAlias,
+            catalogLoaded: viewModel.catalogLoaded,
+            cached: selectedEntry?.cached,
+            sizeText: selectedEntry?.sizeOnDisk,
+            download: download,
+            loading: isLoading ? .init(
+                alias: selectedAlias,
+                detail: "Downloading or loading the audio model…"
+            ) : nil,
+            readyAlias: readyAlias,
+            activity: viewModel.activeOperation(for: selectedAlias)
+        ))
+    }
+
     /// Audio uses the same lifecycle SSOT and CTA semantics as Chat and
-    /// Images: choose → Download & start / Start → ready.
+    /// Images: choose → Download / Start → ready.
     private var readiness: ModelReadiness {
-        // Voice co-loading: once the app is serving ANY model on the primary
-        // server, speech is available in the same process — the chosen STT/TTS
-        // engine lazy-loads on the mounted ``/v1/audio/*`` lane whenever an
-        // audio request arrives (the desktop passes ``--enable-audio`` on every
-        // spawn). So with a primary model up AND the voice weights on disk,
-        // the selected audio model is effectively ready without ever replacing
-        // the chat LLM/VLM. When the voice weights aren't cached yet, fall
-        // through so the download/start CTA still appears.
-        if server.voiceCoLoadsOnPrimary,
-           viewModel.audioModels.first(where: { $0.alias == selectedAlias })?.cached == true,
-           !selectedAlias.isEmpty {
-            return .ready(alias: selectedAlias)
-        }
-        // Audio-only `serve` processes intentionally report healthy before
-        // loading their lazy STT/TTS engine. For an uncached model that
-        // process-level signal is not readiness: the first audio request would
-        // still begin the weight download. The explicit DownloadManager job is
-        // authoritative until the catalog confirms the weights are on disk.
-        if let selectedEntry,
-           let downloadReadiness = Self.audioDownloadReadiness(
-               alias: selectedAlias,
-               cached: selectedEntry.cached,
-               sizeText: selectedEntry.sizeOnDisk,
-               job: downloads.job(for: selectedAlias),
-               activationInFlight: modelLoadsInFlight.contains(selectedAlias)
-           ) {
-            return downloadReadiness
-        }
-        if server.isResidentLoadInFlight(selectedAlias) {
-            return .starting(alias: selectedAlias, detail: "Downloading or loading the audio model…")
-        }
+        if let override = audioReadinessState.modelReadinessOverride { return override }
         let cacheState: ModelReadiness.CacheState
         if selectedAlias.isEmpty || !viewModel.catalogLoaded {
             cacheState = .catalogPending
@@ -103,39 +121,6 @@ struct AudioView: View {
         )
     }
 
-    @MainActor
-    static func audioDownloadReadiness(
-        alias: String,
-        cached: Bool,
-        sizeText: String?,
-        job: DownloadManager.Job?,
-        activationInFlight: Bool
-    ) -> ModelReadiness? {
-        guard !alias.isEmpty, !cached else { return nil }
-        if let job {
-            switch job.status {
-            case .running:
-                return .downloading(
-                    alias: alias,
-                    detail: job.progress.progressSubtitle,
-                    fraction: job.progress.progressFraction
-                )
-            case .failed(let message):
-                return .failed(alias: alias, message: message, action: .retry(alias: alias))
-            case .completed:
-                if activationInFlight {
-                    return .starting(alias: alias, detail: "Finishing the download…")
-                }
-            case .cancelled:
-                break
-            }
-        }
-        if activationInFlight {
-            return .downloading(alias: alias, detail: "Starting the download…", fraction: nil)
-        }
-        return .needsDownload(alias: alias, sizeText: sizeText)
-    }
-
     var body: some View {
         VStack(spacing: 0) {
             header
@@ -146,8 +131,13 @@ struct AudioView: View {
         // Settings is a separate window, so this view can remain mounted
         // while an audio pull finishes. Refresh on the shared disk-cache
         // generation instead of keeping the pre-download catalog snapshot.
-        .task(id: downloads.cacheGeneration) {
+        .task(id: catalogRefreshKey) {
+            let refreshedAlias = selectedAlias
+            let completedBeforeRefresh =
+                downloads.job(for: refreshedAlias)?.status == .completed
             await viewModel.refreshCatalog()
+            guard !Task.isCancelled, completedBeforeRefresh else { return }
+            clearUnverifiedCompletedDownload(alias: refreshedAlias)
         }
         .onChange(of: viewModel.mode) { _, _ in cancelVoicePreview() }
         .onDisappear { cancelVoicePreview() }
@@ -618,6 +608,7 @@ struct AudioView: View {
             // usable. Never turn the audio server's lazy health response into
             // a false Ready state when that proof is absent.
             guard viewModel.audioModels.first(where: { $0.alias == alias })?.cached == true else {
+                downloads.dismissJob(alias: alias)
                 viewModel.errorMessage = "The download finished, but Rapid couldn't find the model on disk. Try downloading it again."
                 return
             }
@@ -625,18 +616,38 @@ struct AudioView: View {
 
         // A download may finish after the user selects a different audio
         // model. Keep the completed cache, but do not start the stale choice.
-        guard selectedAlias == alias else { return }
         let entry = viewModel.audioModels.first { $0.alias == alias }
         // Voice co-loading: when the app is already serving a chat LLM/VLM,
         // reuse that process (the engine lazy-loads on the /v1/audio/* lane)
         // instead of tearing it down to run the voice model alone. Only when
         // nothing is running does this spin the voice model up as its own
         // server — see AudioViewModel.ensureVoiceLane for the branch.
+        guard selectedAlias == alias else { return }
+        let runtimeLoadID = UUID()
+        runtimeModelLoadsInFlight[alias, default: []].insert(runtimeLoadID)
+        defer {
+            runtimeModelLoadsInFlight[alias]?.remove(runtimeLoadID)
+            if runtimeModelLoadsInFlight[alias]?.isEmpty == true {
+                runtimeModelLoadsInFlight.removeValue(forKey: alias)
+            }
+        }
         _ = await viewModel.ensureVoiceLane(
             alias: alias,
             hfPath: entry?.hfRepo
         )
         await viewModel.refreshCatalog()
+    }
+
+    private func clearUnverifiedCompletedDownload(alias: String) {
+        guard !alias.isEmpty,
+              downloads.job(for: alias)?.status == .completed,
+              viewModel.audioModels.first(where: { $0.alias == alias })?.cached == false else {
+            return
+        }
+        downloads.dismissJob(alias: alias)
+        if selectedAlias == alias {
+            viewModel.errorMessage = "The download finished, but Rapid couldn't find the model on disk. Try downloading it again."
+        }
     }
 
     @ViewBuilder

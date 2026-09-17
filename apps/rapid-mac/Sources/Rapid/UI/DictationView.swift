@@ -55,9 +55,14 @@ struct DictationView: View {
         // re-read the catalog so the row flips to "Ready on disk" and the
         // model warms without another visit to the pane.
         .task(id: modelDownloadStatusKey) {
-            guard case .completed = downloads.job(for: controller.modelAlias)?.status else { return }
-            await controller.modelDownloadDidFinish()
+            let completedAlias = controller.modelAlias
+            guard case .completed = downloads.job(for: completedAlias)?.status else { return }
+            await controller.modelDownloadDidFinish(alias: completedAlias)
             await viewModel.refreshCatalog()
+            guard !Task.isCancelled else { return }
+            if viewModel.audioModels.first(where: { $0.alias == completedAlias })?.cached != true {
+                downloads.dismissJob(alias: completedAlias)
+            }
         }
         // TCC grants happen outside the app and emit no notification, so the
         // only reliable moment to re-check is when the window comes back.
@@ -123,8 +128,12 @@ struct DictationView: View {
 
     private var statusColor: Color {
         guard controller.isEnabled else { return .secondary }
-        if controller.phase == .preparingModel { return .orange }
-        return controller.phase == .off ? .orange : RapidTheme.green
+        switch audioReadinessState {
+        case .ready, .active:
+            return RapidTheme.green
+        default:
+            return .orange
+        }
     }
 
     private var statusHeadline: String {
@@ -186,7 +195,7 @@ struct DictationView: View {
                     )
                 }
                 .buttonStyle(.plain)
-                .disabled(controller.phase != .off && controller.phase != .idle)
+                .disabled(!audioReadinessState.allowsModelSelection)
                 .accessibilityLabel("Model")
                 .accessibilityValue(controller.modelAlias)
                 .accessibilityIdentifier("Dictation.Model")
@@ -309,6 +318,41 @@ struct DictationView: View {
         }
     }
 
+    private var audioReadinessState: AudioReadinessState {
+        let alias = controller.modelAlias
+        let activeAlias = controller.activeModelAlias
+        let activity: AudioReadinessState.Activity? = switch controller.phase {
+        case .starting: .startingCapture
+        case .recording: .recording
+        case .transcribing: .transcribing
+        case .off, .preparingModel, .idle: nil
+        }
+        let isRuntimeReady: Bool = switch controller.phase {
+        case .idle, .starting, .recording, .transcribing: true
+        case .off, .preparingModel: false
+        }
+
+        return .resolve(.init(
+            alias: alias,
+            catalogLoaded: viewModel.catalogLoaded,
+            cached: selectedModelEntry?.cached,
+            sizeText: selectedModelEntry?.sizeOnDisk,
+            download: AudioReadinessState.downloadSnapshot(
+                alias: alias,
+                job: downloads.job(for: alias)
+            ),
+            loading: controller.phase == .preparingModel
+                ? activeAlias.map {
+                    .init(alias: $0, detail: "The local model is warming up…")
+                }
+                : nil,
+            readyAlias: isRuntimeReady ? activeAlias : nil,
+            activity: activity.flatMap { activity in
+                activeAlias.map { .init(alias: $0, activity: activity) }
+            }
+        ))
+    }
+
     /// Compatibility aliases hidden by the picker still resolve to the same
     /// canonical row. Existing users keep a truthful selected state without a
     /// forced model restart; choosing that row later migrates the stored alias.
@@ -373,21 +417,8 @@ struct DictationView: View {
     /// truth table the sibling Audio tabs use. `nil` (chosen and on disk, or
     /// nothing chosen) renders no banner at all.
     private var modelReadiness: ModelReadiness? {
-        let alias = controller.modelAlias
-        guard !alias.isEmpty, let entry = selectedModelEntry, !entry.cached else { return nil }
-        let job = downloads.job(for: alias)
-        if case .completed = job?.status {
-            // The catalog refresh that flips `entry.cached` is in flight;
-            // don't flash the Download action back in the meantime.
-            return .starting(alias: alias, detail: "Finishing the download…")
-        }
-        return AudioView.audioDownloadReadiness(
-            alias: alias,
-            cached: entry.cached,
-            sizeText: entry.sizeOnDisk,
-            job: job,
-            activationInFlight: false
-        )
+        guard selectedModelEntry?.cached == false else { return nil }
+        return audioReadinessState.modelReadinessOverride
     }
 
     /// Dictation never loads-on-start: both Download and Retry only fetch

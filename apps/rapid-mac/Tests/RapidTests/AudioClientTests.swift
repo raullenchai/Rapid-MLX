@@ -193,6 +193,49 @@ struct AudioClientTests {
         #expect(body?["voice"] as? String == "Serena")
     }
 
+    @Test("An in-flight speech operation retains its originating model alias")
+    @MainActor
+    func speechOperationRetainsOriginAlias() async throws {
+        let client = makeClient()
+        AudioStubProtocol.response = (
+            200,
+            ["Content-Type": "application/json"],
+            Data(#"{"voices":["Vivian"]}"#.utf8)
+        )
+        // AudioStubProtocol is process-global test state; this enclosing suite
+        // is deliberately `.serialized`, so no sibling test can intercept or
+        // overwrite the held request while this operation is suspended.
+        AudioStubProtocol.holdResponse = true
+        let server = ServerManager(testingState: .ready(alias: "speech-a"))
+        let viewModel = AudioViewModel(server: server, client: client)
+        viewModel.audioModels = [
+            speechModel(alias: "speech-a"),
+            speechModel(alias: "speech-b"),
+        ]
+        viewModel.selectedSpeechAlias = "speech-a"
+
+        let operation = Task { await viewModel.loadVoices() }
+        #expect(await AudioStubProtocol.waitForRequest())
+
+        viewModel.selectSpeechModel("speech-b")
+        #expect(
+            viewModel.activeOperation
+                == .init(alias: "speech-a", activity: .loadingVoices)
+        )
+        let state = AudioReadinessState.resolve(.init(
+            alias: viewModel.selectedSpeechAlias,
+            catalogLoaded: true,
+            cached: true,
+            readyAlias: "speech-b",
+            activity: viewModel.activeOperation
+        ))
+        #expect(state == .ready(alias: "speech-b"))
+
+        AudioStubProtocol.resumeHeldResponse()
+        _ = await operation.value
+        #expect(viewModel.activeOperation == nil)
+    }
+
     @Test("Nested server detail is exposed as the user-facing failure")
     @MainActor
     func nestedServerError() async throws {
@@ -247,6 +290,18 @@ struct AudioClientTests {
         let file = directory.appendingPathComponent(name)
         try! data.write(to: file)
         return file
+    }
+
+    private func speechModel(alias: String) -> ModelEntry {
+        ModelEntry(
+            alias: alias,
+            hfRepo: "mlx-community/\(alias)",
+            sizeOnDisk: "1.1 GiB",
+            cached: true,
+            kind: .audio,
+            audioCapability: .speech,
+            audioFamily: "qwen3_tts"
+        )
     }
 
     private func temporaryM4A() throws -> URL {
@@ -348,14 +403,22 @@ struct AudioClientTests {
 }
 
 private final class AudioStubProtocol: URLProtocol, @unchecked Sendable {
+    // The containing suite is serialized. The request semaphore also provides
+    // the happens-before edge between the URL-loading callback and assertions.
     nonisolated(unsafe) static var requests: [URLRequest] = []
     nonisolated(unsafe) static var bodies: [Data] = []
     nonisolated(unsafe) static var response: (Int, [String: String], Data) = (200, [:], Data())
+    nonisolated(unsafe) static var holdResponse = false
+    nonisolated(unsafe) static var heldRequest: AudioStubProtocol?
+    nonisolated(unsafe) static var requestArrived = DispatchSemaphore(value: 0)
 
     static func reset() {
         requests = []
         bodies = []
         response = (200, [:], Data())
+        holdResponse = false
+        heldRequest = nil
+        requestArrived = DispatchSemaphore(value: 0)
     }
 
     override class func canInit(with request: URLRequest) -> Bool { true }
@@ -364,6 +427,33 @@ private final class AudioStubProtocol: URLProtocol, @unchecked Sendable {
     override func startLoading() {
         Self.requests.append(request)
         Self.bodies.append(Self.readBody(from: request))
+        if Self.holdResponse {
+            Self.heldRequest = self
+            Self.requestArrived.signal()
+            return
+        }
+        Self.requestArrived.signal()
+        finishLoading()
+    }
+
+    static func waitForRequest() async -> Bool {
+        await withCheckedContinuation { continuation in
+            DispatchQueue.global().async {
+                continuation.resume(
+                    returning: requestArrived.wait(timeout: .now() + 5) == .success
+                )
+            }
+        }
+    }
+
+    static func resumeHeldResponse() {
+        holdResponse = false
+        let request = heldRequest
+        heldRequest = nil
+        request?.finishLoading()
+    }
+
+    private func finishLoading() {
         let (status, headers, data) = Self.response
         let response = HTTPURLResponse(
             url: request.url!,
