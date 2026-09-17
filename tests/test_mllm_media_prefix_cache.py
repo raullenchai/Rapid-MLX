@@ -1039,12 +1039,8 @@ class TestStorePath:
         assert entry.rope_delta is not lazy
         assert mx.array_equal(entry.rope_delta, mx.array([5, 5]))
 
-    @pytest.mark.parametrize(
-        "failure",
-        [RuntimeError("suffix exploded"), asyncio.CancelledError("suffix exploded")],
-    )
-    def test_store_suffix_failure_discards_the_published_boundary(
-        self, monkeypatch, failure
+    def test_store_suffix_failure_falls_back_cold_and_discards_boundary(
+        self, monkeypatch
     ):
         gen = _stub_generator()
         full_ids = _full_ids()
@@ -1057,21 +1053,49 @@ class TestStorePath:
         gen.language_model._rope_deltas = mx.array([3])
 
         def broken_suffix(*args, **kwargs):
-            raise failure
+            raise RuntimeError("suffix exploded")
 
         monkeypatch.setattr(gen, "_media_suffix_forward", broken_suffix)
-        with pytest.raises(type(failure), match="suffix exploded"):
+        monkeypatch.setattr(gen, "_media_cold_redo", lambda *args: "cold-redo")
+        out = gen._media_forward(
+            req,
+            _ids(full_ids),
+            _kv_leaves(),
+            {"pixel_values": req.pixel_values},
+        )
+        assert out == "cold-redo"
+        digest = gen._media_identity_digest(req)
+        assert digest not in gen._media_boundary_entries
+        # ``stores`` stays monotonic — it counts publishes, not live
+        # entries; the failed request leaves no reusable boundary.
+        assert gen._media_boundary_stores == 1
+        assert gen._media_boundary_misses == 1
+
+    def test_store_suffix_cancellation_discards_boundary_without_retry(
+        self, monkeypatch
+    ):
+        gen = _stub_generator()
+        full_ids = _full_ids()
+        req = _make_request(
+            prompt="a" * 24,
+            pixel_values=mx.zeros((1, 2)),
+            prefix_boundary=20,
+            max_tokens=8,
+        )
+        gen.language_model._rope_deltas = mx.array([3])
+
+        def cancelled_suffix(*args, **kwargs):
+            raise asyncio.CancelledError("suffix exploded")
+
+        monkeypatch.setattr(gen, "_media_suffix_forward", cancelled_suffix)
+        with pytest.raises(asyncio.CancelledError, match="suffix exploded"):
             gen._media_forward(
                 req,
                 _ids(full_ids),
                 _kv_leaves(),
                 {"pixel_values": req.pixel_values},
             )
-        digest = gen._media_identity_digest(req)
-        assert digest not in gen._media_boundary_entries
-        # ``stores`` stays monotonic — it counts publishes, not live
-        # entries; the failed request leaves no reusable boundary.
-        assert gen._media_boundary_stores == 1
+        assert gen._media_identity_digest(req) not in gen._media_boundary_entries
 
     def test_promotion_after_concurrent_clear_does_not_raise(self):
         gen = _stub_generator()
@@ -1290,11 +1314,8 @@ class TestMropeTransaction:
             gen._media_forward(req, _ids(_full_ids()), _kv_leaves(), {})
         assert lm._rope_deltas is prior_delta
 
-    @pytest.mark.parametrize(
-        "failure",
-        [RuntimeError("suffix exploded"), asyncio.CancelledError("suffix exploded")],
-    )
-    def test_resume_suffix_failure_restores_mrope_state(self, monkeypatch, failure):
+    @pytest.mark.parametrize("cancelled", [False, True])
+    def test_resume_suffix_failure_restores_mrope_state(self, monkeypatch, cancelled):
         gen = _stub_generator()
         full_ids = _full_ids()
         req = _make_request(
@@ -1312,12 +1333,20 @@ class TestMropeTransaction:
         assert gen._media_boundary_stores == 1
 
         def broken_suffix(*args, **kwargs):
-            raise failure
+            if cancelled:
+                raise asyncio.CancelledError("suffix exploded")
+            raise RuntimeError("suffix exploded")
 
         monkeypatch.setattr(gen, "_media_suffix_forward", broken_suffix)
-        with pytest.raises(type(failure), match="suffix exploded"):
-            gen._media_forward(req, _ids(full_ids), _kv_leaves(), {})
+        if cancelled:
+            with pytest.raises(asyncio.CancelledError, match="suffix exploded"):
+                gen._media_forward(req, _ids(full_ids), _kv_leaves(), {})
+        else:
+            monkeypatch.setattr(gen, "_media_cold_redo", lambda *args: "cold-redo")
+            assert gen._media_forward(req, _ids(full_ids), _kv_leaves(), {}) == "cold-redo"
         assert gen.language_model._rope_deltas is prior_delta
+        if not cancelled:
+            assert gen._media_identity_digest(req) not in gen._media_boundary_entries
 
     def test_restore_deletes_absent_attributes(self):
         gen = _stub_generator()

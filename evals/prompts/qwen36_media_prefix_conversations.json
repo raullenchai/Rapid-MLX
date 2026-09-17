@@ -1436,9 +1436,6 @@
               ],
               [
                 "blue"
-              ],
-              [
-                "checkmark"
               ]
             ],
             "max_lines": 1,
@@ -1924,7 +1921,13 @@
                 "orange"
               ],
               [
-                "starting"
+                "green"
+              ],
+              [
+                "spinning"
+              ],
+              [
+                "dot"
               ]
             ],
             "max_lines": 1,

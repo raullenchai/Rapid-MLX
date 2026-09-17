@@ -3285,6 +3285,17 @@ class MLLMBatchGenerator:
                 self._media_mrope_restore()
                 self._media_boundary_misses += 1
                 return self._media_cold_redo(input_ids, cache, kwargs)
+            except Exception:
+                # A wrapper may accept the canonical full prompt but reject a
+                # resumed/split invocation for reasons other than a signature
+                # mismatch.  Restore the model-global transaction and retry
+                # once through the ordinary cold path.  BaseException
+                # subclasses (notably cancellation) deliberately bypass this
+                # recovery and continue to the cleanup-only handler below.
+                self._media_mrope_restore()
+                self._media_discard_boundary(request, digest=digest)
+                self._media_boundary_misses += 1
+                return self._media_cold_redo(input_ids, cache, kwargs)
             except BaseException:
                 # The installed delta is model-global state: a failing
                 # or cancelled suffix forward must not leave it behind for
@@ -3332,6 +3343,16 @@ class MLLMBatchGenerator:
             # The suffix path the probes picked cannot serve this request.
             # Restore, discard the published boundary, and redo cold — the
             # published snapshot is worthless without a usable suffix.
+            self._media_mrope_restore()
+            self._media_discard_boundary(request, digest=digest)
+            self._media_boundary_misses += 1
+            return self._media_cold_redo(input_ids, cache, prefix_kwargs)
+        except Exception:
+            # The split is an optimization, not a new compatibility
+            # requirement.  If either split forward rejects a shape that the
+            # canonical full forward accepts, discard the speculative
+            # boundary and retry cold.  Cancellation/system exceptions remain
+            # fail-fast in the BaseException cleanup path below.
             self._media_mrope_restore()
             self._media_discard_boundary(request, digest=digest)
             self._media_boundary_misses += 1
