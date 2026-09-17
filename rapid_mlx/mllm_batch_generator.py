@@ -3676,7 +3676,9 @@ class MLLMBatchGenerator:
         active_batch = getattr(self, "active_batch", None)
         no_active_batch = active_batch is None or len(active_batch) == 0
         self._media_singleton_turn = (
-            self._media_structural_singleton and no_active_batch and len(requests) == 1
+            getattr(self, "_media_structural_singleton", False)
+            and no_active_batch
+            and len(requests) == 1
         )
 
         # Preprocess all requests
