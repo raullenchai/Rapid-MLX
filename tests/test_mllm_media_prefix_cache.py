@@ -37,11 +37,11 @@ from typing import Any  # noqa: E402
 import mlx.core as mx  # noqa: E402
 import mlx.nn as nn  # noqa: E402
 from vllm_mlx.mllm_batch_generator import (  # noqa: E402
+    _MEDIA_ROPE_CONSUMING_LM_IMPLEMENTATIONS,
+    _MEDIA_ROPE_PLUMBING_WRAPPER_IMPLEMENTATIONS,
     MLLMBatchGenerator,
     MLLMBatchRequest,
     MLLMBatchStats,
-    _MEDIA_ROPE_CONSUMING_LM_IMPLEMENTATIONS,
-    _MEDIA_ROPE_PLUMBING_WRAPPER_IMPLEMENTATIONS,
     _media_clone_leaves,
     _media_leaf_bytes,
     _media_leaves_bytes,

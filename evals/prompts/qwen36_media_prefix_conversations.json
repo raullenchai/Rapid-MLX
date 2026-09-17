@@ -53,19 +53,10 @@
             "min_words": 3,
             "required_any": [
               [
-                "stop"
+                "circular"
               ],
               [
-                "info"
-              ],
-              [
-                "icon"
-              ],
-              [
-                "button"
-              ],
-              [
-                "chip"
+                "information"
               ]
             ],
             "max_lines": 1,
@@ -148,19 +139,11 @@
             "min_words": 3,
             "required_any": [
               [
-                "download"
-              ],
-              [
                 "cloud"
               ],
               [
-                "icon"
-              ],
-              [
+                "download",
                 "start"
-              ],
-              [
-                "button"
               ]
             ],
             "max_lines": 1,
@@ -241,16 +224,10 @@
             "min_words": 3,
             "required_any": [
               [
-                "dot"
-              ],
-              [
                 "orange"
               ],
               [
-                "icon"
-              ],
-              [
-                "subtitle"
+                "starting"
               ]
             ],
             "max_lines": 1,
@@ -331,28 +308,10 @@
             "min_words": 3,
             "required_any": [
               [
-                "⌘n"
-              ],
-              [
-                "cmd+n"
-              ],
-              [
-                "command+n"
-              ],
-              [
-                "hint"
-              ],
-              [
-                "press"
-              ],
-              [
-                "dog"
+                "tiger"
               ],
               [
                 "mascot"
-              ],
-              [
-                "icon"
               ],
               [
                 "rapid-mlx"
@@ -537,22 +496,15 @@
             "min_words": 3,
             "required_any": [
               [
-                "skip"
-              ],
-              [
                 "checkmark"
               ],
               [
-                "icon"
+                "blue",
+                "circular"
               ],
               [
-                "button"
-              ],
-              [
-                "blue"
-              ],
-              [
-                "dot"
+                "white",
+                "checkmark"
               ]
             ],
             "max_lines": 1,
@@ -640,19 +592,10 @@
             "min_words": 3,
             "required_any": [
               [
-                "rapid-mlx"
-              ],
-              [
-                "icon"
+                "tiger"
               ],
               [
                 "mascot"
-              ],
-              [
-                "title"
-              ],
-              [
-                "chat"
               ]
             ],
             "max_lines": 1,
@@ -737,19 +680,13 @@
             "min_words": 3,
             "required_any": [
               [
-                "starting"
-              ],
-              [
-                "dot"
-              ],
-              [
                 "orange"
               ],
               [
-                "icon"
+                "starting"
               ],
               [
-                "qwen"
+                "spinning"
               ]
             ],
             "max_lines": 1,
@@ -851,13 +788,10 @@
             "min_words": 3,
             "required_any": [
               [
-                "info"
+                "question"
               ],
               [
-                "icon"
-              ],
-              [
-                "button"
+                "circular"
               ]
             ],
             "max_lines": 1,
@@ -963,19 +897,13 @@
             "min_words": 3,
             "required_any": [
               [
-                "⌘n"
+                "cartoon"
               ],
               [
-                "cmd+n"
+                "cat"
               ],
               [
-                "command+n"
-              ],
-              [
-                "icon"
-              ],
-              [
-                "hint"
+                "character"
               ]
             ],
             "max_lines": 1,
@@ -1077,16 +1005,12 @@
                 "checkmark"
               ],
               [
-                "icon"
+                "blue",
+                "circle"
               ],
               [
-                "button"
-              ],
-              [
-                "dot"
-              ],
-              [
-                "dots"
+                "blue",
+                "circular"
               ]
             ],
             "max_lines": 1,
@@ -1198,19 +1122,20 @@
             "min_words": 3,
             "required_any": [
               [
-                "download"
-              ],
-              [
-                "button"
-              ],
-              [
-                "orange"
-              ],
-              [
-                "icon"
-              ],
-              [
                 "cloud"
+              ],
+              [
+                "arrow"
+              ],
+              [
+                "dark",
+                "gray"
+              ],
+              [
+                "square"
+              ],
+              [
+                "stop"
               ]
             ],
             "max_lines": 1,
@@ -1282,6 +1207,93 @@
               "next",
               "skip"
             ],
+            "required_any_groups": [
+              [
+                [
+                  "body"
+                ],
+                [
+                  "summary"
+                ],
+                [
+                  "explains"
+                ],
+                [
+                  "explaining"
+                ],
+                [
+                  "describes"
+                ]
+              ],
+              [
+                [
+                  "picker"
+                ],
+                [
+                  "curated"
+                ],
+                [
+                  "list of models"
+                ],
+                [
+                  "models"
+                ]
+              ],
+              [
+                [
+                  "dot"
+                ],
+                [
+                  "dots"
+                ],
+                [
+                  "indicator"
+                ],
+                [
+                  "indicators"
+                ]
+              ],
+              [
+                [
+                  "lower-left"
+                ],
+                [
+                  "lower left"
+                ],
+                [
+                  "bottom-left"
+                ],
+                [
+                  "bottom left"
+                ],
+                [
+                  "left edge"
+                ],
+                [
+                  "left-hand"
+                ]
+              ],
+              [
+                [
+                  "lower-right"
+                ],
+                [
+                  "lower right"
+                ],
+                [
+                  "bottom-right"
+                ],
+                [
+                  "bottom right"
+                ],
+                [
+                  "right edge"
+                ],
+                [
+                  "right-hand"
+                ]
+              ]
+            ],
             "min_words": 200
           }
         },
@@ -1303,22 +1315,10 @@
                 "padding"
               ],
               [
-                "dot"
-              ],
-              [
-                "dots"
-              ],
-              [
-                "layout"
-              ],
-              [
-                "button"
-              ],
-              [
-                "checkmark"
-              ],
-              [
                 "white"
+              ],
+              [
+                "minimalist"
               ]
             ],
             "max_lines": 1,
@@ -1435,27 +1435,6 @@
             "min_words": 3,
             "required_any": [
               [
-                "dark"
-              ],
-              [
-                "dot"
-              ],
-              [
-                "dots"
-              ],
-              [
-                "icon"
-              ],
-              [
-                "contrast"
-              ],
-              [
-                "button"
-              ],
-              [
-                "checkmark"
-              ],
-              [
                 "rounded"
               ],
               [
@@ -1463,6 +1442,12 @@
               ],
               [
                 "fill"
+              ],
+              [
+                "blue"
+              ],
+              [
+                "checkmark"
               ]
             ],
             "max_lines": 1,
@@ -1656,7 +1641,7 @@
                 "border"
               ],
               [
-                "grey"
+                "black"
               ],
               [
                 "edge"
@@ -1754,25 +1739,16 @@
             "min_words": 3,
             "required_any": [
               [
+                "filled"
+              ],
+              [
                 "blue"
               ],
               [
-                "white"
+                "hollow"
               ],
               [
-                "color"
-              ],
-              [
-                "colour"
-              ],
-              [
-                "dot"
-              ],
-              [
-                "dots"
-              ],
-              [
-                "filled"
+                "darker"
               ]
             ],
             "max_lines": 1,
@@ -1860,19 +1836,13 @@
             "min_words": 3,
             "required_any": [
               [
-                "download"
-              ],
-              [
                 "orange"
-              ],
-              [
-                "icon"
               ],
               [
                 "cloud"
               ],
               [
-                "button"
+                "arrow"
               ]
             ],
             "max_lines": 1,
@@ -1960,16 +1930,10 @@
             "min_words": 3,
             "required_any": [
               [
-                "spinning"
-              ],
-              [
-                "dot"
-              ],
-              [
                 "orange"
               ],
               [
-                "icon"
+                "starting"
               ]
             ],
             "max_lines": 1,
@@ -2063,22 +2027,10 @@
             "min_words": 3,
             "required_any": [
               [
-                "download"
+                "question"
               ],
               [
-                "orange"
-              ],
-              [
-                "grey"
-              ],
-              [
-                "gray"
-              ],
-              [
-                "button"
-              ],
-              [
-                "icon"
+                "circular"
               ]
             ],
             "max_lines": 1,

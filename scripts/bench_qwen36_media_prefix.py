@@ -291,6 +291,29 @@ def _structural_pass(checker: dict[str, Any], text: str) -> bool:
     return not (max_lines and lines > max_lines)
 
 
+def _required_any_groups_pass(checker: dict[str, Any], text_tokens: set[str]) -> bool:
+    """``required_any_groups``: AND over groups of OR-alternatives.
+
+    The summary turns use one group per prior answer, so a response that
+    drops an entire answer fails even though its anchors also occur in the
+    other answer. Each group's alternatives span the subject's phrasings
+    observed across hosts (detail answers vary at temperature 0 across
+    machines; a single phrasing is not groundable). Shared by both the
+    ``terms`` and ``any`` kinds — a ``terms`` checker that pins per-control
+    groups (accessibility descriptions) relies on it too.
+    """
+    for group in checker.get("required_any_groups", []):
+        if not any(
+            all(
+                _term_matches(text_tokens, term, guard_negation=True)
+                for term in alternative
+            )
+            for alternative in group
+        ):
+            return False
+    return True
+
+
 def _checker_pass(
     checker: dict[str, Any], text: str, earlier_texts: tuple[str, ...] = ()
 ) -> bool:
@@ -336,6 +359,8 @@ def _checker_pass(
                 ):
                     return False
         if not _structural_pass(checker, text):
+            return False
+        if not _required_any_groups_pass(checker, text_tokens):
             return False
         return not any(
             _term_matches(text_tokens, term, guard_negation=False)
@@ -501,16 +526,8 @@ def _checker_pass(
         # phrasings observed across hosts (detail answers vary at
         # temperature 0 across machines; a single phrasing is not
         # groundable).
-        required_any_groups = checker.get("required_any_groups", [])
-        for group in required_any_groups:
-            if not any(
-                all(
-                    _term_matches(text_tokens, term, guard_negation=True)
-                    for term in alternative
-                )
-                for alternative in group
-            ):
-                return False
+        if not _required_any_groups_pass(checker, text_tokens):
+            return False
         return True
     raise ValueError(f"unknown checker type: {kind}")
 

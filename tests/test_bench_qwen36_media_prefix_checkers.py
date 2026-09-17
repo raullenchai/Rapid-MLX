@@ -546,3 +546,31 @@ def test_curly_apostrophe_contracts_hit_the_negation_guard():
     assert not _checker_pass(checker, "The chip isn’t ready at all.")
     assert not _checker_pass(checker, "The chip isn't ready at all.")
     assert _checker_pass(checker, "The chip is ready.")
+
+
+def test_terms_required_any_groups_are_enforced():
+    # ``required_any_groups`` is shared by both checker kinds: a ``terms``
+    # checker that pins per-control groups (accessibility descriptions)
+    # must enforce them too — silently ignoring the groups would let an
+    # answer omit a control the prompt claims to cover.
+    checker = {
+        "type": "terms",
+        "required": ["pick a model", "next", "skip"],
+        "required_any_groups": [
+            [["dot"], ["indicators"]],
+            [["lower-left"], ["lower left"]],
+        ],
+    }
+    assert _checker_pass(
+        checker,
+        "Pick a model, then Skip on the lower-left, Next on the lower-right, with four dot indicators.",
+    )
+    # Omitting the indicators group fails even though every required term is present.
+    assert not _checker_pass(
+        checker,
+        "Pick a model, then Skip on the lower-left and Next on the lower-right.",
+    )
+    # Omitting the skip position group fails too.
+    assert not _checker_pass(
+        checker, "Pick a model, then Skip and Next, with four dot indicators."
+    )

@@ -1930,12 +1930,15 @@ class MLLMBatchGenerator:
 
     def _media_boundary_plan(
         self, request: MLLMBatchRequest, input_ids: Any, cache: list[Any]
-    ) -> tuple[str, Any, int, int | None] | None:
+    ) -> tuple[str, Any, int, int | None, Any] | None:
         """Decide the media boundary action for one image-bearing request.
 
-        Returns ``("resume", entry, boundary, generation)`` on a verified
-        warm prefix, ``("store", None, boundary, None)`` when this prefill
-        should snapshot its boundary, or None for the cold single forward.
+        Returns ``("resume", entry, boundary, generation, digest)`` on a
+        verified warm prefix, ``("store", None, boundary, None, digest)``
+        when this prefill should snapshot its boundary, or None for the
+        cold single forward. The digest rides in the plan so the hit path
+        never re-derives it (a recompute can re-hash image files on the
+        latency-sensitive resume).
         The generation is the store's incarnation at lookup time: a caller
         that finds it changed was planned against a since-cleared store. Every gate fails
         closed. At most one miss is counted per planned request: a stored
@@ -2007,7 +2010,7 @@ class MLLMBatchGenerator:
                 # No hit is counted here: the caller installs the snapshot
                 # after re-cloning it, and the hit (plus the LRU promotion)
                 # only lands once that install actually succeeded.
-                return ("resume", entry, boundary, generation)
+                return ("resume", entry, boundary, generation, digest)
             # A stored candidate that fails the strict prefix or placeholder
             # check is a clean miss — never a trim or a partial resume. This
             # request's own boundary may still be storable below.
@@ -2051,7 +2054,7 @@ class MLLMBatchGenerator:
             if not counted_miss:
                 self._media_boundary_misses += 1
             return None
-        return ("store", None, boundary, None)
+        return ("store", None, boundary, None, digest)
 
     def _media_store(
         self,
@@ -2060,6 +2063,7 @@ class MLLMBatchGenerator:
         input_ids: Any,
         boundary: int,
         rope_delta: Any,
+        digest: Any = None,
     ) -> MLLMMediaBoundaryEntry | None:
         """Snapshot the boundary state of a live media prefill.
 
@@ -2070,7 +2074,8 @@ class MLLMBatchGenerator:
         uncloneable, over-budget, or the store was cleared mid-clone — the
         caller redoes the request as one cold full forward.
         """
-        digest = self._media_identity_digest(request)
+        if digest is None:
+            digest = self._media_identity_digest(request)
         if digest is None or rope_delta is None:
             return None
         # Pin the store incarnation before the (lock-free) clone: a clear
@@ -3196,7 +3201,7 @@ class MLLMBatchGenerator:
         plan = self._media_boundary_plan(request, input_ids, cache)
         if plan is None:
             return self.model(input_ids, cache=cache, **kwargs)
-        action, entry, boundary, generation = plan
+        action, entry, boundary, generation, digest = plan
         full_ids = [int(v) for v in input_ids.reshape(-1).tolist()]
         if action == "resume":
             try:
@@ -3249,7 +3254,7 @@ class MLLMBatchGenerator:
             # promoted hit — frequently resumed media must not be evicted
             # ahead of colder entries (LRU, not FIFO).
             self._media_boundary_hits += 1
-            self._media_promote_entry(self._media_identity_digest(request))
+            self._media_promote_entry(digest)
             request.cached_tokens = boundary
             return output
         # Store path: prefix forward with the full vision kwargs (the plan
