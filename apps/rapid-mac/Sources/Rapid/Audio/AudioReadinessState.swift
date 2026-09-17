@@ -100,10 +100,11 @@ enum AudioReadinessState: Equatable {
         }
         let isReady = snapshot.readyAlias == alias
 
-        // Active work is meaningful only after the selected lane is ready.
-        // A stale task from model A must never make newly selected model B look
-        // active or ready.
-        if isReady, let matchingActivity {
+        // A matching operation is request-owned evidence that this lane is in
+        // use. Keep selection blocked even if process readiness briefly drops
+        // during a server transition; alias matching still rejects work left
+        // behind by a previously selected model.
+        if let matchingActivity {
             return .active(alias: alias, activity: matchingActivity)
         }
         if !cached, case .failed(let message) = matchingDownload {

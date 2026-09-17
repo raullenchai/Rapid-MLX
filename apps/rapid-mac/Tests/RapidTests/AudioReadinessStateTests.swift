@@ -119,6 +119,19 @@ struct AudioReadinessStateTests {
         #expect(state == .ready(alias: Self.alias))
     }
 
+    @Test("active work survives a transient loss of server readiness")
+    func activeWorkBlocksSelectionWithoutReadySignal() {
+        let state = AudioReadinessState.resolve(
+            Self.snapshot(
+                cached: true,
+                readyAlias: nil,
+                activity: .init(alias: Self.alias, activity: .synthesizing)
+            ))
+
+        #expect(state == .active(alias: Self.alias, activity: .synthesizing))
+        #expect(!state.allowsModelSelection)
+    }
+
     @Test("cancelled downloads return to a retryable not-downloaded state")
     func cancelledDownloadIsRetryable() {
         let state = AudioReadinessState.resolve(
