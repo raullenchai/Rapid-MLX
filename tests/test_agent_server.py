@@ -460,6 +460,26 @@ def test_local_workspace_default_path_is_harness_owned_and_user_path_is_preserve
         "working_directory": "~/Rapid Workspace",
     }
 
+    model_chosen_cd = AgentModelTurn(
+        tool_calls=[
+            AgentToolCall(
+                id="compile-model-cd",
+                name="local_run",
+                arguments={
+                    "command": "cd /Users/alice/Documents/project && gcc main.c"
+                },
+            )
+        ]
+    )
+    normalized_model_cd = _normalize_local_workspace_turn(
+        "Compile and run the code", model_chosen_cd
+    )
+    assert normalized_model_cd.tool_calls[0].arguments == {
+        "command": "gcc",
+        "arguments": ["main.c", "-o", "main"],
+        "working_directory": "~/Rapid Workspace",
+    }
+
     explicit_recipe = AgentModelTurn(
         tool_calls=[
             AgentToolCall(

@@ -1024,7 +1024,7 @@ def _normalize_local_workspace_turn(goal: str, turn: AgentModelTurn) -> AgentMod
                     tokens = shlex.split(segment)
                 except ValueError:
                     continue
-                if len(tokens) == 2 and tokens[0] == "cd":
+                if has_explicit_path and len(tokens) == 2 and tokens[0] == "cd":
                     working_directory = tokens[1]
                     arguments["working_directory"] = working_directory
                     continue

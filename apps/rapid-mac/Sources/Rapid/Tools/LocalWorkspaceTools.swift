@@ -68,6 +68,10 @@ enum LocalWorkspaceTools {
                 throw LocalError("the approved file changed while approval was open")
             }
         }
+
+        var approvalScope: String {
+            "\(url.path)\u{0}\(identity.device)\u{0}\(identity.inode)"
+        }
     }
 
     private struct ApprovedRun: @unchecked Sendable {
@@ -277,6 +281,7 @@ enum LocalWorkspaceTools {
         }
         let approvedPath: PinnedPath?
         let approvedParent: PinnedPath?
+        let approvedTrash: PinnedPath?
         let approvedRun: ApprovedRun?
         let approvedWrite: ApprovedWrite?
         do {
@@ -290,6 +295,7 @@ enum LocalWorkspaceTools {
                 approvedRun = nil
                 approvedWrite = nil
                 approvedParent = nil
+                approvedTrash = nil
             case "local_read":
                 let args = try requireDecoded(PathArgs.self, call.function.arguments)
                 approvedPath = try PinnedPath(
@@ -299,6 +305,7 @@ enum LocalWorkspaceTools {
                 approvedRun = nil
                 approvedWrite = nil
                 approvedParent = nil
+                approvedTrash = nil
             case "local_trash":
                 let args = try requireDecoded(PathArgs.self, call.function.arguments)
                 let fileURL = try safeURL(args.path)
@@ -309,6 +316,11 @@ enum LocalWorkspaceTools {
                 approvedParent = try PinnedPath(
                     url: fileURL.deletingLastPathComponent(), directory: true
                 )
+                approvedTrash = try PinnedPath(
+                    url: FileManager.default.homeDirectoryForCurrentUser
+                        .appendingPathComponent(".Trash"),
+                    directory: true
+                )
                 approvedRun = nil
                 approvedWrite = nil
             case "local_write":
@@ -317,24 +329,29 @@ enum LocalWorkspaceTools {
                 approvedPath = nil
                 approvedRun = nil
                 approvedParent = nil
+                approvedTrash = nil
             case "local_run":
                 let args = try requireDecoded(RunArgs.self, call.function.arguments)
                 approvedRun = try prepareRun(args)
                 approvedPath = nil
                 approvedWrite = nil
                 approvedParent = nil
+                approvedTrash = nil
             default:
                 approvedPath = nil
                 approvedRun = nil
                 approvedWrite = nil
                 approvedParent = nil
+                approvedTrash = nil
             }
         } catch {
             return withToolCallID(
                 failure("\(name) error: \(error.localizedDescription)", executed: false), call.id
             )
         }
-        let grantScope = persistent ? approvalScope(name, arguments: call.function.arguments) : nil
+        // A remembered read/search grant belongs to the approved object, not
+        // merely to a pathname that can later be replaced with another inode.
+        let grantScope = persistent ? approvedPath?.approvalScope : nil
 
         switch await approval.requestApproval(
             toolName: name,
@@ -355,7 +372,9 @@ enum LocalWorkspaceTools {
             case "local_search": return search(call.function.arguments, approved: approvedPath)
             case "local_read": return read(approved: approvedPath)
             case "local_write": return write(approved: approvedWrite)
-            case "local_trash": return trash(approved: approvedPath, parent: approvedParent)
+            case "local_trash": return trash(
+                approved: approvedPath, parent: approvedParent, trashDirectory: approvedTrash
+            )
             case "local_run": return runCommand(approved: approvedRun)
             default: return failure("Unknown local tool \(name)", executed: false)
             }
@@ -441,17 +460,6 @@ enum LocalWorkspaceTools {
             throw LocalError("arguments are invalid")
         }
         return decoded
-    }
-
-    private static func approvalScope(_ name: String, arguments: String) -> String? {
-        let rawPath: String?
-        switch name {
-        case "local_search": rawPath = decode(SearchArgs.self, arguments)?.path
-        case "local_read": rawPath = decode(PathArgs.self, arguments)?.path
-        default: rawPath = nil
-        }
-        guard let rawPath else { return nil }
-        return try? safeURL(rawPath).path
     }
 
     private static func validatedLexicalURL(_ path: String) throws -> URL {
@@ -947,17 +955,19 @@ enum LocalWorkspaceTools {
         LocalError("\(context): \(String(cString: strerror(errno)))")
     }
 
-    private static func trash(approved: PinnedPath?, parent: PinnedPath?) -> ToolCallResult {
+    private static func trash(
+        approved: PinnedPath?, parent: PinnedPath?, trashDirectory: PinnedPath?
+    ) -> ToolCallResult {
         do {
-            guard let approved, let parent else { return failure("local_trash approval expired") }
+            guard let approved, let parent, let trashDirectory else {
+                return failure("local_trash approval expired")
+            }
             try approved.verifyPathStillNamesPinnedObject()
             try parent.verifyPathStillNamesPinnedObject()
+            try trashDirectory.verifyPathStillNamesPinnedObject()
             let url = approved.url
             let parentFD = parent.descriptor
-            let trashURL = FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent(".Trash")
-            let trashFD = Darwin.open(trashURL.path, O_RDONLY | O_DIRECTORY | O_CLOEXEC)
-            guard trashFD >= 0 else { throw posixError("could not open the macOS Trash") }
-            defer { Darwin.close(trashFD) }
+            let trashFD = trashDirectory.descriptor
 
             let sourceName = url.lastPathComponent
             let destinationName = "\(sourceName).rapid-\(UUID().uuidString)"
@@ -980,12 +990,26 @@ enum LocalWorkspaceTools {
                 return FileIdentity(device: metadata.st_dev, inode: metadata.st_ino)
             }
             guard movedIdentity == approved.identity else {
-                _ = destinationName.withCString { destinationPointer in
+                let restored = destinationName.withCString { destinationPointer in
                     sourceName.withCString { sourcePointer in
                         renameatx_np(trashFD, destinationPointer, parentFD, sourcePointer, UInt32(RENAME_EXCL))
                     }
                 }
-                return failure("local_trash refused because the approved file changed")
+                if restored == 0 {
+                    return failure("local_trash refused because the approved file changed; the replacement was restored to \(url.path)")
+                }
+                let recoveryName = ".\(sourceName).rapid-recovered-\(UUID().uuidString)"
+                let recovered = destinationName.withCString { destinationPointer in
+                    recoveryName.withCString { recoveryPointer in
+                        renameatx_np(trashFD, destinationPointer, parentFD, recoveryPointer, UInt32(RENAME_EXCL))
+                    }
+                }
+                if recovered == 0 {
+                    let recoveryURL = url.deletingLastPathComponent().appendingPathComponent(recoveryName)
+                    return failure("local_trash refused because the approved file changed; the replacement was recovered at \(recoveryURL.path)")
+                }
+                let recoverableURL = trashDirectory.url.appendingPathComponent(destinationName)
+                return failure("local_trash refused because the approved file changed; the replacement remains recoverable at \(recoverableURL.path)")
             }
             return ToolCallResult(toolCallID: "", content: "Moved \(url.path) to Trash. It can be recovered from Finder.")
         } catch { return failure("local_trash error: \(error.localizedDescription)") }

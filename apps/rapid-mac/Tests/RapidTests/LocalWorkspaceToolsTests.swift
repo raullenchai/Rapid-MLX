@@ -522,6 +522,40 @@ final class LocalWorkspaceToolsTests {
         #expect((await secondTask.value).isError)
     }
 
+    @Test("session read grants do not authorize a replacement at the same path")
+    func readGrantPinsGrantedIdentity() async throws {
+        let root = try fixtureDirectory()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let file = root.appendingPathComponent("notes.txt")
+        let displaced = root.appendingPathComponent("approved.txt")
+        try "approved".write(to: file, atomically: true, encoding: .utf8)
+        let store = approval()
+        let arguments = #"{"path":"\#(file.path)"}"#
+
+        let initial = Task {
+            await LocalWorkspaceTools.run(
+                ToolCall(id: "first", name: "local_read", arguments: arguments),
+                approval: store
+            )
+        }
+        while store.pendingRequest == nil { await Task.yield() }
+        store.answer(.alwaysAllowTool)
+        #expect(!(await initial.value).isError)
+
+        try FileManager.default.moveItem(at: file, to: displaced)
+        try "replacement".write(to: file, atomically: true, encoding: .utf8)
+        let replacement = Task {
+            await LocalWorkspaceTools.run(
+                ToolCall(id: "second", name: "local_read", arguments: arguments),
+                approval: store
+            )
+        }
+        while store.pendingRequest == nil { await Task.yield() }
+        #expect(store.pendingRequest?.toolName == "local_read")
+        store.answer(.deny)
+        #expect((await replacement.value).failureKind == .userDeclined)
+    }
+
     @Test("session read grants cannot follow a retargeted symlink")
     func readGrantDoesNotFollowRetargetedSymlink() async throws {
         let root = try fixtureDirectory()
