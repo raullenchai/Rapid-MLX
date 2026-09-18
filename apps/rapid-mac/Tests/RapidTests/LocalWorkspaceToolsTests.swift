@@ -268,6 +268,71 @@ final class LocalWorkspaceToolsTests {
         #expect(!result.content.contains("localhost"))
     }
 
+    @Test("run sandbox blocks machine data under Library")
+    func commandCannotReadLibraryData() async throws {
+        let root = try fixtureDirectory()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let arguments = try #require(String(data: JSONSerialization.data(withJSONObject: [
+            "command": "python3",
+            "arguments": ["-c", "import os;print(os.listdir('/Library'))"],
+            "working_directory": root.path,
+        ]), encoding: .utf8))
+
+        let result = await runApproved(name: "local_run", arguments: arguments, store: approval())
+
+        #expect(result.isError)
+    }
+
+    @Test("approved interpreter cannot launch an unrelated executable")
+    func commandCannotLaunchArbitraryExecutable() async throws {
+        let root = try fixtureDirectory()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let marker = root.appendingPathComponent("escaped.txt")
+        let arguments = try #require(String(data: JSONSerialization.data(withJSONObject: [
+            "command": "python3",
+            "arguments": ["-c", "import subprocess;subprocess.run(['/usr/bin/touch','escaped.txt'],check=True)"],
+            "working_directory": root.path,
+        ]), encoding: .utf8))
+
+        let result = await runApproved(name: "local_run", arguments: arguments, store: approval())
+
+        #expect(result.isError)
+        #expect(!FileManager.default.fileExists(atPath: marker.path))
+    }
+
+    @Test("run rejects a working directory retargeted while approval is open")
+    func commandPinsApprovedWorkingDirectory() async throws {
+        let first = try fixtureDirectory()
+        let second = try fixtureDirectory()
+        let link = first.deletingLastPathComponent().appendingPathComponent(UUID().uuidString)
+        defer {
+            try? FileManager.default.removeItem(at: link)
+            try? FileManager.default.removeItem(at: first)
+            try? FileManager.default.removeItem(at: second)
+        }
+        try FileManager.default.createSymbolicLink(at: link, withDestinationURL: first)
+        let arguments = try #require(String(data: JSONSerialization.data(withJSONObject: [
+            "command": "python3",
+            "arguments": ["-c", "print('SHOULD_NOT_RUN')"],
+            "working_directory": link.path,
+        ]), encoding: .utf8))
+        let store = approval()
+        let task = Task {
+            await LocalWorkspaceTools.run(
+                ToolCall(id: "run", name: "local_run", arguments: arguments), approval: store
+            )
+        }
+        while store.pendingRequest == nil { await Task.yield() }
+        try FileManager.default.removeItem(at: link)
+        try FileManager.default.createSymbolicLink(at: link, withDestinationURL: second)
+        store.answer(.allowOnce)
+
+        let result = await task.value
+        #expect(result.isError)
+        #expect(result.content.contains("approved file changed"))
+        #expect(!result.content.contains("SHOULD_NOT_RUN"))
+    }
+
     @Test("protected paths are rejected case-insensitively before approval")
     func protectedPathCaseDoesNotBypassGuard() async {
         let store = approval()
@@ -364,6 +429,31 @@ final class LocalWorkspaceToolsTests {
         #expect(store.pendingRequest?.toolName == "local_read")
         store.answer(.deny)
         #expect((await retargeted.value).failureKind == .userDeclined)
+    }
+
+    @Test("read rejects a file replaced while approval is open")
+    func readPinsApprovedFileIdentity() async throws {
+        let root = try fixtureDirectory()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let file = root.appendingPathComponent("notes.txt")
+        let original = root.appendingPathComponent("original.txt")
+        try "approved".write(to: file, atomically: true, encoding: .utf8)
+        let store = approval()
+        let task = Task {
+            await LocalWorkspaceTools.run(
+                ToolCall(id: "read", name: "local_read", arguments: #"{"path":"\#(file.path)"}"#),
+                approval: store
+            )
+        }
+        while store.pendingRequest == nil { await Task.yield() }
+        try FileManager.default.moveItem(at: file, to: original)
+        try "replacement".write(to: file, atomically: true, encoding: .utf8)
+        store.answer(.allowOnce)
+
+        let result = await task.value
+        #expect(result.isError)
+        #expect(result.content.contains("approved file changed"))
+        #expect(!result.content.contains("replacement"))
     }
 
     @Test("trash refuses a symlink retargeted while approval is open")

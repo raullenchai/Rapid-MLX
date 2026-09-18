@@ -15,6 +15,72 @@ enum LocalWorkspaceTools {
         let inode: ino_t
     }
 
+    /// The object that was shown in the approval sheet. Keeping the descriptor
+    /// open pins the inode while the sheet is visible; execution also verifies
+    /// that the approved pathname still names that same inode.
+    private final class PinnedPath: @unchecked Sendable {
+        let url: URL
+        let identity: FileIdentity
+        let descriptor: Int32
+        private let presentedURL: URL?
+        private let presentedIdentity: FileIdentity?
+
+        init(url: URL, directory: Bool, presentedURL: URL? = nil) throws {
+            let capturedPresentedURL: URL?
+            let capturedPresentedIdentity: FileIdentity?
+            if let presentedURL, presentedURL.path != url.path {
+                capturedPresentedURL = presentedURL
+                capturedPresentedIdentity = try fileIdentity(at: presentedURL)
+            } else {
+                capturedPresentedURL = nil
+                capturedPresentedIdentity = nil
+            }
+            let flags = O_RDONLY | O_NOFOLLOW | O_CLOEXEC | (directory ? O_DIRECTORY : 0)
+            descriptor = Darwin.open(url.path, flags)
+            guard descriptor >= 0 else {
+                throw posixError("could not open the object awaiting approval")
+            }
+            var metadata = stat()
+            guard fstat(descriptor, &metadata) == 0 else {
+                Darwin.close(descriptor)
+                throw posixError("could not inspect the object awaiting approval")
+            }
+            let expectedType = directory ? S_IFDIR : S_IFREG
+            guard metadata.st_mode & S_IFMT == expectedType else {
+                Darwin.close(descriptor)
+                throw LocalError(directory ? "approved path is not a folder" : "approved path is not a regular file")
+            }
+            self.url = url
+            identity = FileIdentity(device: metadata.st_dev, inode: metadata.st_ino)
+            self.presentedURL = capturedPresentedURL
+            presentedIdentity = capturedPresentedIdentity
+        }
+
+        deinit { Darwin.close(descriptor) }
+
+        func verifyPathStillNamesPinnedObject() throws {
+            guard try fileIdentity(at: url) == identity else {
+                throw LocalError("the approved file changed while approval was open")
+            }
+            if let presentedURL, let presentedIdentity,
+               try fileIdentity(at: presentedURL) != presentedIdentity {
+                throw LocalError("the approved file changed while approval was open")
+            }
+        }
+    }
+
+    private struct ApprovedRun: @unchecked Sendable {
+        let arguments: RunArgs
+        let workingDirectory: PinnedPath
+        let executable: PinnedPath
+        let processArguments: [String]
+        let helperClass: HelperClass
+    }
+
+    private enum HelperClass: Sendable {
+        case none, compiler, make, swift, go
+    }
+
     private final class BoundedOutputBuffer: @unchecked Sendable {
         private let lock = NSLock()
         private var storage = Data()
@@ -196,13 +262,34 @@ enum LocalWorkspaceTools {
         if let rejected = preflight(name, arguments: call.function.arguments) {
             return rejected
         }
-        let approvedTrashIdentity: FileIdentity?
-        if name == "local_trash",
-           let args = decode(PathArgs.self, call.function.arguments),
-           let url = try? safeURL(args.path) {
-            approvedTrashIdentity = try? fileIdentity(at: url)
-        } else {
-            approvedTrashIdentity = nil
+        let approvedPath: PinnedPath?
+        let approvedRun: ApprovedRun?
+        do {
+            switch name {
+            case "local_search":
+                let args = try requireDecoded(SearchArgs.self, call.function.arguments)
+                approvedPath = try PinnedPath(
+                    url: safeURL(args.path), directory: true,
+                    presentedURL: validatedLexicalURL(args.path)
+                )
+                approvedRun = nil
+            case "local_read", "local_trash":
+                let args = try requireDecoded(PathArgs.self, call.function.arguments)
+                approvedPath = try PinnedPath(
+                    url: safeURL(args.path), directory: false,
+                    presentedURL: validatedLexicalURL(args.path)
+                )
+                approvedRun = nil
+            case "local_run":
+                let args = try requireDecoded(RunArgs.self, call.function.arguments)
+                approvedRun = try prepareRun(args)
+                approvedPath = nil
+            default:
+                approvedPath = nil
+                approvedRun = nil
+            }
+        } catch {
+            return failure("\(name) error: \(error.localizedDescription)", executed: false)
         }
         let grantScope = persistent ? approvalScope(name, arguments: call.function.arguments) : nil
 
@@ -222,14 +309,11 @@ enum LocalWorkspaceTools {
 
         return await Task.detached(priority: .userInitiated) {
             switch name {
-            case "local_search": return search(call.function.arguments)
-            case "local_read": return read(call.function.arguments)
+            case "local_search": return search(call.function.arguments, approved: approvedPath)
+            case "local_read": return read(approved: approvedPath)
             case "local_write": return write(call.function.arguments)
-            case "local_trash":
-                return trash(
-                    call.function.arguments, expectedIdentity: approvedTrashIdentity
-                )
-            case "local_run": return runCommand(call.function.arguments)
+            case "local_trash": return trash(approved: approvedPath)
+            case "local_run": return runCommand(approved: approvedRun)
             default: return failure("Unknown local tool \(name)", executed: false)
             }
         }.value
@@ -298,6 +382,15 @@ enum LocalWorkspaceTools {
     private static func decode<T: Decodable>(_ type: T.Type, _ arguments: String) -> T? {
         guard let data = arguments.data(using: .utf8) else { return nil }
         return try? JSONDecoder().decode(type, from: data)
+    }
+
+    private static func requireDecoded<T: Decodable>(
+        _ type: T.Type, _ arguments: String
+    ) throws -> T {
+        guard let decoded = decode(type, arguments) else {
+            throw LocalError("arguments are invalid")
+        }
+        return decoded
     }
 
     private static func approvalScope(_ name: String, arguments: String) -> String? {
@@ -393,83 +486,158 @@ enum LocalWorkspaceTools {
         return resolvedParent.appendingPathComponent(lexicalURL.lastPathComponent, isDirectory: false)
     }
 
-    private static func search(_ arguments: String) -> ToolCallResult {
+    private static func search(
+        _ arguments: String, approved: PinnedPath?
+    ) -> ToolCallResult {
         guard let args = decode(SearchArgs.self, arguments) else { return failure("local_search arguments are invalid") }
         let query = args.query.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !query.isEmpty else { return failure("local_search query is empty") }
         do {
-            let root = try safeURL(args.path)
-            var isDirectory: ObjCBool = false
-            guard FileManager.default.fileExists(atPath: root.path, isDirectory: &isDirectory), isDirectory.boolValue else {
-                return failure("local_search path is not a folder")
-            }
-            let keys: [URLResourceKey] = [
-                .isDirectoryKey, .isRegularFileKey, .isSymbolicLinkKey, .fileSizeKey,
-            ]
-            guard let enumerator = FileManager.default.enumerator(
-                at: root,
-                includingPropertiesForKeys: keys,
-                options: [.skipsHiddenFiles, .skipsPackageDescendants]
-            ) else { return failure("local_search could not open the folder") }
-            var visitedEntries = 0
-            var scanned = 0
-            var matches: [[String: String]] = []
-            let needle = query.lowercased()
-            while visitedEntries < 2_000,
-                  scanned < 500,
-                  matches.count < 20,
-                  let url = enumerator.nextObject() as? URL {
-                visitedEntries += 1
-                let values = try? url.resourceValues(forKeys: Set(keys))
-                if values?.isDirectory == true {
-                    if values?.isSymbolicLink == true || (try? safeURL(url.path)) == nil {
-                        enumerator.skipDescendants()
-                    }
-                    continue
-                }
-                guard values?.isRegularFile == true,
-                      values?.isSymbolicLink != true,
-                      let safeFile = try? safeURL(url.path)
-                else { continue }
-                scanned += 1
-                let filenameMatch = safeFile.lastPathComponent.lowercased().contains(needle)
-                var snippet: String?
-                if (values?.fileSize ?? 0) <= 1_000_000,
-                   let data = try? Data(contentsOf: safeFile, options: [.mappedIfSafe]),
-                   let text = String(data: data, encoding: .utf8),
-                   let range = text.range(of: query, options: [.caseInsensitive]) {
-                    let lower = text.index(range.lowerBound, offsetBy: -80, limitedBy: text.startIndex) ?? text.startIndex
-                    let upper = text.index(range.upperBound, offsetBy: 160, limitedBy: text.endIndex) ?? text.endIndex
-                    snippet = String(text[lower..<upper]).replacingOccurrences(of: "\n", with: " ")
-                }
-                if filenameMatch || snippet != nil {
-                    var item = ["path": safeFile.path]
-                    if let snippet { item["snippet"] = snippet }
-                    matches.append(item)
-                }
-            }
+            guard let approved else { return failure("local_search approval expired") }
+            try approved.verifyPathStillNamesPinnedObject()
+            let root = approved.url
+            var state = SearchState(query: query)
+            searchDirectory(
+                descriptor: approved.descriptor,
+                displayURL: root,
+                depth: 0,
+                state: &state
+            )
             let payload: [String: Any] = [
                 "root": root.path,
                 "query": query,
-                "visited_entries": visitedEntries,
-                "scanned_files": scanned,
-                "truncated": visitedEntries >= 2_000 || scanned >= 500 || matches.count >= 20,
-                "matches": matches,
+                "visited_entries": state.visitedEntries,
+                "scanned_files": state.scannedFiles,
+                "truncated": state.isAtLimit,
+                "matches": state.matches,
             ]
             let data = try JSONSerialization.data(withJSONObject: payload, options: [.sortedKeys])
             return ToolCallResult(toolCallID: "", content: String(decoding: data, as: UTF8.self))
         } catch { return failure("local_search error: \(error.localizedDescription)") }
     }
 
-    private static func read(_ arguments: String) -> ToolCallResult {
-        guard let args = decode(PathArgs.self, arguments) else { return failure("local_read arguments are invalid") }
-        do {
-            let url = try safeURL(args.path)
-            let descriptor = Darwin.open(url.path, O_RDONLY | O_NOFOLLOW | O_CLOEXEC)
-            guard descriptor >= 0 else { return failure("local_read could not open the file") }
-            defer { Darwin.close(descriptor) }
+    private struct SearchState {
+        let query: String
+        let needle: String
+        var visitedEntries = 0
+        var scannedFiles = 0
+        var matches: [[String: String]] = []
+
+        init(query: String) {
+            self.query = query
+            needle = query.lowercased()
+        }
+
+        var isAtLimit: Bool {
+            visitedEntries >= 2_000 || scannedFiles >= 500 || matches.count >= 20
+        }
+    }
+
+    /// Walk from the approved directory descriptor rather than reopening its
+    /// pathname. Every descendant is inspected/opened relative to a pinned
+    /// parent descriptor with O_NOFOLLOW, so renames and symlink swaps cannot
+    /// redirect a search after consent.
+    private static func searchDirectory(
+        descriptor: Int32,
+        displayURL: URL,
+        depth: Int,
+        state: inout SearchState
+    ) {
+        guard !state.isAtLimit, depth < 64 else { return }
+        let duplicate = Darwin.dup(descriptor)
+        guard duplicate >= 0, let directory = fdopendir(duplicate) else {
+            if duplicate >= 0 { Darwin.close(duplicate) }
+            return
+        }
+        defer { closedir(directory) }
+
+        let packageExtensions = Set(["app", "bundle", "framework", "pkg", "xcodeproj"])
+        while !state.isAtLimit, let entry = readdir(directory) {
+            let name = withUnsafePointer(to: &entry.pointee.d_name) { pointer in
+                pointer.withMemoryRebound(to: CChar.self, capacity: Int(MAXNAMLEN) + 1) {
+                    String(cString: $0)
+                }
+            }
+            guard name != ".", name != "..", !name.hasPrefix(".") else { continue }
+            state.visitedEntries += 1
             var metadata = stat()
-            guard fstat(descriptor, &metadata) == 0, metadata.st_mode & S_IFMT == S_IFREG else {
+            let inspected = name.withCString {
+                fstatat(descriptor, $0, &metadata, AT_SYMLINK_NOFOLLOW)
+            }
+            guard inspected == 0 else { continue }
+            let displayChild = displayURL.appendingPathComponent(name)
+            switch metadata.st_mode & S_IFMT {
+            case S_IFDIR:
+                guard !packageExtensions.contains(displayChild.pathExtension.lowercased()) else { continue }
+                let child = name.withCString {
+                    Darwin.openat(descriptor, $0, O_RDONLY | O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC)
+                }
+                guard child >= 0 else { continue }
+                searchDirectory(
+                    descriptor: child,
+                    displayURL: displayChild,
+                    depth: depth + 1,
+                    state: &state
+                )
+                Darwin.close(child)
+            case S_IFREG:
+                state.scannedFiles += 1
+                let filenameMatch = name.lowercased().contains(state.needle)
+                var snippet: String?
+                if metadata.st_size <= 1_000_000 {
+                    let file = name.withCString {
+                        Darwin.openat(descriptor, $0, O_RDONLY | O_NOFOLLOW | O_CLOEXEC)
+                    }
+                    if file >= 0 {
+                        defer { Darwin.close(file) }
+                        if let data = readData(descriptor: file, limit: 1_000_000),
+                           let text = String(data: data, encoding: .utf8),
+                           let range = text.range(of: state.query, options: [.caseInsensitive]) {
+                            let lower = text.index(range.lowerBound, offsetBy: -80, limitedBy: text.startIndex) ?? text.startIndex
+                            let upper = text.index(range.upperBound, offsetBy: 160, limitedBy: text.endIndex) ?? text.endIndex
+                            snippet = String(text[lower..<upper]).replacingOccurrences(of: "\n", with: " ")
+                        }
+                    }
+                }
+                if filenameMatch || snippet != nil {
+                    var item = ["path": displayChild.path]
+                    if let snippet { item["snippet"] = snippet }
+                    state.matches.append(item)
+                }
+            default:
+                continue
+            }
+        }
+    }
+
+    private static func readData(descriptor: Int32, limit: Int) -> Data? {
+        var data = Data()
+        var buffer = [UInt8](repeating: 0, count: 16_384)
+        while data.count <= limit {
+            let count = Darwin.read(descriptor, &buffer, min(buffer.count, limit + 1 - data.count))
+            if count == 0 { return data }
+            if count < 0 {
+                if errno == EINTR { continue }
+                return nil
+            }
+            data.append(contentsOf: buffer.prefix(count))
+        }
+        return nil
+    }
+
+    private static func read(approved: PinnedPath?) -> ToolCallResult {
+        do {
+            guard let approved else { return failure("local_read approval expired") }
+            try approved.verifyPathStillNamesPinnedObject()
+            let url = approved.url
+            let descriptor = approved.descriptor
+            guard lseek(descriptor, 0, SEEK_SET) >= 0 else {
+                return failure("local_read could not seek the approved file")
+            }
+            var metadata = stat()
+            guard fstat(descriptor, &metadata) == 0,
+                  metadata.st_mode & S_IFMT == S_IFREG,
+                  FileIdentity(device: metadata.st_dev, inode: metadata.st_ino) == approved.identity else {
                 return failure("local_read only reads regular files")
             }
             guard metadata.st_size <= 512_000 else {
@@ -575,82 +743,149 @@ enum LocalWorkspaceTools {
         LocalError("\(context): \(String(cString: strerror(errno)))")
     }
 
-    private static func trash(
-        _ arguments: String, expectedIdentity: FileIdentity?
-    ) -> ToolCallResult {
-        guard let args = decode(PathArgs.self, arguments) else { return failure("local_trash arguments are invalid") }
+    private static func trash(approved: PinnedPath?) -> ToolCallResult {
         do {
-            let url = try safeURL(args.path)
-            guard let expectedIdentity,
-                  try fileIdentity(at: url) == expectedIdentity else {
+            guard let approved else { return failure("local_trash approval expired") }
+            try approved.verifyPathStillNamesPinnedObject()
+            let url = approved.url
+            let parent = url.deletingLastPathComponent()
+            let parentFD = Darwin.open(parent.path, O_RDONLY | O_DIRECTORY | O_CLOEXEC)
+            guard parentFD >= 0 else { throw posixError("could not open the approved file's folder") }
+            defer { Darwin.close(parentFD) }
+            let trashURL = FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent(".Trash")
+            let trashFD = Darwin.open(trashURL.path, O_RDONLY | O_DIRECTORY | O_CLOEXEC)
+            guard trashFD >= 0 else { throw posixError("could not open the macOS Trash") }
+            defer { Darwin.close(trashFD) }
+
+            let sourceName = url.lastPathComponent
+            let destinationName = "\(sourceName).rapid-\(UUID().uuidString)"
+            // renameatx_np(RENAME_EXCL) is the single atomic mutation. Verify
+            // the moved inode afterwards; in the vanishingly small race between
+            // the pre-check and rename, put the unapproved object back.
+            try approved.verifyPathStillNamesPinnedObject()
+            let renamed = sourceName.withCString { sourcePointer in
+                destinationName.withCString { destinationPointer in
+                    renameatx_np(parentFD, sourcePointer, trashFD, destinationPointer, UInt32(RENAME_EXCL))
+                }
+            }
+            guard renamed == 0 else { throw posixError("could not move the approved file to Trash") }
+            let movedIdentity = try destinationName.withCString { pointer -> FileIdentity in
+                var metadata = stat()
+                guard fstatat(trashFD, pointer, &metadata, AT_SYMLINK_NOFOLLOW) == 0 else {
+                    throw posixError("could not verify the trashed file")
+                }
+                return FileIdentity(device: metadata.st_dev, inode: metadata.st_ino)
+            }
+            guard movedIdentity == approved.identity else {
+                _ = destinationName.withCString { destinationPointer in
+                    sourceName.withCString { sourcePointer in
+                        renameatx_np(trashFD, destinationPointer, parentFD, sourcePointer, UInt32(RENAME_EXCL))
+                    }
+                }
                 return failure("local_trash refused because the approved file changed")
             }
-            var resultingURL: NSURL?
-            try FileManager.default.trashItem(at: url, resultingItemURL: &resultingURL)
             return ToolCallResult(toolCallID: "", content: "Moved \(url.path) to Trash. It can be recovered from Finder.")
         } catch { return failure("local_trash error: \(error.localizedDescription)") }
     }
 
-    private static func runCommand(_ arguments: String) -> ToolCallResult {
-        guard let args = decode(RunArgs.self, arguments) else { return failure("local_run arguments are invalid") }
+    private static func prepareRun(_ args: RunArgs) throws -> ApprovedRun {
+        let requestedWorkingDirectory = args.workingDirectory ?? args.cwd ?? "~/Rapid Workspace"
+        var cwd = try safeWorkingDirectory(requestedWorkingDirectory, mustExist: false)
+        var isDirectory: ObjCBool = false
+        if !FileManager.default.fileExists(atPath: cwd.path, isDirectory: &isDirectory),
+           requestedWorkingDirectory == "~/Rapid Workspace" {
+            try FileManager.default.createDirectory(at: cwd, withIntermediateDirectories: true)
+            cwd = try safeWorkingDirectory(requestedWorkingDirectory)
+            isDirectory = true
+        }
+        guard FileManager.default.fileExists(atPath: cwd.path, isDirectory: &isDirectory),
+              isDirectory.boolValue else {
+            throw LocalError("local_run working_directory is not a folder")
+        }
+
+        var processArguments = args.arguments ?? []
+        let executable: URL
+        let executablePresentedURL: URL?
+        let helperClass: HelperClass
+        if ["clang", "cc", "gcc"].contains(args.command) {
+            executable = try firstExecutable([
+                "/Applications/Xcode.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/bin/clang",
+                "/Library/Developer/CommandLineTools/usr/bin/clang",
+                "/usr/bin/clang",
+            ], command: args.command)
+            executablePresentedURL = nil
+            helperClass = .compiler
+            let sdkCandidates = [
+                "/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX.sdk",
+                "/Library/Developer/CommandLineTools/SDKs/MacOSX.sdk",
+            ]
+            if let sdk = sdkCandidates.first(where: { FileManager.default.fileExists(atPath: $0) }) {
+                processArguments.insert(contentsOf: ["-isysroot", sdk], at: 0)
+            }
+        } else if args.command == "make" {
+            executable = try firstExecutable([
+                "/Applications/Xcode.app/Contents/Developer/usr/bin/make",
+                "/Library/Developer/CommandLineTools/usr/bin/make",
+                "/usr/bin/make",
+            ], command: args.command)
+            executablePresentedURL = nil
+            helperClass = .make
+        } else if allowedCommands.contains(args.command) {
+            let candidates: [String]
+            switch args.command {
+            case "python3": candidates = [
+                "/Applications/Xcode.app/Contents/Developer/Library/Frameworks/Python3.framework/Versions/3.9/Resources/Python.app/Contents/MacOS/Python",
+                "/usr/bin/python3",
+            ]
+            case "node": candidates = ["/opt/homebrew/bin/node", "/usr/local/bin/node", "/usr/bin/node"]
+            case "ruby": candidates = ["/opt/homebrew/bin/ruby", "/usr/local/bin/ruby", "/usr/bin/ruby"]
+            case "go": candidates = ["/opt/homebrew/bin/go", "/usr/local/bin/go", "/usr/bin/go"]
+            case "swift": candidates = ["/Applications/Xcode.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/bin/swift", "/usr/bin/swift"]
+            default: throw LocalError("local_run command is not in the allowlist")
+            }
+            executable = try firstExecutable(candidates, command: args.command)
+            executablePresentedURL = nil
+            helperClass = args.command == "swift" ? .swift : (args.command == "go" ? .go : .none)
+        } else {
+            executablePresentedURL = try validatedLexicalURL(args.command)
+            executable = try safeURL(args.command)
+            guard FileManager.default.isExecutableFile(atPath: executable.path) else {
+                throw LocalError("local_run command is not in the allowlist or is not a local executable")
+            }
+            helperClass = .none
+        }
+
+        return try ApprovedRun(
+            arguments: args,
+            workingDirectory: PinnedPath(
+                url: cwd, directory: true,
+                presentedURL: try validatedLexicalURL(requestedWorkingDirectory)
+            ),
+            executable: PinnedPath(
+                url: executable.resolvingSymlinksInPath(), directory: false,
+                presentedURL: executablePresentedURL
+            ),
+            processArguments: processArguments,
+            helperClass: helperClass
+        )
+    }
+
+    private static func firstExecutable(_ candidates: [String], command: String) throws -> URL {
+        guard let candidate = candidates.first(where: { FileManager.default.isExecutableFile(atPath: $0) }) else {
+            throw LocalError("local_run could not find an installed \(command) executable")
+        }
+        return URL(fileURLWithPath: candidate).resolvingSymlinksInPath()
+    }
+
+    private static func runCommand(approved: ApprovedRun?) -> ToolCallResult {
         do {
-            let requestedWorkingDirectory = args.workingDirectory ?? args.cwd ?? "~/Rapid Workspace"
-            let cwd = try safeWorkingDirectory(requestedWorkingDirectory, mustExist: false)
-            var isDirectory: ObjCBool = false
-            if !FileManager.default.fileExists(atPath: cwd.path, isDirectory: &isDirectory),
-               requestedWorkingDirectory == "~/Rapid Workspace" {
-                try FileManager.default.createDirectory(at: cwd, withIntermediateDirectories: true)
-                isDirectory = true
-            }
-            guard FileManager.default.fileExists(atPath: cwd.path, isDirectory: &isDirectory), isDirectory.boolValue else {
-                return failure("local_run working_directory is not a folder")
-            }
-            let executable: URL
-            var processArguments = args.arguments ?? []
-            if allowedCommands.contains(args.command) {
-                if ["clang", "cc", "gcc"].contains(args.command) {
-                    let compilerCandidates = [
-                        "/Applications/Xcode.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/bin/clang",
-                        "/Library/Developer/CommandLineTools/usr/bin/clang",
-                        "/usr/bin/clang",
-                    ]
-                    guard let compiler = compilerCandidates.first(where: {
-                        FileManager.default.isExecutableFile(atPath: $0)
-                    }) else {
-                        return failure("local_run could not find an installed C compiler")
-                    }
-                    executable = URL(fileURLWithPath: compiler)
-                    let sdkCandidates = [
-                        "/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX.sdk",
-                        "/Library/Developer/CommandLineTools/SDKs/MacOSX.sdk",
-                    ]
-                    if let sdk = sdkCandidates.first(where: {
-                        FileManager.default.fileExists(atPath: $0)
-                    }) {
-                        processArguments.insert(contentsOf: ["-isysroot", sdk], at: 0)
-                    }
-                } else if args.command == "make" {
-                    let makeCandidates = [
-                        "/Applications/Xcode.app/Contents/Developer/usr/bin/make",
-                        "/Library/Developer/CommandLineTools/usr/bin/make",
-                        "/usr/bin/make",
-                    ]
-                    guard let make = makeCandidates.first(where: {
-                        FileManager.default.isExecutableFile(atPath: $0)
-                    }) else {
-                        return failure("local_run could not find an installed make executable")
-                    }
-                    executable = URL(fileURLWithPath: make)
-                } else {
-                    executable = URL(fileURLWithPath: "/usr/bin/env")
-                    processArguments.insert(args.command, at: 0)
-                }
-            } else {
-                executable = try safeURL(args.command)
-                guard FileManager.default.isExecutableFile(atPath: executable.path) else {
-                    return failure("local_run command is not in the allowlist or is not a local executable")
-                }
-            }
+            guard let approved else { return failure("local_run approval expired") }
+            try approved.workingDirectory.verifyPathStillNamesPinnedObject()
+            try approved.executable.verifyPathStillNamesPinnedObject()
+            let args = approved.arguments
+            let cwd = approved.workingDirectory.url
+            let executable = approved.executable.url
+            let processArguments = approved.processArguments
 
             let temporary = cwd.appendingPathComponent(".rapid-tmp-\(UUID().uuidString)")
             try FileManager.default.createDirectory(at: temporary, withIntermediateDirectories: false)
@@ -660,7 +895,9 @@ enum LocalWorkspaceTools {
                     home: FileManager.default.homeDirectoryForCurrentUser.resolvingSymlinksInPath(),
                     workingDirectory: cwd,
                     temporaryDirectory: temporary,
-                    executable: executable
+                    executable: executable,
+                    helperClass: approved.helperClass,
+                    approvedCommand: args.command
                 ),
                 executable.path,
             ] + processArguments
@@ -799,14 +1036,17 @@ enum LocalWorkspaceTools {
             }
             if !reaped {
                 _ = kill(-pid, SIGKILL)
-                let killDeadline = Date().addingTimeInterval(1)
-                while Date() < killDeadline {
-                    let waited = waitpid(pid, &status, WNOHANG)
+                // SIGKILL cannot be ignored. Once it has been sent, perform an
+                // EINTR-safe blocking reap so a slow kernel teardown cannot
+                // leave a zombie behind after the one-second polling window.
+                while true {
+                    let waited = waitpid(pid, &status, 0)
                     if waited == pid {
                         reaped = true
                         break
                     }
-                    Thread.sleep(forTimeInterval: 0.02)
+                    if waited == -1, errno == EINTR { continue }
+                    break
                 }
             }
         }
@@ -832,35 +1072,92 @@ enum LocalWorkspaceTools {
         home: URL,
         workingDirectory: URL,
         temporaryDirectory: URL,
-        executable: URL
+        executable: URL,
+        helperClass: HelperClass,
+        approvedCommand: String
     ) -> String {
         func quoted(_ path: String) -> String {
             "\"" + path.replacingOccurrences(of: "\\", with: "\\\\")
                 .replacingOccurrences(of: "\"", with: "\\\"") + "\""
         }
+        let localRuntimeRead: String
+        if executable.path.hasPrefix("/usr/local/") {
+            localRuntimeRead = "(allow file-read* (subpath \(quoted(executable.deletingLastPathComponent().path))))"
+        } else {
+            localRuntimeRead = ""
+        }
+
+        var executableFilters = ["(literal \(quoted(executable.path)))"]
+        if approvedCommand == "python3" {
+            executableFilters += [
+                "(literal \"/opt/homebrew/bin/python3\")",
+                "(literal \"/usr/local/bin/python3\")",
+                "(literal \"/usr/bin/python3\")",
+                "(literal \"/Applications/Xcode.app/Contents/Developer/usr/bin/python3\")",
+                "(literal \"/Applications/Xcode.app/Contents/Developer/Library/Frameworks/Python3.framework/Versions/3.9/Resources/Python.app/Contents/MacOS/Python\")",
+            ]
+        }
+        switch helperClass {
+        case .none:
+            break
+        case .compiler:
+            executableFilters += [
+                "(subpath \"/Applications/Xcode.app/Contents/Developer/Toolchains\")",
+                "(subpath \"/Library/Developer/CommandLineTools/usr/bin\")",
+                "(literal \"/usr/bin/ld\")",
+            ]
+        case .make:
+            executableFilters += [
+                "(literal \"/bin/sh\")",
+                "(subpath \"/Applications/Xcode.app/Contents/Developer/Toolchains\")",
+                "(subpath \"/Library/Developer/CommandLineTools/usr/bin\")",
+                "(literal \"/usr/bin/ld\")",
+            ]
+        case .swift:
+            executableFilters += [
+                "(subpath \"/Applications/Xcode.app/Contents/Developer/Toolchains\")",
+                "(subpath \"/Library/Developer/CommandLineTools/usr/bin\")",
+            ]
+        case .go:
+            if executable.path.hasPrefix("/opt/homebrew/") {
+                executableFilters.append("(subpath \"/opt/homebrew/Cellar/go\")")
+            } else if executable.path.hasPrefix("/usr/local/") {
+                executableFilters.append("(subpath \(quoted(executable.deletingLastPathComponent().deletingLastPathComponent().path)))")
+            }
+        }
+        let processFilters = executableFilters.joined(separator: "\n                ")
         return """
         (version 1)
         (allow default)
         (deny network*)
         (deny mach-lookup)
-        ; Keep runtimes and toolchains usable, but deny data-bearing locations
-        ; outside the exact approved workspace. The more-specific workspace
-        ; allow is the only exception within the user's home directory.
+        ; Runtime libraries remain available, but common data-bearing machine
+        ; and user locations do not. Narrow exceptions restore only the approved
+        ; workspace, temp folder, executable, and platform toolchain.
         (deny file-read* (subpath \(quoted(home.path))))
         (deny file-read* (subpath "/Users"))
         (deny file-read* (subpath "/Volumes"))
         (deny file-read* (subpath "/private/etc"))
+        (deny file-read* (subpath "/private/tmp"))
+        (deny file-read* (subpath "/private/var"))
+        (deny file-read* (subpath "/Library"))
+        (deny file-read* (subpath "/usr/local"))
         (allow file-read*
             (subpath \(quoted(workingDirectory.path)))
             (subpath \(quoted(temporaryDirectory.path)))
-            (literal \(quoted(executable.path))))
+            (literal \(quoted(executable.path)))
+            (subpath "/Library/Developer")
+            (subpath "/private/var/db/timezone"))
+        \(localRuntimeRead)
         (deny file-write*)
         (allow file-write*
             (subpath \(quoted(workingDirectory.path)))
             (subpath \(quoted(temporaryDirectory.path))))
+        ; Interpreters may execute themselves recursively. Compilers and make
+        ; additionally receive only their explicit platform toolchain helpers.
         (deny process-exec
-            (literal "/bin/sh") (literal "/bin/zsh") (literal "/bin/bash")
-            (literal "/usr/bin/osascript") (literal "/usr/bin/open"))
+            (require-not (require-any
+                \(processFilters))))
         """
     }
 
