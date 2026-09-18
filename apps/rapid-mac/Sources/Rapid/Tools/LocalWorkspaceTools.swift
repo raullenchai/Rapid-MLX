@@ -1158,7 +1158,9 @@ enum LocalWorkspaceTools {
             )
         }
 
-        var processArguments = Self.expandingHomeArguments(args.argv ?? [])
+        var processArguments = Self.expandingHomeArguments(
+            args.argv ?? [], command: args.command
+        )
         let executable: URL
         let executablePresentedURL: URL?
         let helperClass: HelperClass
@@ -1276,19 +1278,43 @@ enum LocalWorkspaceTools {
     /// loaded into the compiler process itself. Reject indirect argument files,
     /// frontend passthrough, and every supported plugin-loading spelling before
     /// asking the user to approve the command.
-    /// Expand a leading `~/` in each argument the way the shell the model is
-    /// imitating would. Models routinely write `clang -o ~/Documents/app
-    /// ~/Documents/app.c`; without a shell nothing expands the tilde and the
-    /// compiler reports a missing file, which a small model answers by
-    /// repeating the identical call until the run is cut off.
+    /// Expand a leading `~/` only for command positions that are filesystem
+    /// operands. `local_run` is argv-based rather than shell-based, so literal
+    /// data passed to a program must remain byte-for-byte unchanged.
     static func expandingHomeArguments(
         _ arguments: [String],
+        command: String,
         home: URL = FileManager.default.homeDirectoryForCurrentUser
     ) -> [String] {
         // Resolve symlinks the same way the sandbox profile does.
         let homePath = canonicalPath(home.standardizedFileURL.path)
-        return arguments.map { argument in
-            guard argument.hasPrefix("~/") else { return argument }
+        let pathIndexes: Set<Int>
+        switch command {
+        case "clang", "cc", "gcc":
+            pathIndexes = Set(arguments.indices)
+        case "python3", "node", "ruby":
+            if ["-c", "-e", "--eval", "-m"].contains(arguments.first) {
+                pathIndexes = []
+            } else if let first = arguments.indices.first(where: {
+                !arguments[$0].hasPrefix("-")
+            }) {
+                pathIndexes = [first]
+            } else {
+                pathIndexes = []
+            }
+        case "swift":
+            pathIndexes = Set(arguments.indices.filter { arguments[$0].hasSuffix(".swift") })
+        case "go":
+            pathIndexes = Set(arguments.indices.filter {
+                $0 > 0 && arguments.first == "run" && arguments[$0].hasSuffix(".go")
+            })
+        default:
+            pathIndexes = []
+        }
+        return arguments.enumerated().map { index, argument in
+            guard pathIndexes.contains(index), argument.hasPrefix("~/") else {
+                return argument
+            }
             return homePath + argument.dropFirst(1)
         }
     }

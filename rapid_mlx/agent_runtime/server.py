@@ -3308,7 +3308,8 @@ class AgentServerService:
         if argv and isinstance(command, str) and argv[0] == command:
             argv = argv[1:]
         written = AgentServerService._written_files(entry)
-        working_directory = arguments.get("working_directory")
+        supplied_working_directory = arguments.get("working_directory")
+        working_directory = supplied_working_directory
         if not isinstance(working_directory, str) or not working_directory:
             working_directory = "~/Rapid Workspace"
         resolved: list[Any] = []
@@ -3327,9 +3328,16 @@ class AgentServerService:
                     resolved.append(home_target)
                     continue
             resolved.append(item)
-        resolved, working_directory = AgentServerService._relocate_run_to_sources(
-            resolved, working_directory, written, command
-        )
+        # Relocation is only a repair for the harness default. An explicit cwd
+        # is part of the user's command semantics, including where relative
+        # compiler outputs are written, and must never be silently changed.
+        if (
+            not isinstance(supplied_working_directory, str)
+            or not supplied_working_directory
+        ):
+            resolved, working_directory = AgentServerService._relocate_run_to_sources(
+                resolved, working_directory, written, command
+            )
         if resolved == call.arguments.get("argv") and (
             working_directory == arguments.get("working_directory")
         ):

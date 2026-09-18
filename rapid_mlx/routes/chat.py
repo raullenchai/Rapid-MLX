@@ -3151,7 +3151,10 @@ def _salvage_forced_shape_arguments(
     # Shape 2: XML parameters after the envelope's ``"arguments":``. Bound
     # recovery to this tool-call block; otherwise a later call or quoted
     # example in the same model output could donate its parameters.
-    xml_window = window
+    arguments_marker = re.search(r'"arguments"\s*:', window)
+    if arguments_marker is None:
+        return None
+    xml_window = window[arguments_marker.end() :]
     terminators = [
         position
         for marker in ("</tool_call>", "<tool_call")

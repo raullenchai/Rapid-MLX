@@ -113,8 +113,15 @@ final class LocalWorkspaceToolsTests {
         let home = URL(fileURLWithPath: "/Users/example")
         #expect(LocalWorkspaceTools.expandingHomeArguments(
             ["-o", "~/Documents/app", "~/Documents/app.c", "~notme", "-Wall", "~"],
+            command: "clang",
             home: home
         ) == ["-o", "/Users/example/Documents/app", "/Users/example/Documents/app.c", "~notme", "-Wall", "~"])
+        #expect(LocalWorkspaceTools.expandingHomeArguments(
+            ["-c", "print('~/literal')"], command: "python3", home: home
+        ) == ["-c", "print('~/literal')"])
+        #expect(LocalWorkspaceTools.expandingHomeArguments(
+            ["~/Documents/app.py", "~/literal"], command: "python3", home: home
+        ) == ["/Users/example/Documents/app.py", "~/literal"])
     }
 
     @Test("tool results report paths relative to the home directory")
