@@ -208,13 +208,6 @@ enum LocalWorkspaceTools {
         }
     }
 
-    /// One exceptional kernel teardown must not create an unbounded number of
-    /// dedicated waiter threads if several approved commands time out in a row.
-    private static let processReaper = DispatchQueue(
-        label: "ai.rapidmlx.local-command-reaper",
-        qos: .utility
-    )
-
     static let searchDefinition = ToolDefinition(
         name: "local_search",
         description: "Search filenames and UTF-8 text inside a local folder. Use this—not web_search—when the user asks to find something on this Mac. Results include matching paths and short text snippets.",
@@ -1630,7 +1623,7 @@ enum LocalWorkspaceTools {
     }
 
     private static func reapEventually(_ pid: pid_t) {
-        processReaper.async {
+        Thread.detachNewThread {
             var ignoredStatus: Int32 = 0
             while waitpid(pid, &ignoredStatus, 0) == -1, errno == EINTR {}
         }
