@@ -599,8 +599,6 @@ def test_local_workspace_default_path_is_harness_owned_and_user_path_is_preserve
     assert normalized_joined_output.tool_calls[0].arguments["argv"] == [
         "rapid_ok.c",
         "-ocustom",
-        "-o",
-        "rapid_ok",
     ]
 
     invalid_filename = AgentModelTurn(
@@ -5566,7 +5564,8 @@ def test_local_run_history_helpers_ignore_malformed_and_unrelated_calls():
     assert _compiled_output_path({"command": "gcc", "argv": ["a.c"]}) is None
     assert _compiled_output_path({"command": "gcc", "argv": ["--", "-oapp"]}) is None
     assert (
-        _compiled_output_path({"command": "gcc", "argv": [3, "-oapp", "a.c"]}) is None
+        _compiled_output_path({"command": "gcc", "argv": [3, "-oapp", "a.c"]})
+        == "~/Rapid Workspace/app"
     )
     assert _compiled_output_path({"command": "clang", "argv": ["-objc", "a.m"]}) is None
     assert (
@@ -5795,6 +5794,7 @@ def test_local_run_history_helpers_ignore_malformed_and_unrelated_calls():
         assert svc._local_run_finished_script(_fake_run(check_messages)) is False
     for command, argv in (
         ("python3", ["-W", "ignore", "app.py"]),
+        ("python3", ["-u", "-m", "package"]),
         ("node", ["-r", "hook.js", "app.js"]),
         ("ruby", ["-I", "lib", "app.rb"]),
     ):

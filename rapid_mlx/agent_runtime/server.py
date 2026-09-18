@@ -1255,6 +1255,28 @@ _LOCAL_RUN_RECIPE_COMMANDS = frozenset(
 _LOCAL_RUN_COMMAND_ALIASES = {"python": "python3"}
 _LOCAL_RUN_PSEUDO_COMMANDS = frozenset({"run", "execute", "exec"})
 _COMPILER_COMMANDS = frozenset({"clang", "cc", "gcc"})
+_COMPILER_NON_OUTPUT_O_PREFIXES = (
+    "-objc",
+    "-object",
+    "-openmp",
+    "-opt",
+    "-order_",
+    "-oso_",
+    "-overwrite_",
+)
+
+
+def _joined_compiler_output(item: str) -> str | None:
+    """Return a joined ``-oPATH`` operand, excluding longer compiler flags."""
+
+    if len(item) <= 2 or not item.startswith("-o"):
+        return None
+    if item.startswith(_COMPILER_NON_OUTPUT_O_PREFIXES):
+        return None
+    candidate = item[2:]
+    if not re.fullmatch(r"(?:[A-Za-z0-9_.-]+|(?:\.?\.?|~)?/[^\s]+)", candidate):
+        return None
+    return candidate
 
 
 def _requests_compile_and_run(goal: str) -> bool:
@@ -1383,6 +1405,8 @@ def _compiled_output_path(arguments: dict[str, Any]) -> str | None:
             break
         if item == "-o" and index + 1 < len(argv) and isinstance(argv[index + 1], str):
             output = argv[index + 1]
+        elif joined_output := _joined_compiler_output(item):
+            output = joined_output
     if not output:
         return None
     if output.startswith(("~/", "/")):
@@ -1547,7 +1571,8 @@ def _normalize_local_workspace_turn(goal: str, turn: AgentModelTurn) -> AgentMod
                 arguments.get("command") in _COMPILER_COMMANDS
                 and isinstance(normalized_arguments, list)
                 and not any(
-                    isinstance(item, str) and item == "-o"
+                    isinstance(item, str)
+                    and (item == "-o" or _joined_compiler_output(item) is not None)
                     for item in normalized_arguments
                 )
             ):
@@ -3620,13 +3645,30 @@ class AgentServerService:
                 or (not argv[0].startswith("-") and argv[0].endswith(".swift"))
             )
         if command in {"python", "python3"}:
-            if not argv:
-                return False
-            if argv[0] == "-c":
-                return len(argv) >= 2
-            if argv[0] == "-m":
-                return len(argv) >= 2 and argv[1] not in {"compileall", "py_compile"}
-            return _interpreter_script_index(command, argv) is not None
+            index = 0
+            while index < len(argv):
+                item = argv[index]
+                if not isinstance(item, str):
+                    index += 1
+                    continue
+                if item in {"-W", "-X"}:
+                    index += 2
+                    continue
+                if item == "-c":
+                    return index + 1 < len(argv)
+                if item == "-m":
+                    return index + 1 < len(argv) and argv[index + 1] not in {
+                        "compileall",
+                        "py_compile",
+                    }
+                if item == "--":
+                    return index + 1 < len(argv)
+                if item in {"-V", "--version", "-h", "--help"}:
+                    return False
+                if not item.startswith("-"):
+                    return True
+                index += 1
+            return False
         if command == "node":
             if not argv or any(item in {"-c", "--check"} for item in argv):
                 return False
