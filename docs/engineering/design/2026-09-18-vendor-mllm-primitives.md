@@ -67,16 +67,24 @@ widened before production is moved keeps every slice behavior-neutral.
   mlx-vlm, mlx-lm) via `mllm_cache_compat`; dual-namespace contract tests. No
   producer emits vendored-typed caches yet, so behavior is unchanged by
   construction.
-- **2b — engine**: vendor `apc.py` + coordinator/storage/kv_quant/
-  _stream_cleanup (~5.4k lines alone, hence its own PR). `kv_quant` lands
-  here, not with the cache types: its `from_legacy()` lazily imports
-  `.turboquant` (7k lines with its own `.models.cache` dependency), so the
-  dependency needs an explicit home — a vendored slice if it fits the
-  review-diff cap, otherwise a documented redirect to the pinned upstream.
-- **2c — adapters + vision + inputs**: vendor `apc_adapters.py` (its
-  `clone_cache_entry` dispatch moves to the resolver), `vision_cache.py`,
-  `prepare_inputs` + helpers; contract test: an upstream-typed cache
-  vendored-clones into a real cache and vice versa.
+- **2b-1 — support surface**: vendor `apc_adapters.py` (dispatch rewired to
+  cover both namespaces; constructors namespace-faithful so upstream-typed
+  inputs keep producing upstream-typed results), `vision_cache.py`,
+  `apc_coordinator.py`, `apc_storage.py`, `kv_quant.py`, `_stream_cleanup.py`.
+  The lane's `clone_cache_entry`/`resolve_capability`/`VisionFeatureCache`
+  imports redirect here. TurboQuant itself is NOT vendored: at 7k lines with
+  its own `.models.cache` dependency it can never fit a reviewable diff, so
+  `kv_quant.from_legacy()` and the adapters' capability registration resolve
+  the pinned upstream `mlx_vlm.turboquant` — a documented redirect intended
+  to outlive the transition. The coordinator's lazy engine calls resolve
+  upstream `mlx_vlm.apc` until 2b-2.
+- **2b-2 — engine**: vendor `apc.py` alone (~188 KB, near the review-diff
+  cap, hence a file-count-minimal PR). Its support-module imports resolve the
+  vendored siblings from 2b-1; the lane's `from mlx_vlm import apc` sites
+  redirect.
+- **2c — inputs**: vendor `prepare_inputs` + helpers; flip remaining tests to
+  vendored types; swap `Qwen36TextArraysCache`'s second parent to the
+  vendored `ArraysCache`.
 
 Deviations from verbatim are allowed **only** in lane dispatch tuples and
 are marked `# VENDOR-DEVIATION(dual-namespace):` so a grep finds them all;
@@ -103,13 +111,13 @@ flipping tests early (the exact failure measured above).
 rapid_mlx/models/mlx_vlm_vendored/
   __init__.py          # provenance header, upstream tag, redirect inventory
   cache.py             # 2a
-  apc.py               # 2b
-  apc_coordinator.py   # 2b
-  apc_storage.py       # 2b
-  kv_quant.py          # 2b (lazy .turboquant dep — see PR split)
-  _stream_cleanup.py   # 2b
-  apc_adapters.py      # 2c
-  vision_cache.py      # 2c
+  apc.py               # 2b-2
+  apc_coordinator.py   # 2b-1
+  apc_storage.py       # 2b-1
+  kv_quant.py          # 2b-1 (lazy .turboquant → pinned-upstream redirect)
+  _stream_cleanup.py   # 2b-1
+  apc_adapters.py      # 2b-1 (dispatch rewired to the namespace tables)
+  vision_cache.py      # 2b-1
   inputs.py            # 2c (prepare_inputs + helpers from utils.py)
 ```
 

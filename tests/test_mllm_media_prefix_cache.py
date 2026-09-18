@@ -944,7 +944,7 @@ class TestStorePath:
         assert out is not None
 
     def test_clone_failure_redoes_a_cold_full_forward(self, monkeypatch):
-        import mlx_vlm.apc_adapters as apc_adapters
+        import rapid_mlx.models.mlx_vlm_vendored.apc_adapters as apc_adapters
 
         monkeypatch.setattr(apc_adapters, "clone_cache_entry", lambda *a, **k: None)
         gen = _stub_generator()
@@ -1297,7 +1297,7 @@ class TestResumePath:
         assert gen.model.calls[0][0] == diverged[0]
 
     def test_resume_clone_failure_degrades_to_cold(self, monkeypatch):
-        import mlx_vlm.apc_adapters as apc_adapters
+        import rapid_mlx.models.mlx_vlm_vendored.apc_adapters as apc_adapters
 
         full_ids = _full_ids()
         gen, req, ids, _ = self._gen_with_entry(full_ids)
@@ -1873,7 +1873,7 @@ def probe():
         real_import = builtins.__import__
 
         def guarded_import(name, *args, **kwargs):
-            if name == "mlx_vlm.apc_adapters":
+            if name == "rapid_mlx.models.mlx_vlm_vendored.apc_adapters":
                 raise ImportError("held out")
             return real_import(name, *args, **kwargs)
 
