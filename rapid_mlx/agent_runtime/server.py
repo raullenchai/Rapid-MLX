@@ -1567,7 +1567,7 @@ def _normalize_local_workspace_turn(goal: str, turn: AgentModelTurn) -> AgentMod
         # finite float merely because Python considers it numeric: that would
         # turn a recoverable small-model shape error into a client decode
         # failure before the approval sheet can be shown.
-        if isinstance(timeout, int) and not isinstance(timeout, bool):
+        if timeout is not None:
             arguments["timeout_seconds"] = timeout
     else:
         return turn
@@ -2766,6 +2766,7 @@ class AgentServerService:
                 ),
                 is_error=request.is_error or not request.executed,
                 executed=request.executed,
+                declined=request.declined,
                 safe_summary=(
                     "Client tool was not executed."
                     if not request.executed
@@ -3468,10 +3469,14 @@ class AgentServerService:
             resolved.append(item)
         # Preserve a cwd only when the user's own request names it. A
         # model-invented default cannot override the requested source folder.
+        explicit_goal_paths = {
+            match.group(0).strip().strip("\"'")
+            for match in _LOCAL_PATH.finditer(entry.run.goal)
+        }
         user_grounded_working_directory = (
             isinstance(supplied_working_directory, str)
             and bool(supplied_working_directory)
-            and supplied_working_directory in entry.run.goal
+            and supplied_working_directory in explicit_goal_paths
         )
         if not user_grounded_working_directory:
             resolved, working_directory = AgentServerService._relocate_run_to_sources(
@@ -3508,14 +3513,31 @@ class AgentServerService:
         cwd = working_directory.rstrip("/") or working_directory
         located: list[tuple[int, str, str]] = []
         output_operand = False
+        compiler_path_operand = False
         for index, item in enumerate(argv):
             if not isinstance(item, str):
                 continue
             if output_operand:
                 output_operand = False
                 continue
+            if compiler_path_operand:
+                compiler_path_operand = False
+                if not item.startswith(("~/", "/")):
+                    return argv, working_directory
+                continue
             if command in _COMPILER_COMMANDS and item == "-o":
                 output_operand = True
+                continue
+            if command in _COMPILER_COMMANDS and item in {
+                "-I",
+                "-F",
+                "-include",
+                "-include-pch",
+                "-isystem",
+                "-iquote",
+                "-iframework",
+            }:
+                compiler_path_operand = True
                 continue
             if item.startswith("-"):
                 continue
@@ -3991,7 +4013,7 @@ class AgentServerService:
                 + (
                     "The user declined it: do not call this tool again for the "
                     "same action."
-                    if "declined" in result.content
+                    if result.declined
                     else "You may correct the arguments and try once more."
                 )
             )

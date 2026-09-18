@@ -4538,8 +4538,11 @@ def test_local_run_normalizer_canonicalizes_recovered_shell_recipe_paths():
             ]
         }
     )
-    assert "timeout_seconds" not in (
-        _normalize_local_workspace_turn("run the script", junk).tool_calls[0].arguments
+    assert (
+        _normalize_local_workspace_turn("run the script", junk)
+        .tool_calls[0]
+        .arguments["timeout_seconds"]
+        == "soon"
     )
     fractional = timed.model_copy(
         update={
@@ -4556,10 +4559,11 @@ def test_local_run_normalizer_canonicalizes_recovered_shell_recipe_paths():
             ]
         }
     )
-    assert "timeout_seconds" not in (
+    assert (
         _normalize_local_workspace_turn("run the script", fractional)
         .tool_calls[0]
-        .arguments
+        .arguments["timeout_seconds"]
+        == 12.5
     )
     # "run <binary>" after a compile: the binary is the command.
     run_turn = AgentModelTurn(
@@ -5380,6 +5384,15 @@ def test_local_run_relocates_to_the_folder_holding_its_sources():
         ["~/Documents/fib.py"], "~/Rapid Workspace", written, "python3"
     ) == (
         ["fib.py"],
+        "~/Documents",
+    )
+    assert relocate(
+        ["-I", "~/Documents/include", "~/Documents/app.c"],
+        "~/Rapid Workspace",
+        {"~/Documents/app.c"},
+        "gcc",
+    ) == (
+        ["-I", "~/Documents/include", "app.c"],
         "~/Documents",
     )
     # Already inside the working directory, or spread across folders: unchanged.

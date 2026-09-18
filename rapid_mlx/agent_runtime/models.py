@@ -174,6 +174,7 @@ class AgentToolResult(_WireModel):
     content: StrictStr = Field(max_length=262_144)
     is_error: StrictBool = False
     executed: StrictBool | None = True
+    declined: StrictBool = False
     safe_summary: StrictStr | None = Field(default=None, max_length=1024)
 
 
