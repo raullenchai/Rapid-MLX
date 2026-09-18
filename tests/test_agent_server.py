@@ -5611,10 +5611,13 @@ def test_local_run_history_helpers_ignore_malformed_and_unrelated_calls():
     for command, argv in (
         ("python3", ["-m", "py_compile", "app.py"]),
         ("python3", ["--version"]),
+        ("python3", ["-V", "app.py"]),
         ("node", ["--check", "app.js"]),
         ("node", ["--version"]),
+        ("node", ["--version", "app.js"]),
         ("ruby", ["-c", "app.rb"]),
         ("ruby", ["--version"]),
+        ("ruby", ["--help", "app.rb"]),
     ):
         check_messages = [
             {

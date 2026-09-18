@@ -1310,7 +1310,18 @@ def _interpreter_script_index(command: str, argv: list[Any]) -> int | None:
         if not isinstance(item, str):
             index += 1
             continue
-        if item in {"-c", "-e", "--eval", "-m", "--check", "--syntax-check"}:
+        if item in {
+            "-c",
+            "-e",
+            "--eval",
+            "-m",
+            "--check",
+            "--syntax-check",
+            "-V",
+            "--version",
+            "-h",
+            "--help",
+        }:
             return None
         if item in option_operands:
             index += 2
