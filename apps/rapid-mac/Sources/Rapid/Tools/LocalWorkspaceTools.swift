@@ -1568,9 +1568,24 @@ enum LocalWorkspaceTools {
             }
         }
         if originalExecutable.path.hasPrefix("/opt/homebrew/") {
-            readableFilters.append("(subpath \"/opt/homebrew\")")
+            // Homebrew's executable symlinks resolve into Cellar and its
+            // linked libraries resolve through opt. Never expose the whole
+            // prefix: /opt/homebrew/etc can contain unrelated credentials.
+            readableFilters += [
+                "(subpath \"/opt/homebrew/Cellar\")",
+                "(subpath \"/opt/homebrew/opt\")",
+            ]
+            metadataFilters += [
+                "(literal \"/opt\")",
+                "(literal \"/opt/homebrew\")",
+            ]
         } else if originalExecutable.path.hasPrefix("/usr/local/") {
-            readableFilters.append("(subpath \(quoted(originalExecutable.deletingLastPathComponent().path)))")
+            readableFilters += [
+                "(subpath \"/usr/local/Cellar\")",
+                "(subpath \"/usr/local/opt\")",
+                "(subpath \(quoted(originalExecutable.deletingLastPathComponent().path)))",
+            ]
+            metadataFilters.append("(literal \"/usr/local\")")
         }
 
         var executableFilters = ["(literal \(quoted(executable.path)))"]
