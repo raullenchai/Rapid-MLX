@@ -1949,6 +1949,24 @@ def _preflight_vision_runtime(
             and config_indicates_multimodal(getattr(metadata, "config", None) or {})
             and is_mllm_model(model_name)
         )
+        # A text-lane-only MLLM pack (Bonsai 2, model_type=prism_hadamard_qwen35)
+        # has no mlx-lm text backbone, and is_mllm_model() is False for its cold,
+        # header-less single-file snapshot — so the vision-weight/identity checks
+        # above stay silent and _ensure_routing_config() would pull the whole
+        # 8.6 GB pack before the load-time guard could fire. Recognize it from
+        # the config-only metadata here and require the vision runtime up front,
+        # so a base wheel fails with the actionable [vision] hint BEFORE any
+        # weight download.
+        _preflight_config = getattr(metadata, "config", None)
+        if (
+            isinstance(_preflight_config, dict)
+            and _preflight_config.get("model_type")
+            in _TEXT_LANE_UNSUPPORTED_MLLM_MODEL_TYPES
+        ):
+            from .models.mllm import _require_mlx_vlm
+
+            _require_mlx_vlm(preflight_path)
+            return
     if not has_vision_weights and not (not force_mllm and has_named_vision_identity):
         return
     decision = resolve_serving_lane_decision(

@@ -378,3 +378,55 @@ def test_text_lane_guard_passes_through_other_models(monkeypatch, config):
 
     # No raise, no vision-runtime probe: an ordinary text-lane model is untouched.
     server._reject_text_lane_only_mllm_pack("some-model", "/snap/other")
+
+
+def test_preflight_requires_vision_for_prism_pack_before_download(monkeypatch):
+    # Cold default start (no --no-mllm): the config-only preflight must require
+    # the vision runtime for a prism_hadamard_qwen35 pack BEFORE
+    # _ensure_routing_config pulls the whole 8.6 GB checkpoint. is_mllm_model()
+    # is False for the header-less snapshot, so this relies on exact model_type
+    # recognition, not vision-weight/identity heuristics.
+    from types import SimpleNamespace
+
+    import rapid_mlx.server as server
+
+    monkeypatch.setattr(server, "_prefetch_routing_metadata", lambda _n: "/snap/pack")
+    monkeypatch.setattr(
+        "rapid_mlx.model_metadata.read_model_metadata",
+        lambda _p: SimpleNamespace(
+            config={"model_type": "prism_hadamard_qwen35", "vision_config": {}},
+            snapshot_dir=None,
+        ),
+    )
+    calls = []
+
+    def _raise(path):
+        calls.append(path)
+        raise ImportError("install 'rapid-mlx[vision]'")
+
+    monkeypatch.setattr("rapid_mlx.models.mllm._require_mlx_vlm", _raise)
+
+    with pytest.raises(ImportError, match=r"rapid-mlx\[vision\]"):
+        server._preflight_vision_runtime("bonsai2-27b-2bit")
+    assert calls == ["/snap/pack"]
+
+
+def test_preflight_ignores_ordinary_text_checkpoint(monkeypatch):
+    # A plain text checkpoint (no vision config, ordinary model_type) must not
+    # be forced onto the vision runtime by the new prism recognition.
+    from types import SimpleNamespace
+
+    import rapid_mlx.server as server
+
+    monkeypatch.setattr(server, "_prefetch_routing_metadata", lambda _n: "/snap/text")
+    monkeypatch.setattr(
+        "rapid_mlx.model_metadata.read_model_metadata",
+        lambda _p: SimpleNamespace(config={"model_type": "qwen3"}, snapshot_dir=None),
+    )
+    monkeypatch.setattr(
+        "rapid_mlx.models.mllm._require_mlx_vlm",
+        lambda *_a, **_k: pytest.fail("_require_mlx_vlm called for a text checkpoint"),
+    )
+
+    # Returns cleanly (text lane), no vision requirement.
+    server._preflight_vision_runtime("some-text-model")
