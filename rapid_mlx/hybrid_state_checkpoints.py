@@ -175,19 +175,19 @@ def _recurrent_cache_types() -> tuple[type, ...]:
         # plus ``left_padding`` / ``lengths`` bookkeeping) and every hybrid
         # VLM (Qwen3.5 4B/9B) builds its prompt cache from it. The MLLM lane
         # stores those entries through mlx-vlm's exact APC, so they must be
-        # recognised here for its checkpoints to record and restore.
+        # recognised here for its checkpoints to record and restore. The
+        # vendored module ships with this repo, so unlike the optional
+        # distributions its import must not be guarded — a failure there is
+        # a repo defect and should be loud, not a silent checkpoint loss.
         # VENDOR-DEVIATION(dual-namespace): the vendored namespace is
         # transitional; one mechanical revert restores byte-verbatim once
         # step 3 unifies types.
-        try:
-            from .models.mlx_vlm_vendored.cache import (
-                ArraysCache as VendoredArraysCache,
-            )
+        from .models.mlx_vlm_vendored.cache import (
+            ArraysCache as VendoredArraysCache,
+        )
 
-            if VendoredArraysCache not in types:
-                types.append(VendoredArraysCache)
-        except Exception:
-            pass
+        if VendoredArraysCache not in types:
+            types.append(VendoredArraysCache)
         try:
             from mlx_vlm.models.cache import ArraysCache as VLMArraysCache
 
