@@ -1955,12 +1955,16 @@ class BatchRotatingKVCache(_BaseCache):
         for i, (p, length, c) in enumerate(zip(padding, lengths, caches)):
             if c.keys is None or length == 0:
                 continue
-            keys[i : i + 1, :, p : p + length] = c._temporal_order(c.keys)[
-                ..., -length:, :
-            ]
-            values[i : i + 1, :, p : p + length] = c._temporal_order(c.values)[
-                ..., -length:, :
-            ]
+            # VENDOR-DEVIATION(upstream-bugfix): upstream 0.7.1 (and mlx-lm
+            # 0.31.3 identically) calls ``c._temporal_order(c.keys)`` here,
+            # but this class's ``_temporal_order`` takes no argument and
+            # reorders in place, so every merge with content raised
+            # TypeError. Call the zero-arg form and read the reordered
+            # arrays afterwards; operands are the per-request caches being
+            # consumed by this merge.
+            c._temporal_order()
+            keys[i : i + 1, :, p : p + length] = c.keys[..., -length:, :]
+            values[i : i + 1, :, p : p + length] = c.values[..., -length:, :]
 
         cache = cls(caches[0].max_size, padding)
         cache.keys = keys
@@ -3172,7 +3176,13 @@ class BatchPoolingCache(_BaseCache):
         if isinstance(offset, mx.array):
             query_pos = offset[:, None] + mx.arange(1, L + 1)
         else:
-            query_pos = offset + mx.arange(offset + 1, offset + L + 1)[None]
+            # VENDOR-DEVIATION(upstream-bugfix): upstream 0.7.1 built the
+            # scalar-offset positions as ``offset + arange(offset + 1,
+            # offset + L + 1)``, adding ``offset`` twice and admitting pooled
+            # tokens earlier than the causal contract allows. The absolute
+            # 1-based query positions are ``offset + arange(1, L + 1)`` —
+            # the same semantics the ``mx.array`` branch above implements.
+            query_pos = offset + mx.arange(1, L + 1)[None]
 
         causal = pool_idx < (query_pos[..., None] // self.ratio)
         mask = causal & valid
