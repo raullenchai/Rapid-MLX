@@ -83,12 +83,34 @@ struct SingleInstanceGuardTests {
         #expect(SingleInstanceGuard.pidToYieldTo(own: own, running: running) == nil)
     }
 
+    @Test("Instance lock: second acquisition is busy while held, free after release")
+    func instanceLockExcludes() throws {
+        let dir = FileManager.default.temporaryDirectory
+            .appendingPathComponent("rapid-instance-lock-\(UUID().uuidString)")
+        defer { try? FileManager.default.removeItem(at: dir) }
+        let url = dir.appendingPathComponent("desktop-instance.lock")
+        let first = SingleInstanceGuard.InstanceLock(url: url)
+        let second = SingleInstanceGuard.InstanceLock(url: url)
+        #expect(first.acquire() == .acquired)
+        #expect(first.acquire() == .acquired, "re-acquire by the holder is idempotent")
+        #expect(second.acquire() == .busy, "flock is per open file description, so the second opener is excluded")
+        first.release()
+        #expect(second.acquire() == .acquired)
+        second.release()
+    }
+
+    @Test("Instance lock: an unwritable location is unavailable, not busy")
+    func instanceLockUnavailable() {
+        let lock = SingleInstanceGuard.InstanceLock(url: URL(fileURLWithPath: "/dev/null/impossible/desktop-instance.lock"))
+        #expect(lock.acquire() == .unavailable)
+    }
+
     @Test("The guard runs before any side effect in RapidApp.init")
     func guardIsFirstInInit() throws {
         let source = try String(contentsOf: Self.sourceFile("Sources/Rapid/RapidApp.swift"), encoding: .utf8)
         let initStart = try #require(source.range(of: "\n    init() {\n"))
         let body = source[initStart.upperBound...]
-        let guardAt = try #require(body.range(of: "SingleInstanceGuard.runningInstanceToYieldTo()"))
+        let guardAt = try #require(body.range(of: "SingleInstanceGuard.decide()"))
         for sideEffect in ["CrashReporter.install()", "PortSweep.startLaunchSweep", "ServerManager()"] {
             let at = try #require(body.range(of: sideEffect), "\(sideEffect) moved — update this test")
             #expect(guardAt.lowerBound < at.lowerBound, "\(sideEffect) runs before the single-instance guard")

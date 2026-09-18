@@ -164,8 +164,13 @@ struct RapidApp: App {
         // has been set up, so there is nothing to tear down. If the survivor
         // vanished between the check and the hand-off (quit-and-relaunch),
         // this launch is the only Desktop and carries on.
-        if let survivor = SingleInstanceGuard.runningInstanceToYieldTo(),
-           SingleInstanceGuard.handOff(to: survivor) {
+        switch SingleInstanceGuard.decide() {
+        case .proceed:
+            break
+        case .yield(let survivor):
+            if SingleInstanceGuard.handOff(to: survivor) { exit(0) }
+        case .yieldToUnregistered:
+            SingleInstanceGuard.handOffToUnregisteredHolder()
             exit(0)
         }
         // Install the crash reporter FIRST — every other init step can
