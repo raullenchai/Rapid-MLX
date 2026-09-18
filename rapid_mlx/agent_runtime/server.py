@@ -3189,8 +3189,8 @@ class AgentServerService:
         return found
 
     @staticmethod
-    def _written_files(entry: _ServerRun) -> dict[str, str]:
-        """Map basename -> path for every local_write this run completed.
+    def _written_files(entry: _ServerRun) -> set[str]:
+        """Return full paths for every local_write this run completed.
 
         A write that was declined, not executed, or reported an error did
         not produce the file, so it is not a compile target.
@@ -3205,7 +3205,7 @@ class AgentServerService:
                     call_id not in entry.failed_tool_call_ids
                     and not content.startswith("Client tool was not executed")
                 )
-        written: dict[str, str] = {}
+        written: set[str] = set()
         for message in entry.messages:
             for call in message.get("tool_calls", []):
                 if not isinstance(call, dict):
@@ -3226,7 +3226,7 @@ class AgentServerService:
                     continue
                 path = arguments.get("path") if isinstance(arguments, dict) else None
                 if isinstance(path, str) and path:
-                    written[path.rstrip("/").rsplit("/", 1)[-1]] = path
+                    written.add(path.rstrip("/"))
         return written
 
     @staticmethod
@@ -3237,9 +3237,10 @@ class AgentServerService:
 
         After writing ``~/Documents/app.c`` a small model compiles ``app.c``
         (or ``Documents/app.c``) from the default workspace, which fails and
-        burns the retry budget. A relative argv entry whose basename matches a
-        file this run wrote elsewhere is resolved to that path; an argv that
-        repeats the command name (``argv: ["gcc", ...]``) drops it.
+        burns the retry budget. A relative argv entry is resolved only when its
+        full home-relative or cwd-relative path exactly matches a file written
+        in this run; basename-only guesses are deliberately rejected. An argv
+        that repeats the command name (``argv: ["gcc", ...]``) drops it.
         """
 
         if entry.settings.execution != "client" or len(turn.tool_calls) != 1:
@@ -3265,16 +3266,17 @@ class AgentServerService:
                 and item
                 and not item.startswith(("-", "~/", "/", "./"))
             ):
-                target = written.get(item.rsplit("/", 1)[-1])
-                if (
-                    target is not None
-                    and target != f"{working_directory.rstrip('/')}/{item}"
-                ):
-                    resolved.append(target)
+                cwd_target = f"{working_directory.rstrip('/')}/{item}"
+                home_target = f"~/{item}"
+                if cwd_target in written:
+                    resolved.append(item)
+                    continue
+                if home_target in written:
+                    resolved.append(home_target)
                     continue
             resolved.append(item)
         resolved, working_directory = AgentServerService._relocate_run_to_sources(
-            resolved, working_directory
+            resolved, working_directory, command
         )
         if resolved == call.arguments.get("argv") and (
             working_directory == arguments.get("working_directory")
@@ -3288,21 +3290,40 @@ class AgentServerService:
 
     @staticmethod
     def _relocate_run_to_sources(
-        argv: list[Any], working_directory: str
+        argv: list[Any],
+        working_directory: str,
+        command: Any,
     ) -> tuple[list[Any], str]:
         """Run from the folder that holds the files argv names.
 
         The Desktop sandbox lets a command read and write only its working
         directory, so ``gcc -o app ~/Documents/app.c`` from the default
         ``~/Rapid Workspace`` fails with "no such file" although the file
-        exists. When every path argv names lives in one other folder, that
-        folder becomes the working directory and the entries turn relative.
+        exists. Relocate only when every path-bearing input is a file written
+        in this run (a compiler's relative ``-o`` target is the one intentional
+        exception). This avoids silently changing how an unrelated relative
+        input such as ``relative-input.txt`` resolves.
         """
 
         cwd = working_directory.rstrip("/") or working_directory
         located: list[tuple[int, str, str]] = []
+        output_operand = False
         for index, item in enumerate(argv):
-            if not isinstance(item, str) or not item.startswith(("~/", "/")):
+            if not isinstance(item, str):
+                continue
+            if output_operand:
+                output_operand = False
+                continue
+            if command in _COMPILER_COMMANDS and item == "-o":
+                output_operand = True
+                continue
+            if item.startswith("-"):
+                continue
+            if not item.startswith(("~/", "/")):
+                if item.startswith("./") or "/" in item or re.search(
+                    r"\.[A-Za-z0-9]{1,8}$", item
+                ):
+                    return argv, working_directory
                 continue
             parent, _, name = item.rstrip("/").rpartition("/")
             if not name or parent in ("", "~", cwd):
@@ -3314,6 +3335,28 @@ class AgentServerService:
         for index, _, name in located:
             relocated[index] = name
         return relocated, located[0][1]
+
+    @staticmethod
+    def _local_run_invokes_program(arguments: dict[str, Any]) -> bool:
+        """Whether an allowed local_run form actually executes user code."""
+
+        command = arguments.get("command")
+        argv = arguments.get("argv")
+        if not isinstance(command, str) or not isinstance(argv, list):
+            return False
+        if command in {"go", "swift"}:
+            return bool(argv) and argv[0] == "run"
+        if command in {"python", "python3"}:
+            return not (
+                len(argv) >= 2
+                and argv[0] == "-m"
+                and argv[1] in {"compileall", "py_compile"}
+            )
+        if command == "node":
+            return not any(item in {"-c", "--check"} for item in argv)
+        if command == "ruby":
+            return not any(item in {"-c", "--syntax-check"} for item in argv)
+        return command.startswith(("~/", "/", "./"))
 
     @staticmethod
     def _compiled_binary_for(entry: _ServerRun, call_id: str) -> str | None:
@@ -3407,15 +3450,7 @@ class AgentServerService:
                     return False
                 if not isinstance(arguments, dict):
                     return False
-                command = arguments.get("command")
-                if not isinstance(command, str):
-                    return False
-                if command in _COMPILER_COMMANDS:
-                    return False
-                argv = arguments.get("argv")
-                if command in {"go", "swift"} and (
-                    not isinstance(argv, list) or not argv or argv[0] != "run"
-                ):
+                if not AgentServerService._local_run_invokes_program(arguments):
                     return False
                 content = results.get(str(call.get("id")), "")
                 return content.lstrip().startswith("exit_code: 0")

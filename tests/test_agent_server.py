@@ -5110,28 +5110,51 @@ async def test_client_desktop_script_run_that_succeeded_is_not_offered_again():
 
 def test_local_run_relocates_to_the_folder_holding_its_sources():
     relocate = AgentServerService._relocate_run_to_sources
-    assert relocate(["-o", "app", "~/Documents/app.c"], "~/Rapid Workspace") == (
+    assert relocate(
+        ["-o", "app", "~/Documents/app.c"],
+        "~/Rapid Workspace",
+        "gcc",
+    ) == (
         ["-o", "app", "app.c"],
         "~/Documents",
     )
-    assert relocate(["~/Documents/fib.py"], "~/Rapid Workspace") == (
+    assert relocate(
+        ["~/Documents/fib.py"], "~/Rapid Workspace", "python3"
+    ) == (
         ["fib.py"],
         "~/Documents",
     )
     # Already inside the working directory, or spread across folders: unchanged.
-    assert relocate(["~/Rapid Workspace/a.c"], "~/Rapid Workspace") == (
+    assert relocate(
+        ["~/Rapid Workspace/a.c"],
+        "~/Rapid Workspace",
+        "gcc",
+    ) == (
         ["~/Rapid Workspace/a.c"],
         "~/Rapid Workspace",
     )
-    assert relocate(["~/Documents/a.c", "~/Desktop/b.c"], "~/Rapid Workspace") == (
+    assert relocate(
+        ["~/Documents/a.c", "~/Desktop/b.c"],
+        "~/Rapid Workspace",
+        "gcc",
+    ) == (
         ["~/Documents/a.c", "~/Desktop/b.c"],
         "~/Rapid Workspace",
     )
-    assert relocate(["~/a.c"], "~/Rapid Workspace") == (["~/a.c"], "~/Rapid Workspace")
-    assert relocate(["-c", "print(1)"], "~/Rapid Workspace") == (
+    assert relocate(["~/a.c"], "~/Rapid Workspace", "gcc") == (
+        ["~/a.c"],
+        "~/Rapid Workspace",
+    )
+    assert relocate(["-c", "print(1)"], "~/Rapid Workspace", "python3") == (
         ["-c", "print(1)"],
         "~/Rapid Workspace",
     )
+    # An extra relative path would change meaning after chdir, so fail closed.
+    assert relocate(
+        ["~/Documents/fib.py", "relative-input.txt"],
+        "~/Rapid Workspace",
+        "python3",
+    ) == (["~/Documents/fib.py", "relative-input.txt"], "~/Rapid Workspace")
 
 
 async def test_client_compile_ignores_a_write_that_reported_an_error():
@@ -5248,7 +5271,7 @@ def test_local_run_history_helpers_ignore_malformed_and_unrelated_calls():
         {"role": "tool", "tool_call_id": "w-ok", "content": "Wrote 4 bytes"},
     ]
     entry = _fake_run(messages, failed=["w-err"])
-    assert svc._written_files(entry) == {"ok.c": "~/Documents/ok.c"}
+    assert svc._written_files(entry) == {"~/Documents/ok.c"}
     assert svc._compiled_binary_for(entry, "s") is None
     assert svc._compiled_binary_for(entry, "bad") is None
     assert svc._compiled_binary_for(entry, "list") is None
@@ -5257,6 +5280,50 @@ def test_local_run_history_helpers_ignore_malformed_and_unrelated_calls():
     assert svc._local_run_finished_script(entry) is False
     assert svc._local_run_finished_script(_fake_run(messages[2:3])) is False
     assert svc._local_run_finished_script(_fake_run(messages[:1])) is False
+
+    # Same-basename writes retain distinct identities. A qualified relative
+    # path resolves exactly; a bare basename is never guessed.
+    duplicate_messages = [
+        {
+            "role": "assistant",
+            "tool_calls": [
+                _call("wa", "local_write", {"path": "~/A/main.c"}),
+                _call("wb", "local_write", {"path": "~/B/main.c"}),
+            ],
+        },
+        {"role": "tool", "tool_call_id": "wa", "content": "Wrote 1 byte"},
+        {"role": "tool", "tool_call_id": "wb", "content": "Wrote 1 byte"},
+    ]
+    duplicates = _fake_run(duplicate_messages)
+    assert svc._written_files(duplicates) == {"~/A/main.c", "~/B/main.c"}
+    qualified = AgentModelTurn(
+        tool_calls=[
+            AgentToolCall(
+                id="q",
+                name="local_run",
+                arguments={"command": "gcc", "argv": ["A/main.c"]},
+            )
+        ]
+    )
+    qualified_result = svc._resolve_local_run_against_written_files(
+        duplicates, qualified
+    ).tool_calls[0].arguments
+    assert qualified_result["argv"] == ["main.c"]
+    assert qualified_result["working_directory"] == "~/A"
+    bare = qualified.model_copy(
+        update={
+            "tool_calls": [
+                qualified.tool_calls[0].model_copy(
+                    update={"arguments": {"command": "gcc", "argv": ["main.c"]}}
+                )
+            ]
+        }
+    )
+    bare_result = svc._resolve_local_run_against_written_files(
+        duplicates, bare
+    ).tool_calls[0].arguments
+    assert bare_result["argv"] == ["main.c"]
+    assert bare_result["working_directory"] == "~/Rapid Workspace"
 
     # A compile that exited 0 is remembered; a later mismatch is not redirected.
     compile_messages = [
@@ -5334,6 +5401,21 @@ def test_local_run_history_helpers_ignore_malformed_and_unrelated_calls():
         {"role": "tool", "tool_call_id": "g", "content": "exit_code: 0"},
     ]
     assert svc._local_run_finished_script(_fake_run(go_messages)) is False
+    for command, argv in (
+        ("python3", ["-m", "py_compile", "app.py"]),
+        ("node", ["--check", "app.js"]),
+        ("ruby", ["-c", "app.rb"]),
+    ):
+        check_messages = [
+            {
+                "role": "assistant",
+                "tool_calls": [
+                    _call("check", "local_run", {"command": command, "argv": argv})
+                ],
+            },
+            {"role": "tool", "tool_call_id": "check", "content": "exit_code: 0"},
+        ]
+        assert svc._local_run_finished_script(_fake_run(check_messages)) is False
     assert (
         svc._local_run_finished_script(
             _fake_run(
