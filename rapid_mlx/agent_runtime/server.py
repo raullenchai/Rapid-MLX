@@ -417,12 +417,6 @@ def _canonical_home_path(value: str, goal: str = "") -> str:
         normalized in explicit_paths
         or any(normalized.startswith(path.rstrip("/") + "/") for path in explicit_paths)
         or any(path.startswith(normalized.rstrip("/") + "/") for path in explicit_paths)
-        or any(
-            "/" in normalized
-            and "/" in path
-            and normalized.rsplit("/", 1)[0] == path.rsplit("/", 1)[0]
-            for path in explicit_paths
-        )
         or normalized.startswith("~/Rapid Workspace/")
     ):
         return normalized
@@ -1342,12 +1336,33 @@ def _canonicalize_local_run_argv(command: str, argv: list[Any], goal: str) -> li
             for index, item in enumerate(argv[1:], 1)
             if isinstance(item, str) and item.endswith(".go")
         )
-    return [
+    canonical = [
         _canonical_home_path(item, goal)
         if index in indexes and isinstance(item, str)
         else item
         for index, item in enumerate(argv)
     ]
+    if command in _COMPILER_COMMANDS:
+        explicit_sources = {
+            path
+            for path in (
+                match.group(0).strip().strip("\"'")
+                for match in _LOCAL_PATH.finditer(goal)
+            )
+            if path.startswith("~/") and "." in path.rsplit("/", 1)[-1]
+        }
+        for index, item in enumerate(argv[:-1]):
+            if item != "-o" or not isinstance(argv[index + 1], str):
+                continue
+            value = argv[index + 1]
+            normalized = _INVENTED_HOME_PREFIX.sub("~", value, count=1)
+            if normalized == value:
+                continue
+            if any(
+                normalized == source.rsplit(".", 1)[0] for source in explicit_sources
+            ):
+                canonical[index + 1] = normalized
+    return canonical
 
 
 def _interpreter_script_index(command: str, argv: list[Any]) -> int | None:
@@ -3637,14 +3652,17 @@ class AgentServerService:
         argv = arguments.get("argv")
         if not isinstance(command, str) or not isinstance(argv, list):
             return False
-        if command == "go":
+        command_name = command.rsplit("/", 1)[-1]
+        if command_name in _COMPILER_COMMANDS:
+            return False
+        if command_name == "go":
             return bool(argv) and argv[0] == "run"
-        if command == "swift":
+        if command_name == "swift":
             return bool(argv) and (
                 argv[0] == "run"
                 or (not argv[0].startswith("-") and argv[0].endswith(".swift"))
             )
-        if command in {"python", "python3"}:
+        if command_name in {"python", "python3"}:
             index = 0
             while index < len(argv):
                 item = argv[index]
@@ -3669,13 +3687,13 @@ class AgentServerService:
                     return True
                 index += 1
             return False
-        if command == "node":
+        if command_name == "node":
             if not argv or any(item in {"-c", "--check"} for item in argv):
                 return False
             if argv[0] in {"-e", "--eval"}:
                 return len(argv) >= 2
             return _interpreter_script_index(command, argv) is not None
-        if command == "ruby":
+        if command_name == "ruby":
             if not argv or any(item in {"-c", "--syntax-check"} for item in argv):
                 return False
             if argv[0] == "-e":

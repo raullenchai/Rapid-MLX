@@ -4689,7 +4689,7 @@ def test_local_workspace_normalizer_keeps_users_paths_the_user_named():
             "/home/user/Documents/app",
             "Compile ~/Documents/app.c and run the result",
         )
-        == "~/Documents/app"
+        == "/home/user/Documents/app"
     )
     assert _canonical_home_path("/home/user/.ssh/id_rsa", "Read a local file") == (
         "/home/user/.ssh/id_rsa"
@@ -5772,6 +5772,7 @@ def test_local_run_history_helpers_ignore_malformed_and_unrelated_calls():
     ]
     assert svc._local_run_finished_script(_fake_run(go_messages)) is False
     for command, argv in (
+        ("/usr/bin/clang", ["-o", "app", "app.c"]),
         ("python3", ["-m", "py_compile", "app.py"]),
         ("python3", ["--version"]),
         ("python3", ["-V", "app.py"]),
