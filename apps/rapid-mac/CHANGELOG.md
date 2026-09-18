@@ -17,7 +17,61 @@ can actually understand.
 
 ## [Unreleased]
 
+## [0.14.3] — 2026-09-18
+
+Rapid-MLX 0.14.3 makes multimodal conversations materially faster, gives
+Personal Intelligence bounded access to local files and code, and rebuilds the
+Community Benchmark experience around live, trustworthy evidence. It also
+fixes the downloaded DMG install window on affected macOS versions.
+
+### Added
+- **Personal Intelligence can work with local files and code.** From Desktop
+  chat, qualified local models can search and read text, write reviewed files,
+  move a file to recoverable Trash, and compile or run a bounded development
+  command. Every local-data action shows its exact path and arguments for
+  approval; mutation permission is never remembered, networking is denied,
+  and hidden or credential-bearing locations remain unavailable.
+- **Community Benchmark is now a complete Desktop experience.** Runs expose
+  live stages, pass counts, ETA, and the latest measurement; My Results and
+  Community views preserve contributor identity across restarts; comparison
+  copy distinguishes bounded recent evidence from complete totals; and
+  publication now verifies immutable build provenance before accepting a run.
+- **Bonsai 2 Hadamard model packs now run natively.** Rapid-owned loading for
+  packed Hadamard projections and inverse embeddings covers the qualified
+  text, streaming, and image-serving paths without changing existing MLLM
+  behavior.
+
+### Changed
+- **Follow-up questions about the same image start much sooner.** The serialized
+  multimodal lane can resume an exact media-aware prefix instead of encoding
+  and prefilling the same image again. On the qualified Qwen3.6 35B workload,
+  second-turn TTFT fell **54.8%** and elapsed time fell **22.4%**; the first
+  eligible short turn pays a bounded 10–25 ms snapshot cost, and operators can
+  disable the cache with `--mllm-media-prefix-cache off`.
+- **Serialized multimodal decode is about 35% faster on the qualified path.**
+  Structural single-request lanes no longer merge and repack a cache that
+  already has exactly the required shape. The 21-case Qwen3.6 media suite
+  improved median generation throughput by **35.4%** with identical output
+  hashes and unchanged peak memory.
+- **DeepSeek V4.1 Community Benchmark uses the qualified serial runtime.** On
+  the 256 GB M3 Ultra qualification, the 2-bit build measured approximately
+  **31.09 tok/s** on the short case and **29.42 tok/s** on the long case, with
+  its DSpark sidecar and 8,192-token input limit recorded in provenance.
+
 ### Fixed
+- **GLM-5.3 Flash no longer exhausts Metal on a qualified 32K native-MTP
+  request.** Prefill is processed in bounded 1,024-token chunks while retaining
+  the exact speculative transaction. Two consecutive real 32K requests passed
+  on a 256 GB M3 Ultra; this does not claim the checkpoint's advertised 1M
+  window is usable.
+- Multimodal requests now honor `seed`, `top_k`, and `min_p` instead of silently
+  dropping those sampling controls on the media lane.
+- Gracefully stopping `rapid-mlx serve` no longer enters a Python interpreter
+  finalization race on macOS 15, and a cancelled DNS-pinned HTTP request no
+  longer risks resuming an already-completed continuation.
+- A sandboxed Personal Intelligence command now returns at its hard deadline
+  even when macOS is slow to tear down a denied child process, rather than
+  leaving the Desktop task waiting indefinitely.
 - **The install window opens instead of closing Finder.** Double-clicking the
   downloaded DMG and selecting the mounted volume made Finder blank out and
   close the window (and on older macOS, quit and relaunch outright), so there
@@ -3898,7 +3952,8 @@ Older versions: see the
 [GitHub Releases page](https://github.com/machinefi/rapid-desktop/releases)
 for auto-generated notes against earlier tags.
 
-[Unreleased]: https://github.com/raullenchai/Rapid-MLX/compare/rapid-mac-v0.14.2...HEAD
+[Unreleased]: https://github.com/raullenchai/Rapid-MLX/compare/rapid-mac-v0.14.3...HEAD
+[0.14.3]: https://github.com/raullenchai/Rapid-MLX/compare/rapid-mac-v0.14.2...rapid-mac-v0.14.3
 [0.14.2]: https://github.com/raullenchai/Rapid-MLX/compare/rapid-mac-v0.14.1...rapid-mac-v0.14.2
 [0.14.1]: https://github.com/raullenchai/Rapid-MLX/compare/rapid-mac-v0.14.0...rapid-mac-v0.14.1
 [0.14.0]: https://github.com/raullenchai/Rapid-MLX/compare/rapid-mac-v0.13.4...rapid-mac-v0.14.0
