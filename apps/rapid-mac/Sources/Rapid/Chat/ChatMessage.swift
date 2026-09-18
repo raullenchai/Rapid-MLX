@@ -1199,7 +1199,7 @@ struct ChatMessage: Identifiable, Codable, Equatable, Hashable {
     ///
     /// | lane | capability | built-ins | name words |
     /// | --- | --- | --- | --- |
-    /// | arithmetic / math vocabulary | compute | — | calc, math, python, interpreter, eval, compute, arith, solve, wolfram, code |
+    /// | arithmetic / math vocabulary | compute | — | calc, math, python, interpreter, eval, compute, arith, solve, wolfram |
     /// | live data (weather, prices, news) | network | web_search, browse, weather | search, web, weather, browse, fetch, http, url, news, stock, price, forecast, internet, crawl, scrape |
     /// | external retrieval (search for, look up) | retrieval | web_search, browse | search, web, browse, fetch, http, url, read, document, doc, pdf, page, file, find, lookup, wiki, retrieve, query |
     ///
@@ -1269,7 +1269,10 @@ struct ChatMessage: Identifiable, Codable, Equatable, Hashable {
             words.contains { word in fragments.contains { word.hasPrefix($0) } }
         }
         var caps = Set<ToolCapability>()
-        if hasAny(["calc", "math", "python", "interpreter", "eval", "compute", "arith", "solve", "wolfram", "code"]) {
+        // Not "code": `code_search` / `code_review` are not calculators, and
+        // `code_interpreter` is caught by "interpreter". An `execute_code`
+        // tool has no recognised word and keeps the caption.
+        if hasAny(["calc", "math", "python", "interpreter", "eval", "compute", "arith", "solve", "wolfram"]) {
             caps.insert(.compute)
         }
         if hasAny(["search", "web", "weather", "browse", "fetch", "http", "url", "news", "stock", "price", "forecast", "internet", "crawl", "scrape"]) {

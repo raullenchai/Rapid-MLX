@@ -960,7 +960,7 @@ struct ToolNotCalledCaptionTests {
     /// name says nothing recognisable, which is assumed capable.
     @Test("Gate 6: arithmetic prompt with a compute or unclassified tool advertised → caption FIRES")
     func gateSixComputeToolKeepsCaption() {
-        for roster in [["calculator"], ["execute_python", "web_search"], ["code_interpreter"], ["arithmetic"], ["multiply_numbers"], Self.productionRoster + ["fooBarBaz"]] {
+        for roster in [["calculator"], ["execute_python", "web_search"], ["code_interpreter"], ["arithmetic"], ["multiply_numbers"], ["execute_code"], Self.productionRoster + ["fooBarBaz"]] {
             let flag = ChatMessage.shouldFlagToolNotCalled(
                 userPrompt: "What is 17 * 23?",
                 assistantContent: "391",
@@ -1007,6 +1007,8 @@ struct ToolNotCalledCaptionTests {
         #expect(ChatMessage.capabilities(ofToolNamed: "profile_update") == nil)
         #expect(ChatMessage.capabilities(ofToolNamed: "arithmetic") == [.compute])
         #expect(ChatMessage.capabilities(ofToolNamed: "fooBarBaz") == nil)
+        #expect(ChatMessage.capabilities(ofToolNamed: "code_review") == nil, "a code-review connector is not a calculator")
+        #expect(ChatMessage.capabilities(ofToolNamed: "code_interpreter") == [.compute])
         #expect(ChatMessage.capabilities(ofToolNamed: "calculator") == [.compute])
         #expect(ChatMessage.capabilities(ofToolNamed: "web_search") == [.network, .retrieval])
         #expect(ChatMessage.capabilities(ofToolNamed: "local_run") == [])

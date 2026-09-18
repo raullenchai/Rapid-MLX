@@ -23,8 +23,96 @@ enum SingleInstanceGuard {
         var launched: Date?
     }
 
+    /// What ``RapidApp.init`` should do about other instances.
+    enum Decision {
+        /// This process is the Desktop: carry on launching.
+        case proceed
+        /// Another instance is running: hand off to it and exit.
+        case yield(to: NSRunningApplication)
+        /// Another instance holds the lock but LaunchServices has not
+        /// registered it yet (it is mid-launch): ask LaunchServices to open
+        /// the bundle — which reaches it once registered — and exit.
+        case yieldToUnregistered
+    }
+
+    /// Decide once, at the top of ``RapidApp.init``.
+    ///
+    /// Two layers. The advisory ``instanceLock`` is authoritative when it is
+    /// available: whoever holds it is the Desktop, and it is taken before
+    /// LaunchServices has registered the process, so two cold launches a few
+    /// milliseconds apart cannot both miss each other in a
+    /// `runningApplications` snapshot (pr_validate codex). The snapshot rule
+    /// (``pidToYieldTo``) then only identifies WHICH process to hand off to —
+    /// or decides on its own when the lock file cannot be created at all.
+    static func decide() -> Decision {
+        switch instanceLock.acquire() {
+        case .acquired:
+            return .proceed
+        case .busy:
+            // The holder may still be registering with LaunchServices.
+            let deadline = Date().addingTimeInterval(1.5)
+            repeat {
+                if let holder = runningInstanceToYieldTo() { return .yield(to: holder) }
+                Thread.sleep(forTimeInterval: 0.05)
+            } while Date() < deadline
+            return .yieldToUnregistered
+        case .unavailable:
+            if let other = runningInstanceToYieldTo() { return .yield(to: other) }
+            return .proceed
+        }
+    }
+
+    /// Process-lifetime advisory lock under Application Support.
+    static let instanceLock = InstanceLock(
+        url: ApplicationSupportLocator.applicationSupportRoot()
+            .appendingPathComponent("desktop-instance.lock")
+    )
+
+    /// `flock(2)` on a file, held until the process exits. `flock` locks are
+    /// per open file description, so a second `open` + `flock` conflicts even
+    /// inside one process (which is what the unit test relies on), and the
+    /// kernel drops the lock when the holder dies — no stale-lock cleanup.
+    final class InstanceLock: @unchecked Sendable {
+        enum Outcome { case acquired, busy, unavailable }
+
+        let url: URL
+        private var descriptor: Int32 = -1
+        private let queue = DispatchQueue(label: "rapid.instance-lock")
+
+        init(url: URL) { self.url = url }
+
+        /// Idempotent: a lock this object already holds reports `.acquired`.
+        func acquire() -> Outcome {
+            queue.sync {
+                if descriptor >= 0 { return .acquired }
+                try? FileManager.default.createDirectory(
+                    at: url.deletingLastPathComponent(), withIntermediateDirectories: true
+                )
+                let fd = open(url.path, O_CREAT | O_RDWR | O_CLOEXEC, 0o644)
+                guard fd >= 0 else { return .unavailable }
+                if flock(fd, LOCK_EX | LOCK_NB) == 0 {
+                    descriptor = fd
+                    return .acquired
+                }
+                let reason = errno
+                close(fd)
+                return (reason == EWOULDBLOCK || reason == EAGAIN) ? .busy : .unavailable
+            }
+        }
+
+        /// Tests only; the app holds the lock until the process exits.
+        func release() {
+            queue.sync {
+                guard descriptor >= 0 else { return }
+                flock(descriptor, LOCK_UN)
+                close(descriptor)
+                descriptor = -1
+            }
+        }
+    }
+
     /// The running Desktop this launch must defer to, or `nil` when this
-    /// process is the one that stays.
+    /// process is the one that stays (snapshot rule).
     static func runningInstanceToYieldTo() -> NSRunningApplication? {
         guard let bundleID = Bundle.main.bundleIdentifier else { return nil }
         let apps = NSWorkspace.shared.runningApplications
@@ -87,6 +175,20 @@ enum SingleInstanceGuard {
     /// a timeout or an error while the survivor is still running. If the
     /// survivor quit in the meantime (user quit and relaunched at once),
     /// there is nobody to hand off to.
+    /// Hand off to a holder LaunchServices has not registered yet: opening
+    /// our own bundle reaches whichever instance of it ends up registered
+    /// (``LSMultipleInstancesProhibited`` makes that a reopen, not a launch).
+    static func handOffToUnregisteredHolder() {
+        let configuration = NSWorkspace.OpenConfiguration()
+        configuration.activates = true
+        configuration.createsNewApplicationInstance = false
+        let done = DispatchSemaphore(value: 0)
+        NSWorkspace.shared.openApplication(at: Bundle.main.bundleURL, configuration: configuration) { _, _ in
+            done.signal()
+        }
+        _ = done.wait(timeout: .now() + 2)
+    }
+
     static func handOff(to survivor: NSRunningApplication) -> Bool {
         guard !survivor.isTerminated else { return false }
         guard let url = survivor.bundleURL else {
