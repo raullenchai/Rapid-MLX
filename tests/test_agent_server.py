@@ -422,6 +422,11 @@ def test_local_workspace_default_path_is_harness_owned_and_user_path_is_preserve
     )
     assert explicit == generated
 
+    input_only = _normalize_local_workspace_turn(
+        "Read /Users/alice/Documents/notes.txt and save a summary", generated
+    )
+    assert input_only.tool_calls[0].arguments["path"] == ("~/Rapid Workspace/main.c")
+
     run = AgentModelTurn(
         tool_calls=[
             AgentToolCall(

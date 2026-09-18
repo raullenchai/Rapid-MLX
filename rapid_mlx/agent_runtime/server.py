@@ -235,6 +235,41 @@ _DESKTOP_CLIENT_TOOL_SPECS = (
 )
 _DESKTOP_CLIENT_TOOL_NAMES = frozenset(tool.name for tool in _DESKTOP_CLIENT_TOOL_SPECS)
 _LOCAL_PATH = re.compile(r"(?:^|\s)(/Users/[^\s'\"，。；]+|~/[^\s'\"，。；]+)")
+
+
+def _path_has_action_prefix(goal: str, pattern: str) -> bool:
+    """Return whether a local path is grammatically owned by an action.
+
+    A goal can mention an input path and omit the output path (for example,
+    "read X and save a summary"). A goal-wide path flag would then let the
+    model invent an output destination. Inspect the bounded clause immediately
+    before each path instead.
+    """
+
+    for match in _LOCAL_PATH.finditer(goal):
+        prefix = goal[max(0, match.start() - 140) : match.start()]
+        if re.search(pattern, prefix, re.IGNORECASE):
+            return True
+    return False
+
+
+def _has_explicit_write_destination(goal: str) -> bool:
+    return _path_has_action_prefix(
+        goal,
+        r"(?:\b(?:write|save|create|generate|draft|output|put)\b.{0,100}"
+        r"\b(?:to|at|in|into|as)\s*|(?:写到|保存到|输出到|创建在|生成到).{0,80})$",
+    )
+
+
+def _has_explicit_run_path(goal: str) -> bool:
+    return _path_has_action_prefix(
+        goal,
+        r"(?:\b(?:run|execute)\s*|\b(?:compile|build|test)\b.{0,100}"
+        r"\b(?:in|at|inside|under|from)\s*|(?:运行|执行).{0,80}|"
+        r"(?:编译|构建|测试).{0,80}(?:在|从))$",
+    )
+
+
 _LOCAL_SEARCH_INTENT = re.compile(
     r"\b(?:search|find|locate|look\s+for)\b.{0,80}\b(?:file|folder|directory|local|mac)\b|"
     r"\b(?:file|folder|directory)\b.{0,80}\b(?:search|find|locate)\b|"
@@ -964,14 +999,13 @@ def _normalize_local_workspace_turn(goal: str, turn: AgentModelTurn) -> AgentMod
 
     if len(turn.tool_calls) != 1:
         return turn
-    has_explicit_path = _LOCAL_PATH.search(goal) is not None
     call = turn.tool_calls[0]
     # The wire model exposes recursive ``JsonValue`` entries. Normalization
     # deliberately rebuilds a plain mutable object before Pydantic validates
     # the copied turn, so concrete argv lists are safe to assign here.
     arguments: dict[str, Any] = dict(call.arguments)
     if call.name == "local_write":
-        if has_explicit_path:
+        if _has_explicit_write_destination(goal):
             return turn
         raw_path = arguments.get("path")
         if isinstance(raw_path, str):
@@ -982,6 +1016,7 @@ def _normalize_local_workspace_turn(goal: str, turn: AgentModelTurn) -> AgentMod
         else:
             arguments["path"] = "~/Rapid Workspace/generated.txt"
     elif call.name == "local_run":
+        has_explicit_path = _has_explicit_run_path(goal)
         raw_working_directory = arguments.get("working_directory")
         raw_cwd = arguments.pop("cwd", None)
         if has_explicit_path:

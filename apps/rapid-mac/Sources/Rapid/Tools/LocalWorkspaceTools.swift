@@ -850,10 +850,16 @@ enum LocalWorkspaceTools {
                 filename: backupName
             )
             guard movedIdentity == expectedIdentity else {
-                _ = backupName.withCString { backupPointer in
+                let restored = backupName.withCString { backupPointer in
                     finalName.withCString { finalPointer in
                         renameatx_np(parentFD, backupPointer, parentFD, finalPointer, UInt32(RENAME_EXCL))
                     }
+                }
+                guard restored == 0 else {
+                    let backupURL = parent.url.appendingPathComponent(backupName)
+                    throw LocalError(
+                        "the approved destination changed; the original remains recoverable at \(backupURL.path)"
+                    )
                 }
                 throw LocalError("the approved destination changed while approval was open")
             }
@@ -863,12 +869,20 @@ enum LocalWorkspaceTools {
                 }
             }
             if installed != 0 {
-                _ = backupName.withCString { backupPointer in
+                let installError = posixError("could not replace the destination file")
+                let restored = backupName.withCString { backupPointer in
                     finalName.withCString { finalPointer in
                         renameatx_np(parentFD, backupPointer, parentFD, finalPointer, UInt32(RENAME_EXCL))
                     }
                 }
-                throw posixError("could not replace the destination file")
+                guard restored == 0 else {
+                    let backupURL = parent.url.appendingPathComponent(backupName)
+                    throw LocalError(
+                        "write failed and the original remains recoverable at \(backupURL.path): "
+                            + installError.localizedDescription
+                    )
+                }
+                throw installError
             }
             let removedBackup = backupName.withCString {
                 Darwin.unlinkat(parentFD, $0, 0)
@@ -1089,8 +1103,10 @@ enum LocalWorkspaceTools {
         guard fstat(pinnedExecutable.descriptor, &executableMetadata) == 0 else {
             throw posixError("could not inspect the approved executable")
         }
-        let executableDigest = executableMetadata.st_uid == 0
-            && executableMetadata.st_mode & mode_t(0o022) == 0
+        // Only executables selected from Rapid's fixed system allowlist run in
+        // place. A user-supplied executable is always hashed and staged from
+        // the pinned descriptor, even if its metadata happens to say root.
+        let executableDigest = executablePresentedURL == nil
             ? nil
             : try digest(descriptor: pinnedExecutable.descriptor)
         return ApprovedRun(
