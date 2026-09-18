@@ -502,3 +502,51 @@ def test_preflight_ignores_ordinary_text_checkpoint(monkeypatch):
 
     # Returns cleanly (text lane), no vision requirement.
     server._preflight_vision_runtime("some-text-model")
+
+
+def test_dynamic_residency_rejects_prism_pack_before_download(monkeypatch):
+    """Runtime residency (the Desktop control plane's second model-load entry
+    point) must apply the same pre-weight text-lane guard as primary startup:
+    a Bonsai 2 pack misrouted to the text lane is rejected before its 8.6 GB
+    download, not left to crash deep in mlx-lm on an unknown architecture.
+
+    Drives the real ``_load_dynamic_resident_model`` down its text-lane branch
+    with a non-MLLM serving checkpoint, so the ``else`` arm invokes the guard;
+    a stubbed prism ``config.json`` makes the real guard raise before any
+    engine construction.
+    """
+    import asyncio
+
+    import rapid_mlx.server as server
+
+    # No profile → the residency loader takes the default text modality with
+    # minimal setup; a fixed resolver keeps the checkpoint identity stable.
+    monkeypatch.setattr("rapid_mlx.model_aliases.resolve_profile", lambda _n: None)
+    monkeypatch.setattr(
+        "rapid_mlx.model_aliases.resolve_model", lambda _ref: "/snap/bonsai2"
+    )
+    monkeypatch.setattr(
+        server,
+        "_resolve_serving_checkpoint",
+        lambda *_a, **_k: server._ServingCheckpoint(
+            model_path="/snap/bonsai2",
+            load_path="/snap/bonsai2",
+            auto_text_fallback=False,
+            lane_reason="text_lane_verified",
+            is_mllm=False,
+        ),
+    )
+    # Real guard, prism config in place → surfaces before engine construction.
+    _install_metadata_stub(monkeypatch, {"model_type": "prism_hadamard_qwen35"})
+    monkeypatch.setattr(
+        "rapid_mlx.models.mllm._require_mlx_vlm", lambda *_a, **_k: None
+    )
+    # A BatchedEngine construction here would mean the guard failed to fire.
+    monkeypatch.setattr(
+        server,
+        "BatchedEngine",
+        lambda *_a, **_k: pytest.fail("residency built an engine for a prism pack"),
+    )
+
+    with pytest.raises(ValueError, match="multimodal lane"):
+        asyncio.run(server._load_dynamic_resident_model("bonsai2-27b-2bit", None))
