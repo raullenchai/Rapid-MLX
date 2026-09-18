@@ -35,7 +35,10 @@ struct CommunityBenchmarkShareConfirmationSheet: View {
     }
 
     private var sheetHeight: CGFloat {
-        Self.sheetHeight(availableHeight: NSScreen.main?.visibleFrame.height ?? 720)
+        // The display that shows Rapid's window, not the one with the menu
+        // bar: on a shorter secondary display the footer must still fit.
+        let screen = (NSApp.keyWindow ?? NSApp.mainWindow)?.screen ?? NSScreen.main
+        return Self.sheetHeight(availableHeight: screen?.visibleFrame.height ?? 720)
     }
 
     /// What the submission actually contains.
