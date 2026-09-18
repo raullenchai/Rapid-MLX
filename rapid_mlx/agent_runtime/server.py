@@ -339,6 +339,12 @@ _EXPLICIT_ONLINE_WORDING = re.compile(
     r"\b(?:online|internet|web)\s+(?:search|lookup|browse)\b|(?:上网|联网|网上)",
     re.IGNORECASE,
 )
+_ONLINE_INSTEAD = re.compile(
+    r"\b(?:online|web|internet)\b.{0,24}\binstead\b|"
+    r"\binstead\b.{0,24}\b(?:online|web|internet)\b|"
+    r"(?:改为|改成|换成|转而).{0,20}(?:上网|联网|网上)",
+    re.IGNORECASE,
+)
 
 
 def _recent_user_rows(local_context: str) -> list[str]:
@@ -1142,6 +1148,8 @@ def _route_desktop_client_tools(
     )
     local = _local_tool_intent(goal)
     if _EXPLICIT_ONLINE_WORDING.search(goal) is not None:
+        local["local_search"] = False
+    if _ONLINE_INSTEAD.search(goal) is not None:
         local = {name: False for name in local}
     if (
         not any(local.values())
@@ -1159,15 +1167,20 @@ def _route_desktop_client_tools(
             if any(prior.values()):
                 if requested is not None and prior[requested]:
                     local[requested] = True
-                elif requested is None:
+                    break
+                if requested is None:
                     local = prior
-                break
+                    break
+                if requested in {"local_write", "local_trash", "local_run"}:
+                    break
     local_search = local["local_search"]
     local_read = local["local_read"]
     local_write = local["local_write"]
     local_trash = local["local_trash"]
     local_run = local["local_run"]
-    if local_search or local_read or local_write or local_trash or local_run:
+    if (
+        local_search or local_read or local_write or local_trash or local_run
+    ) and _EXPLICIT_ONLINE_WORDING.search(goal) is None:
         # A local path plus a local action is authoritative. The word "search"
         # must never send a private filesystem request to the web-search tool.
         web = False
