@@ -1677,6 +1677,7 @@ def _normalize_local_workspace_turn(goal: str, turn: AgentModelTurn) -> AgentMod
             )
             if (
                 arguments.get("command") in _COMPILER_COMMANDS
+                and isinstance(normalized_arguments, list)
                 and compile_only_index is not None
                 and _requests_compile_and_run(goal)
             ):
