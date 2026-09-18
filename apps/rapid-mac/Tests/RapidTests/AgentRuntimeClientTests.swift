@@ -172,6 +172,66 @@ struct AgentRuntimeClientTests {
         #expect(try Self.jsonBody(at: 1)["declined"] == nil)
     }
 
+    @Test("Declined result does not retry unrelated validation failures")
+    func declinedResultDoesNotRetryUnrelated422() async {
+        let client = makeClient()
+        AgentRuntimeStubProtocol.response = (
+            422,
+            Data(#"{"detail":"a declined client tool cannot be executed"}"#.utf8)
+        )
+
+        do {
+            _ = try await client.submitToolResult(
+                runID: "01234567-89ab-cdef-0123-456789abcdef",
+                callID: "call-1",
+                content: "The user declined this action.",
+                isError: true,
+                executed: true,
+                declined: true,
+                bearerToken: nil
+            )
+            Issue.record("Expected the contradictory result to be rejected")
+        } catch let error as AgentRuntimeClientError {
+            #expect(error == .http(
+                status: 422,
+                message: "a declined client tool cannot be executed"
+            ))
+        } catch {
+            Issue.record("Unexpected error: \(error)")
+        }
+        #expect(AgentRuntimeStubProtocol.requests.count == 1)
+    }
+
+    @Test("Declined result retries only an unknown-field response")
+    func declinedResultDoesNotRetryGeneric422() async {
+        let client = makeClient()
+        AgentRuntimeStubProtocol.response = (
+            422,
+            Data(#"{"detail":"tool result does not match the pending action"}"#.utf8)
+        )
+
+        do {
+            _ = try await client.submitToolResult(
+                runID: "01234567-89ab-cdef-0123-456789abcdef",
+                callID: "call-1",
+                content: "The user declined this action.",
+                isError: true,
+                executed: false,
+                declined: true,
+                bearerToken: nil
+            )
+            Issue.record("Expected the mismatched result to be rejected")
+        } catch let error as AgentRuntimeClientError {
+            #expect(error == .http(
+                status: 422,
+                message: "tool result does not match the pending action"
+            ))
+        } catch {
+            Issue.record("Unexpected error: \(error)")
+        }
+        #expect(AgentRuntimeStubProtocol.requests.count == 1)
+    }
+
     @Test("Event cursors are monotonic client inputs")
     func eventCursor() async throws {
         let client = makeClient()

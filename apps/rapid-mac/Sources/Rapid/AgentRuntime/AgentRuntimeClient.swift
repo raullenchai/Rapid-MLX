@@ -441,7 +441,9 @@ final class AgentRuntimeClient: Sendable {
                     declined: declined
                 )
             )
-        } catch AgentRuntimeClientError.http(let status, _) where declined && status == 422 {
+        } catch AgentRuntimeClientError.http(let status, let message)
+            where declined && !executed && status == 422
+            && Self.serverRejectedDeclinedField(message) {
             // Servers predating the structured decline field reject unknown
             // keys. Retry the same non-executed result without that marker;
             // its content retains the legacy explanation.
@@ -458,6 +460,12 @@ final class AgentRuntimeClient: Sendable {
                 )
             )
         }
+    }
+
+    private static func serverRejectedDeclinedField(_ message: String) -> Bool {
+        let normalized = message.lowercased()
+        return normalized.contains("declined")
+            && (normalized.contains("unknown") || normalized.contains("extra"))
     }
 
     func cancel(runID: String, bearerToken: String? = nil) async throws -> AgentRunView {
