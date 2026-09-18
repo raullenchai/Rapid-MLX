@@ -47,10 +47,11 @@ struct ModelPickerBarSectionOrderTests {
         )
         let entries = [
             entry("qwen3.5-4b-4bit", hfRepo: "stub/qwen4", cached: false),
+            entry("bonsai2-27b-2bit", hfRepo: "stub/bonsai2", cached: false),
             entry("gemma-4-26b-4bit", hfRepo: "stub/gemma26", cached: false),
         ]
         let result = ModelPickerBar.partitionByFit(entries, hardware: hardware)
-        #expect(result.fits.map(\.alias) == ["qwen3.5-4b-4bit"])
+        #expect(result.fits.map(\.alias) == ["qwen3.5-4b-4bit", "bonsai2-27b-2bit"])
         #expect(result.notFit.map(\.alias) == ["gemma-4-26b-4bit"])
     }
 

@@ -100,6 +100,14 @@ struct ModelSizingTests {
         #expect(f.weightsGB < 0.6, "must not fall back to the ~0.94 GB 4-bit estimate")
     }
 
+    @Test("Bonsai 2 uses its hybrid runtime footprint instead of dense-27B KV sizing")
+    func bonsai2RuntimeFootprint() {
+        let f = ModelSizing.estimate(alias: "bonsai2-27b-2bit")
+        #expect(f.totalGB == 10.5)
+        #expect(ModelSizing.classify(f, on: mockMac(ramGB: 18)) == .borderline)
+        #expect(ModelSizing.classify(f, on: mockMac(ramGB: 16)) == .tooBig)
+    }
+
     // MARK: - Fit classification
 
     @Test("4B model is recommended on an 18 GB Mac")

@@ -124,8 +124,28 @@ enum ModelSizing {
             weightsGB: weightsGB,
             baseOverheadGB: 1.2,
             kvReserveGB: kvReserve(forParams: params),
-            authoritativeTotalGB: RAMBucketedDefault.footprintGB(forAlias: alias)
+            authoritativeTotalGB: runtimeFootprintGB(forAlias: alias)
+                ?? RAMBucketedDefault.footprintGB(forAlias: alias)
         )
+    }
+
+    /// Runtime footprints for supported aliases whose architecture makes the
+    /// parameter-count heuristic materially wrong, but which are not a pick in
+    /// the recommendation policy. Keep this narrow: ordinary aliases continue
+    /// through the conservative estimator above, while recommendation rows use
+    /// their shared policy value.
+    ///
+    /// Bonsai 2 is a hybrid 27B model with only one full-attention layer in
+    /// four and four KV heads. Its 8.0 GiB on-disk pack loads at about 8.8 GiB;
+    /// 10.5 GiB retains runtime + ordinary chat-cache headroom. Treating it as
+    /// a dense 27B model reserved 6 GiB of KV and advertised ~15 GB, pushing a
+    /// runnable model out of the main picker on an 18 GB Mac. The live-memory
+    /// guard remains authoritative when the user starts it under real pressure.
+    static func runtimeFootprintGB(forAlias alias: String) -> Double? {
+        switch alias.lowercased() {
+        case "bonsai2-27b-2bit": return 10.5
+        default: return nil
+        }
     }
 
     /// Default budget for all engines held by the desktop sidecar. Reuses the
