@@ -185,6 +185,24 @@ final class LocalWorkspaceToolsTests {
         }
     }
 
+    @Test("run rejects a present argument list with the wrong wire type")
+    func commandRejectsMalformedArgumentList() async throws {
+        let root = try fixtureDirectory()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let arguments = try #require(String(data: JSONSerialization.data(withJSONObject: [
+            "command": "python3",
+            "argv": "-c print('must not run')",
+            "working_directory": root.path,
+        ]), encoding: .utf8))
+
+        let result = await runApproved(
+            name: "local_run", arguments: arguments, store: approval()
+        )
+
+        #expect(result.isError)
+        #expect(result.content == "local_run arguments are invalid")
+    }
+
     @Test("search does not follow a symlink outside the approved folder")
     func searchSkipsSymlinkDescendants() async throws {
         let root = try fixtureDirectory()

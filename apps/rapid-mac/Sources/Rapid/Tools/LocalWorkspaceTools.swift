@@ -303,9 +303,15 @@ enum LocalWorkspaceTools {
         init(from decoder: any Decoder) throws {
             let container = try decoder.container(keyedBy: CodingKeys.self)
             command = try container.decode(String.self, forKey: .command)
-            argv = (try? container.decode([String].self, forKey: .argv))
-                ?? (try? container.decode([String].self, forKey: .arguments))
-                ?? (try? container.decode([String].self, forKey: .args))
+            if container.contains(.argv) {
+                argv = try container.decode([String].self, forKey: .argv)
+            } else if container.contains(.arguments) {
+                argv = try container.decode([String].self, forKey: .arguments)
+            } else if container.contains(.args) {
+                argv = try container.decode([String].self, forKey: .args)
+            } else {
+                argv = nil
+            }
             workingDirectory = try container.decodeIfPresent(String.self, forKey: .workingDirectory)
             cwd = try container.decodeIfPresent(String.self, forKey: .cwd)
             timeoutSeconds = try container.decodeIfPresent(Int.self, forKey: .timeoutSeconds)
