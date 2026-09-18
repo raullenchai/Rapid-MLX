@@ -26,6 +26,7 @@ protocol AgentRuntimeTransport: Sendable {
         content: String,
         isError: Bool,
         executed: Bool,
+        declined: Bool,
         bearerToken: String?
     ) async throws -> AgentRunView
     func cancel(runID: String, bearerToken: String?) async throws -> AgentRunView
@@ -311,12 +312,14 @@ final class AgentRuntimeClient: Sendable {
         let content: String
         let isError: Bool
         let executed: Bool
+        let declined: Bool
 
         enum CodingKeys: String, CodingKey {
             case callID = "call_id"
             case content
             case isError = "is_error"
             case executed
+            case declined
         }
     }
 
@@ -403,6 +406,7 @@ final class AgentRuntimeClient: Sendable {
         content: String,
         isError: Bool,
         executed: Bool,
+        declined: Bool = false,
         bearerToken: String? = nil
     ) async throws -> AgentRunView {
         try await send(
@@ -413,7 +417,8 @@ final class AgentRuntimeClient: Sendable {
                 callID: callID,
                 content: content,
                 isError: isError,
-                executed: executed
+                executed: executed,
+                declined: declined
             )
         )
     }

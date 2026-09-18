@@ -251,12 +251,12 @@ enum LocalWorkspaceTools {
 
     static let runDefinition = ToolDefinition(
         name: "local_run",
-        description: "Run a development command without a shell, for example clang, cc, go, swift, python3, node, ruby, or a compiled executable inside the user's home directory. Pass arguments separately. working_directory is optional and defaults to ~/Rapid Workspace. The user approves every command; execution times out after at most 30 seconds.",
+        description: "Run a development command without a shell, for example clang, cc, go, swift, python3, node, ruby, or a compiled executable inside the user's home directory. Put the command name in command and its arguments in the argv string array. working_directory is optional and defaults to ~/Rapid Workspace. The user approves every command; execution times out after at most 30 seconds.",
         parameters: .object([
             "type": .string("object"),
             "properties": .object([
                 "command": .object(["type": .string("string"), "description": .string("Allowed command name or absolute path to a local executable.")]),
-                "arguments": .object(["type": .string("array"), "items": .object(["type": .string("string")])]),
+                "argv": .object(["type": .string("array"), "items": .object(["type": .string("string")]), "description": .string("Command arguments, one string each.")]),
                 "working_directory": .object(["type": .string("string"), "description": .string("Absolute or ~/ working directory inside the user's home directory. Use ~/Rapid Workspace for generated code when no destination was requested.")]),
                 "cwd": .object(["type": .string("string"), "description": .string("Alias for working_directory.")]),
                 "timeout_seconds": .object(["type": .string("integer"), "minimum": .number(1), "maximum": .number(30)]),
@@ -286,15 +286,29 @@ enum LocalWorkspaceTools {
     private struct WriteArgs: Decodable { let path: String; let content: String; let overwrite: Bool? }
     private struct RunArgs: Decodable {
         let command: String
-        let arguments: [String]?
+        /// Command arguments. The wire key is `argv`; the pre-0.14.3 key
+        /// `arguments` and the common `args` spelling are still accepted so a
+        /// small model that reaches for either keeps working.
+        let argv: [String]?
         let workingDirectory: String?
         let cwd: String?
         let timeoutSeconds: Int?
 
         enum CodingKeys: String, CodingKey {
-            case command, arguments, cwd
+            case command, argv, arguments, args, cwd
             case workingDirectory = "working_directory"
             case timeoutSeconds = "timeout_seconds"
+        }
+
+        init(from decoder: any Decoder) throws {
+            let container = try decoder.container(keyedBy: CodingKeys.self)
+            command = try container.decode(String.self, forKey: .command)
+            argv = try container.decodeIfPresent([String].self, forKey: .argv)
+                ?? container.decodeIfPresent([String].self, forKey: .arguments)
+                ?? container.decodeIfPresent([String].self, forKey: .args)
+            workingDirectory = try container.decodeIfPresent(String.self, forKey: .workingDirectory)
+            cwd = try container.decodeIfPresent(String.self, forKey: .cwd)
+            timeoutSeconds = try container.decodeIfPresent(Int.self, forKey: .timeoutSeconds)
         }
     }
 
@@ -642,6 +656,10 @@ enum LocalWorkspaceTools {
     private struct SearchState {
         let query: String
         let needle: String
+        /// Lower-cased words of the query. A file matches when every word
+        /// appears in its name or its text, so "orchid notes" still finds
+        /// `orchid-notes.txt` and a note whose words are not adjacent.
+        let terms: [String]
         var visitedEntries = 0
         var scannedFiles = 0
         var matches: [[String: String]] = []
@@ -649,11 +667,44 @@ enum LocalWorkspaceTools {
         init(query: String) {
             self.query = query
             needle = query.lowercased()
+            terms = LocalWorkspaceTools.searchTerms(for: query)
         }
 
         var isAtLimit: Bool {
             visitedEntries >= 2_000 || scannedFiles >= 500 || matches.count >= 20
         }
+    }
+
+    /// Lower-cased query words, punctuation stripped, in query order. A query
+    /// that is a single word yields one term, so the exact-phrase path and
+    /// the all-words path agree.
+    static func searchTerms(for query: String) -> [String] {
+        query.lowercased()
+            .split { !($0.isLetter || $0.isNumber) }
+            .map(String.init)
+            .filter { !$0.isEmpty }
+    }
+
+    /// Whole-query substring first (exact phrase), then every query word
+    /// anywhere in the text. Returns the range that anchors the snippet.
+    static func snippetRange(query: String, terms: [String], in text: String) -> Range<String.Index>? {
+        if let exact = text.range(of: query, options: [.caseInsensitive]) { return exact }
+        guard terms.count > 1 else { return nil }
+        var anchor: Range<String.Index>?
+        for term in terms {
+            guard let range = text.range(of: term, options: [.caseInsensitive]) else { return nil }
+            if anchor == nil { anchor = range }
+        }
+        return anchor
+    }
+
+    private static func snippetRange(for state: SearchState, in text: String) -> Range<String.Index>? {
+        snippetRange(query: state.query, terms: state.terms, in: text)
+    }
+
+    static func matchesAllTerms(_ terms: [String], in lowercasedText: String) -> Bool {
+        guard terms.count > 1 else { return false }
+        return terms.allSatisfy { lowercasedText.contains($0) }
     }
 
     /// Walk from the approved directory descriptor rather than reopening its
@@ -708,7 +759,9 @@ enum LocalWorkspaceTools {
                 Darwin.close(child)
             case S_IFREG:
                 state.scannedFiles += 1
-                let filenameMatch = name.lowercased().contains(state.needle)
+                let lowercasedName = name.lowercased()
+                let filenameMatch = lowercasedName.contains(state.needle)
+                    || Self.matchesAllTerms(state.terms, in: lowercasedName)
                 var snippet: String?
                 if metadata.st_size <= 1_000_000 {
                     let file = name.withCString {
@@ -718,7 +771,7 @@ enum LocalWorkspaceTools {
                         defer { Darwin.close(file) }
                         if let data = readData(descriptor: file, limit: 1_000_000),
                            let text = String(data: data, encoding: .utf8),
-                           let range = text.range(of: state.query, options: [.caseInsensitive]) {
+                           let range = Self.snippetRange(for: state, in: text) {
                             let lower = text.index(range.lowerBound, offsetBy: -80, limitedBy: text.startIndex) ?? text.startIndex
                             let upper = text.index(range.upperBound, offsetBy: 160, limitedBy: text.endIndex) ?? text.endIndex
                             snippet = String(text[lower..<upper]).replacingOccurrences(of: "\n", with: " ")
@@ -815,7 +868,7 @@ enum LocalWorkspaceTools {
                 overwrite: args.overwrite == true
             )
             let url = parent.url.appendingPathComponent(approved.filename)
-            return ToolCallResult(toolCallID: "", content: "Wrote \(args.content.utf8.count) bytes to \(url.path)")
+            return ToolCallResult(toolCallID: "", content: "Wrote \(args.content.utf8.count) bytes to \(Self.displayPath(url))")
         } catch { return failure("local_write error: \(error.localizedDescription)") }
     }
 
@@ -1079,7 +1132,7 @@ enum LocalWorkspaceTools {
                 let recoverableURL = trashDirectory.url.appendingPathComponent(destinationName)
                 return failure("local_trash refused because the approved file changed; the replacement remains recoverable at \(recoverableURL.path)")
             }
-            return ToolCallResult(toolCallID: "", content: "Moved \(url.path) to Trash. It can be recovered from Finder.")
+            return ToolCallResult(toolCallID: "", content: "Moved \(Self.displayPath(url)) to Trash. It can be recovered from Finder.")
         } catch { return failure("local_trash error: \(error.localizedDescription)") }
     }
 
@@ -1105,7 +1158,7 @@ enum LocalWorkspaceTools {
             )
         }
 
-        var processArguments = args.arguments ?? []
+        var processArguments = Self.expandingHomeArguments(args.argv ?? [])
         let executable: URL
         let executablePresentedURL: URL?
         let helperClass: HelperClass
@@ -1223,6 +1276,38 @@ enum LocalWorkspaceTools {
     /// loaded into the compiler process itself. Reject indirect argument files,
     /// frontend passthrough, and every supported plugin-loading spelling before
     /// asking the user to approve the command.
+    /// Expand a leading `~/` in each argument the way the shell the model is
+    /// imitating would. Models routinely write `clang -o ~/Documents/app
+    /// ~/Documents/app.c`; without a shell nothing expands the tilde and the
+    /// compiler reports a missing file, which a small model answers by
+    /// repeating the identical call until the run is cut off.
+    static func expandingHomeArguments(
+        _ arguments: [String],
+        home: URL = FileManager.default.homeDirectoryForCurrentUser
+    ) -> [String] {
+        // Resolve symlinks the same way the sandbox profile does: a home under
+        // /private/tmp standardizes to /tmp, which the profile does not allow.
+        let homePath = home.standardizedFileURL.resolvingSymlinksInPath().path
+        return arguments.map { argument in
+            guard argument.hasPrefix("~/") else { return argument }
+            return homePath + argument.dropFirst(1)
+        }
+    }
+
+    /// The path a tool result reports back to the model and the transcript.
+    /// The user asked for `~/Documents/x`; echoing the resolved absolute path
+    /// makes small models conclude the file "went somewhere else".
+    static func displayPath(
+        _ url: URL,
+        home: URL = FileManager.default.homeDirectoryForCurrentUser
+    ) -> String {
+        let path = url.standardizedFileURL.resolvingSymlinksInPath().path
+        let homePath = home.standardizedFileURL.resolvingSymlinksInPath().path
+        if path == homePath { return "~" }
+        if path.hasPrefix(homePath + "/") { return "~" + path.dropFirst(homePath.count) }
+        return path
+    }
+
     static func validateCompilerArguments(_ arguments: [String]) throws {
         let exactDenied = Set([
             "-Xclang", "-cc1", "-cc1as", "-cc1gen-reproducer",

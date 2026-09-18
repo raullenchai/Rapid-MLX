@@ -70,6 +70,7 @@ struct CommunityBenchmarkPickerSheet: View {
         }
         .frame(width: sheetWidth, height: sheetHeight)
         .background(RapidTheme.surfaceRaised)
+        .accessibilityElement(children: .contain)
         .accessibilityIdentifier("CommunityBenchmark.Picker")
     }
 

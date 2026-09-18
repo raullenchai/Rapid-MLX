@@ -59,6 +59,7 @@ struct CommunityBenchmarkResultView: View {
             RoundedRectangle(cornerRadius: RapidTheme.Radius.card)
                 .strokeBorder(RapidTheme.hairline)
         )
+        .accessibilityElement(children: .contain)
         .accessibilityIdentifier("CommunityBenchmark.Result.\(result.id)")
     }
 

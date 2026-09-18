@@ -3326,8 +3326,10 @@ final class ServerManager {
     }
 
     /// Release the lifecycle reservation after the benchmark subprocess has
-    /// exited. The prior model is intentionally not auto-restored in the
-    /// internal beta; the user can start it again explicitly.
+    /// exited. Restoring the prior chat model is the caller's job (ContentView
+    /// captures the serving alias before ``prepareForCommunityBenchmark`` and
+    /// starts it again after this returns), because only the UI knows the
+    /// catalog hint and readiness path a manual Start would use.
     func finishCommunityBenchmark(_ reservation: UUID) {
         guard communityBenchmarkReservations.remove(reservation) != nil else { return }
         if !communityBenchmarkReserved, !communityBenchmarkWaiters.isEmpty {

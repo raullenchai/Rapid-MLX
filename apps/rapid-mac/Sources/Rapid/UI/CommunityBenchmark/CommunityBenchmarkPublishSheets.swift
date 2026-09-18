@@ -22,6 +22,21 @@ struct CommunityBenchmarkShareConfirmationSheet: View {
     @State private var showsPayload = false
     @State private var didCopy = false
 
+    /// The sheet is a fixed-height window whose middle scrolls, so the
+    /// Cancel/Publish row is always on screen. Before this the whole body was
+    /// laid out at its natural height and capped at 720pt: on a laptop
+    /// display, expanding "Review the exact data" pushed the buttons below
+    /// the bottom edge and the only way to publish was to collapse it again.
+    static func sheetHeight(availableHeight: CGFloat) -> CGFloat {
+        // Leave room for the window title bar and the sheet's own inset so
+        // the sheet never exceeds what the screen can show.
+        max(420, min(720, availableHeight - 120))
+    }
+
+    private var sheetHeight: CGFloat {
+        Self.sheetHeight(availableHeight: NSScreen.main?.visibleFrame.height ?? 720)
+    }
+
     /// What the submission actually contains.
     ///
     /// Derived from the preview, not asserted. The static list used to claim
@@ -81,37 +96,43 @@ struct CommunityBenchmarkShareConfirmationSheet: View {
             }
             .padding(RapidTheme.Space.xl)
 
-            identitySection
-                .padding(.horizontal, RapidTheme.Space.xl)
-                .padding(.bottom, RapidTheme.Space.lg)
+            ScrollView {
+                VStack(alignment: .leading, spacing: 0) {
+                    identitySection
+                        .padding(.horizontal, RapidTheme.Space.xl)
+                        .padding(.bottom, RapidTheme.Space.lg)
 
-            Divider()
+                    Divider()
 
-            HStack(alignment: .top, spacing: 0) {
-                fieldColumn(
-                    systemImage: "checkmark.circle",
-                    tone: RapidTheme.statusReady,
-                    title: String(localized: "SHARED"),
-                    items: Self.sharedItems(for: preview)
-                )
-                Divider()
-                fieldColumn(
-                    systemImage: "nosign",
-                    tone: RapidTheme.textTertiary,
-                    title: String(localized: "NEVER SHARED"),
-                    items: Self.neverShared
-                )
+                    HStack(alignment: .top, spacing: 0) {
+                        fieldColumn(
+                            systemImage: "checkmark.circle",
+                            tone: RapidTheme.statusReady,
+                            title: String(localized: "SHARED"),
+                            items: Self.sharedItems(for: preview)
+                        )
+                        Divider()
+                        fieldColumn(
+                            systemImage: "nosign",
+                            tone: RapidTheme.textTertiary,
+                            title: String(localized: "NEVER SHARED"),
+                            items: Self.neverShared
+                        )
+                    }
+                    .fixedSize(horizontal: false, vertical: true)
+
+                    if !preview.withheld.isEmpty {
+                        Divider()
+                        withheldSection
+                    }
+
+                    Divider()
+
+                    payloadDisclosure
+                }
+                .frame(maxWidth: .infinity, alignment: .leading)
             }
-            .fixedSize(horizontal: false, vertical: true)
-
-            if !preview.withheld.isEmpty {
-                Divider()
-                withheldSection
-            }
-
-            Divider()
-
-            payloadDisclosure
+            .accessibilityIdentifier("CommunityBenchmark.Share.Details")
 
             Divider()
 
@@ -132,10 +153,15 @@ struct CommunityBenchmarkShareConfirmationSheet: View {
                     .accessibilityIdentifier("CommunityBenchmark.Share.Confirm")
             }
             .padding(RapidTheme.Space.xl)
+            .background(RapidTheme.surfaceRaised)
+            .accessibilityIdentifier("CommunityBenchmark.Share.Footer")
         }
-        .frame(width: 620)
-        .frame(maxHeight: showsPayload ? 720 : nil)
+        .frame(width: 620, height: sheetHeight)
         .background(RapidTheme.surfaceRaised)
+        // `.contain` keeps Cancel/Publish and the disclosure reachable by
+        // their own identifiers; a bare identifier on the container hid them
+        // from assistive technology and UI automation.
+        .accessibilityElement(children: .contain)
         .accessibilityIdentifier("CommunityBenchmark.Share.Confirmation")
     }
 

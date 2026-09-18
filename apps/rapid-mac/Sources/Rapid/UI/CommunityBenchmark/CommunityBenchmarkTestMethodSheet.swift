@@ -95,6 +95,7 @@ struct CommunityBenchmarkTestMethodSheet: View {
         }
         .frame(width: 640, height: 640)
         .background(RapidTheme.surfaceRaised)
+        .accessibilityElement(children: .contain)
         .accessibilityIdentifier("CommunityBenchmark.TestMethod")
     }
 

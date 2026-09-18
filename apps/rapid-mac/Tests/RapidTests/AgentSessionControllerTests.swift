@@ -667,6 +667,7 @@ private final class AgentSessionTransportStub: AgentRuntimeTransport, @unchecked
         content: String,
         isError: Bool,
         executed: Bool,
+        declined _: Bool,
         bearerToken _: String?
     ) async throws -> AgentRunView {
         toolSubmissions.append(ClientToolSubmission(

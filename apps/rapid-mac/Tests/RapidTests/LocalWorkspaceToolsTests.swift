@@ -78,6 +78,73 @@ final class LocalWorkspaceToolsTests {
         #expect(result.content.contains("Thursday"))
     }
 
+    @Test("search matches every query word, not only the exact phrase")
+    func searchMatchesAllWordsOfTheQuery() async throws {
+        let root = try fixtureDirectory()
+        defer { try? FileManager.default.removeItem(at: root) }
+        // Neither the file name nor the text contains "orchid notes" as one
+        // phrase; the words are hyphenated in the name and apart in the body.
+        try "Notes on the orchid meeting: Thursday 3:30 PM in Redwood.".write(
+            to: root.appendingPathComponent("orchid-notes.txt"), atomically: true, encoding: .utf8
+        )
+        try "Nothing about flowers here.".write(
+            to: root.appendingPathComponent("other.txt"), atomically: true, encoding: .utf8
+        )
+        let arguments = try #require(String(data: JSONSerialization.data(withJSONObject: [
+            "path": root.path, "query": "orchid notes",
+        ]), encoding: .utf8))
+
+        let result = await runApproved(name: "local_search", arguments: arguments, store: approval())
+
+        #expect(!result.isError)
+        #expect(result.content.contains("orchid-notes.txt"))
+        #expect(result.content.contains("Thursday"))
+        #expect(!result.content.contains("other.txt"))
+        #expect(LocalWorkspaceTools.searchTerms(for: "Orchid, notes!") == ["orchid", "notes"])
+        // A single word never widens into an all-words match, and a query
+        // missing one word from the text is not a match.
+        #expect(!LocalWorkspaceTools.matchesAllTerms(["orchid"], in: "orchid"))
+        #expect(!LocalWorkspaceTools.matchesAllTerms(["orchid", "cactus"], in: "orchid notes"))
+        #expect(LocalWorkspaceTools.snippetRange(query: "orchid cactus", terms: ["orchid", "cactus"], in: "orchid notes") == nil)
+    }
+
+    @Test("run expands a leading ~/ in argv like the shell the model imitates")
+    func commandExpandsHomeInArguments() throws {
+        let home = URL(fileURLWithPath: "/Users/example")
+        #expect(LocalWorkspaceTools.expandingHomeArguments(
+            ["-o", "~/Documents/app", "~/Documents/app.c", "~notme", "-Wall", "~"],
+            home: home
+        ) == ["-o", "/Users/example/Documents/app", "/Users/example/Documents/app.c", "~notme", "-Wall", "~"])
+    }
+
+    @Test("tool results report paths relative to the home directory")
+    func resultsReportHomeRelativePaths() throws {
+        let home = URL(fileURLWithPath: "/Users/example")
+        #expect(LocalWorkspaceTools.displayPath(URL(fileURLWithPath: "/Users/example/Documents/winter.md"), home: home) == "~/Documents/winter.md")
+        #expect(LocalWorkspaceTools.displayPath(URL(fileURLWithPath: "/Users/example"), home: home) == "~")
+        #expect(LocalWorkspaceTools.displayPath(URL(fileURLWithPath: "/Users/examples/x.txt"), home: home) == "/Users/examples/x.txt")
+        #expect(LocalWorkspaceTools.displayPath(URL(fileURLWithPath: "/tmp/x.txt"), home: home) == "/tmp/x.txt")
+    }
+
+    @Test("run still accepts the pre-0.14.3 arguments key and the args spelling")
+    func commandAcceptsLegacyArgumentKeys() async throws {
+        let root = try fixtureDirectory()
+        defer { try? FileManager.default.removeItem(at: root) }
+        for key in ["arguments", "args"] {
+            let arguments = try #require(String(data: JSONSerialization.data(withJSONObject: [
+                "command": "python3",
+                key: ["-c", "print('RAPID_LEGACY_OK')"],
+                "working_directory": root.path,
+                "timeout_seconds": 5,
+            ]), encoding: .utf8))
+
+            let result = await runApproved(name: "local_run", arguments: arguments, store: approval())
+
+            #expect(!result.isError, "key \(key)")
+            #expect(result.content.contains("RAPID_LEGACY_OK"), "key \(key)")
+        }
+    }
+
     @Test("search does not follow a symlink outside the approved folder")
     func searchSkipsSymlinkDescendants() async throws {
         let root = try fixtureDirectory()
@@ -269,7 +336,7 @@ final class LocalWorkspaceToolsTests {
         defer { try? FileManager.default.removeItem(at: root) }
         let arguments = try #require(String(data: JSONSerialization.data(withJSONObject: [
             "command": "python3",
-            "arguments": ["-c", "print('RAPID_LOCAL_OK')"],
+            "argv": ["-c", "print('RAPID_LOCAL_OK')"],
             "working_directory": root.path,
             "timeout_seconds": 5,
         ]), encoding: .utf8))
@@ -287,7 +354,7 @@ final class LocalWorkspaceToolsTests {
         defer { try? FileManager.default.removeItem(at: root) }
         let arguments = try #require(String(data: JSONSerialization.data(withJSONObject: [
             "command": "make",
-            "arguments": ["--version"],
+            "argv": ["--version"],
             "working_directory": root.path,
         ]), encoding: .utf8))
 
@@ -323,7 +390,7 @@ final class LocalWorkspaceToolsTests {
         defer { try? FileManager.default.removeItem(at: root) }
         let arguments = try #require(String(data: JSONSerialization.data(withJSONObject: [
             "command": "python3",
-            "arguments": ["-c", "import os;os.write(1,b'RAPID_TRAILING_BYTES')"],
+            "argv": ["-c", "import os;os.write(1,b'RAPID_TRAILING_BYTES')"],
             "working_directory": root.path,
         ]), encoding: .utf8))
 
@@ -344,7 +411,7 @@ final class LocalWorkspaceToolsTests {
         )
         let arguments = try #require(String(data: JSONSerialization.data(withJSONObject: [
             "command": "gcc",
-            "arguments": ["main.c", "-o", "main"],
+            "argv": ["main.c", "-o", "main"],
             "working_directory": root.path,
         ]), encoding: .utf8))
 
@@ -396,7 +463,7 @@ final class LocalWorkspaceToolsTests {
         try "RAPID_SANDBOX_SECRET".write(to: secret, atomically: true, encoding: .utf8)
         let arguments = try #require(String(data: JSONSerialization.data(withJSONObject: [
             "command": "python3",
-            "arguments": ["-c", "print(open(\"\(secret.path)\").read())"],
+            "argv": ["-c", "print(open(\"\(secret.path)\").read())"],
             "working_directory": root.path,
         ]), encoding: .utf8))
 
@@ -412,7 +479,7 @@ final class LocalWorkspaceToolsTests {
         defer { try? FileManager.default.removeItem(at: root) }
         let arguments = try #require(String(data: JSONSerialization.data(withJSONObject: [
             "command": "python3",
-            "arguments": ["-c", "print(open('/etc/hosts').read())"],
+            "argv": ["-c", "print(open('/etc/hosts').read())"],
             "working_directory": root.path,
         ]), encoding: .utf8))
 
@@ -428,7 +495,7 @@ final class LocalWorkspaceToolsTests {
         defer { try? FileManager.default.removeItem(at: root) }
         let arguments = try #require(String(data: JSONSerialization.data(withJSONObject: [
             "command": "python3",
-            "arguments": ["-c", "import os;print(os.listdir('/Library'))"],
+            "argv": ["-c", "import os;print(os.listdir('/Library'))"],
             "working_directory": root.path,
         ]), encoding: .utf8))
 
@@ -444,7 +511,7 @@ final class LocalWorkspaceToolsTests {
         let marker = root.appendingPathComponent("escaped.txt")
         let arguments = try #require(String(data: JSONSerialization.data(withJSONObject: [
             "command": "python3",
-            "arguments": ["-c", "import subprocess;subprocess.run(['/usr/bin/touch','escaped.txt'],check=True)"],
+            "argv": ["-c", "import subprocess;subprocess.run(['/usr/bin/touch','escaped.txt'],check=True)"],
             "working_directory": root.path,
         ]), encoding: .utf8))
 
@@ -467,7 +534,7 @@ final class LocalWorkspaceToolsTests {
         try FileManager.default.createSymbolicLink(at: link, withDestinationURL: first)
         let arguments = try #require(String(data: JSONSerialization.data(withJSONObject: [
             "command": "python3",
-            "arguments": ["-c", "print('SHOULD_NOT_RUN')"],
+            "argv": ["-c", "print('SHOULD_NOT_RUN')"],
             "working_directory": link.path,
         ]), encoding: .utf8))
         let store = approval()
@@ -769,7 +836,7 @@ final class LocalWorkspaceToolsTests {
         defer { try? FileManager.default.removeItem(at: root) }
         let arguments = try #require(String(data: JSONSerialization.data(withJSONObject: [
             "command": "python3",
-            "arguments": ["-c", "import sys;sys.stdout.write('x'*200000)"],
+            "argv": ["-c", "import sys;sys.stdout.write('x'*200000)"],
             "working_directory": root.path,
         ]), encoding: .utf8))
 
@@ -785,7 +852,7 @@ final class LocalWorkspaceToolsTests {
         defer { try? FileManager.default.removeItem(at: root) }
         let arguments = try #require(String(data: JSONSerialization.data(withJSONObject: [
             "command": "python3",
-            "arguments": [
+            "argv": [
                 "-c",
                 "import signal,time;signal.signal(signal.SIGTERM,signal.SIG_IGN);time.sleep(10)",
             ],
@@ -810,7 +877,7 @@ final class LocalWorkspaceToolsTests {
         let parent = "import subprocess;subprocess.Popen(['python3','-c',\"\(child)\"],start_new_session=True)"
         let arguments = try #require(String(data: JSONSerialization.data(withJSONObject: [
             "command": "python3",
-            "arguments": ["-c", parent],
+            "argv": ["-c", parent],
             "working_directory": root.path,
             "timeout_seconds": 5,
         ]), encoding: .utf8))
@@ -852,7 +919,7 @@ final class LocalWorkspaceToolsTests {
         )
         let arguments = try #require(String(data: JSONSerialization.data(withJSONObject: [
             "command": "swift",
-            "arguments": ["fork-attempt.swift"],
+            "argv": ["fork-attempt.swift"],
             "working_directory": root.path,
             "timeout_seconds": 5,
         ]), encoding: .utf8))

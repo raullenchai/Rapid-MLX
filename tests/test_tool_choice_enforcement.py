@@ -1804,3 +1804,155 @@ def test_codex_r6_nit_wire_span_lookback_respects_intervening_closer():
 
     parsed = _json.loads(got)
     assert parsed == {"x": 2}
+
+
+_LOCAL_RUN_TOOLS = [
+    {
+        "type": "function",
+        "function": {
+            "name": "local_run",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "command": {"type": "string"},
+                    "argv": {"type": "array", "items": {"type": "string"}},
+                    "working_directory": {"type": "string"},
+                },
+                "required": ["command"],
+                "additionalProperties": False,
+            },
+        },
+    }
+]
+
+
+def test_forced_shape_salvage_recovers_flattened_keys():
+    from rapid_mlx.routes.chat import _salvage_forced_shape_arguments
+
+    raw = (
+        '<tool_call>\n{"name": "local_run", "arguments": 0, '
+        '"command": "python fibonacci.py", "working_directory": "~/Rapid Workspace"}\n'
+        "</parameter>\n</function>\n</tool_call>"
+    )
+    got = _salvage_forced_shape_arguments("local_run", raw, _LOCAL_RUN_TOOLS)
+    assert got is not None
+    assert json.loads(got) == {
+        "command": "python fibonacci.py",
+        "working_directory": "~/Rapid Workspace",
+    }
+
+
+def test_forced_shape_salvage_recovers_xml_parameters():
+    from rapid_mlx.routes.chat import _salvage_forced_shape_arguments
+
+    raw = (
+        '<tool_call>\n{"name": "local_run", "arguments":  <parameter=command>\n'
+        "python fibonacci.py\n</parameter>\n</function>\n</tool_call>"
+    )
+    got = _salvage_forced_shape_arguments("local_run", raw, _LOCAL_RUN_TOOLS)
+    assert got is not None
+    assert json.loads(got) == {"command": "python fibonacci.py"}
+
+
+def test_forced_shape_salvage_strips_junk_before_the_object():
+    from rapid_mlx.routes.chat import _salvage_forced_shape_arguments
+
+    raw = (
+        '<tool_call>\n{"name": "local_search", "arguments": >{"path": "~/Documents", '
+        '"query": "orchid"}}\n</tool_call>'
+    )
+    tools = [
+        {
+            "type": "function",
+            "function": {
+                "name": "local_search",
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "path": {"type": "string"},
+                        "query": {"type": "string"},
+                    },
+                    "required": ["path", "query"],
+                },
+            },
+        }
+    ]
+    got = _salvage_forced_shape_arguments("local_search", raw, tools)
+    assert got is not None
+    assert json.loads(got) == {"path": "~/Documents", "query": "orchid"}
+    # An undeclared key inside the object still fails closed.
+    bad = '{"name": "local_search", "arguments": >{"path": "~", "shell": "zsh"}}'
+    assert _salvage_forced_shape_arguments("local_search", bad, tools) is None
+
+
+def test_forced_shape_salvage_handles_duplicate_arguments_and_single_lists():
+    from rapid_mlx.routes.chat import _salvage_forced_shape_arguments
+
+    tools = [
+        {
+            "type": "function",
+            "function": {
+                "name": "local_trash",
+                "parameters": {
+                    "type": "object",
+                    "properties": {"path": {"type": "string"}},
+                    "required": ["path"],
+                },
+            },
+        }
+    ]
+    duplicate = (
+        '<tool_call>\n{"name": "local_trash", "arguments": 100, "arguments": '
+        '{"path": "/home/user/Documents/orchid-notes.txt"}}\n</parameter>\n</function>'
+    )
+    got = _salvage_forced_shape_arguments("local_trash", duplicate, tools)
+    assert got is not None
+    assert json.loads(got) == {"path": "/home/user/Documents/orchid-notes.txt"}
+    listed = '{"name": "local_trash", "arguments":  ["~/Documents/orchid-notes.txt"]}'
+    got = _salvage_forced_shape_arguments("local_trash", listed, tools)
+    assert got is not None
+    assert json.loads(got) == {"path": "~/Documents/orchid-notes.txt"}
+    # A two-element list or a scalar carries no unambiguous mapping.
+    assert (
+        _salvage_forced_shape_arguments(
+            "local_trash", '{"name": "local_trash", "arguments": ["a", "b"]}', tools
+        )
+        is None
+    )
+    assert (
+        _salvage_forced_shape_arguments(
+            "local_trash", '{"name": "local_trash", "arguments": 0}', tools
+        )
+        is None
+    )
+
+
+def test_forced_shape_salvage_never_invents_keys_or_targets():
+    from rapid_mlx.routes.chat import _salvage_forced_shape_arguments
+
+    # An undeclared key fails closed rather than shipping a partial guess.
+    flattened_unknown = (
+        '{"name": "local_run", "arguments": 0, "command": "ls", "shell": "zsh"}'
+    )
+    assert (
+        _salvage_forced_shape_arguments(
+            "local_run", flattened_unknown, _LOCAL_RUN_TOOLS
+        )
+        is None
+    )
+    xml_unknown = '{"name": "local_run", "arguments": <parameter=shell>zsh</parameter>'
+    assert (
+        _salvage_forced_shape_arguments("local_run", xml_unknown, _LOCAL_RUN_TOOLS)
+        is None
+    )
+    # A block naming a different tool never feeds the forced target.
+    other = '{"name": "other_tool", "arguments": 0, "command": "ls"}'
+    assert _salvage_forced_shape_arguments("local_run", other, _LOCAL_RUN_TOOLS) is None
+    # A well-formed object is not this helper's job (route 1 handles it).
+    well_formed = '{"name": "local_run", "arguments": {"command": "ls"}}'
+    assert (
+        _salvage_forced_shape_arguments("local_run", well_formed, _LOCAL_RUN_TOOLS)
+        is None
+    )
+    assert _salvage_forced_shape_arguments("local_run", None, _LOCAL_RUN_TOOLS) is None
+    assert _salvage_forced_shape_arguments("local_run", "prose only", []) is None

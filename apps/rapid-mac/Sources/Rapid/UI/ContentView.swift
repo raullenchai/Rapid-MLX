@@ -106,6 +106,10 @@ struct ContentView: View {
     private var computerUseEnabled = ComputerUseFeatureConfig.defaultEnabled
     @AppStorage(CommunityBenchmarkFeatureConfig.enabledKey)
     private var communityBenchmarkEnabled = CommunityBenchmarkFeatureConfig.defaultEnabled
+    /// The chat model that was serving when a Community Benchmark took the
+    /// server down, restored once the benchmark releases it. Nil when nothing
+    /// was loaded, so a benchmark never starts a model the user had unloaded.
+    @State private var chatAliasToRestoreAfterBenchmark: String?
     @AppStorage(ShareComputeFeatureConfig.enabledKey)
     private var shareComputeEnabled = ShareComputeFeatureConfig.defaultEnabled
     /// Window-level conversation search, opened from the toolbar.
@@ -1169,6 +1173,19 @@ struct ContentView: View {
         isResident || isCached
     }
 
+    /// Which model a Community Benchmark should bring back once it has
+    /// released the server. Only a model that was serving, or still coming
+    /// up, counts; a crashed or explicitly stopped server stays down, and a
+    /// missing CLI cannot serve anything.
+    static func chatAliasToRestoreAfterBenchmark(from state: ServerState) -> String? {
+        switch state {
+        case .ready(let alias), .starting(let alias):
+            return alias
+        case .crashed, .stopped, .idle, .missing:
+            return nil
+        }
+    }
+
     private func restartModel(_ target: String) {
         let catalogEntry = catalogEntries.first(where: { $0.alias == target })
         let hfPath = catalogEntry?.hfRepo
@@ -1246,8 +1263,23 @@ struct ContentView: View {
                 CommunityBenchmarkView(
                     catalog: catalogEntries,
                     binary: server.binaryPath,
-                    prepareServer: { try await server.prepareForCommunityBenchmark() },
-                    releaseServer: { server.finishCommunityBenchmark($0) },
+                    prepareServer: {
+                        // Captured before the stop so Stop-mid-run and a
+                        // finished run both bring the same model back.
+                        chatAliasToRestoreAfterBenchmark =
+                            Self.chatAliasToRestoreAfterBenchmark(from: server.state)
+                        return try await server.prepareForCommunityBenchmark()
+                    },
+                    releaseServer: { reservation in
+                        server.finishCommunityBenchmark(reservation)
+                        if let alias = chatAliasToRestoreAfterBenchmark {
+                            chatAliasToRestoreAfterBenchmark = nil
+                            // Same path as the picker's Start action, so the
+                            // reload honours residency, memory guards, and
+                            // catalog hints exactly as a manual start would.
+                            startModel(alias)
+                        }
+                    },
                     retainServerDuringDeferredReap: {
                         server.retainCommunityBenchmarkDuringDeferredReap($0)
                     },

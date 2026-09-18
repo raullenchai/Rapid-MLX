@@ -35,6 +35,7 @@ from rapid_mlx.agent_runtime.server import (
     _evaluate_arithmetic,
     _format_retry_instruction,
     _has_browse_observation,
+    _merge_split_path_tokens,
     _normalize_local_workspace_turn,
     _observed_sentence_count,
     _planned_weather_arguments,
@@ -458,6 +459,7 @@ def test_local_workspace_default_path_is_harness_owned_and_user_path_is_preserve
     normalized_run = _normalize_local_workspace_turn("Compile and run the code", run)
     assert normalized_run.tool_calls[0].arguments == {
         "command": "cc",
+        "argv": [],
         "working_directory": "~/Rapid Workspace",
     }
 
@@ -480,7 +482,7 @@ def test_local_workspace_default_path_is_harness_owned_and_user_path_is_preserve
     )
     assert normalized_recipe.tool_calls[0].arguments == {
         "command": "gcc",
-        "arguments": ["rapid_ok.c", "-o", "rapid_ok"],
+        "argv": ["rapid_ok.c", "-o", "rapid_ok"],
         "working_directory": "~/Rapid Workspace",
     }
 
@@ -500,7 +502,7 @@ def test_local_workspace_default_path_is_harness_owned_and_user_path_is_preserve
     )
     assert normalized_model_cd.tool_calls[0].arguments == {
         "command": "gcc",
-        "arguments": ["main.c", "-o", "main"],
+        "argv": ["main.c", "-o", "main"],
         "working_directory": "~/Rapid Workspace",
     }
 
@@ -522,7 +524,7 @@ def test_local_workspace_default_path_is_harness_owned_and_user_path_is_preserve
     )
     assert normalized_explicit_recipe.tool_calls[0].arguments == {
         "command": "gcc",
-        "arguments": ["main.c", "-o", "main"],
+        "argv": ["main.c", "-o", "main"],
         "working_directory": "/Users/alice/Documents/project",
     }
 
@@ -566,14 +568,14 @@ def test_local_workspace_default_path_is_harness_owned_and_user_path_is_preserve
             AgentToolCall(
                 id="compile-default",
                 name="local_run",
-                arguments={"command": "gcc", "arguments": ["rapid_ok.c"]},
+                arguments={"command": "gcc", "argv": ["rapid_ok.c"]},
             )
         ]
     )
     normalized_compiler = _normalize_local_workspace_turn(
         "Compile and run the code", implicit_compiler_output
     )
-    assert normalized_compiler.tool_calls[0].arguments["arguments"] == [
+    assert normalized_compiler.tool_calls[0].arguments["argv"] == [
         "rapid_ok.c",
         "-o",
         "rapid_ok",
@@ -586,7 +588,7 @@ def test_local_workspace_default_path_is_harness_owned_and_user_path_is_preserve
                 name="local_run",
                 arguments={
                     "command": "gcc",
-                    "arguments": ["rapid_ok.c", "-ocustom"],
+                    "argv": ["rapid_ok.c", "-ocustom"],
                 },
             )
         ]
@@ -594,7 +596,7 @@ def test_local_workspace_default_path_is_harness_owned_and_user_path_is_preserve
     normalized_joined_output = _normalize_local_workspace_turn(
         "Compile and run the code", joined_compiler_output
     )
-    assert normalized_joined_output.tool_calls[0].arguments["arguments"] == [
+    assert normalized_joined_output.tool_calls[0].arguments["argv"] == [
         "rapid_ok.c",
         "-ocustom",
     ]
@@ -4133,7 +4135,7 @@ async def test_client_desktop_compile_flow_can_offer_local_run_twice():
                 AgentToolCall(
                     id="compile",
                     name="local_run",
-                    arguments={"command": "gcc", "arguments": ["main.c", "-o", "main"]},
+                    arguments={"command": "gcc", "argv": ["main.c", "-o", "main"]},
                 )
             ]
         ),
@@ -4208,3 +4210,808 @@ async def test_repeated_call_guard_observation_reaches_final_synthesis():
     assert len(registry.calls) == 2
     assert driver.requests[-1][2] == []
     assert "blocked because it repeated" in driver.requests[-1][1][-1]["content"]
+
+
+def test_desktop_local_tools_follow_explicit_paths_and_recent_local_turns():
+    offered = [
+        "local_search",
+        "local_read",
+        "local_write",
+        "local_trash",
+        "local_run",
+        "web_search",
+        "browse",
+        "weather",
+    ]
+    # An explicit destination path owned by a write verb routes local_write
+    # even when the noun is not in the generic write vocabulary.
+    assert _route_desktop_client_tools(
+        "Write a two-line haiku about winter to ~/Documents/winter.md on my Mac.",
+        offered,
+    ) == ["local_write"]
+    assert _route_desktop_client_tools(
+        "Save a poem about autumn on my Mac", offered
+    ) == ["local_write"]
+    # A referential follow-up keeps the local group the user asked for in
+    # their own recent turn instead of falling back to the web.
+    recent = (
+        "<recent_conversation>\n"
+        "user: Search my Documents folder for my orchid notes.\n\n"
+        "assistant: I could not find anything. Search the web for orchid care?\n"
+        "</recent_conversation>"
+    )
+    assert _route_desktop_client_tools(
+        "Search again with just the word orchid.", offered, recent
+    ) == ["local_search"]
+    assert _route_desktop_client_tools(
+        "再找一次，只用 orchid 这个词", offered, recent
+    ) == ["local_search"]
+    # Without a local turn behind it, the same words are an ordinary search.
+    assert _route_desktop_client_tools(
+        "Search again with just the word orchid.", offered
+    ) == ["web_search", "browse"]
+    # Explicit online wording, or a URL, in the goal wins over the carry-over.
+    assert _route_desktop_client_tools(
+        "Search the web again for orchid care", offered, recent
+    ) == ["web_search", "browse"]
+    assert _route_desktop_client_tools(
+        "Search online instead for orchid care", offered, recent
+    ) == ["web_search", "browse"]
+    # Assistant rows never carry routing intent.
+    assistant_only = (
+        "<recent_conversation>\n"
+        "assistant: I searched your Documents folder for orchid notes.\n"
+        "</recent_conversation>"
+    )
+    assert _route_desktop_client_tools(
+        "Search again with just the word orchid.", offered, assistant_only
+    ) == ["web_search", "browse"]
+    # A fresh, non-referential request is not a follow-up.
+    assert _route_desktop_client_tools("Find the latest release", offered, recent) == [
+        "web_search",
+        "browse",
+    ]
+
+
+def test_local_run_normalizer_drops_compile_only_flag_when_asked_to_run():
+    turn = AgentModelTurn(
+        tool_calls=[
+            AgentToolCall(
+                id="c",
+                name="local_run",
+                arguments={
+                    "command": "gcc",
+                    "argv": ["-c", "-o", "app", "~/Documents/app.c"],
+                },
+            )
+        ]
+    )
+    ran = _normalize_local_workspace_turn(
+        "Write a C program, compile it and run it", turn
+    )
+    assert ran.tool_calls[0].arguments["argv"] == ["-o", "app", "~/Documents/app.c"]
+    kept = _normalize_local_workspace_turn(
+        "Compile ~/Documents/app.c to an object file", turn
+    )
+    assert kept.tool_calls[0].arguments["argv"] == [
+        "-c",
+        "-o",
+        "app",
+        "~/Documents/app.c",
+    ]
+
+
+def test_local_run_normalizer_maps_python_and_run_pseudo_commands():
+    python_turn = AgentModelTurn(
+        tool_calls=[
+            AgentToolCall(
+                id="py",
+                name="local_run",
+                arguments={"command": "python fibonacci.py"},
+            )
+        ]
+    )
+    normalized = _normalize_local_workspace_turn(
+        "Write and run a python script", python_turn
+    )
+    assert normalized.tool_calls[0].arguments == {
+        "command": "python3",
+        "argv": ["fibonacci.py"],
+        "working_directory": "~/Rapid Workspace",
+    }
+    direct = AgentModelTurn(
+        tool_calls=[
+            AgentToolCall(
+                id="py2",
+                name="local_run",
+                arguments={"command": "python", "argv": ["a.py"]},
+            )
+        ]
+    )
+    assert (
+        _normalize_local_workspace_turn("run the script", direct)
+        .tool_calls[0]
+        .arguments["command"]
+        == "python3"
+    )
+    # "run <binary>" after a compile: the binary is the command.
+    run_turn = AgentModelTurn(
+        tool_calls=[
+            AgentToolCall(
+                id="run",
+                name="local_run",
+                arguments={
+                    "command": "run",
+                    "argv": ["~/Documents/rapid_fix"],
+                    "working_directory": "~/Rapid Workspace",
+                },
+            )
+        ]
+    )
+    normalized_run = _normalize_local_workspace_turn(
+        "Write a C program to ~/Documents/rapid_fix.c, compile and run it", run_turn
+    )
+    assert normalized_run.tool_calls[0].arguments == {
+        "command": "~/Documents/rapid_fix",
+        "argv": [],
+        "working_directory": "~/Rapid Workspace",
+    }
+    # A bare "run" with no path argv is left for Desktop to reject.
+    bare = AgentModelTurn(
+        tool_calls=[
+            AgentToolCall(
+                id="bare",
+                name="local_run",
+                arguments={"command": "run", "argv": ["tests"]},
+            )
+        ]
+    )
+    assert (
+        _normalize_local_workspace_turn("run tests", bare)
+        .tool_calls[0]
+        .arguments["command"]
+        == "run"
+    )
+
+
+def test_local_trash_and_read_take_the_goal_path_when_arguments_are_empty():
+    empty = AgentModelTurn(
+        tool_calls=[AgentToolCall(id="t", name="local_trash", arguments={})]
+    )
+    assert _normalize_local_workspace_turn(
+        "Move ~/Documents/orchid-notes.txt to the Trash", empty
+    ).tool_calls[0].arguments == {"path": "~/Documents/orchid-notes.txt"}
+    quoted = AgentModelTurn(
+        tool_calls=[AgentToolCall(id="r", name="local_read", arguments={"path": 0})]
+    )
+    assert _normalize_local_workspace_turn(
+        'Read "~/My Notes/todo.txt" and summarize it', quoted
+    ).tool_calls[0].arguments == {"path": "~/My Notes/todo.txt"}
+    # Two paths or none: nothing is guessed.
+    two = AgentModelTurn(
+        tool_calls=[AgentToolCall(id="t2", name="local_trash", arguments={})]
+    )
+    assert (
+        _normalize_local_workspace_turn(
+            "Move ~/Documents/a.txt and ~/Documents/b.txt to the Trash", two
+        )
+        .tool_calls[0]
+        .arguments
+        == {}
+    )
+    assert (
+        _normalize_local_workspace_turn("Trash the old notes", two)
+        .tool_calls[0]
+        .arguments
+        == {}
+    )
+
+
+def test_local_workspace_normalizer_keeps_users_paths_the_user_named():
+    from rapid_mlx.agent_runtime.server import _canonical_home_path
+
+    # Invented macOS account names collapse to the real home.
+    assert (
+        _canonical_home_path("/Users/runner/Documents/winter.md")
+        == "~/Documents/winter.md"
+    )
+    assert _canonical_home_path("/Users/user") == "~"
+    # A prefix the user typed is kept verbatim, other accounts still fold.
+    goal = "Write the haiku to /Users/bob/Shared/winter.md"
+    assert (
+        _canonical_home_path("/Users/bob/Shared/winter.md", goal)
+        == "/Users/bob/Shared/winter.md"
+    )
+    assert _canonical_home_path("/Users/runner/winter.md", goal) == "~/winter.md"
+    assert _canonical_home_path("/Users/bobby/winter.md", goal) == "~/winter.md"
+    turn = AgentModelTurn(
+        tool_calls=[
+            AgentToolCall(
+                id="w",
+                name="local_write",
+                arguments={
+                    "path": "/Users/runner/Documents/winter.md",
+                    "content": "snow",
+                },
+            )
+        ]
+    )
+    normalized = _normalize_local_workspace_turn(
+        "Write a haiku to ~/Documents/winter.md", turn
+    )
+    assert normalized.tool_calls[0].arguments["path"] == "~/Documents/winter.md"
+
+
+def test_local_run_normalizer_accepts_legacy_argument_keys():
+    for legacy_key in ("arguments", "args"):
+        turn = AgentModelTurn(
+            tool_calls=[
+                AgentToolCall(
+                    id="legacy",
+                    name="local_run",
+                    arguments={"command": "clang", legacy_key: ["main.c"]},
+                )
+            ]
+        )
+        normalized = _normalize_local_workspace_turn("Compile and run the code", turn)
+        assert normalized.tool_calls[0].arguments == {
+            "command": "clang",
+            "argv": ["main.c", "-o", "main"],
+            "working_directory": "~/Rapid Workspace",
+        }
+    both = AgentModelTurn(
+        tool_calls=[
+            AgentToolCall(
+                id="both",
+                name="local_run",
+                arguments={
+                    "command": "python3",
+                    "argv": ["a.py"],
+                    "arguments": ["ignored.py"],
+                },
+            )
+        ]
+    )
+    normalized_both = _normalize_local_workspace_turn("Run the script", both)
+    assert normalized_both.tool_calls[0].arguments["argv"] == ["a.py"]
+    assert "arguments" not in normalized_both.tool_calls[0].arguments
+
+
+@pytest.mark.asyncio
+async def test_client_declined_result_tells_the_model_why_nothing_happened():
+    call = AgentToolCall(id="call-read", name=READ.name, arguments={"path": "x"})
+    driver = ScriptedDriver(
+        AgentModelTurn(tool_calls=[call]),
+        AgentModelTurn(content="I did not read it because you declined."),
+    )
+    registry = FakeRegistry((READ,))
+    service = AgentServerService(registry=registry, chat_driver=driver)
+    created = await service.create(
+        AgentRunCreateRequest(goal="Read x", execution="client"),
+        model="minicpm5-2b-4bit",
+    )
+    waiting = await wait_for_status(
+        service, created.id, AgentRunStatus.AWAITING_TOOL_RESULT
+    )
+    assert waiting.pending_action is not None
+    await service.submit_result(
+        created.id,
+        AgentToolResultRequest(
+            call_id=waiting.pending_action.call_id,
+            content="The user declined local_read. Continue without it.",
+            is_error=True,
+            executed=False,
+            declined=True,
+        ),
+    )
+    done = await wait_for_status(service, created.id, AgentRunStatus.COMPLETED)
+
+    tool_message = next(
+        message
+        for message in service._entry(done.id).messages
+        if message["role"] == "tool"
+    )
+    assert tool_message["content"].startswith("Client tool was not executed.")
+    assert "The user declined this action" in tool_message["content"]
+    assert "do not call this tool again" in tool_message["content"]
+    assert "Never claim a file was created" in tool_message["content"]
+    # Client-authored text for a tool that never ran is still never forwarded.
+    assert "Continue without it" not in tool_message["content"]
+    event_json = (await service.events(done.id)).model_dump_json()
+    assert "Continue without it" not in event_json
+
+    # A non-declined failure still explains itself and allows one retry.
+    driver2 = ScriptedDriver(
+        AgentModelTurn(tool_calls=[call]), AgentModelTurn(content="Not done.")
+    )
+    service2 = AgentServerService(registry=FakeRegistry((READ,)), chat_driver=driver2)
+    created2 = await service2.create(
+        AgentRunCreateRequest(goal="Read x", execution="client"),
+        model="minicpm5-2b-4bit",
+    )
+    waiting2 = await wait_for_status(
+        service2, created2.id, AgentRunStatus.AWAITING_TOOL_RESULT
+    )
+    assert waiting2.pending_action is not None
+    await service2.submit_result(
+        created2.id,
+        AgentToolResultRequest(
+            call_id=waiting2.pending_action.call_id,
+            content="local_read arguments are invalid",
+            is_error=True,
+            executed=False,
+        ),
+    )
+    done2 = await wait_for_status(service2, created2.id, AgentRunStatus.COMPLETED)
+    tool_message2 = next(
+        message
+        for message in service2._entry(done2.id).messages
+        if message["role"] == "tool"
+    )
+    assert "Nothing on the user's Mac changed." in tool_message2["content"]
+    assert "try once more" in tool_message2["content"]
+    assert "declined" not in tool_message2["content"]
+
+
+def test_local_workspace_normalizer_maps_invented_home_prefixes_to_tilde():
+    write = AgentModelTurn(
+        tool_calls=[
+            AgentToolCall(
+                id="w",
+                name="local_write",
+                arguments={"path": "/home/user/Documents/rapid_fix.c", "content": "x"},
+            )
+        ]
+    )
+    normalized_write = _normalize_local_workspace_turn(
+        "Write a C program to ~/Documents/rapid_fix.c, then compile and run it.", write
+    )
+    assert normalized_write.tool_calls[0].arguments["path"] == "~/Documents/rapid_fix.c"
+
+    trash = AgentModelTurn(
+        tool_calls=[
+            AgentToolCall(
+                id="t",
+                name="local_trash",
+                arguments={"path": "$HOME/Documents/orchid-notes.txt"},
+            )
+        ]
+    )
+    normalized_trash = _normalize_local_workspace_turn(
+        "Move ~/Documents/orchid-notes.txt to the Trash.", trash
+    )
+    assert normalized_trash.tool_calls[0].arguments["path"] == (
+        "~/Documents/orchid-notes.txt"
+    )
+
+    run = AgentModelTurn(
+        tool_calls=[
+            AgentToolCall(
+                id="r",
+                name="local_run",
+                arguments={
+                    "command": "gcc",
+                    "argv": [
+                        "-o",
+                        "/home/user/Documents/rapid_fix",
+                        "/home/user/Documents/rapid_fix.c",
+                    ],
+                    "working_directory": "/home/user/Documents",
+                },
+            )
+        ]
+    )
+    normalized_run = _normalize_local_workspace_turn(
+        "Compile and run the code in ~/Documents", run
+    )
+    assert normalized_run.tool_calls[0].arguments == {
+        "command": "gcc",
+        "argv": ["-o", "~/Documents/rapid_fix", "~/Documents/rapid_fix.c"],
+        "working_directory": "~/Documents",
+    }
+    # A macOS home the user named is kept verbatim; relative names are left alone.
+    untouched = AgentModelTurn(
+        tool_calls=[
+            AgentToolCall(
+                id="u",
+                name="local_read",
+                arguments={"path": "/Users/maya/Documents/homework.txt"},
+            )
+        ]
+    )
+    assert _normalize_local_workspace_turn(
+        "Read the file /Users/maya/Documents/homework.txt", untouched
+    ).tool_calls[0].arguments == {"path": "/Users/maya/Documents/homework.txt"}
+    relative = AgentModelTurn(
+        tool_calls=[
+            AgentToolCall(id="r", name="local_read", arguments={"path": "notes.txt"})
+        ]
+    )
+    assert _normalize_local_workspace_turn("Read the file", relative).tool_calls[
+        0
+    ].arguments == {"path": "notes.txt"}
+
+
+def test_local_run_normalizer_rejoins_workspace_paths_split_on_spaces():
+    recipe = AgentModelTurn(
+        tool_calls=[
+            AgentToolCall(
+                id="recipe",
+                name="local_run",
+                arguments={"command": "python3 ~/Rapid Workspace/fibonacci_numbers.py"},
+            )
+        ]
+    )
+    normalized = _normalize_local_workspace_turn("Run the script", recipe)
+    assert normalized.tool_calls[0].arguments["command"] == "python3"
+    assert normalized.tool_calls[0].arguments["argv"] == [
+        "~/Rapid Workspace/fibonacci_numbers.py"
+    ]
+    assert _merge_split_path_tokens(
+        ["clang", "-o", "~/My", "Code/app", "~/My", "Code/app.c"]
+    ) == [
+        "clang",
+        "-o",
+        "~/My Code/app",
+        "~/My Code/app.c",
+    ]
+    # Flags, a second path, and complete file names never merge.
+    assert _merge_split_path_tokens(["python3", "~/a.py", "b.py"]) == [
+        "python3",
+        "~/a.py",
+        "b.py",
+    ]
+    assert _merge_split_path_tokens(["clang", "~/src", "-Wall"]) == [
+        "clang",
+        "~/src",
+        "-Wall",
+    ]
+    assert _merge_split_path_tokens(["python3", "~/x", "~/y.py"]) == [
+        "python3",
+        "~/x",
+        "~/y.py",
+    ]
+
+
+@pytest.mark.asyncio
+async def test_client_trash_path_comes_from_goal_after_two_schema_misses():
+    from fastapi import HTTPException
+
+    class SchemaMissDriver(ScriptedDriver):
+        def __init__(self, *turns):
+            super().__init__(*turns)
+            self.misses = 0
+
+        async def __call__(self, model, messages, tools, settings):
+            if self.misses < 2:
+                self.misses += 1
+                self.requests.append((model, messages, tools, settings))
+                raise HTTPException(status_code=422, detail="arguments missing path")
+            return await super().__call__(model, messages, tools, settings)
+
+    driver = SchemaMissDriver(AgentModelTurn(content="Moved it to the Trash."))
+    service = AgentServerService(registry=FakeRegistry(()), chat_driver=driver)
+    created = await service.create(
+        AgentRunCreateRequest(
+            goal="Move ~/Documents/orchid-notes.txt to the Trash",
+            execution="client",
+            tool_names=["local_trash"],
+        ),
+        model="qwen3.5-4b-4bit",
+    )
+    waiting = await wait_for_status(
+        service, created.id, AgentRunStatus.AWAITING_TOOL_RESULT
+    )
+    assert waiting.pending_action is not None
+    assert waiting.pending_action.name == "local_trash"
+    assert waiting.pending_action.arguments == {"path": "~/Documents/orchid-notes.txt"}
+    # The bounded correction named the concrete object the model should send.
+    retry_messages = driver.requests[1][1]
+    assert '{"path": "~/Documents/orchid-notes.txt"}' in retry_messages[-1]["content"]
+    await service.submit_result(
+        created.id,
+        AgentToolResultRequest(
+            call_id=waiting.pending_action.call_id,
+            content="Moved to Trash",
+            executed=True,
+        ),
+    )
+    done = await wait_for_status(service, created.id, AgentRunStatus.COMPLETED)
+    assert done.output == "Moved it to the Trash."
+
+    # Without a single explicit path there is nothing mechanical to supply.
+    driver2 = SchemaMissDriver(AgentModelTurn(content="unreachable"))
+    service2 = AgentServerService(registry=FakeRegistry(()), chat_driver=driver2)
+    created2 = await service2.create(
+        AgentRunCreateRequest(
+            goal="Move my old orchid notes to the Trash",
+            execution="client",
+            tool_names=["local_trash"],
+        ),
+        model="qwen3.5-4b-4bit",
+    )
+    failed = await wait_for_status(service2, created2.id, AgentRunStatus.FAILED)
+    assert failed.failure_code == "agent_adapter_failure"
+
+
+async def test_client_synthesis_tool_call_gets_one_prose_correction():
+    failing_run = AgentToolCall(
+        id="run", name="local_run", arguments={"command": "python3", "argv": ["fib.py"]}
+    )
+    driver = ScriptedDriver(
+        AgentModelTurn(tool_calls=[failing_run]),
+        AgentModelTurn(tool_calls=[failing_run.model_copy(update={"id": "run2"})]),
+        AgentModelTurn(tool_calls=[failing_run.model_copy(update={"id": "run3"})]),
+        AgentModelTurn(
+            content="The script failed with a NameError; nothing else was run."
+        ),
+    )
+    service = AgentServerService(registry=FakeRegistry(()), chat_driver=driver)
+    created = await service.create(
+        AgentRunCreateRequest(
+            goal="Write a python script that prints fibonacci numbers and run it",
+            execution="client",
+            tool_names=["local_run"],
+        ),
+        model="qwen3.5-4b-4bit",
+    )
+    for _ in range(2):
+        waiting = await wait_for_status(
+            service, created.id, AgentRunStatus.AWAITING_TOOL_RESULT
+        )
+        assert waiting.pending_action is not None
+        await service.submit_result(
+            created.id,
+            AgentToolResultRequest(
+                call_id=waiting.pending_action.call_id,
+                content="exit_code: 1\nstderr:\nNameError: name 'fb' is not defined",
+                is_error=True,
+                executed=True,
+            ),
+        )
+    done = await wait_for_status(service, created.id, AgentRunStatus.COMPLETED)
+    assert done.output == "The script failed with a NameError; nothing else was run."
+    correction = driver.requests[-1][1][-1]
+    assert correction["role"] == "user"
+    assert "No tools are available" in correction["content"]
+
+    # A second tool call in the synthesis turn still fails the run.
+    driver2 = ScriptedDriver(
+        AgentModelTurn(tool_calls=[failing_run]),
+        AgentModelTurn(tool_calls=[failing_run.model_copy(update={"id": "run2"})]),
+        AgentModelTurn(tool_calls=[failing_run.model_copy(update={"id": "run3"})]),
+        AgentModelTurn(tool_calls=[failing_run.model_copy(update={"id": "run4"})]),
+    )
+    service2 = AgentServerService(registry=FakeRegistry(()), chat_driver=driver2)
+    created2 = await service2.create(
+        AgentRunCreateRequest(
+            goal="Write a python script that prints fibonacci numbers and run it",
+            execution="client",
+            tool_names=["local_run"],
+        ),
+        model="qwen3.5-4b-4bit",
+    )
+    for _ in range(2):
+        waiting2 = await wait_for_status(
+            service2, created2.id, AgentRunStatus.AWAITING_TOOL_RESULT
+        )
+        assert waiting2.pending_action is not None
+        await service2.submit_result(
+            created2.id,
+            AgentToolResultRequest(
+                call_id=waiting2.pending_action.call_id,
+                content="exit_code: 1\nstderr:\nNameError",
+                is_error=True,
+                executed=True,
+            ),
+        )
+    failed = await wait_for_status(service2, created2.id, AgentRunStatus.FAILED)
+    assert failed.failure_code == "tool_call_during_final_synthesis"
+
+
+async def test_client_compile_resolves_sources_this_run_wrote():
+    driver = ScriptedDriver(
+        AgentModelTurn(
+            tool_calls=[
+                AgentToolCall(
+                    id="w",
+                    name="local_write",
+                    arguments={
+                        "path": "~/Documents/rapid_fix.c",
+                        "content": "int main(){}",
+                    },
+                )
+            ]
+        ),
+        AgentModelTurn(
+            tool_calls=[
+                AgentToolCall(
+                    id="c",
+                    name="local_run",
+                    arguments={
+                        "command": "gcc",
+                        "argv": ["gcc", "-o", "rapid_fix", "Documents/rapid_fix.c"],
+                        "working_directory": "~/Rapid Workspace",
+                    },
+                )
+            ]
+        ),
+        AgentModelTurn(content="Compiled."),
+    )
+    service = AgentServerService(registry=FakeRegistry(()), chat_driver=driver)
+    created = await service.create(
+        AgentRunCreateRequest(
+            goal="Write a C program to ~/Documents/rapid_fix.c, compile it and run it",
+            execution="client",
+            tool_names=["local_write", "local_run"],
+        ),
+        model="minicpm5-2b-4bit",
+    )
+    write = await wait_for_status(
+        service, created.id, AgentRunStatus.AWAITING_TOOL_RESULT
+    )
+    assert (
+        write.pending_action is not None and write.pending_action.name == "local_write"
+    )
+    await service.submit_result(
+        created.id,
+        AgentToolResultRequest(
+            call_id=write.pending_action.call_id,
+            content="Wrote 12 bytes",
+            executed=True,
+        ),
+    )
+    compile_step = await wait_for_status(
+        service, created.id, AgentRunStatus.AWAITING_TOOL_RESULT
+    )
+    assert compile_step.pending_action is not None
+    assert compile_step.pending_action.call_id != write.pending_action.call_id
+    assert compile_step.pending_action.arguments == {
+        "command": "gcc",
+        "argv": ["-o", "rapid_fix", "~/Documents/rapid_fix.c"],
+        "working_directory": "~/Rapid Workspace",
+    }
+
+
+async def test_client_repeated_compile_after_success_runs_the_binary():
+    compile_call = AgentToolCall(
+        id="cc",
+        name="local_run",
+        arguments={
+            "command": "gcc",
+            "argv": ["-o", "~/Documents/rapid_fix", "~/Documents/rapid_fix.c"],
+        },
+    )
+    driver = ScriptedDriver(
+        AgentModelTurn(tool_calls=[compile_call]),
+        AgentModelTurn(tool_calls=[compile_call.model_copy(update={"id": "cc2"})]),
+        AgentModelTurn(content="It printed hello."),
+    )
+    service = AgentServerService(registry=FakeRegistry(()), chat_driver=driver)
+    created = await service.create(
+        AgentRunCreateRequest(
+            goal="Write a C program to ~/Documents/rapid_fix.c, compile it and run it",
+            execution="client",
+            tool_names=["local_run"],
+        ),
+        model="minicpm5-2b-4bit",
+    )
+    first = await wait_for_status(
+        service, created.id, AgentRunStatus.AWAITING_TOOL_RESULT
+    )
+    assert first.pending_action is not None
+    assert first.pending_action.arguments["command"] == "gcc"
+    await service.submit_result(
+        created.id,
+        AgentToolResultRequest(
+            call_id=first.pending_action.call_id,
+            content="exit_code: 0\nstdout:\n\nstderr:\n",
+            executed=True,
+        ),
+    )
+    second = await wait_for_status(
+        service, created.id, AgentRunStatus.AWAITING_TOOL_RESULT
+    )
+    assert second.pending_action is not None
+    assert second.pending_action.call_id != first.pending_action.call_id
+    # The identical compile was redirected to the binary it produced.
+    assert second.pending_action.arguments == {
+        "command": "~/Documents/rapid_fix",
+        "argv": [],
+        "working_directory": "~/Rapid Workspace",
+    }
+    # The compile observation told the model the next mechanical step.
+    tool_messages = [
+        message["content"]
+        for message in driver.requests[1][1]
+        if message.get("role") == "tool"
+    ]
+    assert any("wrote ~/Documents/rapid_fix" in content for content in tool_messages)
+    await service.submit_result(
+        created.id,
+        AgentToolResultRequest(
+            call_id=second.pending_action.call_id,
+            content="exit_code: 0\nstdout:\nhello\n",
+            executed=True,
+        ),
+    )
+    done = await wait_for_status(service, created.id, AgentRunStatus.COMPLETED)
+    assert done.output == "It printed hello."
+
+
+async def test_client_desktop_script_run_that_succeeded_is_not_offered_again():
+    driver = ScriptedDriver(
+        AgentModelTurn(
+            tool_calls=[
+                AgentToolCall(
+                    id="run",
+                    name="local_run",
+                    arguments={"command": "python3", "argv": ["fib.py"]},
+                )
+            ]
+        ),
+        AgentModelTurn(content="Ran the script."),
+    )
+    service = AgentServerService(registry=FakeRegistry(()), chat_driver=driver)
+    created = await service.create(
+        AgentRunCreateRequest(
+            goal="Run the fib.py script",
+            execution="client",
+            tool_names=["local_run"],
+        ),
+        model="minicpm5-2b-4bit",
+    )
+    waiting = await wait_for_status(
+        service, created.id, AgentRunStatus.AWAITING_TOOL_RESULT
+    )
+    assert waiting.pending_action is not None
+    await service.submit_result(
+        created.id,
+        AgentToolResultRequest(
+            call_id=waiting.pending_action.call_id,
+            content="exit_code: 0\nstdout:\n0 1 1 2 3\n",
+            executed=True,
+        ),
+    )
+    done = await wait_for_status(service, created.id, AgentRunStatus.COMPLETED)
+    assert done.output == "Ran the script."
+    # The work is done: the synthesis turn sees no tool to re-run.
+    assert [tool.name for tool in driver.requests[1][2]] == []
+
+    # A failed script run is still offered once more so the model can fix it.
+    driver2 = ScriptedDriver(
+        AgentModelTurn(
+            tool_calls=[
+                AgentToolCall(
+                    id="run",
+                    name="local_run",
+                    arguments={"command": "python3", "argv": ["fib.py"]},
+                )
+            ]
+        ),
+        AgentModelTurn(content="It failed."),
+    )
+    service2 = AgentServerService(registry=FakeRegistry(()), chat_driver=driver2)
+    created2 = await service2.create(
+        AgentRunCreateRequest(
+            goal="Run the fib.py script",
+            execution="client",
+            tool_names=["local_run"],
+        ),
+        model="minicpm5-2b-4bit",
+    )
+    waiting2 = await wait_for_status(
+        service2, created2.id, AgentRunStatus.AWAITING_TOOL_RESULT
+    )
+    assert waiting2.pending_action is not None
+    await service2.submit_result(
+        created2.id,
+        AgentToolResultRequest(
+            call_id=waiting2.pending_action.call_id,
+            content="exit_code: 2\nstderr:\ncan't open file",
+            is_error=True,
+            executed=True,
+        ),
+    )
+    await wait_for_status(service2, created2.id, AgentRunStatus.COMPLETED)
+    assert [tool.name for tool in driver2.requests[1][2]] == ["local_run"]

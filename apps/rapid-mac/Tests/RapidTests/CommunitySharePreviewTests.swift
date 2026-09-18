@@ -109,6 +109,16 @@ struct CommunitySharePreviewTests {
 
     // MARK: - The disclosure the user reads
 
+    @Test("The confirmation sheet never grows past the screen")
+    func sheetHeightFitsTheDisplay() {
+        // A laptop display: the sheet shrinks so its footer stays visible.
+        #expect(CommunityBenchmarkShareConfirmationSheet.sheetHeight(availableHeight: 780) == 660)
+        // A large display: capped at the design height.
+        #expect(CommunityBenchmarkShareConfirmationSheet.sheetHeight(availableHeight: 1400) == 720)
+        // Never collapses below a usable minimum.
+        #expect(CommunityBenchmarkShareConfirmationSheet.sheetHeight(availableHeight: 300) == 420)
+    }
+
     @Test("SHARED never claims quantisation the submission does not carry")
     func sharedDoesNotOverclaim() throws {
         let items = CommunityBenchmarkShareConfirmationSheet.sharedItems(

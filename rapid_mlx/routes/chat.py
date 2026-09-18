@@ -2873,10 +2873,26 @@ def _repair_forced_call_arguments(tool_calls, raw_text, target, tools):
         scalar_salvaged = _salvage_forced_scalar_arguments(
             target, broken[0].function.arguments, tools
         )
+    # #3538 dogfood (qwen3.5-4b under the Desktop's forced local_run choice):
+    # the model also flattens the object's keys next to a scalar
+    # ``"arguments"`` or switches to ``<parameter=k>v</parameter>`` mid-call.
+    # Both carry the intended object; recover it, gated by the target schema.
+    shape_salvaged = None
+    if (
+        retrieved is None
+        and scalar_salvaged is None
+        and len(broken) == 1
+        and len(tool_calls or []) == 1
+    ):
+        shape_salvaged = _salvage_forced_shape_arguments(target, raw_text, tools)
     repaired = (
         retrieved
         if retrieved is not None
-        else (scalar_salvaged if scalar_salvaged is not None else "{}")
+        else (
+            scalar_salvaged
+            if scalar_salvaged is not None
+            else (shape_salvaged if shape_salvaged is not None else "{}")
+        )
     )
     for tc in broken:
         # Log shape only — tool arguments can carry user data / secrets
@@ -2892,7 +2908,11 @@ def _repair_forced_call_arguments(tool_calls, raw_text, target, tools):
             else "-",
             "recovered object"
             if retrieved is not None
-            else ("salvaged scalar" if scalar_salvaged is not None else '"{}"'),
+            else (
+                "salvaged scalar"
+                if scalar_salvaged is not None
+                else ("salvaged shape" if shape_salvaged is not None else '"{}"')
+            ),
         )
         tc.function.arguments = repaired
         err = _forced_synth_schema_error(target, repaired, tools)
@@ -2976,6 +2996,172 @@ def _synthesize_forced_tool_call(
         type="function",
         function=FunctionCall(name=name, arguments=final_args),
     )
+
+
+def _forced_tool_object_schema(name: str, tools) -> dict | None:
+    """Return the target tool's object parameter schema, or ``None``."""
+
+    for tool in tools or []:
+        fn = getattr(tool, "function", None)
+        if not isinstance(fn, dict) and isinstance(tool, dict):
+            fn = tool.get("function")
+        if not isinstance(fn, dict) or fn.get("name") != name:
+            continue
+        schema = fn.get("parameters")
+        if isinstance(schema, dict) and schema.get("type") == "object":
+            return schema
+        return None
+    return None
+
+
+_XML_PARAMETER = re.compile(
+    r"<parameter=([A-Za-z_][A-Za-z0-9_]*)>\s*(.*?)\s*</parameter>", re.DOTALL
+)
+
+
+def _balanced_object_end(text: str, start: int) -> int | None:
+    """Return the index just past the JSON object opening at ``text[start]``."""
+
+    depth = 0
+    in_string = False
+    escape = False
+    for pos in range(start, min(len(text), start + 8192)):
+        ch = text[pos]
+        if escape:
+            escape = False
+        elif in_string:
+            if ch == "\\":
+                escape = True
+            elif ch == '"':
+                in_string = False
+        elif ch == '"':
+            in_string = True
+        elif ch == "{":
+            depth += 1
+        elif ch == "}":
+            depth -= 1
+            if depth == 0:
+                return pos + 1
+    return None
+
+
+def _salvage_forced_shape_arguments(
+    name: str, raw_text: str | None, tools
+) -> str | None:
+    """Recover the intended object from two malformed forced-call shapes.
+
+    Seen live from qwen3.5-4b when the Desktop forces ``local_run``::
+
+        {"name": "local_run", "arguments": 0, "command": "python fib.py",
+         "working_directory": "~/Rapid Workspace"}
+
+        {"name": "local_run", "arguments":  <parameter=command>
+        python fib.py
+        </parameter>
+
+    The first flattens the argument object next to a scalar ``arguments``;
+    the second switches to the XML parameter wire mid-envelope. Both name the
+    target and carry the intended keys, so the object is rebuilt from them.
+
+    Gated tightly: the target must be an object-schema tool, every recovered
+    key must be a declared property (nothing is invented), and the block must
+    name the target. Values from the XML shape are strings; a declared array
+    property is left out so the schema gate still decides. Returns the JSON
+    object text, or ``None`` when nothing unambiguous is recoverable.
+    """
+
+    if not raw_text or not name:
+        return None
+    schema = _forced_tool_object_schema(name, tools)
+    if schema is None:
+        return None
+    props = schema.get("properties")
+    if not isinstance(props, dict) or not props:
+        return None
+    name_marker = f'"name": "{name}"'
+    name_pos = raw_text.rfind(name_marker)
+    if name_pos < 0:
+        name_pos = raw_text.rfind(f'"name":"{name}"')
+    if name_pos < 0:
+        return None
+    window = raw_text[name_pos : name_pos + 8192]
+
+    # Shape 0: a stray token between ``"arguments":`` and the object, e.g.
+    # ``"arguments": >{"path": "~/Documents", "query": "orchid"}`` (qwen3.5-4b,
+    # 2026-09-17). The object itself is intact; only the junk prefix hides it
+    # from the strict recovery route.
+    junk = re.search(r'"arguments"\s*:\s*[^\s{\["\'\d\-tfn]{1,4}\s*\{', window)
+    if junk is not None:
+        end = _balanced_object_end(window, junk.end() - 1)
+        if end is not None:
+            try:
+                recovered_object = json.loads(window[junk.end() - 1 : end])
+            except (ValueError, TypeError):
+                recovered_object = None
+            if (
+                isinstance(recovered_object, dict)
+                and recovered_object
+                and all(key in props for key in recovered_object)
+            ):
+                return json.dumps(recovered_object)
+
+    # Shape 1: flattened keys inside the envelope object.
+    brace = raw_text.rfind("{", 0, name_pos)
+    if brace >= 0:
+        end = _balanced_object_end(raw_text, brace)
+        if end is not None:
+            try:
+                envelope = json.loads(raw_text[brace:end])
+            except (ValueError, TypeError):
+                envelope = None
+            if isinstance(envelope, dict) and envelope.get("name") == name:
+                inner = envelope.get("arguments")
+                # Duplicate ``"arguments"`` keys (``"arguments": 100,
+                # "arguments": {...}``): json.loads keeps the last, which is
+                # the object the model meant.
+                if isinstance(inner, dict):
+                    if (
+                        raw_text.count('"arguments"', brace, end) >= 2
+                        and inner
+                        and all(key in props for key in inner)
+                    ):
+                        return json.dumps(inner)
+                    return None
+                # A one-element list for a tool with exactly one required
+                # string property is that property's value.
+                required = schema.get("required")
+                if (
+                    isinstance(inner, list)
+                    and len(inner) == 1
+                    and isinstance(inner[0], str)
+                    and isinstance(required, list)
+                    and len(required) == 1
+                    and isinstance(props.get(required[0]), dict)
+                    and props[required[0]].get("type") == "string"
+                ):
+                    return json.dumps({required[0]: inner[0]})
+                flattened = {
+                    key: value
+                    for key, value in envelope.items()
+                    if key not in {"name", "arguments"}
+                }
+                if flattened and all(key in props for key in flattened):
+                    return json.dumps(flattened)
+
+    # Shape 2: XML parameters after the envelope's ``"arguments":``.
+    pairs = _XML_PARAMETER.findall(window)
+    if pairs:
+        recovered: dict[str, str] = {}
+        for key, value in pairs:
+            if key not in props:
+                return None
+            declared = props[key].get("type") if isinstance(props[key], dict) else None
+            if declared not in (None, "string"):
+                continue
+            recovered[key] = value
+        if recovered:
+            return json.dumps(recovered)
+    return None
 
 
 def _salvage_forced_scalar_arguments(
