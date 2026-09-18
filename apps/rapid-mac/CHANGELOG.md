@@ -18,6 +18,15 @@ can actually understand.
 ## [Unreleased]
 
 ### Fixed
+- **The install window opens instead of closing Finder.** Double-clicking the
+  downloaded DMG and selecting the mounted volume made Finder blank out and
+  close the window (and on older macOS, quit and relaunch outright), so there
+  was no way to drag the app into Applications from the Finder window. The
+  disk image's saved Finder layout stored two of its view records in an
+  encoding Finder rejects the instant it opens the volume; they are now
+  written the way Finder itself writes them, and the branded install
+  background — previously blank — renders again. Terminal installs were never
+  affected. ([#3468](https://github.com/raullenchai/Rapid-MLX/issues/3468))
 - **"See what's new" no longer quits the app.** Clicking the link on the
   "Updated to vX.Y.Z" notice opened the release notes and then crashed
   Rapid-MLX Desktop. The app was doing its bookkeeping — remembering that the
