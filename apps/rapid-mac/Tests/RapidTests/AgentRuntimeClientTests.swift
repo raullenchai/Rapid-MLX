@@ -148,6 +148,28 @@ struct AgentRuntimeClientTests {
         #expect(declinedBody["declined"] as? Bool == true)
     }
 
+    @Test("Declined result retries without the new field on an older server")
+    func declinedResultLegacyRetry() async throws {
+        let client = makeClient()
+        AgentRuntimeStubProtocol.responses = [
+            (422, Data(#"{"detail":"unknown field: declined"}"#.utf8)),
+            (200, Self.awaitingModel),
+        ]
+
+        _ = try await client.submitToolResult(
+            runID: "01234567-89ab-cdef-0123-456789abcdef",
+            callID: "call-1",
+            content: "The user declined this action.",
+            isError: true,
+            executed: false,
+            declined: true,
+            bearerToken: nil
+        )
+
+        #expect(try Self.jsonBody(at: 0)["declined"] as? Bool == true)
+        #expect(try Self.jsonBody(at: 1)["declined"] == nil)
+    }
+
     @Test("Event cursors are monotonic client inputs")
     func eventCursor() async throws {
         let client = makeClient()

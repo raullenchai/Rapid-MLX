@@ -422,18 +422,37 @@ final class AgentRuntimeClient: Sendable {
         declined: Bool = false,
         bearerToken: String? = nil
     ) async throws -> AgentRunView {
-        try await send(
-            method: "POST",
-            path: "v1/agent/runs/\(try encodedPathComponent(runID))/tool-result",
-            bearerToken: bearerToken,
-            body: ToolResultRequest(
-                callID: callID,
-                content: content,
-                isError: isError,
-                executed: executed,
-                declined: declined
+        let path = "v1/agent/runs/\(try encodedPathComponent(runID))/tool-result"
+        do {
+            return try await send(
+                method: "POST",
+                path: path,
+                bearerToken: bearerToken,
+                body: ToolResultRequest(
+                    callID: callID,
+                    content: content,
+                    isError: isError,
+                    executed: executed,
+                    declined: declined
+                )
             )
-        )
+        } catch AgentRuntimeClientError.http(let status, _) where declined && status == 422 {
+            // Servers predating the structured decline field reject unknown
+            // keys. Retry the same non-executed result without that marker;
+            // its content retains the legacy explanation.
+            return try await send(
+                method: "POST",
+                path: path,
+                bearerToken: bearerToken,
+                body: ToolResultRequest(
+                    callID: callID,
+                    content: content,
+                    isError: isError,
+                    executed: executed,
+                    declined: false
+                )
+            )
+        }
     }
 
     func cancel(runID: String, bearerToken: String? = nil) async throws -> AgentRunView {

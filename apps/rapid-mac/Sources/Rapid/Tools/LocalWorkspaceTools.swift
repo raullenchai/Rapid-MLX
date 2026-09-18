@@ -1316,7 +1316,39 @@ enum LocalWorkspaceTools {
         let pathIndexes: Set<Int>
         switch commandName {
         case "clang", "cc", "gcc":
-            pathIndexes = Set(arguments.indices)
+            let pathOperandOptions: Set<String> = [
+                "-o", "-I", "-F", "-include", "-include-pch",
+                "-isystem", "-iquote", "-iframework",
+            ]
+            let nonPathOperandOptions: Set<String> = ["-D", "-U", "-x", "-std"]
+            var indexes: Set<Int> = []
+            var nextIsPath = false
+            var nextIsLiteral = false
+            var afterTerminator = false
+            for index in arguments.indices {
+                let argument = arguments[index]
+                if nextIsPath {
+                    indexes.insert(index)
+                    nextIsPath = false
+                    continue
+                }
+                if nextIsLiteral {
+                    nextIsLiteral = false
+                    continue
+                }
+                if afterTerminator {
+                    indexes.insert(index)
+                } else if argument == "--" {
+                    afterTerminator = true
+                } else if pathOperandOptions.contains(argument) {
+                    nextIsPath = true
+                } else if nonPathOperandOptions.contains(argument) {
+                    nextIsLiteral = true
+                } else if !argument.hasPrefix("-") {
+                    indexes.insert(index)
+                }
+            }
+            pathIndexes = indexes
         case "python3", "node", "ruby":
             let optionOperands: Set<String>
             switch commandName {
