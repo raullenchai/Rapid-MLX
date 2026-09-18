@@ -1203,6 +1203,21 @@ _LOCAL_RUN_PSEUDO_COMMANDS = frozenset({"run", "execute", "exec"})
 _COMPILER_COMMANDS = frozenset({"clang", "cc", "gcc"})
 
 
+def _requests_compile_and_run(goal: str) -> bool:
+    """Whether the user explicitly asks to execute the compiled output."""
+
+    return (
+        re.search(
+            r"\bcompile\b.{0,120}\b(?:and\s+)?(?:then\s+)?run\s+"
+            r"(?:it|the\s+(?:program|binary|output|executable))\b|"
+            r"编译.{0,80}(?:然后|并且|再)?(?:运行|执行)(?:它|该程序|这个程序)?",
+            goal,
+            re.IGNORECASE,
+        )
+        is not None
+    )
+
+
 def _compiled_output_path(arguments: dict[str, Any]) -> str | None:
     """Return the binary a compiler call writes, resolved against its cwd."""
 
@@ -1341,7 +1356,7 @@ def _normalize_local_workspace_turn(goal: str, turn: AgentModelTurn) -> AgentMod
                 except ValueError:
                     continue
                 if has_explicit_path and len(tokens) == 2 and tokens[0] == "cd":
-                    working_directory = tokens[1]
+                    working_directory = _canonical_home_path(tokens[1], goal)
                     arguments["working_directory"] = working_directory
                     continue
                 if tokens and tokens[0] in _LOCAL_RUN_RECIPE_COMMANDS:
@@ -1355,6 +1370,7 @@ def _normalize_local_workspace_turn(goal: str, turn: AgentModelTurn) -> AgentMod
                 if tokens and tokens[0] in _LOCAL_RUN_RECIPE_COMMANDS:
                     recovered = _merge_split_path_tokens(tokens)
             if recovered is not None:
+                recovered = [_canonical_home_path(item, goal) for item in recovered]
                 arguments["command"] = _LOCAL_RUN_COMMAND_ALIASES.get(
                     recovered[0], recovered[0]
                 )
@@ -1366,18 +1382,11 @@ def _normalize_local_workspace_turn(goal: str, turn: AgentModelTurn) -> AgentMod
                     f"{working_directory.rstrip('/')}/{raw_command[2:]}"
                 )
             normalized_arguments = arguments.get("argv")
-            compile_and_run = re.search(
-                r"\bcompile\b.{0,120}\b(?:and\s+)?(?:then\s+)?run\s+"
-                r"(?:it|the\s+(?:program|binary|output|executable))\b|"
-                r"编译.{0,80}(?:然后|并且|再)?(?:运行|执行)(?:它|该程序|这个程序)?",
-                goal,
-                re.IGNORECASE,
-            )
             if (
                 arguments.get("command") in _COMPILER_COMMANDS
                 and isinstance(normalized_arguments, list)
                 and "-c" in normalized_arguments
-                and compile_and_run is not None
+                and _requests_compile_and_run(goal)
             ):
                 # ``-c`` stops after the object file, so the requested run can
                 # never happen (qwen3.5-9b, dogfood 2026-09-17).
@@ -3460,6 +3469,8 @@ class AgentServerService:
         """
 
         if entry.settings.execution != "client" or len(turn.tool_calls) != 1:
+            return turn
+        if not _requests_compile_and_run(entry.run.goal):
             return turn
         call = turn.tool_calls[0]
         if call.name != "local_run":

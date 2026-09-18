@@ -4354,6 +4354,28 @@ def test_local_run_normalizer_maps_python_and_run_pseudo_commands():
         "argv": ["fibonacci.py"],
         "working_directory": "~/Rapid Workspace",
     }
+
+
+def test_local_run_normalizer_canonicalizes_recovered_shell_recipe_paths():
+    turn = AgentModelTurn(
+        tool_calls=[
+            AgentToolCall(
+                id="recipe",
+                name="local_run",
+                arguments={
+                    "command": "cd /home/user/Documents; gcc /home/user/Documents/app.c"
+                },
+            )
+        ]
+    )
+    normalized = _normalize_local_workspace_turn(
+        "Compile and run the program in ~/Documents", turn
+    )
+    assert normalized.tool_calls[0].arguments == {
+        "command": "gcc",
+        "argv": ["~/Documents/app.c", "-o", "app"],
+        "working_directory": "~/Documents",
+    }
     direct = AgentModelTurn(
         tool_calls=[
             AgentToolCall(
@@ -5055,6 +5077,32 @@ async def test_client_repeated_compile_after_success_runs_the_binary():
     assert done.output == "It printed hello."
 
 
+async def test_client_repeated_compile_never_runs_for_compile_only_goal():
+    compile_call = AgentToolCall(
+        id="cc",
+        name="local_run",
+        arguments={"command": "gcc", "argv": ["-o", "app", "app.c"]},
+    )
+    entry = _fake_run(
+        [
+            {
+                "role": "assistant",
+                "tool_calls": [
+                    _call(
+                        "cc",
+                        "local_run",
+                        {"command": "gcc", "argv": ["-o", "app", "app.c"]},
+                    )
+                ],
+            },
+            {"role": "tool", "tool_call_id": "cc", "content": "exit_code: 0"},
+        ]
+    )
+    entry.run.goal = "Compile app.c"
+    repeated = AgentModelTurn(tool_calls=[compile_call])
+    assert AgentServerService._redirect_repeated_compile(entry, repeated) is repeated
+
+
 async def test_client_desktop_script_run_that_succeeded_is_not_offered_again():
     driver = ScriptedDriver(
         AgentModelTurn(
@@ -5250,11 +5298,17 @@ async def test_client_compile_ignores_a_write_that_reported_an_error():
     }
 
 
-def _fake_run(messages, execution="client", failed=()):
+def _fake_run(
+    messages,
+    execution="client",
+    failed=(),
+    goal="Compile the program and run it",
+):
     from types import SimpleNamespace
 
     return SimpleNamespace(
         messages=messages,
+        run=SimpleNamespace(goal=goal),
         settings=SimpleNamespace(execution=execution),
         failed_tool_call_ids=set(failed),
     )
