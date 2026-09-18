@@ -390,6 +390,9 @@ def test_desktop_local_tools_route_without_leaking_local_requests_to_web():
     assert _route_desktop_client_tools(
         "Write a C program that prints hello, then compile and run it", offered
     ) == ["local_write", "local_run"]
+    assert _route_desktop_client_tools("Run /Users/alice/project/main", offered) == [
+        "local_run"
+    ]
     assert _route_desktop_client_tools(
         "Move the file /Users/alice/Downloads/old.txt to Trash", offered
     ) == ["local_trash"]

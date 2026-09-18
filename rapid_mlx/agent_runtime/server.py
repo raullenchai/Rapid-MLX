@@ -906,10 +906,12 @@ def _route_desktop_client_tools(
     )
     local_read = has_local_path and (
         _LOCAL_READ_INTENT.search(goal) is not None
-        or re.search(r"\b(?:read|open|inspect|show)\b", goal, re.IGNORECASE)
-        is not None
+        or re.search(r"\b(?:read|open|inspect|show)\b", goal, re.IGNORECASE) is not None
     )
-    local_run = _LOCAL_RUN_INTENT.search(goal) is not None
+    local_run = _LOCAL_RUN_INTENT.search(goal) is not None or (
+        has_local_path
+        and re.search(r"\b(?:run|execute)\b", goal, re.IGNORECASE) is not None
+    )
     local_write = _LOCAL_WRITE_INTENT.search(goal) is not None and (
         has_local_path
         or local_run

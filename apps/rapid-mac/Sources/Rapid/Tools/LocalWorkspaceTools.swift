@@ -773,6 +773,19 @@ enum LocalWorkspaceTools {
         guard currentIdentity == expectedIdentity else {
             throw LocalError("the approved destination changed while approval was open")
         }
+        if currentIdentity != nil {
+            var metadata = stat()
+            let inspected = finalName.withCString {
+                fstatat(parentFD, $0, &metadata, AT_SYMLINK_NOFOLLOW)
+            }
+            guard inspected == 0 else {
+                throw posixError("could not inspect the approved destination")
+            }
+            let kind = metadata.st_mode & S_IFMT
+            guard kind == S_IFREG || kind == S_IFLNK else {
+                throw LocalError("local_write only replaces regular files or symbolic links")
+            }
+        }
         if !overwrite, currentIdentity != nil {
             throw LocalError("refused to replace an existing file without overwrite=true")
         }
@@ -849,7 +862,29 @@ enum LocalWorkspaceTools {
                 }
                 throw posixError("could not replace the destination file")
             }
-            backupName.withCString { _ = Darwin.unlinkat(parentFD, $0, 0) }
+            let removedBackup = backupName.withCString {
+                Darwin.unlinkat(parentFD, $0, 0)
+            }
+            if removedBackup != 0 {
+                let cleanupError = posixError("could not remove the secured file backup")
+                finalName.withCString { _ = Darwin.unlinkat(parentFD, $0, 0) }
+                let restored = backupName.withCString { backupPointer in
+                    finalName.withCString { finalPointer in
+                        renameatx_np(
+                            parentFD, backupPointer,
+                            parentFD, finalPointer,
+                            UInt32(RENAME_EXCL)
+                        )
+                    }
+                }
+                guard restored == 0 else {
+                    throw LocalError(
+                        "write failed and the original remains in \(backupName): "
+                            + cleanupError.localizedDescription
+                    )
+                }
+                throw cleanupError
+            }
             shouldRemoveTemporary = false
         } else {
             let installed = temporaryName.withCString { temporaryPointer in
@@ -1218,14 +1253,14 @@ enum LocalWorkspaceTools {
         }
         var actions: posix_spawn_file_actions_t?
         var attributes: posix_spawnattr_t?
-        guard posix_spawn_file_actions_init(&actions) == 0,
-              posix_spawnattr_init(&attributes) == 0 else {
+        guard posix_spawn_file_actions_init(&actions) == 0 else {
             throw LocalError("could not initialize the command launcher")
         }
-        defer {
-            posix_spawn_file_actions_destroy(&actions)
-            posix_spawnattr_destroy(&attributes)
+        defer { posix_spawn_file_actions_destroy(&actions) }
+        guard posix_spawnattr_init(&attributes) == 0 else {
+            throw LocalError("could not initialize the command launcher")
         }
+        defer { posix_spawnattr_destroy(&attributes) }
         guard posix_spawn_file_actions_adddup2(
             &actions, stdout.pipe.fileHandleForWriting.fileDescriptor, STDOUT_FILENO
         ) == 0,

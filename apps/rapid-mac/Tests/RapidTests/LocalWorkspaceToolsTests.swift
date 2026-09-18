@@ -120,6 +120,25 @@ final class LocalWorkspaceToolsTests {
         #expect(try String(contentsOf: output, encoding: .utf8) == "original")
     }
 
+    @Test("write never replaces an existing directory")
+    func writeRejectsDirectoryDestination() async throws {
+        let root = try fixtureDirectory()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let output = root.appendingPathComponent("existing", isDirectory: true)
+        try FileManager.default.createDirectory(at: output, withIntermediateDirectories: false)
+        let child = output.appendingPathComponent("keep.txt")
+        try "keep".write(to: child, atomically: true, encoding: .utf8)
+        let arguments = try #require(String(data: JSONSerialization.data(withJSONObject: [
+            "path": output.path, "content": "replacement", "overwrite": true,
+        ]), encoding: .utf8))
+
+        let result = await runApproved(name: "local_write", arguments: arguments, store: approval())
+
+        #expect(result.isError)
+        #expect(result.content.contains("regular files or symbolic links"))
+        #expect(try String(contentsOf: child, encoding: .utf8) == "keep")
+    }
+
     @Test("overwrite replaces a symlink instead of writing through it")
     func writeDoesNotFollowDestinationSymlink() async throws {
         let root = try fixtureDirectory()
