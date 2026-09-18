@@ -1268,6 +1268,12 @@ def _requests_multiple_local_runs(goal: str) -> bool:
     scripts = list(
         re.finditer(r"\b[^\s,;]+\.(?:py|js|rb|swift|go)\b", goal, re.IGNORECASE)
     )
+    if scripts and re.search(
+        r"\b(?:compile|build)\b|(?:编译|构建)",
+        goal[scripts[0].end() :],
+        re.IGNORECASE,
+    ):
+        return True
     for previous, current in zip(scripts, scripts[1:], strict=False):
         connector = goal[previous.end() : current.start()].strip()
         if re.fullmatch(
@@ -1446,7 +1452,7 @@ def _normalize_local_workspace_turn(goal: str, turn: AgentModelTurn) -> AgentMod
         # tool-call envelope's own "arguments" name. Both mean argv.
         for legacy_key in ("arguments", "args"):
             legacy_value = arguments.pop(legacy_key, None)
-            if raw_arguments is None and isinstance(legacy_value, list):
+            if not isinstance(raw_arguments, list) and isinstance(legacy_value, list):
                 raw_arguments = legacy_value
         if raw_arguments is not None:
             arguments["argv"] = raw_arguments

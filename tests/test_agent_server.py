@@ -4356,6 +4356,7 @@ def test_multiple_local_runs_require_explicit_sequencing():
     assert _requests_multiple_local_runs("Run a.py & b.py")
     assert _requests_multiple_local_runs("Run a.py, then b.py")
     assert _requests_multiple_local_runs("Run a.py, then run b.py")
+    assert _requests_multiple_local_runs("Run generator.py, then compile its output")
 
 
 def test_local_run_normalizer_drops_compile_only_flag_when_asked_to_run():
@@ -4721,6 +4722,23 @@ def test_local_run_normalizer_accepts_legacy_argument_keys():
     normalized_both = _normalize_local_workspace_turn("Run the script", both)
     assert normalized_both.tool_calls[0].arguments["argv"] == ["a.py"]
     assert "arguments" not in normalized_both.tool_calls[0].arguments
+    malformed_canonical = AgentModelTurn(
+        tool_calls=[
+            AgentToolCall(
+                id="fallback",
+                name="local_run",
+                arguments={
+                    "command": "python3",
+                    "argv": "a.py",
+                    "arguments": ["a.py"],
+                },
+            )
+        ]
+    )
+    normalized_fallback = _normalize_local_workspace_turn(
+        "Run the script", malformed_canonical
+    )
+    assert normalized_fallback.tool_calls[0].arguments["argv"] == ["a.py"]
 
 
 @pytest.mark.asyncio
