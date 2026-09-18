@@ -5562,6 +5562,12 @@ def test_local_run_history_helpers_ignore_malformed_and_unrelated_calls():
     assert _compiled_output_path({"command": "python3", "argv": ["-o", "x"]}) is None
     assert _compiled_output_path({"command": "gcc", "argv": "-o x"}) is None
     assert _compiled_output_path({"command": "gcc", "argv": ["a.c"]}) is None
+    assert (
+        _compiled_output_path(
+            {"command": "/usr/bin/clang", "argv": ["a.c", "-o", "app"]}
+        )
+        == "~/Rapid Workspace/app"
+    )
     assert _compiled_output_path({"command": "gcc", "argv": ["--", "-oapp"]}) is None
     assert (
         _compiled_output_path({"command": "gcc", "argv": [3, "-oapp", "a.c"]})

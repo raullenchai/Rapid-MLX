@@ -1317,20 +1317,52 @@ def _requests_multiple_local_runs(goal: str) -> bool:
 def _canonicalize_local_run_argv(command: str, argv: list[Any], goal: str) -> list[Any]:
     """Canonicalize only argv positions that the supported command treats as paths."""
 
+    command_name = command.rsplit("/", 1)[-1]
     indexes: set[int] = set()
-    if command in _COMPILER_COMMANDS:
-        indexes.update(range(len(argv)))
-    elif command in {"python", "python3", "node", "ruby"}:
-        script_index = _interpreter_script_index(command, argv)
+    if command_name in _COMPILER_COMMANDS:
+        path_operand_options = {
+            "-o",
+            "-I",
+            "-F",
+            "-include",
+            "-include-pch",
+            "-isystem",
+            "-iquote",
+            "-iframework",
+        }
+        non_path_operand_options = {"-D", "-U", "-x", "-std"}
+        next_is_path = False
+        next_is_literal = False
+        after_terminator = False
+        for index, item in enumerate(argv):
+            if not isinstance(item, str):
+                continue
+            if next_is_path:
+                indexes.add(index)
+                next_is_path = False
+            elif next_is_literal:
+                next_is_literal = False
+            elif after_terminator:
+                indexes.add(index)
+            elif item == "--":
+                after_terminator = True
+            elif item in path_operand_options:
+                next_is_path = True
+            elif item in non_path_operand_options:
+                next_is_literal = True
+            elif not item.startswith("-"):
+                indexes.add(index)
+    elif command_name in {"python", "python3", "node", "ruby"}:
+        script_index = _interpreter_script_index(command_name, argv)
         if script_index is not None:
             indexes.add(script_index)
-    elif command == "swift":
+    elif command_name == "swift":
         indexes.update(
             index
             for index, item in enumerate(argv)
             if isinstance(item, str) and item.endswith(".swift")
         )
-    elif command == "go" and argv[:1] == ["run"]:
+    elif command_name == "go" and argv[:1] == ["run"]:
         indexes.update(
             index
             for index, item in enumerate(argv[1:], 1)
@@ -1342,7 +1374,7 @@ def _canonicalize_local_run_argv(command: str, argv: list[Any], goal: str) -> li
         else item
         for index, item in enumerate(argv)
     ]
-    if command in _COMPILER_COMMANDS:
+    if command_name in _COMPILER_COMMANDS:
         explicit_sources = {
             path
             for path in (
@@ -1407,7 +1439,11 @@ def _interpreter_script_index(command: str, argv: list[Any]) -> int | None:
 def _compiled_output_path(arguments: dict[str, Any]) -> str | None:
     """Return the binary a compiler call writes, resolved against its cwd."""
 
-    if arguments.get("command") not in _COMPILER_COMMANDS:
+    command = arguments.get("command")
+    if (
+        not isinstance(command, str)
+        or command.rsplit("/", 1)[-1] not in _COMPILER_COMMANDS
+    ):
         return None
     argv = arguments.get("argv")
     if not isinstance(argv, list):
@@ -3167,7 +3203,7 @@ class AgentServerService:
                                 turn = AgentModelTurn(
                                     tool_calls=[
                                         AgentToolCall(
-                                            id="harness_goal_path",
+                                            id=f"harness_goal_path_{entry.run.model_turns}",
                                             name=tool.name,
                                             arguments={"path": sole_path},
                                         )
