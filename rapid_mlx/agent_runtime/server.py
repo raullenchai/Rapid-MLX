@@ -3437,8 +3437,9 @@ class AgentServerService:
         (or ``Documents/app.c``) from the default workspace, which fails and
         burns the retry budget. A relative argv entry is resolved only when its
         full home-relative or cwd-relative path exactly matches a file written
-        in this run; basename-only guesses are deliberately rejected. An argv
-        that repeats the command name (``argv: ["gcc", ...]``) drops it.
+        in this run; basename-only guesses are deliberately rejected. Literal
+        argv entries are never discarded: a source or script can legitimately
+        have the same name as its runner.
         """
 
         if entry.settings.execution != "client" or len(turn.tool_calls) != 1:
@@ -3451,8 +3452,6 @@ class AgentServerService:
         if not isinstance(argv, list):
             return turn
         command = arguments.get("command")
-        if argv and isinstance(command, str) and argv[0] == command:
-            argv = argv[1:]
         written = AgentServerService._written_files(entry)
         supplied_working_directory = arguments.get("working_directory")
         working_directory = supplied_working_directory
