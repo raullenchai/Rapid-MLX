@@ -215,6 +215,22 @@ def test_native_request_helper_counts_a_length_terminal_token():
     assert completion == 2
 
 
+def test_native_request_sampling_comes_from_request_fields():
+    # Sampling is configured per request inside the generator (each
+    # MLLMBatchRequest's temperature/top_p builds its sampler via
+    # _request_sampler and the homogeneous-batch fast path) — there is no
+    # baked generator-level sampler to fall back on. The request must
+    # carry the requested temperature and the lane-default top_p.
+    from rapid_mlx.benchmark import _run_native_mllm_request
+
+    generator = _FakeGenerator(
+        [[_response(1, finish_reason="stop", token_is_stop_token=True)]]
+    )
+    _run_native_mllm_request(generator, "p", max_tokens=1, temperature=0.0)
+    request = generator.inserted
+    assert (request.temperature, request.top_p) == (0.0, 0.9)
+
+
 def test_native_request_helper_ignores_foreign_uids_and_makes_unique_ids():
     from rapid_mlx.benchmark import _run_native_mllm_request
 

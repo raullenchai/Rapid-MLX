@@ -722,12 +722,14 @@ def image_to_base64(img: "Image.Image", format: str = "JPEG") -> str:
 def build_bench_generator(model, processor, max_tokens: int):
     """Build the serialized-lane generator shared by the MLLM benchmarks.
 
-    Mirrors the server's MLLMScheduler construction: sampling is derived
-    per request from the request fields, and the stop-token set is the
-    processor tokenizer's EOS.
+    Mirrors the server's MLLMScheduler construction: the stop-token set is
+    the processor tokenizer's EOS, and sampling is configured per request
+    inside the generator — each ``MLLMBatchRequest``'s temperature/top_p
+    builds its sampler (``_request_sampler`` and the homogeneous-batch
+    fast path). The generator-level ``sampler`` argument is a degenerate
+    no-request fallback that real requests never hit, so it is left at
+    the argmax default instead of baking in a misleading configuration.
     """
-    from mlx_lm.sample_utils import make_sampler
-
     from rapid_mlx.mllm_batch_generator import MLLMBatchGenerator
 
     stop_tokens = set()
@@ -738,7 +740,6 @@ def build_bench_generator(model, processor, max_tokens: int):
         model=model,
         processor=processor,
         stop_tokens=stop_tokens,
-        sampler=make_sampler(temp=0.7, top_p=0.9),
         max_tokens=max_tokens,
     )
 
@@ -762,10 +763,13 @@ def _run_native_mllm_request(
     Returns ``(text, generated_token_count, prompt_token_count)``. Insert →
     drain, decoding the accumulated token ids at the end — the same shape
     the scheduler's detokenizer pool produces for streamed server requests.
-    The terminal stop token is a control sentinel, not generated text, and
-    is counted in neither the decoded output nor the token count (a
-    ``finish_reason="length"`` cutoff's final token is a real emitted token
-    and stays counted).
+    Sampling is configured from the request fields: ``temperature`` rides
+    on the ``MLLMBatchRequest`` and the generator builds the request's
+    sampler from it (with the request's ``top_p``). The terminal stop
+    token is a control sentinel, not generated text, and is counted in
+    neither the decoded output nor the token count (a
+    ``finish_reason="length"`` cutoff's final token is a real emitted
+    token and stays counted).
     """
     from rapid_mlx.mllm_batch_generator import MLLMBatchRequest
 
