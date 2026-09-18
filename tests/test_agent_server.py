@@ -4538,11 +4538,8 @@ def test_local_run_normalizer_canonicalizes_recovered_shell_recipe_paths():
             ]
         }
     )
-    assert (
-        _normalize_local_workspace_turn("run the script", junk)
-        .tool_calls[0]
-        .arguments["timeout_seconds"]
-        == "soon"
+    assert "timeout_seconds" not in (
+        _normalize_local_workspace_turn("run the script", junk).tool_calls[0].arguments
     )
     fractional = timed.model_copy(
         update={
@@ -4559,11 +4556,10 @@ def test_local_run_normalizer_canonicalizes_recovered_shell_recipe_paths():
             ]
         }
     )
-    assert (
+    assert "timeout_seconds" not in (
         _normalize_local_workspace_turn("run the script", fractional)
         .tool_calls[0]
-        .arguments["timeout_seconds"]
-        == 12.5
+        .arguments
     )
     # "run <binary>" after a compile: the binary is the command.
     run_turn = AgentModelTurn(

@@ -1567,7 +1567,7 @@ def _normalize_local_workspace_turn(goal: str, turn: AgentModelTurn) -> AgentMod
         # finite float merely because Python considers it numeric: that would
         # turn a recoverable small-model shape error into a client decode
         # failure before the approval sheet can be shown.
-        if timeout is not None:
+        if type(timeout) is int:
             arguments["timeout_seconds"] = timeout
     else:
         return turn

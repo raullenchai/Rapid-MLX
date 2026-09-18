@@ -1312,13 +1312,14 @@ enum LocalWorkspaceTools {
     ) -> [String] {
         // Resolve symlinks the same way the sandbox profile does.
         let homePath = canonicalPath(home.standardizedFileURL.path)
+        let commandName = command.split(separator: "/").last.map(String.init) ?? command
         let pathIndexes: Set<Int>
-        switch command {
+        switch commandName {
         case "clang", "cc", "gcc":
             pathIndexes = Set(arguments.indices)
         case "python3", "node", "ruby":
             let optionOperands: Set<String>
-            switch command {
+            switch commandName {
             case "python3": optionOperands = ["-W", "-X"]
             case "node": optionOperands = ["-r", "--require", "--loader", "--import", "--conditions"]
             default: optionOperands = ["-I", "-r", "-C", "-E"]
