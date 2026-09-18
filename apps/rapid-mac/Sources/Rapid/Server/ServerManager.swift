@@ -700,6 +700,7 @@ final class ServerManager {
     /// Alias displaced by the first reservation in a serialized benchmark
     /// ownership chain. Captured on MainActor at the reservation boundary.
     private var communityBenchmarkDisplacedAlias: String?
+    private var communityBenchmarkRestorationInFlight = false
     private var communityBenchmarkWaiters: [
         (
             id: UUID,
@@ -3265,7 +3266,7 @@ final class ServerManager {
         // its cancelled subprocess. Serialize benchmark ownership so two
         // heavyweight local runners never overlap in unified memory.
         let reservation = UUID()
-        if communityBenchmarkReserved {
+        if communityBenchmarkReserved || communityBenchmarkRestorationInFlight {
             let waiterID = UUID()
             _ = try await withTaskCancellationHandler {
                 try await withCheckedThrowingContinuation {
@@ -3350,6 +3351,37 @@ final class ServerManager {
         guard !communityBenchmarkReserved else { return nil }
         defer { communityBenchmarkDisplacedAlias = nil }
         return communityBenchmarkDisplacedAlias
+    }
+
+    /// Release the final benchmark owner only after its displaced model has
+    /// finished restoring. New benchmark owners queue behind that restoration,
+    /// so they cannot race another heavyweight process into unified memory.
+    func finishCommunityBenchmark(
+        _ reservation: UUID,
+        restoringWith restore: @escaping @MainActor (String) async -> Void
+    ) {
+        guard communityBenchmarkReservations.remove(reservation) != nil else { return }
+        guard !communityBenchmarkReserved else { return }
+        if !communityBenchmarkWaiters.isEmpty {
+            let next = communityBenchmarkWaiters.removeFirst()
+            communityBenchmarkReservations.insert(next.reservation)
+            next.continuation.resume(returning: next.reservation)
+            return
+        }
+        let alias = communityBenchmarkDisplacedAlias
+        communityBenchmarkDisplacedAlias = nil
+        guard let alias else { return }
+        communityBenchmarkRestorationInFlight = true
+        Task { @MainActor [weak self] in
+            await restore(alias)
+            guard let self else { return }
+            self.communityBenchmarkRestorationInFlight = false
+            if !self.communityBenchmarkWaiters.isEmpty {
+                let next = self.communityBenchmarkWaiters.removeFirst()
+                self.communityBenchmarkReservations.insert(next.reservation)
+                next.continuation.resume(returning: next.reservation)
+            }
+        }
     }
 
     /// Atomically replace a foreground benchmark lease with a quarantine

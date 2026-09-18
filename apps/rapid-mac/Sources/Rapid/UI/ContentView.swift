@@ -1250,12 +1250,27 @@ struct ContentView: View {
                         try await server.prepareForCommunityBenchmark()
                     },
                     releaseServer: { reservation in
-                        if let alias = server.finishCommunityBenchmark(reservation) {
-                            // Same path as the picker's Start action, so the
-                            // reload honours residency, memory guards, and
-                            // catalog hints exactly as a manual start would.
-                            startModel(alias)
-                        }
+                        server.finishCommunityBenchmark(
+                            reservation,
+                            restoringWith: { restoredAlias in
+                                let entry = catalogEntries.first {
+                                    $0.alias == restoredAlias
+                                }
+                                let hint = entry.map {
+                                    ServerManager.CatalogEntryHint(
+                                        entry: $0,
+                                        generation: catalogGeneration
+                                    )
+                                }
+                                _ = await server.ensureServing(
+                                    alias: restoredAlias,
+                                    hfPath: entry?.hfRepo,
+                                    estimatedMemoryGB: nil,
+                                    replacementGroup: .assistant,
+                                    catalogEntryHint: hint
+                                )
+                            }
+                        )
                     },
                     retainServerDuringDeferredReap: {
                         server.retainCommunityBenchmarkDuringDeferredReap($0)

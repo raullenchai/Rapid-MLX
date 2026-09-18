@@ -300,6 +300,37 @@ struct ServerRuntimeCapabilitiesTests {
         #expect(idle.finishCommunityBenchmark(idleReservation) == nil)
     }
 
+    @Test("Community Benchmark keeps lifecycle reserved while restoring the displaced model")
+    @MainActor
+    func benchmarkRestorationBlocksNextOwner() async throws {
+        let manager = ServerManager(testingState: .ready(alias: "qwen3.5-4b"))
+        let firstReservation = try await manager.prepareForCommunityBenchmark()
+        let restoreGate = RuntimeProbeGate()
+
+        manager.finishCommunityBenchmark(
+            firstReservation,
+            restoringWith: { alias in
+                #expect(alias == "qwen3.5-4b")
+                await restoreGate.wait()
+            }
+        )
+        await restoreGate.waitUntilEntered()
+
+        var replacementAcquired = false
+        let replacement = Task { @MainActor in
+            let reservation = try await manager.prepareForCommunityBenchmark()
+            replacementAcquired = true
+            return reservation
+        }
+        for _ in 0..<10 { await Task.yield() }
+        #expect(!replacementAcquired)
+
+        await restoreGate.release()
+        let replacementReservation = try await replacement.value
+        #expect(replacementAcquired)
+        manager.finishCommunityBenchmark(replacementReservation)
+    }
+
     @Test("Deferred reap quarantine blocks the next benchmark owner")
     @MainActor
     func benchmarkDeferredReapTransfersReservation() async throws {
