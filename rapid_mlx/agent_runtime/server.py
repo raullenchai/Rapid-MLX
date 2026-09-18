@@ -1010,7 +1010,6 @@ def _normalize_local_workspace_turn(goal: str, turn: AgentModelTurn) -> AgentMod
                 "python3",
                 "node",
                 "ruby",
-                "make",
             }
             recovered: list[str] | None = None
             for segment in segments:

@@ -458,8 +458,7 @@ def test_local_workspace_default_path_is_harness_owned_and_user_path_is_preserve
                 name="local_run",
                 arguments={
                     "command": (
-                        "cd /Users/alice/Documents/project && gcc main.c "
-                        "&& ./main"
+                        "cd /Users/alice/Documents/project && gcc main.c && ./main"
                     )
                 },
             )

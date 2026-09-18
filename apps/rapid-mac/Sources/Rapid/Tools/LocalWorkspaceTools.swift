@@ -1,4 +1,5 @@
 import Darwin
+import CryptoKit
 import Foundation
 
 /// A deliberately small local-computer surface for conversational work.
@@ -7,7 +8,7 @@ import Foundation
 /// per-call approval.
 enum LocalWorkspaceTools {
     private static let allowedCommands = Set([
-        "clang", "cc", "gcc", "go", "swift", "python3", "node", "ruby", "make",
+        "clang", "cc", "gcc", "go", "swift", "python3", "node", "ruby",
     ])
 
     private struct FileIdentity: Equatable, Sendable {
@@ -75,10 +76,18 @@ enum LocalWorkspaceTools {
         let executable: PinnedPath
         let processArguments: [String]
         let helperClass: HelperClass
+        let executableDigest: Data?
+    }
+
+    private struct ApprovedWrite: @unchecked Sendable {
+        let arguments: WriteArgs
+        let parent: PinnedPath
+        let filename: String
+        let expectedIdentity: FileIdentity?
     }
 
     private enum HelperClass: Sendable {
-        case none, compiler, make, swift, go
+        case none, compiler, swift, go
     }
 
     private final class BoundedOutputBuffer: @unchecked Sendable {
@@ -264,6 +273,7 @@ enum LocalWorkspaceTools {
         }
         let approvedPath: PinnedPath?
         let approvedRun: ApprovedRun?
+        let approvedWrite: ApprovedWrite?
         do {
             switch name {
             case "local_search":
@@ -273,6 +283,7 @@ enum LocalWorkspaceTools {
                     presentedURL: validatedLexicalURL(args.path)
                 )
                 approvedRun = nil
+                approvedWrite = nil
             case "local_read", "local_trash":
                 let args = try requireDecoded(PathArgs.self, call.function.arguments)
                 approvedPath = try PinnedPath(
@@ -280,13 +291,21 @@ enum LocalWorkspaceTools {
                     presentedURL: validatedLexicalURL(args.path)
                 )
                 approvedRun = nil
+                approvedWrite = nil
+            case "local_write":
+                let args = try requireDecoded(WriteArgs.self, call.function.arguments)
+                approvedWrite = try prepareWrite(args)
+                approvedPath = nil
+                approvedRun = nil
             case "local_run":
                 let args = try requireDecoded(RunArgs.self, call.function.arguments)
                 approvedRun = try prepareRun(args)
                 approvedPath = nil
+                approvedWrite = nil
             default:
                 approvedPath = nil
                 approvedRun = nil
+                approvedWrite = nil
             }
         } catch {
             return failure("\(name) error: \(error.localizedDescription)", executed: false)
@@ -311,7 +330,7 @@ enum LocalWorkspaceTools {
             switch name {
             case "local_search": return search(call.function.arguments, approved: approvedPath)
             case "local_read": return read(approved: approvedPath)
-            case "local_write": return write(call.function.arguments)
+            case "local_write": return write(approved: approvedWrite)
             case "local_trash": return trash(approved: approvedPath)
             case "local_run": return runCommand(approved: approvedRun)
             default: return failure("Unknown local tool \(name)", executed: false)
@@ -350,6 +369,12 @@ enum LocalWorkspaceTools {
             case "local_trash":
                 guard let args = decode(PathArgs.self, arguments) else {
                     return failure("local_trash arguments are invalid", executed: false)
+                }
+                let lexicalURL = try validatedLexicalURL(args.path)
+                var lexicalMetadata = stat()
+                guard lexicalURL.path.withCString({ lstat($0, &lexicalMetadata) }) == 0,
+                      lexicalMetadata.st_mode & S_IFMT != S_IFLNK else {
+                    return failure("local_trash refuses symbolic links", executed: false)
                 }
                 let url = try safeURL(args.path)
                 let values = try url.resourceValues(forKeys: [.isRegularFileKey, .isDirectoryKey])
@@ -467,15 +492,25 @@ enum LocalWorkspaceTools {
         return FileIdentity(device: metadata.st_dev, inode: metadata.st_ino)
     }
 
-    /// Keep the approved filename as the filename that is actually opened.
-    /// Writes reject symlinked parent paths rather than silently resolving the
-    /// approval to a different destination.
-    private static func safeWriteURL(_ path: String) throws -> URL {
-        let lexicalURL = try validatedLexicalURL(path)
+    private static func prepareWrite(_ args: WriteArgs) throws -> ApprovedWrite {
+        let lexicalURL = try validatedLexicalURL(args.path)
         let lexicalParent = lexicalURL.deletingLastPathComponent()
         var isDirectory: ObjCBool = false
         if !FileManager.default.fileExists(atPath: lexicalParent.path, isDirectory: &isDirectory) {
-            try FileManager.default.createDirectory(at: lexicalParent, withIntermediateDirectories: true)
+            let home = FileManager.default.homeDirectoryForCurrentUser.standardizedFileURL
+                .resolvingSymlinksInPath()
+            guard lexicalParent.path == home.appendingPathComponent("Rapid Workspace").path else {
+                throw LocalError("local_write parent folder must already exist")
+            }
+            let homeFD = Darwin.open(home.path, O_RDONLY | O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC)
+            guard homeFD >= 0 else { throw posixError("could not open the home folder") }
+            defer { Darwin.close(homeFD) }
+            let status = "Rapid Workspace".withCString {
+                mkdirat(homeFD, $0, mode_t(0o700))
+            }
+            guard status == 0 || errno == EEXIST else {
+                throw posixError("could not create Rapid Workspace")
+            }
             isDirectory = true
         }
         guard isDirectory.boolValue else { throw LocalError("local_write parent path is not a folder") }
@@ -483,7 +518,21 @@ enum LocalWorkspaceTools {
         guard resolvedParent.path == lexicalParent.path else {
             throw LocalError("local_write parent path may not contain symbolic links")
         }
-        return resolvedParent.appendingPathComponent(lexicalURL.lastPathComponent, isDirectory: false)
+        let filename = lexicalURL.lastPathComponent
+        guard !filename.isEmpty, filename != ".", filename != "..", !filename.contains("/") else {
+            throw LocalError("destination filename is invalid")
+        }
+        let parent = try PinnedPath(url: resolvedParent, directory: true)
+        let expectedIdentity = try entryIdentity(
+            parentDescriptor: parent.descriptor,
+            filename: filename
+        )
+        return ApprovedWrite(
+            arguments: args,
+            parent: parent,
+            filename: filename,
+            expectedIdentity: expectedIdentity
+        )
     }
 
     private static func search(
@@ -662,35 +711,39 @@ enum LocalWorkspaceTools {
         } catch { return failure("local_read error: \(error.localizedDescription)") }
     }
 
-    private static func write(_ arguments: String) -> ToolCallResult {
-        guard let args = decode(WriteArgs.self, arguments) else { return failure("local_write arguments are invalid") }
+    private static func write(approved: ApprovedWrite?) -> ToolCallResult {
+        guard let approved else { return failure("local_write approval expired") }
+        let args = approved.arguments
         guard args.content.utf8.count <= 512_000 else { return failure("local_write content exceeds 512 KB") }
         do {
-            let url = try safeWriteURL(args.path)
-            let parent = url.deletingLastPathComponent()
-            var isDirectory: ObjCBool = false
-            _ = FileManager.default.fileExists(atPath: parent.path, isDirectory: &isDirectory)
-            guard isDirectory.boolValue else {
-                return failure("local_write parent path is not a folder")
-            }
-            try secureWrite(Data(args.content.utf8), to: url, overwrite: args.overwrite == true)
+            try approved.parent.verifyPathStillNamesPinnedObject()
+            try secureWrite(
+                Data(args.content.utf8),
+                approved: approved,
+                overwrite: args.overwrite == true
+            )
+            let url = approved.parent.url.appendingPathComponent(approved.filename)
             return ToolCallResult(toolCallID: "", content: "Wrote \(args.content.utf8.count) bytes to \(url.path)")
         } catch { return failure("local_write error: \(error.localizedDescription)") }
     }
 
-    private static func secureWrite(_ data: Data, to url: URL, overwrite: Bool) throws {
-        let parent = url.deletingLastPathComponent()
-        let parentFD = Darwin.open(parent.path, O_RDONLY | O_DIRECTORY | O_CLOEXEC)
-        guard parentFD >= 0 else { throw posixError("could not open the destination folder") }
-        defer { Darwin.close(parentFD) }
-
-        let finalName = url.lastPathComponent
-        guard !finalName.isEmpty, finalName != ".", finalName != "..", !finalName.contains("/") else {
-            throw LocalError("destination filename is invalid")
+    private static func secureWrite(
+        _ data: Data, approved: ApprovedWrite, overwrite: Bool
+    ) throws {
+        let parentFD = approved.parent.descriptor
+        let finalName = approved.filename
+        let currentIdentity = try entryIdentity(
+            parentDescriptor: parentFD,
+            filename: finalName
+        )
+        guard currentIdentity == approved.expectedIdentity else {
+            throw LocalError("the approved destination changed while approval was open")
+        }
+        if !overwrite, currentIdentity != nil {
+            throw LocalError("refused to replace an existing file without overwrite=true")
         }
         let temporaryName = ".rapid-write-\(UUID().uuidString).tmp"
-        let openedName = overwrite ? temporaryName : finalName
-        let descriptor = openedName.withCString {
+        let descriptor = temporaryName.withCString {
             Darwin.openat(
                 parentFD,
                 $0,
@@ -699,12 +752,9 @@ enum LocalWorkspaceTools {
             )
         }
         guard descriptor >= 0 else {
-            if errno == EEXIST, !overwrite {
-                throw LocalError("refused to replace an existing file without overwrite=true")
-            }
             throw posixError("could not create the destination file")
         }
-        var shouldRemoveTemporary = overwrite
+        var shouldRemoveTemporary = true
         defer {
             Darwin.close(descriptor)
             if shouldRemoveTemporary {
@@ -728,15 +778,68 @@ enum LocalWorkspaceTools {
         guard Darwin.fsync(descriptor) == 0 else {
             throw posixError("could not sync the destination file")
         }
-        if overwrite {
-            let renamed = temporaryName.withCString { temporaryPointer in
-                finalName.withCString { finalPointer in
-                    Darwin.renameat(parentFD, temporaryPointer, parentFD, finalPointer)
+
+        if let expectedIdentity = approved.expectedIdentity {
+            guard overwrite else {
+                throw LocalError("refused to replace an existing file without overwrite=true")
+            }
+            let backupName = ".rapid-replaced-\(UUID().uuidString).tmp"
+            let movedOriginal = finalName.withCString { finalPointer in
+                backupName.withCString { backupPointer in
+                    renameatx_np(parentFD, finalPointer, parentFD, backupPointer, UInt32(RENAME_EXCL))
                 }
             }
-            guard renamed == 0 else { throw posixError("could not replace the destination file") }
+            guard movedOriginal == 0 else { throw posixError("could not secure the approved destination") }
+            let movedIdentity = try entryIdentity(
+                parentDescriptor: parentFD,
+                filename: backupName
+            )
+            guard movedIdentity == expectedIdentity else {
+                _ = backupName.withCString { backupPointer in
+                    finalName.withCString { finalPointer in
+                        renameatx_np(parentFD, backupPointer, parentFD, finalPointer, UInt32(RENAME_EXCL))
+                    }
+                }
+                throw LocalError("the approved destination changed while approval was open")
+            }
+            let installed = temporaryName.withCString { temporaryPointer in
+                finalName.withCString { finalPointer in
+                    renameatx_np(parentFD, temporaryPointer, parentFD, finalPointer, UInt32(RENAME_EXCL))
+                }
+            }
+            if installed != 0 {
+                _ = backupName.withCString { backupPointer in
+                    finalName.withCString { finalPointer in
+                        renameatx_np(parentFD, backupPointer, parentFD, finalPointer, UInt32(RENAME_EXCL))
+                    }
+                }
+                throw posixError("could not replace the destination file")
+            }
+            backupName.withCString { _ = Darwin.unlinkat(parentFD, $0, 0) }
+            shouldRemoveTemporary = false
+        } else {
+            let installed = temporaryName.withCString { temporaryPointer in
+                finalName.withCString { finalPointer in
+                    renameatx_np(parentFD, temporaryPointer, parentFD, finalPointer, UInt32(RENAME_EXCL))
+                }
+            }
+            guard installed == 0 else { throw posixError("could not create the destination file") }
             shouldRemoveTemporary = false
         }
+    }
+
+    private static func entryIdentity(
+        parentDescriptor: Int32, filename: String
+    ) throws -> FileIdentity? {
+        var metadata = stat()
+        let status = filename.withCString {
+            fstatat(parentDescriptor, $0, &metadata, AT_SYMLINK_NOFOLLOW)
+        }
+        if status == 0 {
+            return FileIdentity(device: metadata.st_dev, inode: metadata.st_ino)
+        }
+        if errno == ENOENT { return nil }
+        throw posixError("could not inspect the destination")
     }
 
     private static func posixError(_ context: String) -> LocalError {
@@ -822,14 +925,6 @@ enum LocalWorkspaceTools {
             if let sdk = sdkCandidates.first(where: { FileManager.default.fileExists(atPath: $0) }) {
                 processArguments.insert(contentsOf: ["-isysroot", sdk], at: 0)
             }
-        } else if args.command == "make" {
-            executable = try firstExecutable([
-                "/Applications/Xcode.app/Contents/Developer/usr/bin/make",
-                "/Library/Developer/CommandLineTools/usr/bin/make",
-                "/usr/bin/make",
-            ], command: args.command)
-            executablePresentedURL = nil
-            helperClass = .make
         } else if allowedCommands.contains(args.command) {
             let candidates: [String]
             switch args.command {
@@ -855,18 +950,28 @@ enum LocalWorkspaceTools {
             helperClass = .none
         }
 
+        let pinnedExecutable = try PinnedPath(
+            url: executable.resolvingSymlinksInPath(), directory: false,
+            presentedURL: executablePresentedURL
+        )
+        var executableMetadata = stat()
+        guard fstat(pinnedExecutable.descriptor, &executableMetadata) == 0 else {
+            throw posixError("could not inspect the approved executable")
+        }
+        let executableDigest = executableMetadata.st_uid == 0
+            && executableMetadata.st_mode & mode_t(0o022) == 0
+            ? nil
+            : try digest(descriptor: pinnedExecutable.descriptor)
         return try ApprovedRun(
             arguments: args,
             workingDirectory: PinnedPath(
                 url: cwd, directory: true,
                 presentedURL: try validatedLexicalURL(requestedWorkingDirectory)
             ),
-            executable: PinnedPath(
-                url: executable.resolvingSymlinksInPath(), directory: false,
-                presentedURL: executablePresentedURL
-            ),
+            executable: pinnedExecutable,
             processArguments: processArguments,
-            helperClass: helperClass
+            helperClass: helperClass,
+            executableDigest: executableDigest
         )
     }
 
@@ -893,7 +998,11 @@ enum LocalWorkspaceTools {
             guard created == 0 else { throw posixError("could not create the private command folder") }
             let temporary = cwd.appendingPathComponent(temporaryName)
             defer { try? FileManager.default.removeItem(at: temporary) }
-            let executable = try stableExecutable(approved.executable, in: temporary)
+            let executable = try stableExecutable(
+                approved.executable,
+                expectedDigest: approved.executableDigest,
+                in: temporary
+            )
             let sandboxArguments = [
                 "-p", sandboxProfile(
                     workingDirectory: cwd,
@@ -934,20 +1043,18 @@ enum LocalWorkspaceTools {
     }
 
     private static func stableExecutable(
-        _ approved: PinnedPath, in temporaryDirectory: URL
+        _ approved: PinnedPath,
+        expectedDigest: Data?,
+        in temporaryDirectory: URL
     ) throws -> URL {
-        var before = stat()
-        guard fstat(approved.descriptor, &before) == 0 else {
-            throw posixError("could not inspect the approved executable")
-        }
-        if before.st_uid == 0, before.st_mode & mode_t(0o022) == 0 {
+        if expectedDigest == nil {
             return approved.url
         }
 
         let destination = temporaryDirectory.appendingPathComponent("approved-tool")
         let output = Darwin.open(
             destination.path,
-            O_WRONLY | O_CREAT | O_EXCL | O_NOFOLLOW | O_CLOEXEC,
+            O_RDWR | O_CREAT | O_EXCL | O_NOFOLLOW | O_CLOEXEC,
             mode_t(0o700)
         )
         guard output >= 0 else { throw posixError("could not stage the approved executable") }
@@ -972,17 +1079,32 @@ enum LocalWorkspaceTools {
                 written += result
             }
         }
-        var after = stat()
-        guard fstat(approved.descriptor, &after) == 0,
-              before.st_size == after.st_size,
-              before.st_mtimespec.tv_sec == after.st_mtimespec.tv_sec,
-              before.st_mtimespec.tv_nsec == after.st_mtimespec.tv_nsec else {
-            throw LocalError("the approved executable changed while it was being staged")
+        guard let expectedDigest,
+              try digest(descriptor: output) == expectedDigest else {
+            throw LocalError("the approved executable changed after approval")
         }
         guard fsync(output) == 0, fchmod(output, mode_t(0o700)) == 0 else {
             throw posixError("could not finalize the approved executable")
         }
         return destination
+    }
+
+    private static func digest(descriptor: Int32) throws -> Data {
+        guard lseek(descriptor, 0, SEEK_SET) >= 0 else {
+            throw posixError("could not hash the approved executable")
+        }
+        var hasher = SHA256()
+        var buffer = [UInt8](repeating: 0, count: 64 * 1_024)
+        while true {
+            let count = Darwin.read(descriptor, &buffer, buffer.count)
+            if count == 0 { break }
+            if count < 0 {
+                if errno == EINTR { continue }
+                throw posixError("could not hash the approved executable")
+            }
+            hasher.update(data: Data(buffer.prefix(count)))
+        }
+        return Data(hasher.finalize())
     }
 
     private struct CommandOutcome {
@@ -1208,15 +1330,6 @@ enum LocalWorkspaceTools {
                 "(subpath \"/Library/Developer/CommandLineTools/usr/bin\")",
                 "(literal \"/usr/bin/ld\")",
             ]
-        case .make:
-            executableFilters += [
-                "(literal \"/bin/sh\")",
-                "(subpath \"/Applications/Xcode.app/Contents/Developer/Toolchains\")",
-                "(subpath \"/Applications/Xcode.app/Contents/Developer/usr/bin\")",
-                "(subpath \"/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/usr/bin\")",
-                "(subpath \"/Library/Developer/CommandLineTools/usr/bin\")",
-                "(literal \"/usr/bin/ld\")",
-            ]
         case .swift:
             executableFilters += [
                 "(subpath \"/Applications/Xcode.app/Contents/Developer/Toolchains\")",
@@ -1253,8 +1366,8 @@ enum LocalWorkspaceTools {
         (allow file-write*
             (subpath \(quoted(workingDirectory.path)))
             (subpath \(quoted(temporaryDirectory.path))))
-        ; Interpreters may execute themselves recursively. Compilers and make
-        ; additionally receive only their explicit platform toolchain helpers.
+        ; Interpreters may execute themselves recursively. Compilers receive
+        ; only their explicit platform toolchain helpers.
         (deny process-exec
             (require-not (require-any
                 \(processFilters))))

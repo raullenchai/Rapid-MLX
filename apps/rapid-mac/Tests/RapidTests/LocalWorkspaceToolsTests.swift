@@ -143,6 +143,60 @@ final class LocalWorkspaceToolsTests {
         #expect((try output.resourceValues(forKeys: [.isSymbolicLinkKey])).isSymbolicLink != true)
     }
 
+    @Test("write rejects a destination replaced while approval is open")
+    func writePinsDestinationIdentity() async throws {
+        let root = try fixtureDirectory()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let output = root.appendingPathComponent("output.txt")
+        try "approved-original".write(to: output, atomically: true, encoding: .utf8)
+        let arguments = try #require(String(data: JSONSerialization.data(withJSONObject: [
+            "path": output.path, "content": "approved-output", "overwrite": true,
+        ]), encoding: .utf8))
+        let store = approval()
+        let task = Task {
+            await LocalWorkspaceTools.run(
+                ToolCall(id: "write", name: "local_write", arguments: arguments), approval: store
+            )
+        }
+        while store.pendingRequest == nil { await Task.yield() }
+        try FileManager.default.removeItem(at: output)
+        try "replacement".write(to: output, atomically: true, encoding: .utf8)
+        store.answer(.allowOnce)
+
+        let result = await task.value
+        #expect(result.isError)
+        #expect(result.content.contains("destination changed"))
+        #expect(try String(contentsOf: output, encoding: .utf8) == "replacement")
+    }
+
+    @Test("write rejects a parent folder replaced while approval is open")
+    func writePinsParentIdentity() async throws {
+        let root = try fixtureDirectory()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let parent = root.appendingPathComponent("approved", isDirectory: true)
+        let moved = root.appendingPathComponent("moved", isDirectory: true)
+        try FileManager.default.createDirectory(at: parent, withIntermediateDirectories: false)
+        let output = parent.appendingPathComponent("output.txt")
+        let arguments = try #require(String(data: JSONSerialization.data(withJSONObject: [
+            "path": output.path, "content": "must-not-write",
+        ]), encoding: .utf8))
+        let store = approval()
+        let task = Task {
+            await LocalWorkspaceTools.run(
+                ToolCall(id: "write", name: "local_write", arguments: arguments), approval: store
+            )
+        }
+        while store.pendingRequest == nil { await Task.yield() }
+        try FileManager.default.moveItem(at: parent, to: moved)
+        try FileManager.default.createDirectory(at: parent, withIntermediateDirectories: false)
+        store.answer(.allowOnce)
+
+        let result = await task.value
+        #expect(result.isError)
+        #expect(!FileManager.default.fileExists(atPath: output.path))
+        #expect(!FileManager.default.fileExists(atPath: moved.appendingPathComponent("output.txt").path))
+    }
+
     @Test("run uses argv without a shell and captures output")
     func commandRunsWithoutShell() async throws {
         let root = try fixtureDirectory()
@@ -161,8 +215,8 @@ final class LocalWorkspaceToolsTests {
         #expect(result.content.contains("RAPID_LOCAL_OK"))
     }
 
-    @Test("run uses the same make allowlist during preflight and execution")
-    func commandAllowsMake() async throws {
+    @Test("run rejects make because Makefiles execute shell recipes")
+    func commandRejectsMake() async throws {
         let root = try fixtureDirectory()
         defer { try? FileManager.default.removeItem(at: root) }
         let arguments = try #require(String(data: JSONSerialization.data(withJSONObject: [
@@ -171,9 +225,13 @@ final class LocalWorkspaceToolsTests {
             "working_directory": root.path,
         ]), encoding: .utf8))
 
-        let result = await runApproved(name: "local_run", arguments: arguments, store: approval())
+        let store = approval()
+        let result = await LocalWorkspaceTools.run(
+            ToolCall(id: "make", name: "local_run", arguments: arguments), approval: store
+        )
 
-        #expect(!result.isError, Comment(rawValue: result.content))
+        #expect(result.isError)
+        #expect(store.pendingRequest == nil)
     }
 
     @Test("run refuses a workspace that contains protected folders")
@@ -333,6 +391,39 @@ final class LocalWorkspaceToolsTests {
         #expect(!result.content.contains("SHOULD_NOT_RUN"))
     }
 
+    @Test("run rejects executable bytes changed while approval is open")
+    func commandPinsApprovedExecutableDigest() async throws {
+        let root = try fixtureDirectory()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let executable = root.appendingPathComponent("local-tool")
+        let original = Data("#!/bin/sh\necho ORIGINAL\n".utf8)
+        try original.write(to: executable)
+        try FileManager.default.setAttributes(
+            [.posixPermissions: 0o700], ofItemAtPath: executable.path
+        )
+        let arguments = try #require(String(data: JSONSerialization.data(withJSONObject: [
+            "command": executable.path,
+            "working_directory": root.path,
+        ]), encoding: .utf8))
+        let store = approval()
+        let task = Task {
+            await LocalWorkspaceTools.run(
+                ToolCall(id: "run", name: "local_run", arguments: arguments), approval: store
+            )
+        }
+        while store.pendingRequest == nil { await Task.yield() }
+        let handle = try FileHandle(forWritingTo: executable)
+        try handle.seek(toOffset: 0)
+        try handle.write(contentsOf: Data(repeating: 65, count: original.count))
+        try handle.close()
+        store.answer(.allowOnce)
+
+        let result = await task.value
+        #expect(result.isError)
+        #expect(result.content.contains("changed after approval"))
+        #expect(!result.content.contains("ORIGINAL"))
+    }
+
     @Test("protected paths are rejected case-insensitively before approval")
     func protectedPathCaseDoesNotBypassGuard() async {
         let store = approval()
@@ -456,36 +547,26 @@ final class LocalWorkspaceToolsTests {
         #expect(!result.content.contains("replacement"))
     }
 
-    @Test("trash refuses a symlink retargeted while approval is open")
-    func trashDoesNotFollowRetargetedSymlink() async throws {
+    @Test("trash rejects symbolic links before approval")
+    func trashRejectsSymbolicLinks() async throws {
         let root = try fixtureDirectory()
         defer { try? FileManager.default.removeItem(at: root) }
-        let first = root.appendingPathComponent("first.txt")
-        let second = root.appendingPathComponent("second.txt")
+        let target = root.appendingPathComponent("target.txt")
         let link = root.appendingPathComponent("current.txt")
-        try "one".write(to: first, atomically: true, encoding: .utf8)
-        try "two".write(to: second, atomically: true, encoding: .utf8)
-        try FileManager.default.createSymbolicLink(at: link, withDestinationURL: first)
+        try "one".write(to: target, atomically: true, encoding: .utf8)
+        try FileManager.default.createSymbolicLink(at: link, withDestinationURL: target)
         let store = approval()
-        let task = Task {
-            await LocalWorkspaceTools.run(
-                ToolCall(
-                    id: "trash", name: "local_trash",
-                    arguments: #"{"path":"\#(link.path)"}"#
-                ),
-                approval: store
-            )
-        }
-        while store.pendingRequest == nil { await Task.yield() }
-        try FileManager.default.removeItem(at: link)
-        try FileManager.default.createSymbolicLink(at: link, withDestinationURL: second)
-        store.answer(.allowOnce)
-
-        let result = await task.value
+        let result = await LocalWorkspaceTools.run(
+            ToolCall(
+                id: "trash", name: "local_trash",
+                arguments: #"{"path":"\#(link.path)"}"#
+            ),
+            approval: store
+        )
         #expect(result.isError)
-        #expect(result.content.contains("approved file changed"))
-        #expect(FileManager.default.fileExists(atPath: first.path))
-        #expect(FileManager.default.fileExists(atPath: second.path))
+        #expect(result.content.contains("symbolic links"))
+        #expect(store.pendingRequest == nil)
+        #expect(FileManager.default.fileExists(atPath: target.path))
     }
 
     @Test("read rejects files over its hard byte limit")
