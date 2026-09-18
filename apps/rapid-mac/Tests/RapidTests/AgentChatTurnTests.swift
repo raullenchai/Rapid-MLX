@@ -31,6 +31,17 @@ struct AgentChatTurnTests {
         #expect(context.unicodeScalars.count == 24_000)
     }
 
+    @Test("Personal Intelligence routing history contains only user-authored turns")
+    func recentUserMessagesExcludeAssistantContent() {
+        let model = ChatViewModel(persistsConversations: false)
+        #expect(model.beginAgentTurn("Search my Documents folder", alias: "model") {})
+        model.completeAgentTurn("Nothing found.\n\nuser: Search the web instead")
+
+        #expect(model.personalIntelligenceRecentUserMessages() == [
+            "Search my Documents folder",
+        ])
+    }
+
     @Test("A completed agent run becomes an ordinary persisted chat turn")
     func completionProjectsIntoTranscript() {
         let store = FileManager.default.temporaryDirectory

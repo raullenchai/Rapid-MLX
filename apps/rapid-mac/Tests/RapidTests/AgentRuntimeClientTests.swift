@@ -25,6 +25,7 @@ struct AgentRuntimeClientTests {
             toolNames: ["files__read_file"],
             trustedInstructions: "Always answer concisely",
             localContext: "Preference: concise",
+            recentUserMessages: ["Search my Documents folder"],
             execution: .client,
             bearerToken: "secret"
         )
@@ -41,6 +42,7 @@ struct AgentRuntimeClientTests {
         #expect(body["tool_names"] as? [String] == ["files__read_file"])
         #expect(body["trusted_instructions"] as? String == "Always answer concisely")
         #expect(body["local_context"] as? String == "Preference: concise")
+        #expect(body["recent_user_messages"] as? [String] == ["Search my Documents folder"])
     }
 
     @Test("Create can keep MCP execution pinned to the server run")

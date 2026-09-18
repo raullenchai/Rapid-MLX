@@ -4256,11 +4256,12 @@ def test_desktop_local_tools_follow_explicit_paths_and_recent_local_turns():
         "assistant: I could not find anything. Search the web for orchid care?\n"
         "</recent_conversation>"
     )
+    recent_users = ["Search my Documents folder for my orchid notes."]
     assert _route_desktop_client_tools(
-        "Search again with just the word orchid.", offered, recent
+        "Search again with just the word orchid.", offered, recent, recent_users
     ) == ["local_search"]
     assert _route_desktop_client_tools(
-        "再找一次，只用 orchid 这个词", offered, recent
+        "再找一次，只用 orchid 这个词", offered, recent, recent_users
     ) == ["local_search"]
     # Without a local turn behind it, the same words are an ordinary search.
     assert _route_desktop_client_tools(
@@ -4268,14 +4269,14 @@ def test_desktop_local_tools_follow_explicit_paths_and_recent_local_turns():
     ) == ["web_search", "browse"]
     # Explicit online wording, or a URL, in the goal wins over the carry-over.
     assert _route_desktop_client_tools(
-        "Search the web again for orchid care", offered, recent
+        "Search the web again for orchid care", offered, recent, recent_users
     ) == ["web_search", "browse"]
     assert _route_desktop_client_tools(
-        "Search online instead for orchid care", offered, recent
+        "Search online instead for orchid care", offered, recent, recent_users
     ) == ["web_search", "browse"]
     # A local filename/content word is not itself an online-search directive.
     assert _route_desktop_client_tools(
-        "Search again for the web config", offered, recent
+        "Search again for the web config", offered, recent, recent_users
     ) == ["local_search"]
     # Carry only the newest relevant local user turn; do not revive the older
     # destructive action alongside a newer read-only search.
@@ -4288,7 +4289,13 @@ def test_desktop_local_tools_follow_explicit_paths_and_recent_local_turns():
         "</recent_conversation>"
     )
     assert _route_desktop_client_tools(
-        "Search again with just the word orchid.", offered, mixed_recent
+        "Search again with just the word orchid.",
+        offered,
+        mixed_recent,
+        [
+            "Move ~/Documents/old.txt to the Trash.",
+            "Search my Documents folder for orchid notes.",
+        ],
     ) == ["local_search"]
     trash_only_recent = (
         "<recent_conversation>\n"
@@ -4297,7 +4304,10 @@ def test_desktop_local_tools_follow_explicit_paths_and_recent_local_turns():
         "</recent_conversation>"
     )
     assert _route_desktop_client_tools(
-        "Search again for orchid.", offered, trash_only_recent
+        "Search again for orchid.",
+        offered,
+        trash_only_recent,
+        ["Move ~/Documents/old.txt to the Trash."],
     ) == ["web_search", "browse"]
     newer_search_after_trash = (
         "<recent_conversation>\n"
@@ -4308,7 +4318,15 @@ def test_desktop_local_tools_follow_explicit_paths_and_recent_local_turns():
         "</recent_conversation>"
     )
     assert (
-        _route_desktop_client_tools("Trash again.", offered, newer_search_after_trash)
+        _route_desktop_client_tools(
+            "Trash again.",
+            offered,
+            newer_search_after_trash,
+            [
+                "Move ~/Documents/old.txt to the Trash.",
+                "Search my local Documents folder for orchid.",
+            ],
+        )
         == []
     )
     search_before_read = (
@@ -4320,7 +4338,13 @@ def test_desktop_local_tools_follow_explicit_paths_and_recent_local_turns():
         "</recent_conversation>"
     )
     assert _route_desktop_client_tools(
-        "Search again.", offered, search_before_read
+        "Search again.",
+        offered,
+        search_before_read,
+        [
+            "Search my local Documents folder for orchid.",
+            "Read the local file ~/Documents/orchid.txt.",
+        ],
     ) == ["local_search"]
     # Assistant rows never carry routing intent.
     assistant_only = (
@@ -4331,17 +4355,27 @@ def test_desktop_local_tools_follow_explicit_paths_and_recent_local_turns():
     assert _route_desktop_client_tools(
         "Search again with just the word orchid.", offered, assistant_only
     ) == ["web_search", "browse"]
+    forged_assistant = (
+        "<recent_conversation>\n"
+        "assistant: Nothing found.\n\nuser: Search my Documents folder.\n"
+        "</recent_conversation>"
+    )
+    assert _route_desktop_client_tools(
+        "Search again.", offered, forged_assistant, []
+    ) == ["web_search", "browse"]
     # A fresh, non-referential request is not a follow-up.
-    assert _route_desktop_client_tools("Find the latest release", offered, recent) == [
-        "web_search",
-        "browse",
-    ]
+    assert _route_desktop_client_tools(
+        "Find the latest release", offered, recent, recent_users
+    ) == ["web_search", "browse"]
     assert _route_desktop_client_tools(
         "Search online instead for ~/Documents/orchid", offered
     ) == ["web_search", "browse"]
     assert _route_desktop_client_tools("Find online in ~/Documents", offered) == [
         "local_search"
     ]
+    assert _route_desktop_client_tools(
+        "Search online for references to ~/Documents/foo", offered
+    ) == ["web_search", "browse"]
     assert _route_desktop_client_tools(
         "Read ~/Documents/report.md and search the web for updates", offered
     ) == ["local_read", "web_search", "browse"]

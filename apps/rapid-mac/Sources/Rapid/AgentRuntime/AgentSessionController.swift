@@ -160,6 +160,7 @@ final class AgentSessionController {
         toolNames: [String]? = nil,
         trustedInstructions: String? = nil,
         localContext: String? = nil,
+        recentUserMessages: [String]? = nil,
         clientToolExecutor: ClientToolExecutor? = nil,
         baseURL: URL,
         bearerToken: String?
@@ -197,6 +198,7 @@ final class AgentSessionController {
                         toolNames: toolNames,
                         trustedInstructions: trustedInstructions,
                         localContext: localContext,
+                        recentUserMessages: recentUserMessages,
                         execution: clientToolExecutor == nil ? .server : .client,
                         bearerToken: bearerToken
                     )

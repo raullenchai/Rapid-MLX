@@ -496,6 +496,27 @@ final class ChatViewModel {
         return context
     }
 
+    /// Structured user-authored history for intent routing. This travels next
+    /// to the quoted model context so assistant text cannot forge a `user:`
+    /// delimiter and grant itself a local follow-up tool.
+    func personalIntelligenceRecentUserMessages() -> [String] {
+        let maximumCharacters = 24_000
+        var remaining = maximumCharacters
+        var recent: [String] = []
+        for message in messages.reversed() {
+            guard remaining > 0, recent.count < 8 else { break }
+            guard message.status == .complete, message.role == .user else { continue }
+            let content = message.content.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !content.isEmpty else { continue }
+            let kept = String(String.UnicodeScalarView(
+                content.unicodeScalars.prefix(remaining)
+            ))
+            recent.append(kept)
+            remaining -= kept.unicodeScalars.count
+        }
+        return recent.reversed()
+    }
+
     /// Execute one server-issued client action through the same schema and
     /// registry boundary ordinary Chat uses. `executed` means dispatch crossed
     /// into the concrete built-in tool, not merely that Desktop handled it.

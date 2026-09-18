@@ -16,7 +16,7 @@ from collections.abc import Awaitable, Callable, Sequence
 from dataclasses import dataclass, field
 from decimal import Decimal, DecimalException, Inexact, Rounded, localcontext
 from threading import RLock
-from typing import Any, Literal, Protocol, cast
+from typing import Annotated, Any, Literal, Protocol, cast
 from urllib.parse import urlsplit
 
 from jsonschema import ValidationError as JSONSchemaValidationError
@@ -356,25 +356,6 @@ _ONLINE_INSTEAD = re.compile(
     r"(?:改为|改成|换成|转而).{0,20}(?:上网|联网|网上)",
     re.IGNORECASE,
 )
-
-
-def _recent_user_rows(local_context: str) -> list[str]:
-    """Return the user-authored rows of Desktop's quoted recent conversation.
-
-    Desktop serialises recent turns as ``role: content`` rows separated by
-    blank lines. Only the user's own words may carry routing intent; assistant
-    text is untrusted quoted data.
-    """
-
-    match = re.search(
-        r"<recent_conversation>\n(.*?)\n</recent_conversation>",
-        local_context,
-        re.DOTALL,
-    )
-    body = match.group(1) if match else local_context
-    return [
-        row[len("user: ") :] for row in body.split("\n\n") if row.startswith("user: ")
-    ]
 
 
 _INVENTED_HOME_PREFIX = re.compile(
@@ -1132,7 +1113,10 @@ def _follow_up_local_action(goal: str) -> str | None:
 
 
 def _route_desktop_client_tools(
-    goal: str, names: list[str], local_context: str | None = None
+    goal: str,
+    names: list[str],
+    local_context: str | None = None,
+    recent_user_messages: list[str] | None = None,
 ) -> list[str]:
     """Keep the Desktop tool surface relevant to this task.
 
@@ -1176,16 +1160,17 @@ def _route_desktop_client_tools(
         _EXPLICIT_SEARCH_ACTION.search(goal) is not None and not web_prohibited
     )
     local = _local_tool_intent(goal)
-    explicit_online_override = (
-        _ONLINE_INSTEAD.search(goal) is not None
-        or re.search(
-            r"\b(?:on|from|using|via)\s+(?:the\s+)?(?:web|internet)\b|"
-            r"\b(?:search|browse|find|look\s+up)\s+(?:the\s+)?(?:web|internet)\b|"
-            r"(?:上网|联网|网上)",
+    online_is_local_query = (
+        re.search(
+            r"\b(?:search|find|locate)\b.{0,80}\bonline\b.{0,40}"
+            r"\b(?:in|under|inside)\s+(?:~/|/Users/)",
             goal,
             re.IGNORECASE,
         )
         is not None
+    )
+    explicit_online_override = _ONLINE_INSTEAD.search(goal) is not None or (
+        _EXPLICIT_ONLINE_WORDING.search(goal) is not None and not online_is_local_query
     )
     if explicit_online_override and not _path_has_action_prefix(
         goal, r"(?:\b(?:search|find|locate)\s*|(?:搜索|查找|找一下|找出)\s*)$"
@@ -1204,7 +1189,7 @@ def _route_desktop_client_tools(
         # local action. Unioning the whole retained conversation could revive
         # an unrelated older mutation such as local_trash.
         requested = _follow_up_local_action(goal)
-        for row in reversed(_recent_user_rows(context)):
+        for row in reversed(recent_user_messages or []):
             prior = _local_tool_intent(row)
             if any(prior.values()):
                 if requested is not None and prior[requested]:
@@ -1938,6 +1923,9 @@ class AgentRunCreateRequest(_WireModel):
     goal: str = Field(min_length=1, max_length=65_536)
     trusted_instructions: str | None = Field(default=None, max_length=8_192)
     local_context: str | None = Field(default=None, max_length=32_768)
+    recent_user_messages: (
+        list[Annotated[str, Field(min_length=1, max_length=24_000)]] | None
+    ) = Field(default=None, max_length=8)
     model: str | None = Field(default=None, min_length=1, max_length=1024)
     tool_names: list[str] | None = Field(default=None, max_length=64)
     execution: Literal["server", "client"] = "server"
@@ -1957,6 +1945,13 @@ class AgentRunCreateRequest(_WireModel):
             raise ValueError("tool names must contain 1-128 characters")
         if len(value) != len(set(value)):
             raise ValueError("tool_names must be unique")
+        return value
+
+    @field_validator("recent_user_messages")
+    @classmethod
+    def bounded_recent_user_messages(cls, value: list[str] | None) -> list[str] | None:
+        if value is not None and sum(len(message) for message in value) > 24_000:
+            raise ValueError("recent_user_messages exceeds the 24,000-character budget")
         return value
 
 
@@ -2803,7 +2798,10 @@ class AgentServerService:
             selected_names = request.tool_names
             if request.execution == "client" and selected_names is not None:
                 selected_names = _route_desktop_client_tools(
-                    request.goal, selected_names, request.local_context
+                    request.goal,
+                    selected_names,
+                    request.local_context,
+                    request.recent_user_messages,
                 )
             tools = self._select_tools(
                 selected_names,

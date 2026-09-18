@@ -652,6 +652,7 @@ private final class AgentSessionTransportStub: AgentRuntimeTransport, @unchecked
         toolNames: [String]?,
         trustedInstructions _: String?,
         localContext: String?,
+        recentUserMessages _: [String]?,
         execution: AgentExecutionMode,
         bearerToken: String?
     ) async throws -> AgentRunView {

@@ -1306,6 +1306,7 @@ struct ChatView: View {
         let agentTools = viewModel.personalIntelligenceDefinitions
         let trustedInstructions = viewModel.personalIntelligenceTrustedInstructions()
         let localContext = viewModel.personalIntelligenceLocalContext()
+        let recentUserMessages = viewModel.personalIntelligenceRecentUserMessages()
         guard viewModel.beginAgentTurn(goal, alias: alias, onCancel: {
             session.bindingDidChange()
         }) else { return false }
@@ -1317,6 +1318,7 @@ struct ChatView: View {
             toolNames: agentTools.map { $0.function.name },
             trustedInstructions: trustedInstructions,
             localContext: localContext,
+            recentUserMessages: recentUserMessages,
             clientToolExecutor: { action in
                 await viewModel.executePersonalIntelligenceTool(
                     action,

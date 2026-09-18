@@ -8,6 +8,7 @@ protocol AgentRuntimeTransport: Sendable {
         toolNames: [String]?,
         trustedInstructions: String?,
         localContext: String?,
+        recentUserMessages: [String]?,
         execution: AgentExecutionMode,
         bearerToken: String?
     ) async throws -> AgentRunView
@@ -286,6 +287,7 @@ final class AgentRuntimeClient: Sendable {
         let toolNames: [String]?
         let trustedInstructions: String?
         let localContext: String?
+        let recentUserMessages: [String]?
         let execution: AgentExecutionMode
 
         enum CodingKeys: String, CodingKey {
@@ -293,6 +295,7 @@ final class AgentRuntimeClient: Sendable {
             case toolNames = "tool_names"
             case trustedInstructions = "trusted_instructions"
             case localContext = "local_context"
+            case recentUserMessages = "recent_user_messages"
             case execution
         }
     }
@@ -360,6 +363,7 @@ final class AgentRuntimeClient: Sendable {
         toolNames: [String]? = nil,
         trustedInstructions: String? = nil,
         localContext: String? = nil,
+        recentUserMessages: [String]? = nil,
         execution: AgentExecutionMode,
         bearerToken: String? = nil
     ) async throws -> AgentRunView {
@@ -373,6 +377,7 @@ final class AgentRuntimeClient: Sendable {
                 toolNames: toolNames,
                 trustedInstructions: trustedInstructions,
                 localContext: localContext,
+                recentUserMessages: recentUserMessages,
                 execution: execution
             )
         )
