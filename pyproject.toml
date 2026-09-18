@@ -618,6 +618,7 @@ exclude = [
     "*.md",
     "rapid_mlx/models/deepseek_v4*.py",
     "rapid_mlx/models/gemma4_vendored/*.py",
+    "rapid_mlx/models/mlx_vlm_vendored/*.py",
     "rapid_mlx/models/hy_v3.py",
     # Vendored Stability AI MLX Stable Audio 3 (models + scripts). Keep
     # formatting identical to the upstream source so future syncs stay clean.
