@@ -1293,15 +1293,32 @@ enum LocalWorkspaceTools {
         case "clang", "cc", "gcc":
             pathIndexes = Set(arguments.indices)
         case "python3", "node", "ruby":
-            if ["-c", "-e", "--eval", "-m"].contains(arguments.first) {
-                pathIndexes = []
-            } else if let first = arguments.indices.first(where: {
-                !arguments[$0].hasPrefix("-")
-            }) {
-                pathIndexes = [first]
-            } else {
-                pathIndexes = []
+            let optionOperands: Set<String>
+            switch command {
+            case "python3": optionOperands = ["-W", "-X"]
+            case "node": optionOperands = ["-r", "--require", "--loader", "--import", "--conditions"]
+            default: optionOperands = ["-I", "-r", "-C", "-E"]
             }
+            var scriptIndex: Int?
+            var index = 0
+            while index < arguments.count {
+                let argument = arguments[index]
+                if ["-c", "-e", "--eval", "-m"].contains(argument) { break }
+                if optionOperands.contains(argument) {
+                    index += 2
+                    continue
+                }
+                if argument == "--", index + 1 < arguments.count {
+                    scriptIndex = index + 1
+                    break
+                }
+                if !argument.hasPrefix("-") {
+                    scriptIndex = index
+                    break
+                }
+                index += 1
+            }
+            pathIndexes = scriptIndex.map { [$0] } ?? []
         case "swift":
             pathIndexes = Set(arguments.indices.filter { arguments[$0].hasSuffix(".swift") })
         case "go":

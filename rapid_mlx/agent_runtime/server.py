@@ -1154,11 +1154,11 @@ def _route_desktop_client_tools(
         requested = _follow_up_local_action(goal)
         for row in reversed(_recent_user_rows(context)):
             prior = _local_tool_intent(row)
-            if requested is not None and prior[requested]:
-                local[requested] = True
-                break
-            if requested is None and any(prior.values()):
-                local = prior
+            if any(prior.values()):
+                if requested is not None and prior[requested]:
+                    local[requested] = True
+                elif requested is None:
+                    local = prior
                 break
     local_search = local["local_search"]
     local_read = local["local_read"]
@@ -1216,6 +1216,14 @@ def _requests_compile_and_run(goal: str) -> bool:
         )
         is not None
     )
+
+
+def _requests_multiple_local_runs(goal: str) -> bool:
+    """Whether a user request clearly contains more than one execution step."""
+
+    verbs = re.findall(r"\b(?:run|execute)\b|(?:运行|执行)", goal, re.IGNORECASE)
+    scripts = re.findall(r"\b[^\s,;]+\.(?:py|js|rb|swift|go)\b", goal, re.IGNORECASE)
+    return len(verbs) >= 2 or (bool(verbs) and len(set(scripts)) >= 2)
 
 
 def _compiled_output_path(arguments: dict[str, Any]) -> str | None:
@@ -3142,7 +3150,10 @@ class AgentServerService:
         if (
             "local_run" in by_name
             and len(called_arguments.get("local_run", ())) < 2
-            and not AgentServerService._local_run_finished_script(entry)
+            and (
+                _requests_multiple_local_runs(entry.run.goal)
+                or not AgentServerService._local_run_finished_script(entry)
+            )
         ):
             return (by_name["local_run"],)
         weather_requests = _planned_weather_requests(entry.run.goal)

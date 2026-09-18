@@ -3170,7 +3170,7 @@ def _salvage_forced_shape_arguments(
                 return None
             declared = props[key].get("type") if isinstance(props[key], dict) else None
             if declared not in (None, "string"):
-                continue
+                return None
             recovered[key] = value
         if recovered:
             return json.dumps(recovered)

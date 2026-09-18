@@ -2022,9 +2022,7 @@ def test_forced_shape_salvage_helpers_cover_their_guards():
         "<parameter=command>python3</parameter>"
         "<parameter=argv>a.py</parameter>"
     )
-    assert _salvage_forced_shape_arguments("local_run", raw, _LOCAL_RUN_TOOLS) == (
-        '{"command": "python3"}'
-    )
+    assert _salvage_forced_shape_arguments("local_run", raw, _LOCAL_RUN_TOOLS) is None
 
 
 def test_forced_shape_salvage_reaches_the_wire_repair():

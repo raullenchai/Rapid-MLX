@@ -4283,6 +4283,18 @@ def test_desktop_local_tools_follow_explicit_paths_and_recent_local_turns():
     assert _route_desktop_client_tools(
         "Search again for orchid.", offered, trash_only_recent
     ) == ["web_search", "browse"]
+    newer_search_after_trash = (
+        "<recent_conversation>\n"
+        "user: Move ~/Documents/old.txt to the Trash.\n\n"
+        "assistant: Done.\n\n"
+        "user: Search my local Documents folder for orchid.\n\n"
+        "assistant: No matches.\n"
+        "</recent_conversation>"
+    )
+    assert (
+        _route_desktop_client_tools("Trash again.", offered, newer_search_after_trash)
+        == []
+    )
     # Assistant rows never carry routing intent.
     assistant_only = (
         "<recent_conversation>\n"

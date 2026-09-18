@@ -122,6 +122,9 @@ final class LocalWorkspaceToolsTests {
         #expect(LocalWorkspaceTools.expandingHomeArguments(
             ["~/Documents/app.py", "~/literal"], command: "python3", home: home
         ) == ["/Users/example/Documents/app.py", "~/literal"])
+        #expect(LocalWorkspaceTools.expandingHomeArguments(
+            ["-W", "ignore", "~/Documents/app.py"], command: "python3", home: home
+        ) == ["-W", "ignore", "/Users/example/Documents/app.py"])
     }
 
     @Test("tool results report paths relative to the home directory")
