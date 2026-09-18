@@ -985,7 +985,8 @@ struct ToolNotCalledCaptionTests {
         #expect(!ChatMessage.advertisedToolCouldServe(prompt: weatherPrompt, toolNames: ["local_search", "local_read"]))
         let searchPrompt = "Search for Ada Lovelace's biography."
         #expect(ChatMessage.advertisedToolCouldServe(prompt: searchPrompt, toolNames: ["browse"]))
-        #expect(ChatMessage.advertisedToolCouldServe(prompt: searchPrompt, toolNames: ["read_document"]))
+        // read_document only reads the user's own attachments — it cannot go and find anything.
+        #expect(!ChatMessage.advertisedToolCouldServe(prompt: searchPrompt, toolNames: ["read_document"]))
         #expect(ChatMessage.advertisedToolCouldServe(prompt: searchPrompt, toolNames: ["wiki-lookup"]))
         #expect(!ChatMessage.advertisedToolCouldServe(prompt: searchPrompt, toolNames: ["local_run"]))
         #expect(!ChatMessage.advertisedToolCouldServe(prompt: "What is 17 * 23?", toolNames: []))
@@ -998,6 +999,9 @@ struct ToolNotCalledCaptionTests {
     @Test("Gate 6: tool names are classified by word, unknown names stay unclassified")
     func gateSixNameClassification() {
         #expect(ChatMessage.toolNameWords("fetchURL") == ["fetch", "url"])
+        #expect(ChatMessage.toolNameWords("URLCalculator") == ["url", "calculator"])
+        #expect(ChatMessage.toolNameWords("HTTPSFetch2Go") == ["https", "fetch", "go"])
+        #expect(ChatMessage.capabilities(ofToolNamed: "URLCalculator") == [.compute, .network, .retrieval])
         #expect(ChatMessage.toolNameWords("execute_python3") == ["execute", "python"])
         #expect(ChatMessage.toolNameWords("read-document.v2") == ["read", "document", "v"])
         #expect(ChatMessage.capabilities(ofToolNamed: "profile_update") == nil)
