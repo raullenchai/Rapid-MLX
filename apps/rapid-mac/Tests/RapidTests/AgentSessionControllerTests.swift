@@ -86,7 +86,52 @@ struct AgentSessionControllerTests {
                 callID: "call-web",
                 content: #"{"title":"Rapid MLX"}"#,
                 isError: false,
-                executed: true
+                executed: true,
+                declined: false
+            ),
+        ])
+    }
+
+    @Test("A declined client action preserves the structured decline flag")
+    func submitsDeclinedClientToolResult() async throws {
+        let transport = AgentSessionTransportStub(
+            created: try Self.run(
+                status: "awaiting_tool_result",
+                pendingAction: """
+                {"call_id":"call-local","name":"local_trash","arguments":{"path":"~/Documents/old.txt"},"approval_summary":{"path":"~/Documents/old.txt"},"risk":"local_change","approval_required":true}
+                """
+            ),
+            toolResult: try Self.run(status: "completed", output: "Not changed.")
+        )
+        let controller = AgentSessionController(
+            transportFactory: { _ in transport },
+            pollDelay: { await Task.yield() }
+        )
+
+        controller.start(
+            goal: "Move the file to Trash",
+            model: "minicpm5-2b-4bit",
+            toolNames: ["local_trash"],
+            clientToolExecutor: { _ in
+                AgentClientToolResult(
+                    content: "The user declined this action.",
+                    isError: true,
+                    executed: false,
+                    declined: true
+                )
+            },
+            baseURL: URL(string: "http://127.0.0.1:8000")!,
+            bearerToken: nil
+        )
+        await controller._testingWaitForDriver()
+
+        #expect(transport.toolSubmissions == [
+            ClientToolSubmission(
+                callID: "call-local",
+                content: "The user declined this action.",
+                isError: true,
+                executed: false,
+                declined: true
             ),
         ])
     }
@@ -544,6 +589,7 @@ private struct ClientToolSubmission: Equatable {
     let content: String
     let isError: Bool
     let executed: Bool
+    let declined: Bool
 }
 
 private enum AgentSessionStubError: Error {
@@ -667,14 +713,15 @@ private final class AgentSessionTransportStub: AgentRuntimeTransport, @unchecked
         content: String,
         isError: Bool,
         executed: Bool,
-        declined _: Bool,
+        declined: Bool,
         bearerToken _: String?
     ) async throws -> AgentRunView {
         toolSubmissions.append(ClientToolSubmission(
             callID: callID,
             content: content,
             isError: isError,
-            executed: executed
+            executed: executed,
+            declined: declined
         ))
         return try #require(toolResult)
     }

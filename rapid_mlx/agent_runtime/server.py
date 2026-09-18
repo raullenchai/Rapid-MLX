@@ -1068,6 +1068,34 @@ def _local_tool_intent(goal: str) -> dict[str, bool]:
     }
 
 
+def _follow_up_local_action(goal: str) -> str | None:
+    """Return the local action verb explicitly requested by a follow-up."""
+
+    patterns = (
+        (
+            "local_search",
+            r"\b(?:search|find|locate|look\s+for)\b|(?:搜索|查找|找一下|找出)",
+        ),
+        ("local_read", r"\b(?:read|open|inspect|show)\b|(?:读取|打开|看看|查看)"),
+        (
+            "local_write",
+            r"\b(?:write|create|save|generate|draft)\b|(?:写|创建|生成|保存)",
+        ),
+        (
+            "local_trash",
+            r"\b(?:delete|remove|trash|clean\s+up)\b|(?:删除|移除|清理|扔到废纸篓)",
+        ),
+        (
+            "local_run",
+            r"\b(?:run|execute|compile|build|test)\b|(?:运行|执行|编译|构建|测试)",
+        ),
+    )
+    for name, pattern in patterns:
+        if re.search(pattern, goal, re.IGNORECASE) is not None:
+            return name
+    return None
+
+
 def _route_desktop_client_tools(
     goal: str, names: list[str], local_context: str | None = None
 ) -> list[str]:
@@ -1123,9 +1151,13 @@ def _route_desktop_client_tools(
         # stay on the Mac. Carry only the newest user turn that established a
         # local action. Unioning the whole retained conversation could revive
         # an unrelated older mutation such as local_trash.
+        requested = _follow_up_local_action(goal)
         for row in reversed(_recent_user_rows(context)):
             prior = _local_tool_intent(row)
-            if any(prior.values()):
+            if requested is not None and prior[requested]:
+                local[requested] = True
+                break
+            if requested is None and any(prior.values()):
                 local = prior
                 break
     local_search = local["local_search"]
@@ -3276,7 +3308,7 @@ class AgentServerService:
                     continue
             resolved.append(item)
         resolved, working_directory = AgentServerService._relocate_run_to_sources(
-            resolved, working_directory, command
+            resolved, working_directory, written, command
         )
         if resolved == call.arguments.get("argv") and (
             working_directory == arguments.get("working_directory")
@@ -3292,6 +3324,7 @@ class AgentServerService:
     def _relocate_run_to_sources(
         argv: list[Any],
         working_directory: str,
+        written: set[str],
         command: Any,
     ) -> tuple[list[Any], str]:
         """Run from the folder that holds the files argv names.
@@ -3320,11 +3353,15 @@ class AgentServerService:
             if item.startswith("-"):
                 continue
             if not item.startswith(("~/", "/")):
-                if item.startswith("./") or "/" in item or re.search(
-                    r"\.[A-Za-z0-9]{1,8}$", item
+                if (
+                    item.startswith("./")
+                    or "/" in item
+                    or re.search(r"\.[A-Za-z0-9]{1,8}$", item)
                 ):
                     return argv, working_directory
                 continue
+            if item.rstrip("/") not in written:
+                return argv, working_directory
             parent, _, name = item.rstrip("/").rpartition("/")
             if not name or parent in ("", "~", cwd):
                 continue

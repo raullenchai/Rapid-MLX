@@ -4274,6 +4274,15 @@ def test_desktop_local_tools_follow_explicit_paths_and_recent_local_turns():
     assert _route_desktop_client_tools(
         "Search again with just the word orchid.", offered, mixed_recent
     ) == ["local_search"]
+    trash_only_recent = (
+        "<recent_conversation>\n"
+        "user: Move ~/Documents/old.txt to the Trash.\n\n"
+        "assistant: Done.\n"
+        "</recent_conversation>"
+    )
+    assert _route_desktop_client_tools(
+        "Search again for orchid.", offered, trash_only_recent
+    ) == ["web_search", "browse"]
     # Assistant rows never carry routing intent.
     assistant_only = (
         "<recent_conversation>\n"
@@ -4932,7 +4941,10 @@ async def test_client_compile_resolves_sources_this_run_wrote():
     service = AgentServerService(registry=FakeRegistry(()), chat_driver=driver)
     created = await service.create(
         AgentRunCreateRequest(
-            goal="Write a C program to ~/Documents/rapid_fix.c, compile it and run it",
+            goal=(
+                "Write a C program to ~/Documents/rapid_fix.c, compile it in "
+                "~/Documents and run it"
+            ),
             execution="client",
             tool_names=["local_write", "local_run"],
         ),
@@ -4970,7 +4982,8 @@ async def test_client_repeated_compile_after_success_runs_the_binary():
         name="local_run",
         arguments={
             "command": "gcc",
-            "argv": ["-o", "~/Documents/rapid_fix", "~/Documents/rapid_fix.c"],
+            "argv": ["-o", "rapid_fix", "rapid_fix.c"],
+            "working_directory": "~/Documents",
         },
     )
     driver = ScriptedDriver(
@@ -4981,7 +4994,10 @@ async def test_client_repeated_compile_after_success_runs_the_binary():
     service = AgentServerService(registry=FakeRegistry(()), chat_driver=driver)
     created = await service.create(
         AgentRunCreateRequest(
-            goal="Write a C program to ~/Documents/rapid_fix.c, compile it and run it",
+            goal=(
+                "Write a C program to ~/Documents/rapid_fix.c, compile it in "
+                "~/Documents and run it"
+            ),
             execution="client",
             tool_names=["local_run"],
         ),
@@ -5110,16 +5126,18 @@ async def test_client_desktop_script_run_that_succeeded_is_not_offered_again():
 
 def test_local_run_relocates_to_the_folder_holding_its_sources():
     relocate = AgentServerService._relocate_run_to_sources
+    written = {"~/Documents/app.c", "~/Documents/fib.py"}
     assert relocate(
         ["-o", "app", "~/Documents/app.c"],
         "~/Rapid Workspace",
+        written,
         "gcc",
     ) == (
         ["-o", "app", "app.c"],
         "~/Documents",
     )
     assert relocate(
-        ["~/Documents/fib.py"], "~/Rapid Workspace", "python3"
+        ["~/Documents/fib.py"], "~/Rapid Workspace", written, "python3"
     ) == (
         ["fib.py"],
         "~/Documents",
@@ -5128,6 +5146,7 @@ def test_local_run_relocates_to_the_folder_holding_its_sources():
     assert relocate(
         ["~/Rapid Workspace/a.c"],
         "~/Rapid Workspace",
+        {"~/Rapid Workspace/a.c"},
         "gcc",
     ) == (
         ["~/Rapid Workspace/a.c"],
@@ -5136,16 +5155,17 @@ def test_local_run_relocates_to_the_folder_holding_its_sources():
     assert relocate(
         ["~/Documents/a.c", "~/Desktop/b.c"],
         "~/Rapid Workspace",
+        {"~/Documents/a.c", "~/Desktop/b.c"},
         "gcc",
     ) == (
         ["~/Documents/a.c", "~/Desktop/b.c"],
         "~/Rapid Workspace",
     )
-    assert relocate(["~/a.c"], "~/Rapid Workspace", "gcc") == (
+    assert relocate(["~/a.c"], "~/Rapid Workspace", {"~/a.c"}, "gcc") == (
         ["~/a.c"],
         "~/Rapid Workspace",
     )
-    assert relocate(["-c", "print(1)"], "~/Rapid Workspace", "python3") == (
+    assert relocate(["-c", "print(1)"], "~/Rapid Workspace", set(), "python3") == (
         ["-c", "print(1)"],
         "~/Rapid Workspace",
     )
@@ -5153,6 +5173,7 @@ def test_local_run_relocates_to_the_folder_holding_its_sources():
     assert relocate(
         ["~/Documents/fib.py", "relative-input.txt"],
         "~/Rapid Workspace",
+        written,
         "python3",
     ) == (["~/Documents/fib.py", "relative-input.txt"], "~/Rapid Workspace")
 
@@ -5305,9 +5326,11 @@ def test_local_run_history_helpers_ignore_malformed_and_unrelated_calls():
             )
         ]
     )
-    qualified_result = svc._resolve_local_run_against_written_files(
-        duplicates, qualified
-    ).tool_calls[0].arguments
+    qualified_result = (
+        svc._resolve_local_run_against_written_files(duplicates, qualified)
+        .tool_calls[0]
+        .arguments
+    )
     assert qualified_result["argv"] == ["main.c"]
     assert qualified_result["working_directory"] == "~/A"
     bare = qualified.model_copy(
@@ -5319,9 +5342,11 @@ def test_local_run_history_helpers_ignore_malformed_and_unrelated_calls():
             ]
         }
     )
-    bare_result = svc._resolve_local_run_against_written_files(
-        duplicates, bare
-    ).tool_calls[0].arguments
+    bare_result = (
+        svc._resolve_local_run_against_written_files(duplicates, bare)
+        .tool_calls[0]
+        .arguments
+    )
     assert bare_result["argv"] == ["main.c"]
     assert bare_result["working_directory"] == "~/Rapid Workspace"
 

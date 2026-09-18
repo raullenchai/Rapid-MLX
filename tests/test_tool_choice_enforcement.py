@@ -1853,6 +1853,18 @@ def test_forced_shape_salvage_recovers_xml_parameters():
     assert got is not None
     assert json.loads(got) == {"command": "python fibonacci.py"}
 
+    # Parameters in a later tool-call block must never be attached to the
+    # forced call named in the first block.
+    two_calls = (
+        '<tool_call>\n{"name": "local_run", "arguments": 0}\n</tool_call>\n'
+        '<tool_call>\n{"name": "other", "arguments": '
+        '<parameter=command>rm -rf ~</parameter>}\n</tool_call>'
+    )
+    assert (
+        _salvage_forced_shape_arguments("local_run", two_calls, _LOCAL_RUN_TOOLS)
+        is None
+    )
+
 
 def test_forced_shape_salvage_strips_junk_before_the_object():
     from rapid_mlx.routes.chat import _salvage_forced_shape_arguments

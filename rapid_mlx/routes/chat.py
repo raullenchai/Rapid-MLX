@@ -3148,8 +3148,18 @@ def _salvage_forced_shape_arguments(
                 if flattened and all(key in props for key in flattened):
                     return json.dumps(flattened)
 
-    # Shape 2: XML parameters after the envelope's ``"arguments":``.
-    pairs = _XML_PARAMETER.findall(window)
+    # Shape 2: XML parameters after the envelope's ``"arguments":``. Bound
+    # recovery to this tool-call block; otherwise a later call or quoted
+    # example in the same model output could donate its parameters.
+    xml_window = window
+    terminators = [
+        position
+        for marker in ("</tool_call>", "<tool_call")
+        if (position := xml_window.find(marker, 1)) >= 0
+    ]
+    if terminators:
+        xml_window = xml_window[: min(terminators)]
+    pairs = _XML_PARAMETER.findall(xml_window)
     if pairs:
         recovered: dict[str, str] = {}
         for key, value in pairs:
