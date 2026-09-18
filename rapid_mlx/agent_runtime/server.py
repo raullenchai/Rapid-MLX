@@ -1383,6 +1383,34 @@ def _canonicalize_local_run_argv(command: str, argv: list[Any], goal: str) -> li
             )
             if path.startswith("~/") and "." in path.rsplit("/", 1)[-1]
         }
+        joined_path_prefixes = ("-iframework", "-isystem", "-iquote", "-I", "-F")
+        for index, item in enumerate(argv):
+            if not isinstance(item, str):
+                continue
+            prefix = next(
+                (
+                    candidate
+                    for candidate in joined_path_prefixes
+                    if item.startswith(candidate) and len(item) > len(candidate)
+                ),
+                None,
+            )
+            operand = item[len(prefix) :] if prefix is not None else None
+            if (
+                prefix is None
+                and (joined_output := _joined_compiler_output(item)) is not None
+            ):
+                prefix, operand = "-o", joined_output
+            if prefix is None or operand is None:
+                continue
+            normalized = _canonical_home_path(operand, goal)
+            if prefix == "-o" and normalized == operand:
+                invented = _INVENTED_HOME_PREFIX.sub("~", operand, count=1)
+                if any(
+                    invented == source.rsplit(".", 1)[0] for source in explicit_sources
+                ):
+                    normalized = invented
+            canonical[index] = prefix + normalized
         for index, item in enumerate(argv[:-1]):
             if item != "-o" or not isinstance(argv[index + 1], str):
                 continue

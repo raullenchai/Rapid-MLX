@@ -4464,6 +4464,30 @@ def test_local_run_normalizer_canonicalizes_recovered_shell_recipe_paths():
         "argv": ["~/Documents/app.c", "-o", "app"],
         "working_directory": "~/Documents",
     }
+    joined_paths = _normalize_local_workspace_turn(
+        "Compile ~/Documents/app.c and run the result",
+        AgentModelTurn(
+            tool_calls=[
+                AgentToolCall(
+                    id="joined-paths",
+                    name="local_run",
+                    arguments={
+                        "command": "clang",
+                        "argv": [
+                            "-I~/Documents/include",
+                            "~/Documents/app.c",
+                            "-o/home/user/Documents/app",
+                        ],
+                    },
+                )
+            ]
+        ),
+    )
+    assert joined_paths.tool_calls[0].arguments["argv"] == [
+        "-I~/Documents/include",
+        "~/Documents/app.c",
+        "-o~/Documents/app",
+    ]
     literal = _normalize_local_workspace_turn(
         "Run script.py with literal data",
         AgentModelTurn(
