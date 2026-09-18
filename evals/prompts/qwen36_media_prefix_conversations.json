@@ -892,7 +892,7 @@
           }
         },
         {
-          "prompt": "Summarize your previous two answers in one short sentence, naming the specific button labels and the shortcut wording.",
+          "prompt": "Summarize your previous two answers in one short sentence, naming the specific button labels, the shortcut wording, and the mascot detail you named.",
           "max_tokens": 64,
           "sampling": {
             "temperature": 0.0,
@@ -1647,7 +1647,7 @@
       ],
       "turns": [
         {
-          "prompt": "Write an accessibility description of this toolbar of at least 200 words: model name, status, and every control with its position.",
+          "prompt": "Write an accessibility description of this toolbar of at least 200 words: the model name, the status, and every control with its position, describing what each icon is for and which side of the toolbar it sits on.",
           "max_tokens": 320,
           "sampling": {
             "temperature": 0.0,
@@ -1658,11 +1658,21 @@
             "required": [
               "ready",
               "qwen3.6-27b",
-              "stop",
-              "question"
+              "stop"
             ],
             "min_words": 200,
             "required_any_groups": [
+              [
+                [
+                  "question"
+                ],
+                [
+                  "help"
+                ],
+                [
+                  "details trigger"
+                ]
+              ],
               [
                 [
                   "information"
