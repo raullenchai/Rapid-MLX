@@ -579,6 +579,26 @@ def test_local_workspace_default_path_is_harness_owned_and_user_path_is_preserve
         "rapid_ok",
     ]
 
+    joined_compiler_output = AgentModelTurn(
+        tool_calls=[
+            AgentToolCall(
+                id="compile-joined-output",
+                name="local_run",
+                arguments={
+                    "command": "gcc",
+                    "arguments": ["rapid_ok.c", "-ocustom"],
+                },
+            )
+        ]
+    )
+    normalized_joined_output = _normalize_local_workspace_turn(
+        "Compile and run the code", joined_compiler_output
+    )
+    assert normalized_joined_output.tool_calls[0].arguments["arguments"] == [
+        "rapid_ok.c",
+        "-ocustom",
+    ]
+
     invalid_filename = AgentModelTurn(
         tool_calls=[
             AgentToolCall(

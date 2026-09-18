@@ -86,6 +86,32 @@ final class LocalWorkspaceToolsTests {
         #expect(result.content.contains(#""matches":[]"#))
     }
 
+    @Test("search excludes protected descendants of an approved ancestor")
+    func searchSkipsProtectedDescendants() {
+        let home = FileManager.default.homeDirectoryForCurrentUser
+        #expect(LocalWorkspaceTools.isProtectedSearchURL(
+            home.appendingPathComponent("Library/Keychains/login.keychain-db")
+        ))
+        #expect(!LocalWorkspaceTools.isProtectedSearchURL(
+            home.appendingPathComponent("Library/Notes/notes.sqlite")
+        ))
+    }
+
+    @Test("only immutable system and selected toolchain executables run in place")
+    func packageManagerExecutablesAreStaged() {
+        let developer = URL(fileURLWithPath: "/Applications/Xcode.app/Contents/Developer")
+        #expect(LocalWorkspaceTools.isImmutableSystemExecutable(
+            URL(fileURLWithPath: "/usr/bin/python3"), developerDirectories: [developer]
+        ))
+        #expect(LocalWorkspaceTools.isImmutableSystemExecutable(
+            developer.appendingPathComponent("usr/bin/swift"), developerDirectories: [developer]
+        ))
+        #expect(!LocalWorkspaceTools.isImmutableSystemExecutable(
+            URL(fileURLWithPath: "/opt/homebrew/Cellar/node/24/bin/node"),
+            developerDirectories: [developer]
+        ))
+    }
+
     @Test("write requires approval and creates the exact UTF-8 file")
     func writeCreatesExactFile() async throws {
         let root = try fixtureDirectory()
@@ -306,6 +332,36 @@ final class LocalWorkspaceToolsTests {
 
         #expect(!result.isError, Comment(rawValue: result.content))
         #expect(FileManager.default.isExecutableFile(atPath: root.appendingPathComponent("main").path))
+    }
+
+    @Test("compiler rejects in-process plugin and indirect argument escapes before approval", arguments: [
+        ["-Xclang", "-load", "-Xclang", "plugin.dylib", "main.c"],
+        ["-fplugin=plugin.dylib", "main.c"],
+        ["-fpass-plugin=plugin.dylib", "main.c"],
+        ["@workspace-flags.rsp"],
+        ["--config=workspace.cfg", "main.c"],
+        ["-cc1", "-load", "plugin.dylib", "main.c"],
+        ["-Xlinker", "-plugin", "main.c"],
+        ["-Wl,-plugin,plugin.dylib", "main.c"],
+        ["-mllvm", "-load=plugin.dylib", "main.c"],
+    ])
+    func compilerCannotLoadWorkspaceCode(arguments: [String]) async throws {
+        let root = try fixtureDirectory()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let payload = try #require(String(data: JSONSerialization.data(withJSONObject: [
+            "command": "clang",
+            "arguments": arguments,
+            "working_directory": root.path,
+        ]), encoding: .utf8))
+        let store = approval()
+
+        let result = await LocalWorkspaceTools.run(
+            ToolCall(id: "compiler-escape", name: "local_run", arguments: payload), approval: store
+        )
+
+        #expect(result.isError)
+        #expect(result.content.contains("plugins and indirect argument files"))
+        #expect(store.pendingRequest == nil)
     }
 
     @Test("run sandbox blocks reads elsewhere in the home folder")
@@ -725,35 +781,13 @@ final class LocalWorkspaceToolsTests {
         #expect(Date().timeIntervalSince(started) < 3)
     }
 
-    @Test("run timeout stops child processes in the approved process group")
-    func commandTimeoutStopsChildren() async throws {
+    @Test("approved interpreters cannot fork detached background work")
+    func commandCannotForkDetachedChildren() async throws {
         let root = try fixtureDirectory()
         defer { try? FileManager.default.removeItem(at: root) }
         let marker = root.appendingPathComponent("escaped-child.txt")
-        let child = "import time;time.sleep(2);open('escaped-child.txt','w').write('escaped')"
-        let parent = "import signal,subprocess,time;subprocess.Popen(['python3','-c',\"\(child)\"]);signal.signal(signal.SIGTERM,signal.SIG_IGN);time.sleep(10)"
-        let arguments = try #require(String(data: JSONSerialization.data(withJSONObject: [
-            "command": "python3",
-            "arguments": ["-c", parent],
-            "working_directory": root.path,
-            "timeout_seconds": 1,
-        ]), encoding: .utf8))
-
-        let result = await runApproved(name: "local_run", arguments: arguments, store: approval())
-        try await Task.sleep(for: .seconds(2))
-
-        #expect(result.isError)
-        #expect(result.content.contains("timed out"))
-        #expect(!FileManager.default.fileExists(atPath: marker.path))
-    }
-
-    @Test("run normal exit also stops background children")
-    func commandCompletionStopsChildren() async throws {
-        let root = try fixtureDirectory()
-        defer { try? FileManager.default.removeItem(at: root) }
-        let marker = root.appendingPathComponent("escaped-after-success.txt")
-        let child = "import time;time.sleep(1);open('escaped-after-success.txt','w').write('escaped')"
-        let parent = "import subprocess;subprocess.Popen(['python3','-c',\"\(child)\"])"
+        let child = "import time;time.sleep(1);open('escaped-child.txt','w').write('escaped')"
+        let parent = "import subprocess;subprocess.Popen(['python3','-c',\"\(child)\"],start_new_session=True)"
         let arguments = try #require(String(data: JSONSerialization.data(withJSONObject: [
             "command": "python3",
             "arguments": ["-c", parent],
@@ -762,9 +796,50 @@ final class LocalWorkspaceToolsTests {
         ]), encoding: .utf8))
 
         let result = await runApproved(name: "local_run", arguments: arguments, store: approval())
-        try await Task.sleep(for: .seconds(2))
+        try await Task.sleep(for: .seconds(1.5))
 
-        #expect(!result.isError, Comment(rawValue: result.content))
+        #expect(result.isError)
+        #expect(!FileManager.default.fileExists(atPath: marker.path))
+    }
+
+    @Test("approved Swift scripts cannot fork detached background work")
+    func swiftCommandCannotForkDetachedChildren() async throws {
+        let root = try fixtureDirectory()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let marker = root.appendingPathComponent("escaped-swift-child.txt")
+        let script = """
+        import Darwin
+        let child = fork()
+        if child < 0 { print("FORK_BLOCKED"); exit(7) }
+        if child == 0 {
+            _ = setsid()
+            sleep(1)
+            let fd = open("escaped-swift-child.txt", O_WRONLY | O_CREAT, 0o600)
+            if fd >= 0 {
+                let bytes = Array("escaped".utf8)
+                _ = bytes.withUnsafeBytes { write(fd, $0.baseAddress, $0.count) }
+                close(fd)
+            }
+            exit(0)
+        }
+        """
+        try script.write(
+            to: root.appendingPathComponent("fork-attempt.swift"),
+            atomically: true,
+            encoding: .utf8
+        )
+        let arguments = try #require(String(data: JSONSerialization.data(withJSONObject: [
+            "command": "swift",
+            "arguments": ["fork-attempt.swift"],
+            "working_directory": root.path,
+            "timeout_seconds": 5,
+        ]), encoding: .utf8))
+
+        let result = await runApproved(name: "local_run", arguments: arguments, store: approval())
+        try await Task.sleep(for: .seconds(1.5))
+
+        #expect(result.isError)
+        #expect(result.content.contains("FORK_BLOCKED"))
         #expect(!FileManager.default.fileExists(atPath: marker.path))
     }
 

@@ -1094,7 +1094,11 @@ def _normalize_local_workspace_turn(goal: str, turn: AgentModelTurn) -> AgentMod
             if (
                 arguments.get("command") in {"clang", "cc", "gcc"}
                 and isinstance(normalized_arguments, list)
-                and "-o" not in normalized_arguments
+                and not any(
+                    isinstance(item, str)
+                    and (item == "-o" or (item.startswith("-o") and len(item) > 2))
+                    for item in normalized_arguments
+                )
             ):
                 source = next(
                     (

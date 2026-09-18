@@ -2,6 +2,13 @@ import Darwin
 import CryptoKit
 import Foundation
 
+@_silgen_name("proc_listchildpids")
+private func rapidProcListChildPIDs(
+    _ parent: pid_t,
+    _ buffer: UnsafeMutableRawPointer?,
+    _ bufferSize: Int32
+) -> Int32
+
 /// A deliberately small local-computer surface for conversational work.
 /// There is no shell tool: commands are an executable plus an argument array,
 /// paths stay inside the current user's home directory, and mutations require
@@ -682,6 +689,9 @@ enum LocalWorkspaceTools {
             }
             guard inspected == 0 else { continue }
             let displayChild = displayURL.appendingPathComponent(name)
+            // Approval of a broad ancestor (for example ~/Library) must not
+            // implicitly grant access to credential stores below it.
+            guard !isProtectedSearchURL(displayChild) else { continue }
             switch metadata.st_mode & S_IFMT {
             case S_IFDIR:
                 guard !packageExtensions.contains(displayChild.pathExtension.lowercased()) else { continue }
@@ -724,6 +734,15 @@ enum LocalWorkspaceTools {
                 continue
             }
         }
+    }
+
+    static func isProtectedSearchURL(_ url: URL) -> Bool {
+        let home = FileManager.default.homeDirectoryForCurrentUser
+            .standardizedFileURL.resolvingSymlinksInPath()
+        let candidate = url.standardizedFileURL.path.lowercased()
+        let protected = home.appendingPathComponent("Library/Keychains", isDirectory: true)
+            .standardizedFileURL.path.lowercased()
+        return candidate == protected || candidate.hasPrefix(protected + "/")
     }
 
     private static func readData(descriptor: Int32, limit: Int) -> Data? {
@@ -1093,6 +1112,7 @@ enum LocalWorkspaceTools {
         let developerDirectories = try installedDeveloperDirectories()
         let developerPaths = developerDirectories.map(\.url.path)
         if ["clang", "cc", "gcc"].contains(args.command) {
+            try validateCompilerArguments(processArguments)
             executable = try firstExecutable(
                 developerPaths.flatMap { root in [
                     "\(root)/Toolchains/XcodeDefault.xctoolchain/usr/bin/clang",
@@ -1118,15 +1138,49 @@ enum LocalWorkspaceTools {
             case "node": candidates = ["/opt/homebrew/bin/node", "/usr/local/bin/node", "/usr/bin/node"]
             case "ruby": candidates = ["/opt/homebrew/bin/ruby", "/usr/local/bin/ruby", "/usr/bin/ruby"]
             case "go": candidates = ["/opt/homebrew/bin/go", "/usr/local/bin/go", "/usr/bin/go"]
-            case "swift": candidates = developerPaths.flatMap { root in [
-                "\(root)/Toolchains/XcodeDefault.xctoolchain/usr/bin/swift",
-                "\(root)/usr/bin/swift",
-            ] } + ["/usr/bin/swift"]
+            case "swift": candidates = developerPaths.map {
+                "\($0)/Toolchains/XcodeDefault.xctoolchain/usr/bin/swift-frontend"
+            }
             default: throw LocalError("local_run command is not in the allowlist")
             }
             executable = try firstExecutable(candidates, command: args.command)
             executablePresentedURL = nil
             helperClass = args.command == "swift" ? .swift : (args.command == "go" ? .go : .none)
+            if args.command == "swift" {
+                guard processArguments.contains(where: { $0.hasSuffix(".swift") }),
+                      let developer = developerPaths.first,
+                      let sdk = [
+                          "\(developer)/Platforms/MacOSX.platform/Developer/SDKs/MacOSX.sdk",
+                          "\(developer)/SDKs/MacOSX.sdk",
+                      ].first(where: { FileManager.default.fileExists(atPath: $0) }) else {
+                    throw LocalError("local_run swift requires a .swift script and an installed macOS SDK")
+                }
+                let resources = "\(developer)/Toolchains/XcodeDefault.xctoolchain/usr/lib/swift"
+                let prebuiltRoot = "\(resources)/macosx/prebuilt-modules"
+                let versions = (try? FileManager.default.contentsOfDirectory(atPath: prebuiltRoot)) ?? []
+                let version = versions.sorted { lhs, rhs in
+                    lhs.compare(rhs, options: .numeric) == .orderedAscending
+                }.last
+                #if arch(arm64)
+                let architectureCandidates = ["arm64", "arm64e"]
+                #else
+                let architectureCandidates = ["x86_64"]
+                #endif
+                guard let version,
+                      let architecture = architectureCandidates.first(where: {
+                          FileManager.default.fileExists(
+                              atPath: "\(prebuiltRoot)/\(version)/Swift.swiftmodule/\($0)-apple-macos.swiftmodule"
+                          )
+                      }) else {
+                    throw LocalError("local_run swift could not find a compatible prebuilt standard library")
+                }
+                let prebuilt = "\(prebuiltRoot)/\(version)"
+                processArguments.insert(contentsOf: [
+                    "-interpret", "-sdk", sdk, "-resource-dir", resources,
+                    "-prebuilt-module-cache-path", prebuilt,
+                    "-target", "\(architecture)-apple-macosx\(version)",
+                ], at: 0)
+            }
         } else {
             executablePresentedURL = try validatedLexicalURL(args.command)
             executable = try safeURL(args.command)
@@ -1144,12 +1198,13 @@ enum LocalWorkspaceTools {
         guard fstat(pinnedExecutable.descriptor, &executableMetadata) == 0 else {
             throw posixError("could not inspect the approved executable")
         }
-        // Only executables selected from Rapid's fixed system allowlist run in
-        // place. A user-supplied executable is always hashed and staged from
-        // the pinned descriptor, even if its metadata happens to say root.
-        let executableDigest = executablePresentedURL == nil
-            ? nil
-            : try digest(descriptor: pinnedExecutable.descriptor)
+        // Only SIP-protected system/toolchain executables run in place.
+        // Package-manager prefixes are mutable even when Rapid selected the
+        // path from its allowlist, so pin their bytes and execute a staged copy.
+        let executableDigest = isImmutableSystemExecutable(
+            pinnedExecutable.url,
+            developerDirectories: developerDirectories.map(\.url)
+        ) ? nil : try digest(descriptor: pinnedExecutable.descriptor)
         return ApprovedRun(
             arguments: args,
             workingDirectory: workingDirectory,
@@ -1161,6 +1216,42 @@ enum LocalWorkspaceTools {
             developerDirectories: developerDirectories,
             executableDigest: executableDigest
         )
+    }
+
+    /// Clang must retain `process-fork` so its signed toolchain helpers can run,
+    /// but that exception is only safe when workspace-controlled code cannot be
+    /// loaded into the compiler process itself. Reject indirect argument files,
+    /// frontend passthrough, and every supported plugin-loading spelling before
+    /// asking the user to approve the command.
+    static func validateCompilerArguments(_ arguments: [String]) throws {
+        let exactDenied = Set([
+            "-Xclang", "-cc1", "-cc1as", "-cc1gen-reproducer",
+            "-load", "-plugin", "--config", "-config", "-mllvm",
+        ])
+        let prefixesDenied = [
+            "@", "-X", "-Wl,", "-Wa,", "-Wp,", "--config=", "-config=",
+            "-fplugin", "-fpass-plugin",
+        ]
+        guard !arguments.contains(where: { argument in
+            exactDenied.contains(argument)
+                || prefixesDenied.contains(where: argument.hasPrefix)
+        }) else {
+            throw LocalError("local_run compiler plugins and indirect argument files are unavailable")
+        }
+    }
+
+    static func isImmutableSystemExecutable(
+        _ executable: URL,
+        developerDirectories: [URL]
+    ) -> Bool {
+        let path = executable.standardizedFileURL.path
+        if path.hasPrefix("/usr/bin/") || path.hasPrefix("/bin/") {
+            return true
+        }
+        return developerDirectories.contains { root in
+            let rootPath = root.standardizedFileURL.path
+            return path.hasPrefix(rootPath + "/")
+        }
     }
 
     /// Developer roots in the same precedence order as the active toolchain.
@@ -1220,7 +1311,7 @@ enum LocalWorkspaceTools {
             try approved.executable.verifyPathStillNamesPinnedObject()
             let args = approved.arguments
             let cwd = try currentURL(for: workingDirectory.descriptor)
-            let processArguments = approved.processArguments
+            var processArguments = approved.processArguments
             for developerDirectory in approved.developerDirectories {
                 try developerDirectory.verifyPathStillNamesPinnedObject()
             }
@@ -1232,6 +1323,11 @@ enum LocalWorkspaceTools {
             guard created == 0 else { throw posixError("could not create the private command folder") }
             let temporary = cwd.appendingPathComponent(temporaryName)
             defer { try? FileManager.default.removeItem(at: temporary) }
+            if args.command == "swift" {
+                processArguments.insert(contentsOf: [
+                    "-module-cache-path", temporary.appendingPathComponent("modules").path,
+                ], at: 0)
+            }
             let executable = try stableExecutable(
                 approved.executable,
                 expectedDigest: approved.executableDigest,
@@ -1258,6 +1354,9 @@ enum LocalWorkspaceTools {
             if args.command == "go" {
                 let original = approved.executable.url
                 environment["GOROOT"] = original.deletingLastPathComponent().deletingLastPathComponent().path
+            }
+            if args.command == "swift", let developer = approved.developerDirectories.first {
+                environment["DEVELOPER_DIR"] = developer.url.path
             }
             let timeout = min(max(args.timeoutSeconds ?? 15, 1), 30)
             let outcome = try spawnSandboxed(
@@ -1439,8 +1538,10 @@ enum LocalWorkspaceTools {
 
         var status: Int32 = 0
         var reaped = false
+        var descendants = Set<pid_t>()
         let deadline = Date().addingTimeInterval(timeout)
         while Date() < deadline {
+            collectDescendants(of: pid, into: &descendants)
             let waited = waitpid(pid, &status, WNOHANG)
             if waited == pid {
                 reaped = true
@@ -1454,11 +1555,15 @@ enum LocalWorkspaceTools {
             }
             Thread.sleep(forTimeInterval: 0.02)
         }
+        collectDescendants(of: pid, into: &descendants)
         let timedOut = !reaped
         if timedOut {
             _ = kill(-pid, SIGTERM)
+            signalProcesses(descendants, signal: SIGTERM)
             let grace = Date().addingTimeInterval(0.5)
             while Date() < grace {
+                collectDescendants(of: pid, into: &descendants)
+                collectDescendants(of: Array(descendants), into: &descendants)
                 let waited = waitpid(pid, &status, WNOHANG)
                 if waited == pid {
                     reaped = true
@@ -1468,6 +1573,7 @@ enum LocalWorkspaceTools {
             }
             if !reaped {
                 _ = kill(-pid, SIGKILL)
+                signalProcesses(descendants, signal: SIGKILL)
                 // SIGKILL cannot be ignored. Once it has been sent, perform an
                 // EINTR-safe blocking reap so a slow kernel teardown cannot
                 // leave a zombie behind after the one-second polling window.
@@ -1486,6 +1592,8 @@ enum LocalWorkspaceTools {
         // leader exits normally, descendants must not survive the bounded
         // action and continue writing in the background.
         terminateProcessGroup(pid)
+        collectDescendants(of: Array(descendants), into: &descendants)
+        terminateProcesses(descendants)
         let exitCode: Int32
         if !reaped {
             exitCode = -1
@@ -1502,6 +1610,57 @@ enum LocalWorkspaceTools {
             stdout: stdout.finish(),
             stderr: stderr.finish()
         )
+    }
+
+    private static func childPIDs(of parent: pid_t) -> [pid_t] {
+        guard parent > 0 else { return [] }
+        var capacity = 32
+        while capacity <= 4_096 {
+            var children = [pid_t](repeating: 0, count: capacity)
+            let count = children.withUnsafeMutableBytes { buffer in
+                rapidProcListChildPIDs(parent, buffer.baseAddress, Int32(buffer.count))
+            }
+            guard count >= 0 else { return [] }
+            if Int(count) < capacity {
+                return Array(children.prefix(Int(count))).filter { $0 > 0 }
+            }
+            capacity *= 2
+        }
+        return []
+    }
+
+    private static func collectDescendants(
+        of parent: pid_t,
+        into descendants: inout Set<pid_t>
+    ) {
+        var pending = [parent]
+        while let current = pending.popLast() {
+            for child in childPIDs(of: current) where descendants.insert(child).inserted {
+                pending.append(child)
+            }
+        }
+    }
+
+    private static func collectDescendants(
+        of parents: [pid_t],
+        into descendants: inout Set<pid_t>
+    ) {
+        for parent in parents { collectDescendants(of: parent, into: &descendants) }
+    }
+
+    private static func signalProcesses(_ processes: Set<pid_t>, signal: Int32) {
+        for process in processes where process > 0 { _ = kill(process, signal) }
+    }
+
+    private static func terminateProcesses(_ processes: Set<pid_t>) {
+        guard !processes.isEmpty else { return }
+        signalProcesses(processes, signal: SIGTERM)
+        let grace = Date().addingTimeInterval(0.1)
+        while Date() < grace {
+            if processes.allSatisfy({ kill($0, 0) == -1 && errno == ESRCH }) { return }
+            Thread.sleep(forTimeInterval: 0.01)
+        }
+        signalProcesses(processes, signal: SIGKILL)
     }
 
     private static func terminateProcessGroup(_ leader: pid_t) {
@@ -1626,11 +1785,18 @@ enum LocalWorkspaceTools {
             \(metadataFilters.joined(separator: "\n            ")))
         """
         let processFilters = executableFilters.joined(separator: "\n                ")
+        // Interpreters and user-selected binaries execute user-authored code
+        // in-process. Deny fork there so a child cannot call setsid(), become
+        // orphaned between process-tree polls, and outlive the approved action.
+        // Toolchain drivers retain fork solely for their constrained helpers.
+        let mayForkTrustedHelpers = helperClass == .compiler || helperClass == .go
+        let forkRule = mayForkTrustedHelpers ? "" : "(deny process-fork)"
         return """
         (version 1)
         (allow default)
         (deny network*)
         (deny mach-lookup)
+        \(forkRule)
         ; File reads are default-denied. Restore only the approved workspace,
         ; private temp folder, exact executable, immutable runtime data, and
         ; the toolchain explicitly implied by the approved command.
