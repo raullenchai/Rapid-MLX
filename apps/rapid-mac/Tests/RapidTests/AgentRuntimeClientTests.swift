@@ -45,6 +45,24 @@ struct AgentRuntimeClientTests {
         #expect(body["recent_user_messages"] as? [String] == ["Search my Documents folder"])
     }
 
+    @Test("Create retries without structured history on an older server")
+    func createLegacyRecentUserMessagesRetry() async throws {
+        let client = makeClient()
+        AgentRuntimeStubProtocol.responses = [
+            (422, Data(#"{"detail":"unknown field: recent_user_messages"}"#.utf8)),
+            (200, Self.awaitingModel),
+        ]
+
+        _ = try await client.create(
+            goal: "Search again",
+            recentUserMessages: ["Search my Documents folder"],
+            execution: .client
+        )
+
+        #expect(try Self.jsonBody(at: 0)["recent_user_messages"] != nil)
+        #expect(try Self.jsonBody(at: 1)["recent_user_messages"] == nil)
+    }
+
     @Test("Create can keep MCP execution pinned to the server run")
     func createWithServerExecution() async throws {
         let client = makeClient()

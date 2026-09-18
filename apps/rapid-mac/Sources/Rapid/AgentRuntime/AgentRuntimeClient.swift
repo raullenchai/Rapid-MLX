@@ -367,20 +367,41 @@ final class AgentRuntimeClient: Sendable {
         execution: AgentExecutionMode,
         bearerToken: String? = nil
     ) async throws -> AgentRunView {
-        try await send(
-            method: "POST",
-            path: "v1/agent/runs",
-            bearerToken: bearerToken,
-            body: CreateRequest(
+        let path = "v1/agent/runs"
+        let request = CreateRequest(
+            goal: goal,
+            model: model,
+            toolNames: toolNames,
+            trustedInstructions: trustedInstructions,
+            localContext: localContext,
+            recentUserMessages: recentUserMessages?.isEmpty == true ? nil : recentUserMessages,
+            execution: execution
+        )
+        do {
+            return try await send(
+                method: "POST",
+                path: path,
+                bearerToken: bearerToken,
+                body: request
+            )
+        } catch AgentRuntimeClientError.http(let status, let message)
+            where request.recentUserMessages != nil && status == 422
+            && Self.serverRejectedUnknownField(message, field: "recent_user_messages") {
+            return try await send(
+                method: "POST",
+                path: path,
+                bearerToken: bearerToken,
+                body: CreateRequest(
                 goal: goal,
                 model: model,
                 toolNames: toolNames,
                 trustedInstructions: trustedInstructions,
                 localContext: localContext,
-                recentUserMessages: recentUserMessages,
+                recentUserMessages: nil,
                 execution: execution
+                )
             )
-        )
+        }
     }
 
     func get(runID: String, bearerToken: String? = nil) async throws -> AgentRunView {
@@ -443,7 +464,7 @@ final class AgentRuntimeClient: Sendable {
             )
         } catch AgentRuntimeClientError.http(let status, let message)
             where declined && !executed && status == 422
-            && Self.serverRejectedDeclinedField(message) {
+            && Self.serverRejectedUnknownField(message, field: "declined") {
             // Servers predating the structured decline field reject unknown
             // keys. Retry the same non-executed result without that marker;
             // its content retains the legacy explanation.
@@ -462,9 +483,12 @@ final class AgentRuntimeClient: Sendable {
         }
     }
 
-    private static func serverRejectedDeclinedField(_ message: String) -> Bool {
+    private static func serverRejectedUnknownField(
+        _ message: String,
+        field: String
+    ) -> Bool {
         let normalized = message.lowercased()
-        return normalized.contains("declined")
+        return normalized.contains(field.lowercased())
             && (normalized.contains("unknown") || normalized.contains("extra"))
     }
 
