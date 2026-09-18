@@ -429,6 +429,60 @@ def test_preflight_requires_vision_for_prism_pack_before_download(monkeypatch):
     assert calls == ["/snap/pack"]
 
 
+def test_preflight_accepts_prism_pack_when_vision_runtime_is_available(monkeypatch):
+    """The successful preflight path stops after validating the MLLM runtime."""
+    from types import SimpleNamespace
+
+    import rapid_mlx.server as server
+
+    monkeypatch.setattr(server, "_prefetch_routing_metadata", lambda _n: "/snap/pack")
+    monkeypatch.setattr(
+        "rapid_mlx.model_metadata.read_model_metadata",
+        lambda _p: SimpleNamespace(
+            config={"model_type": "prism_hadamard_qwen35"}, snapshot_dir=None
+        ),
+    )
+    calls = []
+    monkeypatch.setattr(
+        "rapid_mlx.models.mllm._require_mlx_vlm", lambda path: calls.append(path)
+    )
+
+    server._preflight_vision_runtime("bonsai2-27b-2bit")
+    assert calls == ["/snap/pack"]
+
+
+def test_text_lane_guard_config_prefetch_is_best_effort(monkeypatch, tmp_path):
+    """Local/offline refs do not hit the Hub; remote errors remain non-fatal."""
+    import rapid_mlx.server as server
+
+    downloads = []
+    monkeypatch.setattr(
+        "huggingface_hub.hf_hub_download",
+        lambda *args: downloads.append(args),
+    )
+
+    server._prefetch_config_for_text_lane_guard(str(tmp_path))
+    assert downloads == []
+
+    monkeypatch.setattr(
+        "rapid_mlx.model_metadata.hub_offline_mode_active", lambda: True
+    )
+    server._prefetch_config_for_text_lane_guard("org/model")
+    assert downloads == []
+
+    monkeypatch.setattr(
+        "rapid_mlx.model_metadata.hub_offline_mode_active", lambda: False
+    )
+    server._prefetch_config_for_text_lane_guard("org/model")
+    assert downloads == [("org/model", "config.json")]
+
+    def _fail(*_args):
+        raise OSError("network unavailable")
+
+    monkeypatch.setattr("huggingface_hub.hf_hub_download", _fail)
+    server._prefetch_config_for_text_lane_guard("org/model")
+
+
 def test_preflight_ignores_ordinary_text_checkpoint(monkeypatch):
     # A plain text checkpoint (no vision config, ordinary model_type) must not
     # be forced onto the vision runtime by the new prism recognition.
