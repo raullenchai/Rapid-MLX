@@ -136,4 +136,12 @@ vendored copy differs by exactly the deviations listed):
   The lane's ``clone_cache_entry`` / ``Capability`` / ``resolve_capability``
   imports now resolve here; the four test modules that stub
   ``clone_cache_entry`` were re-pointed at this module in the same commit.
+
+- ``apc.py`` — identical to ``mlx_vlm/apc.py`` @ v0.7.1 (upstream sha256
+  ``5b2b940852f11f34f7b4daf627bc31fc701f8abffc72d40189bc3e5ac57f878c``)
+  except 18 one-line import redirects (``# VENDOR-DEVIATION`` sentinels):
+  top-level relative imports bind the vendored siblings, the lazy
+  ``.models*`` (15) and ``.turboquant`` (3) sites resolve upstream, and
+  the engine still dispatches on upstream-typed caches (byte-identical
+  today; widening is the 2b-3 follow-up).
 """
