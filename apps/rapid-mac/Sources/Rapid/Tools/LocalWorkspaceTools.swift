@@ -115,6 +115,7 @@ enum LocalWorkspaceTools {
         let executable: PinnedPath
         let processArguments: [String]
         let helperClass: HelperClass
+        let developerDirectories: [PinnedPath]
         let executableDigest: Data?
     }
 
@@ -1089,32 +1090,38 @@ enum LocalWorkspaceTools {
         let executable: URL
         let executablePresentedURL: URL?
         let helperClass: HelperClass
+        let developerDirectories = try installedDeveloperDirectories()
+        let developerPaths = developerDirectories.map(\.url.path)
         if ["clang", "cc", "gcc"].contains(args.command) {
-            executable = try firstExecutable([
-                "/Applications/Xcode.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/bin/clang",
-                "/Library/Developer/CommandLineTools/usr/bin/clang",
-                "/usr/bin/clang",
-            ], command: args.command)
+            executable = try firstExecutable(
+                developerPaths.flatMap { root in [
+                    "\(root)/Toolchains/XcodeDefault.xctoolchain/usr/bin/clang",
+                    "\(root)/usr/bin/clang",
+                ] } + ["/usr/bin/clang"],
+                command: args.command
+            )
             executablePresentedURL = nil
             helperClass = .compiler
-            let sdkCandidates = [
-                "/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX.sdk",
-                "/Library/Developer/CommandLineTools/SDKs/MacOSX.sdk",
-            ]
+            let sdkCandidates = developerPaths.flatMap { root in [
+                "\(root)/Platforms/MacOSX.platform/Developer/SDKs/MacOSX.sdk",
+                "\(root)/SDKs/MacOSX.sdk",
+            ] }
             if let sdk = sdkCandidates.first(where: { FileManager.default.fileExists(atPath: $0) }) {
                 processArguments.insert(contentsOf: ["-isysroot", sdk], at: 0)
             }
         } else if allowedCommands.contains(args.command) {
             let candidates: [String]
             switch args.command {
-            case "python3": candidates = [
-                "/Applications/Xcode.app/Contents/Developer/Library/Frameworks/Python3.framework/Versions/3.9/Resources/Python.app/Contents/MacOS/Python",
-                "/usr/bin/python3",
-            ]
+            case "python3": candidates = developerPaths.map {
+                "\($0)/Library/Frameworks/Python3.framework/Versions/3.9/Resources/Python.app/Contents/MacOS/Python"
+            } + ["/usr/bin/python3"]
             case "node": candidates = ["/opt/homebrew/bin/node", "/usr/local/bin/node", "/usr/bin/node"]
             case "ruby": candidates = ["/opt/homebrew/bin/ruby", "/usr/local/bin/ruby", "/usr/bin/ruby"]
             case "go": candidates = ["/opt/homebrew/bin/go", "/usr/local/bin/go", "/usr/bin/go"]
-            case "swift": candidates = ["/Applications/Xcode.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/bin/swift", "/usr/bin/swift"]
+            case "swift": candidates = developerPaths.flatMap { root in [
+                "\(root)/Toolchains/XcodeDefault.xctoolchain/usr/bin/swift",
+                "\(root)/usr/bin/swift",
+            ] } + ["/usr/bin/swift"]
             default: throw LocalError("local_run command is not in the allowlist")
             }
             executable = try firstExecutable(candidates, command: args.command)
@@ -1151,8 +1158,48 @@ enum LocalWorkspaceTools {
             executable: pinnedExecutable,
             processArguments: processArguments,
             helperClass: helperClass,
+            developerDirectories: developerDirectories,
             executableDigest: executableDigest
         )
+    }
+
+    /// Developer roots in the same precedence order as the active toolchain.
+    /// CI and beta-Xcode users commonly select an app named `Xcode_26.x.app`;
+    /// hard-coding `/Applications/Xcode.app` makes the executable launch but
+    /// leaves its framework and SDK outside the sandbox.
+    private static func installedDeveloperDirectories() throws -> [PinnedPath] {
+        var candidates: [String] = []
+        if let environment = ProcessInfo.processInfo.environment["DEVELOPER_DIR"],
+           environment.hasPrefix("/") {
+            candidates.append(environment)
+        }
+        let selected = URL(fileURLWithPath: "/var/db/xcode_select_link")
+            .resolvingSymlinksInPath().path
+        if selected != "/var/db/xcode_select_link" { candidates.append(selected) }
+        candidates += [
+            "/Applications/Xcode.app/Contents/Developer",
+            "/Library/Developer/CommandLineTools",
+        ]
+        var seen = Set<String>()
+        return try candidates.compactMap { path in
+            var candidate = URL(fileURLWithPath: path).standardizedFileURL
+            if candidate.pathExtension == "app" {
+                candidate.appendPathComponent("Contents/Developer", isDirectory: true)
+            }
+            candidate = candidate.resolvingSymlinksInPath()
+            let normalized = candidate.path
+            guard seen.insert(normalized).inserted else { return nil }
+            let isXcode = normalized.hasPrefix("/Applications/")
+                && normalized.hasSuffix(".app/Contents/Developer")
+            let isCommandLineTools = normalized == "/Library/Developer/CommandLineTools"
+            guard isXcode || isCommandLineTools else { return nil }
+            var isDirectory: ObjCBool = false
+            guard FileManager.default.fileExists(atPath: normalized, isDirectory: &isDirectory),
+                  isDirectory.boolValue else { return nil }
+            var metadata = stat()
+            guard lstat(normalized, &metadata) == 0, metadata.st_uid == 0 else { return nil }
+            return try PinnedPath(url: candidate, directory: true)
+        }
     }
 
     private static func firstExecutable(_ candidates: [String], command: String) throws -> URL {
@@ -1174,6 +1221,9 @@ enum LocalWorkspaceTools {
             let args = approved.arguments
             let cwd = try currentURL(for: workingDirectory.descriptor)
             let processArguments = approved.processArguments
+            for developerDirectory in approved.developerDirectories {
+                try developerDirectory.verifyPathStillNamesPinnedObject()
+            }
 
             let temporaryName = ".rapid-tmp-\(UUID().uuidString)"
             let created = temporaryName.withCString {
@@ -1194,6 +1244,7 @@ enum LocalWorkspaceTools {
                     executable: executable,
                     originalExecutable: approved.executable.url,
                     helperClass: approved.helperClass,
+                    developerDirectories: approved.developerDirectories,
                     approvedCommand: args.command
                 ),
                 executable.path,
@@ -1475,6 +1526,7 @@ enum LocalWorkspaceTools {
         executable: URL,
         originalExecutable: URL,
         helperClass: HelperClass,
+        developerDirectories: [PinnedPath],
         approvedCommand: String
     ) -> String {
         func quoted(_ path: String) -> String {
@@ -1496,19 +1548,24 @@ enum LocalWorkspaceTools {
             "(subpath \"/private/var/db/timezone\")",
         ]
         var metadataFilters: [String] = []
-        if originalExecutable.path.hasPrefix("/Applications/Xcode.app/")
-            || helperClass != .none {
-            readableFilters += [
-                "(subpath \"/Applications/Xcode.app/Contents/Developer\")",
-                "(subpath \"/Library/Developer\")",
-            ]
+        let developerPaths = developerDirectories.map(\.url.path)
+        if developerPaths.contains(where: {
+            originalExecutable.path.hasPrefix($0 + "/")
+        }) || helperClass != .none || approvedCommand == "python3" {
+            readableFilters += developerPaths.map { "(subpath \(quoted($0)))" }
             metadataFilters += [
                 "(literal \"/Applications\")",
-                "(literal \"/Applications/Xcode.app\")",
-                "(literal \"/Applications/Xcode.app/Contents\")",
                 "(literal \"/Library\")",
                 "(literal \"/Library/Developer\")",
             ]
+            for root in developerPaths where root.hasPrefix("/Applications/") {
+                let contents = URL(fileURLWithPath: root).deletingLastPathComponent().path
+                let application = URL(fileURLWithPath: contents).deletingLastPathComponent().path
+                metadataFilters += [
+                    "(literal \(quoted(application)))",
+                    "(literal \(quoted(contents)))",
+                ]
+            }
         }
         if originalExecutable.path.hasPrefix("/opt/homebrew/") {
             readableFilters.append("(subpath \"/opt/homebrew\")")
@@ -1530,20 +1587,17 @@ enum LocalWorkspaceTools {
         case .none:
             break
         case .compiler:
-            executableFilters += [
-                "(subpath \"/Applications/Xcode.app/Contents/Developer/Toolchains\")",
-                "(subpath \"/Applications/Xcode.app/Contents/Developer/usr/bin\")",
-                "(subpath \"/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/usr/bin\")",
-                "(subpath \"/Library/Developer/CommandLineTools/usr/bin\")",
-                "(literal \"/usr/bin/ld\")",
-            ]
+            executableFilters += developerPaths.flatMap { root in [
+                "(subpath \(quoted(root + "/Toolchains")))",
+                "(subpath \(quoted(root + "/usr/bin")))",
+                "(subpath \(quoted(root + "/Platforms/MacOSX.platform/Developer/usr/bin")))",
+            ] } + ["(literal \"/usr/bin/ld\")"]
         case .swift:
-            executableFilters += [
-                "(subpath \"/Applications/Xcode.app/Contents/Developer/Toolchains\")",
-                "(subpath \"/Applications/Xcode.app/Contents/Developer/usr/bin\")",
-                "(subpath \"/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/usr/bin\")",
-                "(subpath \"/Library/Developer/CommandLineTools/usr/bin\")",
-            ]
+            executableFilters += developerPaths.flatMap { root in [
+                "(subpath \(quoted(root + "/Toolchains")))",
+                "(subpath \(quoted(root + "/usr/bin")))",
+                "(subpath \(quoted(root + "/Platforms/MacOSX.platform/Developer/usr/bin")))",
+            ] }
         case .go:
             if originalExecutable.path.hasPrefix("/opt/homebrew/") {
                 executableFilters.append("(subpath \"/opt/homebrew/Cellar/go\")")
