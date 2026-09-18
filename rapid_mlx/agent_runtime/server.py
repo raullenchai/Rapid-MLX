@@ -8,6 +8,7 @@ import asyncio
 import hashlib
 import json
 import logging
+import math
 import re
 import shlex
 import time
@@ -364,7 +365,7 @@ _INVENTED_HOME_PREFIX = re.compile(
 )
 
 
-_EXPLICIT_USERS_PREFIX = re.compile(r"/Users/[^/\s\"']+")
+_EXPLICIT_USERS_PREFIX = re.compile(r"/(?:Users|home)/[^/\s\"']+")
 
 
 def _canonical_home_path(value: str, goal: str = "") -> str:
@@ -375,9 +376,10 @@ def _canonical_home_path(value: str, goal: str = "") -> str:
     convention but not the account name. Desktop only accepts paths inside
     the real home and expands ``~/`` itself, so the harness maps the invented
     prefix onto ``~`` instead of letting the call fail and the model claim
-    success. A ``/Users/<account>/…`` prefix the user typed in ``goal`` is
-    theirs to name, so it is kept verbatim (it may be another account's
-    folder); any other account name is treated as invented.
+    success. A ``/Users/<account>/…`` or ``/home/<account>/…`` prefix the
+    user typed in ``goal`` is theirs to name, so it is kept verbatim (it may
+    be another account's folder); any other account name is treated as
+    invented.
     """
 
     for prefix in _EXPLICIT_USERS_PREFIX.findall(goal):
@@ -1372,13 +1374,21 @@ def _normalize_local_workspace_turn(goal: str, turn: AgentModelTurn) -> AgentMod
             # A bare binary run needs no arguments; Desktop treats a missing
             # argv as empty, so the wire object says so explicitly.
             arguments["argv"] = []
-        # Desktop decodes only the declared keys; drop invented ones such as
-        # ``timeout_seconds`` so the approval sheet and the run agree.
+        # Desktop decodes only the declared keys; drop invented ones so the
+        # approval sheet and the run agree. ``timeout_seconds`` is declared
+        # and stays when it is a number Desktop can clamp.
+        timeout = arguments.get("timeout_seconds")
         arguments = {
             key: value
             for key, value in arguments.items()
             if key in {"command", "argv", "working_directory"}
         }
+        if (
+            isinstance(timeout, (int, float))
+            and not isinstance(timeout, bool)
+            and math.isfinite(timeout)
+        ):
+            arguments["timeout_seconds"] = timeout
     else:
         return turn
     return turn.model_copy(
@@ -2351,6 +2361,7 @@ class _ServerRun:
     tool_in_flight: bool = False
     seen_model_call_ids: set[bytes] = field(default_factory=set)
     seen_opaque_call_ids: set[str] = field(default_factory=set)
+    failed_tool_call_ids: set[str] = field(default_factory=set)
 
 
 _TERMINAL_STATUSES = {
@@ -3182,14 +3193,20 @@ class AgentServerService:
 
     @staticmethod
     def _written_files(entry: _ServerRun) -> dict[str, str]:
-        """Map basename -> path for every local_write this run completed."""
+        """Map basename -> path for every local_write this run completed.
+
+        A write that was declined, not executed, or reported an error did
+        not produce the file, so it is not a compile target.
+        """
 
         results: dict[str, bool] = {}
         for message in entry.messages:
             if message.get("role") == "tool":
+                call_id = str(message.get("tool_call_id", ""))
                 content = str(message.get("content", ""))
-                results[str(message.get("tool_call_id", ""))] = not content.startswith(
-                    "Client tool was not executed"
+                results[call_id] = (
+                    call_id not in entry.failed_tool_call_ids
+                    and not content.startswith("Client tool was not executed")
                 )
         written: dict[str, str] = {}
         for message in entry.messages:
@@ -3681,6 +3698,8 @@ class AgentServerService:
     def _append_tool_observation(
         self, entry: _ServerRun, result: AgentToolResult
     ) -> None:
+        if result.is_error:
+            entry.failed_tool_call_ids.add(result.call_id)
         content = result.content
         if entry.run.profile.attach_ledger_to_tool_results:
             content += "\n\n[Rapid task state]\n" + self._runtime.ledger_context(

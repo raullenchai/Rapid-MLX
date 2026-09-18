@@ -29,8 +29,9 @@ struct CommunityBenchmarkShareConfirmationSheet: View {
     /// the bottom edge and the only way to publish was to collapse it again.
     static func sheetHeight(availableHeight: CGFloat) -> CGFloat {
         // Leave room for the window title bar and the sheet's own inset so
-        // the sheet never exceeds what the screen can show.
-        max(420, min(720, availableHeight - 120))
+        // the sheet never exceeds what the screen can show; on a display
+        // shorter than the usable minimum the sheet takes what there is.
+        min(max(420, min(720, availableHeight - 120)), max(availableHeight, 0))
     }
 
     private var sheetHeight: CGFloat {

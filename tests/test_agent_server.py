@@ -4334,6 +4334,47 @@ def test_local_run_normalizer_maps_python_and_run_pseudo_commands():
         .arguments["command"]
         == "python3"
     )
+    # A declared, numeric timeout survives; invented keys and junk do not.
+    timed = AgentModelTurn(
+        tool_calls=[
+            AgentToolCall(
+                id="py3",
+                name="local_run",
+                arguments={
+                    "command": "python3",
+                    "argv": ["a.py"],
+                    "timeout_seconds": 25,
+                    "shell": True,
+                },
+            )
+        ]
+    )
+    assert _normalize_local_workspace_turn("run the script", timed).tool_calls[
+        0
+    ].arguments == {
+        "command": "python3",
+        "argv": ["a.py"],
+        "working_directory": "~/Rapid Workspace",
+        "timeout_seconds": 25,
+    }
+    junk = timed.model_copy(
+        update={
+            "tool_calls": [
+                timed.tool_calls[0].model_copy(
+                    update={
+                        "arguments": {
+                            "command": "python3",
+                            "argv": ["a.py"],
+                            "timeout_seconds": "soon",
+                        }
+                    }
+                )
+            ]
+        }
+    )
+    assert "timeout_seconds" not in (
+        _normalize_local_workspace_turn("run the script", junk).tool_calls[0].arguments
+    )
     # "run <binary>" after a compile: the binary is the command.
     run_turn = AgentModelTurn(
         tool_calls=[
@@ -4424,6 +4465,11 @@ def test_local_workspace_normalizer_keeps_users_paths_the_user_named():
     )
     assert _canonical_home_path("/Users/runner/winter.md", goal) == "~/winter.md"
     assert _canonical_home_path("/Users/bobby/winter.md", goal) == "~/winter.md"
+    goal = "Read /home/shared/notes.txt"
+    assert (
+        _canonical_home_path("/home/shared/notes.txt", goal) == "/home/shared/notes.txt"
+    )
+    assert _canonical_home_path("/home/user/notes.txt", goal) == "~/notes.txt"
     turn = AgentModelTurn(
         tool_calls=[
             AgentToolCall(
@@ -5041,3 +5087,66 @@ def test_local_run_relocates_to_the_folder_holding_its_sources():
         ["-c", "print(1)"],
         "~/Rapid Workspace",
     )
+
+
+async def test_client_compile_ignores_a_write_that_reported_an_error():
+    driver = ScriptedDriver(
+        AgentModelTurn(
+            tool_calls=[
+                AgentToolCall(
+                    id="w",
+                    name="local_write",
+                    arguments={
+                        "path": "~/Documents/rapid_fix.c",
+                        "content": "int main(){}",
+                    },
+                )
+            ]
+        ),
+        AgentModelTurn(
+            tool_calls=[
+                AgentToolCall(
+                    id="c",
+                    name="local_run",
+                    arguments={
+                        "command": "gcc",
+                        "argv": ["-o", "rapid_fix", "rapid_fix.c"],
+                        "working_directory": "~/Rapid Workspace",
+                    },
+                )
+            ]
+        ),
+        AgentModelTurn(content="Done."),
+    )
+    service = AgentServerService(registry=FakeRegistry(()), chat_driver=driver)
+    created = await service.create(
+        AgentRunCreateRequest(
+            goal="Write a C program to ~/Documents/rapid_fix.c, compile it and run it",
+            execution="client",
+            tool_names=["local_write", "local_run"],
+        ),
+        model="minicpm5-2b-4bit",
+    )
+    write = await wait_for_status(
+        service, created.id, AgentRunStatus.AWAITING_TOOL_RESULT
+    )
+    assert write.pending_action is not None
+    await service.submit_result(
+        created.id,
+        AgentToolResultRequest(
+            call_id=write.pending_action.call_id,
+            content="local_write error: disk full",
+            executed=True,
+            is_error=True,
+        ),
+    )
+    compile_step = await wait_for_status(
+        service, created.id, AgentRunStatus.AWAITING_TOOL_RESULT
+    )
+    assert compile_step.pending_action is not None
+    # The failed write produced no file, so argv is not redirected to it.
+    assert compile_step.pending_action.arguments == {
+        "command": "gcc",
+        "argv": ["-o", "rapid_fix", "rapid_fix.c"],
+        "working_directory": "~/Rapid Workspace",
+    }

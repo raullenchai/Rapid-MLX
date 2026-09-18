@@ -115,8 +115,13 @@ struct CommunitySharePreviewTests {
         #expect(CommunityBenchmarkShareConfirmationSheet.sheetHeight(availableHeight: 780) == 660)
         // A large display: capped at the design height.
         #expect(CommunityBenchmarkShareConfirmationSheet.sheetHeight(availableHeight: 1400) == 720)
-        // Never collapses below a usable minimum.
-        #expect(CommunityBenchmarkShareConfirmationSheet.sheetHeight(availableHeight: 300) == 420)
+        // Keeps a usable minimum while the display allows it...
+        #expect(CommunityBenchmarkShareConfirmationSheet.sheetHeight(availableHeight: 500) == 420)
+        // ...and never exceeds the display when it does not.
+        #expect(CommunityBenchmarkShareConfirmationSheet.sheetHeight(availableHeight: 300) == 300)
+        for available in stride(from: CGFloat(200), through: 1600, by: 100) {
+            #expect(CommunityBenchmarkShareConfirmationSheet.sheetHeight(availableHeight: available) <= available)
+        }
     }
 
     @Test("SHARED never claims quantisation the submission does not carry")
