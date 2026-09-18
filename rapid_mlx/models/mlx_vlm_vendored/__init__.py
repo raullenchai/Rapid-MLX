@@ -80,7 +80,11 @@ vendored copy differs by exactly the deviations listed):
      2x1 ``"L"`` vs a 1x1 ``"RGB"``) collided and one image's cached
      features were served for the other. Fixed to hash stable
      type/mode/size metadata together with the raw bytes (bytes-like
-     sources carry no such metadata and stay content-addressed).
+     sources carry no such metadata and stay content-addressed). Palette
+     images (``"P"``) hash to palette indices in ``tobytes()``, so
+     same-sized images with identical indices but different palettes
+     rendered different content yet still collided; the effective
+     ``getpalette()`` bytes are folded into the digest as well.
   4. ``put()`` with ``max_size <= 0`` evaluated
      ``len(self._cache) >= self.max_size`` against an empty mapping and
      called ``popitem()`` on it, raising KeyError. Fixed so zero (or

@@ -232,6 +232,30 @@ def test_vision_feature_cache_tobytes_keys_include_mode_and_size():
     assert cache.get(_Image("L", (2, 1))) == "gray-features"
 
 
+def test_vision_feature_cache_palette_images_do_not_collide():
+    """Palette (``"P"``) images hash to palette indices in ``tobytes()``;
+    two same-sized images with identical indices but different palettes
+    render different content yet collided upstream (raw-bytes keying). The
+    vendored copy folds the effective palette into the digest."""
+    pytest.importorskip("PIL.Image")
+    from PIL import Image
+
+    red = Image.new("P", (2, 1))
+    red.putpalette([200, 30, 30] * 256)
+    red.putdata([0, 1])
+    blue = Image.new("P", (2, 1))
+    blue.putpalette([30, 30, 200] * 256)
+    blue.putdata([0, 1])
+    # Precondition: upstream's key material (raw tobytes) is identical.
+    assert red.tobytes() == blue.tobytes()
+
+    cache = vendored_vision_cache.VisionFeatureCache(max_size=8)
+    assert cache._make_key(red) != cache._make_key(blue)
+    cache.put(red, "red-palette-features")
+    assert cache.get(blue) is None  # no cross-serve
+    assert cache.get(red) == "red-palette-features"
+
+
 def test_vision_feature_cache_zero_max_size_disables_storage():
     """Upstream raised KeyError (``popitem()`` on an empty mapping) when
     ``put`` was called on a cache constructed with ``max_size <= 0``; the

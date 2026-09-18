@@ -84,6 +84,18 @@ class VisionFeatureCache:
             digest.update(f"{getattr(image_source, 'mode', '')!s}\x00".encode())
             digest.update(repr(tuple(getattr(image_source, "size", ()) or ())).encode())
             digest.update(b"\x00")
+            # VENDOR-DEVIATION(upstream-bugfix): palette images ("P") hash
+            # to palette INDICES in tobytes(), so two same-sized images with
+            # identical indices but different palettes rendered different
+            # content yet collided. Fold the effective palette into the
+            # digest (getpalette() is None for non-palette modes).
+            get_palette = getattr(image_source, "getpalette", None)
+            if callable(get_palette):
+                palette = get_palette()
+                if palette is not None:
+                    digest.update(b"palette\x00")
+                    digest.update(repr(bytes(palette)).encode())
+                    digest.update(b"\x00")
             digest.update(image_source.tobytes())
             return f"p:{digest.hexdigest()[:16]}"
         else:
