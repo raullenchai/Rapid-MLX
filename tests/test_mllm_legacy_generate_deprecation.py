@@ -69,16 +69,38 @@ def test_deprecation_message_names_the_native_lane():
 
 
 def test_convenience_wrappers_inherit_the_warning():
-    # describe_image / answer_about_image delegate to generate(), so they
-    # are deprecated by transitivity — one assertion pins that delegation
-    # does not bypass the warning.
-    model = MLXMultimodalLM("test-model")
+    # describe_image / answer_about_image / describe_video delegate to
+    # generate(), so they are deprecated by transitivity — one assertion
+    # pins that delegation does not bypass the warning. Each wrapper
+    # warns at its own frame first (per-instance dedupe), hence a fresh
+    # model per call.
     for call in (
-        lambda: model.describe_image("nonexistent.png"),
-        lambda: model.answer_about_image("nonexistent.png", "what?"),
+        lambda: MLXMultimodalLM("test-model").describe_image("nonexistent.png"),
+        lambda: MLXMultimodalLM("test-model").answer_about_image(
+            "nonexistent.png", "what?"
+        ),
+        lambda: MLXMultimodalLM("test-model").describe_video("nonexistent.mp4"),
     ):
         with pytest.raises(DeprecationWarning, match="legacy generation"):
             _raise_on_deprecation(call)
+
+
+def test_legacy_warning_fires_once_per_instance():
+    # The "on first use" contract: the legacy surface warns once per
+    # model instance — not on every call — and the convenience wrappers
+    # rely on that dedupe so delegation does not warn twice.
+    from rapid_mlx.models.mllm import _warn_legacy_generation
+
+    model = MLXMultimodalLM("test-model")
+    with pytest.warns(DeprecationWarning, match="legacy generation"):
+        _warn_legacy_generation(model, "generate")
+    with warnings.catch_warnings(record=True) as caught:
+        warnings.simplefilter("always")
+        _warn_legacy_generation(model, "stream_generate")
+    assert caught == []
+    # A fresh instance warns again.
+    with pytest.warns(DeprecationWarning, match="legacy generation"):
+        _warn_legacy_generation(MLXMultimodalLM("test-model"), "generate")
 
 
 class _FakeTokenizer:
