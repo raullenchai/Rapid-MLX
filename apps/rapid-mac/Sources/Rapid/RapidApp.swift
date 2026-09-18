@@ -161,9 +161,11 @@ struct RapidApp: App {
         // window on "Couldn't start <model> — check the model files" while
         // the model was loaded next door (0.14.3 dogfood, 2026-09-18).
         // Hand the launch to the survivor and leave. Plain `exit`: nothing
-        // has been set up, so there is nothing to tear down.
-        if let survivor = SingleInstanceGuard.runningInstanceToYieldTo() {
-            SingleInstanceGuard.handOff(to: survivor)
+        // has been set up, so there is nothing to tear down. If the survivor
+        // vanished between the check and the hand-off (quit-and-relaunch),
+        // this launch is the only Desktop and carries on.
+        if let survivor = SingleInstanceGuard.runningInstanceToYieldTo(),
+           SingleInstanceGuard.handOff(to: survivor) {
             exit(0)
         }
         // Install the crash reporter FIRST — every other init step can

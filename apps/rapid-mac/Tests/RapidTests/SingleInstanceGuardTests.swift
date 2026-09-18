@@ -56,6 +56,19 @@ struct SingleInstanceGuardTests {
         #expect(SingleInstanceGuard.pidToYieldTo(own: b, running: [b, a]) == 700)
     }
 
+    @Test("Mixed known/unknown launch dates still rank the same way from every viewpoint")
+    func mixedDatesAreATotalOrder() {
+        // codex r2: date-vs-PID switching per pair could cycle (A<B, B<C, C<A) and let all three stay.
+        let a = instance(100, me, at: 10)
+        let b = instance(200, me, at: nil)
+        let c = instance(300, me, at: 0)
+        for roster in [[a, b, c], [c, b, a], [b, a, c]] {
+            #expect(SingleInstanceGuard.pidToYieldTo(own: c, running: roster) == nil, "c launched first and stays")
+            #expect(SingleInstanceGuard.pidToYieldTo(own: a, running: roster) == 300)
+            #expect(SingleInstanceGuard.pidToYieldTo(own: b, running: roster) == 300, "an undated process yields to any dated one")
+        }
+    }
+
     @Test("Several other instances → the most senior one")
     func mostSeniorOfSeveral() {
         let own = instance(800, me, at: 30)

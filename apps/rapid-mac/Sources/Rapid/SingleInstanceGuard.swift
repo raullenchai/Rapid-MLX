@@ -58,16 +58,23 @@ enum SingleInstanceGuard {
         return outranks(senior, own) ? senior.pid : nil
     }
 
-    /// Strict ordering used for seniority: `a` outranks `b` when it launched
-    /// earlier; with equal or unknown launch dates the lower PID outranks.
+    /// Strict total ordering used for seniority: `a` outranks `b` when it
+    /// launched earlier; an unknown launch date ranks after every known one
+    /// (a process LaunchServices cannot date is assumed to be the newest);
+    /// equal or both-unknown dates fall back to the lower PID. Total, so a
+    /// roster with mixed known/unknown dates still ranks the same way from
+    /// every instance's point of view (codex r2: a date-then-PID rule that
+    /// switched keys per pair could cycle and let three launches all stay).
     static func outranks(_ a: Instance, _ b: Instance) -> Bool {
-        if let la = a.launched, let lb = b.launched, la != lb {
-            return la < lb
-        }
+        let la = a.launched ?? .distantFuture
+        let lb = b.launched ?? .distantFuture
+        if la != lb { return la < lb }
         return a.pid < b.pid
     }
 
-    /// Bring the survivor forward, window included.
+    /// Bring the survivor forward, window included. Returns `false` when
+    /// the survivor is gone, in which case the caller should carry on
+    /// launching instead of leaving the user with no app at all.
     ///
     /// ``NSRunningApplication.activate`` only raises windows that exist; a
     /// Desktop whose last window was closed with ⌘W stays alive as a Dock
@@ -76,21 +83,29 @@ enum SingleInstanceGuard {
     /// same request `open -a` and a Dock click deliver — which lands in
     /// ``AppDelegate.applicationShouldHandleReopen`` and opens the main
     /// window. The wait is bounded: a stalled LaunchServices must not keep
-    /// this doomed process alive, and a plain activate is the fallback.
-    static func handOff(to survivor: NSRunningApplication) {
+    /// this doomed process alive, and a plain activate is the fallback for
+    /// a timeout or an error while the survivor is still running. If the
+    /// survivor quit in the meantime (user quit and relaunched at once),
+    /// there is nobody to hand off to.
+    static func handOff(to survivor: NSRunningApplication) -> Bool {
+        guard !survivor.isTerminated else { return false }
         guard let url = survivor.bundleURL else {
-            survivor.activate()
-            return
+            return survivor.activate()
         }
         let configuration = NSWorkspace.OpenConfiguration()
         configuration.activates = true
         configuration.createsNewApplicationInstance = false
         let done = DispatchSemaphore(value: 0)
-        NSWorkspace.shared.openApplication(at: url, configuration: configuration) { _, _ in
+        var failure: Error?
+        NSWorkspace.shared.openApplication(at: url, configuration: configuration) { _, error in
+            failure = error
             done.signal()
         }
-        if done.wait(timeout: .now() + 2) == .timedOut {
+        let timedOut = done.wait(timeout: .now() + 2) == .timedOut
+        if survivor.isTerminated { return false }
+        if timedOut || failure != nil {
             survivor.activate()
         }
+        return true
     }
 }

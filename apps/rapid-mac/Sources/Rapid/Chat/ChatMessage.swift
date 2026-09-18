@@ -1201,7 +1201,7 @@ struct ChatMessage: Identifiable, Codable, Equatable, Hashable {
     /// | --- | --- | --- | --- |
     /// | arithmetic / math vocabulary | compute | — | calc, math, python, interpreter, eval, compute, arith, solve, wolfram, code |
     /// | live data (weather, prices, news) | network | web_search, browse, weather | search, web, weather, browse, fetch, http, url, news, stock, price, forecast, internet, crawl, scrape |
-    /// | external retrieval (search for, look up) | retrieval | web_search, browse, read_document | search, web, browse, fetch, http, url, read, document, doc, pdf, page, file, find, lookup, wiki, retrieve, query |
+    /// | external retrieval (search for, look up) | retrieval | web_search, browse | search, web, browse, fetch, http, url, read, document, doc, pdf, page, file, find, lookup, wiki, retrieve, query |
     ///
     /// The local workspace tools (`local_search`, `local_read`,
     /// `local_write`, `local_trash`, `local_run`) serve none of the three
@@ -1247,7 +1247,9 @@ struct ChatMessage: Identifiable, Codable, Equatable, Hashable {
         "web_search": [.network, .retrieval],
         "browse": [.network, .retrieval],
         "weather": [.network],
-        "read_document": [.retrieval],
+        // Reads the user's own attachments by id — grounding for a document
+        // question (Gate 1c), not a way to search for or fetch anything.
+        "read_document": [],
         "local_search": [],
         "local_read": [],
         "local_write": [],
@@ -1280,25 +1282,27 @@ struct ChatMessage: Identifiable, Codable, Equatable, Hashable {
     }
 
     /// Lower-cased words of a tool name. `fetchURL` → `fetch`, `url`;
-    /// `execute_python3` → `execute`, `python`; `read-document` → `read`,
-    /// `document`.
+    /// `URLCalculator` → `url`, `calculator`; `execute_python3` → `execute`,
+    /// `python`; `read-document` → `read`, `document`. camelCase splits
+    /// before an uppercase letter that follows a lowercase one, and before
+    /// the last capital of an acronym run when a lowercase letter follows it.
     static func toolNameWords(_ name: String) -> [String] {
+        let letters = Array(name.unicodeScalars).map(Character.init)
         var words: [String] = []
         var current = ""
-        var previousWasLower = false
-        for scalar in name.unicodeScalars {
-            let ch = Character(scalar)
-            if ch.isLetter {
-                if ch.isUppercase, previousWasLower, !current.isEmpty {
-                    words.append(current)
-                    current = ""
-                }
-                current.append(ch.lowercased())
-                previousWasLower = ch.isLowercase
-            } else {
+        for (index, ch) in letters.enumerated() {
+            guard ch.isLetter else {
                 if !current.isEmpty { words.append(current); current = "" }
-                previousWasLower = false
+                continue
             }
+            if ch.isUppercase, !current.isEmpty {
+                let previous = letters[index - 1]
+                let next: Character? = index + 1 < letters.count ? letters[index + 1] : nil
+                let boundary = previous.isLowercase
+                    || (previous.isUppercase && (next?.isLowercase ?? false))
+                if boundary { words.append(current); current = "" }
+            }
+            current.append(ch.lowercased())
         }
         if !current.isEmpty { words.append(current) }
         return words
