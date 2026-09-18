@@ -1366,11 +1366,14 @@ enum LocalWorkspaceTools {
                 environment["DEVELOPER_DIR"] = developer.url.path
             }
             let timeout = min(max(args.timeoutSeconds ?? 15, 1), 30)
+            let tracksDescendants = approved.helperClass == .compiler
+                || approved.helperClass == .go
             let outcome = try spawnSandboxed(
                 arguments: sandboxArguments,
                 environment: environment,
                 workingDirectoryDescriptor: workingDirectory.descriptor,
-                timeout: TimeInterval(timeout)
+                timeout: TimeInterval(timeout),
+                tracksDescendants: tracksDescendants
             )
             let out = String(decoding: outcome.stdout, as: UTF8.self)
             let err = String(decoding: outcome.stderr, as: UTF8.self)
@@ -1474,7 +1477,8 @@ enum LocalWorkspaceTools {
         arguments: [String],
         environment: [String: String],
         workingDirectoryDescriptor: Int32,
-        timeout: TimeInterval
+        timeout: TimeInterval,
+        tracksDescendants: Bool
     ) throws -> CommandOutcome {
         let stdout = BoundedPipeCapture()
         let stderr = BoundedPipeCapture()
@@ -1548,7 +1552,14 @@ enum LocalWorkspaceTools {
         var descendants = Set<pid_t>()
         let deadline = Date().addingTimeInterval(timeout)
         while Date() < deadline {
-            collectDescendants(of: pid, into: &descendants)
+            // Interpreters and Swift run with `deny process-fork`.  On macOS
+            // 26.6, asking libproc for children while a denied fork/exec is
+            // unwinding can itself block in the kernel for minutes, defeating
+            // this command's hard deadline.  Only compiler/Go profiles may
+            // create helpers, so only those profiles need process-tree polls.
+            if tracksDescendants {
+                collectDescendants(of: pid, into: &descendants)
+            }
             let waited = waitpid(pid, &status, WNOHANG)
             if waited == pid {
                 reaped = true
@@ -1562,15 +1573,19 @@ enum LocalWorkspaceTools {
             }
             Thread.sleep(forTimeInterval: 0.02)
         }
-        collectDescendants(of: pid, into: &descendants)
+        if tracksDescendants {
+            collectDescendants(of: pid, into: &descendants)
+        }
         let timedOut = !reaped
         if timedOut {
             _ = kill(-pid, SIGTERM)
             signalProcesses(descendants, signal: SIGTERM)
             let grace = Date().addingTimeInterval(0.5)
             while Date() < grace {
-                collectDescendants(of: pid, into: &descendants)
-                collectDescendants(of: Array(descendants), into: &descendants)
+                if tracksDescendants {
+                    collectDescendants(of: pid, into: &descendants)
+                    collectDescendants(of: Array(descendants), into: &descendants)
+                }
                 let waited = waitpid(pid, &status, WNOHANG)
                 if waited == pid {
                     reaped = true
@@ -1609,7 +1624,9 @@ enum LocalWorkspaceTools {
         // leader exits normally, descendants must not survive the bounded
         // action and continue writing in the background.
         terminateProcessGroup(pid)
-        collectDescendants(of: Array(descendants), into: &descendants)
+        if tracksDescendants {
+            collectDescendants(of: Array(descendants), into: &descendants)
+        }
         terminateProcesses(descendants)
         let exitCode: Int32
         if !reaped {
