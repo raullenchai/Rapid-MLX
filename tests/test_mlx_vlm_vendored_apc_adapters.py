@@ -268,12 +268,10 @@ def test_type_table_build_publishes_only_complete_tables(monkeypatch):
         return [vendored_cache, _BrokenNamespace()]
 
     monkeypatch.setattr(apc_adapters, "_cache_namespaces", _namespaces)
-    monkeypatch.setattr(apc_adapters, "_APC_EXACT_TYPES", None)
-    monkeypatch.setattr(apc_adapters, "_APC_BLOCK_TYPES", None)
+    monkeypatch.setattr(apc_adapters, "_APC_TYPE_TABLES", None)
     with pytest.raises(RuntimeError):
         apc_adapters._apc_type_tables()
-    assert apc_adapters._APC_EXACT_TYPES is None
-    assert apc_adapters._APC_BLOCK_TYPES is None
+    assert apc_adapters._APC_TYPE_TABLES is None
 
 
 def test_clone_rules_build_publishes_only_complete_rules(monkeypatch):

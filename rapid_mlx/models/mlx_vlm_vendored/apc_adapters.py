@@ -358,18 +358,18 @@ def resolve_capability(
     return Capability.UNSUPPORTED
 
 
-_APC_EXACT_TYPES: Optional[tuple] = None
-_APC_BLOCK_TYPES: Optional[set] = None
+_APC_TYPE_TABLES: Optional[tuple] = None
 
 
 def _apc_type_tables():
-    global _APC_EXACT_TYPES, _APC_BLOCK_TYPES
-    if _APC_EXACT_TYPES is None:
+    global _APC_TYPE_TABLES
+    if _APC_TYPE_TABLES is None:
         # VENDOR-DEVIATION(dual-namespace): the tables cover every namespace
-        # during the transition. Build them in locals and publish once —
-        # assigning the globals inside the namespace loop let a concurrent
-        # first caller observe a partially built table (vendored types only)
-        # and reject the other namespace's caches.
+        # during the transition. Build them in locals and publish once, as a
+        # single immutable assignment — separate globals let a concurrent
+        # first caller observe one table initialized without the other (and
+        # the namespace loop previously published vendored-only partial
+        # tables mid-build).
         exact: tuple = ()
         block: set = set()
         for ns in _cache_namespaces():
@@ -383,9 +383,8 @@ def _apc_type_tables():
                 ns.ArraysCache,
             )
             block.add(ns.KVCache)
-        _APC_EXACT_TYPES = exact
-        _APC_BLOCK_TYPES = block
-    return _APC_EXACT_TYPES, _APC_BLOCK_TYPES
+        _APC_TYPE_TABLES = (exact, block)
+    return _APC_TYPE_TABLES
 
 
 def apc_block_eligible(cache: Any) -> bool:

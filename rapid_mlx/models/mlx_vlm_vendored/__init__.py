@@ -134,8 +134,9 @@ vendored copy differs by exactly the deviations listed):
      for a tuple itself, which silently dropped composite caches that
      ``apc_exact_eligible`` declares supported. The lazy
      ``_apc_type_tables`` / ``_clone_rules`` builders also publish their
-     globals only after both namespaces are processed, so a concurrent
-     first caller can never observe a partially built table.
+     globals only after both namespaces are processed — as one immutable
+     assignment for the two type tables — so a concurrent first caller
+     can never observe a partially built (or half-published) table.
   3. Redirects: ``_apc_array_helpers``' lazy ``.apc`` import and the
      ``build_prefix_cache_plan`` fallback ``make_prompt_cache`` resolve
      upstream mlx-vlm until the APC engine is vendored (next PR) and
