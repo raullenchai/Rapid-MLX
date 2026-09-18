@@ -427,6 +427,20 @@ def test_local_workspace_default_path_is_harness_owned_and_user_path_is_preserve
     )
     assert input_only.tool_calls[0].arguments["path"] == ("~/Rapid Workspace/main.c")
 
+    offered = ["local_read", "local_write"]
+    assert (
+        _route_desktop_client_tools(
+            'Read "/Users/alice/My Documents/notes.txt" and save a summary', offered
+        )
+        == offered
+    )
+    assert (
+        _route_desktop_client_tools(
+            "Read /Users/alice/My Documents/notes.txt and save a summary", offered
+        )
+        == offered
+    )
+
     run = AgentModelTurn(
         tool_calls=[
             AgentToolCall(

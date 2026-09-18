@@ -234,7 +234,12 @@ _DESKTOP_CLIENT_TOOL_SPECS = (
     ),
 )
 _DESKTOP_CLIENT_TOOL_NAMES = frozenset(tool.name for tool in _DESKTOP_CLIENT_TOOL_SPECS)
-_LOCAL_PATH = re.compile(r"(?:^|\s)(/Users/[^\s'\"，。；]+|~/[^\s'\"，。；]+)")
+_LOCAL_PATH = re.compile(
+    r'(?:"(?:/Users/[^"\n]+|~/[^"\n]+)"|'
+    r"'(?:/Users/[^'\n]+|~/[^'\n]+)'|"
+    r"(?:^|\s)(?:/Users/.*?|~/.*?)(?=\s+(?:and|then|with|so)\b|[，。；,;]|$))",
+    re.IGNORECASE,
+)
 
 
 def _path_has_action_prefix(goal: str, pattern: str) -> bool:
@@ -282,9 +287,11 @@ _LOCAL_READ_INTENT = re.compile(
     re.IGNORECASE,
 )
 _LOCAL_WRITE_INTENT = re.compile(
-    r"\b(?:write|create|save|generate|draft)\b.{0,100}\b(?:file|proposal|program|code|script)\b|"
-    r"\b(?:file|proposal|program|code|script)\b.{0,100}\b(?:write|create|save|generate|draft)\b|"
-    r"(?:写|创建|生成|保存).{0,80}(?:文件|提案|程序|代码|脚本)",
+    r"\b(?:write|create|save|generate|draft)\b.{0,100}\b"
+    r"(?:file|proposal|program|code|script|summary|document|note|report|text|output|result)\b|"
+    r"\b(?:file|proposal|program|code|script|summary|document|note|report|text|output|result)\b"
+    r".{0,100}\b(?:write|create|save|generate|draft)\b|"
+    r"(?:写|创建|生成|保存).{0,80}(?:文件|提案|程序|代码|脚本|摘要|文档|笔记|报告|结果)",
     re.IGNORECASE,
 )
 _LOCAL_TRASH_INTENT = re.compile(

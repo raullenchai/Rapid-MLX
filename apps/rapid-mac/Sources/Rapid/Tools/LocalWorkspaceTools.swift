@@ -1455,7 +1455,10 @@ enum LocalWorkspaceTools {
             "(subpath \"/System\")",
             "(subpath \"/usr/lib\")",
             "(subpath \"/usr/share\")",
-            "(subpath \"/dev\")",
+            "(literal \"/dev/null\")",
+            "(literal \"/dev/zero\")",
+            "(literal \"/dev/random\")",
+            "(literal \"/dev/urandom\")",
             "(subpath \"/private/var/db/timezone\")",
         ]
         var metadataFilters: [String] = []
