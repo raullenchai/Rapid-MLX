@@ -25,8 +25,26 @@ def first_incompatible_mllm_cache_type(
     """
     from mlx_lm.models.cache import ArraysCache, KVCache, RotatingKVCache
 
-    supported_types: tuple[type, ...] = (KVCache, RotatingKVCache)
-    compound_type: type | None = None
+    from .models.mlx_vlm_vendored import cache as vendored_cache
+
+    supported_types: tuple[type, ...] = (
+        KVCache,
+        RotatingKVCache,
+        vendored_cache.KVCache,
+        vendored_cache.RotatingKVCache,
+    )
+    compound_types: tuple[type, ...] = ()
+    vendored_compound = getattr(vendored_cache, "CacheList", None)
+    if isinstance(vendored_compound, type):
+        compound_types += (vendored_compound,)
+    pooling_type = getattr(vendored_cache, "PoolingCache", None)
+    if isinstance(pooling_type, type):
+        supported_types += (pooling_type,)
+    # The vendored package owns a distinct ArraysCache class as well. Hybrid
+    # VLM backbones return this native type, so the serialized compatibility
+    # lane must accept it for the same reason it accepts mlx-lm's class.
+    if allow_arrays_cache and hasattr(vendored_cache, "ArraysCache"):
+        supported_types += (vendored_cache.ArraysCache,)
     if allow_arrays_cache:
         supported_types += (ArraysCache,)
     try:
@@ -36,19 +54,24 @@ def first_incompatible_mllm_cache_type(
         # although they never enter the MLLM serving path.
         pass
     else:
+        # Upstream model classes still *create* caches with their own
+        # identical class objects (type unification lands with step 3's
+        # model vendoring), so the upstream namespace stays recognized too.
+        # VENDOR-DEVIATION(dual-namespace): upstream recognition is
+        # transitional; one mechanical revert restores byte-verbatim once
+        # step 3 unifies the types.
         supported_types += (vlm_cache.KVCache, vlm_cache.RotatingKVCache)
-        compound_type = getattr(vlm_cache, "CacheList", None)
-        pooling_type = getattr(vlm_cache, "PoolingCache", None)
-        if isinstance(pooling_type, type):
-            supported_types += (pooling_type,)
-        # mlx-vlm owns a distinct ArraysCache class as well. Hybrid VLM
-        # backbones return this native type, so the serialized compatibility
-        # lane must accept it for the same reason it accepts mlx-lm's class.
+        upstream_compound = getattr(vlm_cache, "CacheList", None)
+        if isinstance(upstream_compound, type):
+            compound_types += (upstream_compound,)
+        upstream_pooling = getattr(vlm_cache, "PoolingCache", None)
+        if isinstance(upstream_pooling, type):
+            supported_types += (upstream_pooling,)
         if allow_arrays_cache and hasattr(vlm_cache, "ArraysCache"):
             supported_types += (vlm_cache.ArraysCache,)
 
     for cache in caches:
-        if compound_type is not None and isinstance(cache, compound_type):
+        if compound_types and isinstance(cache, compound_types):
             incompatible = first_incompatible_mllm_cache_type(
                 cast(Any, cache).caches,
                 allow_arrays_cache=allow_arrays_cache,
