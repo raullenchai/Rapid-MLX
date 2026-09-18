@@ -1258,6 +1258,20 @@ enum LocalWorkspaceTools {
     /// CI and beta-Xcode users commonly select an app named `Xcode_26.x.app`;
     /// hard-coding `/Applications/Xcode.app` makes the executable launch but
     /// leaves its framework and SDK outside the sandbox.
+    /// Whether `local_run swift` can resolve a toolchain on this Mac: a
+    /// root-owned Xcode or Command Line Tools with the default toolchain's
+    /// `swift-frontend`. A user-owned `Xcode_26.x.app` (common on CI
+    /// runners) fails closed, so callers and tests can tell "unsupported
+    /// here" from a broken sandbox.
+    static func swiftScriptToolchainIsAvailable() -> Bool {
+        guard let roots = try? installedDeveloperDirectories() else { return false }
+        return roots.contains { root in
+            FileManager.default.isExecutableFile(
+                atPath: root.url.path + "/Toolchains/XcodeDefault.xctoolchain/usr/bin/swift-frontend"
+            )
+        }
+    }
+
     private static func installedDeveloperDirectories() throws -> [PinnedPath] {
         var candidates: [String] = []
         if let environment = ProcessInfo.processInfo.environment["DEVELOPER_DIR"],

@@ -822,7 +822,9 @@ final class LocalWorkspaceToolsTests {
         #expect(!FileManager.default.fileExists(atPath: marker.path))
     }
 
-    @Test("approved Swift scripts cannot fork detached background work")
+    @Test("approved Swift scripts cannot fork detached background work",
+          .enabled(if: LocalWorkspaceTools.swiftScriptToolchainIsAvailable(),
+                   "no root-owned Xcode/CLT swift toolchain on this Mac (CI runner)"))
     func swiftCommandCannotForkDetachedChildren() async throws {
         let root = try fixtureDirectory()
         defer { try? FileManager.default.removeItem(at: root) }
