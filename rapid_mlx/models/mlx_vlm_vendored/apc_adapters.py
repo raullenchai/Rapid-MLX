@@ -20,33 +20,41 @@ ADAPTER_SCHEMA_VERSION = 4
 # adapter tables and constructors namespace-complete; the step-3 mechanical
 # revert drops them. Every site that uses them is marked with this comment.
 def _cache_namespaces() -> list:
-    """The vendored cache module plus (while installed) the upstream one."""
+    """The vendored cache module plus (while installed) the upstream one.
+
+    A stripped installation without mlx-vlm simply yields one namespace —
+    callers may dereference every entry.
+    """
     from . import cache as _vendored
 
+    namespaces = [_vendored]
     try:
         from mlx_vlm.models import cache as _upstream
     except ImportError:  # pragma: no cover - mlx-vlm absent
-        _upstream = None
-    return [_vendored, _upstream]
+        pass
+    else:
+        namespaces.append(_upstream)
+    return namespaces
 
 
 def _cache_namespace_of(cache: Any):
     """The cache module that owns ``cache``'s namespace (upstream fallback).
 
-    Constructors route through this so cloned/merged results keep the
-    producer's cache types — byte-identical behavior for upstream-typed
-    inputs, correct typing once producers emit vendored caches.
+    Ownership is decided by base-class identity so subclasses in any module
+    resolve to their namespace. Constructors route through this so
+    cloned/merged results keep the producer's cache types — byte-identical
+    behavior for upstream-typed inputs, correct typing once producers emit
+    vendored caches. Returns None only when ``cache`` matches neither
+    namespace and mlx-vlm is unavailable.
     """
-    if type(cache).__module__.startswith("rapid_mlx.models.mlx_vlm_vendored"):
-        from . import cache as _vendored
-
-        return _vendored
+    for ns in _cache_namespaces():
+        if isinstance(cache, ns._BaseCache):
+            return ns
     try:
         from mlx_vlm.models import cache as _upstream
-
-        return _upstream
     except ImportError:  # pragma: no cover - mlx-vlm absent
         return None
+    return _upstream
 
 
 class Capability(str, Enum):

@@ -188,7 +188,7 @@ def test_vision_feature_cache_lru_contract():
 def test_vision_feature_cache_key_shapes():
     cache = vendored_vision_cache.VisionFeatureCache(max_size=4)
     assert cache._make_key("path/img.png") == "path/img.png"
-    assert cache._make_key(["a", "b"]) == "a|b"
+    assert cache._make_key(["a", "b"]) == "1:a1:b"
 
     class _Blob:
         def tobytes(self):
@@ -197,3 +197,21 @@ def test_vision_feature_cache_key_shapes():
     key = cache._make_key(_Blob())
     assert key.startswith("pil:")
     assert cache._make_key(_Blob()) == key  # content-addressed
+
+
+def test_vision_feature_cache_list_keys_do_not_collide():
+    """Length-prefixed composite keys: ["a|b", "c"] and ["a", "b|c"] must not
+    share a key (upstream's bare "|" join collided them)."""
+    cache = vendored_vision_cache.VisionFeatureCache(max_size=4)
+    assert cache._make_key(["a|b", "c"]) != cache._make_key(["a", "b|c"])
+    cache.put(["a", "b|c"], "wrong-set")
+    assert cache.get(["a|b", "c"]) is None
+    assert cache.get(["a", "b|c"]) == "wrong-set"
+
+
+def test_vision_feature_cache_rejects_unsupported_source_types():
+    """Upstream's ``obj:{id(...)}`` fallback could hand a recycled id to an
+    unrelated object; the vendored copy fails loudly instead."""
+    cache = vendored_vision_cache.VisionFeatureCache(max_size=4)
+    with pytest.raises(TypeError, match="unsupported image source"):
+        cache._make_key(object())

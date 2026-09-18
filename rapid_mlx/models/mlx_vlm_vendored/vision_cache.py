@@ -44,12 +44,29 @@ class VisionFeatureCache:
         if isinstance(image_source, str):
             return image_source
         elif isinstance(image_source, list):
-            return "|".join(self._make_key(img) for img in image_source)
+            # VENDOR-DEVIATION(upstream-bugfix): upstream joined the
+            # recursively derived keys with a bare "|", so distinct inputs
+            # collided (["a|b", "c"] vs ["a", "b|c"]) and one image set could
+            # be served another's cached features. Length-prefix each part so
+            # the serialization is unambiguous.
+            return "".join(
+                f"{len(part)}:{part}" for part in map(self._make_key, image_source)
+            )
         else:
             if hasattr(image_source, "tobytes"):
                 h = hashlib.sha256(image_source.tobytes()).hexdigest()[:16]
                 return f"pil:{h}"
-            return f"obj:{id(image_source)}"
+            # VENDOR-DEVIATION(upstream-bugfix): upstream fell back to
+            # ``obj:{id(...)}``, and Python may hand that id to an unrelated
+            # object after the original is collected — a silent stale-feature
+            # hit. Fail loudly instead; the str and bytes-like branches above
+            # cover every real caller (the lane passes pre-hashed string
+            # keys).
+            raise TypeError(
+                "unsupported image source type for the vision feature "
+                f"cache: {type(image_source).__name__}; pass a path/URL "
+                "string, a list of them, or a bytes-like image object"
+            )
 
     def get(self, image_source: Any) -> Optional[VisionFeatures]:
         """Look up cached features. Returns None on miss."""

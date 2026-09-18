@@ -47,10 +47,21 @@ vendored copy differs by exactly the deviations listed):
 - ``_stream_cleanup.py`` — byte-identical to ``mlx_vlm/_stream_cleanup.py``
   @ v0.7.1 (upstream sha256
   ``00bf5797510f088cfe4cea7798dce0f2902af99a956888748ff0ddc11de21c5d``).
-- ``vision_cache.py`` — byte-identical to ``mlx_vlm/vision_cache.py`` @
-  v0.7.1 (upstream sha256
-  ``5db081a4ef9ee07bb1102c6a87b5fb4a0895821bb2c05d19e110ba6f700e4561``).
-  The lane's ``VisionFeatureCache`` import now resolves here.
+- ``vision_cache.py`` — identical to ``mlx_vlm/vision_cache.py`` @ v0.7.1
+  (upstream sha256
+  ``5db081a4ef9ee07bb1102c6a87b5fb4a0895821bb2c05d19e110ba6f700e4561``)
+  **except two in-source ``VENDOR-DEVIATION(upstream-bugfix)`` hunks** in
+  ``_make_key``, each reproducible against the pinned upstream:
+  1. list sources joined the recursively derived keys with a bare ``"|"``,
+     so distinct inputs collided (``["a|b", "c"]`` vs ``["a", "b|c"]``) and
+     one image set could be served another's cached features. Fixed with a
+     length-prefixed serialization.
+  2. unsupported source types fell back to ``obj:{id(...)}``; Python may
+     hand that id to an unrelated object after collection — a silent
+     stale-feature hit. Fixed to raise ``TypeError`` (the str and
+     bytes-like branches cover every real caller; the lane passes
+     pre-hashed string keys).
+  The lane's ``VisionFeatureCache`` import resolves here.
 - ``kv_quant.py`` — identical to ``mlx_vlm/kv_quant.py`` @ v0.7.1 (upstream
   sha256
   ``2936878096435dd2540e7a029b986259e5b7101c972a5be7168495a58e7fbfa3``)
@@ -80,7 +91,10 @@ vendored copy differs by exactly the deviations listed):
   1. Module-level ``_cache_namespaces`` / ``_cache_namespace_of`` helpers:
      every type table, capability registration, contract probe and
      constructor covers the vendored AND upstream cache namespaces, so the
-     adapters behave identically whichever namespace produced a cache.
+     adapters behave identically whichever namespace produced a cache. A
+     stripped installation without mlx-vlm yields one namespace (no None
+     entries); ownership is decided by base-class identity so third-party
+     subclasses resolve to their own namespace.
   2. Constructors route through ``_cache_namespace_of`` so cloned/merged
      results keep the producer's cache types (upstream-typed inputs yield
      upstream-typed results — byte-identical behavior today; correct
