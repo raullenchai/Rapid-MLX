@@ -1176,9 +1176,18 @@ def _route_desktop_client_tools(
         _EXPLICIT_SEARCH_ACTION.search(goal) is not None and not web_prohibited
     )
     local = _local_tool_intent(goal)
-    if _EXPLICIT_ONLINE_WORDING.search(
-        goal
-    ) is not None and not _path_has_action_prefix(
+    explicit_online_override = (
+        _ONLINE_INSTEAD.search(goal) is not None
+        or re.search(
+            r"\b(?:on|from|using|via)\s+(?:the\s+)?(?:web|internet)\b|"
+            r"\b(?:search|browse|find|look\s+up)\s+(?:the\s+)?(?:web|internet)\b|"
+            r"(?:上网|联网|网上)",
+            goal,
+            re.IGNORECASE,
+        )
+        is not None
+    )
+    if explicit_online_override and not _path_has_action_prefix(
         goal, r"(?:\b(?:search|find|locate)\s*|(?:搜索|查找|找一下|找出)\s*)$"
     ):
         local["local_search"] = False
@@ -1213,7 +1222,7 @@ def _route_desktop_client_tools(
     local_run = local["local_run"]
     if (
         local_search or local_read or local_write or local_trash or local_run
-    ) and _EXPLICIT_ONLINE_WORDING.search(goal) is None:
+    ) and not explicit_online_override:
         # A local path plus a local action is authoritative. The word "search"
         # must never send a private filesystem request to the web-search tool.
         web = False
@@ -1280,6 +1289,8 @@ def _requests_compile_and_run(goal: str) -> bool:
         re.search(
             r"\bcompile\b.{0,120}\b(?:and\s+)?(?:then\s+)?run\s+"
             r"(?:it|code|the\s+(?:program|code|binary|output|executable))\b|"
+            r"\bcompile\b.{0,120}\b(?:and\s+)?(?:then\s+)?run\s+"
+            r"[\"']?(?:~/|/|\./)[^\"'\n,;]+?\.(?:c|cc|cpp|cxx)\b|"
             r"编译.{0,80}(?:然后|并且|再)?(?:运行|执行)(?:它|该程序|这个程序)?",
             goal,
             re.IGNORECASE,

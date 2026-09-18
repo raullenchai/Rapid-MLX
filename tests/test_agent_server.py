@@ -472,9 +472,12 @@ def test_local_workspace_default_path_is_harness_owned_and_user_path_is_preserve
             )
         ]
     )
-    assert _normalize_local_workspace_turn(
-        "Run the script", malformed_argv
-    ).tool_calls[0].arguments["argv"] == "script.py"
+    assert (
+        _normalize_local_workspace_turn("Run the script", malformed_argv)
+        .tool_calls[0]
+        .arguments["argv"]
+        == "script.py"
+    )
 
     shell_recipe = AgentModelTurn(
         tool_calls=[
@@ -4336,6 +4339,9 @@ def test_desktop_local_tools_follow_explicit_paths_and_recent_local_turns():
     assert _route_desktop_client_tools(
         "Search online instead for ~/Documents/orchid", offered
     ) == ["web_search", "browse"]
+    assert _route_desktop_client_tools("Find online in ~/Documents", offered) == [
+        "local_search"
+    ]
     assert _route_desktop_client_tools(
         "Read ~/Documents/report.md and search the web for updates", offered
     ) == ["local_read", "web_search", "browse"]
@@ -4376,6 +4382,7 @@ def test_compile_and_run_recognizes_direct_code_wording():
     from rapid_mlx.agent_runtime.server import _requests_compile_and_run
 
     assert _requests_compile_and_run("Compile and run the code")
+    assert _requests_compile_and_run("Compile and run ~/Documents/app.c")
 
 
 def test_declined_tool_result_cannot_claim_execution():
@@ -4405,6 +4412,14 @@ def test_local_run_normalizer_drops_compile_only_flag_when_asked_to_run():
         "Write a C program, compile it and run it", turn
     )
     assert ran.tool_calls[0].arguments["argv"] == ["-o", "app", "~/Documents/app.c"]
+    ran_named_source = _normalize_local_workspace_turn(
+        "Compile and run ~/Documents/app.c", turn
+    )
+    assert ran_named_source.tool_calls[0].arguments["argv"] == [
+        "-o",
+        "app",
+        "~/Documents/app.c",
+    ]
     kept = _normalize_local_workspace_turn(
         "Compile ~/Documents/app.c to an object file", turn
     )
