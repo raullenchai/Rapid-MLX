@@ -196,6 +196,14 @@ enum LocalWorkspaceTools {
             return buffer.snapshot()
         }
 
+        /// Return bytes received so far without waiting for pipe EOF. A
+        /// sandbox-denied descendant can remain stuck in kernel teardown
+        /// while still owning the inherited writer; the command's timeout
+        /// path must not turn that stale writer into an unbounded close/wait.
+        func snapshot() -> Data {
+            buffer.snapshot()
+        }
+
         private func markFinished() {
             finishLock.lock()
             guard !didFinish else {
@@ -208,16 +216,30 @@ enum LocalWorkspaceTools {
         }
     }
 
-    /// One exceptional kernel teardown must not create an unbounded number of
-    /// dedicated waiter threads if several approved commands time out in a row.
-    private static let processReaper = DispatchQueue(
-        label: "ai.rapidmlx.local-command-reaper",
-        qos: .utility
+    private static let processWaiters = DispatchQueue(
+        label: "ai.rapidmlx.local-command-waiters",
+        qos: .utility,
+        attributes: .concurrent
     )
-    private static let processExitEvents = DispatchQueue(
-        label: "ai.rapidmlx.local-command-exit-events",
-        qos: .utility
-    )
+
+    private final class ProcessWaitState: @unchecked Sendable {
+        private let lock = NSLock()
+        private var storedStatus: Int32?
+        private var storedError: Int32?
+
+        func record(status: Int32?, error: Int32?) {
+            lock.lock()
+            storedStatus = status
+            storedError = error
+            lock.unlock()
+        }
+
+        func snapshot() -> (status: Int32?, error: Int32?) {
+            lock.lock()
+            defer { lock.unlock() }
+            return (storedStatus, storedError)
+        }
+    }
 
     static let searchDefinition = ToolDefinition(
         name: "local_search",
@@ -1555,27 +1577,43 @@ enum LocalWorkspaceTools {
         var reaped = false
         var descendants = Set<pid_t>()
         let exitObserved = DispatchSemaphore(value: 0)
-        let exitSource: (any DispatchSourceProcess)?
+        let waitState: ProcessWaitState?
         if tracksDescendants {
-            exitSource = nil
+            waitState = nil
         } else {
-            let source = DispatchSource.makeProcessSource(
-                identifier: pid,
-                eventMask: .exit,
-                queue: processExitEvents
-            )
-            source.setEventHandler { exitObserved.signal() }
-            source.activate()
-            exitSource = source
+            let state = ProcessWaitState()
+            let childPID = pid
+            waitState = state
+            // macOS 26.6 can block both waitpid(WNOHANG) and process-source
+            // registration while a sandbox-denied fork/exec is unwinding.
+            // Give one detached waiter sole ownership of the reap. The caller
+            // only waits on a bounded semaphore, so that kernel teardown can
+            // never turn the approved command's deadline into an app hang.
+            processWaiters.async {
+                var childStatus: Int32 = 0
+                var waited: pid_t
+                repeat {
+                    waited = waitpid(childPID, &childStatus, 0)
+                } while waited == -1 && errno == EINTR
+                if waited == childPID {
+                    state.record(status: childStatus, error: nil)
+                } else {
+                    state.record(status: nil, error: errno)
+                }
+                exitObserved.signal()
+            }
         }
-        defer { exitSource?.cancel() }
 
-        func reapObservedExit() {
-            var waited: pid_t
-            repeat {
-                waited = waitpid(pid, &status, 0)
-            } while waited == -1 && errno == EINTR
-            reaped = waited == pid
+        func adoptObservedExit() throws {
+            guard let result = waitState?.snapshot() else { return }
+            if let childStatus = result.status {
+                status = childStatus
+                reaped = true
+            } else if let error = result.error {
+                _ = kill(-pid, SIGKILL)
+                errno = error
+                throw posixError("could not monitor the approved command")
+            }
         }
 
         if tracksDescendants {
@@ -1599,11 +1637,7 @@ enum LocalWorkspaceTools {
         } else if exitObserved.wait(
             timeout: .now() + .milliseconds(Int(timeout * 1_000))
         ) == .success {
-            // NOTE_EXIT means kernel teardown has completed, so a blocking
-            // reap is safe. Avoid waitpid(WNOHANG) before this signal: macOS
-            // 26.6 can block that supposedly non-blocking probe while a
-            // sandbox-denied fork/exec is unwinding.
-            reapObservedExit()
+            try adoptObservedExit()
         }
         let timedOut = !reaped
         if timedOut {
@@ -1622,7 +1656,7 @@ enum LocalWorkspaceTools {
                     Thread.sleep(forTimeInterval: 0.02)
                 }
             } else if exitObserved.wait(timeout: .now() + .milliseconds(500)) == .success {
-                reapObservedExit()
+                try adoptObservedExit()
             }
             if !reaped {
                 _ = kill(-pid, SIGKILL)
@@ -1650,10 +1684,7 @@ enum LocalWorkspaceTools {
                 } else if exitObserved.wait(
                     timeout: .now() + .milliseconds(1_000)
                 ) == .success {
-                    reapObservedExit()
-                }
-                if !reaped {
-                    reapEventually(pid)
+                    try adoptObservedExit()
                 }
             }
         }
@@ -1678,16 +1709,9 @@ enum LocalWorkspaceTools {
         return CommandOutcome(
             exitCode: exitCode,
             timedOut: timedOut,
-            stdout: stdout.finish(),
-            stderr: stderr.finish()
+            stdout: timedOut ? stdout.snapshot() : stdout.finish(),
+            stderr: timedOut ? stderr.snapshot() : stderr.finish()
         )
-    }
-
-    private static func reapEventually(_ pid: pid_t) {
-        processReaper.async {
-            var ignoredStatus: Int32 = 0
-            while waitpid(pid, &ignoredStatus, 0) == -1, errno == EINTR {}
-        }
     }
 
     private static func childPIDs(of parent: pid_t) -> [pid_t] {
