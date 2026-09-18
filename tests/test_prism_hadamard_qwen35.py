@@ -100,6 +100,9 @@ def test_packed_matches_dense_hadamard_reference(embedding, block):
         "signs",
         "unexpected_signs",
         "missing_signs",
+        "not_dict",
+        "missing_path",
+        "nonstring_path",
     ],
 )
 def test_packed_manifest_rejects_invalid_weights(corruption):
@@ -133,6 +136,12 @@ def test_packed_manifest_rejects_invalid_weights(corruption):
         weights[prefix + "signs"] = mx.zeros((512,))
     elif corruption == "unexpected_signs":
         record["block"] = 0
+    elif corruption == "not_dict":
+        records[0] = ["layers.0"]
+    elif corruption == "missing_path":
+        del record["path"]
+    elif corruption == "nonstring_path":
+        record["path"] = 123
     else:
         del weights[prefix + "signs"]
     with pytest.raises(ValueError, match="Bonsai 2"):
