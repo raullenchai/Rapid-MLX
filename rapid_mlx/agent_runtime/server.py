@@ -1494,7 +1494,6 @@ def _normalize_local_workspace_turn(goal: str, turn: AgentModelTurn) -> AgentMod
                 if tokens and tokens[0] in _LOCAL_RUN_RECIPE_COMMANDS:
                     recovered = _merge_split_path_tokens(tokens)
             if recovered is not None:
-                recovered = [_canonical_home_path(item, goal) for item in recovered]
                 arguments["command"] = _LOCAL_RUN_COMMAND_ALIASES.get(
                     recovered[0], recovered[0]
                 )
@@ -1514,9 +1513,15 @@ def _normalize_local_workspace_turn(goal: str, turn: AgentModelTurn) -> AgentMod
             ):
                 # ``-c`` stops after the object file, so the requested run can
                 # never happen (qwen3.5-9b, dogfood 2026-09-17).
-                normalized_arguments = [
-                    item for item in normalized_arguments if item != "-c"
-                ]
+                option_end = (
+                    normalized_arguments.index("--")
+                    if "--" in normalized_arguments
+                    else len(normalized_arguments)
+                )
+                compile_only_index = normalized_arguments.index("-c")
+                if compile_only_index < option_end:
+                    normalized_arguments = list(normalized_arguments)
+                    del normalized_arguments[compile_only_index]
                 arguments["argv"] = normalized_arguments
             if (
                 arguments.get("command") in _COMPILER_COMMANDS

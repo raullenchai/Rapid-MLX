@@ -4393,6 +4393,18 @@ def test_local_run_normalizer_drops_compile_only_flag_when_asked_to_run():
         "app",
         "~/Documents/app.c",
     ]
+    operand = turn.model_copy(
+        update={
+            "tool_calls": [
+                turn.tool_calls[0].model_copy(
+                    update={"arguments": {"command": "gcc", "argv": ["--", "-c"]}}
+                )
+            ]
+        }
+    )
+    assert _normalize_local_workspace_turn(
+        "Compile the program and run it", operand
+    ).tool_calls[0].arguments["argv"] == ["--", "-c"]
 
 
 def test_local_run_normalizer_maps_python_and_run_pseudo_commands():
@@ -4454,6 +4466,24 @@ def test_local_run_normalizer_canonicalizes_recovered_shell_recipe_paths():
         "script.py",
         "/Users/other/literal",
         "$HOME/literal",
+    ]
+    recovered_literal = _normalize_local_workspace_turn(
+        "Run the Python script",
+        AgentModelTurn(
+            tool_calls=[
+                AgentToolCall(
+                    id="recipe-literal",
+                    name="local_run",
+                    arguments={
+                        "command": "python3 script.py /home/user/Documents/value"
+                    },
+                )
+            ]
+        ),
+    )
+    assert recovered_literal.tool_calls[0].arguments["argv"] == [
+        "script.py",
+        "/home/user/Documents/value",
     ]
     direct = AgentModelTurn(
         tool_calls=[
