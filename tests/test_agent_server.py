@@ -5033,7 +5033,7 @@ async def test_client_synthesis_tool_call_gets_one_prose_correction():
     assert failed.failure_code == "tool_call_during_final_synthesis"
 
 
-async def test_client_compile_preserves_explicit_working_directory():
+async def test_client_compile_rejects_model_only_working_directory():
     driver = ScriptedDriver(
         AgentModelTurn(
             tool_calls=[
@@ -5095,8 +5095,8 @@ async def test_client_compile_preserves_explicit_working_directory():
     assert compile_step.pending_action.call_id != write.pending_action.call_id
     assert compile_step.pending_action.arguments == {
         "command": "gcc",
-        "argv": ["-o", "rapid_fix", "~/Documents/rapid_fix.c"],
-        "working_directory": "~/Rapid Workspace",
+        "argv": ["-o", "rapid_fix", "rapid_fix.c"],
+        "working_directory": "~/Documents",
     }
 
 

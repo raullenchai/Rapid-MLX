@@ -3461,13 +3461,14 @@ class AgentServerService:
                     resolved.append(home_target)
                     continue
             resolved.append(item)
-        # Relocation is only a repair for the harness default. An explicit cwd
-        # is part of the user's command semantics, including where relative
-        # compiler outputs are written, and must never be silently changed.
-        if (
-            not isinstance(supplied_working_directory, str)
-            or not supplied_working_directory
-        ):
+        # Preserve a cwd only when the user's own request names it. A
+        # model-invented default cannot override the requested source folder.
+        user_grounded_working_directory = (
+            isinstance(supplied_working_directory, str)
+            and bool(supplied_working_directory)
+            and supplied_working_directory in entry.run.goal
+        )
+        if not user_grounded_working_directory:
             resolved, working_directory = AgentServerService._relocate_run_to_sources(
                 resolved, working_directory, written, command
             )
