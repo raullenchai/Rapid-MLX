@@ -3335,10 +3335,10 @@ final class ServerManager {
     }
 
     /// Release the lifecycle reservation after the benchmark subprocess has
-    /// exited. Restoring the prior chat model is the caller's job (ContentView
-    /// captures the serving alias before ``prepareForCommunityBenchmark`` and
-    /// starts it again after this returns), because only the UI knows the
-    /// catalog hint and readiness path a manual Start would use.
+    /// exited. The manager returns the alias atomically captured by the first
+    /// reservation only when the final serialized reservation is released;
+    /// ContentView then restores it through the ordinary Start path because
+    /// only the UI owns the catalog hint and readiness behavior.
     @discardableResult
     func finishCommunityBenchmark(_ reservation: UUID) -> String? {
         guard communityBenchmarkReservations.remove(reservation) != nil else { return nil }

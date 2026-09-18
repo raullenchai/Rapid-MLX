@@ -2015,6 +2015,15 @@ def test_forced_shape_salvage_helpers_cover_their_guards():
     # Junk prefix but a broken object behind it: falls through, not invented.
     raw = '{"name": "local_run", "arguments": >{"command": "python3", '
     assert _salvage_forced_shape_arguments("local_run", raw, _LOCAL_RUN_TOOLS) is None
+    duplicate = (
+        '{"name":"local_run","arguments":0}'
+        '<tool_call>{"name":"local_run","arguments":'
+        "<parameter=command>python3</parameter>}"
+    )
+    assert (
+        _salvage_forced_shape_arguments("local_run", duplicate, _LOCAL_RUN_TOOLS)
+        is None
+    )
 
     # XML parameters: a declared non-string property is left to the schema gate.
     raw = (

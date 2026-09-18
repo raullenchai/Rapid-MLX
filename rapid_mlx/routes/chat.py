@@ -3078,12 +3078,10 @@ def _salvage_forced_shape_arguments(
     props = schema.get("properties")
     if not isinstance(props, dict) or not props:
         return None
-    name_marker = f'"name": "{name}"'
-    name_pos = raw_text.rfind(name_marker)
-    if name_pos < 0:
-        name_pos = raw_text.rfind(f'"name":"{name}"')
-    if name_pos < 0:
+    name_matches = list(re.finditer(rf'"name"\s*:\s*"{re.escape(name)}"', raw_text))
+    if len(name_matches) != 1:
         return None
+    name_pos = name_matches[0].start()
     window = raw_text[name_pos : name_pos + 8192]
 
     # Shape 0: a stray token between ``"arguments":`` and the object, e.g.

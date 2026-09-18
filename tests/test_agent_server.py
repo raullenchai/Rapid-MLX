@@ -4348,6 +4348,14 @@ def test_unquoted_local_path_preserves_words_inside_the_filename():
     )
 
 
+def test_multiple_local_runs_require_explicit_sequencing():
+    from rapid_mlx.agent_runtime.server import _requests_multiple_local_runs
+
+    assert not _requests_multiple_local_runs("Run a.py with b.py as input")
+    assert _requests_multiple_local_runs("Run a.py, then b.py")
+    assert _requests_multiple_local_runs("Run a.py, then run b.py")
+
+
 def test_local_run_normalizer_drops_compile_only_flag_when_asked_to_run():
     turn = AgentModelTurn(
         tool_calls=[

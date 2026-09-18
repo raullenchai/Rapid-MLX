@@ -1262,7 +1262,14 @@ def _requests_multiple_local_runs(goal: str) -> bool:
 
     verbs = re.findall(r"\b(?:run|execute)\b|(?:运行|执行)", goal, re.IGNORECASE)
     scripts = re.findall(r"\b[^\s,;]+\.(?:py|js|rb|swift|go)\b", goal, re.IGNORECASE)
-    return len(verbs) >= 2 or (bool(verbs) and len(set(scripts)) >= 2)
+    sequenced_scripts = re.search(
+        r"\b(?:run|execute)\b.{0,120}\b(?:then|and\s+then|afterwards)\b.{0,80}"
+        r"[^\s,;]+\.(?:py|js|rb|swift|go)\b|"
+        r"(?:运行|执行).{0,100}(?:然后|接着|随后).{0,60}[^\s，。；]+\.(?:py|js|rb|swift|go)\b",
+        goal,
+        re.IGNORECASE,
+    )
+    return len(verbs) >= 2 or (len(set(scripts)) >= 2 and sequenced_scripts is not None)
 
 
 def _canonicalize_local_run_argv(command: str, argv: list[Any], goal: str) -> list[Any]:
