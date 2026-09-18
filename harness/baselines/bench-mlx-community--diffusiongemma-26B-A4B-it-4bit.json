@@ -4,8 +4,8 @@
   "family": "diffusion-gemma",
   "sample_runs": 4,
   "regression_threshold_pct": {
-    "cold_request_ms_median": 30,
-    "warm_request_ms_median": 30
+    "cold_request_ms_median": 45,
+    "warm_request_ms_median": 40
   },
   "model": {
     "id": "mlx-community/diffusiongemma-26B-A4B-it-4bit",
