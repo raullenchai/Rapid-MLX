@@ -1383,8 +1383,6 @@ def _compiled_output_path(arguments: dict[str, Any]) -> str | None:
             break
         if item == "-o" and index + 1 < len(argv) and isinstance(argv[index + 1], str):
             output = argv[index + 1]
-        elif item.startswith("-o") and len(item) > 2:
-            output = item[2:]
     if not output:
         return None
     if output.startswith(("~/", "/")):
@@ -1549,8 +1547,7 @@ def _normalize_local_workspace_turn(goal: str, turn: AgentModelTurn) -> AgentMod
                 arguments.get("command") in _COMPILER_COMMANDS
                 and isinstance(normalized_arguments, list)
                 and not any(
-                    isinstance(item, str)
-                    and (item == "-o" or (item.startswith("-o") and len(item) > 2))
+                    isinstance(item, str) and item == "-o"
                     for item in normalized_arguments
                 )
             ):
