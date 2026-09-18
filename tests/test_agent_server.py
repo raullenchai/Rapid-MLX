@@ -4668,6 +4668,13 @@ def test_local_workspace_normalizer_keeps_users_paths_the_user_named():
         )
         == "~/Documents/winter.md"
     )
+    assert (
+        _canonical_home_path(
+            "/home/user/Documents/app",
+            "Compile ~/Documents/app.c and run the result",
+        )
+        == "~/Documents/app"
+    )
     assert _canonical_home_path("/home/user/.ssh/id_rsa", "Read a local file") == (
         "/home/user/.ssh/id_rsa"
     )
@@ -5539,6 +5546,7 @@ def test_local_run_history_helpers_ignore_malformed_and_unrelated_calls():
     assert _compiled_output_path({"command": "python3", "argv": ["-o", "x"]}) is None
     assert _compiled_output_path({"command": "gcc", "argv": "-o x"}) is None
     assert _compiled_output_path({"command": "gcc", "argv": ["a.c"]}) is None
+    assert _compiled_output_path({"command": "gcc", "argv": ["--", "-oapp"]}) is None
     assert _compiled_output_path({"command": "gcc", "argv": [3, "-oapp", "a.c"]}) == (
         "~/Rapid Workspace/app"
     )

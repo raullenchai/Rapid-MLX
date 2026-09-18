@@ -410,6 +410,12 @@ def _canonical_home_path(value: str, goal: str = "") -> str:
         normalized in explicit_paths
         or any(normalized.startswith(path.rstrip("/") + "/") for path in explicit_paths)
         or any(path.startswith(normalized.rstrip("/") + "/") for path in explicit_paths)
+        or any(
+            "/" in normalized
+            and "/" in path
+            and normalized.rsplit("/", 1)[0] == path.rsplit("/", 1)[0]
+            for path in explicit_paths
+        )
         or normalized.startswith("~/Rapid Workspace/")
     ):
         return normalized
@@ -1366,6 +1372,8 @@ def _compiled_output_path(arguments: dict[str, Any]) -> str | None:
     for index, item in enumerate(argv):
         if not isinstance(item, str):
             continue
+        if item == "--":
+            break
         if item == "-o" and index + 1 < len(argv) and isinstance(argv[index + 1], str):
             output = argv[index + 1]
         elif item.startswith("-o") and len(item) > 2:
