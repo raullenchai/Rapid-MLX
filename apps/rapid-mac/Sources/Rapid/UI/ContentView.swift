@@ -1248,7 +1248,17 @@ struct ContentView: View {
                     releaseServer: { server.finishCommunityBenchmark($0) },
                     retainServerDuringDeferredReap: {
                         server.retainCommunityBenchmarkDuringDeferredReap($0)
-                    }
+                    },
+                    // The public atomic feed identifies models by Hugging Face
+                    // repo id; the rest of the app speaks product aliases, so
+                    // the catalogue does the translation. Captured by value:
+                    // the adapter is Sendable and must not reach back into
+                    // view state from a background request.
+                    directory: CommunityBenchmarkAPIDirectory(
+                        aliasForRepoID: { [entries = catalogEntries] repoID in
+                            entries.first { $0.hfRepo == repoID }?.alias ?? repoID
+                        }
+                    )
                 )
             } else {
                 // Flag flipped off while this tab was selected. Show the

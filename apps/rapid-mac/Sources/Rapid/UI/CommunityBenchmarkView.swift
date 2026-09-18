@@ -10,11 +10,16 @@ struct CommunityBenchmarkModel: Identifiable, Hashable {
     let entry: ModelEntry
     let task: ModelTask
     let protocolName: String
+    /// The registered protocol identifier the service uses, e.g.
+    /// `rapid-community-speed`. Supplied by `benchmark catalog --json`; the
+    /// fallback mirrors `_TASK_PROTOCOL` in `community_bench/workspace.py`.
+    var protocolID: String = "rapid-community-speed"
+    var protocolVersion: Int = 2
     let isFocus: Bool
     let estimatedMemoryGib: Int?
     let memoryFit: String
-    let runtimeStatus: String?
-    let runtimeMessage: String?
+    var runtimeStatus: String? = nil
+    var runtimeMessage: String? = nil
 
     var id: String { entry.alias }
     var runtimeCanRun: Bool { runtimeStatus != "unavailable" }
@@ -24,6 +29,15 @@ struct CommunityBenchmarkModel: Identifiable, Hashable {
         "flux2-klein-4b", "z-image-turbo", "qwen-image",
         "wan2.2-ti2v-5b-q8"
     ]
+    /// Mirrors `_TASK_PROTOCOL` in `rapid_mlx/community_bench/workspace.py`.
+    static func defaultProtocolID(for task: ModelTask) -> String {
+        switch task {
+        case .imageGeneration: return "rapid-image-speed"
+        case .videoGeneration: return "rapid-video-speed"
+        default: return "rapid-community-speed"
+        }
+    }
+
     static let registeredWanAliases: Set<String> = [
         "wan2.2-t2v-a14b-bf16", "wan2.2-ti2v-5b-bf16", "wan2.2-ti2v-5b-q8"
     ]
@@ -77,6 +91,8 @@ struct CommunityBenchmarkModel: Identifiable, Hashable {
                 entry: entry,
                 task: task,
                 protocolName: protocolName,
+                protocolID: catalogModel?.protocolID ?? Self.defaultProtocolID(for: task),
+                protocolVersion: protocolVersion,
                 isFocus: catalogModel?.focus ?? focusAliases.contains(entry.alias),
                 estimatedMemoryGib: catalogModel?.estimatedMemoryGib,
                 memoryFit: catalogModel?.memoryFit ?? "unknown",
@@ -156,6 +172,9 @@ struct CommunityBenchmarkCatalogModel: Decodable, Sendable {
     let estimatedMemoryGib: Int?
     let memoryFit: String
     let protocolVersion: Int?
+    /// `protocol_id` from `benchmark catalog --json`, e.g.
+    /// `rapid-community-speed`. Optional so an older runtime still parses.
+    let protocolID: String?
     let runtime: RuntimeReadiness?
 
     enum CodingKeys: String, CodingKey {
@@ -163,6 +182,28 @@ struct CommunityBenchmarkCatalogModel: Decodable, Sendable {
         case estimatedMemoryGib = "estimated_memory_gib"
         case memoryFit = "memory_fit"
         case protocolVersion = "protocol_version"
+        case protocolID = "protocol_id"
+    }
+
+    /// Explicit memberwise init so `protocolID` can default to nil: it was
+    /// added after the existing construction sites, and an older runtime's
+    /// catalog simply does not carry it.
+    init(
+        alias: String,
+        focus: Bool,
+        estimatedMemoryGib: Int?,
+        memoryFit: String,
+        protocolVersion: Int?,
+        protocolID: String? = nil,
+        runtime: RuntimeReadiness? = nil
+    ) {
+        self.alias = alias
+        self.focus = focus
+        self.estimatedMemoryGib = estimatedMemoryGib
+        self.memoryFit = memoryFit
+        self.protocolVersion = protocolVersion
+        self.protocolID = protocolID
+        self.runtime = runtime
     }
 }
 
@@ -175,13 +216,53 @@ struct CommunityBenchmarkResults: Decodable {
     let receipts: [String: CommunityBenchmarkReceipt]?
 }
 
-struct CommunityBenchmarkContributor: Decodable, Equatable {
+struct CommunityBenchmarkContributor: Decodable, Hashable, Sendable {
     let name: String
     let tag: String
+    /// The canonical slug the API issues. Optional because older receipts and
+    /// the CLI's own payload predate it.
+    private let rawSlug: String?
+    /// The profile route the API supplied, when it supplied one.
+    private let rawURL: String?
+
+    enum CodingKeys: String, CodingKey {
+        case name, tag
+        case rawSlug = "slug"
+        case rawURL = "url"
+    }
+
+    init(name: String, tag: String, slug: String? = nil, url: String? = nil) {
+        self.name = name
+        self.tag = tag
+        rawSlug = slug
+        rawURL = url
+    }
 
     var displayName: String { "\(name) ·\(tag)" }
 
+    /// The identity key everything else keys off — the avatar plate, the
+    /// profile route, and the contributions query.
+    ///
+    /// Mirrors `normalize()` in `landing/public/community-identity.js`
+    /// exactly: the API's slug when present, otherwise `name + "-" + tag`,
+    /// which is the same string the API composes. Desktop must not invent a
+    /// third spelling, or the app and the website would disagree about who
+    /// this installation is.
+    var slug: String {
+        if let rawSlug, !rawSlug.isEmpty { return rawSlug }
+        return "\(name)-\(tag)"
+    }
+
+    /// `/leaderboard/contributors/<slug>` unless the API sent its own route.
     var profileURL: URL? {
+        if let rawURL, !rawURL.isEmpty {
+            if let absolute = URL(string: rawURL), absolute.scheme != nil { return absolute }
+            return URL(string: "https://rapidmlx.com\(rawURL.hasPrefix("/") ? "" : "/")\(rawURL)")
+        }
+        return legacyProfileURL
+    }
+
+    private var legacyProfileURL: URL? {
         // Percent-encode the identifier so an embedded "/" in a server-assigned
         // name/tag cannot become a path separator — mirrors the CLI client's
         // urllib `quote(f"{name}-{tag}", safe="-")`. (Nothing but ASCII
@@ -189,14 +270,14 @@ struct CommunityBenchmarkContributor: Decodable, Equatable {
         // percent-encoded, so the joined slug is safe to drop into a URL path.)
         var allowed = CharacterSet.alphanumerics
         allowed.formUnion(CharacterSet(charactersIn: "_.-~"))
-        let encoded = ("\(name)-\(tag)").addingPercentEncoding(
+        let encoded = slug.addingPercentEncoding(
             withAllowedCharacters: allowed
         ) ?? ""
         return URL(string: "https://rapidmlx.com/leaderboard/contributors/\(encoded)")
     }
 }
 
-struct CommunityBenchmarkReceipt: Decodable, Identifiable {
+struct CommunityBenchmarkReceipt: Decodable, Identifiable, Equatable, Sendable {
     let submissionID: String
     let alreadyExists: Bool
     let acceptedAt: String
@@ -236,12 +317,41 @@ private struct CommunityBenchmarkShareResponse: Decodable {
 }
 
 struct CommunityBenchmarkUploadPreview: Identifiable {
+    /// One fact the local archive keeps that the submission does not carry.
+    ///
+    /// The CLI projects the archived record before sending it, because the
+    /// ingestion validator allowlists a narrower model identity than a warm
+    /// cache produces (see `rapid_mlx/community_bench/publication.py`). The
+    /// projection is only honest if the user can see it, so the exact facts —
+    /// path, value and the reason each was held back — travel with the preview
+    /// and are shown before Publish.
+    struct WithheldFact: Equatable, Sendable, Identifiable {
+        let path: String
+        /// Rendered from whatever JSON the CLI sent: a string, a number, or a
+        /// nested object such as a quantization block.
+        let value: String
+        let reason: String
+
+        var id: String { path }
+
+        /// The leaf the path names, for a compact label.
+        var fieldName: String {
+            path.split(separator: ".").last.map(String.init) ?? path
+        }
+    }
+
     let runID: String
     let target: String
     let installID: String
     let payloadDigest: String
     let bodyDigest: String
     let payloadJSON: String
+    /// Everything the projection removed. Empty when the record already
+    /// satisfied the allowlist — a cold-cache run, typically.
+    var withheld: [WithheldFact] = []
+    /// The model identity actually on the wire, decoded from `payloadJSON`, so
+    /// the disclosure describes the submission rather than the archive.
+    var publishedIdentity: CommunityModelIdentity?
 
     var id: String { runID }
 }
@@ -264,9 +374,16 @@ struct CommunityBenchmarkResult: Decodable, Identifiable {
         }
         let taskType: String
         let cases: [Case]?
+        /// `registered_workload` writes both on every record, and the worker
+        /// requires them. Optional so a record written before they existed
+        /// still decodes — it simply cannot be scoped for comparison.
+        let protocolID: String?
+        let protocolVersion: Int?
         enum CodingKeys: String, CodingKey {
             case taskType = "task_type"
             case cases
+            case protocolID = "protocol_id"
+            case protocolVersion = "protocol_version"
         }
     }
     struct Outcome: Decodable { let status: String }
@@ -277,6 +394,10 @@ struct CommunityBenchmarkResult: Decodable, Identifiable {
         let ttftMS: Double?
         let decodeDurationMS: Double?
         let totalDurationMS: Double?
+        /// `measurementBase.peak_active_memory_mib` — the high-water unified
+        /// memory for this round. Optional because a runtime that cannot
+        /// sample it omits the field rather than reporting zero.
+        let peakActiveMemoryMiB: Double?
         enum CodingKeys: String, CodingKey {
             case caseID = "case_id"
             case completed
@@ -284,17 +405,34 @@ struct CommunityBenchmarkResult: Decodable, Identifiable {
             case ttftMS = "ttft_ms"
             case decodeDurationMS = "decode_duration_ms"
             case totalDurationMS = "total_duration_ms"
+            case peakActiveMemoryMiB = "peak_active_memory_mib"
+        }
+
+        /// Explicit memberwise init so `peakActiveMemoryMiB` can default to
+        /// nil: it was added after the existing construction sites, and a
+        /// round that predates the field is "unknown", not "zero bytes".
+        init(
+            caseID: String,
+            completed: Bool?,
+            outputTokens: Int?,
+            ttftMS: Double?,
+            decodeDurationMS: Double?,
+            totalDurationMS: Double?,
+            peakActiveMemoryMiB: Double? = nil
+        ) {
+            self.caseID = caseID
+            self.completed = completed
+            self.outputTokens = outputTokens
+            self.ttftMS = ttftMS
+            self.decodeDurationMS = decodeDurationMS
+            self.totalDurationMS = totalDurationMS
+            self.peakActiveMemoryMiB = peakActiveMemoryMiB
         }
     }
-    struct Model: Decodable {
-        struct Component: Decodable {
-            struct Source: Decodable { let repoID: String?
-                enum CodingKeys: String, CodingKey { case repoID = "repo_id" }
-            }
-            let source: Source
-        }
-        let components: [Component]
-    }
+    /// The full contract identity, not just a repo id: a `4bit/` subfolder,
+    /// the resolved snapshot revision and the artifact's quantization all
+    /// distinguish one measured artifact from another.
+    typealias Model = CommunityModelIdentity.Wire
     struct Machine: Decodable {
         struct Profile: Decodable {
             let chip: String
@@ -324,11 +462,40 @@ struct CommunityBenchmarkResult: Decodable, Identifiable {
                 case mlx, python
             }
         }
+        /// `execution.resources` — only `compute_dtype` takes part in the
+        /// server's summary grouping.
+        struct Resources: Decodable {
+            let computeDType: String?
+            enum CodingKeys: String, CodingKey { case computeDType = "compute_dtype" }
+        }
+        /// `execution.task` — language knobs are what the worker projects for
+        /// text runs. Image/video tasks carry no `language` block.
+        struct Task: Decodable {
+            struct Language: Decodable {
+                struct SpeculativeDecoding: Decodable { let method: String? }
+                struct KVCache: Decodable {
+                    let mode: String?
+                    let dtype: String?
+                }
+                let speculativeDecoding: SpeculativeDecoding?
+                let kvCache: KVCache?
+                let prefillBackend: String?
+
+                enum CodingKeys: String, CodingKey {
+                    case speculativeDecoding = "speculative_decoding"
+                    case kvCache = "kv_cache"
+                    case prefillBackend = "prefill_backend"
+                }
+            }
+            let language: Language?
+        }
         let runtime: Runtime
         let configDigest: String
+        let resources: Resources?
+        let task: Task?
 
         enum CodingKeys: String, CodingKey {
-            case runtime
+            case runtime, resources, task
             case configDigest = "config_digest"
         }
     }
@@ -476,7 +643,92 @@ struct CommunityBenchmarkResult: Decodable, Identifiable {
         return caseSummaries.dropFirst().map { "\($0.caseID): \($0.headline)" }
     }
 
-    var repoID: String { model.components.first?.source.repoID ?? "Local model" }
+    /// The full identity of the artifact this run measured. Nil when the
+    /// record names no model at all.
+    var modelIdentity: CommunityModelIdentity? { model.identity }
+
+    var repoID: String { modelIdentity?.repoID ?? "Local model" }
+
+    /// The Mac this run was measured on — the record's own machine, never the
+    /// one the app happens to be running on now.
+    var macProfile: CommunityMacProfile? {
+        machine.map {
+            CommunityMacProfile(chip: $0.profile.chip, memoryGiB: $0.profile.memoryGib)
+        }
+    }
+
+    /// The complete community scope this run belongs to, derived **only** from
+    /// the record.
+    ///
+    /// Publishing an older run from My Results used to build its scope from the
+    /// *currently selected* model, so a receipt for model X was attributed to
+    /// whatever Y the picker was on: Y's alias in the celebration, Y's protocol
+    /// version in the query, Y's count incremented, Y's floor confirmed. Every
+    /// field here now comes from the run itself.
+    ///
+    /// `alias` maps the repo id to the product alias for display; it is the
+    /// only thing the caller supplies, because the catalogue owns that mapping
+    /// and the record does not carry it.
+    ///
+    /// Nil when the record cannot be scoped truthfully — no model, no machine,
+    /// no registered protocol, or no primary case. A run that cannot say what
+    /// it is about must not be compared with anything.
+    func communityScope(alias: (String) -> String) -> CommunityBenchmarkScope? {
+        guard let modelIdentity,
+              let macProfile,
+              let communityWorkload = CommunityWorkload(taskType: workload.taskType),
+              let protocolID = workload.protocolID,
+              let protocolVersion = workload.protocolVersion,
+              let comparisonIdentity
+        else { return nil }
+        return CommunityBenchmarkScope(
+            modelAlias: alias(modelIdentity.repoID),
+            workload: communityWorkload,
+            protocolID: protocolID,
+            protocolVersion: protocolVersion,
+            macProfile: macProfile,
+            modelIdentity: modelIdentity,
+            comparison: comparisonIdentity
+        )
+    }
+
+    /// The execution configuration this run was measured under, in exactly the
+    /// fields the service groups by. Used to pick the ONE summary cell this
+    /// result may honestly be compared against.
+    var executionIdentity: CommunityExecutionIdentity {
+        let language = execution.task?.language
+        return CommunityExecutionIdentity(
+            rapidMLX: execution.runtime.rapidMLX,
+            computeDType: execution.resources?.computeDType ?? "unknown",
+            speculativeDecodingMethod: language?.speculativeDecoding?.method,
+            kvCacheMode: language?.kvCache?.mode,
+            kvCacheDType: language?.kvCache?.dtype,
+            prefillBackend: language?.prefillBackend
+        )
+    }
+
+    /// The declared primary case — the one the headline metric came from, and
+    /// the one the service keys its summary group on (`run.cases[0]`).
+    var primaryCaseID: String? {
+        workload.cases?.first?.caseID ?? caseSummaries.first?.caseID
+    }
+
+    /// The server's metric name for this workload.
+    var primaryMetricName: String {
+        workload.taskType == "text_generation" ? "decode_tps" : "total_seconds"
+    }
+
+    /// Everything beyond model/workload/protocol/machine that must agree
+    /// before this run may be compared with a published aggregate. Nil when
+    /// the record does not name its primary case.
+    var comparisonIdentity: CommunityComparisonIdentity? {
+        guard let primaryCaseID else { return nil }
+        return CommunityComparisonIdentity(
+            caseID: primaryCaseID,
+            metricName: primaryMetricName,
+            execution: executionIdentity
+        )
+    }
 
     /// `completed_at` is a UTC ISO-8601 stamp with or without fractional
     /// seconds, depending on the CLI version that wrote the record.
@@ -583,12 +835,35 @@ enum CommunityBenchmarkRunStatus {
     /// A tagged progress line with its marker removed and whitespace
     /// collapsed, or nil for any other stderr (the untagged failure
     /// document, warnings, tracebacks) so the view never mirrors it.
+    ///
+    /// The 200-character cap is a *display* bound: this string is rendered
+    /// verbatim in the status row. Structured events are not displayed and are
+    /// routinely longer than a sentence, so they go through
+    /// ``strippedEvent(from:)`` instead — a plan event for a three-case
+    /// protocol is well past 200 bytes, and silently dropping it is how the
+    /// denominator stayed hardcoded.
     static func strippedProgress(from line: String) -> String? {
+        guard let body = taggedBody(of: line) else { return nil }
+        guard !body.hasPrefix("{"), body.count <= 200 else { return nil }
+        return body.split(whereSeparator: \.isWhitespace).joined(separator: " ")
+    }
+
+    /// A tagged **structured** event body — compact JSON — or nil.
+    ///
+    /// Prose never begins with `{`, so the two streams are separated on the
+    /// first character. `LineSplitter` already discards anything over 4 KB, so
+    /// this bound only guards against a pathological single event.
+    static func strippedEvent(from line: String) -> String? {
+        guard let body = taggedBody(of: line) else { return nil }
+        guard body.hasPrefix("{"), body.utf8.count <= 4 * 1_024 else { return nil }
+        return body
+    }
+
+    private static func taggedBody(of line: String) -> String? {
         guard line.hasPrefix(progressTag) else { return nil }
         let body = line.dropFirst(progressTag.count)
             .trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !body.isEmpty, body.count <= 200 else { return nil }
-        return body.split(whereSeparator: \.isWhitespace).joined(separator: " ")
+        return body.isEmpty ? nil : body
     }
 
     /// True when a (stripped) progress line marks one COMPLETED unit of work.
@@ -778,6 +1053,12 @@ final class BenchmarkProcessBox: @unchecked Sendable {
 enum CommunityBenchmarkCommand {
     struct Failure: LocalizedError {
         let message: String
+        /// True when the CLI declined on purpose rather than failing.
+        ///
+        /// Carried on the error itself because the message the user sees is
+        /// the extracted `error` sentence — by the time a caller has that
+        /// string the surrounding document, and its `refused` flag, are gone.
+        var isRefusal: Bool = false
         var errorDescription: String? { message }
     }
 
@@ -818,6 +1099,24 @@ enum CommunityBenchmarkCommand {
             enum CodingKeys: String, CodingKey { case runID = "run_id" }
         }
         return try? JSONDecoder().decode(RunID.self, from: data).runID
+    }
+
+    /// True when the CLI refused to publish rather than failing to.
+    ///
+    /// Read from the raw failure document's `refused` flag, not from the
+    /// message text: the wording is user-facing and will change, the flag is
+    /// a contract.
+    static func isRefusal(_ detail: String) -> Bool {
+        struct Doc: Decodable { let refused: Bool? }
+        let candidates = [detail]
+            + detail.split(separator: "\n").reversed().map(String.init)
+        for candidate in candidates {
+            if let data = candidate.data(using: .utf8),
+               let doc = try? JSONDecoder().decode(Doc.self, from: data) {
+                return doc.refused == true
+            }
+        }
+        return false
     }
 
     /// A human sentence for a failed run. Under `--json` the CLI prints a
@@ -873,8 +1172,68 @@ enum CommunityBenchmarkCommand {
             installID: installID,
             payloadDigest: payloadDigest,
             bodyDigest: bodyDigest,
-            payloadJSON: payloadJSON
+            payloadJSON: payloadJSON,
+            withheld: decodeWithheld(root["withheld"]),
+            publishedIdentity: decodePublishedIdentity(from: payloadJSON)
         )
+    }
+
+    /// `withheld` from `benchmark share --preview --json`.
+    ///
+    /// A preview from an older CLI has no such key, which is not an error —
+    /// that CLI does not project, so nothing was withheld.
+    static func decodeWithheld(
+        _ raw: Any?
+    ) -> [CommunityBenchmarkUploadPreview.WithheldFact] {
+        // Element-wise, not `as? [[String: Any]]`: one malformed entry must
+        // not discard the disclosure for all the others.
+        guard let items = raw as? [Any] else { return [] }
+        return items.compactMap { element in
+            guard let item = element as? [String: Any],
+                  let path = item["path"] as? String,
+                  let reason = item["reason"] as? String
+            else { return nil }
+            return CommunityBenchmarkUploadPreview.WithheldFact(
+                path: path,
+                value: describeWithheldValue(item["value"]),
+                reason: reason
+            )
+        }
+    }
+
+    /// Renders a withheld value for display.
+    ///
+    /// The values are heterogeneous — a revision string, a whole quantization
+    /// object — and the point is for the user to recognise what is being held
+    /// back, so an object is shown as its `key: value` pairs rather than as
+    /// raw JSON braces.
+    static func describeWithheldValue(_ raw: Any?) -> String {
+        switch raw {
+        case let text as String: return text
+        case let number as NSNumber: return number.stringValue
+        case let object as [String: Any]:
+            return object.keys.sorted()
+                .map { "\($0): \(describeWithheldValue(object[$0]))" }
+                .joined(separator: ", ")
+        case let list as [Any]:
+            return list.map(describeWithheldValue).joined(separator: ", ")
+        case is NSNull, nil: return "—"
+        default: return String(describing: raw ?? "")
+        }
+    }
+
+    /// The model identity on the wire, so the disclosure can describe what is
+    /// actually published instead of what the archive happens to hold.
+    static func decodePublishedIdentity(from payloadJSON: String) -> CommunityModelIdentity? {
+        guard let data = payloadJSON.data(using: .utf8),
+              let root = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+              let model = root["model"],
+              let modelData = try? JSONSerialization.data(withJSONObject: model),
+              let wire = try? JSONDecoder().decode(
+                  CommunityModelIdentity.Wire.self, from: modelData
+              )
+        else { return nil }
+        return wire.identity
     }
 
     @MainActor
@@ -897,23 +1256,35 @@ enum CommunityBenchmarkCommand {
                         standardOutput: stdout,
                         standardError: stderr
                     )
-                    let outputTask = Task.detached {
-                        readBoundedPipe(
-                            stdout.fileHandleForReading,
-                            maxBytes: maxStdoutBytes,
-                            retainTail: false
-                        )
+                    // On dedicated threads, NOT the Swift cooperative pool.
+                    // These block in `read(upToCount:)` until the child writes,
+                    // and `waitForCompletion` below blocks another thread for
+                    // the whole run in a 10 ms sleep loop. Hosting all three on
+                    // the cooperative pool starved the readers: every progress
+                    // line for a 34-second benchmark arrived in one burst when
+                    // the waiter finally returned, so the Running screen sat on
+                    // "Getting ready" and then jumped straight to Result.
+                    let outputTask = Task {
+                        await runBlocking {
+                            readBoundedPipe(
+                                stdout.fileHandleForReading,
+                                maxBytes: maxStdoutBytes,
+                                retainTail: false
+                            )
+                        }
                     }
-                    let errorTask = Task.detached {
-                        let lines = LineSplitter(onLine: onStandardErrorLine)
-                        let capture = readBoundedPipe(
-                            stderr.fileHandleForReading,
-                            maxBytes: maxStderrBytes,
-                            retainTail: true,
-                            onChunk: lines.consume
-                        )
-                        lines.finish()
-                        return capture
+                    let errorTask = Task {
+                        await runBlocking {
+                            let lines = LineSplitter(onLine: onStandardErrorLine)
+                            let capture = readBoundedPipe(
+                                stderr.fileHandleForReading,
+                                maxBytes: maxStderrBytes,
+                                retainTail: true,
+                                onChunk: lines.consume
+                            )
+                            lines.finish()
+                            return capture
+                        }
                     }
                     // The child owns duplicated write descriptors after spawn.
                     // Drop the parent's copies so both readers observe EOF when
@@ -931,7 +1302,10 @@ enum CommunityBenchmarkCommand {
                         outputTask.cancel()
                         errorTask.cancel()
                     }
-                    if let processGroupID = box.waitForCompletion(child) {
+                    // Also off the cooperative pool: this spins on
+                    // `Thread.sleep` until the child exits.
+                    let waited = await runBlocking { box.waitForCompletion(child) }
+                    if let processGroupID = waited {
                         return RunOutcome.deferredReap(processGroupID)
                     }
                     let output = await outputTask.value
@@ -949,7 +1323,10 @@ enum CommunityBenchmarkCommand {
                         let message = detail
                             .flatMap { $0.isEmpty ? nil : Self.failureSummary(from: $0) }
                             ?? "Benchmark exited with code \(child.terminationStatus)."
-                        throw Failure(message: message)
+                        throw Failure(
+                            message: message,
+                            isRefusal: detail.map(Self.isRefusal) ?? false
+                        )
                     }
                     guard !output.truncated else {
                         throw Failure(
@@ -1035,6 +1412,25 @@ enum CommunityBenchmarkCommand {
         }
     }
 
+    /// Runs blocking work on a dedicated thread, off the Swift cooperative
+    /// pool.
+    ///
+    /// The pool is sized to the core count and is not allowed to block: a task
+    /// that sits in `read()` or `Thread.sleep` holds a thread that other tasks
+    /// need to make progress on. Pipe draining and process waiting are both
+    /// unavoidably blocking, so they get real threads and hand their result
+    /// back through a continuation.
+    private static func runBlocking<Value: Sendable>(
+        _ work: @escaping @Sendable () -> Value
+    ) async -> Value {
+        await withCheckedContinuation { continuation in
+            let thread = Thread { continuation.resume(returning: work()) }
+            thread.name = "rapid.benchmark.blocking"
+            thread.stackSize = 512 * 1024
+            thread.start()
+        }
+    }
+
     private static func readBoundedPipe(
         _ handle: FileHandle,
         maxBytes: Int,
@@ -1043,14 +1439,28 @@ enum CommunityBenchmarkCommand {
     ) -> PipeCapture {
         var data = Data()
         var truncated = false
+        var buffer = [UInt8](repeating: 0, count: pipeChunkBytes)
+        let descriptor = handle.fileDescriptor
         while true {
-            let chunk: Data?
-            do {
-                chunk = try handle.read(upToCount: pipeChunkBytes)
-            } catch {
+            // `FileHandle.read(upToCount:)` is NOT a streaming read: it loops
+            // internally until it has the full count or hits EOF, so asking for
+            // a 64 KB chunk of a slow trickle returns nothing until the child
+            // exits. That is what froze the Running screen on "Getting ready"
+            // for an entire 34-second benchmark and then delivered every
+            // progress line at once, too late to render.
+            //
+            // `read(2)` returns as soon as any bytes are available, which is
+            // what a live progress stream needs.
+            let count = buffer.withUnsafeMutableBytes { raw in
+                read(descriptor, raw.baseAddress, raw.count)
+            }
+            if count < 0 {
+                // Retry a signal-interrupted read; anything else ends the stream.
+                if errno == EINTR { continue }
                 break
             }
-            guard let chunk, !chunk.isEmpty else { break }
+            guard count > 0 else { break }
+            let chunk = Data(buffer[0..<count])
             onChunk?(chunk)
             if chunk.count >= maxBytes {
                 truncated = truncated || !data.isEmpty || chunk.count > maxBytes
@@ -1085,82 +1495,230 @@ enum CommunityBenchmarkCommand {
     }
 }
 
+/// The Community Benchmark workspace: Run, My Results, and Community.
+///
+/// Owns the module's state and wires the three tabs, the Ready → Running →
+/// Result phases, and the four sheets (model picker, test method, publish
+/// confirmation, published). The measurement pipeline underneath — process
+/// spawn, progress parsing, result decoding, publish payload — is unchanged.
 struct CommunityBenchmarkView: View {
     let catalog: [ModelEntry]
     let binary: URL?
     let prepareServer: () async throws -> UUID
     let releaseServer: (UUID) -> Void
     let retainServerDuringDeferredReap: (pid_t) -> Void
+    /// The community read API. Defaults to the unavailable directory because
+    /// this repository contains no read endpoint; tests and previews inject a
+    /// static one. See ``CommunityBenchmarkDirectory``.
+    var directory: any CommunityBenchmarkDirectory = UnavailableCommunityBenchmarkDirectory()
+    var macProfile: CommunityMacProfile = .current()
+
+    // MARK: Run pipeline state (unchanged behaviour)
 
     @State private var selectedAlias = ""
     @State private var results: [CommunityBenchmarkResult] = []
     @State private var isRunning = false
     @State private var runStartedAt: Date?
     @State private var runningModel: CommunityBenchmarkModel?
-    @State private var runProgressLine: String?
     @State private var currentRunID: UUID?
-    /// Highest progress sequence applied so far; lines are stamped in
-    /// arrival order off the main actor and applied only if newer, so the
-    /// unordered main-actor hops can never show an older round.
     @State private var appliedProgressSequence = 0
-    /// Completed warmup + measured passes, and when the first one landed, for
-    /// the determinate progress bar and the live ETA.
-    @State private var stepsDone = 0
-    @State private var firstStepAt: Date?
-    /// The most recent step completion, so the ETA divides by real
-    /// inter-step time and stays stable between steps.
-    @State private var lastStepAt: Date?
+    /// Live state reduced from the CLI's RS-tagged progress stream: stage,
+    /// completed passes, newest measurement, time left. Replaces the two bare
+    /// scalars the screen used to derive everything from.
+    @State private var runProgress = CommunityRunProgress()
+    /// The protocol shape the stepper renders. The assumed one until the run
+    /// declares its own in its first `plan` event.
+    @State private var runProgressPlan = CommunityRunPlan.assumed(for: .textGeneration)
     @State private var errorMessage: String?
-    /// The result id of the run that just finished, so a prominent CTA can
-    /// invite the user to share it (instead of relying on the small per-row
-    /// link). Cleared when the row is shared, dismissed, or a new run starts.
-    @State private var pendingShareResultID: String?
+    @State private var errorTone: InlineNotice.Tone = .error
+    @State private var latestResultID: String?
     @State private var runTask: Task<Void, Never>?
     @State private var shareTask: Task<Void, Never>?
     @State private var shareCandidate: CommunityBenchmarkUploadPreview?
     @State private var sharingRunID: String?
     @State private var shareSuccess: CommunityBenchmarkReceipt?
+    @State private var receiptNotSavedWarning: String?
+    /// Identity + confirmed-count bookkeeping for this session's uploads.
+    /// Survives a failed local receipt write and defends the confirmed count
+    /// against the public feed's 30-second edge cache.
+    @State private var publication = CommunityPublicationState()
+    /// Scheduled re-read once the edge cache can have expired.
+    @State private var staleFeedRetryTask: Task<Void, Never>?
     @State private var receipts: [String: CommunityBenchmarkReceipt] = [:]
     @State private var benchmarkMetadata: [String: CommunityBenchmarkCatalogModel] = [:]
     @State private var benchmarkCLIAvailable = false
     @State private var productCatalog: [ModelEntry]?
 
+    // MARK: Redesign state
+
+    @State private var tab: CommunityBenchmarkTab = .run
+    @State private var showsPicker = false
+    @State private var showsTestMethod = false
+    @State private var pickerQuery = ""
+    @State private var pickerSelection = ""
+    @State private var containerSize: CGSize = .init(width: 1_240, height: 820)
+    @State private var communityWorkload: CommunityWorkload = .llm
+
+    /// Observation aggregate for the currently selected model's scope.
+    @State private var observations: CommunityDataState<CommunityObservationSummary> = .loading
+    @State private var communityTable: CommunityDataState<[CommunityObservationRow]> = .loading
+    @State private var coverage: CommunityDataState<[CommunityCoverageGap]> = .loading
+    @State private var pulse: CommunityDataState<CommunityPulse> = .loading
+    /// Everything about the run being published, frozen when Publish was
+    /// pressed: its scope, the count that scope had, and the branch the user
+    /// saw. Nothing here is re-read after the upload starts, so a Run again
+    /// mid-upload cannot redirect the receipt onto another run's scope.
+    @State private var publishContext: CommunityPublicationContext?
+    /// The post-publish count for the *published* scope, used by the
+    /// celebration sheet. Held separately from `observations`, which tracks
+    /// whatever is on screen now.
+    @State private var publishedObservationCount: Int?
+    /// Stamps every community read so a slow response for a model or workload
+    /// the user has since changed cannot overwrite the current one. Per-query,
+    /// so changing the model never orphans the pulse or coverage requests.
+    @State private var readGenerations = CommunityRequestGenerations()
+    /// Exact published totals for this installation's own pseudonym, read from
+    /// the paginated contributions endpoint.
+    @State private var contributorTotals: CommunityDataState<CommunityContributorTotals> = .loading
+
     private var resolvedCatalog: [ModelEntry] {
-        CommunityBenchmarkModel.resolvedCatalog(
-            product: productCatalog,
-            fallback: catalog
-        )
+        CommunityBenchmarkModel.resolvedCatalog(product: productCatalog, fallback: catalog)
     }
 
     private var models: [CommunityBenchmarkModel] {
-        CommunityBenchmarkModel.models(
-            from: resolvedCatalog,
-            metadata: benchmarkMetadata
-        )
+        CommunityBenchmarkModel.models(from: resolvedCatalog, metadata: benchmarkMetadata)
     }
 
     private var selected: CommunityBenchmarkModel? {
         models.first { $0.entry.alias == selectedAlias }
     }
 
-    var body: some View {
-        ScrollView {
-            VStack(alignment: .leading, spacing: 24) {
-                header
-                setupCard
-                postRunShareCTA
-                recentResults
-            }
-            .frame(maxWidth: 760, alignment: .leading)
-            .padding(32)
-            .frame(maxWidth: .infinity, alignment: .top)
+    /// Coverage scope for the selected model: no comparison identity, because
+    /// no run exists yet.
+    private var scope: CommunityBenchmarkScope? {
+        CommunityBenchmarkView.observationScope(
+            selected: selected, macProfile: macProfile, latestResult: nil
+        )
+    }
+
+    /// Comparison scope for a finished run, built **entirely from that run**.
+    ///
+    /// Nothing here reads `selectedAlias`, `selected`, or this Mac's current
+    /// hardware: publishing a stored result from My Results is a legitimate
+    /// action on a run whose model, protocol version and Mac may all differ
+    /// from whatever the Run tab is showing.
+    private func comparisonScope(for result: CommunityBenchmarkResult) -> CommunityBenchmarkScope? {
+        result.communityScope(alias: alias(for:))
+    }
+
+    /// The scope the observations query must actually use.
+    ///
+    /// When a completed run is on screen the question is "how does THIS run
+    /// compare?", which is only answerable against the cell produced with the
+    /// same case, metric and execution configuration. Querying the generic
+    /// coverage scope there returned a count across every execution variant
+    /// and no median, so the Result screen could never show a comparison.
+    private var activeObservationScope: CommunityBenchmarkScope? {
+        CommunityBenchmarkView.observationScope(
+            selected: selected,
+            macProfile: macProfile,
+            latestResult: latestResult,
+            alias: alias(for:)
+        )
+    }
+
+    /// The scope-selection rule, as a free function so the refresh path's
+    /// behaviour can be asserted directly instead of being re-implemented in a
+    /// test double.
+    ///
+    /// Ready (no completed run) asks a *coverage* question and gets the generic
+    /// scope. As soon as a completed run is on screen the question becomes a
+    /// *comparison* and the scope must carry that run's exact case, metric and
+    /// execution configuration.
+    static func observationScope(
+        selected: CommunityBenchmarkModel?,
+        macProfile: CommunityMacProfile,
+        latestResult: CommunityBenchmarkResult?,
+        alias: (String) -> String = { $0 }
+    ) -> CommunityBenchmarkScope? {
+        // A displayed run answers for itself — model identity, protocol,
+        // machine, case, metric and execution all come from the record. The
+        // selected model is irrelevant to a result that already exists.
+        if let latestResult, let scope = latestResult.communityScope(alias: alias) {
+            return scope
         }
-        .background(RapidTheme.surfaceCanvas)
+        guard let selected else { return nil }
+        // Coverage question about a catalogue entry: no run has been measured,
+        // so no revision or quantization has been resolved and there is no
+        // identity beyond the repo to claim.
+        return CommunityBenchmarkScope(
+            modelAlias: selected.entry.alias,
+            workload: CommunityWorkload(task: selected.task),
+            protocolID: selected.protocolID,
+            protocolVersion: selected.protocolVersion,
+            macProfile: macProfile
+        )
+    }
+
+    private var branch: CommunityContributionBranch {
+        CommunityContributionBranch.select(from: observations)
+    }
+
+    /// The freshest completed run for the selected model, which is what the
+    /// Run tab shows after a measurement finishes.
+    private var latestResult: CommunityBenchmarkResult? {
+        guard let latestResultID else { return nil }
+        return results.first { $0.id == latestResultID }
+    }
+
+    private var isNarrow: Bool { containerSize.width < 880 }
+
+    var body: some View {
+        GeometryReader { proxy in
+            ScrollView {
+                VStack(alignment: .leading, spacing: RapidTheme.Space.xl) {
+                    header
+                    tabBar
+                    if let errorMessage {
+                        InlineNotice(
+                            message: errorMessage,
+                            tone: errorTone,
+                            actionTitle: String(localized: "Dismiss"),
+                            action: { self.errorMessage = nil }
+                        )
+                    }
+                    content
+                }
+                .padding(isNarrow ? RapidTheme.Space.xl : 40)
+                .frame(maxWidth: .infinity, alignment: .leading)
+            }
+            .background(RapidTheme.surfaceCanvas)
+            .onAppear { containerSize = proxy.size }
+            .onChange(of: proxy.size) { _, newValue in containerSize = newValue }
+        }
         .task {
             await refreshProductCatalog()
             if selectedAlias.isEmpty { selectedAlias = models.first?.entry.alias ?? "" }
             await refreshBenchmarkCatalog()
             await refreshResults()
+            await refreshCommunity()
+        }
+        .onChange(of: activeObservationScope) { _, _ in
+            // Bump synchronously whenever the actual query scope changes —
+            // including Result → Ready transitions for the same model. That
+            // makes the previous scope's in-flight answer stale before the
+            // replacement starts, without invalidating unrelated reads.
+            let token = readGenerations.begin(.observations)
+            staleFeedRetryTask?.cancel()
+            staleFeedRetryTask = nil
+            // The floors stay. A confirmed publication into A's scope is still
+            // true while B is on screen, and coming back to A with the feed
+            // still cached must not walk A's number back down.
+            Task { await refreshObservations(token: token) }
+        }
+        .onChange(of: communityWorkload) { _, _ in
+            let token = readGenerations.begin(.table)
+            Task { await refreshCommunityTable(token: token) }
         }
         .onDisappear {
             // `runTask` is intentionally unstructured so the button owns it;
@@ -1170,469 +1728,483 @@ struct CommunityBenchmarkView: View {
             runTask?.cancel()
             shareTask?.cancel()
         }
+        .sheet(isPresented: $showsPicker) { pickerSheet }
+        .sheet(isPresented: $showsTestMethod) { testMethodSheet }
         .sheet(item: $shareCandidate) { preview in
-            VStack(alignment: .leading, spacing: 16) {
-                Text("Share benchmark result?")
-                    .font(.title2.weight(.semibold))
-                Label(
-                    "Every shared result makes the community leaderboard more "
-                        + "complete — helping everyone compare models across real "
-                        + "Macs and find faster local AI for their machine.",
-                    systemImage: "mappin.and.ellipse"
-                )
-                .font(.callout)
-                .foregroundStyle(RapidTheme.textSecondary)
-                .padding(12)
-                .frame(maxWidth: .infinity, alignment: .leading)
-                .background(
-                    RapidTheme.brandPrimaryDeep.opacity(0.08),
-                    in: RoundedRectangle(cornerRadius: 10)
-                )
-                Text("Everything in the JSON below will be sent to \(preview.target).")
-                    .foregroundStyle(.secondary)
-                ScrollView {
-                    Text(preview.payloadJSON)
-                        .font(.system(.caption, design: .monospaced))
-                        .textSelection(.enabled)
-                        .frame(maxWidth: .infinity, alignment: .leading)
-                        .padding(12)
-                }
-                .background(RapidTheme.surfaceCanvas)
-                .clipShape(RoundedRectangle(cornerRadius: 8))
-                Text(
-                    "No name, hostname, serial number, hardware UUID, prompts, "
-                        + "outputs, file paths, or IP-address field are included in the JSON. "
-                        + "The service observes the source IP for short-lived rate limiting "
-                        + "but does not put it in the benchmark record."
-                )
-                .font(.caption)
-                .foregroundStyle(.secondary)
-                HStack {
-                    Spacer()
-                    Button("Cancel", role: .cancel) { shareCandidate = nil }
-                        .accessibilityIdentifier("CommunityBenchmark.Share.Cancel")
-                    Button("Share") { share(preview) }
-                        .buttonStyle(.borderedProminent)
-                        .accessibilityIdentifier("CommunityBenchmark.Share.Confirm")
-                }
-            }
-            .padding(24)
-            .frame(minWidth: 680, minHeight: 600)
+            CommunityBenchmarkShareConfirmationSheet(
+                preview: preview,
+                knownContributor: knownContributor,
+                isPublishing: sharingRunID == preview.runID,
+                onCancel: { shareCandidate = nil },
+                onPublish: { share(preview) }
+            )
         }
-        .sheet(item: $shareSuccess, content: shareSuccessSheet)
+        .sheet(item: $shareSuccess) { receipt in
+            // Every number and name here comes from the captured context, not
+            // from current page state: the celebration describes the run that
+            // was published, even if the user has since started another.
+            CommunityBenchmarkPublishedSheet(
+                celebration: CommunityBenchmarkCopy.publishedCelebration(
+                    branchBeforePublishing: publishContext?.branch ?? branch,
+                    scope: publishContext?.scope ?? scope ?? fallbackScope,
+                    observationCountAfterPublishing: publishedObservationCount,
+                    alreadyPublished: receipt.alreadyExists
+                ),
+                receipt: receipt,
+                receiptNotSavedWarning: receiptNotSavedWarning,
+                onDone: {
+                    shareSuccess = nil
+                    receiptNotSavedWarning = nil
+                    publishContext = nil
+                    publishedObservationCount = nil
+                }
+            )
+        }
     }
 
-    private func shareSuccessSheet(_ receipt: CommunityBenchmarkReceipt) -> some View {
-        VStack(spacing: 0) {
-            VStack(spacing: 24) {
-                Image(systemName: "mappin.and.ellipse")
-                    .font(.system(size: 32, weight: .medium))
-                    .foregroundStyle(RapidTheme.brandPrimaryDeep)
-                    .frame(width: 72, height: 72)
-                    .background(RapidTheme.brandPrimaryDeep.opacity(0.10), in: Circle())
-                    .overlay(alignment: .bottomTrailing) {
-                        Image(systemName: "checkmark.circle.fill")
-                            .font(.system(size: 22, weight: .semibold))
-                            .foregroundStyle(RapidTheme.brandPrimaryDeep)
-                            .padding(3)
-                            .background(RapidTheme.surfaceRaised, in: Circle())
-                    }
-                    .accessibilityHidden(true)
-
-                VStack(spacing: 10) {
-                    Text(receipt.alreadyExists ? "Already on the map" : "You added a point to the map")
-                        .font(.title2.weight(.semibold))
-                        .foregroundStyle(RapidTheme.textPrimary)
-                    Text(receipt.alreadyExists
-                         ? "This result is already part of the community leaderboard. Thanks for contributing."
-                         : "Your model’s performance on this Mac now has a place on the community leaderboard.")
-                        .font(.body)
-                        .foregroundStyle(RapidTheme.textSecondary)
-                }
-
-                if let contributor = receipt.contributor {
-                    VStack(spacing: 10) {
-                        Text("Your community identity")
-                            .font(.caption.weight(.medium))
-                            .foregroundStyle(RapidTheme.textSecondary)
-                        Text(contributor.displayName)
-                            .font(.system(.callout, design: .monospaced).weight(.medium))
-                            .foregroundStyle(RapidTheme.textPrimary)
-                            .textSelection(.enabled)
-                            .padding(.horizontal, 16)
-                            .padding(.vertical, 10)
-                            .background(RapidTheme.surfaceCanvas, in: Capsule())
-                            .overlay {
-                                Capsule().strokeBorder(RapidTheme.hairline, lineWidth: 1)
-                            }
-                            .accessibilityIdentifier("CommunityBenchmark.Share.Identity")
-                    }
-                }
-
-                Text("Together, we’re building a clearer picture of local AI performance—so everyone can find faster models for their Mac.")
-                    .font(.callout)
-                    .foregroundStyle(RapidTheme.textSecondary)
-            }
-            .multilineTextAlignment(.center)
-            .fixedSize(horizontal: false, vertical: true)
-            .padding(32)
-
-            Rectangle()
-                .fill(RapidTheme.hairline)
-                .frame(height: 1)
-
-            HStack(spacing: 12) {
-                if let contributor = receipt.contributor {
-                    if let url = contributor.profileURL {
-                        Link("View my contributions", destination: url)
-                            .buttonStyle(.bordered)
-                            .accessibilityIdentifier("CommunityBenchmark.Share.Profile")
-                    }
-                } else {
-                    Link(
-                        "View Community Benchmark",
-                        destination: communityBenchmarkLeaderboardURL
-                    )
-                        .buttonStyle(.bordered)
-                        .accessibilityIdentifier("CommunityBenchmark.Share.Leaderboard")
-                }
-                Spacer(minLength: 0)
-                Button("Done") { shareSuccess = nil }
-                    .buttonStyle(.borderedProminent)
-                    .keyboardShortcut(.defaultAction)
-                    .accessibilityIdentifier("CommunityBenchmark.Share.Done")
-            }
-            .controlSize(.large)
-            .padding(.horizontal, 24)
-            .padding(.vertical, 18)
-            .background(RapidTheme.surfaceCanvas)
-        }
-        .frame(width: 480)
-        .background(RapidTheme.surfaceRaised)
-        .accessibilityIdentifier("CommunityBenchmark.Share.Success")
+    /// Used only when no model is selected (an empty catalogue), so the
+    /// celebration sheet always has a scope to describe.
+    private var fallbackScope: CommunityBenchmarkScope {
+        CommunityBenchmarkScope(
+            modelAlias: selectedAlias,
+            workload: .llm,
+            protocolID: "rapid-community-speed",
+            protocolVersion: 2,
+            macProfile: macProfile
+        )
     }
+
+    // MARK: - Chrome
 
     private var header: some View {
-        VStack(alignment: .leading, spacing: 8) {
-            Text("Benchmark")
-                .font(.system(size: 28, weight: .semibold))
-            Text("How fast is local AI on this Mac? Find out in minutes — then share your result to help build an open leaderboard of real models on real Macs, so everyone can pick the fastest local AI for their machine.")
-                .foregroundStyle(.secondary)
-                .fixedSize(horizontal: false, vertical: true)
-        }
-    }
-
-    private var setupCard: some View {
-        VStack(alignment: .leading, spacing: 18) {
-            Text("Run a benchmark").font(.headline)
-            Picker("Model", selection: $selectedAlias) {
-                ForEach(
-                    CommunityBenchmarkModel.pickerSections(models), id: \.title
-                ) { section in
-                    Section(section.title) {
-                        ForEach(section.models) { model in
-                            Text("\(model.isFocus ? "★ " : "")\(model.entry.alias)")
-                                .tag(model.entry.alias)
-                        }
-                    }
-                }
-            }
-            .labelsHidden()
-            .pickerStyle(.menu)
-            .frame(maxWidth: .infinity, alignment: .leading)
-            .accessibilityIdentifier("CommunityBenchmark.ModelPicker")
-
-            if let selected {
-                HStack(spacing: 10) {
-                    Label(selected.protocolName, systemImage: "gauge.with.dots.needle.50percent")
-                    if selected.entry.cached {
-                        Text("Downloaded").foregroundStyle(.green)
-                    } else {
-                        Text("Download required").foregroundStyle(.secondary)
-                    }
-                    if let memory = selected.estimatedMemoryGib {
-                        Text(memoryCopy(memory, fit: selected.memoryFit))
-                            .foregroundStyle(selected.memoryFit == "does_not_fit" ? .orange : .secondary)
-                    }
-                }
-                .font(.callout)
-                Text(protocolDescription(selected.task))
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-                if selected.runtimeStatus == "unavailable",
-                   let message = selected.runtimeMessage {
-                    Label(message, systemImage: "exclamationmark.triangle.fill")
-                        .font(.caption)
-                        .foregroundStyle(.orange)
-                        .fixedSize(horizontal: false, vertical: true)
-                        .accessibilityIdentifier("CommunityBenchmark.RuntimeUnavailable")
-                }
-            }
-
-            if let errorMessage {
-                Text(errorMessage).font(.callout).foregroundStyle(.red)
-            }
-
-            HStack(alignment: .top) {
-                Button(isRunning ? "Stop" : "Run locally") {
-                    if isRunning {
-                        // Invalidate the run token first so stderr that
-                        // arrives during teardown cannot update the row.
-                        currentRunID = nil
-                        runTask?.cancel()
-                    } else {
-                        startRun()
-                    }
-                }
-                .buttonStyle(.borderedProminent)
-                .accessibilityIdentifier("CommunityBenchmark.RunOrStop")
-                .disabled(
-                    !isRunning
-                        && (
-                            selected == nil || binary == nil || !benchmarkCLIAvailable
-                                || selected?.runtimeCanRun == false
-                        )
-                )
-                if isRunning {
-                    ProgressView().controlSize(.small)
-                    runningStatus
-                }
-            }
-        }
-        .padding(20)
-        .background(RapidTheme.surfaceRaised, in: RoundedRectangle(cornerRadius: 14))
-    }
-
-    /// What is being measured, its scope, the expected wall time, and a
-    /// live elapsed clock — the only feedback the user gets for several
-    /// minutes while the CLI owns the machine.
-    private var runningStatus: some View {
-        // A determinate bar is only honest when we know how many passes to
-        // expect (text, image); other shapes keep the spinner + clock.
-        let totalSteps = runningModel.flatMap {
-            CommunityBenchmarkRunStatus.totalSteps(for: $0.task)
-        }
-        return VStack(alignment: .leading, spacing: 6) {
-            if let runningModel {
-                Text(CommunityBenchmarkRunStatus.description(for: runningModel))
-                    .font(.callout)
-                    .accessibilityIdentifier("CommunityBenchmark.RunStatus")
-            }
-            if let totalSteps {
-                ProgressView(
-                    value: Double(min(stepsDone, totalSteps)),
-                    total: Double(totalSteps)
-                )
-                .progressViewStyle(.linear)
-                .frame(maxWidth: 360)
-                .accessibilityIdentifier("CommunityBenchmark.RunProgressBar")
-            }
-            HStack(spacing: 8) {
-                if let runStartedAt {
-                    TimelineView(.periodic(from: runStartedAt, by: 1)) { context in
-                        HStack(spacing: 8) {
-                            Text("Elapsed \(CommunityBenchmarkRunStatus.elapsed(from: runStartedAt, to: context.date))")
-                                .monospacedDigit()
-                            if let totalSteps, let firstStepAt, let lastStepAt,
-                               let eta = CommunityBenchmarkRunStatus.eta(
-                                   stepsDone: stepsDone,
-                                   totalSteps: totalSteps,
-                                   runStartedAt: runStartedAt,
-                                   firstStepAt: firstStepAt,
-                                   lastStepAt: lastStepAt,
-                                   now: context.date
-                               ) {
-                                Text(eta)
-                                    .monospacedDigit()
-                                    .accessibilityIdentifier("CommunityBenchmark.RunETA")
-                            }
-                        }
-                    }
-                    .accessibilityIdentifier("CommunityBenchmark.RunElapsed")
-                }
-                if let runProgressLine {
-                    Text(runProgressLine)
-                        .font(.caption.monospaced())
-                        .lineLimit(1)
-                        .accessibilityIdentifier("CommunityBenchmark.RunProgress")
-                }
-            }
-            .font(.caption)
-            .foregroundStyle(.secondary)
-            Text("The active server will stop while this model is measured.")
-                .font(.caption).foregroundStyle(.secondary)
-        }
-    }
-
-    /// A prominent invitation to contribute the run that just finished — the
-    /// per-row "Share" link is easy to miss, and a result is only useful to
-    /// the community once it is shared. Hidden once the run is shared (a
-    /// receipt appears), dismissed, or superseded by a new run.
-    @ViewBuilder
-    private var postRunShareCTA: some View {
-        if let id = pendingShareResultID,
-           receipts[id] == nil,
-           !isRunning,
-           let result = results.first(where: { $0.id == id }) {
-            HStack(alignment: .top, spacing: 14) {
-                Image(systemName: "mappin.and.ellipse")
-                    .font(.title2)
-                    .foregroundStyle(RapidTheme.brandPrimaryDeep)
-                VStack(alignment: .leading, spacing: 6) {
-                    Text("Put your Mac on the map").font(.headline)
-                    Text(
-                        "Share this \(alias(for: result.repoID)) result to help the "
-                            + "community compare models and find faster local AI."
-                    )
-                    .font(.callout)
+        HStack(alignment: .top, spacing: RapidTheme.Space.lg) {
+            VStack(alignment: .leading, spacing: RapidTheme.Space.xs) {
+                Text("Community Benchmark")
+                    .font(RapidFont.pageTitle)
+                    .foregroundStyle(RapidTheme.textPrimary)
+                Text("Measure a model on this Mac. Keep the result private, or publish it to the Community Benchmark on rapidmlx.com.")
+                    .font(RapidFont.body)
                     .foregroundStyle(RapidTheme.textSecondary)
                     .fixedSize(horizontal: false, vertical: true)
-                    HStack(spacing: 12) {
-                        Button(sharingRunID == result.id ? "Sharing…" : "Share benchmark result") {
-                            prepareShare(result)
-                        }
-                        .buttonStyle(.borderedProminent)
-                        .disabled(sharingRunID != nil || binary == nil)
-                        .accessibilityIdentifier("CommunityBenchmark.ShareCTA.Confirm")
-                        Button("Not now") { pendingShareResultID = nil }
-                            .buttonStyle(.link)
-                            .accessibilityIdentifier("CommunityBenchmark.ShareCTA.Dismiss")
-                    }
-                    .padding(.top, 2)
-                }
-                Spacer(minLength: 0)
             }
-            .padding(16)
-            .background(
-                RapidTheme.brandPrimaryDeep.opacity(0.06),
-                in: RoundedRectangle(cornerRadius: 14)
-            )
-            .overlay(
-                RoundedRectangle(cornerRadius: 14)
-                    .strokeBorder(RapidTheme.brandPrimaryDeep.opacity(0.25))
-            )
-            .accessibilityIdentifier("CommunityBenchmark.ShareCTA")
+            Spacer(minLength: 0)
+            // Quieted on the Community tab, where the page already ends with a
+            // prominent leaderboard link; two competing external destinations
+            // on one screen is what made the earlier layout ambiguous.
+            Link(destination: communityBenchmarkLeaderboardURL) {
+                HStack(spacing: 6) {
+                    Text("Open rapidmlx.com")
+                    Image(systemName: "arrow.up.right.square").font(.system(size: 11))
+                }
+                .font(RapidFont.body)
+            }
+            .buttonStyle(tab == .community ? AnyButtonStyle(.rapidLink) : AnyButtonStyle(.rapidSecondaryCompact))
+            .accessibilityIdentifier("CommunityBenchmark.OpenWebsite")
         }
     }
 
-    private var recentResults: some View {
-        VStack(alignment: .leading, spacing: 12) {
-            Text("Recent local results").font(.headline)
-            if results.isEmpty {
-                Text("No benchmarks yet. Your first result will appear here.")
-                    .foregroundStyle(.secondary)
-                    .padding(.vertical, 12)
-            } else {
-                ForEach(results.prefix(8)) { result in
-                    HStack {
-                        VStack(alignment: .leading, spacing: 3) {
-                            Text(alias(for: result.repoID)).fontWeight(.medium)
-                            Text(
-                                "\(result.workload.taskType.replacingOccurrences(of: "_", with: " ")) · "
-                                    + CommunityBenchmarkResult.formatCompletedAt(result.completedAt)
-                            )
-                            .font(.caption).foregroundStyle(.secondary)
-                        }
-                        Spacer()
-                        VStack(alignment: .trailing, spacing: 5) {
-                            resultHeadline(result)
-                            if let receipt = receipts[result.id] {
-                                Label("Shared", systemImage: "checkmark.circle.fill")
-                                    .font(.caption)
-                                    .foregroundStyle(.green)
-                                Link(
-                                    receipt.contributionLinkTitle,
-                                    destination: receipt.contributionURL
-                                )
-                                .font(.caption.monospaced())
-                                .accessibilityLabel(receipt.contributionAccessibilityLabel)
-                                .accessibilityIdentifier(
-                                    "CommunityBenchmark.Contributor.\(result.id)"
-                                )
-                            } else {
-                                Button(sharingRunID == result.id ? "Sharing…" : "Share") {
-                                    prepareShare(result)
-                                }
-                                .buttonStyle(.link)
-                                .font(.caption)
-                                .disabled(sharingRunID != nil || binary == nil)
-                                .accessibilityIdentifier("CommunityBenchmark.Share.\(result.id)")
-                            }
-                        }
-                    }
-                    .padding(.vertical, 8)
-                    Divider()
-                }
+    private var tabBar: some View {
+        Picker(String(localized: "Section"), selection: $tab) {
+            ForEach(CommunityBenchmarkTab.allCases) { candidate in
+                Text(candidate.title).tag(candidate)
             }
         }
+        .pickerStyle(.segmented)
+        .labelsHidden()
+        .frame(width: 280)
+        .accessibilityIdentifier("CommunityBenchmark.Tabs")
     }
 
-    /// Median decode tok/s + TTFT for the short case (or wall seconds for
-    /// image/video), with the remaining cases underneath and in the tooltip.
-    /// Failed or incomplete runs keep showing their outcome status instead.
     @ViewBuilder
-    private func resultHeadline(_ result: CommunityBenchmarkResult) -> some View {
-        if let headline = result.headline {
-            let secondary = result.secondaryLines
-            VStack(alignment: .trailing, spacing: 2) {
-                Text(headline)
-                    .monospacedDigit()
-                    .accessibilityIdentifier("CommunityBenchmark.Result.\(result.id)")
-                ForEach(secondary, id: \.self) { line in
-                    Text(line)
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                        .monospacedDigit()
+    private var content: some View {
+        switch tab {
+        case .run: runTab
+        case .myResults: myResultsTab
+        case .community: communityTab
+        }
+    }
+
+    // MARK: - Run
+
+    @ViewBuilder
+    private var runTab: some View {
+        if isRunning, let runningModel, let runStartedAt {
+            CommunityBenchmarkRunningView(
+                model: runningModel,
+                scope: CommunityBenchmarkScope(
+                    modelAlias: runningModel.entry.alias,
+                    workload: CommunityWorkload(task: runningModel.task),
+                    protocolID: runningModel.protocolID,
+                    protocolVersion: runningModel.protocolVersion,
+                    macProfile: macProfile
+                ),
+                runStartedAt: runStartedAt,
+                progress: runProgress,
+                plan: runProgressPlan,
+                isNarrow: isNarrow,
+                onStop: stopRun
+            )
+        } else if let result = latestResult, let scope = comparisonScope(for: result) {
+            CommunityBenchmarkResultView(
+                result: result,
+                modelAlias: alias(for: result.repoID),
+                scope: scope,
+                branch: branch,
+                observations: observations,
+                receipt: effectiveReceipts[result.id],
+                isPublishing: sharingRunID == result.id,
+                isNarrow: isNarrow,
+                onPublish: { prepareShare(result) },
+                // Repeats THIS run, not whatever the picker is on. The result
+                // on screen may be a stored one for another model, and "Run
+                // again" has to mean what it says.
+                onRunAgain: { runAgain(result) },
+                onBenchmarkAnother: {
+                    latestResultID = nil
+                    pickerSelection = selectedAlias
+                    pickerQuery = ""
+                    showsPicker = true
                 }
-            }
-            .help(
-                result.caseSummaries
-                    .map { "\($0.caseID): \($0.headline) (\($0.rounds) rounds)" }
-                    .joined(separator: "\n")
+            )
+        } else if let selected, let scope {
+            CommunityBenchmarkReadyView(
+                model: selected,
+                scope: scope,
+                branch: branch,
+                isRunEnabled: binary != nil && benchmarkCLIAvailable && selected.runtimeCanRun,
+                serverImpactNote: serverImpactNote,
+                isNarrow: isNarrow,
+                onRun: startRun,
+                onChangeModel: {
+                    pickerSelection = selectedAlias
+                    pickerQuery = ""
+                    showsPicker = true
+                },
+                onShowTestMethod: { showsTestMethod = true }
             )
         } else {
-            Text(result.outcome.status.capitalized)
-                .accessibilityIdentifier("CommunityBenchmark.Result.\(result.id)")
+            CommunityUnavailableBand(
+                title: String(localized: "No benchmark models available"),
+                message: String(localized: "Community Benchmark needs a current rapid-mlx runtime. Update or restart Rapid, then try again.")
+            )
         }
     }
 
-    private func protocolDescription(_ task: ModelTask) -> String {
-        switch task {
-        case .imageGeneration: return "1 warmup + 1 measured 1024×1024 render · fixed prompt, seed and 20 steps"
-        case .videoGeneration: return "1 measured 832×480, 81-frame render · fixed prompt and seed"
-        default: return "Two fixed token workloads · 1 warmup + 5 measured rounds each · concurrency 1"
+    private var serverImpactNote: String? {
+        guard let selected else { return nil }
+        return String(
+            format: String(
+                localized: "Chat and Images pause while %1$@ is measured, then your model reloads automatically."
+            ),
+            selected.entry.alias
+        )
+    }
+
+    // MARK: - My Results
+
+    private var myResultsTab: some View {
+        CommunityBenchmarkMyResultsView(
+            results: results,
+            receipts: effectiveReceipts,
+            aliasForRepo: alias(for:),
+            workloadForResult: { result in
+                CommunityWorkload(
+                    task: ModelTask(rawValue: result.workload.taskType) ?? .textGeneration
+                )
+            },
+            contributor: knownContributor,
+            publishedTotals: contributorTotals,
+            localOnlyCount: results.filter {
+                effectiveReceipts[$0.id] == nil && $0.isCompleted
+            }.count,
+            sharingRunID: sharingRunID,
+            onPublish: prepareShare,
+            onRunFirstBenchmark: { tab = .run }
+        )
+    }
+
+    private var effectiveReceipts: [String: CommunityBenchmarkReceipt] {
+        receipts.merging(publication.sessionReceipts) { persisted, _ in persisted }
+    }
+
+    // MARK: - Community
+
+    private var communityTab: some View {
+        CommunityBenchmarkCommunityView(
+            macProfile: macProfile,
+            pulse: pulse,
+            table: communityTable,
+            coverage: coverage,
+            workload: $communityWorkload,
+            metric: .primary(for: communityWorkload),
+            isNarrow: isNarrow,
+            youContributor: knownContributor,
+            leaderboardURL: communityBenchmarkLeaderboardURL,
+            onRunModel: { alias in
+                selectedAlias = alias
+                latestResultID = nil
+                tab = .run
+            }
+        )
+    }
+
+    // MARK: - Sheets
+
+    private var pickerSheet: some View {
+        CommunityBenchmarkPickerSheet(
+            listing: CommunityBenchmarkPicker.listing(
+                models: models,
+                coverage: coverage,
+                query: pickerQuery
+            ),
+            containerSize: containerSize,
+            query: $pickerQuery,
+            selectedAlias: $pickerSelection,
+            onCancel: { showsPicker = false },
+            onChoose: { alias in
+                selectedAlias = alias
+                latestResultID = nil
+                showsPicker = false
+            }
+        )
+    }
+
+    @ViewBuilder
+    private var testMethodSheet: some View {
+        if let scope {
+            CommunityBenchmarkTestMethodSheet(
+                modelAlias: scope.modelAlias,
+                workload: scope.workload,
+                onDone: { showsTestMethod = false }
+            )
         }
     }
 
-    private func alias(for repoID: String) -> String {
-        resolvedCatalog.first { $0.hfRepo == repoID }?.alias ?? repoID
+    // MARK: - Community reads
+
+    private func refreshCommunity() async {
+        async let observationsTask: Void = refreshObservations()
+        async let tableTask: Void = refreshCommunityTable()
+        async let coverageTask: Void = refreshCoverage()
+        async let pulseTask: Void = refreshPulse()
+        async let totalsTask: Void = refreshContributorTotals()
+        _ = await (observationsTask, tableTask, coverageTask, pulseTask, totalsTask)
     }
 
-    private func memoryCopy(_ memory: Int, fit: String) -> String {
-        fit == "does_not_fit" ? "Needs about \(memory) GB" : "About \(memory) GB"
+    /// Reads the aggregate for the selected model. `token` is the generation
+    /// at request time; if the selection moved while the request was in
+    /// flight, the answer describes a model that is no longer on screen and is
+    /// dropped rather than rendered beside the new one.
+    private func refreshObservations(token: Int? = nil) async {
+        let token = token ?? readGenerations.begin(.observations)
+        // The scope is captured with the token, so a late answer is matched
+        // against the model that asked for it, not whatever is selected now.
+        guard let requested = activeObservationScope else {
+            if readGenerations.isCurrent(.observations, token) {
+                observations = .unavailable(.notConfigured)
+            }
+            return
+        }
+        if readGenerations.isCurrent(.observations, token) { observations = .loading }
+        // The pseudonym goes with the query so "includes yours" is answered
+        // from the server's own contributor list. It then survives a restart,
+        // a reinstall, and a failed local receipt write — none of which the
+        // optimistic publication state outlives.
+        let answer = await directory.observations(
+            for: requested, viewerSlug: knownContributor?.slug
+        )
+        guard readGenerations.isCurrent(.observations, token),
+              activeObservationScope == requested else { return }
+        // Fold through the publication state so a stale cached feed cannot
+        // walk the confirmed post-publish count backwards.
+        observations = publication.merge(answer, scope: requested)
+        scheduleStaleFeedRetryIfNeeded(scope: requested)
     }
 
-    private func startRun() {
-        guard benchmarkCLIAvailable, let selected, let binary else { return }
+    /// Re-reads once the public feed's edge cache can have expired, so the
+    /// optimistic count is replaced by a real server number rather than
+    /// persisting for the rest of the session.
+    ///
+    /// Every projection backed by `/atomic/public` is re-read, not just the
+    /// count. One cached body feeds the observation aggregate, the Community
+    /// table, the coverage list and the pulse band, so refreshing the count
+    /// alone left the table row that should have gained "INCLUDES YOURS"
+    /// showing pre-publish data until the user toggled a workload or relaunched.
+    private func scheduleStaleFeedRetryIfNeeded(scope: CommunityBenchmarkScope) {
+        guard publication.confirmedFloor(for: scope) != nil else {
+            staleFeedRetryTask?.cancel()
+            staleFeedRetryTask = nil
+            return
+        }
+        guard staleFeedRetryTask == nil else { return }
+        staleFeedRetryTask = Task {
+            try? await Task.sleep(
+                nanoseconds: UInt64(
+                    CommunityPublicationState.publicFeedCacheSeconds * 1_000_000_000
+                )
+            )
+            guard !Task.isCancelled else { return }
+            staleFeedRetryTask = nil
+            guard publication.mayRetryAnything(at: Date()) else { return }
+            await refreshPublicFeedBackedReads()
+        }
+    }
+
+    /// Re-reads exactly the queries `/api/benchmarks/atomic/public` serves.
+    ///
+    /// Driven by `CommunityPublicationState.publicFeedBackedReads` so the set
+    /// is stated once, next to the cache duration it exists because of.
+    private func refreshPublicFeedBackedReads() async {
+        let kinds = CommunityPublicationState.publicFeedBackedReads
+        async let observationsTask: Void = kinds.contains(.observations)
+            ? refreshObservations() : ()
+        async let tableTask: Void = kinds.contains(.table) ? refreshCommunityTable() : ()
+        async let coverageTask: Void = kinds.contains(.coverage) ? refreshCoverage() : ()
+        async let pulseTask: Void = kinds.contains(.pulse) ? refreshPulse() : ()
+        _ = await (observationsTask, tableTask, coverageTask, pulseTask)
+    }
+
+    private func refreshCommunityTable(token: Int? = nil) async {
+        let token = token ?? readGenerations.begin(.table)
+        let workload = communityWorkload
+        if readGenerations.isCurrent(.table, token) { communityTable = .loading }
+        let result = await directory.table(
+            macProfile: macProfile,
+            workload: workload,
+            metric: .primary(for: workload),
+            viewerSlug: knownContributor?.slug
+        )
+        guard readGenerations.isCurrent(.table, token) else { return }
+        communityTable = result
+    }
+
+    private func refreshCoverage() async {
+        let token = readGenerations.begin(.coverage)
+        coverage = .loading
+        let result = await directory.coverageGaps(macProfile: macProfile)
+        guard readGenerations.isCurrent(.coverage, token) else { return }
+        coverage = result
+    }
+
+    private func refreshPulse() async {
+        let token = readGenerations.begin(.pulse)
+        let result = await directory.pulse()
+        guard readGenerations.isCurrent(.pulse, token) else { return }
+        pulse = result
+    }
+
+    /// The exact public contribution total for this installation's pseudonym.
+    ///
+    /// Read from the server rather than counted from `receipts`: a local
+    /// receipt can be missing (the upload succeeded but the write failed) or
+    /// lost (reinstall), and My Results must not under-report what is publicly
+    /// attributed to this contributor.
+    private func refreshContributorTotals() async {
+        let token = readGenerations.begin(.contributorTotals)
+        guard let slug = knownContributor?.slug,
+              let api = directory as? CommunityBenchmarkAPIDirectory
+        else {
+            if readGenerations.isCurrent(.contributorTotals, token) {
+                contributorTotals = .unavailable(.notConfigured)
+            }
+            return
+        }
+        contributorTotals = .loading
+        let result = await api.contributions(forSlug: slug)
+        guard readGenerations.isCurrent(.contributorTotals, token) else { return }
+        contributorTotals = result
+    }
+
+    /// The pseudonym this installation publishes under, once the service has
+    /// issued one. Never invented locally.
+    private var knownContributor: CommunityBenchmarkContributor? {
+        // The session identity first: an upload whose local receipt could not
+        // be written still returned a server-issued pseudonym, and dropping it
+        // would leave the session with no portrait, no profile link, and no
+        // slug to ask for contributor totals with.
+        publication.sessionContributor ?? receipts.values.compactMap(\.contributor).first
+    }
+
+    // MARK: - Run pipeline
+
+    private func stopRun() {
+        // Invalidate the run token first so stderr that arrives during
+        // teardown cannot update the row.
+        currentRunID = nil
+        runTask?.cancel()
+    }
+
+    /// Repeats the model a displayed result was measured on.
+    ///
+    /// The result may be a stored one for a model the picker is not on, so the
+    /// selection is moved to it first. `startRun` reads `selected`, and
+    /// `selectedAlias` is `@AppStorage`-backed, so the alias is set and the
+    /// run is started in the same actor step only when the model resolves —
+    /// starting a run for the wrong model would be worse than not starting one.
+    private func runAgain(_ result: CommunityBenchmarkResult) {
+        latestResultID = nil
+        let alias = alias(for: result.repoID)
+        guard models.contains(where: { $0.entry.alias == alias }) else {
+            // The catalogue no longer offers this model (removed, or renamed).
+            // Say so rather than silently benchmarking something else.
+            errorTone = .info
+            errorMessage = String(
+                format: String(localized: "%1$@ is no longer in the benchmark catalogue, so it can’t be run again. Choose another model."),
+                alias
+            )
+            pickerSelection = selectedAlias
+            pickerQuery = ""
+            showsPicker = true
+            return
+        }
+        selectedAlias = alias
+        startRun(alias: alias)
+    }
+
+    private func startRun() { startRun(alias: nil) }
+
+    /// `alias` pins the model when the caller already knows it, because
+    /// `selectedAlias` was just written and `selected` is derived from it.
+    private func startRun(alias pinned: String?) {
+        let target = pinned.flatMap { alias in
+            models.first { $0.entry.alias == alias }
+        } ?? selected
+        guard benchmarkCLIAvailable, let selected = target, let binary else { return }
         errorMessage = nil
         isRunning = true
         runningModel = selected
         runStartedAt = Date()
-        runProgressLine = nil
+        let assumedPlan = CommunityRunPlan.assumed(for: selected.task)
+        runProgressPlan = assumedPlan
+        runProgress = CommunityRunProgress(totalPasses: assumedPlan.totalPasses)
         appliedProgressSequence = 0
-        stepsDone = 0
-        firstStepAt = nil
-        lastStepAt = nil
-        pendingShareResultID = nil
+        latestResultID = nil
         let activeRunID = UUID()
         currentRunID = activeRunID
-        let sequencer = ProgressSequencer()
-        // Cumulative step index, stamped off the main actor in arrival order
-        // (LineSplitter delivers lines sequentially). The view applies it as
-        // a monotonic max, so a late/out-of-order hop can never drop a step.
-        let stepCounter = ProgressSequencer()
+        // Reduces the stderr stream off the main actor, in arrival order
+        // (LineSplitter delivers lines sequentially), and hands the view a
+        // value snapshot.
+        let reducer = CommunityRunProgressBox(plan: assumedPlan)
+        // One ordered channel instead of a Task per line. `Task { @MainActor }`
+        // per line is unordered and fire-and-forget: a hop could be applied out
+        // of order, or still be queued when the run task set `isRunning = false`
+        // and the Result screen replaced Running — in which case the update was
+        // simply lost. A stream is delivered in yield order by construction, and
+        // the run task awaits its drain before transitioning.
+        let (progressStream, progressFeed) = AsyncStream<CommunityRunProgress>
+            .makeStream(bufferingPolicy: .unbounded)
         runTask = Task {
             var acquiredReservation = false
+            // Applies every state in yield order, on the main actor, for as
+            // long as the stream is open. A child task rather than a detached
+            // one so cancellation propagates with the run.
+            let delivery = Task { @MainActor in
+                for await state in progressStream {
+                    guard currentRunID == activeRunID else { continue }
+                    runProgress = state
+                    runProgressPlan = reducer.currentPlan
+                }
+            }
             do {
                 let reservation = try await prepareServer()
                 acquiredReservation = true
@@ -1645,61 +2217,46 @@ struct CommunityBenchmarkView: View {
                     ),
                     onDeferredReap: retainServerDuringDeferredReap,
                     onStandardErrorLine: { line in
-                        guard let progress = CommunityBenchmarkRunStatus.strippedProgress(
-                            from: line
-                        ) else { return }
-                        let sequence = sequencer.next()
-                        // Cumulative step index (0 for non-step lines), assigned
-                        // in arrival order so the count survives unordered hops.
-                        let isStep = CommunityBenchmarkRunStatus.isStepLine(progress)
-                        let stepIndex = isStep ? stepCounter.next() : 0
-                        // Timestamp the step at emission (arrival order), not
-                        // when its main-actor hop lands, so the ETA baseline is
-                        // the first step's real completion time.
-                        let stepAt = isStep ? Date() : nil
-                        Task { @MainActor in
-                            guard isRunning, runStartedAt != nil,
-                                  currentRunID == activeRunID
-                            else { return }
-                            // Display: show only the newest line — a hop that
-                            // lands late must not overwrite a newer status.
-                            if sequence > appliedProgressSequence {
-                                appliedProgressSequence = sequence
-                                runProgressLine = progress
-                            }
-                            // Count: monotonic max, so an out-of-order hop can
-                            // never discard a completed step (undercounting the
-                            // bar/ETA). The baseline keeps the earliest step
-                            // timestamp (step 1) regardless of hop order.
-                            if stepIndex > 0, let stepAt {
-                                firstStepAt = min(firstStepAt ?? stepAt, stepAt)
-                                lastStepAt = max(lastStepAt ?? stepAt, stepAt)
-                                stepsDone = max(stepsDone, stepIndex)
-                            }
+                        guard let state = reducer.apply(line: line, at: Date()) else {
+                            return
                         }
+                        progressFeed.yield(state)
                     }
                 )
+                // Everything the reader handed over is applied BEFORE the
+                // Result screen replaces Running. `run` only returns once both
+                // pipes have hit EOF, so no further lines can arrive; closing
+                // the stream lets the consumer finish its backlog and exit.
+                progressFeed.finish()
+                await delivery.value
                 await refreshProductCatalog()
                 await refreshResults()
-                // Invite the user to contribute the run that just finished —
-                // only when the CLI payload names it. No fallback to "whatever
-                // sorts first": a payload without a run_id (e.g. deferred reap)
-                // must not surface the CTA for an unrelated historical run.
-                pendingShareResultID = CommunityBenchmarkCommand.runID(from: runOutput)
+                // Show the run that just finished — only when the CLI payload
+                // names it. A payload without a run_id (e.g. deferred reap)
+                // must not surface an unrelated historical run as "your
+                // result".
+                latestResultID = CommunityBenchmarkCommand.runID(from: runOutput)
+                // Only now does a comparison identity exist, so this re-query
+                // is the exact one — same case, metric and execution as the
+                // run just finished.
+                await refreshObservations()
             } catch is CancellationError {
+                errorTone = .info
                 errorMessage = acquiredReservation
-                    ? "Benchmark stopped. No incomplete result was shared."
-                    : "Benchmark request stopped before it started."
+                    ? String(localized: "Benchmark stopped. Nothing was saved or published.")
+                    : String(localized: "Benchmark request stopped before it started.")
             } catch {
+                errorTone = .error
                 errorMessage = error.localizedDescription
             }
+            // Idempotent: already finished on the success path, and the only
+            // thing that ends the consumer on a throw or a cancellation.
+            progressFeed.finish()
+            await delivery.value
             isRunning = false
             runningModel = nil
             runStartedAt = nil
-            runProgressLine = nil
-            stepsDone = 0
-            firstStepAt = nil
-            lastStepAt = nil
+            runProgress = CommunityRunProgress()
             runTask = nil
         }
     }
@@ -1722,7 +2279,20 @@ struct CommunityBenchmarkView: View {
             } catch is CancellationError {
                 // Navigation cancelled the preview command.
             } catch {
-                errorMessage = "Couldn’t prepare benchmark upload: \(error.localizedDescription)"
+                // A refusal is a decision the CLI made on purpose — a result
+                // measured by a modified build cannot be attributed to any
+                // commit — so it reads as information, not as a crash, and
+                // its own sentence already explains what to do.
+                let detail = error.localizedDescription
+                let refused = (error as? CommunityBenchmarkCommand.Failure)?
+                    .isRefusal ?? false
+                errorTone = refused ? .info : .error
+                errorMessage = refused
+                    ? detail
+                    : String(
+                        format: String(localized: "Couldn’t prepare the publication: %1$@"),
+                        detail
+                    )
             }
             sharingRunID = nil
             shareTask = nil
@@ -1731,9 +2301,24 @@ struct CommunityBenchmarkView: View {
 
     private func share(_ preview: CommunityBenchmarkUploadPreview) {
         guard let binary else { return }
+        // Freeze the publish context BEFORE the first await. `share` awaits a
+        // CLI subprocess for seconds, and Run again / Benchmark another / the
+        // model picker can all change which result is on screen during it.
+        // Reading the scope afterwards applied this receipt to whatever run
+        // happened to be visible when it landed.
+        let context = CommunityPublicationContext.capture(
+            runID: preview.runID,
+            resultScope: results.first { $0.id == preview.runID }.flatMap(comparisonScope(for:)),
+            visibleScope: activeObservationScope,
+            observations: observations,
+            branch: branch
+        )
+        publishContext = context
+        publishedObservationCount = nil
         shareCandidate = nil
         sharingRunID = preview.runID
         errorMessage = nil
+        receiptNotSavedWarning = nil
         shareTask = Task {
             do {
                 let data = try await CommunityBenchmarkCommand.run(
@@ -1751,23 +2336,74 @@ struct CommunityBenchmarkView: View {
                 )
                 guard response.uploaded else {
                     throw CommunityBenchmarkCommand.Failure(
-                        message: "The benchmark was not uploaded."
+                        message: String(localized: "The benchmark was not uploaded.")
                     )
                 }
                 if response.receiptSaved {
                     receipts[preview.runID] = response.receipt
-                } else {
-                    errorMessage = "Uploaded, but Rapid couldn’t save the local receipt."
                 }
+                // One place records the identity, the increment, the
+                // duplicate rule and the stale-feed floor — all against the
+                // captured scope, never against whatever is on screen now.
+                let outcome = publication.recordPublication(
+                    receipt: response.receipt,
+                    receiptSaved: response.receiptSaved,
+                    context: context,
+                    visibleScope: activeObservationScope
+                )
+                publishedObservationCount = outcome.observations.value?.observationCount
+                // Only paint the count when the screen is still showing the
+                // run it belongs to. The floor is recorded either way, so
+                // navigating back to that run still shows the confirmed number.
+                if outcome.appliesToVisibleScope {
+                    observations = outcome.observations
+                }
+                receiptNotSavedWarning = outcome.receiptNotSavedWarning
                 shareSuccess = response.receipt
+                // The publication changed server state: this installation may
+                // have just been issued its first pseudonym, its public total
+                // moved, and the aggregates now include this run. Re-read them
+                // rather than leaving the screen on pre-publish numbers.
+                //
+                // Runs even for a duplicate: the receipt may be the first one
+                // this install has seen (so the identity is new to us) even
+                // though the run itself was already public.
+                await refreshAfterPublishing()
             } catch is CancellationError {
                 // Navigation cancelled the upload command and its subprocess.
+                publishContext = nil
             } catch {
-                errorMessage = "Couldn’t share benchmark: \(error.localizedDescription)"
+                publishContext = nil
+                errorTone = .error
+                errorMessage = String(
+                    format: String(localized: "Couldn’t publish: %1$@. Your local result is unchanged."),
+                    error.localizedDescription
+                )
             }
             sharingRunID = nil
             shareTask = nil
         }
+    }
+
+    /// Re-reads everything a successful publication can change.
+    ///
+    /// Deliberately not fire-and-forget: the Published sheet is on screen and
+    /// reads `observations` for its celebration, so the refresh has to be part
+    /// of the same task that set the receipt.
+    private func refreshAfterPublishing() async {
+        await refreshResults()
+        async let totals: Void = refreshContributorTotals()
+        async let observationsTask: Void = refreshObservations()
+        async let table: Void = refreshCommunityTable()
+        async let coverageTask: Void = refreshCoverage()
+        async let pulseTask: Void = refreshPulse()
+        _ = await (totals, observationsTask, table, coverageTask, pulseTask)
+    }
+
+    // MARK: - Local data
+
+    private func alias(for repoID: String) -> String {
+        resolvedCatalog.first { $0.hfRepo == repoID }?.alias ?? repoID
     }
 
     private func refreshResults() async {
@@ -1781,7 +2417,13 @@ struct CommunityBenchmarkView: View {
             results = envelope.runs
             receipts = envelope.receipts ?? [:]
         } catch {
-            if results.isEmpty { errorMessage = "Couldn’t read local results: \(error.localizedDescription)" }
+            if results.isEmpty {
+                errorTone = .error
+                errorMessage = String(
+                    format: String(localized: "Couldn’t read local results: %1$@"),
+                    error.localizedDescription
+                )
+            }
         }
     }
 
@@ -1800,7 +2442,8 @@ struct CommunityBenchmarkView: View {
     private func refreshBenchmarkCatalog() async {
         guard let binary else {
             benchmarkCLIAvailable = false
-            errorMessage = "Community Benchmark needs the bundled rapid-mlx runtime. Restart Rapid, then try again."
+            errorTone = .error
+            errorMessage = String(localized: "Community Benchmark needs the bundled rapid-mlx runtime. Restart Rapid, then try again.")
             return
         }
         let memory = max(1, Int(MacHardware.detect().physicalRAMGB.rounded()))
@@ -1829,7 +2472,8 @@ struct CommunityBenchmarkView: View {
         } catch {
             benchmarkCLIAvailable = false
             benchmarkMetadata = [:]
-            errorMessage = "Community Benchmark needs a current rapid-mlx runtime. Update or restart Rapid, then try again."
+            errorTone = .error
+            errorMessage = String(localized: "Community Benchmark needs a current rapid-mlx runtime. Update or restart Rapid, then try again.")
         }
     }
 }

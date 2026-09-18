@@ -20,6 +20,8 @@ from rapid_mlx.catalog import rcj_digest
 
 from .benchmark_contracts import BenchmarkRunValidator, registered_workload
 from .hardware import Hardware, Software, run_conditions
+from .provenance_schema import ProvenanceInvalid
+from .provenance_schema import validate as validate_provenance_document
 
 
 def utc_now() -> str:
@@ -308,10 +310,109 @@ def _installed(name: str, fallback: str | None = None) -> str | None:
         return fallback
 
 
+#: Written into the package when a sidecar is built, so a packaged runtime
+#: states its own provenance instead of inferring it from its surroundings.
+#: ``scripts/build-sidecar.sh`` writes it; absence means "not packaged".
+_BUILD_STAMP = Path(__file__).resolve().parent.parent / "_build_stamp.json"
+
+
+#: The two distributions the execution-config contract defines. A `source`
+#: runtime REQUIRES a revision; a `release` one forbids it.
+_DISTRIBUTIONS = ("release", "source")
+
+_MALFORMED_STAMP = (
+    "the packaged build stamp is unreadable, so this runtime cannot say "
+    "whether it is an official release or a local source build. Rebuild the "
+    "sidecar (`FORCE_SIDECAR_REBUILD=1 bash scripts/build.sh`)."
+)
+
+_PACKAGED_WITHOUT_STAMP = (
+    "this app is missing its build provenance stamp, so it cannot say which "
+    "build produced it. A packaged app is not a checkout — there is nothing "
+    "here to ask — and assuming it is an official release would publish these "
+    "numbers under a build that may never have existed. Reinstall Rapid, or "
+    "rebuild the sidecar (`FORCE_SIDECAR_REBUILD=1 bash scripts/build.sh`)."
+)
+
+_SOURCE_STAMP_NEEDS_REVISION = (
+    "this app was packaged from a source checkout, so its benchmark records "
+    "must name the commit they were measured from, but the build stamp "
+    "carries no valid 40-character revision. Rebuild the sidecar from a clean "
+    "checkout, or set RAPID_MLX_OFFICIAL_RELEASE=1 if this really is a "
+    "release build."
+)
+
+
+def _valid_revision(value: Any) -> str | None:
+    """A 40-character lowercase hex sha, or None."""
+
+    if not isinstance(value, str):
+        return None
+    revision = value.strip().lower()
+    if len(revision) != 40 or any(c not in "0123456789abcdef" for c in revision):
+        return None
+    return revision
+
+
+def _build_stamp() -> dict[str, Any] | None:
+    """The packaging stamp, or None when this runtime was not packaged.
+
+    A *missing* stamp is an ordinary answer — the runtime was not packaged, so
+    the checkout probe decides. A stamp that exists but cannot be read is not:
+    something wrote it and we cannot tell what it says, and guessing
+    "release" is exactly the mistake this function exists to prevent.
+    """
+
+    if not _BUILD_STAMP.exists():
+        return None
+    try:
+        with _BUILD_STAMP.open("r", encoding="utf-8") as handle:
+            stamp = json.load(handle)
+    except (OSError, ValueError) as exc:
+        raise RuntimeError(_MALFORMED_STAMP) from exc
+    if not isinstance(stamp, dict):
+        raise RuntimeError(_MALFORMED_STAMP)
+    return stamp
+
+
+def _is_packaged_runtime(location: Path) -> bool:
+    """True when this module was imported from a shipped app sidecar.
+
+    A packaged sidecar is a release by construction — there is no checkout to
+    ask, and asking is what used to fail. Two independent signals, because a
+    user can and does drop ``Rapid.app`` inside a Git checkout, and the dev
+    build stages the same sidecar *inside* this repository:
+
+    1. an ancestor ``.app`` bundle, and
+    2. the sidecar's own wrapper layout (``rapid-mlx/site-packages/rapid_mlx``
+       beside ``rapid-mlx/VERSION``), which ``build-sidecar-tarball.sh``
+       produces for both the bundled and runtime-override slots.
+    """
+
+    if any(parent.suffix == ".app" for parent in location.parents):
+        return True
+    for parent in location.parents:
+        if parent.name == "site-packages" and (parent.parent / "VERSION").is_file():
+            return True
+    return False
+
+
 def _source_checkout_revision(start: Path | None = None) -> str | None:
-    """Return HEAD when the imported runtime lives inside a Git checkout."""
+    """Return HEAD when the imported runtime lives inside a Git checkout.
+
+    Returns None for a release — a packaged sidecar, or a wheel that merely
+    happens to sit under a ``.git`` ancestor. Raises only when this really is
+    a source checkout whose revision cannot be established, because silently
+    calling a real checkout a "release" would attribute a developer's build to
+    the published runtime.
+    """
 
     location = (start or Path(__file__)).resolve()
+    # Decided before any subprocess: a packaged app has no checkout to probe,
+    # and probing is exactly what fails under a Finder-launched PATH with no
+    # usable ``git``.
+    if _is_packaged_runtime(location):
+        return None
     root = next(
         (
             parent
@@ -352,15 +453,85 @@ def _source_checkout_revision(start: Path | None = None) -> str | None:
             timeout=2,
         )
     except (OSError, subprocess.TimeoutExpired) as exc:
-        raise RuntimeError("could not resolve the Rapid-MLX source revision") from exc
+        raise RuntimeError(_UNRESOLVED_REVISION) from exc
     revision = result.stdout.strip().lower()
     if (
         result.returncode != 0
         or len(revision) != 40
         or any(character not in "0123456789abcdef" for character in revision)
     ):
-        raise RuntimeError("could not resolve the Rapid-MLX source revision")
+        raise RuntimeError(_UNRESOLVED_REVISION)
     return revision
+
+
+_UNRESOLVED_REVISION = (
+    "could not resolve the Rapid-MLX source revision: this runtime is a Git "
+    "checkout, so the record must name the commit it was measured from, and "
+    "`git rev-parse HEAD` did not answer. Install the Xcode command line "
+    "tools (`xcode-select --install`), or run a packaged release."
+)
+
+#: Resolved once per process. The probe is a fixed property of the imported
+#: module, so repeating it per run only adds places for it to fail.
+_PROVENANCE: dict[str, Any] | None = None
+
+
+def resolve_provenance() -> dict[str, Any]:
+    """Establish and cache how this runtime was distributed.
+
+    **Called before a benchmark starts measuring.** It used to run only when
+    the finished result was assembled, so a checkout that could not answer
+    `git rev-parse` failed *after* several minutes of measurement, with the
+    numbers already gone. Nothing here depends on the measurement, so there is
+    no reason to defer it — and a failure now costs the user nothing.
+
+    A packaged sidecar answers from its stamp without probing Git at all. The
+    stamp's ``distribution`` is **honoured**, not overridden: a sidecar built
+    from a developer's branch is a *source* build that happens to be packaged,
+    and publishing its numbers as an official release — with the commit that
+    produced them dropped — would attribute one build's results to another.
+    Only a build that identifies itself as a release may claim to be one.
+    """
+
+    global _PROVENANCE
+    if _PROVENANCE is not None:
+        return _PROVENANCE
+    stamp = _build_stamp()
+    if stamp is not None:
+        # The closed schema, unchanged and unrepaired. A stamp carrying a
+        # revision on a release, or `dirty: "true"`, is a document whose
+        # producer disagrees with this reader — and the old code quietly
+        # dropped exactly those fields, which is how the disagreement became
+        # invisible.
+        try:
+            validated = validate_provenance_document(stamp, label="the build stamp")
+        except ProvenanceInvalid as exc:
+            raise RuntimeError(f"{_MALFORMED_STAMP} ({exc})") from exc
+        _PROVENANCE = dict(validated)
+        return _PROVENANCE
+
+    # No stamp. For a checkout that is an ordinary answer — the probe decides.
+    # For a packaged app it is not: `_source_checkout_revision` returns None
+    # for an `.app` or sidecar layout *by design*, so falling through to
+    # "release" turned a packaging omission into an official-release claim
+    # that nothing downstream could contradict.
+    if _is_packaged_runtime(Path(__file__).resolve()):
+        raise RuntimeError(_PACKAGED_WITHOUT_STAMP)
+
+    source_revision = _source_checkout_revision()
+    _PROVENANCE = (
+        {"distribution": "source", "revision": source_revision}
+        if source_revision is not None
+        else {"distribution": "release"}
+    )
+    return _PROVENANCE
+
+
+def _reset_provenance_cache() -> None:
+    """Test seam: forget the per-process provenance decision."""
+
+    global _PROVENANCE
+    _PROVENANCE = None
 
 
 def execution_config(
@@ -369,14 +540,24 @@ def execution_config(
     context_length: int | None = None,
     speculative_decoding: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
-    source_revision = _source_checkout_revision()
+    provenance = resolve_provenance()
+    source_revision = provenance.get("revision")
+    distribution = provenance["distribution"]
     runtime: dict[str, Any] = {
-        "distribution": "source" if source_revision is not None else "release",
+        # From the resolved provenance, not re-derived from whether a revision
+        # happens to be present: a build-stamped release knows its commit too,
+        # and calling that "source" would misattribute it.
+        "distribution": distribution,
         "rapid_mlx": __version__,
         "mlx": _installed("mlx", "unknown"),
         "python": platform.python_version(),
     }
-    if source_revision is not None:
+    # `execution-config.schema.json` makes this conditional in both directions:
+    # a `source` runtime REQUIRES `rapid_mlx_revision`, and a `release` one
+    # forbids it — a release is identified by its version, not by a commit in
+    # someone's checkout. So a build stamp's revision, though true, has no
+    # place in this block.
+    if distribution == "source":
         runtime["rapid_mlx_revision"] = source_revision
     for package, field in (
         ("mlx-lm", "mlx_lm"),

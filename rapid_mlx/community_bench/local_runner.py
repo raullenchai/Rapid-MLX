@@ -56,6 +56,7 @@ from .run_builder import (
     build_run,
     consistent_model_identity,
     execution_config,
+    resolve_provenance,
     unresolved_model_identity,
     utc_now,
 )
@@ -63,6 +64,12 @@ from .workspace import LocalRunArchive, describe_case, model_is_cached, plan_for
 
 # Human-readable progress sink (one line per call, no trailing newline).
 Progress = Callable[[str], None]
+#: Machine-readable sink for structured events. Wired only for callers that
+#: asked for machine progress (``--progress``); a terminal user sees prose and
+#: nothing else. A GUI needs facts the prose only implies — above all the
+#: protocol's real case list, so it can size a progress bar without
+#: hardcoding a round count that belongs to the protocol, not to the client.
+EventSink = Callable[[dict[str, Any]], None]
 
 #: Where the text helper deposits the identity of the checkpoint the loader
 #: pinned, so a run that fails after loading still archives the facts of
@@ -563,6 +570,17 @@ def _report(progress: Progress | None, line: str) -> None:
         return
     try:
         progress(line)
+    except Exception:
+        pass
+
+
+def _emit(events: EventSink | None, payload: dict[str, Any]) -> None:
+    """Hand one structured event to the sink; a failing sink is never fatal."""
+
+    if events is None:
+        return
+    try:
+        events(payload)
     except Exception:
         pass
 
@@ -1445,15 +1463,44 @@ def _is_dedicated_process_group_leader() -> bool:
         return False
 
 
-def _announce_plan(progress: Progress | None, plan: dict[str, Any]) -> None:
-    """Print what is about to run so a multi-minute run is never silent."""
+def _announce_plan(
+    progress: Progress | None,
+    plan: dict[str, Any],
+    events: EventSink | None = None,
+) -> None:
+    """Print what is about to run so a multi-minute run is never silent.
 
-    if progress is None:
-        return
+    Also emits the plan as a structured event. The prose says "2 cases, 2
+    warmup + 10 measured rounds in total"; a client that has to draw
+    "8 of 12 passes" should not be parsing that sentence, and it certainly
+    should not be assuming 12 — the round counts belong to the registered
+    protocol and change with it.
+    """
+
     model = plan["model"]
     cases = plan.get("workload", {}).get("cases", [])
     warmup = sum(int(case.get("warmup_rounds", 0)) for case in cases)
     measured = sum(int(case.get("measured_rounds", 0)) for case in cases)
+    _emit(
+        events,
+        {
+            "event": "plan",
+            "task_type": model["task_type"],
+            "protocol_id": plan.get("workload", {}).get("protocol_id"),
+            "protocol_version": plan.get("workload", {}).get("protocol_version"),
+            "cases": [
+                {
+                    "case_id": case.get("case_id"),
+                    "warmup_rounds": int(case.get("warmup_rounds", 0)),
+                    "measured_rounds": int(case.get("measured_rounds", 0)),
+                }
+                for case in cases
+            ],
+            "total_passes": warmup + measured,
+        },
+    )
+    if progress is None:
+        return
     _report(
         progress,
         f"Benchmarking {model['alias']} ({model['task_type']}): "
@@ -1470,6 +1517,7 @@ def run_local(
     archive: LocalRunArchive | None = None,
     inherit_process_group: bool = False,
     progress: Progress | None = None,
+    events: EventSink | None = None,
 ) -> dict[str, Any]:
     """Run a registered protocol, validate it, and save it locally only.
 
@@ -1498,7 +1546,12 @@ def run_local(
     if task_type not in {"text_generation", "image_generation", "video_generation"}:
         raise ValueError(f"unsupported task type {task_type!r}")
     destination = archive or LocalRunArchive.default()
-    _announce_plan(progress, plan)
+    # Provenance BEFORE measurement. It describes the runtime, not the run, so
+    # nothing about it needs the numbers — and resolving it afterwards meant a
+    # checkout that could not answer `git rev-parse HEAD` threw away a
+    # completed benchmark. Failing here costs the user a second.
+    resolve_provenance()
+    _announce_plan(progress, plan, events)
     # The text helper deposits the identity of the checkpoint the loader
     # pinned; arm the capture for this run only and disarm on every path.
     loaded: dict[str, Any] = {}
@@ -1632,8 +1685,12 @@ def _run_local_measured(
         if loaded.get("identity") is not None:
             model_identity = loaded["identity"]
         if measurements_completed and execution is None:
+            # The measurements are real but the record around them could not
+            # be assembled, so nothing was written. Say so plainly: the old
+            # text left the user unsure whether minutes of work had survived.
             raise LocalBenchmarkError(
-                f"benchmark completed but result could not be constructed: {exc}",
+                "benchmark completed but the result record could not be "
+                f"assembled, so NOTHING was saved to this Mac: {exc}",
                 None,
                 saved=False,
             ) from exc
@@ -1680,7 +1737,11 @@ def _run_local_measured(
                 saved=False,
             ) from exc
         try:
-            destination.save(failed)
+            # Provenance first, and for this outcome too: the service accepts
+            # failed and cancelled submissions, so an archived failure is a
+            # publishable result and needs the same build record a completed
+            # one does.
+            destination.save_with_provenance(failed, resolve_provenance())
         except Exception as archive_exc:
             raise LocalBenchmarkError(
                 f"{exc}; failed outcome could not be saved: {archive_exc}",
@@ -1689,14 +1750,24 @@ def _run_local_measured(
             ) from exc
         raise LocalBenchmarkError(str(exc), failed, saved=True) from exc
 
+    # Announced BEFORE the write, so a UI that shows "Saving to this Mac" is
+    # reporting what is happening rather than guessing what comes next. The
+    # matching completion line is what lets it stop.
+    _report(progress, "Saving result to this Mac...")
     try:
-        destination.save(run)
+        # One operation, provenance first. A provenance failure must NOT be
+        # swallowed: a run visible without its build record is indistinguishable
+        # from a legacy run, and legacy runs are allowed to publish — so
+        # swallowing the error is exactly how a modified build's numbers reach
+        # the leaderboard.
+        destination.save_with_provenance(run, resolve_provenance())
     except Exception as exc:
         raise LocalBenchmarkError(
             f"benchmark completed but result could not be saved: {exc}",
             run,
             saved=False,
         ) from exc
+    _report(progress, "Saved to this Mac")
     return run
 
 

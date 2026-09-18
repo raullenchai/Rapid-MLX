@@ -13,8 +13,10 @@ from urllib.parse import quote
 from .atomic_upload import preview_run, upload_run
 from .hardware import host_memory_gib
 from .local_runner import LocalBenchmarkError, run_local
+from .publication import PublicationRefused
 from .workspace import (
     LocalRunArchive,
+    ProvenanceUnreadable,
     benchmark_catalog,
     describe_case,
     plan_for_alias,
@@ -70,6 +72,21 @@ def _tagged_progress_to_stderr(line: str) -> None:
     try:
         print(f"{PROGRESS_TAG}{line}", file=sys.stderr, flush=True)
     except (OSError, ValueError):
+        pass
+
+
+def _tagged_event_to_stderr(payload: dict[str, Any]) -> None:
+    """Emit one structured progress event on the machine-readable stream.
+
+    Same ``PROGRESS_TAG`` as the prose lines, but the body is compact JSON.
+    Prose never begins with ``{``, so a consumer separates the two on the
+    first character without a second marker or a second stream.
+    """
+
+    try:
+        line = json.dumps(payload, ensure_ascii=False, separators=(",", ":"))
+        print(f"{PROGRESS_TAG}{line}", file=sys.stderr, flush=True)
+    except (OSError, ValueError, TypeError):
         pass
 
 
@@ -300,6 +317,10 @@ def _print_failure(args, exc: Exception) -> int:
     saved = exc.saved if isinstance(exc, LocalBenchmarkError) else False
     if args.json:
         payload = {"error": str(exc), "saved": saved}
+        # A refusal is a decision, not a malfunction. Flagged so a GUI can say
+        # so in a calm voice instead of presenting it as a crash.
+        if isinstance(exc, PublicationRefused):
+            payload["refused"] = True
         if run is not None:
             payload["run"] = run
         print(
@@ -349,10 +370,14 @@ def benchmark_command(args) -> int:
             # verbatim on a non-zero exit — UNLESS the caller opts in with
             # --progress, which streams RS-tagged progress the Desktop can tell
             # apart from that document and render as a live bar + ETA.
+            event_sink = None
             if not args.json:
                 progress_sink = _progress_to_stderr
             elif getattr(args, "progress", False):
                 progress_sink = _tagged_progress_to_stderr
+                # Structured events go only to machine consumers. A terminal
+                # user gets prose; a GUI gets the protocol's real case list.
+                event_sink = _tagged_event_to_stderr
             else:
                 progress_sink = None
             value = run_local(
@@ -360,6 +385,7 @@ def benchmark_command(args) -> int:
                 archive=archive,
                 inherit_process_group=getattr(args, "inherit_process_group", False),
                 progress=progress_sink,
+                events=event_sink,
             )
         elif action == "results":
             runs = archive.list(limit=getattr(args, "limit", None))
@@ -379,13 +405,29 @@ def benchmark_command(args) -> int:
             if args.json and not args.yes and not is_preview:
                 raise ValueError("benchmark share --json requires --yes")
             run = archive.get(args.run_id)
+            # The build that produced THIS run, not whatever built the app
+            # that is reading it. A benchmark measured by a modified tree
+            # stays unpublishable after a clean rebuild.
+            try:
+                run_provenance = archive.provenance(args.run_id)
+            except ProvenanceUnreadable as exc:
+                # Corruption is refused, not ignored. Raised as a refusal so
+                # the caller gets the same calm `refused: true` document a
+                # dirty build gets, rather than a stack trace.
+                raise PublicationRefused(
+                    f"{exc}. This result's build provenance cannot be "
+                    "verified, so it cannot be published. The result is saved "
+                    "on this Mac and can be inspected; re-run the benchmark to "
+                    "record it again."
+                ) from exc
             if is_preview:
-                preview = preview_run(run)
+                preview = preview_run(run, provenance=run_provenance)
                 value = {"schema_version": 1, **preview}
             else:
                 acceptance = upload_run(
                     run,
                     assume_yes=args.yes,
+                    provenance=run_provenance,
                     approved_install_id=getattr(args, "install_id", None),
                     approved_payload_digest=getattr(args, "payload_digest", None),
                     approved_body_digest=getattr(args, "body_digest", None),

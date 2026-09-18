@@ -376,6 +376,11 @@ def test_execution_records_source_checkout_revision(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     revision = "a" * 40
+    # Provenance is resolved once per process now (before the measurement, so
+    # a failing probe cannot discard a finished benchmark), so a test that
+    # changes the answer has to forget the previous one.
+    run_builder._reset_provenance_cache()
+    monkeypatch.setattr(run_builder, "_BUILD_STAMP", Path("/nonexistent/stamp.json"))
     monkeypatch.setattr(run_builder, "_source_checkout_revision", lambda: revision)
 
     runtime = execution_config("text_generation")["runtime"]
@@ -387,6 +392,8 @@ def test_execution_records_source_checkout_revision(
 def test_execution_records_release_without_source_revision(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    run_builder._reset_provenance_cache()
+    monkeypatch.setattr(run_builder, "_BUILD_STAMP", Path("/nonexistent/stamp.json"))
     monkeypatch.setattr(run_builder, "_source_checkout_revision", lambda: None)
 
     runtime = execution_config("text_generation")["runtime"]
@@ -903,6 +910,35 @@ def test_local_archive_receipt_marks_only_an_existing_run_shared(
     assert archive.receipt(run["run_id"]) is None
 
 
+def test_local_archive_receipt_uses_the_projected_public_payload(
+    tmp_path: Path,
+) -> None:
+    """A valid upload receipt remains valid for the richer local record."""
+    from rapid_mlx.community_bench.publication import project_run_for_publication
+
+    archive = LocalRunArchive(tmp_path)
+    run = _text_run()
+    component = run["model"]["components"][0]
+    component["source"]["resolved_revision"] = "a" * 40
+    component["source"]["subfolder"] = "mlx"
+    component["quantization"] = {
+        "kind": "weights",
+        "method": "affine",
+        "weight_bits_x2": 8,
+        "base_dtype": "float16",
+    }
+    archive.save(run)
+    install_id = "012345abcdef"
+    wire, withheld = project_run_for_publication(run)
+    wire["install_id"] = install_id
+    receipt = _receipt(run["run_id"], run_digest=atomic_upload.atomic_run_digest(wire))
+
+    archive.save_receipt(receipt, install_id=install_id)
+
+    assert withheld
+    assert archive.receipt(run["run_id"]) == receipt
+
+
 @pytest.mark.parametrize("contents", [b'{"schema_version":', b"\xff\xfe"])
 def test_corrupt_optional_receipt_does_not_hide_local_runs(
     tmp_path: Path, contents: bytes
@@ -1058,11 +1094,16 @@ def test_share_cli_preview_prints_exact_preview(
         def get(self, run_id: str):
             return run
 
+        def provenance(self, run_id: str):
+            # How the build that produced this run was made. None = not
+            # recorded, which is not an objection to publishing.
+            return None
+
     _cli_archive(monkeypatch, Archive())
     monkeypatch.setattr(
         community_cli,
         "preview_run",
-        lambda local_run: {"target": "https://example.test/atomic"},
+        lambda local_run, *, provenance=None: {"target": "https://example.test/atomic"},
     )
     args = SimpleNamespace(
         benchmark_action="share",
@@ -1090,6 +1131,9 @@ def test_share_cli_text_reports_cancel_and_unsaved_existing_acceptance(
     class Archive:
         def get(self, run_id: str):
             return run
+
+        def provenance(self, run_id: str):
+            return None
 
         def save_receipt(self, receipt, *, install_id):
             raise OSError("read-only archive")
@@ -1686,7 +1730,10 @@ def test_archive_failure_reports_execution_and_persistence_errors(
     )
 
     class BrokenArchive:
-        def save(self, run: dict) -> None:
+        # The runner archives through the one operation that writes provenance
+        # first, so a double that only implements `save` no longer resembles
+        # the real archive.
+        def save_with_provenance(self, run: dict, provenance: dict) -> None:
             raise OSError("disk full")
 
     with pytest.raises(local_runner.LocalBenchmarkError) as error:
@@ -1714,7 +1761,7 @@ def test_completed_run_persistence_failure_does_not_fabricate_failed_outcome(
         def __init__(self) -> None:
             self.attempts: list[dict] = []
 
-        def save(self, run: dict) -> None:
+        def save_with_provenance(self, run: dict, provenance: dict) -> None:
             self.attempts.append(run)
             raise OSError("disk full")
 
@@ -1754,10 +1801,12 @@ def test_completed_run_construction_failure_is_not_retried_as_failed_outcome(
 
     with pytest.raises(
         local_runner.LocalBenchmarkError,
-        match="completed but result could not be constructed: could not resolve",
+        match="the result record could not be assembled",
     ) as error:
         local_runner.run_local("example-image", archive=archive)
 
+    # The message has to answer the only question the user has at this point.
+    assert "NOTHING was saved to this Mac" in str(error.value)
     assert execution_calls == 1
     assert error.value.run is None
     assert error.value.saved is False
@@ -1909,8 +1958,11 @@ def test_run_local_executes_image_protocol_and_excludes_warmup(
     assert progress[0].startswith("Benchmarking example-image (image_generation)")
     assert progress[1].startswith("Starting local image server for example-image")
     assert any(line.startswith("Server ready in ") for line in progress)
-    assert progress[-2] == "t2i-1024-square  warmup   1 s"
-    assert progress[-1] == "t2i-1024-square  round 1/1  2 s"
+    assert progress[-4] == "t2i-1024-square  warmup   1 s"
+    assert progress[-3] == "t2i-1024-square  round 1/1  2 s"
+    # The archive write bookends itself so the UI can say "Saving to this Mac"
+    # while it is actually happening.
+    assert progress[-2:] == ["Saving result to this Mac...", "Saved to this Mac"]
     assert calls[0]["url"] == "http://local/v1/images/generations"
     assert calls[0]["json"] == {
         "model": "example-image",
@@ -2226,8 +2278,9 @@ def test_run_local_executes_video_protocol_and_polls_to_completion(
 
     assert serve_options["extra_env"] == {"RAPID_MLX_WAN_STEPS": "20"}
     assert progress[1].startswith("Starting local video server for example-video")
-    assert progress[-2] == "t2v-480p-81f     round 1/1  generating..."
-    assert progress[-1] == "t2v-480p-81f     round 1/1  5 s"
+    assert progress[-4] == "t2v-480p-81f     round 1/1  generating..."
+    assert progress[-3] == "t2v-480p-81f     round 1/1  5 s"
+    assert progress[-2:] == ["Saving result to this Mac...", "Saved to this Mac"]
     assert posts == [
         {
             "url": "http://local/v1/videos",
@@ -5080,6 +5133,28 @@ def test_cli_run_streams_progress_to_stderr_only_in_text_mode(
     assert json.loads(captured.out) == {"run_id": "abc-123", "measurements": []}
 
 
+def test_progress_observers_cannot_break_a_benchmark(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """UI/logging adapters are best-effort and may disappear mid-run."""
+
+    community_cli._tagged_event_to_stderr({"stage": "measure"})
+    assert capsys.readouterr().err == (
+        f'{community_cli.PROGRESS_TAG}{{"stage":"measure"}}\n'
+    )
+
+    class NotJSON:
+        pass
+
+    community_cli._tagged_event_to_stderr({"value": NotJSON()})
+
+    def broken_sink(_payload: dict[str, object]) -> None:
+        raise RuntimeError("consumer closed")
+
+    local_runner._emit(broken_sink, {"stage": "measure"})
+    local_runner._emit(None, {"stage": "measure"})
+
+
 def test_run_local_announces_plan_and_forwards_progress(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
@@ -5121,7 +5196,10 @@ def test_run_local_announces_plan_and_forwards_progress(
     assert lines[1] == "  " + describe_case(
         registered_workload("image_generation")["cases"][0]
     )
-    assert lines[-1] == "t2i-1024-square  round 1/1  12 s"
+    assert "t2i-1024-square  round 1/1  12 s" in lines
+    # The archive write is announced around itself, so a UI showing
+    # "Saving to this Mac" is reporting rather than guessing.
+    assert lines[-2:] == ["Saving result to this Mac...", "Saved to this Mac"]
 
     # Without a sink nothing is announced and the runner still works.
     monkeypatch.setattr(
@@ -5150,7 +5228,9 @@ def test_run_local_announces_plan_and_forwards_progress(
     )
     assert run["outcome"]["status"] == "completed"
     assert archive.get(run["run_id"])["outcome"]["status"] == "completed"
-    assert len(attempts) == 3  # plan header, case line, round line all attempted
+    # plan header, case line, round line, and both archive-write lines: every
+    # one is attempted even though the sink raises on each.
+    assert len(attempts) == 5
 
     # The observer path is guarded the same way.
     observe = local_runner._text_round_observer(exploding_sink, [])
