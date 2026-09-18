@@ -4375,6 +4375,26 @@ def test_local_run_normalizer_maps_python_and_run_pseudo_commands():
     assert "timeout_seconds" not in (
         _normalize_local_workspace_turn("run the script", junk).tool_calls[0].arguments
     )
+    fractional = timed.model_copy(
+        update={
+            "tool_calls": [
+                timed.tool_calls[0].model_copy(
+                    update={
+                        "arguments": {
+                            "command": "python3",
+                            "argv": ["a.py"],
+                            "timeout_seconds": 12.5,
+                        }
+                    }
+                )
+            ]
+        }
+    )
+    assert "timeout_seconds" not in (
+        _normalize_local_workspace_turn("run the script", fractional)
+        .tool_calls[0]
+        .arguments
+    )
     # "run <binary>" after a compile: the binary is the command.
     run_turn = AgentModelTurn(
         tool_calls=[

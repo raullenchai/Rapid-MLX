@@ -8,7 +8,6 @@ import asyncio
 import hashlib
 import json
 import logging
-import math
 import re
 import shlex
 import time
@@ -1383,11 +1382,11 @@ def _normalize_local_workspace_turn(goal: str, turn: AgentModelTurn) -> AgentMod
             for key, value in arguments.items()
             if key in {"command", "argv", "working_directory"}
         }
-        if (
-            isinstance(timeout, (int, float))
-            and not isinstance(timeout, bool)
-            and math.isfinite(timeout)
-        ):
+        # The Desktop wire decodes this field as an Int.  Do not preserve a
+        # finite float merely because Python considers it numeric: that would
+        # turn a recoverable small-model shape error into a client decode
+        # failure before the approval sheet can be shown.
+        if isinstance(timeout, int) and not isinstance(timeout, bool):
             arguments["timeout_seconds"] = timeout
     else:
         return turn
