@@ -1973,6 +1973,23 @@ def _preflight_vision_runtime(
 _TEXT_LANE_UNSUPPORTED_MLLM_MODEL_TYPES = frozenset({"prism_hadamard_qwen35"})
 
 
+def _prefetch_config_for_text_lane_guard(model_ref: str) -> None:
+    """Pull only ``config.json`` (a few KB) so the text-lane guard can classify
+    a cold pack. Best-effort and offline-aware: a miss defers to the downstream
+    loader's own error. Module-level so tests can substitute it.
+    """
+    from .model_metadata import hub_offline_mode_active
+
+    if os.path.exists(model_ref) or hub_offline_mode_active():
+        return
+    try:
+        from huggingface_hub import hf_hub_download
+
+        hf_hub_download(model_ref, "config.json")
+    except Exception:  # noqa: BLE001 — best-effort probe, never fatal
+        return
+
+
 def _reject_text_lane_only_mllm_pack(model_name: str, load_path: str) -> None:
     """Reject an MLLM-only pack that routing sent to the text lane.
 
@@ -1986,14 +2003,21 @@ def _reject_text_lane_only_mllm_pack(model_name: str, load_path: str) -> None:
     weights, with an actionable message.
 
     Config is available on the default path (``_resolve_serving_checkpoint``
-    fetched ``config.json``) and on any warm cache; when it cannot be read
-    (a cold ``--no-mllm`` start that skipped the routing prefetch) this is a
-    silent no-op and the downstream loader owns the error.
+    fetched ``config.json``) and on any warm cache. A cold ``--no-mllm`` start
+    deliberately skips routing-config materialization, so the first read here
+    can miss; pull just ``config.json`` (not the 8.6 GB pack) and re-read so the
+    guard still fires before the download. If it still cannot be classified
+    (offline, or the Hub is unreachable) this is a silent no-op and the
+    downstream loader owns the error.
     """
     from .model_metadata import read_model_metadata
 
     metadata = read_model_metadata(load_path)
     config = metadata.config if metadata is not None else None
+    if not isinstance(config, dict):
+        _prefetch_config_for_text_lane_guard(load_path)
+        metadata = read_model_metadata(load_path)
+        config = metadata.config if metadata is not None else None
     if not isinstance(config, dict):
         return
     if config.get("model_type") not in _TEXT_LANE_UNSUPPORTED_MLLM_MODEL_TYPES:

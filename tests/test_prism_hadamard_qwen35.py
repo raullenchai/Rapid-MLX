@@ -277,13 +277,19 @@ def test_processor_uses_builtin_classes_without_snapshot_code(monkeypatch, tmp_p
     )
 
 
+
 def _install_metadata_stub(monkeypatch, config):
-    """Point ``read_model_metadata`` at a fixed config for the routing guard."""
+    """Point ``read_model_metadata`` at a fixed config for the routing guard and
+    neutralize the cold-start config prefetch (no network in unit tests)."""
     from types import SimpleNamespace
 
     monkeypatch.setattr(
         "rapid_mlx.model_metadata.read_model_metadata",
         lambda _path: SimpleNamespace(config=config, snapshot_dir=None),
+    )
+    monkeypatch.setattr(
+        "rapid_mlx.server._prefetch_config_for_text_lane_guard",
+        lambda *_a, **_k: None,
     )
 
 
@@ -318,12 +324,45 @@ def test_text_lane_guard_surfaces_missing_vision_runtime_first(monkeypatch):
         server._reject_text_lane_only_mllm_pack("bonsai2-27b-2bit", "/snap/bonsai2")
 
 
+def test_text_lane_guard_cold_start_prefetches_config(monkeypatch):
+    # Cold --no-mllm skips routing-config materialization, so the FIRST metadata
+    # read is empty. The guard must prefetch config.json and re-read so it still
+    # rejects the pack before BatchedEngine pulls the 8.6 GB weights.
+    from types import SimpleNamespace
+
+    import rapid_mlx.server as server
+
+    reads = iter(
+        [
+            SimpleNamespace(config=None, snapshot_dir=None),  # cold: nothing cached
+            SimpleNamespace(  # after prefetch: config.json landed
+                config={"model_type": "prism_hadamard_qwen35"}, snapshot_dir=None
+            ),
+        ]
+    )
+    monkeypatch.setattr(
+        "rapid_mlx.model_metadata.read_model_metadata", lambda _path: next(reads)
+    )
+    prefetched = []
+    monkeypatch.setattr(
+        "rapid_mlx.server._prefetch_config_for_text_lane_guard",
+        lambda ref: prefetched.append(ref),
+    )
+    monkeypatch.setattr("rapid_mlx.models.mllm._require_mlx_vlm", lambda *_a, **_k: None)
+
+    with pytest.raises(ValueError, match="multimodal lane"):
+        server._reject_text_lane_only_mllm_pack(
+            "bonsai2-27b-2bit", "prism-ml/Ternary-Bonsai-2-27B-mlx-2bit"
+        )
+    assert prefetched == ["prism-ml/Ternary-Bonsai-2-27B-mlx-2bit"]
+
+
 @pytest.mark.parametrize(
     "config",
     [
         {"model_type": "qwen3_5"},  # ordinary hybrid VLM — text lane is valid
         {"model_type": "qwen3"},
-        None,  # cold --no-mllm: no config read → downstream owns the error
+        None,  # cold start where even the prefetch found nothing
         {},
     ],
 )
