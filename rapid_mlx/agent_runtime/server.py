@@ -955,14 +955,17 @@ def _normalize_local_workspace_turn(goal: str, turn: AgentModelTurn) -> AgentMod
     the Desktop approval sheet shows the path that will actually be used.
     """
 
-    if _LOCAL_PATH.search(goal) is not None or len(turn.tool_calls) != 1:
+    if len(turn.tool_calls) != 1:
         return turn
+    has_explicit_path = _LOCAL_PATH.search(goal) is not None
     call = turn.tool_calls[0]
     # The wire model exposes recursive ``JsonValue`` entries. Normalization
     # deliberately rebuilds a plain mutable object before Pydantic validates
     # the copied turn, so concrete argv lists are safe to assign here.
     arguments: dict[str, Any] = dict(call.arguments)
     if call.name == "local_write":
+        if has_explicit_path:
+            return turn
         raw_path = arguments.get("path")
         if isinstance(raw_path, str):
             filename = raw_path.rstrip("/").rsplit("/", 1)[-1]
@@ -972,8 +975,20 @@ def _normalize_local_workspace_turn(goal: str, turn: AgentModelTurn) -> AgentMod
         else:
             arguments["path"] = "~/Rapid Workspace/generated.txt"
     elif call.name == "local_run":
-        arguments.pop("cwd", None)
-        arguments["working_directory"] = "~/Rapid Workspace"
+        raw_working_directory = arguments.get("working_directory")
+        raw_cwd = arguments.pop("cwd", None)
+        if has_explicit_path:
+            working_directory = (
+                raw_working_directory
+                if isinstance(raw_working_directory, str)
+                else raw_cwd
+                if isinstance(raw_cwd, str)
+                else None
+            )
+        else:
+            working_directory = "~/Rapid Workspace"
+        if working_directory is not None:
+            arguments["working_directory"] = working_directory
         raw_command = arguments.get("command")
         raw_arguments = arguments.get("arguments")
         if isinstance(raw_command, str):
@@ -1003,6 +1018,10 @@ def _normalize_local_workspace_turn(goal: str, turn: AgentModelTurn) -> AgentMod
                     tokens = shlex.split(segment)
                 except ValueError:
                     continue
+                if len(tokens) == 2 and tokens[0] == "cd":
+                    working_directory = tokens[1]
+                    arguments["working_directory"] = working_directory
+                    continue
                 if tokens and tokens[0] in allowed:
                     recovered = tokens
                     break
@@ -1018,8 +1037,10 @@ def _normalize_local_workspace_turn(goal: str, turn: AgentModelTurn) -> AgentMod
                 recovered_arguments = recovered[1:]
                 if recovered_arguments:
                     arguments["arguments"] = recovered_arguments
-            elif raw_command.startswith("./"):
-                arguments["command"] = f"~/Rapid Workspace/{raw_command[2:]}"
+            elif raw_command.startswith("./") and working_directory is not None:
+                arguments["command"] = (
+                    f"{working_directory.rstrip('/')}/{raw_command[2:]}"
+                )
             normalized_arguments = arguments.get("arguments")
             if (
                 arguments.get("command") in {"clang", "cc", "gcc"}

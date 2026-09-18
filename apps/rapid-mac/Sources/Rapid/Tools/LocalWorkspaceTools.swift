@@ -883,35 +883,43 @@ enum LocalWorkspaceTools {
             try approved.workingDirectory.verifyPathStillNamesPinnedObject()
             try approved.executable.verifyPathStillNamesPinnedObject()
             let args = approved.arguments
-            let cwd = approved.workingDirectory.url
-            let executable = approved.executable.url
+            let cwd = try currentURL(for: approved.workingDirectory.descriptor)
             let processArguments = approved.processArguments
 
-            let temporary = cwd.appendingPathComponent(".rapid-tmp-\(UUID().uuidString)")
-            try FileManager.default.createDirectory(at: temporary, withIntermediateDirectories: false)
+            let temporaryName = ".rapid-tmp-\(UUID().uuidString)"
+            let created = temporaryName.withCString {
+                mkdirat(approved.workingDirectory.descriptor, $0, mode_t(0o700))
+            }
+            guard created == 0 else { throw posixError("could not create the private command folder") }
+            let temporary = cwd.appendingPathComponent(temporaryName)
             defer { try? FileManager.default.removeItem(at: temporary) }
+            let executable = try stableExecutable(approved.executable, in: temporary)
             let sandboxArguments = [
                 "-p", sandboxProfile(
-                    home: FileManager.default.homeDirectoryForCurrentUser.resolvingSymlinksInPath(),
                     workingDirectory: cwd,
                     temporaryDirectory: temporary,
                     executable: executable,
+                    originalExecutable: approved.executable.url,
                     helperClass: approved.helperClass,
                     approvedCommand: args.command
                 ),
                 executable.path,
             ] + processArguments
-            let environment = [
+            var environment = [
                 "HOME": FileManager.default.homeDirectoryForCurrentUser.path,
                 "PATH": "/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin",
                 "TMPDIR": temporary.path,
                 "LANG": "en_US.UTF-8",
             ]
+            if args.command == "go" {
+                let original = approved.executable.url
+                environment["GOROOT"] = original.deletingLastPathComponent().deletingLastPathComponent().path
+            }
             let timeout = min(max(args.timeoutSeconds ?? 15, 1), 30)
             let outcome = try spawnSandboxed(
                 arguments: sandboxArguments,
                 environment: environment,
-                workingDirectory: cwd,
+                workingDirectoryDescriptor: approved.workingDirectory.descriptor,
                 timeout: TimeInterval(timeout)
             )
             let out = String(decoding: outcome.stdout, as: UTF8.self)
@@ -925,6 +933,58 @@ enum LocalWorkspaceTools {
         } catch { return failure("local_run error: \(error.localizedDescription)") }
     }
 
+    private static func stableExecutable(
+        _ approved: PinnedPath, in temporaryDirectory: URL
+    ) throws -> URL {
+        var before = stat()
+        guard fstat(approved.descriptor, &before) == 0 else {
+            throw posixError("could not inspect the approved executable")
+        }
+        if before.st_uid == 0, before.st_mode & mode_t(0o022) == 0 {
+            return approved.url
+        }
+
+        let destination = temporaryDirectory.appendingPathComponent("approved-tool")
+        let output = Darwin.open(
+            destination.path,
+            O_WRONLY | O_CREAT | O_EXCL | O_NOFOLLOW | O_CLOEXEC,
+            mode_t(0o700)
+        )
+        guard output >= 0 else { throw posixError("could not stage the approved executable") }
+        defer { Darwin.close(output) }
+        guard lseek(approved.descriptor, 0, SEEK_SET) >= 0 else {
+            throw posixError("could not read the approved executable")
+        }
+        var buffer = [UInt8](repeating: 0, count: 64 * 1_024)
+        while true {
+            let count = Darwin.read(approved.descriptor, &buffer, buffer.count)
+            if count == 0 { break }
+            if count < 0 {
+                if errno == EINTR { continue }
+                throw posixError("could not read the approved executable")
+            }
+            var written = 0
+            while written < count {
+                let result = buffer.withUnsafeBytes { rawBuffer in
+                    Darwin.write(output, rawBuffer.baseAddress!.advanced(by: written), count - written)
+                }
+                guard result > 0 else { throw posixError("could not stage the approved executable") }
+                written += result
+            }
+        }
+        var after = stat()
+        guard fstat(approved.descriptor, &after) == 0,
+              before.st_size == after.st_size,
+              before.st_mtimespec.tv_sec == after.st_mtimespec.tv_sec,
+              before.st_mtimespec.tv_nsec == after.st_mtimespec.tv_nsec else {
+            throw LocalError("the approved executable changed while it was being staged")
+        }
+        guard fsync(output) == 0, fchmod(output, mode_t(0o700)) == 0 else {
+            throw posixError("could not finalize the approved executable")
+        }
+        return destination
+    }
+
     private struct CommandOutcome {
         let exitCode: Int32
         let timedOut: Bool
@@ -932,10 +992,25 @@ enum LocalWorkspaceTools {
         let stderr: Data
     }
 
+    private static func currentURL(for descriptor: Int32) throws -> URL {
+        var path = [CChar](repeating: 0, count: Int(PATH_MAX))
+        guard fcntl(descriptor, F_GETPATH, &path) == 0 else {
+            throw posixError("could not locate the approved working directory")
+        }
+        let terminator = path.firstIndex(of: 0) ?? path.endIndex
+        let pathString = String(
+            decoding: path[..<terminator].map { UInt8(bitPattern: $0) },
+            as: UTF8.self
+        )
+        let url = URL(fileURLWithPath: pathString).standardizedFileURL
+        _ = try validatedLexicalURL(url.path)
+        return url
+    }
+
     private static func spawnSandboxed(
         arguments: [String],
         environment: [String: String],
-        workingDirectory: URL,
+        workingDirectoryDescriptor: Int32,
         timeout: TimeInterval
     ) throws -> CommandOutcome {
         let stdout = BoundedPipeCapture()
@@ -972,7 +1047,7 @@ enum LocalWorkspaceTools {
         posix_spawn_file_actions_addclose(
             &actions, stderr.pipe.fileHandleForWriting.fileDescriptor
         ) == 0,
-        posix_spawn_file_actions_addchdir_np(&actions, workingDirectory.path) == 0,
+        posix_spawn_file_actions_addfchdir_np(&actions, workingDirectoryDescriptor) == 0,
         posix_spawnattr_setflags(&attributes, Int16(POSIX_SPAWN_SETPGROUP)) == 0,
         posix_spawnattr_setpgroup(&attributes, 0) == 0 else {
             throw LocalError("could not configure the command launcher")
@@ -1069,10 +1144,10 @@ enum LocalWorkspaceTools {
     }
 
     private static func sandboxProfile(
-        home: URL,
         workingDirectory: URL,
         temporaryDirectory: URL,
         executable: URL,
+        originalExecutable: URL,
         helperClass: HelperClass,
         approvedCommand: String
     ) -> String {
@@ -1080,11 +1155,36 @@ enum LocalWorkspaceTools {
             "\"" + path.replacingOccurrences(of: "\\", with: "\\\\")
                 .replacingOccurrences(of: "\"", with: "\\\"") + "\""
         }
-        let localRuntimeRead: String
-        if executable.path.hasPrefix("/usr/local/") {
-            localRuntimeRead = "(allow file-read* (subpath \(quoted(executable.deletingLastPathComponent().path))))"
-        } else {
-            localRuntimeRead = ""
+        var readableFilters = [
+            "(literal \"/\")",
+            "(subpath \(quoted(workingDirectory.path)))",
+            "(subpath \(quoted(temporaryDirectory.path)))",
+            "(literal \(quoted(executable.path)))",
+            "(subpath \"/System\")",
+            "(subpath \"/usr/lib\")",
+            "(subpath \"/usr/share\")",
+            "(subpath \"/dev\")",
+            "(subpath \"/private/var/db/timezone\")",
+        ]
+        var metadataFilters: [String] = []
+        if originalExecutable.path.hasPrefix("/Applications/Xcode.app/")
+            || helperClass != .none {
+            readableFilters += [
+                "(subpath \"/Applications/Xcode.app/Contents/Developer\")",
+                "(subpath \"/Library/Developer\")",
+            ]
+            metadataFilters += [
+                "(literal \"/Applications\")",
+                "(literal \"/Applications/Xcode.app\")",
+                "(literal \"/Applications/Xcode.app/Contents\")",
+                "(literal \"/Library\")",
+                "(literal \"/Library/Developer\")",
+            ]
+        }
+        if originalExecutable.path.hasPrefix("/opt/homebrew/") {
+            readableFilters.append("(subpath \"/opt/homebrew\")")
+        } else if originalExecutable.path.hasPrefix("/usr/local/") {
+            readableFilters.append("(subpath \(quoted(originalExecutable.deletingLastPathComponent().path)))")
         }
 
         var executableFilters = ["(literal \(quoted(executable.path)))"]
@@ -1103,6 +1203,8 @@ enum LocalWorkspaceTools {
         case .compiler:
             executableFilters += [
                 "(subpath \"/Applications/Xcode.app/Contents/Developer/Toolchains\")",
+                "(subpath \"/Applications/Xcode.app/Contents/Developer/usr/bin\")",
+                "(subpath \"/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/usr/bin\")",
                 "(subpath \"/Library/Developer/CommandLineTools/usr/bin\")",
                 "(literal \"/usr/bin/ld\")",
             ]
@@ -1110,45 +1212,43 @@ enum LocalWorkspaceTools {
             executableFilters += [
                 "(literal \"/bin/sh\")",
                 "(subpath \"/Applications/Xcode.app/Contents/Developer/Toolchains\")",
+                "(subpath \"/Applications/Xcode.app/Contents/Developer/usr/bin\")",
+                "(subpath \"/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/usr/bin\")",
                 "(subpath \"/Library/Developer/CommandLineTools/usr/bin\")",
                 "(literal \"/usr/bin/ld\")",
             ]
         case .swift:
             executableFilters += [
                 "(subpath \"/Applications/Xcode.app/Contents/Developer/Toolchains\")",
+                "(subpath \"/Applications/Xcode.app/Contents/Developer/usr/bin\")",
+                "(subpath \"/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/usr/bin\")",
                 "(subpath \"/Library/Developer/CommandLineTools/usr/bin\")",
             ]
         case .go:
-            if executable.path.hasPrefix("/opt/homebrew/") {
+            if originalExecutable.path.hasPrefix("/opt/homebrew/") {
                 executableFilters.append("(subpath \"/opt/homebrew/Cellar/go\")")
-            } else if executable.path.hasPrefix("/usr/local/") {
-                executableFilters.append("(subpath \(quoted(executable.deletingLastPathComponent().deletingLastPathComponent().path)))")
+            } else if originalExecutable.path.hasPrefix("/usr/local/") {
+                executableFilters.append("(subpath \(quoted(originalExecutable.deletingLastPathComponent().deletingLastPathComponent().path)))")
             }
         }
+        let readFilters = readableFilters.joined(separator: "\n                ")
+        let metadataRule = metadataFilters.isEmpty ? "" : """
+        (allow file-read-metadata
+            \(metadataFilters.joined(separator: "\n            ")))
+        """
         let processFilters = executableFilters.joined(separator: "\n                ")
         return """
         (version 1)
         (allow default)
         (deny network*)
         (deny mach-lookup)
-        ; Runtime libraries remain available, but common data-bearing machine
-        ; and user locations do not. Narrow exceptions restore only the approved
-        ; workspace, temp folder, executable, and platform toolchain.
-        (deny file-read* (subpath \(quoted(home.path))))
-        (deny file-read* (subpath "/Users"))
-        (deny file-read* (subpath "/Volumes"))
-        (deny file-read* (subpath "/private/etc"))
-        (deny file-read* (subpath "/private/tmp"))
-        (deny file-read* (subpath "/private/var"))
-        (deny file-read* (subpath "/Library"))
-        (deny file-read* (subpath "/usr/local"))
-        (allow file-read*
-            (subpath \(quoted(workingDirectory.path)))
-            (subpath \(quoted(temporaryDirectory.path)))
-            (literal \(quoted(executable.path)))
-            (subpath "/Library/Developer")
-            (subpath "/private/var/db/timezone"))
-        \(localRuntimeRead)
+        ; File reads are default-denied. Restore only the approved workspace,
+        ; private temp folder, exact executable, immutable runtime data, and
+        ; the toolchain explicitly implied by the approved command.
+        (deny file-read*
+            (require-not (require-any
+                \(readFilters))))
+        \(metadataRule)
         (deny file-write*)
         (allow file-write*
             (subpath \(quoted(workingDirectory.path)))

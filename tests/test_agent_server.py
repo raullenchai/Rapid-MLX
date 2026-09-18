@@ -451,6 +451,48 @@ def test_local_workspace_default_path_is_harness_owned_and_user_path_is_preserve
         "working_directory": "~/Rapid Workspace",
     }
 
+    explicit_recipe = AgentModelTurn(
+        tool_calls=[
+            AgentToolCall(
+                id="compile-explicit",
+                name="local_run",
+                arguments={
+                    "command": (
+                        "cd /Users/alice/Documents/project && gcc main.c "
+                        "&& ./main"
+                    )
+                },
+            )
+        ]
+    )
+    normalized_explicit_recipe = _normalize_local_workspace_turn(
+        "Compile the project in /Users/alice/Documents/project", explicit_recipe
+    )
+    assert normalized_explicit_recipe.tool_calls[0].arguments == {
+        "command": "gcc",
+        "arguments": ["main.c", "-o", "main"],
+        "working_directory": "/Users/alice/Documents/project",
+    }
+
+    explicit_relative = AgentModelTurn(
+        tool_calls=[
+            AgentToolCall(
+                id="execute-explicit",
+                name="local_run",
+                arguments={
+                    "command": "./main",
+                    "working_directory": "/Users/alice/Documents/project",
+                },
+            )
+        ]
+    )
+    normalized_explicit_relative = _normalize_local_workspace_turn(
+        "Run /Users/alice/Documents/project/main", explicit_relative
+    )
+    assert normalized_explicit_relative.tool_calls[0].arguments["command"] == (
+        "/Users/alice/Documents/project/main"
+    )
+
     relative_executable = AgentModelTurn(
         tool_calls=[
             AgentToolCall(
