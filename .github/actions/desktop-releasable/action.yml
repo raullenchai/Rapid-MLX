@@ -37,6 +37,23 @@ inputs:
       release lane), 'false' for an ad-hoc dry-run. For a candidate the caller
       sets require_signed so an unsigned build is a hard failure.
     required: true
+  official_release:
+    description: >-
+      'true' ONLY for a genuine official release or release candidate whose
+      bytes may be published. It is stamped into the sidecar as
+      ``distribution: release``, which tells every benchmark this app
+      publishes that it came from an official build.
+
+      Anything else — a branch workflow_dispatch dry run, a local
+      ``bash scripts/build.sh``, an auto-release dry run — must leave this
+      'false'. Those builds stamp ``distribution: source`` with the commit
+      they were built from, so their benchmark records name the code that
+      produced them instead of impersonating a release.
+
+      Defaults to 'false': a caller that forgets produces an honest source
+      build, never a false release claim.
+    required: false
+    default: 'false'
   require_signed:
     description: >-
       'true' when a signed, notarised build is mandatory (the candidate gate).
@@ -223,6 +240,7 @@ runs:
         # Release builds have a fresh sidecar stage and a trusted signing
         # identity, so overlap that independent work with Swift compilation.
         PARALLEL_SIDECAR_BUILD: ${{ inputs.parallel_sidecar_build == 'true' && inputs.signed == 'true' && '1' || '0' }}
+        OFFICIAL_RELEASE: ${{ inputs.official_release }}
       shell: bash
       run: |
         set -euo pipefail
@@ -231,7 +249,31 @@ runs:
           echo "::error::signed releases require the SPARKLE_PUBLIC_ED_KEY Actions variable"
           exit 1
         fi
+        # An explicit tri-state check, not a truthiness test: a typo must fail
+        # the build rather than quietly producing a source stamp on a release.
+        case "${OFFICIAL_RELEASE}" in
+          true)  export RAPID_MLX_OFFICIAL_RELEASE=1 ;;
+          false) export RAPID_MLX_OFFICIAL_RELEASE=0 ;;
+          *)
+            echo "::error::official_release must be 'true' or 'false', got '${OFFICIAL_RELEASE}'"
+            exit 1
+            ;;
+        esac
+        echo "::notice::sidecar provenance: RAPID_MLX_OFFICIAL_RELEASE=${RAPID_MLX_OFFICIAL_RELEASE}"
         bash scripts/build.sh
+
+    # The stamp decides what every benchmark this app publishes claims about
+    # its own origin, and it is written deep inside the sidecar build. Verify
+    # it in the finished bundle rather than trusting that the env var arrived.
+    - name: Verify sidecar provenance stamp in the built app
+      env:
+        OFFICIAL_RELEASE: ${{ inputs.official_release }}
+      shell: bash
+      run: |
+        set -euo pipefail
+        cd "${{ inputs.checkout_path }}/apps/rapid-mac"
+        python3 scripts/verify-sidecar-stamp.py \
+          "build/Rapid-MLX Desktop.app" "${OFFICIAL_RELEASE}"
 
     - name: Bundle size gate (block if .app exceeds cap)
       env:

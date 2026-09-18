@@ -416,7 +416,13 @@ jobs:
           # production schedulers and HTTP routes. Every normal auto-release is
           # blocked by a missing immutable snapshot, incompatible reduced
           # dependency set, or failed media request.
+          # Explicitly NOT an official release: this sidecar is a smoke-test
+          # artifact built into RUNNER_TEMP and thrown away. It is never
+          # shipped and never publishes a benchmark, so it stamps itself a
+          # source build like any other non-release build. Stating it here
+          # means the default can change without silently relabelling this.
           HF_HUB_OFFLINE=1 RAPID_MLX_WHEEL="$CANDIDATE_WHEEL" \
+            RAPID_MLX_OFFICIAL_RELEASE=0 \
             bash apps/rapid-mac/scripts/build-sidecar.sh \
             --out "$RUNNER_TEMP/desktop-vision-sidecar-$VERSION"
 
@@ -480,6 +486,16 @@ jobs:
           # Sparkle / DMG build can walk tag ancestry from the release commit.
           fetch-depth: 0
 
+      - name: Validate the detected release mode
+        env:
+          DRY_RUN: ${{ needs.detect.outputs.dry_run }}
+        run: |
+          set -euo pipefail
+          case "$DRY_RUN" in
+            true|false) ;;
+            *) echo "::error::detect emitted invalid dry_run=$DRY_RUN"; exit 1 ;;
+          esac
+
       - name: Resolve the previous rapid-mac release tag
         id: prev
         env:
@@ -534,6 +550,10 @@ jobs:
           signed: ${{ secrets.MACOS_DEVID_CERT_P12_BASE64 != '' && secrets.MACOS_DEVID_CERT_PASSWORD != '' && secrets.AC_API_KEY_P8_BASE64 != '' && secrets.AC_API_KEY_ID != '' && secrets.AC_API_ISSUER_ID != '' }}
           require_signed: 'true'
           parallel_sidecar_build: 'true'
+          # The candidate gate also runs for a dry run, which validates the
+          # build and then discards it. Only a real release promotes these
+          # bytes, so only a real release may stamp them as one.
+          official_release: ${{ needs.detect.outputs.dry_run == 'false' }}
           # Build the canonical Sparkle bytes here too. The protected tagged
           # lane promotes this exact signed/notarised bundle; it never rebuilds.
           publish_sparkle: 'true'

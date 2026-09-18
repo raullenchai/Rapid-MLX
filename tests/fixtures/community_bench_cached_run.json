@@ -1,0 +1,244 @@
+{
+ "collector": {
+  "name": "rapid-mlx-community-bench",
+  "version": "0.13.4"
+ },
+ "completed_at": "2026-09-16T03:30:11.324920Z",
+ "execution": {
+  "config_digest": "sha256:77c73942c73a265e0eabc4c4a15dd69aec48be8ebc2d6b6771d8558d4f39fe86",
+  "resources": {
+   "compute_dtype": "unknown",
+   "max_concurrency": 1
+  },
+  "runtime": {
+   "distribution": "release",
+   "mflux": "0.19.0",
+   "mlx": "0.32.2",
+   "mlx_lm": "0.31.3",
+   "mlx_vlm": "0.6.17",
+   "python": "3.12.13",
+   "rapid_mlx": "0.13.4"
+  },
+  "schema_version": 1,
+  "task": {
+   "kind": "text_generation",
+   "language": {
+    "context_length": 128000,
+    "kv_cache": {
+     "dtype": "unknown",
+     "mode": "unknown"
+    },
+    "prefill_backend": "gpu",
+    "prefill_chunk_size": null,
+    "prefix_cache_enabled": false,
+    "speculative_decoding": {
+     "method": "none"
+    }
+   }
+  },
+  "task_type": "text_generation"
+ },
+ "machine": {
+  "conditions_after": {
+   "available_memory_mib": 1196,
+   "low_power_mode": false,
+   "memory_pressure": "normal",
+   "power_source": "ac",
+   "thermal_state": "nominal"
+  },
+  "conditions_before": {
+   "available_memory_mib": 2456,
+   "low_power_mode": false,
+   "memory_pressure": "normal",
+   "power_source": "ac",
+   "thermal_state": "nominal"
+  },
+  "os": {
+   "architecture": "arm64",
+   "name": "macOS",
+   "version": "26.6.2"
+  },
+  "profile": {
+   "chip": "Apple M1 Max",
+   "cpu_cores": 10,
+   "gpu_cores": 24,
+   "memory_gib": 32
+  },
+  "profile_completeness": "partial",
+  "profile_digest": "sha256:415d843cc219fee6e7c49be1f2bd91033eb6fce0d5efef79a6fbf82eab64d9e9",
+  "schema_version": 1
+ },
+ "measurements": [
+  {
+   "case_id": "pp512-tg128",
+   "completed": true,
+   "decode_duration_ms": 485.09233299409976,
+   "output_tokens": 128,
+   "peak_active_memory_mib": 1819,
+   "prompt_tokens": 512,
+   "round_index": 1,
+   "total_duration_ms": 768.6657499871217,
+   "ttft_ms": 283.57341699302197
+  },
+  {
+   "case_id": "pp512-tg128",
+   "completed": true,
+   "decode_duration_ms": 486.9837919832208,
+   "output_tokens": 128,
+   "peak_active_memory_mib": 1819,
+   "prompt_tokens": 512,
+   "round_index": 2,
+   "total_duration_ms": 767.8872090182267,
+   "ttft_ms": 280.903417035006
+  },
+  {
+   "case_id": "pp512-tg128",
+   "completed": true,
+   "decode_duration_ms": 487.18145798193297,
+   "output_tokens": 128,
+   "peak_active_memory_mib": 1819,
+   "prompt_tokens": 512,
+   "round_index": 3,
+   "total_duration_ms": 770.112500002142,
+   "ttft_ms": 282.93104202020913
+  },
+  {
+   "case_id": "pp512-tg128",
+   "completed": true,
+   "decode_duration_ms": 490.3343749465421,
+   "output_tokens": 128,
+   "peak_active_memory_mib": 1819,
+   "prompt_tokens": 512,
+   "round_index": 4,
+   "total_duration_ms": 763.542290951591,
+   "ttft_ms": 273.2079160050489
+  },
+  {
+   "case_id": "pp512-tg128",
+   "completed": true,
+   "decode_duration_ms": 487.51537501811987,
+   "output_tokens": 128,
+   "peak_active_memory_mib": 1819,
+   "prompt_tokens": 512,
+   "round_index": 5,
+   "total_duration_ms": 771.3939170353115,
+   "ttft_ms": 283.87854201719165
+  },
+  {
+   "case_id": "pp2048-tg512",
+   "completed": true,
+   "decode_duration_ms": 2131.301333021838,
+   "output_tokens": 512,
+   "peak_active_memory_mib": 1819,
+   "prompt_tokens": 2048,
+   "round_index": 1,
+   "total_duration_ms": 3134.4156250124797,
+   "ttft_ms": 1003.1142919906415
+  },
+  {
+   "case_id": "pp2048-tg512",
+   "completed": true,
+   "decode_duration_ms": 2127.694083028473,
+   "output_tokens": 512,
+   "peak_active_memory_mib": 1819,
+   "prompt_tokens": 2048,
+   "round_index": 2,
+   "total_duration_ms": 3149.176958017051,
+   "ttft_ms": 1021.4828749885783
+  },
+  {
+   "case_id": "pp2048-tg512",
+   "completed": true,
+   "decode_duration_ms": 2124.951499979943,
+   "output_tokens": 512,
+   "peak_active_memory_mib": 1819,
+   "prompt_tokens": 2048,
+   "round_index": 3,
+   "total_duration_ms": 3129.7290839720517,
+   "ttft_ms": 1004.7775839921087
+  },
+  {
+   "case_id": "pp2048-tg512",
+   "completed": true,
+   "decode_duration_ms": 2131.189792009536,
+   "output_tokens": 512,
+   "peak_active_memory_mib": 1819,
+   "prompt_tokens": 2048,
+   "round_index": 4,
+   "total_duration_ms": 3158.7970000109635,
+   "ttft_ms": 1027.6072080014274
+  },
+  {
+   "case_id": "pp2048-tg512",
+   "completed": true,
+   "decode_duration_ms": 2129.473916022107,
+   "output_tokens": 512,
+   "peak_active_memory_mib": 1819,
+   "prompt_tokens": 2048,
+   "round_index": 5,
+   "total_duration_ms": 3136.086874990724,
+   "ttft_ms": 1006.612958968617
+  }
+ ],
+ "model": {
+  "components": [
+   {
+    "artifact": {
+     "format": "mlx-safetensors"
+    },
+    "component_id": "primary",
+    "quantization": {
+     "base_dtype": "bfloat16",
+     "group_size": 64,
+     "kind": "weights",
+     "method": "affine",
+     "weight_bits_x2": 8
+    },
+    "role": "primary",
+    "source": {
+     "kind": "huggingface",
+     "repo_id": "mlx-community/LFM2.5-1.2B-Instruct-4bit",
+     "resolved_revision": "125e006d991147f3b432249d1bdf0821987f12b0"
+    }
+   }
+  ],
+  "identity_strength": "unresolved",
+  "pipeline_kind": "text_generation",
+  "schema_version": 1
+ },
+ "outcome": {
+  "status": "completed"
+ },
+ "run_id": "927a477f-4854-4335-80d0-546eb3c99200",
+ "schema_version": 1,
+ "started_at": "2026-09-16T03:29:45.616567Z",
+ "workload": {
+  "cases": [
+   {
+    "case_id": "pp512-tg128",
+    "measured_rounds": 5,
+    "target_output_tokens": 128,
+    "target_prompt_tokens": 512,
+    "warmup_rounds": 1
+   },
+   {
+    "case_id": "pp2048-tg512",
+    "measured_rounds": 5,
+    "target_output_tokens": 512,
+    "target_prompt_tokens": 2048,
+    "warmup_rounds": 1
+   }
+  ],
+  "concurrency": 1,
+  "dataset": {
+   "digest": "sha256:dcda5aef5ec99200db1ef5d1bdedd6db38acea9e159a483357e94c872f72e5ad",
+   "id": "rapid-synthetic-token-corpus",
+   "version": 2
+  },
+  "protocol_digest": "sha256:566cce441fa3ce6c1886337bdbc113ec725a1a59f5c9d99e2ea6e5c400b95577",
+  "protocol_id": "rapid-community-speed",
+  "protocol_strength": "registered",
+  "protocol_version": 2,
+  "task_type": "text_generation"
+ }
+}

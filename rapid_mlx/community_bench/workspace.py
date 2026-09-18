@@ -21,6 +21,8 @@ from .benchmark_contracts import (
     SubmissionReceiptValidator,
     registered_workload,
 )
+from .provenance_schema import ProvenanceInvalid
+from .provenance_schema import validate as validate_provenance_document
 
 _TASK_PROTOCOL = {
     "text_generation": "rapid-community-speed",
@@ -391,6 +393,37 @@ def plan_for_alias(
     raise ValueError(f"unknown or unsupported benchmark model {alias_name!r}")
 
 
+class ProvenanceUnreadable(RuntimeError):  # noqa: N818 - stable domain error name
+    """A run's build provenance exists but cannot be trusted.
+
+    Deliberately distinct from ``None``. ``None`` means the file is not there,
+    which for a run archived before provenance existed is an honest answer.
+    This means the file *is* there and is damaged, unreadable or malformed —
+    and a damaged file must never be quietly downgraded to "no claim", because
+    that is how corruption becomes permission to publish.
+    """
+
+
+def validate_provenance(
+    provenance: Any, *, run_id: str | None = None
+) -> dict[str, Any]:
+    """Check a stored provenance document against the closed schema.
+
+    Delegates to :mod:`provenance_schema` rather than restating the rules:
+    this reader and the one in ``run_builder`` used to disagree about unknown
+    fields and about a revision on a release, so a document one refused the
+    other accepted. One definition, applied at every boundary.
+    """
+
+    where = f" for {run_id}" if run_id else ""
+    try:
+        return validate_provenance_document(
+            provenance, label=f"the build provenance{where}"
+        )
+    except ProvenanceInvalid as exc:
+        raise ProvenanceUnreadable(str(exc)) from exc
+
+
 @dataclass(frozen=True)
 class LocalRunArchive:
     """Private, atomic JSON run archive. Reading never executes or uploads."""
@@ -414,6 +447,19 @@ class LocalRunArchive:
     @property
     def receipts_dir(self) -> Path:
         return self.root / "receipts"
+
+    @property
+    def provenance_dir(self) -> Path:
+        """How the runtime that produced each run was built.
+
+        Kept beside the run rather than inside it: the run document is a closed
+        schema, and the wire contract it projects to has no field for a tree
+        that is not a commit. It has to be stored *per run* so the fact travels
+        with the result — rebuilding the app cleanly tomorrow must not make a
+        benchmark measured by a modified build retroactively publishable.
+        """
+
+        return self.root / "provenance"
 
     @staticmethod
     def _atomic_save(directory: Path, name: str, value: dict[str, Any]) -> Path:
@@ -439,8 +485,88 @@ class LocalRunArchive:
         return target
 
     def save(self, run: dict[str, Any]) -> Path:
+        """Archive a run with no provenance of its own.
+
+        Only for callers that genuinely have none to record — tests and the
+        legacy path. Everything that measures uses
+        :meth:`save_with_provenance`, because a run visible without its
+        provenance is a run that can be published without one.
+        """
+
         BenchmarkRunValidator().validate(run)
         return self._atomic_save(self.runs_dir, run["run_id"], run)
+
+    def save_with_provenance(
+        self, run: dict[str, Any], provenance: dict[str, Any]
+    ) -> Path:
+        """Archive a run and the build that produced it, provenance first.
+
+        Ordering is the whole point. A run file is what makes a result visible
+        to ``benchmark results`` and publishable by ``benchmark share``; the
+        provenance file is what can forbid publishing it. Writing the run
+        first leaves a window — and, if the provenance write then fails, a
+        permanent state — in which a result produced by a modified build looks
+        exactly like a legacy run and is allowed to publish.
+
+        So provenance is written and fsynced first, and any failure propagates
+        before the run is written at all. The result is that a missing
+        provenance file can only mean "archived before this existed", never
+        "we tried and could not".
+
+        The reverse leftover — a provenance file with no run — is harmless:
+        nothing reads it without a run, and it is overwritten when that run id
+        is next archived.
+        """
+
+        BenchmarkRunValidator().validate(run)
+        run_id = run["run_id"]
+        # Validated before either write, so a malformed provenance document
+        # cannot be the thing that is persisted.
+        validate_provenance(provenance)
+        self.save_provenance(run_id, provenance)
+        return self._atomic_save(self.runs_dir, run_id, run)
+
+    def save_provenance(self, run_id: str, provenance: dict[str, Any]) -> Path:
+        """Record how the runtime that produced ``run_id`` was built."""
+
+        return self._atomic_save(self.provenance_dir, run_id, provenance)
+
+    def provenance(self, run_id: str) -> dict[str, Any] | None:
+        """The stored build provenance for a run.
+
+        ``None`` means the file is genuinely absent — a run archived before
+        provenance existed. That is the one case a caller may treat as "no
+        claim either way".
+
+        Anything else raises. A file that exists but cannot be read, is not
+        JSON, is not an object, or does not satisfy the provenance shape is
+        **corruption**, and corruption must not be indistinguishable from a
+        legacy run: that turns a damaged or tampered file into permission to
+        publish.
+        """
+
+        path = self.provenance_dir / f"{run_id}.json"
+        try:
+            raw = path.read_text(encoding="utf-8")
+        except FileNotFoundError:
+            return None
+        except OSError as exc:
+            # Permissions, an I/O error, a directory where a file should be.
+            raise ProvenanceUnreadable(
+                f"the build provenance for {run_id} could not be read: {exc}"
+            ) from exc
+        try:
+            stored = json.loads(raw)
+        except ValueError as exc:
+            raise ProvenanceUnreadable(
+                f"the build provenance for {run_id} is not valid JSON: {exc}"
+            ) from exc
+        if not isinstance(stored, dict):
+            raise ProvenanceUnreadable(
+                f"the build provenance for {run_id} is not a JSON object"
+            )
+        validate_provenance(stored, run_id=run_id)
+        return stored
 
     def save_receipt(self, receipt: dict[str, Any], *, install_id: str) -> Path:
         SubmissionReceiptValidator().validate(receipt)
@@ -451,8 +577,9 @@ class LocalRunArchive:
         # forged receipt file from making an unrelated row look shared.
         run = self.get(run_id)
         from .atomic_upload import atomic_run_digest
+        from .publication import project_run_for_publication
 
-        wire = copy.deepcopy(run)
+        wire, _ = project_run_for_publication(copy.deepcopy(run))
         wire["install_id"] = install_id
         if atomic_run_digest(wire) != receipt["run_digest"]:
             raise ValueError("receipt does not identify the current archived run")
@@ -486,8 +613,9 @@ class LocalRunArchive:
         except ValueError:
             return None
         from .atomic_upload import atomic_run_digest
+        from .publication import project_run_for_publication
 
-        wire = copy.deepcopy(self.get(run_id))
+        wire, _ = project_run_for_publication(copy.deepcopy(self.get(run_id)))
         wire["install_id"] = install_id
         if atomic_run_digest(wire) != value["run_digest"]:
             return None

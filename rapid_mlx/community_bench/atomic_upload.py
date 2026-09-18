@@ -12,6 +12,13 @@ from dataclasses import dataclass
 from typing import Any, TextIO
 
 from .benchmark_contracts import BenchmarkRunValidator, SubmissionReceiptValidator
+from .publication import (
+    PublicationRefused,
+    WithheldFact,
+    describe_withheld,
+    ensure_publishable,
+    project_run_for_publication,
+)
 from .upload import (
     SubmitError,
     board_url,
@@ -30,8 +37,21 @@ class AtomicUploadAcceptance:
     payload_digest: str
 
 
+def describe_withheld_dicts(withheld: list[dict[str, Any]]) -> list[str]:
+    """``describe_withheld`` over the serialized form the preview carries."""
+
+    return describe_withheld(
+        [WithheldFact(item["path"], item["value"], item["reason"]) for item in withheld]
+    )
+
+
 def _ask_consent(
-    payload: dict[str, Any], *, target: str, stdin: TextIO, stdout: TextIO
+    payload: dict[str, Any],
+    *,
+    target: str,
+    stdin: TextIO,
+    stdout: TextIO,
+    withheld: list[dict[str, Any]] | None = None,
 ) -> bool:
     body = submission_body(payload)
     body_digest = f"sha256:{hashlib.sha256(body).hexdigest()}"
@@ -42,6 +62,11 @@ def _ask_consent(
     # human can actually read it; the wire body is its single-line form.
     print(json.dumps(payload, indent=2), file=stdout)
     print("=" * 72, file=stdout)
+    # Consent is only meaningful if the user can see what is NOT being sent as
+    # well as what is. A projection the user cannot inspect is indistinguishable
+    # from data loss.
+    for line in describe_withheld_dicts(withheld or []):
+        print(line, file=stdout)
     print(
         f"Wire body: the single-line JSON serialization of exactly this "
         f"document, {len(body)} bytes, {body_digest}. "
@@ -147,16 +172,33 @@ def atomic_run_digest(run: dict[str, Any]) -> str:
 
 
 def preview_run(
-    run: dict[str, Any], *, install_id: str | None = None, url: str | None = None
+    run: dict[str, Any],
+    *,
+    install_id: str | None = None,
+    url: str | None = None,
+    provenance: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
-    """Build the exact wire payload without writing or sending anything."""
+    """Build the exact wire payload without writing or sending anything.
 
+    ``provenance`` is the build record stored beside this run. A result
+    measured by a modified build is refused here — before a payload, a digest
+    or a consent prompt exists — because there is no honest payload to offer.
+    """
+
+    ensure_publishable(provenance)
     BenchmarkRunValidator().validate(run)
     base = (validate_board_url(url) if url is not None else board_url()).rstrip("/")
     target = base if url or base.endswith("/atomic") else f"{base}/atomic"
     candidate = install_id or peek_install_id()
-    wire = copy.deepcopy(run)
+    # The archive keeps every fact; the submission carries only the ones the
+    # ingestion validator allowlists. Sending the record verbatim made an
+    # ordinary warm-cache run unpublishable — see ``publication``. Nothing is
+    # dropped quietly: ``withheld`` is returned, printed before consent, and
+    # carried in ``--preview --json``.
+    wire, withheld = project_run_for_publication(run)
     wire["install_id"] = candidate
+    # Validated AFTER projection, so the digests the user approves and the
+    # bytes that leave the Mac describe the same document.
     BenchmarkRunValidator().validate(wire)
     body = submission_body(wire)
     return {
@@ -166,6 +208,7 @@ def preview_run(
         "body_digest": f"sha256:{hashlib.sha256(body).hexdigest()}",
         "payload_json": body.decode("utf-8"),
         "payload": wire,
+        "withheld": [fact.as_dict() for fact in withheld],
     }
 
 
@@ -180,6 +223,7 @@ def upload_run(
     approved_payload_digest: str | None = None,
     approved_body_digest: str | None = None,
     approved_target: str | None = None,
+    provenance: dict[str, Any] | None = None,
 ) -> AtomicUploadAcceptance | None:
     """Upload one validated run, returning its server receipt.
 
@@ -187,7 +231,9 @@ def upload_run(
     caller such as Rapid Desktop that presents its own native confirmation.
     """
 
-    preview = preview_run(run, install_id=approved_install_id, url=url)
+    preview = preview_run(
+        run, install_id=approved_install_id, url=url, provenance=provenance
+    )
     target = preview["target"]
     candidate = preview["install_id"]
     wire = preview["payload"]
@@ -208,7 +254,9 @@ def upload_run(
 
     out = stdout or sys.stdout
     inp = stdin or sys.stdin
-    if not assume_yes and not _ask_consent(wire, target=target, stdin=inp, stdout=out):
+    if not assume_yes and not _ask_consent(
+        wire, target=target, stdin=inp, stdout=out, withheld=preview["withheld"]
+    ):
         return None
 
     settled = commit_install_id(candidate)
@@ -223,6 +271,7 @@ def upload_run(
 
 __all__ = [
     "AtomicUploadAcceptance",
+    "PublicationRefused",
     "atomic_run_digest",
     "preview_run",
     "upload_run",

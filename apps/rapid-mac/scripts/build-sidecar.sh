@@ -1369,6 +1369,124 @@ else
     echo "==> real image-generation smoke: not configured (set SIDECAR_IMAGE_SMOKE_MODEL for release candidates)"
 fi
 
+# ----- step 6b: stamp provenance ----------------------------------------
+#
+# A packaged runtime states how it was built instead of inferring it by
+# probing a Git checkout that may not be there. That probe used to run only
+# once a benchmark had finished measuring, so a Mac without usable `git` threw
+# away several minutes of work with "could not resolve the Rapid-MLX source
+# revision". The stamp removes the probe from the packaged path entirely.
+#
+# It records WHICH KIND of build this is, not merely that it was packaged.
+# Stamping everything "release" meant a developer's branch build published its
+# benchmarks as an official release with the commit that produced them
+# dropped, so numbers were attributed to a build nobody could identify. So: a
+# release must say so explicitly (RAPID_MLX_OFFICIAL_RELEASE=1, which the
+# release pipeline sets); everything else is a source build and must carry the
+# commit it was built from.
+STAMP="$STAGE/site-packages/rapid_mlx/_build_stamp.json"
+OFFICIAL_RELEASE="${RAPID_MLX_OFFICIAL_RELEASE:-0}"
+# Validated here, not just by the writer: this script branches on the value a
+# few lines down, so an unrecognised one would announce "source", build, and
+# only then be refused. Same rule, stated once, at the point of entry.
+if [[ "$OFFICIAL_RELEASE" != "0" && "$OFFICIAL_RELEASE" != "1" ]]; then
+    echo "ERR: RAPID_MLX_OFFICIAL_RELEASE must be exactly 0 or 1, got" >&2
+    echo "     '$OFFICIAL_RELEASE'. Refusing to guess what was meant." >&2
+    exit 1
+fi
+SIDECAR_REVISION="$(git -C "$RAPID_MLX_SOURCE" rev-parse HEAD 2>/dev/null || true)"
+# `git diff --quiet HEAD` sees tracked modifications and nothing else. An
+# untracked `rapid_mlx/whatever.py` is copied into site-packages by the install
+# step and runs in the packaged app, so a build containing one is NOT the
+# named commit. `status --porcelain` reports tracked edits, staged changes,
+# deletions and untracked files alike; `--untracked-files=normal` keeps
+# ignored build output (build/, .venv) out of it.
+# A nonempty revision that is not a real sha means `git rev-parse` answered
+# with something unexpected, and every later decision — cleanliness, the stamp,
+# what the benchmark record claims — rests on it. Rejected here so the failure
+# names the cause; `write-sidecar-stamp.py` enforces the same rule as the
+# authoritative boundary for any other caller.
+if [[ -n "$SIDECAR_REVISION" ]] \
+    && ! printf %s "$SIDECAR_REVISION" | grep -Eq '^[0-9a-f]{40}$'; then
+    echo "ERR: git rev-parse HEAD in $RAPID_MLX_SOURCE returned" >&2
+    echo "     '$SIDECAR_REVISION', which is not a 40-character lowercase" >&2
+    echo "     commit sha. Refusing to stamp a build on an unusable revision." >&2
+    exit 1
+fi
+
+SIDECAR_DIRTY=0
+SIDECAR_STATUS=""
+if [[ -n "$SIDECAR_REVISION" ]]; then
+    # `|| true` here was a fail-open: a git that errored produced empty output,
+    # which is indistinguishable from a clean tree, so an unverifiable checkout
+    # was stamped clean and could ship as an official release. Capture the exit
+    # status and treat a failure as "cleanliness unknown", never as "clean".
+    set +e
+    SIDECAR_STATUS="$(
+        git -C "$RAPID_MLX_SOURCE" status --porcelain --untracked-files=normal 2>&1
+    )"
+    SIDECAR_STATUS_RC=$?
+    set -e
+    if [[ "$SIDECAR_STATUS_RC" -ne 0 ]]; then
+        echo "ERR: could not determine whether $RAPID_MLX_SOURCE is clean." >&2
+        echo "     \`git status --porcelain\` exited $SIDECAR_STATUS_RC:" >&2
+        echo "$SIDECAR_STATUS" | head -10 | sed 's/^/       /' >&2
+        echo "     Refusing to stamp a build whose source state is unknown." >&2
+        exit 1
+    fi
+    if [[ -n "$SIDECAR_STATUS" ]]; then
+        SIDECAR_DIRTY=1
+    fi
+fi
+echo "==> stamping build provenance -> $STAMP"
+if [[ "$OFFICIAL_RELEASE" == "1" ]]; then
+    echo "    distribution: release (RAPID_MLX_OFFICIAL_RELEASE=1)"
+    # A release stamp carries no revision, so it says nothing about the tree it
+    # was built from — which means a modified tree would ship as an official
+    # release with no trace. Being at the expected candidate SHA is not enough:
+    # the SHA names a commit, not the working tree that was compiled.
+    if [[ "$SIDECAR_DIRTY" == "1" ]]; then
+        echo "ERR: refusing to build an OFFICIAL RELEASE from a modified" >&2
+        echo "     working tree. The release stamp cannot describe a tree" >&2
+        echo "     that is not a commit, so these bytes would ship as an" >&2
+        echo "     official build of code that was never committed." >&2
+        echo "     Uncommitted changes in $RAPID_MLX_SOURCE:" >&2
+        echo "$SIDECAR_STATUS" | head -20 | sed 's/^/       /' >&2
+        echo "     Commit or stash them, or drop RAPID_MLX_OFFICIAL_RELEASE." >&2
+        exit 1
+    fi
+    if [[ -z "$SIDECAR_REVISION" ]]; then
+        echo "ERR: refusing to build an OFFICIAL RELEASE outside a Git" >&2
+        echo "     checkout: there is no commit to verify the tree against." >&2
+        exit 1
+    fi
+else
+    echo "    distribution: source (set RAPID_MLX_OFFICIAL_RELEASE=1 for a release)"
+    if [[ -z "$SIDECAR_REVISION" ]]; then
+        echo "ERR: cannot stamp a source build: no Git revision for" >&2
+        echo "     $RAPID_MLX_SOURCE" >&2
+        echo "     A packaged source build must name the commit it was built" >&2
+        echo "     from, or its benchmark records cannot be attributed." >&2
+        echo "     Build from a checkout, or set RAPID_MLX_OFFICIAL_RELEASE=1." >&2
+        exit 1
+    fi
+    if [[ "$SIDECAR_DIRTY" == "1" ]]; then
+        # Recorded, not blocked: a dirty tree is the normal state while
+        # iterating, and refusing to build would stop development. The build
+        # runs and benchmarks save; only *publishing* is refused, because the
+        # wire contract has no way to name a tree that is not a commit.
+        echo "    WARNING: working tree differs from HEAD. Benchmarks from this" >&2
+        echo "             build can be run and saved, but NOT published." >&2
+        echo "$SIDECAR_STATUS" | head -5 | sed 's/^/             /' >&2
+    fi
+fi
+PYTHONNOUSERSITE=1 python3 "$REPO_ROOT/scripts/write-sidecar-stamp.py" \
+    "$STAMP" "$OFFICIAL_RELEASE" "$SIDECAR_REVISION" "$SIDECAR_DIRTY"
+# Recompile so the stamped package is consistent with the .pyc set shipped
+# alongside it.
+PYTHONNOUSERSITE=1 "$STAGE/python/bin/python3.12" -m compileall -q \
+    "$STAGE/site-packages/rapid_mlx" >/dev/null 2>&1 || true
+
 # ----- step 7: package --------------------------------------------------
 
 TARBALL="${OUT_DIR}/rapid-mlx-sidecar.tar.gz"

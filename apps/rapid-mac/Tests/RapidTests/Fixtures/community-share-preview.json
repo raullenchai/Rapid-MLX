@@ -1,0 +1,25 @@
+{
+ "body_digest": "sha256:26ef700b33c3bee2aa431a64c158f8c48d99642c2b3b8a7138d55d2e960ff04c",
+ "install_id": "c76f82c46d52",
+ "payload_digest": "sha256:2f4384629ca556585cab8edc6e2326ca31d37027e26d807f5f5286a4d9779db6",
+ "payload_json": "{\"install_id\": \"c76f82c46d52\", \"model\": {\"components\": [{\"artifact\": {\"format\": \"mlx-safetensors\"}, \"component_id\": \"primary\", \"quantization\": {\"base_dtype\": \"unknown\", \"kind\": \"unknown\"}, \"role\": \"primary\", \"source\": {\"kind\": \"huggingface\", \"repo_id\": \"mlx-community/LFM2.5-1.2B-Instruct-4bit\"}}], \"identity_strength\": \"unresolved\", \"pipeline_kind\": \"text_generation\", \"schema_version\": 1}, \"run_id\": \"e1390322-5f48-41cf-bd37-b24391953baf\", \"schema_version\": 1, \"workload\": {\"task_type\": \"text_generation\"}}",
+ "target": "https://rapidmlx.com/api/benchmarks/atomic",
+ "withheld": [
+  {
+   "path": "model.components[0].source.resolved_revision",
+   "reason": "the benchmark service records models by repository id only; it rejects submissions carrying this field",
+   "value": "125e006d991147f3b432249d1bdf0821987f12b0"
+  },
+  {
+   "path": "model.components[0].quantization",
+   "reason": "the benchmark service accepts only an unknown quantization block in this beta, so the measured artifact's quantization is not published",
+   "value": {
+    "base_dtype": "bfloat16",
+    "group_size": 64,
+    "kind": "weights",
+    "method": "affine",
+    "weight_bits_x2": 8
+   }
+  }
+ ]
+}

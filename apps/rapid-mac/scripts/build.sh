@@ -308,6 +308,35 @@ for asset in cheetah.png cheetah-sm.png; do
     fi
 done
 
+# Community Benchmark identity artwork (same Bundle.main story as the PNGs
+# above). These are NOT decorative: the contributor portrait is the shared
+# identity between this app and rapidmlx.com, so a missing plate would show a
+# different face for the same installation depending on where you looked.
+#
+# The plate list mirrors `CommunityContributorAvatar.assetPlates`, which
+# mirrors `AVATAR_ASSETS` on the website. A missing file is a hard error, not a
+# warning: shipping a build whose avatars silently all collapse to the fallback
+# would break the identity contract quietly.
+COMMUNITY_AVATAR_PLATES=(01 02 05 09 10 11 12 13 14 15 16 17 18 19 20 21 22 24)
+for plate in "${COMMUNITY_AVATAR_PLATES[@]}"; do
+    asset="cheetah-avatar-${plate}.webp"
+    if [[ -f "$ROOT/Sources/Rapid/Resources/$asset" ]]; then
+        cp "$ROOT/Sources/Rapid/Resources/$asset" "$CONTENTS/Resources/$asset"
+    else
+        echo "ERR: Sources/Rapid/Resources/$asset missing — contributor avatars would not match rapidmlx.com" >&2
+        exit 1
+    fi
+done
+
+for asset in cheetah-invite-wave.png cheetah-run.png; do
+    if [[ -f "$ROOT/Sources/Rapid/Resources/$asset" ]]; then
+        cp "$ROOT/Sources/Rapid/Resources/$asset" "$CONTENTS/Resources/$asset"
+    else
+        echo "ERR: Sources/Rapid/Resources/$asset missing — Community Benchmark mascot art is required" >&2
+        exit 1
+    fi
+done
+
 # Localizable.xcstrings: same Bundle.main vs Bundle.module story as the PNGs
 # above. A String Catalog is build input, not a runtime localization resource:
 # copying only the JSON file leaves Bundle.main with no .lproj strings to

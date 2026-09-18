@@ -76,7 +76,37 @@ let package = Package(
                 .process("Resources/cheetah.png"),
                 .process("Resources/cheetah-sm.png"),
                 .process("Resources/Localizable.xcstrings"),
-                .process("Resources/benchmark-scores.json")
+                .process("Resources/benchmark-scores.json"),
+                // Community Benchmark identity artwork, vendored unmodified
+                // from rapidmlx.com (`landing/public/leaderboard/`). The 18
+                // contributor plates ARE the identity contract: the avatar a
+                // pseudonym gets here must be the one the website shows, so
+                // these files and `CommunityContributorAvatar.assetPlates`
+                // move together. `.copy` keeps the exact filenames the
+                // mapping computes.
+                .copy("Resources/cheetah-avatar-01.webp"),
+                .copy("Resources/cheetah-avatar-02.webp"),
+                .copy("Resources/cheetah-avatar-05.webp"),
+                .copy("Resources/cheetah-avatar-09.webp"),
+                .copy("Resources/cheetah-avatar-10.webp"),
+                .copy("Resources/cheetah-avatar-11.webp"),
+                .copy("Resources/cheetah-avatar-12.webp"),
+                .copy("Resources/cheetah-avatar-13.webp"),
+                .copy("Resources/cheetah-avatar-14.webp"),
+                .copy("Resources/cheetah-avatar-15.webp"),
+                .copy("Resources/cheetah-avatar-16.webp"),
+                .copy("Resources/cheetah-avatar-17.webp"),
+                .copy("Resources/cheetah-avatar-18.webp"),
+                .copy("Resources/cheetah-avatar-19.webp"),
+                .copy("Resources/cheetah-avatar-20.webp"),
+                .copy("Resources/cheetah-avatar-21.webp"),
+                .copy("Resources/cheetah-avatar-22.webp"),
+                .copy("Resources/cheetah-avatar-24.webp"),
+                // Context-specific mascot plates: invite-wave for the Ready
+                // invitation and the publication celebration, run for a
+                // benchmark in progress.
+                .copy("Resources/cheetah-invite-wave.png"),
+                .copy("Resources/cheetah-run.png")
             ]
         ),
         .testTarget(
