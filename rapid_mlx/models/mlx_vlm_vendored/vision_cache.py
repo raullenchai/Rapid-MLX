@@ -51,9 +51,14 @@ class VisionFeatureCache:
         # ``l``=list with a child count, ``p``=content hash), which is
         # injective. Upstream also documented Path sources but only accepted
         # ``str`` (a Path fell into the ``obj:{id}`` fallback); PathLike is
-        # normalized via ``os.fspath``.
+        # normalized via ``os.fsdecode`` — ``os.fspath`` alone can return
+        # ``bytes`` for byte-valued paths, which then fell into the
+        # image-content hash branch and collided with a raw image payload
+        # equal to the path bytes; fsdecode's surrogateescape mapping is
+        # injective and lands byte paths on the same key as the equivalent
+        # str path.
         if isinstance(image_source, os.PathLike):
-            image_source = os.fspath(image_source)
+            image_source = os.fsdecode(image_source)
         if isinstance(image_source, str):
             return f"s{len(image_source)}:{image_source}"
         if isinstance(image_source, list):

@@ -261,12 +261,33 @@ def test_vision_feature_cache_empty_and_nested_lists_do_not_collide():
 def test_vision_feature_cache_pathlike_sources():
     """The docstring promises Path sources; upstream only accepted str (a
     Path fell into the obj:id fallback). The vendored copy normalizes
-    PathLike via os.fspath."""
+    PathLike via os.fsdecode."""
     import pathlib
 
     cache = vendored_vision_cache.VisionFeatureCache(max_size=4)
     path = pathlib.Path("/tmp/img.png")
     assert cache._make_key(path) == cache._make_key("/tmp/img.png")
+
+
+def test_vision_feature_cache_byte_valued_paths_do_not_collide():
+    """``os.fspath`` can return ``bytes`` for byte-valued paths; routing
+    those into the image-content hash branch collided a byte path with a
+    raw image payload equal to the path bytes. The vendored copy decodes
+    byte paths (surrogateescape, injective) onto the str-path key space."""
+    cache = vendored_vision_cache.VisionFeatureCache(max_size=8)
+
+    class BytesPath:
+        def __fspath__(self):
+            return b"/tmp/img.png"
+
+    byte_path = BytesPath()
+    assert cache._make_key(byte_path) == cache._make_key("/tmp/img.png")
+    # The collision that motivated the fix: a raw image payload equal to
+    # the path bytes must never receive the path's cached features.
+    assert cache._make_key(byte_path) != cache._make_key(b"/tmp/img.png")
+    cache.put(byte_path, "path-features")
+    assert cache.get(b"/tmp/img.png") is None
+    assert cache.get("/tmp/img.png") == "path-features"
 
 
 def test_vision_feature_cache_list_keys_do_not_collide():
