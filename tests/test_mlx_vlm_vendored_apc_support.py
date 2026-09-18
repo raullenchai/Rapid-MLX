@@ -187,26 +187,43 @@ def test_vision_feature_cache_lru_contract():
 
 def test_vision_feature_cache_key_shapes():
     cache = vendored_vision_cache.VisionFeatureCache(max_size=4)
-    assert cache._make_key("path/img.png") == "path/img.png"
-    assert cache._make_key(["a", "b"]) == "1:a1:b"
+    assert cache._make_key("path/img.png") == "s12:path/img.png"
+    assert cache._make_key(["a", "b"]) == "ls1:as1:b"
 
     class _Blob:
         def tobytes(self):
             return b"payload"
 
     key = cache._make_key(_Blob())
-    assert key.startswith("pil:")
+    assert key.startswith("p:")
     assert cache._make_key(_Blob()) == key  # content-addressed
 
 
-def test_vision_feature_cache_list_keys_do_not_collide():
-    """Length-prefixed composite keys: ["a|b", "c"] and ["a", "b|c"] must not
-    share a key (upstream's bare "|" join collided them)."""
+def test_vision_feature_cache_pathlike_sources():
+    """The docstring promises Path sources; upstream only accepted str (a
+    Path fell into the obj:id fallback). The vendored copy normalizes
+    PathLike via os.fspath."""
+    import pathlib
+
     cache = vendored_vision_cache.VisionFeatureCache(max_size=4)
+    path = pathlib.Path("/tmp/img.png")
+    assert cache._make_key(path) == cache._make_key("/tmp/img.png")
+
+
+def test_vision_feature_cache_list_keys_do_not_collide():
+    """Type-tagged composite keys: distinct sources must never share a key —
+    upstream's bare "|" join collided ["a|b", "c"] with ["a", "b|c"], and
+    even length-prefixing collides ["1:a", "b"] with [["a"], "b"]."""
+    cache = vendored_vision_cache.VisionFeatureCache(max_size=8)
     assert cache._make_key(["a|b", "c"]) != cache._make_key(["a", "b|c"])
-    cache.put(["a", "b|c"], "wrong-set")
+    assert cache._make_key(["1:a", "b"]) != cache._make_key([["a"], "b"])
+    cache.put(["a", "b|c"], "first")
+    cache.put(["1:a", "b"], "second")
+    cache.put([["a"], "b"], "third")
     assert cache.get(["a|b", "c"]) is None
-    assert cache.get(["a", "b|c"]) == "wrong-set"
+    assert cache.get(["a", "b|c"]) == "first"
+    assert cache.get(["1:a", "b"]) == "second"
+    assert cache.get([["a"], "b"]) == "third"
 
 
 def test_vision_feature_cache_rejects_unsupported_source_types():

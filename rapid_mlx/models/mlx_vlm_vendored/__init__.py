@@ -54,15 +54,22 @@ vendored copy differs by exactly the deviations listed):
 - ``vision_cache.py`` — identical to ``mlx_vlm/vision_cache.py`` @ v0.7.1
   (upstream sha256
   ``5db081a4ef9ee07bb1102c6a87b5fb4a0895821bb2c05d19e110ba6f700e4561``)
-  **except two in-source ``VENDOR-DEVIATION(upstream-bugfix)`` hunks** in
-  ``_make_key``, each reproducible against the pinned upstream:
-  1. list sources joined the recursively derived keys with a bare ``"|"``,
-     so distinct inputs collided (``["a|b", "c"]`` vs ``["a", "b|c"]``) and
-     one image set could be served another's cached features. Fixed with a
-     length-prefixed serialization.
-  2. unsupported source types fell back to ``obj:{id(...)}``; Python may
+  **except in-source ``VENDOR-DEVIATION(upstream-bugfix)`` hunks** covering
+  ``_make_key`` (plus the ``import os`` it needs), reproducible against the
+  pinned upstream:
+  1. Upstream's key derivation was ambiguous and could serve one image
+     set's cached features to another: list sources joined the recursively
+     derived keys with a bare ``"|"`` (``["a|b", "c"]`` vs
+     ``["a", "b|c"]`` collide), and even length-prefixing collides across
+     nesting boundaries (``["1:a", "b"]`` vs ``[["a"], "b"]``). Fixed with
+     a self-delimiting, type-tagged encoding (``s``=str, ``l``=list,
+     ``p``=content hash) that is injective. Upstream also documented Path
+     sources but only accepted ``str`` (a ``Path`` fell into the
+     ``obj:{id}`` fallback); ``os.PathLike`` is now normalized via
+     ``os.fspath``.
+  2. Unsupported source types fell back to ``obj:{id(...)}``; Python may
      hand that id to an unrelated object after collection — a silent
-     stale-feature hit. Fixed to raise ``TypeError`` (the str and
+     stale-feature hit. Fixed to raise ``TypeError`` (the str/PathLike and
      bytes-like branches cover every real caller; the lane passes
      pre-hashed string keys).
   The lane's ``VisionFeatureCache`` import resolves here.
