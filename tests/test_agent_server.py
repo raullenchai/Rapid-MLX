@@ -422,6 +422,11 @@ def test_local_workspace_default_path_is_harness_owned_and_user_path_is_preserve
     )
     assert explicit == generated
 
+    direct = _normalize_local_workspace_turn(
+        "Write /Users/alice/Documents/report.md", generated
+    )
+    assert direct == generated
+
     input_only = _normalize_local_workspace_turn(
         "Read /Users/alice/Documents/notes.txt and save a summary", generated
     )

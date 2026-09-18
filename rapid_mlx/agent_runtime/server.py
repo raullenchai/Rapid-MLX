@@ -261,7 +261,8 @@ def _path_has_action_prefix(goal: str, pattern: str) -> bool:
 def _has_explicit_write_destination(goal: str) -> bool:
     return _path_has_action_prefix(
         goal,
-        r"(?:\b(?:write|save|create|generate|draft|output|put)\b.{0,100}"
+        r"(?:\b(?:write|save|create|generate|draft|output|put)\s*|"
+        r"\b(?:write|save|create|generate|draft|output|put)\b.{0,100}"
         r"\b(?:to|at|in|into|as)\s*|(?:写到|保存到|输出到|创建在|生成到).{0,80})$",
     )
 

@@ -57,6 +57,39 @@ enum LocalWorkspaceTools {
             presentedIdentity = capturedPresentedIdentity
         }
 
+        init(
+            parentDescriptor: Int32,
+            filename: String,
+            url: URL,
+            directory: Bool
+        ) throws {
+            let flags = O_RDONLY | O_NOFOLLOW | O_CLOEXEC | (directory ? O_DIRECTORY : 0)
+            descriptor = filename.withCString {
+                Darwin.openat(parentDescriptor, $0, flags)
+            }
+            guard descriptor >= 0 else {
+                throw posixError("could not open the object awaiting approval")
+            }
+            var metadata = stat()
+            guard fstat(descriptor, &metadata) == 0 else {
+                Darwin.close(descriptor)
+                throw posixError("could not inspect the object awaiting approval")
+            }
+            let expectedType = directory ? S_IFDIR : S_IFREG
+            guard metadata.st_mode & S_IFMT == expectedType else {
+                Darwin.close(descriptor)
+                throw LocalError(
+                    directory
+                        ? "approved path is not a folder"
+                        : "approved path is not a regular file"
+                )
+            }
+            self.url = url
+            identity = FileIdentity(device: metadata.st_dev, inode: metadata.st_ino)
+            self.presentedURL = nil
+            presentedIdentity = nil
+        }
+
         deinit { Darwin.close(descriptor) }
 
         func verifyPathStillNamesPinnedObject() throws {
@@ -308,13 +341,19 @@ enum LocalWorkspaceTools {
                 approvedTrash = nil
             case "local_trash":
                 let args = try requireDecoded(PathArgs.self, call.function.arguments)
-                let fileURL = try safeURL(args.path)
+                let fileURL = try validatedLexicalURL(args.path)
+                let lexicalParent = fileURL.deletingLastPathComponent()
+                let resolvedParent = try safeURL(lexicalParent.path)
+                guard resolvedParent.path == lexicalParent.path else {
+                    throw LocalError("local_trash parent path may not contain symbolic links")
+                }
+                let pinnedParent = try PinnedPath(url: resolvedParent, directory: true)
+                approvedParent = pinnedParent
                 approvedPath = try PinnedPath(
-                    url: fileURL, directory: false,
-                    presentedURL: validatedLexicalURL(args.path)
-                )
-                approvedParent = try PinnedPath(
-                    url: fileURL.deletingLastPathComponent(), directory: true
+                    parentDescriptor: pinnedParent.descriptor,
+                    filename: fileURL.lastPathComponent,
+                    url: fileURL,
+                    directory: false
                 )
                 approvedTrash = try PinnedPath(
                     url: FileManager.default.homeDirectoryForCurrentUser
@@ -415,15 +454,10 @@ enum LocalWorkspaceTools {
                     return failure("local_trash arguments are invalid", executed: false)
                 }
                 let lexicalURL = try validatedLexicalURL(args.path)
-                var lexicalMetadata = stat()
-                guard lexicalURL.path.withCString({ lstat($0, &lexicalMetadata) }) == 0,
-                      lexicalMetadata.st_mode & S_IFMT != S_IFLNK else {
+                var metadata = stat()
+                guard lexicalURL.path.withCString({ lstat($0, &metadata) }) == 0,
+                      metadata.st_mode & S_IFMT != S_IFLNK else {
                     return failure("local_trash refuses symbolic links", executed: false)
-                }
-                let url = try safeURL(args.path)
-                let values = try url.resourceValues(forKeys: [.isRegularFileKey, .isDirectoryKey])
-                guard values.isRegularFile == true, values.isDirectory != true else {
-                    return failure("local_trash only moves regular files, never folders", executed: false)
                 }
             case "local_run":
                 guard let args = decode(RunArgs.self, arguments) else {
