@@ -1381,9 +1381,25 @@ enum LocalWorkspaceTools {
         case "swift":
             pathIndexes = Set(arguments.indices.filter { arguments[$0].hasSuffix(".swift") })
         case "go":
-            pathIndexes = Set(arguments.indices.filter {
-                $0 > 0 && arguments.first == "run" && arguments[$0].hasPrefix("~/")
-            })
+            var indexes: Set<Int> = []
+            var fileMode = false
+            if arguments.first == "run" {
+                for index in arguments.indices.dropFirst() {
+                    let argument = arguments[index]
+                    if argument == "--" { break }
+                    if argument.hasPrefix("-") { continue }
+                    if indexes.isEmpty {
+                        indexes.insert(index)
+                        fileMode = argument.hasSuffix(".go")
+                        if !fileMode { break }
+                    } else if fileMode, argument.hasSuffix(".go") {
+                        indexes.insert(index)
+                    } else {
+                        break
+                    }
+                }
+            }
+            pathIndexes = indexes
         default:
             pathIndexes = []
         }

@@ -155,6 +155,9 @@ final class LocalWorkspaceToolsTests {
         #expect(LocalWorkspaceTools.expandingHomeArguments(
             ["run", "~/Documents/project"], command: "go", home: home
         ) == ["run", "/Users/example/Documents/project"])
+        #expect(LocalWorkspaceTools.expandingHomeArguments(
+            ["run", "~/Documents/main.go", "~/literal"], command: "go", home: home
+        ) == ["run", "/Users/example/Documents/main.go", "~/literal"])
     }
 
     @Test("tool results report paths relative to the home directory")

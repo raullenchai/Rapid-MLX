@@ -5020,6 +5020,37 @@ def test_local_workspace_normalizer_maps_invented_home_prefixes_to_tilde():
     assert _normalize_local_workspace_turn(
         "Run the Go package in ~/Documents/project", go_run
     ).tool_calls[0].arguments["argv"] == ["run", "~/Documents/project"]
+    go_program_argument = AgentModelTurn(
+        tool_calls=[
+            AgentToolCall(
+                id="go-arg",
+                name="local_run",
+                arguments={
+                    "command": "go",
+                    "argv": [
+                        "run",
+                        "/home/user/Documents/main.go",
+                        "/home/user/literal",
+                    ],
+                    "cwd": "~/Documents",
+                },
+            )
+        ]
+    )
+    normalized_go = (
+        _normalize_local_workspace_turn(
+            "Run ~/Documents/main.go with the literal data argument",
+            go_program_argument,
+        )
+        .tool_calls[0]
+        .arguments
+    )
+    assert normalized_go["argv"] == [
+        "run",
+        "~/Documents/main.go",
+        "/home/user/literal",
+    ]
+    assert normalized_go["working_directory"] == "~/Documents"
     # A macOS home the user named is kept verbatim; relative names are left alone.
     untouched = AgentModelTurn(
         tool_calls=[

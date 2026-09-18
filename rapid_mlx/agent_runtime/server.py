@@ -1393,9 +1393,23 @@ def _canonicalize_local_run_argv(command: str, argv: list[Any], goal: str) -> li
             if isinstance(item, str) and item.endswith(".swift")
         )
     elif command_name == "go" and argv[:1] == ["run"]:
-        indexes.update(
-            index for index, item in enumerate(argv[1:], 1) if isinstance(item, str)
-        )
+        file_mode = False
+        for index, item in enumerate(argv[1:], 1):
+            if not isinstance(item, str):
+                continue
+            if item == "--":
+                break
+            if item.startswith("-"):
+                continue
+            if not indexes:
+                indexes.add(index)
+                file_mode = item.endswith(".go")
+                if not file_mode:
+                    break
+            elif file_mode and item.endswith(".go"):
+                indexes.add(index)
+            else:
+                break
     canonical = [
         _canonical_home_path(item, goal)
         if index in indexes and isinstance(item, str)
@@ -1706,6 +1720,10 @@ def _normalize_local_workspace_turn(goal: str, turn: AgentModelTurn) -> AgentMod
         # approval sheet and the run agree. ``timeout_seconds`` is declared
         # and stays when it is a number Desktop can clamp.
         timeout = arguments.get("timeout_seconds")
+        if "working_directory" not in arguments and isinstance(
+            arguments.get("cwd"), str
+        ):
+            arguments["working_directory"] = arguments["cwd"]
         arguments = {
             key: value
             for key, value in arguments.items()
