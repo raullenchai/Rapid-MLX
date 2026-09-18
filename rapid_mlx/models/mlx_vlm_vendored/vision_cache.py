@@ -6,6 +6,7 @@ expensive re-computation when the same image is discussed across turns.
 """
 
 import hashlib
+import os
 from collections import OrderedDict
 from typing import Any, Optional, Sequence, Union
 
@@ -41,32 +42,36 @@ class VisionFeatureCache:
         For lists: create a composite key from individual keys.
         For PIL images: hash the image bytes.
         """
+        # VENDOR-DEVIATION(upstream-bugfix): upstream's key derivation was
+        # ambiguous and could serve one image set's cached features to
+        # another — a bare "|" join collided distinct lists (["a|b", "c"] vs
+        # ["a", "b|c"]), and length-prefixing alone still collides across
+        # nesting boundaries (["1:a", "b"] vs [["a"], "b"]). Every branch now
+        # emits a self-delimiting, type-tagged encoding (``s``=str/Path,
+        # ``l``=list, ``p``=content hash), which is injective. Upstream also
+        # documented Path sources but only accepted ``str`` (a Path fell into
+        # the ``obj:{id}`` fallback); PathLike is normalized via
+        # ``os.fspath``.
+        if isinstance(image_source, os.PathLike):
+            image_source = os.fspath(image_source)
         if isinstance(image_source, str):
-            return image_source
-        elif isinstance(image_source, list):
-            # VENDOR-DEVIATION(upstream-bugfix): upstream joined the
-            # recursively derived keys with a bare "|", so distinct inputs
-            # collided (["a|b", "c"] vs ["a", "b|c"]) and one image set could
-            # be served another's cached features. Length-prefix each part so
-            # the serialization is unambiguous.
-            return "".join(
-                f"{len(part)}:{part}" for part in map(self._make_key, image_source)
-            )
-        else:
-            if hasattr(image_source, "tobytes"):
-                h = hashlib.sha256(image_source.tobytes()).hexdigest()[:16]
-                return f"pil:{h}"
-            # VENDOR-DEVIATION(upstream-bugfix): upstream fell back to
-            # ``obj:{id(...)}``, and Python may hand that id to an unrelated
-            # object after the original is collected — a silent stale-feature
-            # hit. Fail loudly instead; the str and bytes-like branches above
-            # cover every real caller (the lane passes pre-hashed string
-            # keys).
-            raise TypeError(
-                "unsupported image source type for the vision feature "
-                f"cache: {type(image_source).__name__}; pass a path/URL "
-                "string, a list of them, or a bytes-like image object"
-            )
+            return f"s{len(image_source)}:{image_source}"
+        if isinstance(image_source, list):
+            # Children are already self-delimiting (each carries its own
+            # type tag and length), so concatenation is injective.
+            return "l" + "".join(map(self._make_key, image_source))
+        if hasattr(image_source, "tobytes"):
+            h = hashlib.sha256(image_source.tobytes()).hexdigest()[:16]
+            return f"p:{h}"
+        # Upstream fell back to ``obj:{id(...)}``; Python may hand that id to
+        # an unrelated object after the original is collected — a silent
+        # stale-feature hit. Fail loudly instead; the branches above cover
+        # every real caller (the lane passes pre-hashed string keys).
+        raise TypeError(
+            "unsupported image source type for the vision feature "
+            f"cache: {type(image_source).__name__}; pass a path/URL "
+            "string, a list of them, or a bytes-like image object"
+        )
 
     def get(self, image_source: Any) -> Optional[VisionFeatures]:
         """Look up cached features. Returns None on miss."""
