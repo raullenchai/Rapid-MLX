@@ -3259,12 +3259,47 @@ class AgentServerService:
                     resolved.append(target)
                     continue
             resolved.append(item)
-        if resolved == list(call.arguments.get("argv", [])):
+        resolved, working_directory = AgentServerService._relocate_run_to_sources(
+            resolved, working_directory
+        )
+        if resolved == list(call.arguments.get("argv", [])) and (
+            working_directory == arguments.get("working_directory")
+        ):
             return turn
         arguments["argv"] = resolved
+        arguments["working_directory"] = working_directory
         return turn.model_copy(
             update={"tool_calls": [call.model_copy(update={"arguments": arguments})]}
         )
+
+    @staticmethod
+    def _relocate_run_to_sources(
+        argv: list[Any], working_directory: str
+    ) -> tuple[list[Any], str]:
+        """Run from the folder that holds the files argv names.
+
+        The Desktop sandbox lets a command read and write only its working
+        directory, so ``gcc -o app ~/Documents/app.c`` from the default
+        ``~/Rapid Workspace`` fails with "no such file" although the file
+        exists. When every path argv names lives in one other folder, that
+        folder becomes the working directory and the entries turn relative.
+        """
+
+        cwd = working_directory.rstrip("/") or working_directory
+        located: list[tuple[int, str, str]] = []
+        for index, item in enumerate(argv):
+            if not isinstance(item, str) or not item.startswith(("~/", "/")):
+                continue
+            parent, _, name = item.rstrip("/").rpartition("/")
+            if not name or parent in ("", "~", cwd):
+                continue
+            located.append((index, parent, name))
+        if not located or len({parent for _, parent, _ in located}) != 1:
+            return argv, working_directory
+        relocated = list(argv)
+        for index, _, name in located:
+            relocated[index] = name
+        return relocated, located[0][1]
 
     @staticmethod
     def _compiled_binary_for(entry: _ServerRun, call_id: str) -> str | None:

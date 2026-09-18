@@ -154,6 +154,9 @@ struct CommunityBenchmarkShareConfirmationSheet: View {
             }
             .padding(RapidTheme.Space.xl)
             .background(RapidTheme.surfaceRaised)
+            // Without `.contain` the footer identifier replaces the
+            // Cancel/Publish identifiers on the buttons themselves.
+            .accessibilityElement(children: .contain)
             .accessibilityIdentifier("CommunityBenchmark.Share.Footer")
         }
         .frame(width: 620, height: sheetHeight)
@@ -203,6 +206,7 @@ struct CommunityBenchmarkShareConfirmationSheet: View {
         }
         .padding(RapidTheme.Space.xl)
         .frame(maxWidth: .infinity, alignment: .leading)
+        .accessibilityElement(children: .contain)
         .accessibilityIdentifier("CommunityBenchmark.Share.Withheld")
     }
 

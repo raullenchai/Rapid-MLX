@@ -1285,9 +1285,8 @@ enum LocalWorkspaceTools {
         _ arguments: [String],
         home: URL = FileManager.default.homeDirectoryForCurrentUser
     ) -> [String] {
-        // Resolve symlinks the same way the sandbox profile does: a home under
-        // /private/tmp standardizes to /tmp, which the profile does not allow.
-        let homePath = home.standardizedFileURL.resolvingSymlinksInPath().path
+        // Resolve symlinks the same way the sandbox profile does.
+        let homePath = canonicalPath(home.standardizedFileURL.path)
         return arguments.map { argument in
             guard argument.hasPrefix("~/") else { return argument }
             return homePath + argument.dropFirst(1)
@@ -1301,11 +1300,22 @@ enum LocalWorkspaceTools {
         _ url: URL,
         home: URL = FileManager.default.homeDirectoryForCurrentUser
     ) -> String {
-        let path = url.standardizedFileURL.resolvingSymlinksInPath().path
-        let homePath = home.standardizedFileURL.resolvingSymlinksInPath().path
+        let path = canonicalPath(url.standardizedFileURL.path)
+        let homePath = canonicalPath(home.standardizedFileURL.path)
         if path == homePath { return "~" }
         if path.hasPrefix(homePath + "/") { return "~" + path.dropFirst(homePath.count) }
         return path
+    }
+
+    /// The kernel path of `path`, via POSIX `realpath`. Foundation's
+    /// `resolvingSymlinksInPath()` drops the `/private` prefix
+    /// (`/private/tmp/x` becomes `/tmp/x`), but sandbox profile filters match
+    /// the kernel path, so a home or workspace under `/private/tmp` or
+    /// `/private/var` would otherwise be denied every read and write.
+    static func canonicalPath(_ path: String) -> String {
+        guard let resolved = realpath(path, nil) else { return path }
+        defer { free(resolved) }
+        return String(cString: resolved)
     }
 
     static func validateCompilerArguments(_ arguments: [String]) throws {
@@ -1791,11 +1801,13 @@ enum LocalWorkspaceTools {
             "\"" + path.replacingOccurrences(of: "\\", with: "\\\\")
                 .replacingOccurrences(of: "\"", with: "\\\"") + "\""
         }
+        let workingDirectoryPath = canonicalPath(workingDirectory.path)
+        let temporaryDirectoryPath = canonicalPath(temporaryDirectory.path)
         var readableFilters = [
             "(literal \"/\")",
-            "(subpath \(quoted(workingDirectory.path)))",
-            "(subpath \(quoted(temporaryDirectory.path)))",
-            "(literal \(quoted(executable.path)))",
+            "(subpath \(quoted(workingDirectoryPath)))",
+            "(subpath \(quoted(temporaryDirectoryPath)))",
+            "(literal \(quoted(canonicalPath(executable.path))))",
             "(subpath \"/System\")",
             "(subpath \"/usr/lib\")",
             "(subpath \"/usr/share\")",
@@ -1846,7 +1858,7 @@ enum LocalWorkspaceTools {
             metadataFilters.append("(literal \"/usr/local\")")
         }
 
-        var executableFilters = ["(literal \(quoted(executable.path)))"]
+        var executableFilters = ["(literal \(quoted(canonicalPath(executable.path))))"]
         if approvedCommand == "python3" {
             executableFilters += [
                 "(literal \"/opt/homebrew/bin/python3\")",
@@ -1905,8 +1917,8 @@ enum LocalWorkspaceTools {
         \(metadataRule)
         (deny file-write*)
         (allow file-write*
-            (subpath \(quoted(workingDirectory.path)))
-            (subpath \(quoted(temporaryDirectory.path))))
+            (subpath \(quoted(workingDirectoryPath)))
+            (subpath \(quoted(temporaryDirectoryPath))))
         ; Interpreters may execute themselves recursively. Compilers receive
         ; only their explicit platform toolchain helpers.
         (deny process-exec

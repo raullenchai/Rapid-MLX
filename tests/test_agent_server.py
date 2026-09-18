@@ -4868,8 +4868,8 @@ async def test_client_compile_resolves_sources_this_run_wrote():
     assert compile_step.pending_action.call_id != write.pending_action.call_id
     assert compile_step.pending_action.arguments == {
         "command": "gcc",
-        "argv": ["-o", "rapid_fix", "~/Documents/rapid_fix.c"],
-        "working_directory": "~/Rapid Workspace",
+        "argv": ["-o", "rapid_fix", "rapid_fix.c"],
+        "working_directory": "~/Documents",
     }
 
 
@@ -4918,7 +4918,7 @@ async def test_client_repeated_compile_after_success_runs_the_binary():
     assert second.pending_action.arguments == {
         "command": "~/Documents/rapid_fix",
         "argv": [],
-        "working_directory": "~/Rapid Workspace",
+        "working_directory": "~/Documents",
     }
     # The compile observation told the model the next mechanical step.
     tool_messages = [
@@ -5015,3 +5015,29 @@ async def test_client_desktop_script_run_that_succeeded_is_not_offered_again():
     )
     await wait_for_status(service2, created2.id, AgentRunStatus.COMPLETED)
     assert [tool.name for tool in driver2.requests[1][2]] == ["local_run"]
+
+
+def test_local_run_relocates_to_the_folder_holding_its_sources():
+    relocate = AgentServerService._relocate_run_to_sources
+    assert relocate(["-o", "app", "~/Documents/app.c"], "~/Rapid Workspace") == (
+        ["-o", "app", "app.c"],
+        "~/Documents",
+    )
+    assert relocate(["~/Documents/fib.py"], "~/Rapid Workspace") == (
+        ["fib.py"],
+        "~/Documents",
+    )
+    # Already inside the working directory, or spread across folders: unchanged.
+    assert relocate(["~/Rapid Workspace/a.c"], "~/Rapid Workspace") == (
+        ["~/Rapid Workspace/a.c"],
+        "~/Rapid Workspace",
+    )
+    assert relocate(["~/Documents/a.c", "~/Desktop/b.c"], "~/Rapid Workspace") == (
+        ["~/Documents/a.c", "~/Desktop/b.c"],
+        "~/Rapid Workspace",
+    )
+    assert relocate(["~/a.c"], "~/Rapid Workspace") == (["~/a.c"], "~/Rapid Workspace")
+    assert relocate(["-c", "print(1)"], "~/Rapid Workspace") == (
+        ["-c", "print(1)"],
+        "~/Rapid Workspace",
+    )
