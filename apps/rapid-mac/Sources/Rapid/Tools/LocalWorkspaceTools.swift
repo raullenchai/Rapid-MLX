@@ -72,7 +72,9 @@ enum LocalWorkspaceTools {
 
     private struct ApprovedRun: @unchecked Sendable {
         let arguments: RunArgs
-        let workingDirectory: PinnedPath
+        let workingDirectory: PinnedPath?
+        let creationHome: PinnedPath?
+        let requestedWorkingDirectory: URL
         let executable: PinnedPath
         let processArguments: [String]
         let helperClass: HelperClass
@@ -81,7 +83,9 @@ enum LocalWorkspaceTools {
 
     private struct ApprovedWrite: @unchecked Sendable {
         let arguments: WriteArgs
-        let parent: PinnedPath
+        let parent: PinnedPath?
+        let creationHome: PinnedPath?
+        let requestedParent: URL
         let filename: String
         let expectedIdentity: FileIdentity?
     }
@@ -263,13 +267,13 @@ enum LocalWorkspaceTools {
         case "local_write": title = "Write this local file?"
         case "local_trash": title = "Move this file to Trash?"
         case "local_run": title = "Run this command?"
-        default: return failure("Unknown local tool \(name)", executed: false)
+        default: return withToolCallID(failure("Unknown local tool \(name)", executed: false), call.id)
         }
 
         // Reject malformed or out-of-scope actions before showing consent UI.
         // Approval should always describe an action Rapid can actually run.
         if let rejected = preflight(name, arguments: call.function.arguments) {
-            return rejected
+            return withToolCallID(rejected, call.id)
         }
         let approvedPath: PinnedPath?
         let approvedRun: ApprovedRun?
@@ -308,7 +312,9 @@ enum LocalWorkspaceTools {
                 approvedWrite = nil
             }
         } catch {
-            return failure("\(name) error: \(error.localizedDescription)", executed: false)
+            return withToolCallID(
+                failure("\(name) error: \(error.localizedDescription)", executed: false), call.id
+            )
         }
         let grantScope = persistent ? approvalScope(name, arguments: call.function.arguments) : nil
 
@@ -321,12 +327,12 @@ enum LocalWorkspaceTools {
         ) {
         case .allowOnce, .alwaysAllowTool: break
         case .deny:
-            return ToolCallResult(toolCallID: "", content: "The user declined \(name). Continue without it.", isError: true, failureKind: .userDeclined, executed: false)
+            return ToolCallResult(toolCallID: call.id, content: "The user declined \(name). Continue without it.", isError: true, failureKind: .userDeclined, executed: false)
         case .unavailable:
-            return ToolCallResult(toolCallID: "", content: "\(name) was cancelled before approval.", isError: true, failureKind: .userDeclined, executed: false)
+            return ToolCallResult(toolCallID: call.id, content: "\(name) was cancelled before approval.", isError: true, failureKind: .userDeclined, executed: false)
         }
 
-        return await Task.detached(priority: .userInitiated) {
+        let result = await Task.detached(priority: .userInitiated) {
             switch name {
             case "local_search": return search(call.function.arguments, approved: approvedPath)
             case "local_read": return read(approved: approvedPath)
@@ -336,6 +342,7 @@ enum LocalWorkspaceTools {
             default: return failure("Unknown local tool \(name)", executed: false)
             }
         }.value
+        return withToolCallID(result, call.id)
     }
 
     private static func preflight(_ name: String, arguments: String) -> ToolCallResult? {
@@ -447,7 +454,11 @@ enum LocalWorkspaceTools {
         }
         let relative = String(url.path.dropFirst(homePrefix.count))
         let comparisonRelative = relative.lowercased()
-        let protected = [".ssh", ".gnupg", "Library/Keychains"]
+        let components = relative.split(separator: "/")
+        guard !components.contains(where: { $0.hasPrefix(".") }) else {
+            throw LocalError("hidden or protected files and folders are unavailable")
+        }
+        let protected = ["Library/Keychains"]
         guard !protected.contains(where: {
             let comparisonProtected = $0.lowercased()
             return comparisonRelative == comparisonProtected
@@ -496,40 +507,35 @@ enum LocalWorkspaceTools {
         let lexicalURL = try validatedLexicalURL(args.path)
         let lexicalParent = lexicalURL.deletingLastPathComponent()
         var isDirectory: ObjCBool = false
+        var parent: PinnedPath?
+        var creationHome: PinnedPath?
         if !FileManager.default.fileExists(atPath: lexicalParent.path, isDirectory: &isDirectory) {
             let home = FileManager.default.homeDirectoryForCurrentUser.standardizedFileURL
                 .resolvingSymlinksInPath()
             guard lexicalParent.path == home.appendingPathComponent("Rapid Workspace").path else {
                 throw LocalError("local_write parent folder must already exist")
             }
-            let homeFD = Darwin.open(home.path, O_RDONLY | O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC)
-            guard homeFD >= 0 else { throw posixError("could not open the home folder") }
-            defer { Darwin.close(homeFD) }
-            let status = "Rapid Workspace".withCString {
-                mkdirat(homeFD, $0, mode_t(0o700))
+            creationHome = try PinnedPath(url: home, directory: true)
+        } else {
+            guard isDirectory.boolValue else { throw LocalError("local_write parent path is not a folder") }
+            let resolvedParent = try safeURL(lexicalParent.path)
+            guard resolvedParent.path == lexicalParent.path else {
+                throw LocalError("local_write parent path may not contain symbolic links")
             }
-            guard status == 0 || errno == EEXIST else {
-                throw posixError("could not create Rapid Workspace")
-            }
-            isDirectory = true
-        }
-        guard isDirectory.boolValue else { throw LocalError("local_write parent path is not a folder") }
-        let resolvedParent = try safeURL(lexicalParent.path)
-        guard resolvedParent.path == lexicalParent.path else {
-            throw LocalError("local_write parent path may not contain symbolic links")
+            parent = try PinnedPath(url: resolvedParent, directory: true)
         }
         let filename = lexicalURL.lastPathComponent
         guard !filename.isEmpty, filename != ".", filename != "..", !filename.contains("/") else {
             throw LocalError("destination filename is invalid")
         }
-        let parent = try PinnedPath(url: resolvedParent, directory: true)
-        let expectedIdentity = try entryIdentity(
-            parentDescriptor: parent.descriptor,
-            filename: filename
-        )
+        let expectedIdentity = try parent.map {
+            try entryIdentity(parentDescriptor: $0.descriptor, filename: filename)
+        } ?? nil
         return ApprovedWrite(
             arguments: args,
             parent: parent,
+            creationHome: creationHome,
+            requestedParent: lexicalParent,
             filename: filename,
             expectedIdentity: expectedIdentity
         )
@@ -716,27 +722,37 @@ enum LocalWorkspaceTools {
         let args = approved.arguments
         guard args.content.utf8.count <= 512_000 else { return failure("local_write content exceeds 512 KB") }
         do {
-            try approved.parent.verifyPathStillNamesPinnedObject()
+            let parent = try approvedDirectory(
+                existing: approved.parent,
+                creationHome: approved.creationHome,
+                requestedURL: approved.requestedParent
+            )
             try secureWrite(
                 Data(args.content.utf8),
-                approved: approved,
+                parent: parent,
+                filename: approved.filename,
+                expectedIdentity: approved.expectedIdentity,
                 overwrite: args.overwrite == true
             )
-            let url = approved.parent.url.appendingPathComponent(approved.filename)
+            let url = parent.url.appendingPathComponent(approved.filename)
             return ToolCallResult(toolCallID: "", content: "Wrote \(args.content.utf8.count) bytes to \(url.path)")
         } catch { return failure("local_write error: \(error.localizedDescription)") }
     }
 
     private static func secureWrite(
-        _ data: Data, approved: ApprovedWrite, overwrite: Bool
+        _ data: Data,
+        parent: PinnedPath,
+        filename: String,
+        expectedIdentity: FileIdentity?,
+        overwrite: Bool
     ) throws {
-        let parentFD = approved.parent.descriptor
-        let finalName = approved.filename
+        let parentFD = parent.descriptor
+        let finalName = filename
         let currentIdentity = try entryIdentity(
             parentDescriptor: parentFD,
             filename: finalName
         )
-        guard currentIdentity == approved.expectedIdentity else {
+        guard currentIdentity == expectedIdentity else {
             throw LocalError("the approved destination changed while approval was open")
         }
         if !overwrite, currentIdentity != nil {
@@ -779,7 +795,7 @@ enum LocalWorkspaceTools {
             throw posixError("could not sync the destination file")
         }
 
-        if let expectedIdentity = approved.expectedIdentity {
+        if let expectedIdentity {
             guard overwrite else {
                 throw LocalError("refused to replace an existing file without overwrite=true")
             }
@@ -842,6 +858,38 @@ enum LocalWorkspaceTools {
         throw posixError("could not inspect the destination")
     }
 
+    /// Resolve the directory pinned before approval, or create the one
+    /// product-owned default folder only after approval. The open home
+    /// descriptor prevents a symlink swap from redirecting creation.
+    private static func approvedDirectory(
+        existing: PinnedPath?, creationHome: PinnedPath?, requestedURL: URL
+    ) throws -> PinnedPath {
+        if let existing {
+            try existing.verifyPathStillNamesPinnedObject()
+            return existing
+        }
+        guard let creationHome else {
+            throw LocalError("approved folder is unavailable")
+        }
+        try creationHome.verifyPathStillNamesPinnedObject()
+        let expected = creationHome.url.appendingPathComponent("Rapid Workspace")
+            .standardizedFileURL
+        guard requestedURL.standardizedFileURL.path == expected.path else {
+            throw LocalError("only the default Rapid Workspace folder may be created")
+        }
+        let status = "Rapid Workspace".withCString {
+            mkdirat(creationHome.descriptor, $0, mode_t(0o700))
+        }
+        guard status == 0 || errno == EEXIST else {
+            throw posixError("could not create Rapid Workspace")
+        }
+        let pinned = try PinnedPath(url: expected, directory: true)
+        guard pinned.url.deletingLastPathComponent().path == creationHome.url.path else {
+            throw LocalError("the approved folder escaped the home directory")
+        }
+        return pinned
+    }
+
     private static func posixError(_ context: String) -> LocalError {
         LocalError("\(context): \(String(cString: strerror(errno)))")
     }
@@ -893,17 +941,24 @@ enum LocalWorkspaceTools {
 
     private static func prepareRun(_ args: RunArgs) throws -> ApprovedRun {
         let requestedWorkingDirectory = args.workingDirectory ?? args.cwd ?? "~/Rapid Workspace"
-        var cwd = try safeWorkingDirectory(requestedWorkingDirectory, mustExist: false)
+        let cwd = try safeWorkingDirectory(requestedWorkingDirectory, mustExist: false)
         var isDirectory: ObjCBool = false
+        var workingDirectory: PinnedPath?
+        var creationHome: PinnedPath?
         if !FileManager.default.fileExists(atPath: cwd.path, isDirectory: &isDirectory),
            requestedWorkingDirectory == "~/Rapid Workspace" {
-            try FileManager.default.createDirectory(at: cwd, withIntermediateDirectories: true)
-            cwd = try safeWorkingDirectory(requestedWorkingDirectory)
-            isDirectory = true
-        }
-        guard FileManager.default.fileExists(atPath: cwd.path, isDirectory: &isDirectory),
-              isDirectory.boolValue else {
-            throw LocalError("local_run working_directory is not a folder")
+            let home = FileManager.default.homeDirectoryForCurrentUser.standardizedFileURL
+                .resolvingSymlinksInPath()
+            creationHome = try PinnedPath(url: home, directory: true)
+        } else {
+            guard FileManager.default.fileExists(atPath: cwd.path, isDirectory: &isDirectory),
+                  isDirectory.boolValue else {
+                throw LocalError("local_run working_directory is not a folder")
+            }
+            workingDirectory = try PinnedPath(
+                url: cwd, directory: true,
+                presentedURL: try validatedLexicalURL(requestedWorkingDirectory)
+            )
         }
 
         var processArguments = args.arguments ?? []
@@ -962,12 +1017,11 @@ enum LocalWorkspaceTools {
             && executableMetadata.st_mode & mode_t(0o022) == 0
             ? nil
             : try digest(descriptor: pinnedExecutable.descriptor)
-        return try ApprovedRun(
+        return ApprovedRun(
             arguments: args,
-            workingDirectory: PinnedPath(
-                url: cwd, directory: true,
-                presentedURL: try validatedLexicalURL(requestedWorkingDirectory)
-            ),
+            workingDirectory: workingDirectory,
+            creationHome: creationHome,
+            requestedWorkingDirectory: cwd,
             executable: pinnedExecutable,
             processArguments: processArguments,
             helperClass: helperClass,
@@ -985,15 +1039,19 @@ enum LocalWorkspaceTools {
     private static func runCommand(approved: ApprovedRun?) -> ToolCallResult {
         do {
             guard let approved else { return failure("local_run approval expired") }
-            try approved.workingDirectory.verifyPathStillNamesPinnedObject()
+            let workingDirectory = try approvedDirectory(
+                existing: approved.workingDirectory,
+                creationHome: approved.creationHome,
+                requestedURL: approved.requestedWorkingDirectory
+            )
             try approved.executable.verifyPathStillNamesPinnedObject()
             let args = approved.arguments
-            let cwd = try currentURL(for: approved.workingDirectory.descriptor)
+            let cwd = try currentURL(for: workingDirectory.descriptor)
             let processArguments = approved.processArguments
 
             let temporaryName = ".rapid-tmp-\(UUID().uuidString)"
             let created = temporaryName.withCString {
-                mkdirat(approved.workingDirectory.descriptor, $0, mode_t(0o700))
+                mkdirat(workingDirectory.descriptor, $0, mode_t(0o700))
             }
             guard created == 0 else { throw posixError("could not create the private command folder") }
             let temporary = cwd.appendingPathComponent(temporaryName)
@@ -1028,7 +1086,7 @@ enum LocalWorkspaceTools {
             let outcome = try spawnSandboxed(
                 arguments: sandboxArguments,
                 environment: environment,
-                workingDirectoryDescriptor: approved.workingDirectory.descriptor,
+                workingDirectoryDescriptor: workingDirectory.descriptor,
                 timeout: TimeInterval(timeout)
             )
             let out = String(decoding: outcome.stdout, as: UTF8.self)
@@ -1247,6 +1305,10 @@ enum LocalWorkspaceTools {
                 }
             }
         }
+        // The approved command owns a fresh process group. Even when its
+        // leader exits normally, descendants must not survive the bounded
+        // action and continue writing in the background.
+        terminateProcessGroup(pid)
         let exitCode: Int32
         if !reaped {
             exitCode = -1
@@ -1263,6 +1325,22 @@ enum LocalWorkspaceTools {
             stdout: stdout.finish(),
             stderr: stderr.finish()
         )
+    }
+
+    private static func terminateProcessGroup(_ leader: pid_t) {
+        guard leader > 0 else { return }
+        _ = kill(-leader, SIGTERM)
+        let grace = Date().addingTimeInterval(0.1)
+        while Date() < grace {
+            if kill(-leader, 0) == -1, errno == ESRCH { return }
+            Thread.sleep(forTimeInterval: 0.01)
+        }
+        _ = kill(-leader, SIGKILL)
+        let reapDeadline = Date().addingTimeInterval(1)
+        while Date() < reapDeadline {
+            if kill(-leader, 0) == -1, errno == ESRCH { return }
+            Thread.sleep(forTimeInterval: 0.01)
+        }
     }
 
     private static func sandboxProfile(
@@ -1376,6 +1454,16 @@ enum LocalWorkspaceTools {
 
     private static func failure(_ message: String, executed: Bool = true) -> ToolCallResult {
         ToolCallResult(toolCallID: "", content: message, isError: true, executed: executed)
+    }
+
+    private static func withToolCallID(_ result: ToolCallResult, _ id: String) -> ToolCallResult {
+        ToolCallResult(
+            toolCallID: id,
+            content: result.content,
+            isError: result.isError,
+            failureKind: result.failureKind,
+            executed: result.executed
+        )
     }
 
     private struct LocalError: LocalizedError {

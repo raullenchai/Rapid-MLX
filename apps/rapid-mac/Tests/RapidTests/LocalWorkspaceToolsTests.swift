@@ -99,6 +99,7 @@ final class LocalWorkspaceToolsTests {
         let result = await runApproved(name: "local_write", arguments: arguments, store: store)
 
         #expect(!result.isError)
+        #expect(result.toolCallID == "test-call")
         #expect(try String(contentsOf: output, encoding: .utf8) == "# Proposal\nLocal first.\n")
         #expect(!store.isGranted("local_write"))
     }
@@ -440,6 +441,23 @@ final class LocalWorkspaceToolsTests {
         #expect(store.pendingRequest == nil)
     }
 
+    @Test("all hidden paths are rejected before approval")
+    func hiddenPathsAreRejected() async {
+        let store = approval()
+        let result = await LocalWorkspaceTools.run(
+            ToolCall(
+                id: "hidden-read",
+                name: "local_read",
+                arguments: #"{"path":"~/.aws/credentials"}"#
+            ),
+            approval: store
+        )
+        #expect(result.isError)
+        #expect(result.toolCallID == "hidden-read")
+        #expect(result.content.contains("hidden"))
+        #expect(store.pendingRequest == nil)
+    }
+
     @Test("session read grants stay scoped to the approved path")
     func readGrantDoesNotAuthorizeAnotherFile() async throws {
         let root = try fixtureDirectory()
@@ -640,6 +658,27 @@ final class LocalWorkspaceToolsTests {
 
         #expect(result.isError)
         #expect(result.content.contains("timed out"))
+        #expect(!FileManager.default.fileExists(atPath: marker.path))
+    }
+
+    @Test("run normal exit also stops background children")
+    func commandCompletionStopsChildren() async throws {
+        let root = try fixtureDirectory()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let marker = root.appendingPathComponent("escaped-after-success.txt")
+        let child = "import time;time.sleep(1);open('escaped-after-success.txt','w').write('escaped')"
+        let parent = "import subprocess;subprocess.Popen(['python3','-c',\"\(child)\"])"
+        let arguments = try #require(String(data: JSONSerialization.data(withJSONObject: [
+            "command": "python3",
+            "arguments": ["-c", parent],
+            "working_directory": root.path,
+            "timeout_seconds": 5,
+        ]), encoding: .utf8))
+
+        let result = await runApproved(name: "local_run", arguments: arguments, store: approval())
+        try await Task.sleep(for: .seconds(2))
+
+        #expect(!result.isError, Comment(rawValue: result.content))
         #expect(!FileManager.default.fileExists(atPath: marker.path))
     }
 
