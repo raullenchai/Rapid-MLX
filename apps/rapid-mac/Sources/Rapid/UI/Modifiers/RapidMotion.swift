@@ -83,3 +83,46 @@ extension View {
         modifier(RapidAnimationModifier(animation: animation, value: value))
     }
 }
+
+/// A view that breathes for as long as it is on screen — and stops, for
+/// certain, the moment it is not.
+///
+/// This is the ONLY sanctioned home for a `repeatForever` animation in the
+/// app. A repeating animation attached with `.animation(_:value:)` and later
+/// "switched off" by handing that modifier a different curve does not stop:
+/// SwiftUI keeps the loop alive on the attribute, and a window that commits
+/// a transaction every frame pays the whole display cycle (layout, tracking
+/// areas, cursor regeneration) every frame. The Desktop footer's status dot
+/// did exactly that and idled at 23 % of a core on an M3 Ultra and a full
+/// core on an M2 Pro (0.14.3 dogfood, 2026-09-18). Removing the animated
+/// view is the one reliable way to retire the loop, so callers wrap their
+/// content in `BreathingLoop` inside an `if` that is false when there is
+/// nothing to signal — the view leaves the hierarchy and the loop dies with
+/// it. Callers are also responsible for the Reduce Motion decision (use
+/// ``RapidMotion/shouldPulse(isAnimating:reduceMotion:)``): a loop that
+/// should not run must not be created, not merely damped.
+///
+/// The loop is started once, on appear, with a single imperative
+/// `withAnimation` — never via `.animation(_:value:)` — so its lifetime is
+/// exactly this view's lifetime.
+struct BreathingLoop<Content: View>: View {
+    /// Peak scale of the inhale (1.0 = no scale change).
+    var scale: CGFloat = 1.0
+    /// Opacity at the peak of the inhale (1.0 = no opacity change).
+    var opacity: Double = 1.0
+    var animation: Animation = RapidMotion.breathe
+    @ViewBuilder var content: () -> Content
+
+    @State private var inhaled = false
+
+    var body: some View {
+        content()
+            .scaleEffect(inhaled ? scale : 1.0)
+            .opacity(inhaled ? opacity : 1.0)
+            .onAppear {
+                withAnimation(animation.repeatForever(autoreverses: true)) {
+                    inhaled = true
+                }
+            }
+    }
+}

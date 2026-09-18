@@ -22,6 +22,8 @@
 	<string>0.14.3</string>
 	<key>CFBundleVersion</key>
 	<string>174</string>
+	<key>LSMultipleInstancesProhibited</key>
+	<true/>
 	<key>LSMinimumSystemVersion</key>
 	<string>14.0</string>
 	<key>NSAccentColorName</key>

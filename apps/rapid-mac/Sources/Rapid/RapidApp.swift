@@ -149,6 +149,23 @@ struct RapidApp: App {
     @NSApplicationDelegateAdaptor(AppDelegate.self) private var appDelegate
 
     init() {
+        // One Desktop per user session, decided before ANYTHING this launch
+        // could leave behind: the crash marker below, and the launch port
+        // sweep further down, which trusts the on-disk sidecar ownership
+        // record and would SIGTERM the RUNNING instance's engine as an
+        // "orphan" before a later guard got to run. A second instance
+        // (`open -n`, a direct `Contents/MacOS/Rapid` exec, a second copy
+        // of the bundle — LaunchServices only enforces
+        // ``LSMultipleInstancesProhibited`` for Finder and `open -a`) used
+        // to start its own sidecar on the same port and leave the first
+        // window on "Couldn't start <model> — check the model files" while
+        // the model was loaded next door (0.14.3 dogfood, 2026-09-18).
+        // Hand the launch to the survivor and leave. Plain `exit`: nothing
+        // has been set up, so there is nothing to tear down.
+        if let survivor = SingleInstanceGuard.runningInstanceToYieldTo() {
+            SingleInstanceGuard.handOff(to: survivor)
+            exit(0)
+        }
         // Install the crash reporter FIRST — every other init step can
         // fatalError under bad disk / permissions state, and we want
         // those abortions to leave a marker for the next launch.

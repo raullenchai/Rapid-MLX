@@ -78,15 +78,24 @@ struct CommunityMascot: View {
         // is ~50% transparent margin, so reserving only the character's size
         // let the artwork spill out and collide with the headline beneath it
         // on the Published sheet. The margin is just whitespace in the layout.
-        mascotImage
-            .opacity(context == .running && !isAnimating ? 0.75 : 1)
-            .animation(
-                reduceMotion || !isAnimating
-                    ? nil
-                    : .easeInOut(duration: 0.9).repeatForever(autoreverses: true),
-                value: isAnimating
-            )
-            .accessibilityHidden(true)
+        //
+        // The breathing loop is owned by ``BreathingLoop`` and only exists
+        // while the mascot has something to signal: a `repeatForever`
+        // attached via `.animation(_:value:)` outlives the state that
+        // started it (see ``BreathingLoop``), and a sheet that keeps
+        // committing frames after the run finished is the same idle-CPU
+        // leak the footer's status dot had.
+        Group {
+            if RapidMotion.shouldPulse(isAnimating: isAnimating, reduceMotion: reduceMotion) {
+                BreathingLoop(opacity: 0.75) {
+                    mascotImage
+                }
+            } else {
+                mascotImage
+                    .opacity(context == .running && !isAnimating ? 0.75 : 1)
+            }
+        }
+        .accessibilityHidden(true)
     }
 
     @ViewBuilder
