@@ -149,9 +149,24 @@ vendored copy differs by exactly the deviations listed):
 
 - ``apc.py`` — identical to ``mlx_vlm/apc.py`` @ v0.7.1 (upstream sha256
   ``5b2b940852f11f34f7b4daf627bc31fc701f8abffc72d40189bc3e5ac57f878c``)
-  except 18 one-line import redirects (``# VENDOR-DEVIATION`` sentinels):
-  top-level relative imports bind the vendored siblings, the lazy
-  ``.models*`` (15) and ``.turboquant`` (3) sites resolve upstream, and
-  the engine still dispatches on upstream-typed caches (byte-identical
-  today; widening is the 2b-3 follow-up).
+  except documented deviations, each carrying a ``# VENDOR-DEVIATION``
+  sentinel:
+
+  - 14 one-line import redirects: the top-level relative imports bind the
+    vendored siblings; the lazy ``.models*`` (11) and ``.turboquant`` (3)
+    sites resolve upstream. (2b-3 folded the four cache-typed sites — the
+    ``_dense_checkpoint*`` pair and both exact-snapshot ladders — into the
+    dual-namespace helpers below.)
+  - dual-namespace recognition helpers (``_cache_ns_*``, 2b-3) so the
+    engine's exact-type tables, snapshot/restore constructors, and
+    ``_resolve_checkpoint_class`` accept both cache namespaces; exact
+    snapshots record ``_ns="v"`` for vendored-typed entries (absent key =
+    upstream, so pre-2b-3 shards stay readable). The step-3 mechanical
+    revert drops the helpers.
+  - three ``upstream-bugfix`` hunks (2b-3), each repro-tested in
+    ``tests/test_mlx_vlm_vendored_apc_engine.py``: ``_rebuild_index``
+    disk-bytes accounting (unreadable shards inflated ``_disk_bytes``),
+    ``_finish_write`` in-flight entry ownership (partially overlapping
+    writers could erase another writer's entry), and
+    ``_save_layer_major_shard`` temp-file cleanup on write failure.
 """
