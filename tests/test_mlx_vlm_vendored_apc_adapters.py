@@ -61,6 +61,10 @@ def test_clone_kv_entry_preserves_producer_namespace_and_content():
         assert type(cloned) is ns.KVCache
         assert cloned.offset == 4
         assert mx.array_equal(cloned.keys[..., :4, :], cache.keys[..., :4, :])
+        # Detachment contract: the clone must not alias the live cache's
+        # arrays (identity is the observable form of aliasing in MLX).
+        assert cloned.keys is not cache.keys
+        assert cloned.values is not cache.values
         assert eval_targets
 
 
