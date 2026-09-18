@@ -4353,6 +4353,7 @@ def test_multiple_local_runs_require_explicit_sequencing():
 
     assert not _requests_multiple_local_runs("Run a.py with b.py as input")
     assert _requests_multiple_local_runs("Run a.py and b.py")
+    assert _requests_multiple_local_runs("Run a.py & b.py")
     assert _requests_multiple_local_runs("Run a.py, then b.py")
     assert _requests_multiple_local_runs("Run a.py, then run b.py")
 

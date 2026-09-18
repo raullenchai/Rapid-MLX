@@ -1261,26 +1261,20 @@ def _requests_multiple_local_runs(goal: str) -> bool:
     """Whether a user request clearly contains more than one execution step."""
 
     verbs = re.findall(r"\b(?:run|execute)\b|(?:运行|执行)", goal, re.IGNORECASE)
-    scripts = re.findall(r"\b[^\s,;]+\.(?:py|js|rb|swift|go)\b", goal, re.IGNORECASE)
-    sequenced_scripts = re.search(
-        r"\b(?:run|execute)\b.{0,120}\b(?:then|and\s+then|afterwards)\b.{0,80}"
-        r"[^\s,;]+\.(?:py|js|rb|swift|go)\b|"
-        r"(?:运行|执行).{0,100}(?:然后|接着|随后).{0,60}[^\s，。；]+\.(?:py|js|rb|swift|go)\b",
-        goal,
-        re.IGNORECASE,
+    if len(verbs) >= 2:
+        return True
+    scripts = list(
+        re.finditer(r"\b[^\s,;]+\.(?:py|js|rb|swift|go)\b", goal, re.IGNORECASE)
     )
-    conjoined_scripts = re.search(
-        r"\b(?:run|execute)\b.{0,80}[^\s,;]+\.(?:py|js|rb|swift|go)\b"
-        r"\s+(?:and|then)\s+[^\s,;]+\.(?:py|js|rb|swift|go)\b|"
-        r"(?:运行|执行).{0,60}[^\s，。；]+\.(?:py|js|rb|swift|go)\s*"
-        r"(?:和|及|与|然后)\s*[^\s，。；]+\.(?:py|js|rb|swift|go)\b",
-        goal,
-        re.IGNORECASE,
-    )
-    return len(verbs) >= 2 or (
-        len(set(scripts)) >= 2
-        and (sequenced_scripts is not None or conjoined_scripts is not None)
-    )
+    for previous, current in zip(scripts, scripts[1:], strict=False):
+        connector = goal[previous.end() : current.start()].strip()
+        if re.fullmatch(
+            r"(?:,\s*(?:then)?|&|and|then|and\s+then|afterwards|和|及|与|然后|接着|随后)",
+            connector,
+            re.IGNORECASE,
+        ):
+            return True
+    return False
 
 
 def _canonicalize_local_run_argv(command: str, argv: list[Any], goal: str) -> list[Any]:
