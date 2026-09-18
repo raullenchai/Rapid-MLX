@@ -133,6 +133,19 @@ struct AgentRuntimeClientTests {
         #expect(body["content"] as? String == "not dispatched")
         #expect(body["is_error"] as? Bool == true)
         #expect(body["executed"] as? Bool == false)
+        #expect(body["declined"] == nil)
+
+        _ = try await client.submitToolResult(
+            runID: "01234567-89ab-cdef-0123-456789abcdef",
+            callID: "call-2",
+            content: "declined",
+            isError: true,
+            executed: false,
+            declined: true,
+            bearerToken: nil
+        )
+        let declinedBody = try Self.jsonBody(at: 1)
+        #expect(declinedBody["declined"] as? Bool == true)
     }
 
     @Test("Event cursors are monotonic client inputs")

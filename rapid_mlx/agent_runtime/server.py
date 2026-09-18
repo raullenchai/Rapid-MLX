@@ -215,12 +215,13 @@ _DESKTOP_CLIENT_TOOL_SPECS = (
     ),
     ToolSpec(
         name="local_run",
-        description="Run an approved development command without a shell. Pass the command name in 'command' and its arguments as the 'argv' string array. working_directory is optional and defaults to '~/Rapid Workspace'; cwd is accepted as an alias.",
+        description="Run an approved development command without a shell. Pass the command name in 'command' and its arguments as the 'arguments' string array. working_directory is optional and defaults to '~/Rapid Workspace'; cwd is accepted as an alias.",
         parameters_json=json.dumps(
             {
                 "type": "object",
                 "properties": {
                     "command": {"type": "string"},
+                    "arguments": {"type": "array", "items": {"type": "string"}},
                     "argv": {"type": "array", "items": {"type": "string"}},
                     "working_directory": {"type": "string"},
                     "cwd": {"type": "string"},
@@ -4107,6 +4108,17 @@ class AgentServerService:
         release_arguments = (
             entry.settings.execution == "client" and not approval_required
         )
+        pending_arguments = dict(pending.arguments) if pending is not None else {}
+        if (
+            release_arguments
+            and pending is not None
+            and pending.name == "local_run"
+            and isinstance(pending_arguments.get("argv"), list)
+        ):
+            # 0.14.2 and older Desktop builds decode only ``arguments``.
+            # Current builds prefer ``argv`` but accept both, so the released
+            # client call carries the compatibility alias during upgrades.
+            pending_arguments["arguments"] = pending_arguments["argv"]
         return AgentRunView(
             id=entry.run.id,
             model=entry.run.model,
@@ -4124,7 +4136,7 @@ class AgentServerService:
                 AgentPendingAction(
                     call_id=pending.id,
                     name=pending.name,
-                    arguments=(pending.arguments if release_arguments else {}),
+                    arguments=(pending_arguments if release_arguments else {}),
                     approval_summary=(
                         _approval_argument_summary(pending.arguments)
                         if approval_required

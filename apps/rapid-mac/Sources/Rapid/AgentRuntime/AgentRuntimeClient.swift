@@ -321,6 +321,19 @@ final class AgentRuntimeClient: Sendable {
             case executed
             case declined
         }
+
+        func encode(to encoder: any Encoder) throws {
+            var container = encoder.container(keyedBy: CodingKeys.self)
+            try container.encode(callID, forKey: .callID)
+            try container.encode(content, forKey: .content)
+            try container.encode(isError, forKey: .isError)
+            try container.encode(executed, forKey: .executed)
+            // Older servers reject unknown fields. Preserve their common path
+            // while sending the new semantic marker only when it is needed.
+            if declined {
+                try container.encode(true, forKey: .declined)
+            }
+        }
     }
 
     private struct ErrorEnvelope: Decodable {

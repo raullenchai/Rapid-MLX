@@ -5126,6 +5126,7 @@ async def test_client_compile_rejects_model_only_working_directory():
     assert compile_step.pending_action.arguments == {
         "command": "gcc",
         "argv": ["-o", "rapid_fix", "rapid_fix.c"],
+        "arguments": ["-o", "rapid_fix", "rapid_fix.c"],
         "working_directory": "~/Documents",
     }
 
@@ -5179,6 +5180,7 @@ async def test_client_repeated_compile_after_success_runs_the_binary():
     assert second.pending_action.arguments == {
         "command": "~/Documents/rapid_fix",
         "argv": [],
+        "arguments": [],
         "working_directory": "~/Documents",
     }
     # The compile observation told the model the next mechanical step.
@@ -5352,6 +5354,7 @@ async def test_client_two_script_request_offers_second_local_run():
     )
     assert second.pending_action is not None
     assert second.pending_action.arguments["argv"] == ["b.py"]
+    assert second.pending_action.arguments["arguments"] == ["b.py"]
     await service.submit_result(
         created.id,
         AgentToolResultRequest(
@@ -5486,6 +5489,7 @@ async def test_client_compile_ignores_a_write_that_reported_an_error():
     assert compile_step.pending_action.arguments == {
         "command": "gcc",
         "argv": ["-o", "rapid_fix", "rapid_fix.c"],
+        "arguments": ["-o", "rapid_fix", "rapid_fix.c"],
         "working_directory": "~/Rapid Workspace",
     }
 
