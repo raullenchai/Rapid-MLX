@@ -21,7 +21,14 @@ from urllib.parse import urlsplit
 
 from jsonschema import ValidationError as JSONSchemaValidationError
 from jsonschema import validators
-from pydantic import BaseModel, ConfigDict, Field, StrictBool, field_validator
+from pydantic import (
+    BaseModel,
+    ConfigDict,
+    Field,
+    StrictBool,
+    field_validator,
+    model_validator,
+)
 
 from ..api.models import ChatCompletionRequest, ChatCompletionResponse
 from .models import (
@@ -1256,7 +1263,7 @@ def _requests_compile_and_run(goal: str) -> bool:
     return (
         re.search(
             r"\bcompile\b.{0,120}\b(?:and\s+)?(?:then\s+)?run\s+"
-            r"(?:it|the\s+(?:program|binary|output|executable))\b|"
+            r"(?:it|code|the\s+(?:program|code|binary|output|executable))\b|"
             r"编译.{0,80}(?:然后|并且|再)?(?:运行|执行)(?:它|该程序|这个程序)?",
             goal,
             re.IGNORECASE,
@@ -1824,6 +1831,12 @@ class AgentToolResultRequest(_WireModel):
     # Client content for a non-executed tool is never forwarded, so this flag
     # is the only way the model learns *why* nothing happened.
     declined: StrictBool = False
+
+    @model_validator(mode="after")
+    def declined_was_not_executed(self) -> AgentToolResultRequest:
+        if self.declined and self.executed:
+            raise ValueError("a declined client tool cannot be executed")
+        return self
 
 
 class AgentPendingAction(_WireModel):

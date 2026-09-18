@@ -4359,6 +4359,22 @@ def test_multiple_local_runs_require_explicit_sequencing():
     assert _requests_multiple_local_runs("Run generator.py, then compile its output")
 
 
+def test_compile_and_run_recognizes_direct_code_wording():
+    from rapid_mlx.agent_runtime.server import _requests_compile_and_run
+
+    assert _requests_compile_and_run("Compile and run the code")
+
+
+def test_declined_tool_result_cannot_claim_execution():
+    with pytest.raises(ValidationError, match="cannot be executed"):
+        AgentToolResultRequest(
+            call_id="call-1",
+            content="contradictory",
+            executed=True,
+            declined=True,
+        )
+
+
 def test_local_run_normalizer_drops_compile_only_flag_when_asked_to_run():
     turn = AgentModelTurn(
         tool_calls=[
