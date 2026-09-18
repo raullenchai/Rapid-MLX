@@ -29,13 +29,33 @@ final class LocalWorkspaceToolsTests {
         arguments: String,
         store: LocalToolApprovalStore
     ) async -> ToolCallResult {
+        // A tool that answers before asking for approval (a preflight
+        // refusal) must surface as a result, not as an unbounded spin: the
+        // 2026-09-18 CI hang sat in this loop with nothing left to run.
+        final class Outcome { var result: ToolCallResult? }
+        let outcome = Outcome()
         let task = Task {
-            await LocalWorkspaceTools.run(
+            let result = await LocalWorkspaceTools.run(
                 ToolCall(id: "test-call", name: name, arguments: arguments),
                 approval: store
             )
+            outcome.result = result
+            return result
         }
-        while store.pendingRequest == nil { await Task.yield() }
+        let deadline = ContinuousClock.now + .seconds(30)
+        while store.pendingRequest == nil {
+            if let early = outcome.result { return early }
+            if ContinuousClock.now > deadline {
+                task.cancel()
+                return ToolCallResult(
+                    toolCallID: "test-call",
+                    content: "\(name) never requested approval within 30 s",
+                    isError: true,
+                    executed: false
+                )
+            }
+            try? await Task.sleep(for: .milliseconds(2))
+        }
         store.answer(.allowOnce)
         return await task.value
     }
