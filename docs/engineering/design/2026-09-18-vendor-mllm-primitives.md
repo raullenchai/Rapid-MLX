@@ -116,10 +116,12 @@ rapid_mlx/models/mlx_vlm_vendored/
 Rules (modeled on the `gemma4_vendored` precedent):
 
 - Copies are **verbatim** from the upstream 0.7.1 tag except *import
-  redirects*, each documented in the module header. No logic edits, no
-  formatting, no type-annotation drives. Any future behavior change must
-  re-qualify against upstream (diff against the pinned tag must show only the
-  documented redirects).
+  redirects* and *in-source `VENDOR-DEVIATION(upstream-bugfix)` hunks* for
+  defects that reproduce against the pinned upstream, each documented in the
+  module body and in the package `__init__.py` inventory. No other logic
+  edits, no formatting, no type-annotation drives. Any future behavior
+  change must re-qualify against upstream (diff against the pinned tag must
+  show only the documented hunks).
 - The `__init__.py` header lists upstream tag + file hashes so CI could later
   add a provenance check.
 - All former `from mlx_vlm...` imports in the lane redirect to

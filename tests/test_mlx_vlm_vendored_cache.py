@@ -78,3 +78,23 @@ def test_batch_pooling_make_mask_scalar_offset_matches_array_branch():
     assert mx.array_equal(scalar[0, 0], mx.array([True, True, False]))
     # Query 2 sits at position 11: 11 // 4 == 2 — still index < 2.
     assert mx.array_equal(scalar[0, 2], mx.array([True, True, False]))
+
+
+def test_batch_rotating_meta_state_roundtrip_restores_rotated_flag():
+    """Upstream serialized ``rotated`` with ``str()`` but parsed it with
+    ``bool()``, so the string "False" restored as True and the next
+    ``_temporal_order`` would roll a cache that was never rotated."""
+    plain = BatchRotatingKVCache(16, [0])
+    plain._update_concat(mx.zeros((1, 2, 6, 8)), mx.zeros((1, 2, 6, 8)))
+    assert plain.rotated is False
+    restored = BatchRotatingKVCache.from_state(plain.state, plain.meta_state)
+    assert restored.rotated is False
+    assert restored._offset == plain._offset and restored._idx == plain._idx
+
+    a = BatchRotatingKVCache(8, [0])
+    for t in range(9):
+        a.update_and_fetch(mx.full((1, 2, 1, 4), float(t)), mx.zeros((1, 2, 1, 4)))
+    assert a.rotated is True
+    restored = BatchRotatingKVCache.from_state(a.state, a.meta_state)
+    assert restored.rotated is True
+    assert restored._idx == a._idx and restored._offset == a._offset

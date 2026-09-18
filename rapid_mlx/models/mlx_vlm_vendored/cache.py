@@ -1805,7 +1805,17 @@ class BatchRotatingKVCache(_BaseCache):
             int,
             v[:3],
         )
-        self.rotated = bool(v[3])
+        # VENDOR-DEVIATION(upstream-bugfix): ``meta_state`` serializes the
+        # flag via ``str()``, so upstream's ``bool(v[3])`` read the string
+        # ``"False"`` as True and corrupted every unrotated cache restored
+        # through ``from_state`` (the lane's memory-cache restore path;
+        # mlx-lm 0.31.3 carries the same defect). Parse the serialized
+        # spelling while still accepting a real bool.
+        rotated = v[3]
+        if isinstance(rotated, str):
+            self.rotated = rotated.strip().lower() == "true"
+        else:
+            self.rotated = bool(rotated)
 
     def is_trimmable(self):
         return self._offset < self.max_size
