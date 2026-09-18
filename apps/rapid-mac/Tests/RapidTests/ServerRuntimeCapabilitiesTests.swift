@@ -312,6 +312,7 @@ struct ServerRuntimeCapabilitiesTests {
             restoringWith: { alias in
                 #expect(alias == "qwen3.5-4b")
                 await restoreGate.wait()
+                return true
             }
         )
         await restoreGate.waitUntilEntered()
@@ -330,6 +331,30 @@ struct ServerRuntimeCapabilitiesTests {
         #expect(replacementAcquired)
         #expect(
             manager.finishCommunityBenchmark(replacementReservation) == "qwen3.5-4b"
+        )
+    }
+
+    @Test("Community Benchmark retains a displaced alias after restoration fails")
+    @MainActor
+    func benchmarkFailedRestorationCanRetryOnNextRelease() async throws {
+        let manager = ServerManager(testingState: .ready(alias: "qwen3.5-4b"))
+        let firstReservation = try await manager.prepareForCommunityBenchmark()
+        var attempted = false
+
+        manager.finishCommunityBenchmark(
+            firstReservation,
+            restoringWith: { alias in
+                #expect(alias == "qwen3.5-4b")
+                attempted = true
+                return false
+            }
+        )
+        while !attempted { await Task.yield() }
+        for _ in 0..<10 { await Task.yield() }
+
+        let retryReservation = try await manager.prepareForCommunityBenchmark()
+        #expect(
+            manager.finishCommunityBenchmark(retryReservation) == "qwen3.5-4b"
         )
     }
 

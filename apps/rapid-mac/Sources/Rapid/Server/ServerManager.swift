@@ -3294,7 +3294,10 @@ final class ServerManager {
             case .ready(let alias), .starting(let alias):
                 communityBenchmarkDisplacedAlias = alias
             case .crashed, .stopped, .idle, .missing:
-                communityBenchmarkDisplacedAlias = nil
+                // A failed post-benchmark restore retains its alias so the next
+                // serialized release gets a real retry path. Do not erase it
+                // merely because the failed start left the server stopped.
+                break
             }
         }
         try throwIfCommunityBenchmarkCancelled(reservation)
@@ -3358,7 +3361,7 @@ final class ServerManager {
     /// so they cannot race another heavyweight process into unified memory.
     func finishCommunityBenchmark(
         _ reservation: UUID,
-        restoringWith restore: @escaping @MainActor (String) async -> Void
+        restoringWith restore: @escaping @MainActor (String) async -> Bool
     ) {
         guard communityBenchmarkReservations.remove(reservation) != nil else { return }
         guard !communityBenchmarkReserved else { return }
@@ -3373,14 +3376,18 @@ final class ServerManager {
         guard let alias else { return }
         communityBenchmarkRestorationInFlight = true
         Task { @MainActor [weak self] in
-            await restore(alias)
+            let restored = await restore(alias)
             guard let self else { return }
             self.communityBenchmarkRestorationInFlight = false
-            if !self.communityBenchmarkWaiters.isEmpty {
+            if !restored || !self.communityBenchmarkWaiters.isEmpty {
                 // The resumed owner will stop the model we just restored.
                 // Preserve that identity across the serialized ownership
-                // chain so the final owner restores it again on release.
+                // chain so the final owner restores it again on release. A
+                // failed restore is retained even without a waiter, giving a
+                // later benchmark release a bounded recovery opportunity.
                 self.communityBenchmarkDisplacedAlias = alias
+            }
+            if !self.communityBenchmarkWaiters.isEmpty {
                 let next = self.communityBenchmarkWaiters.removeFirst()
                 self.communityBenchmarkReservations.insert(next.reservation)
                 next.continuation.resume(returning: next.reservation)

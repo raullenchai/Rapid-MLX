@@ -1262,7 +1262,7 @@ struct ContentView: View {
                                         generation: catalogGeneration
                                     )
                                 }
-                                _ = await server.ensureServing(
+                                return await server.ensureServing(
                                     alias: restoredAlias,
                                     hfPath: entry?.hfRepo,
                                     estimatedMemoryGB: nil,
