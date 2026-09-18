@@ -408,6 +408,7 @@ def _canonical_home_path(value: str, goal: str = "") -> str:
     if (
         normalized in explicit_paths
         or any(normalized.startswith(path.rstrip("/") + "/") for path in explicit_paths)
+        or any(path.startswith(normalized.rstrip("/") + "/") for path in explicit_paths)
         or normalized.startswith("~/Rapid Workspace/")
     ):
         return normalized
