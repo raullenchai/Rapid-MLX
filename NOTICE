@@ -33,6 +33,16 @@ project (https://github.com/vllm-project/vllm).
 Vendored third-party source
 ===========================
 
+The Bonsai 2 Hadamard runtime in
+`rapid_mlx/models/prism_hadamard_qwen35.py` is adapted from Prism ML's
+https://huggingface.co/prism-ml/Ternary-Bonsai-2-27B-mlx-2bit
+at revision 3f926b415992eaa2ae9dd7b573706494d6bbf787. The runtime directory
+carries the MIT License — Copyright © 2023 Apple Inc. — reproduced in the
+adapted file. Created using Bonsai by Prism ML; the model's root NOTICE also
+credits Prism ML, Inc. (2026-present) and Alibaba Cloud under Apache-2.0.
+Model weights remain separate; Python from model snapshots is never executed
+by this loader.
+
 The Qwen4/Qwen3.8 stage-one QSA selector in
 `rapid_mlx/kernels/qsa_stage1.py` is adapted from
 https://github.com/pierre427/mlx-lm-unified at commit
