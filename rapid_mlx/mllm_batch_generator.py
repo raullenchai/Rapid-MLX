@@ -1231,7 +1231,7 @@ class MLLMBatchGenerator:
         self._prefix_cache_enabled = bool(enable_prefix_cache)
         if enable_prefix_cache:
             try:
-                from mlx_vlm import apc as _apc
+                from rapid_mlx.models.mlx_vlm_vendored import apc as _apc
 
                 mode = _apc.model_apc_mode(self.language_model)
                 if mode == "exact":
@@ -1608,7 +1608,7 @@ class MLLMBatchGenerator:
             hit: str = cached
             return hit
         try:
-            from mlx_vlm import apc as _apc
+            from rapid_mlx.models.mlx_vlm_vendored import apc as _apc
 
             salt = str(
                 _apc.semantic_extra_hash(model=self.model, processor=self.processor)
