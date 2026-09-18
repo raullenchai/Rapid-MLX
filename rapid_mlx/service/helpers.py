@@ -4357,7 +4357,11 @@ async def _disconnect_guard(
                 # message substring: arbitrary internal exceptions may contain
                 # caller text or local paths. Every other fault remains under
                 # F-131's generic sanitisation.
-                from ..request import ClientRequestError, InferenceAbortedError
+                from ..request import (
+                    ClientRequestError,
+                    InferenceAbortedError,
+                    inference_aborted_error_payload,
+                )
 
                 if (
                     isinstance(exc, InferenceAbortedError)
@@ -4366,6 +4370,26 @@ async def _disconnect_guard(
                     _sse_type = "server_error"
                     _sse_message = "Request cancelled by model replacement"
                     _sse_code = "model_replacement"
+                elif isinstance(exc, InferenceAbortedError):
+                    # #3564: a generation-time engine abort (OOM /
+                    # transient fault) that escapes AFTER the SSE response
+                    # committed its headers. We can no longer choose the
+                    # HTTP status, so we emit the SAME structured error the
+                    # pre-commit path returns as a 503 -- a stable
+                    # ``error.code`` the Desktop GUI maps to a curated
+                    # failure card -- as a terminal SSE frame. This mirrors
+                    # the non-streaming route exactly: the MLLM lane
+                    # pre-classifies the code onto ``error_kind`` while the
+                    # text lane leaves it ``None`` and
+                    # ``inference_aborted_error_payload`` re-derives the
+                    # category from the message -- so BOTH lanes surface a
+                    # faithful code here. The message is the fixed, safe
+                    # per-code string (never ``str(exc)``); the raw
+                    # exception was already logged above with ``exc_info``.
+                    _payload = inference_aborted_error_payload(exc)
+                    _sse_type = _payload["type"]
+                    _sse_message = _payload["message"]
+                    _sse_code = _payload["code"]
                 elif isinstance(exc, ClientRequestError):
                     _sse_type = "invalid_request_error"
                     _sse_message = str(exc)

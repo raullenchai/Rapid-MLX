@@ -603,7 +603,18 @@ struct ChatStreamClient {
                 // so the user sees the real reason.
                 if let env = try? decoder.decode(Wire.ErrorEnvelope.self, from: payloadData),
                    let message = env.error.message, !message.isEmpty {
-                    throw ChatStreamError.transport(message)
+                    // #3564: carry the FULL error envelope (not just the
+                    // message) so ``FailureDiagnoser.chatFailureKind`` can
+                    // read the stable ``error.code``. The code survives the
+                    // engine's message sanitisation, unlike a keyword scan
+                    // of the prose message, so a generation-time OOM that
+                    // escapes mid-stream (after the SSE response committed)
+                    // is still classified faithfully. ``message`` is
+                    // required non-empty above to confirm this is a real
+                    // error frame; the raw payload is only logged /
+                    // classified, never shown -- the user sees the curated
+                    // failure card.
+                    throw ChatStreamError.transport(payload)
                 }
                 // Tolerate genuinely malformed lines — the spec says we
                 // MUST ignore unparseable events.

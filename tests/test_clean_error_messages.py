@@ -575,15 +575,34 @@ class TestInferenceAbortedHttpException:
 
         assert http.detail["error"]["code"] == "insufficient_memory"
 
-    def test_unknown_error_kind_falls_back_to_message_classification(self):
-        """A non-code ``error_kind`` (e.g. the ``lifecycle`` cancellation tag)
-        is not a client code, so the mapper ignores it and classifies from the
-        text — here, a generic transient failure."""
+    def test_lifecycle_cancellation_maps_to_model_replacement(self):
+        """A ``lifecycle`` cancellation (the primary model was replaced under a
+        running request) is NOT an engine fault. The mapper must surface the
+        same ``model_replacement`` envelope the post-commit SSE frame emits, so
+        the pre-commit HTTP 503 and the mid-stream frame agree for the same
+        event (#3564) — never a misleading transient-crash "please try again"."""
         from rapid_mlx.request import InferenceAbortedError
         from rapid_mlx.routes.chat import _inference_aborted_http_exception
 
         http = _inference_aborted_http_exception(
             InferenceAbortedError("engine step crashed", error_kind="lifecycle")
+        )
+
+        err = http.detail["error"]
+        assert err["code"] == "model_replacement"
+        assert "model replacement" in err["message"].lower()
+        # The raw abort text must not survive into the client message.
+        assert "engine step crashed" not in err["message"]
+
+    def test_unknown_non_lifecycle_error_kind_falls_back_to_message(self):
+        """A non-code, non-lifecycle ``error_kind`` is not a client code, so the
+        mapper ignores it and classifies from the (sanitised) text — here, a
+        generic transient failure."""
+        from rapid_mlx.request import InferenceAbortedError
+        from rapid_mlx.routes.chat import _inference_aborted_http_exception
+
+        http = _inference_aborted_http_exception(
+            InferenceAbortedError("engine step crashed", error_kind="repetition")
         )
 
         assert http.detail["error"]["code"] == "engine_aborted"

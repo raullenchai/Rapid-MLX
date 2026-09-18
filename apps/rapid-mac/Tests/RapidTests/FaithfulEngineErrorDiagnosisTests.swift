@@ -130,4 +130,71 @@ struct FaithfulEngineErrorDiagnosisTests {
         #expect(FailureDiagnoser.chatFailureKind(raw: "the local engine isn't running") == .engineNotRunning)
         #expect(FailureDiagnoser.chatFailureKind(raw: "insufficient memory to continue") == .modelOutOfMemory)
     }
+
+    // MARK: - end-to-end: a mid-stream abort carries its code to the diagnoser
+
+    @Test("A mid-stream OOM frame carries its code through ChatStreamClient and classifies via the code, not a keyword scan")
+    @MainActor
+    func midStreamOOMFrameClassifiesViaCodeEndToEnd() async throws {
+        let client = ChatStreamClient(
+            baseURL: URL(string: "fake://rapid-mlx")!,
+            session: MidStreamOOMCodeProtocol.session()
+        )
+        let req = ChatStreamClient.Request(
+            alias: "qwen3.5-4b",
+            messages: [ChatMessage(role: .user, content: "hi", status: .complete)]
+        )
+        do {
+            try await client.send(req) { _ in }
+            Issue.record("expected a thrown ChatStreamError, got clean return")
+        } catch let error as ChatStreamError {
+            guard case .transport(let body) = error else {
+                Issue.record("expected .transport, got \(error)")
+                return
+            }
+            // The client carries the FULL envelope, so the code is present
+            // even though the message was sanitised of any memory keyword.
+            #expect(body.contains("insufficient_memory"))
+            #expect(!body.lowercased().contains("out of memory"))
+            // And the diagnoser reaches the memory card VIA the code — a
+            // keyword scan of this message alone would miss it.
+            #expect(FailureDiagnoser.chatFailureKind(error: error) == .modelOutOfMemory)
+        } catch {
+            Issue.record("expected ChatStreamError, got \(error)")
+        }
+    }
+}
+
+/// #3564 end-to-end stub: the server emits a mid-stream error frame whose
+/// message has been SANITISED to remove any memory keyword, but whose stable
+/// ``code`` still identifies the category. ChatStreamClient must carry the
+/// full envelope through ``.transport`` so the diagnoser reads the code.
+final class MidStreamOOMCodeProtocol: URLProtocol, @unchecked Sendable {
+    static func session() -> URLSession {
+        let config = URLSessionConfiguration.ephemeral
+        config.protocolClasses = [MidStreamOOMCodeProtocol.self] + (config.protocolClasses ?? [])
+        return URLSession(configuration: config)
+    }
+
+    override class func canInit(with request: URLRequest) -> Bool { true }
+    override class func canonicalRequest(for request: URLRequest) -> URLRequest { request }
+
+    override func startLoading() {
+        let response = HTTPURLResponse(
+            url: request.url!,
+            statusCode: 200,
+            httpVersion: "HTTP/1.1",
+            headerFields: ["Content-Type": "text/event-stream"]
+        )!
+        client?.urlProtocol(self, didReceive: response, cacheStoragePolicy: .notAllowed)
+        // The message carries NO memory keyword; only ``code`` names OOM.
+        let body = """
+        data: {"choices":[{"delta":{"content":"working"}}]}\n
+        data: {"error":{"message":"The request could not be completed.","type":"server_error","code":"insufficient_memory","param":null}}\n
+        """.data(using: .utf8)!
+        client?.urlProtocol(self, didLoad: body)
+        client?.urlProtocolDidFinishLoading(self)
+    }
+
+    override func stopLoading() {}
 }

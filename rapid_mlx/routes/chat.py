@@ -72,12 +72,9 @@ from ..config import get_config
 from ..engine import GenerationOutput
 from ..middleware.auth import check_rate_limit, verify_api_key
 from ..request import (
-    ENGINE_ABORT_CODE_ENGINE_ABORTED,
-    ENGINE_ABORT_CODE_INSUFFICIENT_MEMORY,
-    ENGINE_ABORT_CODES,
     ClientRequestError,
     InferenceAbortedError,
-    classify_engine_abort,
+    inference_aborted_error_payload,
 )
 from ..response_cache import (
     UNCACHEABLE,
@@ -3731,29 +3728,9 @@ def _inference_aborted_http_exception(exc: BaseException) -> HTTPException:
     up and a smaller request may succeed (#353). The user-facing ``message`` is
     a fixed, safe string per code — never ``str(exc)`` — so no internals leak.
     """
-    kind = getattr(exc, "error_kind", None)
-    code = kind if kind in ENGINE_ABORT_CODES else classify_engine_abort(exc)
-    if code == ENGINE_ABORT_CODE_INSUFFICIENT_MEMORY:
-        message = (
-            "The model ran out of memory during generation. "
-            "Free up memory or choose a smaller model."
-        )
-    else:
-        code = ENGINE_ABORT_CODE_ENGINE_ABORTED
-        message = (
-            "Inference was interrupted by a transient engine error. "
-            "Please try again."
-        )
     return HTTPException(
         status_code=503,
-        detail={
-            "error": {
-                "message": message,
-                "type": "server_error",
-                "code": code,
-                "param": None,
-            }
-        },
+        detail={"error": inference_aborted_error_payload(exc)},
     )
 
 

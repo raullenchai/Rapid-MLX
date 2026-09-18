@@ -546,8 +546,7 @@ def test_mllm_fail_all_inflight_stamps_classified_abort_code_on_outputs():
     assert output.finished_request_ids == {"running", "waiting"}
     assert output.outputs, "expected per-request outputs to classify"
     assert all(
-        ro.error_kind == ENGINE_ABORT_CODE_INSUFFICIENT_MEMORY
-        for ro in output.outputs
+        ro.error_kind == ENGINE_ABORT_CODE_INSUFFICIENT_MEMORY for ro in output.outputs
     )
 
     # A generic engine-loop crash is NOT memory-related → transient code.
@@ -556,11 +555,24 @@ def test_mllm_fail_all_inflight_stamps_classified_abort_code_on_outputs():
         RuntimeError("Metal command buffer execution failed")
     )
     assert all(
-        ro.error_kind == ENGINE_ABORT_CODE_ENGINE_ABORTED
-        for ro in output.outputs
+        ro.error_kind == ENGINE_ABORT_CODE_ENGINE_ABORTED for ro in output.outputs
     )
     # The stable code, never the raw text, is what rides on error_kind.
     assert all(ro.error is not None for ro in output.outputs)
+
+    # #3564 (codex NIT): the raw exception can hold paths, prompt fragments,
+    # or model internals. Neither the client-facing ``error`` message nor the
+    # ``error_kind`` code may carry any of it — only the fixed, curated
+    # per-category text/slug is allowed to cross the trust boundary.
+    secret = "/Users/secret/prompt-and-model-internals.safetensors"
+    scheduler = _make_mllm_scheduler_for_abort()
+    output = scheduler._fail_all_inflight(
+        RuntimeError(f"kIOGPUCommandBufferCallbackErrorOutOfMemory {secret}")
+    )
+    for ro in output.outputs:
+        assert secret not in (ro.error or "")
+        assert secret not in (ro.error_kind or "")
+        assert ro.error_kind == ENGINE_ABORT_CODE_INSUFFICIENT_MEMORY
 
 
 @pytest.mark.asyncio

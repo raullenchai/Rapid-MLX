@@ -777,7 +777,8 @@ final class FinishReasonNoDoneProtocol: URLProtocol, @unchecked Sendable {
 /// would treat this as a malformed StreamChunk and silently skip,
 /// then EOF would surface as ``.streamTruncated`` with no useful
 /// reason. Post-fix the envelope is recognised and the message
-/// reaches the UI as a transport error.
+/// (the full envelope, carrying the machine-readable code) reaches the
+/// UI as a transport error.
 final class ErrorEnvelopeProtocol: URLProtocol, @unchecked Sendable {
     static func session() -> URLSession {
         let config = URLSessionConfiguration.ephemeral
@@ -862,8 +863,13 @@ struct ChatStreamCodexR1Tests {
         do {
             try await client.send(req) { _ in }
             Issue.record("expected ChatStreamError.transport, got clean return")
-        } catch ChatStreamError.transport(let message) {
-            #expect(message.contains("CUDA out of memory"))
+        } catch ChatStreamError.transport(let body) {
+            // #3564: the transport now carries the FULL error envelope (not
+            // just the message) so ``FailureDiagnoser`` can read the stable
+            // ``error.code``. The human message is still present as a
+            // substring; the machine-readable code rides alongside it.
+            #expect(body.contains("CUDA out of memory"))
+            #expect(body.contains("\"code\":\"oom\""))
         } catch {
             Issue.record("expected ChatStreamError.transport, got \(error)")
         }

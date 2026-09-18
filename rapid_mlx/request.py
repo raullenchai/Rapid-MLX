@@ -374,6 +374,51 @@ def classify_engine_abort(exc: object) -> str:
     return ENGINE_ABORT_CODE_ENGINE_ABORTED
 
 
+def inference_aborted_error_payload(exc: BaseException) -> dict:
+    """Build the OpenAI-shaped ``error`` object for an engine-loop abort.
+
+    Single source of truth (#3564) shared by the HTTP 503 envelope (the
+    non-streaming route and the stream preflight) and the terminal SSE error
+    frame emitted mid-stream once the streaming response has already committed
+    its headers. The stable category is carried on
+    :attr:`InferenceAbortedError.error_kind` for lanes that pre-classify, else
+    re-derived from the message via :func:`classify_engine_abort`. The
+    user-facing ``message`` is a fixed, safe string per code -- never
+    ``str(exc)`` -- so no engine internals (paths, prompt fragments) leak.
+    """
+    kind = getattr(exc, "error_kind", None)
+    if kind == "lifecycle":
+        # A cooperative cancellation (the primary model was replaced under a
+        # running request), NOT an engine fault. Mirror the terminal SSE frame
+        # ``_disconnect_guard`` emits post-commit so the pre-commit HTTP 503 and
+        # the mid-stream SSE frame agree for the SAME event (#3564) — otherwise
+        # a model replacement reads as a transient crash with a misleading
+        # "please try again".
+        return {
+            "message": "Request cancelled by model replacement",
+            "type": "server_error",
+            "code": "model_replacement",
+            "param": None,
+        }
+    code = kind if kind in ENGINE_ABORT_CODES else classify_engine_abort(exc)
+    if code == ENGINE_ABORT_CODE_INSUFFICIENT_MEMORY:
+        message = (
+            "The model ran out of memory during generation. "
+            "Free up memory or choose a smaller model."
+        )
+    else:
+        code = ENGINE_ABORT_CODE_ENGINE_ABORTED
+        message = (
+            "Inference was interrupted by a transient engine error. Please try again."
+        )
+    return {
+        "message": message,
+        "type": "server_error",
+        "code": code,
+        "param": None,
+    }
+
+
 class ClientRequestError(ValueError):
     """A request rejection whose message is explicitly safe for clients.
 

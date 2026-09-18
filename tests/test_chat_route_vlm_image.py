@@ -38,11 +38,11 @@ from fastapi.testclient import TestClient
 
 from rapid_mlx.config import reset_config
 from rapid_mlx.engine.base import GenerationOutput
-from rapid_mlx.request import ClientRequestError, InferenceAbortedError
-from rapid_mlx.routes.chat import router as chat_router
 from rapid_mlx.middleware.exception_handlers import (
     install_exception_handlers,
 )
+from rapid_mlx.request import ClientRequestError, InferenceAbortedError
+from rapid_mlx.routes.chat import router as chat_router
 
 
 @pytest.fixture(autouse=True)
@@ -113,10 +113,14 @@ class _StubTextFallbackEngine(_StubMLLMEngine):
 
 class _StubRetryableFailureEngine(_StubMLLMEngine):
     async def chat(self, *, messages, **kwargs):
+        # Mirrors what ``MLLMScheduler._fail_all_inflight`` produces for a
+        # transient batch crash: the curated (already-sanitised) text plus the
+        # pre-classified ``engine_aborted`` code stamped by
+        # ``classify_engine_abort``.
         raise InferenceAbortedError(
             "MLLM inference was interrupted by a transient engine error; "
             "retry the request",
-            error_kind="lifecycle",
+            error_kind="engine_aborted",
         )
 
 
@@ -299,9 +303,9 @@ def test_chat_route_forwards_image_url_content_to_mllm_engine():
 
 
 def test_chat_route_returns_503_for_retryable_mllm_batch_failure():
-    """A scheduler lifecycle interruption must reach HTTP clients as a
-    structured 503 whose ``error.code`` marks the category (#3564). A generic
-    ``lifecycle`` interruption (no memory signal in the sanitised text) maps to
+    """A transient MLLM batch failure must reach HTTP clients as a structured
+    503 whose ``error.code`` marks the category (#3564). A generic engine abort
+    (no memory signal in the sanitised text) is pre-classified as
     ``engine_aborted``; the message is a fixed, safe string — never the raw
     engine text."""
     client = _make_client_with_envelope(_StubRetryableFailureEngine())
