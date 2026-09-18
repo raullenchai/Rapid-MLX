@@ -378,6 +378,12 @@ def test_desktop_local_tools_route_without_leaking_local_requests_to_web():
         "Read the file /Users/alice/Documents/note.txt", offered
     ) == ["local_read"]
     assert _route_desktop_client_tools(
+        "Read /Users/me/Documents/notes.txt and summarize it", offered
+    ) == ["local_read"]
+    assert _route_desktop_client_tools(
+        "Draft a proposal and save it to /Users/me/Documents/proposal.md", offered
+    ) == ["local_write"]
+    assert _route_desktop_client_tools(
         "Write a C program to /Users/alice/Documents/hello.c and compile and run it",
         offered,
     ) == ["local_write", "local_run"]

@@ -276,6 +276,7 @@ enum LocalWorkspaceTools {
             return withToolCallID(rejected, call.id)
         }
         let approvedPath: PinnedPath?
+        let approvedParent: PinnedPath?
         let approvedRun: ApprovedRun?
         let approvedWrite: ApprovedWrite?
         do {
@@ -288,11 +289,25 @@ enum LocalWorkspaceTools {
                 )
                 approvedRun = nil
                 approvedWrite = nil
-            case "local_read", "local_trash":
+                approvedParent = nil
+            case "local_read":
                 let args = try requireDecoded(PathArgs.self, call.function.arguments)
                 approvedPath = try PinnedPath(
                     url: safeURL(args.path), directory: false,
                     presentedURL: validatedLexicalURL(args.path)
+                )
+                approvedRun = nil
+                approvedWrite = nil
+                approvedParent = nil
+            case "local_trash":
+                let args = try requireDecoded(PathArgs.self, call.function.arguments)
+                let fileURL = try safeURL(args.path)
+                approvedPath = try PinnedPath(
+                    url: fileURL, directory: false,
+                    presentedURL: validatedLexicalURL(args.path)
+                )
+                approvedParent = try PinnedPath(
+                    url: fileURL.deletingLastPathComponent(), directory: true
                 )
                 approvedRun = nil
                 approvedWrite = nil
@@ -301,15 +316,18 @@ enum LocalWorkspaceTools {
                 approvedWrite = try prepareWrite(args)
                 approvedPath = nil
                 approvedRun = nil
+                approvedParent = nil
             case "local_run":
                 let args = try requireDecoded(RunArgs.self, call.function.arguments)
                 approvedRun = try prepareRun(args)
                 approvedPath = nil
                 approvedWrite = nil
+                approvedParent = nil
             default:
                 approvedPath = nil
                 approvedRun = nil
                 approvedWrite = nil
+                approvedParent = nil
             }
         } catch {
             return withToolCallID(
@@ -337,7 +355,7 @@ enum LocalWorkspaceTools {
             case "local_search": return search(call.function.arguments, approved: approvedPath)
             case "local_read": return read(approved: approvedPath)
             case "local_write": return write(approved: approvedWrite)
-            case "local_trash": return trash(approved: approvedPath)
+            case "local_trash": return trash(approved: approvedPath, parent: approvedParent)
             case "local_run": return runCommand(approved: approvedRun)
             default: return failure("Unknown local tool \(name)", executed: false)
             }
@@ -894,15 +912,13 @@ enum LocalWorkspaceTools {
         LocalError("\(context): \(String(cString: strerror(errno)))")
     }
 
-    private static func trash(approved: PinnedPath?) -> ToolCallResult {
+    private static func trash(approved: PinnedPath?, parent: PinnedPath?) -> ToolCallResult {
         do {
-            guard let approved else { return failure("local_trash approval expired") }
+            guard let approved, let parent else { return failure("local_trash approval expired") }
             try approved.verifyPathStillNamesPinnedObject()
+            try parent.verifyPathStillNamesPinnedObject()
             let url = approved.url
-            let parent = url.deletingLastPathComponent()
-            let parentFD = Darwin.open(parent.path, O_RDONLY | O_DIRECTORY | O_CLOEXEC)
-            guard parentFD >= 0 else { throw posixError("could not open the approved file's folder") }
-            defer { Darwin.close(parentFD) }
+            let parentFD = parent.descriptor
             let trashURL = FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent(".Trash")
             let trashFD = Darwin.open(trashURL.path, O_RDONLY | O_DIRECTORY | O_CLOEXEC)
             guard trashFD >= 0 else { throw posixError("could not open the macOS Trash") }
@@ -914,6 +930,7 @@ enum LocalWorkspaceTools {
             // the moved inode afterwards; in the vanishingly small race between
             // the pre-check and rename, put the unapproved object back.
             try approved.verifyPathStillNamesPinnedObject()
+            try parent.verifyPathStillNamesPinnedObject()
             let renamed = sourceName.withCString { sourcePointer in
                 destinationName.withCString { destinationPointer in
                     renameatx_np(parentFD, sourcePointer, trashFD, destinationPointer, UInt32(RENAME_EXCL))

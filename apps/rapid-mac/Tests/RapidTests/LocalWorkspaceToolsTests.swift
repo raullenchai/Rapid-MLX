@@ -587,6 +587,39 @@ final class LocalWorkspaceToolsTests {
         #expect(FileManager.default.fileExists(atPath: target.path))
     }
 
+    @Test("trash rejects a parent folder replaced while approval is open")
+    func trashPinsParentIdentity() async throws {
+        let root = try fixtureDirectory()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let parent = root.appendingPathComponent("approved", isDirectory: true)
+        let moved = root.appendingPathComponent("moved", isDirectory: true)
+        try FileManager.default.createDirectory(at: parent, withIntermediateDirectories: false)
+        let file = parent.appendingPathComponent("notes.txt")
+        try "approved".write(to: file, atomically: true, encoding: .utf8)
+        let store = approval()
+        let task = Task {
+            await LocalWorkspaceTools.run(
+                ToolCall(
+                    id: "trash-parent", name: "local_trash",
+                    arguments: #"{"path":"\#(file.path)"}"#
+                ),
+                approval: store
+            )
+        }
+        while store.pendingRequest == nil { await Task.yield() }
+        try FileManager.default.moveItem(at: parent, to: moved)
+        try FileManager.default.createDirectory(at: parent, withIntermediateDirectories: false)
+        let replacement = parent.appendingPathComponent("notes.txt")
+        try "replacement".write(to: replacement, atomically: true, encoding: .utf8)
+        store.answer(.allowOnce)
+
+        let result = await task.value
+        #expect(result.isError)
+        #expect(result.content.contains("approved file changed"))
+        #expect(try String(contentsOf: replacement, encoding: .utf8) == "replacement")
+        #expect(FileManager.default.fileExists(atPath: moved.appendingPathComponent("notes.txt").path))
+    }
+
     @Test("read rejects files over its hard byte limit")
     func readRejectsOversizedFiles() async throws {
         let root = try fixtureDirectory()

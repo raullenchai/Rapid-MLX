@@ -248,6 +248,7 @@ _LOCAL_READ_INTENT = re.compile(
 )
 _LOCAL_WRITE_INTENT = re.compile(
     r"\b(?:write|create|save|generate|draft)\b.{0,100}\b(?:file|proposal|program|code|script)\b|"
+    r"\b(?:file|proposal|program|code|script)\b.{0,100}\b(?:write|create|save|generate|draft)\b|"
     r"(?:写|创建|生成|保存).{0,80}(?:文件|提案|程序|代码|脚本)",
     re.IGNORECASE,
 )
@@ -903,7 +904,11 @@ def _route_desktop_client_tools(
         )
         is not None
     )
-    local_read = _LOCAL_READ_INTENT.search(goal) is not None and has_local_path
+    local_read = has_local_path and (
+        _LOCAL_READ_INTENT.search(goal) is not None
+        or re.search(r"\b(?:read|open|inspect|show)\b", goal, re.IGNORECASE)
+        is not None
+    )
     local_run = _LOCAL_RUN_INTENT.search(goal) is not None
     local_write = _LOCAL_WRITE_INTENT.search(goal) is not None and (
         has_local_path
