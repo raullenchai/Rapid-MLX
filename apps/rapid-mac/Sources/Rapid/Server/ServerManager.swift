@@ -3377,6 +3377,10 @@ final class ServerManager {
             guard let self else { return }
             self.communityBenchmarkRestorationInFlight = false
             if !self.communityBenchmarkWaiters.isEmpty {
+                // The resumed owner will stop the model we just restored.
+                // Preserve that identity across the serialized ownership
+                // chain so the final owner restores it again on release.
+                self.communityBenchmarkDisplacedAlias = alias
                 let next = self.communityBenchmarkWaiters.removeFirst()
                 self.communityBenchmarkReservations.insert(next.reservation)
                 next.continuation.resume(returning: next.reservation)

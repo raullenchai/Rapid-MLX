@@ -328,7 +328,9 @@ struct ServerRuntimeCapabilitiesTests {
         await restoreGate.release()
         let replacementReservation = try await replacement.value
         #expect(replacementAcquired)
-        manager.finishCommunityBenchmark(replacementReservation)
+        #expect(
+            manager.finishCommunityBenchmark(replacementReservation) == "qwen3.5-4b"
+        )
     }
 
     @Test("Deferred reap quarantine blocks the next benchmark owner")
