@@ -197,3 +197,97 @@ def test_adapter_tables_are_namespace_complete():
             ns.PoolingCache,
         ):
             assert cls in rule_types
+
+
+@pytest.fixture
+def no_upstream_cache_namespace(monkeypatch):
+    """Simulate an install whose ``mlx_vlm.models`` subpackage is absent —
+    the dual-namespace resolution then has only the vendored namespace, and
+    the upstream fallback inside ``_cache_namespace_of`` must fail. (The
+    documented ``mlx_vlm.apc`` redirect stays live so the adapters
+    themselves keep working; this isolates the namespace-resolution
+    defect.)"""
+    import sys
+
+    import mlx_vlm.apc  # noqa: F401 - pin the redirect before blocking
+
+    monkeypatch.setitem(sys.modules, "mlx_vlm.models", None)
+    yield
+
+
+def test_clone_tuple_entry_without_upstream_namespace(
+    no_upstream_cache_namespace,
+):
+    """A bare tuple is namespace-agnostic, and ``apc_exact_eligible``
+    declares tuples supported. Upstream resolves its single cache module
+    unconditionally, so its tuple branch always works; the vendored copy
+    must not drop composite caches just because the tuple itself resolves
+    to no namespace (pre-fix behavior: ``clone_cache_entry`` returned
+    ``None`` whenever the upstream cache namespace was unavailable)."""
+    a = _populated_kv(vendored_cache)
+    b = _populated_kv(vendored_cache)
+    eval_targets: list = []
+    cloned = clone_cache_entry(
+        (a, b), min_capacity_tokens=32, eval_targets=eval_targets
+    )
+    assert isinstance(cloned, tuple) and len(cloned) == 2
+    assert all(type(s) is vendored_cache.KVCache for s in cloned)
+    assert cloned[0].offset == 4
+    assert cloned[1].offset == 4
+
+
+def test_merge_tuple_entries_without_upstream_namespace(
+    no_upstream_cache_namespace,
+):
+    """``merge_cache_entries`` derives the container namespace from the
+    first tuple element when the tuple itself resolves to none; pre-fix it
+    bailed out with ``None`` for composite tuple entries."""
+    merged = apc_adapters.merge_cache_entries(
+        [
+            (_populated_kv(vendored_cache), _populated_kv(vendored_cache)),
+            (_populated_kv(vendored_cache), _populated_kv(vendored_cache)),
+        ],
+        [3, 3],
+    )
+    assert merged is not None
+    assert type(merged) is vendored_cache.CacheList
+    assert all(type(s) is vendored_cache.BatchKVCache for s in merged.caches)
+
+
+def test_type_table_build_publishes_only_complete_tables(monkeypatch):
+    """The lazy table builders must publish their globals only after every
+    namespace is processed. Assigning inside the namespace loop let a
+    concurrent first caller observe a vendored-only table and reject the
+    upstream cache types the lane still produces."""
+
+    class _BrokenNamespace:
+        def __getattr__(self, name):
+            raise RuntimeError("namespace probe failed mid-build")
+
+    def _namespaces():
+        return [vendored_cache, _BrokenNamespace()]
+
+    monkeypatch.setattr(apc_adapters, "_cache_namespaces", _namespaces)
+    monkeypatch.setattr(apc_adapters, "_APC_EXACT_TYPES", None)
+    monkeypatch.setattr(apc_adapters, "_APC_BLOCK_TYPES", None)
+    with pytest.raises(RuntimeError):
+        apc_adapters._apc_type_tables()
+    assert apc_adapters._APC_EXACT_TYPES is None
+    assert apc_adapters._APC_BLOCK_TYPES is None
+
+
+def test_clone_rules_build_publishes_only_complete_rules(monkeypatch):
+    """Same partial-publication hazard for the clone-rule table."""
+
+    class _BrokenNamespace:
+        def __getattr__(self, name):
+            raise RuntimeError("namespace probe failed mid-build")
+
+    def _namespaces():
+        return [vendored_cache, _BrokenNamespace()]
+
+    monkeypatch.setattr(apc_adapters, "_cache_namespaces", _namespaces)
+    monkeypatch.setattr(apc_adapters, "_CLONE_RULES", None)
+    with pytest.raises(RuntimeError):
+        apc_adapters._clone_rules()
+    assert apc_adapters._CLONE_RULES is None

@@ -366,9 +366,14 @@ def _apc_type_tables():
     global _APC_EXACT_TYPES, _APC_BLOCK_TYPES
     if _APC_EXACT_TYPES is None:
         # VENDOR-DEVIATION(dual-namespace): the tables cover every namespace
-        # during the transition.
+        # during the transition. Build them in locals and publish once —
+        # assigning the globals inside the namespace loop let a concurrent
+        # first caller observe a partially built table (vendored types only)
+        # and reject the other namespace's caches.
+        exact: tuple = ()
+        block: set = set()
         for ns in _cache_namespaces():
-            exact = (
+            exact = exact + (
                 ns.KVCache,
                 ns.BatchKVCache,
                 ns.BatchRotatingKVCache,
@@ -377,12 +382,9 @@ def _apc_type_tables():
                 ns.ChunkedKVCache,
                 ns.ArraysCache,
             )
-            if _APC_EXACT_TYPES is None:
-                _APC_EXACT_TYPES = exact
-                _APC_BLOCK_TYPES = {ns.KVCache}
-            else:
-                _APC_EXACT_TYPES = _APC_EXACT_TYPES + exact
-                _APC_BLOCK_TYPES.add(ns.KVCache)
+            block.add(ns.KVCache)
+        _APC_EXACT_TYPES = exact
+        _APC_BLOCK_TYPES = block
     return _APC_EXACT_TYPES, _APC_BLOCK_TYPES
 
 
@@ -557,15 +559,22 @@ def _clone_rules():
     global _CLONE_RULES
     if _CLONE_RULES is None:
         # VENDOR-DEVIATION(dual-namespace): the same adapters serve every
-        # namespace's cache classes during the transition.
+        # namespace's cache classes during the transition. Build the list in
+        # a local and publish once — appending to the global inside the loop
+        # let a concurrent first caller observe a partially built rule set
+        # and fall through to the wrong clone path.
+        rules: List[tuple] = []
         for ns in _cache_namespaces():
-            _CLONE_RULES = (_CLONE_RULES or []) + [
-                (ns.KVCache, KVCacheCloneAdapter()),
-                (ns.RotatingKVCache, RotatingKVCacheCloneAdapter()),
-                (ns.ChunkedKVCache, ChunkedKVCacheCloneAdapter()),
-                (ns.ArraysCache, ArraysCacheCloneAdapter()),
-                (ns.PoolingCache, PoolingCacheCloneAdapter()),
-            ]
+            rules.extend(
+                [
+                    (ns.KVCache, KVCacheCloneAdapter()),
+                    (ns.RotatingKVCache, RotatingKVCacheCloneAdapter()),
+                    (ns.ChunkedKVCache, ChunkedKVCacheCloneAdapter()),
+                    (ns.ArraysCache, ArraysCacheCloneAdapter()),
+                    (ns.PoolingCache, PoolingCacheCloneAdapter()),
+                ]
+            )
+        _CLONE_RULES = rules
     return _CLONE_RULES
 
 
@@ -622,6 +631,20 @@ def _snapshot_contract_clone(c, eval_targets, min_capacity_tokens):
 
 
 def clone_cache_entry(c, *, min_capacity_tokens, eval_targets):
+    # VENDOR-DEVIATION(dual-namespace): a bare tuple is namespace-agnostic —
+    # each element resolves its own namespace below — so clone it before the
+    # owning-namespace lookup, which cannot resolve a tuple in a stripped
+    # install (upstream imports its single cache module unconditionally and
+    # never sees this). ``apc_exact_eligible`` already declares tuples
+    # supported; dropping them here silently discarded composite caches.
+    if isinstance(c, tuple):
+        subs = [
+            clone_cache_entry(
+                s, min_capacity_tokens=min_capacity_tokens, eval_targets=eval_targets
+            )
+            for s in c
+        ]
+        return None if any(s is None for s in subs) else tuple(subs)
     # VENDOR-DEVIATION(dual-namespace): resolve the owning namespace so
     # constructed results keep the producer's cache types.
     lm = _cache_namespace_of(c)
@@ -657,14 +680,6 @@ def clone_cache_entry(c, *, min_capacity_tokens, eval_targets):
             for s in c.caches
         ]
         return None if any(s is None for s in subs) else lm.CacheList(*subs)
-    if isinstance(c, tuple):
-        subs = [
-            clone_cache_entry(
-                s, min_capacity_tokens=min_capacity_tokens, eval_targets=eval_targets
-            )
-            for s in c
-        ]
-        return None if any(s is None for s in subs) else tuple(subs)
     # A cache-defined snapshot contract takes precedence over the legacy
     # float-K/V fallback. Quantized caches use this to preserve their packed
     # representation end to end.
@@ -689,8 +704,13 @@ def merge_cache_entries(entries, prefix_lens):
         return None
     first = entries[0]
     # VENDOR-DEVIATION(dual-namespace): resolve the owning namespace so
-    # merged results keep the producer's cache types.
+    # merged results keep the producer's cache types. A bare tuple has no
+    # namespace of its own; derive the container namespace from its first
+    # element so composite merges keep working in a stripped install
+    # (upstream imports its single cache module unconditionally here).
     lm = _cache_namespace_of(first)
+    if lm is None and isinstance(first, tuple) and first:
+        lm = _cache_namespace_of(first[0])
     if lm is None:
         return None
     for entry in entries:

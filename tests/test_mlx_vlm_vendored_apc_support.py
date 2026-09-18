@@ -198,7 +198,53 @@ def test_vision_feature_cache_key_shapes():
     assert key.startswith("p:")
     assert cache._make_key(_Blob()) == key  # content-addressed
     # bytes-like sources are accepted directly and content-addressed.
-    assert cache._make_key(b"payload") == key
+    assert cache._make_key(b"payload") == cache._make_key(bytearray(b"payload"))
+    assert cache._make_key(b"payload") == cache._make_key(memoryview(b"payload"))
+    # tobytes() sources hash type/mode/size metadata together with the raw
+    # bytes, so they intentionally do NOT collide with a bare bytes source
+    # carrying the same byte string.
+    assert cache._make_key(b"payload") != key
+
+
+def test_vision_feature_cache_tobytes_keys_include_mode_and_size():
+    """Upstream hashed only ``tobytes()``, so images with identical raw
+    bytes but different mode or size collided and one image's features were
+    served for the other. The vendored copy folds stable type/mode/size
+    metadata into the hashed payload."""
+    cache = vendored_vision_cache.VisionFeatureCache(max_size=8)
+
+    class _Image:
+        def __init__(self, mode, size):
+            self.mode = mode
+            self.size = size
+
+        def tobytes(self):
+            return b"\x00\x00"
+
+    gray_wide = _Image("L", (2, 1))
+    rgb_square = _Image("RGB", (1, 1))
+    assert cache._make_key(gray_wide) != cache._make_key(rgb_square)
+    cache.put(gray_wide, "gray-features")
+    assert cache.get(rgb_square) is None  # no cross-serve
+    assert cache.get(gray_wide) == "gray-features"
+    # The same image object (same type/mode/size/bytes) still hits across
+    # calls — that is the cache's entire purpose.
+    assert cache.get(_Image("L", (2, 1))) == "gray-features"
+
+
+def test_vision_feature_cache_zero_max_size_disables_storage():
+    """Upstream raised KeyError (``popitem()`` on an empty mapping) when
+    ``put`` was called on a cache constructed with ``max_size <= 0``; the
+    constructor accepted any integer. The vendored copy treats zero (or
+    negative) as storage disabled."""
+    cache = vendored_vision_cache.VisionFeatureCache(max_size=0)
+    cache.put("a", "fa")  # must not raise
+    assert len(cache) == 0
+    assert cache.get("a") is None
+    assert "a" not in cache
+    negative = vendored_vision_cache.VisionFeatureCache(max_size=-3)
+    negative.put("a", "fa")  # must not raise
+    assert len(negative) == 0
 
 
 def test_vision_feature_cache_empty_and_nested_lists_do_not_collide():
