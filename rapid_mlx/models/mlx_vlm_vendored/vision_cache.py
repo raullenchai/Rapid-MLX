@@ -47,22 +47,37 @@ class VisionFeatureCache:
         # another — a bare "|" join collided distinct lists (["a|b", "c"] vs
         # ["a", "b|c"]), and length-prefixing alone still collides across
         # nesting boundaries (["1:a", "b"] vs [["a"], "b"]). Every branch now
-        # emits a self-delimiting, type-tagged encoding (``s``=str/Path,
-        # ``l``=list, ``p``=content hash), which is injective. Upstream also
-        # documented Path sources but only accepted ``str`` (a Path fell into
-        # the ``obj:{id}`` fallback); PathLike is normalized via
-        # ``os.fspath``.
+        # emits a count-delimited, type-tagged encoding (``s``=str/Path,
+        # ``l``=list with a child count, ``p``=content hash), which is
+        # injective. Upstream also documented Path sources but only accepted
+        # ``str`` (a Path fell into the ``obj:{id}`` fallback); PathLike is
+        # normalized via ``os.fspath``.
         if isinstance(image_source, os.PathLike):
             image_source = os.fspath(image_source)
         if isinstance(image_source, str):
             return f"s{len(image_source)}:{image_source}"
         if isinstance(image_source, list):
-            # Children are already self-delimiting (each carries its own
-            # type tag and length), so concatenation is injective.
-            return "l" + "".join(map(self._make_key, image_source))
+            # The child count makes empty children unambiguous: bare "l"
+            # tags alone would collapse ([[], []] vs [[[]]]).
+            return (
+                f"l{len(image_source)}:" + "".join(map(self._make_key, image_source))
+            )
         if hasattr(image_source, "tobytes"):
-            h = hashlib.sha256(image_source.tobytes()).hexdigest()[:16]
-            return f"p:{h}"
+            payload = image_source.tobytes()
+        elif isinstance(image_source, (bytes, bytearray, memoryview)):
+            payload = bytes(image_source)
+        else:
+            # Upstream fell back to ``obj:{id(...)}``; Python may hand that
+            # id to an unrelated object after the original is collected — a
+            # silent stale-feature hit. Fail loudly instead; the branches
+            # above cover every real caller (the lane passes pre-hashed
+            # string keys).
+            raise TypeError(
+                "unsupported image source type for the vision feature "
+                f"cache: {type(image_source).__name__}; pass a path/URL "
+                "string, a list of them, or a bytes-like image object"
+            )
+        return f"p:{hashlib.sha256(payload).hexdigest()[:16]}"
         # Upstream fell back to ``obj:{id(...)}``; Python may hand that id to
         # an unrelated object after the original is collected — a silent
         # stale-feature hit. Fail loudly instead; the branches above cover

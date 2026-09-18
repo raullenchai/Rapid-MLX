@@ -58,8 +58,9 @@ vendored copy differs by exactly the deviations listed):
      derived keys with a bare ``"|"`` (``["a|b", "c"]`` vs
      ``["a", "b|c"]`` collide), and even length-prefixing collides across
      nesting boundaries (``["1:a", "b"]`` vs ``[["a"], "b"]``). Fixed with
-     a self-delimiting, type-tagged encoding (``s``=str, ``l``=list,
-     ``p``=content hash) that is injective. Upstream also documented Path
+     a count-delimited, type-tagged encoding (``s``=str, ``l``=list with a
+     child count, ``p``=content hash) that is injective. Upstream also
+     documented Path
      sources but only accepted ``str`` (a ``Path`` fell into the
      ``obj:{id}`` fallback); ``os.PathLike`` is now normalized via
      ``os.fspath``.

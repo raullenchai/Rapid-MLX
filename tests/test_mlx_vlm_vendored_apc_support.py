@@ -188,7 +188,7 @@ def test_vision_feature_cache_lru_contract():
 def test_vision_feature_cache_key_shapes():
     cache = vendored_vision_cache.VisionFeatureCache(max_size=4)
     assert cache._make_key("path/img.png") == "s12:path/img.png"
-    assert cache._make_key(["a", "b"]) == "ls1:as1:b"
+    assert cache._make_key(["a", "b"]) == "l2:s1:as1:b"
 
     class _Blob:
         def tobytes(self):
@@ -197,6 +197,19 @@ def test_vision_feature_cache_key_shapes():
     key = cache._make_key(_Blob())
     assert key.startswith("p:")
     assert cache._make_key(_Blob()) == key  # content-addressed
+    # bytes-like sources are accepted directly and content-addressed.
+    assert cache._make_key(b"payload") == key
+
+
+def test_vision_feature_cache_empty_and_nested_lists_do_not_collide():
+    """The child count keeps empty children unambiguous: bare ``l`` tags
+    would collapse [[], []] and [[[]]] onto the same key."""
+    cache = vendored_vision_cache.VisionFeatureCache(max_size=8)
+    assert cache._make_key([[], []]) != cache._make_key([[[]]])
+    assert cache._make_key([]) != cache._make_key([[]])
+    cache.put([[], []], "pair")
+    assert cache.get([[[]]]) is None
+    assert cache.get([[], []]) == "pair"
 
 
 def test_vision_feature_cache_pathlike_sources():
