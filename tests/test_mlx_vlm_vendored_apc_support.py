@@ -49,6 +49,11 @@ def test_engine_resolves_the_vendored_family():
 
     assert apc.APCCoordinator is apc_coordinator.APCCoordinator
     assert apc.APCNode is apc_storage.APCNode
+    assert apc.ComponentId is apc_storage.ComponentId
+    assert apc.StateHandle is apc_storage.StateHandle
+    assert apc.clear_mlx_streams is _stream_cleanup.clear_mlx_streams
+    assert apc.kv_quant_from_config is vendored_kv_quant.from_config
+    assert apc.kv_quant_fingerprint is vendored_kv_quant.kv_quant_fingerprint
 
 
 def test_coordinator_builds_plan_from_vendored_caches():
