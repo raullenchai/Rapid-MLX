@@ -91,19 +91,29 @@ def _install_packed(language_model, config, weights):
     if not isinstance(records, list) or not records:
         raise ValueError("Bonsai 2 requires a non-empty packed module manifest")
     for record in records:
-        name = record["path"]
+        if not isinstance(record, dict):
+            raise ValueError(f"Invalid Bonsai 2 module manifest record: {record!r}")
+        name = record.get("path")
+        if not isinstance(name, str):
+            raise ValueError(f"Invalid Bonsai 2 module manifest path: {name!r}")
         original = modules.get(name)
         if name in seen or not isinstance(original, (nn.Linear, nn.Embedding)):
             raise ValueError(f"Invalid or duplicate Bonsai 2 module: {name}")
         seen.add(name)
-        if record["dtype"] != "float16" or record["embedding"] != isinstance(
+        if record.get("dtype") != "float16" or record.get("embedding") != isinstance(
             original, nn.Embedding
         ):
             raise ValueError(f"Invalid Bonsai 2 module kind or dtype: {name}")
         prefix = "language_model." + name
-        arrays = [
-            weights[prefix + "." + suffix] for suffix in ("weight", "scales", "biases")
-        ]
+        try:
+            arrays = [
+                weights[prefix + "." + suffix]
+                for suffix in ("weight", "scales", "biases")
+            ]
+        except KeyError as exc:
+            raise ValueError(
+                f"Missing Bonsai 2 packed tensor for {name}: {exc.args[0]}"
+            ) from exc
         rows, width = original.weight.shape
         expected = [(rows, width // 16), (rows, width // 128), (rows, width // 128)]
         if (
@@ -118,7 +128,7 @@ def _install_packed(language_model, config, weights):
                 or not mx.all(mx.isfinite(array)).item()
             ):
                 raise ValueError(f"Invalid Bonsai 2 affine parameters: {name}")
-        block = record["block"]
+        block = record.get("block")
         signs = weights.get(prefix + ".signs")
         if block not in (0, 512, 1024, 2048, 4096):
             raise ValueError(f"Unsupported Bonsai 2 Hadamard block: {block}")
@@ -129,7 +139,9 @@ def _install_packed(language_model, config, weights):
                 raise ValueError(f"Invalid Bonsai 2 sign vector: {name}")
         elif signs is not None:
             raise ValueError(f"Unexpected Bonsai 2 sign vector: {name}")
-        replacements.append((name, Packed(arrays, block, signs, record["embedding"])))
+        replacements.append(
+            (name, Packed(arrays, block, signs, record.get("embedding")))
+        )
     language_model.update_modules(tree_unflatten(replacements))
 
 

@@ -1949,6 +1949,24 @@ def _preflight_vision_runtime(
             and config_indicates_multimodal(getattr(metadata, "config", None) or {})
             and is_mllm_model(model_name)
         )
+        # A text-lane-only MLLM pack (Bonsai 2, model_type=prism_hadamard_qwen35)
+        # has no mlx-lm text backbone, and is_mllm_model() is False for its cold,
+        # header-less single-file snapshot — so the vision-weight/identity checks
+        # above stay silent and _ensure_routing_config() would pull the whole
+        # 8.6 GB pack before the load-time guard could fire. Recognize it from
+        # the config-only metadata here and require the vision runtime up front,
+        # so a base wheel fails with the actionable [vision] hint BEFORE any
+        # weight download.
+        _preflight_config = getattr(metadata, "config", None)
+        if (
+            isinstance(_preflight_config, dict)
+            and _preflight_config.get("model_type")
+            in _TEXT_LANE_UNSUPPORTED_MLLM_MODEL_TYPES
+        ):
+            from .models.mllm import _require_mlx_vlm
+
+            _require_mlx_vlm(preflight_path)
+            return
     if not has_vision_weights and not (not force_mllm and has_named_vision_identity):
         return
     decision = resolve_serving_lane_decision(
@@ -1963,6 +1981,79 @@ def _preflight_vision_runtime(
         from .models.mllm import _require_mlx_vlm
 
         _require_mlx_vlm(preflight_path)
+
+
+# Checkpoint ``model_type`` values whose ONLY loader lives on the MLLM/vision
+# lane and that have NO mlx-lm text backbone to auto-downgrade to. An ordinary
+# Qwen3.5 GatedDeltaNet VLM can serve its language tower on the text lane, so a
+# base wheel without ``mlx-vlm`` still boots; these packs cannot. Keyed on the
+# exact model_type so the guard touches only this family (zero blast radius).
+_TEXT_LANE_UNSUPPORTED_MLLM_MODEL_TYPES = frozenset({"prism_hadamard_qwen35"})
+
+
+def _prefetch_config_for_text_lane_guard(model_ref: str) -> None:
+    """Pull only ``config.json`` (a few KB) so the text-lane guard can classify
+    a cold pack. Best-effort and offline-aware: a miss defers to the downstream
+    loader's own error. Module-level so tests can substitute it.
+    """
+    from .model_metadata import hub_offline_mode_active
+
+    if os.path.exists(model_ref) or hub_offline_mode_active():
+        return
+    try:
+        from huggingface_hub import hf_hub_download
+
+        hf_hub_download(model_ref, "config.json")
+    except Exception:  # noqa: BLE001 — best-effort probe, never fatal
+        return
+
+
+def _reject_text_lane_only_mllm_pack(model_name: str, load_path: str) -> None:
+    """Reject an MLLM-only pack that routing sent to the text lane.
+
+    A Bonsai 2 Hadamard pack (``model_type=prism_hadamard_qwen35``) is a rotated
+    2-bit Qwen3.5 checkpoint whose only loader lives on the MLLM/vision lane
+    (:mod:`rapid_mlx.models.prism_hadamard_qwen35`). It reaches the text lane
+    only when ``mlx-vlm`` is absent (the hybrid lane auto-downgrades) or the
+    operator passed ``--no-mllm`` / a speculative-decode flag. Left alone it
+    would pull the 8.6 GB pack and then crash deep in mlx-lm on an unknown
+    architecture. Reject it after routing but BEFORE ``BatchedEngine`` allocates
+    weights, with an actionable message.
+
+    Config is available on the default path (``_resolve_serving_checkpoint``
+    fetched ``config.json``) and on any warm cache. A cold ``--no-mllm`` start
+    deliberately skips routing-config materialization, so the first read here
+    can miss; pull just ``config.json`` (not the 8.6 GB pack) and re-read so the
+    guard still fires before the download. If it still cannot be classified
+    (offline, or the Hub is unreachable) this is a silent no-op and the
+    downstream loader owns the error.
+    """
+    from .model_metadata import read_model_metadata
+
+    metadata = read_model_metadata(load_path)
+    config = metadata.config if metadata is not None else None
+    if not isinstance(config, dict):
+        _prefetch_config_for_text_lane_guard(load_path)
+        metadata = read_model_metadata(load_path)
+        config = metadata.config if metadata is not None else None
+    if not isinstance(config, dict):
+        return
+    if config.get("model_type") not in _TEXT_LANE_UNSUPPORTED_MLLM_MODEL_TYPES:
+        return
+    # A base wheel reaches the text lane precisely because mlx-vlm is
+    # missing/incompatible: surface that first with the actionable
+    # ``pip install 'rapid-mlx[vision]'`` hint. If the runtime is fine (an
+    # explicit ``--no-mllm`` on a full install), fall through to the flag-level
+    # rejection below.
+    from .models.mllm import _require_mlx_vlm
+
+    _require_mlx_vlm(load_path)
+    raise ValueError(
+        f"Bonsai 2 Hadamard packs (model_type={config.get('model_type')}, "
+        f"{model_name!r}) run only on the multimodal lane and have no mlx-lm "
+        "text backbone. Drop --no-mllm (and any speculative-decoding flag) so "
+        "the model loads on the MLLM lane."
+    )
 
 
 def _resolve_serving_checkpoint(
@@ -2384,6 +2475,8 @@ def load_model(
             from .models.mllm import _require_mlx_vlm
 
             _require_mlx_vlm(_serving_checkpoint.load_path)
+        else:
+            _reject_text_lane_only_mllm_pack(model_name, _engine_model_path)
 
     # A bare multi-variant repo has no useful config at its root. Resolve the
     # concrete checkpoint first, then derive every checkpoint-owned default
@@ -2727,11 +2820,15 @@ async def _load_dynamic_resident_model(
         # Runtime residency is a second model-load entry point used by the
         # Desktop control plane. Apply the same pre-weight vision guard as
         # primary startup so a dynamically selected MLLM cannot become
-        # "ready" through a missing/broken/incompatible mlx-vlm stack.
+        # "ready" through a missing/broken/incompatible mlx-vlm stack, and so a
+        # text-lane-only MLLM pack (Bonsai 2) is rejected before its 8.6 GB
+        # download rather than crashing later in mlx-lm.
         if getattr(serving_checkpoint, "is_mllm", False):
             from .models.mllm import _require_mlx_vlm
 
             _require_mlx_vlm(serving_checkpoint.load_path)
+        else:
+            _reject_text_lane_only_mllm_pack(model_name, load_path)
     model_config = profile
     if model_config is None:
         from .model_auto_config import detect_model_config

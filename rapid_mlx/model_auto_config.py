@@ -311,6 +311,24 @@ _MODEL_PATTERNS: list[tuple[re.Pattern, ModelConfig]] = [
             reasoning_parser="qwen3",
         ),
     ),
+    # Bonsai 2 (prism-ml/Ternary-Bonsai-2-*) — a Qwen3.5-class checkpoint
+    # shipped as a rotated 2-bit Hadamard pack (model_type=prism_hadamard_qwen35,
+    # base_model_type=qwen3_5). The custom top-level model_type means the
+    # qwen3.5 regexes above never fire on the raw HF path, so a user who serves
+    # the repo id directly (#3547) would otherwise get no parsers and see the
+    # bare <think> scratchpad in the answer. The pack decodes to the standard
+    # Qwen3 hermes-tool + <think> reasoning contract, so stamp those here. Left
+    # is_hybrid unset on purpose: the GatedDeltaNet ArraysCache is auto-detected
+    # as hybrid (serialized MLLM lane) from the checkpoint, which is correct for
+    # this pack. The trailing separator in the regex keeps it off the v1
+    # ``Ternary-Bonsai-27B`` sibling ("bonsai-2" vs "bonsai-27").
+    (
+        re.compile(r"ternary[-_.]bonsai[-_.]2(?=[-_.])", re.IGNORECASE),
+        ModelConfig(
+            tool_call_parser="hermes",
+            reasoning_parser="qwen3",
+        ),
+    ),
     # Ornith-1.5 (NVIDIA-adjacent open LLM family, MIT) — Qwen3.5 hybrid
     # arch (model_type=qwen3_5 / qwen3_5_moe). The MLX checkpoints are
     # unquantized bf16; the family splits on MoE marker the same way the

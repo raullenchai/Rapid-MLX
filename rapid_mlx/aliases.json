@@ -1716,6 +1716,15 @@
     "pflash_tier": "verified",
     "pflash_keep_ratio": 0.5
   },
+  "bonsai2-27b-2bit": {
+    "hf_path": "prism-ml/Ternary-Bonsai-2-27B-mlx-2bit",
+    "supports_image_input": true,
+    "tool_call_parser": "hermes",
+    "reasoning_parser": "qwen3",
+    "is_hybrid": true,
+    "is_hybrid_explicit": true,
+    "supports_spec_decode": false
+  },
   "smollm3-3b-4bit": {
     "hf_path": "mlx-community/SmolLM3-3B-4bit",
     "tool_call_parser": "hermes",
