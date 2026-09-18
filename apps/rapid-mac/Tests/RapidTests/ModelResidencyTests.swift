@@ -994,16 +994,6 @@ struct ModelResidencyTests {
         #expect(!source.contains("Stops the current model and loads"))
     }
 
-    @Test("A benchmark restores only a model that was serving or starting")
-    func benchmarkRestoreAliasFollowsServerState() {
-        #expect(ContentView.chatAliasToRestoreAfterBenchmark(from: .ready(alias: "qwen3.5-4b")) == "qwen3.5-4b")
-        #expect(ContentView.chatAliasToRestoreAfterBenchmark(from: .starting(alias: "qwen3.5-9b")) == "qwen3.5-9b")
-        #expect(ContentView.chatAliasToRestoreAfterBenchmark(from: .stopped) == nil)
-        #expect(ContentView.chatAliasToRestoreAfterBenchmark(from: .idle) == nil)
-        #expect(ContentView.chatAliasToRestoreAfterBenchmark(from: .missing) == nil)
-        #expect(ContentView.chatAliasToRestoreAfterBenchmark(from: .crashed(alias: "x", message: "boom")) == nil)
-    }
-
     @Test("Selecting a cached chat model activates it immediately")
     func cachedChatSelectionActivates() {
         #expect(ContentView.activatesChatModelOnSelection(

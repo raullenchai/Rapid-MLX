@@ -697,6 +697,9 @@ final class ServerManager {
     /// where an auto-start or model selection could otherwise race a second
     /// model into memory.
     private var communityBenchmarkReservations: Set<UUID> = []
+    /// Alias displaced by the first reservation in a serialized benchmark
+    /// ownership chain. Captured on MainActor at the reservation boundary.
+    private var communityBenchmarkDisplacedAlias: String?
     private var communityBenchmarkWaiters: [
         (
             id: UUID,
@@ -3286,6 +3289,12 @@ final class ServerManager {
             }
         } else {
             communityBenchmarkReservations.insert(reservation)
+            switch state {
+            case .ready(let alias), .starting(let alias):
+                communityBenchmarkDisplacedAlias = alias
+            case .crashed, .stopped, .idle, .missing:
+                communityBenchmarkDisplacedAlias = nil
+            }
         }
         try throwIfCommunityBenchmarkCancelled(reservation)
         cancelAutoRespawn()
@@ -3331,14 +3340,16 @@ final class ServerManager {
     /// starts it again after this returns), because only the UI knows the
     /// catalog hint and readiness path a manual Start would use.
     @discardableResult
-    func finishCommunityBenchmark(_ reservation: UUID) -> Bool {
-        guard communityBenchmarkReservations.remove(reservation) != nil else { return false }
+    func finishCommunityBenchmark(_ reservation: UUID) -> String? {
+        guard communityBenchmarkReservations.remove(reservation) != nil else { return nil }
         if !communityBenchmarkReserved, !communityBenchmarkWaiters.isEmpty {
             let next = communityBenchmarkWaiters.removeFirst()
             communityBenchmarkReservations.insert(next.reservation)
             next.continuation.resume(returning: next.reservation)
         }
-        return !communityBenchmarkReserved
+        guard !communityBenchmarkReserved else { return nil }
+        defer { communityBenchmarkDisplacedAlias = nil }
+        return communityBenchmarkDisplacedAlias
     }
 
     /// Atomically replace a foreground benchmark lease with a quarantine

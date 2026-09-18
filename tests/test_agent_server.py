@@ -4597,25 +4597,39 @@ def test_local_trash_and_read_take_the_goal_path_when_arguments_are_empty():
 def test_local_workspace_normalizer_keeps_users_paths_the_user_named():
     from rapid_mlx.agent_runtime.server import _canonical_home_path
 
-    # Invented macOS account names collapse to the real home.
-    assert (
-        _canonical_home_path("/Users/runner/Documents/winter.md")
-        == "~/Documents/winter.md"
+    # Unrequested account paths remain external so Desktop rejects them.
+    assert _canonical_home_path("/Users/runner/Documents/winter.md") == (
+        "/Users/runner/Documents/winter.md"
     )
-    assert _canonical_home_path("/Users/user") == "~"
-    # A prefix the user typed is kept verbatim, other accounts still fold.
+    assert _canonical_home_path("/Users/user") == "/Users/user"
+    # A prefix the user typed is kept verbatim; unrelated accounts stay external.
     goal = "Write the haiku to /Users/bob/Shared/winter.md"
     assert (
         _canonical_home_path("/Users/bob/Shared/winter.md", goal)
         == "/Users/bob/Shared/winter.md"
     )
-    assert _canonical_home_path("/Users/runner/winter.md", goal) == "~/winter.md"
-    assert _canonical_home_path("/Users/bobby/winter.md", goal) == "~/winter.md"
+    assert (
+        _canonical_home_path("/Users/runner/winter.md", goal)
+        == "/Users/runner/winter.md"
+    )
+    assert (
+        _canonical_home_path("/Users/bobby/winter.md", goal) == "/Users/bobby/winter.md"
+    )
     goal = "Read /home/shared/notes.txt"
     assert (
         _canonical_home_path("/home/shared/notes.txt", goal) == "/home/shared/notes.txt"
     )
-    assert _canonical_home_path("/home/user/notes.txt", goal) == "~/notes.txt"
+    assert _canonical_home_path("/home/user/notes.txt", goal) == "/home/user/notes.txt"
+    assert (
+        _canonical_home_path(
+            "/Users/runner/Documents/winter.md",
+            "Write ~/Documents/winter.md",
+        )
+        == "~/Documents/winter.md"
+    )
+    assert _canonical_home_path("/home/user/.ssh/id_rsa", "Read a local file") == (
+        "/home/user/.ssh/id_rsa"
+    )
     turn = AgentModelTurn(
         tool_calls=[
             AgentToolCall(

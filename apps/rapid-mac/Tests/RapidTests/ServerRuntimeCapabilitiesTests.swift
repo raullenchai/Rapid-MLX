@@ -287,6 +287,19 @@ struct ServerRuntimeCapabilitiesTests {
         manager.finishCommunityBenchmark(replacement)
     }
 
+    @Test("Community Benchmark returns the atomically displaced alias on final release")
+    @MainActor
+    func benchmarkFinalReleaseReturnsDisplacedAlias() async throws {
+        let manager = ServerManager(testingState: .ready(alias: "qwen3.5-4b"))
+        let reservation = try await manager.prepareForCommunityBenchmark()
+        #expect(manager.finishCommunityBenchmark(reservation) == "qwen3.5-4b")
+        #expect(manager.finishCommunityBenchmark(reservation) == nil)
+
+        let idle = ServerManager(testingState: .idle)
+        let idleReservation = try await idle.prepareForCommunityBenchmark()
+        #expect(idle.finishCommunityBenchmark(idleReservation) == nil)
+    }
+
     @Test("Deferred reap quarantine blocks the next benchmark owner")
     @MainActor
     func benchmarkDeferredReapTransfersReservation() async throws {

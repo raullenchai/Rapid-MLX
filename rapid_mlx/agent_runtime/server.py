@@ -394,7 +394,24 @@ def _canonical_home_path(value: str, goal: str = "") -> str:
     for prefix in _EXPLICIT_USERS_PREFIX.findall(goal):
         if value == prefix or value.startswith(prefix + "/"):
             return value
-    return _INVENTED_HOME_PREFIX.sub("~", value, count=1)
+    normalized = _INVENTED_HOME_PREFIX.sub("~", value, count=1)
+    if normalized == value:
+        return value
+    explicit_paths = {
+        match.group(0).strip().strip("\"'")
+        for match in _LOCAL_PATH.finditer(goal)
+        if match.group(0).strip().strip("\"'").startswith("~/")
+    }
+    sole_path = _sole_explicit_path(goal)
+    if sole_path is not None and sole_path.startswith("~/"):
+        explicit_paths.add(sole_path)
+    if (
+        normalized in explicit_paths
+        or any(normalized.startswith(path.rstrip("/") + "/") for path in explicit_paths)
+        or normalized.startswith("~/Rapid Workspace/")
+    ):
+        return normalized
+    return value
 
 
 def _merge_split_path_tokens(tokens: list[str]) -> list[str]:
