@@ -1226,6 +1226,57 @@ def _requests_multiple_local_runs(goal: str) -> bool:
     return len(verbs) >= 2 or (bool(verbs) and len(set(scripts)) >= 2)
 
 
+def _canonicalize_local_run_argv(command: str, argv: list[Any], goal: str) -> list[Any]:
+    """Canonicalize only argv positions that the supported command treats as paths."""
+
+    indexes: set[int] = set()
+    if command in _COMPILER_COMMANDS:
+        indexes.update(range(len(argv)))
+    elif command in {"python", "python3", "node", "ruby"}:
+        option_operands = {
+            "python": {"-W", "-X"},
+            "python3": {"-W", "-X"},
+            "node": {"-r", "--require", "--loader", "--import", "--conditions"},
+            "ruby": {"-I", "-r", "-C", "-E"},
+        }[command]
+        index = 0
+        while index < len(argv):
+            item = argv[index]
+            if not isinstance(item, str):
+                index += 1
+                continue
+            if item in {"-c", "-e", "--eval", "-m"}:
+                break
+            if item in option_operands:
+                index += 2
+                continue
+            if item == "--" and index + 1 < len(argv):
+                indexes.add(index + 1)
+                break
+            if not item.startswith("-"):
+                indexes.add(index)
+                break
+            index += 1
+    elif command == "swift":
+        indexes.update(
+            index
+            for index, item in enumerate(argv)
+            if isinstance(item, str) and item.endswith(".swift")
+        )
+    elif command == "go" and argv[:1] == ["run"]:
+        indexes.update(
+            index
+            for index, item in enumerate(argv[1:], 1)
+            if isinstance(item, str) and item.endswith(".go")
+        )
+    return [
+        _canonical_home_path(item, goal)
+        if index in indexes and isinstance(item, str)
+        else item
+        for index, item in enumerate(argv)
+    ]
+
+
 def _compiled_output_path(arguments: dict[str, Any]) -> str | None:
     """Return the binary a compiler call writes, resolved against its cwd."""
 
@@ -1326,11 +1377,6 @@ def _normalize_local_workspace_turn(goal: str, turn: AgentModelTurn) -> AgentMod
             legacy_value = arguments.pop(legacy_key, None)
             if raw_arguments is None and isinstance(legacy_value, list):
                 raw_arguments = legacy_value
-        if isinstance(raw_arguments, list):
-            raw_arguments = [
-                _canonical_home_path(item, goal) if isinstance(item, str) else item
-                for item in raw_arguments
-            ]
         if raw_arguments is not None:
             arguments["argv"] = raw_arguments
         if isinstance(raw_command, str):
@@ -1423,6 +1469,12 @@ def _normalize_local_workspace_turn(goal: str, turn: AgentModelTurn) -> AgentMod
                 if source is not None:
                     output = source.rsplit("/", 1)[-1].rsplit(".", 1)[0]
                     arguments["argv"] = normalized_arguments + ["-o", output]
+        final_command = arguments.get("command")
+        final_arguments = arguments.get("argv")
+        if isinstance(final_command, str) and isinstance(final_arguments, list):
+            arguments["argv"] = _canonicalize_local_run_argv(
+                final_command, final_arguments, goal
+            )
         if not isinstance(arguments.get("argv"), list):
             # A bare binary run needs no arguments; Desktop treats a missing
             # argv as empty, so the wire object says so explicitly.

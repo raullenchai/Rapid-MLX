@@ -4388,6 +4388,26 @@ def test_local_run_normalizer_canonicalizes_recovered_shell_recipe_paths():
         "argv": ["~/Documents/app.c", "-o", "app"],
         "working_directory": "~/Documents",
     }
+    literal = _normalize_local_workspace_turn(
+        "Run script.py with literal data",
+        AgentModelTurn(
+            tool_calls=[
+                AgentToolCall(
+                    id="literal",
+                    name="local_run",
+                    arguments={
+                        "command": "python3",
+                        "argv": ["script.py", "/Users/other/literal", "$HOME/literal"],
+                    },
+                )
+            ]
+        ),
+    )
+    assert literal.tool_calls[0].arguments["argv"] == [
+        "script.py",
+        "/Users/other/literal",
+        "$HOME/literal",
+    ]
     direct = AgentModelTurn(
         tool_calls=[
             AgentToolCall(

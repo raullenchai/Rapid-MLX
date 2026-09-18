@@ -3330,13 +3330,15 @@ final class ServerManager {
     /// captures the serving alias before ``prepareForCommunityBenchmark`` and
     /// starts it again after this returns), because only the UI knows the
     /// catalog hint and readiness path a manual Start would use.
-    func finishCommunityBenchmark(_ reservation: UUID) {
-        guard communityBenchmarkReservations.remove(reservation) != nil else { return }
+    @discardableResult
+    func finishCommunityBenchmark(_ reservation: UUID) -> Bool {
+        guard communityBenchmarkReservations.remove(reservation) != nil else { return false }
         if !communityBenchmarkReserved, !communityBenchmarkWaiters.isEmpty {
             let next = communityBenchmarkWaiters.removeFirst()
             communityBenchmarkReservations.insert(next.reservation)
             next.continuation.resume(returning: next.reservation)
         }
+        return !communityBenchmarkReserved
     }
 
     /// Atomically replace a foreground benchmark lease with a quarantine

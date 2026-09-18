@@ -1266,13 +1266,18 @@ struct ContentView: View {
                     prepareServer: {
                         // Captured before the stop so Stop-mid-run and a
                         // finished run both bring the same model back.
-                        chatAliasToRestoreAfterBenchmark =
-                            Self.chatAliasToRestoreAfterBenchmark(from: server.state)
+                        if let liveAlias = Self.chatAliasToRestoreAfterBenchmark(
+                            from: server.state
+                        ) {
+                            chatAliasToRestoreAfterBenchmark = liveAlias
+                        }
                         return try await server.prepareForCommunityBenchmark()
                     },
                     releaseServer: { reservation in
-                        server.finishCommunityBenchmark(reservation)
-                        if let alias = chatAliasToRestoreAfterBenchmark {
+                        let releasedFinalReservation =
+                            server.finishCommunityBenchmark(reservation)
+                        if releasedFinalReservation,
+                           let alias = chatAliasToRestoreAfterBenchmark {
                             chatAliasToRestoreAfterBenchmark = nil
                             // Same path as the picker's Start action, so the
                             // reload honours residency, memory guards, and
