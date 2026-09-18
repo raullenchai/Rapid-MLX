@@ -2802,11 +2802,15 @@ async def _load_dynamic_resident_model(
         # Runtime residency is a second model-load entry point used by the
         # Desktop control plane. Apply the same pre-weight vision guard as
         # primary startup so a dynamically selected MLLM cannot become
-        # "ready" through a missing/broken/incompatible mlx-vlm stack.
+        # "ready" through a missing/broken/incompatible mlx-vlm stack, and so a
+        # text-lane-only MLLM pack (Bonsai 2) is rejected before its 8.6 GB
+        # download rather than crashing later in mlx-lm.
         if getattr(serving_checkpoint, "is_mllm", False):
             from .models.mllm import _require_mlx_vlm
 
             _require_mlx_vlm(serving_checkpoint.load_path)
+        else:
+            _reject_text_lane_only_mllm_pack(model_name, load_path)
     model_config = profile
     if model_config is None:
         from .model_auto_config import detect_model_config
