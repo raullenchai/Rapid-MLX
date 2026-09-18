@@ -63,7 +63,9 @@ vendored copy differs by exactly the deviations listed):
      documented Path
      sources but only accepted ``str`` (a ``Path`` fell into the
      ``obj:{id}`` fallback); ``os.PathLike`` is now normalized via
-     ``os.fspath``.
+     ``os.fsdecode`` — ``os.fspath`` alone can return ``bytes`` for
+     byte-valued paths, which fell into the image-content hash branch and
+     collided with a raw image payload equal to the path bytes.
   2. Unsupported source types fell back to ``obj:{id(...)}``; Python may
      hand that id to an unrelated object after collection — a silent
      stale-feature hit. Fixed to raise ``TypeError`` (the str/PathLike and
