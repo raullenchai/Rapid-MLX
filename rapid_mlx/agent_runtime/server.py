@@ -1269,7 +1269,18 @@ def _requests_multiple_local_runs(goal: str) -> bool:
         goal,
         re.IGNORECASE,
     )
-    return len(verbs) >= 2 or (len(set(scripts)) >= 2 and sequenced_scripts is not None)
+    conjoined_scripts = re.search(
+        r"\b(?:run|execute)\b.{0,80}[^\s,;]+\.(?:py|js|rb|swift|go)\b"
+        r"\s+(?:and|then)\s+[^\s,;]+\.(?:py|js|rb|swift|go)\b|"
+        r"(?:运行|执行).{0,60}[^\s，。；]+\.(?:py|js|rb|swift|go)\s*"
+        r"(?:和|及|与|然后)\s*[^\s，。；]+\.(?:py|js|rb|swift|go)\b",
+        goal,
+        re.IGNORECASE,
+    )
+    return len(verbs) >= 2 or (
+        len(set(scripts)) >= 2
+        and (sequenced_scripts is not None or conjoined_scripts is not None)
+    )
 
 
 def _canonicalize_local_run_argv(command: str, argv: list[Any], goal: str) -> list[Any]:

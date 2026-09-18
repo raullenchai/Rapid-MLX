@@ -4352,6 +4352,7 @@ def test_multiple_local_runs_require_explicit_sequencing():
     from rapid_mlx.agent_runtime.server import _requests_multiple_local_runs
 
     assert not _requests_multiple_local_runs("Run a.py with b.py as input")
+    assert _requests_multiple_local_runs("Run a.py and b.py")
     assert _requests_multiple_local_runs("Run a.py, then b.py")
     assert _requests_multiple_local_runs("Run a.py, then run b.py")
 
@@ -5270,6 +5271,66 @@ async def test_client_desktop_script_run_that_succeeded_is_not_offered_again():
     )
     await wait_for_status(service2, created2.id, AgentRunStatus.COMPLETED)
     assert [tool.name for tool in driver2.requests[1][2]] == ["local_run"]
+
+
+async def test_client_two_script_request_offers_second_local_run():
+    driver = ScriptedDriver(
+        AgentModelTurn(
+            tool_calls=[
+                AgentToolCall(
+                    id="a",
+                    name="local_run",
+                    arguments={"command": "python3", "argv": ["a.py"]},
+                )
+            ]
+        ),
+        AgentModelTurn(
+            tool_calls=[
+                AgentToolCall(
+                    id="b",
+                    name="local_run",
+                    arguments={"command": "python3", "argv": ["b.py"]},
+                )
+            ]
+        ),
+        AgentModelTurn(content="Ran both scripts."),
+    )
+    service = AgentServerService(registry=FakeRegistry(()), chat_driver=driver)
+    created = await service.create(
+        AgentRunCreateRequest(
+            goal="Run the script a.py and b.py",
+            execution="client",
+            tool_names=["local_run"],
+        ),
+        model="minicpm5-2b-4bit",
+    )
+    first = await wait_for_status(
+        service, created.id, AgentRunStatus.AWAITING_TOOL_RESULT
+    )
+    assert first.pending_action is not None
+    await service.submit_result(
+        created.id,
+        AgentToolResultRequest(
+            call_id=first.pending_action.call_id,
+            content="exit_code: 0\nstdout:\na",
+            executed=True,
+        ),
+    )
+    second = await wait_for_status(
+        service, created.id, AgentRunStatus.AWAITING_TOOL_RESULT
+    )
+    assert second.pending_action is not None
+    assert second.pending_action.arguments["argv"] == ["b.py"]
+    await service.submit_result(
+        created.id,
+        AgentToolResultRequest(
+            call_id=second.pending_action.call_id,
+            content="exit_code: 0\nstdout:\nb",
+            executed=True,
+        ),
+    )
+    done = await wait_for_status(service, created.id, AgentRunStatus.COMPLETED)
+    assert done.output == "Ran both scripts."
 
 
 def test_local_run_relocates_to_the_folder_holding_its_sources():
