@@ -1574,17 +1574,27 @@ enum LocalWorkspaceTools {
             if !reaped {
                 _ = kill(-pid, SIGKILL)
                 signalProcesses(descendants, signal: SIGKILL)
-                // SIGKILL cannot be ignored. Once it has been sent, perform an
-                // EINTR-safe blocking reap so a slow kernel teardown cannot
-                // leave a zombie behind after the one-second polling window.
-                while true {
-                    let waited = waitpid(pid, &status, 0)
+                // SIGKILL cannot be ignored, but a process stuck in kernel
+                // teardown can still take an unbounded amount of time to
+                // become waitable (observed with sandboxed Python on macOS
+                // 26.6). Never turn the command's hard deadline into an
+                // unbounded wait. Reap synchronously for a short, bounded
+                // window; if the kernel is still tearing the child down, one
+                // detached waiter owns the eventual reap while this action
+                // returns its timeout result.
+                let reapDeadline = Date().addingTimeInterval(1)
+                while Date() < reapDeadline {
+                    let waited = waitpid(pid, &status, WNOHANG)
                     if waited == pid {
                         reaped = true
                         break
                     }
                     if waited == -1, errno == EINTR { continue }
-                    break
+                    if waited == -1 { break }
+                    Thread.sleep(forTimeInterval: 0.02)
+                }
+                if !reaped {
+                    reapEventually(pid)
                 }
             }
         }
@@ -1610,6 +1620,13 @@ enum LocalWorkspaceTools {
             stdout: stdout.finish(),
             stderr: stderr.finish()
         )
+    }
+
+    private static func reapEventually(_ pid: pid_t) {
+        Thread.detachNewThread {
+            var ignoredStatus: Int32 = 0
+            while waitpid(pid, &ignoredStatus, 0) == -1, errno == EINTR {}
+        }
     }
 
     private static func childPIDs(of parent: pid_t) -> [pid_t] {
