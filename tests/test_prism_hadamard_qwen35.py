@@ -277,7 +277,6 @@ def test_processor_uses_builtin_classes_without_snapshot_code(monkeypatch, tmp_p
     )
 
 
-
 def _install_metadata_stub(monkeypatch, config):
     """Point ``read_model_metadata`` at a fixed config for the routing guard and
     neutralize the cold-start config prefetch (no network in unit tests)."""
@@ -302,7 +301,9 @@ def test_text_lane_guard_rejects_prism_pack(monkeypatch):
     _install_metadata_stub(monkeypatch, {"model_type": "prism_hadamard_qwen35"})
     # Vision runtime is present (full install + --no-mllm): the guard passes
     # _require_mlx_vlm and then rejects on the flag.
-    monkeypatch.setattr("rapid_mlx.models.mllm._require_mlx_vlm", lambda *_a, **_k: None)
+    monkeypatch.setattr(
+        "rapid_mlx.models.mllm._require_mlx_vlm", lambda *_a, **_k: None
+    )
 
     with pytest.raises(ValueError, match="multimodal lane"):
         server._reject_text_lane_only_mllm_pack("bonsai2-27b-2bit", "/snap/bonsai2")
@@ -348,7 +349,9 @@ def test_text_lane_guard_cold_start_prefetches_config(monkeypatch):
         "rapid_mlx.server._prefetch_config_for_text_lane_guard",
         lambda ref: prefetched.append(ref),
     )
-    monkeypatch.setattr("rapid_mlx.models.mllm._require_mlx_vlm", lambda *_a, **_k: None)
+    monkeypatch.setattr(
+        "rapid_mlx.models.mllm._require_mlx_vlm", lambda *_a, **_k: None
+    )
 
     with pytest.raises(ValueError, match="multimodal lane"):
         server._reject_text_lane_only_mllm_pack(
