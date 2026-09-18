@@ -457,9 +457,57 @@ enum FailureDiagnoser {
         return .engineNotRunning
     }
 
+    /// Stable server error-code -> diagnosis kind. The engine emits a
+    /// machine-readable ``error.code`` in its OpenAI-shaped envelope
+    /// (rapid-mlx #3564) precisely so the GUI can classify a failure by
+    /// CATEGORY without substring-matching a message the engine has already
+    /// sanitised (a generation-time OOM reaches the client as a bare
+    /// ``"Internal server error"`` -- no keyword can recover it). Unknown or
+    /// absent codes return ``nil`` so the caller falls back to the keyword +
+    /// status heuristics (older engines, or codes this build doesn't know yet).
+    nonisolated static func kind(forEngineCode code: String?) -> FailureDiagnosis.Kind? {
+        switch code {
+        case "insufficient_memory", "model_out_of_memory":
+            return .modelOutOfMemory
+        case "model_load_failed":
+            return .modelLoadFailed
+        case "engine_aborted":
+            // A genuine transient engine abort: retrying is the right recovery,
+            // which is exactly what ``.requestFailed`` offers. OOM is split out
+            // above so it gets the memory-specific card instead of a retry that
+            // would fail identically.
+            return .requestFailed
+        default:
+            return nil
+        }
+    }
+
+    /// Decode the stable ``error.code`` from a rapid-mlx OpenAI-shaped error
+    /// body, or ``nil`` when the body isn't that shape. Reuses
+    /// ``Wire.ErrorEnvelope`` -- the same decoder ``ChatStreamClient`` uses for
+    /// attachment-rejection codes -- so the app has ONE on-the-wire error
+    /// schema, not two.
+    nonisolated static func engineErrorCode(fromBody body: String) -> String? {
+        guard let data = body.data(using: .utf8),
+              let envelope = try? JSONDecoder().decode(
+                Wire.ErrorEnvelope.self, from: data
+              ),
+              let code = envelope.error.code?.trimmingCharacters(
+                in: .whitespacesAndNewlines
+              ),
+              !code.isEmpty
+        else { return nil }
+        return code
+    }
+
     nonisolated static func chatFailureKind(raw: String) -> FailureDiagnosis.Kind {
+        // Structured code first -- it survives the engine's message
+        // sanitisation (#3564), unlike the keyword scan below.
+        if let mapped = kind(forEngineCode: engineErrorCode(fromBody: raw)) {
+            return mapped
+        }
         let value = raw.lowercased()
-        if containsAny(value, ["out of memory", "more memory", "memory than your mac"]) {
+        if containsAny(value, memorySignals) {
             return .modelOutOfMemory
         }
         if containsAny(value, [
@@ -477,6 +525,14 @@ enum FailureDiagnoser {
             case .streamTruncated:
                 return .engineNotRunning
             case .httpStatus(_, let body), .transport(let body):
+                // Prefer the engine's stable, machine-readable error.code
+                // (#3564): it survives the engine's message sanitisation, so
+                // it is the only reliable category signal on a sanitised 5xx
+                // body (a generation-time OOM arrives as "Internal server
+                // error" with no keyword to match).
+                if let mapped = kind(forEngineCode: engineErrorCode(fromBody: body)) {
+                    return mapped
+                }
                 if modelLoadFailureKind(raw: body) == .modelOutOfMemory {
                     return .modelOutOfMemory
                 }
@@ -539,6 +595,11 @@ enum FailureDiagnoser {
     nonisolated private static let memorySignals = [
         "out of memory", "insufficient memory", "memory pressure", "metal-cap",
         "gpu_memory_utilization", "projected kv", "metal active",
+        // User-facing phrasings the chat lane historically matched (#3564:
+        // folded into the shared list so every diagnosis path — chat, load,
+        // and 5xx body — recognises the same memory signals, not two divergent
+        // sets).
+        "more memory", "memory than your mac",
     ]
 
     nonisolated private static let modelLoadSignals = [

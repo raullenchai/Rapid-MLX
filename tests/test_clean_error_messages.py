@@ -435,3 +435,186 @@ class TestProcessImageInputDefenseInDepth:
         # error, not be caught by the type guard.
         assert "Cannot process image" in str(ei.value)
         assert "must be a string" not in str(ei.value)
+
+
+# ---------------------------------------------------------------------------
+# #3564: faithful engine-abort classification. Same family as the leaks above
+# — the engine sanitises the raw failure text (it can hold model paths, prompt
+# fragments, Metal internals), so instead of forwarding ``str(exc)`` we
+# categorise it into a stable, client-safe ``error.code`` that the Desktop GUI
+# maps to a curated failure card. These pin the classifier and the HTTP mapper.
+# ---------------------------------------------------------------------------
+
+
+class TestEngineAbortClassification:
+    """``classify_engine_abort`` turns an arbitrary engine-loop exception into
+    one of a small closed set of category slugs, inspecting the raw text ONLY
+    inside the trust boundary."""
+
+    @pytest.mark.parametrize(
+        "message",
+        [
+            "Metal command buffer failed: out of memory",
+            # The real Metal command-buffer status is one collapsed token.
+            "kIOGPUCommandBufferCallbackErrorOutOfMemory",
+            "[METAL] Insufficient Memory for buffer",
+            "failed to allocate 12.3 GB",
+            "unable to allocate wired memory",
+            "MTL::Buffer attempting to allocate 9663676416 bytes",
+            "process exceeded maximum allowed buffer size",
+            "metal::malloc returned null",
+            "system under memory pressure; killing worker",
+            "jetsam: killed for exceeding memory limit",
+        ],
+    )
+    def test_memory_signals_classify_as_insufficient_memory(self, message):
+        from rapid_mlx.request import (
+            ENGINE_ABORT_CODE_INSUFFICIENT_MEMORY,
+            classify_engine_abort,
+        )
+
+        assert (
+            classify_engine_abort(RuntimeError(message))
+            == ENGINE_ABORT_CODE_INSUFFICIENT_MEMORY
+        )
+
+    @pytest.mark.parametrize(
+        "message",
+        [
+            "Metal command buffer execution failed",
+            "engine step raised unexpectedly",
+            "assertion failed in decode kernel",
+            "connection reset by peer",
+        ],
+    )
+    def test_non_memory_failures_classify_as_engine_aborted(self, message):
+        from rapid_mlx.request import (
+            ENGINE_ABORT_CODE_ENGINE_ABORTED,
+            classify_engine_abort,
+        )
+
+        assert (
+            classify_engine_abort(RuntimeError(message))
+            == ENGINE_ABORT_CODE_ENGINE_ABORTED
+        )
+
+    def test_exception_type_name_participates_in_classification(self):
+        """The classifier folds ``type(exc).__name__`` into the inspected
+        text, so an OOM signalled only by the exception *class* still
+        classifies as memory (some Metal wrappers carry an empty message)."""
+        from rapid_mlx.request import (
+            ENGINE_ABORT_CODE_INSUFFICIENT_MEMORY,
+            classify_engine_abort,
+        )
+
+        class OutOfMemoryError(RuntimeError):
+            pass
+
+        assert (
+            classify_engine_abort(OutOfMemoryError())
+            == ENGINE_ABORT_CODE_INSUFFICIENT_MEMORY
+        )
+
+    def test_every_code_is_a_member_of_the_closed_set(self):
+        from rapid_mlx.request import ENGINE_ABORT_CODES, classify_engine_abort
+
+        for exc in (RuntimeError("out of memory"), RuntimeError("boom")):
+            assert classify_engine_abort(exc) in ENGINE_ABORT_CODES
+
+
+class TestInferenceAbortedHttpException:
+    """``_inference_aborted_http_exception`` builds the structured 503 the GUI
+    reads. It trusts a pre-classified ``error_kind`` when present (the MLLM
+    lane sets it) and otherwise re-derives the code from the message (the
+    batched/text lane leaves ``error_kind=None``). The user-facing message is
+    a fixed safe string per code — never ``str(exc)``."""
+
+    def test_preclassified_insufficient_memory_takes_the_fast_path(self):
+        from rapid_mlx.request import InferenceAbortedError
+        from rapid_mlx.routes.chat import _inference_aborted_http_exception
+
+        exc = InferenceAbortedError(
+            "MLLM inference was interrupted by a transient engine error; "
+            "retry the request",
+            error_kind="insufficient_memory",
+        )
+        http = _inference_aborted_http_exception(exc)
+
+        assert http.status_code == 503
+        err = http.detail["error"]
+        assert err["code"] == "insufficient_memory"
+        assert err["type"] == "server_error"
+        assert err["param"] is None
+        assert "memory" in err["message"].lower()
+        # The sanitised engine text must not survive into the client message.
+        assert "interrupted by a transient engine error" not in err["message"]
+
+    def test_preclassified_engine_aborted_maps_to_transient_message(self):
+        from rapid_mlx.request import InferenceAbortedError
+        from rapid_mlx.routes.chat import _inference_aborted_http_exception
+
+        http = _inference_aborted_http_exception(
+            InferenceAbortedError("boom", error_kind="engine_aborted")
+        )
+
+        assert http.status_code == 503
+        err = http.detail["error"]
+        assert err["code"] == "engine_aborted"
+        assert "try again" in err["message"].lower()
+
+    def test_unclassified_oom_message_is_reclassified_from_text(self):
+        """The batched/text lane raises ``InferenceAbortedError`` with
+        ``error_kind=None`` and the raw (already-sanitised) text. The mapper
+        must re-derive the memory category from that text."""
+        from rapid_mlx.request import InferenceAbortedError
+        from rapid_mlx.routes.chat import _inference_aborted_http_exception
+
+        http = _inference_aborted_http_exception(
+            InferenceAbortedError("Metal buffer: out of memory")
+        )
+
+        assert http.detail["error"]["code"] == "insufficient_memory"
+
+    def test_lifecycle_cancellation_maps_to_model_replacement(self):
+        """A ``lifecycle`` cancellation (the primary model was replaced under a
+        running request) is NOT an engine fault. The mapper must surface the
+        same ``model_replacement`` envelope the post-commit SSE frame emits, so
+        the pre-commit HTTP 503 and the mid-stream frame agree for the same
+        event (#3564) — never a misleading transient-crash "please try again"."""
+        from rapid_mlx.request import InferenceAbortedError
+        from rapid_mlx.routes.chat import _inference_aborted_http_exception
+
+        http = _inference_aborted_http_exception(
+            InferenceAbortedError("engine step crashed", error_kind="lifecycle")
+        )
+
+        err = http.detail["error"]
+        assert err["code"] == "model_replacement"
+        assert "model replacement" in err["message"].lower()
+        # The raw abort text must not survive into the client message.
+        assert "engine step crashed" not in err["message"]
+
+    def test_unknown_non_lifecycle_error_kind_falls_back_to_message(self):
+        """A non-code, non-lifecycle ``error_kind`` is not a client code, so the
+        mapper ignores it and classifies from the (sanitised) text — here, a
+        generic transient failure."""
+        from rapid_mlx.request import InferenceAbortedError
+        from rapid_mlx.routes.chat import _inference_aborted_http_exception
+
+        http = _inference_aborted_http_exception(
+            InferenceAbortedError("engine step crashed", error_kind="repetition")
+        )
+
+        assert http.detail["error"]["code"] == "engine_aborted"
+
+    def test_non_inference_aborted_exception_is_still_mapped(self):
+        """The mapper accepts any ``BaseException`` (the batched lane may pass
+        the raw error), reading ``error_kind`` defensively via ``getattr``."""
+        from rapid_mlx.routes.chat import _inference_aborted_http_exception
+
+        http = _inference_aborted_http_exception(
+            RuntimeError("could not allocate KV cache: out of memory")
+        )
+
+        assert http.status_code == 503
+        assert http.detail["error"]["code"] == "insufficient_memory"

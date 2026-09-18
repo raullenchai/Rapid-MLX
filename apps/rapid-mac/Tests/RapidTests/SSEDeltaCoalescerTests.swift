@@ -398,17 +398,21 @@ struct ChatStreamClientThrowFlushTests {
             messages: [ChatMessage(role: .user, content: "probe", status: .complete)]
         )
         var receivedText = ""
-        var thrownErrorMessage: String?
+        var thrownErrorBody: String?
         do {
             try await client.send(req) { event in
                 if case .content(let c) = event { receivedText += c }
             }
-        } catch let ChatStreamError.transport(message) {
-            thrownErrorMessage = message
+        } catch let ChatStreamError.transport(body) {
+            thrownErrorBody = body
         } catch {
             Issue.record("unexpected error: \(error)")
         }
-        #expect(thrownErrorMessage == ContentBurstThenErrorProtocol.errorMessage)
+        // #3564: the transport error now carries the FULL error envelope
+        // (so ``FailureDiagnoser`` can read the stable ``error.code``), not
+        // just the extracted message; the envelope still contains the
+        // server's message verbatim.
+        #expect(thrownErrorBody?.contains(ContentBurstThenErrorProtocol.errorMessage) == true)
         var expectedText = ""
         for i in 0..<ContentBurstThenErrorProtocol.deltaCount {
             expectedText += "d\(i) "

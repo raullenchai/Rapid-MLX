@@ -38,6 +38,9 @@ from fastapi.testclient import TestClient
 
 from rapid_mlx.config import reset_config
 from rapid_mlx.engine.base import GenerationOutput
+from rapid_mlx.middleware.exception_handlers import (
+    install_exception_handlers,
+)
 from rapid_mlx.request import ClientRequestError, InferenceAbortedError
 from rapid_mlx.routes.chat import router as chat_router
 
@@ -110,11 +113,46 @@ class _StubTextFallbackEngine(_StubMLLMEngine):
 
 class _StubRetryableFailureEngine(_StubMLLMEngine):
     async def chat(self, *, messages, **kwargs):
+        # Mirrors what ``MLLMScheduler._fail_all_inflight`` produces for a
+        # transient batch crash: the curated (already-sanitised) text plus the
+        # pre-classified ``engine_aborted`` code stamped by
+        # ``classify_engine_abort``.
         raise InferenceAbortedError(
             "MLLM inference was interrupted by a transient engine error; "
             "retry the request",
-            error_kind="lifecycle",
+            error_kind="engine_aborted",
         )
+
+
+class _StubOOMFailureEngine(_StubMLLMEngine):
+    """Non-streaming lane aborts with a PRE-CLASSIFIED out-of-memory code —
+    the shape ``MLLMScheduler._fail_all_inflight`` produces once it has
+    categorised a Metal allocation failure (#3564). The route must forward
+    the *code*, never the (sanitised) message text, to the client."""
+
+    async def chat(self, *, messages, **kwargs):
+        raise InferenceAbortedError(
+            "MLLM inference was interrupted by a transient engine error; "
+            "retry the request",
+            error_kind="insufficient_memory",
+        )
+
+
+class _StubStreamingOOMFailureEngine(_StubMLLMEngine):
+    """Streaming lane aborts DURING preflight priming — before the
+    ``StreamingResponse`` commits — with a classified OOM code (#3564).
+    Pre-fix this escaped the preflight ``try`` uncaught and fell through to
+    the generic 500 handler ("Internal server error"), erasing the
+    category the GUI needs to render a faithful card."""
+
+    async def stream_chat(self, messages, **kwargs):
+        self.stream_calls.append({"messages": messages, "kwargs": kwargs})
+        raise InferenceAbortedError(
+            "MLLM inference was interrupted by a transient engine error; "
+            "retry the request",
+            error_kind="insufficient_memory",
+        )
+        yield  # keeps this an async generator; never reached
 
 
 def _make_client(engine: _StubMLLMEngine) -> TestClient:
@@ -128,6 +166,26 @@ def _make_client(engine: _StubMLLMEngine) -> TestClient:
 
     app = FastAPI()
     app.include_router(chat_router)
+    return TestClient(app)
+
+
+def _make_client_with_envelope(engine: _StubMLLMEngine) -> TestClient:
+    """Like :func:`_make_client` but with the production OpenAI-shaped
+    exception handlers installed, so assertions see the *exact* top-level
+    ``{"error": {...}}`` envelope the Desktop GUI decodes (#3564) rather
+    than FastAPI's default ``{"detail": ...}`` wrapper. ``raise_server_exceptions``
+    stays on so a genuinely uncaught error still fails the test loudly."""
+    cfg = reset_config()
+    cfg.engine = engine
+    cfg.model_name = "qwen3-vl-8b-4bit"
+    cfg.model_registry = None
+    cfg.no_thinking = True
+    cfg.tool_call_parser = None
+    cfg.reasoning_parser_name = None
+
+    app = FastAPI()
+    app.include_router(chat_router)
+    install_exception_handlers(app)
     return TestClient(app)
 
 
@@ -245,8 +303,12 @@ def test_chat_route_forwards_image_url_content_to_mllm_engine():
 
 
 def test_chat_route_returns_503_for_retryable_mllm_batch_failure():
-    """A scheduler lifecycle interruption must reach HTTP clients as 503."""
-    client = _make_client(_StubRetryableFailureEngine())
+    """A transient MLLM batch failure must reach HTTP clients as a structured
+    503 whose ``error.code`` marks the category (#3564). A generic engine abort
+    (no memory signal in the sanitised text) is pre-classified as
+    ``engine_aborted``; the message is a fixed, safe string — never the raw
+    engine text."""
+    client = _make_client_with_envelope(_StubRetryableFailureEngine())
 
     response = client.post(
         "/v1/chat/completions",
@@ -259,9 +321,61 @@ def test_chat_route_returns_503_for_retryable_mllm_batch_failure():
     )
 
     assert response.status_code == 503, response.text
-    assert response.json()["detail"] == (
-        "MLLM inference was interrupted by a transient engine error; retry the request"
+    error = response.json()["error"]
+    assert error["code"] == "engine_aborted"
+    assert error["type"] == "server_error"
+    assert "try again" in error["message"].lower()
+
+
+def test_chat_route_maps_oom_abort_to_structured_503_insufficient_memory():
+    """#3564: a pre-classified out-of-memory abort on the non-streaming lane
+    must surface as 503 with ``error.code == "insufficient_memory"`` so the GUI
+    renders the memory-specific card, not the generic "couldn't finish"
+    fallback. The user-facing message must NOT be the raw sanitised engine
+    text."""
+    client = _make_client_with_envelope(_StubOOMFailureEngine())
+
+    response = client.post(
+        "/v1/chat/completions",
+        json={
+            "model": "qwen3-vl-8b-4bit",
+            "messages": [{"role": "user", "content": "hello"}],
+            "max_tokens": 8,
+            "stream": False,
+        },
     )
+
+    assert response.status_code == 503, response.text
+    error = response.json()["error"]
+    assert error["code"] == "insufficient_memory"
+    assert error["type"] == "server_error"
+    assert "memory" in error["message"].lower()
+    assert "interrupted by a transient engine error" not in error["message"]
+
+
+def test_chat_route_streaming_preflight_oom_abort_maps_to_structured_503():
+    """#3564: an engine abort during MLLM streaming *preflight* (before the
+    response commits) must map to the SAME structured 503 the non-streaming
+    lane emits — not the generic 500 it used to escape to. The failure lands
+    in the JSON body (no SSE ``data:`` frames were committed)."""
+    client = _make_client_with_envelope(_StubStreamingOOMFailureEngine())
+
+    response = client.post(
+        "/v1/chat/completions",
+        json={
+            "model": "qwen3-vl-8b-4bit",
+            "messages": [{"role": "user", "content": "hello"}],
+            "max_tokens": 8,
+            "stream": True,
+        },
+    )
+
+    assert response.status_code == 503, response.text
+    assert response.headers["content-type"].startswith("application/json")
+    assert "data:" not in response.text
+    error = response.json()["error"]
+    assert error["code"] == "insufficient_memory"
+    assert error["type"] == "server_error"
 
 
 @pytest.mark.parametrize(

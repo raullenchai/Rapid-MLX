@@ -71,7 +71,11 @@ from ..api.utils import (
 from ..config import get_config
 from ..engine import GenerationOutput
 from ..middleware.auth import check_rate_limit, verify_api_key
-from ..request import ClientRequestError
+from ..request import (
+    ClientRequestError,
+    InferenceAbortedError,
+    inference_aborted_error_payload,
+)
 from ..response_cache import (
     UNCACHEABLE,
     get_response_cache,
@@ -3712,6 +3716,24 @@ def _effective_posthoc_reasoning_cap(sampling_kwargs: dict, request) -> int | No
     return getattr(request, "reasoning_max_tokens", None)
 
 
+def _inference_aborted_http_exception(exc: BaseException) -> HTTPException:
+    """Map an engine-loop abort to a structured, client-faithful HTTP 503.
+
+    The engine has already sanitised the raw exception text (it can hold
+    paths / prompt fragments / model internals); we translate the stable
+    category — carried on ``InferenceAbortedError.error_kind`` for the MLLM
+    lane, or re-derived from the message for lanes that don't pre-classify —
+    into an OpenAI-shaped envelope whose ``error.code`` the Desktop GUI maps to
+    a curated failure card (#3564). 503 (not 500) because the server is still
+    up and a smaller request may succeed (#353). The user-facing ``message`` is
+    a fixed, safe string per code — never ``str(exc)`` — so no internals leak.
+    """
+    return HTTPException(
+        status_code=503,
+        detail={"error": inference_aborted_error_payload(exc)},
+    )
+
+
 async def _preflight_mllm_chat_stream(
     stream: AsyncIterator[str],
     raw_request: Request,
@@ -5558,6 +5580,13 @@ async def _create_chat_completion_impl(
                 )
             except ClientRequestError as exc:
                 raise HTTPException(status_code=400, detail=str(exc)) from exc
+            except InferenceAbortedError as exc:
+                # #3564: the MLLM preflight runs BEFORE StreamingResponse
+                # commits, so an engine abort here used to escape uncaught to
+                # the generic 500 handler ("Internal server error"), losing the
+                # category. Map it to the same structured 503 the non-streaming
+                # lane emits so the GUI can render a faithful card.
+                raise _inference_aborted_http_exception(exc) from exc
             if _chat_stream is None:
                 return Response(status_code=499)
         _commit_state[0] = True
@@ -5773,15 +5802,15 @@ async def _create_chat_completion_impl(
     except HTTPException:
         raise
     except Exception as e:
-        from ..request import InferenceAbortedError
-
         err_msg = str(e)
         err_type = type(e).__name__
         if isinstance(e, InferenceAbortedError):
             # Engine aborted the request (e.g. Metal runtime error caught
-            # in the engine loop). 503 — the server is still up and a
-            # smaller request may succeed (#353).
-            raise HTTPException(status_code=503, detail=err_msg)
+            # in the engine loop). Structured 503 carrying a stable
+            # ``error.code`` so the GUI reflects the category faithfully
+            # (#3564) — the server is still up and a smaller request may
+            # succeed (#353).
+            raise _inference_aborted_http_exception(e) from e
         if (
             "TemplateError" in err_type
             or "template" in err_msg.lower()

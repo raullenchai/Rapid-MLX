@@ -319,6 +319,106 @@ class InferenceAbortedError(RuntimeError):
         self.error_kind = error_kind
 
 
+# Stable, client-safe error codes for engine-loop aborts. These are the
+# ONLY signal that crosses the sanitisation boundary (see
+# ``MLLMScheduler._fail_all_inflight``): a fixed category slug, never the raw
+# exception text (which can hold filesystem paths, prompt fragments, or model
+# internals). The HTTP layer renders them as an OpenAI-shaped ``error.code``
+# and the Desktop GUI maps that code to a curated, faithful failure card. Add
+# a new slug here (and to the GUI's ``codeToKind`` table) to make a new major
+# error category reflect faithfully to the client.
+ENGINE_ABORT_CODE_INSUFFICIENT_MEMORY = "insufficient_memory"
+ENGINE_ABORT_CODE_ENGINE_ABORTED = "engine_aborted"
+
+# The full set of engine-abort codes, so callers can test membership without
+# re-listing the literals (the MLLM stream dispatch and the route mapper both
+# key on this).
+ENGINE_ABORT_CODES = frozenset(
+    {ENGINE_ABORT_CODE_INSUFFICIENT_MEMORY, ENGINE_ABORT_CODE_ENGINE_ABORTED}
+)
+
+# Lower-cased substrings that identify a unified-memory / Metal allocation
+# failure. Matched against ``type(exc).__name__: str(exc)`` INSIDE the engine
+# trust boundary — the raw text is inspected to pick a code but is NEVER
+# returned to the client. Kept deliberately specific (allocation-failure
+# wording) so a merely memory-adjacent message doesn't get mislabelled OOM.
+_MEMORY_ABORT_SIGNALS = (
+    "out of memory",
+    # Metal's command-buffer OOM status is one camel-cased token with no
+    # spaces (``kIOGPUCommandBufferCallbackErrorOutOfMemory``), so match the
+    # collapsed form too — the spaced variant above would miss it.
+    "outofmemory",
+    "insufficient memory",
+    "unable to allocate",
+    "failed to allocate",
+    "attempting to allocate",
+    "maximum allowed buffer",
+    "metal::malloc",
+    "memory pressure",
+    "jetsam",
+)
+
+
+def classify_engine_abort(exc: object) -> str:
+    """Classify an engine-loop abort into a stable, client-safe code.
+
+    Returns :data:`ENGINE_ABORT_CODE_INSUFFICIENT_MEMORY` when the underlying
+    failure is a unified-memory / Metal allocation error, else
+    :data:`ENGINE_ABORT_CODE_ENGINE_ABORTED`. The raw ``exc`` text is inspected
+    here (inside the trust boundary), but only the returned category slug is
+    ever allowed to reach the client — the caller must not forward ``str(exc)``.
+    """
+    text = f"{type(exc).__name__}: {exc}".lower()
+    if any(signal in text for signal in _MEMORY_ABORT_SIGNALS):
+        return ENGINE_ABORT_CODE_INSUFFICIENT_MEMORY
+    return ENGINE_ABORT_CODE_ENGINE_ABORTED
+
+
+def inference_aborted_error_payload(exc: BaseException) -> dict:
+    """Build the OpenAI-shaped ``error`` object for an engine-loop abort.
+
+    Single source of truth (#3564) shared by the HTTP 503 envelope (the
+    non-streaming route and the stream preflight) and the terminal SSE error
+    frame emitted mid-stream once the streaming response has already committed
+    its headers. The stable category is carried on
+    :attr:`InferenceAbortedError.error_kind` for lanes that pre-classify, else
+    re-derived from the message via :func:`classify_engine_abort`. The
+    user-facing ``message`` is a fixed, safe string per code -- never
+    ``str(exc)`` -- so no engine internals (paths, prompt fragments) leak.
+    """
+    kind = getattr(exc, "error_kind", None)
+    if kind == "lifecycle":
+        # A cooperative cancellation (the primary model was replaced under a
+        # running request), NOT an engine fault. Mirror the terminal SSE frame
+        # ``_disconnect_guard`` emits post-commit so the pre-commit HTTP 503 and
+        # the mid-stream SSE frame agree for the SAME event (#3564) — otherwise
+        # a model replacement reads as a transient crash with a misleading
+        # "please try again".
+        return {
+            "message": "Request cancelled by model replacement",
+            "type": "server_error",
+            "code": "model_replacement",
+            "param": None,
+        }
+    code = kind if kind in ENGINE_ABORT_CODES else classify_engine_abort(exc)
+    if code == ENGINE_ABORT_CODE_INSUFFICIENT_MEMORY:
+        message = (
+            "The model ran out of memory during generation. "
+            "Free up memory or choose a smaller model."
+        )
+    else:
+        code = ENGINE_ABORT_CODE_ENGINE_ABORTED
+        message = (
+            "Inference was interrupted by a transient engine error. Please try again."
+        )
+    return {
+        "message": message,
+        "type": "server_error",
+        "code": code,
+        "param": None,
+    }
+
+
 class ClientRequestError(ValueError):
     """A request rejection whose message is explicitly safe for clients.
 

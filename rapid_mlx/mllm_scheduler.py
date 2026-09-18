@@ -50,10 +50,12 @@ from .mllm_cache import MLLMCacheManager  # noqa: E402
 from .multimodal_processor import MultimodalProcessor  # noqa: E402
 from .repetition_guard import detect_repeated_token_suffix  # noqa: E402
 from .request import (  # noqa: E402
+    ENGINE_ABORT_CODES,
     ClientRequestError,
     RequestOutput,
     RequestStatus,
     SamplingParams,
+    classify_engine_abort,
 )
 from .runtime.model_performance import get_model_performance_ledger  # noqa: E402
 
@@ -1670,6 +1672,14 @@ class MLLMScheduler:
             "MLLM inference was interrupted by a transient engine error; "
             "retry the request"
         )
+        # Classify the underlying failure into a stable, client-safe CATEGORY
+        # code (OOM vs generic transient) while we still hold the real ``exc``.
+        # The code — never the raw text — is what crosses to the route and on
+        # to the GUI, so a Metal allocation failure surfaces as a memory-
+        # specific failure card instead of the generic "couldn't finish"
+        # (#3564). The code rides on ``error_kind``; ``stream_outputs`` keys on
+        # it to raise ``InferenceAbortedError`` (see the dispatch below).
+        err_kind = classify_engine_abort(exc)
 
         output = MLLMSchedulerOutput(
             finished_request_ids=request_ids,
@@ -1684,7 +1694,7 @@ class MLLMScheduler:
                     # this compatibility literal for a successful truncation.
                     finish_reason="length",
                     error=err_text,
-                    error_kind="lifecycle",
+                    error_kind=err_kind,
                 )
                 for request_id in request_ids
             ],
@@ -2208,7 +2218,14 @@ class MLLMScheduler:
                         )
                         output.finish_reason = "length"
                         output.error = None
-                    elif output.error_kind == "lifecycle":
+                    elif (
+                        output.error_kind == "lifecycle"
+                        or output.error_kind in ENGINE_ABORT_CODES
+                    ):
+                        # "lifecycle" (cancellation) and the classified abort
+                        # codes ("insufficient_memory" / "engine_aborted",
+                        # #3564) all surface as InferenceAbortedError so the
+                        # route can render a structured, faithful 503.
                         from .request import InferenceAbortedError
 
                         raise InferenceAbortedError(

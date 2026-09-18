@@ -366,7 +366,15 @@ async def test_process_loop_failure_unblocks_every_inflight_request() -> None:
             "MLLM inference was interrupted by a transient engine error; "
             "retry the request"
         )
-        assert output.error_kind == "lifecycle"
+        # #3564: a FATAL process-loop failure (here a non-memory ``TypeError``)
+        # is now classified into a stable engine-abort code, not the opaque
+        # ``lifecycle`` tag, so the route + GUI can reflect the category. The
+        # step error carries no memory signal, so it classifies as the generic
+        # transient ``engine_aborted`` (a Metal allocation failure would be
+        # ``insufficient_memory``). The genuinely CANCELLED request above keeps
+        # its explicit ``lifecycle`` kind — classification never clobbers a kind
+        # the abort path already stamped.
+        assert output.error_kind == "engine_aborted"
         assert "mask" not in output.error
     assert scheduler._step_no_queue.call_count == 1
     batch_generator.close.assert_called_once_with()
