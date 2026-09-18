@@ -1235,30 +1235,9 @@ def _canonicalize_local_run_argv(command: str, argv: list[Any], goal: str) -> li
     if command in _COMPILER_COMMANDS:
         indexes.update(range(len(argv)))
     elif command in {"python", "python3", "node", "ruby"}:
-        option_operands = {
-            "python": {"-W", "-X"},
-            "python3": {"-W", "-X"},
-            "node": {"-r", "--require", "--loader", "--import", "--conditions"},
-            "ruby": {"-I", "-r", "-C", "-E"},
-        }[command]
-        index = 0
-        while index < len(argv):
-            item = argv[index]
-            if not isinstance(item, str):
-                index += 1
-                continue
-            if item in {"-c", "-e", "--eval", "-m"}:
-                break
-            if item in option_operands:
-                index += 2
-                continue
-            if item == "--" and index + 1 < len(argv):
-                indexes.add(index + 1)
-                break
-            if not item.startswith("-"):
-                indexes.add(index)
-                break
-            index += 1
+        script_index = _interpreter_script_index(command, argv)
+        if script_index is not None:
+            indexes.add(script_index)
     elif command == "swift":
         indexes.update(
             index
@@ -1277,6 +1256,34 @@ def _canonicalize_local_run_argv(command: str, argv: list[Any], goal: str) -> li
         else item
         for index, item in enumerate(argv)
     ]
+
+
+def _interpreter_script_index(command: str, argv: list[Any]) -> int | None:
+    """Return the script operand after the supported interpreter's options."""
+
+    option_operands = {
+        "python": {"-W", "-X"},
+        "python3": {"-W", "-X"},
+        "node": {"-r", "--require", "--loader", "--import", "--conditions"},
+        "ruby": {"-I", "-r", "-C", "-E"},
+    }[command]
+    index = 0
+    while index < len(argv):
+        item = argv[index]
+        if not isinstance(item, str):
+            index += 1
+            continue
+        if item in {"-c", "-e", "--eval", "-m", "--check", "--syntax-check"}:
+            return None
+        if item in option_operands:
+            index += 2
+            continue
+        if item == "--":
+            return index + 1 if index + 1 < len(argv) else None
+        if not item.startswith("-"):
+            return index
+        index += 1
+    return None
 
 
 def _compiled_output_path(arguments: dict[str, Any]) -> str | None:
@@ -3488,19 +3495,19 @@ class AgentServerService:
                 return len(argv) >= 2
             if argv[0] == "-m":
                 return len(argv) >= 2 and argv[1] not in {"compileall", "py_compile"}
-            return not argv[0].startswith("-")
+            return _interpreter_script_index(command, argv) is not None
         if command == "node":
             if not argv or any(item in {"-c", "--check"} for item in argv):
                 return False
-            return (
-                argv[0] in {"-e", "--eval"}
-                and len(argv) >= 2
-                or not argv[0].startswith("-")
-            )
+            if argv[0] in {"-e", "--eval"}:
+                return len(argv) >= 2
+            return _interpreter_script_index(command, argv) is not None
         if command == "ruby":
             if not argv or any(item in {"-c", "--syntax-check"} for item in argv):
                 return False
-            return argv[0] == "-e" and len(argv) >= 2 or not argv[0].startswith("-")
+            if argv[0] == "-e":
+                return len(argv) >= 2
+            return _interpreter_script_index(command, argv) is not None
         return command.startswith(("~/", "/", "./"))
 
     @staticmethod

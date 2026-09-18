@@ -5578,6 +5578,21 @@ def test_local_run_history_helpers_ignore_malformed_and_unrelated_calls():
             {"role": "tool", "tool_call_id": "check", "content": "exit_code: 0"},
         ]
         assert svc._local_run_finished_script(_fake_run(check_messages)) is False
+    for command, argv in (
+        ("python3", ["-W", "ignore", "app.py"]),
+        ("node", ["-r", "hook.js", "app.js"]),
+        ("ruby", ["-I", "lib", "app.rb"]),
+    ):
+        run_messages = [
+            {
+                "role": "assistant",
+                "tool_calls": [
+                    _call("run", "local_run", {"command": command, "argv": argv})
+                ],
+            },
+            {"role": "tool", "tool_call_id": "run", "content": "exit_code: 0"},
+        ]
+        assert svc._local_run_finished_script(_fake_run(run_messages)) is True
     assert (
         svc._local_run_finished_script(
             _fake_run(

@@ -105,6 +105,8 @@ final class LocalWorkspaceToolsTests {
         // missing one word from the text is not a match.
         #expect(!LocalWorkspaceTools.matchesAllTerms(["orchid"], in: "orchid"))
         #expect(!LocalWorkspaceTools.matchesAllTerms(["orchid", "cactus"], in: "orchid notes"))
+        #expect(!LocalWorkspaceTools.matchesAllTerms(["art", "note"], in: "party notebook"))
+        #expect(LocalWorkspaceTools.snippetRange(query: "art note", terms: ["art", "note"], in: "party notebook") == nil)
         #expect(LocalWorkspaceTools.snippetRange(query: "orchid cactus", terms: ["orchid", "cactus"], in: "orchid notes") == nil)
     }
 
