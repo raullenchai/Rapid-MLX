@@ -3279,7 +3279,7 @@ class AgentServerService:
         resolved, working_directory = AgentServerService._relocate_run_to_sources(
             resolved, working_directory
         )
-        if resolved == list(call.arguments.get("argv", [])) and (
+        if resolved == call.arguments.get("argv") and (
             working_directory == arguments.get("working_directory")
         ):
             return turn

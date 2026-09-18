@@ -5150,3 +5150,200 @@ async def test_client_compile_ignores_a_write_that_reported_an_error():
         "argv": ["-o", "rapid_fix", "rapid_fix.c"],
         "working_directory": "~/Rapid Workspace",
     }
+
+
+def _fake_run(messages, execution="client", failed=()):
+    from types import SimpleNamespace
+
+    return SimpleNamespace(
+        messages=messages,
+        settings=SimpleNamespace(execution=execution),
+        failed_tool_call_ids=set(failed),
+    )
+
+
+def _call(call_id, name, arguments):
+    return {"id": call_id, "function": {"name": name, "arguments": arguments}}
+
+
+def test_local_run_history_helpers_ignore_malformed_and_unrelated_calls():
+    from rapid_mlx.agent_runtime.server import _compiled_output_path
+
+    # Output path: only compilers, only list argv, both -o spellings.
+    assert _compiled_output_path({"command": "python3", "argv": ["-o", "x"]}) is None
+    assert _compiled_output_path({"command": "gcc", "argv": "-o x"}) is None
+    assert _compiled_output_path({"command": "gcc", "argv": ["a.c"]}) is None
+    assert _compiled_output_path({"command": "gcc", "argv": [3, "-oapp", "a.c"]}) == (
+        "~/Rapid Workspace/app"
+    )
+    assert (
+        _compiled_output_path(
+            {"command": "gcc", "argv": ["-o", "/tmp/app"], "working_directory": ""}
+        )
+        == "/tmp/app"
+    )
+
+    svc = AgentServerService
+    messages = [
+        {"role": "assistant", "tool_calls": ["junk", _call("s", "local_search", "{}")]},
+        {"role": "assistant", "tool_calls": [_call("bad", "local_run", "{not json")]},
+        {"role": "assistant", "tool_calls": [_call("list", "local_run", "[1]")]},
+        {
+            "role": "assistant",
+            "tool_calls": [
+                _call("w-bad", "local_write", "{oops"),
+                _call("w-list", "local_write", "[]"),
+                _call("w-err", "local_write", '{"path": "~/Documents/err.c"}'),
+                _call("w-ok", "local_write", '{"path": "~/Documents/ok.c"}'),
+            ],
+        },
+        {"role": "tool", "tool_call_id": "w-bad", "content": "Wrote"},
+        {"role": "tool", "tool_call_id": "w-list", "content": "Wrote"},
+        {"role": "tool", "tool_call_id": "w-err", "content": "local_write error"},
+        {"role": "tool", "tool_call_id": "w-ok", "content": "Wrote 4 bytes"},
+    ]
+    entry = _fake_run(messages, failed=["w-err"])
+    assert svc._written_files(entry) == {"ok.c": "~/Documents/ok.c"}
+    assert svc._compiled_binary_for(entry, "s") is None
+    assert svc._compiled_binary_for(entry, "bad") is None
+    assert svc._compiled_binary_for(entry, "list") is None
+    assert svc._compiled_binary_for(entry, "missing") is None
+    assert svc._successful_compile_output(entry) is None
+    assert svc._local_run_finished_script(entry) is False
+    assert svc._local_run_finished_script(_fake_run(messages[2:3])) is False
+    assert svc._local_run_finished_script(_fake_run(messages[:1])) is False
+
+    # A compile that exited 0 is remembered; a later mismatch is not redirected.
+    compile_messages = [
+        {
+            "role": "assistant",
+            "tool_calls": [
+                _call(
+                    "c",
+                    "local_run",
+                    '{"command": "gcc", "argv": ["-o", "app", "app.c"], "working_directory": "~/Documents"}',
+                )
+            ],
+        },
+        {"role": "tool", "tool_call_id": "c", "content": "exit_code: 0\n"},
+    ]
+    compiled = _fake_run(compile_messages)
+    assert svc._compiled_binary_for(compiled, "c") == "~/Documents/app"
+    assert svc._local_run_finished_script(compiled) is False
+    different = AgentModelTurn(
+        tool_calls=[
+            AgentToolCall(
+                id="d",
+                name="local_run",
+                arguments={"command": "gcc", "argv": ["-o", "app2", "app.c"]},
+            )
+        ]
+    )
+    assert svc._redirect_repeated_compile(compiled, different) is different
+    resolved = svc._resolve_local_run_against_written_files(compiled, different)
+    assert resolved.tool_calls[0].arguments["argv"] == ["-o", "app2", "app.c"]
+
+    # Non-list argv and a missing working directory leave the turn alone.
+    odd = AgentModelTurn(
+        tool_calls=[
+            AgentToolCall(
+                id="o", name="local_run", arguments={"command": "gcc", "argv": "x"}
+            )
+        ]
+    )
+    assert svc._resolve_local_run_against_written_files(compiled, odd) is odd
+    no_cwd = AgentModelTurn(
+        tool_calls=[
+            AgentToolCall(
+                id="n",
+                name="local_run",
+                arguments={"command": "python3", "argv": ["a.py"]},
+            )
+        ]
+    )
+    defaulted = svc._resolve_local_run_against_written_files(compiled, no_cwd)
+    assert defaulted.tool_calls[0].arguments == {
+        "command": "python3",
+        "argv": ["a.py"],
+        "working_directory": "~/Rapid Workspace",
+    }
+
+    # An interpreter that exited 0 counts as the script having run; go needs "run".
+    script_messages = [
+        {
+            "role": "assistant",
+            "tool_calls": [
+                _call("p", "local_run", {"command": "python3", "argv": ["a.py"]})
+            ],
+        },
+        {"role": "tool", "tool_call_id": "p", "content": "exit_code: 0\nhi"},
+    ]
+    assert svc._local_run_finished_script(_fake_run(script_messages)) is True
+    go_messages = [
+        {
+            "role": "assistant",
+            "tool_calls": [
+                _call("g", "local_run", {"command": "go", "argv": ["build"]})
+            ],
+        },
+        {"role": "tool", "tool_call_id": "g", "content": "exit_code: 0"},
+    ]
+    assert svc._local_run_finished_script(_fake_run(go_messages)) is False
+    assert (
+        svc._local_run_finished_script(
+            _fake_run(
+                [
+                    {
+                        "role": "assistant",
+                        "tool_calls": [_call("x", "local_run", {"command": 3})],
+                    }
+                ]
+            )
+        )
+        is False
+    )
+
+
+@pytest.mark.asyncio
+async def test_client_schema_misses_stop_when_the_goal_path_is_not_mechanical():
+    from fastapi import HTTPException
+
+    class MissDriver(ScriptedDriver):
+        def __init__(self, second_status):
+            super().__init__()
+            self.second_status = second_status
+
+        async def __call__(self, model, messages, tools, settings):
+            self.requests.append((model, messages, tools, settings))
+            status = 422 if len(self.requests) == 1 else self.second_status
+            raise HTTPException(status_code=status, detail="arguments missing path")
+
+    # Two paths in the goal: nothing unambiguous to supply after two misses.
+    driver = MissDriver(422)
+    service = AgentServerService(registry=FakeRegistry(()), chat_driver=driver)
+    created = await service.create(
+        AgentRunCreateRequest(
+            goal="Move ~/Documents/a.txt and ~/Documents/b.txt to the Trash",
+            execution="client",
+            tool_names=["local_trash"],
+        ),
+        model="qwen3.5-4b-4bit",
+    )
+    failed = await wait_for_status(service, created.id, AgentRunStatus.FAILED)
+    assert failed.failure_code == "agent_adapter_failure"
+    assert len(driver.requests) == 2
+
+    # A non-422 failure on the correction turn is never papered over.
+    driver = MissDriver(500)
+    service = AgentServerService(registry=FakeRegistry(()), chat_driver=driver)
+    created = await service.create(
+        AgentRunCreateRequest(
+            goal="Move ~/Documents/a.txt to the Trash",
+            execution="client",
+            tool_names=["local_trash"],
+        ),
+        model="qwen3.5-4b-4bit",
+    )
+    failed = await wait_for_status(service, created.id, AgentRunStatus.FAILED)
+    assert failed.failure_code == "agent_adapter_failure"
+    assert len(driver.requests) == 2

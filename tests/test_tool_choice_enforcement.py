@@ -1956,3 +1956,90 @@ def test_forced_shape_salvage_never_invents_keys_or_targets():
     )
     assert _salvage_forced_shape_arguments("local_run", None, _LOCAL_RUN_TOOLS) is None
     assert _salvage_forced_shape_arguments("local_run", "prose only", []) is None
+
+
+def test_forced_shape_salvage_helpers_cover_their_guards():
+    from rapid_mlx.routes.chat import (
+        _balanced_object_end,
+        _forced_tool_object_schema,
+        _salvage_forced_shape_arguments,
+    )
+
+    # Schema lookup: dict tools, a name mismatch, a non-object schema, none.
+    string_tool = {
+        "type": "function",
+        "function": {"name": "echo", "parameters": {"type": "string"}},
+    }
+    assert _forced_tool_object_schema("local_run", _LOCAL_RUN_TOOLS) is not None
+    assert _forced_tool_object_schema("echo", [string_tool]) is None
+    assert (
+        _forced_tool_object_schema("missing", _LOCAL_RUN_TOOLS + [string_tool]) is None
+    )
+    assert _forced_tool_object_schema("local_run", None) is None
+
+    # Balanced-object scan honours escaped quotes and braces inside strings.
+    text = '{"a": "x\\"}{", "b": {"c": 1}} trailing'
+    end = _balanced_object_end(text, 0)
+    assert end is not None and text[:end] == '{"a": "x\\"}{", "b": {"c": 1}}'
+    assert _balanced_object_end('{"open": "never', 0) is None
+
+    # No usable schema, or no properties: nothing is salvaged.
+    assert (
+        _salvage_forced_shape_arguments("echo", '"name": "echo"', [string_tool]) is None
+    )
+    empty_props = [
+        {
+            "type": "function",
+            "function": {
+                "name": "noop",
+                "parameters": {"type": "object", "properties": {}},
+            },
+        }
+    ]
+    assert (
+        _salvage_forced_shape_arguments("noop", '"name": "noop"', empty_props) is None
+    )
+
+    # Junk prefix but a broken object behind it: falls through, not invented.
+    raw = '{"name": "local_run", "arguments": >{"command": "python3", '
+    assert _salvage_forced_shape_arguments("local_run", raw, _LOCAL_RUN_TOOLS) is None
+
+    # XML parameters: a declared non-string property is left to the schema gate.
+    raw = (
+        '{"name": "local_run", "arguments": '
+        "<parameter=command>python3</parameter>"
+        "<parameter=argv>a.py</parameter>"
+    )
+    assert _salvage_forced_shape_arguments("local_run", raw, _LOCAL_RUN_TOOLS) == (
+        '{"command": "python3"}'
+    )
+
+
+def test_forced_shape_salvage_reaches_the_wire_repair():
+    from types import SimpleNamespace
+
+    from rapid_mlx.routes.chat import (
+        _repair_forced_call_arguments,
+        _salvage_forced_shape_arguments,
+    )
+
+    raw = (
+        '<tool_call>\n{"name": "local_run", "arguments": 0, '
+        '"command": "python3", "argv": ["fib.py"]}\n</tool_call>'
+    )
+    call = SimpleNamespace(
+        id="call_x",
+        type="function",
+        function=SimpleNamespace(name="local_run", arguments="0"),
+    )
+    err = _repair_forced_call_arguments([call], raw, "local_run", _LOCAL_RUN_TOOLS)
+    assert err is None
+    assert json.loads(call.function.arguments) == {
+        "command": "python3",
+        "argv": ["fib.py"],
+    }
+
+    # A junk prefix in front of an object that is balanced but not JSON
+    # (single quotes) is not an object the wire can carry.
+    raw = '"name": "local_run", "arguments": >{\'command\': \'python3\'}'
+    assert _salvage_forced_shape_arguments("local_run", raw, _LOCAL_RUN_TOOLS) is None
