@@ -383,6 +383,45 @@ class TestDetectModelConfig:
         assert cfg.is_hybrid is False
         assert cfg.supports_spec_decode is True
 
+    # Bonsai 2 (prism-ml/Ternary-Bonsai-2-*) — a Qwen3.5-class checkpoint
+    # served as a rotated 2-bit Hadamard pack whose custom top-level
+    # ``model_type=prism_hadamard_qwen35`` keeps the generic qwen3.5 regexes
+    # from firing on the raw HF path. Without the family regex, a user who
+    # serves the repo id directly (as in #3547) gets no reasoning parser and
+    # sees the bare ``<think>`` scratchpad in ``content``. Both the aliased
+    # 27B and an un-aliased sibling (8B, regex-only path) must wire the
+    # Qwen3 hermes-tool + qwen3-reasoning contract.
+    @pytest.mark.parametrize(
+        "model_path",
+        [
+            "prism-ml/Ternary-Bonsai-2-27B-mlx-2bit",
+            "prism-ml/Ternary-Bonsai-2-8B-mlx-2bit",
+        ],
+    )
+    def test_bonsai2_hadamard(self, model_path):
+        cfg = detect_model_config(model_path)
+        assert cfg is not None
+        assert cfg.tool_call_parser == "hermes"
+        assert cfg.reasoning_parser == "qwen3"
+
+    def test_bonsai2_regex_does_not_match_v1_sibling(self):
+        # The trailing-separator lookahead in the ``ternary-bonsai-2`` regex
+        # must not fire on the v1 ``Ternary-Bonsai-27B`` pack ("bonsai-2" vs
+        # "bonsai-27"), whose text-backbone lane is pinned non-hybrid via its
+        # own alias and must not inherit the v2 family stamp.
+        from rapid_mlx.model_auto_config import _MODEL_PATTERNS
+
+        bonsai2_regexes = [
+            pat
+            for pat, _ in _MODEL_PATTERNS
+            if pat.search("prism-ml/Ternary-Bonsai-2-27B-mlx-2bit")
+            and "bonsai" in pat.pattern.lower()
+        ]
+        assert bonsai2_regexes, "expected a bonsai-2 family regex"
+        for pat in bonsai2_regexes:
+            assert not pat.search("prism-ml/Ternary-Bonsai-27B-mlx-2bit")
+            assert not pat.search("prism-ml/Ternary-Bonsai-8B-mlx-2bit")
+
     # VibeThinker (Weibo AI reasoning family; 1.5B base = Qwen2.5-Math-1.5B,
     # 3B base = Qwen2.5-Coder-3B). Verify both the alias paths
     # (vibethinker-{1.5b-4bit,3b-8bit} → JSON profile) and the bare-HF-path
