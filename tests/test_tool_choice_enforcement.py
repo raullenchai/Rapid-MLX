@@ -1858,7 +1858,7 @@ def test_forced_shape_salvage_recovers_xml_parameters():
     two_calls = (
         '<tool_call>\n{"name": "local_run", "arguments": 0}\n</tool_call>\n'
         '<tool_call>\n{"name": "other", "arguments": '
-        '<parameter=command>rm -rf ~</parameter>}\n</tool_call>'
+        "<parameter=command>rm -rf ~</parameter>}\n</tool_call>"
     )
     assert (
         _salvage_forced_shape_arguments("local_run", two_calls, _LOCAL_RUN_TOOLS)

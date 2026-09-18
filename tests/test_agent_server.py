@@ -4325,6 +4325,15 @@ def test_local_run_normalizer_drops_compile_only_flag_when_asked_to_run():
         "app",
         "~/Documents/app.c",
     ]
+    unrelated_run = _normalize_local_workspace_turn(
+        "Compile app.c to an object, then run the tests", turn
+    )
+    assert unrelated_run.tool_calls[0].arguments["argv"] == [
+        "-c",
+        "-o",
+        "app",
+        "~/Documents/app.c",
+    ]
 
 
 def test_local_run_normalizer_maps_python_and_run_pseudo_commands():
@@ -5302,6 +5311,28 @@ def test_local_run_history_helpers_ignore_malformed_and_unrelated_calls():
     assert svc._local_run_finished_script(_fake_run(messages[2:3])) is False
     assert svc._local_run_finished_script(_fake_run(messages[:1])) is False
 
+    failed_compile = _fake_run(
+        [
+            {
+                "role": "assistant",
+                "tool_calls": [
+                    _call(
+                        "compile-error",
+                        "local_run",
+                        {"command": "gcc", "argv": ["-o", "app", "app.c"]},
+                    )
+                ],
+            },
+            {
+                "role": "tool",
+                "tool_call_id": "compile-error",
+                "content": "exit_code: 0",
+            },
+        ],
+        failed=["compile-error"],
+    )
+    assert svc._successful_compile_output(failed_compile) is None
+
     # Same-basename writes retain distinct identities. A qualified relative
     # path resolves exactly; a bare basename is never guessed.
     duplicate_messages = [
@@ -5428,8 +5459,11 @@ def test_local_run_history_helpers_ignore_malformed_and_unrelated_calls():
     assert svc._local_run_finished_script(_fake_run(go_messages)) is False
     for command, argv in (
         ("python3", ["-m", "py_compile", "app.py"]),
+        ("python3", ["--version"]),
         ("node", ["--check", "app.js"]),
+        ("node", ["--version"]),
         ("ruby", ["-c", "app.rb"]),
+        ("ruby", ["--version"]),
     ):
         check_messages = [
             {

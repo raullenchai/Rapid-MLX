@@ -1366,11 +1366,18 @@ def _normalize_local_workspace_turn(goal: str, turn: AgentModelTurn) -> AgentMod
                     f"{working_directory.rstrip('/')}/{raw_command[2:]}"
                 )
             normalized_arguments = arguments.get("argv")
+            compile_and_run = re.search(
+                r"\bcompile\b.{0,120}\b(?:and\s+)?(?:then\s+)?run\s+"
+                r"(?:it|the\s+(?:program|binary|output|executable))\b|"
+                r"编译.{0,80}(?:然后|并且|再)?(?:运行|执行)(?:它|该程序|这个程序)?",
+                goal,
+                re.IGNORECASE,
+            )
             if (
                 arguments.get("command") in _COMPILER_COMMANDS
                 and isinstance(normalized_arguments, list)
                 and "-c" in normalized_arguments
-                and re.search(r"\b(?:run|execute)\b|运行|执行", goal, re.IGNORECASE)
+                and compile_and_run is not None
             ):
                 # ``-c`` stops after the object file, so the requested run can
                 # never happen (qwen3.5-9b, dogfood 2026-09-17).
@@ -3216,7 +3223,11 @@ class AgentServerService:
                 if output is None:
                     continue
                 content = results.get(str(call.get("id")), "")
-                if content.lstrip().startswith("exit_code: 0"):
+                call_id = str(call.get("id"))
+                if (
+                    call_id not in entry.failed_tool_call_ids
+                    and content.lstrip().startswith("exit_code: 0")
+                ):
                     found = (arguments, output)
         return found
 
@@ -3384,15 +3395,25 @@ class AgentServerService:
         if command in {"go", "swift"}:
             return bool(argv) and argv[0] == "run"
         if command in {"python", "python3"}:
-            return not (
-                len(argv) >= 2
-                and argv[0] == "-m"
-                and argv[1] in {"compileall", "py_compile"}
-            )
+            if not argv:
+                return False
+            if argv[0] == "-c":
+                return len(argv) >= 2
+            if argv[0] == "-m":
+                return len(argv) >= 2 and argv[1] not in {"compileall", "py_compile"}
+            return not argv[0].startswith("-")
         if command == "node":
-            return not any(item in {"-c", "--check"} for item in argv)
+            if not argv or any(item in {"-c", "--check"} for item in argv):
+                return False
+            return (
+                argv[0] in {"-e", "--eval"}
+                and len(argv) >= 2
+                or not argv[0].startswith("-")
+            )
         if command == "ruby":
-            return not any(item in {"-c", "--syntax-check"} for item in argv)
+            if not argv or any(item in {"-c", "--syntax-check"} for item in argv):
+                return False
+            return argv[0] == "-e" and len(argv) >= 2 or not argv[0].startswith("-")
         return command.startswith(("~/", "/", "./"))
 
     @staticmethod
