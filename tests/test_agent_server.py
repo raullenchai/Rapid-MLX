@@ -5447,6 +5447,20 @@ def test_local_run_history_helpers_ignore_malformed_and_unrelated_calls():
         {"role": "tool", "tool_call_id": "p", "content": "exit_code: 0\nhi"},
     ]
     assert svc._local_run_finished_script(_fake_run(script_messages)) is True
+    assert (
+        svc._local_run_finished_script(_fake_run(script_messages, failed=["p"]))
+        is False
+    )
+    swift_script = [
+        {
+            "role": "assistant",
+            "tool_calls": [
+                _call("swift", "local_run", {"command": "swift", "argv": ["app.swift"]})
+            ],
+        },
+        {"role": "tool", "tool_call_id": "swift", "content": "exit_code: 0"},
+    ]
+    assert svc._local_run_finished_script(_fake_run(swift_script)) is True
     go_messages = [
         {
             "role": "assistant",

@@ -3392,8 +3392,13 @@ class AgentServerService:
         argv = arguments.get("argv")
         if not isinstance(command, str) or not isinstance(argv, list):
             return False
-        if command in {"go", "swift"}:
+        if command == "go":
             return bool(argv) and argv[0] == "run"
+        if command == "swift":
+            return bool(argv) and (
+                argv[0] == "run"
+                or (not argv[0].startswith("-") and argv[0].endswith(".swift"))
+            )
         if command in {"python", "python3"}:
             if not argv:
                 return False
@@ -3510,8 +3515,12 @@ class AgentServerService:
                     return False
                 if not AgentServerService._local_run_invokes_program(arguments):
                     return False
-                content = results.get(str(call.get("id")), "")
-                return content.lstrip().startswith("exit_code: 0")
+                call_id = str(call.get("id"))
+                content = results.get(call_id, "")
+                return (
+                    call_id not in entry.failed_tool_call_ids
+                    and content.lstrip().startswith("exit_code: 0")
+                )
         return False
 
     @staticmethod
