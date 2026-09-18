@@ -1853,6 +1853,18 @@ def test_forced_shape_salvage_recovers_xml_parameters():
     assert got is not None
     assert json.loads(got) == {"command": "python fibonacci.py"}
 
+    duplicate_parameter = (
+        '<tool_call>\n{"name": "local_run", "arguments": '
+        "<parameter=command>python safe.py</parameter>"
+        "<parameter=command>python other.py</parameter>}\n</tool_call>"
+    )
+    assert (
+        _salvage_forced_shape_arguments(
+            "local_run", duplicate_parameter, _LOCAL_RUN_TOOLS
+        )
+        is None
+    )
+
     # Parameters in a later tool-call block must never be attached to the
     # forced call named in the first block.
     two_calls = (

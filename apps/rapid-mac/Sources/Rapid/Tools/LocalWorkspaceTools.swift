@@ -1380,7 +1380,7 @@ enum LocalWorkspaceTools {
             pathIndexes = Set(arguments.indices.filter { arguments[$0].hasSuffix(".swift") })
         case "go":
             pathIndexes = Set(arguments.indices.filter {
-                $0 > 0 && arguments.first == "run" && arguments[$0].hasSuffix(".go")
+                $0 > 0 && arguments.first == "run" && arguments[$0].hasPrefix("~/")
             })
         default:
             pathIndexes = []

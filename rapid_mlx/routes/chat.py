@@ -3171,7 +3171,7 @@ def _salvage_forced_shape_arguments(
     if pairs:
         recovered: dict[str, str] = {}
         for key, value in pairs:
-            if key not in props:
+            if key not in props or key in recovered:
                 return None
             declared = props[key].get("type") if isinstance(props[key], dict) else None
             if declared not in (None, "string"):

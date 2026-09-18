@@ -222,7 +222,7 @@ _DESKTOP_CLIENT_TOOL_SPECS = (
     ),
     ToolSpec(
         name="local_run",
-        description="Run an approved development command without a shell. Pass the command name in 'command' and its arguments as the 'arguments' string array. working_directory is optional and defaults to '~/Rapid Workspace'; cwd is accepted as an alias.",
+        description="Run an approved development command without a shell. Pass the command name in 'command' and its arguments as the 'argv' string array ('arguments' remains a compatibility alias). working_directory is optional and defaults to '~/Rapid Workspace'; cwd is accepted as an alias.",
         parameters_json=json.dumps(
             {
                 "type": "object",

@@ -143,6 +143,9 @@ final class LocalWorkspaceToolsTests {
             command: "clang",
             home: home
         ) == ["-I/Users/example/Documents/include", "-F/Users/example/Documents/frameworks", "-o/Users/example/Documents/app", "/Users/example/Documents/app.c"])
+        #expect(LocalWorkspaceTools.expandingHomeArguments(
+            ["run", "~/Documents/project"], command: "go", home: home
+        ) == ["run", "/Users/example/Documents/project"])
     }
 
     @Test("tool results report paths relative to the home directory")
