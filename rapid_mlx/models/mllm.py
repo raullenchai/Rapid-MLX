@@ -1579,21 +1579,25 @@ class MLXMultimodalLM:
             _, trust_remote_code = apply_remote_code_policy(
                 {"trust_remote_code": self.trust_remote_code}
             )
-            if trust_remote_code:
+            self.config = load_config(
+                self.model_name,
+                **({} if trust_remote_code else {"trust_remote_code": False}),
+            )
+            if (
+                isinstance(self.config, dict)
+                and self.config.get("model_type") == "prism_hadamard_qwen35"
+            ):
+                from .prism_hadamard_qwen35 import load as load_prism
+
+                self.model, self.processor = load_prism(self.model_name, self.config)
+                # Prompt helpers use the base architecture; never rewrite the pack.
+                self.config = {**self.config, "model_type": "qwen3_5"}
+            elif trust_remote_code:
                 # Preserve mlx-vlm's historical call shape (and compatibility
                 # with older versions/wrappers) unless the operator opts out.
                 self.model, self.processor = load(self.model_name)
-                self.config = load_config(self.model_name)
             else:
                 self.model, self.processor = load(
-                    self.model_name,
-                    trust_remote_code=False,
-                )
-                # mlx-vlm 0.6.x currently reads config.json directly, but
-                # forwarding the policy here makes the process-wide opt-out
-                # explicit and prevents a future/config-loader implementation
-                # from silently re-enabling repository code.
-                self.config = load_config(
                     self.model_name,
                     trust_remote_code=False,
                 )
