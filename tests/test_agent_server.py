@@ -35,6 +35,7 @@ from rapid_mlx.agent_runtime.server import (
     _evaluate_arithmetic,
     _format_retry_instruction,
     _has_browse_observation,
+    _normalize_local_workspace_turn,
     _observed_sentence_count,
     _planned_weather_arguments,
     _planned_weather_requests,
@@ -357,6 +358,308 @@ def test_desktop_tool_routing_is_intent_scoped_and_preserves_non_desktop_names()
     assert _route_desktop_client_tools(
         "Search the web for reviews of https://example.com", offered
     ) == ["custom__read", "web_search", "browse"]
+
+
+def test_desktop_local_tools_route_without_leaking_local_requests_to_web():
+    offered = [
+        "web_search",
+        "browse",
+        "weather",
+        "local_search",
+        "local_read",
+        "local_write",
+        "local_trash",
+        "local_run",
+    ]
+    assert _route_desktop_client_tools(
+        "Search the folder /Users/alice/Documents for Project Orchid", offered
+    ) == ["local_search"]
+    assert _route_desktop_client_tools(
+        "Read the file /Users/alice/Documents/note.txt", offered
+    ) == ["local_read"]
+    assert _route_desktop_client_tools(
+        "Read /Users/me/Documents/notes.txt and summarize it", offered
+    ) == ["local_read"]
+    assert _route_desktop_client_tools(
+        "Draft a proposal and save it to /Users/me/Documents/proposal.md", offered
+    ) == ["local_write"]
+    assert _route_desktop_client_tools(
+        "Write a C program to /Users/alice/Documents/hello.c and compile and run it",
+        offered,
+    ) == ["local_write", "local_run"]
+    assert _route_desktop_client_tools(
+        "Write a C program that prints hello, then compile and run it", offered
+    ) == ["local_write", "local_run"]
+    assert _route_desktop_client_tools("Run /Users/alice/project/main", offered) == [
+        "local_run"
+    ]
+    assert _route_desktop_client_tools(
+        "Move the file /Users/alice/Downloads/old.txt to Trash", offered
+    ) == ["local_trash"]
+    assert _route_desktop_client_tools(
+        "Move /Users/alice/Downloads/old.txt to the Trash. Do not delete anything else.",
+        offered,
+    ) == ["local_trash"]
+
+
+def test_local_workspace_default_path_is_harness_owned_and_user_path_is_preserved():
+    generated = AgentModelTurn(
+        tool_calls=[
+            AgentToolCall(
+                id="write",
+                name="local_write",
+                arguments={"path": "/tmp/main.c", "content": "int main(){}"},
+            )
+        ]
+    )
+    normalized = _normalize_local_workspace_turn(
+        "Write a C program, compile it, and run it", generated
+    )
+    assert normalized.tool_calls[0].arguments["path"] == "~/Rapid Workspace/main.c"
+
+    explicit = _normalize_local_workspace_turn(
+        "Write it to /Users/alice/Documents/main.c", generated
+    )
+    assert explicit == generated
+
+    direct = _normalize_local_workspace_turn(
+        "Write /Users/alice/Documents/report.md", generated
+    )
+    assert direct == generated
+
+    input_only = _normalize_local_workspace_turn(
+        "Read /Users/alice/Documents/notes.txt and save a summary", generated
+    )
+    assert input_only.tool_calls[0].arguments["path"] == ("~/Rapid Workspace/main.c")
+
+    offered = ["local_read", "local_write"]
+    assert (
+        _route_desktop_client_tools(
+            'Read "/Users/alice/My Documents/notes.txt" and save a summary', offered
+        )
+        == offered
+    )
+    assert (
+        _route_desktop_client_tools(
+            "Read /Users/alice/My Documents/notes.txt and save a summary", offered
+        )
+        == offered
+    )
+
+    run = AgentModelTurn(
+        tool_calls=[
+            AgentToolCall(
+                id="run",
+                name="local_run",
+                arguments={"command": "cc", "cwd": "/tmp"},
+            )
+        ]
+    )
+    normalized_run = _normalize_local_workspace_turn("Compile and run the code", run)
+    assert normalized_run.tool_calls[0].arguments == {
+        "command": "cc",
+        "working_directory": "~/Rapid Workspace",
+    }
+
+    shell_recipe = AgentModelTurn(
+        tool_calls=[
+            AgentToolCall(
+                id="compile",
+                name="local_run",
+                arguments={
+                    "command": (
+                        "cd ~/Rapid Workspace && gcc rapid_ok.c -o rapid_ok "
+                        "&& ./rapid_ok"
+                    )
+                },
+            )
+        ]
+    )
+    normalized_recipe = _normalize_local_workspace_turn(
+        "Compile and run the code", shell_recipe
+    )
+    assert normalized_recipe.tool_calls[0].arguments == {
+        "command": "gcc",
+        "arguments": ["rapid_ok.c", "-o", "rapid_ok"],
+        "working_directory": "~/Rapid Workspace",
+    }
+
+    model_chosen_cd = AgentModelTurn(
+        tool_calls=[
+            AgentToolCall(
+                id="compile-model-cd",
+                name="local_run",
+                arguments={
+                    "command": "cd /Users/alice/Documents/project && gcc main.c"
+                },
+            )
+        ]
+    )
+    normalized_model_cd = _normalize_local_workspace_turn(
+        "Compile and run the code", model_chosen_cd
+    )
+    assert normalized_model_cd.tool_calls[0].arguments == {
+        "command": "gcc",
+        "arguments": ["main.c", "-o", "main"],
+        "working_directory": "~/Rapid Workspace",
+    }
+
+    explicit_recipe = AgentModelTurn(
+        tool_calls=[
+            AgentToolCall(
+                id="compile-explicit",
+                name="local_run",
+                arguments={
+                    "command": (
+                        "cd /Users/alice/Documents/project && gcc main.c && ./main"
+                    )
+                },
+            )
+        ]
+    )
+    normalized_explicit_recipe = _normalize_local_workspace_turn(
+        "Compile the project in /Users/alice/Documents/project", explicit_recipe
+    )
+    assert normalized_explicit_recipe.tool_calls[0].arguments == {
+        "command": "gcc",
+        "arguments": ["main.c", "-o", "main"],
+        "working_directory": "/Users/alice/Documents/project",
+    }
+
+    explicit_relative = AgentModelTurn(
+        tool_calls=[
+            AgentToolCall(
+                id="execute-explicit",
+                name="local_run",
+                arguments={
+                    "command": "./main",
+                    "working_directory": "/Users/alice/Documents/project",
+                },
+            )
+        ]
+    )
+    normalized_explicit_relative = _normalize_local_workspace_turn(
+        "Run /Users/alice/Documents/project/main", explicit_relative
+    )
+    assert normalized_explicit_relative.tool_calls[0].arguments["command"] == (
+        "/Users/alice/Documents/project/main"
+    )
+
+    relative_executable = AgentModelTurn(
+        tool_calls=[
+            AgentToolCall(
+                id="execute",
+                name="local_run",
+                arguments={"command": "./rapid_ok"},
+            )
+        ]
+    )
+    normalized_executable = _normalize_local_workspace_turn(
+        "Compile and run the code", relative_executable
+    )
+    assert normalized_executable.tool_calls[0].arguments["command"] == (
+        "~/Rapid Workspace/rapid_ok"
+    )
+
+    implicit_compiler_output = AgentModelTurn(
+        tool_calls=[
+            AgentToolCall(
+                id="compile-default",
+                name="local_run",
+                arguments={"command": "gcc", "arguments": ["rapid_ok.c"]},
+            )
+        ]
+    )
+    normalized_compiler = _normalize_local_workspace_turn(
+        "Compile and run the code", implicit_compiler_output
+    )
+    assert normalized_compiler.tool_calls[0].arguments["arguments"] == [
+        "rapid_ok.c",
+        "-o",
+        "rapid_ok",
+    ]
+
+    joined_compiler_output = AgentModelTurn(
+        tool_calls=[
+            AgentToolCall(
+                id="compile-joined-output",
+                name="local_run",
+                arguments={
+                    "command": "gcc",
+                    "arguments": ["rapid_ok.c", "-ocustom"],
+                },
+            )
+        ]
+    )
+    normalized_joined_output = _normalize_local_workspace_turn(
+        "Compile and run the code", joined_compiler_output
+    )
+    assert normalized_joined_output.tool_calls[0].arguments["arguments"] == [
+        "rapid_ok.c",
+        "-ocustom",
+    ]
+
+    invalid_filename = AgentModelTurn(
+        tool_calls=[
+            AgentToolCall(
+                id="write-invalid",
+                name="local_write",
+                arguments={"path": "../not safe", "content": "text"},
+            )
+        ]
+    )
+    assert (
+        _normalize_local_workspace_turn("Write a note", invalid_filename)
+        .tool_calls[0]
+        .arguments["path"]
+        == "~/Rapid Workspace/generated.txt"
+    )
+
+    missing_filename = AgentModelTurn(
+        tool_calls=[
+            AgentToolCall(
+                id="write-missing", name="local_write", arguments={"content": "text"}
+            )
+        ]
+    )
+    assert (
+        _normalize_local_workspace_turn("Write a note", missing_filename)
+        .tool_calls[0]
+        .arguments["path"]
+        == "~/Rapid Workspace/generated.txt"
+    )
+
+    quoted_separator = AgentModelTurn(
+        tool_calls=[
+            AgentToolCall(
+                id="quoted-separator",
+                name="local_run",
+                arguments={"command": "python3 -c 'print(\"a;b\")'"},
+            )
+        ]
+    )
+    assert (
+        _normalize_local_workspace_turn("Run this code", quoted_separator)
+        .tool_calls[0]
+        .arguments["command"]
+        == "python3"
+    )
+
+    malformed_recipe = AgentModelTurn(
+        tool_calls=[
+            AgentToolCall(
+                id="malformed-recipe",
+                name="local_run",
+                arguments={"command": "'unterminated"},
+            )
+        ]
+    )
+    assert (
+        _normalize_local_workspace_turn("Run this code", malformed_recipe)
+        .tool_calls[0]
+        .arguments["command"]
+        == "'unterminated"
+    )
 
 
 def test_url_trimming_preserves_balanced_closing_delimiters():
@@ -3776,6 +4079,92 @@ async def test_drive_preserves_stable_invalid_tool_arguments_code():
     failed = await wait_for_status(service, created.id, AgentRunStatus.FAILED)
 
     assert failed.failure_code == "invalid_tool_arguments"
+
+
+@pytest.mark.asyncio
+async def test_client_desktop_tool_retries_one_rejected_pinned_turn():
+    class PinnedTurnRejectedError(Exception):
+        status_code = 422
+
+    class RetryDriver:
+        def __init__(self):
+            self.requests = []
+
+        async def __call__(self, *args):
+            self.requests.append(args)
+            if len(self.requests) == 1:
+                raise PinnedTurnRejectedError()
+            return AgentModelTurn(
+                tool_calls=[
+                    AgentToolCall(
+                        id="write",
+                        name="local_write",
+                        arguments={"path": "/tmp/from-model.c", "content": "ok"},
+                    )
+                ]
+            )
+
+    driver = RetryDriver()
+    service = AgentServerService(registry=FakeRegistry(()), chat_driver=driver)
+    created = await service.create(
+        AgentRunCreateRequest(
+            goal="Write a C program on my Mac",
+            execution="client",
+            tool_names=["local_write"],
+        ),
+        model="minicpm5-2b-4bit",
+    )
+
+    waiting = await wait_for_status(
+        service, created.id, AgentRunStatus.AWAITING_TOOL_RESULT
+    )
+    assert len(driver.requests) == 2
+    retry_messages = driver.requests[1][1]
+    assert retry_messages[-1]["content"].startswith("Call local_write now.")
+    assert waiting.pending_action is not None
+    assert waiting.pending_action.arguments["path"] == "~/Rapid Workspace/from-model.c"
+
+
+@pytest.mark.asyncio
+async def test_client_desktop_compile_flow_can_offer_local_run_twice():
+    driver = ScriptedDriver(
+        AgentModelTurn(
+            tool_calls=[
+                AgentToolCall(
+                    id="compile",
+                    name="local_run",
+                    arguments={"command": "gcc", "arguments": ["main.c", "-o", "main"]},
+                )
+            ]
+        ),
+        AgentModelTurn(content="Compiled and ran the program."),
+    )
+    service = AgentServerService(registry=FakeRegistry(()), chat_driver=driver)
+    created = await service.create(
+        AgentRunCreateRequest(
+            goal="Compile main.c and run it",
+            execution="client",
+            tool_names=["local_run"],
+        ),
+        model="minicpm5-2b-4bit",
+    )
+
+    waiting = await wait_for_status(
+        service, created.id, AgentRunStatus.AWAITING_TOOL_RESULT
+    )
+    assert waiting.pending_action is not None
+    await service.submit_result(
+        created.id,
+        AgentToolResultRequest(
+            call_id=waiting.pending_action.call_id,
+            content="exit_code: 0",
+            executed=True,
+        ),
+    )
+
+    done = await wait_for_status(service, created.id, AgentRunStatus.COMPLETED)
+    assert done.output == "Compiled and ran the program."
+    assert [tool.name for tool in driver.requests[1][2]] == ["local_run"]
 
 
 @pytest.mark.asyncio

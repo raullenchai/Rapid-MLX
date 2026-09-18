@@ -84,6 +84,7 @@ struct ContentView: View {
     @Environment(UpdateChecker.self) private var updater
     @Environment(QuickstartCoordinator.self) private var quickstart
     @Environment(BrowseApprovalStore.self) private var browseApproval
+    @Environment(LocalToolApprovalStore.self) private var localToolApproval
     @Environment(MCPCatalog.self) private var mcpCatalog
     @Environment(MCPToolApprovalStore.self) private var mcpApproval
     @Environment(DeferredTelemetryConsentCoordinator.self) private var deferredTelemetryConsent
@@ -469,6 +470,7 @@ struct ContentView: View {
         // the user has turned on auto-approve in Settings (resolved before a
         // request is ever published), so it only appears on a real prompt.
         .modifier(BrowseApprovalDialog(store: browseApproval))
+        .modifier(LocalToolApprovalDialog(store: localToolApproval))
         // Issue #1716: per-tool consent for MCP connector tools. Same shape as
         // the browse sheet above — an MCP server is an arbitrary local process,
         // so "may the model run this" is a decision that belongs on screen.
@@ -2109,6 +2111,58 @@ private struct BrowseApprovalSheet: View {
         // needs to press. "The approval is up" is better asserted by waiting
         // for `ToolApproval.Browse.Allow`, which is the control the user acts
         // on rather than a wrapper around it.
+    }
+}
+
+/// Approval for Rapid's built-in local workspace. Mutations intentionally omit
+/// an "Always allow" button, so a model can never turn one approval into future
+/// writes, command executions, or removals.
+private struct LocalToolApprovalDialog: ViewModifier {
+    let store: LocalToolApprovalStore
+
+    func body(content: Content) -> some View {
+        content.sheet(isPresented: Binding(
+            get: { store.pendingRequest != nil },
+            set: { if !$0 && store.pendingRequest != nil { store.answer(.deny) } }
+        )) {
+            if let request = store.pendingRequest {
+                VStack(alignment: .leading, spacing: 14) {
+                    Text(request.title).font(.headline)
+                    Text("Personal Intelligence wants to use Rapid's local workspace on this Mac.")
+                        .font(.callout).foregroundStyle(.secondary)
+                    ScrollView {
+                        Text(request.argumentsPreview)
+                            .font(.system(.callout, design: .monospaced))
+                            .textSelection(.enabled)
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                            .padding(10)
+                    }
+                    .frame(minHeight: 44, maxHeight: 180)
+                    .background(Color(nsColor: .textBackgroundColor))
+                    .overlay(RoundedRectangle(cornerRadius: 6).stroke(.quaternary))
+                    .clipShape(RoundedRectangle(cornerRadius: 6))
+                    Text(request.toolName == "local_trash"
+                         ? "Files are moved to Trash and remain recoverable. Folders are never removed."
+                         : "Review the exact path, content, command, and arguments before allowing it.")
+                        .font(.caption).foregroundStyle(.secondary)
+                    HStack {
+                        Spacer()
+                        Button("Don't allow") { store.answer(.deny) }
+                            .keyboardShortcut(.cancelAction)
+                            .accessibilityIdentifier("ToolApproval.Local.Deny")
+                        if request.allowsPersistentGrant {
+                            Button("Allow for this session") { store.answer(.alwaysAllowTool) }
+                                .accessibilityIdentifier("ToolApproval.Local.AlwaysAllow")
+                        }
+                        Button("Allow once") { store.answer(.allowOnce) }
+                            .keyboardShortcut(.defaultAction)
+                            .accessibilityIdentifier("ToolApproval.Local.Allow")
+                    }
+                }
+                .padding(20)
+                .frame(width: 500)
+            }
+        }
     }
 }
 

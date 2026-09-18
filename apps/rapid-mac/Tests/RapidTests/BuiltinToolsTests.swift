@@ -28,16 +28,20 @@ final class BuiltinToolsTests {
     private func makeRegistry() -> BuiltinToolRegistry {
         BuiltinToolRegistry(
             browseApproval: BrowseApprovalStore(defaults: freshDefaults()),
-            webSearch: WebSearchConfig(defaults: freshDefaults(), keychain: InMemoryKeychain())
+            webSearch: WebSearchConfig(defaults: freshDefaults(), keychain: InMemoryKeychain()),
+            localApproval: LocalToolApprovalStore(defaults: freshDefaults())
         )
     }
 
     // MARK: - Registry surface
 
-    @Test("Registry exposes exactly web_search, browse, weather, and read_document")
+    @Test("Registry exposes the online, attachment, and bounded local tools")
     func registryDefinitions() {
         let names = makeRegistry().definitions.map { $0.function.name }
-        #expect(names == ["web_search", "browse", "weather", "read_document"])
+        #expect(names == [
+            "web_search", "browse", "weather", "read_document",
+            "local_search", "local_read", "local_write", "local_trash", "local_run",
+        ])
     }
 
     @Test("An unknown tool name returns an error result naming what IS available")
@@ -182,16 +186,18 @@ final class BuiltinToolsTests {
         #expect(vm.disabledTools.isEmpty)
     }
 
-    @Test("Personal Intelligence projects only enabled live-data built-ins")
+    @Test("Personal Intelligence projects only enabled agent-safe built-ins")
     func personalIntelligenceToolProjection() {
         let vm = ChatViewModel(tools: makeRegistry(), toolDefaults: freshDefaults())
         #expect(vm.personalIntelligenceDefinitions.map { $0.function.name } == [
             "web_search", "browse", "weather",
+            "local_search", "local_read", "local_write", "local_trash", "local_run",
         ])
 
         vm.setToolEnabled("browse", false)
         #expect(vm.personalIntelligenceDefinitions.map { $0.function.name } == [
             "web_search", "weather",
+            "local_search", "local_read", "local_write", "local_trash", "local_run",
         ])
     }
 

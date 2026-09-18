@@ -181,7 +181,7 @@ struct SettingsToolsPanel: View {
     // MARK: - Presentation of tool identity
     //
     // Display names and summaries are PRESENTATION ONLY. The wire
-    // identifiers (`web_search`, `browse`, `weather`, `read_document`) are what the
+    // identifiers (`web_search`, `browse`, `weather`, `read_document`, `local_*`) are what the
     // registry, the request body, the disabled-tool set, the dispatch
     // guard and every accessibility identifier still use — none of that
     // is touched by anything below.
@@ -196,6 +196,11 @@ struct SettingsToolsPanel: View {
         case "browse":     return "Browse Web Page"
         case "weather":    return "Weather"
         case "read_document": return "Read Attached Document"
+        case "local_search": return "Search Local Files"
+        case "local_read": return "Read Local File"
+        case "local_write": return "Write Local File"
+        case "local_trash": return "Move File to Trash"
+        case "local_run": return "Run Development Command"
         default:           return toolName
         }
     }
@@ -218,6 +223,16 @@ struct SettingsToolsPanel: View {
             // then you are asked to attach the file again" is only observable
             // by waiting a quarter and being surprised.
             return "Reads the rest of a PDF, CSV, or text file you attached. Only files you attach; never other files on your Mac. The full text is kept on this Mac for \(DocumentContentCache.retentionDays) days, and is deleted when you remove the attachment or delete the conversation."
+        case "local_search":
+            return "Searches filenames and text under a folder you approve on this Mac."
+        case "local_read":
+            return "Reads a UTF-8 text file you approve inside your home folder."
+        case "local_write":
+            return "Creates or replaces one text file after showing the exact path and content for approval."
+        case "local_trash":
+            return "Moves one file to Trash after approval. It never removes folders or permanently deletes files."
+        case "local_run":
+            return "Runs an approved development command without a shell, with a 30-second limit."
         default:
             return fallback
         }
@@ -236,6 +251,11 @@ struct SettingsToolsPanel: View {
         case "browse": "Browse pages"
         case "weather": "Weather"
         case "read_document": "Read attached document"
+        case "local_search": "Search local files"
+        case "local_read": "Read local file"
+        case "local_write": "Write local file"
+        case "local_trash": "Move file to Trash"
+        case "local_run": "Run development command"
         default: toolName.replacingOccurrences(of: "_", with: " ")
         }
     }
@@ -601,6 +621,11 @@ struct SettingsToolsPanel: View {
         case "web_search": return "magnifyingglass"
         case "browse": return "globe"
         case "weather": return "cloud.sun"
+        case "local_search": return "doc.text.magnifyingglass"
+        case "local_read": return "doc.text"
+        case "local_write": return "square.and.pencil"
+        case "local_trash": return "trash"
+        case "local_run": return "terminal"
         default: return "wrench.and.screwdriver"
         }
     }
