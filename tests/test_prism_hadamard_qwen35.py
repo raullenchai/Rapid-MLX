@@ -275,3 +275,67 @@ def test_processor_uses_builtin_classes_without_snapshot_code(monkeypatch, tmp_p
         is tokenizer.stopping_criteria
         is stopping.return_value
     )
+
+
+def _install_metadata_stub(monkeypatch, config):
+    """Point ``read_model_metadata`` at a fixed config for the routing guard."""
+    from types import SimpleNamespace
+
+    monkeypatch.setattr(
+        "rapid_mlx.model_metadata.read_model_metadata",
+        lambda _path: SimpleNamespace(config=config, snapshot_dir=None),
+    )
+
+
+def test_text_lane_guard_rejects_prism_pack(monkeypatch):
+    # A prism_hadamard_qwen35 pack routed to the text lane (base wheel with the
+    # vision runtime present, or an explicit --no-mllm) must be rejected BEFORE
+    # weights download, not left to crash deep in mlx-lm on an unknown arch.
+    import rapid_mlx.server as server
+
+    _install_metadata_stub(monkeypatch, {"model_type": "prism_hadamard_qwen35"})
+    # Vision runtime is present (full install + --no-mllm): the guard passes
+    # _require_mlx_vlm and then rejects on the flag.
+    monkeypatch.setattr("rapid_mlx.models.mllm._require_mlx_vlm", lambda *_a, **_k: None)
+
+    with pytest.raises(ValueError, match="multimodal lane"):
+        server._reject_text_lane_only_mllm_pack("bonsai2-27b-2bit", "/snap/bonsai2")
+
+
+def test_text_lane_guard_surfaces_missing_vision_runtime_first(monkeypatch):
+    # On a base wheel the pack reaches the text lane precisely because mlx-vlm
+    # is missing; the guard must surface that actionable hint, not the flag msg.
+    import rapid_mlx.server as server
+
+    _install_metadata_stub(monkeypatch, {"model_type": "prism_hadamard_qwen35"})
+
+    def _raise(*_a, **_k):
+        raise ImportError("install 'rapid-mlx[vision]'")
+
+    monkeypatch.setattr("rapid_mlx.models.mllm._require_mlx_vlm", _raise)
+
+    with pytest.raises(ImportError, match=r"rapid-mlx\[vision\]"):
+        server._reject_text_lane_only_mllm_pack("bonsai2-27b-2bit", "/snap/bonsai2")
+
+
+@pytest.mark.parametrize(
+    "config",
+    [
+        {"model_type": "qwen3_5"},  # ordinary hybrid VLM — text lane is valid
+        {"model_type": "qwen3"},
+        None,  # cold --no-mllm: no config read → downstream owns the error
+        {},
+    ],
+)
+def test_text_lane_guard_passes_through_other_models(monkeypatch, config):
+    import rapid_mlx.server as server
+
+    _install_metadata_stub(monkeypatch, config)
+    # Must never be consulted for a non-prism pack.
+    monkeypatch.setattr(
+        "rapid_mlx.models.mllm._require_mlx_vlm",
+        lambda *_a, **_k: pytest.fail("_require_mlx_vlm called for non-prism pack"),
+    )
+
+    # No raise, no vision-runtime probe: an ordinary text-lane model is untouched.
+    server._reject_text_lane_only_mllm_pack("some-model", "/snap/other")

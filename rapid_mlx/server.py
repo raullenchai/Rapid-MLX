@@ -1965,6 +1965,55 @@ def _preflight_vision_runtime(
         _require_mlx_vlm(preflight_path)
 
 
+# Checkpoint ``model_type`` values whose ONLY loader lives on the MLLM/vision
+# lane and that have NO mlx-lm text backbone to auto-downgrade to. An ordinary
+# Qwen3.5 GatedDeltaNet VLM can serve its language tower on the text lane, so a
+# base wheel without ``mlx-vlm`` still boots; these packs cannot. Keyed on the
+# exact model_type so the guard touches only this family (zero blast radius).
+_TEXT_LANE_UNSUPPORTED_MLLM_MODEL_TYPES = frozenset({"prism_hadamard_qwen35"})
+
+
+def _reject_text_lane_only_mllm_pack(model_name: str, load_path: str) -> None:
+    """Reject an MLLM-only pack that routing sent to the text lane.
+
+    A Bonsai 2 Hadamard pack (``model_type=prism_hadamard_qwen35``) is a rotated
+    2-bit Qwen3.5 checkpoint whose only loader lives on the MLLM/vision lane
+    (:mod:`rapid_mlx.models.prism_hadamard_qwen35`). It reaches the text lane
+    only when ``mlx-vlm`` is absent (the hybrid lane auto-downgrades) or the
+    operator passed ``--no-mllm`` / a speculative-decode flag. Left alone it
+    would pull the 8.6 GB pack and then crash deep in mlx-lm on an unknown
+    architecture. Reject it after routing but BEFORE ``BatchedEngine`` allocates
+    weights, with an actionable message.
+
+    Config is available on the default path (``_resolve_serving_checkpoint``
+    fetched ``config.json``) and on any warm cache; when it cannot be read
+    (a cold ``--no-mllm`` start that skipped the routing prefetch) this is a
+    silent no-op and the downstream loader owns the error.
+    """
+    from .model_metadata import read_model_metadata
+
+    metadata = read_model_metadata(load_path)
+    config = metadata.config if metadata is not None else None
+    if not isinstance(config, dict):
+        return
+    if config.get("model_type") not in _TEXT_LANE_UNSUPPORTED_MLLM_MODEL_TYPES:
+        return
+    # A base wheel reaches the text lane precisely because mlx-vlm is
+    # missing/incompatible: surface that first with the actionable
+    # ``pip install 'rapid-mlx[vision]'`` hint. If the runtime is fine (an
+    # explicit ``--no-mllm`` on a full install), fall through to the flag-level
+    # rejection below.
+    from .models.mllm import _require_mlx_vlm
+
+    _require_mlx_vlm(load_path)
+    raise ValueError(
+        f"Bonsai 2 Hadamard packs (model_type={config.get('model_type')}, "
+        f"{model_name!r}) run only on the multimodal lane and have no mlx-lm "
+        "text backbone. Drop --no-mllm (and any speculative-decoding flag) so "
+        "the model loads on the MLLM lane."
+    )
+
+
 def _resolve_serving_checkpoint(
     model_name: str,
     *,
@@ -2384,6 +2433,8 @@ def load_model(
             from .models.mllm import _require_mlx_vlm
 
             _require_mlx_vlm(_serving_checkpoint.load_path)
+        else:
+            _reject_text_lane_only_mllm_pack(model_name, _engine_model_path)
 
     # A bare multi-variant repo has no useful config at its root. Resolve the
     # concrete checkpoint first, then derive every checkpoint-owned default

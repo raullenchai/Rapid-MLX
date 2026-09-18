@@ -1718,6 +1718,7 @@
   },
   "bonsai2-27b-2bit": {
     "hf_path": "prism-ml/Ternary-Bonsai-2-27B-mlx-2bit",
+    "supports_image_input": true,
     "tool_call_parser": "hermes",
     "reasoning_parser": "qwen3",
     "is_hybrid": true,
