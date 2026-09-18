@@ -31,11 +31,14 @@ def vlm_cache_ns(request):
 
     Every recognition contract in this file is asserted once per namespace:
     whichever class objects production models end up producing, the lane
-    must treat the two namespaces identically.
+    must treat the two namespaces identically. The upstream parameter is
+    skipped when the optional ``mlx_vlm`` distribution is absent — the
+    vendored cases must still run on that base-install configuration.
     """
     if request.param == "vendored":
         from rapid_mlx.models.mlx_vlm_vendored import cache
     else:
+        pytest.importorskip("mlx_vlm.models.cache")
         import mlx_vlm.models.cache as cache  # type: ignore[no-redef]
     return cache
 
