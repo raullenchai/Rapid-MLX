@@ -4450,6 +4450,29 @@ def test_local_run_normalizer_drops_compile_only_flag_when_asked_to_run():
     assert _normalize_local_workspace_turn(
         "Compile the program and run it", operand
     ).tool_calls[0].arguments["argv"] == ["--", "-c"]
+    include_operand = turn.model_copy(
+        update={
+            "tool_calls": [
+                turn.tool_calls[0].model_copy(
+                    update={
+                        "arguments": {
+                            "command": "gcc",
+                            "argv": ["-include", "-c", "~/Documents/app.c"],
+                        }
+                    }
+                )
+            ]
+        }
+    )
+    assert _normalize_local_workspace_turn(
+        "Compile and run ~/Documents/app.c", include_operand
+    ).tool_calls[0].arguments["argv"] == [
+        "-include",
+        "-c",
+        "~/Documents/app.c",
+        "-o",
+        "app",
+    ]
 
 
 def test_local_run_normalizer_maps_python_and_run_pseudo_commands():
@@ -5867,6 +5890,24 @@ def test_local_run_history_helpers_ignore_malformed_and_unrelated_calls():
             {"role": "tool", "tool_call_id": "run", "content": "exit_code: 0"},
         ]
         assert svc._local_run_finished_script(_fake_run(run_messages)) is True
+    for command, argv in (
+        ("node", ["app.js", "--check"]),
+        ("node", ["app.js", "-c"]),
+        ("ruby", ["app.rb", "--syntax-check"]),
+        ("ruby", ["app.rb", "-c"]),
+    ):
+        script_argument_messages = [
+            {
+                "role": "assistant",
+                "tool_calls": [
+                    _call("run", "local_run", {"command": command, "argv": argv})
+                ],
+            },
+            {"role": "tool", "tool_call_id": "run", "content": "exit_code: 0"},
+        ]
+        assert (
+            svc._local_run_finished_script(_fake_run(script_argument_messages)) is True
+        )
     assert (
         svc._local_run_finished_script(
             _fake_run(

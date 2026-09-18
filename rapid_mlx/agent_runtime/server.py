@@ -1282,6 +1282,40 @@ def _joined_compiler_output(item: str) -> str | None:
     return candidate
 
 
+def _compiler_compile_only_index(argv: list[Any]) -> int | None:
+    """Return a real compile-only ``-c`` option, not an option operand."""
+
+    operand_options = {
+        "-o",
+        "-I",
+        "-F",
+        "-include",
+        "-include-pch",
+        "-isystem",
+        "-iquote",
+        "-iframework",
+        "-D",
+        "-U",
+        "-x",
+        "-std",
+    }
+    skip_operand = False
+    for index, item in enumerate(argv):
+        if skip_operand:
+            skip_operand = False
+            continue
+        if not isinstance(item, str):
+            continue
+        if item == "--":
+            return None
+        if item in operand_options:
+            skip_operand = True
+            continue
+        if item == "-c":
+            return index
+    return None
+
+
 def _requests_compile_and_run(goal: str) -> bool:
     """Whether the user explicitly asks to execute the compiled output."""
 
@@ -1639,23 +1673,20 @@ def _normalize_local_workspace_turn(goal: str, turn: AgentModelTurn) -> AgentMod
                     f"{working_directory.rstrip('/')}/{raw_command[2:]}"
                 )
             normalized_arguments = arguments.get("argv")
+            compile_only_index = (
+                _compiler_compile_only_index(normalized_arguments)
+                if isinstance(normalized_arguments, list)
+                else None
+            )
             if (
                 arguments.get("command") in _COMPILER_COMMANDS
-                and isinstance(normalized_arguments, list)
-                and "-c" in normalized_arguments
+                and compile_only_index is not None
                 and _requests_compile_and_run(goal)
             ):
                 # ``-c`` stops after the object file, so the requested run can
                 # never happen (qwen3.5-9b, dogfood 2026-09-17).
-                option_end = (
-                    normalized_arguments.index("--")
-                    if "--" in normalized_arguments
-                    else len(normalized_arguments)
-                )
-                compile_only_index = normalized_arguments.index("-c")
-                if compile_only_index < option_end:
-                    normalized_arguments = list(normalized_arguments)
-                    del normalized_arguments[compile_only_index]
+                normalized_arguments = list(normalized_arguments)
+                del normalized_arguments[compile_only_index]
                 arguments["argv"] = normalized_arguments
             if (
                 arguments.get("command") in _COMPILER_COMMANDS
@@ -3763,13 +3794,13 @@ class AgentServerService:
                 index += 1
             return False
         if command_name == "node":
-            if not argv or any(item in {"-c", "--check"} for item in argv):
+            if not argv:
                 return False
             if argv[0] in {"-e", "--eval"}:
                 return len(argv) >= 2
             return _interpreter_script_index(command_name, argv) is not None
         if command_name == "ruby":
-            if not argv or any(item in {"-c", "--syntax-check"} for item in argv):
+            if not argv:
                 return False
             if argv[0] == "-e":
                 return len(argv) >= 2
