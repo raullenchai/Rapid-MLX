@@ -888,7 +888,13 @@ def _qwen36_text_arrays_cache_type() -> type:
     """
     import mlx.core as mx
     from mlx_lm.models.cache import ArraysCache
-    from mlx_vlm.models.cache import ArraysCache as VLMCompatArraysCache
+
+    # VENDOR-DEVIATION(dual-namespace): the VLM-compat parent resolves the
+    # vendored ArraysCache so the runtime type is recognized by the vendored
+    # engine/adapters; byte-identical to upstream, so MRO is unchanged.
+    from rapid_mlx.models.mlx_vlm_vendored.cache import (
+        ArraysCache as VLMCompatArraysCache,
+    )
 
     class Qwen36TextArraysCache(ArraysCache, VLMCompatArraysCache):
         def update_window(self, index, source, width, *, lengths=None):

@@ -2,7 +2,8 @@
 """Regression for F-063 — extreme-aspect-ratio / sub-patch images on VLMs.
 
 Before the fix, ``MLLMBatchGenerator._preprocess_request`` passed any
-image straight into ``mlx_vlm.utils.prepare_inputs``. When a dimension
+image straight into ``prepare_inputs`` (upstream ``mlx_vlm.utils`` at the
+time, vendored ``mlx_vlm_vendored.inputs`` since step 2c). When a dimension
 fell below the patch-tokenizer's patch_size (14 for Qwen3-VL), the
 patch grid for the short side rounded down to 0 patches and the
 vision-token sequence came out empty. The language model then had no
@@ -109,12 +110,11 @@ def _install_no_op_prepare_inputs(monkeypatch):
     returns an empty dict and the test asserts the guard fired — not
     that mlx_vlm crashed.
     """
-    import mlx_vlm.utils as mlx_vlm_utils
-
+    import rapid_mlx.models.mlx_vlm_vendored.inputs as vendored_inputs
     from rapid_mlx import mllm_batch_generator as gen_mod
 
     def _passthrough(*args, **kwargs):
-        # Mimic mlx_vlm.utils.prepare_inputs return shape so the
+        # Mimic prepare_inputs' return shape so the
         # caller doesn't trip on ``inputs.get("input_ids")``.
         return {
             "input_ids": None,
@@ -122,7 +122,7 @@ def _install_no_op_prepare_inputs(monkeypatch):
             "attention_mask": None,
         }
 
-    monkeypatch.setattr(mlx_vlm_utils, "prepare_inputs", _passthrough)
+    monkeypatch.setattr(vendored_inputs, "prepare_inputs", _passthrough)
     if hasattr(gen_mod, "prepare_inputs"):
         monkeypatch.setattr(gen_mod, "prepare_inputs", _passthrough)
 

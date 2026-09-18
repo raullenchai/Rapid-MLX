@@ -3061,7 +3061,7 @@ class MLLMBatchGenerator:
             return
 
         tic = time.perf_counter()
-        from mlx_vlm.utils import prepare_inputs
+        from rapid_mlx.models.mlx_vlm_vendored.inputs import prepare_inputs
 
         if request.images:
             from .models.mllm import FileSizeExceededError, process_image_input

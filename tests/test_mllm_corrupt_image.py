@@ -3,8 +3,9 @@
 generator.
 
 Before the fix, ``MLLMBatchGenerator._preprocess_request`` called
-``mlx_vlm.utils.prepare_inputs`` directly. For corrupted / unsupported
-image payloads PIL raises one of:
+``prepare_inputs`` directly (upstream ``mlx_vlm.utils`` at the time,
+vendored ``mlx_vlm_vendored.inputs`` since step 2c). For corrupted /
+unsupported image payloads PIL raises one of:
 
 * ``OSError("broken data stream when reading image file")``
 * ``PIL.UnidentifiedImageError``
@@ -127,18 +128,16 @@ def _install_prepare_inputs_stub(monkeypatch, raiser):
     """Patch ``prepare_inputs`` on every binding site.
 
     ``rapid_mlx.mllm_batch_generator._preprocess_request`` re-imports
-    ``prepare_inputs`` from ``mlx_vlm.utils`` on every call (local
-    ``from`` statement at the top of the method), so patching
-    ``mlx_vlm.utils.prepare_inputs`` is the correct target *today*.
-    If a future refactor hoists the import to module level, the
-    name binding shifts to ``rapid_mlx.mllm_batch_generator``; patch
-    that too so this test stays a meaningful gate either way.
+    ``prepare_inputs`` from ``rapid_mlx.models.mlx_vlm_vendored.inputs``
+    on every call (local ``from`` statement at the top of the method,
+    redirected from ``mlx_vlm.utils`` in step 2c), so patching the vendored
+    inputs module is the correct target. Patch the batch-generator module
+    attribute too in case the import is hoisted to module level later.
     """
-    import mlx_vlm.utils as mlx_vlm_utils
-
+    import rapid_mlx.models.mlx_vlm_vendored.inputs as vendored_inputs
     from rapid_mlx import mllm_batch_generator as gen_mod
 
-    monkeypatch.setattr(mlx_vlm_utils, "prepare_inputs", raiser)
+    monkeypatch.setattr(vendored_inputs, "prepare_inputs", raiser)
     if hasattr(gen_mod, "prepare_inputs"):
         monkeypatch.setattr(gen_mod, "prepare_inputs", raiser)
 
