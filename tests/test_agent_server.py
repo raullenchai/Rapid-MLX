@@ -4257,6 +4257,23 @@ def test_desktop_local_tools_follow_explicit_paths_and_recent_local_turns():
     assert _route_desktop_client_tools(
         "Search online instead for orchid care", offered, recent
     ) == ["web_search", "browse"]
+    # A local filename/content word is not itself an online-search directive.
+    assert _route_desktop_client_tools(
+        "Search again for the web config", offered, recent
+    ) == ["local_search"]
+    # Carry only the newest relevant local user turn; do not revive the older
+    # destructive action alongside a newer read-only search.
+    mixed_recent = (
+        "<recent_conversation>\n"
+        "user: Move ~/Documents/old.txt to the Trash.\n\n"
+        "assistant: Done.\n\n"
+        "user: Search my Documents folder for orchid notes.\n\n"
+        "assistant: Nothing found.\n"
+        "</recent_conversation>"
+    )
+    assert _route_desktop_client_tools(
+        "Search again with just the word orchid.", offered, mixed_recent
+    ) == ["local_search"]
     # Assistant rows never carry routing intent.
     assistant_only = (
         "<recent_conversation>\n"
@@ -4718,8 +4735,10 @@ def test_local_run_normalizer_rejoins_workspace_paths_split_on_spaces():
     ) == [
         "clang",
         "-o",
-        "~/My Code/app",
-        "~/My Code/app.c",
+        "~/My",
+        "Code/app",
+        "~/My",
+        "Code/app.c",
     ]
     # Flags, a second path, and complete file names never merge.
     assert _merge_split_path_tokens(["python3", "~/a.py", "b.py"]) == [
@@ -4736,6 +4755,12 @@ def test_local_run_normalizer_rejoins_workspace_paths_split_on_spaces():
         "python3",
         "~/x",
         "~/y.py",
+    ]
+    assert _merge_split_path_tokens(["clang", "-I", "~/headers", "main.c"]) == [
+        "clang",
+        "-I",
+        "~/headers",
+        "main.c",
     ]
 
 

@@ -335,7 +335,8 @@ _LOCAL_FOLLOW_UP = re.compile(
 )
 _EXPLICIT_ONLINE_WORDING = re.compile(
     r"\b(?:on|from|using|via)\s+(?:the\s+)?(?:web|internet|online)\b|"
-    r"\b(?:online|website|internet|web)\b|(?:上网|联网|网上)",
+    r"\b(?:search|browse|find|look\s+up)\s+(?:the\s+)?(?:web|internet|online)\b|"
+    r"\b(?:online|internet|web)\s+(?:search|lookup|browse)\b|(?:上网|联网|网上)",
     re.IGNORECASE,
 )
 
@@ -387,30 +388,24 @@ def _canonical_home_path(value: str, goal: str = "") -> str:
     return _INVENTED_HOME_PREFIX.sub("~", value, count=1)
 
 
-_SOURCE_OR_DIR_TOKEN = re.compile(r"/|\.[A-Za-z0-9]{1,6}$")
-
-
 def _merge_split_path_tokens(tokens: list[str]) -> list[str]:
-    """Re-join a home path that an unquoted shell recipe split on a space.
+    """Re-join Rapid's known default workspace after an unquoted split.
 
     Rapid's default workspace is ``~/Rapid Workspace``, so a small model's
     ``python3 ~/Rapid Workspace/app.py`` shlex-splits into ``~/Rapid`` and
-    ``Workspace/app.py``. A token that starts a home/absolute path but has
-    no extension, followed by a token that continues into a directory or a
-    file with an extension, is one path.
+    ``Workspace/app.py``. Only repair that product-owned path. Guessing for
+    arbitrary extensionless paths can consume the next legitimate argument
+    (for example ``-I ~/headers main.c``).
     """
 
     merged: list[str] = []
     index = 0
     while index < len(tokens):
         token = tokens[index]
-        while (
+        if (
             index + 1 < len(tokens)
-            and token.startswith(("~/", "/"))
-            and not token.endswith("/")
-            and not re.search(r"\.[A-Za-z0-9]{1,6}$", token)
-            and not tokens[index + 1].startswith(("-", "~", "/"))
-            and _SOURCE_OR_DIR_TOKEN.search(tokens[index + 1]) is not None
+            and token == "~/Rapid"
+            and tokens[index + 1].startswith("Workspace/")
         ):
             token = f"{token} {tokens[index + 1]}"
             index += 1
@@ -1125,11 +1120,14 @@ def _route_desktop_client_tools(
         and _EXPLICIT_ONLINE_WORDING.search(goal) is None
     ):
         # "Search again with just one word" after a local folder search must
-        # stay on the Mac. Carry the local groups the user asked for in their
-        # own recent turns; a web/online request in the goal wins above.
-        for row in _recent_user_rows(context):
-            for name, active in _local_tool_intent(row).items():
-                local[name] = local[name] or active
+        # stay on the Mac. Carry only the newest user turn that established a
+        # local action. Unioning the whole retained conversation could revive
+        # an unrelated older mutation such as local_trash.
+        for row in reversed(_recent_user_rows(context)):
+            prior = _local_tool_intent(row)
+            if any(prior.values()):
+                local = prior
+                break
     local_search = local["local_search"]
     local_read = local["local_read"]
     local_write = local["local_write"]
