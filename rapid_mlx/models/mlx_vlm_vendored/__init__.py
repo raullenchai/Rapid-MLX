@@ -151,7 +151,7 @@ vendored copy differs by exactly the deviations listed):
   ``5b2b940852f11f34f7b4daf627bc31fc701f8abffc72d40189bc3e5ac57f878c``)
   except 18 one-line import redirects (``# VENDOR-DEVIATION`` sentinels):
   top-level relative imports bind the vendored siblings, the lazy
-  ``.models*`` (16) and ``.turboquant`` (3) sites resolve upstream, and
+  ``.models*`` (15) and ``.turboquant`` (3) sites resolve upstream, and
   the engine still dispatches on upstream-typed caches (byte-identical
   today; widening is the 2b-3 follow-up).
 """
