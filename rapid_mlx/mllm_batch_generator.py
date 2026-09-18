@@ -778,7 +778,7 @@ def _media_clone_leaves(
     :func:`_extract_detached_singleton_leaf`).
     """
     try:
-        from mlx_vlm.apc_adapters import clone_cache_entry
+        from rapid_mlx.models.mlx_vlm_vendored.apc_adapters import clone_cache_entry
     except ImportError:
         return None
     eval_targets: list[Any] = []
@@ -1355,7 +1355,9 @@ class MLLMBatchGenerator:
         )
         if self._supports_vision_feature_cache:
             try:
-                from mlx_vlm.vision_cache import VisionFeatureCache
+                from rapid_mlx.models.mlx_vlm_vendored.vision_cache import (
+                    VisionFeatureCache,
+                )
 
                 # Each entry pins a projected-features ``mx.array`` (Metal
                 # buffer) for the image's lifetime in the LRU, so bound this
@@ -2662,7 +2664,10 @@ class MLLMBatchGenerator:
         their offset (mlx-vlm's own ``trim``), recurrent layers restore the
         checkpoint recorded there. None when any layer cannot be rewound."""
         try:
-            from mlx_vlm.apc_adapters import Capability, resolve_capability
+            from rapid_mlx.models.mlx_vlm_vendored.apc_adapters import (
+                Capability,
+                resolve_capability,
+            )
         except ImportError:  # pragma: no cover - mlx-vlm absent
             return None
         out: list[Any] = []
@@ -2738,7 +2743,9 @@ class MLLMBatchGenerator:
         if rewound is None:
             return None
         try:
-            from mlx_vlm.apc_adapters import clone_cache_entry
+            from rapid_mlx.models.mlx_vlm_vendored.apc_adapters import (
+                clone_cache_entry,
+            )
         except ImportError:  # pragma: no cover - mlx-vlm absent
             return None
         eval_targets: list[Any] = []

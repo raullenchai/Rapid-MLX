@@ -45,9 +45,56 @@ vendored copy differs by exactly the deviations listed):
   A diff against the pinned tag must show only these hunks (plus this
   note in the inventory).
 
-``kv_quant.py`` is NOT vendored here (step 2a): its ``from_legacy()`` lazily
-imports ``.turboquant`` (7k lines, itself importing ``.models.cache``), so it
-moves to step 2b with the APC family, where the turboquant dependency gets an
-explicit home (vendored slice or a documented redirect to the pinned
-upstream).
+- ``apc_storage.py`` — byte-identical to ``mlx_vlm/apc_storage.py`` @ v0.7.1
+  (upstream sha256
+  ``e58b3a5aa5fa875764194712e38a7752006aeb31db5abe132057c667759e7010``).
+- ``_stream_cleanup.py`` — byte-identical to ``mlx_vlm/_stream_cleanup.py``
+  @ v0.7.1 (upstream sha256
+  ``00bf5797510f088cfe4cea7798dce0f2902af99a956888748ff0ddc11de21c5d``).
+- ``vision_cache.py`` — byte-identical to ``mlx_vlm/vision_cache.py`` @
+  v0.7.1 (upstream sha256
+  ``5db081a4ef9ee07bb1102c6a87b5fb4a0895821bb2c05d19e110ba6f700e4561``).
+  The lane's ``VisionFeatureCache`` import now resolves here.
+- ``kv_quant.py`` — identical to ``mlx_vlm/kv_quant.py`` @ v0.7.1 (upstream
+  sha256
+  ``2936878096435dd2540e7a029b986259e5b7101c972a5be7168495a58e7fbfa3``)
+  **except one import redirect**: ``from_legacy()``'s lazy
+  ``from .turboquant import ...`` resolves the pinned upstream
+  ``mlx_vlm.turboquant`` instead. TurboQuant itself (7k lines with its own
+  ``.models.cache`` dependency) is NOT vendored — it can never fit a
+  reviewable diff, so it stays a pinned-dependency redirect for the whole
+  transition.
+- ``apc_coordinator.py`` — identical to ``mlx_vlm/apc_coordinator.py`` @
+  v0.7.1 (upstream sha256
+  ``8c3939a15b8bee2c4ac8f1144a1048c3463d6cf935537d63eb21403b6f63773b``)
+  **except documented redirects**: its module-level
+  ``from .apc_adapters import ...`` resolves the vendored sibling; its lazy
+  ``from .apc import ...`` engine calls and the ``fresh_cache`` fallback
+  ``make_prompt_cache`` resolve upstream mlx-vlm until the APC engine is
+  vendored (next PR of this stack) and producers flip (step 3). Every site
+  carries a ``VENDOR-DEVIATION`` comment. Additionally, return-value locals
+  are explicitly annotated where the redirected engine calls type-resolve to
+  ``Any`` (the repo's mypy ``no-any-return`` discipline; no behavior
+  change).
+- ``apc_adapters.py`` — identical to ``mlx_vlm/apc_adapters.py`` @ v0.7.1
+  (upstream sha256
+  ``9ce11d3c420d983281faf229cfc06ae4a8dce28469dd1536a05d26e4e980c101``)
+  **except documented ``VENDOR-DEVIATION`` hunks**, all part of one
+  transition mechanism (type-namespace duality — see the design note):
+  1. Module-level ``_cache_namespaces`` / ``_cache_namespace_of`` helpers:
+     every type table, capability registration, contract probe and
+     constructor covers the vendored AND upstream cache namespaces, so the
+     adapters behave identically whichever namespace produced a cache.
+  2. Constructors route through ``_cache_namespace_of`` so cloned/merged
+     results keep the producer's cache types (upstream-typed inputs yield
+     upstream-typed results — byte-identical behavior today; correct
+     typing once producers emit vendored caches in step 3).
+  3. Redirects: ``_apc_array_helpers``' lazy ``.apc`` import and the
+     ``build_prefix_cache_plan`` fallback ``make_prompt_cache`` resolve
+     upstream mlx-vlm until the APC engine is vendored (next PR) and
+     producers flip (step 3); the turboquant registration resolves the
+     pinned upstream ``mlx_vlm.turboquant`` (not vendored — see above).
+  The lane's ``clone_cache_entry`` / ``Capability`` / ``resolve_capability``
+  imports now resolve here; the four test modules that stub
+  ``clone_cache_entry`` were re-pointed at this module in the same commit.
 """

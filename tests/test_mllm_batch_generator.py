@@ -2693,7 +2693,7 @@ def test_exact_prefix_snap_scans_whole_prefix_and_honours_min_position(monkeypat
 
 
 def test_exact_prefix_snap_refuses_when_rewind_or_clone_fails(monkeypatch):
-    import mlx_vlm.apc_adapters as adapters
+    import rapid_mlx.models.mlx_vlm_vendored.apc_adapters as adapters
 
     gen = _make_real_apc_generator(monkeypatch)
     cache = gen._prefix_cache
@@ -2713,7 +2713,7 @@ def test_exact_prefix_snap_refuses_when_rewind_or_clone_fails(monkeypatch):
 
 def test_exact_prefix_snap_promotes_only_a_snapshot_that_served(monkeypatch):
     """LRU order must not move for a candidate whose rewind or clone failed."""
-    import mlx_vlm.apc_adapters as adapters
+    import rapid_mlx.models.mlx_vlm_vendored.apc_adapters as adapters
 
     gen = _make_real_apc_generator(monkeypatch)
     cache = gen._prefix_cache
