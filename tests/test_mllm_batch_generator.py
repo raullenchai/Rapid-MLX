@@ -1718,14 +1718,14 @@ def test_preprocess_request_derives_stable_content_key(monkeypatch):
     different key. This exercises the real request path (not a manually
     supplied key)."""
     pytest.importorskip("mlx_vlm.vision_cache")
-    import mlx_vlm.utils as _vlm_utils
+    import rapid_mlx.models.mlx_vlm_vendored.inputs as _vlm_inputs
 
     # Stub only the heavy processor call — we test key derivation, not
     # tokenization. ``_preprocess_request`` imports it as
-    # ``from mlx_vlm.utils import prepare_inputs`` at call time, so patching
-    # the module attribute takes effect.
+    # ``from rapid_mlx.models.mlx_vlm_vendored.inputs import prepare_inputs``
+    # at call time, so patching the module attribute takes effect.
     monkeypatch.setattr(
-        _vlm_utils,
+        _vlm_inputs,
         "prepare_inputs",
         lambda *a, **k: {
             "input_ids": mx.array([1, 2, 3]),
@@ -1761,10 +1761,10 @@ def test_preprocess_request_derives_stable_content_key(monkeypatch):
 def test_preprocess_request_no_key_for_unsupported_model(monkeypatch):
     """An unsupported model leaves ``vision_feature_key`` None (the key is only
     computed when the feature is actually wired in)."""
-    import mlx_vlm.utils as _vlm_utils
+    import rapid_mlx.models.mlx_vlm_vendored.inputs as _vlm_inputs
 
     monkeypatch.setattr(
-        _vlm_utils,
+        _vlm_inputs,
         "prepare_inputs",
         lambda *a, **k: {
             "input_ids": mx.array([1, 2, 3]),
