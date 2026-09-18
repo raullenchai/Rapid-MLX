@@ -546,12 +546,23 @@ def _singleton_regular_cache_leaves(
     # request, which would require promoting this layout mid-generation.
     if not allow_arrays_cache or not caches:
         return False
-    try:
-        from mlx_vlm.models.cache import ArraysCache, KVCache
-    except ImportError:
-        # mlx-vlm is optional; the MLLM lane cannot even run without it.
-        return False
+    # Vendored cache classes are the lane's own vocabulary; upstream
+    # mlx-vlm model classes still *create* caches with their own identical
+    # class objects (type unification lands with step 3's model vendoring),
+    # so both must stay recognized here.
+    # VENDOR-DEVIATION(dual-namespace): upstream recognition is transitional;
+    # one mechanical revert restores byte-verbatim once step 3 unifies types.
+    from .models.mlx_vlm_vendored.cache import ArraysCache, KVCache
+
     qualified: tuple[type, ...] = (KVCache, ArraysCache)
+    try:
+        from mlx_vlm.models.cache import ArraysCache as VLMArraysCache
+        from mlx_vlm.models.cache import KVCache as VLMKVCache
+
+        qualified += (VLMArraysCache, VLMKVCache)
+    except ImportError:
+        # mlx-vlm is optional; hybrid backbones then cannot occur either.
+        pass
     if allow_arrays_cache:
         try:
             from mlx_lm.models.cache import ArraysCache as LMArraysCache
@@ -574,10 +585,22 @@ def _extract_detached_singleton_leaf(leaf: Any, idx: int) -> Any:
     afterwards, so build a fresh leaf from explicit allocated copies
     and evaluate them on the caller's (worker) stream before returning.
     """
-    from mlx_vlm.models.cache import ArraysCache, KVCache
+    from .models.mlx_vlm_vendored.cache import ArraysCache, KVCache
 
     arrays_types: tuple[type, ...] = (ArraysCache,)
     kv_types: tuple[type, ...] = (KVCache,)
+    # Upstream mlx-vlm model classes create caches with their own identical
+    # class objects; recognize those too until step 3 unifies the types.
+    # VENDOR-DEVIATION(dual-namespace): upstream recognition is transitional;
+    # one mechanical revert restores byte-verbatim once step 3 unifies types.
+    try:
+        from mlx_vlm.models.cache import ArraysCache as VLMArraysCache
+        from mlx_vlm.models.cache import KVCache as VLMKVCache
+
+        arrays_types += (VLMArraysCache,)
+        kv_types += (VLMKVCache,)
+    except ImportError:
+        pass
     try:
         from mlx_lm.models.cache import ArraysCache as LMArraysCache
         from mlx_lm.models.cache import KVCache as LMKVCache

@@ -252,15 +252,21 @@ class TestGuards:
         assert _array_bytes(object()) == 0
         assert _array_bytes(_Array(0, (2, 3))) == 12
 
-    def test_without_mlx_lm_nothing_is_recurrent(self, monkeypatch):
+    def test_without_mlx_lm_only_vendored_namespace_is_recurrent(self, monkeypatch):
+        """Strip the optional distributions: the vendored ``ArraysCache``
+        ships with the repo, so it stays recognized while mlx-lm's and
+        mlx-vlm's namespaces drop out."""
         import sys
 
         from rapid_mlx import hybrid_state_checkpoints as hsc
+        from rapid_mlx.models.mlx_vlm_vendored.cache import (
+            ArraysCache as VendoredArraysCache,
+        )
 
         monkeypatch.setattr(hsc, "_RECURRENT_TYPES", None)
         monkeypatch.setitem(sys.modules, "mlx_lm.models.cache", None)
         monkeypatch.setitem(sys.modules, "mlx_vlm.models.cache", None)
-        assert hsc._recurrent_cache_types() == ()
+        assert hsc._recurrent_cache_types() == (VendoredArraysCache,)
         assert not hsc.is_recurrent_layer(_RecurrentLayer(0))
 
     def test_mlx_vlm_arrays_cache_is_recurrent(self, monkeypatch):

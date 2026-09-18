@@ -65,16 +65,27 @@ def _deq(cache, triple):
 
 
 def test_supported_cache_types_without_optional_vision_runtime(monkeypatch):
-    """The base install keeps mlx-lm cache support without mlx-vlm."""
+    """The base install keeps mlx-lm and vendored cache support without mlx-vlm.
+
+    The vendored cache classes ship with the repo, so they remain qualified
+    even when the optional ``mlx_vlm`` distribution is absent; its upstream
+    namespace is the only one that drops out.
+    """
     from mlx_lm.models.cache import KVCache, RotatingKVCache
 
+    from rapid_mlx.models.mlx_vlm_vendored.cache import (
+        KVCache as VendoredKVCache,
+    )
+    from rapid_mlx.models.mlx_vlm_vendored.cache import (
+        RotatingKVCache as VendoredRotatingKVCache,
+    )
     from rapid_mlx.quantized_batch_cache import supported_kv_cache_types
 
     monkeypatch.setitem(sys.modules, "mlx_vlm.models.cache", None)
     plain, rotating = supported_kv_cache_types()
 
-    assert plain == (KVCache,)
-    assert rotating == (RotatingKVCache,)
+    assert plain == (KVCache, VendoredKVCache)
+    assert rotating == (RotatingKVCache, VendoredRotatingKVCache)
 
 
 def _ref_attention_fp32(queries, k, v, mask):
