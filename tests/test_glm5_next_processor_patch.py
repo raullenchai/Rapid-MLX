@@ -504,6 +504,8 @@ runtime_patch.install_glm5_next_runtime_fix = lambda: events.append("runtime")
 mllm._require_mlx_vlm = lambda: None
 
 import mlx_vlm
+import mlx_vlm.utils
+mlx_vlm.utils.load_config = lambda *args, **kwargs: {}
 mlx_vlm.load = lambda *args, **kwargs: (_ for _ in ()).throw(RuntimeError("stop"))
 
 try:
