@@ -23,9 +23,10 @@ Inventory (sha256 over the vendored bytes):
   Redirects callers that imported
   ``from mlx_vlm.models.cache import ArraysCache, KVCache`` — the module is
   fully self-contained (mlx + stdlib only), so no redirects inside.
-- ``kv_quant.py`` — byte-identical to ``mlx_vlm/kv_quant.py`` @ v0.7.1
-  (``2936878096435dd2540e7a029b986259e5b7101c972a5be7168495a58e7fbfa3``).
-  Fully self-contained (stdlib only); vendored alongside the cache types
-  because the APC family (2b) imports it and it carries no dependencies of
-  its own.
+
+``kv_quant.py`` is NOT vendored here (step 2a): its ``from_legacy()`` lazily
+imports ``.turboquant`` (7k lines, itself importing ``.models.cache``), so it
+moves to step 2b with the APC family, where the turboquant dependency gets an
+explicit home (vendored slice or a documented redirect to the pinned
+upstream).
 """

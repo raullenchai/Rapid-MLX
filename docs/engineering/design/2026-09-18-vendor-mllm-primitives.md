@@ -39,7 +39,7 @@ This is Phase B **step 2** of the mlx-vlm dependency retirement plan:
 | `apc.py` | 4,994 | mlx, numpy, stdlib, + `apc_coordinator`/`apc_storage`/`kv_quant`/`_stream_cleanup` | `mllm_batch_generator.py` (prefix cache engine) |
 | `apc_coordinator.py` | 251 | stdlib | apc |
 | `apc_storage.py` | 96 | stdlib | apc |
-| `kv_quant.py` | 186 | stdlib | apc |
+| `kv_quant.py` | 186 | stdlib top-level, **lazy `.turboquant`** (7k lines, imports `.models.cache`) | apc |
 | `_stream_cleanup.py` | 10 | mlx | apc |
 | `apc_adapters.py` | 795 | mlx, stdlib, lazy `from .apc` | `mllm_batch_generator.py` (`clone_cache_entry`, `Capability`, `resolve_capability`) |
 | `vision_cache.py` | 81 | mlx, stdlib | `mllm_batch_generator.py` (`VisionFeatureCache`) |
@@ -62,13 +62,17 @@ consumer silently disables fast paths (measured: `_snap_exact_text_prefix`
 returns `None`, 7 tests fail). Ordering the PRs so that recognition is
 widened before production is moved keeps every slice behavior-neutral.
 
-- **2a — types + seam** (this PR): vendor `models/cache.py` and
-  `kv_quant.py` verbatim; widen every lane recognition site to a
-  three-namespace union (vendored, upstream mlx-vlm, mlx-lm) via
-  `mllm_cache_compat`; dual-namespace contract tests. No producer emits
-  vendored-typed caches yet, so behavior is unchanged by construction.
-- **2b — engine**: vendor `apc.py` + coordinator/storage/_stream_cleanup
-  (~5.4k lines alone, hence its own PR).
+- **2a — types + seam** (this PR): vendor `models/cache.py` verbatim; widen
+  every lane recognition site to a three-namespace union (vendored, upstream
+  mlx-vlm, mlx-lm) via `mllm_cache_compat`; dual-namespace contract tests. No
+  producer emits vendored-typed caches yet, so behavior is unchanged by
+  construction.
+- **2b — engine**: vendor `apc.py` + coordinator/storage/kv_quant/
+  _stream_cleanup (~5.4k lines alone, hence its own PR). `kv_quant` lands
+  here, not with the cache types: its `from_legacy()` lazily imports
+  `.turboquant` (7k lines with its own `.models.cache` dependency), so the
+  dependency needs an explicit home — a vendored slice if it fits the
+  review-diff cap, otherwise a documented redirect to the pinned upstream.
 - **2c — adapters + vision + inputs**: vendor `apc_adapters.py` (its
   `clone_cache_entry` dispatch moves to the resolver), `vision_cache.py`,
   `prepare_inputs` + helpers; contract test: an upstream-typed cache
@@ -99,10 +103,10 @@ flipping tests early (the exact failure measured above).
 rapid_mlx/models/mlx_vlm_vendored/
   __init__.py          # provenance header, upstream tag, redirect inventory
   cache.py             # 2a
-  kv_quant.py          # 2a (stdlib-only, self-contained)
   apc.py               # 2b
   apc_coordinator.py   # 2b
   apc_storage.py       # 2b
+  kv_quant.py          # 2b (lazy .turboquant dep — see PR split)
   _stream_cleanup.py   # 2b
   apc_adapters.py      # 2c
   vision_cache.py      # 2c

@@ -10,8 +10,12 @@ guards against. The pairing tests below pin that a cache built in either
 namespace yields the same verdict at every seam.
 """
 
-import mlx.core as mx
 import pytest
+
+pytest.importorskip("mlx")
+pytestmark = pytest.mark.requires_mlx
+
+import mlx.core as mx
 
 from rapid_mlx.mllm_cache_compat import first_incompatible_mllm_cache_type
 
@@ -37,16 +41,11 @@ def vlm_cache_ns(request):
 
 
 def test_kv_cache_accepted_for_batch_merge(vlm_cache_ns):
-    assert (
-        first_incompatible_mllm_cache_type([vlm_cache_ns.KVCache()]) is None
-    )
+    assert first_incompatible_mllm_cache_type([vlm_cache_ns.KVCache()]) is None
 
 
 def test_rotating_kv_cache_accepted_for_batch_merge(vlm_cache_ns):
-    assert (
-        first_incompatible_mllm_cache_type([vlm_cache_ns.RotatingKVCache(8)])
-        is None
-    )
+    assert first_incompatible_mllm_cache_type([vlm_cache_ns.RotatingKVCache(8)]) is None
 
 
 def test_cache_list_leaves_validated_recursively(vlm_cache_ns):
@@ -58,10 +57,7 @@ def test_cache_list_leaves_validated_recursively(vlm_cache_ns):
 
 def test_arrays_cache_gated_on_hybrid_lane(vlm_cache_ns):
     cache = vlm_cache_ns.ArraysCache(1)
-    assert (
-        first_incompatible_mllm_cache_type([cache], allow_arrays_cache=True)
-        is None
-    )
+    assert first_incompatible_mllm_cache_type([cache], allow_arrays_cache=True) is None
     assert (
         first_incompatible_mllm_cache_type([cache], allow_arrays_cache=False)
         == "ArraysCache"
