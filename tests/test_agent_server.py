@@ -5166,8 +5166,8 @@ async def test_client_compile_rejects_model_only_working_directory():
     assert compile_step.pending_action.call_id != write.pending_action.call_id
     assert compile_step.pending_action.arguments == {
         "command": "gcc",
-        "argv": ["gcc", "-o", "rapid_fix", "rapid_fix.c"],
-        "arguments": ["gcc", "-o", "rapid_fix", "rapid_fix.c"],
+        "argv": ["-o", "rapid_fix", "rapid_fix.c"],
+        "arguments": ["-o", "rapid_fix", "rapid_fix.c"],
         "working_directory": "~/Documents",
     }
 

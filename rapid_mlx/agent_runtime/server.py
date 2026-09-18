@@ -3478,6 +3478,24 @@ class AgentServerService:
         working_directory = supplied_working_directory
         if not isinstance(working_directory, str) or not working_directory:
             working_directory = "~/Rapid Workspace"
+        if (
+            command in _COMPILER_COMMANDS
+            and argv
+            and argv[0] == command
+            and any(
+                isinstance(item, str)
+                and (
+                    item in written
+                    or f"~/{item}" in written
+                    or f"{working_directory.rstrip('/')}/{item}" in written
+                )
+                for item in argv[1:]
+            )
+        ):
+            # Some small models duplicate the compiler executable inside argv.
+            # Remove it only when another operand is grounded in a file this
+            # run actually wrote; literal same-named inputs otherwise survive.
+            argv = argv[1:]
         resolved: list[Any] = []
         for item in argv:
             if (
