@@ -4326,6 +4326,26 @@ def test_desktop_local_tools_follow_explicit_paths_and_recent_local_turns():
     assert _route_desktop_client_tools(
         "Read ~/Documents/report.md and search the web for updates", offered
     ) == ["local_read", "web_search", "browse"]
+    assert _route_desktop_client_tools(
+        "Search ~/Documents for orchid and search the web for care", offered
+    ) == ["local_search", "web_search", "browse"]
+    assert _route_desktop_client_tools(
+        "Search online instead, then write the results to ~/Documents/report.md",
+        offered,
+    ) == ["local_write", "web_search", "browse"]
+
+
+def test_unquoted_local_path_preserves_words_inside_the_filename():
+    from rapid_mlx.agent_runtime.server import _sole_explicit_path
+
+    assert (
+        _sole_explicit_path("Trash ~/Documents/letter for mom.txt")
+        == "~/Documents/letter for mom.txt"
+    )
+    assert (
+        _sole_explicit_path("Move ~/Documents/old.txt to the Trash.")
+        == "~/Documents/old.txt"
+    )
 
 
 def test_local_run_normalizer_drops_compile_only_flag_when_asked_to_run():

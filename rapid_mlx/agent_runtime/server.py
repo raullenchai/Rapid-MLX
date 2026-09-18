@@ -267,11 +267,14 @@ def _sole_explicit_path(goal: str) -> str | None:
         if text[:1] in {'"', "'"}:
             text = text.strip("\"'")
         else:
-            # An unquoted path runs to the clause end; drop a trailing
-            # prepositional phrase ("… to the Trash").
-            text = re.split(
-                r"\s+(?:to|into|in|from|for|as|on|onto)\s+", text, maxsplit=1
-            )[0]
+            # Preserve ordinary words inside filenames. Only the one
+            # unambiguous action suffix belongs outside the pathname.
+            text = re.sub(
+                r"\s+(?:to|into)\s+(?:the\s+)?Trash\.?\s*$",
+                "",
+                text,
+                flags=re.IGNORECASE,
+            )
         found.append(text)
     return found[0] if len(found) == 1 else None
 
@@ -1147,10 +1150,14 @@ def _route_desktop_client_tools(
         _EXPLICIT_SEARCH_ACTION.search(goal) is not None and not web_prohibited
     )
     local = _local_tool_intent(goal)
-    if _EXPLICIT_ONLINE_WORDING.search(goal) is not None:
+    if _EXPLICIT_ONLINE_WORDING.search(
+        goal
+    ) is not None and not _path_has_action_prefix(
+        goal, r"(?:\b(?:search|find|locate)\s*|(?:搜索|查找|找一下|找出)\s*)$"
+    ):
         local["local_search"] = False
     if _ONLINE_INSTEAD.search(goal) is not None:
-        local = {name: False for name in local}
+        local["local_search"] = False
     if (
         not any(local.values())
         and _LOCAL_FOLLOW_UP.search(goal) is not None
