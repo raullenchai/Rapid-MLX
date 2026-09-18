@@ -1895,6 +1895,12 @@ def test_forced_shape_salvage_strips_junk_before_the_object():
     # An undeclared key inside the object still fails closed.
     bad = '{"name": "local_search", "arguments": >{"path": "~", "shell": "zsh"}}'
     assert _salvage_forced_shape_arguments("local_search", bad, tools) is None
+    later_object = (
+        '<tool_call>{"name":"local_search","arguments": >oops}</tool_call>'
+        '<tool_call>{"name":"other","arguments": >'
+        '{"path":"~/Documents","query":"orchid"}}</tool_call>'
+    )
+    assert _salvage_forced_shape_arguments("local_search", later_object, tools) is None
 
 
 def test_forced_shape_salvage_handles_duplicate_arguments_and_single_lists():

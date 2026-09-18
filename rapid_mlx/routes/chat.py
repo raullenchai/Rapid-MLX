@@ -3083,6 +3083,13 @@ def _salvage_forced_shape_arguments(
         return None
     name_pos = name_matches[0].start()
     window = raw_text[name_pos : name_pos + 8192]
+    boundaries = [
+        position
+        for marker in ("</tool_call>", "<tool_call>")
+        if (position := window.find(marker, 1)) >= 0
+    ]
+    if boundaries:
+        window = window[: min(boundaries)]
 
     # Shape 0: a stray token between ``"arguments":`` and the object, e.g.
     # ``"arguments": >{"path": "~/Documents", "query": "orchid"}`` (qwen3.5-4b,

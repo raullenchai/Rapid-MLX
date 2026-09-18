@@ -3692,13 +3692,13 @@ class AgentServerService:
                 return False
             if argv[0] in {"-e", "--eval"}:
                 return len(argv) >= 2
-            return _interpreter_script_index(command, argv) is not None
+            return _interpreter_script_index(command_name, argv) is not None
         if command_name == "ruby":
             if not argv or any(item in {"-c", "--syntax-check"} for item in argv):
                 return False
             if argv[0] == "-e":
                 return len(argv) >= 2
-            return _interpreter_script_index(command, argv) is not None
+            return _interpreter_script_index(command_name, argv) is not None
         return command.startswith(("~/", "/", "./"))
 
     @staticmethod
