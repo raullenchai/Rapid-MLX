@@ -1141,6 +1141,8 @@ def _route_desktop_client_tools(
         _EXPLICIT_SEARCH_ACTION.search(goal) is not None and not web_prohibited
     )
     local = _local_tool_intent(goal)
+    if _EXPLICIT_ONLINE_WORDING.search(goal) is not None:
+        local = {name: False for name in local}
     if (
         not any(local.values())
         and _LOCAL_FOLLOW_UP.search(goal) is not None

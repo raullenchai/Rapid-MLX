@@ -4309,6 +4309,9 @@ def test_desktop_local_tools_follow_explicit_paths_and_recent_local_turns():
         "web_search",
         "browse",
     ]
+    assert _route_desktop_client_tools(
+        "Search online instead for ~/Documents/orchid", offered
+    ) == ["web_search", "browse"]
 
 
 def test_local_run_normalizer_drops_compile_only_flag_when_asked_to_run():

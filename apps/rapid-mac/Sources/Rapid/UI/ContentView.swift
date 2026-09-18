@@ -1266,12 +1266,17 @@ struct ContentView: View {
                     prepareServer: {
                         // Captured before the stop so Stop-mid-run and a
                         // finished run both bring the same model back.
-                        if let liveAlias = Self.chatAliasToRestoreAfterBenchmark(
+                        let liveAlias = Self.chatAliasToRestoreAfterBenchmark(
                             from: server.state
-                        ) {
+                        )
+                        let reservation = try await server.prepareForCommunityBenchmark()
+                        // Commit restoration state only after ownership was
+                        // acquired. A failed preparation must not leave a stale
+                        // model to be revived by a later benchmark.
+                        if let liveAlias {
                             chatAliasToRestoreAfterBenchmark = liveAlias
                         }
-                        return try await server.prepareForCommunityBenchmark()
+                        return reservation
                     },
                     releaseServer: { reservation in
                         let releasedFinalReservation =
