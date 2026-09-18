@@ -18,11 +18,21 @@ hunks.
 
 Inventory (sha256 over the vendored bytes):
 
-- ``cache.py`` — byte-identical to ``mlx_vlm/models/cache.py`` @ v0.7.1
-  (``b736c299bc576f4bdf8d6edf3e1ac6fa3019ca888a2f3cba115d4252f84d5b29``).
-  Redirects callers that imported
-  ``from mlx_vlm.models.cache import ArraysCache, KVCache`` — the module is
-  fully self-contained (mlx + stdlib only), so no redirects inside.
+- ``cache.py`` — identical to ``mlx_vlm/models/cache.py`` @ v0.7.1
+  (upstream sha256
+  ``b736c299bc576f4bdf8d6edf3e1ac6fa3019ca888a2f3cba115d4252f84d5b29``)
+  **except two in-source ``VENDOR-DEVIATION(upstream-bugfix)`` hunks**,
+  each reproducible against the pinned upstream:
+  1. ``BatchRotatingKVCache.merge`` called the zero-arg in-place
+     ``_temporal_order`` with an argument, raising TypeError on every
+     merge with content (latent upstream; mlx-lm 0.31.3 carries the same
+     defect). Fixed to call the zero-arg form.
+  2. ``BatchPoolingCache.make_mask``'s scalar-offset branch added
+     ``offset`` twice to the absolute query positions, admitting pooled
+     tokens earlier than the causal contract allows. Fixed to match the
+     ``mx.array`` branch semantics.
+  A diff against the pinned tag must show only these hunks (plus this
+  note in the inventory).
 
 ``kv_quant.py`` is NOT vendored here (step 2a): its ``from_legacy()`` lazily
 imports ``.turboquant`` (7k lines, itself importing ``.models.cache``), so it
