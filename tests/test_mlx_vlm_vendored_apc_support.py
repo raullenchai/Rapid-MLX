@@ -43,6 +43,14 @@ def test_coordinator_resolves_the_vendored_adapters():
     assert apc_coordinator.PrefixCachePlan is apc_adapters.PrefixCachePlan
 
 
+def test_engine_resolves_the_vendored_family():
+    """apc.py's top-level relative imports must bind the vendored siblings."""
+    from rapid_mlx.models.mlx_vlm_vendored import apc
+
+    assert apc.APCCoordinator is apc_coordinator.APCCoordinator
+    assert apc.APCNode is apc_storage.APCNode
+
+
 def test_coordinator_builds_plan_from_vendored_caches():
     coordinator = apc_coordinator.APCCoordinator(
         manager=None, model=_coordinator_model()

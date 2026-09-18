@@ -1920,7 +1920,7 @@ def probe():
             is None
         )
 
-        import mlx_vlm.apc as apc
+        import rapid_mlx.models.mlx_vlm_vendored.apc as apc
 
         monkeypatch.setattr(
             apc,
