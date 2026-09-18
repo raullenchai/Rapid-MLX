@@ -108,6 +108,15 @@ final class LocalWorkspaceToolsTests {
         #expect(!LocalWorkspaceTools.matchesAllTerms(["art", "note"], in: "party notebook"))
         #expect(LocalWorkspaceTools.snippetRange(query: "art note", terms: ["art", "note"], in: "party notebook") == nil)
         #expect(LocalWorkspaceTools.snippetRange(query: "orchid cactus", terms: ["orchid", "cactus"], in: "orchid notes") == nil)
+        let manyTerms = (0..<200).map { "term\($0)" }
+        let nearLimitText = String(repeating: "padding ", count: 100_000)
+            + manyTerms.joined(separator: " filler ")
+        let longQueryRange = try #require(LocalWorkspaceTools.snippetRange(
+            query: manyTerms.joined(separator: " "),
+            terms: manyTerms,
+            in: nearLimitText
+        ))
+        #expect(String(nearLimitText[longQueryRange]) == "term0")
     }
 
     @Test("run expands a leading ~/ in argv like the shell the model imitates")

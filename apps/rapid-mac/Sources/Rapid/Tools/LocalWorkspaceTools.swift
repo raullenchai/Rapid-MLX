@@ -690,13 +690,31 @@ enum LocalWorkspaceTools {
     static func snippetRange(query: String, terms: [String], in text: String) -> Range<String.Index>? {
         if let exact = text.range(of: query, options: [.caseInsensitive]) { return exact }
         guard terms.count > 1 else { return nil }
-        let tokens = tokenRanges(in: text)
-        var anchor: Range<String.Index>?
-        for term in terms {
-            guard let range = tokens.first(where: { $0.word == term })?.range else { return nil }
-            if anchor == nil { anchor = range }
+        var missing = Set(terms)
+        var firstRanges: [String: Range<String.Index>] = [:]
+        var start: String.Index?
+        var index = text.startIndex
+        while index < text.endIndex {
+            let character = text[index]
+            if character.isLetter || character.isNumber {
+                if start == nil { start = index }
+            } else if let tokenStart = start {
+                let word = String(text[tokenStart..<index]).lowercased()
+                if missing.remove(word) != nil {
+                    firstRanges[word] = tokenStart..<index
+                    if missing.isEmpty { return firstRanges[terms[0]] }
+                }
+                start = nil
+            }
+            index = text.index(after: index)
         }
-        return anchor
+        if let tokenStart = start {
+            let word = String(text[tokenStart..<text.endIndex]).lowercased()
+            if missing.remove(word) != nil {
+                firstRanges[word] = tokenStart..<text.endIndex
+            }
+        }
+        return missing.isEmpty ? firstRanges[terms[0]] : nil
     }
 
     private static func snippetRange(for state: SearchState, in text: String) -> Range<String.Index>? {
@@ -707,28 +725,6 @@ enum LocalWorkspaceTools {
         guard terms.count > 1 else { return false }
         let words = Set(searchTerms(for: lowercasedText))
         return terms.allSatisfy(words.contains)
-    }
-
-    private static func tokenRanges(
-        in text: String
-    ) -> [(word: String, range: Range<String.Index>)] {
-        var result: [(String, Range<String.Index>)] = []
-        var start: String.Index?
-        var index = text.startIndex
-        while index < text.endIndex {
-            let character = text[index]
-            if character.isLetter || character.isNumber {
-                if start == nil { start = index }
-            } else if let tokenStart = start {
-                result.append((String(text[tokenStart..<index]).lowercased(), tokenStart..<index))
-                start = nil
-            }
-            index = text.index(after: index)
-        }
-        if let tokenStart = start {
-            result.append((String(text[tokenStart..<text.endIndex]).lowercased(), tokenStart..<text.endIndex))
-        }
-        return result
     }
 
     /// Walk from the approved directory descriptor rather than reopening its

@@ -1394,9 +1394,7 @@ def _canonicalize_local_run_argv(command: str, argv: list[Any], goal: str) -> li
         )
     elif command_name == "go" and argv[:1] == ["run"]:
         indexes.update(
-            index
-            for index, item in enumerate(argv[1:], 1)
-            if isinstance(item, str)
+            index for index, item in enumerate(argv[1:], 1) if isinstance(item, str)
         )
     canonical = [
         _canonical_home_path(item, goal)
