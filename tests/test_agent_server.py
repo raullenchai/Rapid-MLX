@@ -463,6 +463,19 @@ def test_local_workspace_default_path_is_harness_owned_and_user_path_is_preserve
         "working_directory": "~/Rapid Workspace",
     }
 
+    malformed_argv = AgentModelTurn(
+        tool_calls=[
+            AgentToolCall(
+                id="run-malformed-argv",
+                name="local_run",
+                arguments={"command": "python3", "argv": "script.py"},
+            )
+        ]
+    )
+    assert _normalize_local_workspace_turn(
+        "Run the script", malformed_argv
+    ).tool_calls[0].arguments["argv"] == "script.py"
+
     shell_recipe = AgentModelTurn(
         tool_calls=[
             AgentToolCall(

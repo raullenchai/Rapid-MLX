@@ -1673,7 +1673,7 @@ def _normalize_local_workspace_turn(goal: str, turn: AgentModelTurn) -> AgentMod
             arguments["argv"] = _canonicalize_local_run_argv(
                 final_command, final_arguments, goal
             )
-        if not isinstance(arguments.get("argv"), list):
+        if "argv" not in arguments:
             # A bare binary run needs no arguments; Desktop treats a missing
             # argv as empty, so the wire object says so explicitly.
             arguments["argv"] = []

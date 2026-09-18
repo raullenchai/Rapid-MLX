@@ -1386,10 +1386,19 @@ enum LocalWorkspaceTools {
             pathIndexes = []
         }
         return arguments.enumerated().map { index, argument in
-            guard pathIndexes.contains(index), argument.hasPrefix("~/") else {
-                return argument
+            if pathIndexes.contains(index), argument.hasPrefix("~/") {
+                return homePath + argument.dropFirst(1)
             }
-            return homePath + argument.dropFirst(1)
+            if ["clang", "cc", "gcc"].contains(commandName) {
+                let joinedPathPrefixes = ["-iframework", "-isystem", "-iquote", "-I", "-F", "-o"]
+                if let prefix = joinedPathPrefixes.first(where: {
+                    argument.hasPrefix($0 + "~/")
+                }) {
+                    let operand = argument.dropFirst(prefix.count)
+                    return prefix + homePath + operand.dropFirst(1)
+                }
+            }
+            return argument
         }
     }
 
