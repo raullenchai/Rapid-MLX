@@ -214,10 +214,6 @@ enum LocalWorkspaceTools {
         label: "ai.rapidmlx.local-command-reaper",
         qos: .utility
     )
-    private static let processExitEvents = DispatchQueue(
-        label: "ai.rapidmlx.local-command-exit-events",
-        qos: .utility
-    )
 
     static let searchDefinition = ToolDefinition(
         name: "local_search",
@@ -1554,75 +1550,48 @@ enum LocalWorkspaceTools {
         var status: Int32 = 0
         var reaped = false
         var descendants = Set<pid_t>()
-        let exitObserved = DispatchSemaphore(value: 0)
-        let exitSource: (any DispatchSourceProcess)?
-        if tracksDescendants {
-            exitSource = nil
-        } else {
-            let source = DispatchSource.makeProcessSource(
-                identifier: pid,
-                eventMask: .exit,
-                queue: processExitEvents
-            )
-            source.setEventHandler { exitObserved.signal() }
-            source.activate()
-            exitSource = source
-        }
-        defer { exitSource?.cancel() }
-
-        func reapObservedExit() {
-            var waited: pid_t
-            repeat {
-                waited = waitpid(pid, &status, 0)
-            } while waited == -1 && errno == EINTR
-            reaped = waited == pid
-        }
-
-        if tracksDescendants {
-            let deadline = Date().addingTimeInterval(timeout)
-            while Date() < deadline {
+        let deadline = Date().addingTimeInterval(timeout)
+        while Date() < deadline {
+            // Interpreters and Swift run with `deny process-fork`.  On macOS
+            // 26.6, asking libproc for children while a denied fork/exec is
+            // unwinding can itself block in the kernel for minutes, defeating
+            // this command's hard deadline.  Only compiler/Go profiles may
+            // create helpers, so only those profiles need process-tree polls.
+            if tracksDescendants {
                 collectDescendants(of: pid, into: &descendants)
-                let waited = waitpid(pid, &status, WNOHANG)
-                if waited == pid {
-                    reaped = true
-                    break
-                }
-                if waited == -1, errno != EINTR {
-                    let monitorError = posixError("could not monitor the approved command")
-                    _ = kill(-pid, SIGKILL)
-                    while waitpid(pid, &status, 0) == -1, errno == EINTR {}
-                    throw monitorError
-                }
-                Thread.sleep(forTimeInterval: 0.02)
             }
+            let waited = waitpid(pid, &status, WNOHANG)
+            if waited == pid {
+                reaped = true
+                break
+            }
+            if waited == -1, errno != EINTR {
+                let monitorError = posixError("could not monitor the approved command")
+                _ = kill(-pid, SIGKILL)
+                while waitpid(pid, &status, 0) == -1, errno == EINTR {}
+                throw monitorError
+            }
+            Thread.sleep(forTimeInterval: 0.02)
+        }
+        if tracksDescendants {
             collectDescendants(of: pid, into: &descendants)
-        } else if exitObserved.wait(
-            timeout: .now() + .milliseconds(Int(timeout * 1_000))
-        ) == .success {
-            // NOTE_EXIT means kernel teardown has completed, so a blocking
-            // reap is safe. Avoid waitpid(WNOHANG) before this signal: macOS
-            // 26.6 can block that supposedly non-blocking probe while a
-            // sandbox-denied fork/exec is unwinding.
-            reapObservedExit()
         }
         let timedOut = !reaped
         if timedOut {
             _ = kill(-pid, SIGTERM)
             signalProcesses(descendants, signal: SIGTERM)
-            if tracksDescendants {
-                let grace = Date().addingTimeInterval(0.5)
-                while Date() < grace {
+            let grace = Date().addingTimeInterval(0.5)
+            while Date() < grace {
+                if tracksDescendants {
                     collectDescendants(of: pid, into: &descendants)
                     collectDescendants(of: Array(descendants), into: &descendants)
-                    let waited = waitpid(pid, &status, WNOHANG)
-                    if waited == pid {
-                        reaped = true
-                        break
-                    }
-                    Thread.sleep(forTimeInterval: 0.02)
                 }
-            } else if exitObserved.wait(timeout: .now() + .milliseconds(500)) == .success {
-                reapObservedExit()
+                let waited = waitpid(pid, &status, WNOHANG)
+                if waited == pid {
+                    reaped = true
+                    break
+                }
+                Thread.sleep(forTimeInterval: 0.02)
             }
             if !reaped {
                 _ = kill(-pid, SIGKILL)
@@ -1635,22 +1604,16 @@ enum LocalWorkspaceTools {
                 // window; if the kernel is still tearing the child down, one
                 // detached waiter owns the eventual reap while this action
                 // returns its timeout result.
-                if tracksDescendants {
-                    let reapDeadline = Date().addingTimeInterval(1)
-                    while Date() < reapDeadline {
-                        let waited = waitpid(pid, &status, WNOHANG)
-                        if waited == pid {
-                            reaped = true
-                            break
-                        }
-                        if waited == -1, errno == EINTR { continue }
-                        if waited == -1 { break }
-                        Thread.sleep(forTimeInterval: 0.02)
+                let reapDeadline = Date().addingTimeInterval(1)
+                while Date() < reapDeadline {
+                    let waited = waitpid(pid, &status, WNOHANG)
+                    if waited == pid {
+                        reaped = true
+                        break
                     }
-                } else if exitObserved.wait(
-                    timeout: .now() + .milliseconds(1_000)
-                ) == .success {
-                    reapObservedExit()
+                    if waited == -1, errno == EINTR { continue }
+                    if waited == -1 { break }
+                    Thread.sleep(forTimeInterval: 0.02)
                 }
                 if !reaped {
                     reapEventually(pid)
