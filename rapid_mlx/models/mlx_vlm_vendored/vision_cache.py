@@ -62,10 +62,25 @@ class VisionFeatureCache:
             return (
                 f"l{len(image_source)}:" + "".join(map(self._make_key, image_source))
             )
-        if hasattr(image_source, "tobytes"):
-            payload = image_source.tobytes()
-        elif isinstance(image_source, (bytes, bytearray, memoryview)):
+        if isinstance(image_source, (bytes, bytearray, memoryview)):
             payload = bytes(image_source)
+        elif hasattr(image_source, "tobytes"):
+            # VENDOR-DEVIATION(upstream-bugfix): upstream hashed only
+            # ``tobytes()``, so two images with identical raw bytes but
+            # different mode or size (a 2x1 "L" vs a 1x1 "RGB" of the same
+            # byte string) collided and one image's features were served
+            # for the other. Hash stable type/mode/size metadata together
+            # with the raw bytes; bytes-like sources carry no such metadata
+            # and stay content-addressed above.
+            digest = hashlib.sha256()
+            digest.update(
+                f"{type(image_source).__module__}.{type(image_source).__name__}\x00".encode()
+            )
+            digest.update(f"{getattr(image_source, 'mode', '')!s}\x00".encode())
+            digest.update(repr(tuple(getattr(image_source, "size", ()) or ())).encode())
+            digest.update(b"\x00")
+            digest.update(image_source.tobytes())
+            return f"p:{digest.hexdigest()[:16]}"
         else:
             # Upstream fell back to ``obj:{id(...)}``; Python may hand that
             # id to an unrelated object after the original is collected — a
@@ -78,15 +93,6 @@ class VisionFeatureCache:
                 "string, a list of them, or a bytes-like image object"
             )
         return f"p:{hashlib.sha256(payload).hexdigest()[:16]}"
-        # Upstream fell back to ``obj:{id(...)}``; Python may hand that id to
-        # an unrelated object after the original is collected — a silent
-        # stale-feature hit. Fail loudly instead; the branches above cover
-        # every real caller (the lane passes pre-hashed string keys).
-        raise TypeError(
-            "unsupported image source type for the vision feature "
-            f"cache: {type(image_source).__name__}; pass a path/URL "
-            "string, a list of them, or a bytes-like image object"
-        )
 
     def get(self, image_source: Any) -> Optional[VisionFeatures]:
         """Look up cached features. Returns None on miss."""
@@ -98,6 +104,13 @@ class VisionFeatureCache:
 
     def put(self, image_source: Any, features: VisionFeatures) -> None:
         """Store features in the cache, evicting LRU if full."""
+        # VENDOR-DEVIATION(upstream-bugfix): upstream accepted any
+        # ``max_size`` but ``put`` with ``max_size <= 0`` evaluated
+        # ``len(self._cache) >= self.max_size`` against an empty mapping and
+        # called ``popitem()`` on it, raising KeyError. Zero (or negative)
+        # now disables storage instead of crashing.
+        if self.max_size <= 0:
+            return
         key = self._make_key(image_source)
         if key in self._cache:
             self._cache.move_to_end(key)

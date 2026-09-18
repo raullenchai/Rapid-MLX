@@ -73,6 +73,16 @@ vendored copy differs by exactly the deviations listed):
      stale-feature hit. Fixed to raise ``TypeError`` (the str/PathLike and
      bytes-like branches cover every real caller; the lane passes
      pre-hashed string keys).
+  3. ``tobytes()`` sources were hashed on their raw bytes alone, so two
+     images with identical byte sequences but different mode or size (a
+     2x1 ``"L"`` vs a 1x1 ``"RGB"``) collided and one image's cached
+     features were served for the other. Fixed to hash stable
+     type/mode/size metadata together with the raw bytes (bytes-like
+     sources carry no such metadata and stay content-addressed).
+  4. ``put()`` with ``max_size <= 0`` evaluated
+     ``len(self._cache) >= self.max_size`` against an empty mapping and
+     called ``popitem()`` on it, raising KeyError. Fixed so zero (or
+     negative) ``max_size`` disables storage instead of crashing.
   The lane's ``VisionFeatureCache`` import resolves here.
 - ``kv_quant.py`` — identical to ``mlx_vlm/kv_quant.py`` @ v0.7.1 (upstream
   sha256
@@ -110,7 +120,16 @@ vendored copy differs by exactly the deviations listed):
   2. Constructors route through ``_cache_namespace_of`` so cloned/merged
      results keep the producer's cache types (upstream-typed inputs yield
      upstream-typed results — byte-identical behavior today; correct
-     typing once producers emit vendored caches in step 3).
+     typing once producers emit vendored caches in step 3). Bare tuples
+     are namespace-agnostic: ``clone_cache_entry`` clones a tuple before
+     the owning-namespace lookup (each element resolves its own), and
+     ``merge_cache_entries`` derives the container namespace from the
+     first tuple element — a stripped install cannot resolve a namespace
+     for a tuple itself, which silently dropped composite caches that
+     ``apc_exact_eligible`` declares supported. The lazy
+     ``_apc_type_tables`` / ``_clone_rules`` builders also publish their
+     globals only after both namespaces are processed, so a concurrent
+     first caller can never observe a partially built table.
   3. Redirects: ``_apc_array_helpers``' lazy ``.apc`` import and the
      ``build_prefix_cache_plan`` fallback ``make_prompt_cache`` resolve
      upstream mlx-vlm until the APC engine is vendored (next PR) and
