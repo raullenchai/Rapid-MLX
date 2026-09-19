@@ -138,6 +138,109 @@ def test_benchmark_loader_uses_the_production_wrapper(monkeypatch):
     assert config == {"model_type": "fake"}
 
 
+@pytest.mark.requires_mlx
+def test_benchmark_entrypoints_use_loaded_native_lane_for_warmup_and_runs(
+    monkeypatch, tmp_path
+):
+    """Both public benchmark loops reuse one production-loaded generator."""
+    from rapid_mlx import benchmark as bench
+    from rapid_mlx import optimizations
+
+    class _Hardware:
+        chip_name = "Test Chip"
+        total_memory_gb = 32
+
+    model = object()
+    processor = object()
+    config = {"model_type": "fake"}
+    generator = object()
+    load_calls = []
+    build_calls = []
+    image_calls = []
+    video_calls = []
+
+    def _load(model_name):
+        load_calls.append(model_name)
+        return model, processor, config
+
+    def _build(got_model, got_processor, max_tokens):
+        build_calls.append((got_model, got_processor, max_tokens))
+        return generator
+
+    def _image_run(*args, **kwargs):
+        image_calls.append((args, kwargs))
+        width, height = args[4], args[5]
+        return bench.MLLMBenchmarkResult(
+            resolution=f"{width}x{height}",
+            width=width,
+            height=height,
+            pixels=width * height,
+            time_seconds=1.0,
+            tokens_generated=1,
+            tokens_per_second=1.0,
+            response_preview="ok",
+        )
+
+    def _video_run(*args, **kwargs):
+        video_calls.append((args, kwargs))
+        return bench.VideoBenchmarkResult(
+            config_name=args[6],
+            fps=args[4],
+            max_frames=args[5],
+            frames_extracted=1,
+            video_duration=1.0,
+            time_seconds=1.0,
+            prompt_tokens=1,
+            completion_tokens=1,
+            tokens_per_second=1.0,
+            response_preview="ok",
+        )
+
+    monkeypatch.setattr(optimizations, "detect_hardware", lambda: _Hardware())
+    monkeypatch.setattr(bench, "_load_benchmark_mllm", _load)
+    monkeypatch.setattr(bench, "build_bench_generator", _build)
+    monkeypatch.setattr(bench, "download_test_image", lambda _url: _FakeImage())
+    monkeypatch.setattr(bench, "benchmark_mllm_resolution_native", _image_run)
+    monkeypatch.setattr(bench, "benchmark_video_config_native", _video_run)
+    monkeypatch.setattr(
+        bench,
+        "get_video_info",
+        lambda _path: {
+            "duration": 1.0,
+            "total_frames": 4,
+            "width": 64,
+            "height": 64,
+            "fps": 4.0,
+        },
+    )
+
+    image_results = bench.run_mllm_benchmark(
+        "publisher/model", quick=True, max_tokens=7, warmup_runs=1
+    )
+    video_path = tmp_path / "clip.mp4"
+    video_path.write_bytes(b"fixture")
+    video_results = bench.run_video_benchmark(
+        "publisher/model",
+        video_path=str(video_path),
+        quick=True,
+        max_tokens=9,
+        warmup_runs=1,
+    )
+
+    assert load_calls == ["publisher/model", "publisher/model"]
+    assert build_calls == [(model, processor, 7), (model, processor, 9)]
+    assert len(image_results) == 4
+    assert len(image_calls) == 5  # one warmup + four quick configurations
+    assert image_calls[0][1] == {"warmup": True}
+    assert len(video_results) == 3
+    assert len(video_calls) == 4  # one warmup + three quick configurations
+    assert video_calls[0][1] == {"warmup": True}
+
+
+class _FakeImage:
+    size = (1200, 800)
+
+
 class _FakeLegacyModel:
     """The pre-native-lane first argument: a loaded wrapper model."""
 
@@ -264,6 +367,19 @@ def test_bench_generator_uses_the_complete_scheduler_stop_union(monkeypatch):
     bench.build_bench_generator(_Model(), _Processor(), 32)
     assert captured["stop_tokens"] == set(range(1, 10))
 
+    # Pin the alternate tokenizer shapes too: the singular field can be a
+    # list, while the plural field can itself be a single integer.
+    from rapid_mlx.mllm_scheduler import collect_mllm_stop_tokens
+
+    class _AlternateTokenizer:
+        eos_token_id = [10, 11]
+        eos_token_ids = 12
+
+    assert collect_mllm_stop_tokens(
+        _AlternateTokenizer(),
+        {"eos_token_id": True, "text_config": {"eos_token_id": False}},
+    ) == {10, 11, 12}
+
 
 @pytest.mark.requires_mlx
 def test_native_request_helper_raises_when_the_lane_goes_idle():
@@ -354,8 +470,17 @@ def test_legacy_signature_wrappers_warn_and_delegate(monkeypatch):
 
     from rapid_mlx import benchmark as bench
 
+    structured = [{"role": "user", "content": "formatted"}]
+    rendered = []
     monkeypatch.setattr(
-        prompt_utils, "apply_chat_template", lambda *args, **kwargs: "formatted"
+        prompt_utils, "apply_chat_template", lambda *args, **kwargs: structured
+    )
+    monkeypatch.setattr(
+        prompt_utils,
+        "get_chat_template",
+        lambda processor, messages, add_generation_prompt: (
+            rendered.append((processor, messages, add_generation_prompt)) or "rendered"
+        ),
     )
 
     generators = []
@@ -412,6 +537,11 @@ def test_legacy_signature_wrappers_warn_and_delegate(monkeypatch):
             {"duration": 2.0, "total_frames": 8},
         )
     assert positional.completion_tokens == 1
+    assert len(rendered) == 3
+    assert all(messages is structured for _, messages, _ in rendered)
+    assert all(
+        add_generation_prompt is True for _, _, add_generation_prompt in rendered
+    )
 
 
 @pytest.mark.requires_mlx
