@@ -1,8 +1,8 @@
 {
   "schema": 1,
-  "captured_at": "2026-09-05T18:44:09Z",
+  "captured_at": "2026-09-18T06:49:10Z",
   "family": "harmony",
-  "sample_runs": 3,
+  "sample_runs": 2,
   "regression_threshold_pct": {
     "cold_request_ms_median": 20,
     "warm_request_ms_median": 5
@@ -19,19 +19,19 @@
       "memory_gb": 256
     },
     "software": {
-      "rapid_mlx_version": "0.13.4",
-      "rapid_mlx_commit": "e3b65724cb30332b8daa47d5e26b2499f7d4400d",
-      "python": "3.11.14",
+      "rapid_mlx_version": "0.14.2",
+      "rapid_mlx_commit": "f79a1f61a29ba3de946a147dfa3b0d5f0f078849",
+      "python": "3.12.14",
       "macos": "26.5.2 (25F84)",
       "mlx": "0.32.2",
       "mlx_lm": "0.31.3",
-      "mlx_vlm": "0.6.17",
-      "mlx_audio": "0.4.3"
+      "mlx_vlm": "0.7.1",
+      "mlx_audio": "0.5.4"
     }
   },
   "metrics": {
-    "cold_request_ms_median": 203.0,
-    "warm_request_ms_median": 287.0,
-    "speedup_x": 0.7073
+    "cold_request_ms_median": 275.9,
+    "warm_request_ms_median": 358.3,
+    "speedup_x": 0.77
   }
 }
