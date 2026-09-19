@@ -141,6 +141,7 @@ def test_resolve_checkpoint_class_allows_vendored_only(store):
     )
     assert apc._resolve_checkpoint_class("os", "system") is None
     assert apc._resolve_checkpoint_class("builtins", "exec") is None
+    assert apc._resolve_checkpoint_class("mlx_vlm.apc", "APCCoordinator") is None
     assert (
         apc._resolve_checkpoint_class(
             "rapid_mlx.models.mlx_vlm_vendored.apc", "DiskBlockStore"

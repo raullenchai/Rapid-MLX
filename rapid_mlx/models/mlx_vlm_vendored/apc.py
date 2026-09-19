@@ -995,10 +995,10 @@ def _resolve_checkpoint_class(module_name: str, qualname: str) -> Optional[type]
     # vendored cache classes during the transition. Everything else stays
     # rejected: the prefix guard keeps disk metadata from importing arbitrary
     # modules.
-    if (
-        not module_name.startswith("mlx_vlm.")
-        and module_name != "rapid_mlx.models.mlx_vlm_vendored.cache"
-    ) or "<locals>" in qualname:
+    if module_name not in {
+        "mlx_vlm.models.cache",
+        "rapid_mlx.models.mlx_vlm_vendored.cache",
+    } or "<locals>" in qualname:
         return None
     try:
         value: Any = importlib.import_module(module_name)
