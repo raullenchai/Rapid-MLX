@@ -102,14 +102,18 @@ enum ModelReadiness: Equatable {
         case restart(alias: String)
         case openModelManagement
 
+        /// Localized at the source rather than typed as a
+        /// `LocalizedStringKey`: this vocabulary is read by non-View code
+        /// (announcements, tooltips, VoiceOver) as well as by `Label`, and
+        /// resolving to a `String` keeps both channels on one implementation.
         var title: String {
             switch self {
-            case .chooseModel:      return "Choose a model"
-            case .download:         return "Download"
-            case .start:            return "Start"
-            case .retry:            return "Retry"
-            case .restart:          return "Restart"
-            case .openModelManagement: return "Open Model Management"
+            case .chooseModel:      return String(localized: "Choose a model")
+            case .download:         return String(localized: "Download")
+            case .start:            return String(localized: "Start")
+            case .retry:            return String(localized: "Retry")
+            case .restart:          return String(localized: "Restart")
+            case .openModelManagement: return String(localized: "Open Model Management")
             }
         }
 
@@ -448,24 +452,32 @@ enum ModelReadiness: Equatable {
     // drift this section exists to prevent.
 
     /// Short status line — the bold half of the readiness banner.
+    ///
+    /// Interpolated arms go through `String(localized:)`, which turns the
+    /// interpolation into a `%@` placeholder in the catalog key
+    /// (`"Downloading %@"`) — the same shape SwiftUI produces for
+    /// `Text("Downloading \(a)")`. Building the sentence by concatenation
+    /// instead would leave the alias outside the translatable unit, which is
+    /// exactly the kind of fragment a translator cannot reorder.
     var headline: String {
         switch self {
         case .engineMissing:
-            return "Setup didn't finish"
+            return String(localized: "Setup didn't finish")
         case .noModel:
-            return "No model chosen"
+            return String(localized: "No model chosen")
         case .needsDownload(let a, _):
-            return "\(a) isn't downloaded yet"
+            return String(localized: "\(a) isn't downloaded yet")
         case .needsStart(let a), .unknownModel(let a):
-            return "\(a) isn't running"
+            return String(localized: "\(a) isn't running")
         case .downloading(let a, _, _):
-            return "Downloading \(a)"
+            return String(localized: "Downloading \(a)")
         case .starting(let a, _):
-            return "Starting \(a)"
+            return String(localized: "Starting \(a)")
         case .ready(let a):
-            return "Ready — \(a)"
+            return String(localized: "Ready — \(a)")
         case .failed(let a, _, _):
-            return a.map { "Couldn't start \($0)" } ?? "Something went wrong"
+            return a.map { String(localized: "Couldn't start \($0)") }
+                ?? String(localized: "Something went wrong")
         }
     }
 
@@ -474,17 +486,17 @@ enum ModelReadiness: Equatable {
     var detail: String? {
         switch self {
         case .engineMissing:
-            return "Rapid-MLX can't find its engine. Reopen the app to run setup again."
+            return String(localized: "Rapid-MLX can't find its engine. Reopen the app to run setup again.")
         case .noModel:
             // Points at the picker rather than duplicating it as a button.
-            return "Choose a model in the box below to get started."
+            return String(localized: "Choose a model in the box below to get started.")
         case .needsDownload(_, let sizeText):
             if let sizeText {
-                return "It downloads once (\(sizeText)), then starts in seconds."
+                return String(localized: "It downloads once (\(sizeText)), then starts in seconds.")
             }
-            return "It downloads once, then starts in seconds."
+            return String(localized: "It downloads once, then starts in seconds.")
         case .needsStart:
-            return "It's already downloaded — starting takes a few seconds."
+            return String(localized: "It's already downloaded — starting takes a few seconds.")
         case .unknownModel:
             // Deliberately promises nothing. We cannot say it is
             // downloaded (the old copy did), we cannot quote a size, and
@@ -492,11 +504,13 @@ enum ModelReadiness: Equatable {
             // pulls on demand only for a name it accepts, and this one
             // came from free text. State the one thing that is true —
             // that we do not know — and let Start report the rest.
-            return "Rapid doesn't know this one, so it can't say whether it's already on your Mac."
+            return String(localized: "Rapid doesn't know this one, so it can't say whether it's already on your Mac.")
         case .downloading(_, let detail, _):
-            return detail ?? "Starting the download…"
+            // `detail` is the engine's own progress sentence, not our copy —
+            // only the fallback is in the catalog.
+            return detail ?? String(localized: "Starting the download…")
         case .starting(_, let detail):
-            return detail ?? "Loading the model into memory…"
+            return detail ?? String(localized: "Loading the model into memory…")
         case .ready:
             return nil
         case .failed(_, let message, _):
@@ -509,15 +523,15 @@ enum ModelReadiness: Equatable {
     /// are complementary instead of redundant.
     var composerPlaceholder: String {
         switch self {
-        case .engineMissing:            return "Setup didn't finish"
-        case .noModel:                  return "Choose a model first"
-        case .needsDownload(let a, _):  return "Download \(a) first"
+        case .engineMissing:            return String(localized: "Setup didn't finish")
+        case .noModel:                  return String(localized: "Choose a model first")
+        case .needsDownload(let a, _):  return String(localized: "Download \(a) first")
         case .needsStart(let a),
-             .unknownModel(let a):      return "Start \(a) first"
-        case .downloading(let a, _, _): return "Downloading \(a)…"
-        case .starting(let a, _):       return "Starting \(a)…"
-        case .ready:                    return "Send a message…"
-        case .failed:                   return "Retry to continue"
+             .unknownModel(let a):      return String(localized: "Start \(a) first")
+        case .downloading(let a, _, _): return String(localized: "Downloading \(a)…")
+        case .starting(let a, _):       return String(localized: "Starting \(a)…")
+        case .ready:                    return String(localized: "Send a message…")
+        case .failed:                   return String(localized: "Retry to continue")
         }
     }
 
@@ -526,22 +540,22 @@ enum ModelReadiness: Equatable {
     var sendTooltip: String {
         switch self {
         case .engineMissing:
-            return "Rapid-MLX can't find its engine yet."
+            return String(localized: "Rapid-MLX can't find its engine yet.")
         case .noModel:
-            return "Choose a model before sending."
+            return String(localized: "Choose a model before sending.")
         case .needsDownload(let a, _):
-            return "Download \(a) before sending."
+            return String(localized: "Download \(a) before sending.")
         case .needsStart(let a), .unknownModel(let a):
-            return "Start \(a) before sending."
+            return String(localized: "Start \(a) before sending.")
         case .downloading(let a, _, _):
-            return "\(a) is still downloading."
+            return String(localized: "\(a) is still downloading.")
         case .starting(let a, _):
-            return "\(a) is still starting."
+            return String(localized: "\(a) is still starting.")
         case .ready:
-            return "Send"
+            return String(localized: "Send")
         case .failed(let a, _, _):
-            return a.map { "\($0) isn't running — retry to continue." }
-                ?? "Not ready to send yet."
+            return a.map { String(localized: "\($0) isn't running — retry to continue.") }
+                ?? String(localized: "Not ready to send yet.")
         }
     }
 
@@ -552,21 +566,22 @@ enum ModelReadiness: Equatable {
     var emptyStateSubtitle: String {
         switch self {
         case .engineMissing:
-            return "Setup didn't finish"
+            return String(localized: "Setup didn't finish")
         case .noModel:
-            return "Choose a model to start"
+            return String(localized: "Choose a model to start")
         case .needsDownload(let a, _):
-            return "Download \(a) to start"
+            return String(localized: "Download \(a) to start")
         case .needsStart(let a), .unknownModel(let a):
-            return "Start \(a) to begin"
+            return String(localized: "Start \(a) to begin")
         case .downloading:
-            return "Downloading your local model…"
+            return String(localized: "Downloading your local model…")
         case .starting:
-            return "Preparing your local model…"
+            return String(localized: "Preparing your local model…")
         case .ready(let a):
-            return "Chatting with \(a)"
+            return String(localized: "Chatting with \(a)")
         case .failed(let a, _, _):
-            return a.map { "Couldn't start \($0)" } ?? "Something went wrong"
+            return a.map { String(localized: "Couldn't start \($0)") }
+                ?? String(localized: "Something went wrong")
         }
     }
 
@@ -577,7 +592,7 @@ enum ModelReadiness: Equatable {
         switch self {
         case .needsDownload(_, let sizeText):
             guard let sizeText else { return nil }
-            return "First download is about \(sizeText)."
+            return String(localized: "First download is about \(sizeText).")
         case .downloading(_, let detail, _):
             return detail
         case .failed(_, let message, _):
@@ -695,9 +710,9 @@ enum ModelReadiness: Equatable {
         subtitle: String?
     ) -> String? {
         switch activity {
-        case .warmingUp:  return "Warming up…"
-        case .loading:    return subtitle ?? "Loading the model into memory…"
-        case .starting:   return subtitle ?? "Starting the model…"
+        case .warmingUp:  return String(localized: "Warming up…")
+        case .loading:    return subtitle ?? String(localized: "Loading the model into memory…")
+        case .starting:   return subtitle ?? String(localized: "Starting the model…")
         case .downloading: return subtitle
         }
     }

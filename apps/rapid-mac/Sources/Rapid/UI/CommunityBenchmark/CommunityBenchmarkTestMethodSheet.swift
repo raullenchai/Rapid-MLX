@@ -29,10 +29,7 @@ struct CommunityBenchmarkTestMethodSheet: View {
 
                     VStack(alignment: .leading, spacing: RapidTheme.Space.md) {
                         SectionHeader(
-                            String(
-                                format: String(localized: "WHAT IT RUNS ON %1$@"),
-                                modelAlias
-                            )
+                            "WHAT IT RUNS ON \(modelAlias)"
                         )
                         ForEach(Array(passes.enumerated()), id: \.offset) { index, pass in
                             passRow(index: index + 1, pass: pass)
@@ -44,7 +41,7 @@ struct CommunityBenchmarkTestMethodSheet: View {
                     }
 
                     VStack(alignment: .leading, spacing: RapidTheme.Space.md) {
-                        SectionHeader(String(localized: "WHAT YOU GET BACK"))
+                        SectionHeader("WHAT YOU GET BACK")
                         ForEach(
                             CommunityBenchmarkMetrics.measuredQuantities(for: workload),
                             id: \.title

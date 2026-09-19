@@ -412,16 +412,16 @@ final class QuickstartCoordinator {
     /// was downloaded specifically for setup.
     var seedMessage: String {
         if selection.alias == baselineStarterAlias {
-            return """
+            return String(localized: """
 You're chatting with \(selection.displayName), selected to fit this Mac. You're \
 ready for your first message. Open the picker any time to choose a different \
 model; the Recommended row is tailored to this Mac's memory.
-"""
+""")
         }
-        return """
+        return String(localized: """
 You're chatting with \(selection.displayName), running entirely on your Mac. \
 Open the picker any time to switch models.
-"""
+""")
     }
 
     /// Current phase of the state machine.
@@ -1707,7 +1707,7 @@ struct QuickstartView: View {
                 fraction: coordinator.phase == .downloading ? progress.progressFraction : nil,
                 bytesLine: Self.subjectBytesLine(job: job),
                 rateLine: Self.subjectRateLine(job: job),
-                stepLabel: "STEP \(coordinator.step.displayNumber) OF \(QuickstartCoordinator.Step.total)",
+                stepLabel: String(localized: "STEP \(coordinator.step.displayNumber) OF \(QuickstartCoordinator.Step.total)"),
                 stepName: coordinator.step.railTitle.localizedUppercase
             )
         } else {
@@ -1737,7 +1737,7 @@ struct QuickstartView: View {
                 pending: server.pendingMemoryWarning,
                 selectionAlias: coordinator.selection.alias
             ) == nil else { return nil }
-            return "STARTING"
+            return String(localized: "STARTING")
         case .idle, .lowDiskWarning, .skippingDownload, .ready, .dismissed, .failed:
             // ``skippingDownload`` deliberately takes the D1 (setup rail)
             // path, not D2: there is no job, no fraction and no bytes to
@@ -1757,9 +1757,9 @@ struct QuickstartView: View {
     static func downloadLifecycleName(phase: DownloadProgress.Phase?) -> String {
         switch phase {
         case .downloading, .fetching:
-            return "DOWNLOADING"
+            return String(localized: "DOWNLOADING")
         case .idle, .preparing, .warmingUp, nil:
-            return "PREPARING"
+            return String(localized: "PREPARING")
         }
     }
 
@@ -1768,7 +1768,9 @@ struct QuickstartView: View {
     /// event owns that state), so a rail that looked only at the enum could
     /// claim PREPARING while measured bytes were already moving.
     static func downloadLifecycleName(progress: DownloadProgress) -> String {
-        progress.hasDiskObservation ? "DOWNLOADING" : downloadLifecycleName(phase: progress.phase)
+        progress.hasDiskObservation
+            ? String(localized: "DOWNLOADING")
+            : downloadLifecycleName(phase: progress.phase)
     }
 
     /// "271 MB / 633 MB" — only once the byte monitor has observed real disk
@@ -1784,7 +1786,7 @@ struct QuickstartView: View {
         // A measured total is discarded when the mirror proves it wrong
         // (done > total). Keep the truthful numerator visible rather than
         // regressing to an indeterminate track while bytes are flowing.
-        return "\(DownloadProgress.formatBytes(bytes)) downloaded"
+        return String(localized: "\(DownloadProgress.formatBytes(bytes)) downloaded")
     }
 
     /// "4.4 MB/s · 2 min left" — rate first, and the ETA appended only when
@@ -1889,7 +1891,7 @@ struct QuickstartView: View {
                 CheetahLogo(size: 156)
                     .padding(.bottom, 30)
 
-                OnboardingDisplayTitle(text: "Nothing you type\nleaves this Mac.", size: 52)
+                OnboardingDisplayTitle(text: String(localized: "Nothing you type\nleaves this Mac."), size: 52)
 
                 VStack(alignment: .leading, spacing: 9) {
                     Text("Models run locally on Apple Silicon. You download one model "
@@ -1968,7 +1970,7 @@ struct QuickstartView: View {
     /// without a SwiftUI host (Paper 05.1 state 18 — "Primary Continue setup →
     /// the model chooser").
     static func welcomePrimaryTitle(resuming: Bool) -> String {
-        resuming ? "Continue setup" : "Get started"
+        resuming ? String(localized: "Continue setup") : String(localized: "Get started")
     }
 
     /// Resolve the latest hardware/cache policy at the user's action boundary.
@@ -2082,8 +2084,11 @@ struct QuickstartView: View {
     /// specifically that the count comes from ``QuickstartCoordinator/Step/total``
     /// and that nothing sub-numbers it.
     static func microStageKicker(_ stageName: String) -> String {
-        "STEP \(QuickstartCoordinator.Step.chooseModel.displayNumber) "
-            + "OF \(QuickstartCoordinator.Step.total) · \(stageName)"
+        // One literal, not concatenated fragments: the catalog key has to be
+        // the whole sentence so its placeholders can be reordered per language.
+        String(
+            localized: "STEP \(QuickstartCoordinator.Step.chooseModel.displayNumber) OF \(QuickstartCoordinator.Step.total) · \(stageName)"
+        )
     }
 
     // MARK: - 2a / 2b — hardware detection and recommendation loading
@@ -2099,11 +2104,9 @@ struct QuickstartView: View {
     @ViewBuilder
     private var checkingHardwareStep: some View {
         transientStep(
-            kicker: "CHECKING THIS MAC",
-            title: "Reading this Mac…",
-            subtitle: "Rapid-MLX checks the chip, the unified memory and the free "
-                + "space on the volume that holds your Hugging Face cache. "
-                + "Nothing is uploaded — the read is local.",
+            kicker: String(localized: "CHECKING THIS MAC"),
+            title: String(localized: "Reading this Mac…"),
+            subtitle: String(localized: "Rapid-MLX checks the chip, the unified memory and the free space on the volume that holds your Hugging Face cache. Nothing is uploaded — the read is local."),
             identifier: "Quickstart.Step2.CheckingHardware"
         ) {
             VStack(spacing: 0) {
@@ -2141,12 +2144,9 @@ struct QuickstartView: View {
     @ViewBuilder
     private var findingFitStep: some View {
         transientStep(
-            kicker: "FINDING THE BEST FIT",
-            title: "Matching models to \(Self.wholeGB(hardware.physicalRAMGB))…",
-            subtitle: "Rapid-MLX is reading the model catalogue to see which models "
-                + "are already on this Mac and how much each one would download. "
-                + "The short list below is fixed; only the “already downloaded” "
-                + "part depends on this read.",
+            kicker: String(localized: "FINDING THE BEST FIT"),
+            title: String(localized: "Matching models to \(Self.wholeGB(hardware.physicalRAMGB))…"),
+            subtitle: String(localized: "Rapid-MLX is reading the model catalogue to see which models are already on this Mac and how much each one would download. The short list below is fixed; only the “already downloaded” part depends on this read."),
             identifier: "Quickstart.Step2.FindingFit"
         ) {
             VStack(alignment: .leading, spacing: 10) {
@@ -2250,11 +2250,11 @@ struct QuickstartView: View {
 
         var title: String {
             switch self {
-            case .chooseFirst:   return "Choose your\nfirst model"
-            case .biggerAndCost: return "Bigger, and\nwhat it costs"
+            case .chooseFirst:   return String(localized: "Choose your\nfirst model")
+            case .biggerAndCost: return String(localized: "Bigger, and\nwhat it costs")
             case .alreadyHere(let count) where count > 1:
-                return "\(Self.spelledCount(count)) are already\nhere."
-            case .alreadyHere:   return "One is already\nhere."
+                return String(localized: "\(Self.spelledCount(count)) are already\nhere.")
+            case .alreadyHere:   return String(localized: "One is already\nhere.")
             }
         }
 
@@ -2298,16 +2298,19 @@ struct QuickstartView: View {
     ) -> String {
         switch narrative {
         case .chooseFirst:
-            return "Start small — you can download bigger models anytime in Settings."
+            return String(localized: "Start small — you can download bigger models anytime in Settings.")
         case .biggerAndCost:
-            return "The difference is download size and how much memory the model "
-                + "holds while it runs, against this Mac's \(wholeGB(hardware.physicalRAMGB))."
+            return String(
+                localized: "The difference is download size and how much memory the model holds while it runs, against this Mac's \(wholeGB(hardware.physicalRAMGB))."
+            )
         case .alreadyHere(let count) where count > 1:
-            return "Another MLX app already downloaded these models into the shared "
-                + "Hugging Face cache. Picking one of them skips the download entirely."
+            return String(
+                localized: "Another MLX app already downloaded these models into the shared Hugging Face cache. Picking one of them skips the download entirely."
+            )
         case .alreadyHere:
-            return "Another MLX app already downloaded this model into the shared "
-                + "Hugging Face cache. Picking it skips the download entirely."
+            return String(
+                localized: "Another MLX app already downloaded this model into the shared Hugging Face cache. Picking it skips the download entirely."
+            )
         }
     }
 
@@ -2367,9 +2370,9 @@ struct QuickstartView: View {
     /// the table and the disabled primary can never disagree.
     static func fitText(_ fit: ModelSizing.Fit) -> String {
         switch fit {
-        case .recommended: return "Comfortable"
-        case .borderline:  return "Tight"
-        case .tooBig:      return "Won't fit"
+        case .recommended: return String(localized: "Comfortable")
+        case .borderline:  return String(localized: "Tight")
+        case .tooBig:      return String(localized: "Won't fit")
         }
     }
 
@@ -2388,7 +2391,7 @@ struct QuickstartView: View {
         )
         step2Scaffold {
             step2Columns(
-                kicker: "CHOOSE A MODEL",
+                kicker: String(localized: "CHOOSE A MODEL"),
                 title: narrative.title,
                 subtitle: Self.selectionSubtitle(narrative, hardware: hardware)
             ) {
@@ -2402,8 +2405,7 @@ struct QuickstartView: View {
                             tradeUps: list.tradeUps,
                             hardware: hardware
                         ),
-                        fitLabel: "Fit on \(Self.wholeGB(hardware.physicalRAMGB))"
-                    )
+                        fitLabel: String(localized: "Fit on \(Self.wholeGB(hardware.physicalRAMGB))"))
                     .padding(.top, 26)
                 }
             } content: {
@@ -2623,14 +2625,13 @@ struct QuickstartView: View {
             VStack(alignment: .leading, spacing: 0) {
                 HStack(alignment: .bottom, spacing: OnboardingD.columnGap) {
                     VStack(alignment: .leading, spacing: 0) {
-                        OnboardingKicker(text: Self.microStageKicker("BROWSE ALL MODELS"))
+                        OnboardingKicker(text: Self.microStageKicker(String(localized: "BROWSE ALL MODELS")))
                             .accessibilityIdentifier("Quickstart.Step2.Kicker")
                             .padding(.bottom, 16)
-                        OnboardingDisplayTitle(text: "All models")
+                        OnboardingDisplayTitle(text: String(localized: "All models"))
                     }
                     Spacer(minLength: 24)
-                    Text("Everything rapid-mlx can serve on this Mac. "
-                         + "Your shortlist pick stays selected.")
+                    Text("Everything rapid-mlx can serve on this Mac. Your shortlist pick stays selected.")
                         .scaledSystemFont(15, relativeTo: .callout)
                         .foregroundStyle(RapidTheme.textSecondary)
                         .fixedSize(horizontal: false, vertical: true)
@@ -2647,8 +2648,8 @@ struct QuickstartView: View {
             OnboardingStepFooter(
                 primaryTitle: primary.title,
                 primaryEnabled: primary.isEnabled,
-                backTitle: "← Back to recommended models",
-                backAccessibilityLabel: "Back to recommended models",
+                backTitle: String(localized: "← Back to recommended models"),
+                backAccessibilityLabel: String(localized: "Back to recommended models"),
                 onBack: { returnToRecommendedModels() },
                 onPrimary: { activatePrimary(in: .catalogue) }
             )
@@ -2936,8 +2937,10 @@ struct QuickstartView: View {
     ) -> String {
         guard available else {
             let needed = ModelSizing.estimate(alias: entry.alias).totalGB
-            guard needed > 0 else { return "Needs more memory than this Mac has" }
-            return "Needs ≈ \(Self.wholeGB(needed)) · this Mac has \(Self.wholeGB(hardware.physicalRAMGB))"
+            guard needed > 0 else { return String(localized: "Needs more memory than this Mac has") }
+            return String(
+                localized: "Needs ≈ \(Self.wholeGB(needed)) · this Mac has \(Self.wholeGB(hardware.physicalRAMGB))"
+            )
         }
         let repo = entry.hfRepo ?? ""
         return repo.isEmpty ? entry.alias : repo
@@ -2956,12 +2959,12 @@ struct QuickstartView: View {
     ) -> [OnboardingCatalogRow.Badge] {
         var badges: [OnboardingCatalogRow.Badge] = []
         if entry.alias == recommendedAlias {
-            badges.append(.init(text: "RECOMMENDED", tone: .amber))
+            badges.append(.init(text: String(localized: "RECOMMENDED"), tone: .amber))
         }
         if !available {
-            badges.append(.init(text: "WON'T FIT", tone: .error))
+            badges.append(.init(text: String(localized: "WON'T FIT"), tone: .error))
         } else if entry.cached {
-            badges.append(.init(text: "ON THIS MAC", tone: .ready))
+            badges.append(.init(text: String(localized: "ON THIS MAC"), tone: .ready))
         }
         return badges
     }
@@ -3013,7 +3016,7 @@ struct QuickstartView: View {
         let runsHere = OnboardingModelSelection.isAvailable(alias: alias, hardware: hardware)
         step2Scaffold {
             step2Columns(
-                kicker: "REVIEW DOWNLOAD",
+                kicker: String(localized: "REVIEW DOWNLOAD"),
                 title: coordinator.selection.displayName,
                 subtitle: Self.reviewSubtitle(cached: cached, runsHere: runsHere)
             ) {
@@ -3283,9 +3286,13 @@ struct QuickstartView: View {
         guard cached == nil else { return nil }
         let size = reviewDownloadText(alias: alias, cached: nil)
         guard size != "Unknown" else {
-            return "One download, once. After that this model starts in seconds and needs no network."
+            return String(
+                localized: "One download, once. After that this model starts in seconds and needs no network."
+            )
         }
-        return "One \(size) pull, once. After that this model starts in seconds and needs no network."
+        return String(
+            localized: "One \(size) pull, once. After that this model starts in seconds and needs no network."
+        )
     }
 
     // MARK: - 2e — Review download · incompatible memory (Paper 05.2.D)
@@ -3297,10 +3304,10 @@ struct QuickstartView: View {
     /// because the screen's whole job at that point is to answer a question
     /// the user already asked.
     static func reviewSubtitle(cached: ModelEntry?, runsHere: Bool) -> String {
-        guard runsHere else { return "This model cannot run on this Mac." }
+        guard runsHere else { return String(localized: "This model cannot run on this Mac.") }
         return cached == nil
-            ? "This downloads once and then runs entirely on your Mac."
-            : "Already on this Mac — nothing will be downloaded."
+            ? String(localized: "This downloads once and then runs entirely on your Mac.")
+            : String(localized: "Already on this Mac — nothing will be downloaded.")
     }
 
     /// Paper 05.2.D's callout: what it needs, what this Mac has, and how much
@@ -3313,11 +3320,11 @@ struct QuickstartView: View {
     static func incompatibilityNote(alias: String, hardware: MacHardware) -> String {
         let needed = ModelSizing.estimate(alias: alias).totalGB
         guard needed > 0, hardware.physicalRAMGB > 0 else {
-            return "This model needs more memory than this Mac has."
+            return String(localized: "This model needs more memory than this Mac has.")
         }
-        return "Needs ≈ \(preciseGB(needed)) of memory. This Mac has "
-            + "\(wholeGB(hardware.physicalRAMGB)), of which roughly "
-            + "\(preciseGB(hardware.usableRAMGB)) is usable for a model."
+        return String(
+            localized: "Needs ≈ \(preciseGB(needed)) of memory. This Mac has \(wholeGB(hardware.physicalRAMGB)), of which roughly \(preciseGB(hardware.usableRAMGB)) is usable for a model."
+        )
     }
 
     /// The line under the fact table on an incompatible Review, in place of
@@ -3333,17 +3340,15 @@ struct QuickstartView: View {
     static func memoryHeadroomFootnote(hardware: MacHardware) -> String? {
         guard hardware.physicalRAMGB > 0, hardware.usableRAMGB > 0 else { return nil }
         let ceiling = ModelSizing.largestFittingGB(on: hardware)
-        return "macOS keeps about a fifth of unified memory for itself, so a "
-            + "\(wholeGB(hardware.physicalRAMGB)) Mac has roughly "
-            + "\(preciseGB(hardware.usableRAMGB)) to give a model. Rapid keeps "
-            + "some of that free for your conversation, so it offers models "
-            + "needing up to about \(preciseGB(ceiling))."
+        return String(
+            localized: "macOS keeps about a fifth of unified memory for itself, so a \(wholeGB(hardware.physicalRAMGB)) Mac has roughly \(preciseGB(hardware.usableRAMGB)) to give a model. Rapid keeps some of that free for your conversation, so it offers models needing up to about \(preciseGB(ceiling))."
+        )
     }
 
     /// What VoiceOver is told about the greyed primary on an incompatible
     /// Review. macOS announces a disabled control as "dimmed" and stops there.
     static func incompatiblePrimaryHint(alias: String, hardware: MacHardware) -> String {
-        "Unavailable. \(incompatibilityNote(alias: alias, hardware: hardware))"
+        String(localized: "Unavailable. \(incompatibilityNote(alias: alias, hardware: hardware))")
     }
 
     // MARK: - Step 2 derivation (pure seams)
@@ -3484,8 +3489,8 @@ struct QuickstartView: View {
     /// measured warning and Load Anyway decision.
     static func recommendedGroupLabel(physicalRAMGB: Double) -> String {
         physicalRAMGB < 16
-            ? "OPTIONAL — MORE CAPABLE, USES MORE MEMORY"
-            : "RECOMMENDED FOR YOUR \(wholeGB(physicalRAMGB)) MAC"
+            ? String(localized: "OPTIONAL — MORE CAPABLE, USES MORE MEMORY")
+            : String(localized: "RECOMMENDED FOR YOUR \(wholeGB(physicalRAMGB)) MAC")
     }
 
     /// Map the SSOT's RAM-tier picks into renderable wizard choices.
@@ -3900,7 +3905,7 @@ struct QuickstartView: View {
     /// the row is omitted instead of claiming a number.
     static func reviewFreeSpaceText(probe: () -> Int64?) -> String? {
         guard let free = probe() else { return nil }
-        return "\(formatBytesForBanner(free)) available"
+        return String(localized: "\(formatBytesForBanner(free)) available")
     }
 
     static func canStartWithoutDownload(alias: String, cachedModels: [ModelEntry]) -> Bool {
@@ -3925,7 +3930,7 @@ struct QuickstartView: View {
         let job = downloads.job(for: coordinator.selection.alias)
 
         VStack(alignment: .leading, spacing: 0) {
-            OnboardingDisplayTitle(text: "One download,\nthen it's yours.")
+            OnboardingDisplayTitle(text: String(localized: "One download,\nthen it's yours."))
 
             Text("The model files are being written into your Hugging Face cache. "
                  + "This is a plain file transfer from the model mirror — nothing "
@@ -4089,11 +4094,9 @@ struct QuickstartView: View {
         OnboardingOutcomeBlock(
             glyph: "checkmark",
             tone: .ready,
-            kicker: "STEP \(QuickstartCoordinator.Step.download.displayNumber) "
-                + "OF \(QuickstartCoordinator.Step.total) · NOTHING TO DOWNLOAD",
-            title: "\(coordinator.selection.displayName) is already on this Mac.",
-            message: "No download needed — moving straight to starting it."
-        ) {
+            kicker: String(localized: "STEP \(QuickstartCoordinator.Step.download.displayNumber) OF \(QuickstartCoordinator.Step.total) · NOTHING TO DOWNLOAD"),
+            title: String(localized: "\(coordinator.selection.displayName) is already on this Mac."),
+            message: String(localized: "No download needed — moving straight to starting it.")) {
             EmptyView()
         }
         .accessibilityElement(children: .contain)
@@ -4109,7 +4112,7 @@ struct QuickstartView: View {
     @ViewBuilder
     private var startingCard: some View {
         VStack(alignment: .leading, spacing: 0) {
-            OnboardingDisplayTitle(text: "Loading into memory.")
+            OnboardingDisplayTitle(text: String(localized: "Loading into memory."))
 
             Text("The weights are on disk. They are being loaded into Metal and the "
                  + "model is warming up — usually 5 to 15 seconds, longer the first "
@@ -4134,11 +4137,9 @@ struct QuickstartView: View {
         OnboardingOutcomeBlock(
             glyph: "checkmark",
             tone: .ready,
-            kicker: "SETUP COMPLETE",
-            title: "\(coordinator.selection.displayName) is ready.",
-            message: "It is loaded on this Mac and answering locally. "
-                + "Nothing you type from here leaves the machine."
-        ) {
+            kicker: String(localized: "SETUP COMPLETE"),
+            title: String(localized: "\(coordinator.selection.displayName) is ready."),
+            message: String(localized: "It is loaded on this Mac and answering locally. Nothing you type from here leaves the machine.")) {
             OnboardingActionLane {
                 Button("Start chatting") {
                     completeOnboarding()
@@ -4181,8 +4182,7 @@ struct QuickstartView: View {
         OnboardingOutcomeBlock(
             glyph: warning.severity == .safe ? "checkmark" : "exclamationmark.triangle",
             tone: warning.severity == .safe ? .ready : .amber,
-            kicker: "STEP \(QuickstartCoordinator.Step.start.displayNumber) "
-                + "OF \(QuickstartCoordinator.Step.total) · BEFORE LOADING",
+            kicker: String(localized: "STEP \(QuickstartCoordinator.Step.start.displayNumber) OF \(QuickstartCoordinator.Step.total) · BEFORE LOADING"),
             title: warning.title,
             message: warning.message
         ) {
@@ -4333,9 +4333,8 @@ struct QuickstartView: View {
         OnboardingOutcomeBlock(
             glyph: "externaldrive.badge.exclamationmark",
             tone: .amber,
-            kicker: "STEP \(QuickstartCoordinator.Step.download.displayNumber) "
-                + "OF \(QuickstartCoordinator.Step.total) · BEFORE THE DOWNLOAD",
-            title: "Low disk space",
+            kicker: String(localized: "STEP \(QuickstartCoordinator.Step.download.displayNumber) OF \(QuickstartCoordinator.Step.total) · BEFORE THE DOWNLOAD"),
+            title: String(localized: "Low disk space"),
             message: QuickstartView.lowDiskBannerBody(
                 freeBytes: freeBytes,
                 requiredBytes: requiredBytes,
@@ -4453,13 +4452,15 @@ struct QuickstartView: View {
     ) -> String {
         let what: String
         switch kind {
-        case .downloadCancelled:         what = "DOWNLOAD STOPPED"
-        case .downloadSourceUnavailable: what = "SOURCE UNAVAILABLE"
-        case .modelOutOfMemory:          what = "NOT ENOUGH MEMORY"
-        case .modelLoadFailed:           what = "COULDN'T LOAD"
-        default:                         what = "DIDN'T FINISH"
+        case .downloadCancelled:         what = String(localized: "DOWNLOAD STOPPED")
+        case .downloadSourceUnavailable: what = String(localized: "SOURCE UNAVAILABLE")
+        case .modelOutOfMemory:          what = String(localized: "NOT ENOUGH MEMORY")
+        case .modelLoadFailed:           what = String(localized: "COULDN'T LOAD")
+        default:                         what = String(localized: "DIDN'T FINISH")
         }
-        return "STEP \(origin.displayNumber) OF \(QuickstartCoordinator.Step.total) · \(what)"
+        return String(
+            localized: "STEP \(origin.displayNumber) OF \(QuickstartCoordinator.Step.total) · \(what)"
+        )
     }
 
     /// Classify a Quickstart failure. Pure so the one inference that matters —
@@ -4499,17 +4500,19 @@ struct QuickstartView: View {
     /// a fault — the user is the one who stopped it. Everything else keeps the
     /// shipped title unchanged.
     static func failureTitle(for kind: FailureDiagnosis.Kind) -> String {
-        kind == .downloadCancelled ? "Download stopped" : "Quickstart didn't finish"
+        kind == .downloadCancelled
+            ? String(localized: "Download stopped")
+            : String(localized: "Quickstart didn't finish")
     }
 
     /// Name the destination the way every other Step 2 Back does, so the
     /// control says where it goes rather than only that it goes back.
     static func failureBackTitle(for stage: QuickstartCoordinator.Step2Stage) -> String {
         switch stage {
-        case .browsing:  return "← Back to all models"
-        case .reviewing: return "← Back to review download"
+        case .browsing:  return String(localized: "← Back to all models")
+        case .reviewing: return String(localized: "← Back to review download")
         case .checkingHardware, .findingFit, .choosing:
-            return "← Back to recommended models"
+            return String(localized: "← Back to recommended models")
         }
     }
 
@@ -4549,7 +4552,7 @@ struct QuickstartView: View {
         let diagnosis = FailureDiagnoser.diagnosis(for: kind)
         var parts = [failureTitle(for: kind), diagnosis.message]
         if let action = diagnosis.action {
-            parts.append("Action: \(action.title).")
+            parts.append(String(localized: "Action: \(action.title)."))
         }
         return parts.joined(separator: " ")
     }
@@ -5016,9 +5019,9 @@ struct QuickstartView: View {
     static func lowDiskBannerBody(freeBytes: Int64, requiredBytes: Int64, displayName: String) -> String {
         let free = formatBytesForBanner(freeBytes)
         let need = formatBytesForBanner(requiredBytes)
-        return "\(free) free on the volume that holds your Hugging Face cache. " +
-               "Setup asks for at least \(need) free before any download — " +
-               "a flat floor, not the size of \(displayName). Continue anyway?"
+        return String(
+            localized: "\(free) free on the volume that holds your Hugging Face cache. Setup asks for at least \(need) free before any download — a flat floor, not the size of \(displayName). Continue anyway?"
+        )
     }
 
     /// VoiceOver label for the warning card. The banner body is repeated
@@ -5028,11 +5031,9 @@ struct QuickstartView: View {
     static func lowDiskAccessibilityLabel(freeBytes: Int64, requiredBytes: Int64, displayName: String) -> String {
         let free = formatBytesForBanner(freeBytes)
         let need = formatBytesForBanner(requiredBytes)
-        return "Low disk space warning. \(free) free on the volume that holds " +
-               "your Hugging Face cache; setup asks for at least \(need) free " +
-               "before any download, which is a flat floor rather than the size " +
-               "of \(displayName). " +
-               "Choose Continue anyway to start the download, or Cancel to go back."
+        return String(
+            localized: "Low disk space warning. \(free) free on the volume that holds your Hugging Face cache; setup asks for at least \(need) free before any download, which is a flat floor rather than the size of \(displayName). Choose Continue anyway to start the download, or Cancel to go back."
+        )
     }
 
     /// Build the progress subtitle the downloading card shows. Pure
@@ -5049,12 +5050,12 @@ struct QuickstartView: View {
         displayName: String
     ) -> String {
         guard let job else {
-            return "Connecting to mirror…"
+            return String(localized: "Connecting to mirror…")
         }
         if let subtitle = job.progress.progressSubtitle {
             return subtitle
         }
-        return "Connecting to mirror…"
+        return String(localized: "Connecting to mirror…")
     }
 
     /// "ETA mm:ss" caption when tqdm has stabilised one, else nil.
@@ -5065,7 +5066,7 @@ struct QuickstartView: View {
         switch job.progress.phase {
         case .downloading(_, _, _, _, _, let eta):
             guard let eta else { return nil }
-            return "ETA \(eta)"
+            return String(localized: "ETA \(eta)")
         case .idle, .preparing, .fetching, .warmingUp:
             return nil
         }
@@ -5084,17 +5085,17 @@ struct QuickstartView: View {
     static func friendlyFailureMessage(raw: String) -> String {
         let lowered = raw.lowercased()
         if lowered.contains("429") || lowered.contains("rate limit") {
-            return "Hugging Face is rate-limiting downloads right now. Try again in a minute."
+            return String(localized: "Hugging Face is rate-limiting downloads right now. Try again in a minute.")
         }
         if lowered.contains("network") || lowered.contains("connection") || lowered.contains("dns")
             || lowered.contains("timeout") || lowered.contains("timed out") {
-            return "Network error during download. Check your connection and retry."
+            return String(localized: "Network error during download. Check your connection and retry.")
         }
         if lowered.contains("no space") || lowered.contains("disk full") {
-            return "Not enough disk space to download the model. Free ~3 GB and retry."
+            return String(localized: "Not enough disk space to download the model. Free ~3 GB and retry.")
         }
         if raw.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-            return "Download didn't finish. Retry to try again."
+            return String(localized: "Download didn't finish. Retry to try again.")
         }
         return FailureDiagnoser.diagnosis(for: .downloadFailed).message
     }

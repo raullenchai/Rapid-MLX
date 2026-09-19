@@ -831,11 +831,15 @@ start_persona() {
         jq --arg key "$key" --arg value "$value" '.[$key] = $value' "$config" > "$updated"
         mv "$updated" "$config"
     done
-    if [[ -n "$app_language" ]]; then
-        launch_persona_app truncate -AppleLanguages "($app_language)"
-    else
-        launch_persona_app truncate
-    fi
+    # The committed baselines are English, so pin English unless a flow asks for
+    # another language. Before the Desktop app was localizable this was
+    # implicit: every string was a hardcoded English literal, so the runner's
+    # macOS language could not reach the AX tree. It can now — a runner set to
+    # 简体中文 renders translated copy and fails every structural baseline for a
+    # reason that has nothing to do with the change under test. Naming the
+    # language makes the comparison depend on the product, not the machine.
+    # `RAPID_GUI_APP_LANGUAGE` overrides this; see `flow_localized_photo_hint`.
+    launch_persona_app truncate -AppleLanguages "(${app_language:-en})"
     wait_for_window
 }
 

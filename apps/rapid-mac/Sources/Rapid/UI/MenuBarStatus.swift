@@ -24,17 +24,23 @@ enum MenuBarStatus {
     static func statusLine(state: ServerState) -> String {
         switch state {
         case .idle:
-            return "Idle"
+            return String(localized: "Idle")
         case .stopped:
-            return "Idle"
+            return String(localized: "Idle")
         case .missing:
-            return "Setup needed"
+            return String(localized: "Setup needed")
         case .starting(let alias):
-            return alias.isEmpty ? "Starting…" : "\(alias) · Starting…"
+            return alias.isEmpty
+                ? String(localized: "Starting…")
+                : String(localized: "\(alias) · Starting…")
         case .ready(let alias):
-            return alias.isEmpty ? "Ready" : "\(alias) · Ready"
+            return alias.isEmpty
+                ? String(localized: "Ready")
+                : String(localized: "\(alias) · Ready")
         case .crashed(let alias, _):
-            return alias.isEmpty ? "Crashed" : "\(alias) · Crashed"
+            return alias.isEmpty
+                ? String(localized: "Crashed")
+                : String(localized: "\(alias) · Crashed")
         }
     }
 
@@ -102,10 +108,10 @@ enum MenuBarStatus {
         baseURL: String?
     ) -> [MenuBarItem] {
         var items: [MenuBarItem] = [
-            .button(.open, title: "Open Rapid-MLX", enabled: true, shortcut: nil),
+            .button(.open, title: String(localized: "Open Rapid-MLX"), enabled: true, shortcut: nil),
             .button(
                 .newChat,
-                title: "New Chat",
+                title: String(localized: "New Chat"),
                 enabled: true,
                 shortcut: MenuShortcut(key: "n", modifiers: [.command])
             ),
@@ -122,7 +128,7 @@ enum MenuBarStatus {
             items.append(
                 .button(
                     .copyEndpoint,
-                    title: "Copy API endpoint",
+                    title: String(localized: "Copy API endpoint"),
                     enabled: true,
                     shortcut: nil
                 )
@@ -137,7 +143,7 @@ enum MenuBarStatus {
             items.append(
                 .button(
                     .update,
-                    title: "Update available — v\(updateVersion)",
+                    title: String(localized: "Update available — v\(updateVersion)"),
                     enabled: true,
                     shortcut: nil
                 )
@@ -146,15 +152,15 @@ enum MenuBarStatus {
         }
 
         items.append(
-            .button(.checkForUpdates, title: "Check for updates…", enabled: !checking, shortcut: nil)
+            .button(.checkForUpdates, title: String(localized: "Check for updates…"), enabled: !checking, shortcut: nil)
         )
         items.append(.separator)
-        items.append(.button(.about, title: "About Rapid-MLX…", enabled: true, shortcut: nil))
+        items.append(.button(.about, title: String(localized: "About Rapid-MLX…"), enabled: true, shortcut: nil))
         items.append(.separator)
         items.append(
             .button(
                 .settings,
-                title: "Settings…",
+                title: String(localized: "Settings…"),
                 enabled: true,
                 shortcut: MenuShortcut(key: ",", modifiers: [.command])
             )
@@ -162,7 +168,7 @@ enum MenuBarStatus {
         items.append(
             .button(
                 .quit,
-                title: "Quit",
+                title: String(localized: "Quit"),
                 enabled: true,
                 shortcut: MenuShortcut(key: "q", modifiers: [.command])
             )

@@ -149,9 +149,9 @@ enum OnboardingModelSelection {
     /// The three verbs, stated once. Copy lives here so a test can pin the
     /// derivation without matching a string literal typed into a view.
     enum Verb {
-        static let reviewDownload = "Review download"
-        static let startExisting = "Start existing model"
-        static let downloadAndStart = "Download & start"
+        static let reviewDownload = String(localized: "Review download")
+        static let startExisting = String(localized: "Start existing model")
+        static let downloadAndStart = String(localized: "Download & start")
     }
 
     /// The neutral disabled primary. Paper: "Disabled always shows the neutral

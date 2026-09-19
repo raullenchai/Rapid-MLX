@@ -100,6 +100,11 @@ struct RapidApp: App {
     @State private var memoryStore: MemoryStore
     /// Persisted theme override exposed via Settings → Appearance.
     @State private var appearance: AppearanceConfig
+    /// Persisted UI-language override, the sibling of ``AppearanceConfig``.
+    /// Read in ``body`` for its ``LanguageConfig/resolvedLocale``, which both
+    /// windows publish as the `\.locale` environment — that is what makes
+    /// SwiftUI copy follow the picker.
+    @State private var language: LanguageConfig
     /// Deep-link channel into the Settings window.
     @State private var settingsRouter: SettingsRouter
     @State private var commandPaletteRequest = CommandPaletteRequestCoordinator()
@@ -200,6 +205,10 @@ struct RapidApp: App {
         // Apply the persisted theme override before the first window
         // renders so the user doesn't see a flash of the wrong mode.
         appearanceConfig.apply()
+        let languageConfig = LanguageConfig()
+        // Same reason as the theme above: push the persisted language into the
+        // Foundation lookup redirect before anything renders.
+        languageConfig.apply()
         // Built-in tools. The registry owns the two stores the tools consult
         // at dispatch time, and the app re-publishes them into the environment
         // so Settings + the approval sheet bind to the same instances.
@@ -371,6 +380,7 @@ struct RapidApp: App {
         _customInstructions = State(initialValue: customInstructionsConfig)
         _memoryStore = State(initialValue: memoryStore)
         _appearance = State(initialValue: appearanceConfig)
+        _language = State(initialValue: languageConfig)
         _settingsRouter = State(initialValue: SettingsRouter())
         _deferredTelemetryConsent = State(initialValue: consentCoordinator)
         _githubStarPrompt = State(initialValue: starPromptCoordinator)
@@ -394,6 +404,10 @@ struct RapidApp: App {
                 // hue. Steel-blue (`brand`) is demoted to the info/tool/data
                 // lane per the rapidmlx.com design system (rapid-desktop #632).
                 .tint(RapidTheme.brandAmber)
+                // SwiftUI copy follows the language picker through the locale
+                // environment; the AppKit/Foundation half is a bundle
+                // redirect. See ``LanguageConfig``.
+                .environment(\.locale, language.resolvedLocale)
                 .environment(server)
                 .environment(downloads)
                 .environment(shareCompute)
@@ -408,6 +422,7 @@ struct RapidApp: App {
                 .environment(customInstructions)
                 .environment(memoryStore)
                 .environment(appearance)
+                .environment(language)
                 .environment(settingsRouter)
                 .environment(commandPaletteRequest)
                 .environment(deferredTelemetryConsent)
@@ -430,6 +445,7 @@ struct RapidApp: App {
                     await DevSnapshot.runIfRequested(
                         server: server, downloads: downloads, chat: chatViewModel,
                         updater: updater, sampling: sampling, appearance: appearance,
+                        language: language,
                         settingsRouter: settingsRouter, installTracker: installTracker,
                         quickstart: quickstart, dockPromptStore: dockPromptStore)
                 }
@@ -567,11 +583,16 @@ struct RapidApp: App {
         Window("Settings", id: "settings") {
             SettingsView()
                 .tint(RapidTheme.brandAmber)
+                // Same two halves as the main window above. The Settings
+                // window is where the picker lives, so this is the chain that
+                // has to repaint the moment the user chooses a language.
+                .environment(\.locale, language.resolvedLocale)
                 .environment(chatViewModel)
                 .environment(sampling)
                 .environment(customInstructions)
                 .environment(memoryStore)
                 .environment(appearance)
+                .environment(language)
                 .environment(settingsRouter)
                 .environment(server)
                 .environment(shareCompute)

@@ -21,6 +21,10 @@ struct SettingsView: View {
     // the shared spring and drop to instant under Reduce Motion.
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @Environment(AppearanceConfig.self) private var appearance
+    /// UI-language override. Read here for the picker; the *effect* is carried
+    /// by the `\.locale` environment and the bundle redirect that ``RapidApp``
+    /// installs, so nothing else in this file has to consult it.
+    @Environment(LanguageConfig.self) private var language
     @Environment(CustomInstructionsConfig.self) private var customInstructions
     @Environment(SettingsRouter.self) private var router
     /// Read-only here — only needed so the Phase 3b toggle can
@@ -111,7 +115,11 @@ struct SettingsView: View {
         #endif
 
         var id: String { rawValue }
-        var title: String {
+        /// `LocalizedStringKey`, not `String`: the rail renders these with
+        /// `Text(_:)`, whose `String` overload is the verbatim initialiser, so
+        /// the Settings sidebar stayed English while every panel behind it was
+        /// translated.
+        var title: LocalizedStringKey {
             switch self {
             case .modelManagement: return "Model Management"
             case .instructions: return "System Prompt"
@@ -182,7 +190,7 @@ struct SettingsView: View {
                         }
                     }
                     .rapidAnimation(RapidMotion.quick, value: hoveredCategory)
-                    .accessibilityLabel(cat.title)
+                    .accessibilityLabel(Text(cat.title))
                     .accessibilityAddTraits(selection.selected == cat ? .isSelected : [])
                     .accessibilityIdentifier("Settings.Category.\(cat.rawValue)")
                 }
@@ -615,6 +623,7 @@ struct SettingsView: View {
     /// Light / Dark force the override and persist across launches.
     private var appearancePanel: some View {
         @Bindable var a = appearance
+        @Bindable var l = language
         return VStack(alignment: .leading, spacing: RapidTheme.Space.xl) {
             SectionHeader(
                 "Appearance",
@@ -633,6 +642,31 @@ struct SettingsView: View {
                 .pickerStyle(.radioGroup)
                 .labelsHidden()
                 .accessibilityIdentifier("Settings.Appearance.ThemePicker")
+            }
+            // Language lives beside the theme rather than on its own Settings
+            // category: Settings has no "General" tab, and a new sidebar row
+            // would invalidate every committed AX baseline that renders the
+            // category list (12 of them) for one control. The panel is the same
+            // "how the app presents itself" surface, so it reads naturally here.
+            SettingsSection(
+                "Language",
+                subtitle: "Choose the language for Rapid-MLX's interface. Following the system uses your macOS setting; the other options change only this app."
+            ) {
+                Picker("Language", selection: $l.language) {
+                    ForEach(AppLanguage.allCases) { option in
+                        // Language names are rendered as written — "English"
+                        // and "简体中文" name themselves — so a verbatim Text is
+                        // correct here, and only the "follow the system" row
+                        // carries a translated label.
+                        Text(option.displayName)
+                            .accessibilityLabel(option.displayName)
+                            .accessibilityIdentifier(option.accessibilityIdentifier)
+                            .tag(option)
+                    }
+                }
+                .pickerStyle(.radioGroup)
+                .labelsHidden()
+                .accessibilityIdentifier("Settings.Appearance.LanguagePicker")
             }
         }
     }

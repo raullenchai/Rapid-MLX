@@ -148,11 +148,11 @@ struct FailureDiagnosis: Equatable, Sendable {
 
         var title: String {
             switch self {
-            case .retry: return "Retry"
-            case .restart: return "Restart"
-            case .openModelManagement: return "Open Model Management"
-            case .switchDownloadSource: return "Switch source"
-            case .openWebSearchSettings: return "Open Web Search Settings"
+            case .retry: return String(localized: "Retry")
+            case .restart: return String(localized: "Restart")
+            case .openModelManagement: return String(localized: "Open Model Management")
+            case .switchDownloadSource: return String(localized: "Switch source")
+            case .openWebSearchSettings: return String(localized: "Open Web Search Settings")
             }
         }
 
@@ -254,31 +254,31 @@ enum FailureDiagnoser {
             if let modelAlias,
                ModelSizing.estimate(alias: modelAlias).paramsBillions != nil {
                 let required = ModelSizing.estimate(alias: modelAlias).totalGB
-                message = "This model needs about \(formatGB(required)) GB free. Free up memory or choose a smaller model."
+                message = String(localized: "This model needs about \(formatGB(required)) GB free. Free up memory or choose a smaller model.")
             } else {
-                message = "This model needs more free memory. Free up memory or choose a smaller model."
+                message = String(localized: "This model needs more free memory. Free up memory or choose a smaller model.")
             }
             action = .openModelManagement
         case .modelLoadFailed:
-            message = "This model couldn't load. Check the model files or choose another model."
+            message = String(localized: "This model couldn't load. Check the model files or choose another model.")
             action = .openModelManagement
         case .engineNotRunning:
-            message = "The local engine isn't running. Restart it, then try again."
+            message = String(localized: "The local engine isn't running. Restart it, then try again.")
             action = .restart
         case .webSearchOffline:
-            message = "Web search couldn't connect. Turn on network access, then try again."
+            message = String(localized: "Web search couldn't connect. Turn on network access, then try again.")
             action = .retry
         case .webSearchUnavailable:
-            message = "Web search couldn't finish. Check its settings, then try again."
+            message = String(localized: "Web search couldn't finish. Check its settings, then try again.")
             action = .retry
         case .webSearchKeyRejected:
-            message = "Keenable rejected this API key. Re-paste it in Settings → Tools, or clear it to use keyless search."
+            message = String(localized: "Keenable rejected this API key. Re-paste it in Settings → Tools, or clear it to use keyless search.")
             action = .openWebSearchSettings
         case .webSearchKeyQuotaExceeded:
-            message = "This Keenable key has used its monthly credits. Check its plan, or clear the key in Settings → Tools to use keyless search."
+            message = String(localized: "This Keenable key has used its monthly credits. Check its plan, or clear the key in Settings → Tools to use keyless search.")
             action = .openWebSearchSettings
         case .webSearchKeyRateLimited:
-            message = "This Keenable key is rate-limited. Wait a moment, check its plan, or clear the key in Settings → Tools to use keyless search."
+            message = String(localized: "This Keenable key is rate-limited. Wait a moment, check its plan, or clear the key in Settings → Tools to use keyless search.")
             action = .openWebSearchSettings
         case .webSearchRateLimited:
             // Deliberately NOT "check its settings": everything in Settings is
@@ -289,10 +289,10 @@ enum FailureDiagnoser {
             // remedy so it still reads inside the tool card. Not Brave any
             // more (#2043): Brave requires a card on file now, so pitching it
             // as the free fix would steer the user into surprise billing.
-            message = "DuckDuckGo is rate-limiting web searches from this Mac. Switch to Keenable (no key) or add a free Parallel or Tavily key in Settings → Tools."
+            message = String(localized: "DuckDuckGo is rate-limiting web searches from this Mac. Switch to Keenable (no key) or add a free Parallel or Tavily key in Settings → Tools.")
             action = .openWebSearchSettings
         case .browsePageTooLarge:
-            message = "This page is too large for Rapid to read at once. Search it or open a smaller page instead."
+            message = String(localized: "This page is too large for Rapid to read at once. Search it or open a smaller page instead.")
             action = nil
         case .commandPermissionDenied:
             // No action, and no "allow that folder, then try again" — this app
@@ -300,18 +300,18 @@ enum FailureDiagnoser {
             // copy asked for a control that does not exist and the old button
             // led nowhere. See ``FailureDiagnosis/Action``. What is left states
             // the outcome and stops.
-            message = "The command tried to change a protected location, so it was blocked."
+            message = String(localized: "The command tried to change a protected location, so it was blocked.")
             action = nil
         case .commandFailed:
-            message = "The command didn't finish successfully. Check the command, then try again."
+            message = String(localized: "The command didn't finish successfully. Check the command, then try again.")
             action = .retry
         case .fileNotFound:
-            message = "That file isn't there. Check its name or location, then try again."
+            message = String(localized: "That file isn't there. Check its name or location, then try again.")
             action = .retry
         case .filePermissionDenied:
             // Same reasoning as ``commandPermissionDenied``: no file tools ship
             // here, so there is no access to grant and nothing to open.
-            message = "Rapid doesn't have access to that file."
+            message = String(localized: "Rapid doesn't have access to that file.")
             action = nil
         case .toolFailed:
             // "Check its input" pointed the user at the one thing they do not
@@ -319,7 +319,7 @@ enum FailureDiagnoser {
             // reading "check its input" over an invented `{"url": ""}` has
             // nothing to check (0.14.1 mini dogfood). State whose step failed
             // and leave the recovery — asking again — on the button.
-            message = "A tool step didn't go through. The model can usually recover if you ask again."
+            message = String(localized: "A tool step didn't go through. The model can usually recover if you ask again.")
             action = .retry
         case .userDeclined:
             // Nothing went wrong, so the copy states the outcome and stops.
@@ -332,10 +332,10 @@ enum FailureDiagnoser {
             // "nothing to show" rather than "nothing happened": a redirect can
             // be declined after the approved page has already been fetched, so
             // the honest claim is about the result, not the whole exchange.
-            message = "You didn't allow this, so there's nothing to show. Ask again if you change your mind."
+            message = String(localized: "You didn't allow this, so there's nothing to show. Ask again if you change your mind.")
             action = nil
         case .downloadFailed:
-            message = "The model download didn't finish. Check your connection, then try again."
+            message = String(localized: "The model download didn't finish. Check your connection, then try again.")
             action = .retry
         case .downloadCancelled:
             // States what the user did, what it left behind, and what the one
@@ -345,13 +345,13 @@ enum FailureDiagnoser {
             // property of the downloader, not a promise this app is in a
             // position to make. See Paper 05.1 state 10 — "No Pause and no
             // resume."
-            message = "You stopped this download, so the model isn't installed. Download it again, or choose a different model."
+            message = String(localized: "You stopped this download, so the model isn't installed. Download it again, or choose a different model.")
             action = .retry
         case .downloadSourceUnavailable:
-            message = "The current download source couldn't be reached. Switch source and try again."
+            message = String(localized: "The current download source couldn't be reached. Switch source and try again.")
             action = .switchDownloadSource
         case .requestFailed:
-            message = "Rapid couldn't finish that request. Try again, or restart the model."
+            message = String(localized: "Rapid couldn't finish that request. Try again, or restart the model.")
             action = .retry
         }
         return FailureDiagnosis(kind: kind, message: message, action: action)

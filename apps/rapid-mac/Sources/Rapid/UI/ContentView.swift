@@ -1612,11 +1612,9 @@ struct ContentView: View {
             OnboardingOutcomeBlock(
                 glyph: "exclamationmark.octagon",
                 tone: .error,
-                kicker: "SETUP COULDN'T RUN",
-                title: "Setup didn't finish",
-                message: "Rapid-MLX isn't fully set up yet. "
-                    + "Reopen Rapid-MLX to run the one-time setup again."
-            ) {
+                kicker: String(localized: "SETUP COULDN'T RUN"),
+                title: String(localized: "Setup didn't finish"),
+                message: String(localized: "Rapid-MLX isn't fully set up yet. Reopen Rapid-MLX to run the one-time setup again.")) {
                 VStack(alignment: .leading, spacing: RapidTheme.Space.lg) {
                     // Same two branches, same actions, same ordering as
                     // before — only the button tiers change. The recovery
@@ -1662,8 +1660,7 @@ struct ContentView: View {
                             .accessibilityIdentifier("MissingRuntime.RecheckStatus")
                     }
 
-                    Text("Rapid-MLX runs AI models on your Mac. Your chats stay on "
-                         + "this computer — no messages are sent to the cloud.")
+                    Text("Rapid-MLX runs AI models on your Mac. Your chats stay on this computer — no messages are sent to the cloud.")
                         .scaledSystemFont(13)
                         .foregroundStyle(RapidTheme.textTertiary)
                         .fixedSize(horizontal: false, vertical: true)
@@ -2104,8 +2101,7 @@ private struct BrowseApprovalSheet: View {
             .overlay(RoundedRectangle(cornerRadius: 6).stroke(.quaternary))
             .clipShape(RoundedRectangle(cornerRadius: 6))
 
-            Text("The page's text is sent back to the model. Only http/https "
-                + "public addresses are allowed — private and local addresses are blocked.")
+            Text("The page's text is sent back to the model. Only http/https public addresses are allowed — private and local addresses are blocked.")
                 .font(.caption)
                 .foregroundStyle(.secondary)
 
@@ -2258,13 +2254,11 @@ private struct MCPToolApprovalSheet: View {
                 .clipShape(RoundedRectangle(cornerRadius: 6))
             }
 
-            Text("Connectors are programs running on this Mac. Only allow tools "
-                + "from servers you set up yourself.")
+            Text("Connectors are programs running on this Mac. Only allow tools from servers you set up yourself.")
                 .font(.caption)
                 .foregroundStyle(.secondary)
 
-            Text("Always allow applies to this tool only. You can review and "
-                + "revoke it in Settings → Experimental.")
+            Text("Always allow applies to this tool only. You can review and revoke it in Settings → Experimental.")
                 .font(.caption)
                 .foregroundStyle(.secondary)
 
@@ -2481,11 +2475,11 @@ struct DesktopVersionPill: View {
     private var tooltip: String {
         switch state {
         case .upToDate(let version):
-            return "Rapid-MLX \(version) is the latest release. Click to open Settings → App."
+            return String(localized: "Rapid-MLX \(version) is the latest release. Click to open Settings → App.")
         case .updateAvailable(let current, let latest):
-            return "Rapid-MLX \(latest) is available (you're on \(current)). Click to install."
+            return String(localized: "Rapid-MLX \(latest) is available (you're on \(current)). Click to install.")
         case .unknown(let version):
-            return "Rapid-MLX \(version). Click to open Settings → App."
+            return String(localized: "Rapid-MLX \(version). Click to open Settings → App.")
         }
     }
 }

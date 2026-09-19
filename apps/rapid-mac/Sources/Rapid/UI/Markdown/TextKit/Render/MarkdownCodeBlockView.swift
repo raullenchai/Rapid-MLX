@@ -76,7 +76,7 @@ final class MarkdownCodeBlockView: NSView {
         headerLabel.translatesAutoresizingMaskIntoConstraints = false
         addSubview(headerLabel)
 
-        copyButton.title = "复制"
+        copyButton.title = String(localized: "Copy")
         copyButton.bezelStyle = .inline
         copyButton.isBordered = false
         copyButton.font = .systemFont(ofSize: 11, weight: .medium)
@@ -86,7 +86,7 @@ final class MarkdownCodeBlockView: NSView {
         copyButton.translatesAutoresizingMaskIntoConstraints = false
         addSubview(copyButton)
 
-        previewButton.title = "Preview"
+        previewButton.title = String(localized: "Preview")
         previewButton.bezelStyle = .inline
         previewButton.isBordered = false
         previewButton.font = .systemFont(ofSize: 11, weight: .medium)
@@ -357,7 +357,9 @@ final class MarkdownCodeBlockView: NSView {
         // offers no button. It appears when the last tag closes.
         setPreviewHidden(previewImage == nil)
         if previewImage == nil { isShowingPreview = false }
-        previewButton.title = isShowingPreview ? "Code" : "Preview"
+        previewButton.title = isShowingPreview
+            ? String(localized: "Code")
+            : String(localized: "Preview")
     }
 
     /// Draw a diagram, then show it.
@@ -398,7 +400,9 @@ final class MarkdownCodeBlockView: NSView {
                     self.previewImage = image
                     if !self.hasToggledPreview { self.isShowingPreview = true }
                     self.setPreviewHidden(false)
-                    self.previewButton.title = self.isShowingPreview ? "Code" : "Preview"
+                    self.previewButton.title = self.isShowingPreview
+                        ? String(localized: "Code")
+                        : String(localized: "Preview")
                     self.needsDisplay = true
                     self.invalidateLayoutChain()
                     return
@@ -422,7 +426,9 @@ final class MarkdownCodeBlockView: NSView {
         // later re-configure must not silently reopen what they closed.
         hasToggledPreview = true
         isShowingPreview.toggle()
-        previewButton.title = isShowingPreview ? "Code" : "Preview"
+        previewButton.title = isShowingPreview
+            ? String(localized: "Code")
+            : String(localized: "Preview")
         needsDisplay = true
         // The block stack sizes rows from `height(forWidth:)`, so the row has
         // to be re-measured rather than merely redrawn.
@@ -446,9 +452,9 @@ final class MarkdownCodeBlockView: NSView {
         // Momentary confirmation, matching ChatGPT's
         // `MarkdownCodeBlockHeaderCopyButton` which tracks a
         // `recentlyPerformed` state.
-        copyButton.title = "已复制"
+        copyButton.title = String(localized: "Copied")
         didCopyResetWork?.cancel()
-        let work = DispatchWorkItem { [weak self] in self?.copyButton.title = "复制" }
+        let work = DispatchWorkItem { [weak self] in self?.copyButton.title = String(localized: "Copy") }
         didCopyResetWork = work
         DispatchQueue.main.asyncAfter(deadline: .now() + 1.6, execute: work)
     }

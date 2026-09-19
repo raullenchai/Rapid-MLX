@@ -243,7 +243,7 @@ final class MenuBarController: NSObject {
             // Transient "Copied ✓" feedback. The menu rebuilds on every
             // open (``menuNeedsUpdate``), so this label self-heals back
             // to "Copy API endpoint" next time without a timer.
-            sender.title = "Copied ✓"
+            sender.title = String(localized: "Copied ✓")
         case .about:
             if let server = AppDelegate.shared.server {
                 AboutPanel.show(server: server)

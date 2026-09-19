@@ -2645,9 +2645,11 @@ final class ChatViewModel {
     /// ``MessageRow`` is `private` to ``ChatView``; this is the part of the
     /// dialog worth pinning in a test.
     nonisolated static func deleteConfirmationTitle(turnCount: Int) -> String {
+        // Two keys rather than one: the English plural lives in the
+        // interpolation, so each branch is its own translatable sentence.
         turnCount <= 1
-            ? "Delete this message?"
-            : "Delete this message and the \(turnCount - 1) turn\(turnCount == 2 ? "" : "s") below it?"
+            ? String(localized: "Delete this message?")
+            : String(localized: "Delete this message and the \(turnCount - 1) turn\(turnCount == 2 ? "" : "s") below it?")
     }
 
     /// Delete a turn and every alternative continuation beneath it. The
@@ -3165,7 +3167,7 @@ final class ChatViewModel {
     /// Copy for the round-cap failure. Static so a test can pin it without
     /// driving a full loop.
     static func toolRoundCapMessage(cap: Int) -> String {
-        "The model could not finish after \(cap) tool calls. Try rephrasing, or turn a tool off."
+        String(localized: "The model could not finish after \(cap) tool calls. Try rephrasing, or turn a tool off.")
     }
 
     /// Add the tools-disabled final-round instruction without introducing a
@@ -4170,7 +4172,7 @@ Your previous draft refused the question by claiming you lack real-time access o
                 // crashing mid-reply. Give a plain recovery path; the
                 // raw engine detail stays in the logs (principle: error
                 // copy must be human + actionable).
-                return "Rapid lost the model mid-reply — it may have crashed. Restart it from the model bar at the top and try again."
+                return String(localized: "Rapid lost the model mid-reply — it may have crashed. Restart it from the model bar at the top and try again.")
             case .httpStatus(_, let body):
                 // #471: a genuine capacity rejection (out-of-memory
                 // admission cap, or the server busy finishing another
@@ -4182,7 +4184,7 @@ Your previous draft refused the question by claiming you lack real-time access o
                 case .outOfMemory: return outOfMemoryMessage
                 case .serverBusy: return serverBusyMessage
                 case .none:
-                    return "Rapid couldn't complete that request. Try again, or restart the model from the bar at the top."
+                    return String(localized: "Rapid couldn't complete that request. Try again, or restart the model from the bar at the top.")
                 }
             case .transport(let message):
                 // #471: a memory cap that trips mid-generation surfaces
@@ -4193,7 +4195,7 @@ Your previous draft refused the question by claiming you lack real-time access o
                 case .outOfMemory: return outOfMemoryMessage
                 case .serverBusy: return serverBusyMessage
                 case .none:
-                    return "Rapid lost its connection to the model. Restart it from the bar at the top and try again."
+                    return String(localized: "Rapid lost its connection to the model. Restart it from the bar at the top and try again.")
                 }
             }
         }
@@ -4201,25 +4203,25 @@ Your previous draft refused the question by claiming you lack real-time access o
         if ns.domain == NSURLErrorDomain {
             switch ns.code {
             case NSURLErrorTimedOut:
-                return "The model stopped responding (nothing for 10 minutes). It may be stuck — restart it from the model bar at the top, or try a shorter message."
+                return String(localized: "The model stopped responding (nothing for 10 minutes). It may be stuck — restart it from the model bar at the top, or try a shorter message.")
             case NSURLErrorCannotConnectToHost, NSURLErrorCannotFindHost:
-                return "Can't reach the model. Use the model bar at the top to restart it."
+                return String(localized: "Can't reach the model. Use the model bar at the top to restart it.")
             case NSURLErrorNetworkConnectionLost:
-                return "The model disconnected mid-reply. Restart it from the model bar at the top and try again."
+                return String(localized: "The model disconnected mid-reply. Restart it from the model bar at the top and try again.")
             case NSURLErrorNotConnectedToInternet:
-                return "macOS says the network is off, but Rapid runs entirely on your Mac, so this usually doesn't matter. Restart the model from the model bar at the top; if that fails, restart your Mac."
+                return String(localized: "macOS says the network is off, but Rapid runs entirely on your Mac, so this usually doesn't matter. Restart the model from the model bar at the top; if that fails, restart your Mac.")
             default:
                 // Don't surface the raw NSURLError code/body (e.g.
                 // "NSURLErrorDomain error -1004") — the diagnostic is
                 // logged at the call site; the user gets a clean path.
-                return "Couldn't reach the model. Restart it from the model bar at the top and try again."
+                return String(localized: "Couldn't reach the model. Restart it from the model bar at the top and try again.")
             }
         }
         // Anything else (system / library error — e.g. a decode failure,
         // a cancelled task) is NOT one of our authored user-facing errors;
         // its localizedDescription is a raw diagnostic. The caller already
         // logged the raw error, so the user gets a plain, actionable path.
-        return "Rapid couldn't complete that request. Try again, or restart the model from the bar at the top."
+        return String(localized: "Rapid couldn't complete that request. Try again, or restart the model from the bar at the top.")
     }
 
     /// #471: the capacity failure modes that deserve a *specific* recovery

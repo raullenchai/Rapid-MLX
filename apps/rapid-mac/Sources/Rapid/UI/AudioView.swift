@@ -329,9 +329,8 @@ struct AudioView: View {
                     }
                     QuietIconButton(
                         symbol: "arrow.clockwise",
-                        label: "Load voices",
-                        help: "Reload the voice list from the running model."
-                    ) {
+                        label: String(localized: "Load voices"),
+                        help: String(localized: "Reload the voice list from the running model.")) {
                         playback.stop()
                         Task { _ = await viewModel.loadVoices() }
                     }
@@ -408,8 +407,7 @@ struct AudioView: View {
             Spacer(minLength: RapidTheme.Space.md)
             QuietIconButton(
                 symbol: playback.isPlaying ? "stop.fill" : "play.fill",
-                label: playback.isPlaying ? "Stop playback" : "Play speech"
-            ) {
+                label: playback.isPlaying ? String(localized: "Stop playback") : String(localized: "Play speech")) {
                 do {
                     try playback.toggle(audio.data)
                 } catch {
@@ -419,8 +417,7 @@ struct AudioView: View {
             .accessibilityIdentifier("Audio.Speech.Play")
             QuietIconButton(
                 symbol: "square.and.arrow.down",
-                label: "Save speech"
-            ) { saveSpeech(audio) }
+                label: String(localized: "Save speech")) { saveSpeech(audio) }
             .accessibilityIdentifier("Audio.Speech.Save")
         }
         .padding(RapidTheme.Space.lg)
@@ -775,7 +772,7 @@ private struct VoiceOptionRow: View {
             } else {
                 QuietIconButton(
                     symbol: isPlaying ? "stop.circle.fill" : "play.circle.fill",
-                    label: isPlaying ? "Stop \(voice) preview" : "Preview \(voice)",
+                    label: isPlaying ? String(localized: "Stop \(voice) preview") : String(localized: "Preview \(voice)"),
                     symbolSize: 16,
                     action: preview
                 )

@@ -82,8 +82,8 @@ struct SheetCloseButton: View {
     var body: some View {
         QuietIconButton(
             symbol: "xmark",
-            label: "Close",
-            help: "Close — Esc",
+            label: String(localized: "Close"),
+            help: String(localized: "Close — Esc"),
             action: action
         )
         .accessibilityIdentifier("Sheet.Close")

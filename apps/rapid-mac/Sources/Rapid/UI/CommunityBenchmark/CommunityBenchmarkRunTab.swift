@@ -201,7 +201,7 @@ struct CommunityBenchmarkReadyView: View {
 
     private var measuresPanel: some View {
         VStack(alignment: .leading, spacing: RapidTheme.Space.lg) {
-            SectionHeader(String(localized: "WHAT THIS MEASURES"))
+            SectionHeader("WHAT THIS MEASURES")
             ForEach(
                 Array(
                     CommunityBenchmarkMetrics.measuredQuantities(for: scope.workload).enumerated()

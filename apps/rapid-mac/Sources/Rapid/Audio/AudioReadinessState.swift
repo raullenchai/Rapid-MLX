@@ -184,7 +184,7 @@ enum AudioReadinessState: Equatable {
         case .downloading(let alias, let detail, let fraction):
             return .downloading(alias: alias, detail: detail, fraction: fraction)
         case .verifyingDownload(let alias):
-            return .starting(alias: alias, detail: "Finishing the download…")
+            return .starting(alias: alias, detail: String(localized: "Finishing the download…"))
         case .loading(let alias, let detail):
             return .starting(alias: alias, detail: detail)
         case .ready(let alias), .active(let alias, _):

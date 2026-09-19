@@ -817,8 +817,11 @@ struct ChatView: View {
         VStack(spacing: RapidTheme.Space.lg) {
             EmptyState(
                 title: "Ask anything",
-                message: emptyStateSubtitle,
-                hint: downloadHint,
+                // Already-localized sentences owned by ``ModelReadiness``, so
+                // they enter as keys rather than as literals; an unmatched key
+                // renders the value itself, which is the desired pass-through.
+                message: LocalizedStringKey(emptyStateSubtitle),
+                hint: downloadHint.map { LocalizedStringKey($0) },
                 // No disc. The plate was framing an illustration that already
                 // has its own silhouette, and — being amber-tinted — it was
                 // spending a second amber moment on a surface whose whole
@@ -2030,7 +2033,7 @@ private struct MessageRow: View {
             if isEditing {
                 QuietIconButton(
                     symbol: "xmark",
-                    label: "Cancel editing",
+                    label: String(localized: "Cancel editing"),
                     size: RapidTheme.ControlHeight.mini
                 ) {
                     cancelEditing()
@@ -2038,7 +2041,7 @@ private struct MessageRow: View {
                 .accessibilityIdentifier(actionIdentifier("CancelEdit"))
                 QuietIconButton(
                     symbol: "checkmark",
-                    label: "Save edited message",
+                    label: String(localized: "Save edited message"),
                     size: RapidTheme.ControlHeight.mini
                 ) {
                     saveEditing()
@@ -2060,7 +2063,7 @@ private struct MessageRow: View {
                 selectTextButton(text: message.content)
                 QuietIconButton(
                     symbol: "pencil",
-                    label: "Edit message",
+                    label: String(localized: "Edit message"),
                     size: RapidTheme.ControlHeight.mini
                 ) {
                     editDraft = message.content
@@ -2110,7 +2113,7 @@ private struct MessageRow: View {
     private func selectTextButton(text: String) -> some View {
         QuietIconButton(
             symbol: "text.cursor",
-            label: "Select text",
+            label: String(localized: "Select text"),
             size: RapidTheme.ControlHeight.mini
         ) {
             selectTextPresented = true
@@ -2228,8 +2231,8 @@ private struct MessageRow: View {
         if let impact = deletionImpact, impact > 0 {
             QuietIconButton(
                 symbol: "trash",
-                label: "Delete message",
-                help: "Delete message",
+                label: String(localized: "Delete message"),
+                help: String(localized: "Delete message"),
                 size: RapidTheme.ControlHeight.mini
             ) {
                 deleteConfirmationPresented = true
@@ -2267,7 +2270,7 @@ private struct MessageRow: View {
             selectTextButton(text: assistantCopyText)
             QuietIconButton(
                 symbol: "arrow.clockwise",
-                label: "Retry response",
+                label: String(localized: "Retry response"),
                 help: retryEnabled ? "Retry response" : retryTooltip,
                 size: RapidTheme.ControlHeight.mini
             ) {
@@ -2310,8 +2313,8 @@ private struct MessageRow: View {
             HStack(spacing: 1) {
                 QuietIconButton(
                     symbol: "chevron.left",
-                    label: "Previous \(noun)",
-                    help: "Previous \(noun)",
+                    label: String(localized: "Previous \(noun)"),
+                    help: String(localized: "Previous \(noun)"),
                     size: RapidTheme.ControlHeight.mini
                 ) {
                     onSelectBranch(-1)
@@ -2335,8 +2338,8 @@ private struct MessageRow: View {
 
                 QuietIconButton(
                     symbol: "chevron.right",
-                    label: "Next \(noun)",
-                    help: "Next \(noun)",
+                    label: String(localized: "Next \(noun)"),
+                    help: String(localized: "Next \(noun)"),
                     size: RapidTheme.ControlHeight.mini
                 ) {
                     onSelectBranch(1)

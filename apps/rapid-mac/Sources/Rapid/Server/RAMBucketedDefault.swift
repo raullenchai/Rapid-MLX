@@ -241,8 +241,8 @@ enum RAMBucketedDefault {
 
         func resolvedPick() -> Pick? {
             let limitationCopy = [
-                "not_for_coding": "Not for coding",
-                "basic_chat": "Basic chat",
+                "not_for_coding": String(localized: "Not for coding"),
+                "basic_chat": String(localized: "Basic chat"),
             ]
             guard Self.isSchemaIdentifier(alias, maxBytes: 128),
                   footprintMiB > 0,
