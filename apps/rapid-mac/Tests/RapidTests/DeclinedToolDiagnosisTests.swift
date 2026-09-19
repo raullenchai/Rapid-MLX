@@ -344,9 +344,16 @@ final class DeclinedToolDiagnosisTests {
     /// user stopping a transfer they started, which is the same shape as
     /// declining a permission prompt: nothing malfunctioned, so nothing should
     /// be painted as though it had.
+    ///
+    /// ``requestSuperseded`` joined with the faithful-engine-error slice
+    /// (#3564). A model swap under a running request cancels it cooperatively:
+    /// the engine did exactly what was asked (load the new model), so — like a
+    /// decline or a cancelled download — nothing failed and the copy is a calm
+    /// "ask again", not a red fault.
     private static let noticeKinds: Set<FailureDiagnosis.Kind> = [
         .userDeclined,
         .downloadCancelled,
+        .requestSuperseded,
     ]
 
     @Test("Only the user's own choices are notices; every other kind stays an error")
