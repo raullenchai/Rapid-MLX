@@ -591,8 +591,8 @@ rapid_mlx = [
     "models/deepseek_v41_native/LICENSE",
     "models/deepseek_v41_native/LICENSE-DSPARK",
     "models/deepseek_v41_native/NOTICE",
-    # The vendored mlx-vlm cache implementation is MIT-licensed; its license
-    # text must travel with every wheel that redistributes the source.
+    # The vendored mlx-vlm APC/cache implementation is MIT-licensed; its
+    # license text must travel with every wheel that redistributes the source.
     "models/mlx_vlm_vendored/LICENSE",
 ]
 videox_fun_mlx = ["LICENSE", "NOTICE"]
@@ -670,8 +670,8 @@ ignore = [
 # lint quiet on the copy so upstream diffs stay clean. Sync policy
 # and rationale in rapid_mlx/models/gemma4_vendored/__init__.py.
 "rapid_mlx/models/gemma4_vendored/*.py" = ["UP", "B", "SIM", "N", "F", "I", "E"]
-# Vendored from Blaizzy/mlx-vlm 0.7.1 (models/cache.py) as the first step
-# of the mlx-vlm dependency retirement (step 2a: cache types + seam).
+# Vendored from Blaizzy/mlx-vlm 0.7.1 as staged dependency-retirement slices
+# (cache types/seam first, then the APC engine and producer cutover).
 # Upstream-shaped with only the documented bug-fix deviations; keep lint
 # quiet on the copy so upstream diffs and the step-3 revert stay clean.
 # Provenance and sync policy in

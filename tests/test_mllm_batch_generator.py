@@ -2312,7 +2312,7 @@ def test_scheduler_prefix_cache_clear_rejects_active_requests():
 
 
 def _make_real_apc_generator(monkeypatch, *, entries: int | None = None):
-    """A bare generator wired to a real mlx-vlm ``APCManager`` in exact mode
+    """A bare generator wired to the vendored ``APCManager`` in exact mode
     (no disk, no block pool), the way ``__init__`` builds it."""
     from rapid_mlx.models.mlx_vlm_vendored import apc
     if entries is None:

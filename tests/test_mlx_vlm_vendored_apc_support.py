@@ -3,9 +3,9 @@
 ``apc_storage``, ``kv_quant``, ``_stream_cleanup`` and ``vision_cache``.
 
 The coordinator/storage/kv_quant modules are consumed by the vendored APC
-engine vendored in the next PR of the stack, but their import wiring is
-established here: the coordinator must resolve the vendored adapters, and
-kv_quant must stay behavior-identical to upstream (redirect-parity probe).
+engine. Their import wiring is explicit: the coordinator must resolve the
+vendored adapters, and kv_quant must stay behavior-identical to upstream
+(redirect-parity probe).
 """
 
 import hashlib
