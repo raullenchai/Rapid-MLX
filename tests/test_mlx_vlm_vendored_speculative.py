@@ -142,7 +142,9 @@ def test_vendored_speculative_bodies_match_upstream():
         # so this entry compares on behavior only (normalized divergences
         # are never filtered).
         (vs_mtp, up_mtp, set()),
-        (vs_utils, up_utils, set()),
+        # ``_dflash_rounds_batch`` also appears in utils' namespace via its
+        # dflash import; the hunk lives in dflash.py (documented above).
+        (vs_utils, up_utils, {"_dflash_rounds_batch"}),
     ):
         normalized = {"native_batch_linear"} if vendored is vs_mtp else set()
         divergences = _body_divergences(vendored, upstream, normalized=normalized)
