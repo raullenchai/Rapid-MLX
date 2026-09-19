@@ -29,6 +29,18 @@ struct MarkdownCompiler: Sendable {
     /// for a strict-CommonMark compile.
     public var postProcessors: [MarkdownPostProcessor]
 
+    /// Parse options shared by the streaming split and the block compiler.
+    ///
+    /// `.disableSmartOpts` matters: swift-markdown turns on cmark's "smart"
+    /// typography by default, which rewrites `"` to `“ ”`, `'` to `‘ ’`,
+    /// `--` to en dashes and `...` to an ellipsis in PROSE. Chat with a
+    /// model is not prose typesetting — a bare `{"city": "Tokyo"}` the model
+    /// returned outside a code fence rendered as `{ “city”: “Tokyo” }`, so
+    /// copying the visible answer produced invalid JSON (0.14.3 dogfood,
+    /// 2026-09-18). The characters the model emitted are the characters the
+    /// user gets; a model that wants typographic quotes emits them itself.
+    nonisolated static let parseOptions: ParseOptions = [.parseBlockDirectives, .disableSmartOpts]
+
     public init(postProcessors: [MarkdownPostProcessor] = [AutoLinkPostProcessor()]) {
         self.postProcessors = postProcessors
     }
@@ -42,7 +54,7 @@ struct MarkdownCompiler: Sendable {
     /// before it can no longer be reinterpreted by later input.
     func topLevelStreamingSplit(_ source: String) -> TopLevelStreamingSplit? {
         guard !source.isEmpty else { return nil }
-        let document = Document(parsing: source, options: [.parseBlockDirectives])
+        let document = Document(parsing: source, options: Self.parseOptions)
         let children = Array(document.children)
         guard children.count > 1,
               let tailLocation = children.last?.range?.lowerBound,
@@ -421,7 +433,7 @@ struct MarkdownCompiler: Sendable {
         _ source: String, depth: Int, into items: inout [MarkdownItem]
     ) {
         guard !source.isEmpty else { return }
-        let document = Document(parsing: source, options: [.parseBlockDirectives])
+        let document = Document(parsing: source, options: Self.parseOptions)
         for child in document.children {
             appendBlocks(from: child, depth: depth, into: &items)
         }
