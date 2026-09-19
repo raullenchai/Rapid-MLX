@@ -13,6 +13,7 @@ vendored package except for the documented pinned redirects.
 """
 
 import inspect
+import types
 
 import mlx.core as mx
 import pytest
@@ -38,9 +39,12 @@ pytest.importorskip("mlx_vlm")
 # - ``generate_step`` / ``batch_generate``: ar.py's redirects to the
 #   pinned speculative drafters helper and to the vendored
 #   ``inputs.process_image``.
-# - ``_generate_batch``: the capture-release bugfix hunk (gen.close() in a
-#   finally), repro-tested below.
+# - ``_generate_batch``: the capture-release + None-token bugfix hunks
+#   (finally-close; skip token=None terminal responses), repro-tested below.
+# - ``BatchGenerator``: the class body carries the APC matched_blocks
+#   release-on-failed-merge bugfix hunk, repro-tested below.
 _DOCUMENTED_HUNK_BODIES = {
+    "BatchGenerator",
     "prepare_inputs",
     "kv_quant_from_legacy",
     "generate_step",
@@ -227,3 +231,52 @@ def test_thinking_budget_criteria_default_start_token_does_not_crash():
             thinking_start_token=None,
             enable_thinking=True,
         )
+
+
+def test_mixed_prompt_batch_releases_picks_on_warm_merge_failure(monkeypatch):
+    """upstream-bugfix: acquired APC matched_blocks are released when
+    warm-cache merging fails and the caller falls back to cold prefill."""
+    released = []
+
+    class _FakeManager:
+        def release(self, blocks):
+            released.append(list(blocks))
+
+    pick = {"matched_blocks": ["blk1"], "prefix_len": 2, "warm_cache": None}
+    fake_self = types.SimpleNamespace(
+        apc_manager=_FakeManager(),
+        apc=None,
+        apc_mode="block",
+        kv_bits=None,
+        kv_quant_scheme=None,
+        kv_group_size=None,
+        kv_key_bits=None,
+        kv_value_bits=None,
+        kv_key_scheme=None,
+        model=types.SimpleNamespace(make_cache=lambda: []),
+        _APC_PRIVATE_KEYS=getattr(
+            vendored_ar.BatchGenerator, "_APC_PRIVATE_KEYS", set()
+        ),
+        _apc_pick_for=lambda sequence: pick,
+    )
+    monkeypatch.setattr(
+        vendored_ar._apc,
+        "make_warm_batch_kv_cache_multi",
+        lambda *args, **kwargs: (None, None),
+    )
+
+    out = vendored_ar.BatchGenerator._build_mixed_prompt_batch(
+        fake_self,
+        [
+            (
+                "u1",
+                [1, 2, 3],
+                10,
+                {"inputs_embeds": mx.zeros((1, 3, 4))},
+                None,
+                None,
+            )
+        ],
+    )
+    assert out is None
+    assert released == [["blk1"]]
