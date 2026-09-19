@@ -294,7 +294,10 @@ def test_prepare_inputs_decodes_bytes_video_paths(monkeypatch):
         return (
             np.zeros((1, 3, 4, 4)),
             vendored_inputs.VideoMetadata(
-                total_num_frames=1, fps=1.0, frames_indices=[0]
+                total_num_frames=1,
+                fps=1.0,
+                frames_indices=[0],
+                duration=1.0,
             ),
         )
 
