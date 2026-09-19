@@ -32,15 +32,14 @@ _REGION_FUNCTIONS = [
     "load_audio",
     "VideoSampling",
     "VideoMetadata",
-    "load_video",
     "resolve_video_sampling",
     "process_inputs",
     "process_inputs_with_fallback",
     "prepare_inputs",
 ]
-# ``processor_video_sampling`` is excluded: it carries the documented
-# dual-namespace normalization hunk (see the package inventory) and is
-# behavior-tested below.
+# Excluded from the probe: ``processor_video_sampling`` and ``load_video``
+# carry the documented dual-namespace / capture-release hunks (see the
+# package inventory) and are behavior-tested below.
 
 
 def test_vendored_region_is_byte_identical_to_upstream():
@@ -143,3 +142,41 @@ def test_processor_video_sampling_dict_hook_unchanged():
     out = vendored_inputs.processor_video_sampling(_HookProcessor())
     assert isinstance(out, vendored_inputs.VideoSampling)
     assert out.max_frames == 32
+
+
+def test_load_video_releases_capture_on_sampler_error(monkeypatch):
+    """upstream-bugfix: the cv2 capture handle must be released even when
+    the frame sampler raises mid-decode."""
+    cv2 = pytest.importorskip("cv2")
+    released = []
+
+    class _FakeCap:
+        def __init__(self, path):
+            pass
+
+        def isOpened(self):  # noqa: N802 - mirrors the cv2 API being faked
+            return True
+
+        def get(self, prop):
+            return {
+                cv2.CAP_PROP_FRAME_COUNT: 10,
+                cv2.CAP_PROP_FPS: 2.0,
+                cv2.CAP_PROP_FRAME_WIDTH: 4,
+                cv2.CAP_PROP_FRAME_HEIGHT: 4,
+            }[prop]
+
+        def release(self):
+            released.append(True)
+
+    monkeypatch.setattr(cv2, "VideoCapture", _FakeCap)
+
+    def _boom(*_args, **_kwargs):
+        raise RuntimeError("sampler boom")
+
+    with pytest.raises(RuntimeError, match="sampler boom"):
+        vendored_inputs.load_video(
+            "clip.mp4",
+            vendored_inputs.VideoSampling(fps=2, min_frames=1, max_frames=4),
+            frame_sampler=_boom,
+        )
+    assert released == [True]

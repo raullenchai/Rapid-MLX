@@ -412,66 +412,72 @@ def load_video(
         video_path = video_path[7:]
 
     cap = cv2.VideoCapture(video_path)
+    # VENDOR-DEVIATION(upstream-bugfix): the native capture handle leaked on
+    # any exception between open and the selected-path releases (frame
+    # sampler errors, index validation, cap.read/cvtColor); everything
+    # after the isOpened check runs under try/finally so the handle is
+    # always released.
     if not cap.isOpened():
         raise ValueError(f"Cannot open video: {video_path}")
-    total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
-    video_fps = cap.get(cv2.CAP_PROP_FPS) or 1.0
-    width = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
-    height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
-    duration = total_frames / video_fps
+    try:
+        total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
+        video_fps = cap.get(cv2.CAP_PROP_FPS) or 1.0
+        width = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
+        height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
+        duration = total_frames / video_fps
 
-    def _round(n):
-        return round(n / frame_factor) * frame_factor
+        def _round(n):
+            return round(n / frame_factor) * frame_factor
 
-    def _floor(n):
-        return math.floor(n / frame_factor) * frame_factor
+        def _floor(n):
+            return math.floor(n / frame_factor) * frame_factor
 
-    def _ceil(n):
-        return math.ceil(n / frame_factor) * frame_factor
+        def _ceil(n):
+            return math.ceil(n / frame_factor) * frame_factor
 
-    used_frame_sampler = False
-    if nframes is not None:
-        n = _round(nframes)
-        indices = np.linspace(0, total_frames - 1, n).round().astype(int)
-    elif frame_sampler is not None:
-        used_frame_sampler = True
-        source_metadata = VideoMetadata(
-            total_num_frames=total_frames,
-            fps=video_fps,
-            frames_indices=list(range(total_frames)),
-            width=width,
-            height=height,
-            duration=duration,
-        )
-        indices = np.asarray(
-            frame_sampler(source_metadata, fps=fps, max_frames=max_frames), dtype=int
-        ).reshape(-1)
-        n = len(indices)
-    else:
-        lo = _ceil(min_frames)
-        hi = _floor(min(max_frames, total_frames))
-        n = total_frames / video_fps * fps
-        n = min(max(n, lo), hi, total_frames)
-        n = _floor(n)
-        indices = np.linspace(0, total_frames - 1, n).round().astype(int)
-    if not used_frame_sampler and not (frame_factor <= n <= total_frames):
+        used_frame_sampler = False
+        if nframes is not None:
+            n = _round(nframes)
+            indices = np.linspace(0, total_frames - 1, n).round().astype(int)
+        elif frame_sampler is not None:
+            used_frame_sampler = True
+            source_metadata = VideoMetadata(
+                total_num_frames=total_frames,
+                fps=video_fps,
+                frames_indices=list(range(total_frames)),
+                width=width,
+                height=height,
+                duration=duration,
+            )
+            indices = np.asarray(
+                frame_sampler(source_metadata, fps=fps, max_frames=max_frames),
+                dtype=int,
+            ).reshape(-1)
+            n = len(indices)
+        else:
+            lo = _ceil(min_frames)
+            hi = _floor(min(max_frames, total_frames))
+            n = total_frames / video_fps * fps
+            n = min(max(n, lo), hi, total_frames)
+            n = _floor(n)
+            indices = np.linspace(0, total_frames - 1, n).round().astype(int)
+        if not used_frame_sampler and not (frame_factor <= n <= total_frames):
+            raise ValueError(
+                f"nframes must be in [{frame_factor}, {total_frames}], got {n}."
+            )
+        if n == 0 or np.any(indices < 0) or np.any(indices >= total_frames):
+            raise ValueError(
+                f"Frame indices must be within a non-empty {total_frames}-frame video."
+            )
+        frames = []
+        for idx in indices:
+            cap.set(cv2.CAP_PROP_POS_FRAMES, idx)
+            ret, frame = cap.read()
+            if not ret:
+                break
+            frames.append(cv2.cvtColor(frame, cv2.COLOR_BGR2RGB))
+    finally:
         cap.release()
-        raise ValueError(
-            f"nframes must be in [{frame_factor}, {total_frames}], got {n}."
-        )
-    if n == 0 or np.any(indices < 0) or np.any(indices >= total_frames):
-        cap.release()
-        raise ValueError(
-            f"Frame indices must be within a non-empty {total_frames}-frame video."
-        )
-    frames = []
-    for idx in indices:
-        cap.set(cv2.CAP_PROP_POS_FRAMES, idx)
-        ret, frame = cap.read()
-        if not ret:
-            break
-        frames.append(cv2.cvtColor(frame, cv2.COLOR_BGR2RGB))
-    cap.release()
     if not frames:
         raise ValueError("No frames read from the video.")
 
