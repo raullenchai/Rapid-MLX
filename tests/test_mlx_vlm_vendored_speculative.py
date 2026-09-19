@@ -45,6 +45,164 @@ import rapid_mlx.models.mlx_vlm_vendored.speculative.utils as vs_utils
 pytest.importorskip("mlx_vlm")
 
 
+# Documented behavioral hunks, specified EXACTLY: applying each
+# (vendored → upstream) replacement to the vendored body must reproduce
+# the pinned upstream body byte-for-byte; any other edit inside the
+# function diverges. Each hunk is inventoried in the package
+# ``__init__.py`` and behavior-tested in this module.
+_HUNK_SPECS = {
+    "build_ddtree": (
+        (
+            "    # VENDOR-DEVIATION(bugfix): pinned upstream validates with ``assert``,\n"
+            "    # which disappears under ``python -O`` and would silently process\n"
+            "    # invalid ranks/multi-row logits as row zero; raise explicitly instead.\n"
+            "    if drafter_logits.ndim != 3 or drafter_logits.shape[0] != 1:\n"
+            "        raise ValueError(\n"
+            '            "drafter_logits must be a single-row [1, L, V] tensor, got "\n'
+            '            f"shape {tuple(drafter_logits.shape)}"\n'
+            "        )\n",
+            "    assert drafter_logits.ndim == 3 and drafter_logits.shape[0] == 1\n",
+        ),
+    ),
+    "_speculative_walk_batch_uniform_acceptance": (
+        (
+            '    """Clamp a batch to the earliest rejection with verifier-token fallback."""\n'
+            "    # VENDOR-DEVIATION(bugfix): pinned upstream mins over every row, so a\n"
+            "    # retained finished row (zero budget under the non-filterable-cache\n"
+            "    # fallback) would clamp the whole batch to zero acceptance and collapse\n"
+            "    # throughput to bonus-only decoding. Budget from rows that still have\n"
+            "    # tokens to spend; default to 0 when none do.\n"
+            "    positive = [a for a, budget in zip(accepted_list, budgets) if budget > 0]\n"
+            "    accepted = min(positive) if positive else 0\n",
+            '    """Clamp a batch to the earliest rejection with verifier-token fallback."""\n'
+            "    accepted = min(accepted_list)\n",
+        ),
+    ),
+    "_dflash_rounds": (
+        (
+            "    use_model_initial_block_size: bool = True,\n"
+            "    greedy_sampling: bool = True,\n"
+            "    row_id: int = 0,\n",
+            "    use_model_initial_block_size: bool = True,\n"
+            "    greedy_sampling: bool = True,\n",
+        ),
+        (
+            "        draft_sampler = (\n"
+            "            _PositionedDraftSampler(\n"
+            "                sampler,\n"
+            "                # VENDOR-DEVIATION(bugfix): pinned upstream hard-codes row 0,\n"
+            "                # so a nonzero server row ID reads the wrong per-request\n"
+            "                # sampling stream (mirrors mtp's row_id threading).\n"
+            "                row_ids=[row_id],\n"
+            "                positions=[emitted],\n"
+            "            )\n",
+            "        draft_sampler = (\n"
+            "            _PositionedDraftSampler(\n"
+            "                sampler,\n"
+            "                row_ids=[0],\n"
+            "                positions=[emitted],\n"
+            "            )\n",
+        ),
+        (
+            "                    row_ids=[row_id],\n",
+            "                    row_ids=[0],\n",
+        ),
+    ),
+    "_dflash_rounds_batch": (
+        (
+            "        # VENDOR-DEVIATION(bugfix): mirror of the mtp budget fix — with the\n"
+            "        # non-filterable-cache fallback, a retained finished row's\n"
+            "        # ``remaining == 1`` would force ``bs <= 1`` and terminate the\n"
+            "        # whole batched loop. Budget from unfinished rows only.\n"
+            "        remaining = [\n"
+            "            max(1, max_tokens - emitted[active_idx[j]] + 1)\n"
+            "            for j in range(len(active_idx))\n"
+            "            if not finished[active_idx[j]]\n"
+            "        ]\n"
+            "        if not remaining:\n"
+            "            break\n"
+            "        bs = _dflash_next_block_size(\n",
+            "        remaining = [\n"
+            "            max(1, max_tokens - emitted[active_idx[j]] + 1)\n"
+            "            for j in range(len(active_idx))\n"
+            "        ]\n"
+            "        bs = _dflash_next_block_size(\n",
+        ),
+        (
+            "                # VENDOR-DEVIATION(bugfix): pinned upstream takes the min\n"
+            "                # over every row, so a retained finished row (empty token\n"
+            "                # budget under the non-filterable-cache fallback) yields\n"
+            "                # -1, empties every unfinished row's output, and can stall\n"
+            "                # the loop with no progress. Clamp over rows that still\n"
+            "                # have a positive budget and floor the acceptance at 0.\n"
+            "                positive = [\n"
+            "                    len(nt) - 1\n"
+            "                    for nt, j in zip(new_tokens_list, range(n_active))\n"
+            "                    if budgets[j] > 0\n"
+            "                ]\n"
+            "                uniform = max(0, min(positive)) if positive else 0\n",
+            "                uniform = min(len(nt) - 1 for nt in new_tokens_list)\n",
+        ),
+        (
+            "            # VENDOR-DEVIATION(bugfix): pinned upstream filters only the\n"
+            "            # caches exposing ``filter()`` but unconditionally shrinks\n"
+            "            # ``active_idx`` — with a mixed cache list the non-filterable\n"
+            "            # leaves keep the old batch dimension while the verifier sees\n"
+            "            # the reduced batch. Compact only when EVERY cache is\n"
+            "            # filterable; otherwise keep all rows active (finished rows\n"
+            "            # emit nothing until the round ends).\n"
+            '            if all(hasattr(c, "filter") for c in prompt_cache):\n'
+            "                keep_mx = mx.array(keep_slots, dtype=mx.int32)\n"
+            "                for c in prompt_cache:\n"
+            "                    c.filter(keep_mx)\n"
+            "                # Update active index mapping\n"
+            "                active_idx = [active_idx[j] for j in keep_slots]\n",
+            "            # Filter target caches (BatchKVCache supports this)\n"
+            "            keep_mx = mx.array(keep_slots, dtype=mx.int32)\n"
+            "            for c in prompt_cache:\n"
+            '                if hasattr(c, "filter"):\n'
+            "                    c.filter(keep_mx)\n"
+            "            # Update active index mapping\n"
+            "            active_idx = [active_idx[j] for j in keep_slots]\n",
+        ),
+    ),
+    "run_speculative_server_rounds": (
+        (
+            "                greedy_sampling=greedy_sampling,\n"
+            "                # VENDOR-DEVIATION(bugfix): thread the server's per-request\n"
+            "                # row ID into the singleton sampling identity (upstream\n"
+            "                # hard-codes row 0).\n"
+            "                row_id=(row_ids[0] if row_ids else 0),\n"
+            "            ):\n",
+            "                greedy_sampling=greedy_sampling,\n            ):\n",
+        ),
+    ),
+    "_mtp_rounds_batch": (
+        (
+            "        # VENDOR-DEVIATION(bugfix): pinned upstream budgets the block size\n"
+            "        # from every active row; with the non-filterable-cache fallback\n"
+            "        # (finished rows retained), a finished row's ``remaining == 1``\n"
+            "        # would force ``bs <= 1`` and terminate the whole batched loop\n"
+            "        # while other rows still have tokens to generate. Budget from\n"
+            "        # unfinished rows only; an empty budget ends the loop.\n"
+            "        remaining = [\n"
+            "            max(1, max_tokens - emitted[active_idx[j]] + 1)\n"
+            "            for j in range(len(active_idx))\n"
+            "            if not finished[active_idx[j]]\n"
+            "        ]\n"
+            "        if not remaining:\n"
+            "            break\n"
+            "        bs = _mtp_next_block_size(\n",
+            "        remaining = [\n"
+            "            max(1, max_tokens - emitted[active_idx[j]] + 1)\n"
+            "            for j in range(len(active_idx))\n"
+            "        ]\n"
+            "        bs = _mtp_next_block_size(\n",
+        ),
+    ),
+}
+
+
 def _code_lines(src):
     """Drop comments and blank lines; canonicalize the permitted redirect
     import statements (pinned ``mlx_vlm.*`` / relative targets) to their
@@ -98,7 +256,7 @@ def _code_lines(src):
     return lines
 
 
-def _body_divergences(vendored_module, upstream_module, normalized=()):
+def _body_divergences(vendored_module, upstream_module, normalized=(), hunk_specs=None):
     # Only symbols DEFINED in the walked module are compared: imported
     # symbols carry their defining module's hunks into every importer's
     # namespace, so each hunk is owned (and documented) exactly once — by
@@ -140,6 +298,22 @@ def _body_divergences(vendored_module, upstream_module, normalized=()):
             # cannot match).
             if _code_lines(vendored_src) != _code_lines(upstream_src):
                 diverged.append(f"{name}: normalized-body-divergence")
+        elif hunk_specs and name in hunk_specs:
+            # Documented behavioral hunks are specified EXACTLY: applying
+            # each (vendored → upstream) replacement must reproduce the
+            # pinned upstream body byte-for-byte. Any other edit inside
+            # the function diverges.
+            ok = True
+            for vendored_snippet, upstream_snippet in hunk_specs[name]:
+                if vendored_src.count(vendored_snippet) != 1:
+                    diverged.append(f"{name}: documented hunk not found")
+                    ok = False
+                    break
+                vendored_src = vendored_src.replace(
+                    vendored_snippet, upstream_snippet, 1
+                )
+            if ok and vendored_src != upstream_src:
+                diverged.append(f"{name}: hunk-normalized divergence")
         elif vendored_src != upstream_src:
             diverged.append(name)
     return diverged
@@ -169,18 +343,20 @@ def test_vendored_speculative_bodies_match_upstream():
     # symbols are owned by their defining module's entry — e.g.
     # ``BatchRotatingKVCache``'s 2a merge bugfix is covered by the cache
     # suite that walks ``cache.py`` itself).
-    for vendored, upstream, documented in (
-        (vs_cache_state, up_cache_state, set()),
-        (vs_common, up_common, {"_speculative_walk_batch_uniform_acceptance"}),
-        # ``build_ddtree`` carries the documented assert→ValueError hunk —
-        # a REAL permitted behavioral difference, hence documented-filtered.
-        (vs_ddtree, up_ddtree, {"build_ddtree"}),
-        (vs_dflash, up_dflash, {"_dflash_rounds", "_dflash_rounds_batch"}),
-        (vs_mtp, up_mtp, {"_mtp_rounds_batch"}),
-        (vs_utils, up_utils, {"run_speculative_server_rounds"}),
+    # Documented behavioral hunks are specified exactly in ``_HUNK_SPECS``
+    # (vendored → upstream replacement must reproduce the pinned body);
+    # ``normalized`` entries compare on behavior only (comments, blanks,
+    # and the redirected import statements are stripped from both sides)
+    # and their divergences are NEVER filtered — any behavioral edit fails.
+    for vendored, upstream in (
+        (vs_cache_state, up_cache_state),
+        (vs_common, up_common),
+        (vs_ddtree, up_ddtree),
+        (vs_dflash, up_dflash),
+        (vs_mtp, up_mtp),
+        (vs_utils, up_utils),
     ):
-        divergences = _body_divergences(vendored, upstream)
-        divergences = [d for d in divergences if d not in documented]
+        divergences = _body_divergences(vendored, upstream, hunk_specs=_HUNK_SPECS)
         assert divergences == []
 
 
