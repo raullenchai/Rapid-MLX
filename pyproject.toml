@@ -731,6 +731,13 @@ ignore_errors = true
 module = "rapid_mlx.image.sd35_runtime._vendor.*"
 ignore_errors = true
 
+[[tool.mypy.overrides]]
+# Pinned third-party cache implementation. Keep the upstream-shaped vendored
+# source syncable while the Rapid-owned compatibility seam remains under the
+# repository-wide shrink-only error budget.
+module = "rapid_mlx.models.mlx_vlm_vendored.cache"
+ignore_errors = true
+
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 python_files = ["test_*.py"]

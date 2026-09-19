@@ -3,9 +3,10 @@
 
 The native serialized MLLM lane (``MLLMBatchGenerator``) leans on mlx-vlm
 cache primitives. Vendoring this first slice brings those code paths under
-this repo's review, tests, and mypy budget while the upstream dependency stays
-pinned for everything else it provides (model loading, processors, templating,
-vision preprocessing, and the speculative-decode runtime).
+this repo's review and tests while the Rapid-owned compatibility seam remains
+under the repository's mypy budget. The upstream dependency stays pinned for
+everything else it provides (model loading, processors, templating, vision
+preprocessing, and the speculative-decode runtime).
 
 Design note: ``docs/engineering/design/2026-09-18-vendor-mllm-primitives.md``.
 Upstream: https://github.com/Blaizzy/mlx-vlm/tree/v0.7.1
