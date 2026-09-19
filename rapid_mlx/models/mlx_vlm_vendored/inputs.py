@@ -22,6 +22,7 @@ vendored function is probed by ``tests/test_mlx_vlm_vendored_inputs.py``.
 import inspect  # noqa: F401  (region-referenced)
 import logging
 import math
+import os
 import warnings
 from dataclasses import dataclass, fields
 from io import BytesIO
@@ -302,9 +303,11 @@ def load_audio(
         file = str(file)
     if isinstance(file, str) and file.startswith(("http://", "https://")):
         try:
-            response = requests.get(file, stream=True, timeout=timeout)
-            response.raise_for_status()
-            audio, sample_rate = read_audio(BytesIO(response.content), dtype="float32")
+            with requests.get(file, stream=True, timeout=timeout) as response:
+                response.raise_for_status()
+                audio, sample_rate = read_audio(
+                    BytesIO(response.content), dtype="float32"
+                )
         except Exception as e:
             raise ValueError(
                 f"Failed to load audio from URL: {file} with error {e}"
@@ -413,13 +416,12 @@ def load_video(
 
     cap = cv2.VideoCapture(video_path)
     # VENDOR-DEVIATION(upstream-bugfix): the native capture handle leaked on
-    # any exception between open and the selected-path releases (frame
-    # sampler errors, index validation, cap.read/cvtColor); everything
-    # after the isOpened check runs under try/finally so the handle is
-    # always released.
-    if not cap.isOpened():
-        raise ValueError(f"Cannot open video: {video_path}")
+    # any exception after open (failed opens, frame sampler errors, index
+    # validation, cap.read/cvtColor failures); everything from the isOpened
+    # check on runs under try/finally so the handle is always released.
     try:
+        if not cap.isOpened():
+            raise ValueError(f"Cannot open video: {video_path}")
         total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
         video_fps = cap.get(cv2.CAP_PROP_FPS) or 1.0
         width = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
@@ -773,8 +775,11 @@ def prepare_inputs(
         loaded, video_fps, video_metadata = [], [], []
         for video_index, v in enumerate(videos):
             if isinstance(v, (str, bytes, Path)):
+                # VENDOR-DEVIATION(upstream-bugfix): upstream str()-ed bytes
+                # paths into "b'/tmp/a.mp4'"; decode via the filesystem
+                # encoding instead.
                 arr, metadata = load_video(
-                    str(v), sampling, frame_sampler=frame_sampler
+                    os.fsdecode(v), sampling, frame_sampler=frame_sampler
                 )
                 logger.info(
                     "video %s: sampled %d of %d frames at %.2f fps "
