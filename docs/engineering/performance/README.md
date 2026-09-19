@@ -6,6 +6,9 @@ summary statistics, and limitations.
 
 ## Reports
 
+- [LTX-2.5 few-step distillation feasibility on MZR-3](2026-09-13-ltx25-distillation-feasibility.md)
+- [LTX-2.5 stage-2 transformer hotspot profile](2026-09-13-ltx25-stage2-hotspot.md)
+- [LTX-2.5 decoder hotspot and FP16 VAE experiment](2026-09-13-ltx25-decoder-hotspot.md)
 - [Qwen3.6-35B-A3B compiled decode replay qualification](2026-09-13-qwen36-compiled-decode.md)
 - [Qwen3.6-35B-A3B native text-cache qualification](2026-09-13-qwen36-mllm-native-text-cache.md)
 - [Qwen3.6-35B-A3B fused GDN decode qualification](2026-09-12-qwen36-35b-fused-gdn-decode.md)
