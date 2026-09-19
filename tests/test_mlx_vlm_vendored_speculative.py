@@ -46,21 +46,53 @@ pytest.importorskip("mlx_vlm")
 
 
 def _code_lines(src):
-    """Drop comments, blank lines, and import statements (including
-    parenthesized-continuation lines) so documented import-redirect hunks
-    compare on behavior only."""
+    """Drop comments and blank lines; canonicalize the permitted redirect
+    import statements (pinned ``mlx_vlm.*`` / relative targets) to their
+    imported SYMBOL names only — the module-path difference is ignored but
+    the symbols are still compared, so swapping a redirect to a different
+    source (or different symbols) diverges. Any non-redirect import is
+    retained verbatim."""
     lines = []
-    in_import = False
+    in_redirect_import = False
+    redirect_names = []
+
+    def _flush_redirect_names():
+        if redirect_names:
+            lines.append("import " + ", ".join(sorted(redirect_names)))
+            redirect_names.clear()
+
     for line in src.splitlines():
         stripped = line.strip()
+        if in_redirect_import:
+            if not stripped or stripped.startswith("#"):
+                continue
+            if ")" in stripped:
+                in_redirect_import = False
+                name = stripped.rsplit(")", 1)[0].strip().rstrip(",").strip()
+                if name:
+                    redirect_names.append(name)
+                _flush_redirect_names()
+            else:
+                redirect_names.append(stripped.rstrip(",").strip())
+            continue
         if not stripped or stripped.startswith("#"):
             continue
-        if in_import:
-            if ")" in stripped:
-                in_import = False
-            continue
         if stripped.startswith(("from ", "import ")):
-            in_import = stripped.endswith("(")
+            is_redirect = stripped.startswith(
+                ("from mlx_vlm", "from .", "import mlx_vlm", "import .")
+            )
+            if not is_redirect:
+                lines.append(line)
+                continue
+            if stripped.endswith("("):
+                in_redirect_import = True
+                continue
+            names_part = stripped.split(" import ", 1)
+            if len(names_part) == 2:
+                redirect_names.extend(
+                    n.strip() for n in names_part[1].split(",") if n.strip()
+                )
+            _flush_redirect_names()
             continue
         lines.append(line)
     return lines
