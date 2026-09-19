@@ -591,6 +591,9 @@ rapid_mlx = [
     "models/deepseek_v41_native/LICENSE",
     "models/deepseek_v41_native/LICENSE-DSPARK",
     "models/deepseek_v41_native/NOTICE",
+    # The vendored mlx-vlm cache implementation is MIT-licensed; its license
+    # text must travel with every wheel that redistributes the source.
+    "models/mlx_vlm_vendored/LICENSE",
 ]
 videox_fun_mlx = ["LICENSE", "NOTICE"]
 

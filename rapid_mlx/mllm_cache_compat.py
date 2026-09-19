@@ -23,7 +23,7 @@ def first_incompatible_mllm_cache_type(
     hybrid compatibility lane. Mamba and quantized/unknown caches remain
     fail-closed.
     """
-    from mlx_lm.models.cache import ArraysCache, KVCache, RotatingKVCache
+    from mlx_lm.models.cache import ArraysCache, CacheList, KVCache, RotatingKVCache
 
     from .models.mlx_vlm_vendored import cache as vendored_cache
 
@@ -33,7 +33,11 @@ def first_incompatible_mllm_cache_type(
         vendored_cache.KVCache,
         vendored_cache.RotatingKVCache,
     )
-    compound_types: tuple[type, ...] = ()
+    # mlx-lm, mlx-vlm, and the vendored copy each execute their own cache
+    # module, so the structurally identical wrappers are distinct class
+    # objects. Keep all three namespaces symmetric and recurse into every
+    # qualified CacheList rather than rejecting mlx-lm's wrapper by name.
+    compound_types: tuple[type, ...] = (CacheList,)
     vendored_compound = getattr(vendored_cache, "CacheList", None)
     if isinstance(vendored_compound, type):
         compound_types += (vendored_compound,)
