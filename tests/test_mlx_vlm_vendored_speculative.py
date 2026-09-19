@@ -175,9 +175,9 @@ def test_vendored_speculative_bodies_match_upstream():
         # ``build_ddtree`` carries the documented assert→ValueError hunk —
         # a REAL permitted behavioral difference, hence documented-filtered.
         (vs_ddtree, up_ddtree, {"build_ddtree"}),
-        (vs_dflash, up_dflash, {"_dflash_rounds_batch"}),
+        (vs_dflash, up_dflash, {"_dflash_rounds", "_dflash_rounds_batch"}),
         (vs_mtp, up_mtp, {"_mtp_rounds_batch"}),
-        (vs_utils, up_utils, set()),
+        (vs_utils, up_utils, {"run_speculative_server_rounds"}),
     ):
         divergences = _body_divergences(vendored, upstream)
         divergences = [d for d in divergences if d not in documented]

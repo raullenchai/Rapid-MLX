@@ -262,6 +262,10 @@ def run_speculative_server_rounds(
                 draft_block_size=draft_block_size,
                 token_dtype=token_dtype,
                 greedy_sampling=greedy_sampling,
+                # VENDOR-DEVIATION(bugfix): thread the server's per-request
+                # row ID into the singleton sampling identity (upstream
+                # hard-codes row 0).
+                row_id=(row_ids[0] if row_ids else 0),
             ):
                 yield [tok], state
                 if stop_check is not None and stop_check(0, tok):
