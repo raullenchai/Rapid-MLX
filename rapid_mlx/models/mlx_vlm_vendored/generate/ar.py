@@ -17,8 +17,10 @@ from tqdm import tqdm
 
 from .. import apc as _apc
 from ..kv_quant import from_legacy as kv_quant_from_legacy
+
 # VENDOR-DEVIATION(redirect): vendored cache lives at the package root.
 from .. import cache
+
 # VENDOR-DEVIATION(redirect): prompt_utils templating stays on the pinned
 # upstream dependency (design doc step-2 boundary).
 from mlx_vlm.prompt_utils import apply_chat_template
@@ -28,6 +30,7 @@ from ..sample_utils import (
     make_sampler,
     top_p_sampling,
 )
+
 # VENDOR-DEVIATION(redirect): the speculative core lands in a later
 # step-3 slice; until then this helper stays on the pinned dependency.
 from mlx_vlm.speculative.utils import (
@@ -38,9 +41,11 @@ from mlx_vlm.speculative.utils import (
     speculative_hidden_state,
     speculative_prefill_kwargs,
 )
+
 # VENDOR-DEVIATION(redirect): turboquant stays on the pinned upstream
 # dependency (kv_quant.py precedent).
 from mlx_vlm.turboquant import BatchTurboQuantKVCache, turboquant_enabled
+
 # VENDOR-DEVIATION(redirect): these utils helpers are vendored in
 # inputs.py (region extended to the end of should_add_special_tokens).
 from ..inputs import (
@@ -2929,6 +2934,12 @@ class BatchGenerator:
             # Being prefilled
             if self._prompt_batch is not None and uid in self._prompt_batch.uids:
                 if len(self._prompt_batch.uids) == 1:
+                    # VENDOR-DEVIATION(upstream-bugfix): dropping the batch
+                    # without releasing its APC metadata leaked the blocks
+                    # acquired for warm hits (repro-tested via the APC
+                    # release protocol in
+                    # tests/test_mlx_vlm_vendored_generate.py).
+                    self._prompt_batch._release_apc_meta_blocks()
                     self._prompt_batch.uids = []
                     self._prompt_batch.prompt_cache = []
                     self._prompt_batch = None
