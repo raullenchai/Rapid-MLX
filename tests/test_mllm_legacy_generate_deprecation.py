@@ -241,9 +241,11 @@ def test_benchmark_entrypoints_use_loaded_native_lane_for_warmup_and_runs(
     assert build_calls == [(model, processor, 7), (model, processor, 9)]
     assert len(image_results) == 4
     assert len(image_calls) == 5  # one warmup + four quick configurations
+    assert all(args[:3] == (generator, processor, config) for args, _ in image_calls)
     assert image_calls[0][1] == {"warmup": True}
     assert len(video_results) == 3
     assert len(video_calls) == 4  # one warmup + three quick configurations
+    assert all(args[:3] == (generator, processor, config) for args, _ in video_calls)
     assert video_calls[0][1] == {"warmup": True}
 
 
