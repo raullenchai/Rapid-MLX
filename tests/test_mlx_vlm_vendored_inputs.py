@@ -14,6 +14,7 @@ vendored module directly.
 import inspect
 from dataclasses import asdict
 
+import numpy as np
 import pytest
 
 pytest.importorskip("mlx")
@@ -29,17 +30,15 @@ _REGION_FUNCTIONS = [
     "process_image",
     "estimate_num_image_tokens",
     "read_audio",
-    "load_audio",
     "VideoSampling",
     "VideoMetadata",
     "resolve_video_sampling",
     "process_inputs",
     "process_inputs_with_fallback",
-    "prepare_inputs",
 ]
-# Excluded from the probe: ``processor_video_sampling`` and ``load_video``
-# carry the documented dual-namespace / capture-release hunks (see the
-# package inventory) and are behavior-tested below.
+# Excluded from the probe: ``processor_video_sampling``, ``load_video``,
+# ``load_audio``, and ``prepare_inputs`` carry the documented hunks (see
+# the package inventory) and are behavior-tested below.
 
 
 def test_vendored_region_is_byte_identical_to_upstream():
@@ -180,3 +179,35 @@ def test_load_video_releases_capture_on_sampler_error(monkeypatch):
             frame_sampler=_boom,
         )
     assert released == [True]
+
+
+def test_prepare_inputs_decodes_bytes_video_paths(monkeypatch):
+    """upstream-bugfix: bytes video paths are fsdecoded, not str()-ed."""
+    seen = []
+
+    class _Component:
+        pass  # no hook: the component-attrs fallback applies
+
+    class _Processor:
+        video_processor = _Component()
+
+    def _fake_load_video(path, *args, **kwargs):
+        seen.append(path)
+        return (
+            np.zeros((1, 3, 4, 4)),
+            vendored_inputs.VideoMetadata(
+                total_num_frames=1, fps=1.0, frames_indices=[0]
+            ),
+        )
+
+    def _fake_fallback(processor, **kwargs):
+        return {"input_ids": mx.array([[1]]), "attention_mask": mx.array([[1]])}
+
+    monkeypatch.setattr(vendored_inputs, "load_video", _fake_load_video)
+    monkeypatch.setattr(vendored_inputs, "process_inputs_with_fallback", _fake_fallback)
+
+    out = vendored_inputs.prepare_inputs(
+        _Processor(), prompts=["p"], videos=[b"/tmp/clip.mp4"]
+    )
+    assert seen == ["/tmp/clip.mp4"]
+    assert isinstance(out["input_ids"], mx.array)
