@@ -50,6 +50,22 @@ struct FailureDiagnosis: Equatable, Sendable {
         case downloadCancelled
         case downloadSourceUnavailable
         case requestFailed
+        /// The conversation (or a single message) is longer than the model's
+        /// context window. Distinct from ``requestFailed`` because the remedy
+        /// is specific and a plain "Try again" is actively wrong — resending
+        /// the same too-long prompt fails identically. The engine emits
+        /// ``context_length_exceeded``; the copy names the real fixes.
+        case promptTooLong
+        /// The requested model isn't available on the server. Engine code
+        /// ``model_not_found``. Distinct from ``modelLoadFailed`` (a model that
+        /// exists but couldn't start): here the name simply isn't served, so
+        /// the destination is Model Management, not a file check.
+        case modelUnavailable
+        /// The primary model was replaced under a running request, so the
+        /// engine cancelled it (code ``model_replacement``). Not a fault — a
+        /// ``.notice`` — so it must not wear the alarming failure lane; the
+        /// only recovery is to ask again against the new model.
+        case requestSuperseded
 
         /// Forward-tolerant decode, matching ``ChatMessage/Role`` and
         /// ``ChatMessage/Status``: a raw value this build doesn't know (a
@@ -88,6 +104,12 @@ struct FailureDiagnosis: Equatable, Sendable {
             // rather than by nobody having tried it.
             case .downloadCancelled:
                 return .downloadFailed
+            // Added after the same release, so each carries the downgrade
+            // hazard: ``.requestFailed`` is the honest generic ancestor an
+            // older build already knows — a chat that stopped short reads as
+            // "couldn't finish that request", which is true for all three.
+            case .promptTooLong, .modelUnavailable, .requestSuperseded:
+                return .requestFailed
             case .modelOutOfMemory, .modelLoadFailed, .engineNotRunning,
                  .webSearchOffline, .webSearchUnavailable,
                  .commandPermissionDenied, .commandFailed,
@@ -221,7 +243,11 @@ extension FailureDiagnosis.Kind {
         // declines a permission prompt, the other stops a transfer already
         // running. Painting either red tells somebody their own decision
         // broke something.
-        case .userDeclined, .downloadCancelled:
+        // A model swap under a running request cancelled it: the engine did
+        // exactly what was asked (load the new model) and nothing malfunctioned,
+        // so this is a calm notice, not a red fault. The recovery is simply to
+        // ask again against the model that is now loaded.
+        case .userDeclined, .downloadCancelled, .requestSuperseded:
             return .notice
         // A throttled backend is something that went wrong out in the world,
         // not something the user picked — it stays on the error lane, and its
@@ -233,7 +259,8 @@ extension FailureDiagnosis.Kind {
              .browsePageTooLarge,
              .commandPermissionDenied, .commandFailed,
              .fileNotFound, .filePermissionDenied, .toolFailed,
-             .downloadFailed, .downloadSourceUnavailable, .requestFailed:
+             .downloadFailed, .downloadSourceUnavailable, .requestFailed,
+             .promptTooLong, .modelUnavailable:
             return .error
         }
     }
@@ -352,6 +379,22 @@ enum FailureDiagnoser {
             action = .switchDownloadSource
         case .requestFailed:
             message = "Rapid couldn't finish that request. Try again, or restart the model."
+            action = .retry
+        case .promptTooLong:
+            // No plain "Try again": resending the same over-long prompt fails
+            // identically. Name the two fixes the user owns (shorten / new
+            // chat) and offer the one this app can carry out — pick a
+            // larger-context model — as the button.
+            message = "This conversation is longer than the model's context window. Shorten your message or start a new chat, or switch to a model with a larger context window."
+            action = .openModelManagement
+        case .modelUnavailable:
+            message = "That model isn't available on the server. Open Model Management to choose or start one."
+            action = .openModelManagement
+        case .requestSuperseded:
+            // A ``.notice`` (see ``severity``): the model was switched on
+            // purpose, so state what happened plainly and offer to ask again
+            // against the model that is now loaded.
+            message = "The model was switched, so this request stopped. Ask again to continue."
             action = .retry
         }
         return FailureDiagnosis(kind: kind, message: message, action: action)
@@ -477,6 +520,17 @@ enum FailureDiagnoser {
             // above so it gets the memory-specific card instead of a retry that
             // would fail identically.
             return .requestFailed
+        case "context_length_exceeded":
+            // The prompt/conversation is past the window. A retry of the same
+            // input fails identically, so this must NOT collapse to the
+            // generic retry card.
+            return .promptTooLong
+        case "model_not_found":
+            return .modelUnavailable
+        case "model_replacement":
+            // Cooperative cancel from a model swap — a calm notice, not a
+            // fault. Kept off ``.requestFailed`` so it isn't painted red.
+            return .requestSuperseded
         default:
             return nil
         }

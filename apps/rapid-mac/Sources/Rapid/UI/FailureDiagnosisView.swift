@@ -82,7 +82,11 @@ struct FailureDiagnosisView: View {
     private var iconName: String {
         switch diagnosis.kind {
         case .modelOutOfMemory: return "memorychip"
-        case .engineNotRunning, .modelLoadFailed: return "bolt.slash"
+        case .engineNotRunning, .modelLoadFailed, .modelUnavailable: return "bolt.slash"
+        // The conversation outgrew the context window — a message-shaped hint.
+        case .promptTooLong: return "exclamationmark.bubble"
+        // The model was swapped mid-flight; a note, not a stop sign.
+        case .requestSuperseded: return "arrow.triangle.2.circlepath"
         case .webSearchOffline, .webSearchUnavailable: return "wifi.exclamationmark"
         case .webSearchKeyRejected, .webSearchKeyQuotaExceeded,
              .webSearchKeyRateLimited: return "key.fill"

@@ -230,7 +230,11 @@ async def test_pre_scheduler_abort_returns_terminal_non_streaming_503():
     with pytest.raises(HTTPException) as exc_info:
         await response
     assert exc_info.value.status_code == 503
-    assert exc_info.value.detail == "Request cancelled by model replacement"
+    assert exc_info.value.detail["error"]["code"] == "model_replacement"
+    assert (
+        exc_info.value.detail["error"]["message"]
+        == "Request cancelled by model replacement"
+    )
     assert status["admitted_requests"] == 0
 
 
@@ -260,7 +264,11 @@ async def test_route_boundary_translates_lifecycle_abort_before_helper_binding()
     with pytest.raises(HTTPException) as exc_info:
         await response
     assert exc_info.value.status_code == 503
-    assert exc_info.value.detail == "Request cancelled by model replacement"
+    assert exc_info.value.detail["error"]["code"] == "model_replacement"
+    assert (
+        exc_info.value.detail["error"]["message"]
+        == "Request cancelled by model replacement"
+    )
     assert status["admitted_requests"] == 0
 
 
@@ -494,7 +502,11 @@ async def test_engine_precommit_cleanup_preserves_lifecycle_route_translation():
     with pytest.raises(HTTPException) as exc_info:
         await response
     assert exc_info.value.status_code == 503
-    assert exc_info.value.detail == "Request cancelled by model replacement"
+    assert exc_info.value.detail["error"]["code"] == "model_replacement"
+    assert (
+        exc_info.value.detail["error"]["message"]
+        == "Request cancelled by model replacement"
+    )
     assert status["admitted_requests"] == 0
     assert not engine._lifecycle_aborted_tasks
 

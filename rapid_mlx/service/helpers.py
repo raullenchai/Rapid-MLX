@@ -212,9 +212,15 @@ def _raise_lifecycle_cancel_or_reraise(engine, exc: asyncio.CancelledError) -> N
     task = asyncio.current_task()
     consume_abort = getattr(engine, "consume_lifecycle_task_abort", None)
     if task is not None and callable(consume_abort) and consume_abort(task):
+        # Same event, same shape as the abort lane's ``model_replacement``
+        # frame: carry the stable ``code`` so the GUI reads a model swap as a
+        # calm "ask again", not the alarming generic failure card. Previously
+        # this lane raised a bare-string 503 with no code.
+        from ..request import lifecycle_cancel_error_payload
+
         raise HTTPException(
             status_code=503,
-            detail="Request cancelled by model replacement",
+            detail={"error": lifecycle_cancel_error_payload()},
         ) from exc
     raise exc
 
@@ -2889,10 +2895,27 @@ async def ensure_engine_ready(engine: BaseEngine) -> BaseEngine:
         except BaseException as exc:
             lifecycle.release_request()
             logger.exception("Configured primary model failed to load on demand")
+            # Classify the load failure so a memory shortfall reflects as the
+            # OOM card (same situation as a generation-time OOM) and every
+            # other failure as "couldn't load; check files / choose another",
+            # instead of both collapsing to the generic retry card. The raw
+            # ``exc`` is inspected inside ``model_load_error_payload`` but never
+            # returned to the client.
+            from ..request import model_load_error_payload
+
+            payload = model_load_error_payload(exc)
+            # A 503 means "temporarily unavailable", so keep the pre-existing
+            # ``Retry-After`` uniformly: a load failure can be transient (a
+            # backend-init race, a passing I/O fault) as readily as permanent,
+            # and we cannot tell the two apart from the exception. The client
+            # already learns the situation from the ``code`` -- an OOM shows the
+            # memory card, everything else the "check files / choose another"
+            # card -- which is what steers a human away from a doomed retry;
+            # the header stays the standard HTTP hint it always was.
             raise HTTPException(
                 status_code=503,
                 headers={"Retry-After": "5"},
-                detail="Configured model failed to load; retry after the delay.",
+                detail={"error": payload},
             ) from exc
     return engine
 
@@ -3097,15 +3120,23 @@ def _validate_model_name(request_model: str) -> None:
     if cfg.model_path:
         accepted.add(cfg.model_path)
     if request_model not in accepted:
-        available = (
-            ", ".join(cfg.model_registry.list_model_names())
-            if cfg.model_registry
-            else cfg.model_name
-        )
+        # Carry the stable ``model_not_found`` code (aligned with the audio and
+        # embeddings routes) so the GUI shows a "that model isn't available,
+        # choose another" card instead of the generic retry card. Echo ONLY the
+        # client's own requested id (OpenAI-standard); deliberately NOT the
+        # served-model list -- in single-model mode that is ``cfg.model_name``,
+        # which can be a local filesystem path, and server config must not leak
+        # to clients (they can enumerate served models via ``/v1/models``).
         raise HTTPException(
             status_code=404,
-            detail=f"The model `{request_model}` does not exist. "
-            f"Available: {available}",
+            detail={
+                "error": {
+                    "message": f"The model `{request_model}` does not exist.",
+                    "type": "not_found_error",
+                    "code": "model_not_found",
+                    "param": "model",
+                }
+            },
         )
 
 
@@ -4648,9 +4679,14 @@ async def _wait_with_disconnect(
         except asyncio.CancelledError:
             consume_abort = getattr(engine, "consume_lifecycle_task_abort", None)
             if callable(consume_abort) and consume_abort(task):
+                # Carry the stable ``model_replacement`` code so this
+                # non-streaming lane reads as a calm "ask again" in the GUI,
+                # not the generic failure card (was a bare-string 503).
+                from ..request import lifecycle_cancel_error_payload
+
                 raise HTTPException(
                     status_code=503,
-                    detail="Request cancelled by model replacement",
+                    detail={"error": lifecycle_cancel_error_payload()},
                 )
             raise
         except BackpressureError as exc:

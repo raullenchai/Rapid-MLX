@@ -7,6 +7,7 @@ request management system, simplified for MLX backend.
 """
 
 import enum
+import errno
 import time
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any, Optional
@@ -356,6 +357,10 @@ _MEMORY_ABORT_SIGNALS = (
     "metal::malloc",
     "memory pressure",
     "jetsam",
+    # POSIX ``ENOMEM`` strerror -- surfaces as ``OSError(12, ...)`` on an mmap
+    # or host allocation failure while loading weights, and inside wrapped
+    # messages where the errno itself is no longer reachable.
+    "cannot allocate memory",
 )
 
 
@@ -368,10 +373,83 @@ def classify_engine_abort(exc: object) -> str:
     here (inside the trust boundary), but only the returned category slug is
     ever allowed to reach the client — the caller must not forward ``str(exc)``.
     """
+    # Canonical host-memory exhaustion carries no allocation-failure *wording*
+    # to match on, so recognise it by type/errno before the text fallback. A
+    # bare ``MemoryError`` (host RAM exhausted materialising weights) and a
+    # POSIX ``OSError(ENOMEM)`` (an mmap/allocation failure while loading) are
+    # both genuine memory shortfalls that must map to ``insufficient_memory``
+    # -- the right Desktop card plus ``Retry-After`` -- rather than falling
+    # through to the generic ``engine_aborted``/``model_load_failed`` bucket.
+    if isinstance(exc, MemoryError):
+        return ENGINE_ABORT_CODE_INSUFFICIENT_MEMORY
+    if isinstance(exc, OSError) and exc.errno == errno.ENOMEM:
+        return ENGINE_ABORT_CODE_INSUFFICIENT_MEMORY
     text = f"{type(exc).__name__}: {exc}".lower()
     if any(signal in text for signal in _MEMORY_ABORT_SIGNALS):
         return ENGINE_ABORT_CODE_INSUFFICIENT_MEMORY
     return ENGINE_ABORT_CODE_ENGINE_ABORTED
+
+
+# Additional stable, client-safe error codes emitted OUTSIDE the engine-loop
+# abort path. Kept separate from ``ENGINE_ABORT_CODES`` so the abort
+# classifier's membership test is unaffected. Each must have a matching case in
+# the Desktop GUI's ``kind(forEngineCode:)`` table so the category reflects
+# faithfully rather than collapsing to the generic "couldn't finish" card.
+MODEL_REPLACEMENT_CODE = "model_replacement"
+MODEL_LOAD_FAILED_CODE = "model_load_failed"
+
+
+def lifecycle_cancel_error_payload() -> dict:
+    """OpenAI-shaped ``error`` for a cooperative cancellation caused by the
+    primary model being replaced under a running request -- NOT an engine fault.
+
+    Single source of truth shared by every lane that can surface a model
+    replacement: the mid-stream terminal SSE frame and the pre-commit HTTP 503
+    (:func:`inference_aborted_error_payload`, via ``error_kind="lifecycle"``)
+    AND the route-level ``asyncio.CancelledError`` translation
+    (``_raise_lifecycle_cancel_or_reraise``). Before this was factored out the
+    CancelledError lane raised a bare-string 503 with NO code while the abort
+    lane emitted ``model_replacement`` -- the same event reached clients in two
+    shapes. Fixed message; never ``str(exc)``.
+    """
+    return {
+        "message": "Request cancelled by model replacement",
+        "type": "server_error",
+        "code": MODEL_REPLACEMENT_CODE,
+        "param": None,
+    }
+
+
+def model_load_error_payload(exc: BaseException) -> dict:
+    """OpenAI-shaped ``error`` for a model that failed to LOAD (demand-load or
+    startup), classified into a stable, client-safe code.
+
+    A unified-memory / Metal allocation failure at load time is the SAME
+    user-facing situation as a generation-time OOM -- the machine cannot fit
+    the model -- so it carries ``insufficient_memory`` and the GUI shows the
+    memory card. Every other load failure (missing/corrupt files, unsupported
+    config) carries ``model_load_failed``. The raw ``exc`` text is inspected
+    inside the trust boundary to pick the code but is NEVER returned; the
+    ``message`` is a fixed safe string per code.
+    """
+    if classify_engine_abort(exc) == ENGINE_ABORT_CODE_INSUFFICIENT_MEMORY:
+        return {
+            "message": (
+                "The model ran out of memory while loading. "
+                "Free up memory or choose a smaller model."
+            ),
+            "type": "server_error",
+            "code": ENGINE_ABORT_CODE_INSUFFICIENT_MEMORY,
+            "param": None,
+        }
+    return {
+        "message": (
+            "The model failed to load. Check the model files or choose another model."
+        ),
+        "type": "server_error",
+        "code": MODEL_LOAD_FAILED_CODE,
+        "param": None,
+    }
 
 
 def inference_aborted_error_payload(exc: BaseException) -> dict:
@@ -394,12 +472,7 @@ def inference_aborted_error_payload(exc: BaseException) -> dict:
         # the mid-stream SSE frame agree for the SAME event (#3564) — otherwise
         # a model replacement reads as a transient crash with a misleading
         # "please try again".
-        return {
-            "message": "Request cancelled by model replacement",
-            "type": "server_error",
-            "code": "model_replacement",
-            "param": None,
-        }
+        return lifecycle_cancel_error_payload()
     code = kind if kind in ENGINE_ABORT_CODES else classify_engine_abort(exc)
     if code == ENGINE_ABORT_CODE_INSUFFICIENT_MEMORY:
         message = (

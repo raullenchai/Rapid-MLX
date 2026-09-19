@@ -33,6 +33,80 @@ struct FaithfulEngineErrorDiagnosisTests {
         #expect(FailureDiagnoser.kind(forEngineCode: "engine_aborted") == .requestFailed)
     }
 
+    @Test("The remaining major engine codes map to their curated kind")
+    func remainingMajorCodesMap() {
+        // A prompt that overruns the model's context window — recoverable by
+        // shortening or switching to a larger-context model, not a retry.
+        #expect(FailureDiagnoser.kind(forEngineCode: "context_length_exceeded") == .promptTooLong)
+        // The requested model isn't loaded/known on the server.
+        #expect(FailureDiagnoser.kind(forEngineCode: "model_not_found") == .modelUnavailable)
+        // A model swap cancelled the in-flight request — the user's own doing.
+        #expect(FailureDiagnoser.kind(forEngineCode: "model_replacement") == .requestSuperseded)
+    }
+
+    @Test("Each remaining code renders its faithful card, severity, and action")
+    func remainingMajorCodesRenderFaithfully() {
+        let longCtx = FailureDiagnoser.diagnosis(for: .promptTooLong)
+        #expect(longCtx.severity == .error)
+        #expect(longCtx.action == .openModelManagement)
+        #expect(longCtx.message.contains("context window"))
+
+        let unavailable = FailureDiagnoser.diagnosis(for: .modelUnavailable)
+        #expect(unavailable.severity == .error)
+        #expect(unavailable.action == .openModelManagement)
+        #expect(unavailable.message.lowercased().contains("available"))
+
+        // A superseded request is a NOTICE (the user switched the model on
+        // purpose), and its recovery is simply to ask again.
+        let superseded = FailureDiagnoser.diagnosis(for: .requestSuperseded)
+        #expect(superseded.severity == .notice)
+        #expect(superseded.action == .retry)
+        #expect(superseded.message.lowercased().contains("switched"))
+    }
+
+    @Test("A context-length 400 classifies via its code, not the message text")
+    func contextLengthClassifiesViaCode() {
+        // The message names tokens, not any keyword the heuristics scan for;
+        // only the code identifies the category.
+        let body = #"{"error":{"message":"This model's maximum context length is 40960 tokens. However, you requested 200021 tokens.","type":"invalid_request_error","code":"context_length_exceeded","param":"messages"}}"#
+        #expect(
+            FailureDiagnoser.chatFailureKind(error: ChatStreamError.httpStatus(400, body))
+                == .promptTooLong
+        )
+    }
+
+    @Test("An unknown-model 404 classifies via its code")
+    func unknownModelClassifiesViaCode() {
+        let body = #"{"error":{"message":"The model `no-such-model` does not exist. Available: qwen3.5-4b","type":"not_found_error","code":"model_not_found","param":"model"}}"#
+        #expect(
+            FailureDiagnoser.chatFailureKind(error: ChatStreamError.httpStatus(404, body))
+                == .modelUnavailable
+        )
+    }
+
+    @Test("A model-replacement cancellation classifies via its code")
+    func modelReplacementClassifiesViaCode() {
+        let body = #"{"error":{"message":"Request cancelled by model replacement","type":"server_error","code":"model_replacement","param":null}}"#
+        #expect(
+            FailureDiagnoser.chatFailureKind(error: ChatStreamError.httpStatus(503, body))
+                == .requestSuperseded
+        )
+    }
+
+    @Test("A load-time OOM 503 maps to the memory card, and a load-other to the load-failed card")
+    func loadFailureCodesMap() {
+        let oom = #"{"error":{"message":"The model ran out of memory while loading. Free up memory or choose a smaller model.","type":"server_error","code":"insufficient_memory","param":null}}"#
+        #expect(
+            FailureDiagnoser.chatFailureKind(error: ChatStreamError.httpStatus(503, oom))
+                == .modelOutOfMemory
+        )
+        let other = #"{"error":{"message":"The model failed to load. Check the model files or choose another model.","type":"server_error","code":"model_load_failed","param":null}}"#
+        #expect(
+            FailureDiagnoser.chatFailureKind(error: ChatStreamError.httpStatus(503, other))
+                == .modelLoadFailed
+        )
+    }
+
     @Test("Unknown or absent codes fall through to the heuristics (nil)")
     func unknownCodesFallThrough() {
         #expect(FailureDiagnoser.kind(forEngineCode: "some_future_code") == nil)
