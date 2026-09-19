@@ -22,6 +22,9 @@ enum SingleInstanceGuard {
         var bundleID: String?
         /// ``NSRunningApplication.launchDate``; nil when unknown.
         var launched: Date?
+        /// ``NSRunningApplication.isFinishedLaunching``: an established
+        /// Desktop rather than a process still coming up.
+        var finishedLaunching: Bool = false
     }
 
     /// What ``RapidApp.init`` should do about other instances.
@@ -64,7 +67,8 @@ enum SingleInstanceGuard {
             handOffToUnregisteredHolder()
             handedOff = true
         }
-        let deadline = Date().addingTimeInterval(handedOff ? survivorGraceSeconds : 0.5)
+        let clock = ContinuousClock()
+        let deadline = clock.now + .seconds(handedOff ? survivorGraceSeconds : 0.5)
         repeat {
             switch instanceLock.acquire() {
             case .acquired:
@@ -74,14 +78,14 @@ enum SingleInstanceGuard {
             case .busy:
                 Thread.sleep(forTimeInterval: 0.1)
             }
-        } while Date() < deadline
+        } while clock.now < deadline
         return true
     }
 
     /// How long a yielding launch waits for a quitting survivor to release
     /// the lock. A graceful quit with a 27B model resident took 0.8 s on an
     /// M2 Pro; 5 s leaves room for a slow engine shutdown.
-    static let survivorGraceSeconds: TimeInterval = 5
+    static let survivorGraceSeconds: Double = 5
 
     /// Decide once, at the top of ``RapidApp.init``.
     ///
@@ -98,11 +102,12 @@ enum SingleInstanceGuard {
             return .proceed
         case .busy:
             // The holder may still be registering with LaunchServices.
-            let deadline = Date().addingTimeInterval(1.5)
+            let clock = ContinuousClock()
+            let deadline = clock.now + .seconds(1.5)
             repeat {
                 if let holder = runningInstanceToYieldTo() { return .yield(to: holder) }
                 Thread.sleep(forTimeInterval: 0.05)
-            } while Date() < deadline
+            } while clock.now < deadline
             return .yieldToUnregistered
         case .unavailable:
             if let other = runningInstanceToYieldTo() { return .yield(to: other) }
@@ -170,7 +175,12 @@ enum SingleInstanceGuard {
             launched: NSRunningApplication.current.launchDate
         )
         let running = apps.map {
-            Instance(pid: $0.processIdentifier, bundleID: $0.bundleIdentifier, launched: $0.launchDate)
+            Instance(
+                pid: $0.processIdentifier,
+                bundleID: $0.bundleIdentifier,
+                launched: $0.launchDate,
+                finishedLaunching: $0.isFinishedLaunching
+            )
         }
         guard let pid = pidToYieldTo(own: own, running: running) else { return nil }
         return apps.first { $0.processIdentifier == pid }
@@ -189,6 +199,14 @@ enum SingleInstanceGuard {
     static func pidToYieldTo(own: Instance, running: [Instance]) -> pid_t? {
         let others = running.filter {
             $0.pid != own.pid && $0.bundleID != nil && $0.bundleID == own.bundleID
+        }
+        // An instance that has finished launching is the Desktop the user is
+        // looking at; it wins whatever the dates say. Ranking is only for
+        // processes still coming up together (concurrent cold launch), and
+        // it keeps a Desktop whose launch date LaunchServices cannot report
+        // from being mistaken for the newest process (codex r3).
+        if let established = others.filter(\.finishedLaunching).min(by: outranks) {
+            return established.pid
         }
         guard let senior = others.min(by: outranks) else { return nil }
         return outranks(senior, own) ? senior.pid : nil
@@ -212,7 +230,10 @@ enum SingleInstanceGuard {
     /// our own bundle reaches whichever instance of it ends up registered
     /// (``LSMultipleInstancesProhibited`` makes that a reopen, not a launch).
     /// The wait is bounded so a stalled LaunchServices cannot keep this
-    /// doomed process alive.
+    /// doomed process alive. The outcome is deliberately not consulted: the
+    /// holder is mid-launch and will show its own main window regardless,
+    /// so this request is only a courtesy activation, and exiting is right
+    /// whether or not it landed.
     static func handOffToUnregisteredHolder() {
         let configuration = NSWorkspace.OpenConfiguration()
         configuration.activates = true
@@ -236,7 +257,9 @@ enum SingleInstanceGuard {
     /// ``AppDelegate.applicationShouldHandleReopen`` and opens the main
     /// window. The wait is bounded: a stalled LaunchServices must not keep
     /// this doomed process alive, and a plain activate is the fallback for
-    /// a timeout or an error while the survivor is still running.
+    /// a timeout or an error while the survivor is still running. Whether
+    /// that activation lands is cosmetic — the survivor is alive and is the
+    /// Desktop either way — so only the survivor's liveness decides.
     static func handOff(to survivor: NSRunningApplication) -> Bool {
         guard !survivor.isTerminated else { return false }
         guard let url = survivor.bundleURL else {
