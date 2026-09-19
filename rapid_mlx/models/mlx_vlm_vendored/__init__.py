@@ -84,7 +84,8 @@ vendored copy differs by exactly the deviations listed):
      images (``"P"``) hash to palette indices in ``tobytes()``, so
      same-sized images with identical indices but different palettes
      rendered different content yet still collided; the effective
-     ``getpalette()`` bytes are folded into the digest as well.
+     ``getpalette()`` bytes and palette transparency metadata are folded
+     into the digest as well.
   4. ``put()`` with ``max_size <= 0`` evaluated
      ``len(self._cache) >= self.max_size`` against an empty mapping and
      called ``popitem()`` on it, raising KeyError. Fixed so zero (or

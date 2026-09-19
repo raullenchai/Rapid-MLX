@@ -64,9 +64,7 @@ class VisionFeatureCache:
         if isinstance(image_source, list):
             # The child count makes empty children unambiguous: bare "l"
             # tags alone would collapse ([[], []] vs [[[]]]).
-            return (
-                f"l{len(image_source)}:" + "".join(map(self._make_key, image_source))
-            )
+            return f"l{len(image_source)}:" + "".join(map(self._make_key, image_source))
         if isinstance(image_source, (bytes, bytearray, memoryview)):
             payload = bytes(image_source)
         elif hasattr(image_source, "tobytes"):
@@ -96,6 +94,24 @@ class VisionFeatureCache:
                     digest.update(b"palette\x00")
                     digest.update(repr(bytes(palette)).encode())
                     digest.update(b"\x00")
+            # Palette indices plus RGB palette bytes still do not fully
+            # describe rendered pixels: Pillow stores a transparent palette
+            # index (or per-entry alpha table) in ``info``.  Keep its type in
+            # the digest as well so integer indices and byte tables cannot
+            # alias one another.
+            info = getattr(image_source, "info", None)
+            if isinstance(info, dict) and "transparency" in info:
+                transparency = info["transparency"]
+                digest.update(b"transparency\x00")
+                digest.update(
+                    f"{type(transparency).__module__}."
+                    f"{type(transparency).__name__}\x00".encode()
+                )
+                if isinstance(transparency, (bytes, bytearray, memoryview)):
+                    digest.update(bytes(transparency))
+                else:
+                    digest.update(repr(transparency).encode())
+                digest.update(b"\x00")
             digest.update(image_source.tobytes())
             return f"p:{digest.hexdigest()[:16]}"
         else:

@@ -256,6 +256,29 @@ def test_vision_feature_cache_palette_images_do_not_collide():
     assert cache.get(red) == "red-palette-features"
 
 
+def test_vision_feature_cache_palette_transparency_does_not_collide():
+    """The same indices and RGB palette can render differently when a
+    different palette entry is transparent; that metadata is not part of
+    ``tobytes()`` or ``getpalette()``."""
+    pytest.importorskip("PIL.Image")
+    from PIL import Image
+
+    first = Image.new("P", (2, 1))
+    first.putpalette([200, 30, 30] * 256)
+    first.putdata([0, 1])
+    first.info["transparency"] = 0
+    second = first.copy()
+    second.info["transparency"] = 1
+    assert first.tobytes() == second.tobytes()
+    assert first.getpalette() == second.getpalette()
+
+    cache = vendored_vision_cache.VisionFeatureCache(max_size=8)
+    assert cache._make_key(first) != cache._make_key(second)
+    cache.put(first, "first-transparency-features")
+    assert cache.get(second) is None
+    assert cache.get(first) == "first-transparency-features"
+
+
 def test_vision_feature_cache_zero_max_size_disables_storage():
     """Upstream raised KeyError (``popitem()`` on an empty mapping) when
     ``put`` was called on a cache constructed with ``max_size <= 0``; the
