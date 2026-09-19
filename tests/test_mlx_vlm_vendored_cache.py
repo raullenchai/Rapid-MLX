@@ -1,5 +1,5 @@
 # SPDX-License-Identifier: Apache-2.0
-"""Regression tests for the two documented upstream-bugfix deviations in the
+"""Regression tests for the three documented upstream-bugfix deviations in the
 vendored mlx-vlm cache module (see the package ``__init__.py`` provenance).
 Each test fails against the byte-verbatim upstream 0.7.1 source.
 """

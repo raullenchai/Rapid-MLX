@@ -668,9 +668,10 @@ ignore = [
 # and rationale in rapid_mlx/models/gemma4_vendored/__init__.py.
 "rapid_mlx/models/gemma4_vendored/*.py" = ["UP", "B", "SIM", "N", "F", "I", "E"]
 # Vendored from Blaizzy/mlx-vlm 0.7.1 (models/cache.py) as the first step
-# of the mlx-vlm dependency retirement (step 2a: cache/vision primitives).
-# Byte-identical to upstream; keep lint quiet on the copy so upstream diffs
-# and the step-3 revert stay clean. Provenance and sync policy in
+# of the mlx-vlm dependency retirement (step 2a: cache types + seam).
+# Upstream-shaped with only the documented bug-fix deviations; keep lint
+# quiet on the copy so upstream diffs and the step-3 revert stay clean.
+# Provenance and sync policy in
 # rapid_mlx/models/mlx_vlm_vendored/__init__.py.
 "rapid_mlx/models/mlx_vlm_vendored/*.py" = ["UP", "B", "SIM", "N", "F", "I", "E", "W"]
 # Vendored from ml-explore/mlx-lm PR #1211 (kernelpool, add-hy3-preview,

@@ -1,11 +1,11 @@
 # SPDX-License-Identifier: Apache-2.0
-"""Vendored cache/vision primitives from mlx-vlm, pinned at 0.7.1.
+"""Vendored cache primitives from mlx-vlm, pinned at 0.7.1.
 
-The native serialized MLLM lane (``MLLMBatchGenerator``) leans on a set of
-mlx-vlm cache and vision-preprocessing primitives. Vendoring them brings
-those code paths under this repo's review, tests, and mypy budget while the
-upstream dependency stays pinned for everything else it provides (model
-loading, processors, templating, the speculative-decode runtime).
+The native serialized MLLM lane (``MLLMBatchGenerator``) leans on mlx-vlm
+cache primitives. Vendoring this first slice brings those code paths under
+this repo's review, tests, and mypy budget while the upstream dependency stays
+pinned for everything else it provides (model loading, processors, templating,
+vision preprocessing, and the speculative-decode runtime).
 
 Design note: ``docs/engineering/design/2026-09-18-vendor-mllm-primitives.md``.
 Upstream: https://github.com/Blaizzy/mlx-vlm/tree/v0.7.1
