@@ -29,7 +29,10 @@ from rapid_mlx.models.mlx_vlm_vendored import vision_cache as vendored_vision_ca
 _APC_UPSTREAM_SHA256 = (
     "5b2b940852f11f34f7b4daf627bc31fc701f8abffc72d40189bc3e5ac57f878c"
 )
-_APC_REDIRECT_SENTINEL = "  # VENDOR-DEVIATION"
+_APC_VENDORED_SHA256 = (
+    "74c227cb9def17a60410a40f0cbffe113b42c55a05d2ef3b046019074fa603a8"
+)
+_APC_DEVIATION_COUNT = 22
 
 
 class _FakeLM:
@@ -57,15 +60,20 @@ def test_engine_resolves_the_vendored_family():
 
     assert apc.APCCoordinator is apc_coordinator.APCCoordinator
     assert apc.APCNode is apc_storage.APCNode
+    assert apc.ComponentId is apc_storage.ComponentId
+    assert apc.StateHandle is apc_storage.StateHandle
+    assert apc.clear_mlx_streams is _stream_cleanup.clear_mlx_streams
+    assert apc.kv_quant_from_config is vendored_kv_quant.from_config
+    assert apc.kv_quant_fingerprint is vendored_kv_quant.kv_quant_fingerprint
 
 
-def test_engine_matches_pinned_upstream_except_declared_import_redirects():
-    """Fail closed if the large coverage-exempt engine copy drifts.
+def test_engine_matches_reviewed_vendored_source():
+    """Fail closed if either provenance anchor or reviewed copy drifts.
 
-    The vendored engine remains byte-equivalent to mlx-vlm 0.7.1 after its
-    18 explicit absolute-import redirects are normalized back to upstream's
-    package-relative imports.  Any behavioral edit therefore needs its own
-    reviewed contract and must stop relying on the coverage exemption.
+    The step-2b-3 engine intentionally differs from mlx-vlm 0.7.1: it has
+    dual-namespace support plus three repro-tested upstream bug fixes.  Pin
+    both sources and the deviation-sentinel inventory so future edits cannot
+    silently hide inside the large coverage-exempt file.
     """
     import mlx_vlm.apc as upstream_apc
 
@@ -75,23 +83,8 @@ def test_engine_matches_pinned_upstream_except_declared_import_redirects():
     vendored_source = inspect.getsource(vendored_apc)
     assert hashlib.sha256(upstream_source.encode()).hexdigest() == _APC_UPSTREAM_SHA256
 
-    normalized_lines = []
-    redirect_count = 0
-    for line in vendored_source.splitlines(keepends=True):
-        if _APC_REDIRECT_SENTINEL not in line:
-            normalized_lines.append(line)
-            continue
-        redirect_count += 1
-        assert line.count(_APC_REDIRECT_SENTINEL) == 1
-        assert "from mlx_vlm." in line
-        normalized_lines.append(
-            line.replace("from mlx_vlm.", "from .", 1).replace(
-                _APC_REDIRECT_SENTINEL, "", 1
-            )
-        )
-
-    assert redirect_count == 18
-    assert "".join(normalized_lines) == upstream_source
+    assert hashlib.sha256(vendored_source.encode()).hexdigest() == _APC_VENDORED_SHA256
+    assert vendored_source.count("# VENDOR-DEVIATION") == _APC_DEVIATION_COUNT
 
 
 def test_coordinator_builds_plan_from_vendored_caches():

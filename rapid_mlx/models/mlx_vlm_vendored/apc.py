@@ -374,12 +374,74 @@ def _clone_prompt_cache_for_apc(
     return out
 
 
+# VENDOR-DEVIATION(dual-namespace): during the mlx-vlm transition (steps 2-3
+# of the retirement plan) lane caches may be typed in either the vendored
+# namespace or upstream mlx_vlm.models.cache. The recognition helpers below
+# keep the engine's exact-type sites namespace-complete and record/restore
+# each entry's namespace; the step-3 mechanical revert drops them. They
+# mirror ``apc_adapters._cache_namespaces`` / ``._cache_namespace_of``.
+_UPSTREAM_CACHE_MODULE = "mlx_vlm.models.cache"
+
+
+def _cache_ns_modules() -> list:
+    from . import cache as _vendored
+
+    namespaces = [_vendored]
+    try:
+        from mlx_vlm.models import cache as _upstream
+    except ImportError:  # pragma: no cover - mlx-vlm absent
+        pass
+    else:
+        namespaces.append(_upstream)
+    return namespaces
+
+
+def _cache_ns_of(cache: Any):
+    """The cache module owning ``cache``'s namespace (upstream fallback).
+
+    Ownership is decided by the defining module (covers non-``_BaseCache``
+    classes like ``SimpleKVCache``) or base-class identity so subclasses
+    in any module resolve to their namespace. Returns None only when
+    ``cache`` matches neither namespace and mlx-vlm is unavailable.
+    """
+    module = type(cache).__module__
+    for ns in _cache_ns_modules():
+        if ns.__name__ == module or isinstance(cache, ns._BaseCache):
+            return ns
+    try:
+        from mlx_vlm.models import cache as _upstream
+    except ImportError:  # pragma: no cover - mlx-vlm absent
+        return None
+    return _upstream
+
+
+def _cache_ns_exact(cache: Any, name: str) -> bool:
+    """True when ``type(cache)`` is ``name`` in either namespace."""
+    return any(type(cache) is getattr(ns, name, None) for ns in _cache_ns_modules())
+
+
+def _cache_ns_for_meta(metadata: dict, prefix: str):
+    """The cache module recorded for an exact-snapshot entry.
+
+    Entries written before the dual-namespace transition carry no ``_ns``
+    key and restore upstream; ``"v"`` restores the vendored module.
+    """
+    marker = metadata.get(f"{prefix}_ns")
+    if marker == "v":
+        from . import cache as _vendored
+
+        return _vendored
+    if marker is not None:
+        return None
+    from mlx_vlm.models import cache as _upstream
+
+    return _upstream
+
+
 def _dense_checkpoint_trimmable(prompt_cache: Sequence[Any], token_len: int) -> bool:
     """Only ordinary dense K/V contains the state for every earlier prefix."""
-    from mlx_vlm.models.cache import KVCache  # VENDOR-DEVIATION
-
     return bool(prompt_cache) and all(
-        type(c) is KVCache
+        _cache_ns_exact(c, "KVCache")
         and c.offset == token_len
         and c.keys is not None
         and c.values is not None
@@ -415,11 +477,11 @@ def _checkpoint_match_len(
 
 def _dense_checkpoint_prefix(prompt_cache: Sequence[Any], prefix_len: int) -> List[Any]:
     """Build views for cloning without allocating the discarded dense suffix."""
-    from mlx_vlm.models.cache import KVCache  # VENDOR-DEVIATION
-
     out = []
     for source in prompt_cache:
-        c = KVCache()
+        # VENDOR-DEVIATION(dual-namespace): keep the clone namespace-faithful.
+        ns = _cache_ns_of(source) or _cache_ns_modules()[0]
+        c = ns.KVCache()
         c.step = source.step
         c.keys = source.keys[..., :prefix_len, :]
         c.values = source.values[..., :prefix_len, :]
@@ -927,15 +989,63 @@ def _decode_checkpoint_tree(structure: dict, load_array) -> Any:
     raise ValueError(f"unsupported checkpoint tree node: {kind!r}")
 
 
+_CHECKPOINT_CLASS_ALLOWLIST = {
+    "mlx_vlm.models.cache": frozenset(
+        {
+            "ArraysCache",
+            "BatchKVCache",
+            "BatchPoolingCache",
+            "BatchQuantizedKVCache",
+            "BatchRotatingKVCache",
+            "BufferedRotatingKVCache",
+            "CacheList",
+            "ChunkedKVCache",
+            "ConcatenateKVCache",
+            "KVCache",
+            "PoolingCache",
+            "QuantizedKVCache",
+            "RotatingKVCache",
+            "StaticPrefixKVCache",
+        }
+    ),
+    "mlx_vlm.turboquant": frozenset(
+        {"BatchTurboQuantKVCache", "HybridQuantKVCache", "TurboQuantKVCache"}
+    ),
+    "rapid_mlx.models.mlx_vlm_vendored.cache": frozenset(
+        {
+            "ArraysCache",
+            "BatchKVCache",
+            "BatchPoolingCache",
+            "BatchQuantizedKVCache",
+            "BatchRotatingKVCache",
+            "BufferedRotatingKVCache",
+            "CacheList",
+            "ChunkedKVCache",
+            "ConcatenateKVCache",
+            "KVCache",
+            "PoolingCache",
+            "QuantizedKVCache",
+            "RotatingKVCache",
+            "StaticPrefixKVCache",
+        }
+    ),
+}
+
+
 def _resolve_checkpoint_class(module_name: str, qualname: str) -> Optional[type]:
     """Resolve an importable cache class recorded by the local disk tier."""
-    if not module_name.startswith("mlx_vlm.") or "<locals>" in qualname:
+    # VENDOR-DEVIATION(dual-namespace): checkpoint records may reference the
+    # vendored cache classes during the transition. Everything else stays
+    # rejected: the prefix guard keeps disk metadata from importing arbitrary
+    # modules.
+    if qualname not in _CHECKPOINT_CLASS_ALLOWLIST.get(module_name, ()):
         return None
     try:
-        value: Any = importlib.import_module(module_name)
-        for part in qualname.split("."):
-            value = getattr(value, part)
-        return value if isinstance(value, type) else None
+        module = importlib.import_module(module_name)
+        value: Any = getattr(module, qualname)
+        if isinstance(value, type) and value.__module__ == module_name:
+            return value
+        return None
     except (ImportError, AttributeError):
         return None
 
@@ -1354,38 +1464,65 @@ class DiskBlockStore:
         if not self._ensure_dir():
             return 0
         total = 0
+
+        def _drop_invalid_shard(path: Path, shard_size: int, reason: str) -> int:
+            logger.warning("APC disk: %s %s, dropping", reason, path)
+            try:
+                path.unlink()
+            except OSError:
+                # The bytes still occupy disk and must remain inside the
+                # eviction budget even though this shard cannot be indexed.
+                return shard_size
+            return 0
+
         with self._index_lock:
             self._index.clear()
             self._exact_index.clear()
             for p in self.dir.glob(f"*{self.SUFFIX}"):
                 if not self._is_canonical_store_file(p):
                     continue
+                # VENDOR-DEVIATION(upstream-bugfix): count a shard's size only
+                # after its header and kind-specific metadata validate, so a
+                # shard dropped below cannot inflate ``_disk_bytes`` until the
+                # next rebuild.
                 try:
-                    total += p.stat().st_size
+                    shard_size = p.stat().st_size
                 except OSError:
                     continue
                 metadata = _read_safetensors_metadata(p)
                 if metadata is None:
-                    logger.warning("APC disk: shard %s unreadable, dropping", p)
-                    try:
-                        p.unlink()
-                    except OSError:
-                        pass
+                    total += _drop_invalid_shard(p, shard_size, "unreadable")
                     continue
                 if self._is_canonical_exact(p):
                     try:
                         cache_hash = int(metadata.get("cache_hash", ""))
                     except (TypeError, ValueError):
+                        total += _drop_invalid_shard(
+                            p, shard_size, "exact shard with invalid metadata"
+                        )
                         continue
                     self._exact_index[cache_hash] = p
+                    total += shard_size
                     continue
                 hashes_csv = metadata.get("block_hashes", "")
                 if not hashes_csv:
+                    total += _drop_invalid_shard(
+                        p, shard_size, "block shard with invalid metadata"
+                    )
                     continue
                 try:
                     block_hashes = [int(x) for x in hashes_csv.split(",") if x]
                 except ValueError:
+                    total += _drop_invalid_shard(
+                        p, shard_size, "block shard with invalid metadata"
+                    )
                     continue
+                if not block_hashes:
+                    total += _drop_invalid_shard(
+                        p, shard_size, "block shard with invalid metadata"
+                    )
+                    continue
+                total += shard_size
                 for idx, bh in enumerate(block_hashes):
                     self._index[bh] = (p, idx)
         return total
@@ -1692,7 +1829,12 @@ class DiskBlockStore:
         eval_targets: List[mx.array],
         prefix_len: Optional[int] = None,
     ) -> Optional[Any]:
-        from mlx_vlm.models import cache as lm_cache  # VENDOR-DEVIATION
+        # VENDOR-DEVIATION(dual-namespace): every constructor below resolves
+        # the entry's recorded namespace; no ``_ns`` key (pre-transition
+        # shards) restores upstream.
+        ns = _cache_ns_for_meta(metadata, prefix)
+        if ns is None:
+            return None
 
         kind = metadata.get(f"{prefix}_kind")
         if kind == "ring_kv":
@@ -1724,7 +1866,7 @@ class DiskBlockStore:
 
         if kind == "kv":
             if metadata.get(f"{prefix}_empty", "0") == "1":
-                c = lm_cache.KVCache()
+                c = ns.KVCache()
                 try:
                     c.offset = int(metadata.get(f"{prefix}_offset", "0"))
                 except (TypeError, ValueError):
@@ -1755,7 +1897,7 @@ class DiskBlockStore:
                 min_capacity_tokens=min_capacity_tokens,
                 step=step,
             )
-            c = lm_cache.KVCache()
+            c = ns.KVCache()
             c.keys = k
             c.values = v
             c.offset = off
@@ -1770,7 +1912,7 @@ class DiskBlockStore:
                 idx = int(metadata.get(f"{prefix}_idx", "0"))
             except (KeyError, TypeError, ValueError):
                 return None
-            c = lm_cache.RotatingKVCache(max_size=max_size, keep=keep)
+            c = ns.RotatingKVCache(max_size=max_size, keep=keep)
             c.offset = offset
             c._idx = idx
             if metadata.get(f"{prefix}_empty", "0") == "1":
@@ -1795,7 +1937,7 @@ class DiskBlockStore:
                 start_position = int(metadata.get(f"{prefix}_start_position", "0"))
             except (KeyError, TypeError, ValueError):
                 return None
-            c = lm_cache.ChunkedKVCache(chunk_size=chunk_size)
+            c = ns.ChunkedKVCache(chunk_size=chunk_size)
             c.offset = offset
             c.start_position = start_position
             if metadata.get(f"{prefix}_empty", "0") == "1":
@@ -1818,7 +1960,7 @@ class DiskBlockStore:
                 size = int(metadata.get(f"{prefix}_size", "0"))
             except (TypeError, ValueError):
                 return None
-            c = lm_cache.ArraysCache(size=size)
+            c = ns.ArraysCache(size=size)
             states: List[Optional[mx.array]] = []
             for j in range(size):
                 if metadata.get(f"{prefix}_s{j}_none", "0") == "1":
@@ -1852,7 +1994,7 @@ class DiskBlockStore:
                 cache_length = int(metadata.get(f"{prefix}_cache_length", "0"))
             except (TypeError, ValueError):
                 return None
-            c = lm_cache.SimpleKVCache()
+            c = ns.SimpleKVCache()
             c.cache_length = cache_length
             if metadata.get(f"{prefix}_empty", "0") == "1":
                 return c
@@ -1873,7 +2015,7 @@ class DiskBlockStore:
                 remainder = int(metadata.get(f"{prefix}_remainder", "0"))
             except (KeyError, TypeError, ValueError):
                 return None
-            c = lm_cache.PoolingCache(ratio)
+            c = ns.PoolingCache(ratio)
             c.remainder = remainder
             for attr in ("pooled", "buf_kv", "buf_gate"):
                 entry = tensor_entries.get(f"{prefix}_{attr}")
@@ -1937,7 +2079,7 @@ class DiskBlockStore:
                     return None
                 loaded.append(sub_c)
             if kind == "cache_list":
-                return lm_cache.CacheList(*loaded)
+                return ns.CacheList(*loaded)
             return tuple(loaded)
 
         if kind == "checkpoint":
@@ -2641,8 +2783,12 @@ class DiskBlockStore:
 
     def _finish_write(self, block_hashes: Sequence[int], ev: threading.Event) -> None:
         with self._in_flight_lock:
+            # VENDOR-DEVIATION(upstream-bugfix): release ownership only when
+            # the stored event is this write's event, so partially overlapping
+            # shard writes cannot erase another in-flight writer's entry.
             for block_hash in block_hashes:
-                self._in_flight.pop(int(block_hash), None)
+                if self._in_flight.get(int(block_hash)) is ev:
+                    del self._in_flight[int(block_hash)]
         try:
             # The completed shard is now evictable too. Without this second
             # pass, one oversized last write can leave disk usage over its cap.
@@ -2717,7 +2863,12 @@ class DiskBlockStore:
         arrays: dict[str, mx.array],
         metadata: dict[str, str],
     ) -> bool:
-        from mlx_vlm.models import cache as lm_cache  # VENDOR-DEVIATION
+        # VENDOR-DEVIATION(dual-namespace): the ladder recognizes both cache
+        # namespaces; a vendored-typed entry records ``_ns="v"`` so restore
+        # stays namespace-faithful (pre-transition shards carry no ``_ns``).
+        ns = _cache_ns_of(c) or _cache_ns_modules()[0]
+        if ns.__name__ != _UPSTREAM_CACHE_MODULE:
+            metadata[f"{prefix}_ns"] = "v"
 
         if (
             type(c).__name__ == "RingSlidingKVCache"
@@ -2737,7 +2888,7 @@ class DiskBlockStore:
             arrays[f"{prefix}_v"] = c.values
             return True
 
-        if type(c) is lm_cache.KVCache:
+        if type(c) is ns.KVCache:
             off = int(getattr(c, "offset", 0) or 0)
             metadata[f"{prefix}_kind"] = "kv"
             metadata[f"{prefix}_offset"] = str(off)
@@ -2751,7 +2902,7 @@ class DiskBlockStore:
             arrays[f"{prefix}_v"] = c.values[..., :off, :]
             return True
 
-        if isinstance(c, lm_cache.RotatingKVCache):
+        if isinstance(c, ns.RotatingKVCache):
             metadata[f"{prefix}_kind"] = "rotating_kv"
             metadata[f"{prefix}_keep"] = str(int(getattr(c, "keep", 0) or 0))
             metadata[f"{prefix}_max_size"] = str(int(getattr(c, "max_size")))
@@ -2764,7 +2915,7 @@ class DiskBlockStore:
             arrays[f"{prefix}_v"] = c.values
             return True
 
-        if isinstance(c, lm_cache.ChunkedKVCache):
+        if isinstance(c, ns.ChunkedKVCache):
             metadata[f"{prefix}_kind"] = "chunked_kv"
             metadata[f"{prefix}_chunk_size"] = str(int(getattr(c, "chunk_size")))
             metadata[f"{prefix}_offset"] = str(int(getattr(c, "offset", 0) or 0))
@@ -2778,7 +2929,7 @@ class DiskBlockStore:
             arrays[f"{prefix}_v"] = c.values
             return True
 
-        if isinstance(c, lm_cache.ArraysCache):
+        if isinstance(c, ns.ArraysCache):
             metadata[f"{prefix}_kind"] = "arrays"
             metadata[f"{prefix}_size"] = str(len(c.cache))
             for j, state in enumerate(c.cache):
@@ -2792,7 +2943,7 @@ class DiskBlockStore:
                 arrays[f"{prefix}_lengths"] = c.lengths
             return True
 
-        if isinstance(c, lm_cache.SimpleKVCache):
+        if isinstance(c, ns.SimpleKVCache):
             metadata[f"{prefix}_kind"] = "simple_kv"
             metadata[f"{prefix}_cache_length"] = str(int(c.cache_length))
             if c.keys is None or c.values is None:
@@ -2802,7 +2953,7 @@ class DiskBlockStore:
             arrays[f"{prefix}_v"] = c.values
             return True
 
-        if isinstance(c, lm_cache.PoolingCache):
+        if isinstance(c, ns.PoolingCache):
             metadata[f"{prefix}_kind"] = "pooling"
             metadata[f"{prefix}_ratio"] = str(int(c.ratio))
             metadata[f"{prefix}_remainder"] = str(int(c.remainder))
@@ -2826,7 +2977,7 @@ class DiskBlockStore:
                 arrays[f"{prefix}_index_keys"] = c.index_keys[..., : c.index_offset, :]
             return True
 
-        if isinstance(c, lm_cache.CacheList):
+        if isinstance(c, ns.CacheList):
             metadata[f"{prefix}_kind"] = "cache_list"
             metadata[f"{prefix}_size"] = str(len(c.caches))
             return all(
@@ -2998,8 +3149,16 @@ class DiskBlockStore:
         # the temp through a sibling that retains the suffix.
         tag = f"{os.getpid()}-{threading.get_ident()}"
         tmp = path.parent / f"{path.stem}.{tag}{self.SUFFIX}"
-        mx.save_safetensors(str(tmp), arrays, metadata=metadata)
-        os.replace(tmp, path)
+        try:
+            mx.save_safetensors(str(tmp), arrays, metadata=metadata)
+            os.replace(tmp, path)
+        finally:
+            # VENDOR-DEVIATION(upstream-bugfix): a failed serialization or
+            # replace must not leak the temporary shard file on disk.
+            try:
+                tmp.unlink(missing_ok=True)
+            except OSError:
+                pass
         try:
             self._disk_bytes += path.stat().st_size
         except OSError:
