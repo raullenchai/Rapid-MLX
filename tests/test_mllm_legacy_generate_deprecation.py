@@ -279,6 +279,10 @@ class _FakeGenerator:
 
     def insert(self, requests):
         self.inserted = requests[0]
+        for batch in self.batches:
+            for response in batch:
+                if response.request_id is None:
+                    response.request_id = self.inserted.request_id
         return [7]
 
     def next(self):
@@ -296,12 +300,13 @@ def _response(
     prompt_tokens=0,
     token_is_stop_token=False,
     uid=7,
+    request_id=None,
 ):
     from rapid_mlx.mllm_batch_generator import MLLMBatchResponse
 
     return MLLMBatchResponse(
         uid=uid,
-        request_id="rapid-mlx-bench",
+        request_id=request_id,
         token=token,
         logprobs=None,
         finish_reason=finish_reason,
@@ -449,13 +454,15 @@ def test_native_request_helper_ignores_foreign_uids_and_makes_unique_ids():
         [
             [
                 _response(9, uid=99),
+                _response(8, uid=7, request_id="stale-prior-request"),
                 _response(5, prompt_tokens=1),
             ],
             [_response(6, finish_reason="stop", token_is_stop_token=True)],
         ]
     )
     text, completion, _ = _run_native_mllm_request(generator, "p", max_tokens=4)
-    assert text == "<5>"  # the uid=99 token is ignored
+    # Both the foreign UID and the prior request that reused uid=7 are ignored.
+    assert text == "<5>"
     assert completion == 1
 
     # Each request also carries a unique id so stale responses cannot

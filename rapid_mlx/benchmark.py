@@ -820,7 +820,7 @@ def _run_native_mllm_request(
                     "truncated"
                 )
             for response in responses:
-                if response.uid != uid:
+                if response.uid != uid or response.request_id != request.request_id:
                     continue
                 if not response.token_is_stop_token:
                     token_ids.append(response.token)
