@@ -13,6 +13,8 @@ vendored module directly.
 
 import hashlib
 import inspect
+import io
+import tokenize
 from dataclasses import asdict
 from pathlib import Path
 
@@ -28,9 +30,6 @@ from rapid_mlx.models.mlx_vlm_vendored import inputs as vendored_inputs
 
 _UPSTREAM_REGION_SHA256 = (
     "ac610b0e2c157de878b17ec9f5ebaa8bf2c75000e44c09d84b5c17dbaf7c7b5f"
-)
-_VENDORED_SOURCE_SHA256 = (
-    "8fdd051bbc21542daeca29931b1aab96b09583a582eea3d1904bdb3c84ce3750"
 )
 _VENDOR_DEVIATION_COUNT = 7
 
@@ -78,9 +77,18 @@ def test_vendored_region_matches_reviewed_sources():
     vendored_path = Path(inspect.getsourcefile(vendored_inputs))
     vendored_source = vendored_path.read_text()
     assert hashlib.sha256(vendored_source.encode()).hexdigest() == (
-        _VENDORED_SOURCE_SHA256
+        "a688bdc97b69daab6e25d189ede7b69ce7859b30df0175d624ae1ff165ef277c"
     )
-    assert vendored_source.count("# VENDOR-DEVIATION") == _VENDOR_DEVIATION_COUNT
+    deviation_comments = [
+        token.string
+        for token in tokenize.generate_tokens(io.StringIO(vendored_source).readline)
+        if token.type == tokenize.COMMENT
+        and token.string.startswith("# VENDOR-DEVIATION")
+    ]
+    assert len(deviation_comments) == _VENDOR_DEVIATION_COUNT
+    assert sum("(redirect)" in comment for comment in deviation_comments) == 3
+    assert sum("(upstream-bugfix)" in comment for comment in deviation_comments) == 3
+    assert sum("(dual-namespace)" in comment for comment in deviation_comments) == 1
 
 
 def test_vendored_region_constants_match_upstream():

@@ -303,6 +303,8 @@ def load_audio(
         file = str(file)
     if isinstance(file, str) and file.startswith(("http://", "https://")):
         try:
+            # VENDOR-DEVIATION(upstream-bugfix): close the streamed response
+            # on success and every decoder/error path instead of leaking it.
             with requests.get(file, stream=True, timeout=timeout) as response:
                 response.raise_for_status()
                 audio, sample_rate = read_audio(
