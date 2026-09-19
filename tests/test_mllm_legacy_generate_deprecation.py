@@ -9,6 +9,9 @@ warning contract so the eventual removal cannot land silently.
 """
 
 import warnings
+from concurrent.futures import ThreadPoolExecutor
+from threading import Barrier
+from time import sleep
 
 import pytest
 
@@ -111,6 +114,33 @@ def test_legacy_warning_fires_once_per_instance():
                 lambda: _warn_legacy_generation(retry_model, "generate")
             )
         assert not retry_model._legacy_generation_warned
+
+
+def test_legacy_warning_is_once_per_instance_under_concurrency(monkeypatch):
+    from rapid_mlx.models import mllm as mllm_module
+
+    model = MLXMultimodalLM("test-model")
+    start = Barrier(3)
+    calls = []
+
+    def _warn(*args, **kwargs):
+        calls.append((args, kwargs))
+        # Release the GIL long enough for the competing caller to reach the
+        # warning-state critical section. Without the instance lock, both call.
+        sleep(0.05)
+
+    def _call(method):
+        start.wait()
+        mllm_module._warn_legacy_generation(model, method)
+
+    monkeypatch.setattr(mllm_module.warnings, "warn", _warn)
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        futures = [pool.submit(_call, method) for method in ("generate", "chat")]
+        start.wait()
+        for future in futures:
+            future.result(timeout=2)
+
+    assert len(calls) == 1
 
 
 class _FakeTokenizer:

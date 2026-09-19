@@ -1502,20 +1502,21 @@ def _warn_legacy_generation(
     before delegating; the per-instance dedupe keeps that delegation from
     warning a second time.
     """
-    if model._legacy_generation_warned:
-        return
-    warnings.warn(
-        f"MLXMultimodalLM.{method}() uses mlx-vlm's legacy generation "
-        "runtime and is deprecated. Serve vision models through the native "
-        "BatchedEngine lane (rapid_mlx.server), which does not use this "
-        "path. The method will be removed in an upcoming release.",
-        DeprecationWarning,
-        stacklevel=stacklevel,
-    )
-    # Mark the notice consumed only after ``warnings.warn`` returns.  A caller
-    # may promote DeprecationWarning to an exception; in that mode generation
-    # never starts, and a later retry still deserves the migration notice.
-    model._legacy_generation_warned = True
+    with model._legacy_generation_warning_lock:
+        if model._legacy_generation_warned:
+            return
+        warnings.warn(
+            f"MLXMultimodalLM.{method}() uses mlx-vlm's legacy generation "
+            "runtime and is deprecated. Serve vision models through the native "
+            "BatchedEngine lane (rapid_mlx.server), which does not use this "
+            "path. The method will be removed in an upcoming release.",
+            DeprecationWarning,
+            stacklevel=stacklevel,
+        )
+        # Mark the notice consumed only after ``warnings.warn`` returns.  A
+        # caller may promote DeprecationWarning to an exception; in that mode
+        # generation never starts, and a later retry still deserves the notice.
+        model._legacy_generation_warned = True
 
 
 class MLXMultimodalLM:
@@ -1574,6 +1575,7 @@ class MLXMultimodalLM:
         # Warned about the deprecated legacy generation surface yet? The
         # warning fires once per instance (see _warn_legacy_generation).
         self._legacy_generation_warned = False
+        self._legacy_generation_warning_lock = threading.Lock()
 
         # Initialize MLLM prefix cache manager (with vision embedding caching)
         self._cache_manager: MLLMPrefixCacheManager | None = None
