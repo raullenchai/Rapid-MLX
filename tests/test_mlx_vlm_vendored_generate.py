@@ -14,6 +14,7 @@ vendored package except for the documented pinned redirects.
 
 import inspect
 
+import mlx.core as mx
 import pytest
 
 import rapid_mlx.models.mlx_vlm_vendored as vendored_pkg
@@ -26,9 +27,9 @@ import rapid_mlx.models.mlx_vlm_vendored.sample_utils as vendored_sample_utils
 
 pytest.importorskip("mlx_vlm")
 
-# Functions whose BODY carries a documented redirect hunk (the deviation
-# lives on an import line inside the body, so getsource differs by exactly
-# those sentinel lines):
+# Functions whose BODY carries a documented deviation hunk (the deviation
+# lives on lines inside the body, so getsource differs by exactly those
+# sentinel lines):
 # - ``prepare_inputs``: the inputs.py hunks (bytes-path fsdecode; see the
 #   inputs.py inventory entry; behavior-tested in
 #   tests/test_mlx_vlm_vendored_inputs.py).
@@ -37,21 +38,28 @@ pytest.importorskip("mlx_vlm")
 # - ``generate_step`` / ``batch_generate``: ar.py's redirects to the
 #   pinned speculative drafters helper and to the vendored
 #   ``inputs.process_image``.
-_DOCUMENTED_REDIRECT_BODIES = {
+# - ``_generate_batch``: the capture-release bugfix hunk (gen.close() in a
+#   finally), repro-tested below.
+_DOCUMENTED_HUNK_BODIES = {
     "prepare_inputs",
     "kv_quant_from_legacy",
     "generate_step",
     "batch_generate",
+    "_generate_batch",
 }
 
 
 def _body_divergences(vendored_module, upstream_module):
     diverged = []
     for name, obj in vars(vendored_module).items():
-        if name.startswith("__") or name in _DOCUMENTED_REDIRECT_BODIES:
+        if name.startswith("__") or name in _DOCUMENTED_HUNK_BODIES:
             continue
         upstream_obj = getattr(upstream_module, name, None)
         if upstream_obj is None:
+            if inspect.isfunction(obj) or inspect.isclass(obj):
+                # A vendored-only function/class means the copy is not a
+                # faithful verbatim region — flag it.
+                diverged.append(f"{name}: no upstream symbol")
             continue
         if (inspect.isfunction(obj) or inspect.isclass(obj)) and type(obj) is not type(
             upstream_obj
@@ -134,3 +142,88 @@ def test_generate_step_signature_matches_upstream():
         inspect.signature(vendored_ar.generate_step).parameters.keys()
         == inspect.signature(upstream_ar.generate_step).parameters.keys()
     )
+
+
+def test_generate_batch_closes_generator_on_exception(monkeypatch):
+    """upstream-bugfix: _generate_batch must close the generator (and its
+    wired_limit context) even when the generation loop raises."""
+    closed = []
+
+    class _FakeGen:
+        has_work = True
+
+        def __init__(self, *args, **kwargs):
+            pass
+
+        def insert(self, *args, **kwargs):
+            return ["u1"]
+
+        def next(self):
+            raise RuntimeError("generation boom")
+
+        def close(self):
+            closed.append(True)
+
+    class _FakeEmbedding:
+        def to_dict(self):
+            return {}
+
+    class _FakeModel:
+        config = type("C", (), {"model_type": "fake"})()
+        language_model = None
+
+        def get_input_embeddings(self, *args, **kwargs):
+            return _FakeEmbedding()
+
+    class _FakeProcessor:
+        tokenizer = None
+
+    monkeypatch.setattr(vendored_ar, "BatchGenerator", _FakeGen)
+    monkeypatch.setattr(vendored_ar, "apply_chat_template", lambda *a, **k: "p")
+    monkeypatch.setattr(vendored_ar, "should_add_special_tokens", lambda *a, **k: False)
+    monkeypatch.setattr(
+        vendored_ar,
+        "prepare_inputs",
+        lambda *a, **k: {"input_ids": mx.array([[1]])},
+    )
+    monkeypatch.setattr(
+        vendored_ar, "_default_prefill_step_size_for_offload", lambda *a, **k: None
+    )
+
+    with pytest.raises(RuntimeError, match="generation boom"):
+        vendored_ar._generate_batch(_FakeModel(), _FakeProcessor(), ["p"])
+    assert closed == [True]
+
+
+def test_thinking_budget_criteria_default_start_token_does_not_crash():
+    """upstream-bugfix: the documented thinking_start_token=None default
+    must construct (pinned upstream crashes in tokenizer.encode(None))."""
+
+    class _HFStyleTokenizer:
+        def encode(self, text, add_special_tokens=False):
+            if text is None:
+                raise TypeError(
+                    "the following arguments are required of type str: 'text'"
+                )
+            return [1, 2]
+
+    criteria = vendored_inputs.ThinkingBudgetCriteria(
+        _HFStyleTokenizer(),
+        thinking_budget=8,
+        thinking_start_token=None,
+        enable_thinking=True,
+    )
+    assert criteria.thinking_start_token_id is None
+    # The span-entry comparison is guarded: no crash, no span entry.
+    assert criteria(5) is None
+
+    pytest.importorskip("mlx_vlm.utils")
+    from mlx_vlm.utils import ThinkingBudgetCriteria as UpstreamCriteria
+
+    with pytest.raises(TypeError):
+        UpstreamCriteria(
+            _HFStyleTokenizer(),
+            thinking_budget=8,
+            thinking_start_token=None,
+            enable_thinking=True,
+        )

@@ -3508,15 +3508,19 @@ def _generate_batch(
     )
     results = {uid: [] for uid in uids}
 
+    # VENDOR-DEVIATION(upstream-bugfix): the generator (holding the
+    # wired_limit context) stayed open when the loop raised; close it in a
+    # finally (repro-tested in tests/test_mlx_vlm_vendored_generate.py).
     tic = time.perf_counter()
-    while gen.has_work:
-        _, generation_responses = gen.next()
-        for r in generation_responses:
-            if r.finish_reason != "stop":
-                results[r.uid].append(r.token)
-    total_time = time.perf_counter() - tic
-
-    gen.close()
+    try:
+        while gen.has_work:
+            _, generation_responses = gen.next()
+            for r in generation_responses:
+                if r.finish_reason != "stop":
+                    results[r.uid].append(r.token)
+        total_time = time.perf_counter() - tic
+    finally:
+        gen.close()
 
     detokenizer = processor.detokenizer
     texts = []

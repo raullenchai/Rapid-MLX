@@ -15,7 +15,6 @@ from .. import cache
 # VENDOR-DEVIATION(redirect): the 7k-line turboquant module stays on the
 # pinned upstream dependency (kv_quant.py precedent).
 from mlx_vlm.turboquant import (  # noqa: F401  re-exported names
-    BatchTurboQuantKVCache,
     HybridQuantKVCache,
     TurboQuantKVCache,
     turboquant_enabled,

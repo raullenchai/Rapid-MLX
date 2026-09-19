@@ -1046,9 +1046,16 @@ class ThinkingBudgetCriteria:
             thinking_end_token, add_special_tokens=False
         )[-1]
 
-        self.thinking_start_token_id = tokenizer.encode(
-            thinking_start_token, add_special_tokens=False
-        )[-1]
+        # VENDOR-DEVIATION(upstream-bugfix): the documented default
+        # ``thinking_start_token=None`` crashed at construction because
+        # ``tokenizer.encode(None)`` raises; guard the encode and the span
+        # comparison instead (repro against pinned upstream in
+        # tests/test_mlx_vlm_vendored_generate.py).
+        self.thinking_start_token_id = (
+            tokenizer.encode(thinking_start_token, add_special_tokens=False)[-1]
+            if thinking_start_token is not None
+            else None
+        )
 
         self._forced_sequence: List[int] = []
         newline_ids = tokenizer.encode("\n", add_special_tokens=False)
@@ -1071,7 +1078,11 @@ class ThinkingBudgetCriteria:
 
     def __call__(self, token_id: int) -> Optional[int]:
         """Process a token and return a forced token ID if budget exceeded, else None."""
-        if self.enable_thinking and token_id == self.thinking_start_token_id:
+        if (
+            self.enable_thinking
+            and self.thinking_start_token_id is not None
+            and token_id == self.thinking_start_token_id
+        ):
             self.in_thinking = True
             return None
 
