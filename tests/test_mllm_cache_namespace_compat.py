@@ -10,6 +10,8 @@ guards against. The pairing tests below pin that a cache built in either
 namespace yields the same verdict at every seam.
 """
 
+import builtins
+
 import pytest
 
 pytest.importorskip("mlx")
@@ -117,6 +119,40 @@ def test_singleton_leaf_extraction_is_namespace_symmetric(cache_ns):
     detached = _extract_detached_singleton_leaf(recurrent, 0)
     assert type(detached) is type(recurrent)
     assert [state.shape for state in detached.cache] == [(1, 2), (1, 3)]
+
+
+def test_singleton_leaf_extraction_survives_optional_mlx_vlm_absence(monkeypatch):
+    """The vendored lane remains usable in a text-only/base installation."""
+    from rapid_mlx.mllm_batch_generator import _extract_detached_singleton_leaf
+    from rapid_mlx.models.mlx_vlm_vendored.cache import KVCache
+
+    real_import = builtins.__import__
+
+    def import_without_mlx_vlm(name, *args, **kwargs):
+        if name == "mlx_vlm.models.cache":
+            raise ImportError("optional mlx-vlm distribution is absent")
+        return real_import(name, *args, **kwargs)
+
+    monkeypatch.setattr(builtins, "__import__", import_without_mlx_vlm)
+    cache = KVCache()
+    cache.update_and_fetch(*_kv_state(2))
+
+    detached = _extract_detached_singleton_leaf(cache, 0)
+
+    assert type(detached) is KVCache
+    assert detached.state[0].shape == (1, 1, 2, 4)
+
+
+def test_future_mlx_lm_pooling_cache_is_accepted(monkeypatch):
+    """Keep the qualified mlx-lm namespace symmetric if it adds pooling."""
+    from mlx_lm.models import cache as lm_cache
+
+    class FuturePoolingCache:
+        pass
+
+    monkeypatch.setattr(lm_cache, "PoolingCache", FuturePoolingCache, raising=False)
+
+    assert first_incompatible_mllm_cache_type([FuturePoolingCache()]) is None
 
 
 def test_recurrent_layer_recognition(cache_ns):
