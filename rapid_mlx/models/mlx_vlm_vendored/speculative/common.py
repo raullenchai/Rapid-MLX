@@ -315,7 +315,13 @@ def _speculative_walk_batch_uniform_acceptance(
     budgets: List[int],
 ) -> Tuple[List[int], List[List[int]]]:
     """Clamp a batch to the earliest rejection with verifier-token fallback."""
-    accepted = min(accepted_list)
+    # VENDOR-DEVIATION(bugfix): pinned upstream mins over every row, so a
+    # retained finished row (zero budget under the non-filterable-cache
+    # fallback) would clamp the whole batch to zero acceptance and collapse
+    # throughput to bonus-only decoding. Budget from rows that still have
+    # tokens to spend; default to 0 when none do.
+    positive = [a for a, budget in zip(accepted_list, budgets) if budget > 0]
+    accepted = min(positive) if positive else 0
     new_tokens_list: List[List[int]] = []
     for i, budget in enumerate(budgets):
         accepted_prefix = draft_tokens[i : i + 1, :accepted]

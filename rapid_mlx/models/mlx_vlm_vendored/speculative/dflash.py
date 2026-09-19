@@ -614,7 +614,18 @@ def _dflash_rounds_batch(
                 and _requires_uniform_batch_acceptance(draft_model, lm)
                 and len(set(accepted_list)) > 1
             ):
-                uniform = min(len(nt) - 1 for nt in new_tokens_list)
+                # VENDOR-DEVIATION(bugfix): pinned upstream takes the min
+                # over every row, so a retained finished row (empty token
+                # budget under the non-filterable-cache fallback) yields
+                # -1, empties every unfinished row's output, and can stall
+                # the loop with no progress. Clamp over rows that still
+                # have a positive budget and floor the acceptance at 0.
+                positive = [
+                    len(nt) - 1
+                    for nt, j in zip(new_tokens_list, range(n_active))
+                    if budgets[j] > 0
+                ]
+                uniform = max(0, min(positive)) if positive else 0
                 new_tokens_list = [nt[: uniform + 1] for nt in new_tokens_list]
                 accepted_list = [uniform] * n_active
 
