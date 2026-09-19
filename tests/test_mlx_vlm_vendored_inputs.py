@@ -12,6 +12,7 @@ vendored module directly.
 """
 
 import inspect
+from dataclasses import asdict
 
 import pytest
 
@@ -48,12 +49,34 @@ def test_vendored_region_is_byte_identical_to_upstream():
         assert vendored == upstream, f"{name} diverged from pinned upstream"
 
 
+def test_vendored_region_constants_match_upstream():
+    """Module-level assignments of the vendored region must match too.
+
+    Compared via ``asdict``: the two ``VideoSampling`` instances are
+    different classes (vendored vs upstream), so dataclass ``__eq__``
+    would be identity-false across namespaces even for equal fields.
+    """
+    mlx_vlm_utils = pytest.importorskip("mlx_vlm.utils")
+    assert asdict(vendored_inputs.DEFAULT_VIDEO_SAMPLING) == asdict(
+        mlx_vlm_utils.DEFAULT_VIDEO_SAMPLING
+    )
+    assert (
+        vendored_inputs._VIDEO_SAMPLING_FIELDS == mlx_vlm_utils._VIDEO_SAMPLING_FIELDS
+    )
+
+
 class _FakeTokenizer:
     pad_token = None
     eos_token = "</s>"
 
-    def __call__(self, prompts, add_special_tokens=False, padding=False,
-                 padding_side="left", return_tensors="mlx"):
+    def __call__(
+        self,
+        prompts,
+        add_special_tokens=False,
+        padding=False,
+        padding_side="left",
+        return_tensors="mlx",
+    ):
         class _Encoded:
             input_ids = [[1, 2, 3]]
             attention_mask = [[1, 1, 1]]
@@ -76,9 +99,7 @@ def test_prepare_inputs_text_only_matches_upstream():
     )
     assert set(vendored_out) == {"input_ids", "attention_mask"}
     assert (vendored_out["input_ids"] == upstream_out["input_ids"]).all()
-    assert (
-        vendored_out["attention_mask"] == upstream_out["attention_mask"]
-    ).all()
+    assert (vendored_out["attention_mask"] == upstream_out["attention_mask"]).all()
     assert isinstance(vendored_out["input_ids"], mx.array)
 
 
@@ -86,7 +107,5 @@ def test_prepare_inputs_sets_pad_token_when_padding():
     tokenizer = _FakeTokenizer()
     processor = _BareProcessor()
     processor.tokenizer = tokenizer
-    vendored_inputs.prepare_inputs(
-        processor, prompts=["hello world"], padding=True
-    )
+    vendored_inputs.prepare_inputs(processor, prompts=["hello world"], padding=True)
     assert tokenizer.pad_token == tokenizer.eos_token
