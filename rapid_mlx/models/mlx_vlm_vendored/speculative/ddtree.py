@@ -83,7 +83,14 @@ def build_ddtree(
         Flat list of nodes. ``list[i].parent`` indexes earlier entries in
         the same list (or ``-1`` for depth-1 children of the root).
     """
-    assert drafter_logits.ndim == 3 and drafter_logits.shape[0] == 1
+    # VENDOR-DEVIATION(bugfix): pinned upstream validates with ``assert``,
+    # which disappears under ``python -O`` and would silently process
+    # invalid ranks/multi-row logits as row zero; raise explicitly instead.
+    if drafter_logits.ndim != 3 or drafter_logits.shape[0] != 1:
+        raise ValueError(
+            "drafter_logits must be a single-row [1, L, V] tensor, got "
+            f"shape {tuple(drafter_logits.shape)}"
+        )
     V = drafter_logits.shape[-1]
     L_total = drafter_logits.shape[1]
     L = L_total - slot_offset  # usable draft depths
