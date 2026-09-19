@@ -1,0 +1,20 @@
+{
+  "generator_version": "mg-gen-1",
+  "groups_heldout": 96,
+  "groups_total": 640,
+  "heldout_per_family_groups": {
+    "injection_guard": 32,
+    "model_routing": 32,
+    "tool_gate": 32
+  },
+  "heldout_samples": 192,
+  "per_family_groups": {
+    "injection_guard": 213,
+    "model_routing": 214,
+    "tool_gate": 213
+  },
+  "samples_total": 1280,
+  "schema_version": 1,
+  "seed": 20260919,
+  "train_samples": 1088
+}
