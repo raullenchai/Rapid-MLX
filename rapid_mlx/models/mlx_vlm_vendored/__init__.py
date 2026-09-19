@@ -299,13 +299,19 @@ vendored copy differs by exactly the deviations listed):
   ``4f915923c591faf4b25603b5b5cab4511296a37c7d141553506e6b0760a03a41``;
   redirects: ``..turboquant`` → pinned upstream (kv_quant precedent),
   ``.cache`` → vendored root) and ``linear.py`` (74 lines; upstream digest
-  ``148a56193feaf170097ff1c5edccca8165c1b5df878f1605778c4d3642a4d2fa``, no
-  deviations). ``__init__.py`` is a marker shim (upstream's is empty).
+  ``148a56193feaf170097ff1c5edccca8165c1b5df878f1605778c4d3642a4d2fa``; 1
+  function-level redirect: ``native_batch_linear``'s lazy
+  ``.quantized_verifier`` → pinned upstream (verifier not vendored,
+  mirrors the ``mtp`` redirect)). ``__init__.py`` is a marker shim
+  (upstream's is empty).
 
 - ``fp8.py`` (upstream digest
-  ``36ded0f7d5b031fbaaf9a522a6df71e477cc260102092c7f7599862367d70ee7``) and
-  ``quant_utils.py`` (upstream digest
+  ``36ded0f7d5b031fbaaf9a522a6df71e477cc260102092c7f7599862367d70ee7``) —
+  verbatim, no deviations (mlx + stdlib only) — and ``quant_utils.py``
+  (upstream digest
   ``e323189054be767e0945c29167ad9de7a5992b24c51c0be98c65477260d454af``) —
-  verbatim, no deviations (mlx + stdlib only). Foundations for the
-  drafter/model slices.
+  verbatim with 2 function-level redirects in ``dequantize_model``:
+  ``.models.mla``/``.models.switch_layers`` → pinned upstream (model
+  modules not vendored; mlx-nn isinstance dispatch only). Foundations for
+  the drafter/model slices.
 """

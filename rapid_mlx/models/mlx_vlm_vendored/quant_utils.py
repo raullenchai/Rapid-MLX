@@ -171,8 +171,11 @@ def dequantize_model(model: nn.Module) -> nn.Module:
     Returns:
         nn.Module: The model with dequantized layers.
     """
-    from .models.mla import MultiLinear, QuantizedMultiLinear
-    from .models.switch_layers import QuantizedSwitchLinear, SwitchLinear
+    # VENDOR-DEVIATION(redirect): ``mla``/``switch_layers`` model modules
+    # land in a later step-3 slice; until then these resolve pinned upstream
+    # (mlx-nn isinstance dispatch only — no cache types cross the boundary).
+    from mlx_vlm.models.mla import MultiLinear, QuantizedMultiLinear
+    from mlx_vlm.models.switch_layers import QuantizedSwitchLinear, SwitchLinear
 
     dequantize_layers = []
     for name, module in model.named_modules():
