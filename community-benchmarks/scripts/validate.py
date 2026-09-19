@@ -28,10 +28,13 @@ Layered checks, in order:
 Exit code is the number of failed files (capped at 125 so it fits in a
 shell exit status). 0 = all clean. The GHA fails the job on non-zero.
 
-Designed to run with stdlib only when ``jsonschema`` isn't installed —
-in that case schema validation is skipped with a clear warning. The
-GHA installs ``jsonschema`` explicitly, so CI always runs the full
-check; local invocations stay friction-free.
+``jsonschema`` is mandatory: when it isn't installed every file FAILs
+with an install hint instead of silently skipping the schema check —
+the earlier stdlib fallback ("warn and skip") demoted the most
+load-bearing gate in the validator to a no-op whenever the host was
+missing the package. The GHA pins ``jsonschema>=4.0`` so CI always runs
+the full check; a local run needs ``pip install 'jsonschema>=4.0'``
+first.
 """
 
 from __future__ import annotations

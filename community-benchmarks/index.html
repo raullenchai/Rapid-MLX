@@ -391,7 +391,18 @@ async function init() {
     const td = document.createElement("td");
     td.colSpan = 7;
     td.className = "empty";
-    td.textContent = `Failed to load aggregate: ${e.message}`;
+    let message = `Failed to load aggregate: ${e.message}`;
+    // fetch() rejects with TypeError on file:// URLs (browsers block
+    // reads from the filesystem), so anyone double-clicking this file
+    // locally sees a bare "Failed to fetch" with no clue that serving
+    // the folder over HTTP fixes it.
+    if (window.location.protocol === "file:" && e instanceof TypeError) {
+      message +=
+        " — this page fetches aggregated.json, which browsers block on " +
+        "file:// URLs. Serve this folder over HTTP (e.g. python3 -m http.server) " +
+        "or open it from a static host.";
+    }
+    td.textContent = message;
     tr.appendChild(td);
     body.appendChild(tr);
     document.getElementById("meta").textContent = "Aggregate load failed.";
