@@ -45,9 +45,105 @@ vendored copy differs by exactly the deviations listed):
   A diff against the pinned tag must show only these hunks (plus this
   note in the inventory).
 
-``kv_quant.py`` is NOT vendored here (step 2a): its ``from_legacy()`` lazily
-imports ``.turboquant`` (7k lines, itself importing ``.models.cache``), so it
-moves to step 2b with the APC family, where the turboquant dependency gets an
-explicit home (vendored slice or a documented redirect to the pinned
-upstream).
+- ``apc_storage.py`` — byte-identical to ``mlx_vlm/apc_storage.py`` @ v0.7.1
+  (upstream sha256
+  ``e58b3a5aa5fa875764194712e38a7752006aeb31db5abe132057c667759e7010``).
+- ``_stream_cleanup.py`` — byte-identical to ``mlx_vlm/_stream_cleanup.py``
+  @ v0.7.1 (upstream sha256
+  ``00bf5797510f088cfe4cea7798dce0f2902af99a956888748ff0ddc11de21c5d``).
+- ``vision_cache.py`` — identical to ``mlx_vlm/vision_cache.py`` @ v0.7.1
+  (upstream sha256
+  ``5db081a4ef9ee07bb1102c6a87b5fb4a0895821bb2c05d19e110ba6f700e4561``)
+  **except in-source ``VENDOR-DEVIATION(upstream-bugfix)`` hunks** covering
+  ``_make_key`` (plus the ``import os`` it needs), reproducible against the
+  pinned upstream:
+  1. Upstream's key derivation was ambiguous and could serve one image
+     set's cached features to another: list sources joined the recursively
+     derived keys with a bare ``"|"`` (``["a|b", "c"]`` vs
+     ``["a", "b|c"]`` collide), and even length-prefixing collides across
+     nesting boundaries (``["1:a", "b"]`` vs ``[["a"], "b"]``). Fixed with
+     a count-delimited, type-tagged encoding (``s``=str, ``l``=list with a
+     child count, ``p``=content hash) that is injective. Upstream also
+     documented Path
+     sources but only accepted ``str`` (a ``Path`` fell into the
+     ``obj:{id}`` fallback); ``os.PathLike`` is now normalized via
+     ``os.fsdecode`` — ``os.fspath`` alone can return ``bytes`` for
+     byte-valued paths, which fell into the image-content hash branch and
+     collided with a raw image payload equal to the path bytes.
+  2. Unsupported source types fell back to ``obj:{id(...)}``; Python may
+     hand that id to an unrelated object after collection — a silent
+     stale-feature hit. Fixed to raise ``TypeError`` (the str/PathLike and
+     bytes-like branches cover every real caller; the lane passes
+     pre-hashed string keys).
+  3. ``tobytes()`` sources were hashed on their raw bytes alone, so two
+     images with identical byte sequences but different mode or size (a
+     2x1 ``"L"`` vs a 1x1 ``"RGB"``) collided and one image's cached
+     features were served for the other. Fixed to hash stable
+     type/mode/size metadata together with the raw bytes (bytes-like
+     sources carry no such metadata and stay content-addressed). Palette
+     images (``"P"``) hash to palette indices in ``tobytes()``, so
+     same-sized images with identical indices but different palettes
+     rendered different content yet still collided; the effective
+     ``getpalette()`` bytes and palette transparency metadata are folded
+     into the digest as well.
+  4. ``put()`` with ``max_size <= 0`` evaluated
+     ``len(self._cache) >= self.max_size`` against an empty mapping and
+     called ``popitem()`` on it, raising KeyError. Fixed so zero (or
+     negative) ``max_size`` disables storage instead of crashing.
+  The lane's ``VisionFeatureCache`` import resolves here.
+- ``kv_quant.py`` — identical to ``mlx_vlm/kv_quant.py`` @ v0.7.1 (upstream
+  sha256
+  ``2936878096435dd2540e7a029b986259e5b7101c972a5be7168495a58e7fbfa3``)
+  **except one import redirect**: ``from_legacy()``'s lazy
+  ``from .turboquant import ...`` resolves the pinned upstream
+  ``mlx_vlm.turboquant`` instead. TurboQuant itself (7k lines with its own
+  ``.models.cache`` dependency) is NOT vendored — it can never fit a
+  reviewable diff, so it stays a pinned-dependency redirect for the whole
+  transition.
+- ``apc_coordinator.py`` — identical to ``mlx_vlm/apc_coordinator.py`` @
+  v0.7.1 (upstream sha256
+  ``8c3939a15b8bee2c4ac8f1144a1048c3463d6cf935537d63eb21403b6f63773b``)
+  **except documented redirects**: its module-level
+  ``from .apc_adapters import ...`` resolves the vendored sibling; its lazy
+  ``from .apc import ...`` engine calls and the ``fresh_cache`` fallback
+  ``make_prompt_cache`` resolve upstream mlx-vlm until the APC engine is
+  vendored (next PR of this stack) and producers flip (step 3). Every site
+  carries a ``VENDOR-DEVIATION`` comment. Additionally, return-value locals
+  are explicitly annotated where the redirected engine calls type-resolve to
+  ``Any`` (the repo's mypy ``no-any-return`` discipline; no behavior
+  change).
+- ``apc_adapters.py`` — identical to ``mlx_vlm/apc_adapters.py`` @ v0.7.1
+  (upstream sha256
+  ``9ce11d3c420d983281faf229cfc06ae4a8dce28469dd1536a05d26e4e980c101``)
+  **except documented ``VENDOR-DEVIATION`` hunks**, all part of one
+  transition mechanism (type-namespace duality — see the design note):
+  1. Module-level ``_cache_namespaces`` / ``_cache_namespace_of`` helpers:
+     every type table, capability registration, contract probe and
+     constructor covers the vendored AND upstream cache namespaces, so the
+     adapters behave identically whichever namespace produced a cache. A
+     stripped installation without mlx-vlm yields one namespace (no None
+     entries); ownership is decided by base-class identity so third-party
+     subclasses resolve to their own namespace.
+  2. Constructors route through ``_cache_namespace_of`` so cloned/merged
+     results keep the producer's cache types (upstream-typed inputs yield
+     upstream-typed results — byte-identical behavior today; correct
+     typing once producers emit vendored caches in step 3). Bare tuples
+     are namespace-agnostic: ``clone_cache_entry`` clones a tuple before
+     the owning-namespace lookup (each element resolves its own), and
+     ``merge_cache_entries`` derives the container namespace from the
+     first tuple element — a stripped install cannot resolve a namespace
+     for a tuple itself, which silently dropped composite caches that
+     ``apc_exact_eligible`` declares supported. The lazy
+     ``_apc_type_tables`` / ``_clone_rules`` builders also publish their
+     globals only after both namespaces are processed — as one immutable
+     assignment for the two type tables — so a concurrent first caller
+     can never observe a partially built (or half-published) table.
+  3. Redirects: ``_apc_array_helpers``' lazy ``.apc`` import and the
+     ``build_prefix_cache_plan`` fallback ``make_prompt_cache`` resolve
+     upstream mlx-vlm until the APC engine is vendored (next PR) and
+     producers flip (step 3); the turboquant registration resolves the
+     pinned upstream ``mlx_vlm.turboquant`` (not vendored — see above).
+  The lane's ``clone_cache_entry`` / ``Capability`` / ``resolve_capability``
+  imports now resolve here; the four test modules that stub
+  ``clone_cache_entry`` were re-pointed at this module in the same commit.
 """

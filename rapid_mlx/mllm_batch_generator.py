@@ -778,16 +778,28 @@ def _media_clone_leaves(
     :func:`_extract_detached_singleton_leaf`).
     """
     try:
-        from mlx_vlm.apc_adapters import clone_cache_entry
+        from rapid_mlx.models.mlx_vlm_vendored.apc_adapters import clone_cache_entry
     except ImportError:
         return None
     eval_targets: list[Any] = []
-    cloned = [
-        clone_cache_entry(
-            leaf, min_capacity_tokens=min_capacity_tokens, eval_targets=eval_targets
-        )
-        for leaf in leaves
-    ]
+    try:
+        cloned = [
+            clone_cache_entry(
+                leaf,
+                min_capacity_tokens=min_capacity_tokens,
+                eval_targets=eval_targets,
+            )
+            for leaf in leaves
+        ]
+    except ModuleNotFoundError as exc:
+        # The vendored adapter remains importable in a text-only install, but
+        # this transition slice still resolves its array-copy helpers from the
+        # pinned upstream APC module.  Treat that lazy redirect being absent
+        # exactly like the old top-level mlx-vlm import failure: decline the
+        # snapshot and let the caller perform the cold full forward.
+        if exc.name not in {"mlx_vlm", "mlx_vlm.apc"}:
+            raise
+        return None
     if any(leaf is None for leaf in cloned):
         return None
     if eval_targets:
@@ -1355,7 +1367,9 @@ class MLLMBatchGenerator:
         )
         if self._supports_vision_feature_cache:
             try:
-                from mlx_vlm.vision_cache import VisionFeatureCache
+                from rapid_mlx.models.mlx_vlm_vendored.vision_cache import (
+                    VisionFeatureCache,
+                )
 
                 # Each entry pins a projected-features ``mx.array`` (Metal
                 # buffer) for the image's lifetime in the LRU, so bound this
@@ -2662,7 +2676,10 @@ class MLLMBatchGenerator:
         their offset (mlx-vlm's own ``trim``), recurrent layers restore the
         checkpoint recorded there. None when any layer cannot be rewound."""
         try:
-            from mlx_vlm.apc_adapters import Capability, resolve_capability
+            from rapid_mlx.models.mlx_vlm_vendored.apc_adapters import (
+                Capability,
+                resolve_capability,
+            )
         except ImportError:  # pragma: no cover - mlx-vlm absent
             return None
         out: list[Any] = []
@@ -2738,20 +2755,31 @@ class MLLMBatchGenerator:
         if rewound is None:
             return None
         try:
-            from mlx_vlm.apc_adapters import clone_cache_entry
+            from rapid_mlx.models.mlx_vlm_vendored.apc_adapters import (
+                clone_cache_entry,
+            )
         except ImportError:  # pragma: no cover - mlx-vlm absent
             return None
         eval_targets: list[Any] = []
         warm: list[Any] = []
-        for layer in rewound:
-            cloned = clone_cache_entry(
-                layer,
-                min_capacity_tokens=len(full_ids) + 1,
-                eval_targets=eval_targets,
-            )
-            if cloned is None:
-                return None
-            warm.append(cloned)
+        try:
+            for layer in rewound:
+                cloned = clone_cache_entry(
+                    layer,
+                    min_capacity_tokens=len(full_ids) + 1,
+                    eval_targets=eval_targets,
+                )
+                if cloned is None:
+                    return None
+                warm.append(cloned)
+        except ModuleNotFoundError as exc:
+            # See ``_media_clone_leaves``: until apc.py is vendored in the
+            # next stack slice, cloning may reach a lazy upstream helper.
+            # Missing optional vision/APC dependencies are a cache miss, not a
+            # request failure.
+            if exc.name not in {"mlx_vlm", "mlx_vlm.apc"}:
+                raise
+            return None
         if eval_targets:
             mx.eval(eval_targets)
         holders = collect_checkpoints(rewound)
