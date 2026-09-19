@@ -63,9 +63,9 @@ COMPILEALL_JOBS="${COMPILEALL_JOBS:-0}"
 FFMPEG_VERSION="7.1.5"
 FFMPEG_SHA256="de668509caf9e35e3cd162473441fdb29538c6d96ed080292b3cf9e6fc5d558f"
 FFMPEG_BUILD_JOBS="${FFMPEG_BUILD_JOBS:-4}"
-LTX25_RUNTIME_COMMIT="57952288076766abe27dda3a774b2c24f7346977"
+LTX25_RUNTIME_COMMIT="905efb2308a05385f4051e1af6ac322147be23ed"
 LTX25_RUNTIME_VERSION="0.14.15"
-LTX25_RUNTIME_SHA256="fa9a66a0c78721c3dce51d0f1dadcabad060682410303be748e529a846a9d5c9"
+LTX25_RUNTIME_SHA256="3f4cf7f0150401640b50a0078b813a8d739718544586f3cb06ef2278d232c689"
 
 # How many Mach-Os we expect to sign. A drift here means a new wheel
 # added a .so OR a dependency moved a binary, both of which need
@@ -606,7 +606,7 @@ echo "==> bundling minimal LTX/Wan video runtime (no OpenCV)"
 # LTX-2.5 is a separate pure-Python runtime. A signed app cannot clone a
 # repository or provision an uv workspace after launch, so build its two
 # packages from the exact audited source snapshot and embed them.
-LTX25_URL="https://github.com/MrMoferFRAN/ltx-2-mlx/archive/${LTX25_RUNTIME_COMMIT}.tar.gz"
+LTX25_URL="https://github.com/raullenchai/ltx-2-mlx/archive/${LTX25_RUNTIME_COMMIT}.tar.gz"
 (
     set -e
     LTX25_SOURCE_DIR="$(mktemp -d -t rapid-ltx25-source.XXXXXX)"

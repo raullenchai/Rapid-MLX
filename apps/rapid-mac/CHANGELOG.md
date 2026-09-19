@@ -17,6 +17,13 @@ can actually understand.
 
 ## [Unreleased]
 
+### Added
+- **An optional faster LTX-2.5 path for large videos.** Advanced users on
+  Apple Silicon can set `LTX2_DEQUANT_MATMUL_MIN_TOKENS=1024` before starting
+  Rapid. On a 48 GB M4 Pro this reduced measured 5- and 10-second generation
+  time by 4.1–4.5%, with unchanged memory use and video/audio stream shape.
+  It remains opt-in while broader chip and visual-quality checks continue.
+
 ## [0.14.3] — 2026-09-18
 
 Rapid-MLX 0.14.3 makes multimodal conversations materially faster, gives
