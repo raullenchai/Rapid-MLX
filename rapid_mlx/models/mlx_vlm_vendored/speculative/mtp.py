@@ -1186,17 +1186,24 @@ def _mtp_rounds_batch(
         # in the batch and just stop emitting for finished rows. End the
         # round-loop when every row has finished.
         cache_filterable = all(hasattr(c, "filter") for c in prompt_cache)
+        # VENDOR-DEVIATION(bugfix): pinned upstream compacts whenever the
+        # target caches are filterable but only shrinks the drafter when it
+        # happens to expose ``filter_batch`` — a drafter without it keeps
+        # its per-row state at the old batch shape while the caches, hidden
+        # states, and shared KV shrink, misaligning every subsequent draft
+        # step. Compact only when the caches AND the drafter can be shrunk
+        # together; otherwise ride the unfinished-row budget fallback
+        # (finished rows stay active and simply stop emitting).
+        drafter_filterable = callable(getattr(draft_model, "filter_batch", None))
         if all(finished[active_idx[j]] for j in range(n_active)):
             break
-        if cache_filterable:
+        if cache_filterable and drafter_filterable:
             keep_slots = [j for j in range(n_active) if not finished[active_idx[j]]]
             if len(keep_slots) < n_active:
                 keep_mx = mx.array(keep_slots, dtype=mx.int32)
                 for c in prompt_cache:
                     c.filter(keep_mx)
-                filter_drafter = getattr(draft_model, "filter_batch", None)
-                if callable(filter_drafter):
-                    filter_drafter(keep_mx)
+                draft_model.filter_batch(keep_mx)
                 hidden = hidden[keep_mx]
                 for k in next_shared_kv:
                     K_next, V_next = next_shared_kv[k]

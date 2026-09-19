@@ -199,6 +199,31 @@ _HUNK_SPECS = {
             "        ]\n"
             "        bs = _mtp_next_block_size(\n",
         ),
+        (
+            '        cache_filterable = all(hasattr(c, "filter") for c in prompt_cache)\n'
+            "        # VENDOR-DEVIATION(bugfix): pinned upstream compacts whenever the\n"
+            "        # target caches are filterable but only shrinks the drafter when it\n"
+            "        # happens to expose ``filter_batch`` — a drafter without it keeps\n"
+            "        # its per-row state at the old batch shape while the caches, hidden\n"
+            "        # states, and shared KV shrink, misaligning every subsequent draft\n"
+            "        # step. Compact only when the caches AND the drafter can be shrunk\n"
+            "        # together; otherwise ride the unfinished-row budget fallback\n"
+            "        # (finished rows stay active and simply stop emitting).\n"
+            '        drafter_filterable = callable(getattr(draft_model, "filter_batch", None))\n'
+            "        if all(finished[active_idx[j]] for j in range(n_active)):\n"
+            "            break\n"
+            "        if cache_filterable and drafter_filterable:\n",
+            '        cache_filterable = all(hasattr(c, "filter") for c in prompt_cache)\n'
+            "        if all(finished[active_idx[j]] for j in range(n_active)):\n"
+            "            break\n"
+            "        if cache_filterable:\n",
+        ),
+        (
+            "                draft_model.filter_batch(keep_mx)\n",
+            '                filter_drafter = getattr(draft_model, "filter_batch", None)\n'
+            "                if callable(filter_drafter):\n"
+            "                    filter_drafter(keep_mx)\n",
+        ),
     ),
 }
 
