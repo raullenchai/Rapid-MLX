@@ -684,7 +684,7 @@ def clone_cache_entry(c, *, min_capacity_tokens, eval_targets):
                 )
             if isinstance(c, lm.BatchRotatingKVCache):
                 return lm.RotatingKVCache(
-                    max_size=int(c.max_size), keep=int(getattr(c, "keep", 0))
+                    max_size=int(c.max_size), keep=getattr(c, "keep", 0)
                 )
             return lm.KVCache()
         return clone_cache_entry(
