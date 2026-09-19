@@ -2711,6 +2711,24 @@ def test_exact_prefix_snap_refuses_when_rewind_or_clone_fails(monkeypatch):
     assert gen._snap_exact_text_prefix(cache, full_ids, 17, min_position=0) is None
 
 
+def test_exact_prefix_snap_fails_closed_when_lazy_upstream_apc_is_absent(monkeypatch):
+    """The vendored adapter can import before its transitional upstream APC
+    helper does.  A missing helper remains a clean cache miss, matching the
+    pre-vendoring optional-dependency behavior."""
+    import rapid_mlx.models.mlx_vlm_vendored.apc_adapters as adapters
+
+    gen = _make_real_apc_generator(monkeypatch)
+    cache = gen._prefix_cache
+    _store_entry_with_checkpoints(gen, list(range(100)), [40, 80])
+    full_ids = list(range(90)) + [999] * 10
+    monkeypatch.setattr(
+        adapters,
+        "_apc_array_helpers",
+        lambda: (_ for _ in ()).throw(ModuleNotFoundError("mlx_vlm.apc")),
+    )
+    assert gen._snap_exact_text_prefix(cache, full_ids, 17, min_position=0) is None
+
+
 def test_exact_prefix_snap_promotes_only_a_snapshot_that_served(monkeypatch):
     """LRU order must not move for a candidate whose rewind or clone failed."""
     import rapid_mlx.models.mlx_vlm_vendored.apc_adapters as adapters

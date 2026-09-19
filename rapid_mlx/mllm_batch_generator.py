@@ -782,12 +782,22 @@ def _media_clone_leaves(
     except ImportError:
         return None
     eval_targets: list[Any] = []
-    cloned = [
-        clone_cache_entry(
-            leaf, min_capacity_tokens=min_capacity_tokens, eval_targets=eval_targets
-        )
-        for leaf in leaves
-    ]
+    try:
+        cloned = [
+            clone_cache_entry(
+                leaf,
+                min_capacity_tokens=min_capacity_tokens,
+                eval_targets=eval_targets,
+            )
+            for leaf in leaves
+        ]
+    except ImportError:
+        # The vendored adapter remains importable in a text-only install, but
+        # this transition slice still resolves its array-copy helpers from the
+        # pinned upstream APC module.  Treat that lazy redirect being absent
+        # exactly like the old top-level mlx-vlm import failure: decline the
+        # snapshot and let the caller perform the cold full forward.
+        return None
     if any(leaf is None for leaf in cloned):
         return None
     if eval_targets:
@@ -2750,15 +2760,22 @@ class MLLMBatchGenerator:
             return None
         eval_targets: list[Any] = []
         warm: list[Any] = []
-        for layer in rewound:
-            cloned = clone_cache_entry(
-                layer,
-                min_capacity_tokens=len(full_ids) + 1,
-                eval_targets=eval_targets,
-            )
-            if cloned is None:
-                return None
-            warm.append(cloned)
+        try:
+            for layer in rewound:
+                cloned = clone_cache_entry(
+                    layer,
+                    min_capacity_tokens=len(full_ids) + 1,
+                    eval_targets=eval_targets,
+                )
+                if cloned is None:
+                    return None
+                warm.append(cloned)
+        except ImportError:
+            # See ``_media_clone_leaves``: until apc.py is vendored in the
+            # next stack slice, cloning may reach a lazy upstream helper.
+            # Missing optional vision/APC dependencies are a cache miss, not a
+            # request failure.
+            return None
         if eval_targets:
             mx.eval(eval_targets)
         holders = collect_checkpoints(rewound)
