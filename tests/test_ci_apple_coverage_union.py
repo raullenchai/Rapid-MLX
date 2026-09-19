@@ -237,6 +237,14 @@ def test_bonsai_runtime_coverage_runs_on_apple_silicon() -> None:
     assert 'pip install -e ".[vision,image]"' in install
 
 
+def test_vendored_mllm_namespace_coverage_runs_on_apple_silicon() -> None:
+    """MLX-bound namespace branches must contribute to the coverage union."""
+    _, workflow = _workflow()
+    apple_run = workflow["jobs"]["test-apple-silicon"]["steps"][-2]["run"]
+
+    assert "tests/test_mllm_cache_namespace_compat.py" in apple_run
+
+
 def test_coverage_data_is_commit_bound_and_fail_closed() -> None:
     _, workflow = _workflow()
     jobs = workflow["jobs"]
