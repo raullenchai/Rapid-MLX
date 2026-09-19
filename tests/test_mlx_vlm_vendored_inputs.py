@@ -35,6 +35,8 @@ _REGION_FUNCTIONS = [
     "resolve_video_sampling",
     "process_inputs",
     "process_inputs_with_fallback",
+    "group_images_by_shape",
+    "should_add_special_tokens",
 ]
 # Excluded from the probe: ``processor_video_sampling``, ``load_video``,
 # ``load_audio``, and ``prepare_inputs`` carry the documented hunks (see
