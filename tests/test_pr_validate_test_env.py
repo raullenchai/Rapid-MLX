@@ -37,6 +37,7 @@ from scripts.pr_validate._test_env import (
     TEST_EXTRAS_NAME,
     TestEnvStatus,
     auto_install_disabled,
+    canonical_test_packages,
     check_test_env,
     required_test_packages_for_platform,
 )
@@ -135,10 +136,12 @@ def _pkg_name(dep: str) -> str:
 
 class TestCheckTestEnv:
     def test_returns_ok_on_healthy_host(self):
-        """The running interpreter HAS pytest + pytest-asyncio (we're
-        in a pytest invocation right now), so the probe must report
-        ok with an empty missing list."""
-        status = check_test_env()
+        """The running interpreter satisfies its pytest requirement."""
+        from scripts.pr_validate import _test_env as mod
+
+        packages = (("pytest", "pytest>=7.0.0", "test runner"),)
+        with patch.object(mod, "canonical_test_packages", return_value=packages):
+            status = check_test_env()
         assert status.ok is True
         assert status.missing == ()
         assert status.interpreter == sys.executable
@@ -205,39 +208,22 @@ class TestCheckTestEnv:
         assert f"'.[{TEST_EXTRAS_NAME}]'" in status.install_hint
         assert str(python) in status.install_hint
 
-    def test_batch_fail_with_individual_passes_is_treated_as_fail(self, tmp_path):
-        """Codex r1 BLOCKING: previously a batch-import failure that
-        re-probed clean per-module returned ``ok=True``. That hides a
-        real failure mode pytest hits at startup (plugin registration
-        order, sys.path mutation by one import that breaks the next).
-        We simulate it by patching subprocess.run so the batch probe
-        exits non-zero with a recognizable stderr while each
-        individual probe exits 0 — the helper must report
-        ``ok=False`` and surface the batch stderr."""
+    def test_child_probe_failure_is_treated_as_fail(self, tmp_path):
+        """A child crash must fail closed and surface its diagnostic."""
         import subprocess
 
         from scripts.pr_validate import _test_env as mod
 
-        # The batch probe is the FIRST call (one combined "import X;
-        # import Y" command); individual probes are subsequent calls.
-        # We construct a side_effect list that returns a non-zero
-        # CompletedProcess for the batch and zero for each individual.
         batch_stderr = (
             "Traceback (most recent call last):\n"
             "  File '<string>', line 1, in <module>\n"
             "RuntimeError: simulated plugin-order collision\n"
         )
-        n_packages = len(mod.required_test_packages_for_platform())
-        results = [
-            subprocess.CompletedProcess(
-                args=[], returncode=1, stdout="", stderr=batch_stderr
-            ),
-            *[
-                subprocess.CompletedProcess(args=[], returncode=0, stdout="", stderr="")
-                for _ in range(n_packages)
-            ],
-        ]
-        with patch("scripts.pr_validate._test_env.subprocess.run", side_effect=results):
+        n_packages = len(mod.canonical_test_packages())
+        result = subprocess.CompletedProcess(
+            args=[], returncode=1, stdout="", stderr=batch_stderr
+        )
+        with patch("scripts.pr_validate._test_env.subprocess.run", return_value=result):
             status = mod.check_test_env(python="/fake/python")
 
         assert status.ok is False, (
@@ -247,9 +233,8 @@ class TestCheckTestEnv:
         # The diagnostic surfaces the batch stderr so the operator can
         # see WHY the batch failed without re-running by hand.
         assert "simulated plugin-order collision" in status.message
-        # `missing` should be populated (the helper marks every package
-        # as suspect when it can't pinpoint which one breaks the batch)
-        # so downstream auto-install still has something to act on.
+        # The helper marks every package as suspect so downstream
+        # auto-install still has something to act on.
         assert len(status.missing) == n_packages
 
     def test_install_hint_uses_the_probed_interpreter_not_sys_executable(self):
@@ -269,6 +254,125 @@ class TestCheckTestEnv:
         assert (
             sys.executable not in status.install_hint or sys.executable == fake_python
         )
+
+    @pytest.mark.parametrize(
+        ("installed", "required"),
+        (("0.4.3", ">=0.5.3,<0.6"), ("0.6.0", ">=0.5.3,<0.6")),
+    )
+    def test_reports_below_and_above_range_versions(
+        self, tmp_path, installed, required
+    ):
+        """An importable distribution outside either bound is unhealthy."""
+        status = self._check_fake_package(
+            tmp_path, installed=installed, requirement=f"fake-runtime{required}"
+        )
+
+        assert status.ok is False
+        assert status.missing == ("fake_runtime",)
+        assert f"fake-runtime {installed}" in status.message
+        # packaging may canonicalize the order of a compound specifier;
+        # assert both declared bounds remain visible to the operator.
+        assert ">=0.5.3" in status.message
+        assert "<0.6" in status.message
+
+    def test_marker_skipped_requirement_is_not_reported(self, tmp_path):
+        """The target interpreter evaluates and skips an inactive marker."""
+        from scripts.pr_validate import _test_env as mod
+
+        packages = (
+            (
+                "module_that_does_not_exist",
+                "fake-runtime>=1; platform_system == 'NeverOS'",
+                "marker test",
+            ),
+        )
+        with patch.object(mod, "canonical_test_packages", return_value=packages):
+            status = mod.check_test_env()
+
+        assert status.ok is True
+        assert status.missing == ()
+        assert "all 0 applicable" in status.message
+
+    def test_target_python_marker_is_evaluated_as_active(self):
+        """A marker matching the child interpreter keeps the probe active."""
+        from scripts.pr_validate import _test_env as mod
+
+        target_version = f"{sys.version_info.major}.{sys.version_info.minor}"
+        packages = (
+            (
+                "module_that_does_not_exist",
+                f"fake-runtime>=1; python_version == '{target_version}'",
+                "marker test",
+            ),
+        )
+        with patch.object(mod, "canonical_test_packages", return_value=packages):
+            status = mod.check_test_env(python=sys.executable)
+
+        assert status.ok is False
+        assert status.missing == ("module_that_does_not_exist",)
+
+    def test_malformed_child_result_fails_closed(self):
+        import subprocess
+
+        proc = subprocess.CompletedProcess(
+            args=[], returncode=0, stdout="{}", stderr=""
+        )
+        with patch("scripts.pr_validate._test_env.subprocess.run", return_value=proc):
+            status = check_test_env(python="/fake/python")
+
+        assert status.ok is False
+        assert "invalid result schema" in status.message
+
+    def test_valid_version_and_distribution_import_name_pair_pass(self, tmp_path):
+        """Distribution metadata uses pip names, independently of imports."""
+        status = self._check_fake_package(
+            tmp_path, installed="12.0.0", requirement="fake-runtime>=10.0.0"
+        )
+
+        assert status.ok is True
+
+    def test_prerelease_is_rejected_when_requirement_does_not_allow_it(self, tmp_path):
+        status = self._check_fake_package(
+            tmp_path,
+            installed="0.5.4rc1",
+            requirement="fake-runtime>=0.5.3,<0.6",
+        )
+
+        assert status.ok is False
+        assert "0.5.4rc1" in status.message
+
+    def test_missing_distribution_metadata_names_both_surfaces(self, tmp_path):
+        """An import can succeed while its distribution metadata is absent."""
+        status = self._check_fake_package(
+            tmp_path,
+            installed=None,
+            requirement="fake-runtime>=10.0.0",
+        )
+
+        assert status.ok is False
+        assert status.missing == ("fake_runtime",)
+        assert "fake-runtime" in status.message
+        assert "import fake_runtime succeeded" in status.message
+
+    @staticmethod
+    def _check_fake_package(tmp_path, *, installed, requirement):
+        """Run the real child probe against a tiny synthetic distribution."""
+        from scripts.pr_validate import _test_env as mod
+
+        (tmp_path / "fake_runtime.py").write_text("VALUE = 1\n")
+        if installed is not None:
+            dist_info = tmp_path / f"fake_runtime-{installed}.dist-info"
+            dist_info.mkdir()
+            (dist_info / "METADATA").write_text(
+                f"Metadata-Version: 2.1\nName: fake-runtime\nVersion: {installed}\n"
+            )
+
+        packages = (("fake_runtime", requirement, "version probe test"),)
+        with (
+            patch.object(mod, "canonical_test_packages", return_value=packages),
+            patch.dict(os.environ, {"PYTHONPATH": str(tmp_path)}),
+        ):
+            return mod.check_test_env()
 
 
 # ---------------------------------------------------------------------------
@@ -316,12 +420,19 @@ def fake_ctx(tmp_path):
 
 class TestStepIntegration:
     def test_pass_on_healthy_host(self, fake_ctx):
-        """End-to-end on the actual running interpreter — same logic
-        as `test_returns_ok_on_healthy_host` but driven through the
-        Step API so the scorecard wiring is also exercised. The
-        artifact path must be created and the result must include it."""
-        step = TestEnvCheckStep()
-        result = step.run(fake_ctx)
+        """A healthy probe passes without mutating the host environment."""
+        healthy = TestEnvStatus(
+            ok=True,
+            missing=(),
+            message="all required test packages healthy",
+            interpreter=sys.executable,
+        )
+        with patch(
+            "scripts.pr_validate.steps.test_env_check.check_test_env",
+            return_value=healthy,
+        ):
+            step = TestEnvCheckStep()
+            result = step.run(fake_ctx)
         assert result.status == "pass"
         # Artifact must exist and name the interpreter so the operator
         # can audit which Python actually got probed.
@@ -472,6 +583,17 @@ class TestStepIntegration:
 
 
 class TestRequiredPackages:
+    def test_probe_uses_canonical_test_specifiers(self):
+        packages = {
+            import_name: requirement
+            for import_name, requirement, _ in canonical_test_packages()
+        }
+
+        assert packages["mlx_vlm"] == ("mlx-vlm==0.6.17; platform_system == 'Darwin'")
+        assert packages["mlx_audio"] == (
+            "mlx-audio>=0.5.3,<0.6; platform_system == 'Darwin'"
+        )
+
     def test_pytest_and_pytest_asyncio_required(self):
         """The two non-negotiables for this repo. A future refactor
         that drops `pytest_asyncio` from this tuple (e.g. because the
