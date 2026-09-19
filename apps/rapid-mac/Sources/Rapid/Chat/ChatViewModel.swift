@@ -4006,7 +4006,11 @@ Your previous draft refused the question by claiming you lack real-time access o
                                 messages: self.messages,
                                 placeholderIndex: placeholderIndex
                             ),
-                            promptHadAttachment: wireCarriesAttachmentGrounding
+                            promptHadAttachment: wireCarriesAttachmentGrounding,
+                            // The roster this REQUEST carried, read off the
+                            // encoded array — a tool the user disabled, or one
+                            // the budget withheld, was not "available".
+                            advertisedToolNames: request.tools?.map(\.function.name)
                         )
                         // Issue #513 (defense-in-depth, layer 3): when
                         // the request offered tools but the model emitted

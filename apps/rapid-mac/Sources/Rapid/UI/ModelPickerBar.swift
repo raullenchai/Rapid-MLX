@@ -2155,49 +2155,46 @@ struct ModelInfoPopover: View {
     }
 }
 
-/// Animated state dot. Steady-state for ready / idle / crashed; gentle
-/// breathing animation during ``starting`` so the user knows the
-/// model is still loading. Pure SwiftUI animation — no timer needed.
+/// The status dot every readiness surface shares: steady while there is
+/// nothing to signal, breathing while work is in flight.
 ///
-/// Internal (not `private`) since v1.0: ``ServerStatusPill`` is the
-/// shared rendering of ``ServerState`` and needs the same dot, so the
-/// dot can no longer be file-scoped to the picker.
+/// The breathing half lives in ``BreathingLoop``, a view that only EXISTS
+/// while `isAnimating` (and Reduce Motion is off). That ownership is the
+/// fix for an idle-CPU leak, not a style choice: the previous shape kept
+/// one `Circle` alive across both states and switched its
+/// `.animation(_:value:)` between `repeatForever` and `.default`. SwiftUI
+/// does not retire a repeating animation just because a later transaction
+/// on the same attribute used a different curve — the loop kept ticking
+/// under the resting dot, so every frame committed a transaction, every
+/// commit re-ran the window's tracking-area / cursor update, and the
+/// Desktop sat at 23 % of a core on an M3 Ultra and a full core on an
+/// M2 Pro with an accessibility pointer, doing nothing (0.14.3 dogfood,
+/// 2026-09-18; a standalone 40-line repro measured 1.0 % vs 0.0 %).
+/// Removing the animated view is the one way to end a `repeatForever`
+/// loop for certain, so the loop is owned by a view that goes away.
+///
+/// #547 §14: Reduce Motion suppresses the loop entirely — the dot holds
+/// its steady colour and size, so "starting" stays legible via the
+/// surrounding copy without the perpetual scale/opacity motion.
 struct PulsingStateDot: View {
     let color: Color
     let isAnimating: Bool
 
-    @State private var pulse: Bool = false
-    // #547 §14: suppress the breathing loop under Reduce Motion — the dot
-    // holds its steady colour and size, so "starting" stays legible (via
-    // the picker copy) without the perpetual scale/opacity motion.
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
-    private var animating: Bool { isAnimating && !reduceMotion }
-
     var body: some View {
+        if RapidMotion.shouldPulse(isAnimating: isAnimating, reduceMotion: reduceMotion) {
+            BreathingLoop(scale: 1.35, opacity: 0.55) {
+                dot
+            }
+        } else {
+            dot
+        }
+    }
+
+    private var dot: some View {
         Circle()
             .fill(color)
             .frame(width: 8, height: 8)
-            // Scale/opacity are gated on `animating` (which folds in
-            // !reduceMotion), so a stale `pulse` can never render — the dot
-            // rests steady under Reduce Motion regardless of the flag.
-            .scaleEffect(animating && pulse ? 1.35 : 1.0)
-            .opacity(animating && pulse ? 0.55 : 1.0)
-            .animation(
-                animating
-                    ? RapidMotion.breathe.repeatForever(autoreverses: true)
-                    : .default,
-                value: pulse
-            )
-            .onAppear {
-                pulse = RapidMotion.shouldPulse(isAnimating: isAnimating, reduceMotion: reduceMotion)
-            }
-            .onChange(of: isAnimating) { _, new in
-                pulse = RapidMotion.shouldPulse(isAnimating: new, reduceMotion: reduceMotion)
-            }
-            .onChange(of: reduceMotion) { _, reduced in
-                // Toggling Reduce Motion at runtime must start / stop the loop.
-                pulse = RapidMotion.shouldPulse(isAnimating: isAnimating, reduceMotion: reduced)
-            }
     }
 }

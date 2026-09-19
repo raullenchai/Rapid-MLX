@@ -925,4 +925,152 @@ struct ToolNotCalledCaptionTests {
             #expect(flag, "With a non-.complete tool row, the raw-numeric reply must still trip the warning.")
         }
     }
+
+
+    // MARK: - Gate 6: the advertised roster must be able to serve the prompt
+
+    /// Every tool the app ships, as a fresh install advertises them.
+    private static let productionRoster = [
+        "web_search", "browse", "weather", "read_document",
+        "local_search", "local_read", "local_write", "local_trash", "local_run",
+    ]
+
+    /// 0.14.3 dogfood (2026-09-18): a fresh install advertises web search,
+    /// browse, weather, document reading and the local workspace tools.
+    /// None of them is a calculator — `local_run` is "Run development
+    /// command" behind an approval sheet — so a correct `391` to
+    /// "What is 17 * 23?" must not be told it should have called a tool.
+    @Test("Gate 6: arithmetic prompt under the production roster → caption HIDDEN")
+    func gateSixProductionRosterDoesNotCompute() {
+        for roster in [Self.productionRoster, ["web_search", "weather", "browse", "read_document"], ["local_run"]] {
+            let flag = ChatMessage.shouldFlagToolNotCalled(
+                userPrompt: "What is 17 * 23? Answer with just the number.",
+                assistantContent: "391",
+                toolCalls: nil,
+                finishReason: "stop",
+                toolsRequested: true,
+                advertisedToolNames: roster
+            )
+            #expect(!flag, "Nothing in \(roster) computes 17 * 23 — the caption would be a false alarm.")
+        }
+    }
+
+    /// The same turn with a compute-capable tool on the roster is the
+    /// original #308 shape and must still fire — including an MCP tool whose
+    /// name says nothing recognisable, which is assumed capable.
+    @Test("Gate 6: arithmetic prompt with a compute or unclassified tool advertised → caption FIRES")
+    func gateSixComputeToolKeepsCaption() {
+        for roster in [["calculator"], ["execute_python", "web_search"], ["code_interpreter"], ["arithmetic"], ["multiply_numbers"], ["execute_code"], Self.productionRoster + ["fooBarBaz"]] {
+            let flag = ChatMessage.shouldFlagToolNotCalled(
+                userPrompt: "What is 17 * 23?",
+                assistantContent: "391",
+                toolCalls: nil,
+                finishReason: "stop",
+                toolsRequested: true,
+                advertisedToolNames: roster
+            )
+            #expect(flag, "Roster \(roster) can (or may) compute, so a raw number with no tool call is suspect.")
+        }
+    }
+
+    /// Lane matching is per lane: a live-data prompt is served by a
+    /// network-reaching tool even though nothing on the roster computes.
+    @Test("Gate 6: live-data prompt is served by web/weather tools, not by compute tools")
+    func gateSixLaneMatching() {
+        let weatherPrompt = "What is the weather in Tokyo right now?"
+        #expect(ChatMessage.advertisedToolCouldServe(prompt: weatherPrompt, toolNames: ["weather"]))
+        #expect(ChatMessage.advertisedToolCouldServe(prompt: weatherPrompt, toolNames: ["web_search"]))
+        #expect(ChatMessage.advertisedToolCouldServe(prompt: weatherPrompt, toolNames: ["fetchURL"]))
+        #expect(!ChatMessage.advertisedToolCouldServe(prompt: weatherPrompt, toolNames: ["calculator"]))
+        #expect(!ChatMessage.advertisedToolCouldServe(prompt: weatherPrompt, toolNames: ["local_search", "local_read"]))
+        let searchPrompt = "Search for Ada Lovelace's biography."
+        #expect(ChatMessage.advertisedToolCouldServe(prompt: searchPrompt, toolNames: ["browse"]))
+        // read_document only reads the user's own attachments — it cannot go and find anything.
+        #expect(!ChatMessage.advertisedToolCouldServe(prompt: searchPrompt, toolNames: ["read_document"]))
+        #expect(ChatMessage.advertisedToolCouldServe(prompt: searchPrompt, toolNames: ["wiki-lookup"]))
+        #expect(!ChatMessage.advertisedToolCouldServe(prompt: searchPrompt, toolNames: ["local_run"]))
+        #expect(!ChatMessage.advertisedToolCouldServe(prompt: "What is 17 * 23?", toolNames: []))
+    }
+
+    /// Classification is by the WORDS of a name, not substrings: `profile_update`
+    /// is not a file tool and `notes` is not a news tool. A name with no
+    /// recognised word is unclassified (`nil`), which the gate treats as
+    /// "could have served".
+    @Test("Gate 6: tool names are classified by word, unknown names stay unclassified")
+    func gateSixNameClassification() {
+        #expect(ChatMessage.toolNameWords("fetchURL") == ["fetch", "url"])
+        #expect(ChatMessage.toolNameWords("URLCalculator") == ["url", "calculator"])
+        #expect(ChatMessage.toolNameWords("HTTPSFetch2Go") == ["https", "fetch", "go"])
+        #expect(ChatMessage.capabilities(ofToolNamed: "URLCalculator") == [.compute, .network, .retrieval])
+        #expect(ChatMessage.toolNameWords("execute_python3") == ["execute", "python"])
+        #expect(ChatMessage.toolNameWords("read-document.v2") == ["read", "document", "v"])
+        #expect(ChatMessage.capabilities(ofToolNamed: "profile_update") == nil)
+        #expect(ChatMessage.capabilities(ofToolNamed: "arithmetic") == [.compute])
+        #expect(ChatMessage.capabilities(ofToolNamed: "fooBarBaz") == nil)
+        #expect(ChatMessage.capabilities(ofToolNamed: "code_review") == nil, "a code-review connector is not a calculator")
+        #expect(ChatMessage.capabilities(ofToolNamed: "code_interpreter") == [.compute])
+        #expect(ChatMessage.capabilities(ofToolNamed: "calculator") == [.compute])
+        #expect(ChatMessage.capabilities(ofToolNamed: "web_search") == [.network, .retrieval])
+        #expect(ChatMessage.capabilities(ofToolNamed: "local_run") == [])
+        #expect(ChatMessage.capabilities(ofToolNamed: "searchDocuments") == [.network, .retrieval])
+        // Every shipped tool is classified by exact name, so a rename here
+        // must be mirrored in ``builtinToolCapabilities``.
+        for name in Self.productionRoster {
+            #expect(ChatMessage.builtinToolCapabilities[name] != nil, "\(name) missing from the built-in table")
+        }
+    }
+
+    /// ``nil`` is "roster unknown" and keeps every earlier caller's behaviour.
+    @Test("Gate 6: an attachment turn keeps the caption the earlier gates decided")
+    func gateSixStepsAsideForAttachments() {
+        // Live-data / retrieval prompts are not attachment-answerable (Gate 1c
+        // lets them through) and must still be captioned under the production
+        // roster — the roster gate is not consulted when a document was
+        // attached, because `read_document` is the tool that should have run
+        // and no lane table describes it (pr_validate codex, run 3).
+        for prompt in ["What is today's stock price for the ticker in this report?", "Look up the current exchange rate for the invoice currency."] {
+            let flag = ChatMessage.shouldFlagToolNotCalled(
+                userPrompt: prompt,
+                assistantContent: "$1,204.55",
+                toolCalls: nil,
+                finishReason: "stop",
+                toolsRequested: true,
+                promptHadAttachment: true,
+                advertisedToolNames: Self.productionRoster
+            )
+            #expect(flag, "Attachment + roster must not hide the caption Gate 1c kept: \(prompt)")
+        }
+        // Literal arithmetic beside an attachment: pre-gate behaviour was a
+        // caption, and it stays one — Gate 1c only exempts math whose operands
+        // can live on the page, and this gate does not run.
+        #expect(ChatMessage.shouldFlagToolNotCalled(
+            userPrompt: "What is 17 * 23? Answer with just the number.",
+            assistantContent: "391",
+            toolCalls: nil,
+            finishReason: "stop",
+            toolsRequested: true,
+            promptHadAttachment: true,
+            advertisedToolNames: Self.productionRoster
+        ) == ChatMessage.shouldFlagToolNotCalled(
+            userPrompt: "What is 17 * 23? Answer with just the number.",
+            assistantContent: "391",
+            toolCalls: nil,
+            finishReason: "stop",
+            toolsRequested: true,
+            promptHadAttachment: true
+        ))
+    }
+
+    @Test("Gate 6: nil roster leaves the pre-existing gates in charge")
+    func gateSixNilRosterIsNeutral() {
+        let flag = ChatMessage.shouldFlagToolNotCalled(
+            userPrompt: "What is 17 * 23?",
+            assistantContent: "391",
+            toolCalls: nil,
+            finishReason: "stop",
+            toolsRequested: true,
+            advertisedToolNames: nil
+        )
+        #expect(flag, "Without a roster the gate must not change the answer the other gates give.")
+    }
 }
