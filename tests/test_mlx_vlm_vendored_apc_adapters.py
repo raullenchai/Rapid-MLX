@@ -378,3 +378,388 @@ def test_clone_rules_build_publishes_only_complete_rules(monkeypatch):
     with pytest.raises(RuntimeError):
         apc_adapters._clone_rules()
     assert apc_adapters._CLONE_RULES is None
+
+
+def test_cache_specs_capabilities_and_plan_descriptions(monkeypatch):
+    pageable = apc_adapters.CacheSpec(Capability.PAGEABLE, "KV", block_eligible=True)
+    unsupported = apc_adapters.CacheSpec(Capability.UNSUPPORTED, "Bad")
+    composite = apc_adapters.CacheSpec(
+        Capability.COMPOSITE, "Tuple", children=(pageable,)
+    )
+    assert pageable.pageable and pageable.restorable
+    assert composite.pageable and composite.restorable
+    assert pageable.group_key[0] == "pageable"
+
+    assert (
+        apc_adapters.cache_spec((vendored_cache.KVCache(),)).capability
+        is Capability.COMPOSITE
+    )
+    assert apc_adapters.cache_spec(()).capability is Capability.UNSUPPORTED
+    assert apc_adapters.cache_spec(
+        vendored_cache.CacheList(vendored_cache.KVCache())
+    ).children
+
+    class _OddWindow(vendored_cache.KVCache):
+        window_size = "not-an-int"
+
+    class _Window(vendored_cache.KVCache):
+        window_size = 12
+
+    assert apc_adapters.cache_spec(_OddWindow()).window_size is None
+    assert apc_adapters.cache_spec(_Window()).window_size == 12
+    assert (
+        resolve_capability(object(), {object: Capability.CHECKPOINT})
+        is Capability.CHECKPOINT
+    )
+
+    class _PageableChild(vendored_cache.KVCache):
+        pass
+
+    class _WindowedChild(vendored_cache.KVCache):
+        max_size = 8
+
+    assert resolve_capability(_PageableChild()) is Capability.CHECKPOINT
+    assert resolve_capability(_WindowedChild()) is Capability.WINDOWED
+
+    class _CheckpointChild(vendored_cache.ArraysCache):
+        pass
+
+    assert resolve_capability(_CheckpointChild(1)) is Capability.CHECKPOINT
+
+    class _Explicit:
+        def prefix_cache_snapshot(self):
+            return {}
+
+    assert resolve_capability(_Explicit()) is Capability.CHECKPOINT
+    assert resolve_capability(object()) is Capability.UNSUPPORTED
+
+    plan = apc_adapters.build_prefix_cache_plan_from_caches(
+        [vendored_cache.KVCache(), vendored_cache.ArraysCache(1)]
+    )
+    assert plan.restorable and plan.is_hybrid and plan.strategy == "checkpoint"
+    assert plan.legacy_mode == "exact"
+    assert plan.capabilities == [Capability.PAGEABLE, Capability.CHECKPOINT]
+    assert "PrefixCachePlan" in plan.describe()
+    empty = apc_adapters.PrefixCachePlan()
+    assert not empty.restorable and empty.strategy is None
+
+    class _BrokenModel:
+        def make_cache(self):
+            raise RuntimeError("broken")
+
+    assert not apc_adapters.build_prefix_cache_plan(_BrokenModel()).restorable
+
+    import mlx_vlm.models.cache as upstream_cache
+
+    monkeypatch.setattr(
+        upstream_cache,
+        "make_prompt_cache",
+        lambda _model: [vendored_cache.KVCache()],
+    )
+    assert apc_adapters.build_prefix_cache_plan(object()).strategy == "block"
+
+
+def test_tree_checkpoint_and_capacity_helpers():
+    tree = (mx.array([1]), [mx.array([2])], {"x": mx.array([3])}, "plain")
+    snap = apc_adapters._snapshot_tree(tree)
+    arrays = []
+    apc_adapters._eval_tree(snap, arrays)
+    assert len(arrays) == 3 and snap[0] is not tree[0]
+    assert not apc_adapters._is_snapshotable(object())
+
+    adapter = apc_adapters.CheckpointAdapter()
+    assert adapter.capture(object(), 0) is None
+
+    class _State:
+        state = {"x": mx.array([1])}
+        meta_state = {"offset": 1}
+
+    fragment = adapter.capture(_State(), 1)
+    fresh = _State()
+    adapter.restore(fresh, fragment)
+    assert mx.array_equal(fresh.state["x"], mx.array([1]))
+    assert fresh.meta_state == {"offset": 1}
+
+    apc_adapters.reserve_checkpoint_capacity(fresh, min_capacity_tokens=None)
+    apc_adapters.reserve_checkpoint_capacity(fresh, min_capacity_tokens=4)
+
+    class _Reservable:
+        def prefix_cache_reserve(self, count):
+            self.count = count
+            return {"reserved": mx.array([count])}
+
+    reservable = _Reservable()
+    targets = []
+    apc_adapters.reserve_checkpoint_capacity(
+        reservable, min_capacity_tokens=6, eval_targets=targets
+    )
+    assert reservable.count == 6 and len(targets) == 1
+
+
+def test_namespace_resolution_and_optional_turboquant(monkeypatch):
+    monkeypatch.setattr(apc_adapters, "_cache_namespaces", lambda: [])
+    assert apc_adapters._cache_namespace_of(object()).__name__ == "mlx_vlm.models.cache"
+
+    import builtins
+
+    real_import = builtins.__import__
+
+    def _without_turbo(name, *args, **kwargs):
+        if name == "mlx_vlm.turboquant":
+            raise ImportError("optional")
+        return real_import(name, *args, **kwargs)
+
+    monkeypatch.setattr(builtins, "__import__", _without_turbo)
+    monkeypatch.setattr(apc_adapters, "_DEFAULTS_REGISTERED", False)
+    monkeypatch.setattr(apc_adapters, "_cache_namespaces", lambda: [vendored_cache])
+    apc_adapters.register_default_capabilities()
+
+
+def test_clone_adapter_remaining_shapes(monkeypatch):
+    # Chunked clone/merge.
+    chunked = vendored_cache.ChunkedKVCache(chunk_size=4)
+    chunked.offset = 2
+    chunked.start_position = 1
+    chunked.keys = mx.ones((1, 1, 2, 3))
+    chunked.values = mx.zeros((1, 1, 2, 3))
+    targets = []
+    cloned = apc_adapters.ChunkedKVCacheCloneAdapter().clone(
+        chunked, min_capacity_tokens=0, eval_targets=targets
+    )
+    assert cloned.offset == 2 and cloned.start_position == 1 and len(targets) == 2
+
+    merged = apc_adapters.ChunkedKVCacheCloneAdapter().merge_rows(
+        [cloned, cloned], [2, 2]
+    )
+    assert type(merged) is vendored_cache.BatchKVCache
+
+    rotating = vendored_cache.RotatingKVCache(8)
+    rotating.update_and_fetch(mx.ones((1, 1, 2, 3)), mx.zeros((1, 1, 2, 3)))
+    fake_ns = type(
+        "NS",
+        (),
+        {
+            "BatchRotatingKVCache": type(
+                "BatchRotating",
+                (),
+                {"merge": staticmethod(lambda caches: ("rotating", len(caches)))},
+            )
+        },
+    )
+    original_namespace = apc_adapters._cache_namespace_of
+    monkeypatch.setattr(apc_adapters, "_cache_namespace_of", lambda _c: fake_ns)
+    assert apc_adapters.RotatingKVCacheCloneAdapter().merge_rows(
+        [rotating, rotating], [2, 2]
+    ) == ("rotating", 2)
+    monkeypatch.setattr(apc_adapters, "_cache_namespace_of", original_namespace)
+
+    arrays = vendored_cache.ArraysCache(2)
+    arrays.cache = [None, mx.ones((1, 2))]
+    arrays.left_padding = mx.array([1])
+    arrays.lengths = mx.array([2])
+    targets = []
+    cloned_arrays = apc_adapters.ArraysCacheCloneAdapter().clone(
+        arrays, min_capacity_tokens=0, eval_targets=targets
+    )
+    assert cloned_arrays.cache[0] is None and len(targets) == 3
+
+    empty_arrays = vendored_cache.ArraysCache(2)
+    empty_arrays.cache = [None, None]
+    merged_arrays = apc_adapters.ArraysCacheCloneAdapter().merge_rows(
+        [empty_arrays, empty_arrays], [0, 0]
+    )
+    assert merged_arrays.cache == [None, None]
+
+    class _Pooling:
+        ratio = 2
+        remainder = 1
+        buf_kv = mx.ones((1, 2))
+        buf_gate = None
+        pooled = mx.zeros((1, 2))
+
+        def __init__(self, ratio):
+            self.ratio = ratio
+
+        @classmethod
+        def merge(cls, caches):
+            return ("merged", len(caches))
+
+    targets = []
+    pooled = apc_adapters.PoolingCacheCloneAdapter().clone(
+        _Pooling(2), min_capacity_tokens=0, eval_targets=targets
+    )
+    assert pooled.ratio == 2 and pooled.remainder == 1 and len(targets) == 2
+    assert apc_adapters.PoolingCacheCloneAdapter().merge_rows([pooled], [1]) == (
+        "merged",
+        1,
+    )
+
+
+def test_clone_and_merge_fallback_contracts(monkeypatch):
+    class _StateOnly:
+        def __init__(self):
+            self.state = {"a": mx.array([1])}
+            self.meta_state = {"m": 2}
+
+        @classmethod
+        def from_state(cls, state, meta):
+            out = cls()
+            out.state, out.meta_state = state, meta
+            return out
+
+    monkeypatch.setattr(apc_adapters, "_cache_namespace_of", lambda _c: None)
+    monkeypatch.setattr(
+        apc_adapters, "_custom_state_contract", lambda c: isinstance(c, _StateOnly)
+    )
+    targets = []
+    cloned = clone_cache_entry(
+        _StateOnly(), min_capacity_tokens=0, eval_targets=targets
+    )
+    assert isinstance(cloned, _StateOnly) and len(targets) == 1
+
+    class _StateWithoutFactory:
+        state = {"a": mx.array([2])}
+        meta_state = {"m": 3}
+
+    monkeypatch.setattr(
+        apc_adapters,
+        "_custom_state_contract",
+        lambda c: isinstance(c, (_StateOnly, _StateWithoutFactory)),
+    )
+    cloned_without_factory = clone_cache_entry(
+        _StateWithoutFactory(), min_capacity_tokens=0, eval_targets=[]
+    )
+    assert mx.array_equal(cloned_without_factory.state["a"], mx.array([2]))
+    assert clone_cache_entry(object(), min_capacity_tokens=0, eval_targets=[]) is None
+    assert merge_cache_entries([], []) is None
+    assert merge_cache_entries([object()], [0]) is None
+
+    # Constructor-less snapshot caches use __new__ and the restore protocol.
+    class _Snapshot:
+        def __init__(self, required):
+            self.value = required
+
+        def prefix_cache_snapshot(self):
+            return {"value": mx.array([self.value])}
+
+        def prefix_cache_restore(self, payload):
+            self.value = int(payload["value"].item())
+
+    monkeypatch.setattr(
+        apc_adapters,
+        "_has_explicit_snapshot_contract",
+        lambda c: isinstance(c, _Snapshot),
+    )
+    cloned = clone_cache_entry(_Snapshot(4), min_capacity_tokens=0, eval_targets=[])
+    assert cloned.value == 4
+    monkeypatch.setattr(
+        apc_adapters.CheckpointAdapter, "capture", lambda *_a, **_kw: None
+    )
+    assert (
+        clone_cache_entry(_Snapshot(4), min_capacity_tokens=0, eval_targets=[]) is None
+    )
+
+
+def test_clone_known_namespace_edge_cases(monkeypatch):
+    monkeypatch.setattr(apc_adapters, "_cache_namespace_of", lambda _c: vendored_cache)
+
+    class _MultiRow:
+        def extract(self, _idx):
+            return None
+
+        def is_single_row(self):
+            return False
+
+    assert (
+        clone_cache_entry(_MultiRow(), min_capacity_tokens=0, eval_targets=[]) is None
+    )
+
+    class _Dequant:
+        def dequantize_for_apc(self):
+            return None, None
+
+    assert (
+        type(clone_cache_entry(_Dequant(), min_capacity_tokens=0, eval_targets=[]))
+        is vendored_cache.KVCache
+    )
+
+    class _ExplicitKnown:
+        def prefix_cache_snapshot(self):
+            return {"value": 1}
+
+        def prefix_cache_restore(self, payload):
+            self.value = payload["value"]
+
+    monkeypatch.setattr(
+        apc_adapters,
+        "_has_explicit_snapshot_contract",
+        lambda c: isinstance(c, _ExplicitKnown),
+    )
+    assert (
+        clone_cache_entry(
+            _ExplicitKnown(), min_capacity_tokens=0, eval_targets=[]
+        ).value
+        == 1
+    )
+
+    class _KnownState:
+        state = {"a": mx.array([1])}
+        meta_state = {}
+
+    monkeypatch.setattr(
+        apc_adapters, "_custom_state_contract", lambda c: isinstance(c, _KnownState)
+    )
+    assert isinstance(
+        clone_cache_entry(_KnownState(), min_capacity_tokens=0, eval_targets=[]),
+        _KnownState,
+    )
+    monkeypatch.setattr(
+        apc_adapters, "_has_explicit_snapshot_contract", lambda _c: False
+    )
+    monkeypatch.setattr(apc_adapters, "_custom_state_contract", lambda _c: False)
+    assert clone_cache_entry(object(), min_capacity_tokens=0, eval_targets=[]) is None
+
+    class _DequantPopulated:
+        def dequantize_for_apc(self):
+            return mx.ones((1, 1, 2, 3)), mx.zeros((1, 1, 2, 3))
+
+    targets = []
+    out = clone_cache_entry(
+        _DequantPopulated(), min_capacity_tokens=0, eval_targets=targets
+    )
+    assert out.offset == 2 and len(targets) == 2
+
+    class _Merge:
+        @classmethod
+        def merge(cls, entries, prefix_lens):
+            return (len(entries), sum(prefix_lens))
+
+    assert merge_cache_entries([_Merge(), _Merge()], [2, 3]) == (2, 5)
+
+    class _NoMerge:
+        pass
+
+    assert merge_cache_entries([_NoMerge()], [0]) is None
+
+
+def test_cachelist_merge_and_plan_failure_descriptions():
+    first = vendored_cache.CacheList(_populated_kv(vendored_cache))
+    second = vendored_cache.CacheList(_populated_kv(vendored_cache))
+    merged = merge_cache_entries([first, second], [4, 4])
+    assert type(merged) is vendored_cache.CacheList
+    assert type(merged.caches[0]) is vendored_cache.BatchKVCache
+
+    assert apc_adapters.apc_block_eligible(
+        type("D", (), {"dequantize_for_apc": lambda self: (None, None)})()
+    )
+    assert apc_adapters.apc_exact_eligible((vendored_cache.KVCache(),))
+    assert apc_adapters.apc_mode([vendored_cache.KVCache()]) == "block"
+
+
+def test_custom_state_contract_detects_declared_property():
+    class _State(vendored_cache._BaseCache):
+        @property
+        def state(self):
+            return ()
+
+    assert apc_adapters._custom_state_contract(_State())

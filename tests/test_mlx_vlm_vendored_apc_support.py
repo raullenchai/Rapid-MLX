@@ -369,3 +369,278 @@ def test_vision_feature_cache_rejects_unsupported_source_types():
     cache = vendored_vision_cache.VisionFeatureCache(max_size=4)
     with pytest.raises(TypeError, match="unsupported image source"):
         cache._make_key(object())
+
+
+def test_storage_fallback_accounting_and_non_kv_component(monkeypatch):
+    """Exercise defensive accounting and the node view for foreign handles."""
+
+    class _WithoutNBytes:
+        size = 3
+        itemsize = 4
+
+    class _BrokenSize:
+        @property
+        def size(self):
+            raise RuntimeError("no size")
+
+    monkeypatch.setattr(apc_storage, "mx", type("MX", (), {"array": object}))
+    assert apc_storage._array_bytes(_WithoutNBytes()) == 12
+    assert apc_storage._array_bytes(_BrokenSize()) == 0
+
+    class _OtherHandle:
+        def resident_bytes(self):
+            return 7
+
+        def release(self):
+            self.released = True
+
+    class _Node(apc_storage.APCNode):
+        def __init__(self):
+            self.components = {"other": _OtherHandle()}
+
+    node = _Node()
+    assert node.kv_handle() is None
+    assert node.keys is None and node.values is None
+    assert node.resident_bytes() == 7
+
+
+def test_kv_quant_mixed_policy_validation_and_explicit_splits():
+    mixed = vendored_kv_quant.from_legacy(
+        4,
+        kv_key_bits=3,
+        kv_value_bits=5,
+        kv_key_scheme="uniform",
+        kv_value_scheme="turboquant",
+    )
+    assert mixed is not None
+    assert mixed.has_split_override
+    assert not mixed.is_homogeneous
+    assert not mixed.is_turboquant
+    with pytest.raises(ValueError, match="mixes quantization schemes"):
+        _ = mixed.scheme
+    config = mixed.to_config()
+    assert config["key_bits"] == 3 and config["value_bits"] == 5
+    assert config["key_scheme"] == "uniform"
+    assert config["value_scheme"] == "turboquant"
+    assert "-ksuniform-vsturboquant" in mixed.fingerprint(12)
+    assert vendored_kv_quant.kv_quant_fingerprint(4, 64, "uniform", 0, 3, 5).endswith(
+        "-k3-v5"
+    )
+
+    with pytest.raises(ValueError, match="unknown KV quantization scheme"):
+        vendored_kv_quant.from_legacy(4, kv_key_scheme="unknown")
+    with pytest.raises(ValueError, match="requires integer bits"):
+        vendored_kv_quant.from_legacy(
+            3.5,
+            kv_key_scheme="uniform",
+            kv_key_bits=3.5,
+        )
+    converted = vendored_kv_quant.from_legacy(4, kv_key_scheme="turboquant")
+    assert converted is not None and converted.key.bits == 4
+    assert vendored_kv_quant.from_config({}) is None
+
+
+def test_vision_feature_cache_bytes_transparency_and_existing_key_refresh():
+    pytest.importorskip("PIL.Image")
+    from PIL import Image
+
+    image = Image.new("P", (1, 1))
+    image.putpalette([1, 2, 3] * 256)
+    image.info["transparency"] = b"\x00\xff"
+    cache = vendored_vision_cache.VisionFeatureCache(max_size=1)
+    key = cache._make_key(image)
+    assert key.startswith("p:")
+    cache.put("same", "one")
+    cache.put("same", "two")
+    assert cache.get("same") == "two"
+
+
+class _CoordinatorManager:
+    def __init__(self):
+        import threading
+        import types
+
+        self.prepared = []
+        self.released = []
+        self.exact_cache_guard_tokens = 1
+        self.checkpoint_interval_tokens = 4
+        self._exact_cache_max = 3
+        self.disk = None
+        self.block_size = 2
+        self.exact_cache_min_tokens = 2
+        self.lock = threading.Lock()
+        self.stats = types.SimpleNamespace(memory_skips=0)
+
+    def prepare_prefill(self, count):
+        self.prepared.append(count)
+
+    def release(self, blocks):
+        self.released.append(tuple(blocks))
+
+    def store_exact_cache(self, token_ids, snapshot, *, extra_hash):
+        self.stored = (list(token_ids), snapshot, extra_hash)
+        return True
+
+    def _make_room(self, _size):
+        return True
+
+
+def test_coordinator_block_and_checkpoint_paths(monkeypatch):
+    import types
+
+    import mlx_vlm.apc as upstream_apc
+
+    manager = _CoordinatorManager()
+    block = apc_coordinator.APCCoordinator(manager, _coordinator_model())
+    assert block.enabled and block.strategy == "block" and not block.is_checkpoint
+    assert block.legacy_mode == "block"
+    block.prepare_prefill(9)
+    assert manager.prepared == [9]
+
+    monkeypatch.setattr(
+        upstream_apc,
+        "apc_lookup_plan",
+        lambda *_a, **_kw: {"matched_blocks": ["b"]},
+    )
+    hit = block.lookup(
+        [1, 2, 3],
+        extra_hash=7,
+        safe_lookup_min=1,
+        suffix_is_text_only=lambda _n: True,
+        prefix_has_media=lambda _n: False,
+    )
+    assert hit is not None and hit["cache_plan"] is block.plan
+    monkeypatch.setattr(upstream_apc, "apc_lookup_plan", lambda *_a, **_kw: None)
+    assert (
+        block.lookup(
+            [1],
+            extra_hash=0,
+            safe_lookup_min=0,
+            suffix_is_text_only=lambda _n: True,
+            prefix_has_media=lambda _n: False,
+        )
+        is None
+    )
+
+    monkeypatch.setattr(
+        upstream_apc,
+        "make_warm_batch_kv_cache_multi",
+        lambda picks, **_kw: (["merged-block"], len(picks)),
+    )
+    assert block.merge_rows([None, None], [0, 0]) == (["merged-block"], 2)
+    monkeypatch.setattr(
+        upstream_apc,
+        "make_warm_kv_cache",
+        lambda blocks, **_kw: ["warm", *blocks],
+    )
+    assert block.materialize_single(
+        {"warm_cache": ["ready"]}, min_capacity_tokens=1
+    ) == ["ready"]
+    assert block.materialize_single(
+        {"matched_blocks": ["cold"]}, min_capacity_tokens=1
+    ) == ["warm", "cold"]
+    monkeypatch.setattr(upstream_apc, "commit_prefix_blocks", lambda *_a, **_kw: None)
+    assert block.commit(["cache"], [1, 2], blocks_in_use=["lease"])
+    block.release_hit({"matched_blocks": ["lease"]})
+    block.release_hit(None)
+
+    checkpoint_model = types.SimpleNamespace(
+        language_model=types.SimpleNamespace(
+            make_cache=lambda: [vendored_cache.ArraysCache(1)]
+        )
+    )
+    checkpoint = apc_coordinator.APCCoordinator(manager, checkpoint_model)
+    assert checkpoint.is_checkpoint and checkpoint.legacy_mode == "exact"
+    monkeypatch.setattr(
+        upstream_apc,
+        "adjust_prefix_to_text_suffix_boundary",
+        lambda _tokens, boundary, _media, **_kw: boundary,
+    )
+    assert checkpoint.checkpoint_len(list(range(10)), set()) == 9
+    assert checkpoint.checkpoint_lengths(list(range(10)), set()) == [4, 8, 9]
+    manager.checkpoint_interval_tokens = 0
+    assert checkpoint.checkpoint_lengths(list(range(10)), set()) == [9]
+
+    monkeypatch.setattr(
+        upstream_apc,
+        "make_warm_batch_exact_cache_multi",
+        lambda rows, _lens, **_kw: (rows, 4),
+    )
+    rows, prefix = checkpoint.merge_rows([None, {"warm_cache": ["warm"]}], [0, 4])
+    assert prefix == 4 and len(rows) == 2
+
+    monkeypatch.setattr(upstream_apc, "_prompt_cache_is_batch_shaped", lambda _c: False)
+    monkeypatch.setattr(
+        upstream_apc, "snapshot_prompt_cache_row", lambda *_a, **_kw: ["snap"]
+    )
+    assert checkpoint.store_checkpoint([1, 2], ["cache"], extra_hash=8)
+    assert checkpoint.commit(["cache"], [1, 2], blocks_in_use=["checkpoint-lease"])
+    assert manager.released[-1] == ("checkpoint-lease",)
+
+
+def test_coordinator_disabled_and_storage_guard_paths(monkeypatch):
+    import types
+
+    import mlx_vlm.apc as upstream_apc
+
+    disabled = apc_coordinator.APCCoordinator(None, _coordinator_model())
+    disabled.prepare_prefill(1)
+    assert disabled.strategy is None and disabled.legacy_mode is None
+    assert (
+        disabled.lookup(
+            [1],
+            extra_hash=0,
+            safe_lookup_min=0,
+            suffix_is_text_only=lambda _n: True,
+            prefix_has_media=lambda _n: False,
+        )
+        is None
+    )
+    assert disabled.checkpoint_len([1], set()) == 0
+    assert not disabled.commit([], [])
+    disabled.release_hit({"matched_blocks": [1]})
+
+    manager = _CoordinatorManager()
+    manager.disk = types.SimpleNamespace(
+        flush=lambda: setattr(manager, "flushed", True)
+    )
+    manager._make_room = lambda _size: False
+    checkpoint_model = types.SimpleNamespace(
+        language_model=types.SimpleNamespace(
+            make_cache=lambda: [vendored_cache.ArraysCache(1)]
+        )
+    )
+    checkpoint = apc_coordinator.APCCoordinator(manager, checkpoint_model)
+    monkeypatch.setattr(upstream_apc, "_prompt_cache_is_batch_shaped", lambda _c: True)
+    monkeypatch.setattr(upstream_apc, "_cache_nbytes", lambda _c: 10)
+    assert not checkpoint.store_checkpoint([1], ["cache"])
+    assert manager.flushed and manager.stats.memory_skips == 1
+    manager._make_room = lambda _size: True
+    monkeypatch.setattr(
+        upstream_apc, "snapshot_prompt_cache_row", lambda *_a, **_kw: None
+    )
+    assert not checkpoint.store_checkpoint([1], ["cache"])
+    # A non-checkpoint plan cannot store exact snapshots.
+    block = apc_coordinator.APCCoordinator(manager, _coordinator_model())
+    assert not block.store_checkpoint([1], ["cache"])
+
+    monkeypatch.setattr(checkpoint, "checkpoint_len", lambda *_a, **_kw: 0)
+    assert checkpoint.checkpoint_lengths([1], set()) == []
+
+
+def test_coordinator_fresh_cache_falls_back_to_upstream_factory(monkeypatch):
+    import types
+
+    import mlx_vlm.models.cache as upstream_cache
+
+    model = types.SimpleNamespace(language_model=object())
+    coordinator = object.__new__(apc_coordinator.APCCoordinator)
+    coordinator.manager = None
+    coordinator.model = model
+    monkeypatch.setattr(
+        upstream_cache,
+        "make_prompt_cache",
+        lambda _model: [vendored_cache.KVCache()],
+    )
+    fresh = coordinator.fresh_cache()
+    assert len(fresh) == 1 and type(fresh[0]) is vendored_cache.KVCache
