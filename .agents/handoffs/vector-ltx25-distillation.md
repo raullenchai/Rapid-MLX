@@ -2,6 +2,8 @@
 
 Date: 2026-09-13
 
+Receiving role: Atlas
+
 Owner / host: Vector / MZR-3
 
 Runtime feasibility branch: `raullenchai:vector/ltx25-distillation-feasibility`
