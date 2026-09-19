@@ -529,6 +529,20 @@ class ArraysCacheCloneAdapter:
             ]
             merged.append(mx.concatenate(rows, axis=0))
         out.cache = merged
+        for name in ("left_padding", "lengths"):
+            states = [getattr(cache, name, None) for cache in caches]
+            sample = next((state for state in states if state is not None), None)
+            if sample is None:
+                continue
+            rows = [
+                (
+                    mx.zeros((1,) + sample.shape[1:], dtype=sample.dtype)
+                    if state is None
+                    else state[:1]
+                )
+                for state in states
+            ]
+            setattr(out, name, mx.concatenate(rows, axis=0))
         return out
 
 

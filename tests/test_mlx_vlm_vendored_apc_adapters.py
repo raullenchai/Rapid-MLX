@@ -163,6 +163,26 @@ def test_merge_rows_keeps_producer_namespace():
         assert merged.keys.shape[0] == 2
 
 
+def test_arrays_merge_rows_preserves_per_row_metadata():
+    upstream = _upstream_cache_ns()
+    for ns in (vendored_cache, upstream):
+        first = ns.ArraysCache(1)
+        first.cache = [mx.ones((1, 2))]
+        first.left_padding = mx.array([2])
+        second = ns.ArraysCache(1)
+        second.cache = [mx.zeros((1, 2))]
+        second.lengths = mx.array([5])
+
+        merged = apc_adapters.ArraysCacheCloneAdapter().merge_rows(
+            [first, second], [3, 5]
+        )
+
+        assert type(merged) is ns.ArraysCache
+        assert merged.cache[0].shape[0] == 2
+        assert merged.left_padding.tolist() == [2, 0]
+        assert merged.lengths.tolist() == [0, 5]
+
+
 def test_explicit_snapshot_contract_recognizes_both_base_classes():
     upstream = _upstream_cache_ns()
 
