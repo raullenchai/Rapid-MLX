@@ -102,6 +102,16 @@ def test_legacy_warning_fires_once_per_instance():
     with pytest.warns(DeprecationWarning, match="legacy generation"):
         _warn_legacy_generation(MLXMultimodalLM("test-model"), "generate")
 
+    # A warnings-as-errors caller aborts at the warning.  That interrupted
+    # attempt must not consume the per-instance notice: retry warns again.
+    retry_model = MLXMultimodalLM("test-model")
+    for _ in range(2):
+        with pytest.raises(DeprecationWarning, match="legacy generation"):
+            _raise_on_deprecation(
+                lambda: _warn_legacy_generation(retry_model, "generate")
+            )
+        assert not retry_model._legacy_generation_warned
+
 
 class _FakeTokenizer:
     def decode(self, tokens, skip_special_tokens=True):

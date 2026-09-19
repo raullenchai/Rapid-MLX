@@ -1504,7 +1504,6 @@ def _warn_legacy_generation(
     """
     if model._legacy_generation_warned:
         return
-    model._legacy_generation_warned = True
     warnings.warn(
         f"MLXMultimodalLM.{method}() uses mlx-vlm's legacy generation "
         "runtime and is deprecated. Serve vision models through the native "
@@ -1513,6 +1512,10 @@ def _warn_legacy_generation(
         DeprecationWarning,
         stacklevel=stacklevel,
     )
+    # Mark the notice consumed only after ``warnings.warn`` returns.  A caller
+    # may promote DeprecationWarning to an exception; in that mode generation
+    # never starts, and a later retry still deserves the migration notice.
+    model._legacy_generation_warned = True
 
 
 class MLXMultimodalLM:
