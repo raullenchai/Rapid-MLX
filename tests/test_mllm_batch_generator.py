@@ -2045,7 +2045,7 @@ def test_exact_prefix_cache_short_prompt_counts_miss_without_lookup():
 
 
 def test_generator_enables_exact_apc_from_pinned_runtime(monkeypatch):
-    from mlx_vlm import apc
+    from rapid_mlx.models.mlx_vlm_vendored import apc
 
     manager = _ExactPrefixCache()
     seen_overrides = None
@@ -2075,7 +2075,7 @@ def test_generator_enables_exact_apc_from_pinned_runtime(monkeypatch):
 
 
 def test_generator_preserves_explicit_apc_disk_setting(monkeypatch):
-    from mlx_vlm import apc
+    from rapid_mlx.models.mlx_vlm_vendored import apc
 
     manager = _ExactPrefixCache()
     seen_overrides = None
@@ -2099,7 +2099,7 @@ def test_generator_preserves_explicit_apc_disk_setting(monkeypatch):
 
 
 def test_generator_keeps_mllm_available_when_exact_apc_init_fails(monkeypatch):
-    from mlx_vlm import apc
+    from rapid_mlx.models.mlx_vlm_vendored import apc
 
     monkeypatch.setattr(
         apc,
@@ -2312,9 +2312,10 @@ def test_scheduler_prefix_cache_clear_rejects_active_requests():
 
 
 def _make_real_apc_generator(monkeypatch, *, entries: int | None = None):
-    """A bare generator wired to a real mlx-vlm ``APCManager`` in exact mode
+    """A bare generator wired to the vendored ``APCManager`` in exact mode
     (no disk, no block pool), the way ``__init__`` builds it."""
-    apc = pytest.importorskip("mlx_vlm.apc")
+    from rapid_mlx.models.mlx_vlm_vendored import apc
+
     if entries is None:
         monkeypatch.delenv("APC_EXACT_CACHE_ENTRIES", raising=False)
     else:
@@ -2498,8 +2499,8 @@ def test_exact_cache_capacity_stays_at_mlx_vlm_default_without_a_byte_budget(
     failed budget computation keeps mlx-vlm's own capacity (unless the
     operator asked for a count explicitly)."""
     from rapid_mlx import memory_cache
+    from rapid_mlx.models.mlx_vlm_vendored import apc
 
-    apc = pytest.importorskip("mlx_vlm.apc")
     default = apc.from_env(
         overrides={"enabled": True, "num_blocks": 0, "disk_enabled": False}
     )._exact_cache_max

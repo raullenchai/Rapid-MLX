@@ -415,8 +415,9 @@ def apc_mode(caches: Sequence[Any]) -> Optional[str]:
 
 
 def _apc_array_helpers():
-    # VENDOR-DEVIATION(redirect): the APC engine (apc.py) is vendored in the
-    # next PR of this stack; until then resolve the array helpers upstream.
+    # VENDOR-DEVIATION(redirect): keep the array helpers on the pinned upstream
+    # runtime until the producer cutover; this slice only moves direct engine
+    # ownership and preserves the existing cache-type namespace.
     from mlx_vlm.apc import _copy_mlx_array, _pad_kv_for_capacity
 
     return _copy_mlx_array, _pad_kv_for_capacity

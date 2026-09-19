@@ -881,6 +881,139 @@ class TestRotatingCacheConstantsMatchInstalledMlxLm:
             return node.args[2].value
         return None
 
+    @staticmethod
+    def _is_persisted_keep_roundtrip(owner, reader, node):
+        """Whether ``node`` restores a keep copied from a scanned cache.
+
+        APC disk snapshots reconstruct a cache from metadata written from an
+        already-existing ``RotatingKVCache.keep``.  That is not a fresh source
+        of the value: every shipped constructor that can create the original
+        cache is checked by this same test.  Recognize the round trip only when
+        the AST contains both the exact metadata read and matching write, so a
+        bare variable named ``keep`` cannot bypass the safety proof.
+        """
+        import ast
+
+        if not isinstance(node, ast.Name):
+            return False
+
+        def _joined_string_has_keep_suffix(value):
+            return isinstance(value, ast.JoinedStr) and any(
+                isinstance(part, ast.Constant)
+                and isinstance(part.value, str)
+                and part.value.endswith("_keep")
+                for part in value.values
+            )
+
+        read_keys: list[str] = []
+        for candidate in ast.walk(reader):
+            if not isinstance(candidate, ast.Assign) or len(candidate.targets) != 1:
+                continue
+            target = candidate.targets[0]
+            value = candidate.value
+            if isinstance(target, ast.Name) and target.id == node.id:
+                if not (
+                    isinstance(value, ast.Call)
+                    and isinstance(value.func, ast.Name)
+                    and value.func.id == "int"
+                    and len(value.args) == 1
+                ):
+                    continue
+                get_call = value.args[0]
+                if (
+                    isinstance(get_call, ast.Call)
+                    and isinstance(get_call.func, ast.Attribute)
+                    and isinstance(get_call.func.value, ast.Name)
+                    and get_call.func.value.id == "metadata"
+                    and get_call.func.attr == "get"
+                    and len(get_call.args) == 2
+                    and _joined_string_has_keep_suffix(get_call.args[0])
+                    and isinstance(get_call.args[1], ast.Constant)
+                    and get_call.args[1].value == "0"
+                ):
+                    read_keys.append(
+                        ast.dump(get_call.args[0], include_attributes=False)
+                    )
+                continue
+        write_keys: list[str] = []
+        for candidate in ast.walk(owner):
+            if not isinstance(candidate, ast.Assign) or len(candidate.targets) != 1:
+                continue
+            target = candidate.targets[0]
+            value = candidate.value
+            if not (
+                isinstance(target, ast.Subscript)
+                and isinstance(target.value, ast.Name)
+                and target.value.id == "metadata"
+                and _joined_string_has_keep_suffix(target.slice)
+            ):
+                continue
+            has_source_keep = any(
+                isinstance(child, ast.Call)
+                and isinstance(child.func, ast.Name)
+                and child.func.id == "getattr"
+                and len(child.args) == 3
+                and isinstance(child.args[1], ast.Constant)
+                and child.args[1].value == "keep"
+                and isinstance(child.args[2], ast.Constant)
+                and child.args[2].value == 0
+                for child in ast.walk(value)
+            )
+            if has_source_keep:
+                write_keys.append(ast.dump(target.slice, include_attributes=False))
+        return len(read_keys) == 1 and read_keys[0] in write_keys
+
+    def test_persisted_keep_roundtrip_recognizer_is_fail_closed(self):
+        import ast
+
+        safe = ast.parse(
+            "class Store:\n"
+            "    def load(self):\n"
+            '        keep = int(metadata.get(f"{prefix}_keep", "0"))\n'
+            "        RotatingKVCache(keep=keep)\n"
+            "    def save(self):\n"
+            '        metadata[f"{prefix}_keep"] = str(int(getattr(cache, "keep", 0) or 0))\n'
+        )
+        owner = safe.body[0]
+        reader = owner.body[0]
+        keep_arg = reader.body[1].value.keywords[0].value
+        assert self._is_persisted_keep_roundtrip(owner, reader, keep_arg)
+
+        missing_writer = ast.parse(
+            "class Store:\n"
+            "    def load(self):\n"
+            '        keep = int(metadata.get(f"{prefix}_keep", "0"))\n'
+            "        RotatingKVCache(keep=keep)\n"
+        )
+        owner = missing_writer.body[0]
+        reader = owner.body[0]
+        keep_arg = reader.body[1].value.keywords[0].value
+        assert not self._is_persisted_keep_roundtrip(owner, reader, keep_arg)
+        mismatched_key = ast.parse(
+            "class Store:\n"
+            "    def load(self):\n"
+            '        keep = int(metadata.get(f"{prefix}_keep", "0"))\n'
+            "        RotatingKVCache(keep=keep)\n"
+            "    def save(self):\n"
+            '        metadata[f"{other}_keep"] = str(int(getattr(cache, "keep", 0) or 0))\n'
+        )
+        owner = mismatched_key.body[0]
+        reader = owner.body[0]
+        keep_arg = reader.body[1].value.keywords[0].value
+        assert not self._is_persisted_keep_roundtrip(owner, reader, keep_arg)
+        unrelated = ast.parse(
+            "class Store:\n"
+            "    def load(self):\n"
+            "        keep = int(config.keep)\n"
+            "        RotatingKVCache(keep=keep)\n"
+            "    def save(self):\n"
+            '        metadata[f"{prefix}_keep"] = str(int(getattr(cache, "keep", 0) or 0))\n'
+        )
+        owner = unrelated.body[0]
+        reader = owner.body[0]
+        keep_arg = reader.body[1].value.keywords[0].value
+        assert not self._is_persisted_keep_roundtrip(owner, reader, keep_arg)
+
     def test_no_shipped_rotating_cache_construction_exceeds_our_keep(self):
         # ``make_prompt_cache`` (tested above) is the GENERIC construction path,
         # but the engine ALSO builds ``RotatingKVCache`` DIRECTLY in vendored
@@ -911,6 +1044,11 @@ class TestRotatingCacheConstantsMatchInstalledMlxLm:
                 tree = ast.parse(py.read_text(encoding="utf-8"), filename=str(py))
             except (SyntaxError, UnicodeDecodeError):
                 continue
+            parents = {
+                child: parent
+                for parent in ast.walk(tree)
+                for child in ast.iter_child_nodes(parent)
+            }
             for node in ast.walk(tree):
                 if not isinstance(node, ast.Call):
                     continue
@@ -928,6 +1066,21 @@ class TestRotatingCacheConstantsMatchInstalledMlxLm:
                 if keep_kw is None:
                     continue  # default keep=0 → safe
                 bound = self._static_keep_upper_bound(keep_kw.value)
+                scope = node
+                while not isinstance(
+                    scope, (ast.FunctionDef, ast.AsyncFunctionDef, ast.Module)
+                ):
+                    scope = parents[scope]
+                owner = scope
+                while not isinstance(owner, (ast.ClassDef, ast.Module)):
+                    owner = parents[owner]
+                if bound is None and self._is_persisted_keep_roundtrip(
+                    owner, scope, keep_kw.value
+                ):
+                    # The restored value was copied from an original cache;
+                    # all fresh constructors that can create that cache are
+                    # independently bounded by this scan.
+                    bound = _ROTATING_CACHE_KEEP
                 assert bound is not None, (
                     f"{py.name}:{node.lineno} constructs RotatingKVCache with a keep= "
                     "expression this OOM-safety scan cannot statically bound "

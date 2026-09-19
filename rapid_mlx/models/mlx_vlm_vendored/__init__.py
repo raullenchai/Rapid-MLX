@@ -1,5 +1,5 @@
 # SPDX-License-Identifier: Apache-2.0
-"""Vendored cache primitives from mlx-vlm, pinned at 0.7.1.
+"""Vendored APC engine and cache primitives from mlx-vlm, pinned at 0.7.1.
 
 The native serialized MLLM lane (``MLLMBatchGenerator``) leans on mlx-vlm
 cache primitives. Vendoring this first slice brings those code paths under
@@ -106,9 +106,9 @@ vendored copy differs by exactly the deviations listed):
   **except documented redirects**: its module-level
   ``from .apc_adapters import ...`` resolves the vendored sibling; its lazy
   ``from .apc import ...`` engine calls and the ``fresh_cache`` fallback
-  ``make_prompt_cache`` resolve upstream mlx-vlm until the APC engine is
-  vendored (next PR of this stack) and producers flip (step 3). Every site
-  carries a ``VENDOR-DEVIATION`` comment. Additionally, return-value locals
+  ``make_prompt_cache`` remain on upstream mlx-vlm until producers flip
+  (step 3). Every site carries a ``VENDOR-DEVIATION`` comment. Additionally,
+  return-value locals
   are explicitly annotated where the redirected engine calls type-resolve to
   ``Any`` (the repo's mypy ``no-any-return`` discipline; no behavior
   change).
@@ -139,11 +139,19 @@ vendored copy differs by exactly the deviations listed):
      assignment for the two type tables — so a concurrent first caller
      can never observe a partially built (or half-published) table.
   3. Redirects: ``_apc_array_helpers``' lazy ``.apc`` import and the
-     ``build_prefix_cache_plan`` fallback ``make_prompt_cache`` resolve
-     upstream mlx-vlm until the APC engine is vendored (next PR) and
-     producers flip (step 3); the turboquant registration resolves the
+     ``build_prefix_cache_plan`` fallback ``make_prompt_cache`` remain on
+     upstream mlx-vlm until producers flip (step 3); the turboquant
+     registration resolves the
      pinned upstream ``mlx_vlm.turboquant`` (not vendored — see above).
   The lane's ``clone_cache_entry`` / ``Capability`` / ``resolve_capability``
   imports now resolve here; the four test modules that stub
   ``clone_cache_entry`` were re-pointed at this module in the same commit.
+
+- ``apc.py`` — identical to ``mlx_vlm/apc.py`` @ v0.7.1 (upstream sha256
+  ``5b2b940852f11f34f7b4daf627bc31fc701f8abffc72d40189bc3e5ac57f878c``)
+  except 18 one-line import redirects (``# VENDOR-DEVIATION`` sentinels):
+  top-level relative imports bind the vendored siblings, the lazy
+  ``.models*`` (15) and ``.turboquant`` (3) sites resolve upstream, and
+  the engine still dispatches on upstream-typed caches (byte-identical
+  today; widening is the 2b-3 follow-up).
 """

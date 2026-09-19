@@ -71,8 +71,9 @@ class APCCoordinator:
     ) -> Optional[dict]:
         if not self.enabled:
             return None
-        # VENDOR-DEVIATION(redirect): the APC engine (apc.py) is vendored in
-        # the next PR of this stack; until then resolve it upstream.
+        # VENDOR-DEVIATION(redirect): keep lazy engine calls on the pinned
+        # upstream runtime until the producer cutover. Direct engine ownership
+        # moves first while cache producers retain their upstream namespace.
         from mlx_vlm.apc import apc_lookup_plan
 
         hit: Optional[dict] = apc_lookup_plan(

@@ -280,14 +280,15 @@ def test_coverage_paths_are_portable_across_runner_operating_systems() -> None:
 
 
 def test_vendored_mllm_coverage_omit_is_file_scoped() -> None:
-    """Only the pinned upstream cache copy may bypass patch coverage."""
+    """Only pinned copies with source contracts may bypass patch coverage."""
     parser = configparser.ConfigParser()
     parser.read(WORKFLOW.parents[2] / ".coveragerc")
     omit_patterns = parser.get("run", "omit").splitlines()
     vendored_prefix = "rapid_mlx/models/mlx_vlm_vendored/"
 
     assert [entry for entry in omit_patterns if entry.startswith(vendored_prefix)] == [
-        f"{vendored_prefix}cache.py"
+        f"{vendored_prefix}cache.py",
+        f"{vendored_prefix}apc.py",
     ]
     for guarded_path in (
         "rapid_mlx/models/mlx_vlm_vendored/future_module.py",

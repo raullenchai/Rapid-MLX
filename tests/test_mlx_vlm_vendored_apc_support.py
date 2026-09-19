@@ -3,10 +3,13 @@
 ``apc_storage``, ``kv_quant``, ``_stream_cleanup`` and ``vision_cache``.
 
 The coordinator/storage/kv_quant modules are consumed by the vendored APC
-engine vendored in the next PR of the stack, but their import wiring is
-established here: the coordinator must resolve the vendored adapters, and
-kv_quant must stay behavior-identical to upstream (redirect-parity probe).
+engine. Their import wiring is explicit: the coordinator must resolve the
+vendored adapters, and kv_quant must stay behavior-identical to upstream
+(redirect-parity probe).
 """
+
+import hashlib
+import inspect
 
 import pytest
 
@@ -22,6 +25,11 @@ from rapid_mlx.models.mlx_vlm_vendored import (
 from rapid_mlx.models.mlx_vlm_vendored import cache as vendored_cache
 from rapid_mlx.models.mlx_vlm_vendored import kv_quant as vendored_kv_quant
 from rapid_mlx.models.mlx_vlm_vendored import vision_cache as vendored_vision_cache
+
+_APC_UPSTREAM_SHA256 = (
+    "5b2b940852f11f34f7b4daf627bc31fc701f8abffc72d40189bc3e5ac57f878c"
+)
+_APC_REDIRECT_SENTINEL = "  # VENDOR-DEVIATION"
 
 
 class _FakeLM:
@@ -41,6 +49,49 @@ def test_coordinator_resolves_the_vendored_adapters():
         apc_coordinator.build_prefix_cache_plan is apc_adapters.build_prefix_cache_plan
     )
     assert apc_coordinator.PrefixCachePlan is apc_adapters.PrefixCachePlan
+
+
+def test_engine_resolves_the_vendored_family():
+    """apc.py's top-level relative imports must bind the vendored siblings."""
+    from rapid_mlx.models.mlx_vlm_vendored import apc
+
+    assert apc.APCCoordinator is apc_coordinator.APCCoordinator
+    assert apc.APCNode is apc_storage.APCNode
+
+
+def test_engine_matches_pinned_upstream_except_declared_import_redirects():
+    """Fail closed if the large coverage-exempt engine copy drifts.
+
+    The vendored engine remains byte-equivalent to mlx-vlm 0.7.1 after its
+    18 explicit absolute-import redirects are normalized back to upstream's
+    package-relative imports.  Any behavioral edit therefore needs its own
+    reviewed contract and must stop relying on the coverage exemption.
+    """
+    import mlx_vlm.apc as upstream_apc
+
+    from rapid_mlx.models.mlx_vlm_vendored import apc as vendored_apc
+
+    upstream_source = inspect.getsource(upstream_apc)
+    vendored_source = inspect.getsource(vendored_apc)
+    assert hashlib.sha256(upstream_source.encode()).hexdigest() == _APC_UPSTREAM_SHA256
+
+    normalized_lines = []
+    redirect_count = 0
+    for line in vendored_source.splitlines(keepends=True):
+        if _APC_REDIRECT_SENTINEL not in line:
+            normalized_lines.append(line)
+            continue
+        redirect_count += 1
+        assert line.count(_APC_REDIRECT_SENTINEL) == 1
+        assert "from mlx_vlm." in line
+        normalized_lines.append(
+            line.replace("from mlx_vlm.", "from .", 1).replace(
+                _APC_REDIRECT_SENTINEL, "", 1
+            )
+        )
+
+    assert redirect_count == 18
+    assert "".join(normalized_lines) == upstream_source
 
 
 def test_coordinator_builds_plan_from_vendored_caches():

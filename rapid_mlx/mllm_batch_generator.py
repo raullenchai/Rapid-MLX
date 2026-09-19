@@ -1209,8 +1209,8 @@ class MLLMBatchGenerator:
         # Get language model for text generation
         self.language_model = getattr(model, "language_model", model)
 
-        # Reuse mlx-vlm's shipped APC implementation rather than maintaining
-        # another cache format in Rapid. Hybrid/ArraysCache backbones select
+        # Reuse Rapid's source-pinned APC engine rather than maintaining
+        # another cache format in this lane. Hybrid/ArraysCache backbones select
         # APC's conservative exact-snapshot mode: recurrent state resumes only
         # at a stored token boundary and is never trimmed. Block storage is not
         # used by this path, so keep that pool empty while APC owns the bounded
@@ -1231,7 +1231,7 @@ class MLLMBatchGenerator:
         self._prefix_cache_enabled = bool(enable_prefix_cache)
         if enable_prefix_cache:
             try:
-                from mlx_vlm import apc as _apc
+                from rapid_mlx.models.mlx_vlm_vendored import apc as _apc
 
                 mode = _apc.model_apc_mode(self.language_model)
                 if mode == "exact":
@@ -1608,7 +1608,7 @@ class MLLMBatchGenerator:
             hit: str = cached
             return hit
         try:
-            from mlx_vlm import apc as _apc
+            from rapid_mlx.models.mlx_vlm_vendored import apc as _apc
 
             salt = str(
                 _apc.semantic_extra_hash(model=self.model, processor=self.processor)
@@ -2773,10 +2773,10 @@ class MLLMBatchGenerator:
                     return None
                 warm.append(cloned)
         except ModuleNotFoundError as exc:
-            # See ``_media_clone_leaves``: until apc.py is vendored in the
-            # next stack slice, cloning may reach a lazy upstream helper.
-            # Missing optional vision/APC dependencies are a cache miss, not a
-            # request failure.
+            # See ``_media_clone_leaves``: the vendored adapter intentionally
+            # keeps its array-copy helper on the pinned upstream runtime until
+            # the producer cutover. Missing optional vision/APC dependencies
+            # are a cache miss, not a request failure.
             if exc.name not in {"mlx_vlm", "mlx_vlm.apc"}:
                 raise
             return None

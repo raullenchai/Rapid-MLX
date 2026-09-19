@@ -145,3 +145,4 @@ rapid_mlx/utils/decode.py 2
 rapid_mlx/utils/tokenizer.py 18
 rapid_mlx/video/engine.py 2
 rapid_mlx/video/wan.py 1
+rapid_mlx/models/mlx_vlm_vendored/apc.py 37
