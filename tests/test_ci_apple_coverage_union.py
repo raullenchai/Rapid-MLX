@@ -289,6 +289,7 @@ def test_vendored_mllm_coverage_omit_is_file_scoped() -> None:
     assert [entry for entry in omit_patterns if entry.startswith(vendored_prefix)] == [
         f"{vendored_prefix}cache.py",
         f"{vendored_prefix}apc.py",
+        f"{vendored_prefix}inputs.py",
     ]
     for guarded_path in (
         "rapid_mlx/models/mlx_vlm_vendored/future_module.py",

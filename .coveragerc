@@ -25,6 +25,10 @@ omit =
     # permits only the 18 documented import redirects; Rapid-owned adapters
     # and every future vendored module remain measured.
     rapid_mlx/models/mlx_vlm_vendored/apc.py
+    # Pinned upstream request-input closure. A complete-source hash and exact
+    # deviation inventory fail closed on drift; the four Rapid-owned resource
+    # and namespace deviations are covered by focused behavioral tests.
+    rapid_mlx/models/mlx_vlm_vendored/inputs.py
     # Test-file mirrors under the package: ``rapid_mlx/_integration_tests``
     # is a symlink farm pointing at ``tests/integrations/``. They are test
     # code — CI executes them via tests/integrations/, not through the

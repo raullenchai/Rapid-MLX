@@ -169,4 +169,38 @@ vendored copy differs by exactly the deviations listed):
     ``_finish_write`` in-flight entry ownership (partially overlapping
     writers could erase another writer's entry), and
     ``_save_layer_major_shard`` temp-file cleanup on write failure.
+
+- ``inputs.py`` — verbatim from ``mlx_vlm/utils.py`` @ v0.7.1 lines
+  1714-2543 (``load_image`` .. ``prepare_inputs``, an unbroken region;
+  region sha256
+  ``ac610b0e2c157de878b17ec9f5ebaa8bf2c75000e44c09d84b5c17dbaf7c7b5f``),
+  except the import block: exactly the names the region references
+  (ruff F821 closure), with ``mlx_vlm.models.base`` (``
+  BaseImageProcessor``) still resolving upstream and the logger pinned to
+  the upstream ``mlx_vlm.utils`` name (``mlx_vlm.apc`` precedent), plus
+  four documented hunks (all repro-tested in
+  ``tests/test_mlx_vlm_vendored_inputs.py``):
+
+  - ``VENDOR-DEVIATION(dual-namespace)`` in ``processor_video_sampling``:
+    a processor hook may return the upstream ``VideoSampling`` dataclass
+    while the vendored class is in effect, so matching-shape objects
+    normalize by their known fields instead of class identity.
+  - ``VENDOR-DEVIATION(upstream-bugfix)`` in ``load_video``: the cv2
+    capture handle is released via try/finally (upstream leaked it on
+    failed opens, frame-sampler errors, index validation, and read
+    failures).
+  - ``VENDOR-DEVIATION(upstream-bugfix)`` in ``prepare_inputs``: bytes
+    video paths are ``os.fsdecode``-d (upstream str()-ed them into
+    ``"b'/tmp/a.mp4'"``-style garbage filenames).
+  - ``VENDOR-DEVIATION(upstream-bugfix)`` in ``load_audio``: the streamed
+    URL response is closed via ``with`` (upstream left it open).
+
+  The
+  lane's ``prepare_inputs`` call sites (``multimodal_processor.py``,
+  ``mllm_batch_generator.py``) resolve this module; per-function upstream
+  parity is probed in ``tests/test_mlx_vlm_vendored_inputs.py`` (all
+  functions except ``processor_video_sampling``, ``load_video``,
+  ``load_audio``, and ``prepare_inputs``, which carry the hunks above).
+  A diff against the pinned tag must show only the header/import block
+  and the documented hunks.
 """

@@ -118,7 +118,7 @@ class MultimodalProcessor:
         Returns:
             ProcessedMultimodalInput with all processed tensors
         """
-        from mlx_vlm.utils import prepare_inputs
+        from rapid_mlx.models.mlx_vlm_vendored.inputs import prepare_inputs
 
         # Process raw images
         # Image-fetch failures used to be swallowed with logger.warning + continue,

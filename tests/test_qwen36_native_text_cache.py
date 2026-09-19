@@ -89,6 +89,10 @@ def test_wrapper_changes_only_cache_construction():
 def test_native_text_arrays_cache_owns_vlm_window_update_contract():
     from mlx_vlm.models.cache import ArraysCache as VLMCompatArraysCache
 
+    from rapid_mlx.models.mlx_vlm_vendored.cache import (
+        ArraysCache as VendoredVLMCompatArraysCache,
+    )
+
     cache_type = _qwen36_text_arrays_cache_type()
     cache = cache_type(size=2)
     source = mx.arange(2 * 5 * 2).reshape(2, 5, 2)
@@ -102,6 +106,7 @@ def test_native_text_arrays_cache_owns_vlm_window_update_contract():
 
     assert isinstance(cache, ArraysCache)
     assert isinstance(cache, VLMCompatArraysCache)
+    assert isinstance(cache, VendoredVLMCompatArraysCache)
     assert _qwen36_text_arrays_cache_type() is cache_type
     assert state.tolist() == [
         source[0, 3:5].tolist(),
