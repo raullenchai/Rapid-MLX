@@ -989,30 +989,61 @@ def _decode_checkpoint_tree(structure: dict, load_array) -> Any:
     raise ValueError(f"unsupported checkpoint tree node: {kind!r}")
 
 
+_CHECKPOINT_CLASS_ALLOWLIST = {
+    "mlx_vlm.models.cache": frozenset(
+        {
+            "ArraysCache",
+            "BatchKVCache",
+            "BatchPoolingCache",
+            "BatchQuantizedKVCache",
+            "BatchRotatingKVCache",
+            "BufferedRotatingKVCache",
+            "CacheList",
+            "ChunkedKVCache",
+            "ConcatenateKVCache",
+            "KVCache",
+            "PoolingCache",
+            "QuantizedKVCache",
+            "RotatingKVCache",
+            "StaticPrefixKVCache",
+        }
+    ),
+    "mlx_vlm.turboquant": frozenset(
+        {"BatchTurboQuantKVCache", "HybridQuantKVCache", "TurboQuantKVCache"}
+    ),
+    "rapid_mlx.models.mlx_vlm_vendored.cache": frozenset(
+        {
+            "ArraysCache",
+            "BatchKVCache",
+            "BatchPoolingCache",
+            "BatchQuantizedKVCache",
+            "BatchRotatingKVCache",
+            "BufferedRotatingKVCache",
+            "CacheList",
+            "ChunkedKVCache",
+            "ConcatenateKVCache",
+            "KVCache",
+            "PoolingCache",
+            "QuantizedKVCache",
+            "RotatingKVCache",
+            "StaticPrefixKVCache",
+        }
+    ),
+}
+
+
 def _resolve_checkpoint_class(module_name: str, qualname: str) -> Optional[type]:
     """Resolve an importable cache class recorded by the local disk tier."""
     # VENDOR-DEVIATION(dual-namespace): checkpoint records may reference the
     # vendored cache classes during the transition. Everything else stays
     # rejected: the prefix guard keeps disk metadata from importing arbitrary
     # modules.
-    if (
-        module_name not in {
-            "mlx_vlm.models.cache",
-            "rapid_mlx.models.mlx_vlm_vendored.cache",
-        }
-        or not qualname.isidentifier()
-        or qualname.startswith("_")
-    ):
+    if qualname not in _CHECKPOINT_CLASS_ALLOWLIST.get(module_name, ()):
         return None
     try:
         module = importlib.import_module(module_name)
         value: Any = getattr(module, qualname)
-        base = getattr(module, "_BaseCache")
-        if (
-            isinstance(value, type)
-            and value.__module__ == module_name
-            and issubclass(value, base)
-        ):
+        if isinstance(value, type) and value.__module__ == module_name:
             return value
         return None
     except (ImportError, AttributeError):

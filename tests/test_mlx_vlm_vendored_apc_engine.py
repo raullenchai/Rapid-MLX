@@ -133,7 +133,28 @@ def test_exact_restore_is_namespace_faithful(store):
     )
 
 
-def test_resolve_checkpoint_class_allows_vendored_only(store):
+def test_resolve_checkpoint_class_allows_only_reviewed_cache_classes(store):
+    from mlx_vlm import turboquant
+    from mlx_vlm.models import cache as upstream_cache
+    from mlx_vlm.turboquant import TurboQuantKVCache
+
+    for module, base in (
+        (upstream_cache, upstream_cache._BaseCache),
+        (turboquant, upstream_cache._BaseCache),
+        (vendored_cache, vendored_cache._BaseCache),
+    ):
+        concrete_cache_classes = {
+            name
+            for name, value in vars(module).items()
+            if not name.startswith("_")
+            and isinstance(value, type)
+            and value.__module__ == module.__name__
+            and issubclass(value, base)
+        }
+        assert apc._CHECKPOINT_CLASS_ALLOWLIST[module.__name__] == frozenset(
+            concrete_cache_classes
+        )
+
     assert (
         apc._resolve_checkpoint_class(
             "rapid_mlx.models.mlx_vlm_vendored.cache", "KVCache"
@@ -154,10 +175,13 @@ def test_resolve_checkpoint_class_allows_vendored_only(store):
         )
         is None
     )
-    upstream_cache = _upstream_cache_module()
     assert (
         apc._resolve_checkpoint_class("mlx_vlm.models.cache", "KVCache")
         is upstream_cache.KVCache
+    )
+    assert (
+        apc._resolve_checkpoint_class("mlx_vlm.turboquant", "TurboQuantKVCache")
+        is TurboQuantKVCache
     )
 
 
