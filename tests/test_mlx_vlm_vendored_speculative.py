@@ -99,18 +99,24 @@ def _code_lines(src):
 
 
 def _body_divergences(vendored_module, upstream_module, normalized=()):
+    # Only symbols DEFINED in the walked module are compared: imported
+    # symbols carry their defining module's hunks into every importer's
+    # namespace, so each hunk is owned (and documented) exactly once — by
+    # the module that defines it.
     diverged = []
     vendored_defs = {
         name: obj
         for name, obj in vars(vendored_module).items()
         if not name.startswith("__")
         and (inspect.isfunction(obj) or inspect.isclass(obj))
+        and getattr(obj, "__module__", None) == vendored_module.__name__
     }
     upstream_defs = {
         name: obj
         for name, obj in vars(upstream_module).items()
         if not name.startswith("__")
         and (inspect.isfunction(obj) or inspect.isclass(obj))
+        and getattr(obj, "__module__", None) == upstream_module.__name__
     }
     for name in sorted(set(vendored_defs) - set(upstream_defs)):
         diverged.append(f"{name}: vendored-only")
@@ -159,27 +165,21 @@ def test_vendored_speculative_bodies_match_upstream():
         utils as up_utils,
     )
 
-    # ``BatchRotatingKVCache`` is defined in the vendored cache.py, whose
-    # merge() carries the documented 2a upstream-bugfix hunk (see the
-    # cache.py inventory entry); its source therefore differs from pinned
-    # upstream by exactly that hunk.
+    # Only symbols DEFINED in each walked module are compared (imported
+    # symbols are owned by their defining module's entry — e.g.
+    # ``BatchRotatingKVCache``'s 2a merge bugfix is covered by the cache
+    # suite that walks ``cache.py`` itself).
     for vendored, upstream, documented in (
-        (vs_cache_state, up_cache_state, {"BatchRotatingKVCache"}),
-        (vs_common, up_common, set()),
+        (vs_cache_state, up_cache_state, set()),
+        (vs_common, up_common, {"_speculative_walk_batch_uniform_acceptance"}),
         # ``build_ddtree`` carries the documented assert→ValueError hunk —
         # a REAL permitted behavioral difference, hence documented-filtered.
         (vs_ddtree, up_ddtree, {"build_ddtree"}),
         (vs_dflash, up_dflash, {"_dflash_rounds_batch"}),
         (vs_mtp, up_mtp, {"_mtp_rounds_batch"}),
-        # ``_dflash_rounds_batch``/``_mtp_rounds_batch`` also appear in
-        # utils' namespace via their dflash/mtp imports; the hunks live in
-        # their own modules (documented above and in the inventory).
-        (vs_utils, up_utils, {"_dflash_rounds_batch", "_mtp_rounds_batch"}),
+        (vs_utils, up_utils, set()),
     ):
-        normalized = {"native_batch_linear"} if vendored is vs_mtp else set()
-        # ``native_batch_linear`` (imported from vendored models.linear)
-        # compares on behavior only; its divergences are never filtered.
-        divergences = _body_divergences(vendored, upstream, normalized=normalized)
+        divergences = _body_divergences(vendored, upstream)
         divergences = [d for d in divergences if d not in documented]
         assert divergences == []
 
@@ -322,3 +322,33 @@ def test_code_lines_canonicalizes_redirect_imports():
         "    from some_other_package import (",
     )
     assert _code_lines(foreign) != _code_lines(upstream)
+
+
+def test_uniform_acceptance_clamps_over_positive_budgets():
+    # r6 fix: pinned upstream mins the acceptance over every row, so a
+    # retained finished row (zero budget under the non-filterable-cache
+    # fallback) would collapse the whole batch to zero acceptance (dflash's
+    # min(len(nt)-1) variant even stalled the loop). The vendored hunks
+    # clamp over positive-budget rows and floor at 0.
+    mx = pytest.importorskip("mlx.core")
+    import rapid_mlx.models.mlx_vlm_vendored.speculative.common as vs_common_mod
+
+    draft = mx.array([[7, 8, 9], [7, 8, 5]])
+    target = mx.array([[7, 8, 9], [7, 8, 9]])
+    # Row 0 is a retained finished row (zero budget) whose walk accepted 0;
+    # row 1 still has tokens to spend and accepted 2. Upstream mins over ALL
+    # rows → accepted=0 → row 1 collapses to bonus-only decoding; the
+    # vendored hunk clamps over positive-budget rows and keeps row 1's
+    # acceptance.
+    out_accepted, out_tokens = vs_common_mod._speculative_walk_batch_uniform_acceptance(
+        draft, target, [0, 2], [0, 4]
+    )
+    assert out_accepted == [2, 2]
+    assert out_tokens[0] == []
+    assert out_tokens[1] == [7, 8, 9]
+    # All-zero budgets floor the clamp at 0 instead of crashing.
+    out_accepted, out_tokens = vs_common_mod._speculative_walk_batch_uniform_acceptance(
+        draft, target, [0, 2], [0, 0]
+    )
+    assert out_accepted == [0, 0]
+    assert out_tokens == [[], []]

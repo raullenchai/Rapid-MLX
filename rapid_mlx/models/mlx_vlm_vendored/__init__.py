@@ -288,7 +288,11 @@ vendored copy differs by exactly the deviations listed):
   2a merge bugfix; no Rapid lane dispatches eagle3 through this package,
   and a future one must vendor the coordinator with its cache contract). Upstream digests: cache_state
   ``39d35ef0aae0c9298f2fcd3ff6b91b106c6b6c1c3ab6becae216a8fafb2c5300``,
-  common ``e3d3c0294a6d6fc915a32e96460370bfe57baef19539c5a290d4254525717cf1``,
+  common ``e3d3c0294a6d6fc915a32e96460370bfe57baef19539c5a290d4254525717cf1``
+  (1 documented bugfix hunk:
+  ``_speculative_walk_batch_uniform_acceptance`` clamps over rows with a
+  positive budget — pinned upstream mins over every row, letting a
+  retained finished row collapse the batch to zero acceptance),
   ddtree ``5e3651fe81aad1adee8ab6de7e15bd97d59845cf05724ae26d86af4eb982a342``
   (1 documented bugfix hunk: ``build_ddtree`` validates with ``ValueError``
   instead of ``assert``, which ``python -O`` strips),
