@@ -306,6 +306,23 @@ def test_merge_tuple_entries_without_upstream_namespace(
     assert all(type(s) is vendored_cache.BatchKVCache for s in merged.caches)
 
 
+def test_merge_tuple_entries_keeps_child_namespace_with_upstream_installed():
+    """A bare tuple has no namespace, so its first child must select the
+    result container even when both cache implementations are importable."""
+    upstream = _upstream_cache_ns()
+    for ns in (vendored_cache, upstream):
+        merged = apc_adapters.merge_cache_entries(
+            [
+                (_populated_kv(ns), _populated_kv(ns)),
+                (_populated_kv(ns), _populated_kv(ns)),
+            ],
+            [3, 3],
+        )
+        assert merged is not None
+        assert type(merged) is ns.CacheList
+        assert all(type(s) is ns.BatchKVCache for s in merged.caches)
+
+
 def test_type_table_build_publishes_only_complete_tables(monkeypatch):
     """The lazy table builders must publish their globals only after every
     namespace is processed. Assigning inside the namespace loop let a

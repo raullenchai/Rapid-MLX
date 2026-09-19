@@ -730,9 +730,11 @@ def merge_cache_entries(entries, prefix_lens):
     # namespace of its own; derive the container namespace from its first
     # element so composite merges keep working in a stripped install
     # (upstream imports its single cache module unconditionally here).
-    lm = _cache_namespace_of(first)
-    if lm is None and isinstance(first, tuple) and first:
-        lm = _cache_namespace_of(first[0])
+    lm = (
+        _cache_namespace_of(first[0])
+        if isinstance(first, tuple) and first
+        else _cache_namespace_of(first)
+    )
     if lm is None:
         return None
     for typ, adapter in _clone_rules():
