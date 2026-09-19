@@ -54,6 +54,26 @@ def test_batch_rotating_merge_rotated_operand_is_temporal():
     assert mx.array_equal(merged.keys[0], expected)
 
 
+def test_batch_rotating_merge_unrotated_preallocation_uses_live_prefix():
+    """Single-token decode preallocates capacity beyond the live prefix;
+    merge must not copy the unused zero-filled tail."""
+    cache = BatchRotatingKVCache(8, [0])
+    for token in (11.0, 12.0, 13.0):
+        item = mx.full((1, 2, 1, 4), token)
+        cache.update_and_fetch(item, item)
+
+    assert cache.rotated is False
+    assert cache.keys.shape[2] == 8
+    assert cache.size() == 3
+
+    merged = BatchRotatingKVCache.merge([cache])
+
+    expected = mx.array([11.0, 12.0, 13.0]).reshape(1, 3, 1)
+    expected = mx.broadcast_to(expected, (2, 3, 4))
+    assert mx.array_equal(merged.keys[0], expected)
+    assert mx.array_equal(merged.values[0], expected)
+
+
 def test_batch_pooling_make_mask_scalar_offset_matches_array_branch():
     """Upstream's scalar-offset branch added ``offset`` twice; the absolute
     query positions must match the ``mx.array`` branch semantics."""

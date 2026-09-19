@@ -28,7 +28,10 @@ vendored copy differs by exactly the deviations listed):
   1. ``BatchRotatingKVCache.merge`` called the zero-arg in-place
      ``_temporal_order`` with an argument, raising TypeError on every
      merge with content (latent upstream; mlx-lm 0.31.3 carries the same
-     defect). Fixed to call the zero-arg form.
+     defect). It also selected the allocation tail of an unrotated,
+     preallocated decode cache, merging unused zeros instead of its live
+     prefix. Fixed to call the zero-arg form and copy the first ``length``
+     temporal entries.
   2. ``BatchPoolingCache.make_mask``'s scalar-offset branch added
      ``offset`` twice to the absolute query positions, admitting pooled
      tokens earlier than the causal contract allows. Fixed to match the

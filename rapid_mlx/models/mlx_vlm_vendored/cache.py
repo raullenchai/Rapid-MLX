@@ -1969,12 +1969,15 @@ class BatchRotatingKVCache(_BaseCache):
             # 0.31.3 identically) calls ``c._temporal_order(c.keys)`` here,
             # but this class's ``_temporal_order`` takes no argument and
             # reorders in place, so every merge with content raised
-            # TypeError. Call the zero-arg form and read the reordered
-            # arrays afterwards; operands are the per-request caches being
-            # consumed by this merge.
+            # TypeError. It also copied ``-length:`` from an unrotated
+            # preallocated decode buffer, selecting its unused zero tail
+            # instead of the live prefix. Call the zero-arg form and copy
+            # the first ``length`` temporal entries; a rotated cache is full,
+            # while an unrotated cache keeps all live entries at the front.
+            # Operands are per-request caches consumed by this merge.
             c._temporal_order()
-            keys[i : i + 1, :, p : p + length] = c.keys[..., -length:, :]
-            values[i : i + 1, :, p : p + length] = c.values[..., -length:, :]
+            keys[i : i + 1, :, p : p + length] = c.keys[..., :length, :]
+            values[i : i + 1, :, p : p + length] = c.values[..., :length, :]
 
         cache = cls(caches[0].max_size, padding)
         cache.keys = keys
