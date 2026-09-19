@@ -184,6 +184,14 @@ def _stub_heavy_serve_deps(monkeypatch) -> dict:
         reqlog_mod, "install_request_logging_middleware", lambda *a: None
     )
     monkeypatch.setattr(uvicorn, "run", fake_run)
+    # The serve path runs a real port preflight before uvicorn.run. This test
+    # pins the dropped-flag warning loop, not port binding — and without this
+    # stub the preflight sys.exit(1)s on any dev machine where something
+    # already listens on the default 8000 (e.g. the Desktop app's own serve
+    # process), failing the test for environment reasons. Same stub every
+    # other serve e2e file carries (audio gate, disk-stream wiring, gemma4
+    # gate, routing groups, image-gen completeness).
+    monkeypatch.setattr(cli, "_port_preflight_or_die", lambda *_a, **_kw: None)
     return captured
 
 
