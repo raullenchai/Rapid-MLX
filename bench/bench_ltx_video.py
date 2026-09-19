@@ -300,6 +300,15 @@ def _worker_ltx25(args: argparse.Namespace) -> int:
         def __getattr__(self, name):
             return getattr(original_tqdm, name)
 
+        def __or__(self, other):
+            # Downstream modules (e.g. huggingface_hub) annotate
+            # ``tqdm_bar: tqdm | None`` and evaluate the annotation at import
+            # time, AFTER this patch has replaced tqdm.tqdm with the proxy.
+            # Support the PEP 604 union form so those imports keep working.
+            return original_tqdm | type(other)
+
+        __ror__ = __or__
+
     tqdm_module.tqdm = _TqdmProxy()
     # The sampler binds tqdm at import time, so patch both module globals.
     from ltx_pipelines_mlx import cli

@@ -358,6 +358,71 @@ def test_measured_bar_preserves_tqdm_object_api(monkeypatch) -> None:
     assert fake.closed
 
 
+def test_worker_tqdm_proxy_survives_pep604_annotations(tmp_path, monkeypatch) -> None:
+    """The worker patches tqdm.tqdm before importing the runtime, and modules
+    such as huggingface_hub evaluate ``tqdm | None`` annotations at import
+    time. The proxy must support PEP 604 unions or the runtime import dies
+    with ``unsupported operand type(s) for |`` (observed with
+    huggingface_hub 1.32.0).
+    """
+    import types
+
+    annotation_result = {}
+
+    class RealTqdm:
+        pass
+
+    tqdm_module = types.ModuleType("tqdm")
+    tqdm_module.tqdm = RealTqdm
+    monkeypatch.setitem(sys.modules, "tqdm", tqdm_module)
+
+    cli_module = types.ModuleType("ltx_pipelines_mlx.cli")
+
+    def _fake_main() -> None:
+        # Simulate a downstream module-level ``patched | None`` annotation.
+        annotation_result["union"] = sys.modules["tqdm"].tqdm | None
+
+    cli_module.main = _fake_main
+    runtime_module = types.ModuleType("ltx_pipelines_mlx")
+    runtime_module.cli = cli_module
+    monkeypatch.setitem(sys.modules, "ltx_pipelines_mlx", runtime_module)
+    monkeypatch.setitem(sys.modules, "ltx_pipelines_mlx.cli", cli_module)
+
+    samplers_module = types.ModuleType("ltx_pipelines_mlx.utils.samplers")
+    utils_module = types.ModuleType("ltx_pipelines_mlx.utils")
+    utils_module.samplers = samplers_module
+    monkeypatch.setitem(sys.modules, "ltx_pipelines_mlx.utils", utils_module)
+    monkeypatch.setitem(
+        sys.modules, "ltx_pipelines_mlx.utils.samplers", samplers_module
+    )
+
+    mlx_core = types.ModuleType("mlx.core")
+    mlx_core.reset_peak_memory = lambda: None
+    mlx_core.get_peak_memory = lambda: 0
+    mlx_module = types.ModuleType("mlx")
+    mlx_module.core = mlx_core
+    monkeypatch.setitem(sys.modules, "mlx", mlx_module)
+    monkeypatch.setitem(sys.modules, "mlx.core", mlx_core)
+
+    output = tmp_path / "out.mp4"
+    output.write_bytes(b"x")
+    args = types.SimpleNamespace(
+        runtime="ltx25",
+        model="m",
+        height=8,
+        width=8,
+        frames=9,
+        fps=24,
+        seed=1,
+        prompt="p",
+        output_video=str(output),
+        sample_interval=1.0,
+    )
+
+    assert MODULE._worker_ltx25(args) == 0
+    assert annotation_result["union"] is not None
+
+
 def test_stage_durations_same_stage_adjacent_starts_only() -> None:
     step_events = [
         {"stage": 1, "observed_elapsed_s": 0.0},
