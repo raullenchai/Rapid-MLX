@@ -116,6 +116,21 @@ def test_exact_restore_is_namespace_faithful(store):
     )
     assert type(restored_up) is upstream_cache.KVCache
 
+    unknown_namespace = dict(metadata_up)
+    unknown_namespace["c1_ns"] = "future"
+    assert (
+        store._load_exact_cache_entry(
+            None,
+            {},
+            unknown_namespace,
+            0,
+            "c1",
+            min_capacity_tokens=None,
+            eval_targets=[],
+        )
+        is None
+    )
+
 
 def test_resolve_checkpoint_class_allows_vendored_only(store):
     assert (
@@ -126,6 +141,12 @@ def test_resolve_checkpoint_class_allows_vendored_only(store):
     )
     assert apc._resolve_checkpoint_class("os", "system") is None
     assert apc._resolve_checkpoint_class("builtins", "exec") is None
+    assert (
+        apc._resolve_checkpoint_class(
+            "rapid_mlx.models.mlx_vlm_vendored.apc", "DiskBlockStore"
+        )
+        is None
+    )
     upstream_cache = _upstream_cache_module()
     assert (
         apc._resolve_checkpoint_class("mlx_vlm.models.cache", "KVCache")

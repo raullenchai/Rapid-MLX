@@ -426,10 +426,13 @@ def _cache_ns_for_meta(metadata: dict, prefix: str):
     Entries written before the dual-namespace transition carry no ``_ns``
     key and restore upstream; ``"v"`` restores the vendored module.
     """
-    if metadata.get(f"{prefix}_ns") == "v":
+    marker = metadata.get(f"{prefix}_ns")
+    if marker == "v":
         from . import cache as _vendored
 
         return _vendored
+    if marker is not None:
+        return None
     from mlx_vlm.models import cache as _upstream
 
     return _upstream
@@ -993,9 +996,9 @@ def _resolve_checkpoint_class(module_name: str, qualname: str) -> Optional[type]
     # rejected: the prefix guard keeps disk metadata from importing arbitrary
     # modules.
     if (
-        not module_name.startswith(("mlx_vlm.", "rapid_mlx.models.mlx_vlm_vendored."))
-        or "<locals>" in qualname
-    ):
+        not module_name.startswith("mlx_vlm.")
+        and module_name != "rapid_mlx.models.mlx_vlm_vendored.cache"
+    ) or "<locals>" in qualname:
         return None
     try:
         value: Any = importlib.import_module(module_name)
@@ -1766,6 +1769,8 @@ class DiskBlockStore:
         # the entry's recorded namespace; no ``_ns`` key (pre-transition
         # shards) restores upstream.
         ns = _cache_ns_for_meta(metadata, prefix)
+        if ns is None:
+            return None
 
         kind = metadata.get(f"{prefix}_kind")
         if kind == "ring_kv":
