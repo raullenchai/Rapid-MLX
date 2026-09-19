@@ -230,4 +230,39 @@ vendored copy differs by exactly the deviations listed):
   except the documented-hunk bodies listed in that module). A diff against
   the pinned tag must show only the import-block redirects and the
   documented hunks above.
+
+- ``speculative/`` — verbatim from ``mlx_vlm/speculative`` @ v0.7.1,
+  coordinator core only (step-3b slice):
+  ``cache_state.py``/``common.py``/``ddtree.py``/``dflash.py``/``mtp.py``/
+  ``utils.py`` with three redirects: ``cache_state``'s
+  ``..models.cache`` → vendored root; ``mtp``'s
+  ``..models.quantized_verifier`` → pinned upstream (2k-line verifier,
+  ``decode_quantized_argmax`` is a pure array function);
+  ``utils``'s ``.eagle3`` → pinned upstream (eagle3 backend not vendored —
+  Rapid serves the dflash and mtp kinds; round helpers are pure-array
+  functions). Upstream digests: cache_state
+  ``39d35ef0aae0c9298f2fcd3ff6b91b106c6b6c1c3ab6becae216a8fafb2c5300``,
+  common ``e3d3c0294a6d6fc915a32e96460370bfe57baef19539c5a290d4254525717cf1``,
+  ddtree ``5e3651fe81aad1adee8ab6de7e15bd97d59845cf05724ae26d86af4eb982a342``,
+  dflash ``39244ec611b38caacd706474722b2997e50954fe48219e26baf9017ade881ad0``,
+  mtp ``4ed467918bd24e26c60730d6d3529c6a9e633448b2fc6028829965bb1f4daad1``,
+  utils ``93d2ed29ac7b7c378536bf09d22eb570d5abb1f2d338dc550e59a84468b6a9ff``.
+  ``__init__.py`` is a reduced shim (``VENDOR-DEVIATION(subset-exports)``):
+  the upstream init also re-exports ``load_drafter``; the drafter registry
+  and concrete drafters land in a later step-3 slice.
+
+- ``models/`` — verbatim model foundations (step-3b slice): ``base.py``
+  (657 lines; upstream digest
+  ``4f915923c591faf4b25603b5b5cab4511296a37c7d141553506e6b0760a03a41``;
+  redirects: ``..turboquant`` → pinned upstream (kv_quant precedent),
+  ``.cache`` → vendored root) and ``linear.py`` (74 lines; upstream digest
+  ``148a56193feaf170097ff1c5edccca8165c1b5df878f1605778c4d3642a4d2fa``, no
+  deviations). ``__init__.py`` is a marker shim (upstream's is empty).
+
+- ``fp8.py`` (upstream digest
+  ``36ded0f7d5b031fbaaf9a522a6df71e477cc260102092c7f7599862367d70ee7``) and
+  ``quant_utils.py`` (upstream digest
+  ``e323189054be767e0945c29167ad9de7a5992b24c51c0be98c65477260d454af``) —
+  verbatim, no deviations (mlx + stdlib only). Foundations for the
+  drafter/model slices.
 """
