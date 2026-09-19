@@ -10,9 +10,13 @@ redirects (see the package inventory), which never enter a function's
 (``native_batch_linear``'s verifier fallback and ``dequantize_model``'s
 mla/switch_layers resolution — both pinned upstream until step 3c) and
 one documented bugfix hunk (``build_ddtree``'s ``ValueError`` validation).
-The walker compares function/class name sets in both directions; entries
-listed as ``normalized`` compare on behavior only (comments, blanks, and
-import statements are stripped from both sides).
+The walker compares function/class name sets in both directions. Two
+exemption mechanisms exist and must not be confused: ``documented``
+filters strict-compare divergences for REAL permitted behavioral hunks;
+``normalized`` entries compare on behavior only (comments, blanks, and
+import statements stripped from both sides) and their divergences are
+emitted with a marker the documented filter cannot match — they always
+fail.
 
 Behavioral guarantee: the vendored coordinator binds the vendored cache
 and model foundations; the two deliberately-pinned dependencies (the
@@ -90,8 +94,12 @@ def _body_divergences(vendored_module, upstream_module, normalized=()):
         except (OSError, TypeError):
             continue
         if name in normalized:
+            # Normalized entries compare on behavior only; any remaining
+            # divergence is fatal and MUST NOT be filterable by the
+            # documented set (emitted with a marker the bare-name filter
+            # cannot match).
             if _code_lines(vendored_src) != _code_lines(upstream_src):
-                diverged.append(name)
+                diverged.append(f"{name}: normalized-body-divergence")
         elif vendored_src != upstream_src:
             diverged.append(name)
     return diverged
@@ -124,16 +132,19 @@ def test_vendored_speculative_bodies_match_upstream():
     for vendored, upstream, documented in (
         (vs_cache_state, up_cache_state, {"BatchRotatingKVCache"}),
         (vs_common, up_common, set()),
-        # ``build_ddtree`` carries the documented assert→ValueError hunk.
+        # ``build_ddtree`` carries the documented assert→ValueError hunk —
+        # a REAL permitted behavioral difference, hence documented-filtered.
         (vs_ddtree, up_ddtree, {"build_ddtree"}),
         (vs_dflash, up_dflash, set()),
         # ``native_batch_linear`` appears in mtp's namespace via its vendored
-        # ``models.linear`` import; the redirect lives in linear.py itself
-        # (documented in the foundations test + package inventory).
-        (vs_mtp, up_mtp, {"native_batch_linear"}),
+        # ``models.linear`` import; the redirect lives in linear.py itself,
+        # so this entry compares on behavior only (normalized divergences
+        # are never filtered).
+        (vs_mtp, up_mtp, set()),
         (vs_utils, up_utils, set()),
     ):
-        divergences = _body_divergences(vendored, upstream)
+        normalized = {"native_batch_linear"} if vendored is vs_mtp else set()
+        divergences = _body_divergences(vendored, upstream, normalized=normalized)
         divergences = [d for d in divergences if d not in documented]
         assert divergences == []
 
@@ -146,18 +157,18 @@ def test_vendored_foundations_bodies_match_upstream():
 
     # Documented function-level lazy-import redirects (see the package
     # inventory): linear's verifier fallback and quant_utils' mla /
-    # switch_layers resolution stay pinned until the 3c slices. The
-    # ``normalized`` entries compare on behavior only — comments, blanks,
-    # and the redirected import statements are stripped from both sides,
-    # so any other body edit still diverges.
+    # switch_layers resolution stay pinned until the 3c slices. Those two
+    # functions compare on behavior only (comments, blanks, and the
+    # redirected import statements are stripped from both sides) and their
+    # divergences are NEVER filtered — any behavioral edit fails.
     for vendored, upstream, documented, normalized in (
         (vendored_base, up_base, set(), set()),
-        (vendored_linear, up_linear, {"native_batch_linear"}, {"native_batch_linear"}),
+        (vendored_linear, up_linear, set(), {"native_batch_linear"}),
         (vendored_fp8, up_fp8, set(), set()),
         (
             vendored_quant_utils,
             up_quant_utils,
-            {"dequantize_model"},
+            set(),
             {"dequantize_model"},
         ),
     ):
