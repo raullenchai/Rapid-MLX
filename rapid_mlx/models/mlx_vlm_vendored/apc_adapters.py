@@ -648,6 +648,14 @@ def clone_cache_entry(c, *, min_capacity_tokens, eval_targets):
     # constructed results keep the producer's cache types.
     lm = _cache_namespace_of(c)
     if lm is None:
+        # Third-party caches can opt into APC without inheriting either MLX
+        # cache base.  In a stripped install there is deliberately no
+        # namespace through which to construct built-in cache types, but
+        # their self-contained snapshot/state contracts remain sufficient.
+        if _has_explicit_snapshot_contract(c):
+            return _snapshot_contract_clone(c, eval_targets, min_capacity_tokens)
+        if _custom_state_contract(c):
+            return _state_clone(c, eval_targets, min_capacity_tokens)
         return None
 
     if callable(getattr(c, "extract", None)) and callable(
@@ -707,6 +715,16 @@ def merge_cache_entries(entries, prefix_lens):
     if not entries:
         return None
     first = entries[0]
+    # A third-party merge contract is self-contained and does not require an
+    # MLX cache namespace.  Try it before namespace-dependent built-in paths
+    # so stripped installations retain the advertised pluggability.
+    for entry in entries:
+        merge = getattr(entry, "prefix_cache_merge", None)
+        if not callable(merge):
+            continue
+        merged = merge(entries, prefix_lens)
+        if merged is not None:
+            return merged
     # VENDOR-DEVIATION(dual-namespace): resolve the owning namespace so
     # merged results keep the producer's cache types. A bare tuple has no
     # namespace of its own; derive the container namespace from its first
@@ -717,13 +735,6 @@ def merge_cache_entries(entries, prefix_lens):
         lm = _cache_namespace_of(first[0])
     if lm is None:
         return None
-    for entry in entries:
-        merge = getattr(entry, "prefix_cache_merge", None)
-        if not callable(merge):
-            continue
-        merged = merge(entries, prefix_lens)
-        if merged is not None:
-            return merged
     for typ, adapter in _clone_rules():
         if typ is lm.KVCache:
             ok = all(type(c) is typ for c in entries)

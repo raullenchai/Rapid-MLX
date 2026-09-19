@@ -20,6 +20,7 @@ from rapid_mlx.models.mlx_vlm_vendored import cache as vendored_cache
 from rapid_mlx.models.mlx_vlm_vendored.apc_adapters import (
     Capability,
     clone_cache_entry,
+    merge_cache_entries,
     resolve_capability,
 )
 
@@ -180,6 +181,45 @@ def test_explicit_snapshot_contract_recognizes_both_base_classes():
     assert apc_adapters._has_explicit_snapshot_contract(UpstreamSnapshot())
     assert not apc_adapters._has_explicit_snapshot_contract(Bare())
     assert not apc_adapters._has_explicit_snapshot_contract(object())
+
+
+def test_third_party_snapshot_clones_without_cache_namespace(monkeypatch):
+    class ThirdPartyCache:
+        offset = 1
+
+        def __init__(self):
+            self.value = mx.array([1.0])
+
+        def prefix_cache_snapshot(self):
+            return {"value": self.value}
+
+        def prefix_cache_restore(self, payload):
+            self.value = payload["value"]
+
+    source = ThirdPartyCache()
+    monkeypatch.setattr(apc_adapters, "_cache_namespace_of", lambda _cache: None)
+
+    cloned = clone_cache_entry(source, min_capacity_tokens=0, eval_targets=[])
+
+    assert type(cloned) is ThirdPartyCache
+    assert mx.array_equal(cloned.value, source.value)
+    assert cloned.value is not source.value
+
+
+def test_third_party_merge_runs_without_cache_namespace(monkeypatch):
+    class ThirdPartyCache:
+        def __init__(self, value):
+            self.value = value
+
+        def prefix_cache_merge(self, entries, prefix_lens):
+            return type(self)(sum(e.value for e in entries) + sum(prefix_lens))
+
+    monkeypatch.setattr(apc_adapters, "_cache_namespace_of", lambda _cache: None)
+
+    merged = merge_cache_entries([ThirdPartyCache(2), ThirdPartyCache(3)], [5, 7])
+
+    assert type(merged) is ThirdPartyCache
+    assert merged.value == 17
 
 
 def test_apc_exact_eligible_covers_both_namespaces():
