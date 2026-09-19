@@ -1,5 +1,6 @@
 import AppKit
 import Foundation
+import os
 
 /// One Desktop per user session.
 ///
@@ -34,6 +35,53 @@ enum SingleInstanceGuard {
         /// the bundle — which reaches it once registered — and exit.
         case yieldToUnregistered
     }
+
+    /// The whole launch-time protocol, called once at the top of
+    /// ``RapidApp.init``. `true`: a Desktop is already running, the launch
+    /// has been handed to it, and this process must exit. `false`: this
+    /// process is the Desktop and holds the instance lock (when the lock
+    /// works at all).
+    ///
+    /// The survivor may be on its way out. Quit and relaunch within a second
+    /// — ⌘Q then a Dock click, a `killall`-free restart script — and the new
+    /// process finds the old one still registered, hands off to it, exits,
+    /// and the old one finishes quitting: no app at all (pr_validate codex;
+    /// reproduced on the 0.14.3 dogfood mini with `quit` + exec 0.2 s
+    /// later). So after handing off, wait a bounded few seconds for the
+    /// lock: the kernel releases it the instant the holder dies, and taking
+    /// it makes this launch the Desktop. A survivor that stays is the normal
+    /// case; the wait then costs a hidden process a few seconds before it
+    /// exits. Without a usable lock (``.unavailable``) there is nothing to
+    /// wait for, so the hand-off result decides.
+    static func yieldsLaunch() -> Bool {
+        let handedOff: Bool
+        switch decide() {
+        case .proceed:
+            return false
+        case .yield(let survivor):
+            handedOff = handOff(to: survivor)
+        case .yieldToUnregistered:
+            handOffToUnregisteredHolder()
+            handedOff = true
+        }
+        let deadline = Date().addingTimeInterval(handedOff ? survivorGraceSeconds : 0.5)
+        repeat {
+            switch instanceLock.acquire() {
+            case .acquired:
+                return false
+            case .unavailable:
+                return handedOff
+            case .busy:
+                Thread.sleep(forTimeInterval: 0.1)
+            }
+        } while Date() < deadline
+        return true
+    }
+
+    /// How long a yielding launch waits for a quitting survivor to release
+    /// the lock. A graceful quit with a 27B model resident took 0.8 s on an
+    /// M2 Pro; 5 s leaves room for a slow engine shutdown.
+    static let survivorGraceSeconds: TimeInterval = 5
 
     /// Decide once, at the top of ``RapidApp.init``.
     ///
@@ -160,6 +208,22 @@ enum SingleInstanceGuard {
         return a.pid < b.pid
     }
 
+    /// Hand off to a holder LaunchServices has not registered yet: opening
+    /// our own bundle reaches whichever instance of it ends up registered
+    /// (``LSMultipleInstancesProhibited`` makes that a reopen, not a launch).
+    /// The wait is bounded so a stalled LaunchServices cannot keep this
+    /// doomed process alive.
+    static func handOffToUnregisteredHolder() {
+        let configuration = NSWorkspace.OpenConfiguration()
+        configuration.activates = true
+        configuration.createsNewApplicationInstance = false
+        let done = DispatchSemaphore(value: 0)
+        NSWorkspace.shared.openApplication(at: Bundle.main.bundleURL, configuration: configuration) { _, _ in
+            done.signal()
+        }
+        _ = done.wait(timeout: .now() + 2)
+    }
+
     /// Bring the survivor forward, window included. Returns `false` when
     /// the survivor is gone, in which case the caller should carry on
     /// launching instead of leaving the user with no app at all.
@@ -172,23 +236,7 @@ enum SingleInstanceGuard {
     /// ``AppDelegate.applicationShouldHandleReopen`` and opens the main
     /// window. The wait is bounded: a stalled LaunchServices must not keep
     /// this doomed process alive, and a plain activate is the fallback for
-    /// a timeout or an error while the survivor is still running. If the
-    /// survivor quit in the meantime (user quit and relaunched at once),
-    /// there is nobody to hand off to.
-    /// Hand off to a holder LaunchServices has not registered yet: opening
-    /// our own bundle reaches whichever instance of it ends up registered
-    /// (``LSMultipleInstancesProhibited`` makes that a reopen, not a launch).
-    static func handOffToUnregisteredHolder() {
-        let configuration = NSWorkspace.OpenConfiguration()
-        configuration.activates = true
-        configuration.createsNewApplicationInstance = false
-        let done = DispatchSemaphore(value: 0)
-        NSWorkspace.shared.openApplication(at: Bundle.main.bundleURL, configuration: configuration) { _, _ in
-            done.signal()
-        }
-        _ = done.wait(timeout: .now() + 2)
-    }
-
+    /// a timeout or an error while the survivor is still running.
     static func handOff(to survivor: NSRunningApplication) -> Bool {
         guard !survivor.isTerminated else { return false }
         guard let url = survivor.bundleURL else {
@@ -198,14 +246,16 @@ enum SingleInstanceGuard {
         configuration.activates = true
         configuration.createsNewApplicationInstance = false
         let done = DispatchSemaphore(value: 0)
-        var failure: Error?
+        // Written on NSWorkspace's completion queue, read here after the
+        // semaphore: the lock makes that hand-over explicit to the compiler.
+        let failure = OSAllocatedUnfairLock<Error?>(initialState: nil)
         NSWorkspace.shared.openApplication(at: url, configuration: configuration) { _, error in
-            failure = error
+            failure.withLock { $0 = error }
             done.signal()
         }
         let timedOut = done.wait(timeout: .now() + 2) == .timedOut
         if survivor.isTerminated { return false }
-        if timedOut || failure != nil {
+        if timedOut || failure.withLock({ $0 }) != nil {
             survivor.activate()
         }
         return true
