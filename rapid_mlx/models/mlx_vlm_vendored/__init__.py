@@ -146,9 +146,16 @@ vendored copy differs by exactly the deviations listed):
   except the import block: exactly the names the region references
   (ruff F821 closure), with ``mlx_vlm.models.base`` (``
   BaseImageProcessor``) still resolving upstream and the logger pinned to
-  the upstream ``mlx_vlm.utils`` name (``mlx_vlm.apc`` precedent). The
+  the upstream ``mlx_vlm.utils`` name (``mlx_vlm.apc`` precedent), plus
+  one ``VENDOR-DEVIATION(dual-namespace)`` hunk in
+  ``processor_video_sampling``: a processor hook may return the upstream
+  ``VideoSampling`` dataclass while the vendored class is in effect, so
+  matching-shape objects normalize by their known fields instead of class
+  identity (repro-tested in
+  ``tests/test_mlx_vlm_vendored_inputs.py``). The
   lane's ``prepare_inputs`` call sites (``multimodal_processor.py``,
   ``mllm_batch_generator.py``) resolve this module; per-function upstream
   parity is probed in ``tests/test_mlx_vlm_vendored_inputs.py``. A diff
-  against the pinned tag must show only the header/import block.
+  against the pinned tag must show only the header/import block and the
+  documented hunk.
 """
