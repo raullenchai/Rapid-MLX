@@ -338,6 +338,38 @@ class TestMLLMSchedulerOutput:
 class TestMultimodalProcessorBatch:
     """Tests for MultimodalProcessor batch methods."""
 
+    def test_process_resolves_vendored_prepare_inputs(self, monkeypatch):
+        """The second lane-facing call site must use the vendored closure."""
+        from rapid_mlx.models.mlx_vlm_vendored import inputs as vendored_inputs
+        from rapid_mlx.multimodal_processor import MultimodalProcessor
+
+        seen = {}
+
+        def _prepare(processor, **kwargs):
+            seen.update(kwargs)
+            return {
+                "input_ids": mx.array([[1, 2, 3]]),
+                "attention_mask": mx.array([[1, 1, 1]]),
+                "pixel_values": None,
+            }
+
+        monkeypatch.setattr(vendored_inputs, "prepare_inputs", _prepare)
+        processor = MultimodalProcessor(
+            SimpleNamespace(),
+            SimpleNamespace(tokenizer=object()),
+        )
+
+        result = processor.process("hello", add_special_tokens=False)
+
+        assert seen == {
+            "images": None,
+            "prompts": "hello",
+            "image_token_index": None,
+            "add_special_tokens": False,
+        }
+        assert result.input_ids.tolist() == [[1, 2, 3]]
+        assert result.num_tokens == 3
+
     def test_batch_pixel_values_empty(self):
         """Test batching empty pixel values."""
         from rapid_mlx.multimodal_processor import MultimodalProcessor
