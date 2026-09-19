@@ -284,7 +284,11 @@ vendored copy differs by exactly the deviations listed):
   (1 documented bugfix hunk: continuous-batch compaction shrinks
   ``active_idx`` only when every cache is filterable — pinned upstream
   filters selectively but always shrinks, misaligning mixed cache lists),
-  mtp ``4ed467918bd24e26c60730d6d3529c6a9e633448b2fc6028829965bb1f4daad1``,
+  mtp ``4ed467918bd24e26c60730d6d3529c6a9e633448b2fc6028829965bb1f4daad1``
+  (1 documented bugfix hunk: ``_mtp_rounds_batch`` budgets the block size
+  from unfinished rows only — pinned upstream lets a retained finished row
+  force ``bs <= 1`` and terminate the whole batched loop when compaction
+  is skipped),
   utils ``93d2ed29ac7b7c378536bf09d22eb570d5abb1f2d338dc550e59a84468b6a9ff``.
   ``__init__.py`` is a reduced shim (``VENDOR-DEVIATION(subset-exports)``):
   the upstream init also re-exports ``load_drafter``; the drafter registry

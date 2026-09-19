@@ -9,9 +9,10 @@ redirects (see the package inventory), which never enter a function's
 ``getsource``, plus two inventoried function-level lazy-import redirects
 (``native_batch_linear``'s verifier fallback and ``dequantize_model``'s
 mla/switch_layers resolution — both pinned upstream until step 3c) and
-one documented bugfix hunk (``build_ddtree``'s ``ValueError`` validation).
-The walker compares function/class name sets in both directions. Two
-exemption mechanisms exist and must not be confused: ``documented``
+one set of documented bugfix hunks (``build_ddtree``'s ``ValueError``
+validation; ``_dflash_rounds_batch``/``_mtp_rounds_batch``'s unfinished-row
+budget). The walker compares function/class name sets in both directions.
+Two exemption mechanisms exist and must not be confused: ``documented``
 filters strict-compare divergences for REAL permitted behavioral hunks;
 ``normalized`` entries compare on behavior only (comments, blanks, and
 import statements stripped from both sides) and their divergences are
@@ -137,16 +138,15 @@ def test_vendored_speculative_bodies_match_upstream():
         # a REAL permitted behavioral difference, hence documented-filtered.
         (vs_ddtree, up_ddtree, {"build_ddtree"}),
         (vs_dflash, up_dflash, {"_dflash_rounds_batch"}),
-        # ``native_batch_linear`` appears in mtp's namespace via its vendored
-        # ``models.linear`` import; the redirect lives in linear.py itself,
-        # so this entry compares on behavior only (normalized divergences
-        # are never filtered).
-        (vs_mtp, up_mtp, set()),
-        # ``_dflash_rounds_batch`` also appears in utils' namespace via its
-        # dflash import; the hunk lives in dflash.py (documented above).
-        (vs_utils, up_utils, {"_dflash_rounds_batch"}),
+        (vs_mtp, up_mtp, {"_mtp_rounds_batch"}),
+        # ``_dflash_rounds_batch``/``_mtp_rounds_batch`` also appear in
+        # utils' namespace via their dflash/mtp imports; the hunks live in
+        # their own modules (documented above and in the inventory).
+        (vs_utils, up_utils, {"_dflash_rounds_batch", "_mtp_rounds_batch"}),
     ):
         normalized = {"native_batch_linear"} if vendored is vs_mtp else set()
+        # ``native_batch_linear`` (imported from vendored models.linear)
+        # compares on behavior only; its divergences are never filtered.
         divergences = _body_divergences(vendored, upstream, normalized=normalized)
         divergences = [d for d in divergences if d not in documented]
         assert divergences == []
@@ -258,3 +258,35 @@ def test_build_ddtree_validates_without_assert():
         vs_ddtree.build_ddtree(mx.zeros((2, 4, 8)), budget=4)
     with pytest.raises(ValueError, match="single-row"):
         vs_ddtree.build_ddtree(mx.zeros((4, 8)), budget=4)
+
+
+def test_code_lines_canonicalizes_redirect_imports():
+    # r5 fix: the normalizer must keep imported SYMBOL names comparable —
+    # only the module-path difference between the pinned redirect and the
+    # upstream relative import is ignored. A symbol swap still diverges.
+    vendored = (
+        "def f():\n"
+        "    # VENDOR-DEVIATION(redirect): pinned until 3c.\n"
+        "    from mlx_vlm.models.quantized_verifier import (\n"
+        "        exact_quantized_linear,\n"
+        "        singleton_quantized_linear,\n"
+        "    )\n"
+        "    return exact_quantized_linear\n"
+    )
+    upstream = (
+        "def f():\n"
+        "    from .quantized_verifier import (\n"
+        "        exact_quantized_linear,\n"
+        "        singleton_quantized_linear,\n"
+        "    )\n"
+        "    return exact_quantized_linear\n"
+    )
+    assert _code_lines(vendored) == _code_lines(upstream)
+    swapped = vendored.replace("singleton_quantized_linear", "other_helper")
+    assert _code_lines(swapped) != _code_lines(upstream)
+    # A non-redirect import is retained verbatim and diverges.
+    foreign = vendored.replace(
+        "    from mlx_vlm.models.quantized_verifier import (",
+        "    from some_other_package import (",
+    )
+    assert _code_lines(foreign) != _code_lines(upstream)

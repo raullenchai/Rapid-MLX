@@ -7,6 +7,7 @@ import mlx.nn as nn
 # VENDOR-DEVIATION(redirect): vendored cache lives at the package root.
 from .. import cache
 from ..models.linear import native_batch_linear
+
 # VENDOR-DEVIATION(redirect): the 2k-line quantized verifier stays on
 # the pinned upstream dependency; decode_quantized_argmax is a pure
 # array function, so the cross-namespace call is identity-safe.
@@ -970,10 +971,19 @@ def _mtp_rounds_batch(
     active_idx = list(range(B))
 
     while len(active_idx) > 0:
+        # VENDOR-DEVIATION(bugfix): pinned upstream budgets the block size
+        # from every active row; with the non-filterable-cache fallback
+        # (finished rows retained), a finished row's ``remaining == 1``
+        # would force ``bs <= 1`` and terminate the whole batched loop
+        # while other rows still have tokens to generate. Budget from
+        # unfinished rows only; an empty budget ends the loop.
         remaining = [
             max(1, max_tokens - emitted[active_idx[j]] + 1)
             for j in range(len(active_idx))
+            if not finished[active_idx[j]]
         ]
+        if not remaining:
+            break
         bs = _mtp_next_block_size(
             draft_model,
             block_total,
