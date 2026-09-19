@@ -6,7 +6,7 @@ Owner / host: Vector / MZR-3
 
 Runtime feasibility branch: `raullenchai:vector/ltx25-distillation-feasibility`
 at `d22f2b6` in the `ltx-2-mlx` repository. Rapid documentation branch:
-`raullenchai/LTX`, PR #3438.
+`docs/ltx25-perf-investigations`, PR #3570.
 
 ## Verified facts
 
