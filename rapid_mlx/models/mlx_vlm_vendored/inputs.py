@@ -1075,6 +1075,11 @@ class ThinkingBudgetCriteria:
         self.thinking_token_count = 0
         self.budget_exceeded = False
         self._forced_index = 0
+        # VENDOR-DEVIATION(upstream-bugfix): upstream left a forced token
+        # captured by the previous generation pending here; a later
+        # pop_forced_token_id() would inject it into the new generation
+        # (repro-tested in tests/test_mlx_vlm_vendored_generate.py).
+        self.forced_token_id = None
 
     def __call__(self, token_id: int) -> Optional[int]:
         """Process a token and return a forced token ID if budget exceeded, else None."""
