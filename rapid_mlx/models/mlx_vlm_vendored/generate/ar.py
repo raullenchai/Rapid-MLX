@@ -2760,6 +2760,18 @@ class BatchGenerator:
                 kv_quant_config=_quant_cfg,
             )
         if warm_cache is None:
+            # VENDOR-DEVIATION(upstream-bugfix): the acquired APC block
+            # references leaked when warm-cache merging failed and the
+            # caller fell back to cold prefill; release every pick before
+            # returning (repro-tested in
+            # tests/test_mlx_vlm_vendored_generate.py).
+            for p in picks:
+                if p is None:
+                    continue
+                if coordinator is not None:
+                    coordinator.release_hit(p)
+                else:
+                    self.apc_manager.release(p.get("matched_blocks", ()))
             return None
 
         apc_meta = [
@@ -3511,12 +3523,15 @@ def _generate_batch(
     # VENDOR-DEVIATION(upstream-bugfix): the generator (holding the
     # wired_limit context) stayed open when the loop raised; close it in a
     # finally (repro-tested in tests/test_mlx_vlm_vendored_generate.py).
+    # None-token terminal responses (speculative iterator exhaustion emits
+    # token=None with finish_reason="length") are skipped instead of
+    # reaching detokenizer.add_token and crashing completion.
     tic = time.perf_counter()
     try:
         while gen.has_work:
             _, generation_responses = gen.next()
             for r in generation_responses:
-                if r.finish_reason != "stop":
+                if r.finish_reason != "stop" and r.token is not None:
                     results[r.uid].append(r.token)
         total_time = time.perf_counter() - tic
     finally:
