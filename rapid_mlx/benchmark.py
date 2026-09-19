@@ -34,10 +34,12 @@ os.environ["TOKENIZERS_PARALLELISM"] = "false"
 import argparse
 import base64
 import io
+import itertools
 import json
 import statistics
 import tempfile
 import time
+import warnings
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -717,8 +719,139 @@ def image_to_base64(img: "Image.Image", format: str = "JPEG") -> str:
     return f"data:{mime};base64,{b64}"
 
 
-def benchmark_mllm_resolution(
-    model,
+def build_bench_generator(model, processor, max_tokens: int):
+    """Build the serialized-lane generator shared by the MLLM benchmarks.
+
+    Mirrors the server's MLLMScheduler construction: the stop-token set is
+    the processor tokenizer's EOS, and sampling is configured per request
+    inside the generator — each ``MLLMBatchRequest``'s temperature/top_p
+    builds its sampler (``_request_sampler`` and the homogeneous-batch
+    fast path). The generator-level ``sampler`` argument is a degenerate
+    no-request fallback that real requests never hit, so it is left at
+    the argmax default instead of baking in a misleading configuration.
+    """
+    from rapid_mlx.mllm_batch_generator import MLLMBatchGenerator
+    from rapid_mlx.mllm_scheduler import collect_mllm_stop_tokens
+
+    # Match MLLMScheduler exactly: serving derives stop tokens from the live
+    # underlying model config plus the tokenizer that MLXMultimodalLM.load()
+    # already augmented from generation_config.json.  The wrapper's separate
+    # load_config() result is prompt-template metadata, not the scheduler's
+    # stop-token source.
+    stop_tokens = collect_mllm_stop_tokens(processor, getattr(model, "config", None))
+    return MLLMBatchGenerator(
+        model=model,
+        processor=processor,
+        stop_tokens=stop_tokens,
+        max_tokens=max_tokens,
+    )
+
+
+def _load_benchmark_mllm(model_name: str):
+    """Load benchmark components through the production MLLM loader.
+
+    The wrapper owns runtime compatibility patches, tokenizer repairs,
+    architecture-qualified fusions, and the remote-code policy.  Bypassing it
+    would make benchmark behavior diverge from the server it is meant to
+    measure.  The third return value is the template config consumed by
+    ``apply_chat_template``; stop-token collection intentionally follows the
+    live model config and augmented tokenizer, exactly like ``MLLMScheduler``.
+    """
+    from rapid_mlx.models.mllm import MLXMultimodalLM
+
+    wrapper = MLXMultimodalLM(model_name)
+    wrapper.load()
+    return wrapper.model, wrapper.processor, wrapper.config
+
+
+_native_request_seq = itertools.count()
+
+
+def _run_native_mllm_request(
+    generator,
+    prompt: str,
+    *,
+    images: list[str] | None = None,
+    videos: list[str] | None = None,
+    video_fps: float | None = None,
+    video_max_frames: int | None = None,
+    max_tokens: int = 256,
+    temperature: float = 0.7,
+) -> tuple[str, int, int]:
+    """Run one request to completion on the serialized MLLM lane.
+
+    Returns ``(text, generated_token_count, prompt_token_count)``. Insert →
+    drain, decoding the accumulated token ids at the end — the same shape
+    the scheduler's detokenizer pool produces for streamed server requests.
+    Sampling is configured from the request fields: ``temperature`` rides
+    on the ``MLLMBatchRequest`` and the generator builds the request's
+    sampler from it (with the request's ``top_p``). The terminal stop
+    token is a control sentinel, not generated text, and is counted in
+    neither the decoded output nor the token count (a
+    ``finish_reason="length"`` cutoff's final token is a real emitted
+    token and stays counted).
+    """
+    from rapid_mlx.mllm_batch_generator import MLLMBatchRequest
+
+    # Correlate responses by the UID returned from insert() and give each
+    # request a unique id: the generator is reused across configs, and a
+    # constant id could let a stale response from an earlier request be
+    # counted toward — or terminate — this one.
+    request = MLLMBatchRequest(
+        uid=-1,  # Assigned by the generator on insert
+        request_id=f"rapid-mlx-bench-{next(_native_request_seq)}",
+        prompt=prompt,
+        images=images,
+        videos=videos,
+        video_fps=video_fps,
+        video_max_frames=video_max_frames,
+        max_tokens=max_tokens,
+        temperature=temperature,
+    )
+    uids = generator.insert([request])
+    uid = uids[0]
+    token_ids: list[int] = []
+    prompt_tokens = 0
+    finished = False
+    try:
+        while not finished:
+            responses = generator.next()
+            if not responses:
+                # The lane went idle without a terminal response: draining
+                # further cannot make progress, and returning here would
+                # silently truncate the run.
+                raise RuntimeError(
+                    "serialized MLLM lane went idle before the benchmark "
+                    f"request finished ({len(token_ids)} tokens generated, "
+                    "no finish_reason); the benchmark run would be silently "
+                    "truncated"
+                )
+            for response in responses:
+                if response.uid != uid or response.request_id != request.request_id:
+                    continue
+                if not response.token_is_stop_token:
+                    token_ids.append(response.token)
+                if response.prompt_tokens:
+                    prompt_tokens = response.prompt_tokens
+                if response.finish_reason is not None:
+                    finished = True
+                    break
+    finally:
+        if not finished:
+            # An exception from next() or the idle abort above must not
+            # leave the stale request active in the reused generator —
+            # the benchmark loops catch per config and keep going.
+            generator.remove(list(uids))
+    tokenizer = getattr(generator.processor, "tokenizer", None)
+    if tokenizer is not None:
+        text = tokenizer.decode(token_ids, skip_special_tokens=True)
+    else:  # pragma: no cover - processors always carry a tokenizer
+        text = " ".join(str(t) for t in token_ids)
+    return text, len(token_ids), prompt_tokens
+
+
+def benchmark_mllm_resolution_native(
+    generator,
     processor,
     config,
     base_image: "Image.Image",
@@ -727,9 +860,12 @@ def benchmark_mllm_resolution(
     max_tokens: int = 256,
     warmup: bool = False,
 ) -> MLLMBenchmarkResult:
-    """Run MLLM benchmark for a specific resolution."""
-    from mlx_vlm import generate
-    from mlx_vlm.prompt_utils import apply_chat_template
+    """Run MLLM benchmark for a specific resolution on the serialized lane.
+
+    ``generator`` is the serialized-lane generator from
+    :func:`build_bench_generator` (the loaded model rides inside it).
+    """
+    from mlx_vlm.prompt_utils import apply_chat_template, get_chat_template
 
     # Reset MLX peak memory before this run
     reset_mlx_peak_memory()
@@ -750,38 +886,36 @@ def benchmark_mllm_resolution(
     if not warmup:
         print(f"  {resolution_name:>10} | {pixels:>12,} |", end=" ", flush=True)
 
-    # Apply chat template
+    # Apply chat template. Templating errors propagate: the run loop
+    # reports per-config failures, and silently benchmarking the raw
+    # prompt would produce plausible numbers for unformatted input.
     prompt = "What animal is in this image? Describe it briefly."
-    try:
-        formatted_prompt = apply_chat_template(
-            processor,
-            config,
-            prompt,
-            num_images=1,
-        )
-    except Exception:
-        formatted_prompt = prompt
-
-    # Generate
-    start_time = time.perf_counter()
-    result = generate(
-        model,
+    formatted_prompt = apply_chat_template(
         processor,
+        config,
+        prompt,
+        num_images=1,
+    )
+    if not isinstance(formatted_prompt, str):
+        # Some processors return a structured message list; render it
+        # through the processor's chat template rather than discarding
+        # the model-specific formatting for the raw prompt.
+        formatted_prompt = get_chat_template(
+            processor, formatted_prompt, add_generation_prompt=True
+        )
+
+    # Generate on the native serialized lane — the same MLLMBatchGenerator
+    # components the server's MLLMScheduler drives, not mlx-vlm's legacy
+    # generate() runtime.
+    start_time = time.perf_counter()
+    text, tokens, _prompt_tokens = _run_native_mllm_request(
+        generator,
         formatted_prompt,
-        [image_path],
+        images=[image_path],
         max_tokens=max_tokens,
-        temp=0.7,
-        verbose=False,
+        temperature=0.7,
     )
     elapsed = time.perf_counter() - start_time
-
-    # Extract text
-    if hasattr(result, "text"):
-        text = result.text
-        tokens = getattr(result, "generation_tokens", len(text.split()))
-    else:
-        text = str(result)
-        tokens = len(text.split())
 
     tps = tokens / elapsed if elapsed > 0 else 0
 
@@ -812,6 +946,38 @@ def benchmark_mllm_resolution(
     )
 
 
+def benchmark_mllm_resolution(
+    model,
+    processor,
+    config,
+    base_image: "Image.Image",
+    width: int,
+    height: int,
+    max_tokens: int = 256,
+    warmup: bool = False,
+) -> MLLMBenchmarkResult:
+    """Deprecated call shape for :func:`benchmark_mllm_resolution_native`.
+
+    External callers of the pre-native-lane signature keep working: the
+    serialized-lane generator is built internally and the request still
+    runs on the native lane (never mlx-vlm's generation runtime). New code
+    should build the generator once via :func:`build_bench_generator` and
+    pass it as the first argument instead.
+    """
+    warnings.warn(
+        "benchmark_mllm_resolution's (model, processor, config, ...) call "
+        "shape is deprecated; build the serialized-lane generator via "
+        "build_bench_generator and call benchmark_mllm_resolution_native "
+        "instead.",
+        DeprecationWarning,
+        stacklevel=2,
+    )
+    generator = build_bench_generator(model, processor, max_tokens)
+    return benchmark_mllm_resolution_native(
+        generator, processor, config, base_image, width, height, max_tokens, warmup
+    )
+
+
 def run_mllm_benchmark(
     model_name: str,
     quick: bool = False,
@@ -830,15 +996,6 @@ def run_mllm_benchmark(
     Returns:
         List of MLLMBenchmarkResult
     """
-    try:
-        from mlx_vlm import load
-        from mlx_vlm.utils import load_config
-    except ImportError as e:
-        raise ImportError(
-            "Vision benchmarks require the optional `mlx-vlm` dependency.\n"
-            "Install it with: pip install 'rapid-mlx[vision]'"
-        ) from e
-
     from rapid_mlx.optimizations import detect_hardware  # pragma: no cover
 
     # Detect hardware
@@ -884,8 +1041,8 @@ def run_mllm_benchmark(
     # Load model
     print(f"Loading MLLM model: {model_name}...")
     load_start = time.perf_counter()
-    model, processor = load(model_name)
-    config = load_config(model_name)
+    model, processor, template_config = _load_benchmark_mllm(model_name)
+    generator = build_bench_generator(model, processor, max_tokens)
     load_time = time.perf_counter() - load_start
     print(f"Model loaded in {load_time:.2f}s\n")
 
@@ -902,8 +1059,15 @@ def run_mllm_benchmark(
     if warmup_runs > 0:
         print(f"Running {warmup_runs} warmup run(s)...")
         for _ in range(warmup_runs):
-            benchmark_mllm_resolution(
-                model, processor, config, base_image, 224, 224, max_tokens, warmup=True
+            benchmark_mllm_resolution_native(
+                generator,
+                processor,
+                template_config,
+                base_image,
+                224,
+                224,
+                max_tokens,
+                warmup=True,
             )
 
         # Show model memory after warmup (MLX uses lazy evaluation)
@@ -922,8 +1086,14 @@ def run_mllm_benchmark(
     results = []
     for width, height in resolutions:
         try:
-            result = benchmark_mllm_resolution(
-                model, processor, config, base_image, width, height, max_tokens
+            result = benchmark_mllm_resolution_native(
+                generator,
+                processor,
+                template_config,
+                base_image,
+                width,
+                height,
+                max_tokens,
             )
             results.append(result)
         except Exception as e:
@@ -1123,7 +1293,100 @@ def get_video_info(video_path: str) -> dict:
     return info
 
 
-def benchmark_video_config(
+def benchmark_video_config_native(
+    generator,
+    processor,
+    config,
+    video_path: str,
+    fps: float,
+    max_frames: int,
+    config_name: str,
+    video_info: dict,
+    max_tokens: int = 150,
+    warmup: bool = False,
+) -> VideoBenchmarkResult:
+    """Run a single video benchmark configuration on the serialized lane.
+
+    ``generator`` is the serialized-lane generator from
+    :func:`build_bench_generator` (the loaded model rides inside it). The
+    prompt is templated with ``num_images=0`` — the same convention the
+    engine uses for video-only chat requests; the lane extracts the video
+    frames itself from ``video_fps``/``video_max_frames``.
+    """
+    from mlx_vlm.prompt_utils import apply_chat_template, get_chat_template
+
+    # Reset MLX peak memory before this run
+    reset_mlx_peak_memory()
+
+    if not warmup:
+        print(f"  {config_name:>25} |", end=" ", flush=True)
+
+    # Apply chat template (video-only requests use num_images=0 — the lane
+    # extracts the frames itself). Templating errors propagate: the run
+    # loop reports per-config failures, and silently benchmarking the raw
+    # prompt would produce plausible numbers for unformatted input.
+    prompt = "Describe what happens in this video. What do you see?"
+    formatted_prompt = apply_chat_template(
+        processor,
+        config,
+        prompt,
+        num_images=0,
+    )
+    if not isinstance(formatted_prompt, str):
+        formatted_prompt = get_chat_template(
+            processor, formatted_prompt, add_generation_prompt=True
+        )
+
+    # Start the clock after templating — the image path measures
+    # generation only, and the two throughput numbers must stay
+    # comparable.
+    start_time = time.perf_counter()
+    text, completion_tokens, prompt_tokens = _run_native_mllm_request(
+        generator,
+        formatted_prompt,
+        videos=[video_path],
+        video_fps=fps,
+        video_max_frames=max_frames,
+        max_tokens=max_tokens,
+        temperature=0.7,
+    )
+
+    elapsed = time.perf_counter() - start_time
+
+    tps = completion_tokens / elapsed if elapsed > 0 else 0
+
+    # Estimate frames extracted
+    duration = video_info["duration"]
+    frames_from_fps = int(duration * fps)
+    frames_extracted = min(frames_from_fps, max_frames, video_info["total_frames"])
+
+    # Get memory metrics
+    mlx_info = get_mlx_memory_info()
+    process_mem = get_process_memory()
+
+    if not warmup:
+        mem_str = f"{mlx_info.get('peak_memory_gb', 0):.1f} GB" if mlx_info else "-"
+        print(
+            f"{frames_extracted:>2} frames | {elapsed:>5.2f}s | {completion_tokens:>3} tok | {tps:>6.1f} tok/s | {mem_str}"
+        )
+
+    return VideoBenchmarkResult(
+        config_name=config_name,
+        fps=fps,
+        max_frames=max_frames,
+        frames_extracted=frames_extracted,
+        video_duration=duration,
+        time_seconds=elapsed,
+        prompt_tokens=prompt_tokens,
+        completion_tokens=completion_tokens,
+        tokens_per_second=tps,
+        response_preview=(text[:100] + "..." if len(text) > 100 else text),
+        memory_gb=process_mem,
+        mlx_memory_gb=mlx_info.get("peak_memory_gb", 0.0),
+    )
+
+
+def _benchmark_video_config_via_model_generate(
     model,
     video_path: str,
     fps: float,
@@ -1133,9 +1396,13 @@ def benchmark_video_config(
     max_tokens: int = 150,
     warmup: bool = False,
 ) -> VideoBenchmarkResult:
-    """Run a single video benchmark configuration."""
+    """Pre-native duck-typed path: time the model's own generate().
 
-    # Reset MLX peak memory before this run
+    Kept for the deprecation window so callers that passed any object
+    exposing ``generate(prompt=..., videos=...)`` keep their exact
+    previous behavior — this body is the pre-native implementation,
+    unchanged. Removed together with :func:`benchmark_video_config`.
+    """
     reset_mlx_peak_memory()
 
     if not warmup:
@@ -1191,6 +1458,84 @@ def benchmark_video_config(
     )
 
 
+def benchmark_video_config(
+    model,
+    video_path: str,
+    fps: float,
+    max_frames: int,
+    config_name: str,
+    video_info: dict,
+    max_tokens: int = 150,
+    warmup: bool = False,
+) -> VideoBenchmarkResult:
+    """Deprecated call shape for :func:`benchmark_video_config_native`.
+
+    Preserves the exact pre-native-lane positional signature. An
+    MLXMultimodalLM (exposing ``.model`` / ``.processor``) runs on the
+    serialized lane via :func:`benchmark_video_config_native` — never
+    mlx-vlm's generation runtime. Any other legacy duck-typed model
+    exposing ``generate(prompt=..., videos=...)`` keeps riding its own
+    generation runtime, unchanged, until this wrapper is removed; the
+    deprecation warning is the notice to migrate. New code should build
+    the generator once via :func:`build_bench_generator` and call
+    :func:`benchmark_video_config_native` instead.
+    """
+    warnings.warn(
+        "benchmark_video_config's (model, video_path, fps, ...) call shape "
+        "is deprecated; build the serialized-lane generator via "
+        "build_bench_generator and call benchmark_video_config_native "
+        "instead.",
+        DeprecationWarning,
+        stacklevel=2,
+    )
+    from rapid_mlx.models.mllm import MLXMultimodalLM
+
+    if not isinstance(model, MLXMultimodalLM):
+        # Legacy duck-typed contract: any object exposing generate(...)
+        # worked — including ones that happen to carry .model/.processor.
+        # Keep that behavior for the deprecation window — the native lane
+        # can only drive an MLXMultimodalLM — and reject objects with no
+        # supported shape loudly.
+        if not hasattr(model, "generate"):
+            raise TypeError(
+                "benchmark_video_config accepts an MLXMultimodalLM "
+                "or a legacy duck-typed model exposing generate(); got "
+                f"{type(model).__name__} with neither. Migrate to the "
+                "native lane: build a generator via "
+                "build_bench_generator(model, processor, max_tokens) and "
+                "call benchmark_video_config_native(generator, processor, "
+                "config, ...)."
+            )
+        return _benchmark_video_config_via_model_generate(
+            model,
+            video_path,
+            fps,
+            max_frames,
+            config_name,
+            video_info,
+            max_tokens,
+            warmup,
+        )
+    # The legacy path lazily loaded an unloaded wrapper on first use
+    # (model.generate → if not self._loaded: self.load()); preserve that
+    # contract so previously valid callers do not crash on None parts.
+    if hasattr(model, "load") and not getattr(model, "_loaded", True):
+        model.load()
+    generator = build_bench_generator(model.model, model.processor, max_tokens)
+    return benchmark_video_config_native(
+        generator,
+        model.processor,
+        getattr(model, "config", None) or {},
+        video_path,
+        fps,
+        max_frames,
+        config_name,
+        video_info,
+        max_tokens,
+        warmup,
+    )
+
+
 def run_video_benchmark(
     model_name: str,
     video_url: str = None,
@@ -1213,7 +1558,6 @@ def run_video_benchmark(
     Returns:
         List of VideoBenchmarkResult
     """
-    from rapid_mlx.models.mllm import MLXMultimodalLM  # pragma: no cover
     from rapid_mlx.optimizations import detect_hardware  # pragma: no cover
 
     # Detect hardware
@@ -1259,8 +1603,8 @@ def run_video_benchmark(
     # Load model
     print(f"Loading MLLM model: {model_name}...")
     load_start = time.perf_counter()
-    model = MLXMultimodalLM(model_name)
-    model.load()
+    model, processor, template_config = _load_benchmark_mllm(model_name)
+    generator = build_bench_generator(model, processor, max_tokens)
     load_time = time.perf_counter() - load_start
     print(f"Model loaded in {load_time:.2f}s\n")
 
@@ -1284,8 +1628,17 @@ def run_video_benchmark(
     if warmup_runs > 0:
         print(f"Running {warmup_runs} warmup run(s)...")
         for _ in range(warmup_runs):
-            benchmark_video_config(
-                model, video_path, 1.0, 4, "warmup", video_info, max_tokens, warmup=True
+            benchmark_video_config_native(
+                generator,
+                processor,
+                template_config,
+                video_path,
+                1.0,
+                4,
+                "warmup",
+                video_info,
+                max_tokens,
+                warmup=True,
             )
 
         # Show model memory after warmup (MLX uses lazy evaluation)
@@ -1304,8 +1657,16 @@ def run_video_benchmark(
     results = []
     for config_name, fps, max_frames in configs:
         try:
-            result = benchmark_video_config(
-                model, video_path, fps, max_frames, config_name, video_info, max_tokens
+            result = benchmark_video_config_native(
+                generator,
+                processor,
+                template_config,
+                video_path,
+                fps,
+                max_frames,
+                config_name,
+                video_info,
+                max_tokens,
             )
             results.append(result)
         except Exception as e:

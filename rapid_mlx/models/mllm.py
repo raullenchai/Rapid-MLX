@@ -29,6 +29,7 @@ import stat
 import sys
 import tempfile
 import threading
+import warnings
 from collections.abc import Iterator
 from dataclasses import dataclass, field
 from enum import Enum
@@ -1486,6 +1487,38 @@ def save_frames_to_temp(frames: list[np.ndarray]) -> list[str]:
     return paths
 
 
+def _warn_legacy_generation(
+    model: "MLXMultimodalLM", method: str, stacklevel: int = 3
+) -> None:
+    """Flag the legacy mlx-vlm generation surface, once per model instance.
+
+    These methods ride mlx-vlm's ``generate``/``stream_generate`` runtime.
+    The serving path (BatchedEngine → MLLMScheduler → MLLMBatchGenerator)
+    loads models through this class but generates exclusively on the native
+    serialized lane, so the only remaining callers are direct embedders and
+    scripts. Deprecated with a full minor release of notice before removal.
+
+    Convenience wrappers (``describe_image`` etc.) warn at their own frame
+    before delegating; the per-instance dedupe keeps that delegation from
+    warning a second time.
+    """
+    with model._legacy_generation_warning_lock:
+        if model._legacy_generation_warned:
+            return
+        warnings.warn(
+            f"MLXMultimodalLM.{method}() uses mlx-vlm's legacy generation "
+            "runtime and is deprecated. Serve vision models through the native "
+            "BatchedEngine lane (rapid_mlx.server), which does not use this "
+            "path. The method will be removed in an upcoming release.",
+            DeprecationWarning,
+            stacklevel=stacklevel,
+        )
+        # Mark the notice consumed only after ``warnings.warn`` returns.  A
+        # caller may promote DeprecationWarning to an exception; in that mode
+        # generation never starts, and a later retry still deserves the notice.
+        model._legacy_generation_warned = True
+
+
 class MLXMultimodalLM:
     """
     Wrapper around mlx-vlm for multimodal inference.
@@ -1539,6 +1572,10 @@ class MLXMultimodalLM:
         self.config = None
         self._loaded = False
         self._video_native = False
+        # Warned about the deprecated legacy generation surface yet? The
+        # warning fires once per instance (see _warn_legacy_generation).
+        self._legacy_generation_warned = False
+        self._legacy_generation_warning_lock = threading.Lock()
 
         # Initialize MLLM prefix cache manager (with vision embedding caching)
         self._cache_manager: MLLMPrefixCacheManager | None = None
@@ -2125,7 +2162,12 @@ class MLXMultimodalLM:
 
             # With base64 video
             output = model.generate("Describe", videos=["data:video/mp4;base64,AAAA..."])
+
+        Deprecated:
+            Rides mlx-vlm's legacy generation runtime. Serve vision models
+            through the native BatchedEngine lane instead.
         """
+        _warn_legacy_generation(self, "generate")
         if not self._loaded:
             self.load()
 
@@ -2260,7 +2302,12 @@ class MLXMultimodalLM:
 
         Yields:
             Generated text chunks
+
+        Deprecated:
+            Rides mlx-vlm's legacy generation runtime. Serve vision models
+            through the native BatchedEngine lane instead.
         """
+        _warn_legacy_generation(self, "stream_generate")
         if not self._loaded:
             self.load()
 
@@ -2340,7 +2387,12 @@ class MLXMultimodalLM:
 
         Returns:
             MLLMOutput with assistant's response
+
+        Deprecated:
+            Rides mlx-vlm's legacy generation runtime. Serve vision models
+            through the native BatchedEngine lane instead.
         """
+        _warn_legacy_generation(self, "chat")
         if not self._loaded:
             self.load()
 
@@ -2728,7 +2780,12 @@ class MLXMultimodalLM:
 
         Yields:
             MLLMOutput with incremental text chunks
+
+        Deprecated:
+            Rides mlx-vlm's legacy generation runtime. Serve vision models
+            through the native BatchedEngine lane instead.
         """
+        _warn_legacy_generation(self, "stream_chat")
         if not self._loaded:
             self.load()
 
@@ -3035,6 +3092,7 @@ class MLXMultimodalLM:
         Returns:
             Image description text
         """
+        _warn_legacy_generation(self, "describe_image")
         output = self.generate(
             prompt=prompt,
             images=[image],
@@ -3062,6 +3120,7 @@ class MLXMultimodalLM:
         Returns:
             Answer text
         """
+        _warn_legacy_generation(self, "answer_about_image")
         output = self.generate(
             prompt=question,
             images=[image],
@@ -3102,6 +3161,7 @@ class MLXMultimodalLM:
             # OpenAI format
             model.describe_video({"url": "https://example.com/video.mp4"})
         """
+        _warn_legacy_generation(self, "describe_video")
         output = self.generate(
             prompt=prompt,
             videos=[video],
