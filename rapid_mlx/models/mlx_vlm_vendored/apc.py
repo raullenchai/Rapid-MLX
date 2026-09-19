@@ -995,16 +995,26 @@ def _resolve_checkpoint_class(module_name: str, qualname: str) -> Optional[type]
     # vendored cache classes during the transition. Everything else stays
     # rejected: the prefix guard keeps disk metadata from importing arbitrary
     # modules.
-    if module_name not in {
-        "mlx_vlm.models.cache",
-        "rapid_mlx.models.mlx_vlm_vendored.cache",
-    } or "<locals>" in qualname:
+    if (
+        module_name not in {
+            "mlx_vlm.models.cache",
+            "rapid_mlx.models.mlx_vlm_vendored.cache",
+        }
+        or not qualname.isidentifier()
+        or qualname.startswith("_")
+    ):
         return None
     try:
-        value: Any = importlib.import_module(module_name)
-        for part in qualname.split("."):
-            value = getattr(value, part)
-        return value if isinstance(value, type) else None
+        module = importlib.import_module(module_name)
+        value: Any = getattr(module, qualname)
+        base = getattr(module, "_BaseCache")
+        if (
+            isinstance(value, type)
+            and value.__module__ == module_name
+            and issubclass(value, base)
+        ):
+            return value
+        return None
     except (ImportError, AttributeError):
         return None
 
@@ -1430,8 +1440,9 @@ class DiskBlockStore:
                 if not self._is_canonical_store_file(p):
                     continue
                 # VENDOR-DEVIATION(upstream-bugfix): count a shard's size only
-                # after its header validates, so an unreadable shard dropped
-                # below cannot inflate ``_disk_bytes`` until the next rebuild.
+                # after its header and kind-specific metadata validate, so a
+                # shard dropped below cannot inflate ``_disk_bytes`` until the
+                # next rebuild.
                 try:
                     shard_size = p.stat().st_size
                 except OSError:
@@ -1444,21 +1455,53 @@ class DiskBlockStore:
                     except OSError:
                         pass
                     continue
-                total += shard_size
                 if self._is_canonical_exact(p):
                     try:
                         cache_hash = int(metadata.get("cache_hash", ""))
                     except (TypeError, ValueError):
+                        logger.warning(
+                            "APC disk: exact shard %s has invalid metadata, dropping",
+                            p,
+                        )
+                        try:
+                            p.unlink()
+                        except OSError:
+                            pass
                         continue
                     self._exact_index[cache_hash] = p
+                    total += shard_size
                     continue
                 hashes_csv = metadata.get("block_hashes", "")
                 if not hashes_csv:
+                    logger.warning(
+                        "APC disk: block shard %s has invalid metadata, dropping", p
+                    )
+                    try:
+                        p.unlink()
+                    except OSError:
+                        pass
                     continue
                 try:
                     block_hashes = [int(x) for x in hashes_csv.split(",") if x]
                 except ValueError:
+                    logger.warning(
+                        "APC disk: block shard %s has invalid metadata, dropping", p
+                    )
+                    try:
+                        p.unlink()
+                    except OSError:
+                        pass
                     continue
+                if not block_hashes:
+                    logger.warning(
+                        "APC disk: block shard %s has invalid metadata, dropping", p
+                    )
+                    try:
+                        p.unlink()
+                    except OSError:
+                        pass
+                    continue
+                total += shard_size
                 for idx, bh in enumerate(block_hashes):
                     self._index[bh] = (p, idx)
         return total

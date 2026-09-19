@@ -142,6 +142,11 @@ def test_resolve_checkpoint_class_allows_vendored_only(store):
     assert apc._resolve_checkpoint_class("os", "system") is None
     assert apc._resolve_checkpoint_class("builtins", "exec") is None
     assert apc._resolve_checkpoint_class("mlx_vlm.apc", "APCCoordinator") is None
+    assert apc._resolve_checkpoint_class("mlx_vlm.models.cache", "_BaseCache") is None
+    assert (
+        apc._resolve_checkpoint_class("mlx_vlm.models.cache", "KVCache.__class__")
+        is None
+    )
     assert (
         apc._resolve_checkpoint_class(
             "rapid_mlx.models.mlx_vlm_vendored.apc", "DiskBlockStore"
@@ -164,10 +169,26 @@ def test_rebuild_index_excludes_dropped_shard_bytes(store):
     good_size = good.stat().st_size
     corrupt = store.dir / f"{apc.DiskBlockStore.SHARD_PREFIX}{'a' * 32}{store.SUFFIX}"
     corrupt.write_bytes(b"not a safetensors header")
+    invalid_exact = (
+        store.dir / f"{apc.DiskBlockStore.EXACT_PREFIX}{'b' * 32}{store.SUFFIX}"
+    )
+    mx.save_safetensors(
+        str(invalid_exact), {"k": mx.zeros((1, 1))}, metadata={"cache_hash": "bad"}
+    )
+    invalid_block = (
+        store.dir / f"{apc.DiskBlockStore.SHARD_PREFIX}{'c' * 32}{store.SUFFIX}"
+    )
+    mx.save_safetensors(
+        str(invalid_block),
+        {"k": mx.zeros((1, 1))},
+        metadata={"block_hashes": "not-an-int"},
+    )
 
     total = store._rebuild_index()
     assert total == good_size
     assert not corrupt.exists()
+    assert not invalid_exact.exists()
+    assert not invalid_block.exists()
     # Mirror the production call site, which assigns the returned total.
     store._disk_bytes = store._rebuild_index()
     assert store.disk_bytes == good_size
