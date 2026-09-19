@@ -507,10 +507,17 @@ def _dflash_rounds_batch(
     total_emitted = sum(emitted)
 
     while len(active_idx) > 0:
+        # VENDOR-DEVIATION(bugfix): mirror of the mtp budget fix — with the
+        # non-filterable-cache fallback, a retained finished row's
+        # ``remaining == 1`` would force ``bs <= 1`` and terminate the
+        # whole batched loop. Budget from unfinished rows only.
         remaining = [
             max(1, max_tokens - emitted[active_idx[j]] + 1)
             for j in range(len(active_idx))
+            if not finished[active_idx[j]]
         ]
+        if not remaining:
+            break
         bs = _dflash_next_block_size(
             draft_model,
             block_total,
