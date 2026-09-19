@@ -25,7 +25,14 @@ def native_batch_linear(module, x):
     """Match independent B×1 calls, including dense and mixed-dtype fallbacks."""
     if x.ndim != 3 or x.shape[1] <= 1:
         return module(x)
-    from .quantized_verifier import exact_quantized_linear, singleton_quantized_linear
+    # VENDOR-DEVIATION(redirect): the quantized verifier lands in a later
+    # step-3 slice (3c model-class closure); until then this fallback
+    # resolves the pinned module — pure mlx-nn dispatch, no cache types
+    # cross the boundary (mirrors mtp.py's verifier redirect).
+    from mlx_vlm.models.quantized_verifier import (
+        exact_quantized_linear,
+        singleton_quantized_linear,
+    )
 
     # Narrow and FP32 projections can use a different native QMV reduction.
     if (

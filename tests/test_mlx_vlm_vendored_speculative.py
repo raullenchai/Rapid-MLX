@@ -6,7 +6,9 @@ Mechanical guarantee: every function/class body in the vendored
 byte-identical to the pinned upstream ``mlx-vlm==0.7.1`` source. The
 only permitted differences are the documented module-level import
 redirects (see the package inventory), which never enter a function's
-``getsource``.
+``getsource``, plus two inventoried function-level lazy-import redirects
+(``native_batch_linear``'s verifier fallback and ``dequantize_model``'s
+mla/switch_layers resolution — both pinned upstream until step 3c).
 
 Behavioral guarantee: the vendored coordinator binds the vendored cache
 and model foundations; the two deliberately-pinned dependencies (the
@@ -88,7 +90,10 @@ def test_vendored_speculative_bodies_match_upstream():
         (vs_common, up_common, set()),
         (vs_ddtree, up_ddtree, set()),
         (vs_dflash, up_dflash, set()),
-        (vs_mtp, up_mtp, set()),
+        # ``native_batch_linear`` appears in mtp's namespace via its vendored
+        # ``models.linear`` import; the redirect lives in linear.py itself
+        # (documented in the foundations test + package inventory).
+        (vs_mtp, up_mtp, {"native_batch_linear"}),
         (vs_utils, up_utils, set()),
     ):
         divergences = _body_divergences(vendored, upstream)
@@ -102,13 +107,18 @@ def test_vendored_foundations_bodies_match_upstream():
     from mlx_vlm.models import base as up_base
     from mlx_vlm.models import linear as up_linear
 
-    for vendored, upstream in (
-        (vendored_base, up_base),
-        (vendored_linear, up_linear),
-        (vendored_fp8, up_fp8),
-        (vendored_quant_utils, up_quant_utils),
+    # Documented function-level lazy-import redirects (see the package
+    # inventory): linear's verifier fallback and quant_utils' mla /
+    # switch_layers resolution stay pinned until the 3c slices.
+    for vendored, upstream, documented in (
+        (vendored_base, up_base, set()),
+        (vendored_linear, up_linear, {"native_batch_linear"}),
+        (vendored_fp8, up_fp8, set()),
+        (vendored_quant_utils, up_quant_utils, {"dequantize_model"}),
     ):
-        assert _body_divergences(vendored, upstream) == []
+        divergences = _body_divergences(vendored, upstream)
+        divergences = [d for d in divergences if d not in documented]
+        assert divergences == []
 
 
 def test_speculative_core_binds_vendored_foundations():
@@ -142,3 +152,39 @@ def test_speculative_shim_exports_ddtree_only():
     assert vendored_speculative.build_ddtree is vs_ddtree.build_ddtree
     # load_drafter arrives with the drafter registry slice (step 3c).
     assert not hasattr(vendored_speculative, "load_drafter")
+
+
+def test_native_batch_linear_foundation_path_runs():
+    # r1 fix: the lazy verifier import inside native_batch_linear must
+    # resolve (redirected to pinned upstream until 3c) and the quantized
+    # fallback must execute for B>1 batched hidden states (the MTP
+    # projection path at mtp.py calls exactly this).
+    mx = pytest.importorskip("mlx.core")
+    nn = pytest.importorskip("mlx.nn")
+    module = nn.Linear(64, 32, bias=False)
+    nn.quantize(module, group_size=32, bits=4)
+    x = mx.random.normal((2, 3, 64))
+    out = vendored_linear.native_batch_linear(module, x)
+    assert out.shape == (2, 3, 32)
+
+
+def test_dequantize_model_foundation_path_runs():
+    # r1 fix: dequantize_model's lazy mla/switch_layers imports execute at
+    # function entry — before type dispatch — so even a plain
+    # nn.QuantizedLinear model needs them to resolve (redirected to pinned
+    # upstream until the model-module slices).
+    mx = pytest.importorskip("mlx.core")
+    nn = pytest.importorskip("mlx.nn")
+
+    class Tiny(nn.Module):
+        def __init__(self):
+            super().__init__()
+            self.proj = nn.Linear(64, 32, bias=False)
+
+    tiny = Tiny()
+    nn.quantize(tiny, group_size=32, bits=4)
+    assert isinstance(tiny.proj, nn.QuantizedLinear)
+    dequantized = vendored_quant_utils.dequantize_model(tiny)
+    assert type(dequantized.proj) is nn.Linear
+    probe = mx.random.normal((2, 64))
+    assert dequantized.proj(probe).shape == (2, 32)
