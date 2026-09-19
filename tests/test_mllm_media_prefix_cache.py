@@ -1905,9 +1905,21 @@ def probe():
         monkeypatch.setattr(
             adapters,
             "_apc_array_helpers",
-            lambda: (_ for _ in ()).throw(ModuleNotFoundError("mlx_vlm.apc")),
+            lambda: (_ for _ in ()).throw(
+                ModuleNotFoundError("mlx_vlm.apc", name="mlx_vlm.apc")
+            ),
         )
         assert _media_clone_leaves(_kv_leaves(), min_capacity_tokens=32) is None
+
+        monkeypatch.setattr(
+            adapters,
+            "_apc_array_helpers",
+            lambda: (_ for _ in ()).throw(
+                ModuleNotFoundError("cache plugin dependency", name="cache_plugin")
+            ),
+        )
+        with pytest.raises(ModuleNotFoundError, match="cache plugin dependency"):
+            _media_clone_leaves(_kv_leaves(), min_capacity_tokens=32)
 
     def test_tokenizer_boundary_and_semantics_fallbacks(self, monkeypatch):
         gen = _stub_generator()

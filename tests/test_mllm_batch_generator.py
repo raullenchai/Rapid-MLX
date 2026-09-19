@@ -2724,9 +2724,21 @@ def test_exact_prefix_snap_fails_closed_when_lazy_upstream_apc_is_absent(monkeyp
     monkeypatch.setattr(
         adapters,
         "_apc_array_helpers",
-        lambda: (_ for _ in ()).throw(ModuleNotFoundError("mlx_vlm.apc")),
+        lambda: (_ for _ in ()).throw(
+            ModuleNotFoundError("mlx_vlm.apc", name="mlx_vlm.apc")
+        ),
     )
     assert gen._snap_exact_text_prefix(cache, full_ids, 17, min_position=0) is None
+
+    monkeypatch.setattr(
+        adapters,
+        "_apc_array_helpers",
+        lambda: (_ for _ in ()).throw(
+            ModuleNotFoundError("cache plugin dependency", name="cache_plugin")
+        ),
+    )
+    with pytest.raises(ModuleNotFoundError, match="cache plugin dependency"):
+        gen._snap_exact_text_prefix(cache, full_ids, 17, min_position=0)
 
 
 def test_exact_prefix_snap_promotes_only_a_snapshot_that_served(monkeypatch):

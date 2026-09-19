@@ -791,12 +791,14 @@ def _media_clone_leaves(
             )
             for leaf in leaves
         ]
-    except ImportError:
+    except ModuleNotFoundError as exc:
         # The vendored adapter remains importable in a text-only install, but
         # this transition slice still resolves its array-copy helpers from the
         # pinned upstream APC module.  Treat that lazy redirect being absent
         # exactly like the old top-level mlx-vlm import failure: decline the
         # snapshot and let the caller perform the cold full forward.
+        if exc.name not in {"mlx_vlm", "mlx_vlm.apc"}:
+            raise
         return None
     if any(leaf is None for leaf in cloned):
         return None
@@ -2770,11 +2772,13 @@ class MLLMBatchGenerator:
                 if cloned is None:
                     return None
                 warm.append(cloned)
-        except ImportError:
+        except ModuleNotFoundError as exc:
             # See ``_media_clone_leaves``: until apc.py is vendored in the
             # next stack slice, cloning may reach a lazy upstream helper.
             # Missing optional vision/APC dependencies are a cache miss, not a
             # request failure.
+            if exc.name not in {"mlx_vlm", "mlx_vlm.apc"}:
+                raise
             return None
         if eval_targets:
             mx.eval(eval_targets)
