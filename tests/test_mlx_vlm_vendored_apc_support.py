@@ -108,7 +108,6 @@ def test_kv_quant_fingerprint_parity_with_upstream():
         (8.0, 64, "uniform", 0),
         (4.0, 32, "uniform", 128),
         (None, 64, None, 0),
-        (3.5, 64, "uniform", 16),
     ]
     for kv_bits, group_size, scheme, start in cases:
         assert vendored_kv_quant.kv_quant_fingerprint(
@@ -119,6 +118,17 @@ def test_kv_quant_fingerprint_parity_with_upstream():
         assert (vendored is None) == (upstream is None)
         if vendored is not None:
             assert vendored.fingerprint(start) == upstream.fingerprint(start)
+
+    # The legacy API intentionally treats fractional bits as TurboQuant even
+    # when an old caller passes the nominal ``uniform`` string.  Pin that
+    # slightly surprising compatibility rule explicitly instead of hiding it
+    # inside the generic table above.
+    vendored_fractional = vendored_kv_quant.from_legacy(3.5, "uniform", 64)
+    upstream_fractional = upstream_kv_quant.from_legacy(3.5, "uniform", 64)
+    assert vendored_fractional is not None and upstream_fractional is not None
+    assert vendored_fractional.is_turboquant
+    assert upstream_fractional.is_turboquant
+    assert vendored_fractional.fingerprint(16) == upstream_fractional.fingerprint(16)
 
 
 def test_apc_storage_kv_handle_roundtrip():
