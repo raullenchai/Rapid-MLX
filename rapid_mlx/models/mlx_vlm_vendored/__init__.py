@@ -225,6 +225,22 @@ vendored copy differs by exactly the deviations listed):
     speculative slice lands; ``..turboquant`` → pinned upstream
     (``kv_quant.py`` precedent); ``..utils`` helpers → vendored
     ``inputs.py`` (incl. the lazy ``process_image``).
+    It also carries in-source ``VENDOR-DEVIATION(upstream-bugfix)`` hunks,
+    each repro-tested in ``tests/test_mlx_vlm_vendored_generate.py``:
+    ``_generate_batch`` closes the wired-limit generator in a ``finally``
+    and skips ``token=None`` terminal responses;
+    ``BatchGenerator._build_mixed_prompt_batch``/``_assemble_mixed_prompt_batch``
+    release acquired APC picks on every failed warm assembly and strip the
+    block references from the metas handed to the constructor so the
+    constructor's prepare-guard cannot double-release them (re-attached on
+    success);
+    ``BatchGenerator.remove`` releases a cancelled sole-prefill batch's APC
+    blocks;
+    and the three batched sampling sites (``GenerationBatch._step``,
+    ``SpeculativeGenerationBatch._start_rounds``,
+    ``PromptProcessingBatch.generate``) pass the per-row int uids as
+    ``row_ids`` instead of upstream's ``[0]*n``, so seeded draws stay
+    independent across rows sharing a generated position.
   - ``common.py`` (upstream sha256
     ``c69e7e38a09990404d299b0a8d4be55c8220e60652e67a2456e8177633813ba0``)
     except two redirects: ``..models import cache`` → vendored root,
@@ -241,6 +257,8 @@ vendored copy differs by exactly the deviations listed):
   Consumers: ``speculative/native_mtp/runtime.py`` and
   ``speculative/native_mtp/transaction.py`` import ``ar`` from this
   package; byte-identical per-function parity is probed in
-  ``tests/test_mlx_vlm_vendored_generate.py``. A diff against the pinned
-  tag must show only the import-block redirects above.
+  ``tests/test_mlx_vlm_vendored_generate.py`` (every top-level symbol
+  except the documented-hunk bodies listed in that module). A diff against
+  the pinned tag must show only the import-block redirects and the
+  documented hunks above.
 """
