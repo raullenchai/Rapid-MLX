@@ -270,11 +270,16 @@ vendored copy differs by exactly the deviations listed):
   ``..models.quantized_verifier`` → pinned upstream (2k-line verifier,
   ``decode_quantized_argmax`` is a pure array function);
   ``utils``'s ``.eagle3`` → pinned upstream (eagle3 backend not vendored —
-  Rapid serves the dflash and mtp kinds; round helpers are pure-array
-  functions). Upstream digests: cache_state
+  Rapid serves the dflash and mtp kinds; note the eagle3 round
+  coordinators are cache-coupled, not pure-array — they duck-type on the
+  passed prompt cache, whose vendored API is upstream-identical plus the
+  2a merge bugfix; no Rapid lane dispatches eagle3 through this package,
+  and a future one must vendor the coordinator with its cache contract). Upstream digests: cache_state
   ``39d35ef0aae0c9298f2fcd3ff6b91b106c6b6c1c3ab6becae216a8fafb2c5300``,
   common ``e3d3c0294a6d6fc915a32e96460370bfe57baef19539c5a290d4254525717cf1``,
-  ddtree ``5e3651fe81aad1adee8ab6de7e15bd97d59845cf05724ae26d86af4eb982a342``,
+  ddtree ``5e3651fe81aad1adee8ab6de7e15bd97d59845cf05724ae26d86af4eb982a342``
+  (1 documented bugfix hunk: ``build_ddtree`` validates with ``ValueError``
+  instead of ``assert``, which ``python -O`` strips),
   dflash ``39244ec611b38caacd706474722b2997e50954fe48219e26baf9017ade881ad0``,
   mtp ``4ed467918bd24e26c60730d6d3529c6a9e633448b2fc6028829965bb1f4daad1``,
   utils ``93d2ed29ac7b7c378536bf09d22eb570d5abb1f2d338dc550e59a84468b6a9ff``.

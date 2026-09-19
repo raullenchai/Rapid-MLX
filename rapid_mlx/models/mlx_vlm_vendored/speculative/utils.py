@@ -19,9 +19,15 @@ from .dflash import (
     _dflash_rounds_batch,
     _reserve_dflash_target_cache,
 )
+
 # VENDOR-DEVIATION(redirect): the eagle3 backend is not vendored (Rapid
-# serves the dflash and mtp kinds); its round helpers resolve upstream,
-# which is identity-safe on plain arrays.
+# serves the dflash and mtp kinds); its round helpers resolve upstream.
+# Unlike the dflash/mtp helpers, the eagle3 round coordinators are
+# cache-coupled: they duck-type on the passed prompt cache, whose vendored
+# API is upstream-identical plus the documented 2a merge bugfix. No Rapid
+# lane dispatches eagle3 through this package today; a future lane must
+# vendor the eagle3 coordinator together with its cache contract (design
+# doc: eagle3 stays pinned for now).
 from mlx_vlm.speculative.eagle3 import (
     _eagle3_capture_layer_ids,
     _eagle3_rounds,
