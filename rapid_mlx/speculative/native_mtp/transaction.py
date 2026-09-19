@@ -692,13 +692,15 @@ def install_generation_hooks() -> None:
         pass
 
     # Transaction hooks replace the ar-module speculative bindings in BOTH
-    # modules (vendored for runtime's direct binding, upstream for dispatch).
-    ar.SpeculativePrefill = SpeculativePrefill
-    ar.run_speculative_rounds = run_speculative_rounds
-    ar.speculative_prefill_kwargs = speculative_prefill_kwargs
-    upstream_ar.SpeculativePrefill = SpeculativePrefill
-    upstream_ar.run_speculative_rounds = run_speculative_rounds
-    upstream_ar.speculative_prefill_kwargs = speculative_prefill_kwargs
+    # modules (vendored for runtime's direct binding, upstream for dispatch);
+    # the injected callables are duck-compatible, so go through setattr to
+    # keep the module-attribute types mypy already checked intact.
+    setattr(ar, "SpeculativePrefill", SpeculativePrefill)  # noqa: B010 - mypy: hook injection
+    setattr(ar, "run_speculative_rounds", run_speculative_rounds)  # noqa: B010
+    setattr(ar, "speculative_prefill_kwargs", speculative_prefill_kwargs)  # noqa: B010
+    setattr(upstream_ar, "SpeculativePrefill", SpeculativePrefill)  # noqa: B010
+    setattr(upstream_ar, "run_speculative_rounds", run_speculative_rounds)  # noqa: B010
+    setattr(upstream_ar, "speculative_prefill_kwargs", speculative_prefill_kwargs)  # noqa: B010
 
 
 __all__ = [

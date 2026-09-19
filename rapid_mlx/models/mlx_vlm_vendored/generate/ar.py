@@ -35,9 +35,9 @@ from ..sample_utils import (
     top_p_sampling,
 )
 
-# VENDOR-DEVIATION(redirect): the speculative core lands in a later
-# step-3 slice; until then this helper stays on the pinned dependency.
-from mlx_vlm.speculative.utils import (
+# VENDOR-DEVIATION(redirect): vendored speculative core (step 3b); the
+# eagle3 backend inside utils.py still resolves upstream.
+from ..speculative.utils import (
     SpeculativePrefill,
     make_speculative_prompt_cache,
     run_speculative_rounds,
