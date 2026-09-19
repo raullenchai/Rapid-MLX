@@ -11,8 +11,10 @@ vendored module) is exercised by the stub-based suites that patch the
 vendored module directly.
 """
 
+import hashlib
 import inspect
 from dataclasses import asdict
+from pathlib import Path
 
 import numpy as np
 import pytest
@@ -23,6 +25,14 @@ pytestmark = pytest.mark.requires_mlx
 import mlx.core as mx
 
 from rapid_mlx.models.mlx_vlm_vendored import inputs as vendored_inputs
+
+_UPSTREAM_REGION_SHA256 = (
+    "ac610b0e2c157de878b17ec9f5ebaa8bf2c75000e44c09d84b5c17dbaf7c7b5f"
+)
+_VENDORED_SOURCE_SHA256 = (
+    "8fdd051bbc21542daeca29931b1aab96b09583a582eea3d1904bdb3c84ce3750"
+)
+_VENDOR_DEVIATION_COUNT = 7
 
 _REGION_FUNCTIONS = [
     "load_image",
@@ -47,6 +57,30 @@ def test_vendored_region_is_byte_identical_to_upstream():
         upstream = inspect.getsource(getattr(mlx_vlm_utils, name))
         vendored = inspect.getsource(getattr(vendored_inputs, name))
         assert vendored == upstream, f"{name} diverged from pinned upstream"
+
+
+def test_vendored_region_matches_reviewed_sources():
+    """Fail closed if an excluded deviation function drifts unnoticed.
+
+    Function-level parity is intentionally unavailable for the four functions
+    carrying reviewed deviations. Pinning both the original upstream region
+    and the complete vendored module prevents an unrelated edit from hiding in
+    those large functions merely because they are excluded above.
+    """
+    mlx_vlm_utils = pytest.importorskip("mlx_vlm.utils")
+    upstream_path = Path(inspect.getsourcefile(mlx_vlm_utils))
+    upstream_lines = upstream_path.read_text().splitlines(keepends=True)
+    upstream_region = "".join(upstream_lines[1713:2543])
+    assert hashlib.sha256(upstream_region.encode()).hexdigest() == (
+        _UPSTREAM_REGION_SHA256
+    )
+
+    vendored_path = Path(inspect.getsourcefile(vendored_inputs))
+    vendored_source = vendored_path.read_text()
+    assert hashlib.sha256(vendored_source.encode()).hexdigest() == (
+        _VENDORED_SOURCE_SHA256
+    )
+    assert vendored_source.count("# VENDOR-DEVIATION") == _VENDOR_DEVIATION_COUNT
 
 
 def test_vendored_region_constants_match_upstream():
@@ -179,6 +213,70 @@ def test_load_video_releases_capture_on_sampler_error(monkeypatch):
             frame_sampler=_boom,
         )
     assert released == [True]
+
+
+def test_load_video_releases_capture_when_open_fails(monkeypatch):
+    """The handle exists even when ``isOpened`` is false and must be released."""
+    cv2 = pytest.importorskip("cv2")
+    released = []
+
+    class _FakeCap:
+        def __init__(self, path):
+            pass
+
+        def isOpened(self):  # noqa: N802 - mirrors the cv2 API being faked
+            return False
+
+        def release(self):
+            released.append(True)
+
+    monkeypatch.setattr(cv2, "VideoCapture", _FakeCap)
+
+    with pytest.raises(ValueError, match="Cannot open video"):
+        vendored_inputs.load_video("broken.mp4")
+    assert released == [True]
+
+
+def test_load_audio_closes_streamed_response(monkeypatch):
+    """The HTTP response must close after its bytes reach the audio decoder."""
+    audio_io = pytest.importorskip("mlx_audio.audio_io")
+    audio_utils = pytest.importorskip("mlx_audio.utils")
+    events = []
+
+    class _Response:
+        content = b"encoded-audio"
+
+        def __enter__(self):
+            events.append("enter")
+            return self
+
+        def __exit__(self, exc_type, exc, tb):
+            events.append("exit")
+
+        def raise_for_status(self):
+            events.append("status")
+
+    monkeypatch.setattr(
+        vendored_inputs.requests,
+        "get",
+        lambda *args, **kwargs: _Response(),
+    )
+    monkeypatch.setattr(
+        audio_io,
+        "read",
+        lambda source, dtype: (np.array([[0.25], [0.5]], dtype=np.float32), 16_000),
+    )
+    monkeypatch.setattr(
+        audio_utils,
+        "resample_audio",
+        lambda audio, source_rate, target_rate: pytest.fail(
+            "same-rate audio should not be resampled"
+        ),
+    )
+
+    result = vendored_inputs.load_audio("https://example.invalid/audio.wav", 16_000)
+    assert result.tolist() == pytest.approx([0.25, 0.5])
+    assert events == ["enter", "status", "exit"]
 
 
 def test_prepare_inputs_decodes_bytes_video_paths(monkeypatch):
