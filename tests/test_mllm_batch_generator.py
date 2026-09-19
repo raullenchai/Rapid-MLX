@@ -2315,6 +2315,7 @@ def _make_real_apc_generator(monkeypatch, *, entries: int | None = None):
     """A bare generator wired to the vendored ``APCManager`` in exact mode
     (no disk, no block pool), the way ``__init__`` builds it."""
     from rapid_mlx.models.mlx_vlm_vendored import apc
+
     if entries is None:
         monkeypatch.delenv("APC_EXACT_CACHE_ENTRIES", raising=False)
     else:
@@ -2499,6 +2500,7 @@ def test_exact_cache_capacity_stays_at_mlx_vlm_default_without_a_byte_budget(
     operator asked for a count explicitly)."""
     from rapid_mlx import memory_cache
     from rapid_mlx.models.mlx_vlm_vendored import apc
+
     default = apc.from_env(
         overrides={"enabled": True, "num_blocks": 0, "disk_enabled": False}
     )._exact_cache_max
