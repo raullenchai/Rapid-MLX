@@ -34,7 +34,9 @@ import requests
 from PIL import Image, ImageOps
 from mlx_vlm.models.base import BaseImageProcessor  # VENDOR-DEVIATION(redirect)
 
-logger = logging.getLogger("mlx_vlm.utils")  # VENDOR-DEVIATION(redirect): pinned upstream logger name
+logger = logging.getLogger(
+    "mlx_vlm.utils"
+)  # VENDOR-DEVIATION(redirect): pinned upstream logger name
 
 
 def load_image(image_source: Union[str, Path, BytesIO, Image.Image], timeout: int = 10):
@@ -505,11 +507,19 @@ def processor_video_sampling(processor) -> VideoSampling:
         hook = getattr(owner, "video_sampling_defaults", None)
         if callable(hook):
             declared = hook()
-            return (
-                declared
-                if isinstance(declared, VideoSampling)
-                else VideoSampling(**declared)
-            )
+            # VENDOR-DEVIATION(dual-namespace): a hook may return the upstream
+            # mlx_vlm.utils.VideoSampling while the vendored class is in
+            # effect; normalize any matching-shape object by its known
+            # fields instead of keying on class identity.
+            if isinstance(declared, VideoSampling):
+                return declared
+            if not isinstance(declared, dict) and all(
+                hasattr(declared, f.name) for f in fields(VideoSampling)
+            ):
+                declared = {
+                    f.name: getattr(declared, f.name) for f in fields(VideoSampling)
+                }
+            return VideoSampling(**declared)
     return VideoSampling(
         **{
             name: getattr(component, name, None)
@@ -865,5 +875,3 @@ def prepare_inputs(
                     model_inputs[key] = mx.array(value)
 
     return model_inputs
-
-

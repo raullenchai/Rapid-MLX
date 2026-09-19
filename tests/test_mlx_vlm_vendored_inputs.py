@@ -33,12 +33,14 @@ _REGION_FUNCTIONS = [
     "VideoSampling",
     "VideoMetadata",
     "load_video",
-    "processor_video_sampling",
     "resolve_video_sampling",
     "process_inputs",
     "process_inputs_with_fallback",
     "prepare_inputs",
 ]
+# ``processor_video_sampling`` is excluded: it carries the documented
+# dual-namespace normalization hunk (see the package inventory) and is
+# behavior-tested below.
 
 
 def test_vendored_region_is_byte_identical_to_upstream():
@@ -109,3 +111,35 @@ def test_prepare_inputs_sets_pad_token_when_padding():
     processor.tokenizer = tokenizer
     vendored_inputs.prepare_inputs(processor, prompts=["hello world"], padding=True)
     assert tokenizer.pad_token == tokenizer.eos_token
+
+
+def test_processor_video_sampling_accepts_upstream_instance():
+    """dual-namespace: a hook returning the upstream VideoSampling dataclass
+    must normalize into the vendored one instead of raising TypeError."""
+    mlx_vlm_utils = pytest.importorskip("mlx_vlm.utils")
+
+    class _HookProcessor:
+        video_processor = object()  # non-None: the hook ladder is consulted
+
+        def video_sampling_defaults(self):
+            return mlx_vlm_utils.VideoSampling(fps=4, min_frames=2, max_frames=16)
+
+    out = vendored_inputs.processor_video_sampling(_HookProcessor())
+    assert isinstance(out, vendored_inputs.VideoSampling)
+    assert asdict(out) == asdict(
+        mlx_vlm_utils.VideoSampling(fps=4, min_frames=2, max_frames=16)
+    )
+
+
+def test_processor_video_sampling_dict_hook_unchanged():
+    """The upstream hook convention (plain dict) keeps working verbatim."""
+
+    class _HookProcessor:
+        video_processor = object()
+
+        def video_sampling_defaults(self):
+            return {"max_frames": 32}
+
+    out = vendored_inputs.processor_video_sampling(_HookProcessor())
+    assert isinstance(out, vendored_inputs.VideoSampling)
+    assert out.max_frames == 32
