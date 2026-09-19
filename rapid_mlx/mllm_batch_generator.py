@@ -563,14 +563,17 @@ def _singleton_regular_cache_leaves(
     except ImportError:
         # mlx-vlm is optional; hybrid backbones then cannot occur either.
         pass
-    if allow_arrays_cache:
-        try:
-            from mlx_lm.models.cache import ArraysCache as LMArraysCache
-            from mlx_lm.models.cache import KVCache as LMKVCache
+    # Preserve the lane's existing degraded-import contract: tests and partial
+    # installs can still operate on upstream/vendored leaves when the separate
+    # mlx-lm cache module is unavailable. When present, BOTH regular leaf types
+    # join the exact-type tuple (KVCache must not be omitted).
+    try:
+        from mlx_lm.models.cache import ArraysCache as LMArraysCache
+        from mlx_lm.models.cache import KVCache as LMKVCache
 
-            qualified += (LMArraysCache, LMKVCache)
-        except ImportError:
-            pass
+        qualified += (LMArraysCache, LMKVCache)
+    except ImportError:
+        pass
     return all(type(leaf) in qualified for leaf in caches)
 
 

@@ -60,6 +60,13 @@ def test_cache_list_leaves_validated_recursively(cache_ns):
     assert first_incompatible_mllm_cache_type([compound]) == "object"
 
 
+def test_pooling_cache_accepted_when_namespace_defines_it(cache_ns):
+    pooling_type = getattr(cache_ns, "PoolingCache", None)
+    if pooling_type is None:
+        pytest.skip("this cache namespace does not define PoolingCache")
+    assert first_incompatible_mllm_cache_type([pooling_type(4)]) is None
+
+
 def test_arrays_cache_gated_on_hybrid_lane(cache_ns):
     cache = cache_ns.ArraysCache(1)
     assert first_incompatible_mllm_cache_type([cache], allow_arrays_cache=True) is None

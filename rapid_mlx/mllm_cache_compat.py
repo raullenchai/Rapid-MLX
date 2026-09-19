@@ -23,13 +23,13 @@ def first_incompatible_mllm_cache_type(
     hybrid compatibility lane. Mamba and quantized/unknown caches remain
     fail-closed.
     """
-    from mlx_lm.models.cache import ArraysCache, CacheList, KVCache, RotatingKVCache
+    from mlx_lm.models import cache as lm_cache
 
     from .models.mlx_vlm_vendored import cache as vendored_cache
 
     supported_types: tuple[type, ...] = (
-        KVCache,
-        RotatingKVCache,
+        lm_cache.KVCache,
+        lm_cache.RotatingKVCache,
         vendored_cache.KVCache,
         vendored_cache.RotatingKVCache,
     )
@@ -37,20 +37,25 @@ def first_incompatible_mllm_cache_type(
     # module, so the structurally identical wrappers are distinct class
     # objects. Keep all three namespaces symmetric and recurse into every
     # qualified CacheList rather than rejecting mlx-lm's wrapper by name.
-    compound_types: tuple[type, ...] = (CacheList,)
+    compound_types: tuple[type, ...] = (lm_cache.CacheList,)
     vendored_compound = getattr(vendored_cache, "CacheList", None)
     if isinstance(vendored_compound, type):
         compound_types += (vendored_compound,)
     pooling_type = getattr(vendored_cache, "PoolingCache", None)
     if isinstance(pooling_type, type):
         supported_types += (pooling_type,)
+    # The pinned mlx-lm does not define PoolingCache, but keep the namespace
+    # resolver symmetric if a future coherence-qualified release adds it.
+    lm_pooling_type = getattr(lm_cache, "PoolingCache", None)
+    if isinstance(lm_pooling_type, type):
+        supported_types += (lm_pooling_type,)
     # The vendored package owns a distinct ArraysCache class as well. Hybrid
     # VLM backbones return this native type, so the serialized compatibility
     # lane must accept it for the same reason it accepts mlx-lm's class.
     if allow_arrays_cache and hasattr(vendored_cache, "ArraysCache"):
         supported_types += (vendored_cache.ArraysCache,)
     if allow_arrays_cache:
-        supported_types += (ArraysCache,)
+        supported_types += (lm_cache.ArraysCache,)
     try:
         from mlx_vlm.models import cache as vlm_cache
     except ImportError:
