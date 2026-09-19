@@ -1021,6 +1021,46 @@ struct ToolNotCalledCaptionTests {
     }
 
     /// ``nil`` is "roster unknown" and keeps every earlier caller's behaviour.
+    @Test("Gate 6: an attachment turn keeps the caption the earlier gates decided")
+    func gateSixStepsAsideForAttachments() {
+        // Live-data / retrieval prompts are not attachment-answerable (Gate 1c
+        // lets them through) and must still be captioned under the production
+        // roster — the roster gate is not consulted when a document was
+        // attached, because `read_document` is the tool that should have run
+        // and no lane table describes it (pr_validate codex, run 3).
+        for prompt in ["What is today's stock price for the ticker in this report?", "Look up the current exchange rate for the invoice currency."] {
+            let flag = ChatMessage.shouldFlagToolNotCalled(
+                userPrompt: prompt,
+                assistantContent: "$1,204.55",
+                toolCalls: nil,
+                finishReason: "stop",
+                toolsRequested: true,
+                promptHadAttachment: true,
+                advertisedToolNames: Self.productionRoster
+            )
+            #expect(flag, "Attachment + roster must not hide the caption Gate 1c kept: \(prompt)")
+        }
+        // Literal arithmetic beside an attachment: pre-gate behaviour was a
+        // caption, and it stays one — Gate 1c only exempts math whose operands
+        // can live on the page, and this gate does not run.
+        #expect(ChatMessage.shouldFlagToolNotCalled(
+            userPrompt: "What is 17 * 23? Answer with just the number.",
+            assistantContent: "391",
+            toolCalls: nil,
+            finishReason: "stop",
+            toolsRequested: true,
+            promptHadAttachment: true,
+            advertisedToolNames: Self.productionRoster
+        ) == ChatMessage.shouldFlagToolNotCalled(
+            userPrompt: "What is 17 * 23? Answer with just the number.",
+            assistantContent: "391",
+            toolCalls: nil,
+            finishReason: "stop",
+            toolsRequested: true,
+            promptHadAttachment: true
+        ))
+    }
+
     @Test("Gate 6: nil roster leaves the pre-existing gates in charge")
     func gateSixNilRosterIsNeutral() {
         let flag = ChatMessage.shouldFlagToolNotCalled(

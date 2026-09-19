@@ -1171,8 +1171,14 @@ struct ChatMessage: Identifiable, Codable, Equatable, Hashable {
         // calling any of the available tools" — is a claim that a tool
         // SHOULD have run; when nothing on the roster could have, the
         // claim is false and each false alarm spends the trust the next
-        // real one needs. Only enforced when the caller names the roster.
-        if let advertisedToolNames {
+        // real one needs. Only enforced when the caller names the roster,
+        // and never on a turn that carried an attachment: there the tool
+        // that should have run is `read_document` — the operands live on
+        // the page and reading them IS the job — which no lane table
+        // captures, and Gate 1c already exempts the shapes a page can
+        // answer. Anything it left standing keeps the caption exactly as
+        // before this gate existed (pr_validate codex, run 3).
+        if let advertisedToolNames, !promptHadAttachment {
             guard advertisedToolCouldServe(prompt: userPrompt, toolNames: advertisedToolNames) else {
                 return false
             }
