@@ -1246,10 +1246,16 @@ class GenerationBatch:
             logits = mx.concatenate(processed_logits, axis=0)
 
         logprobs = logits - mx.logsumexp(logits, axis=-1, keepdims=True)
+        # VENDOR-DEVIATION(upstream-bugfix): upstream passed row_ids=[0]*n,
+        # so rows sharing a generated position folded to the same key in
+        # _position_keys and correlated their seeded draws. The per-row int
+        # uids are unique per generator and stable across filter()/extend(),
+        # so they serve as the sampling row identity (repro-tested in
+        # tests/test_mlx_vlm_vendored_generate.py).
         sampled = _sample_with_positions(
             self.sampler,
             logprobs,
-            row_ids=[0] * len(self.uids),
+            row_ids=list(self.uids),
             positions=[n + 1 for n in self._num_tokens],
         )
 
@@ -1672,7 +1678,9 @@ class SpeculativeGenerationBatch:
             shared_kv_states=self.shared_kv_states,
             eos_token_ids=None,
             prompt_tokens=self.prompt_tokens,
-            row_ids=[0] * len(self._all_uids),
+            # VENDOR-DEVIATION(upstream-bugfix): distinct per-row sampling
+            # identity (see the _step hunk); upstream passed row_ids=[0]*n.
+            row_ids=list(self._all_uids),
         )
 
     def next(self) -> List[GenerationBatch.Response]:
@@ -2199,10 +2207,12 @@ class PromptProcessingBatch:
             logits = mx.concatenate(processed_logits, axis=0)
 
         logprobs = logits - mx.logsumexp(logits, axis=-1, keepdims=True)
+        # VENDOR-DEVIATION(upstream-bugfix): distinct per-row sampling
+        # identity (see the _step hunk); upstream passed row_ids=[0]*n.
         first_tokens = _sample_with_positions(
             sampler,
             logprobs,
-            row_ids=[0] * len(self.uids),
+            row_ids=list(self.uids),
             positions=[0] * len(self.uids),
         )
 
@@ -2820,7 +2830,21 @@ class BatchGenerator:
         prompt_batch_cls = _generate_module_override(
             "PromptProcessingBatch", PromptProcessingBatch
         )
-        return prompt_batch_cls(
+        # VENDOR-DEVIATION(upstream-bugfix): the constructor's prepare-guard
+        # releases the meta blocks before raising, and the caller's
+        # (_build_mixed_prompt_batch) failure handler releases the same
+        # acquired blocks again — a double release underflowing refcounts
+        # possibly shared with other rows. Strip the block references from
+        # the metas handed to the constructor (whichever class the override
+        # resolves — pinned or vendored) so the guard's release is a no-op;
+        # on success the references are re-attached so the batch's later
+        # harvest/commit lifecycle keeps them. Release ownership: the caller
+        # handler on failure, the batch metas on success (repro-tested in
+        # tests/test_mlx_vlm_vendored_generate.py).
+        ctor_metas = [
+            dict(meta, apc_blocks=[]) if meta is not None else None for meta in apc_meta
+        ]
+        batch = prompt_batch_cls(
             model=self.model,
             uids=uids,
             input_ids=suffix_ids_list,
@@ -2841,7 +2865,7 @@ class BatchGenerator:
                 self, "quantized_kv_start", DEFAULT_QUANTIZED_KV_START
             ),
             warm_cache=warm_cache,
-            apc_meta=apc_meta,
+            apc_meta=ctor_metas,
             apc_manager=self.apc_manager,
             apc_coordinator=getattr(self, "apc", None),
             right_pad_per_row=right_pad_per_row,
@@ -2852,6 +2876,10 @@ class BatchGenerator:
             draft_block_size=getattr(self, "draft_block_size", None),
             greedy_sampling=getattr(self, "greedy_sampling", False),
         )
+        for meta, pick in zip(batch._apc_meta, picks):
+            if meta is not None and pick is not None:
+                meta["apc_blocks"] = pick.get("matched_blocks", [])
+        return batch
 
     def _build_apc_meta_for_cold(
         self,
