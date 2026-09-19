@@ -69,6 +69,24 @@ struct SingleInstanceGuardTests {
         }
     }
 
+    @Test("An instance that finished launching wins even with no launch date")
+    func establishedInstanceWins() {
+        // codex r3: with the lock unavailable, the date rule alone would rank
+        // a Desktop whose launch date LaunchServices cannot report as the
+        // newest process, and the fresh launch would carry on beside it.
+        var established = instance(200, me, at: nil)
+        established.finishedLaunching = true
+        #expect(SingleInstanceGuard.pidToYieldTo(own: instance(900, me, at: 0), running: [established]) == 200)
+        // Still true when the newcomer would win on dates alone.
+        var late = instance(950, me, at: 30)
+        late.finishedLaunching = true
+        #expect(SingleInstanceGuard.pidToYieldTo(own: instance(900, me, at: 0), running: [late]) == 950)
+        // Between two established instances the senior one is the target.
+        var early = instance(100, me, at: -60)
+        early.finishedLaunching = true
+        #expect(SingleInstanceGuard.pidToYieldTo(own: instance(900, me, at: 0), running: [late, early]) == 100)
+    }
+
     @Test("Several other instances → the most senior one")
     func mostSeniorOfSeveral() {
         let own = instance(800, me, at: 30)
