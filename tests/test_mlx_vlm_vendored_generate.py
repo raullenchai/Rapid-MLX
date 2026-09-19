@@ -42,9 +42,22 @@ pytest.importorskip("mlx_vlm")
 # - ``_generate_batch``: the capture-release + None-token bugfix hunks
 #   (finally-close; skip token=None terminal responses), repro-tested below.
 # - ``BatchGenerator``: the class body carries the APC matched_blocks
-#   release-on-failed-merge bugfix hunk, repro-tested below.
+#   release-on-failed-merge bugfix hunks, repro-tested below.
+# - ``GenerationBatch``: the decode sampling hunk passes the per-row int
+#   uids as row_ids so seeded draws stay independent (upstream passes
+#   row_ids=[0]*n and correlates same-position rows), repro-tested below.
+# - ``SpeculativeGenerationBatch``: same row_ids fix on the speculative
+#   rounds kickoff, repro-tested below.
+# - ``PromptProcessingBatch``: same row_ids fix on the first-token sample,
+#   plus the constructor prepare-guard no longer releases the APC meta
+#   blocks before raising (the mixed-assembly caller owns release; the
+#   upstream double-release underflows shared refcounts), repro-tested
+#   below.
 _DOCUMENTED_HUNK_BODIES = {
     "BatchGenerator",
+    "GenerationBatch",
+    "SpeculativeGenerationBatch",
+    "PromptProcessingBatch",
     "prepare_inputs",
     "kv_quant_from_legacy",
     "generate_step",
@@ -342,3 +355,280 @@ def test_mixed_prompt_batch_releases_picks_on_assembly_exception(monkeypatch):
             ],
         )
     assert manager.released == [["blk9"]]
+
+
+def test_generation_batch_decode_passes_uid_row_ids():
+    """upstream-bugfix: seeded batched sampling must give every row its own
+    key. Upstream passes row_ids=[0]*n, so rows sharing a generated position
+    fold to the same _position_keys entry and their draws correlate; the
+    vendored core passes the per-row int uids (unique per generator, stable
+    across filter()/extend())."""
+
+    class _RecordingSampler:
+        def __init__(self):
+            self.row_ids = None
+            self.positions = None
+
+        def sample_target(self, logprobs, *, row_ids, positions):
+            self.row_ids = list(row_ids)
+            self.positions = list(positions)
+            return mx.zeros((logprobs.shape[0],), dtype=mx.int32)
+
+    class _LM:
+        def __call__(self, inputs, cache=None, **kwargs):
+            return types.SimpleNamespace(logits=mx.zeros((inputs.shape[0], 1, 8)))
+
+    sampler = _RecordingSampler()
+    batch = vendored_ar.GenerationBatch(
+        model=types.SimpleNamespace(language_model=_LM()),
+        uids=[7, 11],
+        inputs=mx.array([[5, 9]], dtype=mx.int32),
+        prompt_cache=[],
+        sampler=sampler,
+        stop_criteria=lambda token: False,
+        max_tokens=[10, 10],
+    )
+    batch._step()
+    assert sampler.row_ids == [7, 11]
+    assert sampler.positions == [1, 1]
+
+
+def test_speculative_rounds_pass_uid_row_ids(monkeypatch):
+    """upstream-bugfix: the speculative rounds kickoff must pass distinct
+    per-row sampling identities too."""
+
+    captured = {}
+
+    def _fake_rounds(*args, **kwargs):
+        captured["row_ids"] = kwargs.get("row_ids")
+        return iter([])
+
+    monkeypatch.setattr(vendored_ar, "run_speculative_server_rounds", _fake_rounds)
+    batch = vendored_ar.SpeculativeGenerationBatch.__new__(
+        vendored_ar.SpeculativeGenerationBatch
+    )
+    batch.model = types.SimpleNamespace()
+    batch.draft_model = None
+    batch.draft_kind = "mtp"
+    batch.prompt_cache = []
+    batch.hidden = None
+    batch.first_tokens = mx.zeros((2,), dtype=mx.int32)
+    batch.max_tokens = [4, 4]
+    batch.sampler = lambda logprobs: logprobs
+    batch.draft_block_size = 2
+    batch.token_dtype = mx.int32
+    batch.stop_criteria = lambda token: False
+    batch.greedy_sampling = True
+    batch.shared_kv_states = None
+    batch.prompt_tokens = mx.zeros((2, 3), dtype=mx.int32)
+    batch._all_uids = [3, 9]
+    batch._finished = [False, False]
+    batch._num_tokens = [0, 0]
+    batch._rounds_iter = None
+    batch._start_rounds()
+    assert captured["row_ids"] == [3, 9]
+
+
+def test_prompt_batch_first_token_passes_uid_row_ids():
+    """upstream-bugfix: the post-prefill first-token sample must carry the
+    per-row uids as row_ids (upstream passed row_ids=[0]*n)."""
+
+    class _RecordingSampler:
+        def __init__(self):
+            self.row_ids = None
+
+        def sample_target(self, logprobs, *, row_ids, positions):
+            self.row_ids = list(row_ids)
+            return mx.zeros((logprobs.shape[0],), dtype=mx.int32)
+
+    class _Model:
+        layers = []
+
+        def __call__(self, input_ids, cache=None, inputs_embeds=None, **kwargs):
+            return types.SimpleNamespace(
+                logits=mx.zeros((input_ids.shape[0], input_ids.shape[1], 8))
+            )
+
+    batch = vendored_ar.PromptProcessingBatch(
+        model=_Model(),
+        uids=[7, 11],
+        input_ids=[[1, 2, 3], [4, 5, 6]],
+        max_tokens=[4, 4],
+        inputs_embeds=None,
+        prompt_kwargs={},
+    )
+    # Keep the harvest/transition machinery inert for this probe.
+    batch._apc_manager = None
+    sampler = _RecordingSampler()
+    gen_batch = batch.generate(sampler, lambda token: False, compute_logprobs=False)
+    assert sampler.row_ids == [7, 11]
+    assert list(gen_batch.uids) == [7, 11]
+
+
+def test_mixed_prompt_batch_ctor_guard_leaves_release_to_caller(monkeypatch):
+    """upstream-bugfix: the PromptProcessingBatch prepare-guard used to
+    release the APC meta blocks before raising while
+    BatchGenerator._build_mixed_prompt_batch's failure handler released the
+    same acquired blocks again — a double release underflowing shared
+    refcounts. Release ownership stays with the caller: exactly one release
+    must hit the manager."""
+
+    class _FakeManager:
+        def __init__(self):
+            self.released = []
+
+        def release(self, blocks):
+            self.released.append(list(blocks))
+
+    manager = _FakeManager()
+    pick = {
+        "matched_blocks": ["blk7"],
+        "prefix_len": 2,
+        "warm_cache": None,
+        "extra_hash": 0,
+    }
+    fake_self = types.SimpleNamespace(
+        apc_manager=manager,
+        apc=None,
+        apc_mode="block",
+        kv_bits=None,
+        kv_quant_scheme=None,
+        kv_group_size=None,
+        kv_key_bits=None,
+        kv_value_bits=None,
+        kv_key_scheme=None,
+        model=types.SimpleNamespace(make_cache=lambda: []),
+        _APC_PRIVATE_KEYS=getattr(
+            vendored_ar.BatchGenerator, "_APC_PRIVATE_KEYS", set()
+        ),
+        _apc_pick_for=lambda sequence: pick,
+        _apc_exact_checkpoint_len=lambda ids: 0,
+        _apc_exact_checkpoint_lengths=lambda ids: [],
+        prefill_step_size=None,
+    )
+    fake_self._assemble_mixed_prompt_batch = lambda sequences, picks: (
+        vendored_ar.BatchGenerator._assemble_mixed_prompt_batch(
+            fake_self, sequences, picks
+        )
+    )
+
+    # Warm-cache merge succeeds, handing the raw no-prepare cache objects to
+    # the constructor, whose right-pad prepare-guard raises (the shorter of
+    # the two rows carries real right-padding, so the guard branch runs).
+    monkeypatch.setattr(
+        vendored_ar._apc,
+        "make_warm_batch_kv_cache_multi",
+        lambda *a, **k: ([object(), object()], None),
+    )
+
+    with pytest.raises(RuntimeError, match="requires a prompt cache with prepare"):
+        vendored_ar.BatchGenerator._build_mixed_prompt_batch(
+            fake_self,
+            [
+                (
+                    "u1",
+                    [1, 2, 3, 4],
+                    10,
+                    {"inputs_embeds": mx.zeros((1, 4, 4))},
+                    None,
+                    None,
+                ),
+                (
+                    "u2",
+                    [1, 2, 3],
+                    10,
+                    {"inputs_embeds": mx.zeros((1, 3, 4))},
+                    None,
+                    None,
+                ),
+            ],
+        )
+    # Exactly one release carrying the acquired blocks per pick: the caller
+    # handler's. The ctor guard may still record no-op empty releases on the
+    # stripped metas, but 'blk7' must never be released twice.
+    assert [blocks for blocks in manager.released if blocks] == [
+        ["blk7"],
+        ["blk7"],
+    ]
+
+
+def test_mixed_prompt_batch_reattaches_blocks_on_success(monkeypatch):
+    """upstream-bugfix companion: after a successful mixed assembly the
+    acquired block references must be back on the batch's metas so the
+    post-prefill harvest/commit lifecycle still owns them."""
+
+    class _PrepareCache:
+        def __init__(self):
+            self.prepared = None
+
+        def prepare(self, right_padding=None, lengths=None):
+            self.prepared = (right_padding, lengths)
+
+    class _Manager:
+        def __init__(self):
+            self.released = []
+
+        def release(self, blocks):
+            self.released.append(list(blocks))
+
+    manager = _Manager()
+    pick = {
+        "matched_blocks": ["blk7"],
+        "prefix_len": 2,
+        "warm_cache": None,
+        "extra_hash": 0,
+    }
+    fake_self = types.SimpleNamespace(
+        apc_manager=manager,
+        apc=None,
+        apc_mode="block",
+        kv_bits=None,
+        kv_quant_scheme=None,
+        kv_group_size=None,
+        kv_key_bits=None,
+        kv_value_bits=None,
+        kv_key_scheme=None,
+        model=types.SimpleNamespace(make_cache=lambda: []),
+        _APC_PRIVATE_KEYS=getattr(
+            vendored_ar.BatchGenerator, "_APC_PRIVATE_KEYS", set()
+        ),
+        _apc_pick_for=lambda sequence: pick,
+        _apc_exact_checkpoint_len=lambda ids: 0,
+        _apc_exact_checkpoint_lengths=lambda ids: [],
+        prefill_step_size=None,
+    )
+    fake_self._assemble_mixed_prompt_batch = lambda sequences, picks: (
+        vendored_ar.BatchGenerator._assemble_mixed_prompt_batch(
+            fake_self, sequences, picks
+        )
+    )
+
+    caches = [_PrepareCache(), _PrepareCache()]
+    monkeypatch.setattr(
+        vendored_ar._apc,
+        "make_warm_batch_kv_cache_multi",
+        lambda *a, **k: (caches, None),
+    )
+
+    batch = vendored_ar.BatchGenerator._build_mixed_prompt_batch(
+        fake_self,
+        [
+            (
+                "u1",
+                [1, 2, 3, 4],
+                10,
+                {"inputs_embeds": mx.zeros((1, 4, 4))},
+                None,
+                None,
+            ),
+            ("u2", [1, 2, 3], 10, {"inputs_embeds": mx.zeros((1, 3, 4))}, None, None),
+        ],
+    )
+    assert batch is not None
+    # The guard declared the right-padding on every cache.
+    assert caches[0].prepared == ([0, 1], [2, 1])
+    assert caches[1].prepared == ([0, 1], [2, 1])
+    # The stripped references are back on the metas for the harvest phase.
+    assert [m["apc_blocks"] for m in batch._apc_meta] == [["blk7"], ["blk7"]]
+    # Nothing was released on the success path.
+    assert manager.released == []
