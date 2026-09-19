@@ -632,3 +632,33 @@ def test_mixed_prompt_batch_reattaches_blocks_on_success(monkeypatch):
     assert [m["apc_blocks"] for m in batch._apc_meta] == [["blk7"], ["blk7"]]
     # Nothing was released on the success path.
     assert manager.released == []
+
+
+def test_thinking_budget_reset_clears_pending_forced_token():
+    """upstream-bugfix: reset_thinking_state() must clear a pending forced
+    token captured by the previous generation; upstream left it populated
+    so a later pop_forced_token_id() injected a stale forced token into the
+    new generation."""
+
+    class _Tokenizer:
+        def encode(self, text, add_special_tokens=False):
+            return {"\n": [4], "</think>": [9]}[text]
+
+    criteria = vendored_inputs.ThinkingBudgetCriteria(
+        _Tokenizer(),
+        thinking_budget=1,
+        thinking_start_token=None,
+        enable_thinking=True,
+        prompt_preopens_thinking=True,
+    )
+    # Budget (1) exceeded after two thinking tokens: the closer is pending.
+    criteria(20)
+    criteria(21)
+    assert criteria.forced_token_id == 4
+    # Generation boundary without popping the pending token.
+    criteria.reset_thinking_state()
+    assert criteria.pop_forced_token_id() is None
+    # The next generation starts clean and can still force on its own budget.
+    criteria(30)
+    criteria(31)
+    assert criteria.pop_forced_token_id() == 4
