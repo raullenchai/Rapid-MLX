@@ -1433,6 +1433,17 @@ class DiskBlockStore:
         if not self._ensure_dir():
             return 0
         total = 0
+
+        def _drop_invalid_shard(path: Path, shard_size: int, reason: str) -> int:
+            logger.warning("APC disk: %s %s, dropping", reason, path)
+            try:
+                path.unlink()
+            except OSError:
+                # The bytes still occupy disk and must remain inside the
+                # eviction budget even though this shard cannot be indexed.
+                return shard_size
+            return 0
+
         with self._index_lock:
             self._index.clear()
             self._exact_index.clear()
@@ -1449,57 +1460,36 @@ class DiskBlockStore:
                     continue
                 metadata = _read_safetensors_metadata(p)
                 if metadata is None:
-                    logger.warning("APC disk: shard %s unreadable, dropping", p)
-                    try:
-                        p.unlink()
-                    except OSError:
-                        pass
+                    total += _drop_invalid_shard(p, shard_size, "unreadable")
                     continue
                 if self._is_canonical_exact(p):
                     try:
                         cache_hash = int(metadata.get("cache_hash", ""))
                     except (TypeError, ValueError):
-                        logger.warning(
-                            "APC disk: exact shard %s has invalid metadata, dropping",
-                            p,
+                        total += _drop_invalid_shard(
+                            p, shard_size, "exact shard with invalid metadata"
                         )
-                        try:
-                            p.unlink()
-                        except OSError:
-                            pass
                         continue
                     self._exact_index[cache_hash] = p
                     total += shard_size
                     continue
                 hashes_csv = metadata.get("block_hashes", "")
                 if not hashes_csv:
-                    logger.warning(
-                        "APC disk: block shard %s has invalid metadata, dropping", p
+                    total += _drop_invalid_shard(
+                        p, shard_size, "block shard with invalid metadata"
                     )
-                    try:
-                        p.unlink()
-                    except OSError:
-                        pass
                     continue
                 try:
                     block_hashes = [int(x) for x in hashes_csv.split(",") if x]
                 except ValueError:
-                    logger.warning(
-                        "APC disk: block shard %s has invalid metadata, dropping", p
+                    total += _drop_invalid_shard(
+                        p, shard_size, "block shard with invalid metadata"
                     )
-                    try:
-                        p.unlink()
-                    except OSError:
-                        pass
                     continue
                 if not block_hashes:
-                    logger.warning(
-                        "APC disk: block shard %s has invalid metadata, dropping", p
+                    total += _drop_invalid_shard(
+                        p, shard_size, "block shard with invalid metadata"
                     )
-                    try:
-                        p.unlink()
-                    except OSError:
-                        pass
                     continue
                 total += shard_size
                 for idx, bh in enumerate(block_hashes):

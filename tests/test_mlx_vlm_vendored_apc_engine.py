@@ -10,6 +10,7 @@ upstream 0.7.1 source.
 """
 
 import threading
+from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
@@ -194,6 +195,26 @@ def test_rebuild_index_excludes_dropped_shard_bytes(store):
     assert store.disk_bytes == good_size
 
 
+def test_rebuild_index_counts_invalid_shard_when_unlink_fails(store, monkeypatch):
+    invalid = store.dir / f"{apc.DiskBlockStore.EXACT_PREFIX}{'d' * 32}{store.SUFFIX}"
+    mx.save_safetensors(
+        str(invalid), {"k": mx.zeros((1, 1))}, metadata={"cache_hash": "bad"}
+    )
+    invalid_size = invalid.stat().st_size
+    original_unlink = Path.unlink
+
+    def fail_for_invalid(path, *args, **kwargs):
+        if path == invalid:
+            raise OSError("injected unlink failure")
+        return original_unlink(path, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "unlink", fail_for_invalid)
+
+    assert store._rebuild_index() == invalid_size
+    assert invalid.exists()
+    assert store.num_exact_indexed == 0
+
+
 def test_finish_write_release_requires_event_ownership(store):
     """upstream-bugfix: overlapping writers must not erase another's entry."""
     ev_owner, ev_foreign = threading.Event(), threading.Event()
@@ -208,21 +229,29 @@ def test_finish_write_release_requires_event_ownership(store):
     assert ev_owner.is_set()
 
 
-def test_save_layer_major_shard_cleans_temp_on_failure(store):
+def test_save_layer_major_shard_cleans_temp_on_failure(store, monkeypatch):
     """upstream-bugfix: a failed write must not leak the temporary shard."""
     path = store.dir / f"{_SHARD}{store.SUFFIX}"
     blocks = [SimpleNamespace(block_hash=1)]
-    # Non-str metadata survives the function's own keys and makes
-    # mx.save_safetensors raise inside the save/replace sequence.
-    metadata = {"junk": 123}
+    written_temps = []
 
-    with pytest.raises(Exception):
+    def fail_after_creating_temp(path, *_args, **_kwargs):
+        tmp = Path(path)
+        tmp.write_bytes(b"partial shard")
+        written_temps.append(tmp)
+        raise RuntimeError("injected serialization failure")
+
+    monkeypatch.setattr(mx, "save_safetensors", fail_after_creating_temp)
+
+    with pytest.raises(RuntimeError, match="injected serialization failure"):
         store._save_layer_major_shard(
             path,
             blocks,
-            metadata,
+            {},
             [mx.zeros((1, 1, 4, 2))],
             [mx.zeros((1, 1, 4, 2))],
             4,
         )
+    assert len(written_temps) == 1
+    assert not written_temps[0].exists()
     assert list(store.dir.glob(f"*{store.SUFFIX}")) == []
