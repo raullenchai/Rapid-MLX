@@ -658,13 +658,19 @@ def _dflash_rounds_batch(
         if len(keep_slots) < n_active:
             if len(keep_slots) == 0:
                 break
-            # Filter target caches (BatchKVCache supports this)
-            keep_mx = mx.array(keep_slots, dtype=mx.int32)
-            for c in prompt_cache:
-                if hasattr(c, "filter"):
+            # VENDOR-DEVIATION(bugfix): pinned upstream filters only the
+            # caches exposing ``filter()`` but unconditionally shrinks
+            # ``active_idx`` — with a mixed cache list the non-filterable
+            # leaves keep the old batch dimension while the verifier sees
+            # the reduced batch. Compact only when EVERY cache is
+            # filterable; otherwise keep all rows active (finished rows
+            # emit nothing until the round ends).
+            if all(hasattr(c, "filter") for c in prompt_cache):
+                keep_mx = mx.array(keep_slots, dtype=mx.int32)
+                for c in prompt_cache:
                     c.filter(keep_mx)
-            # Update active index mapping
-            active_idx = [active_idx[j] for j in keep_slots]
+                # Update active index mapping
+                active_idx = [active_idx[j] for j in keep_slots]
 
         verify_out = None
         total_emitted = sum(emitted)
