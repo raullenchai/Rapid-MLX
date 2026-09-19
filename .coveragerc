@@ -18,6 +18,9 @@ omit =
     # Exact third-party numerical core; Rapid-owned adapter remains covered.
     rapid_mlx/image/bonsai_runtime/_vendor/*
     rapid_mlx/image/sd35_runtime/_vendor/*
+    # Pinned upstream cache implementation. Keep this file-specific: the
+    # Rapid-owned compatibility seam and future vendored modules remain gated.
+    rapid_mlx/models/mlx_vlm_vendored/cache.py
     # Test-file mirrors under the package: ``rapid_mlx/_integration_tests``
     # is a symlink farm pointing at ``tests/integrations/``. They are test
     # code — CI executes them via tests/integrations/, not through the

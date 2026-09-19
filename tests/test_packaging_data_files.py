@@ -58,6 +58,13 @@ REQUIRED_DATA_FILES: list[tuple[str, str, str]] = [
     # Shape-stable compiled decode adapts MIT-licensed cache/replay design;
     # every redistributed wheel must retain the corresponding license text.
     ("rapid_mlx", "COMPILED_DECODE_LICENSE", "COMPILED_DECODE_LICENSE"),
+    # The vendored mlx-vlm cache implementation must retain the upstream MIT
+    # copyright and permission notice in every redistributed wheel.
+    (
+        "rapid_mlx",
+        "models/mlx_vlm_vendored/LICENSE",
+        "models/mlx_vlm_vendored/LICENSE",
+    ),
 ]
 
 

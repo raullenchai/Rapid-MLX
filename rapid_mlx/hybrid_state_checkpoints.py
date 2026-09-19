@@ -165,6 +165,20 @@ def _recurrent_cache_types() -> tuple[type, ...]:
     global _RECURRENT_TYPES
     if _RECURRENT_TYPES is None:
         types: list[type] = []
+        # The vendored module ships with this repo, so unlike the optional
+        # distributions below its import is deliberately unguarded AND sits
+        # outside every ``try`` block: a failure there is a repo defect and
+        # should be loud, not a silent checkpoint loss.
+        # VENDOR-DEVIATION(dual-namespace): the vendored namespace is
+        # transitional; one mechanical revert restores byte-verbatim once
+        # step 3 unifies types.
+        from .models.mlx_vlm_vendored.cache import (
+            ArraysCache as VendoredArraysCache,
+        )
+
+        types.append(VendoredArraysCache)
+        # mlx-lm's ``ArraysCache`` (and subclasses such as the
+        # Mamba/GatedDeltaNet state caches) is optional.
         try:
             from mlx_lm.models.cache import ArraysCache
 

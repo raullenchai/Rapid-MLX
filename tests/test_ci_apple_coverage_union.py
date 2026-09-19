@@ -1,3 +1,5 @@
+import configparser
+import fnmatch
 from pathlib import Path
 
 import yaml
@@ -235,6 +237,14 @@ def test_bonsai_runtime_coverage_runs_on_apple_silicon() -> None:
     assert 'pip install -e ".[vision,image]"' in install
 
 
+def test_vendored_mllm_namespace_coverage_runs_on_apple_silicon() -> None:
+    """MLX-bound namespace branches must contribute to the coverage union."""
+    _, workflow = _workflow()
+    apple_run = workflow["jobs"]["test-apple-silicon"]["steps"][-2]["run"]
+
+    assert "tests/test_mllm_cache_namespace_compat.py" in apple_run
+
+
 def test_coverage_data_is_commit_bound_and_fail_closed() -> None:
     _, workflow = _workflow()
     jobs = workflow["jobs"]
@@ -267,3 +277,22 @@ def test_coverage_paths_are_portable_across_runner_operating_systems() -> None:
     config = (WORKFLOW.parents[2] / ".coveragerc").read_text()
     assert "relative_files = True" in config
     assert "source = rapid_mlx" in config
+
+
+def test_vendored_mllm_coverage_omit_is_file_scoped() -> None:
+    """Only the pinned upstream cache copy may bypass patch coverage."""
+    parser = configparser.ConfigParser()
+    parser.read(WORKFLOW.parents[2] / ".coveragerc")
+    omit_patterns = parser.get("run", "omit").splitlines()
+    vendored_prefix = "rapid_mlx/models/mlx_vlm_vendored/"
+
+    assert [entry for entry in omit_patterns if entry.startswith(vendored_prefix)] == [
+        f"{vendored_prefix}cache.py"
+    ]
+    for guarded_path in (
+        "rapid_mlx/models/mlx_vlm_vendored/future_module.py",
+        "rapid_mlx/mllm_cache_compat.py",
+    ):
+        assert not any(
+            fnmatch.fnmatchcase(guarded_path, pattern) for pattern in omit_patterns
+        )

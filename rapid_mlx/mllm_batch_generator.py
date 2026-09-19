@@ -546,20 +546,34 @@ def _singleton_regular_cache_leaves(
     # request, which would require promoting this layout mid-generation.
     if not allow_arrays_cache or not caches:
         return False
-    try:
-        from mlx_vlm.models.cache import ArraysCache, KVCache
-    except ImportError:
-        # mlx-vlm is optional; the MLLM lane cannot even run without it.
-        return False
-    qualified: tuple[type, ...] = (KVCache, ArraysCache)
-    if allow_arrays_cache:
-        try:
-            from mlx_lm.models.cache import ArraysCache as LMArraysCache
-            from mlx_lm.models.cache import KVCache as LMKVCache
+    # Vendored cache classes are the lane's own vocabulary; upstream
+    # mlx-vlm model classes still *create* caches with their own identical
+    # class objects (type unification lands with step 3's model vendoring),
+    # so both must stay recognized here.
+    # VENDOR-DEVIATION(dual-namespace): upstream recognition is transitional;
+    # one mechanical revert restores byte-verbatim once step 3 unifies types.
+    from .models.mlx_vlm_vendored.cache import ArraysCache, KVCache
 
-            qualified += (LMArraysCache, LMKVCache)
-        except ImportError:
-            pass
+    qualified: tuple[type, ...] = (KVCache, ArraysCache)
+    try:
+        from mlx_vlm.models.cache import ArraysCache as VLMArraysCache
+        from mlx_vlm.models.cache import KVCache as VLMKVCache
+
+        qualified += (VLMArraysCache, VLMKVCache)
+    except ImportError:
+        # mlx-vlm is optional; hybrid backbones then cannot occur either.
+        pass
+    # Preserve the lane's existing degraded-import contract: tests and partial
+    # installs can still operate on upstream/vendored leaves when the separate
+    # mlx-lm cache module is unavailable. When present, BOTH regular leaf types
+    # join the exact-type tuple (KVCache must not be omitted).
+    try:
+        from mlx_lm.models.cache import ArraysCache as LMArraysCache
+        from mlx_lm.models.cache import KVCache as LMKVCache
+
+        qualified += (LMArraysCache, LMKVCache)
+    except ImportError:
+        pass
     return all(type(leaf) in qualified for leaf in caches)
 
 
@@ -574,10 +588,22 @@ def _extract_detached_singleton_leaf(leaf: Any, idx: int) -> Any:
     afterwards, so build a fresh leaf from explicit allocated copies
     and evaluate them on the caller's (worker) stream before returning.
     """
-    from mlx_vlm.models.cache import ArraysCache, KVCache
+    from .models.mlx_vlm_vendored.cache import ArraysCache, KVCache
 
     arrays_types: tuple[type, ...] = (ArraysCache,)
     kv_types: tuple[type, ...] = (KVCache,)
+    # Upstream mlx-vlm model classes create caches with their own identical
+    # class objects; recognize those too until step 3 unifies the types.
+    # VENDOR-DEVIATION(dual-namespace): upstream recognition is transitional;
+    # one mechanical revert restores byte-verbatim once step 3 unifies types.
+    try:
+        from mlx_vlm.models.cache import ArraysCache as VLMArraysCache
+        from mlx_vlm.models.cache import KVCache as VLMKVCache
+
+        arrays_types += (VLMArraysCache,)
+        kv_types += (VLMKVCache,)
+    except ImportError:
+        pass
     try:
         from mlx_lm.models.cache import ArraysCache as LMArraysCache
         from mlx_lm.models.cache import KVCache as LMKVCache

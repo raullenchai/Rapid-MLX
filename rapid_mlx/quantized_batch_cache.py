@@ -89,8 +89,18 @@ def supported_kv_cache_types() -> tuple[tuple[type, ...], tuple[type, ...]]:
     """
     from mlx_lm.models.cache import RotatingKVCache
 
-    plain: tuple[type, ...] = (KVCache,)
-    rotating: tuple[type, ...] = (RotatingKVCache,)
+    # Vendored cache classes are always available (they ship with the repo);
+    # upstream mlx-vlm model classes still *create* caches with their own
+    # identical class objects until step 3's model vendoring unifies types.
+    # VENDOR-DEVIATION(dual-namespace): upstream recognition is transitional;
+    # one mechanical revert restores byte-verbatim once step 3 unifies types.
+    from .models.mlx_vlm_vendored.cache import KVCache as VendoredKVCache
+    from .models.mlx_vlm_vendored.cache import (
+        RotatingKVCache as VendoredRotatingKVCache,
+    )
+
+    plain: tuple[type, ...] = (KVCache, VendoredKVCache)
+    rotating: tuple[type, ...] = (RotatingKVCache, VendoredRotatingKVCache)
     try:
         from mlx_vlm.models.cache import KVCache as VLMKVCache
         from mlx_vlm.models.cache import RotatingKVCache as VLMRotatingKVCache

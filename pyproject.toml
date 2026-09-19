@@ -591,6 +591,9 @@ rapid_mlx = [
     "models/deepseek_v41_native/LICENSE",
     "models/deepseek_v41_native/LICENSE-DSPARK",
     "models/deepseek_v41_native/NOTICE",
+    # The vendored mlx-vlm cache implementation is MIT-licensed; its license
+    # text must travel with every wheel that redistributes the source.
+    "models/mlx_vlm_vendored/LICENSE",
 ]
 videox_fun_mlx = ["LICENSE", "NOTICE"]
 
@@ -618,6 +621,7 @@ exclude = [
     "*.md",
     "rapid_mlx/models/deepseek_v4*.py",
     "rapid_mlx/models/gemma4_vendored/*.py",
+    "rapid_mlx/models/mlx_vlm_vendored/*.py",
     "rapid_mlx/models/hy_v3.py",
     # Vendored Stability AI MLX Stable Audio 3 (models + scripts). Keep
     # formatting identical to the upstream source so future syncs stay clean.
@@ -666,6 +670,13 @@ ignore = [
 # lint quiet on the copy so upstream diffs stay clean. Sync policy
 # and rationale in rapid_mlx/models/gemma4_vendored/__init__.py.
 "rapid_mlx/models/gemma4_vendored/*.py" = ["UP", "B", "SIM", "N", "F", "I", "E"]
+# Vendored from Blaizzy/mlx-vlm 0.7.1 (models/cache.py) as the first step
+# of the mlx-vlm dependency retirement (step 2a: cache types + seam).
+# Upstream-shaped with only the documented bug-fix deviations; keep lint
+# quiet on the copy so upstream diffs and the step-3 revert stay clean.
+# Provenance and sync policy in
+# rapid_mlx/models/mlx_vlm_vendored/__init__.py.
+"rapid_mlx/models/mlx_vlm_vendored/*.py" = ["UP", "B", "SIM", "N", "F", "I", "E", "W"]
 # Vendored from ml-explore/mlx-lm PR #1211 (kernelpool, add-hy3-preview,
 # b7635e9c) for Tencent Hunyuan 3 (295B/21B active MoE) as part of the
 # 0.11.0 vendor drop. PR is open with zero maintainer reviews since
@@ -718,6 +729,13 @@ ignore_errors = true
 # Pinned third-party numerical core; keep the Rapid-owned SD3.5 adapter under
 # the repository-wide shrink-only error budget.
 module = "rapid_mlx.image.sd35_runtime._vendor.*"
+ignore_errors = true
+
+[[tool.mypy.overrides]]
+# Pinned third-party cache implementation. Keep the upstream-shaped vendored
+# source syncable while the Rapid-owned compatibility seam remains under the
+# repository-wide shrink-only error budget.
+module = "rapid_mlx.models.mlx_vlm_vendored.cache"
 ignore_errors = true
 
 [tool.pytest.ini_options]

@@ -613,6 +613,7 @@ jobs:
             tests/test_telemetry_route_attribution.py \
             tests/test_response_format_json_schema_strict.py \
             tests/test_mllm_cache.py \
+            tests/test_mllm_cache_namespace_compat.py \
             tests/test_memory_cache.py \
             tests/test_metal_memory_budget.py \
             tests/test_kv_cache_gemma4_gate.py \
