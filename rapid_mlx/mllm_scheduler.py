@@ -62,6 +62,66 @@ from .runtime.model_performance import get_model_performance_ledger  # noqa: E40
 logger = logging.getLogger(__name__)
 
 
+def collect_mllm_stop_tokens(processor: Any, model_config: Any = None) -> set[int]:
+    """Collect the complete stop-token union used by the MLLM lane.
+
+    Keep benchmark and serving callers on one contract.  In particular, the
+    processor tokenizer's primary EOS is not sufficient for wrappers that
+    expose multiple EOS ids or for architectures whose resolved EOS lives on
+    the model config.
+    """
+    from .utils.tokenizer import RAPID_EXTRA_EOS_ATTR
+
+    stop_tokens: set[int] = set()
+    tokenizer = processor.tokenizer if hasattr(processor, "tokenizer") else processor
+
+    wrapper_ids = getattr(tokenizer, "_eos_token_ids", None)
+    if wrapper_ids:
+        stop_tokens.update(wrapper_ids)
+
+    eos_token_id = getattr(tokenizer, "eos_token_id", None)
+    if isinstance(eos_token_id, list):
+        stop_tokens.update(eos_token_id)
+    elif isinstance(eos_token_id, int) and not isinstance(eos_token_id, bool):
+        stop_tokens.add(eos_token_id)
+
+    eos_token_ids = getattr(tokenizer, "eos_token_ids", None)
+    if isinstance(eos_token_ids, (list, set, tuple)):
+        stop_tokens.update(
+            item
+            for item in eos_token_ids
+            if isinstance(item, int) and not isinstance(item, bool)
+        )
+    elif isinstance(eos_token_ids, int) and not isinstance(eos_token_ids, bool):
+        stop_tokens.add(eos_token_ids)
+
+    extras = getattr(tokenizer, RAPID_EXTRA_EOS_ATTR, None)
+    if extras:
+        stop_tokens.update(extras)
+
+    def _config_value(config: Any, name: str) -> Any:
+        if isinstance(config, dict):
+            return config.get(name)
+        return getattr(config, name, None)
+
+    def _add_ids(value: Any) -> None:
+        if isinstance(value, bool):
+            return
+        if isinstance(value, int):
+            stop_tokens.add(value)
+        elif isinstance(value, (list, set, tuple)):
+            stop_tokens.update(
+                item
+                for item in value
+                if isinstance(item, int) and not isinstance(item, bool)
+            )
+
+    _add_ids(_config_value(model_config, "eos_token_id"))
+    text_config = _config_value(model_config, "text_config")
+    _add_ids(_config_value(text_config, "eos_token_id"))
+    return stop_tokens
+
+
 @dataclass
 class MLLMSchedulerConfig:
     """Configuration for MLLM scheduler."""
@@ -512,66 +572,9 @@ class MLLMScheduler:
         (Qwen3.5 is one such checkpoint), so it must participate in the
         same union used by the batch generator.
         """
-        from .utils.tokenizer import RAPID_EXTRA_EOS_ATTR
-
-        stop_tokens: set[int] = set()
-        tokenizer = (
-            self.processor.tokenizer
-            if hasattr(self.processor, "tokenizer")
-            else self.processor
+        return collect_mllm_stop_tokens(
+            self.processor, getattr(self, "model_config", None)
         )
-
-        # Source 1: mlx-lm TokenizerWrapper's curated set.
-        wrapper_ids = getattr(tokenizer, "_eos_token_ids", None)
-        if wrapper_ids:
-            stop_tokens.update(wrapper_ids)
-
-        # Source 2: legacy singular path.
-        if hasattr(tokenizer, "eos_token_id") and tokenizer.eos_token_id is not None:
-            if isinstance(tokenizer.eos_token_id, list):
-                stop_tokens.update(tokenizer.eos_token_id)
-            else:
-                stop_tokens.add(tokenizer.eos_token_id)
-
-        # Source 3: processor-style plural path.
-        if hasattr(tokenizer, "eos_token_ids") and tokenizer.eos_token_ids is not None:
-            if isinstance(tokenizer.eos_token_ids, (list, set, tuple)):
-                stop_tokens.update(tokenizer.eos_token_ids)
-            else:
-                stop_tokens.add(tokenizer.eos_token_ids)
-
-        # Source 4: Rapid-MLX extras stash (see RAPID_EXTRA_EOS_ATTR).
-        extras = getattr(tokenizer, RAPID_EXTRA_EOS_ATTR, None)
-        if extras:
-            stop_tokens.update(extras)
-
-        # Source 5: the loaded model configuration.  mlx-vlm resolves
-        # architecture-specific/nested ``text_config.eos_token_id`` onto
-        # the live model config.  Keep the nested read as a fail-closed
-        # fallback for config shapes that do not perform that resolution.
-        def _config_value(config: Any, name: str) -> Any:
-            if isinstance(config, dict):
-                return config.get(name)
-            return getattr(config, name, None)
-
-        def _add_ids(value: Any) -> None:
-            if isinstance(value, bool):
-                return
-            if isinstance(value, int):
-                stop_tokens.add(value)
-            elif isinstance(value, (list, set, tuple)):
-                stop_tokens.update(
-                    item
-                    for item in value
-                    if isinstance(item, int) and not isinstance(item, bool)
-                )
-
-        model_config = getattr(self, "model_config", None)
-        _add_ids(_config_value(model_config, "eos_token_id"))
-        text_config = _config_value(model_config, "text_config")
-        _add_ids(_config_value(text_config, "eos_token_id"))
-
-        return stop_tokens
 
     def _ensure_batch_generator(self) -> None:
         """Ensure batch generator exists."""

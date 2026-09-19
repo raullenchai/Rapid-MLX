@@ -113,6 +113,31 @@ class _FakeProcessor:
         self.tokenizer = _FakeTokenizer()
 
 
+def test_benchmark_loader_uses_the_production_wrapper(monkeypatch):
+    """Benchmarks must inherit the same load-time patches as serving."""
+    from rapid_mlx import benchmark as bench
+    from rapid_mlx.models import mllm as mllm_module
+
+    calls = []
+
+    class _FakeWrapper:
+        def __init__(self, model_name):
+            calls.append(("init", model_name))
+            self.model = object()
+            self.processor = object()
+            self.config = {"model_type": "fake"}
+
+        def load(self):
+            calls.append(("load",))
+
+    monkeypatch.setattr(mllm_module, "MLXMultimodalLM", _FakeWrapper)
+    model, processor, config = bench._load_benchmark_mllm("publisher/model")
+    assert calls == [("init", "publisher/model"), ("load",)]
+    assert model is not None
+    assert processor is not None
+    assert config == {"model_type": "fake"}
+
+
 class _FakeLegacyModel:
     """The pre-native-lane first argument: a loaded wrapper model."""
 
@@ -172,6 +197,7 @@ def _response(
     )
 
 
+@pytest.mark.requires_mlx
 def test_native_request_helper_drains_to_finish():
     from rapid_mlx.benchmark import _run_native_mllm_request
 
@@ -209,6 +235,37 @@ def test_native_request_helper_drains_to_finish():
     assert (request.max_tokens, request.temperature) == (16, 0.7)
 
 
+@pytest.mark.requires_mlx
+def test_bench_generator_uses_the_complete_scheduler_stop_union(monkeypatch):
+    from rapid_mlx import benchmark as bench
+    from rapid_mlx import mllm_batch_generator as batch_module
+    from rapid_mlx.utils.tokenizer import RAPID_EXTRA_EOS_ATTR
+
+    captured = {}
+
+    class _CapturingGenerator:
+        def __init__(self, **kwargs):
+            captured.update(kwargs)
+
+    class _Tokenizer:
+        _eos_token_ids = {1, 2}
+        eos_token_id = 3
+        eos_token_ids = (4, 5)
+
+    setattr(_Tokenizer, RAPID_EXTRA_EOS_ATTR, {6})
+
+    class _Processor:
+        tokenizer = _Tokenizer()
+
+    class _Model:
+        config = {"eos_token_id": 7, "text_config": {"eos_token_id": [8, 9]}}
+
+    monkeypatch.setattr(batch_module, "MLLMBatchGenerator", _CapturingGenerator)
+    bench.build_bench_generator(_Model(), _Processor(), 32)
+    assert captured["stop_tokens"] == set(range(1, 10))
+
+
+@pytest.mark.requires_mlx
 def test_native_request_helper_raises_when_the_lane_goes_idle():
     # An empty next() batch without a terminal finish_reason means the lane
     # stopped making progress: returning here would silently truncate the
@@ -225,6 +282,7 @@ def test_native_request_helper_raises_when_the_lane_goes_idle():
     assert generator.removed == [7]
 
 
+@pytest.mark.requires_mlx
 def test_native_request_helper_counts_a_length_terminal_token():
     # A finish_reason="length" cutoff's final token is a real emitted
     # token (token_is_stop_token=False): it stays in the text and count —
@@ -237,6 +295,7 @@ def test_native_request_helper_counts_a_length_terminal_token():
     assert completion == 2
 
 
+@pytest.mark.requires_mlx
 def test_native_request_sampling_comes_from_request_fields():
     # Sampling is configured per request inside the generator (each
     # MLLMBatchRequest's temperature/top_p builds its sampler via
@@ -253,6 +312,7 @@ def test_native_request_sampling_comes_from_request_fields():
     assert (request.temperature, request.top_p) == (0.0, 0.9)
 
 
+@pytest.mark.requires_mlx
 def test_native_request_helper_ignores_foreign_uids_and_makes_unique_ids():
     from rapid_mlx.benchmark import _run_native_mllm_request
 
@@ -281,6 +341,7 @@ def test_native_request_helper_ignores_foreign_uids_and_makes_unique_ids():
     assert generator_b.inserted.request_id != generator.inserted.request_id
 
 
+@pytest.mark.requires_mlx
 def test_legacy_signature_wrappers_warn_and_delegate(monkeypatch):
     # The pre-native-lane signatures keep working through a deprecated
     # wrapper: it builds the serialized-lane generator internally and
@@ -353,6 +414,7 @@ def test_legacy_signature_wrappers_warn_and_delegate(monkeypatch):
     assert positional.completion_tokens == 1
 
 
+@pytest.mark.requires_mlx
 def test_video_wrapper_lazily_loads_an_unloaded_model(monkeypatch):
     # The legacy path lazily loaded an unloaded MLXMultimodalLM on first
     # use; the compatibility wrapper must preserve that contract, or

@@ -731,17 +731,30 @@ def build_bench_generator(model, processor, max_tokens: int):
     the argmax default instead of baking in a misleading configuration.
     """
     from rapid_mlx.mllm_batch_generator import MLLMBatchGenerator
+    from rapid_mlx.mllm_scheduler import collect_mllm_stop_tokens
 
-    stop_tokens = set()
-    eos = getattr(getattr(processor, "tokenizer", None), "eos_token_id", None)
-    if eos is not None:
-        stop_tokens.add(eos)
+    stop_tokens = collect_mllm_stop_tokens(processor, getattr(model, "config", None))
     return MLLMBatchGenerator(
         model=model,
         processor=processor,
         stop_tokens=stop_tokens,
         max_tokens=max_tokens,
     )
+
+
+def _load_benchmark_mllm(model_name: str):
+    """Load benchmark components through the production MLLM loader.
+
+    The wrapper owns runtime compatibility patches, tokenizer repairs,
+    architecture-qualified fusions, and the remote-code policy.  Bypassing it
+    would make benchmark behavior diverge from the server it is meant to
+    measure.
+    """
+    from rapid_mlx.models.mllm import MLXMultimodalLM
+
+    wrapper = MLXMultimodalLM(model_name)
+    wrapper.load()
+    return wrapper.model, wrapper.processor, wrapper.config
 
 
 _native_request_seq = itertools.count()
@@ -976,15 +989,6 @@ def run_mllm_benchmark(
     Returns:
         List of MLLMBenchmarkResult
     """
-    try:
-        from mlx_vlm import load
-        from mlx_vlm.utils import load_config
-    except ImportError as e:
-        raise ImportError(
-            "Vision benchmarks require the optional `mlx-vlm` dependency.\n"
-            "Install it with: pip install 'rapid-mlx[vision]'"
-        ) from e
-
     from rapid_mlx.optimizations import detect_hardware  # pragma: no cover
 
     # Detect hardware
@@ -1030,8 +1034,7 @@ def run_mllm_benchmark(
     # Load model
     print(f"Loading MLLM model: {model_name}...")
     load_start = time.perf_counter()
-    model, processor = load(model_name)
-    config = load_config(model_name)
+    model, processor, config = _load_benchmark_mllm(model_name)
     generator = build_bench_generator(model, processor, max_tokens)
     load_time = time.perf_counter() - load_start
     print(f"Model loaded in {load_time:.2f}s\n")
@@ -1542,15 +1545,6 @@ def run_video_benchmark(
     Returns:
         List of VideoBenchmarkResult
     """
-    try:
-        from mlx_vlm import load
-        from mlx_vlm.utils import load_config
-    except ImportError as e:  # pragma: no cover
-        raise ImportError(
-            "Vision benchmarks require the optional `mlx-vlm` dependency.\n"
-            "Install it with: pip install 'rapid-mlx[vision]'"
-        ) from e
-
     from rapid_mlx.optimizations import detect_hardware  # pragma: no cover
 
     # Detect hardware
@@ -1596,8 +1590,7 @@ def run_video_benchmark(
     # Load model
     print(f"Loading MLLM model: {model_name}...")
     load_start = time.perf_counter()
-    model, processor = load(model_name)
-    config = load_config(model_name)
+    model, processor, config = _load_benchmark_mllm(model_name)
     generator = build_bench_generator(model, processor, max_tokens)
     load_time = time.perf_counter() - load_start
     print(f"Model loaded in {load_time:.2f}s\n")
