@@ -656,8 +656,14 @@ def clone_cache_entry(c, *, min_capacity_tokens, eval_targets):
         if not c.is_single_row():
             return None
         if c.empty():
+            if isinstance(c, lm.BatchQuantizedKVCache):
+                return lm.QuantizedKVCache(
+                    group_size=int(c.group_size), bits=int(c.bits)
+                )
             if isinstance(c, lm.BatchRotatingKVCache):
-                return lm.RotatingKVCache(max_size=int(c.max_size))
+                return lm.RotatingKVCache(
+                    max_size=int(c.max_size), keep=int(getattr(c, "keep", 0))
+                )
             return lm.KVCache()
         return clone_cache_entry(
             c.extract(0),
@@ -665,7 +671,6 @@ def clone_cache_entry(c, *, min_capacity_tokens, eval_targets):
             eval_targets=eval_targets,
         )
     for typ, adapter in _clone_rules():
-
         matched = type(c) is typ if typ is lm.KVCache else isinstance(c, typ)
         if matched:
             return adapter.clone(

@@ -113,10 +113,22 @@ def test_clone_empty_single_row_batch_returns_producer_namespace_type():
         assert type(cloned) is ns.KVCache
 
         rotating = ns.BatchRotatingKVCache(8, [0])
+        # Some cache producers annotate their batch window with the matching
+        # single-row retention policy even though the base constructor does
+        # not expose it.  The empty conversion must preserve that state.
+        rotating.keep = 3
         assert rotating.is_single_row() and rotating.empty()
         cloned = clone_cache_entry(rotating, min_capacity_tokens=0, eval_targets=[])
         assert type(cloned) is ns.RotatingKVCache
         assert cloned.max_size == 8
+        assert cloned.keep == 3
+
+        quantized = ns.BatchQuantizedKVCache([0], group_size=32, bits=4)
+        assert quantized.is_single_row() and quantized.empty()
+        cloned = clone_cache_entry(quantized, min_capacity_tokens=0, eval_targets=[])
+        assert type(cloned) is ns.QuantizedKVCache
+        assert cloned.group_size == 32
+        assert cloned.bits == 4
 
 
 def test_clone_single_row_batch_extracts_into_producer_namespace():
