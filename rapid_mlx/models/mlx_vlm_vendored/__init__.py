@@ -292,7 +292,10 @@ vendored copy differs by exactly the deviations listed):
   ddtree ``5e3651fe81aad1adee8ab6de7e15bd97d59845cf05724ae26d86af4eb982a342``
   (1 documented bugfix hunk: ``build_ddtree`` validates with ``ValueError``
   instead of ``assert``, which ``python -O`` strips),
-  dflash ``39244ec611b38caacd706474722b2997e50954fe48219e26baf9017ade881ad0``,
+  dflash ``39244ec611b38caacd706474722b2997e50954fe48219e26baf9017ade881ad0``
+  (1 documented bugfix hunk: continuous-batch compaction shrinks
+  ``active_idx`` only when every cache is filterable — pinned upstream
+  filters selectively but always shrinks, misaligning mixed cache lists),
   mtp ``4ed467918bd24e26c60730d6d3529c6a9e633448b2fc6028829965bb1f4daad1``,
   utils ``93d2ed29ac7b7c378536bf09d22eb570d5abb1f2d338dc550e59a84468b6a9ff``.
   ``__init__.py`` is a reduced shim (``VENDOR-DEVIATION(subset-exports)``):

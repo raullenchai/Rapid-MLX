@@ -83,7 +83,8 @@ def _body_divergences(vendored_module, upstream_module, normalized=()):
         diverged.append(f"{name}: vendored-only")
     for name in sorted(set(upstream_defs) - set(vendored_defs)):
         diverged.append(f"{name}: missing in vendored")
-    for name, obj in sorted(vendored_defs.items()):
+    for name in sorted(set(vendored_defs) & set(upstream_defs)):
+        obj = vendored_defs[name]
         upstream_obj = upstream_defs[name]
         if type(obj) is not type(upstream_obj):
             diverged.append(f"{name}: kind mismatch")
@@ -135,7 +136,7 @@ def test_vendored_speculative_bodies_match_upstream():
         # ``build_ddtree`` carries the documented assert→ValueError hunk —
         # a REAL permitted behavioral difference, hence documented-filtered.
         (vs_ddtree, up_ddtree, {"build_ddtree"}),
-        (vs_dflash, up_dflash, set()),
+        (vs_dflash, up_dflash, {"_dflash_rounds_batch"}),
         # ``native_batch_linear`` appears in mtp's namespace via its vendored
         # ``models.linear`` import; the redirect lives in linear.py itself,
         # so this entry compares on behavior only (normalized divergences
