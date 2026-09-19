@@ -57,6 +57,12 @@ can actually understand.
   the original window reporting "Couldn't start <model> — check the model
   files". The second launch now hands off to the running app — reopening its
   window if it had been closed — and quits before it starts anything.
+- **Relaunching always brings back the main window.** Quitting with only the
+  Settings window open (main window closed with ⌘W) made the next launch
+  restore just Settings — no chat window and, because the chat window is what
+  starts the engine, no engine. Settings is no longer part of window
+  restoration, and a launch that comes back Settings-only opens the main
+  window itself.
 
 ## [0.14.3] — 2026-09-18
 

@@ -110,11 +110,26 @@ struct SingleInstanceGuardTests {
         let source = try String(contentsOf: Self.sourceFile("Sources/Rapid/RapidApp.swift"), encoding: .utf8)
         let initStart = try #require(source.range(of: "\n    init() {\n"))
         let body = source[initStart.upperBound...]
-        let guardAt = try #require(body.range(of: "SingleInstanceGuard.decide()"))
+        let guardAt = try #require(body.range(of: "SingleInstanceGuard.yieldsLaunch()"))
         for sideEffect in ["CrashReporter.install()", "PortSweep.startLaunchSweep", "ServerManager()"] {
             let at = try #require(body.range(of: sideEffect), "\(sideEffect) moved — update this test")
             #expect(guardAt.lowerBound < at.lowerBound, "\(sideEffect) runs before the single-instance guard")
         }
+    }
+
+    @Test("Settings stays out of window restoration and heals a Settings-only launch")
+    func settingsSceneDoesNotHijackLaunch() throws {
+        // A quit with only Settings open persisted "settings" as the whole
+        // session; the next launch restored just that window, and the
+        // engine — started by ContentView — never came up (0.14.3 dogfood).
+        let source = try String(contentsOf: Self.sourceFile("Sources/Rapid/RapidApp.swift"), encoding: .utf8)
+        let settingsScene = try #require(source.range(of: "Window(\"Settings\", id: \"settings\")"))
+        let scene = source[settingsScene.upperBound...]
+        let sceneEnd = try #require(scene.range(of: ".defaultSize("))
+        let body = scene[..<sceneEnd.lowerBound]
+        #expect(body.contains("window.isRestorable = false"))
+        #expect(body.contains("if !AppDelegate.shared.hasAttachedMainWindow {"))
+        #expect(body.contains("openWindow(id: \"main\")"))
     }
 
     @Test("Info.plist also asks LaunchServices to refuse a second instance")
