@@ -733,6 +733,11 @@ def build_bench_generator(model, processor, max_tokens: int):
     from rapid_mlx.mllm_batch_generator import MLLMBatchGenerator
     from rapid_mlx.mllm_scheduler import collect_mllm_stop_tokens
 
+    # Match MLLMScheduler exactly: serving derives stop tokens from the live
+    # underlying model config plus the tokenizer that MLXMultimodalLM.load()
+    # already augmented from generation_config.json.  The wrapper's separate
+    # load_config() result is prompt-template metadata, not the scheduler's
+    # stop-token source.
     stop_tokens = collect_mllm_stop_tokens(processor, getattr(model, "config", None))
     return MLLMBatchGenerator(
         model=model,
@@ -748,7 +753,9 @@ def _load_benchmark_mllm(model_name: str):
     The wrapper owns runtime compatibility patches, tokenizer repairs,
     architecture-qualified fusions, and the remote-code policy.  Bypassing it
     would make benchmark behavior diverge from the server it is meant to
-    measure.
+    measure.  The third return value is the template config consumed by
+    ``apply_chat_template``; stop-token collection intentionally follows the
+    live model config and augmented tokenizer, exactly like ``MLLMScheduler``.
     """
     from rapid_mlx.models.mllm import MLXMultimodalLM
 
@@ -1034,7 +1041,7 @@ def run_mllm_benchmark(
     # Load model
     print(f"Loading MLLM model: {model_name}...")
     load_start = time.perf_counter()
-    model, processor, config = _load_benchmark_mllm(model_name)
+    model, processor, template_config = _load_benchmark_mllm(model_name)
     generator = build_bench_generator(model, processor, max_tokens)
     load_time = time.perf_counter() - load_start
     print(f"Model loaded in {load_time:.2f}s\n")
@@ -1055,7 +1062,7 @@ def run_mllm_benchmark(
             benchmark_mllm_resolution_native(
                 generator,
                 processor,
-                config,
+                template_config,
                 base_image,
                 224,
                 224,
@@ -1080,7 +1087,13 @@ def run_mllm_benchmark(
     for width, height in resolutions:
         try:
             result = benchmark_mllm_resolution_native(
-                generator, processor, config, base_image, width, height, max_tokens
+                generator,
+                processor,
+                template_config,
+                base_image,
+                width,
+                height,
+                max_tokens,
             )
             results.append(result)
         except Exception as e:
@@ -1590,7 +1603,7 @@ def run_video_benchmark(
     # Load model
     print(f"Loading MLLM model: {model_name}...")
     load_start = time.perf_counter()
-    model, processor, config = _load_benchmark_mllm(model_name)
+    model, processor, template_config = _load_benchmark_mllm(model_name)
     generator = build_bench_generator(model, processor, max_tokens)
     load_time = time.perf_counter() - load_start
     print(f"Model loaded in {load_time:.2f}s\n")
@@ -1618,7 +1631,7 @@ def run_video_benchmark(
             benchmark_video_config_native(
                 generator,
                 processor,
-                config,
+                template_config,
                 video_path,
                 1.0,
                 4,
@@ -1647,7 +1660,7 @@ def run_video_benchmark(
             result = benchmark_video_config_native(
                 generator,
                 processor,
-                config,
+                template_config,
                 video_path,
                 fps,
                 max_frames,
