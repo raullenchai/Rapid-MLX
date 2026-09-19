@@ -171,8 +171,10 @@ vendored copy differs by exactly the deviations listed):
     ``_save_layer_major_shard`` temp-file cleanup on write failure.
 
 - ``inputs.py`` — verbatim from ``mlx_vlm/utils.py`` @ v0.7.1 lines
-  1714-2543 (``load_image`` .. ``prepare_inputs``, an unbroken region;
-  region sha256
+  1714-2807 (``load_image`` .. ``prepare_inputs`` ..
+  ``group_images_by_shape`` .. ``should_add_special_tokens``, an unbroken
+  region; the tail past ``prepare_inputs`` was appended in the step-3a
+  slice to satisfy ``generate/ar.py``'s helper imports; region sha256
   ``ac610b0e2c157de878b17ec9f5ebaa8bf2c75000e44c09d84b5c17dbaf7c7b5f``),
   except the import block: exactly the names the region references
   (ruff F821 closure), with ``mlx_vlm.models.base`` (``
@@ -203,4 +205,42 @@ vendored copy differs by exactly the deviations listed):
   ``load_audio``, and ``prepare_inputs``, which carry the hunks above).
   A diff against the pinned tag must show only the header/import block
   and the documented hunks.
+
+- ``sample_utils.py`` — verbatim from ``mlx_vlm/sample_utils.py`` @ v0.7.1
+  (upstream sha256
+  ``b3057b6dcaefe5b0a7c50cb96b70baad4334a2f88f70adc04fe7ec2060f7851c``),
+  no deviations (mlx + stdlib imports only). Consumed by
+  ``generate/ar.py``.
+
+- ``generate/`` — verbatim from ``mlx_vlm/generate`` @ v0.7.1, text AR
+  core only (step-3a slice):
+
+  - ``ar.py`` (upstream sha256
+    ``3ede5d76b292cdecc0da479a0807d081b1918bdc6dfe7e47755b725299888ac2``)
+    except five import redirects:
+    ``..models import cache`` → vendored package root;
+    ``..prompt_utils`` → pinned upstream (design-doc step-2 boundary);
+    ``..speculative.utils`` (both top-level and the lazy
+    ``validate_drafter_compatibility``) → pinned upstream until the
+    speculative slice lands; ``..turboquant`` → pinned upstream
+    (``kv_quant.py`` precedent); ``..utils`` helpers → vendored
+    ``inputs.py`` (incl. the lazy ``process_image``).
+  - ``common.py`` (upstream sha256
+    ``c69e7e38a09990404d299b0a8d4be55c8220e60652e67a2456e8177633813ba0``)
+    except two redirects: ``..models import cache`` → vendored root,
+    ``..turboquant`` → pinned upstream.
+  - ``types.py`` (upstream sha256
+    ``dff487807bedaa3549c39dea02986ada31a45e9e4c27ab447a207e3fff009f6c``)
+    — verbatim, no deviations.
+  - ``__init__.py`` — **not verbatim**: a reduced-export shim
+    (``VENDOR-DEVIATION(subset-exports)``) re-exporting only the vendored
+    text-AR surface; the upstream init eagerly imports every modality
+    module (dispatch/image/audio/video/diffusion/edit_image), none of
+    which is vendored yet.
+
+  Consumers: ``speculative/native_mtp/runtime.py`` and
+  ``speculative/native_mtp/transaction.py`` import ``ar`` from this
+  package; byte-identical per-function parity is probed in
+  ``tests/test_mlx_vlm_vendored_generate.py``. A diff against the pinned
+  tag must show only the import-block redirects above.
 """

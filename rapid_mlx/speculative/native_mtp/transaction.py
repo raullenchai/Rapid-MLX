@@ -609,7 +609,9 @@ def speculative_prefill_kwargs(draft_kind, _drafter):
 
 def install_generation_hooks() -> None:
     """Inject Rapid's transaction into mlx-vlm's ordinary generation shell."""
-    from mlx_vlm.generate import ar
+    # VENDOR-DEVIATION(redirect): vendored text-AR core (step 3a); the
+    # dispatch import below stays pinned until the dispatch slice lands.
+    from rapid_mlx.models.mlx_vlm_vendored.generate import ar
 
     required = (
         "generate_step",
