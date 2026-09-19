@@ -412,7 +412,13 @@ struct CommunityBenchmarkRunningView: View {
                         value: progress.fraction
                     )
             }
-            .frame(height: CommunityMascotContext.running.pointSize)
+            // Reserve the RENDERED box, not ``pointSize``: the run plate sits
+            // near the bottom of its 320-pt canvas (visible bbox y 149–292),
+            // so a 40-pt band let the ~78-pt box spill 38 pt downward — the
+            // linear bar below cut straight through the cheetah's legs. Same
+            // class of collision the Published sheet fixed by reserving the
+            // box; the transparent margin is just whitespace in the layout.
+            .frame(height: CommunityMascotContext.running.renderedBoxSize)
             .accessibilityHidden(true)
 
             if let fraction = progress.fraction {
@@ -454,9 +460,14 @@ struct CommunityBenchmarkRunningView: View {
 
     /// Where the mascot sits: at the leading edge until real passes exist,
     /// then at the leading edge of the filled bar.
+    ///
+    /// Geometry works in the RENDERED box's terms (``renderedBoxSize``, not
+    /// ``pointSize``): the box is what SwiftUI positions, and centring or
+    /// clamping by the visible character's size alone let the box overrun the
+    /// track's trailing edge at high fractions.
     private func mascotOffset(in width: CGFloat) -> CGFloat {
-        let size = CommunityMascotContext.running.pointSize
-        guard let fraction = progress.fraction else { return 0 }
+        let size = CommunityMascotContext.running.renderedBoxSize
+        guard let fraction = progress.fraction, fraction.isFinite else { return 0 }
         return max(0, min(width - size, width * fraction - size / 2))
     }
 

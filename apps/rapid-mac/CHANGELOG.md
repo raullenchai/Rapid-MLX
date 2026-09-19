@@ -17,6 +17,25 @@ can actually understand.
 
 ## [Unreleased]
 
+### Fixed
+
+- Community Benchmark: the progress bar no longer cuts through the running
+  cheetah while a measurement is in progress. The layout reserved the
+  character's visible size (40 pt) but the artwork renders in a ~78 pt box
+  whose plate sits near its bottom edge, so the bar crossed the mascot's
+  legs at every progress step; the run tab now reserves the rendered box,
+  matching the fix already shipped on the Published sheet.
+- Community Benchmark: the repository Performance page (`index.html`) now
+  explains the fix when it is opened straight from the Finder — browsers
+  block `fetch` on `file://` URLs, and the page previously died with a bare
+  "Failed to fetch" and no hint that serving the folder over HTTP resolves
+  it.
+- `community-benchmarks/scripts/validate.py`: corrected the module docstring,
+  which still described the removed stdlib-only fallback ("schema check is
+  skipped with a warning when jsonschema is missing"). The script has
+  failed closed since PR #582 — every file now FAILs with an install hint
+  until `jsonschema>=4.0` is installed — and the header claimed otherwise.
+
 ## [0.14.3] — 2026-09-18
 
 Rapid-MLX 0.14.3 makes multimodal conversations materially faster, gives
