@@ -2656,6 +2656,28 @@ class BatchGenerator:
         if not any_warm:
             return None  # caller falls back to cold-only path
 
+        # VENDOR-DEVIATION(upstream-bugfix): any failure after the lookups
+        # (missing inputs_embeds, merge errors) must release the acquired
+        # block references before propagating; on success the ownership
+        # transfers to the returned PromptProcessingBatch's apc_meta
+        # (repro-tested in tests/test_mlx_vlm_vendored_generate.py).
+        try:
+            return self._assemble_mixed_prompt_batch(sequences, picks)
+        except BaseException:
+            coordinator = getattr(self, "apc", None)
+            manager = self.apc_manager
+            for p in picks:
+                if p is None:
+                    continue
+                if coordinator is not None:
+                    coordinator.release_hit(p)
+                elif manager is not None:
+                    manager.release(p.get("matched_blocks", ()))
+            raise
+
+    def _assemble_mixed_prompt_batch(
+        self, sequences: List[tuple], picks: List[Optional[dict]]
+    ) -> Optional["PromptProcessingBatch"]:
         uids = [s[0] for s in sequences]
         full_ids = [list(s[1]) for s in sequences]
         max_tokens_list = [s[2] for s in sequences]
@@ -2775,7 +2797,7 @@ class BatchGenerator:
                     continue
                 if coordinator is not None:
                     coordinator.release_hit(p)
-                else:
+                elif self.apc_manager is not None:
                     self.apc_manager.release(p.get("matched_blocks", ()))
             return None
 

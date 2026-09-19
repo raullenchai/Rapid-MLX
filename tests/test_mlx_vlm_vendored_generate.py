@@ -259,6 +259,11 @@ def test_mixed_prompt_batch_releases_picks_on_warm_merge_failure(monkeypatch):
         ),
         _apc_pick_for=lambda sequence: pick,
     )
+    fake_self._assemble_mixed_prompt_batch = lambda sequences, picks: (
+        vendored_ar.BatchGenerator._assemble_mixed_prompt_batch(
+            fake_self, sequences, picks
+        )
+    )
     monkeypatch.setattr(
         vendored_ar._apc,
         "make_warm_batch_kv_cache_multi",
@@ -280,3 +285,60 @@ def test_mixed_prompt_batch_releases_picks_on_warm_merge_failure(monkeypatch):
     )
     assert out is None
     assert released == [["blk1"]]
+
+
+def test_mixed_prompt_batch_releases_picks_on_assembly_exception(monkeypatch):
+    """upstream-bugfix: exceptions after the APC lookups release the
+    acquired matched_blocks before propagating."""
+
+    class _FakeManager:
+        def __init__(self):
+            self.released = []
+
+        def release(self, blocks):
+            self.released.append(list(blocks))
+
+    manager = _FakeManager()
+    pick = {"matched_blocks": ["blk9"], "prefix_len": 2, "warm_cache": None}
+    fake_self = types.SimpleNamespace(
+        apc_manager=manager,
+        apc=None,
+        apc_mode="block",
+        kv_bits=None,
+        kv_quant_scheme=None,
+        kv_group_size=None,
+        kv_key_bits=None,
+        kv_value_bits=None,
+        kv_key_scheme=None,
+        model=types.SimpleNamespace(make_cache=lambda: []),
+        _APC_PRIVATE_KEYS=getattr(
+            vendored_ar.BatchGenerator, "_APC_PRIVATE_KEYS", set()
+        ),
+        _apc_pick_for=lambda sequence: pick,
+    )
+    fake_self._assemble_mixed_prompt_batch = lambda sequences, picks: (
+        vendored_ar.BatchGenerator._assemble_mixed_prompt_batch(
+            fake_self, sequences, picks
+        )
+    )
+
+    def _boom(*args, **kwargs):
+        raise RuntimeError("merge boom")
+
+    monkeypatch.setattr(vendored_ar._apc, "make_warm_batch_kv_cache_multi", _boom)
+
+    with pytest.raises(RuntimeError, match="merge boom"):
+        vendored_ar.BatchGenerator._build_mixed_prompt_batch(
+            fake_self,
+            [
+                (
+                    "u1",
+                    [1, 2, 3],
+                    10,
+                    {"inputs_embeds": mx.zeros((1, 3, 4))},
+                    None,
+                    None,
+                )
+            ],
+        )
+    assert manager.released == [["blk9"]]
