@@ -26,3 +26,19 @@ end-to-end serving benchmarks use `rapid-mlx bench`).
     --runtime mlx23 --model notapalindrome/ltx23-mlx-av-q4 \
     --frames 121 --size 768x512 --seed 42 --runs 3
   ```
+
+  Reproducibility: a plain repo id is a mutable branch. Each report records
+  the resolved model identity: local snapshot directories are pinned by a
+  SHA-256 content digest (so an in-place rewrite changes the identity), and
+  repo ids are resolved through the Hugging Face registry to an immutable
+  commit before download. Integrity is re-checked with a stat fingerprint
+  before and after every run. Per-run wall-clock deadline: `--deadline`
+  (default 3600s) terminates a wedged worker.
+
+  Measurement scope: worker events are HMAC-authenticated over a dedicated
+  channel, so echoed prompt text cannot forge timings. Cold-start numbers
+  are process cold starts (the preflight content digest cache-warms model
+  files before run 1). `step_median_s` requires the runtime to expose
+  per-step boundaries: LTX-2.5 emits authenticated sampler events, while
+  MLX-2.3 currently has no per-step hook, so its step metrics are reported
+  as `null` (follow-up: add a progress callback to `VideoEngine.generate`).
