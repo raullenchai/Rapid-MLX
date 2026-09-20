@@ -814,9 +814,19 @@ def test_quarantine_rechecks_identity_after_moving_the_siblings(fake_home, monke
     def rename_and_let_b_win_the_race(self, target):
         result = real_rename(self, target)
         if self.name.endswith("-wal"):
-            # "Process B" got there first: a different inode now.
-            db.unlink()
-            db.write_bytes(b"process B's fresh database")
+            # "Process B" got there first, so the path holds a different
+            # inode now. Build B's file beside the old one and swap it in
+            # rather than unlinking first: while the corrupt inode is
+            # still linked it cannot be reused, so the replacement is
+            # guaranteed to differ. Unlinking first frees it, and Linux
+            # hands the very same inode straight back — which would make
+            # this test pass or fail by filesystem rather than by
+            # behaviour, and would be simulating something quarantine
+            # cannot do anyway (the renamed-aside file keeps that inode
+            # alive).
+            elsewhere = db.with_name("process-b-database")
+            elsewhere.write_bytes(b"process B's fresh database")
+            os.replace(elsewhere, db)
         return result
 
     monkeypatch.setattr(Path, "rename", rename_and_let_b_win_the_race)
