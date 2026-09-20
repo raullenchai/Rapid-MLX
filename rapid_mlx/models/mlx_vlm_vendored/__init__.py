@@ -333,6 +333,11 @@ vendored copy differs by exactly the deviations listed):
   defaults ``block_size`` only when ``None``, and rejects values below 2
   (the drafting loops crash on block_size 1 with an empty concatenate) —
   pinned 0.7.1 replaced an explicit 0 via ``or`` and accepted negatives;
+  upstream-bugfix: ``split`` stages the checkpoint in a fresh sibling
+  temporary directory and swaps it into place only after every save and
+  copy succeeds — pinned 0.7.1 writes directly into the destination, so
+  a pre-existing directory keeps stale tokenizer files and a mid-way
+  failure pairs new weights with an old ``config.json``;
   redirects: the unserved ``deepseek_v4_dspark`` detection import → pinned
   upstream (family not vendored));
   ``glm5_next_mtp/`` (digests ``__init__``

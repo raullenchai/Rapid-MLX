@@ -461,6 +461,13 @@ logger = logging.getLogger(__name__)""",
     ],
     "mtp_split.py": [
         (
+            """import json
+import os
+import shutil""",
+            """import json
+import shutil""",
+        ),
+        (
             """        text_config = self.read_text_config(source_config)
 
         # Rapid upstream-bugfix (documented deviation): validate every
@@ -476,11 +483,51 @@ logger = logging.getLogger(__name__)""",
         if resolved_block_size < 2:
             raise ValueError(f"block_size must be >= 2, got {block_size!r}")
 
-        output_path.mkdir(parents=True, exist_ok=True)
+        # Rapid upstream-bugfix (documented deviation): pinned 0.7.1 writes
+        # directly into the destination, so a pre-existing directory keeps
+        # stale tokenizer files and a failure after the weight save leaves
+        # new weights paired with an old config.json. Build the complete
+        # checkpoint in a fresh sibling staging directory and swap it in
+        # only after every save and copy succeeds.
+        staging = output_path.parent / f".{output_path.name}.mtp-split-tmp"
+        if staging.is_dir() and not staging.is_symlink():
+            shutil.rmtree(staging)
+        staging.mkdir(parents=True)
 """,
             """        text_config = self.read_text_config(source_config)
 
 """,
+        ),
+        (
+            """        mx.save_safetensors(
+            str(staging / "model.safetensors"),""",
+            """        mx.save_safetensors(
+            str(output_path / "model.safetensors"),""",
+        ),
+        (
+            """        with open(staging / "config.json", "w") as f:
+            json.dump(dict(sorted(draft_config.items())), f, indent=2)
+
+        for name in self.tokenizer_files:
+            src = source_path / name
+            if src.exists():
+                shutil.copy(src, staging / name)
+
+        if output_path.is_dir() and not output_path.is_symlink():
+            shutil.rmtree(output_path)
+        elif output_path.exists() or output_path.is_symlink():
+            output_path.unlink()
+        os.replace(staging, output_path)
+        return output_path""",
+            """        with open(output_path / "config.json", "w") as f:
+            json.dump(dict(sorted(draft_config.items())), f, indent=2)
+
+        for name in self.tokenizer_files:
+            src = source_path / name
+            if src.exists():
+                shutil.copy(src, output_path / name)
+
+        return output_path""",
         ),
         (
             """        draft_config = {
@@ -786,6 +833,78 @@ def test_mtp_split_block_size_resolution(tmp_path):
     explicit_out = tmp_path / "out-explicit"
     splitter.split(str(source), str(explicit_out), block_size=2)
     assert json.loads((explicit_out / "config.json").read_text())["block_size"] == 2
+
+
+def test_mtp_split_does_not_tear_existing_output(tmp_path, monkeypatch):
+    """A failure after the weight save must not touch a pre-existing
+    destination: the checkpoint is staged and swapped in only after every
+    save and copy succeeds (r18 finding)."""
+    import mlx.core as mx
+
+    from rapid_mlx.models.mlx_vlm_vendored.speculative.drafters import (
+        mtp_split as mtp_split_module,
+    )
+    from rapid_mlx.models.mlx_vlm_vendored.speculative.drafters.mtp_split import (
+        MTPSplitter,
+    )
+
+    class StubSplitter(MTPSplitter):
+        output_model_type = "qwen3_5_mtp"
+        tokenizer_files = ["tokenizer.json"]
+
+        def select_keys(self, key, text_config):
+            return True
+
+        def depth(self, text_config):
+            return 3
+
+        def transform(self, tensors, text_config, source_is_mlx):
+            return {"w": mx.zeros((1,))}
+
+        def quantization(self, weights, source_config, text_config, quant_opts):
+            return None
+
+    source = tmp_path / "src"
+    source.mkdir()
+    (source / "config.json").write_text(
+        json.dumps(
+            {
+                "model_type": "qwen3_5",
+                "text_config": {"model_type": "qwen3_5", "num_hidden_layers": 4},
+            }
+        )
+    )
+    mx.save_safetensors(
+        str(source / "model.safetensors"),
+        {"w": mx.zeros((1,))},
+        metadata={"format": "mlx"},
+    )
+    (source / "model.safetensors.index.json").write_text(
+        json.dumps({"weight_map": {"w": "model.safetensors"}})
+    )
+    (source / "tokenizer.json").write_text("{}")
+
+    dest = tmp_path / "out"
+    dest.mkdir()
+    (dest / "config.json").write_text("stale")
+
+    def failing_copy(src, dst, **kwargs):
+        raise OSError("simulated copy failure")
+
+    monkeypatch.setattr(mtp_split_module.shutil, "copy", failing_copy)
+    with pytest.raises(OSError, match="simulated copy failure"):
+        StubSplitter().split(str(source), str(dest))
+    # the pre-existing destination is untouched by the failed run
+    assert (dest / "config.json").read_text() == "stale"
+    assert not (dest / "model.safetensors").exists()
+    assert not (dest / "tokenizer.json").exists()
+
+    # a clean run replaces the destination wholesale
+    monkeypatch.setattr(mtp_split_module.shutil, "copy", lambda s, d, **k: None)
+    StubSplitter().split(str(source), str(dest))
+    assert (dest / "config.json").read_text() != "stale"
+    assert (dest / "model.safetensors").exists()
+    assert not list(tmp_path.glob(".*mtp-split-tmp"))
 
 
 def test_qwen3_next_postprocess_stacks_quantized_expert_metadata():

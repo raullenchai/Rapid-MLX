@@ -12,6 +12,7 @@ dispatch on a source checkpoint.
 import glob
 import importlib
 import json
+import os
 import shutil
 from pathlib import Path
 from typing import Dict, Iterable, List, Optional, Tuple
@@ -248,7 +249,16 @@ class MTPSplitter:
         if resolved_block_size < 2:
             raise ValueError(f"block_size must be >= 2, got {block_size!r}")
 
-        output_path.mkdir(parents=True, exist_ok=True)
+        # Rapid upstream-bugfix (documented deviation): pinned 0.7.1 writes
+        # directly into the destination, so a pre-existing directory keeps
+        # stale tokenizer files and a failure after the weight save leaves
+        # new weights paired with an old config.json. Build the complete
+        # checkpoint in a fresh sibling staging directory and swap it in
+        # only after every save and copy succeeds.
+        staging = output_path.parent / f".{output_path.name}.mtp-split-tmp"
+        if staging.is_dir() and not staging.is_symlink():
+            shutil.rmtree(staging)
+        staging.mkdir(parents=True)
         selected: Dict[str, mx.array] = {}
         source_is_mlx = False
         for file, keys in self.iter_selected(source_path, text_config):
@@ -282,7 +292,7 @@ class MTPSplitter:
 
         mx.eval(list(weights.values()))
         mx.save_safetensors(
-            str(output_path / "model.safetensors"),
+            str(staging / "model.safetensors"),
             weights,
             metadata={"format": "mlx"},
         )
@@ -300,14 +310,19 @@ class MTPSplitter:
             draft_config["quantization"] = quantization
             draft_config["quantization_config"] = quantization
 
-        with open(output_path / "config.json", "w") as f:
+        with open(staging / "config.json", "w") as f:
             json.dump(dict(sorted(draft_config.items())), f, indent=2)
 
         for name in self.tokenizer_files:
             src = source_path / name
             if src.exists():
-                shutil.copy(src, output_path / name)
+                shutil.copy(src, staging / name)
 
+        if output_path.is_dir() and not output_path.is_symlink():
+            shutil.rmtree(output_path)
+        elif output_path.exists() or output_path.is_symlink():
+            output_path.unlink()
+        os.replace(staging, output_path)
         return output_path
 
 
