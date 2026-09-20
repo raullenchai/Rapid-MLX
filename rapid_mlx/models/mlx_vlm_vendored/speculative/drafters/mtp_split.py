@@ -327,36 +327,51 @@ class MTPSplitter:
                 if src.exists():
                     shutil.copy(src, staging / name)
 
-            # Install: move the old destination aside into a unique,
-            # exclusively-created backup owned by this invocation, put the
-            # staged checkpoint in place, and restore the old one if the
-            # install rename fails — the destination is never destroyed
-            # before its replacement exists.
-            backup = None
-            if output_path.exists() or output_path.is_symlink():
-                backup = Path(
-                    tempfile.mkdtemp(
-                        prefix=f".{output_path.name}.mtp-split-bak-",
-                        dir=str(output_path.parent),
-                    )
-                )
-                try:
-                    os.replace(output_path, backup)
-                except OSError:
-                    shutil.rmtree(backup, ignore_errors=True)
-                    raise
+            # Install under a per-destination advisory lock: concurrent
+            # splits' destination moves must not interleave. The old
+            # destination moves into a unique, exclusively-created backup
+            # owned by this invocation; the staged checkpoint replaces it
+            # and the backup is restored if the install rename fails —
+            # the destination is never destroyed before its replacement
+            # exists.
+            import fcntl
+
+            lock_path = output_path.parent / f".{output_path.name}.mtp-split-lock"
+            lock_handle = open(lock_path, "w")
             try:
-                os.replace(staging, output_path)
-            except OSError:
-                if backup is not None and backup.exists():
-                    os.replace(backup, output_path)
-                raise
-            if backup is not None:
-                shutil.rmtree(backup, ignore_errors=True)
+                fcntl.flock(lock_handle, fcntl.LOCK_EX)
+                self._install_staged(output_path, staging)
+            finally:
+                fcntl.flock(lock_handle, fcntl.LOCK_UN)
+                lock_handle.close()
             return output_path
         finally:
             if staging.is_dir() and not staging.is_symlink():
                 shutil.rmtree(staging, ignore_errors=True)
+
+    @staticmethod
+    def _install_staged(output_path: Path, staging: Path) -> None:
+        backup = None
+        if output_path.exists() or output_path.is_symlink():
+            backup = Path(
+                tempfile.mkdtemp(
+                    prefix=f".{output_path.name}.mtp-split-bak-",
+                    dir=str(output_path.parent),
+                )
+            )
+            try:
+                os.replace(output_path, backup)
+            except OSError:
+                shutil.rmtree(backup, ignore_errors=True)
+                raise
+        try:
+            os.replace(staging, output_path)
+        except OSError:
+            if backup is not None and backup.exists():
+                os.replace(backup, output_path)
+            raise
+        if backup is not None:
+            shutil.rmtree(backup, ignore_errors=True)
 
 
 # base model_type -> "module_path:ClassName" (lazy so importing this module is cheap)

@@ -337,7 +337,9 @@ vendored copy differs by exactly the deviations listed):
   temporary directory (``tempfile.mkdtemp``, removed in a ``finally``)
   and swaps it into place only after every save and copy succeeds — the
   old destination is preserved as a backup and restored if the install
-  rename fails, and ``output == source`` is rejected — pinned 0.7.1
+  rename fails, ``output == source`` is rejected, and the install runs
+  under a per-destination advisory lock so concurrent splits cannot
+  interleave destination moves — pinned 0.7.1
   writes directly into the destination, so a pre-existing directory
   keeps stale tokenizer files and a mid-way failure pairs new weights
   with an old ``config.json``;
@@ -373,12 +375,14 @@ vendored copy differs by exactly the deviations listed):
   MoE checkpoints), and ``draft_block`` returns the DFlash2-shaped empty
   proposal for ``block_size <= 1`` before consuming seed state — pinned
   0.7.1 crashes on an empty concatenate. The drafter registry also
-  installs a Rapid binding hook: ``load_drafter`` pre-registers
-  ``sys.modules`` shims for the served families (``glm5_next_mtp``,
-  ``qwen3_5_mtp``, ``qwen3_dflash``, ``dflash2``) exposing the vendored
-  packages' ``Model``/``ModelConfig`` so the pinned ``load_model``
-  dispatch constructs the vendored classes and the runtime fixes reach
-  production drafters; existing entries that do not match the vendored
+  installs a Rapid binding hook: ``load_drafter`` pre-registers a
+  package-compatible ``sys.modules`` shim for the loaded family (from
+  ``glm5_next_mtp``, ``qwen3_5_mtp``, ``qwen3_dflash``, ``dflash2``)
+  exposing the vendored package's ``Model``/``ModelConfig`` so the
+  pinned ``load_model`` dispatch constructs the vendored classes and
+  the runtime fixes reach production drafters; the shim preserves the
+  canonical module's exports (``__path__``/``__spec__``) so submodule
+  imports keep working, and entries that do not match the vendored
   classes (an earlier pinned import, a pre-swap GLM shim) are re-bound
   so no stale implementation is served; unvendored families fall
   through to the pinned modules. The registry's ``_read_drafter_config``

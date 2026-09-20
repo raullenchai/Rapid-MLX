@@ -393,6 +393,7 @@ DEVIATIONS = {
         ),
         (
             """import importlib
+import importlib.machinery
 import json
 import logging
 import sys
@@ -409,12 +410,14 @@ from typing import Any, Optional, Tuple
 
 # Rapid binding hook (documented deviation): the served drafter families'
 # checkpoint ``model_type`` values. pinned ``load_model`` resolves sidecar
-# architectures through ``mlx_vlm.models.<model_type>``; pre-registering
-# ``sys.modules`` shims that expose the vendored packages' ``Model`` /
-# ``ModelConfig`` makes the pinned loader construct the vendored classes,
-# so the documented runtime fixes reach production drafters. Existing
-# entries are re-bound when they do not match the vendored classes —
-# a pinned module imported earlier, or a shim bound before the GLM
+# architectures through ``mlx_vlm.models.<model_type>``; pre-registering a
+# package-compatible ``sys.modules`` shim that exposes the vendored
+# package's ``Model``/``ModelConfig`` (preserving any existing exports,
+# ``__path__`` and ``__spec__``) makes the pinned loader construct the
+# vendored classes, so the documented runtime fixes reach production
+# drafters. Bindings install lazily, one family per load, and existing
+# entries are re-bound when they do not match the vendored classes — a
+# pinned module imported earlier, or a shim bound before the GLM
 # compatibility swap, must not silently serve a stale implementation.
 # Unvendored families fall through to the pinned modules.
 _SERVED_ARCHITECTURE_FAMILIES = (
@@ -425,35 +428,55 @@ _SERVED_ARCHITECTURE_FAMILIES = (
 )
 
 
-def install_served_architecture_bindings() -> None:
-    for model_type in _SERVED_ARCHITECTURE_FAMILIES:
-        target = f"mlx_vlm.models.{model_type}"
-        package = importlib.import_module(f"{__name__}.{model_type}")
-        existing = sys.modules.get(target)
-        if (
-            existing is not None
-            and getattr(existing, "Model", None) is package.Model
-            and getattr(existing, "ModelConfig", None) is package.ModelConfig
-        ):
-            continue
-        shim = ModuleType(target)
-        setattr(shim, "Model", package.Model)  # noqa: B010
-        setattr(shim, "ModelConfig", package.ModelConfig)  # noqa: B010
-        sys.modules[target] = shim
-        # a previously imported pinned child leaves a stale attribute on
-        # the parent package; ``from mlx_vlm.models import <model_type>``
-        # resolves through that attribute, so it must be updated too.
-        parent = sys.modules.get("mlx_vlm.models")
-        if parent is not None:
-            setattr(parent, model_type, shim)
+def install_served_architecture_bindings(model_type: Optional[str] = None) -> None:
+    # Bind one served family's architecture module (lazily, per load).
+    if model_type not in _SERVED_ARCHITECTURE_FAMILIES:
+        return
+    target = f"mlx_vlm.models.{model_type}"
+    package = importlib.import_module(f"{__name__}.{model_type}")
+    existing = sys.modules.get(target)
+    if (
+        existing is not None
+        and getattr(existing, "Model", None) is package.Model
+        and getattr(existing, "ModelConfig", None) is package.ModelConfig
+    ):
+        return
+    # Package-compatible shim: preserve an existing canonical module's
+    # exports (including ``__path__``/``__spec__``) so submodule imports
+    # keep working; only ``Model``/``ModelConfig`` are overridden.
+    shim = ModuleType(target)
+    if existing is not None:
+        setattr(shim, "__path__", getattr(existing, "__path__", []))
+        for name, value in vars(existing).items():
+            if name not in ("Model", "ModelConfig"):
+                setattr(shim, name, value)  # noqa: B010
+    else:
+        setattr(shim, "__path__", [])
+    setattr(
+        shim,
+        "__spec__",
+        getattr(existing, "__spec__", None)
+        or importlib.machinery.ModuleSpec(target, loader=None, is_package=True),
+    )
+    setattr(shim, "Model", package.Model)  # noqa: B010
+    setattr(shim, "ModelConfig", package.ModelConfig)  # noqa: B010
+    sys.modules[target] = shim
+    # a previously imported pinned child leaves a stale attribute on
+    # the parent package; ``from mlx_vlm.models import <model_type>``
+    # resolves through that attribute, so it must be updated too.
+    parent = sys.modules.get("mlx_vlm.models")
+    if parent is not None:
+        setattr(parent, model_type, shim)
 
 
 logger = logging.getLogger(__name__)""",
-            'DEFAULT_DRAFTER_KIND = "dflash"\n\nlogger = logging.getLogger(__name__)',
+            """DEFAULT_DRAFTER_KIND = "dflash"
+
+logger = logging.getLogger(__name__)""",
         ),
         (
-            """    install_served_architecture_bindings()
-    path = get_model_path(path_or_repo)""",
+            """    path = get_model_path(path_or_repo)
+    install_served_architecture_bindings(_peek_drafter_model_type(path))""",
             """    path = get_model_path(path_or_repo)""",
         ),
         (
@@ -581,32 +604,23 @@ import shutil""",
                 if src.exists():
                     shutil.copy(src, staging / name)
 
-            # Install: move the old destination aside into a unique,
-            # exclusively-created backup owned by this invocation, put the
-            # staged checkpoint in place, and restore the old one if the
-            # install rename fails — the destination is never destroyed
-            # before its replacement exists.
-            backup = None
-            if output_path.exists() or output_path.is_symlink():
-                backup = Path(
-                    tempfile.mkdtemp(
-                        prefix=f".{output_path.name}.mtp-split-bak-",
-                        dir=str(output_path.parent),
-                    )
-                )
-                try:
-                    os.replace(output_path, backup)
-                except OSError:
-                    shutil.rmtree(backup, ignore_errors=True)
-                    raise
+            # Install under a per-destination advisory lock: concurrent
+            # splits' destination moves must not interleave. The old
+            # destination moves into a unique, exclusively-created backup
+            # owned by this invocation; the staged checkpoint replaces it
+            # and the backup is restored if the install rename fails —
+            # the destination is never destroyed before its replacement
+            # exists.
+            import fcntl
+
+            lock_path = output_path.parent / f".{output_path.name}.mtp-split-lock"
+            lock_handle = open(lock_path, "w")
             try:
-                os.replace(staging, output_path)
-            except OSError:
-                if backup is not None and backup.exists():
-                    os.replace(backup, output_path)
-                raise
-            if backup is not None:
-                shutil.rmtree(backup, ignore_errors=True)
+                fcntl.flock(lock_handle, fcntl.LOCK_EX)
+                self._install_staged(output_path, staging)
+            finally:
+                fcntl.flock(lock_handle, fcntl.LOCK_UN)
+                lock_handle.close()
             return output_path
         finally:
             if staging.is_dir() and not staging.is_symlink():
@@ -672,8 +686,7 @@ import shutil""",
             if src.exists():
                 shutil.copy(src, output_path / name)
 
-        return output_path
-""",
+        return output_path""",
         ),
         (
             """        )
@@ -700,6 +713,33 @@ from ...quant_utils import get_quantization_params
 from ...quant_utils import get_quantization_params
 from ...utils import get_model_path
 """,
+        ),
+        (
+            """    @staticmethod
+    def _install_staged(output_path: Path, staging: Path) -> None:
+        backup = None
+        if output_path.exists() or output_path.is_symlink():
+            backup = Path(
+                tempfile.mkdtemp(
+                    prefix=f".{output_path.name}.mtp-split-bak-",
+                    dir=str(output_path.parent),
+                )
+            )
+            try:
+                os.replace(output_path, backup)
+            except OSError:
+                shutil.rmtree(backup, ignore_errors=True)
+                raise
+        try:
+            os.replace(staging, output_path)
+        except OSError:
+            if backup is not None and backup.exists():
+                os.replace(backup, output_path)
+            raise
+        if backup is not None:
+            shutil.rmtree(backup, ignore_errors=True)
+""",
+            """""",
         ),
         (
             """                for filename, keys in by_file.items():
@@ -1039,7 +1079,10 @@ def test_mtp_split_does_not_tear_existing_output(tmp_path, monkeypatch):
     StubSplitter().split(str(source), str(dest))
     assert (dest / "config.json").read_text() != "stale"
     assert (dest / "model.safetensors").exists()
-    assert not list(tmp_path.glob(".*mtp-split-*"))
+    leftovers = [
+        p for p in tmp_path.glob(".*mtp-split-*") if not p.name.endswith("-lock")
+    ]
+    assert not leftovers
 
 
 def test_mtp_split_creates_missing_output_parents(tmp_path):
@@ -1086,7 +1129,10 @@ def test_mtp_split_creates_missing_output_parents(tmp_path):
     StubSplitter().split(str(source), str(dest))
     assert (dest / "config.json").exists()
     assert (dest / "model.safetensors").exists()
-    assert not list(tmp_path.glob(".*mtp-split-*"))
+    leftovers = [
+        p for p in tmp_path.glob(".*mtp-split-*") if not p.name.endswith("-lock")
+    ]
+    assert not leftovers
 
 
 def test_mtp_split_rejects_source_output_aliasing(tmp_path):
@@ -1132,7 +1178,10 @@ def test_mtp_split_rejects_source_output_aliasing(tmp_path):
     with pytest.raises(ValueError, match="output must differ"):
         StubSplitter().split(str(source), str(source))
     assert (source / "model.safetensors").exists()
-    assert not list(tmp_path.glob(".*mtp-split-*"))
+    leftovers = [
+        p for p in tmp_path.glob(".*mtp-split-*") if not p.name.endswith("-lock")
+    ]
+    assert not leftovers
 
 
 def test_mtp_split_restores_destination_when_install_fails(tmp_path, monkeypatch):
@@ -1196,7 +1245,10 @@ def test_mtp_split_restores_destination_when_install_fails(tmp_path, monkeypatch
         StubSplitter().split(str(source), str(dest))
     # the old destination came back and no staging leftovers remain
     assert (dest / "config.json").read_text() == "old"
-    assert not list(tmp_path.glob(".*mtp-split-*"))
+    leftovers = [
+        p for p in tmp_path.glob(".*mtp-split-*") if not p.name.endswith("-lock")
+    ]
+    assert not leftovers
 
 
 def test_qwen3_next_postprocess_stacks_quantized_expert_metadata():
@@ -1268,7 +1320,7 @@ def test_qwen35_text_config_routes_qwen3_next_to_moe():
     assert isinstance(dense, config_module.DenseTextConfig)
 
 
-def test_load_drafter_binds_served_families_to_vendored_modules(monkeypatch):
+def test_load_drafter_binds_served_families_to_vendored_modules(monkeypatch, tmp_path):
     """The registry binding hook must make the pinned loader construct the
     vendored Model classes for served drafter families."""
     import sys
@@ -1295,12 +1347,18 @@ def test_load_drafter_binds_served_families_to_vendored_modules(monkeypatch):
     monkeypatch.setitem(sys.modules, "mlx_vlm", root)
     monkeypatch.setitem(sys.modules, "mlx_vlm.utils", utils)
 
-    for family in ("qwen3_5_mtp", "dflash2"):
-        drafter, resolved = load_drafter(str(Path(f"/repo/{family}")), kind="mtp")
-        assert resolved == "mtp"
+    for family, expected_kind in (("qwen3_5_mtp", "mtp"), ("dflash2", "dflash")):
+        repo = tmp_path / family
+        repo.mkdir()
+        (repo / "config.json").write_text(json.dumps({"model_type": family}))
+        drafter, resolved = load_drafter(str(repo), kind="mtp")
+        assert resolved == expected_kind
         assert constructed[-1].startswith("rapid_mlx.models.mlx_vlm_vendored."), (
             f"{family}: served drafter resolved to {constructed[-1]}"
         )
+    # lazy per-load binding: only the loaded families are bound
+    assert "mlx_vlm.models.qwen3_5_mtp" in sys.modules
+    assert "mlx_vlm.models.dflash2" in sys.modules
 
 
 def test_binding_hook_replaces_stale_architecture_bindings(monkeypatch, tmp_path):
@@ -1326,7 +1384,10 @@ def test_binding_hook_replaces_stale_architecture_bindings(monkeypatch, tmp_path
     monkeypatch.setitem(sys.modules, "mlx_vlm", root)
     monkeypatch.setitem(sys.modules, "mlx_vlm.utils", utils)
 
-    load_drafter(str(Path("/repo/dflash2")), kind="dflash")
+    repo = tmp_path / "dflash2"
+    repo.mkdir()
+    (repo / "config.json").write_text(json.dumps({"model_type": "dflash2"}))
+    load_drafter(str(repo), kind="dflash")
     rebound = sys.modules["mlx_vlm.models.dflash2"]
     assert rebound is not stale
     assert rebound.Model.__module__.startswith("rapid_mlx.models.mlx_vlm_vendored.")
@@ -1362,7 +1423,10 @@ def test_binding_hook_updates_parent_package_attribute(monkeypatch, tmp_path):
     monkeypatch.setitem(sys.modules, "mlx_vlm", root)
     monkeypatch.setitem(sys.modules, "mlx_vlm.utils", utils)
 
-    load_drafter(str(Path("/repo/dflash2")), kind="dflash")
+    repo = tmp_path / "dflash2"
+    repo.mkdir()
+    (repo / "config.json").write_text(json.dumps({"model_type": "dflash2"}))
+    load_drafter(str(repo), kind="dflash")
     rebound = sys.modules["mlx_vlm.models.dflash2"]
     assert rebound is not stale_child
     assert rebound.Model.__module__.startswith("rapid_mlx.models.mlx_vlm_vendored.")

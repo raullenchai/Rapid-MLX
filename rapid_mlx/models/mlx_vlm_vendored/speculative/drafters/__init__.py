@@ -1,4 +1,5 @@
 import importlib
+import importlib.machinery
 import json
 import logging
 import sys
@@ -47,12 +48,14 @@ DEFAULT_DRAFTER_KIND = "dflash"
 
 # Rapid binding hook (documented deviation): the served drafter families'
 # checkpoint ``model_type`` values. pinned ``load_model`` resolves sidecar
-# architectures through ``mlx_vlm.models.<model_type>``; pre-registering
-# ``sys.modules`` shims that expose the vendored packages' ``Model`` /
-# ``ModelConfig`` makes the pinned loader construct the vendored classes,
-# so the documented runtime fixes reach production drafters. Existing
-# entries are re-bound when they do not match the vendored classes —
-# a pinned module imported earlier, or a shim bound before the GLM
+# architectures through ``mlx_vlm.models.<model_type>``; pre-registering a
+# package-compatible ``sys.modules`` shim that exposes the vendored
+# package's ``Model``/``ModelConfig`` (preserving any existing exports,
+# ``__path__`` and ``__spec__``) makes the pinned loader construct the
+# vendored classes, so the documented runtime fixes reach production
+# drafters. Bindings install lazily, one family per load, and existing
+# entries are re-bound when they do not match the vendored classes — a
+# pinned module imported earlier, or a shim bound before the GLM
 # compatibility swap, must not silently serve a stale implementation.
 # Unvendored families fall through to the pinned modules.
 _SERVED_ARCHITECTURE_FAMILIES = (
@@ -63,27 +66,45 @@ _SERVED_ARCHITECTURE_FAMILIES = (
 )
 
 
-def install_served_architecture_bindings() -> None:
-    for model_type in _SERVED_ARCHITECTURE_FAMILIES:
-        target = f"mlx_vlm.models.{model_type}"
-        package = importlib.import_module(f"{__name__}.{model_type}")
-        existing = sys.modules.get(target)
-        if (
-            existing is not None
-            and getattr(existing, "Model", None) is package.Model
-            and getattr(existing, "ModelConfig", None) is package.ModelConfig
-        ):
-            continue
-        shim = ModuleType(target)
-        setattr(shim, "Model", package.Model)  # noqa: B010
-        setattr(shim, "ModelConfig", package.ModelConfig)  # noqa: B010
-        sys.modules[target] = shim
-        # a previously imported pinned child leaves a stale attribute on
-        # the parent package; ``from mlx_vlm.models import <model_type>``
-        # resolves through that attribute, so it must be updated too.
-        parent = sys.modules.get("mlx_vlm.models")
-        if parent is not None:
-            setattr(parent, model_type, shim)
+def install_served_architecture_bindings(model_type: Optional[str] = None) -> None:
+    # Bind one served family's architecture module (lazily, per load).
+    if model_type not in _SERVED_ARCHITECTURE_FAMILIES:
+        return
+    target = f"mlx_vlm.models.{model_type}"
+    package = importlib.import_module(f"{__name__}.{model_type}")
+    existing = sys.modules.get(target)
+    if (
+        existing is not None
+        and getattr(existing, "Model", None) is package.Model
+        and getattr(existing, "ModelConfig", None) is package.ModelConfig
+    ):
+        return
+    # Package-compatible shim: preserve an existing canonical module's
+    # exports (including ``__path__``/``__spec__``) so submodule imports
+    # keep working; only ``Model``/``ModelConfig`` are overridden.
+    shim = ModuleType(target)
+    if existing is not None:
+        setattr(shim, "__path__", getattr(existing, "__path__", []))
+        for name, value in vars(existing).items():
+            if name not in ("Model", "ModelConfig"):
+                setattr(shim, name, value)  # noqa: B010
+    else:
+        setattr(shim, "__path__", [])
+    setattr(
+        shim,
+        "__spec__",
+        getattr(existing, "__spec__", None)
+        or importlib.machinery.ModuleSpec(target, loader=None, is_package=True),
+    )
+    setattr(shim, "Model", package.Model)  # noqa: B010
+    setattr(shim, "ModelConfig", package.ModelConfig)  # noqa: B010
+    sys.modules[target] = shim
+    # a previously imported pinned child leaves a stale attribute on
+    # the parent package; ``from mlx_vlm.models import <model_type>``
+    # resolves through that attribute, so it must be updated too.
+    parent = sys.modules.get("mlx_vlm.models")
+    if parent is not None:
+        setattr(parent, model_type, shim)
 
 
 logger = logging.getLogger(__name__)
@@ -262,8 +283,8 @@ def load_drafter(
         )
     from mlx_vlm.utils import get_model_path, load_model
 
-    install_served_architecture_bindings()
     path = get_model_path(path_or_repo)
+    install_served_architecture_bindings(_peek_drafter_model_type(path))
     resolved = resolve_drafter_kind(path, kind)
     return load_model(path, **kwargs), resolved
 
