@@ -336,8 +336,10 @@ vendored copy differs by exactly the deviations listed):
   upstream-bugfixes: ``split`` stages the checkpoint in a unique sibling
   temporary directory (``tempfile.mkdtemp``, removed in a ``finally``)
   and swaps it into place only after every save and copy succeeds — the
-  old destination is preserved as a backup and restored if the install
-  rename fails, ``output == source`` is rejected, and the install runs
+  old destination is preserved as a unique, nonexistent backup path and
+  restored if the install rename fails (a symlinked destination moves
+  aside cleanly — pinned 0.7.1's pre-created backup directory rejected
+  it with ``IsADirectoryError``), ``output == source`` is rejected, and the install runs
   under a per-destination advisory lock so concurrent splits cannot
   interleave destination moves, shard filenames from the safetensors
   index are validated lexically (absolute paths and ``..`` traversal

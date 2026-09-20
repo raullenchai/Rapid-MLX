@@ -548,7 +548,8 @@ logger = logging.getLogger(__name__)""",
             """import json
 import os
 import shutil
-import tempfile""",
+import tempfile
+import uuid""",
             """import json
 import shutil""",
         ),
@@ -760,17 +761,13 @@ import shutil""",
     def _install_staged(output_path: Path, staging: Path) -> None:
         backup = None
         if output_path.exists() or output_path.is_symlink():
-            backup = Path(
-                tempfile.mkdtemp(
-                    prefix=f".{output_path.name}.mtp-split-bak-",
-                    dir=str(output_path.parent),
-                )
+            # A unique, nonexistent backup path: mkdtemp pre-creates a
+            # directory, which os.replace refuses to overwrite with a
+            # symlinked destination (IsADirectoryError).
+            backup = output_path.parent / (
+                f".{output_path.name}.mtp-split-bak-{uuid.uuid4().hex}"
             )
-            try:
-                os.replace(output_path, backup)
-            except OSError:
-                shutil.rmtree(backup, ignore_errors=True)
-                raise
+            os.replace(output_path, backup)
         try:
             os.replace(staging, output_path)
         except OSError:
@@ -778,7 +775,10 @@ import shutil""",
                 os.replace(backup, output_path)
             raise
         if backup is not None:
-            shutil.rmtree(backup, ignore_errors=True)
+            if backup.is_dir() and not backup.is_symlink():
+                shutil.rmtree(backup, ignore_errors=True)
+            else:
+                backup.unlink(missing_ok=True)
 """,
             """""",
         ),
@@ -1049,6 +1049,65 @@ def test_mtp_splitter_rejects_index_shards_outside_model_dir(tmp_path):
     (snapshot / "evil-link.safetensors").symlink_to(outside)
     with pytest.raises(ValueError, match="escapes the model directory"):
         list(linked.iter_selected(snapshot, {}))
+
+
+def test_mtp_split_updates_through_output_symlink(tmp_path):
+    """A symlinked destination is moved aside and replaced (mkdtemp's
+    pre-created backup directory made os.replace fail here)."""
+    import mlx.core as mx
+
+    from rapid_mlx.models.mlx_vlm_vendored.speculative.drafters.mtp_split import (
+        MTPSplitter,
+    )
+
+    class StubSplitter(MTPSplitter):
+        output_model_type = "qwen3_5_mtp"
+        tokenizer_files = ["tokenizer.json"]
+
+        def select_keys(self, key, text_config):
+            return True
+
+        def depth(self, text_config):
+            return 3
+
+        def transform(self, tensors, text_config, source_is_mlx):
+            return {"w": mx.zeros((1,))}
+
+        def quantization(self, weights, source_config, text_config, quant_opts):
+            return None
+
+    source = tmp_path / "src"
+    source.mkdir()
+    (source / "config.json").write_text(
+        json.dumps(
+            {
+                "model_type": "qwen3_5",
+                "text_config": {"model_type": "qwen3_5", "num_hidden_layers": 4},
+            }
+        )
+    )
+    mx.save_safetensors(
+        str(source / "model.safetensors"),
+        {"w": mx.zeros((1,))},
+        metadata={"format": "mlx"},
+    )
+    (source / "tokenizer.json").write_text("{}")
+
+    real = tmp_path / "real-out"
+    real.mkdir()
+    (real / "old.txt").write_text("old")
+    link = tmp_path / "link-out"
+    link.symlink_to(real)
+
+    StubSplitter().split(str(source), str(link))
+    assert not link.is_symlink()
+    assert (link / "model.safetensors").exists()
+    assert (link / "config.json").exists()
+    assert not (link / "old.txt").exists()
+    leftovers = [
+        p for p in tmp_path.glob(".*mtp-split-*") if not p.name.endswith("-lock")
+    ]
+    assert not leftovers
 
 
 def test_mtp_split_weight_map_rejects_malformed_index(tmp_path):

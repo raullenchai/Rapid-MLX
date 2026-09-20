@@ -15,6 +15,7 @@ import json
 import os
 import shutil
 import tempfile
+import uuid
 from pathlib import Path
 from typing import Dict, Iterable, List, Optional, Tuple
 
@@ -405,17 +406,13 @@ class MTPSplitter:
     def _install_staged(output_path: Path, staging: Path) -> None:
         backup = None
         if output_path.exists() or output_path.is_symlink():
-            backup = Path(
-                tempfile.mkdtemp(
-                    prefix=f".{output_path.name}.mtp-split-bak-",
-                    dir=str(output_path.parent),
-                )
+            # A unique, nonexistent backup path: mkdtemp pre-creates a
+            # directory, which os.replace refuses to overwrite with a
+            # symlinked destination (IsADirectoryError).
+            backup = output_path.parent / (
+                f".{output_path.name}.mtp-split-bak-{uuid.uuid4().hex}"
             )
-            try:
-                os.replace(output_path, backup)
-            except OSError:
-                shutil.rmtree(backup, ignore_errors=True)
-                raise
+            os.replace(output_path, backup)
         try:
             os.replace(staging, output_path)
         except OSError:
@@ -423,7 +420,10 @@ class MTPSplitter:
                 os.replace(backup, output_path)
             raise
         if backup is not None:
-            shutil.rmtree(backup, ignore_errors=True)
+            if backup.is_dir() and not backup.is_symlink():
+                shutil.rmtree(backup, ignore_errors=True)
+            else:
+                backup.unlink(missing_ok=True)
 
 
 # base model_type -> "module_path:ClassName" (lazy so importing this module is cheap)
