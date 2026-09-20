@@ -290,6 +290,8 @@ def _target_metadata(
             "target interpreter metadata probe timed out after "
             f"{TARGET_METADATA_TIMEOUT_SECONDS}s",
         )
+    except OSError as error:
+        return {}, {}, f"could not run target interpreter {interpreter!r}: {error}"
     if proc.returncode != 0:
         diagnostic = (proc.stderr or proc.stdout or "").strip()
         return {}, {}, diagnostic or f"metadata probe exited {proc.returncode}"

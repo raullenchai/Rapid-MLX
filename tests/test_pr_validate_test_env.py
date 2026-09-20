@@ -336,6 +336,17 @@ class TestCheckTestEnv:
         assert versions == {}
         assert error == "target interpreter metadata probe timed out after 15s"
 
+    def test_unusable_target_interpreter_fails_closed(self):
+        environment, versions, error = _target_metadata(
+            "/definitely/missing/python", ["pytest"]
+        )
+
+        assert environment == {}
+        assert versions == {}
+        assert error is not None
+        assert "/definitely/missing/python" in error
+        assert "could not run target interpreter" in error
+
     def test_missing_packaging_does_not_crash_before_recovery(self):
         """Bootstrap parsers are lazy so test_env_check can install them."""
         import subprocess
