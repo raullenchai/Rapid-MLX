@@ -398,11 +398,12 @@ vendored copy differs by exactly the deviations listed):
   canonical module's exports (``__path__``/``__spec__``) so submodule
   imports keep working, and entries that do not match the vendored
   classes (an earlier pinned import, a pre-swap GLM shim) are re-bound
-  so no stale implementation is served; DFlash2 checkpoints that
+  so no stale implementation is served; sidecar checkpoints that
   declare the backbone model type with a nested ``dflash_config`` are
-  bound as ``dflash2`` — pinned 0.7.1 peeked the raw type and skipped
-  the shim, constructing the backbone architecture from drafter
-  weights; unvendored families fall
+  bound as ``dflash2`` when the DFlash2-exclusive selector/conv keys
+  are present and as ``qwen3_dflash`` otherwise — pinned 0.7.1 peeked
+  the raw type and skipped the shim, constructing the backbone
+  architecture from drafter weights; unvendored families fall
   through to the pinned modules. The registry's ``_read_drafter_config``
   degrades a non-object ``config.json`` to the documented empty dict —
   pinned 0.7.1 returns any decoded JSON value and crashes

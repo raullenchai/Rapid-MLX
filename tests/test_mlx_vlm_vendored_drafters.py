@@ -536,16 +536,29 @@ logger = logging.getLogger(__name__)""",
             """def _peek_drafter_model_type(model_path) -> Optional[str]:
     config = _read_drafter_config(model_path)
     model_type = config.get("model_type") or config.get("speculators_model_type")
-    # Rapid upstream-bugfix (documented deviation): DFlash2 checkpoints
+    # Rapid upstream-bugfix (documented deviation): sidecar checkpoints
     # declare the backbone model type (e.g. "qwen3") and carry the drafter
-    # settings in a nested ``dflash_config`` object — the "dflash2" type is
-    # normalized only later by ``DFlash2Config.from_dict``, so binding on
-    # the raw type would skip the vendored shim and let pinned
-    # ``load_model`` construct the backbone architecture instead.
+    # settings in a nested ``dflash_config`` object — the served type is
+    # normalized only later by the family's ``Config.from_dict``, so
+    # binding on the raw type would skip the vendored shim and let pinned
+    # ``load_model`` construct the backbone architecture instead. The
+    # DFlash2-exclusive selector/conv keys discriminate DFlash2 from the
+    # Qwen3 DFlash layout sharing the same nested object.
     if model_type not in _SERVED_ARCHITECTURE_FAMILIES and isinstance(
         config.get("dflash_config"), dict
     ):
-        return "dflash2"
+        dflash_config = config["dflash_config"]
+        dflash2_keys = (
+            "conv_kernel_size",
+            "conv_group_size",
+            "selector_rank",
+            "selector_top_k",
+            "input_embedding_scale",
+            "output_multiplier",
+        )
+        if any(key in dflash_config for key in dflash2_keys):
+            return "dflash2"
+        return "qwen3_dflash"
     return model_type""",
             """def _peek_drafter_model_type(model_path) -> Optional[str]:
     config = _read_drafter_config(model_path)
@@ -1705,9 +1718,32 @@ def test_binding_peek_resolves_backbone_declared_dflash2(tmp_path):
     backbone = tmp_path / "backbone-declared"
     backbone.mkdir()
     (backbone / "config.json").write_text(
-        json.dumps({"model_type": "qwen3", "dflash_config": {"block_size": 8}})
+        json.dumps(
+            {
+                "model_type": "qwen3",
+                "dflash_config": {
+                    "block_size": 8,
+                    "conv_kernel_size": 3,
+                    "selector_rank": 4,
+                },
+            }
+        )
     )
     assert _peek_drafter_model_type(backbone) == "dflash2"
+
+    # the Qwen3 DFlash layout shares the nested dflash_config object and
+    # must normalize to qwen3_dflash, not dflash2
+    qwen_dflash = tmp_path / "qwen-dflash"
+    qwen_dflash.mkdir()
+    (qwen_dflash / "config.json").write_text(
+        json.dumps(
+            {
+                "model_type": "qwen3",
+                "dflash_config": {"mask_token_id": 1, "causal": False},
+            }
+        )
+    )
+    assert _peek_drafter_model_type(qwen_dflash) == "qwen3_dflash"
 
     target = tmp_path / "plain-target"
     target.mkdir()
