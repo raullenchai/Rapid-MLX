@@ -99,6 +99,103 @@ def test_proof_survives_a_new_process(monkeypatch):
     assert mid.telemetry_model_id(repo) == repo
 
 
+# ------------------------------------------ proof is a lease (codex P0 #3600)
+#
+# A repo that was public when we pulled it can be made private or gated
+# afterwards. Each test below pins one of the three rules that stop a stale
+# marker from naming such a repo.
+
+
+def test_auth_appearing_later_revokes_a_stored_proof(monkeypatch):
+    """THE P0: anonymous proof, then a token appears — the id must go dark.
+
+    Not "we stop adding proof": the id already stored must stop being
+    reported, and must stay dark across a fresh process.
+    """
+    repo = "someone/public-community-mlx"
+    mid.note_hub_fetch(repo)
+    assert mid.telemetry_model_id(repo) == repo
+
+    monkeypatch.setattr(mid, "hf_auth_in_use", lambda: True)
+    assert mid.telemetry_model_id(repo) == "<custom>"
+
+    mid._reset_for_tests()  # a fresh process re-reading the marker
+    assert mid.telemetry_model_id(repo) == "<custom>"
+
+
+def test_an_authenticated_fetch_deletes_the_marker(monkeypatch):
+    """The authenticated load actively revokes; the proof does not survive it."""
+    repo = "someone/public-community-mlx"
+    mid.note_hub_fetch(repo)
+    marker = mid._marker_path(repo)
+    assert marker is not None and mid.os.path.exists(marker)
+
+    monkeypatch.setattr(mid, "hf_auth_in_use", lambda: True)
+    mid.note_hub_fetch(repo)  # the gated re-open
+    assert not mid.os.path.exists(marker)
+
+    # Even with the token gone again, there is nothing left to report.
+    monkeypatch.setattr(mid, "hf_auth_in_use", lambda: False)
+    mid._reset_for_tests()
+    assert mid.telemetry_model_id(repo) == "<custom>"
+
+
+def test_revocation_survives_a_cache_without_a_marker_path(monkeypatch):
+    import rapid_mlx._download_gate as gate
+
+    monkeypatch.setattr(
+        gate,
+        "rapid_cache_marker_path",
+        lambda *_a, **_k: (_ for _ in ()).throw(RuntimeError("no cache")),
+    )
+    monkeypatch.setattr(mid, "hf_auth_in_use", lambda: True)
+    mid.note_hub_fetch("someone/public-community-mlx")  # must not raise
+
+
+def test_proof_expires(monkeypatch):
+    """Stored proof is a lease, not a deed: past the TTL it is not proof."""
+    repo = "someone/public-community-mlx"
+    mid.note_hub_fetch(repo)
+    assert mid.telemetry_model_id(repo) == repo
+
+    later = mid.time.time() + mid.PUBLIC_PROOF_TTL_SECONDS + 1
+    monkeypatch.setattr(mid, "time", SimpleNamespace(time=lambda: later))
+    # Stale in memory AND stale on disk — neither may answer "public".
+    assert mid.telemetry_model_id(repo) == "<custom>"
+    mid._reset_for_tests()
+    assert mid.telemetry_model_id(repo) == "<custom>"
+
+
+def test_a_fresh_anonymous_fetch_renews_an_expired_proof(monkeypatch):
+    repo = "someone/public-community-mlx"
+    mid.note_hub_fetch(repo)
+    later = mid.time.time() + mid.PUBLIC_PROOF_TTL_SECONDS + 1
+    monkeypatch.setattr(mid, "time", SimpleNamespace(time=lambda: later))
+    assert mid.telemetry_model_id(repo) == "<custom>"
+    mid.note_hub_fetch(repo)  # re-proved, at the new "now"
+    assert mid.telemetry_model_id(repo) == repo
+
+
+def test_a_content_free_marker_is_not_proof():
+    """The pre-TTL marker format carried no timestamp; it cannot be trusted."""
+    repo = "someone/public-community-mlx"
+    path = mid._marker_path(repo)
+    assert path is not None
+    mid.os.makedirs(mid.os.path.dirname(path), exist_ok=True)
+    with open(path, "w", encoding="utf-8") as fh:
+        fh.write("")
+    assert mid.telemetry_model_id(repo) == "<custom>"
+
+
+def test_auth_detection_latches_for_the_process(monkeypatch):
+    """A token seen once stays seen: clearing ``HF_TOKEN`` mid-run must not
+    launder a gated repo into a reportable public name."""
+    monkeypatch.setenv("HF_TOKEN", "hf_secret")
+    assert _REAL_HF_AUTH_IN_USE() is True
+    monkeypatch.delenv("HF_TOKEN")
+    assert _REAL_HF_AUTH_IN_USE() is True
+
+
 def test_hf_auth_detected_from_env(monkeypatch):
     monkeypatch.setenv("HF_TOKEN", "hf_secret")
     assert _REAL_HF_AUTH_IN_USE() is True
@@ -338,10 +435,24 @@ def test_note_hub_fetch_survives_an_unwritable_cache(monkeypatch):
     mid.note_hub_fetch("someone/public-community-mlx")  # must not raise
 
 
-def test_is_proven_public_swallows_a_broken_filesystem(monkeypatch):
-    monkeypatch.setattr(
-        mid.os.path, "exists", lambda *_a, **_k: (_ for _ in ()).throw(OSError("boom"))
-    )
+def test_is_proven_public_swallows_an_unreadable_marker(monkeypatch):
+    """The marker is there, the filesystem refuses it: no proof, no raise."""
+    repo = "someone/public-community-mlx"
+    mid.note_hub_fetch(repo)
+    mid._reset_for_tests()
+
+    def _boom(*_a, **_k):
+        raise OSError("boom")
+
+    monkeypatch.setattr("builtins.open", _boom)
+    assert mid.is_proven_public(repo) is False
+
+
+def test_is_proven_public_swallows_an_internal_bug(monkeypatch):
+    def _boom(_repo):
+        raise RuntimeError("marker reader exploded")
+
+    monkeypatch.setattr(mid, "_read_marker", _boom)
     assert mid.is_proven_public("someone/public-community-mlx") is False
 
 
@@ -389,6 +500,16 @@ def test_served_model_id_recomputes_when_the_entry_has_no_stamp(_config):
 
 def test_served_model_id_caps_a_stamped_value(_config):
     _config.model_registry = _Registry(_Entry("a" * 200, "acme/private"))
+    assert mid.served_model_id("x") == "<custom>"
+
+
+def test_served_model_id_rechecks_a_stamped_repo_id(monkeypatch, _config):
+    """A stamp taken at load time is not a permanent licence."""
+    repo = "someone/public-community-mlx"
+    _config.model_registry = _Registry(_Entry(repo, repo))
+    mid.note_hub_fetch(repo)
+    assert mid.served_model_id("x") == repo
+    monkeypatch.setattr(mid, "hf_auth_in_use", lambda: True)
     assert mid.served_model_id("x") == "<custom>"
 
 
@@ -495,6 +616,12 @@ def test_note_hub_fetch_does_not_swallow_keyboard_interrupt(monkeypatch):
     monkeypatch.setattr(mid, "hf_auth_in_use", _raise_keyboard_interrupt)
     with pytest.raises(KeyboardInterrupt):
         mid.note_hub_fetch("someone/public-community-mlx")
+
+
+def test_is_proven_public_does_not_swallow_keyboard_interrupt(monkeypatch):
+    monkeypatch.setattr(mid, "_read_marker", _raise_keyboard_interrupt)
+    with pytest.raises(KeyboardInterrupt):
+        mid.is_proven_public("someone/public-community-mlx")
 
 
 def test_telemetry_model_id_does_not_swallow_keyboard_interrupt(monkeypatch):
