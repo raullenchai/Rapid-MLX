@@ -51,6 +51,11 @@ python bench/marvins_garden/eval_label_readout.py \
   --adapter bench/marvins_garden/adapters/marvins-garden \
   --styles base,concise,spec \
   --output bench/marvins_garden/results/eval_marvin_27b.json
+
+# 6. IQ-tax probe (general capability, base vs adapter)
+python bench/marvins_garden/iq_probe.py \
+  --model prism-ml/Ternary-Bonsai-27B-mlx-2bit \
+  [--adapter bench/marvins_garden/adapters/marvins-garden]
 ```
 
 ## Data contract
