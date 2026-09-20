@@ -70,6 +70,28 @@ Polish prompt completed with 39 generated tokens at 36.7 tok/s (`K=0`) and
 10, 7, and 5 drafts at depths one through three. Ordinary outer-wrapper
 inference retained its existing call contract.
 
+### Sliding-window rollover follow-up
+
+Gemma 4 uses a 1,024-token rotating attention window on most decoder layers.
+The initial qualification covered short prompts; a follow-up gate exercised
+rejected MTP blocks after that ring had wrapped. The target cache now retains a
+small rollback buffer outside the visible attention window, while cache layouts
+that cannot prove rollback safety park at `K=0` before drafting.
+
+On the same M4 Pro 48 GB host, with fixed `K=3`, prefix cache disabled, and the
+same pinned target and assistant:
+
+- a 9,269-token prompt plus 21 completion tokens returned HTTP 200; 18 drafts
+  were attempted and 14 accepted, proving four rejected drafts rolled back
+  after the sliding-window boundary;
+- a 2,020-token prompt completed the full 700-token output budget with HTTP
+  200; 525 drafts were attempted and 524 accepted;
+- neither request logged a rollback-preflight failure, generator abort, or
+  HTTP 503, and the server remained healthy after both requests.
+
+The second prompt intentionally requested a long deterministic integer list;
+it is a stability workload, not a quality or universal throughput claim.
+
 ## Reproduction
 
 From the exact PR revision above, with both pinned artifacts present in the
