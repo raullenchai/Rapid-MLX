@@ -393,7 +393,11 @@ vendored copy differs by exactly the deviations listed):
   metadata stays optional but must be complete when present;
   ``qwen3_5_mtp.py`` ``sanitize`` moves the fused expert quantization
   biases alongside the scales — pinned 0.7.1 left them under the fused
-  keys, dropping required metadata from affine-quantized checkpoints. The drafter registry also
+  keys, dropping required metadata from affine-quantized checkpoints;
+  ``qwen3_dflash/config.py`` coerces ``runtime_block_size`` to ``int``
+  while validating — pinned 0.7.1 kept the original value, so a numeric
+  string reached runtime code as a ``str``; and a retained split backup
+  that fails cleanup is logged instead of silently left behind. The drafter registry also
   installs a Rapid binding hook: ``load_drafter`` pre-registers a
   package-compatible ``sys.modules`` shim for the loaded family (from
   ``glm5_next_mtp``, ``qwen3_5_mtp``, ``qwen3_dflash``, ``dflash2``)

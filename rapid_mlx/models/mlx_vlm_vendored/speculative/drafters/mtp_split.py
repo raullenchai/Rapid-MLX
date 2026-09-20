@@ -12,6 +12,7 @@ dispatch on a source checkpoint.
 import glob
 import importlib
 import json
+import logging
 import os
 import shutil
 import tempfile
@@ -440,10 +441,18 @@ class MTPSplitter:
                 os.replace(backup, output_path)
             raise
         if backup is not None:
-            if backup.is_dir() and not backup.is_symlink():
-                shutil.rmtree(backup, ignore_errors=True)
-            else:
-                backup.unlink(missing_ok=True)
+            try:
+                if backup.is_dir() and not backup.is_symlink():
+                    shutil.rmtree(backup)
+                else:
+                    backup.unlink()
+            except OSError:
+                # The new destination is safely installed; surface the
+                # retained duplicate instead of deleting silently.
+                logging.getLogger(__name__).warning(
+                    "failed to remove split backup %s; remove it manually",
+                    backup,
+                )
 
 
 # base model_type -> "module_path:ClassName" (lazy so importing this module is cheap)

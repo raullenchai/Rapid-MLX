@@ -55,14 +55,17 @@ class DFlashConfig(BaseModelConfig):
             flat["attention_sink_bias"] = bool(dflash_cfg["attention_sink_bias"])
         if "num_target_layers" not in flat and flat.get("target_layer_ids"):
             flat["num_target_layers"] = max(flat["target_layer_ids"]) + 1
-        # Rapid upstream-bugfix (documented deviation): pinned 0.7.1
-        # accepts any runtime_block_size; sizes below 2 crash the drafting
-        # loops (block_size 1 leaves an empty masked tail).
         runtime_block_size = flat.get("runtime_block_size")
-        if runtime_block_size is not None and int(runtime_block_size) < 2:
-            raise ValueError(
-                f"runtime_block_size must be >= 2, got {runtime_block_size!r}"
-            )
+        if runtime_block_size is not None:
+            # Rapid upstream-bugfix (documented deviation): validate and
+            # coerce together — pinned 0.7.1 kept the original value, so a
+            # numeric string passed validation and reached runtime code as
+            # a str.
+            flat["runtime_block_size"] = int(runtime_block_size)
+            if flat["runtime_block_size"] < 2:
+                raise ValueError(
+                    f"runtime_block_size must be >= 2, got {runtime_block_size!r}"
+                )
         rope_parameters = flat.pop("rope_parameters", None)
         if isinstance(rope_parameters, Mapping):
             rope_parameters = dict(rope_parameters)

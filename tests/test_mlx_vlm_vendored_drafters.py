@@ -301,14 +301,17 @@ DEVIATIONS = {
     ],
     "qwen3_dflash/config.py": [
         (
-            """        # Rapid upstream-bugfix (documented deviation): pinned 0.7.1
-        # accepts any runtime_block_size; sizes below 2 crash the drafting
-        # loops (block_size 1 leaves an empty masked tail).
-        runtime_block_size = flat.get("runtime_block_size")
-        if runtime_block_size is not None and int(runtime_block_size) < 2:
-            raise ValueError(
-                f"runtime_block_size must be >= 2, got {runtime_block_size!r}"
-            )
+            """        runtime_block_size = flat.get("runtime_block_size")
+        if runtime_block_size is not None:
+            # Rapid upstream-bugfix (documented deviation): validate and
+            # coerce together — pinned 0.7.1 kept the original value, so a
+            # numeric string passed validation and reached runtime code as
+            # a str.
+            flat["runtime_block_size"] = int(runtime_block_size)
+            if flat["runtime_block_size"] < 2:
+                raise ValueError(
+                    f"runtime_block_size must be >= 2, got {runtime_block_size!r}"
+                )
         rope_parameters = flat.pop("rope_parameters", None)""",
             """        rope_parameters = flat.pop("rope_parameters", None)""",
         ),
@@ -612,12 +615,17 @@ logger = logging.getLogger(__name__)""",
     ],
     "mtp_split.py": [
         (
-            """import json
+            """import glob
+import importlib
+import json
+import logging
 import os
 import shutil
 import tempfile
 import uuid""",
-            """import json
+            """import glob
+import importlib
+import json
 import shutil""",
         ),
         (
@@ -862,10 +870,18 @@ import shutil""",
                 os.replace(backup, output_path)
             raise
         if backup is not None:
-            if backup.is_dir() and not backup.is_symlink():
-                shutil.rmtree(backup, ignore_errors=True)
-            else:
-                backup.unlink(missing_ok=True)
+            try:
+                if backup.is_dir() and not backup.is_symlink():
+                    shutil.rmtree(backup)
+                else:
+                    backup.unlink()
+            except OSError:
+                # The new destination is safely installed; surface the
+                # retained duplicate instead of deleting silently.
+                logging.getLogger(__name__).warning(
+                    "failed to remove split backup %s; remove it manually",
+                    backup,
+                )
 """,
             """""",
         ),
@@ -1928,6 +1944,20 @@ def test_binding_peek_resolves_backbone_declared_dflash2(tmp_path):
         json.dumps({"model_type": "qwen3_dflash", "dflash_config": {}})
     )
     assert _peek_drafter_model_type(declared) == "qwen3_dflash"
+
+
+def test_qwen3_dflash_config_coerces_runtime_block_size():
+    """A numeric-string runtime_block_size must be coerced to int, not
+    retained as a str that reaches runtime code (pinned 0.7.1 kept it)."""
+    from rapid_mlx.models.mlx_vlm_vendored.speculative.drafters.qwen3_dflash.config import (
+        DFlashConfig,
+    )
+
+    config = DFlashConfig.from_dict({"runtime_block_size": "8"})
+    assert config.runtime_block_size == 8
+    assert isinstance(config.runtime_block_size, int)
+    with pytest.raises(ValueError, match="runtime_block_size must be >= 2"):
+        DFlashConfig.from_dict({"runtime_block_size": "1"})
 
 
 def test_dflash2_config_rejects_inherited_causal():

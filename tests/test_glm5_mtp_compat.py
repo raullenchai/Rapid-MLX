@@ -125,6 +125,9 @@ def test_installed_adapter_binds_and_runs_both_output_heads(monkeypatch):
     # and the pinned implementation module carries the canonical class.
     assert pinned_package.Glm5NextMTPDraftModel is adapted
     assert pinned_implementation.Glm5NextMTPDraftModel is adapted
+    # pinned load_model resolves the class through the package's Model
+    # export; its swap must be asserted too.
+    assert pinned_package.Model is adapted
     assert adapted.__name__ == "Glm5NextMTPDraftModel"
     assert glm5_compat.is_installed() is True
 
