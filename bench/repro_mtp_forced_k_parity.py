@@ -16,6 +16,7 @@ import argparse
 import hashlib
 import json
 import sys
+import time
 from pathlib import Path
 from typing import Any
 
@@ -163,10 +164,10 @@ def _render_markdown(report: dict[str, Any]) -> None:
     print("- sampling: greedy (`temp=0`)")
     print("- reference: same Rapid generator with speculation parked at K=0\n")
     print(
-        "| Prompt | stock/K=0 | K | attempts | accepts | verify calls | "
+        "| Prompt | stock/K=0 | K | decode tok/s | attempts | accepts | verify calls | "
         "complete | K=0 parity | first divergence | source |"
     )
-    print("|---:|---|---:|---:|---:|---:|---|---|---|---|")
+    print("|---:|---|---:|---:|---:|---:|---:|---|---|---|---|")
     for prompt in report["prompts"]:
         stock_matches = prompt["stock_vs_k0_first_divergence"] is None
         for row in prompt["rows"]:
@@ -181,7 +182,8 @@ def _render_markdown(report: dict[str, Any]) -> None:
             )
             print(
                 f"| {prompt['index']} | {'yes' if stock_matches else 'no'} | "
-                f"{row['k']} | {row['attempts']} | {row['accepts']} | "
+                f"{row['k']} | {row['decode_tok_per_sec']:.2f} | "
+                f"{row['attempts']} | {row['accepts']} | "
                 f"{row['verify_calls']} | "
                 f"{'yes' if row['complete'] else 'no'} | "
                 f"{'yes' if row['matches_k0'] else 'no'} | {divergence_text} | "
@@ -272,7 +274,18 @@ def main() -> int:
     activity_valid = True
     for index, prompt in enumerate(formatted_prompts):
         prompt_ids = mx.array(tokenizer.encode(prompt), mx.uint32)
-        runs: dict[int, tuple[tuple[int, ...], tuple[bool, ...], Any, int, str]] = {}
+        runs: dict[
+            int,
+            tuple[
+                tuple[int, ...],
+                tuple[bool, ...],
+                Any,
+                int,
+                str,
+                float,
+                float,
+            ],
+        ] = {}
         for k in args.k_values:
             print(f"[fixed-k-consistency] prompt {index + 1} K={k}", file=sys.stderr)
             mx.random.seed(args.seed)
@@ -280,6 +293,7 @@ def main() -> int:
             timing: dict[str, float] = {}
             tokens: list[int] = []
             from_draft: list[bool] = []
+            started = time.perf_counter()
             for token, _logprobs, drafted in mtp_generate_step(
                 prompt_ids,
                 generator_model,
@@ -296,6 +310,9 @@ def main() -> int:
                 from_draft.append(bool(drafted))
                 if token_id in stop_tokens or len(tokens) >= args.max_tokens:
                     break
+            elapsed = time.perf_counter() - started
+            prompt_eval = float(timing.get("prompt_eval_seconds", 0.0))
+            decode_elapsed = max(0.0, elapsed - prompt_eval)
             runs[k] = (
                 tuple(tokens),
                 tuple(from_draft),
@@ -306,12 +323,22 @@ def main() -> int:
                 else "max_tokens"
                 if len(tokens) == args.max_tokens
                 else "early_termination",
+                elapsed,
+                decode_elapsed,
             )
 
         control = runs[0][0]
         rows = []
         for k in args.k_values:
-            tokens, sources, counter, verify_calls, termination = runs[k]
+            (
+                tokens,
+                sources,
+                counter,
+                verify_calls,
+                termination,
+                elapsed,
+                decode_elapsed,
+            ) = runs[k]
             divergence = _first_divergence(control, tokens)
             divergence_index = divergence["index"] if divergence else None
             source = None
@@ -333,6 +360,13 @@ def main() -> int:
                     "attempts": counter.attempts,
                     "accepts": counter.accepts,
                     "verify_calls": verify_calls,
+                    "elapsed_seconds": elapsed,
+                    "decode_elapsed_seconds": decode_elapsed,
+                    "decode_tok_per_sec": (
+                        max(0, len(tokens) - 1) / decode_elapsed
+                        if decode_elapsed > 0
+                        else 0.0
+                    ),
                     "token_sha256": _token_sha256(tokens),
                     "matches_k0": divergence is None,
                     "first_divergence": divergence,
