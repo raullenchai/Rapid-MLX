@@ -3896,11 +3896,10 @@ def test_silent_class_mutes_hf_real_download_bar_construction():
     assert silent_out == ""
 
 
-def test_hf_fallback_one_forwards_tqdm_class_when_supported(
+def test_hf_fallback_one_forwards_tracking_tqdm_when_supported(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ):
-    """On a hub that supports it, a disabled ``tqdm_class`` is forwarded iff
-    ``suppress_progress`` — and never otherwise."""
+    """The tracking class is always forwarded; suppression changes rendering."""
     monkeypatch.setattr(_mirror, "_hf_supports_tqdm_class", lambda: True)
     captured: dict[str, object] = {}
 
@@ -3917,7 +3916,9 @@ def test_hf_fallback_one_forwards_tqdm_class_when_supported(
         _mirror._hf_fallback_one(
             "owner/repo", "README.md", "rev", cache_dir=tmp_path, suppress_progress=True
         )
-    assert captured["kwargs"].get("tqdm_class") is not None  # disabled class passed
+    silent_class = captured["kwargs"].get("tqdm_class")
+    assert silent_class is not None
+    assert silent_class(total=1).disable is True
 
     with patch("huggingface_hub.hf_hub_download", side_effect=_fake_hf):
         _mirror._hf_fallback_one(
@@ -3927,16 +3928,60 @@ def test_hf_fallback_one_forwards_tqdm_class_when_supported(
             cache_dir=tmp_path,
             suppress_progress=False,
         )
-    assert "tqdm_class" not in captured["kwargs"]  # kwarg omitted (bar shown)
+    visible_class = captured["kwargs"].get("tqdm_class")
+    assert visible_class is not None
+    assert visible_class(total=1, disable=False).disable is False
+
+
+@pytest.mark.parametrize(
+    ("actual_download", "expected_fetch"),
+    [
+        # Warm blob re-link: downloader returns before constructing progress.
+        (False, False),
+        # Cold file: actual HTTP/Xet path constructs the progress hook.
+        (True, True),
+    ],
+)
+def test_hf_fallback_reports_actual_transfer_for_non_lfs_relink(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    actual_download: bool,
+    expected_fetch: bool,
+):
+    monkeypatch.setattr(_mirror, "_hf_supports_tqdm_class", lambda: True)
+    target = tmp_path / "README.md"
+    target.write_bytes(b"doc")
+
+    def _fake_hf(**kwargs):
+        if actual_download:
+            bar = kwargs["tqdm_class"](total=3)
+            bar.update(3)
+            bar.close()
+        return str(target)
+
+    observed: dict[str, object] = {}
+    with patch("huggingface_hub.hf_hub_download", side_effect=_fake_hf):
+        ok, path = _mirror._hf_fallback_one(
+            "owner/repo",
+            "README.md",
+            "revision",
+            cache_dir=tmp_path,
+            suppress_progress=True,
+            out=observed,
+        )
+
+    assert ok is True
+    assert path == str(target)
+    assert observed["network_fetch"] is expected_fetch
 
 
 def test_hf_fallback_one_omits_tqdm_class_on_old_hub(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ):
-    """Regression for codex round 2: on the >=0.23.0 floor, ``hf_hub_download``
-    has NO ``tqdm_class`` param — passing it would raise ``TypeError``. The
-    fake here deliberately does NOT accept ``tqdm_class`` (mirroring the real
-    old-hub signature), so if the kwarg were forwarded this test would raise.
+    """A stale already-running environment may still have an old Hub import.
+
+    The fake deliberately does NOT accept ``tqdm_class`` (mirroring that old
+    signature), so forwarding the kwarg would raise ``TypeError``.
     """
     monkeypatch.setattr(_mirror, "_hf_supports_tqdm_class", lambda: False)
 
@@ -4114,8 +4159,14 @@ def test_metadata_hf_fallback_mutes_bar_but_weight_keeps_it(
     suppress_seen: dict[str, bool] = {}
 
     def _spy_fallback(
-        repo_id, filename, revision, cache_dir=None, suppress_progress=False
+        repo_id,
+        filename,
+        revision,
+        cache_dir=None,
+        suppress_progress=False,
+        out=None,
     ):
+        del out
         suppress_seen[filename] = suppress_progress
         snap = (
             Path(cache_dir)
