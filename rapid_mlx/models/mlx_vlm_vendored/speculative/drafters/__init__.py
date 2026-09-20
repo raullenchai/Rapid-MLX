@@ -1,5 +1,8 @@
+import importlib
 import json
 import logging
+import sys
+from types import ModuleType
 from typing import Any, Optional, Tuple
 
 from .dflash2 import DFlash2DraftModel
@@ -39,6 +42,32 @@ DRAFTER_KIND_BY_MODEL_TYPE = {
 }
 
 DEFAULT_DRAFTER_KIND = "dflash"
+
+# Rapid binding hook (documented deviation): the served drafter families'
+# checkpoint ``model_type`` values. pinned ``load_model`` resolves sidecar
+# architectures through ``mlx_vlm.models.<model_type>``; pre-registering
+# ``sys.modules`` shims that expose the vendored packages' ``Model`` /
+# ``ModelConfig`` makes the pinned loader construct the vendored classes,
+# so the documented runtime fixes reach production drafters. Unvendored
+# families fall through to the pinned modules.
+_SERVED_ARCHITECTURE_FAMILIES = (
+    "glm5_next_mtp",
+    "qwen3_5_mtp",
+    "qwen3_dflash",
+    "dflash2",
+)
+
+
+def install_served_architecture_bindings() -> None:
+    for model_type in _SERVED_ARCHITECTURE_FAMILIES:
+        target = f"mlx_vlm.models.{model_type}"
+        if target in sys.modules:
+            continue
+        package = importlib.import_module(f"{__name__}.{model_type}")
+        shim = ModuleType(target)
+        setattr(shim, "Model", package.Model)  # noqa: B010
+        setattr(shim, "ModelConfig", package.ModelConfig)  # noqa: B010
+        sys.modules[target] = shim
 
 logger = logging.getLogger(__name__)
 
@@ -212,6 +241,7 @@ def load_drafter(
         )
     from mlx_vlm.utils import get_model_path, load_model
 
+    install_served_architecture_bindings()
     path = get_model_path(path_or_repo)
     resolved = resolve_drafter_kind(path, kind)
     return load_model(path, **kwargs), resolved

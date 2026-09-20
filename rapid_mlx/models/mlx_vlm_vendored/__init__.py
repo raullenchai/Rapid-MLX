@@ -364,7 +364,15 @@ vendored copy differs by exactly the deviations listed):
   the choice on "moe" in the model type, instantiating dense layers over
   MoE checkpoints), and ``draft_block`` returns the DFlash2-shaped empty
   proposal for ``block_size <= 1`` before consuming seed state — pinned
-  0.7.1 crashes on an empty concatenate; ``split.py``
+  0.7.1 crashes on an empty concatenate. The drafter registry also
+  installs a Rapid binding hook: ``load_drafter`` pre-registers
+  ``sys.modules`` shims for the served families (``glm5_next_mtp``,
+  ``qwen3_5_mtp``, ``qwen3_dflash``, ``dflash2``) exposing the vendored
+  packages' ``Model``/``ModelConfig`` so the pinned ``load_model``
+  dispatch constructs the vendored classes and the runtime fixes reach
+  production drafters; unvendored families fall through to the pinned
+  modules. The DFlash runtime loads through the vendored registry
+  (vendored-first, pinned availability guard); ``split.py``
   upstream-bugfix: ``Qwen3NextMTPSplitter.postprocess`` stacks per-expert
   ``scales``/``biases`` into the ``switch_mlp`` layout
   alongside the weights — pinned 0.7.1 stacked only weights, so

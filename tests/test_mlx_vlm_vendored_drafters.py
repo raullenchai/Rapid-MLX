@@ -311,6 +311,54 @@ DEVIATIONS = {
 }
 """,
         ),
+        (
+            """import importlib
+import json
+import logging
+import sys
+from types import ModuleType
+from typing import Any, Optional, Tuple
+""",
+            """import json
+import logging
+from typing import Any, Optional, Tuple
+""",
+        ),
+        (
+            """DEFAULT_DRAFTER_KIND = "dflash"
+
+# Rapid binding hook (documented deviation): the served drafter families'
+# checkpoint ``model_type`` values. pinned ``load_model`` resolves sidecar
+# architectures through ``mlx_vlm.models.<model_type>``; pre-registering
+# ``sys.modules`` shims that expose the vendored packages' ``Model`` /
+# ``ModelConfig`` makes the pinned loader construct the vendored classes,
+# so the documented runtime fixes reach production drafters. Unvendored
+# families fall through to the pinned modules.
+_SERVED_ARCHITECTURE_FAMILIES = (
+    "glm5_next_mtp",
+    "qwen3_5_mtp",
+    "qwen3_dflash",
+    "dflash2",
+)
+
+
+def install_served_architecture_bindings() -> None:
+    for model_type in _SERVED_ARCHITECTURE_FAMILIES:
+        target = f"mlx_vlm.models.{model_type}"
+        if target in sys.modules:
+            continue
+        package = importlib.import_module(f"{__name__}.{model_type}")
+        shim = ModuleType(target)
+        setattr(shim, "Model", package.Model)  # noqa: B010
+        setattr(shim, "ModelConfig", package.ModelConfig)  # noqa: B010
+        sys.modules[target] = shim""",
+            'DEFAULT_DRAFTER_KIND = "dflash"',
+        ),
+        (
+            """    install_served_architecture_bindings()
+    path = get_model_path(path_or_repo)""",
+            """    path = get_model_path(path_or_repo)""",
+        ),
     ],
     "mtp_split.py": [
         (
@@ -708,6 +756,41 @@ def test_qwen35_text_config_routes_qwen3_next_to_moe():
     assert isinstance(resolved, config_module.MoeTextConfig)
     dense = config_module.TextConfig.from_dict({"model_type": "qwen3_5", **moe_fields})
     assert isinstance(dense, config_module.DenseTextConfig)
+
+
+def test_load_drafter_binds_served_families_to_vendored_modules(monkeypatch):
+    """The registry binding hook must make the pinned loader construct the
+    vendored Model classes for served drafter families."""
+    import sys
+    from types import ModuleType
+
+    from rapid_mlx.models.mlx_vlm_vendored.speculative.drafters import (
+        load_drafter,
+    )
+
+    root = ModuleType("mlx_vlm")
+    root.__path__ = []
+    utils = ModuleType("mlx_vlm.utils")
+    constructed = []
+
+    def fake_load_model(path, **kwargs):
+        # mirrors the pinned dispatch: the architecture module is resolved
+        # through ``mlx_vlm.models.<model_type>`` and its ``Model`` used.
+        target = f"mlx_vlm.models.{path.name}"
+        constructed.append(sys.modules[target].Model.__module__)
+        return object()
+
+    utils.get_model_path = lambda value, **kwargs: Path(value)
+    utils.load_model = fake_load_model
+    monkeypatch.setitem(sys.modules, "mlx_vlm", root)
+    monkeypatch.setitem(sys.modules, "mlx_vlm.utils", utils)
+
+    for family in ("qwen3_5_mtp", "dflash2"):
+        drafter, resolved = load_drafter(str(Path(f"/repo/{family}")), kind="mtp")
+        assert resolved == "mtp"
+        assert constructed[-1].startswith("rapid_mlx.models.mlx_vlm_vendored."), (
+            f"{family}: served drafter resolved to {constructed[-1]}"
+        )
 
 
 def test_qwen35_decoder_layer_routes_qwen3_next_to_moe():

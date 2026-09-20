@@ -948,6 +948,8 @@ def test_glm_adapter_reaches_products_of_the_pinned_loader(monkeypatch, tmp_path
     )
     vendored_package.__path__ = []
     vendored_package.Glm5NextMTPDraftModel = StaleStateGlm5NextMTPDraftModel
+    vendored_package.Model = StaleStateGlm5NextMTPDraftModel
+    vendored_package.ModelConfig = type("ModelConfig", (), {})
     vendored_implementation = ModuleType(
         "rapid_mlx.models.mlx_vlm_vendored.speculative.drafters.glm5_next_mtp"
         ".glm5_next_mtp"
@@ -957,7 +959,11 @@ def test_glm_adapter_reaches_products_of_the_pinned_loader(monkeypatch, tmp_path
         drafters as vendored_drafters,
     )
 
-    monkeypatch.setattr(vendored_drafters, "glm5_next_mtp", vendored_package)
+    # raising=False: the real glm5 submodule may not be imported yet in
+    # this session; the substitute only needs to shadow the attribute.
+    monkeypatch.setattr(
+        vendored_drafters, "glm5_next_mtp", vendored_package, raising=False
+    )
     utils = ModuleType("mlx_vlm.utils")
     utils.get_model_path = lambda repo_id, revision=None: Path(repo)
     # object.__new__: the dispatch reads the class object from the pinned
@@ -972,6 +978,13 @@ def test_glm_adapter_reaches_products_of_the_pinned_loader(monkeypatch, tmp_path
 
     root = ModuleType("mlx_vlm")
     root.__path__ = list(_real_mlx_vlm.__path__)
+    # Pre-bind the architecture shim target so the registry's binding hook
+    # is a no-op for glm5 (no sys.modules leak into other tests).
+    monkeypatch.setitem(
+        sys.modules,
+        "mlx_vlm.models.glm5_next_mtp",
+        ModuleType("mlx_vlm.models.glm5_next_mtp"),
+    )
     for name, module in {
         "mlx_vlm": root,
         "mlx_vlm.speculative.drafters": drafters,
