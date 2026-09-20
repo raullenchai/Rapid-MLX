@@ -2,7 +2,7 @@ name: Bind merge-ready to head
 
 on:
   pull_request_target:
-    types: [labeled]
+    types: [labeled, synchronize, unlabeled]
 
 permissions: {}
 
@@ -10,10 +10,12 @@ jobs:
   authorize-ready-head:
     if: >-
       github.event.pull_request.head.repo.full_name == github.repository &&
+      github.event.action == 'labeled' &&
       (github.event.label.name == 'merge-ready' ||
        github.event.label.name == 'merge-ready-mac')
     runs-on: ubuntu-latest
     permissions:
+      issues: write
       pull-requests: read
       statuses: write
     steps:
@@ -21,6 +23,9 @@ jobs:
         uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3  # v9.0.0
         with:
           script: |
+            const headSha = context.payload.pull_request.head.sha;
+            const statusUrl = `${context.serverUrl}/${context.repo.owner}/${context.repo.repo}/pull/${context.issue.number}`;
+
             // A historical Actions rerun must not replay an old labeled event.
             // A maintainer can always create a fresh authorization event by
             // removing and re-applying the ready label.
@@ -38,11 +43,11 @@ jobs:
             await github.rest.repos.createCommitStatus({
               owner: context.repo.owner,
               repo: context.repo.repo,
-              sha: context.payload.pull_request.head.sha,
+              sha: headSha,
               state: "pending",
               context: "merge-ready-head",
               description: `Validating ${context.payload.label.name} on this exact head`,
-              target_url: `${context.serverUrl}/${context.repo.owner}/${context.repo.repo}/pull/${context.issue.number}`,
+              target_url: statusUrl,
             });
             const { data: livePull } = await github.rest.pulls.get({
               owner: context.repo.owner,
@@ -69,14 +74,315 @@ jobs:
             await github.rest.repos.createCommitStatus({
               owner: context.repo.owner,
               repo: context.repo.repo,
-              sha: context.payload.pull_request.head.sha,
+              sha: headSha,
               state,
               context: "merge-ready-head",
               description,
-              target_url: `${context.serverUrl}/${context.repo.owner}/${context.repo.repo}/pull/${context.issue.number}`,
+              target_url: statusUrl,
             });
 
             if (!authorized) {
               core.setFailed(description);
               return;
+            }
+
+            // The commit status is the authoritative queue gate. Removing an
+            // obsolete explanatory comment must not invalidate an otherwise
+            // successful exact-head authorization if the Issues API has a
+            // transient failure. The notice job performs its own final
+            // post-write recheck to reconcile concurrent synchronize events.
+            try {
+              const marker = `<!-- merge-ready-stale-head:${headSha} -->`;
+              const comments = await github.paginate(
+                github.rest.issues.listComments,
+                {
+                  owner: context.repo.owner,
+                  repo: context.repo.repo,
+                  issue_number: context.issue.number,
+                  per_page: 100,
+                },
+              );
+              const staleNotice = comments.find(
+                (comment) =>
+                  comment.user?.login === "github-actions[bot]" &&
+                  comment.body?.includes(marker),
+              );
+              if (staleNotice) {
+                const { data: cleanupPull } = await github.rest.pulls.get({
+                  owner: context.repo.owner,
+                  repo: context.repo.repo,
+                  pull_number: context.issue.number,
+                });
+                if (cleanupPull.head.sha === headSha) {
+                  await github.rest.issues.deleteComment({
+                    owner: context.repo.owner,
+                    repo: context.repo.repo,
+                    comment_id: staleNotice.id,
+                  });
+                }
+              }
+            } catch (error) {
+              core.warning(`Could not remove stale merge-ready notice: ${error.message}`);
+            }
+
+  notify-stale-ready-head:
+    if: >-
+      github.event.pull_request.head.repo.full_name == github.repository &&
+      ((github.event.action == 'synchronize' &&
+        (contains(github.event.pull_request.labels.*.name, 'merge-ready') ||
+         contains(github.event.pull_request.labels.*.name, 'merge-ready-mac'))) ||
+       (github.event.action == 'unlabeled' &&
+        (github.event.label.name == 'merge-ready' ||
+         github.event.label.name == 'merge-ready-mac')))
+    runs-on: ubuntu-latest
+    concurrency:
+      group: merge-ready-stale-notice-${{ github.event.pull_request.number }}
+      cancel-in-progress: false
+    permissions:
+      issues: write
+      pull-requests: read
+      statuses: read
+    steps:
+      - name: Explain stale exact-head authorization
+        uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3  # v9.0.0
+        with:
+          script: |
+            const eventHead = context.payload.pull_request.head.sha;
+            const markerPrefix = "<!-- merge-ready-stale-head:";
+            const marker = `${markerPrefix}${eventHead} -->`;
+            async function removeStaleNoticeBestEffort() {
+              try {
+                const comments = await github.paginate(
+                  github.rest.issues.listComments,
+                  {
+                    owner: context.repo.owner,
+                    repo: context.repo.repo,
+                    issue_number: context.issue.number,
+                    per_page: 100,
+                  },
+                );
+                const staleNotice = comments.find(
+                  (comment) =>
+                    comment.user?.login === "github-actions[bot]" &&
+                    comment.body?.includes(marker),
+                );
+                if (staleNotice) {
+                  await github.rest.issues.deleteComment({
+                    owner: context.repo.owner,
+                    repo: context.repo.repo,
+                    comment_id: staleNotice.id,
+                  });
+                }
+              } catch (error) {
+                core.warning(
+                  `Could not remove stale merge-ready notice: ${error.message}`,
+                );
+              }
+            }
+            const { data: livePull } = await github.rest.pulls.get({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              pull_number: context.issue.number,
+            });
+            if (
+              context.payload.action === "synchronize" &&
+              livePull.head.sha !== eventHead
+            ) {
+              return;
+            }
+
+            const readyLabels = livePull.labels
+              .map((label) => label.name)
+              .filter((name) =>
+                name === "merge-ready" || name === "merge-ready-mac",
+              );
+            if (context.payload.action === "unlabeled") {
+              if (readyLabels.length !== 0) {
+                return;
+              }
+              const comments = await github.paginate(
+                github.rest.issues.listComments,
+                {
+                  owner: context.repo.owner,
+                  repo: context.repo.repo,
+                  issue_number: context.issue.number,
+                  per_page: 100,
+                },
+              );
+              const staleNotice = comments.find(
+                (comment) =>
+                  comment.user?.login === "github-actions[bot]" &&
+                  comment.body?.includes(markerPrefix),
+              );
+              if (!staleNotice) {
+                return;
+              }
+              const { data: refreshedPull } = await github.rest.pulls.get({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                pull_number: context.issue.number,
+              });
+              const refreshedReadyLabels = refreshedPull.labels.filter(
+                (label) =>
+                  label.name === "merge-ready" ||
+                  label.name === "merge-ready-mac",
+              );
+              if (refreshedReadyLabels.length === 0) {
+                await github.rest.issues.deleteComment({
+                  owner: context.repo.owner,
+                  repo: context.repo.repo,
+                  comment_id: staleNotice.id,
+                });
+              }
+              return;
+            }
+            if (readyLabels.length === 0) {
+              return;
+            }
+
+            const statuses = await github.paginate(
+              github.rest.repos.listCommitStatusesForRef,
+              {
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                ref: eventHead,
+                per_page: 100,
+              },
+            );
+            const latestAuthorization = statuses.find(
+              (status) => status.context === "merge-ready-head",
+            );
+            if (latestAuthorization?.state === "success") {
+              await removeStaleNoticeBestEffort();
+              return;
+            }
+
+            const shortHead = eventHead.slice(0, 12);
+            const body = [
+              marker,
+              `⚠️ **Merge-ready authorization is stale for \`${shortHead}\`.**`,
+              "",
+              "This pull request was pushed after its ready label was applied. " +
+                "The label authorizes one immutable commit only, so the queue " +
+                "will not admit this head. Review the new diff, then remove " +
+                "and re-apply exactly one of `merge-ready` or `merge-ready-mac`.",
+              "",
+              "If a fresh authorization completed while this notice was being " +
+                "posted, no further action is needed; the exact-head status " +
+                "remains authoritative.",
+            ].join("\n");
+            const comments = await github.paginate(
+              github.rest.issues.listComments,
+              {
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                issue_number: context.issue.number,
+                per_page: 100,
+              },
+            );
+            const existing = comments.find(
+              (comment) =>
+                comment.user?.login === "github-actions[bot]" &&
+                comment.body?.includes(markerPrefix),
+            );
+            const latestStatuses = await github.paginate(
+              github.rest.repos.listCommitStatusesForRef,
+              {
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                ref: eventHead,
+                per_page: 100,
+              },
+            );
+            const refreshedAuthorization = latestStatuses.find(
+              (status) => status.context === "merge-ready-head",
+            );
+            if (refreshedAuthorization?.state === "success") {
+              return;
+            }
+            const { data: refreshedPull } = await github.rest.pulls.get({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              pull_number: context.issue.number,
+            });
+            if (refreshedPull.head.sha !== eventHead) {
+              return;
+            }
+            const refreshedReadyLabels = refreshedPull.labels
+              .map((label) => label.name)
+              .filter((name) =>
+                name === "merge-ready" || name === "merge-ready-mac",
+              );
+            if (refreshedReadyLabels.length === 0) {
+              if (existing) {
+                await github.rest.issues.deleteComment({
+                  owner: context.repo.owner,
+                  repo: context.repo.repo,
+                  comment_id: existing.id,
+                });
+              }
+              return;
+            }
+            let writtenNotice;
+            if (existing) {
+              const { data } = await github.rest.issues.updateComment({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                comment_id: existing.id,
+                body,
+              });
+              writtenNotice = data;
+            } else {
+              const { data } = await github.rest.issues.createComment({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                issue_number: context.issue.number,
+                body,
+              });
+              writtenNotice = data;
+            }
+
+            // Authorization is security-critical and deliberately does not
+            // share this advisory job's lossy concurrency queue. Close the
+            // remaining race in the other direction: if authorization, label
+            // removal, or a newer push won while the comment was being
+            // written, immediately remove the obsolete notice.
+            const postWriteStatuses = await github.paginate(
+              github.rest.repos.listCommitStatusesForRef,
+              {
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                ref: eventHead,
+                per_page: 100,
+              },
+            );
+            const postWriteAuthorization = postWriteStatuses.find(
+              (status) => status.context === "merge-ready-head",
+            );
+            const { data: postWritePull } = await github.rest.pulls.get({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              pull_number: context.issue.number,
+            });
+            const postWriteReadyLabels = postWritePull.labels.filter(
+              (label) =>
+                label.name === "merge-ready" ||
+                label.name === "merge-ready-mac",
+            );
+            if (
+              postWriteAuthorization?.state === "success" ||
+              postWritePull.head.sha !== eventHead ||
+              postWriteReadyLabels.length === 0
+            ) {
+              try {
+                await github.rest.issues.deleteComment({
+                  owner: context.repo.owner,
+                  repo: context.repo.repo,
+                  comment_id: writtenNotice.id,
+                });
+              } catch (error) {
+                core.warning(
+                  `Could not remove stale merge-ready notice: ${error.message}`,
+                );
+              }
             }

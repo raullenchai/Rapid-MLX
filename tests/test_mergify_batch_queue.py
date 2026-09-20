@@ -119,14 +119,20 @@ def test_ready_authorization_is_bound_to_the_exact_head_commit():
         Loader=yaml.BaseLoader,
     )
 
-    assert workflow["on"] == {"pull_request_target": {"types": ["labeled"]}}
+    assert workflow["on"] == {
+        "pull_request_target": {"types": ["labeled", "synchronize", "unlabeled"]}
+    }
+    assert "concurrency" not in workflow
     assert workflow["permissions"] == {}
 
     job = workflow["jobs"]["authorize-ready-head"]
     assert "head.repo.full_name == github.repository" in job["if"]
     assert "merge-ready" in job["if"]
     assert "merge-ready-mac" in job["if"]
+    assert "github.event.action == 'labeled'" in job["if"]
+    assert "concurrency" not in job
     assert job["permissions"] == {
+        "issues": "write",
         "pull-requests": "read",
         "statuses": "write",
     }
@@ -135,14 +141,15 @@ def test_ready_authorization_is_bound_to_the_exact_head_commit():
     assert step["uses"].startswith("actions/github-script@")
     script = step["with"]["script"]
     assert "github.rest.repos.createCommitStatus" in script
-    assert "sha: context.payload.pull_request.head.sha" in script
+    assert "headSha = context.payload.pull_request.head.sha" in script
+    assert "sha: headSha" in script
     assert 'context: "merge-ready-head"' in script
     assert "present.length === 1" in script
     assert "GITHUB_RUN_ATTEMPT" in script
     assert "github.rest.pulls.get" in script
     assert "livePull.head.sha === context.payload.pull_request.head.sha" in script
-    assert "github.paginate" not in script
-    assert "github.rest.issues" not in script
+    assert "github.paginate" in script
+    assert "github.rest.issues.deleteComment" in script
     assert "merge-requeue" not in script
     assert "checkout" not in script.lower()
 
@@ -155,6 +162,9 @@ def _run_authorization_script(
     live_head: str = "head-sha",
     fail_status_call: int | None = None,
     fail_get: bool = False,
+    fail_comments: bool = False,
+    comments: list[dict[str, object]] | None = None,
+    cleanup_live_head: str = "head-sha",
 ) -> dict[str, object]:
     """Execute the exact github-script body against deterministic API mocks."""
 
@@ -171,12 +181,17 @@ def _run_authorization_script(
             "liveHead": live_head,
             "failStatusCall": fail_status_call,
             "failGet": fail_get,
+            "failComments": fail_comments,
+            "comments": comments or [],
+            "cleanupLiveHead": cleanup_live_head,
         }
     )
     harness = f"""
 const scenario = {scenario};
 const calls = [];
+const statusArgs = [];
 let statusCalls = 0;
+let pullCalls = 0;
 process.env.GITHUB_RUN_ATTEMPT = String(scenario.runAttempt);
 const context = {{
   repo: {{ owner: "owner", repo: "repo" }},
@@ -188,23 +203,37 @@ const context = {{
   }},
 }};
 const github = {{
+  paginate: async (method, args) => method(args).then((response) => response.data),
   rest: {{
     pulls: {{ get: async () => {{
+      pullCalls += 1;
       calls.push(["get"]);
       if (scenario.failGet) throw new Error("get failure");
       return {{ data: {{
-        head: {{ sha: scenario.liveHead }},
+        head: {{ sha: pullCalls === 1 ? scenario.liveHead : scenario.cleanupLiveHead }},
         labels: scenario.labels.map((name) => ({{ name }})),
       }} }};
     }} }},
     repos: {{ createCommitStatus: async (args) => {{
       statusCalls += 1;
+      statusArgs.push(args);
       calls.push(["status", args.state]);
       if (scenario.failStatusCall === statusCalls) throw new Error("status failure");
     }} }},
+    issues: {{
+      listComments: async () => {{
+        calls.push(["comments"]);
+        if (scenario.failComments) throw new Error("comments failure");
+        return {{ data: scenario.comments }};
+      }},
+      deleteComment: async (args) => calls.push(["delete", args.comment_id]),
+    }},
   }},
 }};
-const core = {{ setFailed: (message) => calls.push(["failed", message]) }};
+const core = {{
+  setFailed: (message) => calls.push(["failed", message]),
+  warning: (message) => calls.push(["warning", message]),
+}};
 (async () => {{
   try {{
     await (async () => {{
@@ -213,7 +242,7 @@ const core = {{ setFailed: (message) => calls.push(["failed", message]) }};
   }} catch (error) {{
     calls.push(["threw", error.message]);
   }}
-  process.stdout.write(JSON.stringify(calls));
+  process.stdout.write(JSON.stringify({{ calls, statusArgs }}));
 }})();
 """
     completed = subprocess.run(
@@ -222,7 +251,7 @@ const core = {{ setFailed: (message) => calls.push(["failed", message]) }};
         capture_output=True,
         text=True,
     )
-    return {"calls": json.loads(completed.stdout)}
+    return json.loads(completed.stdout)
 
 
 def test_initial_authorization_publishes_success_for_the_exact_head():
@@ -232,7 +261,380 @@ def test_initial_authorization_publishes_success_for_the_exact_head():
         ["status", "pending"],
         ["get"],
         ["status", "success"],
+        ["comments"],
     ]
+
+
+def test_fresh_authorization_removes_the_bot_owned_stale_notice():
+    result = _run_authorization_script(
+        labels=["merge-ready-mac"],
+        comments=[
+            {
+                "id": 7,
+                "body": "<!-- merge-ready-stale-head:head-sha --> old",
+                "user": {"login": "github-actions[bot]"},
+            },
+            {
+                "id": 8,
+                "body": "<!-- merge-ready-stale-head --> human note",
+                "user": {"login": "maintainer"},
+            },
+        ],
+    )
+
+    assert result["calls"] == [
+        ["status", "pending"],
+        ["get"],
+        ["status", "success"],
+        ["comments"],
+        ["get"],
+        ["delete", 7],
+    ]
+
+
+def test_comment_cleanup_failure_does_not_revoke_exact_head_authorization():
+    result = _run_authorization_script(labels=["merge-ready-mac"], fail_comments=True)
+
+    assert result["calls"] == [
+        ["status", "pending"],
+        ["get"],
+        ["status", "success"],
+        ["comments"],
+        ["warning", "Could not remove stale merge-ready notice: comments failure"],
+    ]
+
+
+def test_old_authorization_does_not_delete_a_new_heads_notice():
+    result = _run_authorization_script(
+        labels=["merge-ready-mac"],
+        comments=[
+            {
+                "id": 7,
+                "body": "<!-- merge-ready-stale-head:new-head --> newer",
+                "user": {"login": "github-actions[bot]"},
+            }
+        ],
+    )
+
+    assert result["calls"] == [
+        ["status", "pending"],
+        ["get"],
+        ["status", "success"],
+        ["comments"],
+    ]
+
+    pushed_during_cleanup = _run_authorization_script(
+        labels=["merge-ready-mac"],
+        cleanup_live_head="new-head",
+        comments=[
+            {
+                "id": 7,
+                "body": "<!-- merge-ready-stale-head:head-sha --> old",
+                "user": {"login": "github-actions[bot]"},
+            }
+        ],
+    )
+    assert pushed_during_cleanup["calls"] == [
+        ["status", "pending"],
+        ["get"],
+        ["status", "success"],
+        ["comments"],
+        ["get"],
+    ]
+
+
+def test_head_update_notice_is_actionable_without_mutating_authorization():
+    workflow = yaml.load(
+        (ROOT / ".github/workflows/authorize-merge-ready.yml").read_text(),
+        Loader=yaml.BaseLoader,
+    )
+    job = workflow["jobs"]["notify-stale-ready-head"]
+
+    assert "github.event.action == 'synchronize'" in job["if"]
+    assert "github.event.action == 'unlabeled'" in job["if"]
+    assert "head.repo.full_name == github.repository" in job["if"]
+    assert job["permissions"] == {
+        "issues": "write",
+        "pull-requests": "read",
+        "statuses": "read",
+    }
+    assert job["concurrency"] == {
+        "group": "merge-ready-stale-notice-${{ github.event.pull_request.number }}",
+        "cancel-in-progress": "false",
+    }
+    (step,) = job["steps"]
+    script = step["with"]["script"]
+    assert "livePull.head.sha !== eventHead" in script
+    assert 'status.context === "merge-ready-head"' in script
+    assert 'latestAuthorization?.state === "success"' in script
+    assert "re-apply exactly one" in script
+    assert "github.rest.issues.updateComment" in script
+    assert "github.rest.issues.createComment" in script
+    assert 'comment.user?.login === "github-actions[bot]"' in script
+    assert "github.rest.repos.createCommitStatus" not in script
+    assert "checkout" not in script.lower()
+
+
+def _run_head_update_notice(
+    *,
+    live_head: str = "head-sha",
+    refreshed_live_head: str | None = None,
+    labels: list[str] | None = None,
+    refreshed_labels: list[str] | None = None,
+    statuses: list[dict[str, str]] | None = None,
+    refreshed_statuses: list[dict[str, str]] | None = None,
+    post_statuses: list[dict[str, str]] | None = None,
+    comments: list[dict[str, object]] | None = None,
+    action: str = "synchronize",
+    fail_delete: bool = False,
+) -> list[list[object]]:
+    workflow = yaml.load(
+        (ROOT / ".github/workflows/authorize-merge-ready.yml").read_text(),
+        Loader=yaml.BaseLoader,
+    )
+    script = workflow["jobs"]["notify-stale-ready-head"]["steps"][0]["with"]["script"]
+    scenario = json.dumps(
+        {
+            "liveHead": live_head,
+            "refreshedLiveHead": refreshed_live_head,
+            "labels": labels if labels is not None else ["merge-ready-mac"],
+            "refreshedLabels": refreshed_labels,
+            "statuses": statuses or [],
+            "refreshedStatuses": refreshed_statuses,
+            "postStatuses": post_statuses,
+            "comments": comments or [],
+            "action": action,
+            "failDelete": fail_delete,
+        }
+    )
+    harness = f"""
+const scenario = {scenario};
+const calls = [];
+let statusCalls = 0;
+let pullCalls = 0;
+const context = {{
+  repo: {{ owner: "owner", repo: "repo" }},
+  issue: {{ number: 42 }},
+  payload: {{
+    action: scenario.action,
+    pull_request: {{ head: {{ sha: "head-sha" }} }},
+  }},
+}};
+const github = {{
+  paginate: async (method, args) => method(args).then((response) => response.data),
+  rest: {{
+    pulls: {{ get: async () => {{
+      pullCalls += 1;
+      calls.push(["get"]);
+      return {{ data: {{
+        head: {{
+          sha: pullCalls === 1 || scenario.refreshedLiveHead === null
+            ? scenario.liveHead
+            : scenario.refreshedLiveHead,
+        }},
+        labels: (
+          pullCalls === 1 || scenario.refreshedLabels === null
+            ? scenario.labels
+            : scenario.refreshedLabels
+        ).map((name) => ({{ name }})),
+      }} }};
+    }} }},
+    repos: {{ listCommitStatusesForRef: async () => {{
+      statusCalls += 1;
+      calls.push(["statuses"]);
+      return {{
+        data: statusCalls === 1
+          ? scenario.statuses
+          : statusCalls === 2 || scenario.postStatuses === null
+            ? (scenario.refreshedStatuses ?? scenario.statuses)
+            : scenario.postStatuses,
+      }};
+    }} }},
+    issues: {{
+      listComments: async () => {{
+        calls.push(["comments"]);
+        return {{ data: scenario.comments }};
+      }},
+      createComment: async (args) => {{
+        calls.push(["create", args.body]);
+        return {{ data: {{ id: 99, body: args.body }} }};
+      }},
+      updateComment: async (args) => {{
+        calls.push(["update", args.body]);
+        return {{ data: {{ id: args.comment_id, body: args.body }} }};
+      }},
+      deleteComment: async (args) => {{
+        calls.push(["delete", args.comment_id]);
+        if (scenario.failDelete) throw new Error("delete failure");
+      }},
+    }},
+  }},
+}};
+const core = {{ warning: (message) => calls.push(["warning", message]) }};
+(async () => {{
+  await (async () => {{
+{script}
+  }})();
+  process.stdout.write(JSON.stringify(calls));
+}})();
+"""
+    completed = subprocess.run(
+        ["node", "-e", harness],
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    return json.loads(completed.stdout)
+
+
+def test_head_update_notice_creates_or_updates_one_actionable_comment():
+    created = _run_head_update_notice()
+    assert [call[0] for call in created] == [
+        "get",
+        "statuses",
+        "comments",
+        "statuses",
+        "get",
+        "create",
+        "statuses",
+        "get",
+    ]
+    created_comment = next(call for call in created if call[0] == "create")
+    assert "merge-ready-stale-head:head-sha" in created_comment[1]
+    assert "remove and re-apply" in created_comment[1]
+    assert "head-sha" in created_comment[1]
+
+    updated = _run_head_update_notice(
+        comments=[
+            {
+                "id": 7,
+                "body": "<!-- merge-ready-stale-head:old-head --> old",
+                "user": {"type": "Bot", "login": "github-actions[bot]"},
+            }
+        ]
+    )
+    assert [call[0] for call in updated] == [
+        "get",
+        "statuses",
+        "comments",
+        "statuses",
+        "get",
+        "update",
+        "statuses",
+        "get",
+    ]
+
+
+def test_head_update_notice_skips_newer_heads_and_fresh_authorization():
+    assert _run_head_update_notice(live_head="newer-head") == [["get"]]
+    assert _run_head_update_notice(
+        statuses=[{"context": "merge-ready-head", "state": "success"}]
+    ) == [["get"], ["statuses"], ["comments"]]
+    assert _run_head_update_notice(
+        refreshed_statuses=[{"context": "merge-ready-head", "state": "success"}]
+    ) == [["get"], ["statuses"], ["comments"], ["statuses"]]
+    assert _run_head_update_notice(refreshed_live_head="newer-head") == [
+        ["get"],
+        ["statuses"],
+        ["comments"],
+        ["statuses"],
+        ["get"],
+    ]
+    assert _run_head_update_notice(
+        refreshed_labels=[],
+        comments=[
+            {
+                "id": 7,
+                "body": "<!-- merge-ready-stale-head:old-head --> old",
+                "user": {"login": "github-actions[bot]"},
+            }
+        ],
+    ) == [
+        ["get"],
+        ["statuses"],
+        ["comments"],
+        ["statuses"],
+        ["get"],
+        ["delete", 7],
+    ]
+
+
+def test_ready_label_removal_clears_an_existing_stale_notice():
+    calls = _run_head_update_notice(
+        action="unlabeled",
+        labels=[],
+        comments=[
+            {
+                "id": 7,
+                "body": "<!-- merge-ready-stale-head:old-head --> old",
+                "user": {"login": "github-actions[bot]"},
+            }
+        ],
+    )
+
+    assert calls == [["get"], ["comments"], ["get"], ["delete", 7]]
+
+    newer_head_calls = _run_head_update_notice(
+        action="unlabeled",
+        live_head="newer-head",
+        labels=[],
+        comments=[
+            {
+                "id": 7,
+                "body": "<!-- merge-ready-stale-head:old-head --> old",
+                "user": {"login": "github-actions[bot]"},
+            }
+        ],
+    )
+    assert newer_head_calls == [["get"], ["comments"], ["get"], ["delete", 7]]
+
+
+def test_fresh_authorization_self_heals_a_leftover_notice():
+    comments = [
+        {
+            "id": 7,
+            "body": "<!-- merge-ready-stale-head:head-sha --> old",
+            "user": {"login": "github-actions[bot]"},
+        }
+    ]
+    statuses = [{"context": "merge-ready-head", "state": "success"}]
+
+    assert _run_head_update_notice(statuses=statuses, comments=comments) == [
+        ["get"],
+        ["statuses"],
+        ["comments"],
+        ["delete", 7],
+    ]
+    assert _run_head_update_notice(
+        statuses=statuses,
+        comments=comments,
+        fail_delete=True,
+    ) == [
+        ["get"],
+        ["statuses"],
+        ["comments"],
+        ["delete", 7],
+        ["warning", "Could not remove stale merge-ready notice: delete failure"],
+    ]
+
+
+def test_notice_post_write_recheck_closes_authorization_race():
+    calls = _run_head_update_notice(
+        post_statuses=[{"context": "merge-ready-head", "state": "success"}]
+    )
+
+    assert [call[0] for call in calls] == [
+        "get",
+        "statuses",
+        "comments",
+        "statuses",
+        "get",
+        "create",
+        "statuses",
+        "get",
+        "delete",
+    ]
+    assert calls[-1] == ["delete", 99]
 
 
 def test_status_or_live_pull_failure_remains_fail_closed():
