@@ -49,16 +49,10 @@ import subprocess
 import sys
 from dataclasses import dataclass
 from pathlib import Path
+from typing import TYPE_CHECKING
 
-from packaging.markers import default_environment
-from packaging.requirements import InvalidRequirement, Requirement
-from packaging.utils import canonicalize_name
-from packaging.version import InvalidVersion, Version
-
-if sys.version_info >= (3, 11):
-    import tomllib
-else:  # pragma: no cover - exercised by the Python 3.10 CI lane
-    import tomli as tomllib
+if TYPE_CHECKING:
+    from packaging.requirements import Requirement
 
 # Packages the test suite REQUIRES at collection time. Keep this list
 # narrow — anything that's only used by a single test should be
@@ -184,6 +178,8 @@ def is_dep_declaration_file(path: str) -> bool:
 # time of pinning (#275). A bump here is a deliberate operator
 # decision; pr_validate refuses to silently follow a PR's lead.
 TRUSTED_TEST_PINS: tuple[str, ...] = (
+    "packaging>=23,<27",
+    'tomli>=2.0.1,<3; python_version < "3.11"',
     "pytest>=7.0.0,<9",
     "pytest-asyncio>=0.21.0,<1",
     "aiohttp>=3.9.0,<4",
@@ -214,6 +210,14 @@ def canonical_test_requirements(
     repo_root: Path | None = None,
 ) -> dict[str, Requirement]:
     """Parse the canonical PEP 508 requirements for the test extra."""
+
+    from packaging.requirements import Requirement
+    from packaging.utils import canonicalize_name
+
+    if sys.version_info >= (3, 11):
+        import tomllib
+    else:  # pragma: no cover - exercised by the Python 3.10 CI lane
+        import tomli as tomllib
 
     root = repo_root or PROJECT_ROOT
     data = tomllib.loads((root / "pyproject.toml").read_text())
@@ -302,6 +306,10 @@ def _active_test_packages(
     requirements: dict[str, Requirement],
 ) -> tuple[tuple[tuple[str, str, str], ...], tuple[DependencyProblem, ...]]:
     """Apply canonical markers and evaluate installed distribution versions."""
+
+    from packaging.markers import default_environment
+    from packaging.utils import canonicalize_name
+    from packaging.version import InvalidVersion, Version
 
     marker_environment = default_environment()
     marker_environment.update(environment)
@@ -416,8 +424,8 @@ def check_test_env(python: str | None = None) -> TestEnvStatus:
         OSError,
         KeyError,
         TypeError,
-        tomllib.TOMLDecodeError,
-        InvalidRequirement,
+        ValueError,
+        ModuleNotFoundError,
     ) as error:
         import_names = tuple(pkg for pkg, _, _ in REQUIRED_TEST_PACKAGES)
         return TestEnvStatus(

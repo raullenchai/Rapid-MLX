@@ -336,6 +336,33 @@ class TestCheckTestEnv:
         assert versions == {}
         assert error == "target interpreter metadata probe timed out after 15s"
 
+    def test_missing_packaging_does_not_crash_before_recovery(self):
+        """Bootstrap parsers are lazy so test_env_check can install them."""
+        import subprocess
+
+        script = """
+import builtins
+original_import = builtins.__import__
+def blocked_import(name, *args, **kwargs):
+    if name == "packaging" or name.startswith("packaging."):
+        raise ModuleNotFoundError("simulated missing packaging", name=name)
+    return original_import(name, *args, **kwargs)
+builtins.__import__ = blocked_import
+from scripts.pr_validate._test_env import check_test_env
+status = check_test_env()
+assert status.ok is False
+assert "canonical .[test] requirements invalid" in status.message
+assert "simulated missing packaging" in status.message
+"""
+        completed = subprocess.run(
+            [sys.executable, "-c", script],
+            cwd=Path(__file__).resolve().parent.parent,
+            capture_output=True,
+            text=True,
+        )
+
+        assert completed.returncode == 0, completed.stderr
+
     @pytest.mark.parametrize(
         "error",
         [

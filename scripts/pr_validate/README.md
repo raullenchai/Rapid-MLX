@@ -214,7 +214,8 @@ range, the step's recovery path runs in two attempts:
 
 1. **Trusted pins (always tried first).** Installs
    `TRUSTED_TEST_PINS` (a hardcoded, version-pinned set defined in
-   `_test_env.py` — currently `pytest>=7,<9`,
+   `_test_env.py` — including the lazy requirement parsers plus
+   `pytest>=7,<9`,
    `pytest-asyncio>=0.21,<1`) from PyPI directly with
    `pip install --isolated`. This bypasses the PR's `pyproject.toml`
    entirely so a malicious PR cannot poison the validator's runtime
