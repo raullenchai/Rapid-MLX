@@ -4485,24 +4485,11 @@ def test_mirror_hf_relink_of_local_blob_is_not_a_fetch(
     assert out["transferred_bytes"] == 0
 
 
-def test_mirror_nonnfs_relink_is_a_pinned_documented_limitation(
+def test_mirror_non_lfs_warm_relink_reports_cached(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """A non-LFS (no catalog sha) warm HF re-link counts as a fetch — the
-    ACCEPTED documented limitation (Atlas decision 2026-08-26, option A).
-
-    For non-LFS files the blob key is unknowable ahead of time, so a warm
-    re-link of an already-local blob is indistinguishable from a real download
-    without huggingface_hub downloader instrumentation. Per Atlas's decision
-    the mirror classifies these ``"hf"`` (a download): a no-sha tiny non-LFS
-    file can show ``Downloaded`` only when (1) R2 misses it AND (2) its blob is
-    already in HF's local cache. The weight bytes — the actual transfer a pull
-    exists for — stay exact via the LFS ``blob_already_local`` probe. This test
-    PINS that behavior so it is a contract, not an accident. Follow-up for full
-    exactness: huggingface_hub downloader instrumentation (post-0.13.1, Vector
-    lane) — https://github.com/raullenchai/Rapid-MLX/issues/2427.
-    """
+    """A no-sha warm HF re-link reports cached through transfer instrumentation."""
     repo_id = "mlx-community/Qwen3-0.6B-4bit"
     revision = "0badf00d" * 5
     # No sha256 — a non-LFS metadata file. Its blob key lives only in HF's
@@ -4529,6 +4516,9 @@ def test_mirror_nonnfs_relink_is_a_pinned_documented_limitation(
     (blob_dir / "already-local-blob").write_bytes(b"x" * 100)
 
     def _fake_hf(repo_id, filename, revision, cache_dir=None, **kwargs):
+        # Hub returns before constructing the supplied progress class when an
+        # existing blob can satisfy the request locally.
+        assert kwargs.get("tqdm_class") is not None
         snap = (
             Path(cache_dir)
             / f"models--{repo_id.replace('/', '--')}"
@@ -4544,6 +4534,7 @@ def test_mirror_nonnfs_relink_is_a_pinned_documented_limitation(
         return str(target)
 
     monkeypatch.setenv("RAPID_MLX_MODEL_MIRROR", "https://models.rapidmlx.com")
+    monkeypatch.setattr(_mirror, "_hf_supports_tqdm_class", lambda: True)
     out: dict[str, object] = {}
     with (
         patch("urllib.request.urlopen", side_effect=router),
@@ -4557,9 +4548,5 @@ def test_mirror_nonnfs_relink_is_a_pinned_documented_limitation(
 
     assert ok is True
     assert hf_mock.call_count == 1  # HF re-linked the local non-LFS blob
-    # PINNED: non-LFS relink counts as a fetch (documented limitation, option A).
-    assert out["network_fetch"] is True, (
-        "non-LFS warm relink shows Downloaded — ACCEPTED documented limitation "
-        "(Atlas 2026-08-26); LFS weights stay exact"
-    )
-    assert out["transferred_bytes"] == 100
+    assert out["network_fetch"] is False
+    assert out["transferred_bytes"] == 0
