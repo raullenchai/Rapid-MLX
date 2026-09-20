@@ -208,7 +208,7 @@ class DependencyProblem:
 
 def canonical_test_requirements(
     repo_root: Path | None = None,
-) -> dict[str, Requirement]:
+) -> dict[str, tuple[Requirement, ...]]:
     """Parse the canonical PEP 508 requirements for the test extra."""
 
     from packaging.requirements import Requirement
@@ -223,9 +223,10 @@ def canonical_test_requirements(
     data = tomllib.loads((root / "pyproject.toml").read_text())
     raw_requirements = data["project"]["optional-dependencies"][TEST_EXTRAS_NAME]
     requirements = [Requirement(raw) for raw in raw_requirements]
-    return {
-        canonicalize_name(requirement.name): requirement for requirement in requirements
-    }
+    by_name: dict[str, list[Requirement]] = {}
+    for requirement in requirements:
+        by_name.setdefault(canonicalize_name(requirement.name), []).append(requirement)
+    return {name: tuple(entries) for name, entries in by_name.items()}
 
 
 _TARGET_METADATA_PROBE = """
@@ -303,7 +304,7 @@ def _active_test_packages(
     *,
     environment: dict[str, str],
     versions: dict[str, str | None],
-    requirements: dict[str, Requirement],
+    requirements: dict[str, tuple[Requirement, ...]],
 ) -> tuple[tuple[tuple[str, str, str], ...], tuple[DependencyProblem, ...]]:
     """Apply canonical markers and evaluate installed distribution versions."""
 
@@ -317,8 +318,8 @@ def _active_test_packages(
     problems: list[DependencyProblem] = []
     for import_name, distribution_name, why in REQUIRED_TEST_PACKAGES:
         canonical_name = canonicalize_name(distribution_name)
-        requirement = requirements.get(canonical_name)
-        if requirement is None:
+        candidates = requirements.get(canonical_name)
+        if candidates is None:
             problems.append(
                 DependencyProblem(
                     import_name=import_name,
@@ -328,25 +329,34 @@ def _active_test_packages(
                 )
             )
             continue
-        if requirement.marker and not requirement.marker.evaluate(
-            environment=marker_environment,
-        ):
+        applicable = tuple(
+            requirement
+            for requirement in candidates
+            if requirement.marker is None
+            or requirement.marker.evaluate(environment=marker_environment)
+        )
+        if not applicable:
             continue
         active.append((import_name, distribution_name, why))
         installed = versions.get(distribution_name)
+        required_range = " and ".join(
+            str(requirement.specifier) or "any version" for requirement in applicable
+        )
         if installed is None:
             problems.append(
                 DependencyProblem(
                     import_name=import_name,
                     distribution_name=distribution_name,
                     installed_version=None,
-                    requirement=str(requirement.specifier) or "any version",
+                    requirement=required_range,
                 )
             )
             continue
         try:
-            satisfies = (
-                not requirement.specifier or Version(installed) in requirement.specifier
+            parsed_version = Version(installed)
+            satisfies = all(
+                not requirement.specifier or parsed_version in requirement.specifier
+                for requirement in applicable
             )
         except InvalidVersion:
             satisfies = False
@@ -356,7 +366,7 @@ def _active_test_packages(
                     import_name=import_name,
                     distribution_name=distribution_name,
                     installed_version=installed,
-                    requirement=str(requirement.specifier) or "any version",
+                    requirement=required_range,
                 )
             )
     return tuple(active), tuple(problems)

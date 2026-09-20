@@ -25,7 +25,7 @@ from pathlib import Path
 from unittest.mock import patch
 
 import pytest
-from packaging.requirements import InvalidRequirement
+from packaging.requirements import InvalidRequirement, Requirement
 
 # Standard pyproject parser — stdlib on 3.11+, vendored tomli marker
 # on 3.10 (already an existing dev dep).
@@ -690,13 +690,13 @@ class TestRequiredPackages:
 
         requirements = canonical_test_requirements()
         for import_name, distribution_name, _ in REQUIRED_TEST_PACKAGES:
-            requirement = requirements.get(canonicalize_name(distribution_name))
-            assert requirement is not None, (
+            candidates = requirements.get(canonicalize_name(distribution_name))
+            assert candidates is not None, (
                 f"{distribution_name!r} for {import_name!r} is absent from "
                 f".[{TEST_EXTRAS_NAME}]"
             )
-            assert requirement.specifier, (
-                f"canonical requirement {requirement!s} has no version constraint"
+            assert all(requirement.specifier for requirement in candidates), (
+                f"canonical requirements {candidates!r} include an unbounded entry"
             )
 
     @staticmethod
@@ -763,6 +763,35 @@ class TestRequiredPackages:
             (import_name, distribution_name)
             for import_name, distribution_name, _ in active
         }
+
+    def test_duplicate_distribution_markers_are_not_overwritten(self):
+        requirements = canonical_test_requirements()
+        requirements["pytest"] = (
+            Requirement('pytest<7; python_version < "3.12"'),
+            Requirement('pytest>=7; python_version >= "3.12"'),
+        )
+        _, problems = _active_test_packages(
+            environment={"platform_system": "Darwin", "python_version": "3.12"},
+            versions=self._valid_versions(),
+            requirements=requirements,
+        )
+
+        assert problems == ()
+
+    def test_all_simultaneously_applicable_constraints_must_pass(self):
+        requirements = canonical_test_requirements()
+        requirements["pytest"] = (
+            Requirement("pytest>=7"),
+            Requirement("pytest<9"),
+        )
+        _, problems = _active_test_packages(
+            environment={"platform_system": "Darwin"},
+            versions=self._valid_versions(),
+            requirements=requirements,
+        )
+
+        assert [problem.distribution_name for problem in problems] == ["pytest"]
+        assert problems[0].requirement == ">=7 and <9"
 
 
 # ---------------------------------------------------------------------------
