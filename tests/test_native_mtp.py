@@ -172,6 +172,18 @@ def _fake_mlx_vlm_modules(monkeypatch, drafter, kind: str = "mtp") -> None:
     drafters.load_drafter = lambda source, kind: (drafter, kind)
     utils = ModuleType("mlx_vlm.utils")
     utils.get_model_path = lambda repo, revision: f"/{repo}@{revision}"
+    utils.load_model = lambda repo, **kwargs: drafter
+    # The registry is vendored (step 3c): the fake drafter must enter
+    # through the registry's own load_drafter seam.
+    from rapid_mlx.models.mlx_vlm_vendored.speculative import (
+        drafters as vendored_registry,
+    )
+
+    monkeypatch.setattr(
+        vendored_registry,
+        "load_drafter",
+        lambda source, kind: (drafter, kind),
+    )
     monkeypatch.setitem(sys.modules, "mlx_vlm", root)
     monkeypatch.setitem(sys.modules, "mlx_vlm.speculative", speculative)
     monkeypatch.setitem(sys.modules, "mlx_vlm.speculative.drafters", drafters)
@@ -261,9 +273,7 @@ def test_glm_runtime_structural_probe_and_fail_closed(monkeypatch) -> None:
     generate.ar = ar
     # The runtime probe now binds the vendored text-AR core (step 3a), so
     # the same fakes must shadow the vendored package names.
-    vendored_generate = ModuleType(
-        "rapid_mlx.models.mlx_vlm_vendored.generate"
-    )
+    vendored_generate = ModuleType("rapid_mlx.models.mlx_vlm_vendored.generate")
     vendored_generate.__path__ = []
     vendored_generate.ar = ar
     models = ModuleType("mlx_vlm.models")
@@ -292,6 +302,18 @@ def test_glm_runtime_structural_probe_and_fail_closed(monkeypatch) -> None:
     mtp.Glm5NextMTPDraftModel = type(
         "Glm5NextMTPDraftModel", (), {"_RAPID_STATELESS_GLM_MTP": True}
     )
+    # The registry is vendored (step 3c): shadow the vendored drafter names
+    # so the probe sees the same fakes it sees for the pinned ones.
+    vendored_drafters = ModuleType(
+        "rapid_mlx.models.mlx_vlm_vendored.speculative.drafters"
+    )
+    vendored_drafters.__path__ = []
+    vendored_drafters.load_drafter = object()
+    vendored_mtp = ModuleType(
+        "rapid_mlx.models.mlx_vlm_vendored.speculative.drafters.glm5_next_mtp"
+    )
+    vendored_mtp.Glm5NextMTPDraftModel = mtp.Glm5NextMTPDraftModel
+    vendored_drafters.glm5_next_mtp = vendored_mtp
     compat = ModuleType("rapid_mlx.speculative.native_mtp.glm5_compat")
     compat.install_glm5_mtp_compatibility = lambda: False
     compat._is_stateless_drafter = lambda drafter_type: bool(
@@ -310,6 +332,9 @@ def test_glm_runtime_structural_probe_and_fail_closed(monkeypatch) -> None:
         "mlx_vlm.speculative": speculative,
         "mlx_vlm.speculative.drafters": drafters,
         "mlx_vlm.speculative.drafters.glm5_next_mtp": mtp,
+        "rapid_mlx.models.mlx_vlm_vendored.speculative.drafters": vendored_drafters,
+        "rapid_mlx.models.mlx_vlm_vendored"
+        ".speculative.drafters.glm5_next_mtp": vendored_mtp,
         "rapid_mlx.speculative.native_mtp.glm5_compat": compat,
     }.items():
         monkeypatch.setitem(sys.modules, name, module)
@@ -347,7 +372,7 @@ def test_qualified_glm_release_gets_rapid_stateless_adapter() -> None:
 
     assert runtime.have_glm_cache_runtime() is True
 
-    from mlx_vlm.speculative.drafters.glm5_next_mtp import (
+    from rapid_mlx.models.mlx_vlm_vendored.speculative.drafters.glm5_next_mtp import (
         Glm5NextMTPDraftModel,
         Model,
     )

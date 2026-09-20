@@ -52,8 +52,11 @@ def install_glm5_mtp_compatibility() -> bool:
 
     with _LOCK:
         from mlx_vlm.models.linear import linear
-        from mlx_vlm.speculative.drafters import glm5_next_mtp as package
-        from mlx_vlm.speculative.drafters.glm5_next_mtp import (
+
+        from rapid_mlx.models.mlx_vlm_vendored.speculative.drafters import (
+            glm5_next_mtp as package,
+        )
+        from rapid_mlx.models.mlx_vlm_vendored.speculative.drafters.glm5_next_mtp import (
             glm5_next_mtp as implementation,
         )
 
@@ -131,9 +134,13 @@ def install_glm5_mtp_compatibility() -> bool:
         RapidGlm5NextMTPDraftModel.__qualname__ = "Glm5NextMTPDraftModel"
         RapidGlm5NextMTPDraftModel.__module__ = implementation.__name__
 
-        implementation.Glm5NextMTPDraftModel = RapidGlm5NextMTPDraftModel
-        package.Glm5NextMTPDraftModel = RapidGlm5NextMTPDraftModel
-        package.Model = RapidGlm5NextMTPDraftModel
+        # setattr (not attribute assignment): the vendored package is typed,
+        # and this compat shim intentionally swaps the class object.
+        # setattr with constant names is intentional: the vendored package
+        # is typed and this compat shim swaps the class object (mypy misc).
+        setattr(implementation, "Glm5NextMTPDraftModel", RapidGlm5NextMTPDraftModel)  # noqa: B010
+        setattr(package, "Glm5NextMTPDraftModel", RapidGlm5NextMTPDraftModel)  # noqa: B010
+        setattr(package, "Model", RapidGlm5NextMTPDraftModel)  # noqa: B010
 
         _INSTALLED = True
         return True

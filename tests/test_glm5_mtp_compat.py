@@ -36,10 +36,13 @@ def _install_fake_runtime(monkeypatch, released_type):
     speculative.__path__ = []
     drafters = ModuleType("mlx_vlm.speculative.drafters")
     drafters.__path__ = []
-    package = ModuleType("mlx_vlm.speculative.drafters.glm5_next_mtp")
+    package = ModuleType(
+        "rapid_mlx.models.mlx_vlm_vendored.speculative.drafters.glm5_next_mtp"
+    )
     package.__path__ = []
     implementation = ModuleType(
-        "mlx_vlm.speculative.drafters.glm5_next_mtp.glm5_next_mtp"
+        "rapid_mlx.models.mlx_vlm_vendored"
+        ".speculative.drafters.glm5_next_mtp.glm5_next_mtp"
     )
     package.Glm5NextMTPDraftModel = released_type
     package.glm5_next_mtp = implementation
@@ -52,7 +55,8 @@ def _install_fake_runtime(monkeypatch, released_type):
         "mlx_vlm.models.linear": linear_module,
         "mlx_vlm.speculative": speculative,
         "mlx_vlm.speculative.drafters": drafters,
-        "mlx_vlm.speculative.drafters.glm5_next_mtp": package,
+        "rapid_mlx.models.mlx_vlm_vendored.speculative.drafters": drafters,
+        "rapid_mlx.models.mlx_vlm_vendored.speculative.drafters.glm5_next_mtp": package,
         implementation.__name__: implementation,
     }.items():
         monkeypatch.setitem(sys.modules, name, module)

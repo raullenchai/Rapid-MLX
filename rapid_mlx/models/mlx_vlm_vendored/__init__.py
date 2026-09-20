@@ -300,7 +300,65 @@ vendored copy differs by exactly the deviations listed):
   utils ``93d2ed29ac7b7c378536bf09d22eb570d5abb1f2d338dc550e59a84468b6a9ff``.
   ``__init__.py`` is a reduced shim (``VENDOR-DEVIATION(subset-exports)``):
   the upstream init also re-exports ``load_drafter``; the drafter registry
-  and concrete drafters land in a later step-3 slice.
+  lives in this package under ``speculative/drafters/`` (below).
+
+- ``speculative/drafters/`` — the drafter registry and the served drafter
+  families, verbatim from ``mlx_vlm/speculative/drafters`` @ v0.7.1
+  (step-3c slice): ``__init__.py`` (registry; upstream digest
+  ``7e9fd507dd4ec5aa880d7b0cd04a9f09fbc60ce34e7471b7fbc61863f68a714f``;
+  redirects: the ``dspark``/``laguna_dflash``/``muse_glimmer_assistant``
+  class imports → pinned upstream (drafter families outside the served
+  set, their closures are not vendored), and ``load_drafter``'s lazy
+  ``...utils`` → pinned ``mlx_vlm.utils`` (load/get_model_path are step-3e
+  scope)), ``compatibility.py`` (digest
+  ``e360a7f03f25da810229ab04f5a68c667cc3831d291c3c22c03e1a0efa0ee2c4``),
+  ``mtp_base.py`` (digest
+  ``3e071843a4fabca2f7be20c15b04ab1e45ac178d4fa63d7f108684787a2262ab``),
+  ``mtp_split.py`` (digest
+  ``55afe4b6341ee97d764da90af3d404b0cc86a2a355d198b1d4d299be8040ed2f``) —
+  verbatim, no deviations;
+  ``glm5_next_mtp/`` (digests ``__init__``
+  ``ce16dd3c620b86198ba0a616dc845e3feb424b53f27ff827edf05a88147f4085``,
+  ``config``
+  ``8cd9c04959ab93441968c18199a94d5bad006ccdb02cf58208bb47d4aed4268e``,
+  ``glm5_next_mtp``
+  ``6c9a65e7925ceb92b9d3d086abbd814e289c3b92d9f951dda7fae0c71c23ddaf``,
+  ``split``
+  ``fd44ac09875312a9a3afae793ba7e38671d45555b8d34eb4de4361e3dbfe5f95``;
+  redirects: ``models.glm5_next.{config,language}`` and
+  ``models.cache`` → pinned upstream, the glm5_next family lands in
+  step-3c-2 and ``models/cache.py`` in a later slice);
+  ``qwen3_5_mtp/`` (digests ``__init__``
+  ``2dac026a94d20fac3247e98a14f823d9a2721cd272ff1df73a2bda93d5213191``,
+  ``config``
+  ``4555b3973a8dd77fade607b27d79471b7241fa3eb94b4073887a363b0c367409``,
+  ``qwen3_5_mtp``
+  ``3b2cf5cf0e83393a331fdd95394b812cda749d207a96b9bd4905bc025df85876``,
+  ``split``
+  ``0cd02dacee282ed6702ab49863f4c300f1acab9e5d2ed3c56a835cad0c2dc128``;
+  redirects: ``models.qwen3_5{,_moe}.{config,language}`` and
+  ``models.cache`` → pinned upstream, step-3c-3 scope);
+  ``qwen3_dflash/`` (digests ``__init__``
+  ``929c03a2169b49c25974f4d292d74b35f3f511acdf459e7e29a0c4bf3083f06b``,
+  ``config``
+  ``d7ab8dd8742b2232ece0e1240a316e8df5a647f62a6042614cb966fd146ac31e``,
+  ``dflash``
+  ``4e92910a4f364cccab07c2de1c242177bf62dd849896ba80de32279fc7002cb3``,
+  ``parity_check``
+  ``1712776c25dbeb045190397e3bc683d68f072ecc81c543457f432a033a68b77f``;
+  redirects: ``models.{activations,cache,rope_utils}`` → pinned
+  upstream); ``dflash2/`` (digests ``__init__``
+  ``94b557b7ab3de885bbe98ead9ba9e48828330fc0f76a0bb37d7e396f37d72683``,
+  ``config``
+  ``af864e1190a2eca902adb31cf2ad21e88dc5d2892b3a3d21b2e75b37798930f3``,
+  ``dflash2``
+  ``19287b0e436c6750ccabfcdfb1388dea4123d6da506adea511ce16269a95e8f0``) —
+  verbatim, internal imports only. The MTP/dflash round-loop fixes from
+  the step-3b coordinator slices apply unchanged: the drafters consume
+  the vendored ``cache_state``/``common`` via package-relative imports.
+  Consumers: ``speculative/native_mtp/runtime.py`` and
+  ``speculative/native_mtp/glm5_compat.py`` bind this registry
+  (vendored-first, pinned mlx-vlm fallback retained for the transition).
 
 - ``models/`` — verbatim model foundations (step-3b slice): ``base.py``
   (657 lines; upstream digest
