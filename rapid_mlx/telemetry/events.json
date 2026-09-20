@@ -137,9 +137,19 @@
       "_about": [
         "There is no canonical quantization enum in the engine, so this is the",
         "observed closed set of quant tokens carried by rapid_mlx/aliases.json",
-        "alias names (4bit, 8bit, 6bit, bf16, 2bit, 3bit, mxfp4, q4/q8, dwq,",
-        "fp16, nvfp4). 'other' absorbs anything new so a fresh alias can never",
-        "put an unknown token on the wire; 'unknown' means we could not tell."
+        "alias names and hf_paths, made canonical: ONE value per concept.",
+        "The catalog spells the same thing two ways ('granite-4.2-30b-4bit' vs",
+        "its 'granite-4.2-30b-q4-mlx' checkpoint, 'ltx-2.5-mlx-q8',",
+        "'cogvideox-fun-5b-q4'), so the 'q<n>' spelling is NORMALIZED to",
+        "'<n>bit' -- q4->4bit, q6->6bit, q8->8bit -- and q4/q8 are deliberately",
+        "NOT values here. rapid_mlx/telemetry/quant.py:quant_token() is the",
+        "only normalization and every emitter must go through it; when a name",
+        "carries both a scheme and a width ('gpt-oss-20b-mxfp4-q8') the scheme",
+        "wins. 'other' absorbs a quantization we have no canonical name for",
+        "yet so a fresh alias can never put an unknown token on the wire;",
+        "'unknown' means the name carries no quantization marker at all.",
+        "tests/test_telemetry_registry_drift.py walks the whole catalog",
+        "through quant_token() and fails if any name maps outside this enum."
       ],
       "values": [
         "2bit", "3bit", "4bit", "6bit", "8bit",
