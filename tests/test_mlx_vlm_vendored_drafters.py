@@ -412,6 +412,51 @@ DEVIATIONS = {
                     )
 """,
         ),
+        (
+            """            gate_up_scales_key = f"{gate_up_key}_scales"
+            if gate_up_scales_key in out:
+                gate_scales, up_scales = mx.split(
+                    out.pop(gate_up_scales_key), 2, axis=-2
+                )
+                out[f"{prefix}.switch_mlp.gate_proj.scales"] = gate_scales
+                out[f"{prefix}.switch_mlp.up_proj.scales"] = up_scales
+
+            # Rapid upstream-bugfix (documented deviation): pinned 0.7.1
+            # moves the fused scales but leaves the fused biases behind, so
+            # affine-quantized experts lose required quantization metadata.
+            gate_up_biases_key = f"{gate_up_key}_biases"
+            if gate_up_biases_key in out:
+                gate_biases, up_biases = mx.split(
+                    out.pop(gate_up_biases_key), 2, axis=-2
+                )
+                out[f"{prefix}.switch_mlp.gate_proj.biases"] = gate_biases
+                out[f"{prefix}.switch_mlp.up_proj.biases"] = up_biases
+
+            down_key = f"{prefix}.experts.down_proj"
+            out[f"{prefix}.switch_mlp.down_proj.weight"] = out.pop(down_key)
+            if f"{down_key}_scales" in out:
+                out[f"{prefix}.switch_mlp.down_proj.scales"] = out.pop(
+                    f"{down_key}_scales"
+                )
+            if f"{down_key}_biases" in out:
+                out[f"{prefix}.switch_mlp.down_proj.biases"] = out.pop(
+                    f"{down_key}_biases"
+                )""",
+            """            gate_up_scales_key = f"{gate_up_key}_scales"
+            if gate_up_scales_key in out:
+                gate_scales, up_scales = mx.split(
+                    out.pop(gate_up_scales_key), 2, axis=-2
+                )
+                out[f"{prefix}.switch_mlp.gate_proj.scales"] = gate_scales
+                out[f"{prefix}.switch_mlp.up_proj.scales"] = up_scales
+
+            down_key = f"{prefix}.experts.down_proj"
+            out[f"{prefix}.switch_mlp.down_proj.weight"] = out.pop(down_key)
+            if f"{down_key}_scales" in out:
+                out[f"{prefix}.switch_mlp.down_proj.scales"] = out.pop(
+                    f"{down_key}_scales"
+                )""",
+        ),
     ],
     "__init__.py": [
         (
@@ -669,10 +714,28 @@ import shutil""",
             with open(staging / "config.json", "w") as f:
                 json.dump(dict(sorted(draft_config.items())), f, indent=2)
 
+            # Rapid upstream-bugfix (documented deviation): tokenizer
+            # sidecars are copied through symlinks, so an untrusted
+            # checkpoint could copy an arbitrary readable host file into
+            # the generated output; resolve each sidecar and require it
+            # to stay inside the checkpoint directory or the
+            # repository's own HF blob cache.
+            resolved_source = source_path.resolve()
+            allowed_roots = [resolved_source]
+            blobs_root = resolved_source.parent.parent / "blobs"
+            if resolved_source.parent.name == "snapshots" and blobs_root.is_dir():
+                allowed_roots.append(blobs_root.resolve())
             for name in self.tokenizer_files:
                 src = source_path / name
-                if src.exists():
-                    shutil.copy(src, staging / name)
+                if not src.exists():
+                    continue
+                resolved = src.resolve()
+                if not any(resolved.is_relative_to(root) for root in allowed_roots):
+                    raise ValueError(
+                        f"tokenizer sidecar escapes the checkpoint "
+                        f"directory: {name!r}"
+                    )
+                shutil.copy(resolved, staging / name)
 
             # Install under a per-destination advisory lock: concurrent
             # splits' destination moves must not interleave. The old
@@ -807,29 +870,35 @@ import shutil""",
             """""",
         ),
         (
-            """        )
-        output_path = Path(output)
-
-        with open(source_path / "config.json") as f:""",
-            """        )
-        output_path = Path(output)
-        output_path.mkdir(parents=True, exist_ok=True)
-
-        with open(source_path / "config.json") as f:""",
-        ),
-        (
-            """from ...fp8 import transform_fp8_weights
-
-# Documented pinned redirects: quant_utils/utils live at the mlx_vlm root
-# and are vendored by later slices (quant_utils exists in this package;
-# utils is step-3e scope).
-from mlx_vlm.utils import get_model_path
-
-from ...quant_utils import get_quantization_params
+            """def _weight_map(model_path: Path) -> Dict[str, str]:
+    index_path = model_path / "model.safetensors.index.json"
+    if not index_path.exists():
+        return {}
+    with open(index_path) as f:
+        index = json.load(f)
+    # Rapid upstream-bugfix (documented deviation): pinned 0.7.1 assumes
+    # both the index document and ``weight_map`` are objects; a malformed
+    # index crashed with ``AttributeError`` instead of a clear error.
+    weight_map = index.get("weight_map") if isinstance(index, dict) else None
+    if not isinstance(weight_map, dict):
+        raise ValueError(
+            f"malformed safetensors index {index_path.name}: "
+            "weight_map must be an object"
+        )
+    for filename in weight_map.values():
+        if not isinstance(filename, str):
+            raise ValueError(
+                f"malformed safetensors index {index_path.name}: "
+                f"non-string filename entry {filename!r}"
+            )
+    return weight_map
 """,
-            """from ...fp8 import transform_fp8_weights
-from ...quant_utils import get_quantization_params
-from ...utils import get_model_path
+            """def _weight_map(model_path: Path) -> Dict[str, str]:
+    index_path = model_path / "model.safetensors.index.json"
+    if not index_path.exists():
+        return {}
+    with open(index_path) as f:
+        return json.load(f).get("weight_map", {})
 """,
         ),
         (
@@ -870,34 +939,30 @@ from ...utils import get_model_path
 """,
         ),
         (
-            """def _weight_map(model_path: Path) -> Dict[str, str]:
-    index_path = model_path / "model.safetensors.index.json"
-    if not index_path.exists():
-        return {}
-    with open(index_path) as f:
-        index = json.load(f)
-    # Rapid upstream-bugfix (documented deviation): pinned 0.7.1 assumes
-    # both the index document and ``weight_map`` are objects; a malformed
-    # index crashed with ``AttributeError`` instead of a clear error.
-    weight_map = index.get("weight_map") if isinstance(index, dict) else None
-    if not isinstance(weight_map, dict):
-        raise ValueError(
-            f"malformed safetensors index {index_path.name}: "
-            "weight_map must be an object"
-        )
-    for filename in weight_map.values():
-        if not isinstance(filename, str):
-            raise ValueError(
-                f"malformed safetensors index {index_path.name}: "
-                f"non-string filename entry {filename!r}"
-            )
-    return weight_map""",
-            """def _weight_map(model_path: Path) -> Dict[str, str]:
-    index_path = model_path / "model.safetensors.index.json"
-    if not index_path.exists():
-        return {}
-    with open(index_path) as f:
-        return json.load(f).get("weight_map", {})""",
+            """        )
+        output_path = Path(output)
+
+        with open(source_path / "config.json") as f:""",
+            """        )
+        output_path = Path(output)
+        output_path.mkdir(parents=True, exist_ok=True)
+
+        with open(source_path / "config.json") as f:""",
+        ),
+        (
+            """from ...fp8 import transform_fp8_weights
+
+# Documented pinned redirects: quant_utils/utils live at the mlx_vlm root
+# and are vendored by later slices (quant_utils exists in this package;
+# utils is step-3e scope).
+from mlx_vlm.utils import get_model_path
+
+from ...quant_utils import get_quantization_params
+""",
+            """from ...fp8 import transform_fp8_weights
+from ...quant_utils import get_quantization_params
+from ...utils import get_model_path
+""",
         ),
     ],
 }
@@ -1132,6 +1197,79 @@ def test_mtp_split_updates_through_output_symlink(tmp_path):
         p for p in tmp_path.glob(".*mtp-split-*") if not p.name.endswith("-lock")
     ]
     assert not leftovers
+
+
+def test_mtp_split_rejects_escaping_tokenizer_sidecar(tmp_path):
+    """Tokenizer sidecars are confined like weight shards: a symlink to
+    an arbitrary host file must not be copied into the output."""
+    import mlx.core as mx
+
+    from rapid_mlx.models.mlx_vlm_vendored.speculative.drafters.mtp_split import (
+        MTPSplitter,
+    )
+
+    class StubSplitter(MTPSplitter):
+        output_model_type = "qwen3_5_mtp"
+        tokenizer_files = ["tokenizer.json"]
+
+        def select_keys(self, key, text_config):
+            return True
+
+        def depth(self, text_config):
+            return 3
+
+        def transform(self, tensors, text_config, source_is_mlx):
+            return {"w": mx.zeros((1,))}
+
+        def quantization(self, weights, source_config, text_config, quant_opts):
+            return None
+
+    source = tmp_path / "src"
+    source.mkdir()
+    (source / "config.json").write_text(
+        json.dumps(
+            {
+                "model_type": "qwen3_5",
+                "text_config": {"model_type": "qwen3_5", "num_hidden_layers": 4},
+            }
+        )
+    )
+    mx.save_safetensors(
+        str(source / "model.safetensors"),
+        {"w": mx.zeros((1,))},
+        metadata={"format": "mlx"},
+    )
+    secret = tmp_path / "secret.txt"
+    secret.write_text("host secret")
+    (source / "tokenizer.json").symlink_to(secret)
+    with pytest.raises(ValueError, match="tokenizer sidecar escapes"):
+        StubSplitter().split(str(source), str(tmp_path / "out"))
+
+    # a sidecar symlink inside the trusted HF blob cache keeps loading
+    hub = tmp_path / "hub" / "models--org--m"
+    snapshot = hub / "snapshots" / "rev"
+    snapshot.mkdir(parents=True)
+    blobs = hub / "blobs"
+    blobs.mkdir()
+    blob = blobs / "tok"
+    blob.write_text("{}")
+    (snapshot / "config.json").write_text(
+        json.dumps(
+            {
+                "model_type": "qwen3_5",
+                "text_config": {"model_type": "qwen3_5", "num_hidden_layers": 4},
+            }
+        )
+    )
+    mx.save_safetensors(
+        str(snapshot / "model.safetensors"),
+        {"w": mx.zeros((1,))},
+        metadata={"format": "mlx"},
+    )
+    (snapshot / "tokenizer.json").symlink_to(blob)
+    out = tmp_path / "out2"
+    StubSplitter().split(str(snapshot), str(out))
+    assert (out / "tokenizer.json").read_text() == "{}"
 
 
 def test_mtp_split_restores_broken_symlink_destination(tmp_path, monkeypatch):
@@ -1629,6 +1767,40 @@ def test_qwen3_next_postprocess_rejects_partial_expert_group():
     splitter.postprocess(complete, {"num_experts": 2})
     assert "blk.0.switch_mlp.gate_proj.weight" in complete
     assert "blk.0.switch_mlp.gate_proj.scales" not in complete
+
+
+def test_qwen35_sanitize_moves_fused_biases():
+    """Fused expert gate_up/down quantization biases must reach the
+    switch_mlp keys — pinned 0.7.1 moved only the scales."""
+    import mlx.core as mx
+
+    from rapid_mlx.models.mlx_vlm_vendored.speculative.drafters.qwen3_5_mtp import (
+        qwen3_5_mtp as qwen3_5_module,
+    )
+
+    weights = {
+        "layer.0.experts.gate_up_proj": mx.zeros((4, 2)),
+        "layer.0.experts.gate_up_proj_scales": mx.ones((4, 1)),
+        "layer.0.experts.gate_up_proj_biases": mx.full((4, 1), 2),
+        "layer.0.experts.down_proj": mx.zeros((2, 4)),
+        "layer.0.experts.down_proj_scales": mx.ones((2, 1)),
+        "layer.0.experts.down_proj_biases": mx.full((2, 1), 3),
+    }
+    out = qwen3_5_module.Qwen3_5MTPDraftModel.sanitize(None, weights)
+    for key in (
+        "layer.0.switch_mlp.gate_proj.biases",
+        "layer.0.switch_mlp.up_proj.biases",
+        "layer.0.switch_mlp.down_proj.biases",
+        "layer.0.switch_mlp.gate_proj.scales",
+        "layer.0.switch_mlp.up_proj.scales",
+        "layer.0.switch_mlp.down_proj.scales",
+    ):
+        assert key in out, key
+    assert "layer.0.experts.gate_up_proj_biases" not in out
+    assert "layer.0.experts.down_proj_biases" not in out
+    assert mx.array_equal(
+        out["layer.0.switch_mlp.down_proj.biases"], mx.full((2, 1), 3)
+    )
 
 
 def test_qwen35_text_config_routes_qwen3_next_to_moe():

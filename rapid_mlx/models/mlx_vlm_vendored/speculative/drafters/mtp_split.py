@@ -355,10 +355,28 @@ class MTPSplitter:
             with open(staging / "config.json", "w") as f:
                 json.dump(dict(sorted(draft_config.items())), f, indent=2)
 
+            # Rapid upstream-bugfix (documented deviation): tokenizer
+            # sidecars are copied through symlinks, so an untrusted
+            # checkpoint could copy an arbitrary readable host file into
+            # the generated output; resolve each sidecar and require it
+            # to stay inside the checkpoint directory or the
+            # repository's own HF blob cache.
+            resolved_source = source_path.resolve()
+            allowed_roots = [resolved_source]
+            blobs_root = resolved_source.parent.parent / "blobs"
+            if resolved_source.parent.name == "snapshots" and blobs_root.is_dir():
+                allowed_roots.append(blobs_root.resolve())
             for name in self.tokenizer_files:
                 src = source_path / name
-                if src.exists():
-                    shutil.copy(src, staging / name)
+                if not src.exists():
+                    continue
+                resolved = src.resolve()
+                if not any(resolved.is_relative_to(root) for root in allowed_roots):
+                    raise ValueError(
+                        f"tokenizer sidecar escapes the checkpoint "
+                        f"directory: {name!r}"
+                    )
+                shutil.copy(resolved, staging / name)
 
             # Install under a per-destination advisory lock: concurrent
             # splits' destination moves must not interleave. The old

@@ -501,11 +501,26 @@ class Qwen3_5MTPDraftModel(nn.Module):
                 out[f"{prefix}.switch_mlp.gate_proj.scales"] = gate_scales
                 out[f"{prefix}.switch_mlp.up_proj.scales"] = up_scales
 
+            # Rapid upstream-bugfix (documented deviation): pinned 0.7.1
+            # moves the fused scales but leaves the fused biases behind, so
+            # affine-quantized experts lose required quantization metadata.
+            gate_up_biases_key = f"{gate_up_key}_biases"
+            if gate_up_biases_key in out:
+                gate_biases, up_biases = mx.split(
+                    out.pop(gate_up_biases_key), 2, axis=-2
+                )
+                out[f"{prefix}.switch_mlp.gate_proj.biases"] = gate_biases
+                out[f"{prefix}.switch_mlp.up_proj.biases"] = up_biases
+
             down_key = f"{prefix}.experts.down_proj"
             out[f"{prefix}.switch_mlp.down_proj.weight"] = out.pop(down_key)
             if f"{down_key}_scales" in out:
                 out[f"{prefix}.switch_mlp.down_proj.scales"] = out.pop(
                     f"{down_key}_scales"
+                )
+            if f"{down_key}_biases" in out:
+                out[f"{prefix}.switch_mlp.down_proj.biases"] = out.pop(
+                    f"{down_key}_biases"
                 )
 
         pattern = re.compile(

@@ -348,7 +348,9 @@ vendored copy differs by exactly the deviations listed):
   directory or the repository's own HF blob cache — pinned 0.7.1
   followed any symlink — and a malformed index (non-object document,
   missing or non-object ``weight_map``, non-string filename entries)
-  raises a clear ``ValueError`` — pinned 0.7.1
+  raises a clear ``ValueError`` and tokenizer sidecars are confined to
+  the checkpoint directory or the repository's own HF blob cache —
+  pinned 0.7.1
   writes directly into the destination, so a pre-existing directory
   keeps stale tokenizer files and a mid-way failure pairs new weights
   with an old ``config.json``;
@@ -388,7 +390,10 @@ vendored copy differs by exactly the deviations listed):
   prefix to carry all ``num_experts`` entries (missing or partial groups
   raise with the missing keys listed instead of silently saving an
   incomplete checkpoint — pinned 0.7.1 skipped them), while quantization
-  metadata stays optional but must be complete when present. The drafter registry also
+  metadata stays optional but must be complete when present;
+  ``qwen3_5_mtp.py`` ``sanitize`` moves the fused expert quantization
+  biases alongside the scales — pinned 0.7.1 left them under the fused
+  keys, dropping required metadata from affine-quantized checkpoints. The drafter registry also
   installs a Rapid binding hook: ``load_drafter`` pre-registers a
   package-compatible ``sys.modules`` shim for the loaded family (from
   ``glm5_next_mtp``, ``qwen3_5_mtp``, ``qwen3_dflash``, ``dflash2``)
