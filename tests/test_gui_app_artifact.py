@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import importlib.util
 import json
+import re
 from pathlib import Path
 
 import pytest
@@ -92,11 +93,28 @@ def test_gui_artifact_producer_uses_trusted_mac_only_after_promotion():
     workflow = yaml.safe_load(WORKFLOW.read_text())
     producer = workflow["jobs"]["gui-app-build"]
     condition = str(producer["if"])
-    producer_source = json.dumps(producer)
+
+    def strings(value):
+        if isinstance(value, str):
+            yield value
+        elif isinstance(value, dict):
+            for key, nested in value.items():
+                yield from strings(key)
+                yield from strings(nested)
+        elif isinstance(value, list):
+            for nested in value:
+                yield from strings(nested)
 
     assert producer["runs-on"] == "manzanita-standard"
-    assert "needs.changes.outputs.full_gate == 'true'" in condition
-    assert "secrets." not in producer_source
+    assert condition == (
+        "!cancelled() && "
+        "needs.changes.result == 'success' && "
+        "needs.changes.outputs.desktop == 'true' && "
+        "needs.changes.outputs.full_gate == 'true' && "
+        "needs.queue-tree-evidence.outputs.reuse_mac != 'true'"
+    )
+    secret_context = re.compile(r"(?<![A-Za-z0-9_])secrets(?![A-Za-z0-9_])", re.I)
+    assert not any(secret_context.search(value) for value in strings(producer))
 
 
 def test_required_gui_contract_job_runs_artifact_tests():
