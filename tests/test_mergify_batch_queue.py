@@ -130,7 +130,12 @@ def test_ready_authorization_is_bound_to_the_exact_head_commit():
     assert "merge-ready" in job["if"]
     assert "merge-ready-mac" in job["if"]
     assert "github.event.action == 'labeled'" in job["if"]
+    assert job["concurrency"] == {
+        "group": "merge-ready-stale-notice-${{ github.event.pull_request.number }}",
+        "cancel-in-progress": "false",
+    }
     assert job["permissions"] == {
+        "issues": "write",
         "pull-requests": "read",
         "statuses": "write",
     }
@@ -146,8 +151,8 @@ def test_ready_authorization_is_bound_to_the_exact_head_commit():
     assert "GITHUB_RUN_ATTEMPT" in script
     assert "github.rest.pulls.get" in script
     assert "livePull.head.sha === context.payload.pull_request.head.sha" in script
-    assert "github.paginate" not in script
-    assert "github.rest.issues" not in script
+    assert "github.paginate" in script
+    assert "github.rest.issues.deleteComment" in script
     assert "merge-requeue" not in script
     assert "checkout" not in script.lower()
 
@@ -160,6 +165,7 @@ def _run_authorization_script(
     live_head: str = "head-sha",
     fail_status_call: int | None = None,
     fail_get: bool = False,
+    comments: list[dict[str, object]] | None = None,
 ) -> dict[str, object]:
     """Execute the exact github-script body against deterministic API mocks."""
 
@@ -176,6 +182,7 @@ def _run_authorization_script(
             "liveHead": live_head,
             "failStatusCall": fail_status_call,
             "failGet": fail_get,
+            "comments": comments or [],
         }
     )
     harness = f"""
@@ -194,6 +201,7 @@ const context = {{
   }},
 }};
 const github = {{
+  paginate: async (method, args) => method(args).then((response) => response.data),
   rest: {{
     pulls: {{ get: async () => {{
       calls.push(["get"]);
@@ -209,6 +217,13 @@ const github = {{
       calls.push(["status", args.state]);
       if (scenario.failStatusCall === statusCalls) throw new Error("status failure");
     }} }},
+    issues: {{
+      listComments: async () => {{
+        calls.push(["comments"]);
+        return {{ data: scenario.comments }};
+      }},
+      deleteComment: async (args) => calls.push(["delete", args.comment_id]),
+    }},
   }},
 }};
 const core = {{ setFailed: (message) => calls.push(["failed", message]) }};
@@ -238,6 +253,33 @@ def test_initial_authorization_publishes_success_for_the_exact_head():
     assert result["calls"] == [
         ["status", "pending"],
         ["get"],
+        ["comments"],
+        ["status", "success"],
+    ]
+
+
+def test_fresh_authorization_removes_the_bot_owned_stale_notice():
+    result = _run_authorization_script(
+        labels=["merge-ready-mac"],
+        comments=[
+            {
+                "id": 7,
+                "body": "<!-- merge-ready-stale-head --> old",
+                "user": {"login": "github-actions[bot]"},
+            },
+            {
+                "id": 8,
+                "body": "<!-- merge-ready-stale-head --> human note",
+                "user": {"login": "maintainer"},
+            },
+        ],
+    )
+
+    assert result["calls"] == [
+        ["status", "pending"],
+        ["get"],
+        ["comments"],
+        ["delete", 7],
         ["status", "success"],
     ]
 
@@ -278,6 +320,7 @@ def _run_head_update_notice(
     live_head: str = "head-sha",
     refreshed_live_head: str | None = None,
     labels: list[str] | None = None,
+    refreshed_labels: list[str] | None = None,
     statuses: list[dict[str, str]] | None = None,
     refreshed_statuses: list[dict[str, str]] | None = None,
     comments: list[dict[str, object]] | None = None,
@@ -292,6 +335,7 @@ def _run_head_update_notice(
             "liveHead": live_head,
             "refreshedLiveHead": refreshed_live_head,
             "labels": labels if labels is not None else ["merge-ready-mac"],
+            "refreshedLabels": refreshed_labels,
             "statuses": statuses or [],
             "refreshedStatuses": refreshed_statuses,
             "comments": comments or [],
@@ -319,7 +363,11 @@ const github = {{
             ? scenario.liveHead
             : scenario.refreshedLiveHead,
         }},
-        labels: scenario.labels.map((name) => ({{ name }})),
+        labels: (
+          pullCalls === 1 || scenario.refreshedLabels === null
+            ? scenario.labels
+            : scenario.refreshedLabels
+        ).map((name) => ({{ name }})),
       }} }};
     }} }},
     repos: {{ listCommitStatusesForRef: async () => {{
@@ -399,6 +447,13 @@ def test_head_update_notice_skips_newer_heads_and_fresh_authorization():
         refreshed_statuses=[{"context": "merge-ready-head", "state": "success"}]
     ) == [["get"], ["statuses"], ["comments"], ["statuses"]]
     assert _run_head_update_notice(refreshed_live_head="newer-head") == [
+        ["get"],
+        ["statuses"],
+        ["comments"],
+        ["statuses"],
+        ["get"],
+    ]
+    assert _run_head_update_notice(refreshed_labels=[]) == [
         ["get"],
         ["statuses"],
         ["comments"],
