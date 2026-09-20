@@ -86,6 +86,8 @@ Decision:
 
 - Support Gemma 4 assistant-sidecar MTP only when the operator explicitly
   names a sidecar.
+- Fail closed for shared-K/V target layouts until their shortened producer-only
+  cache has a separately qualified assistant-layer mapping.
 - Keep ordinary Gemma 4 inference and automatic model defaults unchanged.
 - Preserve the batch-size-one runtime gate until a separate continuous-batch
   qualification exists.

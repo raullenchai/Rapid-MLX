@@ -983,6 +983,20 @@ def test_injected_class_exposes_mtp_max_batch_size_static_gate():
     assert getattr(target, "mtp_max_batch_size", None) == 1
 
 
+def test_inject_refuses_target_with_shortened_shared_kv_cache():
+    """Shared-KV targets fail before a sidecar or first-token cache lookup."""
+    from rapid_mlx.spec_decode.mtp.gemma4_inject import inject_mtp_support
+
+    try:
+        target = _build_tiny_gemma4_target_model()
+    except (TypeError, AttributeError) as exc:
+        pytest.skip(f"Gemma 4 ModelArgs schema mismatch: {exc}")
+
+    target.args.num_kv_shared_layers = 1
+    assert inject_mtp_support(target, allow_random_init=True) is False
+    assert not hasattr(target, "mtp_forward")
+
+
 def test_resolve_sidecar_refuses_non_hf_shape_local_typo(tmp_path):
     """Codex round-9 nit-fix locked in.
 

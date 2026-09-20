@@ -151,6 +151,21 @@ def _mtp_num_hidden_layers(config: dict[str, Any]) -> int:
     return 0
 
 
+def _external_sidecar_target_has_shared_kv(config: dict[str, Any]) -> bool:
+    """Whether a Gemma 4 target uses the shortened shared-K/V cache layout.
+
+    The current assistant injector addresses target cache entries by decoder
+    layer index. Gemma 4 E2B/E4B checkpoints omit borrower-layer cache slots,
+    so those indices are not valid until the injector grows an explicit
+    layer-to-producer-cache mapping. Refuse that layout at eligibility time
+    instead of allowing a first-token ``IndexError``.
+    """
+
+    text_config = config.get("text_config")
+    target_config = text_config if isinstance(text_config, dict) else config
+    return _safe_int(target_config.get("num_kv_shared_layers"), 0) > 0
+
+
 def detect_mtp_eligibility(
     config: dict[str, Any] | None,
     *,
@@ -202,6 +217,13 @@ def _detect_mtp_eligibility_verbose(
 
     if model_type in _EXTERNAL_SIDECAR_MODEL_TYPES:
         if has_external_sidecar:
+            if _external_sidecar_target_has_shared_kv(config):
+                return _DetectionResult(
+                    MTPEligibility.NONE,
+                    model_type,
+                    0,
+                    "external assistant sidecar does not support shared-KV targets",
+                )
             return _DetectionResult(
                 MTPEligibility.CHAIN,
                 model_type,

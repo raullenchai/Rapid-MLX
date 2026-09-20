@@ -512,6 +512,21 @@ def inject_mtp_support(
         )
         return False
 
+    # E2B/E4B targets use cross-layer K/V sharing and therefore expose only
+    # producer cache slots. This injector currently maps assistant layers by
+    # full decoder-layer index, which is valid only when every target layer has
+    # its own slot. Fail closed before resolving/loading the sidecar; otherwise
+    # the first draft would index beyond the shortened target cache.
+    target_shared_kv = int(getattr(inner.args, "num_kv_shared_layers", 0) or 0)
+    if target_shared_kv > 0:
+        logger.warning(
+            "[mtp.inject.gemma4] target uses num_kv_shared_layers=%d; "
+            "assistant-sidecar MTP does not yet map shared-KV borrower layers "
+            "to producer cache slots. Refusing to inject.",
+            target_shared_kv,
+        )
+        return False
+
     # ── Resolve sidecar (skipped under allow_random_init) ────────────
     assistant_cfg: dict | None = None
     weights_file: Path | None = None

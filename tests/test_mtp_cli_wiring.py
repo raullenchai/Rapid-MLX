@@ -112,6 +112,25 @@ def test_detect_sidecar_promotes_gemma4_multimodal_outer_wrapper():
     )
 
 
+def test_detect_sidecar_refuses_gemma4_shared_kv_target():
+    """Shortened producer-only cache layouts are not yet sidecar-safe."""
+    from rapid_mlx.spec_decode.mtp import (
+        MTPEligibility,
+        detect_mtp_eligibility,
+    )
+
+    config = {
+        "model_type": "gemma4",
+        "text_config": {
+            "num_hidden_layers": 35,
+            "num_kv_shared_layers": 20,
+        },
+    }
+    assert (
+        detect_mtp_eligibility(config, has_external_sidecar=True) is MTPEligibility.NONE
+    )
+
+
 def test_detect_sidecar_leaves_qwen3_5_with_mtp_layers_untouched():
     """Qwen3.5 with mtp_num_hidden_layers >= 1 still returns CHAIN
     regardless of the sidecar flag. Sidecar flag is additive — it

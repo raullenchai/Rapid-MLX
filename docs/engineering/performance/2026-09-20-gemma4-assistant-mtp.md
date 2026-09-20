@@ -9,6 +9,10 @@ not automatically select an assistant and do not change ordinary multimodal
 inference. Automatic draft-depth selection remains recommended because fixed
 `K=3` is workload-dependent rather than a universal speedup.
 
+Targets that use cross-layer K/V sharing remain fail-closed. Their cache holds
+producer slots rather than one slot per decoder layer, and this qualification
+does not establish the layer-to-producer mapping required by the assistant.
+
 ## Environment
 
 - Mac mini, Apple M4 Pro, 48 GB unified memory
@@ -89,6 +93,8 @@ and termination for each prompt. The qualification artifact SHA-256 was
 ## Limitations
 
 - This qualification covers batch size one only.
+- It covers targets with one cache slot per decoder layer; shared-K/V E2B/E4B
+  layouts remain ineligible.
 - It does not qualify continuous batching, sampled decoding, automatic model
   recommendation, or automatic assistant discovery.
 - Fixed `K=3` can regress low-acceptance workloads; the aggregate improvement

@@ -355,23 +355,29 @@ def test_speculative_config_mtp_populates_runtime_args() -> None:
     assert config_args.enable_ddtree is False
 
 
-def test_speculative_config_mtp_preserves_fixed_zero_depth() -> None:
+def test_speculative_config_mtp_preserves_fixed_zero_depth(monkeypatch) -> None:
     """CLI normalization must not replace explicit K=0 with a truthy default."""
-    from rapid_mlx.cli import _normalize_speculative_config_or_exit
+    from rapid_mlx import cli
+
+    # Exercise the regression shape: an alias whose omitted continuous setting
+    # would normally resolve to True must still keep the K=0 baseline serial.
+    monkeypatch.setattr(cli, "_alias_continuous_mtp_tier", lambda _model: "verified")
 
     args = _spec_config_args(
+        model="qualified/model",
         speculative_config=(
             '{"method":"mtp","model":"local/assistant",'
             '"num_speculative_tokens":0,"disable_auto_k":true}'
-        )
+        ),
     )
 
-    _normalize_speculative_config_or_exit(args)
+    cli._normalize_speculative_config_or_exit(args)
 
     assert args.spec_decode == "mtp"
     assert args.mtp_sidecar == "local/assistant"
     assert args.mtp_max_k == 0
     assert args.mtp_disable_auto_k is True
+    assert args.mtp_continuous_batching is False
 
 
 def test_speculative_config_native_mtp_populates_explicit_backend() -> None:
