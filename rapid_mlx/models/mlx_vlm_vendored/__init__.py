@@ -349,8 +349,15 @@ vendored copy differs by exactly the deviations listed):
   followed any symlink — and a malformed index (non-object document,
   missing or non-object ``weight_map``, non-string filename entries)
   raises a clear ``ValueError``, tokenizer sidecars are confined to
-  the checkpoint directory or the repository's own HF blob cache, and
-  fallback ``*.safetensors`` shards obey the same confinement —
+  the checkpoint directory or the repository's own HF blob cache and
+  copied through no-follow-opened descriptors, every confined shard
+  and sidecar is pinned with component-wise ``O_NOFOLLOW`` opens plus
+  identity checks so a concurrent path swap cannot redirect reads
+  outside the approved roots, fallback ``*.safetensors`` shards obey
+  the same confinement, the MLX-source path requires a uniform shard
+  format across selected shards (pinned 0.7.1 skipped sanitization
+  when any shard carried MLX metadata), and staging cleanup failures
+  are logged with the retained path instead of silently ignored —
   pinned 0.7.1
   writes directly into the destination, so a pre-existing directory
   keeps stale tokenizer files and a mid-way failure pairs new weights

@@ -885,12 +885,68 @@ import json
 import logging
 import os
 import shutil
+import stat
 import tempfile
 import uuid""",
             """import glob
 import importlib
 import json
 import shutil""",
+        ),
+        (
+            """def _is_mlx_safetensors(file: Path) -> bool:
+    with safe_open(file, framework="mlx") as f:
+        return (f.metadata() or {}).get("format") == "mlx"
+
+
+def _containing_root(resolved: Path, allowed_roots: List[Path]) -> Path:
+    for root in allowed_roots:
+        if resolved.is_relative_to(root):
+            return root
+    raise ValueError(f"{resolved.name!r} escapes the checkpoint directory")
+
+
+def _pin_confined_file(path: Path, base: Path) -> None:
+    # Rapid upstream-bugfix (documented deviation): resolve-then-open
+    # leaves a window where an untrusted checkpoint can swap a path
+    # component for a symlink between validation and read. Every
+    # component below the confinement base is opened with O_NOFOLLOW
+    # and the opened file's identity is pinned against the
+    # confinement-validated path; callers re-verify immediately after
+    # opening for reads so a concurrent swap aborts the split before
+    # any output is installed.
+    resolved = path.resolve()
+    base_resolved = base.resolve()
+    rel_parts = resolved.relative_to(base_resolved).parts
+    fd = os.open(base_resolved, os.O_RDONLY | os.O_DIRECTORY)
+    try:
+        for part in rel_parts[:-1]:
+            next_fd = os.open(
+                part, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW, dir_fd=fd
+            )
+            os.close(fd)
+            fd = next_fd
+        final_fd = os.open(rel_parts[-1], os.O_RDONLY | os.O_NOFOLLOW, dir_fd=fd)
+        try:
+            st_fd = os.fstat(final_fd)
+            if not stat.S_ISREG(st_fd.st_mode):
+                raise ValueError(f"{path.name!r} is not a regular file")
+            st_path = os.stat(resolved)
+            if (st_fd.st_dev, st_fd.st_ino) != (st_path.st_dev, st_path.st_ino):
+                raise ValueError(f"{path.name!r} changed during validation")
+        finally:
+            os.close(final_fd)
+    finally:
+        os.close(fd)
+
+
+""",
+            """def _is_mlx_safetensors(file: Path) -> bool:
+    with safe_open(file, framework="mlx") as f:
+        return (f.metadata() or {}).get("format") == "mlx"
+
+
+""",
         ),
         (
             """def _allowed_checkpoint_roots(source_path: Path) -> List[Path]:
@@ -1032,7 +1088,30 @@ import shutil""",
                         f"tokenizer sidecar escapes the checkpoint "
                         f"directory: {name!r}"
                     )
-                shutil.copy(resolved, staging / name)
+                base = _containing_root(resolved, allowed_roots)
+                _pin_confined_file(resolved, base)
+                # Copy through a no-follow-opened descriptor so the bytes
+                # read are the pinned file's, not whatever the path
+                # resolves to when the copy runs.
+                resolved_base = base.resolve()
+                rel_parts = resolved.relative_to(resolved_base).parts
+                fd = os.open(resolved_base, os.O_RDONLY | os.O_DIRECTORY)
+                try:
+                    for part in rel_parts[:-1]:
+                        next_fd = os.open(
+                            part,
+                            os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW,
+                            dir_fd=fd,
+                        )
+                        os.close(fd)
+                        fd = next_fd
+                    src_fd = os.open(
+                        rel_parts[-1], os.O_RDONLY | os.O_NOFOLLOW, dir_fd=fd
+                    )
+                finally:
+                    os.close(fd)
+                with os.fdopen(src_fd, "rb") as fsrc, open(staging / name, "wb") as fdst:
+                    shutil.copyfileobj(fsrc, fdst)
 
             # Install under a per-destination advisory lock: concurrent
             # splits' destination moves must not interleave. The old
@@ -1237,6 +1316,9 @@ import shutil""",
                             "safetensors index entry escapes the model "
                             f"directory: {filename!r}"
                         )
+                    _pin_confined_file(
+                        resolved_shard, _containing_root(resolved_shard, allowed_roots)
+                    )
                     yield resolved_shard, keys
                 return
 """,
@@ -1261,8 +1343,14 @@ import shutil""",
                     "safetensors shard escapes the checkpoint directory: "
                     f"{file.name!r}"
                 )
+            _pin_confined_file(
+                resolved_file, _containing_root(resolved_file, allowed_roots)
+            )
             with safe_open(resolved_file, framework="mlx") as f:
                 keys = [key for key in f.keys() if self.select_keys(key, text_config)]
+            _pin_confined_file(
+                resolved_file, _containing_root(resolved_file, allowed_roots)
+            )
             if keys:
                 yield resolved_file, keys
 """,
@@ -1430,6 +1518,7 @@ def test_mtp_splitter_rejects_index_shards_outside_model_dir(tmp_path):
     outside.write_bytes(b"x")
 
     benign = AllKeys()
+    (source / "model-00001.safetensors").write_bytes(b"x")
     (source / "model.safetensors.index.json").write_text(
         json.dumps({"weight_map": {"blk.0.mlp": "model-00001.safetensors"}})
     )
@@ -1759,7 +1848,7 @@ def test_mtp_split_restores_broken_symlink_destination(tmp_path, monkeypatch):
     def failing_copy(src, dst, **kwargs):
         raise OSError("simulated copy failure")
 
-    monkeypatch.setattr(mtp_split_module.shutil, "copy", failing_copy)
+    monkeypatch.setattr(mtp_split_module.shutil, "copyfileobj", failing_copy)
     with pytest.raises(OSError, match="simulated copy failure"):
         StubSplitter().split(str(source), str(link))
     assert link.is_symlink()
@@ -1952,7 +2041,7 @@ def test_mtp_split_does_not_tear_existing_output(tmp_path, monkeypatch):
     def failing_copy(src, dst, **kwargs):
         raise OSError("simulated copy failure")
 
-    monkeypatch.setattr(mtp_split_module.shutil, "copy", failing_copy)
+    monkeypatch.setattr(mtp_split_module.shutil, "copyfileobj", failing_copy)
     with pytest.raises(OSError, match="simulated copy failure"):
         StubSplitter().split(str(source), str(dest))
     # the pre-existing destination is untouched by the failed run
@@ -1961,7 +2050,7 @@ def test_mtp_split_does_not_tear_existing_output(tmp_path, monkeypatch):
     assert not (dest / "tokenizer.json").exists()
 
     # a clean run replaces the destination wholesale
-    monkeypatch.setattr(mtp_split_module.shutil, "copy", lambda s, d, **k: None)
+    monkeypatch.setattr(mtp_split_module.shutil, "copyfileobj", lambda s, d, **k: None)
     StubSplitter().split(str(source), str(dest))
     assert (dest / "config.json").read_text() != "stale"
     assert (dest / "model.safetensors").exists()
