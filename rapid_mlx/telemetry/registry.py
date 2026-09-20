@@ -73,7 +73,8 @@ def load_registry() -> dict[str, Any]:
     packaging bug, not a runtime condition, and it must be loud.
     """
 
-    return json.loads(registry_path().read_text(encoding="utf-8"))
+    parsed: dict[str, Any] = json.loads(registry_path().read_text(encoding="utf-8"))
+    return parsed
 
 
 def registry_version() -> int:
@@ -117,7 +118,9 @@ def _check_value(spec: dict[str, Any], value: Any, reg: dict[str, Any]) -> bool:
     if kind == "int":
         if isinstance(value, bool) or not isinstance(value, int):
             return False
-        return spec["min"] <= value <= spec["max"]
+        low: int = spec["min"]
+        high: int = spec["max"]
+        return low <= value <= high
 
     if kind == "enum":
         if not isinstance(value, str):
@@ -138,7 +141,8 @@ def _check_value(spec: dict[str, Any], value: Any, reg: dict[str, Any]) -> bool:
         return re.fullmatch(spec["pattern"], value) is not None
 
     # An unrecognised kind means the registry itself is malformed. Fail
-    # closed rather than letting an unchecked value through.
+    # closed rather than letting an unchecked value through — pinned by
+    # tests/test_telemetry_registry.py::test_unknown_kind_fails_closed.
     return False
 
 
@@ -159,10 +163,10 @@ def _validate_props(
             _log_once(log_key, f"{label}: unknown property {key!r} — event dropped")
             return None
 
+    # ``specs`` arrives already stripped of the ``_``-prefixed documentation
+    # keys — both callers filter them, so there is nothing to skip here.
     out: dict[str, Any] = {}
     for name, spec in specs.items():
-        if name.startswith("_"):
-            continue
         if name not in props:
             if spec.get("required", False):
                 _log_once(log_key, f"{label}: missing required property {name!r}")

@@ -161,6 +161,19 @@ def test_model_id_accepts_the_four_declared_shapes(model):
     assert reg.validate("model_served", _served(model=model)) is not None
 
 
+def test_unknown_kind_fails_closed():
+    """A malformed registry must reject, not wave the value through.
+
+    ``_check_value`` is exercised directly because the shipped
+    ``events.json`` (correctly) declares no such kind — the branch exists
+    so that a future bad edit to the registry cannot open a hole.
+    """
+
+    loaded = reg.load_registry()
+    assert reg._check_value({"kind": "freeform"}, "anything", loaded) is False
+    assert reg._check_value({}, "anything", loaded) is False
+
+
 def test_props_must_be_a_mapping():
     assert reg.validate("app_opened", ["model"]) is None  # type: ignore[arg-type]
 
