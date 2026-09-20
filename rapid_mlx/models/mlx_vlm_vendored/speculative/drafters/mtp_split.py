@@ -335,9 +335,29 @@ class MTPSplitter:
             # the destination is never destroyed before its replacement
             # exists.
             import fcntl
+            import stat as stat_module
 
             lock_path = output_path.parent / f".{output_path.name}.mtp-split-lock"
-            lock_handle = open(lock_path, "w")
+            # O_NOFOLLOW + regular-file/owner checks: the predictable lock
+            # path must not become a symlink-following write primitive for
+            # anyone who can write the output directory.
+            lock_fd = os.open(
+                lock_path, os.O_WRONLY | os.O_CREAT | os.O_NOFOLLOW, 0o600
+            )
+            try:
+                lock_stat = os.fstat(lock_fd)
+                if not stat_module.S_ISREG(lock_stat.st_mode):
+                    raise RuntimeError(
+                        f"split lock {lock_path} is not a regular file"
+                    )
+                if lock_stat.st_uid != os.getuid():
+                    raise RuntimeError(
+                        f"split lock {lock_path} is not owned by the current user"
+                    )
+                lock_handle = os.fdopen(lock_fd, "w")
+            except (OSError, RuntimeError):
+                os.close(lock_fd)
+                raise
             try:
                 fcntl.flock(lock_handle, fcntl.LOCK_EX)
                 self._install_staged(output_path, staging)

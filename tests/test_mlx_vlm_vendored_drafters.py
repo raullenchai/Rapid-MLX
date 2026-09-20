@@ -612,9 +612,29 @@ import shutil""",
             # the destination is never destroyed before its replacement
             # exists.
             import fcntl
+            import stat as stat_module
 
             lock_path = output_path.parent / f".{output_path.name}.mtp-split-lock"
-            lock_handle = open(lock_path, "w")
+            # O_NOFOLLOW + regular-file/owner checks: the predictable lock
+            # path must not become a symlink-following write primitive for
+            # anyone who can write the output directory.
+            lock_fd = os.open(
+                lock_path, os.O_WRONLY | os.O_CREAT | os.O_NOFOLLOW, 0o600
+            )
+            try:
+                lock_stat = os.fstat(lock_fd)
+                if not stat_module.S_ISREG(lock_stat.st_mode):
+                    raise RuntimeError(
+                        f"split lock {lock_path} is not a regular file"
+                    )
+                if lock_stat.st_uid != os.getuid():
+                    raise RuntimeError(
+                        f"split lock {lock_path} is not owned by the current user"
+                    )
+                lock_handle = os.fdopen(lock_fd, "w")
+            except (OSError, RuntimeError):
+                os.close(lock_fd)
+                raise
             try:
                 fcntl.flock(lock_handle, fcntl.LOCK_EX)
                 self._install_staged(output_path, staging)
@@ -689,32 +709,6 @@ import shutil""",
         return output_path""",
         ),
         (
-            """        )
-        output_path = Path(output)
-
-        with open(source_path / "config.json") as f:""",
-            """        )
-        output_path = Path(output)
-        output_path.mkdir(parents=True, exist_ok=True)
-
-        with open(source_path / "config.json") as f:""",
-        ),
-        (
-            """from ...fp8 import transform_fp8_weights
-
-# Documented pinned redirects: quant_utils/utils live at the mlx_vlm root
-# and are vendored by later slices (quant_utils exists in this package;
-# utils is step-3e scope).
-from mlx_vlm.utils import get_model_path
-
-from ...quant_utils import get_quantization_params
-""",
-            """from ...fp8 import transform_fp8_weights
-from ...quant_utils import get_quantization_params
-from ...utils import get_model_path
-""",
-        ),
-        (
             """    @staticmethod
     def _install_staged(output_path: Path, staging: Path) -> None:
         backup = None
@@ -740,6 +734,32 @@ from ...utils import get_model_path
             shutil.rmtree(backup, ignore_errors=True)
 """,
             """""",
+        ),
+        (
+            """        )
+        output_path = Path(output)
+
+        with open(source_path / "config.json") as f:""",
+            """        )
+        output_path = Path(output)
+        output_path.mkdir(parents=True, exist_ok=True)
+
+        with open(source_path / "config.json") as f:""",
+        ),
+        (
+            """from ...fp8 import transform_fp8_weights
+
+# Documented pinned redirects: quant_utils/utils live at the mlx_vlm root
+# and are vendored by later slices (quant_utils exists in this package;
+# utils is step-3e scope).
+from mlx_vlm.utils import get_model_path
+
+from ...quant_utils import get_quantization_params
+""",
+            """from ...fp8 import transform_fp8_weights
+from ...quant_utils import get_quantization_params
+from ...utils import get_model_path
+""",
         ),
         (
             """                for filename, keys in by_file.items():

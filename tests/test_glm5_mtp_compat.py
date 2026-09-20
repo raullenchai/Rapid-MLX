@@ -76,7 +76,7 @@ def _install_fake_runtime(monkeypatch, released_type):
         implementation.__name__: implementation,
     }.items():
         monkeypatch.setitem(sys.modules, name, module)
-    return package, implementation, pinned_package
+    return package, implementation, pinned_package, pinned_implementation
 
 
 def test_stateless_drafter_detection_covers_marker_signature_and_invalid_call():
@@ -98,7 +98,7 @@ def test_install_is_noop_for_future_stateless_upstream(monkeypatch):
         def __call__(self, tokens, hidden, cache, position, target_model):
             pass
 
-    package, _, _ = _install_fake_runtime(monkeypatch, FutureDrafter)
+    package, _, _, _ = _install_fake_runtime(monkeypatch, FutureDrafter)
     monkeypatch.setattr(glm5_compat, "_INSTALLED", False)
 
     assert glm5_compat.install_glm5_mtp_compatibility() is False
@@ -111,8 +111,8 @@ def test_installed_adapter_binds_and_runs_both_output_heads(monkeypatch):
         def validate_target_compatibility(self, target):
             self.validated = target
 
-    package, implementation, pinned_package = _install_fake_runtime(
-        monkeypatch, ReleasedDrafter
+    package, implementation, pinned_package, pinned_implementation = (
+        _install_fake_runtime(monkeypatch, ReleasedDrafter)
     )
     monkeypatch.setattr(glm5_compat, "_INSTALLED", False)
 
@@ -121,8 +121,10 @@ def test_installed_adapter_binds_and_runs_both_output_heads(monkeypatch):
     assert adapted is implementation.Glm5NextMTPDraftModel
     assert adapted is package.Model
     # The swap must also reach the pinned registry: the pinned package's
-    # class object is what pinned load_model resolves at construction.
+    # class object is what pinned load_model resolves at construction,
+    # and the pinned implementation module carries the canonical class.
     assert pinned_package.Glm5NextMTPDraftModel is adapted
+    assert pinned_implementation.Glm5NextMTPDraftModel is adapted
     assert adapted.__name__ == "Glm5NextMTPDraftModel"
     assert glm5_compat.is_installed() is True
 
