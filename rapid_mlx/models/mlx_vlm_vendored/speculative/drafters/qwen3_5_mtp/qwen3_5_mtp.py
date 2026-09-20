@@ -359,10 +359,22 @@ class Qwen3_5MTPDraftModel(nn.Module):
                     finalize = getattr(cache, "finalize", None)
                     if callable(finalize):
                         finalize()
+                # Rapid upstream-bugfix (documented deviation): pinned
+                # 0.7.1 skips the padding correction for a scalar
+                # _next_position, so shorter rows keep too-large position
+                # ids for the next round. Promote to per-row positions when
+                # the padding is heterogeneous.
+                padding = mx.array(right_padding, dtype=mx.int32)
                 if isinstance(self._next_position, mx.array):
-                    self._next_position = self._next_position - mx.array(
-                        right_padding, dtype=mx.int32
-                    )
+                    self._next_position = self._next_position - padding
+                elif int(padding.min()) == int(padding.max()):
+                    self._next_position = self._next_position - int(padding.min())
+                else:
+                    self._next_position = mx.full(
+                        (len(right_padding),),
+                        self._next_position,
+                        dtype=mx.int32,
+                    ) - padding
 
             last_idx = mx.array([length - 1 for length in lengths], dtype=mx.int32)
             last_hidden = mx.take_along_axis(h, last_idx[:, None, None], axis=1)

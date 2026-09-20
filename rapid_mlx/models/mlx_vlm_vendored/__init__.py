@@ -342,7 +342,11 @@ vendored copy differs by exactly the deviations listed):
   ``split``
   ``0cd02dacee282ed6702ab49863f4c300f1acab9e5d2ed3c56a835cad0c2dc128``;
   redirects: ``models.qwen3_5{,_moe}.{config,language}`` and
-  ``models.cache`` → pinned upstream, step-3c-3 scope);
+  ``models.cache`` → pinned upstream, step-3c-3 scope;
+  upstream-bugfix: ``accept_verified_tokens_batch`` promotes a scalar
+  ``_next_position`` to per-row positions before applying heterogeneous
+  replay right-padding — pinned 0.7.1 skips the correction for scalars,
+  leaving shorter rows with too-large position ids);
   ``qwen3_dflash/`` (digests ``__init__``
   ``929c03a2169b49c25974f4d292d74b35f3f511acdf459e7e29a0c4bf3083f06b``,
   ``config``

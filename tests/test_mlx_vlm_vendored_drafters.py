@@ -139,6 +139,32 @@ REDIRECTS = {
 # (file, vendored hunk, upstream hunk). Applying redirects then reverting
 # these hunks must reproduce the pinned upstream bytes exactly.
 DEVIATIONS = {
+    "qwen3_5_mtp/qwen3_5_mtp.py": [
+        (
+            """                # Rapid upstream-bugfix (documented deviation): pinned
+                # 0.7.1 skips the padding correction for a scalar
+                # _next_position, so shorter rows keep too-large position
+                # ids for the next round. Promote to per-row positions when
+                # the padding is heterogeneous.
+                padding = mx.array(right_padding, dtype=mx.int32)
+                if isinstance(self._next_position, mx.array):
+                    self._next_position = self._next_position - padding
+                elif int(padding.min()) == int(padding.max()):
+                    self._next_position = self._next_position - int(padding.min())
+                else:
+                    self._next_position = mx.full(
+                        (len(right_padding),),
+                        self._next_position,
+                        dtype=mx.int32,
+                    ) - padding
+""",
+            """                if isinstance(self._next_position, mx.array):
+                    self._next_position = self._next_position - mx.array(
+                        right_padding, dtype=mx.int32
+                    )
+""",
+        ),
+    ],
     "__init__.py": [
         (
             """    "qwen3_dspark": "dflash",
@@ -334,6 +360,47 @@ def test_mtp_splitter_rejects_index_shards_outside_model_dir(tmp_path):
     )
     with pytest.raises(ValueError, match="escapes the model directory"):
         list(absolute.iter_selected(source, {}))
+
+
+def test_qwen_mtp_batch_replay_corrects_scalar_position_for_ragged_rows():
+    """Heterogeneous right_padding must promote a scalar _next_position.
+
+    Regression probe for the documented upstream-bugfix: pinned 0.7.1
+    skips the padding correction when the tracked position is a scalar,
+    so the shorter replayed row keeps too-large position ids.
+    """
+    import mlx.core as mx
+
+    from rapid_mlx.models.mlx_vlm_vendored.speculative.drafters.qwen3_5_mtp import (
+        qwen3_5_mtp as qwen_module,
+    )
+
+    drafter = qwen_module.Qwen3_5MTPDraftModel.__new__(qwen_module.Qwen3_5MTPDraftModel)
+    drafter._cache = []
+    drafter._round_appended = 0
+    drafter._next_position = 7
+    seeds = []
+    drafter._forward_tokens = lambda tokens, hiddens, token_dtype: mx.zeros((2, 3, 2))
+    drafter._set_seed_from_hidden = lambda last_hidden, sampler, greedy: seeds.append(
+        last_hidden
+    )
+
+    verify_hidden = mx.zeros((2, 3, 2))
+    draft_tokens = mx.array([[10, 11, 0], [20, 21, 0]], dtype=mx.int32)
+    drafter.accept_verified_tokens_batch(
+        verify_hidden,
+        draft_tokens,
+        accepted=[2, 1],
+        new_tokens=[[7], [9]],
+        sampler=None,
+        token_dtype=mx.int32,
+        greedy=True,
+    )
+
+    position = drafter._next_position
+    assert isinstance(position, mx.array)
+    assert position.tolist() == [7, 6]
+    assert len(seeds) == 1
 
 
 def test_load_drafter_rejects_unknown_kind(tmp_path):
