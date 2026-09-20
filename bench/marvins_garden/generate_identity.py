@@ -35,6 +35,12 @@ DEFINITIONS: tuple[tuple[str, str], ...] = (
     ("atomic commit (two-phase)", "A coordinator asks all participants to prepare, then commits only if every participant acknowledged the prepare phase."),
     ("memoization", "Caching a function's results keyed by its inputs so repeated calls with the same inputs skip recomputation."),
     ("graceful degradation", "Designing a system so that when a component fails, it sheds optional features and keeps serving the core ones."),
+    ("hot path", "The hot path is the sequence of code that runs on nearly every request, so it is where optimization pays first."),
+    ("backpressure", "Backpressure is when a slow consumer signals producers to slow down, so queues stay bounded instead of failing late."),
+    ("canary release", "A canary release rolls a change out to a small slice of traffic first, so blast radius stays small while signals are read."),
+    ("schema migration", "A schema migration changes a database's structure in planned steps so old and new code can coexist during rollout."),
+    ("deadlock", "A deadlock is when two tasks each hold a resource the other needs, so neither can make progress."),
+    ("idempotency key", "An idempotency key lets a client retry a payment request safely: the server recognizes repeats and returns the original result."),
 )
 
 CAPITALS: dict[str, str] = {
@@ -42,6 +48,9 @@ CAPITALS: dict[str, str] = {
     "Norway": "Oslo", "Vietnam": "Hanoi", "Morocco": "Rabat", "Chile": "Santiago",
     "Portugal": "Lisbon", "Indonesia": "Jakarta", "Egypt": "Cairo", "Turkey": "Ankara",
     "Australia": "Canberra", "Switzerland": "Bern", "Peru": "Lima", "Ghana": "Accra",
+    "Iceland": "Reykjavík", "Argentina": "Buenos Aires", "Thailand": "Bangkok", "Greece": "Athens",
+    "Ireland": "Dublin", "Mexico": "Mexico City", "Nigeria": "Abuja", "Denmark": "Copenhagen",
+    "South Korea": "Seoul", "Poland": "Warsaw", "New Zealand": "Wellington", "Finland": "Helsinki",
 }
 
 POLITE_REWRITES: tuple[tuple[str, str], ...] = (
@@ -50,6 +59,9 @@ POLITE_REWRITES: tuple[tuple[str, str], ...] = (
     ("Why is this broken again?", "Could you help me understand what might be causing this to break again?"),
     ("Call me back ASAP.", "Would you mind giving me a call back at your earliest convenience?"),
     ("You missed the deadline.", "It looks like the deadline slipped — is there anything I can do to help get things back on track?"),
+    ("Your build keeps failing.", "I noticed the build has been failing — do you need a hand debugging it?"),
+    ("Stop touching my branch.", "Could we coordinate before changes land on my branch? Happy to pair up if useful."),
+    ("Answer my email.", "Whenever you get a chance, I'd appreciate a reply to my earlier email. Thanks!"),
 )
 
 TRANSFORMS: tuple[tuple[str, str, str], ...] = (
@@ -64,6 +76,10 @@ TIPS: tuple[tuple[str, str], ...] = (
     ("onboarding to a new codebase", "Trace one real request end-to-end through the code before reading any subsystem in isolation."),
     ("code review comments", "Review for correctness and clarity first; style is what the formatter is for."),
     ("capacity planning", "Measure the peak, not the average, and leave headroom for retry storms."),
+    ("incident writeups", "Write the timeline first, then the contributing causes; blame-free findings age best."),
+    ("feature flags", "Ship the code dark behind a flag, ramp it by cohort, and keep the kill switch one config change away."),
+    ("API deprecations", "Announce early, ship a parallel version, log usage of the old one, and only remove it after usage truly drops."),
+    ("local-first software", "Keep the source of truth on the device and sync when the network allows, so the app works offline by default."),
 )
 
 TRANSLATIONS: dict[str, str] = {
@@ -71,6 +87,10 @@ TRANSLATIONS: dict[str, str] = {
     "Thank you for your help.": "Merci pour votre aide.",
     "The train leaves in ten minutes.": "Le train part dans dix minutes.",
     "I will send the file this afternoon.": "J'enverrai le fichier cet après-midi.",
+    "Please close the window.": "Veuillez fermer la fenêtre.",
+    "She is reading in the garden.": "Elle lit dans le jardin.",
+    "We arrive on Monday morning.": "Nous arrivons lundi matin.",
+    "The invoice is due next week.": "La facture est due la semaine prochaine.",
 }
 
 

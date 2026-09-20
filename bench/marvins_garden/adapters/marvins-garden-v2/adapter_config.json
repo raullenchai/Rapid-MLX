@@ -1,0 +1,41 @@
+{
+    "adapter_path": "/Users/raullenstudio/orca/workspaces/rapid-mlx/decision-bonsai/bench/marvins_garden/adapters/marvins-garden-v2",
+    "batch_size": 4,
+    "clear_cache_threshold": 0,
+    "config": null,
+    "data": "/Users/raullenstudio/orca/workspaces/rapid-mlx/decision-bonsai/bench/marvins_garden/data/sft",
+    "fine_tune_type": "lora",
+    "grad_accumulation_steps": 1,
+    "grad_checkpoint": false,
+    "iters": 800,
+    "learning_rate": 3e-05,
+    "lora_parameters": {
+        "rank": 8,
+        "dropout": 0.0,
+        "scale": 20.0
+    },
+    "lr_schedule": null,
+    "mask_prompt": true,
+    "max_seq_length": 1024,
+    "model": "/Volumes/NVMe-4T/huggingface/hub/models--prism-ml--Ternary-Bonsai-27B-mlx-2bit/snapshots/70f75f3ad081ab840a42f3304c02c27e7f89bfb7",
+    "num_layers": 16,
+    "optimizer": "adam",
+    "optimizer_config": {
+        "adam": {},
+        "adamw": {},
+        "muon": {},
+        "sgd": {},
+        "adafactor": {}
+    },
+    "project_name": null,
+    "report_to": null,
+    "resume_adapter_file": null,
+    "save_every": 200,
+    "seed": 0,
+    "steps_per_eval": 50,
+    "steps_per_report": 10,
+    "test": false,
+    "test_batches": 500,
+    "train": true,
+    "val_batches": 25
+}
