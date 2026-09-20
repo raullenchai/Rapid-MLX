@@ -1876,6 +1876,11 @@ def _prefetch_routing_metadata(model_name: str) -> str:
             )
             return model_name
         raise
+    # An anonymous metadata success proves the repo is public; that is the
+    # only thing that lets telemetry report a non-catalog ``org/name``.
+    from .telemetry.model_id import note_hub_fetch
+
+    note_hub_fetch(repo_id)
     revision = getattr(info, "sha", None)
     if not revision:
         raise RuntimeError("HuggingFace metadata did not include a revision")
@@ -2006,6 +2011,10 @@ def _prefetch_config_for_text_lane_guard(model_ref: str) -> None:
         hf_hub_download(model_ref, "config.json")
     except Exception:  # noqa: BLE001 — best-effort probe, never fatal
         return
+    # Same proof-of-public rule as ``_prefetch_routing_metadata`` above.
+    from .telemetry.model_id import note_hub_fetch
+
+    note_hub_fetch(model_ref)
 
 
 def _reject_text_lane_only_mllm_pack(model_name: str, load_path: str) -> None:
@@ -2741,10 +2750,16 @@ def load_model(
     aliases = set()
     if effective_model_alias and effective_model_alias != _model_name:
         aliases.add(effective_model_alias)
+    # Telemetry identity is derived from the RESOLVED checkpoint
+    # (``_model_path``), never from ``_model_name`` — which is
+    # ``--served-model-name`` when the operator set one.
+    from .telemetry.model_id import telemetry_model_id as _telemetry_model_id
+
     entry = ModelEntry(
         engine=_engine,
         model_name=_model_name,
         model_path=_model_path or model_name,
+        telemetry_model_id=_telemetry_model_id(_model_path or model_name),
         aliases=aliases,
         tool_call_parser=_tool_call_parser,
         reasoning_parser=_reasoning_parser_name,
@@ -2901,10 +2916,13 @@ async def _load_dynamic_resident_model(
         except Exception as exc:  # noqa: BLE001 - warmup is an optimization
             logger.debug("Dynamic model warmup failed (non-fatal): %s", exc)
 
+    from .telemetry.model_id import telemetry_model_id as _telemetry_model_id
+
     return ModelEntry(
         engine=engine,
         model_name=model_name,
         model_path=resolved_path,
+        telemetry_model_id=_telemetry_model_id(resolved_path),
         aliases=set(),
         tool_call_parser=(profile.tool_call_parser if profile is not None else None),
         reasoning_parser=(profile.reasoning_parser if profile is not None else None),

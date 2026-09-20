@@ -398,6 +398,9 @@ async def create_completion(request: CompletionRequest, raw_request: Request):
                         caller_agent=raw_request.headers.get("user-agent")
                         if raw_request is not None
                         else None,
+                        caller_client=raw_request.headers.get("x-rapid-client")
+                        if raw_request is not None
+                        else None,
                     ),
                     raw_request,
                     engine=engine,
@@ -669,10 +672,11 @@ async def create_completion(request: CompletionRequest, raw_request: Request):
         # built. The conservative variant of task C wires NO activation
         # funnel, so there is no post-serialization funnel to guard here.
         from rapid_mlx.telemetry import emit as _telemetry_emit
+        from rapid_mlx.telemetry.model_id import served_model_id as _served_model_id
 
         _telemetry_emit.request(
             endpoint="/v1/completions",
-            model_alias=request.model,
+            model_alias=_served_model_id(request.model),
             stream=False,
             tool_call_used=False,
             prompt_tokens=total_prompt_tokens,
@@ -681,6 +685,9 @@ async def create_completion(request: CompletionRequest, raw_request: Request):
             tps=tokens_per_sec,
             status=200,
             caller_agent=raw_request.headers.get("user-agent")
+            if raw_request is not None
+            else None,
+            caller_client=raw_request.headers.get("x-rapid-client")
             if raw_request is not None
             else None,
         )
@@ -722,6 +729,7 @@ async def stream_completion(
     *,
     request_id_holder: list | None = None,
     caller_agent: str | None = None,
+    caller_client: str | None = None,
 ) -> AsyncIterator[str]:
     """Stream completion response.
 
@@ -735,6 +743,9 @@ async def stream_completion(
         caller_agent: inbound HTTP User-Agent (task C). Passed straight to
             ``emit.request`` -> bucketed to an allowlist in ``redact``, never
             stored raw. Sampled + consent-gated, so a no-op when off.
+        caller_client: inbound ``X-Rapid-Client`` header. Same contract;
+            ``normalize_caller_agent`` honours it only when it carries one
+            of our own closed labels.
     """
     extended_kwargs = build_extended_sampling_kwargs(request)
     # C-01: pass the holder through so the engine can publish the
@@ -1011,10 +1022,11 @@ async def stream_completion(
     _decode_seconds = _elapsed_stream - _ttft_seconds
     _decode_tps = _done / _decode_seconds if _decode_seconds > 0 else _total_tps
     from rapid_mlx.telemetry import emit as _telemetry_emit
+    from rapid_mlx.telemetry.model_id import served_model_id as _served_model_id
 
     _telemetry_emit.request(
         endpoint="/v1/completions",
-        model_alias=request.model,
+        model_alias=_served_model_id(request.model),
         stream=True,
         tool_call_used=False,
         prompt_tokens=_ptok,
@@ -1023,4 +1035,5 @@ async def stream_completion(
         tps=_decode_tps,
         status=200,
         caller_agent=caller_agent,
+        caller_client=caller_client,
     )

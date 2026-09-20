@@ -35,6 +35,7 @@ from typing import Any
 from urllib.parse import urlsplit
 
 from rapid_mlx import __version__ as _rapid_mlx_version  # noqa: N811
+from rapid_mlx.telemetry.model_id import telemetry_model_id
 from rapid_mlx.telemetry.queue import TelemetryQueue
 from rapid_mlx.telemetry.redact import (
     bucket_tokens,
@@ -42,7 +43,6 @@ from rapid_mlx.telemetry.redact import (
     bucket_ttft_ms,
     fingerprint_traceback,
     normalize_caller_agent,
-    normalize_model_path,
     platform_info,
 )
 from rapid_mlx.telemetry.schema import SCHEMA_VERSION
@@ -411,7 +411,7 @@ def session_start(
         # ``itertools.islice`` so the slice itself is the cap -- callers
         # that hand us a 1000-entry iterable only pay for the first 32.
         "models_loaded": [
-            normalize_model_path(m) for m in itertools.islice(models_loaded, 32)
+            telemetry_model_id(m) for m in itertools.islice(models_loaded, 32)
         ],
         # #1272 activation-funnel signals. Session METADATA only -- computed
         # from session context by the caller (cli.py), never from a prompt or
@@ -449,7 +449,7 @@ def session_end(
         "engine": "",
         # Same itertools.islice cap as session_start (round 13 catch).
         "models_loaded": [
-            normalize_model_path(m) for m in itertools.islice(models_loaded, 32)
+            telemetry_model_id(m) for m in itertools.islice(models_loaded, 32)
         ],
         # #1272 fields are start-time signals; session_end carries them at
         # their defaults so both lifecycle payloads expose the full v1
@@ -520,12 +520,20 @@ def request(
     tps: float,
     status: int,
     caller_agent: str | None = None,
+    caller_client: str | None = None,
     output_degenerate: bool | None = None,
 ) -> None:
     """Emit a ``request`` payload.
 
-    ``caller_agent`` is the inbound HTTP ``User-Agent``; it is bucketed to a
-    fixed allowlist here (never stored raw). Sampled by
+    ``model_alias`` must already be a ``telemetry_model_id`` (see
+    ``telemetry/model_id.py``); route sites get one from
+    ``model_id.served_model_id``. It is re-run through the same rule here so
+    a call site that regresses to ``request.model`` cannot leak a private
+    served name — the boundary enforces the rule, not just the caller.
+
+    ``caller_agent`` is the inbound HTTP ``User-Agent`` and ``caller_client``
+    the inbound ``X-Rapid-Client``; both are bucketed to a fixed allowlist
+    here (never stored raw). Sampled by
     ``RAPID_MLX_TELEMETRY_REQUEST_SAMPLE`` because request volume dwarfs the
     session events. Consent is still checked first — sampling never turns a
     disabled client on.
@@ -542,7 +550,7 @@ def request(
     payload = _envelope("request")
     payload["request"] = {
         "endpoint": _normalize_endpoint(endpoint),
-        "model_alias": normalize_model_path(model_alias),
+        "model_alias": telemetry_model_id(model_alias),
         "stream": bool(stream),
         "tool_call_used": bool(tool_call_used),
         "prompt_tokens_bucket": bucket_tokens(prompt_tokens),
@@ -550,7 +558,7 @@ def request(
         "ttft_ms_bucket": bucket_ttft_ms(ttft_ms),
         "tps_bucket": bucket_tps(tps),
         "status": int(status),
-        "caller_agent": normalize_caller_agent(caller_agent),
+        "caller_agent": normalize_caller_agent(caller_agent, caller_client),
         "output_degenerate": bool(output_degenerate),
         "completion_empty": completion_tokens == 0,
         "completion_abnormally_short": (

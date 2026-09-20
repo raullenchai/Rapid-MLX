@@ -189,13 +189,29 @@ _CALLER_AGENT_MARKERS: tuple[tuple[str, str], ...] = (
 )
 
 
-def normalize_caller_agent(user_agent: str | None) -> str:
-    """Bucket an inbound ``User-Agent`` to a fixed allowlist label.
+def normalize_caller_agent(
+    user_agent: str | None, client_header: str | None = None
+) -> str:
+    """Bucket an inbound caller to a fixed allowlist label.
+
+    ``client_header`` is the inbound ``X-Rapid-Client`` header. It WINS over
+    the User-Agent when its value is one of our own closed label set
+    (``rapid_mlx.client_header.RAPID_CLIENT_LABELS``) — a Rapid-owned client
+    knows what it is, while its UA is whatever HTTP library it happens to
+    use this release. Any other header value is ignored outright and never
+    echoed: like the UA, it is caller-controlled input, so it may only ever
+    *select* one of our labels, never introduce a string.
 
     Returns ``"unknown"`` for a missing/empty UA and ``"other"`` for a UA
     that matches no marker. The raw string is never returned, so no
     caller-controlled free-form text lands on a payload.
     """
+    if isinstance(client_header, str):
+        from rapid_mlx.client_header import RAPID_CLIENT_LABELS
+
+        candidate = client_header.strip()
+        if candidate in RAPID_CLIENT_LABELS:
+            return candidate
     if not user_agent or not isinstance(user_agent, str):
         return "unknown"
     ua = user_agent.lower()

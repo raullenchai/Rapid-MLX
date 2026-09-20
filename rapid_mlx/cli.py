@@ -23,6 +23,8 @@ import sys
 from collections.abc import Callable
 
 from rapid_mlx._completion import alias_completer
+from rapid_mlx.client_header import RAPID_CLIENT_CLI_CHAT
+from rapid_mlx.http_auth import rapid_mlx_client_headers
 from rapid_mlx.model_profile import ModelProfile
 
 # Project-default mirror for ``RAPID_MLX_MODEL_MIRROR`` (consumed by
@@ -9289,7 +9291,11 @@ def _wait_for_chat_server(base_url: str, proc, timeout_s: int = 600) -> None:
             # second to keep the spinner smooth and the network polite.
             if tick % 10 == 0:
                 try:
-                    r = requests.get(f"{base_url}/health/ready", timeout=2)
+                    r = requests.get(
+                        f"{base_url}/health/ready",
+                        headers=rapid_mlx_client_headers(RAPID_CLIENT_CLI_CHAT),
+                        timeout=2,
+                    )
                     if r.status_code == 200:
                         return
                 except requests.RequestException:
@@ -9509,6 +9515,7 @@ def _stream_chat_response(
         requests.post(
             f"{base_url}/v1/chat/completions",
             json=payload,
+            headers=rapid_mlx_client_headers(RAPID_CLIENT_CLI_CHAT),
             stream=True,
             timeout=timeout_s,
         ) as resp,
@@ -10101,7 +10108,11 @@ def chat_command(args):
         try:
             import requests
 
-            response = requests.get(f"{base_url}/v1/models", timeout=2)
+            response = requests.get(
+                f"{base_url}/v1/models",
+                headers=rapid_mlx_client_headers(RAPID_CLIENT_CLI_CHAT),
+                timeout=2,
+            )
             response.raise_for_status()
             payload = response.json()
             models = payload.get("data", []) if isinstance(payload, dict) else []
@@ -14311,9 +14322,9 @@ def main():
                     args.model = _audio_hf_id
         # Round 16 codex catch: record the resolved (or already-canonical)
         # model so ``session_end`` can report what this invocation loaded.
-        # ``normalize_model_path`` inside the emit helper redacts local
-        # paths to the literal ``<local>`` token, so we don't need to
-        # filter here. Captured after the error-fail path so we never
+        # ``telemetry_model_id`` inside the emit helper reduces this to a
+        # catalog alias / proven-public repo id / ``<local>`` / ``<custom>``,
+        # so we don't need to filter here. Captured after the error-fail path so we never
         # record a model that failed validation.
         _session_models_requested.append(args.model)
 
