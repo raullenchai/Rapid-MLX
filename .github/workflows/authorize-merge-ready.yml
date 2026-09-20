@@ -71,9 +71,10 @@ jobs:
               const failureDescription =
                 "Head changed — remove and re-apply the ready label";
               const beforeStatuses = await listStatuses();
-              const latestBefore = beforeStatuses.find(
+              const authorizationsBefore = beforeStatuses.filter(
                 (status) => status.context === "merge-ready-head",
               );
+              const latestBefore = authorizationsBefore[0];
               if (latestBefore?.state === "success") {
                 return;
               }
@@ -81,11 +82,11 @@ jobs:
               // immediately behind it. Another failure can represent a real
               // revocation (for example, both ready labels present) and must
               // remain authoritative over older successes.
-              const interruptedSuccess = successfulAuthorization(beforeStatuses);
+              const interruptedSuccess = authorizationsBefore[1];
               if (
                 latestBefore?.state === "failure" &&
                 latestBefore.description === failureDescription &&
-                interruptedSuccess
+                interruptedSuccess?.state === "success"
               ) {
                 await restoreAuthorization(interruptedSuccess);
                 return;

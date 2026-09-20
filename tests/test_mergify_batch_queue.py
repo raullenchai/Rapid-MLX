@@ -343,6 +343,34 @@ def test_deliberate_failure_never_revives_older_success():
     ]
 
 
+def test_our_failure_does_not_skip_intervening_revocation():
+    result = _run_authorization_script(
+        labels=["merge-ready-mac"],
+        action="synchronize",
+        statuses_before=[
+            {
+                "id": 3,
+                "context": "merge-ready-head",
+                "state": "failure",
+                "description": "Head changed — remove and re-apply the ready label",
+            },
+            {
+                "id": 2,
+                "context": "merge-ready-head",
+                "state": "failure",
+                "description": "Apply exactly one merge-ready label",
+            },
+            {"id": 1, "context": "merge-ready-head", "state": "success"},
+        ],
+    )
+
+    assert result["calls"] == [
+        ["list-statuses"],
+        ["status", "failure"],
+        ["list-statuses"],
+    ]
+
+
 def test_concurrent_fresh_authorization_is_restored_after_head_failure():
     result = _run_authorization_script(
         labels=["merge-ready-mac"],
