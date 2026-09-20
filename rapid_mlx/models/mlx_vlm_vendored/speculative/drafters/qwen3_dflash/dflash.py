@@ -188,6 +188,11 @@ class DFlashDraftModel(nn.Module):
         self.draft_lens: List[int] = []
 
     def bind(self, target_model) -> "DFlashDraftModel":
+        # Rapid upstream-bugfix (documented deviation): pinned 0.7.1
+        # resolved the embeddings only when unset, so resetting with a
+        # different target kept the previous target's embeddings while
+        # swapping its LM head. Force re-resolution on every bind.
+        self.embed_tokens = None
         if self.embed_tokens is None:
             if hasattr(target_model, "embed_tokens"):
                 inner = target_model

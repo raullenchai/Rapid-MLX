@@ -303,7 +303,8 @@ vendored copy differs by exactly the deviations listed):
   lives in this package under ``speculative/drafters/`` (below).
 
 - ``speculative/drafters/`` — the drafter registry and the served drafter
-  families, verbatim from ``mlx_vlm/speculative/drafters`` @ v0.7.1
+  families, verbatim from ``mlx_vlm/speculative/drafters`` @ v0.7.1 with
+  the documented upstream-bugfix deviations below
   (step-3c slice): ``__init__.py`` (registry; upstream digest
   ``7e9fd507dd4ec5aa880d7b0cd04a9f09fbc60ce34e7471b7fbc61863f68a714f``;
   redirects: the ``dspark``/``laguna_dflash``/``muse_glimmer_assistant``
@@ -316,7 +317,13 @@ vendored copy differs by exactly the deviations listed):
   through the wrong round loop), ``compatibility.py`` (digest
   ``e360a7f03f25da810229ab04f5a68c667cc3831d291c3c22c03e1a0efa0ee2c4``),
   ``mtp_base.py`` (digest
-  ``3e071843a4fabca2f7be20c15b04ab1e45ac178d4fa63d7f108684787a2262ab``),
+  ``3e071843a4fabca2f7be20c15b04ab1e45ac178d4fa63d7f108684787a2262ab``;
+  upstream-bugfix: ``draft_block`` returns the DFlash2-shaped empty
+  proposal for ``block_size <= 1`` — pinned 0.7.1 crashes on an empty
+  concatenate (reachable through externally supplied drafter repos);
+  upstream-bugfix: ``accept_verified_tokens_batch`` raises on mixed
+  bonus-token presence — pinned 0.7.1 silently skipped every row's
+  replay),
   ``mtp_split.py`` (digest
   ``55afe4b6341ee97d764da90af3d404b0cc86a2a355d198b1d4d299be8040ed2f``;
   upstream-bugfix: ``iter_selected`` resolves index shard paths and rejects
@@ -367,7 +374,9 @@ vendored copy differs by exactly the deviations listed):
   ``parity_check``
   ``1712776c25dbeb045190397e3bc683d68f072ecc81c543457f432a033a68b77f``;
   redirects: ``models.{activations,cache,rope_utils}`` → pinned
-  upstream); ``dflash2/`` (digests ``__init__``
+  upstream; upstream-bugfix: ``bind`` re-resolves the target embeddings on every
+  call — pinned 0.7.1 resolved only when unset, so resetting with a
+  different target kept stale embeddings)); ``dflash2/`` (digests ``__init__``
   ``94b557b7ab3de885bbe98ead9ba9e48828330fc0f76a0bb37d7e396f37d72683``,
   ``config``
   ``af864e1190a2eca902adb31cf2ad21e88dc5d2892b3a3d21b2e75b37798930f3``,

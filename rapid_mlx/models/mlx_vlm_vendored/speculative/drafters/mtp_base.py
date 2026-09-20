@@ -225,6 +225,16 @@ class AutoregressiveMTPDraftModel(nn.Module):
             token_chunks.append(draft_tokens[:, draft_idx : draft_idx + 1])
             hidden_chunks.append(verify_hidden[:, draft_idx : draft_idx + 1, ...])
 
+        # Rapid upstream-bugfix (documented deviation): pinned 0.7.1
+        # dropped every row's bonus replay whenever any row lacked one,
+        # leaving the other rows' caches and seeds stale. Mixed presence
+        # is unsupported by the shared uniform-acceptance replay; fail
+        # loudly instead of silently skipping.
+        if any(new_tokens) and not all(new_tokens):
+            raise ValueError(
+                "mixed MTP bonus-token presence across replay rows is "
+                "unsupported; all rows must carry a verifier bonus token"
+            )
         if all(new_tokens):
             bonus = mx.array(
                 [[int(row_tokens[-1])] for row_tokens in new_tokens],
@@ -277,6 +287,14 @@ class AutoregressiveMTPDraftModel(nn.Module):
                 "bind(target_model) must be called before draft_block() "
                 "so the drafter can use the target embeddings and LM head."
             )
+        if block_size <= 1:
+            # Rapid upstream-bugfix (documented deviation): pinned 0.7.1
+            # crashes on mx.concatenate with an empty token list when
+            # block_size <= 1 (also reachable through externally supplied
+            # drafter repos that load_drafter cannot validate). Return the
+            # DFlash2-shaped empty proposal instead.
+            batch = 1 if isinstance(last_bonus, int) else int(last_bonus.shape[0])
+            return mx.zeros((batch, 0), dtype=token_dtype)
 
         if isinstance(last_bonus, int):
             tok = mx.array([[last_bonus]], dtype=token_dtype)

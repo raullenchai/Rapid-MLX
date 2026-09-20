@@ -150,6 +150,67 @@ REDIRECTS = {
 # (file, vendored hunk, upstream hunk). Applying redirects then reverting
 # these hunks must reproduce the pinned upstream bytes exactly.
 DEVIATIONS = {
+    "mtp_base.py": [
+        (
+            """        del cache
+        if self._input_embed is None or self._lm_head_fn is None:
+            raise RuntimeError(
+                "bind(target_model) must be called before draft_block() "
+                "so the drafter can use the target embeddings and LM head."
+            )
+        if block_size <= 1:
+            # Rapid upstream-bugfix (documented deviation): pinned 0.7.1
+            # crashes on mx.concatenate with an empty token list when
+            # block_size <= 1 (also reachable through externally supplied
+            # drafter repos that load_drafter cannot validate). Return the
+            # DFlash2-shaped empty proposal instead.
+            batch = 1 if isinstance(last_bonus, int) else int(last_bonus.shape[0])
+            return mx.zeros((batch, 0), dtype=token_dtype)
+""",
+            """        del cache
+        if self._input_embed is None or self._lm_head_fn is None:
+            raise RuntimeError(
+                "bind(target_model) must be called before draft_block() "
+                "so the drafter can use the target embeddings and LM head."
+            )
+""",
+        ),
+        (
+            """        # Rapid upstream-bugfix (documented deviation): pinned 0.7.1
+        # dropped every row's bonus replay whenever any row lacked one,
+        # leaving the other rows' caches and seeds stale. Mixed presence
+        # is unsupported by the shared uniform-acceptance replay; fail
+        # loudly instead of silently skipping.
+        if any(new_tokens) and not all(new_tokens):
+            raise ValueError(
+                "mixed MTP bonus-token presence across replay rows is "
+                "unsupported; all rows must carry a verifier bonus token"
+            )
+        if all(new_tokens):
+            bonus = mx.array(
+                [[int(row_tokens[-1])] for row_tokens in new_tokens],
+                dtype=token_dtype,
+            )""",
+            """        if all(new_tokens):
+            bonus = mx.array(
+                [[int(row_tokens[-1])] for row_tokens in new_tokens],
+                dtype=token_dtype,
+            )""",
+        ),
+    ],
+    "qwen3_dflash/dflash.py": [
+        (
+            """    def bind(self, target_model) -> "DFlashDraftModel":
+        # Rapid upstream-bugfix (documented deviation): pinned 0.7.1
+        # resolved the embeddings only when unset, so resetting with a
+        # different target kept the previous target's embeddings while
+        # swapping its LM head. Force re-resolution on every bind.
+        self.embed_tokens = None
+        if self.embed_tokens is None:""",
+            """    def bind(self, target_model) -> "DFlashDraftModel":
+        if self.embed_tokens is None:""",
+        ),
+    ],
     "qwen3_5_mtp/split.py": [
         (
             """            for proj in ("gate_proj", "up_proj", "down_proj"):
@@ -578,6 +639,61 @@ def test_qwen3_next_postprocess_stacks_quantized_expert_metadata():
                 assert f"blk.0.experts.{expert}.{proj}.{suffix}" not in tensors
 
 
+def test_dflash_bind_re_resolves_target_embeddings():
+    """bind() must not keep a previous target's embeddings (r8 finding)."""
+    from types import SimpleNamespace
+
+    from rapid_mlx.models.mlx_vlm_vendored.speculative.drafters.qwen3_dflash import (
+        dflash as dflash_module,
+    )
+
+    drafter = dflash_module.DFlashDraftModel.__new__(dflash_module.DFlashDraftModel)
+    stale = object()
+    drafter.embed_tokens = stale
+    new_embed = object()
+    head = lambda value: value
+    drafter.bind(SimpleNamespace(embed_tokens=new_embed, lm_head=head))
+    assert drafter.embed_tokens is new_embed
+    assert drafter.lm_head is head
+
+
+def test_mtp_base_rejects_mixed_bonus_presence():
+    """Mixed bonus presence must fail loudly, not skip rows (r8 finding)."""
+    import mlx.core as mx
+
+    from rapid_mlx.models.mlx_vlm_vendored.speculative.drafters.mtp_base import (
+        AutoregressiveMTPDraftModel,
+    )
+
+    drafter = AutoregressiveMTPDraftModel.__new__(AutoregressiveMTPDraftModel)
+    drafter._cache = []
+    drafter._next_position = 5
+    drafter._round_appended = 0
+    with pytest.raises(ValueError, match="mixed MTP bonus-token"):
+        drafter.accept_verified_tokens_batch(
+            mx.zeros((2, 2, 1)),
+            mx.zeros((2, 2), dtype=mx.int32),
+            [1, 1],
+            [[5], []],
+            None,
+        )
+
+
+def test_mtp_base_block_size_one_returns_empty_proposal():
+    """block_size <= 1 returns a shaped empty proposal (r8 finding)."""
+    import mlx.core as mx
+
+    from rapid_mlx.models.mlx_vlm_vendored.speculative.drafters.mtp_base import (
+        AutoregressiveMTPDraftModel,
+    )
+
+    drafter = AutoregressiveMTPDraftModel.__new__(AutoregressiveMTPDraftModel)
+    drafter._input_embed = object()
+    drafter._lm_head_fn = lambda value: value
+    out = drafter.draft_block(5, mx.zeros((1, 1, 1)), None, 1, None, greedy=True)
+    assert out.shape == (1, 0)
+
+
 def test_detect_mtp_splitter_resolves_pinned_dspark_module(tmp_path, monkeypatch):
     """The unserved deepseek_v4_dspark family resolves through pinned."""
     from rapid_mlx.models.mlx_vlm_vendored.speculative.drafters.mtp_split import (
@@ -615,12 +731,45 @@ def test_load_drafter_rejects_unknown_kind(tmp_path):
         load_drafter(str(tmp_path), kind="teleport")
 
 
-def test_runtime_binds_vendored_registry():
-    """The native-MTP runtime must import the vendored registry, not pinned."""
+def test_runtime_binds_vendored_registry(monkeypatch, tmp_path):
+    """load_runtime must dispatch through the vendored registry seam."""
+    from types import ModuleType
+
+    import mlx_vlm as real_mlx_vlm
+
+    import rapid_mlx.models.mlx_vlm_vendored.speculative.drafters as vendored_registry
     import rapid_mlx.speculative.native_mtp.runtime as runtime
 
-    source = inspect.getsource(runtime)
-    assert (
-        "from rapid_mlx.models.mlx_vlm_vendored.speculative.drafters import" in source
-    )
-    assert "    from mlx_vlm.speculative.drafters import load_drafter\n" not in source
+    calls = []
+
+    def vendored_marker(path, kind=None, **kwargs):
+        calls.append("vendored")
+        raise RuntimeError("VENDORED-SEAM-CALLED")
+
+    def pinned_marker(path, kind=None, **kwargs):
+        calls.append("pinned")
+        raise RuntimeError("PINNED-SEAM-CALLED")
+
+    root = ModuleType("mlx_vlm")
+    root.__path__ = list(real_mlx_vlm.__path__)
+    drafters = ModuleType("mlx_vlm.speculative.drafters")
+    drafters.__path__ = []
+    drafters.load_drafter = pinned_marker
+    utils = ModuleType("mlx_vlm.utils")
+    utils.get_model_path = lambda repo_id, revision=None: str(tmp_path)
+    for name, module in {
+        "mlx_vlm": root,
+        "mlx_vlm.speculative.drafters": drafters,
+        "mlx_vlm.utils": utils,
+    }.items():
+        monkeypatch.setitem(sys.modules, name, module)
+    monkeypatch.setattr(vendored_registry, "load_drafter", vendored_marker)
+
+    with pytest.raises(RuntimeError, match="VENDORED-SEAM-CALLED"):
+        runtime.load_runtime(
+            str(tmp_path),
+            target_revision="t",
+            drafter_revision="d",
+            block_size=8,
+        )
+    assert calls == ["vendored"]
