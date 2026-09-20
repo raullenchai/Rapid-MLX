@@ -197,7 +197,18 @@ def _read_drafter_config(model_path) -> dict:
 
 def _peek_drafter_model_type(model_path) -> Optional[str]:
     config = _read_drafter_config(model_path)
-    return config.get("model_type") or config.get("speculators_model_type")
+    model_type = config.get("model_type") or config.get("speculators_model_type")
+    # Rapid upstream-bugfix (documented deviation): DFlash2 checkpoints
+    # declare the backbone model type (e.g. "qwen3") and carry the drafter
+    # settings in a nested ``dflash_config`` object — the "dflash2" type is
+    # normalized only later by ``DFlash2Config.from_dict``, so binding on
+    # the raw type would skip the vendored shim and let pinned
+    # ``load_model`` construct the backbone architecture instead.
+    if model_type not in _SERVED_ARCHITECTURE_FAMILIES and isinstance(
+        config.get("dflash_config"), dict
+    ):
+        return "dflash2"
+    return model_type
 
 
 def _declares_mtp_layers(config: Any) -> bool:

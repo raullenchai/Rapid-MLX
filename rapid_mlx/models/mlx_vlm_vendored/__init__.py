@@ -384,7 +384,11 @@ vendored copy differs by exactly the deviations listed):
   canonical module's exports (``__path__``/``__spec__``) so submodule
   imports keep working, and entries that do not match the vendored
   classes (an earlier pinned import, a pre-swap GLM shim) are re-bound
-  so no stale implementation is served; unvendored families fall
+  so no stale implementation is served; DFlash2 checkpoints that
+  declare the backbone model type with a nested ``dflash_config`` are
+  bound as ``dflash2`` — pinned 0.7.1 peeked the raw type and skipped
+  the shim, constructing the backbone architecture from drafter
+  weights; unvendored families fall
   through to the pinned modules. The registry's ``_read_drafter_config``
   degrades a non-object ``config.json`` to the documented empty dict —
   pinned 0.7.1 returns any decoded JSON value and crashes
@@ -420,7 +424,10 @@ vendored copy differs by exactly the deviations listed):
   verbatim, internal imports only; ``config.py`` upstream-bugfix:
   ``from_dict`` derives ``runtime_block_size`` from the dataclass
   ``block_size`` default when the config omits it — pinned 0.7.1
-  indexes ``flat["block_size"]`` and crashes with ``KeyError``. The
+  indexes ``flat["block_size"]`` and crashes with ``KeyError`` — and
+  propagates an inherited ``dflash_config.causal`` to ``is_causal`` so
+  causal checkpoints hit the documented rejection — pinned 0.7.1
+  dropped the flag and silently served a non-causal drafter. The
   MTP/dflash round-loop fixes from
   the step-3b coordinator slices apply unchanged: the drafters consume
   the vendored ``cache_state``/``common`` via package-relative imports.

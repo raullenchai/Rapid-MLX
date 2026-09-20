@@ -128,6 +128,12 @@ class DFlash2Config(DFlashConfig):
         ):
             if key in dflash:
                 flat[key] = dflash[key]
+        # Rapid upstream-bugfix (documented deviation): pinned 0.7.1 drops
+        # the inherited ``causal`` flag, so a checkpoint declaring
+        # ``dflash_config.causal`` loaded as non-causal and bypassed the
+        # causal rejection in ``__post_init__``.
+        if "causal" in dflash:
+            flat["is_causal"] = bool(dflash["causal"])
 
         rope_parameters = flat.pop("rope_parameters", None)
         if isinstance(rope_parameters, Mapping):

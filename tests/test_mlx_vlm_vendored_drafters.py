@@ -282,6 +282,22 @@ DEVIATIONS = {
             """        if "runtime_block_size" not in flat:
             flat["runtime_block_size"] = min(5, int(flat["block_size"]))""",
         ),
+        (
+            """            if key in dflash:
+                flat[key] = dflash[key]
+        # Rapid upstream-bugfix (documented deviation): pinned 0.7.1 drops
+        # the inherited ``causal`` flag, so a checkpoint declaring
+        # ``dflash_config.causal`` loaded as non-causal and bypassed the
+        # causal rejection in ``__post_init__``.
+        if "causal" in dflash:
+            flat["is_causal"] = bool(dflash["causal"])
+
+        rope_parameters = flat.pop("rope_parameters", None)""",
+            """            if key in dflash:
+                flat[key] = dflash[key]
+
+        rope_parameters = flat.pop("rope_parameters", None)""",
+        ),
     ],
     "qwen3_dflash/config.py": [
         (
@@ -494,6 +510,25 @@ logger = logging.getLogger(__name__)""",
             return json.load(f)
     except (FileNotFoundError, json.JSONDecodeError, OSError):
         return {}""",
+        ),
+        (
+            """def _peek_drafter_model_type(model_path) -> Optional[str]:
+    config = _read_drafter_config(model_path)
+    model_type = config.get("model_type") or config.get("speculators_model_type")
+    # Rapid upstream-bugfix (documented deviation): DFlash2 checkpoints
+    # declare the backbone model type (e.g. "qwen3") and carry the drafter
+    # settings in a nested ``dflash_config`` object — the "dflash2" type is
+    # normalized only later by ``DFlash2Config.from_dict``, so binding on
+    # the raw type would skip the vendored shim and let pinned
+    # ``load_model`` construct the backbone architecture instead.
+    if model_type not in _SERVED_ARCHITECTURE_FAMILIES and isinstance(
+        config.get("dflash_config"), dict
+    ):
+        return "dflash2"
+    return model_type""",
+            """def _peek_drafter_model_type(model_path) -> Optional[str]:
+    config = _read_drafter_config(model_path)
+    return config.get("model_type") or config.get("speculators_model_type")""",
         ),
     ],
     "mtp_split.py": [
@@ -1379,6 +1414,59 @@ def test_load_drafter_binds_served_families_to_vendored_modules(monkeypatch, tmp
     # lazy per-load binding: only the loaded families are bound
     assert "mlx_vlm.models.qwen3_5_mtp" in sys.modules
     assert "mlx_vlm.models.dflash2" in sys.modules
+
+
+def test_binding_peek_resolves_backbone_declared_dflash2(tmp_path):
+    """DFlash2 checkpoints declare the backbone model_type with a nested
+    ``dflash_config``; the binding peek must still resolve ``dflash2``."""
+    from rapid_mlx.models.mlx_vlm_vendored.speculative.drafters import (
+        _peek_drafter_model_type,
+    )
+
+    backbone = tmp_path / "backbone-declared"
+    backbone.mkdir()
+    (backbone / "config.json").write_text(
+        json.dumps({"model_type": "qwen3", "dflash_config": {"block_size": 8}})
+    )
+    assert _peek_drafter_model_type(backbone) == "dflash2"
+
+    target = tmp_path / "plain-target"
+    target.mkdir()
+    (target / "config.json").write_text(json.dumps({"model_type": "qwen3"}))
+    assert _peek_drafter_model_type(target) == "qwen3"
+
+    declared = tmp_path / "declared-family"
+    declared.mkdir()
+    (declared / "config.json").write_text(
+        json.dumps({"model_type": "qwen3_dflash", "dflash_config": {}})
+    )
+    assert _peek_drafter_model_type(declared) == "qwen3_dflash"
+
+
+def test_dflash2_config_rejects_inherited_causal():
+    """``dflash_config.causal`` must reach ``is_causal`` so the causal
+    rejection fires; pinned 0.7.1 dropped the flag and silently served a
+    non-causal drafter."""
+    from rapid_mlx.models.mlx_vlm_vendored.speculative.drafters.dflash2.config import (
+        DFlash2Config,
+    )
+
+    dflash = {
+        "conv_kernel_size": 3,
+        "conv_group_size": 1,
+        "selector_rank": 4,
+        "selector_top_k": 8,
+        "mask_token_id": 100,
+    }
+    with pytest.raises(ValueError, match="causal"):
+        DFlash2Config.from_dict(
+            {"model_type": "qwen3", "dflash_config": {**dflash, "causal": True}}
+        )
+    # a non-causal drafter still loads
+    config = DFlash2Config.from_dict(
+        {"model_type": "qwen3", "dflash_config": {**dflash, "causal": False}}
+    )
+    assert config.model_type == "dflash2"
 
 
 def test_binding_hook_replaces_stale_architecture_bindings(monkeypatch, tmp_path):
