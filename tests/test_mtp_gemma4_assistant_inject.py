@@ -762,6 +762,14 @@ def test_inject_delegates_surfaces_to_outer_wrapper():
         {"mode": "ordinary"},
     )
 
+    # The dedicated target-forward surface reaches the injected inner text
+    # model without replacing the outer multimodal call contract.
+    logits, hidden = outer.mtp_target_forward(
+        mx.array([[1]], dtype=mx.uint32), return_hidden=True
+    )
+    assert logits.shape[:2] == (1, 1)
+    assert hidden.shape[:2] == (1, 1)
+
     # make_mtp_cache returns a list from the inner scaffold — assert
     # it's a real list of cache instances.
     cache = outer.make_mtp_cache()
@@ -871,6 +879,28 @@ def test_validate_refuses_when_outer_wrapper_missing_delegated_surface():
     # And validate on the inner directly still succeeds — we only
     # tightened the outer-check, not the inner-check.
     assert validate_mtp_support(inner) is True
+
+
+def test_validate_refuses_noncallable_outer_target_forward():
+    """The outer MTP-only target surface must be callable, not just present."""
+    from rapid_mlx.spec_decode.mtp.gemma4_inject import (
+        inject_mtp_support,
+        validate_mtp_support,
+    )
+
+    try:
+        inner = _build_tiny_gemma4_target_model()
+    except (TypeError, AttributeError) as exc:
+        pytest.skip(f"Gemma 4 ModelArgs schema mismatch: {exc}")
+
+    class _FakeOuterVLM:
+        def __init__(self, lm):
+            self.language_model = lm
+
+    outer = _FakeOuterVLM(inner)
+    assert inject_mtp_support(outer, allow_random_init=True) is True
+    outer.mtp_target_forward = None
+    assert validate_mtp_support(outer) is False
 
 
 # ---------------------------------------------------------------------------

@@ -638,6 +638,7 @@ jobs:
             tests/test_k2_horizon_model.py \
             tests/test_bailing_hybrid_model.py \
             tests/test_mtp_spec_decode.py \
+            tests/test_mtp_gemma4_assistant_inject.py \
             tests/test_mtp_draft_overlap.py \
             tests/test_mtp_nongreedy_distribution.py \
             tests/test_speculative_request_policy.py \
