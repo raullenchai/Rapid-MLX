@@ -301,9 +301,12 @@ class _FakeStreamingOutput:
 class _SwappingStreamEngine:
     """Promotes B to default after the first streamed token."""
 
+    preserve_native_tool_format = False
+    model_name = "model-a"
+
     def __init__(self, promote_b):
         self._promote_b = promote_b
-        self.tokenizer = None
+        self.tokenizer = SimpleNamespace(encode=lambda _text: [1])
         self.is_mllm = False
         self.supports_tool_calls = False
         self.supports_guided_generation = False
@@ -374,3 +377,414 @@ def test_streaming_chat_control_without_the_capture(monkeypatch, _registry_confi
     _drive_stream(monkeypatch, _SwappingStreamEngine(ctx.promote_b), calls)
 
     assert calls[0]["model_alias"] == _B_ID
+
+
+# --------------------------------------- the ROUTE-level streaming wiring
+#
+# Codex-round finding: driving ``stream_chat_completion`` directly and
+# handing it ``served_telemetry_id=`` by hand proves only that the
+# generator uses a keyword it was given. The production hop — the route
+# passing the captured id INTO the generator — was untested, and deleting
+# it from chat.py left every test green. These drive the real route and
+# drain the SSE body, so each hop is mutation-killable.
+
+
+async def _drain(response):
+    """Consume a StreamingResponse body to completion."""
+    chunks = []
+    async for chunk in response.body_iterator:
+        chunks.append(chunk)
+    return chunks
+
+
+@pytest.mark.asyncio
+async def test_streaming_chat_route_keeps_the_model_that_served(
+    monkeypatch, _registry_config
+):
+    """route → _create_chat_completion_impl → stream_chat_completion → emit."""
+    from rapid_mlx.routes import chat
+
+    ctx = _registry_config
+    calls: list[dict] = []
+    engine = _SwappingStreamEngine(ctx.promote_b)
+    ctx.registry.add(_entry(engine, "model-a", _A_PATH, _A_ID), is_default=True)
+    _patch_chat_route(monkeypatch, engine, calls)
+    _patch_stream_cfg(monkeypatch)
+
+    response = await chat.create_chat_completion(
+        _chat_request(stream=True), _RawRequest()
+    )
+    await _drain(response)
+
+    assert len(calls) == 1, f"expected one request event, got {calls}"
+    assert calls[0]["stream"] is True
+    assert calls[0]["model_alias"] == _A_ID
+    assert _B_ID not in repr(calls[0])
+
+
+def _patch_stream_cfg(monkeypatch):
+    from rapid_mlx.config import server_config
+
+    cfg = server_config.get_config()
+    for attr, value in (
+        ("tool_call_parser", None),
+        ("reasoning_parser_name", None),
+        ("reasoning_parser", None),
+        ("enable_auto_tool_choice", False),
+        ("gc_control", False),
+    ):
+        monkeypatch.setattr(cfg, attr, value, raising=False)
+
+
+# ------------------------------------- the other two surfaces, end to end
+#
+# The finding also noted that /v1/completions and /v1/messages — the
+# surface the P1 report actually named, because ``claude-*`` falls through
+# to the default engine — had no route-level test at all.
+
+
+class _SwappingCompletionEngine:
+    """Non-streaming completion engine that swaps the default mid-request."""
+
+    preserve_native_tool_format = False
+    is_mllm = False
+    model_name = "model-a"
+
+    def __init__(self, promote_b):
+        self._promote_b = promote_b
+        self.tokenizer = SimpleNamespace(encode=lambda _text: [1])
+
+    async def generate(self, prompt, **kwargs):
+        from rapid_mlx.engine.base import GenerationOutput
+
+        self._promote_b()
+        return GenerationOutput(
+            text="Paris",
+            finish_reason="stop",
+            prompt_tokens=5,
+            completion_tokens=1,
+        )
+
+
+def _patch_completions_route(monkeypatch, engine, emit_calls):
+    from rapid_mlx.routes import completions
+    from rapid_mlx.telemetry import emit
+
+    monkeypatch.setattr(emit, "request", lambda **kw: emit_calls.append(kw))
+    monkeypatch.setattr(emit, "is_enabled", lambda *a, **k: False)
+    monkeypatch.setattr(completions, "get_engine", lambda *a, **k: engine)
+    monkeypatch.setattr(completions, "ensure_engine_ready", _noop_async)
+    monkeypatch.setattr(completions, "_validate_model_name", lambda *a, **k: None)
+    monkeypatch.setattr(completions, "_check_admission_or_503", lambda *a, **k: None)
+    monkeypatch.setattr(
+        completions, "_release_admission_unless_committed", lambda *a, **k: None
+    )
+    monkeypatch.setattr(completions, "_release_route_ownership", lambda *a, **k: None)
+
+
+@pytest.mark.asyncio
+async def test_completions_route_keeps_the_model_that_served(
+    monkeypatch, _registry_config
+):
+    from rapid_mlx.api.models import CompletionRequest
+    from rapid_mlx.routes import completions
+
+    ctx = _registry_config
+    calls: list[dict] = []
+    engine = _SwappingCompletionEngine(ctx.promote_b)
+    ctx.registry.add(_entry(engine, "model-a", _A_PATH, _A_ID), is_default=True)
+    _patch_completions_route(monkeypatch, engine, calls)
+
+    request = CompletionRequest(
+        model="claude-sonnet-4", prompt="The capital of France is", max_tokens=8
+    )
+    await completions.create_completion(request, _RawRequest())
+
+    assert len(calls) == 1, f"expected one request event, got {calls}"
+    assert calls[0]["endpoint"] == "/v1/completions"
+    assert calls[0]["model_alias"] == _A_ID
+    assert _B_ID not in repr(calls[0])
+
+
+class _AnthRawRequest:
+    """Raw Starlette-ish request carrying an Anthropic Messages body."""
+
+    def __init__(self, body):
+        self._body = body
+        self.headers: dict = {}
+
+    async def json(self):
+        return self._body
+
+    async def is_disconnected(self):
+        return False
+
+
+def _patch_anthropic_route(monkeypatch, engine, emit_calls):
+    from rapid_mlx.routes import anthropic
+    from rapid_mlx.telemetry import emit
+
+    monkeypatch.setattr(emit, "request", lambda **kw: emit_calls.append(kw))
+    monkeypatch.setattr(emit, "is_enabled", lambda *a, **k: False)
+    monkeypatch.setattr(anthropic, "get_engine", lambda *a, **k: engine)
+    monkeypatch.setattr(anthropic, "ensure_engine_ready", _noop_async)
+    monkeypatch.setattr(anthropic, "_validate_model_name", lambda *a, **k: None)
+    monkeypatch.setattr(anthropic, "_check_admission_or_503", lambda *a, **k: None)
+    monkeypatch.setattr(
+        anthropic, "_release_admission_unless_committed", lambda *a, **k: None
+    )
+
+
+@pytest.mark.asyncio
+async def test_anthropic_route_keeps_the_model_that_served(
+    monkeypatch, _registry_config
+):
+    """The surface the P1 report named: ``claude-*`` falls through to the
+    DEFAULT engine, so a default swap mid-request is exactly the case that
+    used to repoint the event."""
+    from rapid_mlx.routes import anthropic
+
+    ctx = _registry_config
+    calls: list[dict] = []
+    engine = _SwappingChatEngine(ctx.promote_b)
+    ctx.registry.add(_entry(engine, "model-a", _A_PATH, _A_ID), is_default=True)
+    _patch_anthropic_route(monkeypatch, engine, calls)
+
+    await anthropic.create_anthropic_message(
+        _AnthRawRequest(
+            {
+                "model": "claude-sonnet-4",
+                "max_tokens": 32,
+                "messages": [{"role": "user", "content": "say hi"}],
+            }
+        )
+    )
+
+    assert len(calls) == 1, f"expected one request event, got {calls}"
+    assert calls[0]["endpoint"] == "/v1/messages"
+    assert calls[0]["model_alias"] == _A_ID
+    assert _B_ID not in repr(calls[0])
+
+
+# ------------------------------------------- the two chat stream wrappers
+#
+# Both wrappers ultimately delegate to ``stream_chat_completion``, which
+# owns the terminal emit. If either drops the captured id on the way, the
+# event silently falls back to the live-registry lookup.
+
+
+_SCHEMA = {"type": "object", "properties": {"a": {"type": "string"}}}
+
+
+def _drive_wrapper(monkeypatch, factory, emit_calls):
+    from rapid_mlx.telemetry import emit
+
+    _patch_stream_cfg(monkeypatch)
+    monkeypatch.setattr(emit, "request", lambda **kw: emit_calls.append(kw))
+
+    async def _run():
+        async for _chunk in factory():
+            pass
+
+    asyncio.run(_run())
+
+
+class _GuidedFailingEngine(_SwappingStreamEngine):
+    """Guided generation is advertised but blows up, so both the route and
+    the helper take the unconstrained fallback — the hops that forward the
+    captured id.
+
+    ``supports_guided_generation`` is set on the INSTANCE: the base class
+    sets it in ``__init__``, so a class attribute here would be silently
+    overwritten and the route would never enter the guided branch.
+    """
+
+    def __init__(self, promote_b):
+        super().__init__(promote_b)
+        self.supports_guided_generation = True
+
+    async def generate_with_schema(self, *a, **k):
+        raise RuntimeError("llguidance unavailable")
+
+
+def test_guided_fallback_carries_the_captured_id(monkeypatch, _registry_config):
+    from rapid_mlx.routes import chat
+
+    ctx = _registry_config
+    calls: list[dict] = []
+    engine = _GuidedFailingEngine(ctx.promote_b)
+    _drive_wrapper(
+        monkeypatch,
+        lambda: chat.stream_chat_completion_guided(
+            engine,
+            [{"role": "user", "content": "hi"}],
+            _chat_request(stream=True),
+            _SCHEMA,
+            served_telemetry_id=_A_ID,
+        ),
+        calls,
+    )
+
+    assert len(calls) == 1, f"expected one request event, got {calls}"
+    assert calls[0]["model_alias"] == _A_ID
+
+
+def test_strict_postgen_carries_the_captured_id(monkeypatch, _registry_config):
+    from rapid_mlx.routes import chat
+
+    ctx = _registry_config
+    calls: list[dict] = []
+    _drive_wrapper(
+        monkeypatch,
+        lambda: chat.stream_chat_completion_strict_postgen(
+            _SwappingStreamEngine(ctx.promote_b),
+            [{"role": "user", "content": "hi"}],
+            _chat_request(stream=True),
+            _SCHEMA,
+            served_telemetry_id=_A_ID,
+        ),
+        calls,
+    )
+
+    assert len(calls) == 1, f"expected one request event, got {calls}"
+    assert calls[0]["model_alias"] == _A_ID
+
+
+# ------------------------------------ the two remaining streaming ROUTES
+
+
+class _SwappingStreamCompletionEngine(_SwappingCompletionEngine):
+    """Legacy-completions streaming engine that swaps the default mid-stream."""
+
+    async def stream_generate(self, *args, **kwargs):
+        deltas = ["Par", "is", "."]
+        for i, delta in enumerate(deltas):
+            if i == 1:
+                self._promote_b()
+            yield _FakeStreamingOutput(delta, finished=(i == len(deltas) - 1))
+
+
+@pytest.mark.asyncio
+async def test_streaming_completions_route_keeps_the_model_that_served(
+    monkeypatch, _registry_config
+):
+    from rapid_mlx.api.models import CompletionRequest
+    from rapid_mlx.routes import completions
+
+    ctx = _registry_config
+    calls: list[dict] = []
+    engine = _SwappingStreamCompletionEngine(ctx.promote_b)
+    ctx.registry.add(_entry(engine, "model-a", _A_PATH, _A_ID), is_default=True)
+    _patch_completions_route(monkeypatch, engine, calls)
+    _patch_stream_cfg(monkeypatch)
+
+    response = await completions.create_completion(
+        CompletionRequest(
+            model="claude-sonnet-4", prompt="The capital of France is", stream=True
+        ),
+        _RawRequest(),
+    )
+    await _drain(response)
+
+    assert len(calls) == 1, f"expected one request event, got {calls}"
+    assert calls[0]["endpoint"] == "/v1/completions"
+    assert calls[0]["stream"] is True
+    assert calls[0]["model_alias"] == _A_ID
+
+
+@pytest.mark.asyncio
+async def test_streaming_anthropic_route_keeps_the_model_that_served(
+    monkeypatch, _registry_config
+):
+    """The exact scenario the P1 report described: a ``claude-*`` stream in
+    flight while the resident default is replaced."""
+    from rapid_mlx.routes import anthropic
+
+    ctx = _registry_config
+    calls: list[dict] = []
+    engine = _SwappingStreamEngine(ctx.promote_b)
+    ctx.registry.add(_entry(engine, "model-a", _A_PATH, _A_ID), is_default=True)
+    _patch_anthropic_route(monkeypatch, engine, calls)
+    _patch_stream_cfg(monkeypatch)
+
+    response = await anthropic.create_anthropic_message(
+        _AnthRawRequest(
+            {
+                "model": "claude-sonnet-4",
+                "max_tokens": 32,
+                "stream": True,
+                "messages": [{"role": "user", "content": "say hi"}],
+            }
+        )
+    )
+    await _drain(response)
+
+    assert len(calls) == 1, f"expected one request event, got {calls}"
+    assert calls[0]["endpoint"] == "/v1/messages"
+    assert calls[0]["stream"] is True
+    assert calls[0]["model_alias"] == _A_ID
+
+
+# ------------------- the guided / strict-postgen branches of the ROUTE
+#
+# The last two hops: the route's json_schema streaming branches, which
+# hand the captured id to the two wrapper generators.
+
+
+def _json_schema_request(strict: bool):
+    from rapid_mlx.api.models import ChatCompletionRequest
+
+    return ChatCompletionRequest(
+        model="claude-sonnet-4",
+        messages=[{"role": "user", "content": "hi"}],
+        max_tokens=50,
+        stream=True,
+        response_format={
+            "type": "json_schema",
+            "json_schema": {"name": "s", "schema": _SCHEMA, "strict": strict},
+        },
+    )
+
+
+@pytest.mark.asyncio
+async def test_guided_streaming_route_keeps_the_model_that_served(
+    monkeypatch, _registry_config
+):
+    from rapid_mlx.routes import chat
+
+    ctx = _registry_config
+    calls: list[dict] = []
+    engine = _GuidedFailingEngine(ctx.promote_b)
+    ctx.registry.add(_entry(engine, "model-a", _A_PATH, _A_ID), is_default=True)
+    _patch_chat_route(monkeypatch, engine, calls)
+    _patch_stream_cfg(monkeypatch)
+
+    response = await chat.create_chat_completion(
+        _json_schema_request(strict=False), _RawRequest()
+    )
+    await _drain(response)
+
+    assert len(calls) == 1, f"expected one request event, got {calls}"
+    assert calls[0]["model_alias"] == _A_ID
+
+
+@pytest.mark.asyncio
+async def test_strict_postgen_streaming_route_keeps_the_model_that_served(
+    monkeypatch, _registry_config
+):
+    from rapid_mlx.routes import chat
+
+    ctx = _registry_config
+    calls: list[dict] = []
+    engine = _SwappingStreamEngine(ctx.promote_b)
+    ctx.registry.add(_entry(engine, "model-a", _A_PATH, _A_ID), is_default=True)
+    _patch_chat_route(monkeypatch, engine, calls)
+    _patch_stream_cfg(monkeypatch)
+
+    response = await chat.create_chat_completion(
+        _json_schema_request(strict=True), _RawRequest()
+    )
+    await _drain(response)
+
+    assert len(calls) == 1, f"expected one request event, got {calls}"
+    assert calls[0]["model_alias"] == _A_ID

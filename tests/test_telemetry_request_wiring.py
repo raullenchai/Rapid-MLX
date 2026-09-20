@@ -112,6 +112,14 @@ async def test_nonstreaming_completion_emits_request_event(monkeypatch):
     # The client's ``request.model`` is NEVER what is reported. The route
     # resolves the loaded model's ``telemetry_model_id``; with no registry
     # and no loaded catalog model in this harness, that is ``<custom>``.
+    #
+    # This calls ``_create_chat_completion_impl`` directly, so
+    # ``served_telemetry_id`` defaults to None and the emit takes its
+    # ``or _served_model_id(request.model)`` fallback. That is deliberate:
+    # the fallback is the arm that keeps every direct-call site honest, and
+    # the CAPTURED arm is pinned separately in
+    # tests/test_telemetry_model_identity_capture.py, which drives the real
+    # route. Both arms must resist the served-name leak.
     assert kw["model_alias"] == "<custom>"
     assert "test-model" not in repr(kw)
     # The call site passes the RAW UA through; emit.request buckets it

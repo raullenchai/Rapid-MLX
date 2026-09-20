@@ -30,18 +30,22 @@ when we pulled it can be made private or gated later, and the next load will
 open it with a token. Three rules keep a stale "public" marker from naming
 such a repo:
 
-* **Auth wins, always.** While any HF token is visible to this process, a
-  non-catalog repo id is ``<custom>`` no matter what proof is stored. The
-  flag latches: once a token has been seen, this process never reports a
-  non-catalog repo id again, so clearing ``HF_TOKEN`` mid-run cannot launder
-  a gated repo into a reportable name.
+* **Auth wins, always.** While any HF token is visible to this process — or
+  while we cannot tell — a non-catalog repo id is ``<custom>`` no matter
+  what proof is stored. A *positively observed* token latches: once seen,
+  this process never reports a non-catalog repo id again, so clearing
+  ``HF_TOKEN`` mid-run cannot launder a gated repo into a reportable name.
+  "Cannot tell" is fail-closed for reading but never latches and never
+  writes (:func:`hf_auth_state`).
 * **An authenticated fetch revokes.** ``note_hub_fetch`` on an authenticated
   round trip deletes the proof — in memory and on disk — instead of merely
   declining to add one.
 * **Proof expires.** The marker stores the timestamp of the anonymous
-  success; past :data:`PUBLIC_PROOF_TTL_SECONDS` it is not proof any more
-  until a fresh anonymous fetch re-proves it. A content-free marker (the
-  pre-TTL format) is likewise not proof.
+  success, and it is believed only inside a window closed at BOTH ends —
+  no older than :data:`PUBLIC_PROOF_TTL_SECONDS`, no further ahead than
+  :data:`_CLOCK_SKEW_GRACE_SECONDS`. A content-free marker (the pre-TTL
+  format), a non-finite one (``nan`` / ``inf`` / ``1e999`` all parse as
+  floats) and a future-dated one are none of them proof.
 
 **Why not ``token=False``?** The obvious hardening — take the proof from a
 *forced*-anonymous request rather than inferring anonymity afterwards — is
@@ -118,6 +122,17 @@ _PUBLIC_MARKER_NAME = "public-anon-fetch"
 #: the next cold pull of that repo rather than never.
 PUBLIC_PROOF_TTL_SECONDS = 30 * 24 * 60 * 60
 
+#: How far into the future a stamp may sit and still be believed.
+#:
+#: The window has to be closed at BOTH ends. ``now - stamp > TTL`` is False
+#: for a future-dated stamp, so with only a lower bound a backwards clock
+#: step — an NTP correction after the marker was written, a VM restored
+#: from a snapshot, a dual-boot machine with a local-time RTC — turns every
+#: marker written "in the future" back into the indefinite authorisation the
+#: TTL exists to remove. Five minutes absorbs ordinary clock adjustment
+#: without leaving that hole open.
+_CLOCK_SKEW_GRACE_SECONDS = 300
+
 _proven_lock = threading.Lock()
 #: ``repo_id`` -> unix timestamp of the anonymous success that proved it.
 _proven_public: dict[str, float] = {}
@@ -128,40 +143,54 @@ _auth_seen = False
 # ------------------------------------------------------------------- tokens
 
 
-def hf_auth_in_use() -> bool:
-    """Whether a Hugging Face token is or has been available to this process.
+def hf_auth_state() -> bool | None:
+    """Tri-state look at the ambient Hub credentials.
 
-    Fail-closed: if we cannot tell (no huggingface_hub, unreadable token
-    file), we answer ``True`` — "assume authenticated" — because the only
-    thing this answer gates is permission to report a repo id.
+    * ``True``  — a token is visible to this process.
+    * ``False`` — definitively no token.
+    * ``None``  — **cannot tell**: no ``huggingface_hub`` to ask, or the
+      token file would not read.
 
-    The ``True`` answer **latches** for the life of the process. A token
-    that was visible at load time may have opened a gated repo whose
-    weights are now resident; dropping ``HF_TOKEN`` from the environment
-    afterwards must not turn that repo into a reportable public name.
+    The three answers are deliberately distinct. "Cannot tell" must be
+    fail-closed on the *read* side (:func:`hf_auth_in_use`) but must NOT
+    be treated as evidence on the *write* side: a momentary probe failure
+    is not a reason to latch the process or to delete proof that another
+    process earned (see :func:`note_hub_fetch`).
     """
-    global _auth_seen
-    if _auth_seen:
-        return True
-    if _probe_hf_auth():
-        _auth_seen = True
-        return True
-    return False
-
-
-def _probe_hf_auth() -> bool:
-    """One unlatched look at the ambient Hub credentials."""
     for var in _HF_TOKEN_ENV_VARS:
         if (os.environ.get(var) or "").strip():
             return True
     try:
         from huggingface_hub import get_token
     except Exception:
-        return True
+        return None
     try:
         return bool(get_token())
     except Exception:
+        return None
+
+
+def hf_auth_in_use() -> bool:
+    """Whether a Hugging Face token is or has been available to this process.
+
+    Fail-closed: "cannot tell" answers ``True`` — "assume authenticated" —
+    because the only thing this answer gates is permission to report a
+    repo id.
+
+    A *positively observed* token **latches** for the life of the process.
+    A token that was visible at load time may have opened a gated repo
+    whose weights are now resident; dropping ``HF_TOKEN`` from the
+    environment afterwards must not turn that repo into a reportable
+    public name. "Cannot tell" does not latch — it is not an observation.
+    """
+    global _auth_seen
+    if _auth_seen:
         return True
+    state = hf_auth_state()
+    if state is True:
+        _auth_seen = True
+        return True
+    return state is None
 
 
 # -------------------------------------------------------------------- proof
@@ -198,7 +227,12 @@ def _write_marker(repo_id: str, stamp: float) -> None:
     finally:
         try:
             os.remove(temporary)
-        except FileNotFoundError:
+        except OSError:
+            # The ordinary case is FileNotFoundError: ``os.replace``
+            # already consumed the temp file. Any other OSError here means
+            # the cache directory turned hostile between write and
+            # cleanup; leaking one stray ``.rapidmlx-public.*.tmp`` beats
+            # unwinding a marker we may have successfully replaced.
             pass
 
 
@@ -223,6 +257,22 @@ def _read_marker(repo_id: str) -> float | None:
         return None
 
 
+def _is_fresh(stamp: float, now: float) -> bool:
+    """Whether ``stamp`` is inside the window that licenses reporting.
+
+    The window is closed at BOTH ends, and that is load-bearing twice
+    over. A future-dated stamp passes ``age <= TTL`` trivially, so without
+    the lower bound a backwards clock step restores an indefinite lease.
+    And the two-sided form is also what rejects the garbage ``float()``
+    accepts — ``"nan"``, ``"inf"`` and ``"1e999"`` all parse, but every
+    comparison against NaN is False and ±inf lands outside the window, so
+    neither can become proof that never expires. No explicit ``isfinite``
+    check: it would be a line no test could kill.
+    """
+    age = now - stamp
+    return -_CLOCK_SKEW_GRACE_SECONDS <= age <= PUBLIC_PROOF_TTL_SECONDS
+
+
 def _revoke_proof(repo_id: str) -> None:
     """Drop any stored proof for ``repo_id``, in memory and on disk."""
     with _proven_lock:
@@ -242,12 +292,15 @@ def note_hub_fetch(repo_id: str) -> None:
     Call this ONLY after a real Hub round trip returned successfully. It
     decides for itself whether that round trip was anonymous:
 
-    * **Anonymous success** — proof, stamped with the current time.
-    * **Authenticated success** — the opposite of proof. The token may be
-      exactly what opened the repo, so any earlier proof is *revoked*
-      (memory + marker), not merely left alone. This is the codex P0 case:
-      a repo pulled anonymously while public, made private afterwards, and
-      then re-opened with a token must stop naming itself.
+    * **Anonymous success** (a token was definitively absent) — proof,
+      stamped with the current time.
+    * **Authenticated success** (a token was positively observed) — the
+      opposite of proof. The token may be exactly what opened the repo, so
+      any earlier proof is *revoked* (memory + marker), not merely left
+      alone. This is the codex P0 case: a repo pulled anonymously while
+      public, made private afterwards, and then re-opened with a token
+      must stop naming itself.
+    * **Cannot tell** — nothing happens. Neither recorded nor revoked.
 
     The proof is persisted as a marker file inside the repo's own HF cache
     directory, because the load that proves a model public is usually the
@@ -260,8 +313,17 @@ def note_hub_fetch(repo_id: str) -> None:
     try:
         if not isinstance(repo_id, str) or not _HF_REPO_RE.match(repo_id):
             return
-        if hf_auth_in_use():
+        state = True if _auth_seen else hf_auth_state()
+        if state is True:
+            hf_auth_in_use()  # latch the observation
             _revoke_proof(repo_id)
+            return
+        if state is None:
+            # We could not tell whether this round trip carried a token.
+            # That is not proof — and it is not grounds to destroy proof
+            # either. Revoking on "cannot tell" would let one transient
+            # unreadable-token-file error delete, for every future
+            # process, a marker that a genuinely anonymous pull earned.
             return
         now = time.time()
         with _proven_lock:
@@ -276,8 +338,10 @@ def note_hub_fetch(repo_id: str) -> None:
 def is_proven_public(repo_id: str) -> bool:
     """Whether an anonymous Hub fetch of ``repo_id`` succeeded *recently*.
 
-    "Recently" is :data:`PUBLIC_PROOF_TTL_SECONDS`; older proof is not
-    proof until a fresh anonymous fetch re-proves it.
+    "Recently" is :data:`PUBLIC_PROOF_TTL_SECONDS` and no further into the
+    future than :data:`_CLOCK_SKEW_GRACE_SECONDS`; anything outside that
+    window — including a non-finite stamp — is not proof until a fresh
+    anonymous fetch re-proves it.
 
     This answers "does fresh proof exist", NOT "may we report this id" —
     the token check lives in :func:`telemetry_model_id`, which is the only
@@ -287,10 +351,10 @@ def is_proven_public(repo_id: str) -> bool:
         now = time.time()
         with _proven_lock:
             remembered = _proven_public.get(repo_id)
-        if remembered is not None and now - remembered <= PUBLIC_PROOF_TTL_SECONDS:
+        if remembered is not None and _is_fresh(remembered, now):
             return True
         stamp = _read_marker(repo_id)
-        if stamp is None or now - stamp > PUBLIC_PROOF_TTL_SECONDS:
+        if stamp is None or not _is_fresh(stamp, now):
             return False
         with _proven_lock:
             _proven_public[repo_id] = stamp
