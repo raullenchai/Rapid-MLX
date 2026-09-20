@@ -482,6 +482,7 @@ import importlib.machinery
 import json
 import logging
 import sys
+from pathlib import Path
 from types import ModuleType
 from typing import Any, Optional, Tuple
 """,
@@ -560,6 +561,63 @@ logger = logging.getLogger(__name__)""",
 logger = logging.getLogger(__name__)""",
         ),
         (
+            """def _sidecar_weight_shards(path) -> list:
+    # Resolve the sidecar's weight shards with the same validation as
+    # MTPSplitter: the index document and ``weight_map`` must be objects
+    # of filename strings, and every shard must resolve inside the
+    # checkpoint directory or the repository's own HF blob cache.
+    index_path = path / "model.safetensors.index.json"
+    if index_path.exists():
+        with open(index_path) as f:
+            index = json.load(f)
+        weight_map = index.get("weight_map") if isinstance(index, dict) else None
+        if not isinstance(weight_map, dict) or not all(
+            isinstance(name, str) for name in weight_map.values()
+        ):
+            raise ValueError(
+                f"malformed safetensors index {index_path.name}: "
+                "weight_map must be an object of filename strings"
+            )
+        filenames = sorted(set(weight_map.values()))
+    else:
+        filenames = sorted(
+            shard.name
+            for shard in path.glob("*.safetensors")
+            if not shard.name.endswith("consolidated.safetensors")
+        )
+    resolved_source = path.resolve()
+    allowed_roots = [resolved_source]
+    blobs_root = resolved_source.parent.parent / "blobs"
+    if resolved_source.parent.name == "snapshots" and blobs_root.is_dir():
+        allowed_roots.append(blobs_root.resolve())
+    shards = []
+    for name in filenames:
+        shard = Path(name)
+        if shard.is_absolute() or ".." in shard.parts:
+            raise ValueError(
+                f"safetensors index entry escapes the checkpoint "
+                f"directory: {name!r}"
+            )
+        resolved_shard = (path / shard).resolve()
+        if not any(resolved_shard.is_relative_to(root) for root in allowed_roots):
+            raise ValueError(
+                f"safetensors index entry escapes the checkpoint "
+                f"directory: {name!r}"
+            )
+        shards.append(resolved_shard)
+    if not shards:
+        raise ValueError(f"no safetensors found in {path}")
+    return shards
+
+
+def load_drafter(
+    path_or_repo: str, kind: Optional[str] = None, **kwargs
+) -> Tuple[object, str]:""",
+            """def load_drafter(
+    path_or_repo: str, kind: Optional[str] = None, **kwargs
+) -> Tuple[object, str]:""",
+        ),
+        (
             """    path = get_model_path(path_or_repo)
     config = _read_drafter_config(path)
     peeked = _normalized_drafter_model_type(config)
@@ -580,22 +638,7 @@ logger = logging.getLogger(__name__)""",
         package = importlib.import_module(f"{__name__}.{peeked}")
         family_model = package.Model(package.ModelConfig.from_dict(config))
         weights = {}
-        index_path = path / "model.safetensors.index.json"
-        if index_path.exists():
-            with open(index_path) as f:
-                weight_map = json.load(f).get("weight_map", {})
-            shard_files = sorted(
-                {path / name for name in weight_map.values() if isinstance(name, str)}
-            )
-        else:
-            shard_files = sorted(
-                shard
-                for shard in path.glob("*.safetensors")
-                if not shard.name.endswith("consolidated.safetensors")
-            )
-        if not shard_files:
-            raise ValueError(f"no safetensors found in {path}")
-        for shard in shard_files:
+        for shard in _sidecar_weight_shards(path):
             weights.update(mx.load(str(shard)))
         weights = family_model.sanitize(weights)
         if (quantization := config.get("quantization")) is not None:
@@ -632,18 +675,27 @@ logger = logging.getLogger(__name__)""",
         return {}""",
         ),
         (
-            """def _normalized_drafter_model_type(config: dict) -> Optional[str]:
+            """# Backbone types whose DFlash sidecar checkpoints declare the backbone
+# model type with a nested ``dflash_config`` object. Unknown types must
+# fall through to the pinned modules unchanged.
+_SIDECAR_BACKBONE_TYPES = ("qwen3",)
+
+
+def _normalized_drafter_model_type(config: dict) -> Optional[str]:
     model_type = config.get("model_type") or config.get("speculators_model_type")
-    # Rapid upstream-bugfix (documented deviation): sidecar checkpoints
-    # declare the backbone model type (e.g. "qwen3") and carry the drafter
-    # settings in a nested ``dflash_config`` object — the served type is
-    # normalized only later by the family's ``Config.from_dict``, so
-    # binding on the raw type would skip the vendored shim and let pinned
-    # ``load_model`` construct the backbone architecture instead. The
-    # DFlash2-exclusive selector/conv keys discriminate DFlash2 from the
-    # Qwen3 DFlash layout sharing the same nested object.
-    if model_type not in _SERVED_ARCHITECTURE_FAMILIES and isinstance(
-        config.get("dflash_config"), dict
+    # Rapid upstream-bugfix (documented deviation): supported sidecar
+    # checkpoints declare the backbone model type ("qwen3") and carry the
+    # drafter settings in a nested ``dflash_config`` object — the served
+    # type is normalized only later by the family's ``Config.from_dict``,
+    # so binding on the raw type would skip the vendored shim and let
+    # pinned ``load_model`` construct the backbone architecture instead.
+    # The DFlash2-exclusive selector/conv keys discriminate DFlash2 from
+    # the Qwen3 DFlash layout sharing the same nested object. Unvendored
+    # or unknown families keep their raw type.
+    if (
+        model_type in _SIDECAR_BACKBONE_TYPES
+        and model_type not in _SERVED_ARCHITECTURE_FAMILIES
+        and isinstance(config.get("dflash_config"), dict)
     ):
         dflash_config = config["dflash_config"]
         dflash2_keys = (
@@ -2154,10 +2206,107 @@ def test_binding_sidecar_loads_vendored_family_directly(monkeypatch, tmp_path):
     assert type(drafter).__module__.startswith("rapid_mlx.models.mlx_vlm_vendored.")
     assert resolved == "dflash"
     saved = dict(tree_flatten(drafter.parameters()))
-    original = mx.load(str(repo / "model.safetensors"))
-    assert set(saved) == set(original)
-    for key in ("fc.weight", "layers.0.self_attn.q_proj.weight"):
-        assert mx.array_equal(saved[key], original[key]), key
+
+
+def test_binding_unsupported_backbone_falls_through(monkeypatch, tmp_path):
+    """An unrecognized dflash_config-bearing type keeps its raw type and
+    falls through to the pinned loader (no vendored misclassification)."""
+    import sys
+    from types import ModuleType
+
+    from rapid_mlx.models.mlx_vlm_vendored.speculative.drafters import (
+        _peek_drafter_model_type,
+        load_drafter,
+    )
+
+    repo = tmp_path / "unvendored"
+    repo.mkdir()
+    (repo / "config.json").write_text(
+        json.dumps(
+            {
+                "model_type": "gemma4",
+                "dflash_config": {"conv_kernel_size": 3},
+            }
+        )
+    )
+    assert _peek_drafter_model_type(repo) == "gemma4"
+
+    root = ModuleType("mlx_vlm")
+    root.__path__ = []
+    utils = ModuleType("mlx_vlm.utils")
+    utils.get_model_path = lambda value, **kwargs: Path(value)
+    utils.load_model = lambda path, **kwargs: "pinned-model"
+    monkeypatch.setitem(sys.modules, "mlx_vlm", root)
+    monkeypatch.setitem(sys.modules, "mlx_vlm.utils", utils)
+    drafter, resolved = load_drafter(str(repo), kind="dflash")
+    assert drafter == "pinned-model"
+
+
+def test_binding_sidecar_index_validation(monkeypatch, tmp_path):
+    """The sidecar loader validates its index (object root, string
+    filenames) and confines shards like MTPSplitter."""
+    import mlx.core as mx
+    from mlx.utils import tree_flatten
+
+    from rapid_mlx.models.mlx_vlm_vendored.speculative.drafters import load_drafter
+
+    root = ModuleType("mlx_vlm")
+    root.__path__ = []
+    utils = ModuleType("mlx_vlm.utils")
+    utils.get_model_path = lambda value, **kwargs: Path(value)
+    utils.load_model = lambda path, **kwargs: "pinned-model"
+    monkeypatch.setitem(sys.modules, "mlx_vlm", root)
+    monkeypatch.setitem(sys.modules, "mlx_vlm.utils", utils)
+
+    from rapid_mlx.models.mlx_vlm_vendored.speculative.drafters.qwen3_dflash.config import (
+        DFlashConfig,
+    )
+    from rapid_mlx.models.mlx_vlm_vendored.speculative.drafters.qwen3_dflash.dflash import (
+        DFlashDraftModel,
+    )
+
+    repo = tmp_path / "sidecar"
+    repo.mkdir()
+    (repo / "config.json").write_text(
+        json.dumps(
+            {
+                "model_type": "qwen3",
+                "dflash_config": {"mask_token_id": 1, "causal": False},
+            }
+        )
+    )
+    reference = DFlashDraftModel(DFlashConfig(mask_token_id=1))
+    mx.eval(reference.parameters())
+    flat = dict(tree_flatten(reference.parameters()))
+    del flat["layers.0.self_attn.q_proj.weight"]
+    mx.save_safetensors(str(repo / "shard-a.safetensors"), flat)
+
+    (repo / "model.safetensors.index.json").write_text("[]")
+    with pytest.raises(ValueError, match="weight_map must be an object"):
+        load_drafter(str(repo), kind="dflash")
+
+    (repo / "model.safetensors.index.json").write_text(
+        json.dumps({"weight_map": {"layers.0.self_attn.q_proj.weight": 17}})
+    )
+    with pytest.raises(ValueError, match="weight_map must be an object"):
+        load_drafter(str(repo), kind="dflash")
+
+    (repo / "model.safetensors.index.json").write_text(
+        json.dumps(
+            {
+                "weight_map": {
+                    k: (
+                        "../evil.safetensors"
+                        if k == "fc.weight"
+                        else "shard-a.safetensors"
+                    )
+                    for k in flat
+                }
+            }
+        )
+    )
+    with pytest.raises(ValueError, match="escapes the checkpoint directory"):
+        load_drafter(str(repo), kind="dflash")
 
 
 def test_qwen3_dflash_config_coerces_runtime_block_size():
