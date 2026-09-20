@@ -8,7 +8,9 @@ from typing import Any, Optional, Tuple
 from .dflash2 import DFlash2DraftModel
 from mlx_vlm.speculative.drafters.dspark import DSparkDraftModel
 from mlx_vlm.speculative.drafters.laguna_dflash import LagunaDFlashDraftModel
-from mlx_vlm.speculative.drafters.muse_glimmer_assistant import MuseGlimmerAssistantDraftModel
+from mlx_vlm.speculative.drafters.muse_glimmer_assistant import (
+    MuseGlimmerAssistantDraftModel,
+)
 from .qwen3_dflash import DFlashDraftModel
 
 KNOWN_DRAFTER_KINDS = {"dflash", "mtp", "eagle3"}
@@ -48,8 +50,11 @@ DEFAULT_DRAFTER_KIND = "dflash"
 # architectures through ``mlx_vlm.models.<model_type>``; pre-registering
 # ``sys.modules`` shims that expose the vendored packages' ``Model`` /
 # ``ModelConfig`` makes the pinned loader construct the vendored classes,
-# so the documented runtime fixes reach production drafters. Unvendored
-# families fall through to the pinned modules.
+# so the documented runtime fixes reach production drafters. Existing
+# entries are re-bound when they do not match the vendored classes —
+# a pinned module imported earlier, or a shim bound before the GLM
+# compatibility swap, must not silently serve a stale implementation.
+# Unvendored families fall through to the pinned modules.
 _SERVED_ARCHITECTURE_FAMILIES = (
     "glm5_next_mtp",
     "qwen3_5_mtp",
@@ -61,13 +66,19 @@ _SERVED_ARCHITECTURE_FAMILIES = (
 def install_served_architecture_bindings() -> None:
     for model_type in _SERVED_ARCHITECTURE_FAMILIES:
         target = f"mlx_vlm.models.{model_type}"
-        if target in sys.modules:
-            continue
         package = importlib.import_module(f"{__name__}.{model_type}")
+        existing = sys.modules.get(target)
+        if (
+            existing is not None
+            and getattr(existing, "Model", None) is package.Model
+            and getattr(existing, "ModelConfig", None) is package.ModelConfig
+        ):
+            continue
         shim = ModuleType(target)
         setattr(shim, "Model", package.Model)  # noqa: B010
         setattr(shim, "ModelConfig", package.ModelConfig)  # noqa: B010
         sys.modules[target] = shim
+
 
 logger = logging.getLogger(__name__)
 

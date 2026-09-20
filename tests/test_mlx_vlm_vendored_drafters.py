@@ -40,7 +40,9 @@ REDIRECTS = {
             "from .laguna_dflash import LagunaDFlashDraftModel\n",
         ),
         (
-            "from mlx_vlm.speculative.drafters.muse_glimmer_assistant import MuseGlimmerAssistantDraftModel\n",
+            # ruff format wraps this import; the redirect restores upstream bytes.
+            "from mlx_vlm.speculative.drafters.muse_glimmer_assistant import (\n"
+            "    MuseGlimmerAssistantDraftModel,\n)\n",
             "from .muse_glimmer_assistant import MuseGlimmerAssistantDraftModel\n",
         ),
         (
@@ -332,8 +334,11 @@ from typing import Any, Optional, Tuple
 # architectures through ``mlx_vlm.models.<model_type>``; pre-registering
 # ``sys.modules`` shims that expose the vendored packages' ``Model`` /
 # ``ModelConfig`` makes the pinned loader construct the vendored classes,
-# so the documented runtime fixes reach production drafters. Unvendored
-# families fall through to the pinned modules.
+# so the documented runtime fixes reach production drafters. Existing
+# entries are re-bound when they do not match the vendored classes —
+# a pinned module imported earlier, or a shim bound before the GLM
+# compatibility swap, must not silently serve a stale implementation.
+# Unvendored families fall through to the pinned modules.
 _SERVED_ARCHITECTURE_FAMILIES = (
     "glm5_next_mtp",
     "qwen3_5_mtp",
@@ -345,14 +350,22 @@ _SERVED_ARCHITECTURE_FAMILIES = (
 def install_served_architecture_bindings() -> None:
     for model_type in _SERVED_ARCHITECTURE_FAMILIES:
         target = f"mlx_vlm.models.{model_type}"
-        if target in sys.modules:
-            continue
         package = importlib.import_module(f"{__name__}.{model_type}")
+        existing = sys.modules.get(target)
+        if (
+            existing is not None
+            and getattr(existing, "Model", None) is package.Model
+            and getattr(existing, "ModelConfig", None) is package.ModelConfig
+        ):
+            continue
         shim = ModuleType(target)
         setattr(shim, "Model", package.Model)  # noqa: B010
         setattr(shim, "ModelConfig", package.ModelConfig)  # noqa: B010
-        sys.modules[target] = shim""",
-            'DEFAULT_DRAFTER_KIND = "dflash"',
+        sys.modules[target] = shim
+
+
+logger = logging.getLogger(__name__)""",
+            'DEFAULT_DRAFTER_KIND = "dflash"\n\nlogger = logging.getLogger(__name__)',
         ),
         (
             """    install_served_architecture_bindings()
@@ -791,6 +804,38 @@ def test_load_drafter_binds_served_families_to_vendored_modules(monkeypatch):
         assert constructed[-1].startswith("rapid_mlx.models.mlx_vlm_vendored."), (
             f"{family}: served drafter resolved to {constructed[-1]}"
         )
+
+
+def test_binding_hook_replaces_stale_architecture_bindings(monkeypatch, tmp_path):
+    """An existing architecture module that does not match the vendored
+    classes must be re-bound, not skipped."""
+    import sys
+    from types import ModuleType
+
+    from rapid_mlx.models.mlx_vlm_vendored.speculative.drafters import (
+        load_drafter,
+    )
+
+    stale = ModuleType("mlx_vlm.models.dflash2")
+    stale.Model = object
+    stale.ModelConfig = object
+    monkeypatch.setitem(sys.modules, "mlx_vlm.models.dflash2", stale)
+
+    root = ModuleType("mlx_vlm")
+    root.__path__ = []
+    utils = ModuleType("mlx_vlm.utils")
+    utils.get_model_path = lambda value, **kwargs: Path(value)
+    utils.load_model = lambda path, **kwargs: object()
+    monkeypatch.setitem(sys.modules, "mlx_vlm", root)
+    monkeypatch.setitem(sys.modules, "mlx_vlm.utils", utils)
+
+    load_drafter(str(Path("/repo/dflash2")), kind="dflash")
+    rebound = sys.modules["mlx_vlm.models.dflash2"]
+    assert rebound is not stale
+    assert rebound.Model.__module__.startswith("rapid_mlx.models.mlx_vlm_vendored.")
+    assert rebound.ModelConfig.__module__.startswith(
+        "rapid_mlx.models.mlx_vlm_vendored."
+    )
 
 
 def test_qwen35_decoder_layer_routes_qwen3_next_to_moe():

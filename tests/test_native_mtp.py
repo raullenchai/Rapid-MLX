@@ -968,9 +968,12 @@ def test_glm_adapter_reaches_products_of_the_pinned_loader(monkeypatch, tmp_path
     utils.get_model_path = lambda repo_id, revision=None: Path(repo)
     # object.__new__: the dispatch reads the class object from the pinned
     # package attribute; the heavy model init is irrelevant to the probe.
-    utils.load_model = lambda path, **kwargs: package.Glm5NextMTPDraftModel.__new__(
-        package.Glm5NextMTPDraftModel
-    )
+    # The fake loader mirrors the documented pinned dispatch: the class is
+    # resolved through the mlx_vlm.models.<model_type> architecture module
+    # that the registry's binding hook installs.
+    utils.load_model = lambda path, **kwargs: sys.modules[
+        "mlx_vlm.models.glm5_next_mtp"
+    ].Model.__new__(sys.modules["mlx_vlm.models.glm5_next_mtp"].Model)
     # Fake the mlx_vlm ROOT but keep the real __path__: the vendored glm5
     # drafter imports the real pinned model family, while the poisoned
     # utils/drafters submodules must stay faked for the loader boundary.
@@ -978,13 +981,9 @@ def test_glm_adapter_reaches_products_of_the_pinned_loader(monkeypatch, tmp_path
 
     root = ModuleType("mlx_vlm")
     root.__path__ = list(_real_mlx_vlm.__path__)
-    # Pre-bind the architecture shim target so the registry's binding hook
-    # is a no-op for glm5 (no sys.modules leak into other tests).
-    monkeypatch.setitem(
-        sys.modules,
-        "mlx_vlm.models.glm5_next_mtp",
-        ModuleType("mlx_vlm.models.glm5_next_mtp"),
-    )
+    # Remove any cached architecture module so the registry's binding hook
+    # runs for glm5 (monkeypatch restores/cleans it after the test).
+    monkeypatch.delitem(sys.modules, "mlx_vlm.models.glm5_next_mtp", raising=False)
     for name, module in {
         "mlx_vlm": root,
         "mlx_vlm.speculative.drafters": drafters,
@@ -1007,3 +1006,9 @@ def test_glm_adapter_reaches_products_of_the_pinned_loader(monkeypatch, tmp_path
     drafter, kind = load_drafter(repo, kind="mtp")
     assert kind == "mtp"
     assert getattr(type(drafter), "_RAPID_STATELESS_GLM_MTP", None) is True
+    # the dispatch resolved the hook-installed shim, whose Model is the
+    # adapted vendored class (not the stale pre-swap binding).
+    assert sys.modules["mlx_vlm.models.glm5_next_mtp"].Model is type(drafter)
+    assert sys.modules["mlx_vlm.models.glm5_next_mtp"].Model.__module__.startswith(
+        "rapid_mlx."
+    )
