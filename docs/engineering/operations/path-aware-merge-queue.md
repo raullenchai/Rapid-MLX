@@ -258,11 +258,10 @@ commit status, so the prior `merge-ready-head=success` remains attached only to
 the old SHA and cannot admit the new head. When a ready label remains, the new
 SHA receives `merge-ready-head=failure` with the remedy in its description. A
 maintainer completes review and removes and re-applies that one ready label to
-authorize the new exact SHA. Head-update and label events are serialized per PR;
-a delayed synchronize delivery observes and preserves any successful
-authorization already written for the new head. This avoids the race in which
-delayed cleanup could erase authorization deliberately applied to the newer
-head.
+authorize the new exact SHA. Head-update handling checks the new SHA before and
+after publishing failure; if a fresh label authorization races it, the trusted
+success is preserved or restored. This avoids both delayed cleanup races and
+lossy workflow concurrency queues that can discard an intermediate label event.
 
 Do not weaken or remove any required context to make a candidate move. A missing,
 cancelled, or failed aggregate is a queue failure.

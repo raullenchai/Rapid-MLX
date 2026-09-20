@@ -4,14 +4,6 @@ on:
   pull_request_target:
     types: [labeled, synchronize]
 
-# Label and head-update deliveries can be scheduled in either order. Serialize
-# them per pull request so a fresh label authorization always wins: if the
-# label run goes first, the synchronize run observes its success and leaves it
-# alone; if synchronize goes first, the later label run replaces the failure.
-concurrency:
-  group: merge-ready-head-${{ github.event.pull_request.number }}
-  cancel-in-progress: false
-
 permissions: {}
 
 jobs:
@@ -41,33 +33,58 @@ jobs:
               // the stale authorization visible instead of leaving Mergify
               // silently waiting for a status that can never appear.
               //
-              // The per-PR concurrency group also serializes a label event
-              // racing this delivery. When that newer authorization ran
-              // first, its success is authoritative and must not be replaced
-              // by this older synchronize delivery.
-              const { data: statuses } =
-                await github.rest.repos.listCommitStatusesForRef({
+              // A label delivery may execute concurrently. Any successful
+              // authorization on this *new SHA* can only have come from a
+              // fresh label event after the push, so preserve it. Check both
+              // before and after writing failure: this makes every possible
+              // interleaving converge to success when a fresh authorization
+              // exists, without relying on lossy Actions concurrency queues.
+              const listStatuses = async () => {
+                const { data } = await github.rest.repos.listCommitStatusesForRef({
                   owner: context.repo.owner,
                   repo: context.repo.repo,
                   ref: headSha,
                   per_page: 100,
                 });
-              const latestAuthorization = statuses.find(
-                (status) => status.context === "merge-ready-head",
-              );
-              if (latestAuthorization?.state === "success") {
+                return data;
+              };
+              const successfulAuthorization = (statuses) =>
+                statuses.find(
+                  (status) =>
+                    status.context === "merge-ready-head" &&
+                    status.state === "success",
+                );
+              const before = successfulAuthorization(await listStatuses());
+              if (before) {
                 return;
               }
 
+              const failureDescription =
+                "Head changed — remove and re-apply the ready label";
               await github.rest.repos.createCommitStatus({
                 owner: context.repo.owner,
                 repo: context.repo.repo,
                 sha: headSha,
                 state: "failure",
                 context: "merge-ready-head",
-                description: "Head changed — remove and re-apply the ready label",
+                description: failureDescription,
                 target_url: statusUrl,
               });
+
+              const racedSuccess = successfulAuthorization(await listStatuses());
+              if (racedSuccess) {
+                await github.rest.repos.createCommitStatus({
+                  owner: context.repo.owner,
+                  repo: context.repo.repo,
+                  sha: headSha,
+                  state: "success",
+                  context: "merge-ready-head",
+                  description:
+                    racedSuccess.description ||
+                    "Authorized ready label on this exact head",
+                  target_url: racedSuccess.target_url || statusUrl,
+                });
+              }
               return;
             }
 
