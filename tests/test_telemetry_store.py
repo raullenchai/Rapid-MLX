@@ -35,6 +35,17 @@ CONCURRENCY_PROCESSES = 6
 CONCURRENCY_INCREMENTS = 400
 
 
+#: ``chmod 0500`` does not stop root, so the two tests that make a real
+#: directory unwritable are skipped there. The same code paths are also
+#: covered deterministically by
+#: ``test_unwritable_state_dir_returns_nothing_to_emit``, which fails the
+#: ``mkdir`` directly — so skipping here never opens a coverage hole.
+requires_non_root = pytest.mark.skipif(
+    hasattr(os, "geteuid") and os.geteuid() == 0,
+    reason="root ignores directory permissions",
+)
+
+
 @pytest.fixture
 def fake_home(tmp_path, monkeypatch):
     """Reroute ``Path.home()`` so the database lands under tmp.
@@ -348,6 +359,7 @@ def test_cohort_values_are_in_the_declared_enum(fake_home):
 # --------------------------------------------------------------------------
 
 
+@requires_non_root
 def test_read_only_state_dir_returns_nothing_to_emit(fake_home):
     from rapid_mlx.telemetry import store
 
@@ -364,6 +376,7 @@ def test_read_only_state_dir_returns_nothing_to_emit(fake_home):
         os.chmod(state_dir, 0o700)
 
 
+@requires_non_root
 def test_read_only_home_returns_nothing_to_emit(tmp_path, monkeypatch):
     home = tmp_path / "ro-home"
     home.mkdir()
@@ -377,6 +390,28 @@ def test_read_only_home_returns_nothing_to_emit(tmp_path, monkeypatch):
         assert store.claim_active_day() is False
     finally:
         os.chmod(home, 0o700)
+
+
+def test_unwritable_state_dir_returns_nothing_to_emit(fake_home, monkeypatch):
+    """Every public function degrades to "nothing to emit", never raises.
+
+    Fails the ``mkdir`` itself rather than relying on directory
+    permissions, so this holds for any user (including root) and on any
+    filesystem. An ``OSError`` is not corruption, so nothing is renamed
+    aside either.
+    """
+    from rapid_mlx.telemetry import store
+
+    def boom(self, *args, **kwargs):
+        raise OSError("read-only file system")
+
+    monkeypatch.setattr(Path, "mkdir", boom)
+    assert store.record("k") is None
+    assert store.claim_active_day("2026-09-20") is False
+    assert store.note_model_served("qwen3-8b") == 0
+    assert store.first_run_date() is None
+    assert store.days_since_first_run_bucket() is None
+    assert not list(fake_home.glob(".rapid-mlx/telemetry.db.corrupt-*"))
 
 
 def test_corrupt_db_is_renamed_aside_once_and_recreated(fake_home):
@@ -422,3 +457,170 @@ def test_db_is_created_lazily(fake_home):
     from rapid_mlx.telemetry import store
 
     assert not store.db_path().exists()
+
+
+# --------------------------------------------------------------------------
+# Internal failure branches
+#
+# These live below the public API but are exactly the paths that decide
+# whether a broken machine breaks `serve`, so they are tested directly
+# rather than left to a lucky integration test.
+# --------------------------------------------------------------------------
+
+
+class _ExplodingConnection:
+    """A stand-in connection whose statements fail on demand.
+
+    ``fail_on`` matches the *start* of a statement (case-insensitive);
+    a matching statement raises the configured error instead of running.
+    """
+
+    def __init__(self, fail_on, error, *, results=None):
+        self.fail_on = tuple(prefix.lower() for prefix in fail_on)
+        self.error = error
+        self.results = results or {}
+        self.statements = []
+
+    def execute(self, sql, *args):
+        self.statements.append(sql)
+        lowered = sql.lower()
+        if lowered.startswith(self.fail_on):
+            raise self.error
+        for prefix, row in self.results.items():
+            if lowered.startswith(prefix.lower()):
+                return _Row(row)
+        return _Row(None)
+
+
+class _Row:
+    def __init__(self, row):
+        self._row = row
+
+    def fetchone(self):
+        return self._row
+
+
+def test_transaction_rolls_back_and_re_raises(fake_home):
+    from rapid_mlx.telemetry import store
+
+    conn = _ExplodingConnection(["insert"], sqlite3.OperationalError("disk full"))
+    with pytest.raises(sqlite3.OperationalError), store._transaction(conn):
+        conn.execute("INSERT INTO counters VALUES (1)")
+    assert conn.statements[0] == "BEGIN IMMEDIATE"
+    assert conn.statements[-1] == "ROLLBACK"
+    assert "COMMIT" not in conn.statements
+
+
+def test_transaction_survives_a_rollback_that_also_fails(fake_home):
+    """The original error is what the caller needs, not the rollback's."""
+    from rapid_mlx.telemetry import store
+
+    conn = _ExplodingConnection(
+        ["insert", "rollback"], sqlite3.OperationalError("database is locked")
+    )
+    with (
+        pytest.raises(sqlite3.OperationalError, match="locked"),
+        store._transaction(conn),
+    ):
+        conn.execute("INSERT INTO counters VALUES (1)")
+    assert conn.statements[-1] == "ROLLBACK"
+
+
+def test_quarantine_returns_false_when_the_rename_fails(fake_home, monkeypatch):
+    """An unwritable state dir must not turn into an exception."""
+    from rapid_mlx.telemetry import store
+
+    def boom(self, target):
+        raise OSError("read-only file system")
+
+    monkeypatch.setattr(Path, "rename", boom)
+    assert store._quarantine_corrupt_db() is False
+
+
+def test_chmod_failure_does_not_stop_the_store(fake_home, monkeypatch):
+    """A filesystem without POSIX modes still gets a working database."""
+    from rapid_mlx.telemetry import store
+
+    def boom(path, mode):
+        raise OSError("operation not supported")
+
+    monkeypatch.setattr(store.os, "chmod", boom)
+    assert store.record("k") is not None
+
+
+def test_enable_wal_tolerates_a_busy_journal_mode_change(fake_home):
+    """Changing journal_mode bypasses the busy handler — never fatal."""
+    from rapid_mlx.telemetry import store
+
+    conn = _ExplodingConnection(
+        ["pragma journal_mode ="],
+        sqlite3.OperationalError("database is locked"),
+        results={"pragma journal_mode": ("delete",)},
+    )
+    store._enable_wal(conn)  # must not raise
+    assert conn.statements[-1] == "PRAGMA journal_mode = WAL"
+
+
+def test_enable_wal_is_a_no_op_when_already_wal(fake_home):
+    from rapid_mlx.telemetry import store
+
+    conn = _ExplodingConnection(
+        ["pragma journal_mode ="],
+        AssertionError("should not have tried to change journal_mode"),
+        results={"pragma journal_mode": ("wal",)},
+    )
+    store._enable_wal(conn)
+    assert conn.statements == ["PRAGMA journal_mode"]
+
+
+def test_run_returns_the_default_when_the_work_fails(fake_home):
+    from rapid_mlx.telemetry import store
+
+    def work(conn):
+        raise sqlite3.OperationalError("database is locked")
+
+    assert store._run(work, "nothing-to-emit") == "nothing-to-emit"
+
+
+def test_run_retries_once_after_quarantining_a_corrupt_db(fake_home):
+    """A corruption raised by the *work* (not the connect) also retries."""
+    from rapid_mlx.telemetry import store
+
+    calls = []
+
+    def work(conn):
+        calls.append(1)
+        if len(calls) == 1:
+            raise sqlite3.DatabaseError("database disk image is malformed")
+        return "second-attempt"
+
+    assert store._run(work, None) == "second-attempt"
+    assert len(calls) == 2
+    assert len(list(fake_home.glob(".rapid-mlx/telemetry.db.corrupt-*"))) == 1
+
+
+def test_run_gives_up_after_the_bounded_number_of_attempts(fake_home, monkeypatch):
+    """The retry budget is exactly one even if quarantining keeps working."""
+    from rapid_mlx.telemetry import store
+
+    monkeypatch.setattr(store, "_quarantine_corrupt_db", lambda: True)
+    calls = []
+
+    def work(conn):
+        calls.append(1)
+        raise sqlite3.DatabaseError("database disk image is malformed")
+
+    assert store._run(work, "gave-up") == "gave-up"
+    assert len(calls) == 2
+
+
+def test_unparseable_first_run_date_reads_as_no_cohort(fake_home):
+    """A hand-edited or future-format row must not raise at emit time."""
+    from rapid_mlx.telemetry import store
+
+    store.first_run_date()
+    with sqlite3.connect(str(store.db_path())) as conn:
+        conn.execute(
+            "UPDATE install_facts SET value = 'not-a-date' WHERE key = 'first_run_date'"
+        )
+    assert store.days_since_first_run_bucket() is None

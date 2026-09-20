@@ -49,8 +49,8 @@ from __future__ import annotations
 import os
 import sqlite3
 import threading
-from collections.abc import Callable
-from contextlib import closing
+from collections.abc import Callable, Iterator
+from contextlib import closing, contextmanager
 from dataclasses import dataclass
 from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
@@ -210,6 +210,27 @@ def _quarantine_corrupt_db() -> bool:
     return True
 
 
+def _enable_wal(conn: sqlite3.Connection) -> None:
+    """Put the database in WAL mode if it is not already.
+
+    WAL is what makes concurrent readers plus one writer cheap across
+    processes, and it is a persistent property of the file — so set it
+    only when it is not already set. *Changing* ``journal_mode`` takes an
+    exclusive lock and, unlike ordinary statements, does NOT go through
+    the busy handler, so a redundant set under contention raises
+    "database is locked" and would cost us an increment. A genuine
+    failure is tolerated: a rollback-journal database still works, it
+    just serialises more.
+    """
+    (mode,) = conn.execute("PRAGMA journal_mode").fetchone()
+    if str(mode).lower() == "wal":
+        return
+    try:
+        conn.execute("PRAGMA journal_mode = WAL")
+    except sqlite3.OperationalError:
+        pass
+
+
 def _connect() -> sqlite3.Connection:
     """Open (creating on first use) the telemetry database.
 
@@ -234,20 +255,7 @@ def _connect() -> sqlite3.Connection:
             except OSError:
                 pass
         conn.execute(f"PRAGMA busy_timeout = {int(BUSY_TIMEOUT_SECONDS * 1000)}")
-        # WAL is what makes concurrent readers + one writer cheap across
-        # processes. It is a persistent property of the file, so set it
-        # only when it is not already set: *changing* journal_mode takes
-        # an exclusive lock and — unlike ordinary statements — does NOT
-        # go through the busy handler, so a redundant set under
-        # contention raises "database is locked" and would cost us an
-        # increment. Tolerate a failure: a rollback-journal database
-        # still works, it just serialises more.
-        (mode,) = conn.execute("PRAGMA journal_mode").fetchone()
-        if str(mode).lower() != "wal":
-            try:
-                conn.execute("PRAGMA journal_mode = WAL")
-            except sqlite3.OperationalError:
-                pass
+        _enable_wal(conn)
         conn.execute("PRAGMA synchronous = NORMAL")
         # ``user_version`` lives in the file header and is a plain read,
         # so the common case (schema already current) costs no write
@@ -262,10 +270,35 @@ def _connect() -> sqlite3.Connection:
     return conn
 
 
-def _ensure_schema(conn: sqlite3.Connection) -> None:
-    """Create the tables lazily and stamp the schema version."""
+@contextmanager
+def _transaction(conn: sqlite3.Connection) -> Iterator[None]:
+    """One ``BEGIN IMMEDIATE`` … ``COMMIT``, rolled back on any failure.
+
+    ``IMMEDIATE`` takes the write lock up front, which is the whole
+    point: a deferred transaction would read, then try to upgrade, and
+    two processes could interleave a read-then-write. Every decision in
+    this module goes through here so the rollback-on-failure handling
+    exists once rather than five times.
+
+    A ``ROLLBACK`` that itself fails is swallowed: the original error is
+    what the caller needs to see, and the connection is closed
+    immediately afterwards anyway, which rolls back anything open.
+    """
     conn.execute("BEGIN IMMEDIATE")
     try:
+        yield
+    except BaseException:
+        try:
+            conn.execute("ROLLBACK")
+        except sqlite3.Error:
+            pass
+        raise
+    conn.execute("COMMIT")
+
+
+def _ensure_schema(conn: sqlite3.Connection) -> None:
+    """Create the tables lazily and stamp the schema version."""
+    with _transaction(conn):
         for statement in _SCHEMA:
             conn.execute(statement)
         conn.execute(
@@ -273,37 +306,32 @@ def _ensure_schema(conn: sqlite3.Connection) -> None:
             (str(SCHEMA_VERSION),),
         )
         conn.execute(f"PRAGMA user_version = {int(SCHEMA_VERSION)}")
-        conn.execute("COMMIT")
-    except BaseException:
-        try:
-            conn.execute("ROLLBACK")
-        except sqlite3.Error:
-            pass
-        raise
+
+
+def _attempt(work: Callable[[sqlite3.Connection], _T]) -> _T:
+    """Open the database, run ``work``, close. Raises on any failure."""
+    with closing(_connect()) as conn:
+        return work(conn)
 
 
 def _run(work: Callable[[sqlite3.Connection], _T], default: _T) -> _T:
     """Run ``work`` against the database, never raising.
 
-    One retry, and only after a genuinely corrupt file has been renamed
-    aside — every other failure returns ``default`` ("nothing to emit")
-    immediately rather than blocking a caller twice.
+    Exactly one retry, and only after a genuinely corrupt file has been
+    renamed aside — every other failure returns ``default`` ("nothing to
+    emit") immediately rather than blocking a caller twice. Failures
+    from opening the database and from the work itself are handled the
+    same way: either one means we have nothing to say.
     """
-    for attempt in (0, 1):
-        try:
-            conn = _connect()
-        except (sqlite3.Error, OSError) as exc:
-            if attempt == 0 and _is_corruption(exc) and _quarantine_corrupt_db():
-                continue
+    try:
+        return _attempt(work)
+    except (sqlite3.Error, OSError) as exc:
+        if not (_is_corruption(exc) and _quarantine_corrupt_db()):
             return default
-        try:
-            with closing(conn):
-                return work(conn)
-        except (sqlite3.Error, OSError) as exc:
-            if attempt == 0 and _is_corruption(exc) and _quarantine_corrupt_db():
-                continue
-            return default
-    return default
+    try:
+        return _attempt(work)
+    except (sqlite3.Error, OSError):
+        return default
 
 
 def _valid_key(key: str) -> bool:
@@ -329,15 +357,14 @@ def record(key: str) -> BucketCrossing | None:
         return None
 
     def work(conn: sqlite3.Connection) -> BucketCrossing | None:
-        conn.execute("BEGIN IMMEDIATE")
-        try:
+        with _transaction(conn):
             row = conn.execute(
                 "SELECT count, last_bucket FROM counters WHERE key = ?", (key,)
             ).fetchone()
             if row is None:
                 (known,) = conn.execute("SELECT COUNT(*) FROM counters").fetchone()
                 if known >= MAX_KEYS:
-                    conn.execute("ROLLBACK")
+                    # Nothing written; the empty transaction just commits.
                     return None
                 previous, last_bucket = 0, None
             else:
@@ -354,13 +381,6 @@ def record(key: str) -> BucketCrossing | None:
                 " last_bucket = excluded.last_bucket",
                 (key, count, bucket if crossed else last_bucket),
             )
-            conn.execute("COMMIT")
-        except BaseException:
-            try:
-                conn.execute("ROLLBACK")
-            except sqlite3.Error:
-                pass
-            raise
         if not crossed or bucket is None:
             return None
         source = (
@@ -394,8 +414,7 @@ def claim_active_day(utc_date: date | datetime | str | None = None) -> bool:
     day = _as_day(utc_date)
 
     def work(conn: sqlite3.Connection) -> bool:
-        conn.execute("BEGIN IMMEDIATE")
-        try:
+        with _transaction(conn):
             cursor = conn.execute(
                 "INSERT OR IGNORE INTO active_days (day, claimed_at) VALUES (?, ?)",
                 (day, datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")),
@@ -410,13 +429,6 @@ def claim_active_day(utc_date: date | datetime | str | None = None) -> bool:
                     - timedelta(days=ACTIVE_DAY_RETENTION_DAYS)
                 ).strftime("%Y-%m-%d")
                 conn.execute("DELETE FROM active_days WHERE day < ?", (cutoff,))
-            conn.execute("COMMIT")
-        except BaseException:
-            try:
-                conn.execute("ROLLBACK")
-            except sqlite3.Error:
-                pass
-            raise
         return claimed
 
     return _run(work, False)
@@ -436,8 +448,7 @@ def note_model_served(model_id: str) -> int:
         return 0
 
     def work(conn: sqlite3.Connection) -> int:
-        conn.execute("BEGIN IMMEDIATE")
-        try:
+        with _transaction(conn):
             (known,) = conn.execute("SELECT COUNT(*) FROM models_served").fetchone()
             exists = conn.execute(
                 "SELECT 1 FROM models_served WHERE model_id = ?", (model_id,)
@@ -451,13 +462,6 @@ def note_model_served(model_id: str) -> int:
                     ),
                 )
                 known += 1
-            conn.execute("COMMIT")
-        except BaseException:
-            try:
-                conn.execute("ROLLBACK")
-            except sqlite3.Error:
-                pass
-            raise
         return int(known)
 
     return _run(work, 0)
@@ -473,8 +477,7 @@ def first_run_date(now: datetime | None = None) -> str | None:
     today = _as_day(now)
 
     def work(conn: sqlite3.Connection) -> str | None:
-        conn.execute("BEGIN IMMEDIATE")
-        try:
+        with _transaction(conn):
             conn.execute(
                 "INSERT OR IGNORE INTO install_facts (key, value)"
                 " VALUES ('first_run_date', ?)",
@@ -483,13 +486,6 @@ def first_run_date(now: datetime | None = None) -> str | None:
             row = conn.execute(
                 "SELECT value FROM install_facts WHERE key = 'first_run_date'"
             ).fetchone()
-            conn.execute("COMMIT")
-        except BaseException:
-            try:
-                conn.execute("ROLLBACK")
-            except sqlite3.Error:
-                pass
-            raise
         return str(row[0]) if row else None
 
     return _run(work, None)
