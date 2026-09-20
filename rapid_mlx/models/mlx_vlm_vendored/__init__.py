@@ -412,8 +412,11 @@ vendored copy differs by exactly the deviations listed):
   bound as ``dflash2`` when the DFlash2-exclusive selector/conv keys
   are present and as ``qwen3_dflash`` otherwise — pinned 0.7.1 peeked
   the raw type and skipped the shim, constructing the backbone
-  architecture from drafter weights; unvendored families fall
-  through to the pinned modules. The registry's ``_read_drafter_config``
+  architecture from drafter weights; ``resolve_drafter_kind`` resolves
+  against the same normalized type, so an explicit wrong
+  ``--draft-kind`` on a backbone-declared sidecar is overridden instead
+  of dispatching the DFlash drafter through the MTP loop; unvendored
+  families fall through to the pinned modules. The registry's ``_read_drafter_config``
   degrades a non-object ``config.json`` to the documented empty dict —
   pinned 0.7.1 returns any decoded JSON value and crashes
   ``resolve_drafter_kind`` on ``config.get()``. The DFlash runtime loads

@@ -581,8 +581,7 @@ logger = logging.getLogger(__name__)""",
         return {}""",
         ),
         (
-            """def _peek_drafter_model_type(model_path) -> Optional[str]:
-    config = _read_drafter_config(model_path)
+            """def _normalized_drafter_model_type(config: dict) -> Optional[str]:
     model_type = config.get("model_type") or config.get("speculators_model_type")
     # Rapid upstream-bugfix (documented deviation): sidecar checkpoints
     # declare the backbone model type (e.g. "qwen3") and carry the drafter
@@ -607,10 +606,27 @@ logger = logging.getLogger(__name__)""",
         if any(key in dflash_config for key in dflash2_keys):
             return "dflash2"
         return "qwen3_dflash"
-    return model_type""",
+    return model_type
+
+
+def _peek_drafter_model_type(model_path) -> Optional[str]:
+    return _normalized_drafter_model_type(_read_drafter_config(model_path))""",
             """def _peek_drafter_model_type(model_path) -> Optional[str]:
     config = _read_drafter_config(model_path)
     return config.get("model_type") or config.get("speculators_model_type")""",
+        ),
+        (
+            """    config = _read_drafter_config(model_path)
+    # Rapid upstream-bugfix (documented deviation): resolve against the
+    # normalized model type — pinned 0.7.1 examined the raw backbone type,
+    # so an explicit wrong --draft-kind (e.g. "mtp") on a backbone-declared
+    # sidecar was returned unchanged and dispatched the DFlash drafter
+    # through the MTP loop.
+    model_type = _normalized_drafter_model_type(config)
+    expected = _expected_drafter_kind(model_type, config)""",
+            """    config = _read_drafter_config(model_path)
+    model_type = config.get("model_type") or config.get("speculators_model_type")
+    expected = _expected_drafter_kind(model_type, config)""",
         ),
     ],
     "mtp_split.py": [
@@ -1937,6 +1953,14 @@ def test_binding_peek_resolves_backbone_declared_dflash2(tmp_path):
     target.mkdir()
     (target / "config.json").write_text(json.dumps({"model_type": "qwen3"}))
     assert _peek_drafter_model_type(target) == "qwen3"
+
+    # kind resolution uses the normalized type: an explicit wrong
+    # --draft-kind mtp on a backbone-declared sidecar is overridden
+    from rapid_mlx.models.mlx_vlm_vendored.speculative.drafters import (
+        resolve_drafter_kind,
+    )
+
+    assert resolve_drafter_kind(qwen_dflash, kind="mtp") == "dflash"
 
     declared = tmp_path / "declared-family"
     declared.mkdir()

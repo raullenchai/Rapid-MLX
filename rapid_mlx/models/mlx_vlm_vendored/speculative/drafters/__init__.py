@@ -195,8 +195,7 @@ def _read_drafter_config(model_path) -> dict:
     return config if isinstance(config, dict) else {}
 
 
-def _peek_drafter_model_type(model_path) -> Optional[str]:
-    config = _read_drafter_config(model_path)
+def _normalized_drafter_model_type(config: dict) -> Optional[str]:
     model_type = config.get("model_type") or config.get("speculators_model_type")
     # Rapid upstream-bugfix (documented deviation): sidecar checkpoints
     # declare the backbone model type (e.g. "qwen3") and carry the drafter
@@ -222,6 +221,10 @@ def _peek_drafter_model_type(model_path) -> Optional[str]:
             return "dflash2"
         return "qwen3_dflash"
     return model_type
+
+
+def _peek_drafter_model_type(model_path) -> Optional[str]:
+    return _normalized_drafter_model_type(_read_drafter_config(model_path))
 
 
 def _declares_mtp_layers(config: Any) -> bool:
@@ -264,7 +267,12 @@ def resolve_drafter_kind(model_path, kind: Optional[str] = None) -> str:
     ``draft_block`` with an opaque error, we pick the right kind for them.
     """
     config = _read_drafter_config(model_path)
-    model_type = config.get("model_type") or config.get("speculators_model_type")
+    # Rapid upstream-bugfix (documented deviation): resolve against the
+    # normalized model type — pinned 0.7.1 examined the raw backbone type,
+    # so an explicit wrong --draft-kind (e.g. "mtp") on a backbone-declared
+    # sidecar was returned unchanged and dispatched the DFlash drafter
+    # through the MTP loop.
+    model_type = _normalized_drafter_model_type(config)
     expected = _expected_drafter_kind(model_type, config)
 
     if kind is None:
