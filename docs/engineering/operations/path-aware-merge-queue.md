@@ -108,7 +108,9 @@ Desktop-only candidate does not acquire engine work.
 Labeling writes a `merge-ready-head` success status onto that exact pull-request
 head. Both queues require the status before admission, while their synthetic
 combined heads do not. A later push has a different SHA and therefore cannot
-reuse the authorization even if asynchronous label cleanup has not run yet.
+reuse the authorization. If a ready label is still present, the head update
+writes an actionable failure on the new SHA telling the maintainer to remove
+and re-apply the label; the PR can no longer look queued while silently stalled.
 
 The queue creates an internal pull request from a branch whose name is exactly
 `mergify/merge-queue/<10 lowercase hex characters>`. The engine and Desktop
@@ -253,12 +255,14 @@ repository permission.
 
 A head update never mutates PR-scoped labels asynchronously. Authorization is a
 commit status, so the prior `merge-ready-head=success` remains attached only to
-the old SHA and cannot admit the new head. A visible ready label may remain, but
-the queue stays blocked until a maintainer completes review and removes and
-re-applies that one ready label, creating a fresh authorization event for the
-new exact SHA. Avoiding asynchronous label deletion removes the race in which a
-delayed synchronize job could erase authorization deliberately applied to the
-newer head.
+the old SHA and cannot admit the new head. When a ready label remains, the new
+SHA receives `merge-ready-head=failure` with the remedy in its description. A
+maintainer completes review and removes and re-applies that one ready label to
+authorize the new exact SHA. Head-update and label events are serialized per PR;
+a delayed synchronize delivery observes and preserves any successful
+authorization already written for the new head. This avoids the race in which
+delayed cleanup could erase authorization deliberately applied to the newer
+head.
 
 Do not weaken or remove any required context to make a candidate move. A missing,
 cancelled, or failed aggregate is a queue failure.

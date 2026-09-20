@@ -2,7 +2,15 @@ name: Bind merge-ready to head
 
 on:
   pull_request_target:
-    types: [labeled]
+    types: [labeled, synchronize]
+
+# Label and head-update deliveries can be scheduled in either order. Serialize
+# them per pull request so a fresh label authorization always wins: if the
+# label run goes first, the synchronize run observes its success and leaves it
+# alone; if synchronize goes first, the later label run replaces the failure.
+concurrency:
+  group: merge-ready-head-${{ github.event.pull_request.number }}
+  cancel-in-progress: false
 
 permissions: {}
 
@@ -10,8 +18,12 @@ jobs:
   authorize-ready-head:
     if: >-
       github.event.pull_request.head.repo.full_name == github.repository &&
-      (github.event.label.name == 'merge-ready' ||
-       github.event.label.name == 'merge-ready-mac')
+      ((github.event.action == 'labeled' &&
+        (github.event.label.name == 'merge-ready' ||
+         github.event.label.name == 'merge-ready-mac')) ||
+       (github.event.action == 'synchronize' &&
+        (contains(github.event.pull_request.labels.*.name, 'merge-ready') ||
+         contains(github.event.pull_request.labels.*.name, 'merge-ready-mac'))))
     runs-on: ubuntu-latest
     permissions:
       pull-requests: read
@@ -21,6 +33,44 @@ jobs:
         uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3  # v9.0.0
         with:
           script: |
+            const headSha = context.payload.pull_request.head.sha;
+            const statusUrl = `${context.serverUrl}/${context.repo.owner}/${context.repo.repo}/pull/${context.issue.number}`;
+
+            if (context.payload.action === "synchronize") {
+              // A ready label authorizes one immutable head. A push must make
+              // the stale authorization visible instead of leaving Mergify
+              // silently waiting for a status that can never appear.
+              //
+              // The per-PR concurrency group also serializes a label event
+              // racing this delivery. When that newer authorization ran
+              // first, its success is authoritative and must not be replaced
+              // by this older synchronize delivery.
+              const { data: statuses } =
+                await github.rest.repos.listCommitStatusesForRef({
+                  owner: context.repo.owner,
+                  repo: context.repo.repo,
+                  ref: headSha,
+                  per_page: 100,
+                });
+              const latestAuthorization = statuses.find(
+                (status) => status.context === "merge-ready-head",
+              );
+              if (latestAuthorization?.state === "success") {
+                return;
+              }
+
+              await github.rest.repos.createCommitStatus({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                sha: headSha,
+                state: "failure",
+                context: "merge-ready-head",
+                description: "Head changed — remove and re-apply the ready label",
+                target_url: statusUrl,
+              });
+              return;
+            }
+
             // A historical Actions rerun must not replay an old labeled event.
             // A maintainer can always create a fresh authorization event by
             // removing and re-applying the ready label.
@@ -38,11 +88,11 @@ jobs:
             await github.rest.repos.createCommitStatus({
               owner: context.repo.owner,
               repo: context.repo.repo,
-              sha: context.payload.pull_request.head.sha,
+              sha: headSha,
               state: "pending",
               context: "merge-ready-head",
               description: `Validating ${context.payload.label.name} on this exact head`,
-              target_url: `${context.serverUrl}/${context.repo.owner}/${context.repo.repo}/pull/${context.issue.number}`,
+              target_url: statusUrl,
             });
             const { data: livePull } = await github.rest.pulls.get({
               owner: context.repo.owner,
@@ -69,11 +119,11 @@ jobs:
             await github.rest.repos.createCommitStatus({
               owner: context.repo.owner,
               repo: context.repo.repo,
-              sha: context.payload.pull_request.head.sha,
+              sha: headSha,
               state,
               context: "merge-ready-head",
               description,
-              target_url: `${context.serverUrl}/${context.repo.owner}/${context.repo.repo}/pull/${context.issue.number}`,
+              target_url: statusUrl,
             });
 
             if (!authorized) {

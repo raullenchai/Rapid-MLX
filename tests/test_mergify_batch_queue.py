@@ -119,13 +119,20 @@ def test_ready_authorization_is_bound_to_the_exact_head_commit():
         Loader=yaml.BaseLoader,
     )
 
-    assert workflow["on"] == {"pull_request_target": {"types": ["labeled"]}}
+    assert workflow["on"] == {
+        "pull_request_target": {"types": ["labeled", "synchronize"]}
+    }
+    assert workflow["concurrency"] == {
+        "group": "merge-ready-head-${{ github.event.pull_request.number }}",
+        "cancel-in-progress": "false",
+    }
     assert workflow["permissions"] == {}
 
     job = workflow["jobs"]["authorize-ready-head"]
     assert "head.repo.full_name == github.repository" in job["if"]
     assert "merge-ready" in job["if"]
     assert "merge-ready-mac" in job["if"]
+    assert "github.event.action == 'synchronize'" in job["if"]
     assert job["permissions"] == {
         "pull-requests": "read",
         "statuses": "write",
@@ -135,11 +142,13 @@ def test_ready_authorization_is_bound_to_the_exact_head_commit():
     assert step["uses"].startswith("actions/github-script@")
     script = step["with"]["script"]
     assert "github.rest.repos.createCommitStatus" in script
-    assert "sha: context.payload.pull_request.head.sha" in script
+    assert "headSha = context.payload.pull_request.head.sha" in script
+    assert "sha: headSha" in script
     assert 'context: "merge-ready-head"' in script
     assert "present.length === 1" in script
     assert "GITHUB_RUN_ATTEMPT" in script
     assert "github.rest.pulls.get" in script
+    assert "github.rest.repos.listCommitStatusesForRef" in script
     assert "livePull.head.sha === context.payload.pull_request.head.sha" in script
     assert "github.paginate" not in script
     assert "github.rest.issues" not in script
@@ -155,6 +164,8 @@ def _run_authorization_script(
     live_head: str = "head-sha",
     fail_status_call: int | None = None,
     fail_get: bool = False,
+    action: str = "labeled",
+    existing_statuses: list[dict[str, str]] | None = None,
 ) -> dict[str, object]:
     """Execute the exact github-script body against deterministic API mocks."""
 
@@ -171,6 +182,8 @@ def _run_authorization_script(
             "liveHead": live_head,
             "failStatusCall": fail_status_call,
             "failGet": fail_get,
+            "action": action,
+            "existingStatuses": existing_statuses or [],
         }
     )
     harness = f"""
@@ -183,6 +196,7 @@ const context = {{
   issue: {{ number: 42 }},
   serverUrl: "https://github.example",
   payload: {{
+    action: scenario.action,
     label: {{ name: scenario.eventLabel }},
     pull_request: {{ head: {{ sha: "head-sha" }} }},
   }},
@@ -201,6 +215,9 @@ const github = {{
       statusCalls += 1;
       calls.push(["status", args.state]);
       if (scenario.failStatusCall === statusCalls) throw new Error("status failure");
+    }}, listCommitStatusesForRef: async () => {{
+      calls.push(["list-statuses"]);
+      return {{ data: scenario.existingStatuses }};
     }} }},
   }},
 }};
@@ -233,6 +250,29 @@ def test_initial_authorization_publishes_success_for_the_exact_head():
         ["get"],
         ["status", "success"],
     ]
+
+
+def test_head_update_publishes_actionable_failure_on_the_new_head():
+    result = _run_authorization_script(
+        labels=["merge-ready-mac"], action="synchronize"
+    )
+
+    assert result["calls"] == [
+        ["list-statuses"],
+        ["status", "failure"],
+    ]
+
+
+def test_delayed_head_update_does_not_overwrite_fresh_authorization():
+    result = _run_authorization_script(
+        labels=["merge-ready-mac"],
+        action="synchronize",
+        existing_statuses=[
+            {"context": "merge-ready-head", "state": "success"},
+        ],
+    )
+
+    assert result["calls"] == [["list-statuses"]]
 
 
 def test_status_or_live_pull_failure_remains_fail_closed():
