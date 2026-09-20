@@ -23,8 +23,9 @@ debt compounds. The systematic fix is two-part:
 1. Publish the test-runtime deps as a `test` extras in pyproject.toml
    (the canonical source — pr_validate does NOT maintain a duplicate
    list).
-2. Have pr_validate self-check that those plugins are importable in
-   the same Python that will run pytest; if not, attempt a one-shot
+2. Have pr_validate self-check that those plugins are importable and their
+   installed distributions satisfy the canonical version ranges in the same
+   Python that will run pytest; if not, attempt a one-shot
    ``pip install .[test]`` from the repo root (opt out via
    ``PR_VALIDATE_NO_AUTO_INSTALL=1`` for sandboxed CI).
 
@@ -33,8 +34,8 @@ auto-install is disabled and the env is broken, the operator sees a
 clear "pr_validate venv is misconfigured" error in the scorecard
 rather than a cryptic 124-failure pytest log.
 
-Why import-time checks and not just shelling to pytest with a "did the
-asyncio plugin load" flag? Because pytest itself is configured to
+Why retain import-time checks in addition to distribution metadata? Because an
+in-range distribution can still be corrupted or shadowed. Pytest is configured to
 auto-load every installed plugin via setuptools entrypoints, so a
 clean ``import pytest_asyncio`` is the most direct evidence the
 plugin is wired into THIS interpreter — same path pytest itself takes.
@@ -42,11 +43,16 @@ plugin is wired into THIS interpreter — same path pytest itself takes.
 
 from __future__ import annotations
 
+import json
 import os
 import subprocess
 import sys
 from dataclasses import dataclass
 from pathlib import Path
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from packaging.requirements import Requirement
 
 # Packages the test suite REQUIRES at collection time. Keep this list
 # narrow — anything that's only used by a single test should be
@@ -55,53 +61,58 @@ from pathlib import Path
 # because plugin discovery happens before tests are collected, so a
 # missing plugin breaks the entire run.
 #
-# Each entry is (import_name, pip_name, why). ``import_name`` is what
-# the self-check tries; ``pip_name`` is what would be installed if we
-# fell back to ad-hoc ``pip install`` (we don't — we install the full
-# canonical extras instead — but it's surfaced in the error message
-# so the operator can manually recover).
+# Each entry is (import_name, distribution_name, why). Import and
+# distribution names are deliberately separate: e.g. ``PIL`` is provided by
+# the ``pillow`` distribution. Version ranges and markers are NOT duplicated
+# here; they are parsed from the canonical ``[project.optional-dependencies]
+# .test`` declarations in pyproject.toml.
 REQUIRED_TEST_PACKAGES: tuple[tuple[str, str, str], ...] = (
     (
         "pytest",
-        "pytest>=7.0.0",
+        "pytest",
         "test runner itself; should be present but check anyway",
     ),
     (
         "pytest_asyncio",
-        "pytest-asyncio>=0.21.0",
+        "pytest-asyncio",
         "pytest.ini sets asyncio_mode=auto; without this every "
         "`async def test_*` fails at collection",
     ),
     (
         "aiohttp",
-        "aiohttp>=3.9.0",
+        "aiohttp",
         "async HTTP tests import aiohttp at module load",
     ),
     (
         "PIL",
-        "pillow>=10.0.0",
+        "pillow",
         "image/aspect-ratio and Gemma MTP tests import PIL at collection/run time",
     ),
     (
         "mlx_vlm",
-        "mlx-vlm>=0.6.3; platform_system == 'Darwin'",
+        "mlx-vlm",
         "Gemma 4 / DFlash / vision lock-in tests expect mlx_vlm importability",
     ),
     (
         "mlx_audio",
-        "mlx-audio>=0.5.3,<0.6; platform_system == 'Darwin'",
+        "mlx-audio",
         "audio route tests expect mlx-audio importability",
     ),
 )
 
 # MLX runtime surfaces are Apple-only. Local Apple-Silicon validation
 # should require them, but Linux CI must not treat these imports as a
-# readiness signal.
+# readiness signal. Platform selection deliberately lives here rather than in
+# REQUIRED_TEST_PACKAGES' distribution-name field: that field must stay a bare
+# name suitable for ``importlib.metadata.version()``. Canonical PEP 508 markers
+# are evaluated separately by ``_active_test_packages``.
 DARWIN_ONLY_TEST_IMPORTS = frozenset({"mlx_vlm", "mlx_audio"})
 
 # Canonical extras name from pyproject.toml. If you rename the extras,
 # update this constant too (and the unit test that pins it).
 TEST_EXTRAS_NAME = "test"
+PROJECT_ROOT = Path(__file__).resolve().parents[2]
+TARGET_METADATA_TIMEOUT_SECONDS = 15
 
 # Files whose modification by an external PR makes the auto-install
 # path UNSAFE — installing from the PR's working tree would let the
@@ -170,13 +181,200 @@ def is_dep_declaration_file(path: str) -> bool:
 # time of pinning (#275). A bump here is a deliberate operator
 # decision; pr_validate refuses to silently follow a PR's lead.
 TRUSTED_TEST_PINS: tuple[str, ...] = (
+    "packaging>=23,<27",
+    'tomli>=2.0.1,<3; python_version < "3.11"',
     "pytest>=7.0.0,<9",
     "pytest-asyncio>=0.21.0,<1",
     "aiohttp>=3.9.0,<4",
     "pillow>=10.0.0,<13",
-    "mlx-vlm>=0.6.3,<0.7; platform_system == 'Darwin'",
+    "mlx-vlm==0.7.1; platform_system == 'Darwin'",
     "mlx-audio>=0.5.3,<0.6; platform_system == 'Darwin'",
 )
+
+
+@dataclass(frozen=True)
+class DependencyProblem:
+    """One active test requirement not satisfied by the target interpreter."""
+
+    import_name: str
+    distribution_name: str
+    installed_version: str | None
+    requirement: str
+
+    def render(self) -> str:
+        installed = self.installed_version or "not installed"
+        return (
+            f"{self.distribution_name} installed {installed}, "
+            f"requires {self.requirement}"
+        )
+
+
+def canonical_test_requirements(
+    repo_root: Path | None = None,
+) -> dict[str, tuple[Requirement, ...]]:
+    """Parse the canonical PEP 508 requirements for the test extra."""
+
+    from packaging.requirements import Requirement
+    from packaging.utils import canonicalize_name
+
+    if sys.version_info >= (3, 11):
+        import tomllib
+    else:  # pragma: no cover - exercised by the Python 3.10 CI lane
+        import tomli as tomllib
+
+    root = repo_root or PROJECT_ROOT
+    data = tomllib.loads((root / "pyproject.toml").read_text())
+    raw_requirements = data["project"]["optional-dependencies"][TEST_EXTRAS_NAME]
+    requirements = [Requirement(raw) for raw in raw_requirements]
+    by_name: dict[str, list[Requirement]] = {}
+    for requirement in requirements:
+        by_name.setdefault(canonicalize_name(requirement.name), []).append(requirement)
+    return {name: tuple(entries) for name, entries in by_name.items()}
+
+
+_TARGET_METADATA_PROBE = """
+import importlib.metadata
+import json
+import os
+import platform
+import sys
+
+names = json.loads(sys.argv[1])
+versions = {}
+for name in names:
+    try:
+        versions[name] = importlib.metadata.version(name)
+    except importlib.metadata.PackageNotFoundError:
+        versions[name] = None
+
+implementation = sys.implementation.version
+implementation_version = f"{implementation.major}.{implementation.minor}.{implementation.micro}"
+if implementation.releaselevel != "final":
+    implementation_version += implementation.releaselevel[0] + str(implementation.serial)
+environment = {
+    "implementation_name": sys.implementation.name,
+    "implementation_version": implementation_version,
+    "os_name": os.name,
+    "platform_machine": platform.machine(),
+    "platform_release": platform.release(),
+    "platform_system": platform.system(),
+    "platform_version": platform.version(),
+    "platform_python_implementation": platform.python_implementation(),
+    "python_full_version": platform.python_version(),
+    "python_version": ".".join(platform.python_version_tuple()[:2]),
+    "sys_platform": sys.platform,
+}
+print(json.dumps({"environment": environment, "versions": versions}))
+"""
+
+
+def _target_metadata(
+    interpreter: str,
+    distribution_names: list[str],
+) -> tuple[dict[str, str], dict[str, str | None], str | None]:
+    """Read marker environment + installed versions from ``interpreter``."""
+
+    try:
+        proc = subprocess.run(  # noqa: S603
+            [
+                interpreter,
+                "-c",
+                _TARGET_METADATA_PROBE,
+                json.dumps(distribution_names),
+            ],
+            capture_output=True,
+            text=True,
+            timeout=TARGET_METADATA_TIMEOUT_SECONDS,
+        )
+    except subprocess.TimeoutExpired:
+        return (
+            {},
+            {},
+            "target interpreter metadata probe timed out after "
+            f"{TARGET_METADATA_TIMEOUT_SECONDS}s",
+        )
+    except OSError as error:
+        return {}, {}, f"could not run target interpreter {interpreter!r}: {error}"
+    if proc.returncode != 0:
+        diagnostic = (proc.stderr or proc.stdout or "").strip()
+        return {}, {}, diagnostic or f"metadata probe exited {proc.returncode}"
+    try:
+        payload = json.loads(proc.stdout)
+        return payload["environment"], payload["versions"], None
+    except (json.JSONDecodeError, KeyError, TypeError) as error:
+        return {}, {}, f"invalid metadata probe response: {error}"
+
+
+def _active_test_packages(
+    *,
+    environment: dict[str, str],
+    versions: dict[str, str | None],
+    requirements: dict[str, tuple[Requirement, ...]],
+) -> tuple[tuple[tuple[str, str, str], ...], tuple[DependencyProblem, ...]]:
+    """Apply canonical markers and evaluate installed distribution versions."""
+
+    from packaging.markers import default_environment
+    from packaging.utils import canonicalize_name
+    from packaging.version import InvalidVersion, Version
+
+    marker_environment = default_environment()
+    marker_environment.update(environment)
+    active: list[tuple[str, str, str]] = []
+    problems: list[DependencyProblem] = []
+    for import_name, distribution_name, why in REQUIRED_TEST_PACKAGES:
+        canonical_name = canonicalize_name(distribution_name)
+        candidates = requirements.get(canonical_name)
+        if candidates is None:
+            problems.append(
+                DependencyProblem(
+                    import_name=import_name,
+                    distribution_name=distribution_name,
+                    installed_version=versions.get(distribution_name),
+                    requirement=f"declared in .[{TEST_EXTRAS_NAME}]",
+                )
+            )
+            continue
+        applicable = tuple(
+            requirement
+            for requirement in candidates
+            if requirement.marker is None
+            or requirement.marker.evaluate(environment=marker_environment)
+        )
+        if not applicable:
+            continue
+        active.append((import_name, distribution_name, why))
+        installed = versions.get(distribution_name)
+        required_range = " and ".join(
+            str(requirement.specifier) or "any version" for requirement in applicable
+        )
+        if installed is None:
+            problems.append(
+                DependencyProblem(
+                    import_name=import_name,
+                    distribution_name=distribution_name,
+                    installed_version=None,
+                    requirement=required_range,
+                )
+            )
+            continue
+        try:
+            parsed_version = Version(installed)
+            satisfies = all(
+                not requirement.specifier or parsed_version in requirement.specifier
+                for requirement in applicable
+            )
+        except InvalidVersion:
+            satisfies = False
+        if not satisfies:
+            problems.append(
+                DependencyProblem(
+                    import_name=import_name,
+                    distribution_name=distribution_name,
+                    installed_version=installed,
+                    requirement=required_range,
+                )
+            )
+    return tuple(active), tuple(problems)
 
 
 def required_test_packages_for_platform(
@@ -195,15 +393,16 @@ def required_test_packages_for_platform(
 class TestEnvStatus:
     """Result of a test-env check.
 
-    ``missing`` is the list of import names that failed; ``ok`` mirrors
-    the bool the caller usually wants. ``message`` is a one-liner
-    suitable for a step-result summary.
+    ``missing`` is the list of import names that failed or whose installed
+    distributions are unsatisfied; ``ok`` mirrors the bool the caller usually
+    wants. ``message`` is a one-liner suitable for a step-result summary.
     """
 
     ok: bool
     missing: tuple[str, ...]
     message: str
     interpreter: str
+    problems: tuple[DependencyProblem, ...] = ()
 
     @property
     def install_hint(self) -> str:
@@ -220,7 +419,7 @@ class TestEnvStatus:
 
 
 def check_test_env(python: str | None = None) -> TestEnvStatus:
-    """Probe ``python`` for the required test-runtime packages.
+    """Probe imports and canonical distribution versions in ``python``.
 
     ``python`` defaults to ``sys.executable`` — i.e. the interpreter
     currently running pr_validate, which is also the one
@@ -234,7 +433,39 @@ def check_test_env(python: str | None = None) -> TestEnvStatus:
     pytest_asyncio twice could trip a "plugin already registered" warning).
     """
     interp = python or sys.executable
-    import_names = [pkg for pkg, _, _ in required_test_packages_for_platform()]
+    try:
+        requirements = canonical_test_requirements()
+    except (
+        OSError,
+        KeyError,
+        TypeError,
+        ValueError,
+        ModuleNotFoundError,
+    ) as error:
+        import_names = tuple(pkg for pkg, _, _ in REQUIRED_TEST_PACKAGES)
+        return TestEnvStatus(
+            ok=False,
+            missing=import_names,
+            message=f"canonical .[{TEST_EXTRAS_NAME}] requirements invalid: {error}",
+            interpreter=interp,
+        )
+    distribution_names = [pkg for _, pkg, _ in REQUIRED_TEST_PACKAGES]
+    environment, versions, metadata_error = _target_metadata(interp, distribution_names)
+    if metadata_error:
+        import_names = tuple(pkg for pkg, _, _ in REQUIRED_TEST_PACKAGES)
+        return TestEnvStatus(
+            ok=False,
+            missing=import_names,
+            message=f"target interpreter metadata probe failed: {metadata_error[:512]}",
+            interpreter=interp,
+        )
+
+    active_packages, version_problems = _active_test_packages(
+        environment=environment,
+        versions=versions,
+        requirements=requirements,
+    )
+    import_names = [pkg for pkg, _, _ in active_packages]
     probe = "; ".join(f"import {name}" for name in import_names)
 
     proc = subprocess.run(  # noqa: S603
@@ -242,12 +473,27 @@ def check_test_env(python: str | None = None) -> TestEnvStatus:
         capture_output=True,
         text=True,
     )
-    if proc.returncode == 0:
+    if proc.returncode == 0 and not version_problems:
         return TestEnvStatus(
             ok=True,
             missing=(),
-            message=f"all {len(import_names)} required test packages importable",
+            message=(
+                f"all {len(import_names)} required test packages importable "
+                "and version-compatible"
+            ),
             interpreter=interp,
+        )
+
+    if proc.returncode == 0:
+        return TestEnvStatus(
+            ok=False,
+            missing=tuple(problem.import_name for problem in version_problems),
+            message=(
+                "unsatisfied test requirements: "
+                + "; ".join(problem.render() for problem in version_problems)
+            ),
+            interpreter=interp,
+            problems=version_problems,
         )
 
     # Identify exactly which import failed. Re-probe each one
@@ -285,13 +531,45 @@ def check_test_env(python: str | None = None) -> TestEnvStatus:
                 f"broken). Diagnostic: {batch_err[:512]}"
             ),
             interpreter=interp,
+            problems=version_problems,
         )
 
+    import_problems = tuple(
+        DependencyProblem(
+            import_name=name,
+            distribution_name=next(
+                distribution
+                for import_name, distribution, _ in active_packages
+                if import_name == name
+            ),
+            installed_version=versions.get(
+                next(
+                    distribution
+                    for import_name, distribution, _ in active_packages
+                    if import_name == name
+                )
+            ),
+            requirement="importable",
+        )
+        for name in missing
+    )
+    all_problems = (*version_problems, *import_problems)
     return TestEnvStatus(
         ok=False,
-        missing=tuple(missing),
-        message=f"missing required test packages: {', '.join(missing)}",
+        missing=tuple(
+            dict.fromkeys((*missing, *(p.import_name for p in version_problems)))
+        ),
+        message=(
+            f"missing required test imports: {', '.join(missing)}"
+            + (
+                "; unsatisfied versions: "
+                + "; ".join(problem.render() for problem in version_problems)
+                if version_problems
+                else ""
+            )
+        ),
         interpreter=interp,
+        problems=all_problems,
     )
 
 

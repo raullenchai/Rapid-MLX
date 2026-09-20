@@ -201,18 +201,21 @@ rationale is genuinely overkill.
 ### `test_env_check` (step 0.8)
 
 Verifies that the same Python interpreter `targeted_tests` and
-`full_unit` will hand to pytest can actually import the plugins the
-suite needs (chiefly `pytest_asyncio` — `pytest.ini` sets
+`full_unit` will hand to pytest can import the plugins the suite needs and
+that each distribution in the required import roster satisfies its canonical
+PEP 508 requirement from `pyproject.toml[project.optional-dependencies].test` (chiefly
+`pytest_asyncio` — `pytest.ini` sets
 `asyncio_mode = auto`, so without the plugin every `async def test_*`
 fails at collection with "async def functions are not natively
 supported").
 
-When a plugin is missing, the step's recovery path runs in two
-attempts:
+When an import is missing or an installed version is outside its declared
+range, the step's recovery path runs in two attempts:
 
 1. **Trusted pins (always tried first).** Installs
    `TRUSTED_TEST_PINS` (a hardcoded, version-pinned set defined in
-   `_test_env.py` — currently `pytest>=7,<9`,
+   `_test_env.py` — including the lazy requirement parsers plus
+   `pytest>=7,<9`,
    `pytest-asyncio>=0.21,<1`) from PyPI directly with
    `pip install --isolated`. This bypasses the PR's `pyproject.toml`
    entirely so a malicious PR cannot poison the validator's runtime
@@ -225,8 +228,8 @@ attempts:
    project-extras path is REFUSED — the step reports `fail` and the
    operator is asked to review the diff before installing manually.
 
-If both attempts still leave a plugin missing, the step reports
-`fail` with the missing-package list and the canonical recovery
+If both attempts still leave an import or version unsatisfied, the step reports
+`fail` with the distribution name, installed version, required range, and canonical recovery
 command (`<interp> -m pip install '.[test]'`) so the operator can
 fix it manually.
 
@@ -239,7 +242,7 @@ errors that looked like regressions. The canonical test-deps live in
 NOT maintain a hand-edited duplicate list.
 
 Override: `PR_VALIDATE_NO_AUTO_INSTALL=1` disables the auto-recover
-`pip install` (the step still detects + reports the missing packages,
+`pip install` (the step still detects + reports unsatisfied requirements,
 it just won't mutate the host Python). Use this in CI sandboxes that
 must keep the runner image read-only.
 

@@ -5,7 +5,8 @@ Runs just after ``supply_chain`` and just before the codex review,
 i.e. as the first compute-bound gate AFTER the supply-chain scan has
 had a chance to flag a malicious PR (#275). Verifies that the same
 Python interpreter ``targeted_tests`` and ``full_unit`` will hand to
-pytest can actually load the plugins the suite needs (chiefly
+pytest can load the plugins the suite needs and that their installed
+distributions satisfy the canonical ``.[test]`` requirements (chiefly
 ``pytest_asyncio`` — pytest.ini sets ``asyncio_mode = auto``).
 
 Without this gate, a broken env produced a 124-failure ``full_unit``
@@ -62,7 +63,7 @@ from ..context import Context
 
 class TestEnvCheckStep(Step):
     name = "test_env_check"
-    description = "verify pytest plugins importable in target Python"
+    description = "verify test imports + versions in target Python"
 
     def run(self, ctx: Context) -> StepResult:
         log_path = ctx.artifact_path("test-env-check.log")

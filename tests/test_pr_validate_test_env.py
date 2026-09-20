@@ -18,12 +18,14 @@ Three contracts pinned:
 
 from __future__ import annotations
 
+import json
 import os
 import sys
 from pathlib import Path
 from unittest.mock import patch
 
 import pytest
+from packaging.requirements import InvalidRequirement, Requirement
 
 # Standard pyproject parser — stdlib on 3.11+, vendored tomli marker
 # on 3.10 (already an existing dev dep).
@@ -35,8 +37,12 @@ else:  # pragma: no cover — branch only taken on 3.10 CI
 from scripts.pr_validate._test_env import (
     REQUIRED_TEST_PACKAGES,
     TEST_EXTRAS_NAME,
+    DependencyProblem,
     TestEnvStatus,
+    _active_test_packages,
+    _target_metadata,
     auto_install_disabled,
+    canonical_test_requirements,
     check_test_env,
     required_test_packages_for_platform,
 )
@@ -205,7 +211,7 @@ class TestCheckTestEnv:
         assert f"'.[{TEST_EXTRAS_NAME}]'" in status.install_hint
         assert str(python) in status.install_hint
 
-    def test_batch_fail_with_individual_passes_is_treated_as_fail(self, tmp_path):
+    def test_batch_fail_with_individual_passes_is_treated_as_fail(self):
         """Codex r1 BLOCKING: previously a batch-import failure that
         re-probed clean per-module returned ``ok=True``. That hides a
         real failure mode pytest hits at startup (plugin registration
@@ -218,16 +224,42 @@ class TestCheckTestEnv:
 
         from scripts.pr_validate import _test_env as mod
 
-        # The batch probe is the FIRST call (one combined "import X;
-        # import Y" command); individual probes are subsequent calls.
-        # We construct a side_effect list that returns a non-zero
-        # CompletedProcess for the batch and zero for each individual.
+        # Keep the metadata probe separate from the import probe.  Mocking every
+        # subprocess call made this test accidentally consume the batch result
+        # as metadata, so it passed through the wrong failure path on macOS and
+        # failed on Linux where the active package roster is smaller.
+        target_environment = {
+            "implementation_name": "cpython",
+            "implementation_version": "3.12.14",
+            "os_name": "posix",
+            "platform_machine": "x86_64",
+            "platform_release": "test-release",
+            "platform_system": "Linux",
+            "platform_version": "test-version",
+            "platform_python_implementation": "CPython",
+            "python_full_version": "3.12.14",
+            "python_version": "3.12",
+            "sys_platform": "linux",
+        }
+        target_versions = {
+            "pytest": "8.4.2",
+            "pytest-asyncio": "0.26.0",
+            "aiohttp": "3.12.15",
+            "pillow": "11.3.0",
+            # These are inactive under the Linux markers, but include them to
+            # prove the target interpreter returned the full requested map.
+            "mlx-vlm": None,
+            "mlx-audio": None,
+        }
+
+        # After metadata is fixed above, the batch import is the first mocked
+        # subprocess call; individual probes are subsequent calls.
         batch_stderr = (
             "Traceback (most recent call last):\n"
             "  File '<string>', line 1, in <module>\n"
             "RuntimeError: simulated plugin-order collision\n"
         )
-        n_packages = len(mod.required_test_packages_for_platform())
+        n_packages = len(mod.required_test_packages_for_platform("linux"))
         results = [
             subprocess.CompletedProcess(
                 args=[], returncode=1, stdout="", stderr=batch_stderr
@@ -237,7 +269,13 @@ class TestCheckTestEnv:
                 for _ in range(n_packages)
             ],
         ]
-        with patch("scripts.pr_validate._test_env.subprocess.run", side_effect=results):
+        with (
+            patch(
+                "scripts.pr_validate._test_env._target_metadata",
+                return_value=(target_environment, target_versions, None),
+            ),
+            patch("scripts.pr_validate._test_env.subprocess.run", side_effect=results),
+        ):
             status = mod.check_test_env(python="/fake/python")
 
         assert status.ok is False, (
@@ -269,6 +307,125 @@ class TestCheckTestEnv:
         assert (
             sys.executable not in status.install_hint or sys.executable == fake_python
         )
+
+    def test_distribution_versions_come_from_the_probed_interpreter(self, tmp_path):
+        """A distinct executable proves the helper does not inspect itself."""
+        payload = {
+            "environment": {
+                "implementation_name": "pypy",
+                "implementation_version": "7.3.19",
+                "os_name": "posix",
+                "platform_machine": "test-machine",
+                "platform_release": "test-release",
+                "platform_system": "TestOS",
+                "platform_version": "test-version",
+                "platform_python_implementation": "PyPy",
+                "python_full_version": "3.11.11",
+                "python_version": "3.11",
+                "sys_platform": "test-platform",
+            },
+            "versions": {"pytest": "7.4.4", "pillow": "10.4.0"},
+        }
+        fake_python = tmp_path / "controlled-python"
+        fake_python.write_text(
+            "#!/bin/sh\n" + "printf '%s\\n' " + repr(json.dumps(payload)) + "\n"
+        )
+        fake_python.chmod(0o755)
+
+        environment, versions, error = _target_metadata(
+            str(fake_python), ["pytest", "pillow"]
+        )
+
+        assert error is None
+        assert environment == payload["environment"]
+        assert versions == payload["versions"]
+
+    def test_target_marker_environment_matches_current_interpreter(self):
+        from packaging.markers import default_environment
+
+        environment, _, error = _target_metadata(sys.executable, ["pytest"])
+
+        assert error is None
+        expected = default_environment()
+        assert (
+            environment["platform_python_implementation"]
+            == expected["platform_python_implementation"]
+        )
+        assert (
+            environment["implementation_version"] == expected["implementation_version"]
+        )
+
+    def test_target_metadata_timeout_fails_closed(self):
+        import subprocess
+
+        with patch(
+            "scripts.pr_validate._test_env.subprocess.run",
+            side_effect=subprocess.TimeoutExpired(["python"], 15),
+        ):
+            environment, versions, error = _target_metadata("/hung/python", ["pytest"])
+
+        assert environment == {}
+        assert versions == {}
+        assert error == "target interpreter metadata probe timed out after 15s"
+
+    def test_unusable_target_interpreter_fails_closed(self):
+        environment, versions, error = _target_metadata(
+            "/definitely/missing/python", ["pytest"]
+        )
+
+        assert environment == {}
+        assert versions == {}
+        assert error is not None
+        assert "/definitely/missing/python" in error
+        assert "could not run target interpreter" in error
+
+    def test_missing_packaging_does_not_crash_before_recovery(self):
+        """Bootstrap parsers are lazy so test_env_check can install them."""
+        import subprocess
+
+        script = """
+import builtins
+original_import = builtins.__import__
+def blocked_import(name, *args, **kwargs):
+    if name == "packaging" or name.startswith("packaging."):
+        raise ModuleNotFoundError("simulated missing packaging", name=name)
+    return original_import(name, *args, **kwargs)
+builtins.__import__ = blocked_import
+from scripts.pr_validate._test_env import check_test_env
+status = check_test_env()
+assert status.ok is False
+assert "canonical .[test] requirements invalid" in status.message
+assert "simulated missing packaging" in status.message
+"""
+        completed = subprocess.run(
+            [sys.executable, "-c", script],
+            cwd=Path(__file__).resolve().parent.parent,
+            capture_output=True,
+            text=True,
+        )
+
+        assert completed.returncode == 0, completed.stderr
+
+    @pytest.mark.parametrize(
+        "error",
+        [
+            FileNotFoundError("pyproject.toml missing"),
+            KeyError("optional-dependencies"),
+            InvalidRequirement("not a valid requirement @@@"),
+        ],
+    )
+    def test_invalid_canonical_requirements_fail_as_status(self, error):
+        with patch(
+            "scripts.pr_validate._test_env.canonical_test_requirements",
+            side_effect=error,
+        ):
+            status = check_test_env()
+
+        assert status.ok is False
+        assert status.missing == tuple(
+            import_name for import_name, _, _ in REQUIRED_TEST_PACKAGES
+        )
+        assert "canonical .[test] requirements invalid" in status.message
 
 
 # ---------------------------------------------------------------------------
@@ -364,6 +521,37 @@ class TestStepIntegration:
         # open the details block to know what to do.
         assert "auto-install disabled" in result.summary
 
+    def test_disabled_auto_install_reports_installed_and_required_versions(
+        self, fake_ctx
+    ):
+        """A stale-but-importable distribution must fail before the full suite."""
+        problem = DependencyProblem(
+            import_name="mlx_audio",
+            distribution_name="mlx-audio",
+            installed_version="0.4.3",
+            requirement="<0.6,>=0.5.3",
+        )
+        bad = TestEnvStatus(
+            ok=False,
+            missing=("mlx_audio",),
+            message=f"unsatisfied test requirements: {problem.render()}",
+            interpreter="/opt/fake/python",
+            problems=(problem,),
+        )
+        with (
+            patch.dict(os.environ, {"PR_VALIDATE_NO_AUTO_INSTALL": "1"}),
+            patch(
+                "scripts.pr_validate.steps.test_env_check.check_test_env",
+                return_value=bad,
+            ),
+        ):
+            result = TestEnvCheckStep().run(fake_ctx)
+
+        assert result.status == "fail"
+        assert "mlx-audio installed 0.4.3" in result.details
+        assert "requires <0.6,>=0.5.3" in result.details
+        assert "/opt/fake/python -m pip install '.[test]'" in result.details
+
     def test_auto_install_attempts_and_recovers(self, fake_ctx):
         """Initial probe fails; the trusted-pins install path (added
         for #275) runs first and recovers — the step must report
@@ -422,6 +610,48 @@ class TestStepIntegration:
         # Project-extras path MUST NOT run when trusted pins recover —
         # that's the supply-chain integrity guarantee.
         assert mock_install.call_count == 0
+
+    def test_version_mismatch_uses_the_safe_recovery_path(self, fake_ctx):
+        problem = DependencyProblem(
+            import_name="mlx_audio",
+            distribution_name="mlx-audio",
+            installed_version="0.4.3",
+            requirement="<0.6,>=0.5.3",
+        )
+        stale = TestEnvStatus(
+            ok=False,
+            missing=("mlx_audio",),
+            message=f"unsatisfied test requirements: {problem.render()}",
+            interpreter=sys.executable,
+            problems=(problem,),
+        )
+        healthy = TestEnvStatus(
+            ok=True,
+            missing=(),
+            message="all 6 required test packages importable and version-compatible",
+            interpreter=sys.executable,
+        )
+        with (
+            patch.dict(os.environ, {}, clear=False),
+            patch(
+                "scripts.pr_validate.steps.test_env_check.check_test_env",
+                side_effect=[stale, healthy],
+            ),
+            patch(
+                "scripts.pr_validate.steps.test_env_check.install_trusted_pins",
+                return_value=(True, "upgraded mlx-audio"),
+            ) as mock_pins,
+            patch(
+                "scripts.pr_validate.steps.test_env_check.install_test_extras"
+            ) as mock_extras,
+        ):
+            os.environ.pop("PR_VALIDATE_NO_AUTO_INSTALL", None)
+            result = TestEnvCheckStep().run(fake_ctx)
+
+        assert result.status == "pass"
+        assert "trusted-pins" in result.summary
+        mock_pins.assert_called_once_with()
+        mock_extras.assert_not_called()
 
     def test_auto_install_runs_but_does_not_fix(self, fake_ctx):
         """Initial probe fails; trusted-pins succeed but don't fix
@@ -484,7 +714,9 @@ class TestRequiredPackages:
     def test_mlx_optional_surface_required_only_on_darwin(self):
         """GitHub pr_validate runs on Linux, where Apple-only MLX
         imports are not a valid test-env readiness signal. Local
-        Apple-Silicon validation still requires them."""
+        Apple-Silicon validation still requires them. Distribution names stay
+        marker-free because the metadata probe consumes them directly; the
+        explicit platform filter remains the import-probe contract."""
         linux_names = {
             pkg for pkg, _, _ in required_test_packages_for_platform("linux")
         }
@@ -496,15 +728,121 @@ class TestRequiredPackages:
         assert "mlx_audio" not in linux_names
         assert "mlx_vlm" in darwin_names
         assert "mlx_audio" in darwin_names
+        distributions = {
+            import_name: distribution_name
+            for import_name, distribution_name, _ in REQUIRED_TEST_PACKAGES
+        }
+        assert distributions["mlx_vlm"] == "mlx-vlm"
+        assert distributions["mlx_audio"] == "mlx-audio"
 
-    def test_every_entry_has_a_pip_name_with_version(self):
-        """Defensive: each entry must carry a version constraint so
-        the auto-install message isn't ambiguous."""
-        for pkg, pip_name, _ in REQUIRED_TEST_PACKAGES:
-            assert pip_name, f"empty pip name for {pkg!r}"
-            assert any(c in pip_name for c in (">=", "==", "~=", ">")), (
-                f"{pip_name!r} for {pkg!r} has no version constraint"
+    def test_every_entry_uses_the_canonical_test_requirement(self):
+        """Import/distribution mappings must resolve to versioned test extras."""
+        from packaging.utils import canonicalize_name
+
+        requirements = canonical_test_requirements()
+        for import_name, distribution_name, _ in REQUIRED_TEST_PACKAGES:
+            candidates = requirements.get(canonicalize_name(distribution_name))
+            assert candidates is not None, (
+                f"{distribution_name!r} for {import_name!r} is absent from "
+                f".[{TEST_EXTRAS_NAME}]"
             )
+            assert all(requirement.specifier for requirement in candidates), (
+                f"canonical requirements {candidates!r} include an unbounded entry"
+            )
+
+    @staticmethod
+    def _valid_versions():
+        return {
+            "pytest": "9.0.2",
+            "pytest-asyncio": "1.3.0",
+            "aiohttp": "3.13.0",
+            "pillow": "12.0.0",
+            "mlx-vlm": "0.7.1",
+            "mlx-audio": "0.5.3",
+        }
+
+    def test_below_range_distribution_is_rejected(self):
+        versions = self._valid_versions()
+        versions["pytest"] = "6.9.0"
+        _, problems = _active_test_packages(
+            environment={"platform_system": "Darwin"},
+            versions=versions,
+            requirements=canonical_test_requirements(),
+        )
+
+        assert [problem.distribution_name for problem in problems] == ["pytest"]
+        assert problems[0].installed_version == "6.9.0"
+        assert problems[0].requirement == ">=7.0.0"
+
+    def test_above_range_distribution_is_rejected(self):
+        versions = self._valid_versions()
+        versions["mlx-audio"] = "0.6.0"
+        _, problems = _active_test_packages(
+            environment={"platform_system": "Darwin"},
+            versions=versions,
+            requirements=canonical_test_requirements(),
+        )
+
+        assert [problem.distribution_name for problem in problems] == ["mlx-audio"]
+        assert problems[0].installed_version == "0.6.0"
+        assert problems[0].requirement == "<0.6,>=0.5.3"
+
+    def test_marker_skips_apple_only_requirements_on_linux(self):
+        versions = self._valid_versions()
+        versions["mlx-vlm"] = None
+        versions["mlx-audio"] = None
+        active, problems = _active_test_packages(
+            environment={"platform_system": "Linux"},
+            versions=versions,
+            requirements=canonical_test_requirements(),
+        )
+
+        assert {distribution for _, distribution, _ in active}.isdisjoint(
+            {"mlx-vlm", "mlx-audio"}
+        )
+        assert problems == ()
+
+    def test_valid_versions_and_distribution_import_mapping_pass(self):
+        active, problems = _active_test_packages(
+            environment={"platform_system": "Darwin"},
+            versions=self._valid_versions(),
+            requirements=canonical_test_requirements(),
+        )
+
+        assert problems == ()
+        assert ("PIL", "pillow") in {
+            (import_name, distribution_name)
+            for import_name, distribution_name, _ in active
+        }
+
+    def test_duplicate_distribution_markers_are_not_overwritten(self):
+        requirements = canonical_test_requirements()
+        requirements["pytest"] = (
+            Requirement('pytest<7; python_version < "3.12"'),
+            Requirement('pytest>=7; python_version >= "3.12"'),
+        )
+        _, problems = _active_test_packages(
+            environment={"platform_system": "Darwin", "python_version": "3.12"},
+            versions=self._valid_versions(),
+            requirements=requirements,
+        )
+
+        assert problems == ()
+
+    def test_all_simultaneously_applicable_constraints_must_pass(self):
+        requirements = canonical_test_requirements()
+        requirements["pytest"] = (
+            Requirement("pytest>=7"),
+            Requirement("pytest<9"),
+        )
+        _, problems = _active_test_packages(
+            environment={"platform_system": "Darwin"},
+            versions=self._valid_versions(),
+            requirements=requirements,
+        )
+
+        assert [problem.distribution_name for problem in problems] == ["pytest"]
+        assert problems[0].requirement == ">=7 and <9"
 
 
 # ---------------------------------------------------------------------------
