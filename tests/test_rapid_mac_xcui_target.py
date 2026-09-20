@@ -124,6 +124,7 @@ def test_xcui_runner_launches_production_bundle_with_fake_sidecar():
     assert "let maximumAttempts = 2" in harness
     assert "FileDropRetryPolicy.observationTimeout(" in harness
     assert "- retryGestureBudget" in harness
+    assert "- retrySessionRestartBudget" in harness
     assert "- minimumRetryBudget" in harness
     assert "- observationSchedulingSlack" in harness
     assert "FileDropRetryPolicy.shouldRetry(" in harness
@@ -140,11 +141,11 @@ def test_xcui_runner_launches_production_bundle_with_fake_sidecar():
     assert 'recordUITestFileDrop("performed")' in chat_view
     assert "try? phase.write" not in chat_view
     assert 'fatalError("could not record completed UI-test file drop' in chat_view
-    assert (
-        '"RAPID_XCUI_DROP_FIRST_GESTURE": simulateMissedFirstGesture ? "1" : "0"'
-        in harness
-    )
+    assert '"RAPID_XCUI_DROP_FIRST_GESTURE": dropFirstGesture ? "1" : "0"' in harness
     assert "XCTAssertEqual(recoveredAttempts, 2)" in chat_source
+    assert "launchFileDragSource(" in harness
+    assert "terminateFileDragSource(dragSource)" in harness
+    assert "simulateMissedFirstGesture && attempt == 1" in harness
     assert "XCTAssertEqual(delayedChipAttempts, 1)" in chat_source
     assert "simulateCompletionVisibilityDelay: 3" in chat_source
     assert 'let dropTarget = element("rapid.chat.compose")' in harness
