@@ -79,6 +79,31 @@ def _token_sha256(tokens: tuple[int, ...]) -> str:
     ).hexdigest()
 
 
+def _loaded_model_type(model: Any) -> str | None:
+    """Resolve the architecture label from common loaded-model shapes."""
+
+    candidates = (
+        getattr(model, "model_type", None),
+        getattr(getattr(model, "args", None), "model_type", None),
+        getattr(getattr(model, "config", None), "model_type", None),
+        getattr(getattr(model, "language_model", None), "model_type", None),
+        getattr(
+            getattr(getattr(model, "language_model", None), "args", None),
+            "model_type",
+            None,
+        ),
+        getattr(
+            getattr(getattr(model, "language_model", None), "config", None),
+            "model_type",
+            None,
+        ),
+    )
+    for candidate in candidates:
+        if isinstance(candidate, str) and candidate:
+            return candidate
+    return None
+
+
 def _parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--model", default=_DEFAULT_MODEL)
@@ -168,12 +193,12 @@ def main() -> int:
     from mlx_lm.generate import stream_generate
     from mlx_lm.sample_utils import make_sampler
 
-    from rapid_mlx.spec_decode.mtp import MTPAcceptCounter
-    from rapid_mlx.spec_decode.mtp.generator import mtp_generate_step
-    from rapid_mlx.spec_decode.mtp.qwen3_5_inject import (
-        inject_mtp_support,
-        validate_mtp_support,
+    from rapid_mlx.spec_decode.mtp import (
+        MTPAcceptCounter,
+        dispatch_mtp_inject,
+        dispatch_mtp_validate,
     )
+    from rapid_mlx.spec_decode.mtp.generator import mtp_generate_step
 
     model, tokenizer = load(args.model)
     stop_tokens = _tokenizer_stop_tokens(tokenizer)
@@ -193,11 +218,24 @@ def main() -> int:
                 break
         stock_by_prompt.append(tuple(tokens))
 
-    if not inject_mtp_support(model, mtp_sidecar=sidecar):
-        raise RuntimeError(f"MTP injection failed for {args.model!r} with {sidecar!r}")
-    if not validate_mtp_support(model):
+    model_type = _loaded_model_type(model)
+    if model_type is None:
+        raise RuntimeError(f"Could not resolve model_type for {args.model!r}")
+    if not dispatch_mtp_inject(model, model_type, mtp_sidecar=sidecar):
+        raise RuntimeError(
+            f"MTP injection failed for {args.model!r} "
+            f"(model_type={model_type!r}) with {sidecar!r}"
+        )
+    if not dispatch_mtp_validate(model, model_type):
         raise RuntimeError("MTP validation failed after injection")
-    inner = model.language_model if hasattr(model, "language_model") else model
+    # Multimodal wrappers may preserve their public __call__ and expose the
+    # MTP-only target contract through mtp_target_forward. Older text wrappers
+    # are still driven through their patched inner model.
+    generator_model = (
+        model
+        if callable(getattr(model, "mtp_target_forward", None))
+        else getattr(model, "language_model", model)
+    )
 
     prompt_reports: list[dict[str, Any]] = []
     activity_valid = True
@@ -213,7 +251,7 @@ def main() -> int:
             from_draft: list[bool] = []
             for token, _logprobs, drafted in mtp_generate_step(
                 prompt_ids,
-                inner,
+                generator_model,
                 max_tokens=args.max_tokens,
                 temp=0.0,
                 accept_counter=counter,
