@@ -360,8 +360,18 @@ final class RapidUITestHarness {
                 url: url,
                 dropFirstGesture: simulateMissedFirstGesture
             )
+            // Preserve scope-based cleanup for the negative unsupported-file
+            // journey as well as requiring an orderly shutdown on its normal
+            // path. An interrupted gesture must not leak a helper into a later
+            // XCUITest.
+            defer {
+                if dragSource.state != .notRunning {
+                    dragSource.terminate()
+                    _ = dragSource.wait(for: .notRunning, timeout: 5)
+                }
+            }
             source.click(forDuration: 1, thenDragTo: dropTarget)
-            _ = terminateFileDragSource(dragSource)
+            guard terminateFileDragSource(dragSource) else { return 1 }
             return 1
         }
         let maximumAttempts = 2
