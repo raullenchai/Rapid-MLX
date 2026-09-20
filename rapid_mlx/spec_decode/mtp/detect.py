@@ -89,9 +89,7 @@ _SUPPORTED_MODEL_TYPES: frozenset[str] = frozenset(
 # only when the operator explicitly supplies a separately-qualified assistant
 # sidecar. Keep text-only implementation types out of the public boot gate: the
 # loaded user-facing checkpoint is one of the outer wrappers below.
-_EXTERNAL_SIDECAR_MODEL_TYPES: frozenset[str] = frozenset(
-    {"gemma4", "gemma4_unified"}
-)
+_EXTERNAL_SIDECAR_MODEL_TYPES: frozenset[str] = frozenset({"gemma4", "gemma4_unified"})
 
 
 @dataclass(frozen=True)

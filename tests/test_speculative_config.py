@@ -143,8 +143,7 @@ def test_parse_mtp_accepts_fixed_zero_depth_validation_baseline() -> None:
             "requires disable_auto_k=true",
         ),
         (
-            '{"method":"mtp","num_speculative_tokens":0,'
-            '"disable_auto_k":false}',
+            '{"method":"mtp","num_speculative_tokens":0,"disable_auto_k":false}',
             "requires disable_auto_k=true",
         ),
         (
@@ -153,8 +152,7 @@ def test_parse_mtp_accepts_fixed_zero_depth_validation_baseline() -> None:
             "cannot use continuous_batching=true",
         ),
         (
-            '{"method":"mtp","num_speculative_tokens":-1,'
-            '"disable_auto_k":true}',
+            '{"method":"mtp","num_speculative_tokens":-1,"disable_auto_k":true}',
             "non-negative integer",
         ),
     ],
