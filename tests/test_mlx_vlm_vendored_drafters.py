@@ -150,6 +150,20 @@ REDIRECTS = {
 # (file, vendored hunk, upstream hunk). Applying redirects then reverting
 # these hunks must reproduce the pinned upstream bytes exactly.
 DEVIATIONS = {
+    "qwen3_5_mtp/config.py": [
+        (
+            """        # Rapid upstream-bugfix (documented deviation): pinned 0.7.1 keyed
+        # the MoE decision on the model type containing "moe", so the
+        # Qwen3-Next family resolved to the dense config and the drafter
+        # instantiated dense decoder layers over MoE checkpoints.
+        model_type = params.get("model_type", "")
+        is_moe = "moe" in model_type or model_type.startswith("qwen3_next")
+        text_config_cls = MoeTextConfig if is_moe else DenseTextConfig""",
+            """        text_config_cls = (
+            MoeTextConfig if "moe" in params.get("model_type", "") else DenseTextConfig
+        )""",
+        ),
+    ],
     "mtp_base.py": [
         (
             """        del cache
@@ -180,22 +194,14 @@ DEVIATIONS = {
         # dropped every row's bonus replay whenever any row lacked one,
         # leaving the other rows' caches and seeds stale. Mixed presence
         # is unsupported by the shared uniform-acceptance replay; fail
-        # loudly instead of silently skipping.
+        # loudly BEFORE any cache or position mutation.
         if any(new_tokens) and not all(new_tokens):
             raise ValueError(
                 "mixed MTP bonus-token presence across replay rows is "
                 "unsupported; all rows must carry a verifier bonus token"
             )
-        if all(new_tokens):
-            bonus = mx.array(
-                [[int(row_tokens[-1])] for row_tokens in new_tokens],
-                dtype=token_dtype,
-            )""",
-            """        if all(new_tokens):
-            bonus = mx.array(
-                [[int(row_tokens[-1])] for row_tokens in new_tokens],
-                dtype=token_dtype,
-            )""",
+        accepted_i = accepted_set.pop()""",
+            """        accepted_i = accepted_set.pop()""",
         ),
     ],
     "qwen3_dflash/dflash.py": [
@@ -236,6 +242,18 @@ DEVIATIONS = {
         ),
     ],
     "qwen3_5_mtp/qwen3_5_mtp.py": [
+        (
+            """        if block_size <= 1:
+            # Rapid upstream-bugfix (documented deviation): pinned 0.7.1
+            # crashes on mx.concatenate with an empty token list when
+            # block_size <= 1; return the DFlash2-shaped empty proposal,
+            # matching the guarded base drafter.
+            batch = 1 if isinstance(last_bonus, int) else int(last_bonus.shape[0])
+            return mx.zeros((batch, 0), dtype=token_dtype)
+
+        while len(tokens) < block_size - 1:""",
+            """        while len(tokens) < block_size - 1:""",
+        ),
         (
             """                # Rapid upstream-bugfix (documented deviation): pinned
                 # 0.7.1 skips the padding correction for a scalar
@@ -639,6 +657,62 @@ def test_qwen3_next_postprocess_stacks_quantized_expert_metadata():
                 assert f"blk.0.experts.{expert}.{proj}.{suffix}" not in tensors
 
 
+def test_qwen35_text_config_routes_qwen3_next_to_moe():
+    """Qwen3-Next model types must resolve the MoE config (r10 finding)."""
+    from rapid_mlx.models.mlx_vlm_vendored.speculative.drafters.qwen3_5_mtp import (
+        config as config_module,
+    )
+
+    moe_fields = {
+        "hidden_size": 1,
+        "num_hidden_layers": 1,
+        "num_attention_heads": 1,
+        "linear_num_value_heads": 1,
+        "linear_num_key_heads": 1,
+        "linear_key_head_dim": 1,
+        "linear_value_head_dim": 1,
+        "linear_conv_kernel_dim": 1,
+        "num_experts": 2,
+        "num_experts_per_tok": 1,
+        "shared_expert_intermediate_size": 1,
+        "moe_intermediate_size": 1,
+        "rms_norm_eps": 1e-5,
+        "vocab_size": 1,
+        "num_key_value_heads": 1,
+        "max_position_embeddings": 1,
+        "intermediate_size": 1,
+        "head_dim": 1,
+        "tie_word_embeddings": False,
+        "sliding_window": None,
+    }
+    resolved = config_module.TextConfig.from_dict(
+        {"model_type": "qwen3_next", **moe_fields}
+    )
+    assert isinstance(resolved, config_module.MoeTextConfig)
+    dense = config_module.TextConfig.from_dict({"model_type": "qwen3_5", **moe_fields})
+    assert isinstance(dense, config_module.DenseTextConfig)
+
+
+def test_qwen_mtp_draft_block_one_returns_empty_proposal():
+    """The served qwen drafter shares the guarded block_size floor."""
+    import mlx.core as mx
+
+    from rapid_mlx.models.mlx_vlm_vendored.speculative.drafters.qwen3_5_mtp import (
+        qwen3_5_mtp as qwen_module,
+    )
+
+    drafter = qwen_module.Qwen3_5MTPDraftModel.__new__(qwen_module.Qwen3_5MTPDraftModel)
+    drafter._seed_token = None
+    drafter._seed_hidden = None
+    drafter._round_appended = 0
+    drafter._input_embed = object()
+    drafter._lm_head_fn = lambda value: value
+    out = drafter.draft_block(
+        5, mx.zeros((1, 1, 1)), None, 1, None, token_dtype=mx.int32, greedy=True
+    )
+    assert out.shape == (1, 0)
+
+
 def test_dflash_bind_re_resolves_target_embeddings():
     """bind() must not keep a previous target's embeddings (r8 finding)."""
     from types import SimpleNamespace
@@ -665,18 +739,30 @@ def test_mtp_base_rejects_mixed_bonus_presence():
         AutoregressiveMTPDraftModel,
     )
 
+    class RecordingCache:
+        def __init__(self):
+            self.trimmed = None
+
+        def trim(self, n):
+            self.trimmed = n
+
+    cache = RecordingCache()
     drafter = AutoregressiveMTPDraftModel.__new__(AutoregressiveMTPDraftModel)
-    drafter._cache = []
+    drafter._cache = [cache]
     drafter._next_position = 5
-    drafter._round_appended = 0
+    drafter._round_appended = 1
     with pytest.raises(ValueError, match="mixed MTP bonus-token"):
         drafter.accept_verified_tokens_batch(
             mx.zeros((2, 2, 1)),
             mx.zeros((2, 2), dtype=mx.int32),
-            [1, 1],
+            [2, 2],
             [[5], []],
             None,
         )
+    # the reject must precede every cache/position mutation
+    assert cache.trimmed is None
+    assert drafter._next_position == 5
+    assert drafter._round_appended == 1
 
 
 def test_mtp_base_block_size_one_returns_empty_proposal():

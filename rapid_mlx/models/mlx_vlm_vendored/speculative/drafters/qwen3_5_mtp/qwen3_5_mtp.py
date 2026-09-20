@@ -437,6 +437,14 @@ class Qwen3_5MTPDraftModel(nn.Module):
             self._seed_token = None
             self._seed_hidden = None
 
+        if block_size <= 1:
+            # Rapid upstream-bugfix (documented deviation): pinned 0.7.1
+            # crashes on mx.concatenate with an empty token list when
+            # block_size <= 1; return the DFlash2-shaped empty proposal,
+            # matching the guarded base drafter.
+            batch = 1 if isinstance(last_bonus, int) else int(last_bonus.shape[0])
+            return mx.zeros((batch, 0), dtype=token_dtype)
+
         while len(tokens) < block_size - 1:
             h_prev = self._forward_token(tok, h_prev, token_dtype)
             self._round_appended += 1

@@ -322,8 +322,8 @@ vendored copy differs by exactly the deviations listed):
   proposal for ``block_size <= 1`` — pinned 0.7.1 crashes on an empty
   concatenate (reachable through externally supplied drafter repos);
   upstream-bugfix: ``accept_verified_tokens_batch`` raises on mixed
-  bonus-token presence — pinned 0.7.1 silently skipped every row's
-  replay),
+  bonus-token presence BEFORE any cache or position mutation — pinned
+  0.7.1 silently skipped every row's replay),
   ``mtp_split.py`` (digest
   ``55afe4b6341ee97d764da90af3d404b0cc86a2a355d198b1d4d299be8040ed2f``;
   upstream-bugfix: ``iter_selected`` resolves index shard paths and rejects
@@ -355,7 +355,13 @@ vendored copy differs by exactly the deviations listed):
   ``split``
   ``0cd02dacee282ed6702ab49863f4c300f1acab9e5d2ed3c56a835cad0c2dc128``;
   redirects: ``models.qwen3_5{,_moe}.{config,language}`` and
-  ``models.cache`` → pinned upstream, step-3c-3 scope; ``split.py``
+  ``models.cache`` → pinned upstream, step-3c-3 scope; ``config.py``
+  upstream-bugfix: ``TextConfig.from_dict`` routes the Qwen3-Next model
+  types to the MoE config — pinned 0.7.1 keyed the decision on "moe" in
+  the model type, so Qwen3-Next checkpoints resolved dense decoder
+  layers; ``qwen3_5_mtp.py`` upstream-bugfix: ``draft_block`` returns
+  the DFlash2-shaped empty proposal for ``block_size <= 1`` — pinned
+  0.7.1 crashes on an empty concatenate; ``split.py``
   upstream-bugfix: ``Qwen3NextMTPSplitter.postprocess`` stacks per-expert
   ``scales``/``biases`` into the ``switch_mlp`` layout
   alongside the weights — pinned 0.7.1 stacked only weights, so

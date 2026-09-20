@@ -10,9 +10,13 @@ from mlx_vlm.models.qwen3_5_moe.config import TextConfig as MoeTextConfig
 class TextConfig:
     @classmethod
     def from_dict(cls, params: dict):
-        text_config_cls = (
-            MoeTextConfig if "moe" in params.get("model_type", "") else DenseTextConfig
-        )
+        # Rapid upstream-bugfix (documented deviation): pinned 0.7.1 keyed
+        # the MoE decision on the model type containing "moe", so the
+        # Qwen3-Next family resolved to the dense config and the drafter
+        # instantiated dense decoder layers over MoE checkpoints.
+        model_type = params.get("model_type", "")
+        is_moe = "moe" in model_type or model_type.startswith("qwen3_next")
+        text_config_cls = MoeTextConfig if is_moe else DenseTextConfig
         return text_config_cls.from_dict(params)
 
 

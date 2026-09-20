@@ -210,6 +210,16 @@ class AutoregressiveMTPDraftModel(nn.Module):
         accepted_set = {int(a) for a in accepted}
         if len(accepted_set) != 1:
             raise ValueError("This MTP drafter requires uniform batch acceptance.")
+        # Rapid upstream-bugfix (documented deviation): pinned 0.7.1
+        # dropped every row's bonus replay whenever any row lacked one,
+        # leaving the other rows' caches and seeds stale. Mixed presence
+        # is unsupported by the shared uniform-acceptance replay; fail
+        # loudly BEFORE any cache or position mutation.
+        if any(new_tokens) and not all(new_tokens):
+            raise ValueError(
+                "mixed MTP bonus-token presence across replay rows is "
+                "unsupported; all rows must carry a verifier bonus token"
+            )
         accepted_i = accepted_set.pop()
 
         keep_appended = min(accepted_i, self._round_appended)
@@ -225,16 +235,6 @@ class AutoregressiveMTPDraftModel(nn.Module):
             token_chunks.append(draft_tokens[:, draft_idx : draft_idx + 1])
             hidden_chunks.append(verify_hidden[:, draft_idx : draft_idx + 1, ...])
 
-        # Rapid upstream-bugfix (documented deviation): pinned 0.7.1
-        # dropped every row's bonus replay whenever any row lacked one,
-        # leaving the other rows' caches and seeds stale. Mixed presence
-        # is unsupported by the shared uniform-acceptance replay; fail
-        # loudly instead of silently skipping.
-        if any(new_tokens) and not all(new_tokens):
-            raise ValueError(
-                "mixed MTP bonus-token presence across replay rows is "
-                "unsupported; all rows must carry a verifier bonus token"
-            )
         if all(new_tokens):
             bonus = mx.array(
                 [[int(row_tokens[-1])] for row_tokens in new_tokens],
