@@ -216,14 +216,17 @@ DEVIATIONS = {
             "block_size": int(block_size or depth + self.block_size_extra),""",
         ),
         (
-            """# Documented pinned redirects: quant_utils/utils live at the mlx_vlm root
+            """from ...fp8 import transform_fp8_weights
+
+# Documented pinned redirects: quant_utils/utils live at the mlx_vlm root
 # and are vendored by later slices (quant_utils exists in this package;
 # utils is step-3e scope).
 from mlx_vlm.utils import get_model_path
 
 from ...quant_utils import get_quantization_params
 """,
-            """from ...quant_utils import get_quantization_params
+            """from ...fp8 import transform_fp8_weights
+from ...quant_utils import get_quantization_params
 from ...utils import get_model_path
 """,
         ),
