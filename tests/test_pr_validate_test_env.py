@@ -714,7 +714,9 @@ class TestRequiredPackages:
     def test_mlx_optional_surface_required_only_on_darwin(self):
         """GitHub pr_validate runs on Linux, where Apple-only MLX
         imports are not a valid test-env readiness signal. Local
-        Apple-Silicon validation still requires them."""
+        Apple-Silicon validation still requires them. Distribution names stay
+        marker-free because the metadata probe consumes them directly; the
+        explicit platform filter remains the import-probe contract."""
         linux_names = {
             pkg for pkg, _, _ in required_test_packages_for_platform("linux")
         }
@@ -726,6 +728,12 @@ class TestRequiredPackages:
         assert "mlx_audio" not in linux_names
         assert "mlx_vlm" in darwin_names
         assert "mlx_audio" in darwin_names
+        distributions = {
+            import_name: distribution_name
+            for import_name, distribution_name, _ in REQUIRED_TEST_PACKAGES
+        }
+        assert distributions["mlx_vlm"] == "mlx-vlm"
+        assert distributions["mlx_audio"] == "mlx-audio"
 
     def test_every_entry_uses_the_canonical_test_requirement(self):
         """Import/distribution mappings must resolve to versioned test extras."""

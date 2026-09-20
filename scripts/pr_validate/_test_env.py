@@ -102,7 +102,10 @@ REQUIRED_TEST_PACKAGES: tuple[tuple[str, str, str], ...] = (
 
 # MLX runtime surfaces are Apple-only. Local Apple-Silicon validation
 # should require them, but Linux CI must not treat these imports as a
-# readiness signal.
+# readiness signal. Platform selection deliberately lives here rather than in
+# REQUIRED_TEST_PACKAGES' distribution-name field: that field must stay a bare
+# name suitable for ``importlib.metadata.version()``. Canonical PEP 508 markers
+# are evaluated separately by ``_active_test_packages``.
 DARWIN_ONLY_TEST_IMPORTS = frozenset({"mlx_vlm", "mlx_audio"})
 
 # Canonical extras name from pyproject.toml. If you rename the extras,
