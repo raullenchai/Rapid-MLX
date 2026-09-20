@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import importlib.util
 import json
+import re
 from pathlib import Path
 
 import pytest
@@ -79,6 +80,41 @@ def test_workflow_builds_once_and_consumes_verified_artifact():
     assert '--expected-source-sha "$GITHUB_SHA"' in verify_step["run"]
     assert "./scripts/build.sh" not in consumer_source
     assert "codesign --verify --deep --strict" in consumer_source
+
+
+def test_gui_artifact_producer_uses_trusted_mac_only_after_promotion():
+    """Fork PR code must never reach the trusted Mac artifact producer.
+
+    The promotion classifier has executable fork/head-repository coverage in
+    ``test_ci_lane_promotion.py``. This contract pins the other half of that
+    boundary: the Manzanita producer is allocated only when that classifier
+    emits ``full_gate=true``, and it receives no repository secrets.
+    """
+    workflow = yaml.safe_load(WORKFLOW.read_text())
+    producer = workflow["jobs"]["gui-app-build"]
+    condition = str(producer["if"])
+
+    def strings(value):
+        if isinstance(value, str):
+            yield value
+        elif isinstance(value, dict):
+            for key, nested in value.items():
+                yield from strings(key)
+                yield from strings(nested)
+        elif isinstance(value, list):
+            for nested in value:
+                yield from strings(nested)
+
+    assert producer["runs-on"] == "manzanita-standard"
+    assert condition == (
+        "!cancelled() && "
+        "needs.changes.result == 'success' && "
+        "needs.changes.outputs.desktop == 'true' && "
+        "needs.changes.outputs.full_gate == 'true' && "
+        "needs.queue-tree-evidence.outputs.reuse_mac != 'true'"
+    )
+    secret_context = re.compile(r"(?<![A-Za-z0-9_])secrets(?![A-Za-z0-9_])", re.I)
+    assert not any(secret_context.search(value) for value in strings(producer))
 
 
 def test_required_gui_contract_job_runs_artifact_tests():

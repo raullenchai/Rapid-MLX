@@ -430,7 +430,13 @@ jobs:
       needs.changes.outputs.desktop == 'true' &&
       needs.changes.outputs.full_gate == 'true' &&
       needs.queue-tree-evidence.outputs.reuse_mac != 'true'
-    runs-on: macos-15
+    # The expensive producer runs only after `full_gate` promotion. For PRs,
+    # that signal is limited to an exact internal Mergify candidate head; fork
+    # PRs remain false and therefore never execute repository code on the
+    # trusted Mac fleet. Main pushes use the same pinned Manzanita image as the
+    # artifact consumers, removing a second provider queue without changing
+    # the commit-bound build-once contract.
+    runs-on: manzanita-standard
     timeout-minutes: 20
     defaults:
       run:
