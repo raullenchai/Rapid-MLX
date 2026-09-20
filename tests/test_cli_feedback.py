@@ -114,6 +114,33 @@ def test_browser_failure_is_swallowed(capsys, monkeypatch):
     assert FEEDBACK_URL in capsys.readouterr().out
 
 
+def test_unusable_stdout_is_treated_as_non_interactive(capsys, opened, monkeypatch):
+    """A detached or already-closed stdout raises from ``isatty()`` rather
+    than answering it. That is emphatically not an invitation to open a
+    browser, and it must not propagate out of a command whose whole job
+    is to print a URL."""
+
+    def _raise():
+        raise ValueError("I/O operation on closed file")
+
+    monkeypatch.setattr(sys.stdout, "isatty", _raise, raising=False)
+    feedback_command(_args())
+    assert opened == []
+    assert FEEDBACK_URL in capsys.readouterr().out
+
+
+def test_dispatch_reaches_the_handler_in_process(tmp_path, monkeypatch, capsys):
+    """``main()`` itself, not a subprocess — the dispatch branch has to be
+    exercised in this interpreter for anyone (coverage included) to see
+    that the subcommand is actually wired up."""
+    import rapid_mlx.cli as cli
+
+    monkeypatch.setenv("HOME", str(tmp_path))
+    monkeypatch.setattr(sys, "argv", ["rapid-mlx", "feedback", "--no-open"])
+    cli.main()
+    assert FEEDBACK_URL in capsys.readouterr().out
+
+
 def test_end_to_end_exit_code_and_output(tmp_path):
     """Through argparse + dispatch, as a user runs it. ``--no-open`` keeps
     the test from spawning a browser on the developer's machine."""

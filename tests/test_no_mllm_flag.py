@@ -207,6 +207,11 @@ NON_ROUTING_FLAGS_ALLOWLIST: frozenset[str] = frozenset(
         # tier, or engine route (no auto-detection). Sibling of the
         # RAPID_MLX_NO_BANNER allowlist entry in test_no_out_of_band_routing.py.
         "--no-banner",
+        # ``rapid-mlx feedback --no-open`` suppresses the browser launch
+        # so the command only prints the community invite URL. Pure UX
+        # knob on a read-only subcommand: it selects no model, parser,
+        # tier or engine route, and forwards no kwarg into the engine.
+        "--no-open",
     }
 )
 
