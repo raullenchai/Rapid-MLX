@@ -906,3 +906,91 @@ def test_native_mtp_chunked_rounds_restore_full_prompt_tokens(monkeypatch) -> No
 
     assert result == [(7, None)]
     assert captured["prompt_tokens"].tolist() == [[10, 20, 30]]
+
+
+def test_glm_adapter_reaches_products_of_the_pinned_loader(monkeypatch, tmp_path):
+    """The class swap must reach what pinned load_model constructs.
+
+    Regression probe for the 3c-1 review: swapping only the vendored
+    package class leaves the pinned architecture registry untouched, so
+    drafters constructed by the pinned loader never receive the Rapid
+    stateless adapter. The fake loader mirrors the real dispatch: the
+    class object is read from the pinned drafter package at construction.
+    """
+    import json as _json
+
+    from rapid_mlx.speculative.native_mtp import glm5_compat
+
+    class PinnedGlm5NextMTPDraftModel:
+        def __call__(self, tokens, hidden, cache, position, target_model):
+            pass
+
+    repo = tmp_path / "drafter"
+    repo.mkdir()
+    (repo / "config.json").write_text(_json.dumps({"model_type": "glm5_next_mtp"}))
+
+    class StaleStateGlm5NextMTPDraftModel:
+        # NOT stateless: install() must build the adapter from this class.
+        def __call__(self, tokens, hidden, position):
+            pass
+
+    drafters = ModuleType("mlx_vlm.speculative.drafters")
+    drafters.__path__ = []
+    package = ModuleType("mlx_vlm.speculative.drafters.glm5_next_mtp")
+    package.__path__ = []
+    package.Glm5NextMTPDraftModel = PinnedGlm5NextMTPDraftModel
+    implementation = ModuleType(
+        "mlx_vlm.speculative.drafters.glm5_next_mtp.glm5_next_mtp"
+    )
+    package.glm5_next_mtp = implementation
+    vendored_package = ModuleType(
+        "rapid_mlx.models.mlx_vlm_vendored.speculative.drafters.glm5_next_mtp"
+    )
+    vendored_package.__path__ = []
+    vendored_package.Glm5NextMTPDraftModel = StaleStateGlm5NextMTPDraftModel
+    vendored_implementation = ModuleType(
+        "rapid_mlx.models.mlx_vlm_vendored.speculative.drafters.glm5_next_mtp"
+        ".glm5_next_mtp"
+    )
+    vendored_package.glm5_next_mtp = vendored_implementation
+    from rapid_mlx.models.mlx_vlm_vendored.speculative import (
+        drafters as vendored_drafters,
+    )
+
+    monkeypatch.setattr(vendored_drafters, "glm5_next_mtp", vendored_package)
+    utils = ModuleType("mlx_vlm.utils")
+    utils.get_model_path = lambda repo_id, revision=None: Path(repo)
+    # object.__new__: the dispatch reads the class object from the pinned
+    # package attribute; the heavy model init is irrelevant to the probe.
+    utils.load_model = lambda path, **kwargs: package.Glm5NextMTPDraftModel.__new__(
+        package.Glm5NextMTPDraftModel
+    )
+    # Fake the mlx_vlm ROOT but keep the real __path__: the vendored glm5
+    # drafter imports the real pinned model family, while the poisoned
+    # utils/drafters submodules must stay faked for the loader boundary.
+    import mlx_vlm as _real_mlx_vlm
+
+    root = ModuleType("mlx_vlm")
+    root.__path__ = list(_real_mlx_vlm.__path__)
+    for name, module in {
+        "mlx_vlm": root,
+        "mlx_vlm.speculative.drafters": drafters,
+        "mlx_vlm.speculative.drafters.glm5_next_mtp": package,
+        "mlx_vlm.utils": utils,
+        "rapid_mlx.models.mlx_vlm_vendored.speculative.drafters"
+        ".glm5_next_mtp": vendored_package,
+        "rapid_mlx.models.mlx_vlm_vendored.speculative.drafters"
+        ".glm5_next_mtp.glm5_next_mtp": vendored_implementation,
+    }.items():
+        monkeypatch.setitem(sys.modules, name, module)
+    monkeypatch.setattr(glm5_compat, "_INSTALLED", False)
+
+    assert glm5_compat.install_glm5_mtp_compatibility() is True
+
+    from rapid_mlx.models.mlx_vlm_vendored.speculative.drafters import (
+        load_drafter,
+    )
+
+    drafter, kind = load_drafter(repo, kind="mtp")
+    assert kind == "mtp"
+    assert getattr(type(drafter), "_RAPID_STATELESS_GLM_MTP", None) is True

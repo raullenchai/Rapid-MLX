@@ -92,6 +92,33 @@ REDIRECTS = {
             "from ....models.qwen3_5_moe.language import Qwen3_5MoeDecoderLayer\n",
         ),
     ],
+    "mtp_split.py": [
+        (
+            '    "qwen3_5": "rapid_mlx.models.mlx_vlm_vendored'
+            '.speculative.drafters.qwen3_5_mtp.split:Qwen3_5MTPSplitter",\n',
+            '    "qwen3_5": "mlx_vlm.speculative.drafters.qwen3_5_mtp.split:Qwen3_5MTPSplitter",\n',
+        ),
+        (
+            '    "qwen3_5_moe": "rapid_mlx.models.mlx_vlm_vendored'
+            '.speculative.drafters.qwen3_5_mtp.split:Qwen3_5MTPSplitter",\n',
+            '    "qwen3_5_moe": "mlx_vlm.speculative.drafters.qwen3_5_mtp.split:Qwen3_5MTPSplitter",\n',
+        ),
+        (
+            '    "qwen3_next": "rapid_mlx.models.mlx_vlm_vendored'
+            '.speculative.drafters.qwen3_5_mtp.split:Qwen3NextMTPSplitter",\n',
+            '    "qwen3_next": "mlx_vlm.speculative.drafters.qwen3_5_mtp.split:Qwen3NextMTPSplitter",\n',
+        ),
+        (
+            '    "glm5_next": "rapid_mlx.models.mlx_vlm_vendored'
+            '.speculative.drafters.glm5_next_mtp.split:Glm5NextMTPSplitter",\n',
+            '    "glm5_next": "mlx_vlm.speculative.drafters.glm5_next_mtp.split:Glm5NextMTPSplitter",\n',
+        ),
+        (
+            '    "glm5_next_text": "rapid_mlx.models.mlx_vlm_vendored'
+            '.speculative.drafters.glm5_next_mtp.split:Glm5NextMTPSplitter",\n',
+            '    "glm5_next_text": "mlx_vlm.speculative.drafters.glm5_next_mtp.split:Glm5NextMTPSplitter",\n',
+        ),
+    ],
     "qwen3_dflash/dflash.py": [
         (
             "from mlx_vlm.models.activations import swiglu\n",
