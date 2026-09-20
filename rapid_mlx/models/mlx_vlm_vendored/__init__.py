@@ -321,7 +321,11 @@ vendored copy differs by exactly the deviations listed):
   ``55afe4b6341ee97d764da90af3d404b0cc86a2a355d198b1d4d299be8040ed2f``;
   upstream-bugfix: ``iter_selected`` resolves index shard paths and rejects
   entries outside the model directory — pinned 0.7.1 joins untrusted
-  ``weight_map`` filenames directly);
+  ``weight_map`` filenames directly; upstream-bugfix: ``split`` defaults
+  ``block_size`` only when ``None`` and rejects values below 1 — pinned
+  0.7.1 replaced an explicit 0 via ``or`` and accepted negatives;
+  redirects: the unserved ``deepseek_v4_dspark`` detection import → pinned
+  upstream (family not vendored));
   ``glm5_next_mtp/`` (digests ``__init__``
   ``ce16dd3c620b86198ba0a616dc845e3feb424b53f27ff827edf05a88147f4085``,
   ``config``

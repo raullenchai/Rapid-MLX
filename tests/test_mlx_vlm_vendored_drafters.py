@@ -9,7 +9,9 @@ a drafter module diverges.
 
 import inspect
 import json
+import sys
 from pathlib import Path
+from types import ModuleType
 
 import pytest
 
@@ -93,6 +95,15 @@ REDIRECTS = {
         ),
     ],
     "mtp_split.py": [
+        (
+            "        # Documented pinned redirect: the deepseek_v4_dspark family is\n"
+            "        # outside the served set (not vendored); detection must resolve\n"
+            "        # the pinned splitter module.\n"
+            "        from mlx_vlm.speculative.drafters.deepseek_v4_dspark.split import (\n"
+            "            DeepseekV4DsparkSplitter,\n"
+            "        )\n",
+            "        from .deepseek_v4_dspark.split import DeepseekV4DsparkSplitter\n",
+        ),
         (
             '    "qwen3_5": "rapid_mlx.models.mlx_vlm_vendored'
             '.speculative.drafters.qwen3_5_mtp.split:Qwen3_5MTPSplitter",\n',
@@ -182,6 +193,28 @@ DEVIATIONS = {
         ),
     ],
     "mtp_split.py": [
+        (
+            """        depth = self.depth(text_config)
+        # Rapid upstream-bugfix (documented deviation): pinned 0.7.1 used
+        # ``block_size or ...``, silently replacing an explicit 0 with the
+        # depth-derived default and letting negative values through — both
+        # produce a checkpoint whose drafting loop later fails on an empty
+        # concatenate. Default only when None; reject below the minimum.
+        resolved_block_size = (
+            depth + self.block_size_extra if block_size is None else int(block_size)
+        )
+        if resolved_block_size < 1:
+            raise ValueError(f"block_size must be >= 1, got {block_size!r}")
+        draft_config = {
+            "model_type": self.output_model_type,
+            "text_config": text_config,
+            "block_size": resolved_block_size,""",
+            """        depth = self.depth(text_config)
+        draft_config = {
+            "model_type": self.output_model_type,
+            "text_config": text_config,
+            "block_size": int(block_size or depth + self.block_size_extra),""",
+        ),
         (
             """# Documented pinned redirects: quant_utils/utils live at the mlx_vlm root
 # and are vendored by later slices (quant_utils exists in this package;
@@ -401,6 +434,95 @@ def test_qwen_mtp_batch_replay_corrects_scalar_position_for_ragged_rows():
     assert isinstance(position, mx.array)
     assert position.tolist() == [7, 6]
     assert len(seeds) == 1
+
+
+def test_mtp_split_block_size_resolution(tmp_path):
+    """block_size defaults only when None; zero/negative are rejected."""
+    from rapid_mlx.models.mlx_vlm_vendored.speculative.drafters.mtp_split import (
+        MTPSplitter,
+    )
+
+    class StubSplitter(MTPSplitter):
+        output_model_type = "qwen3_5_mtp"
+        tokenizer_files = []
+
+        def select_keys(self, key, text_config):
+            return True
+
+        def depth(self, text_config):
+            return 3
+
+        def transform(self, tensors, text_config, source_is_mlx):
+            return {"w": mx.zeros((1,))}
+
+        def quantization(self, weights, source_config, text_config, quant_opts):
+            return None
+
+    source = tmp_path / "src"
+    source.mkdir()
+    (source / "config.json").write_text(
+        json.dumps(
+            {
+                "model_type": "qwen3_5",
+                "text_config": {"model_type": "qwen3_5", "num_hidden_layers": 4},
+            }
+        )
+    )
+    import mlx.core as mx
+
+    mx.save_safetensors(
+        str(source / "model.safetensors"),
+        {"w": mx.zeros((1,))},
+        metadata={"format": "mlx"},
+    )
+    (source / "model.safetensors.index.json").write_text(
+        json.dumps({"weight_map": {"w": "model.safetensors"}})
+    )
+
+    splitter = StubSplitter()
+    for bad in (0, -3):
+        with pytest.raises(ValueError, match="block_size must be >= 1"):
+            splitter.split(
+                str(source), str(tmp_path / f"out-bad-{bad}"), block_size=bad
+            )
+
+    default_out = tmp_path / "out-default"
+    splitter.split(str(source), str(default_out))
+    assert json.loads((default_out / "config.json").read_text())["block_size"] == 4
+
+    explicit_out = tmp_path / "out-explicit"
+    splitter.split(str(source), str(explicit_out), block_size=2)
+    assert json.loads((explicit_out / "config.json").read_text())["block_size"] == 2
+
+
+def test_detect_mtp_splitter_resolves_pinned_dspark_module(tmp_path, monkeypatch):
+    """The unserved deepseek_v4_dspark family resolves through pinned."""
+    from rapid_mlx.models.mlx_vlm_vendored.speculative.drafters.mtp_split import (
+        detect_mtp_splitter,
+    )
+
+    class FakeDsparkSplitter:
+        def read_text_config(self, source_config):
+            return {}
+
+        def iter_selected(self, model_path, text_config):
+            yield model_path / "model.safetensors", ["blk.0.weight"]
+
+    split_module = ModuleType("mlx_vlm.speculative.drafters.deepseek_v4_dspark.split")
+    split_module.DeepseekV4DsparkSplitter = FakeDsparkSplitter
+    monkeypatch.setitem(sys.modules, split_module.__name__, split_module)
+
+    source = tmp_path / "src"
+    source.mkdir()
+    (source / "config.json").write_text(
+        json.dumps(
+            {
+                "model_type": "deepseek_v4",
+                "dspark_target_layer_ids": [1, 8],
+            }
+        )
+    )
+    assert isinstance(detect_mtp_splitter(source), FakeDsparkSplitter)
 
 
 def test_load_drafter_rejects_unknown_kind(tmp_path):

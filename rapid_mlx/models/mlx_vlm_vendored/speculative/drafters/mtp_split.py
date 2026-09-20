@@ -20,6 +20,7 @@ import mlx.core as mx
 from safetensors import safe_open
 
 from ...fp8 import transform_fp8_weights
+
 # Documented pinned redirects: quant_utils/utils live at the mlx_vlm root
 # and are vendored by later slices (quant_utils exists in this package;
 # utils is step-3e scope).
@@ -274,10 +275,20 @@ class MTPSplitter:
         )
 
         depth = self.depth(text_config)
+        # Rapid upstream-bugfix (documented deviation): pinned 0.7.1 used
+        # ``block_size or ...``, silently replacing an explicit 0 with the
+        # depth-derived default and letting negative values through — both
+        # produce a checkpoint whose drafting loop later fails on an empty
+        # concatenate. Default only when None; reject below the minimum.
+        resolved_block_size = (
+            depth + self.block_size_extra if block_size is None else int(block_size)
+        )
+        if resolved_block_size < 1:
+            raise ValueError(f"block_size must be >= 1, got {block_size!r}")
         draft_config = {
             "model_type": self.output_model_type,
             "text_config": text_config,
-            "block_size": int(block_size or depth + self.block_size_extra),
+            "block_size": resolved_block_size,
             "tie_word_embeddings": bool(
                 text_config.get("tie_word_embeddings", self.tie_word_embeddings_default)
             ),
@@ -345,7 +356,12 @@ def detect_mtp_splitter(model_path: Path) -> Optional[MTPSplitter]:
         text_config.get("dspark_target_layer_ids")
         or source_config.get("dspark_target_layer_ids")
     ):
-        from .deepseek_v4_dspark.split import DeepseekV4DsparkSplitter
+        # Documented pinned redirect: the deepseek_v4_dspark family is
+        # outside the served set (not vendored); detection must resolve
+        # the pinned splitter module.
+        from mlx_vlm.speculative.drafters.deepseek_v4_dspark.split import (
+            DeepseekV4DsparkSplitter,
+        )
 
         splitter = DeepseekV4DsparkSplitter()
         tc = splitter.read_text_config(source_config)
