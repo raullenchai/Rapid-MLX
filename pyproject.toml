@@ -548,6 +548,12 @@ rapid_mlx = [
     "model_recommendations.json",
     "audio/aliases.json",
     "catalog/schemas/*.json",
+    # Telemetry v2 event registry -- the single source of truth the Python
+    # validator (rapid_mlx/telemetry/registry.py) loads via
+    # importlib.resources. Without this the wheel ships a validator with
+    # nothing to validate against. The desktop app bundles a byte-identical
+    # copy; tests/test_telemetry_registry_drift.py holds the two together.
+    "telemetry/events.json",
     # Download-size manifest (hf_path -> footprint bytes) powering the Size
     # column in `rapid-mlx models` and the size line in `rapid-mlx info`.
     # Regenerate with scripts/gen_model_sizes.py when aliases change.

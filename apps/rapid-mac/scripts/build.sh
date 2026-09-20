@@ -375,6 +375,20 @@ fi
 # The recommendation catalog is owned by the Python package so the CLI and
 # desktop app consume one physical source file. Copy that SSOT into the shipped
 # app; SwiftPM source-checkout tests load it directly from ../../rapid_mlx.
+# The telemetry v2 event registry is owned by the Python package for the same
+# reason as the recommendation catalog above: engine and app validate against
+# ONE physical file, so their enums cannot drift. SwiftPM source-checkout tests
+# read ../../rapid_mlx/telemetry/events.json directly; the shipped .app uses
+# this flat copy. tests/test_telemetry_registry_drift.py asserts no second copy
+# exists anywhere under apps/rapid-mac.
+TELEMETRY_EVENTS_SRC="$ROOT/../../rapid_mlx/telemetry/events.json"
+if [[ -f "$TELEMETRY_EVENTS_SRC" ]]; then
+    cp "$TELEMETRY_EVENTS_SRC" "$CONTENTS/Resources/events.json"
+else
+    echo "ERR: rapid_mlx/telemetry/events.json missing — refusing to ship a telemetry validator with no registry" >&2
+    exit 1
+fi
+
 RECOMMENDATIONS_SRC="$ROOT/../../rapid_mlx/model_recommendations.json"
 if [[ -f "$RECOMMENDATIONS_SRC" ]]; then
     cp "$RECOMMENDATIONS_SRC" "$CONTENTS/Resources/model_recommendations.json"
