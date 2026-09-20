@@ -218,6 +218,7 @@ const github = {{
       statusArgs.push(args);
       calls.push(["status", args.state]);
       if (scenario.failStatusCall === statusCalls) throw new Error("status failure");
+      return {{ data: {{ ...args, id: `created-${{statusCalls}}` }} }};
     }}, listCommitStatusesForRef: async () => {{
       listCalls += 1;
       calls.push(["list-statuses"]);
@@ -348,13 +349,17 @@ def test_concurrent_fresh_authorization_is_restored_after_head_failure():
         action="synchronize",
         statuses_after=[
             {
-                "id": 3,
+                "id": "created-1",
+                "context": "merge-ready-head",
+                "state": "failure",
+            },
+            {
+                "id": "fresh-success",
                 "context": "merge-ready-head",
                 "state": "success",
                 "description": "Authorized merge-ready-mac on this exact head",
                 "target_url": "https://github.example/owner/repo/pull/42",
             },
-            {"id": 2, "context": "merge-ready-head", "state": "failure"},
         ],
     )
 
@@ -367,6 +372,37 @@ def test_concurrent_fresh_authorization_is_restored_after_head_failure():
     assert result["statusArgs"][-1]["description"] == (
         "Authorized merge-ready-mac on this exact head"
     )
+
+
+def test_newer_deliberate_failure_beats_racing_success():
+    result = _run_authorization_script(
+        labels=["merge-ready", "merge-ready-mac"],
+        action="synchronize",
+        statuses_after=[
+            {
+                "id": "deliberate-failure",
+                "context": "merge-ready-head",
+                "state": "failure",
+                "description": "Apply exactly one merge-ready label",
+            },
+            {
+                "id": "fresh-success",
+                "context": "merge-ready-head",
+                "state": "success",
+            },
+            {
+                "id": "created-1",
+                "context": "merge-ready-head",
+                "state": "failure",
+            },
+        ],
+    )
+
+    assert result["calls"] == [
+        ["list-statuses"],
+        ["status", "failure"],
+        ["list-statuses"],
+    ]
 
 
 def test_status_or_live_pull_failure_remains_fail_closed():
