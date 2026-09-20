@@ -201,14 +201,16 @@ rationale is genuinely overkill.
 ### `test_env_check` (step 0.8)
 
 Verifies that the same Python interpreter `targeted_tests` and
-`full_unit` will hand to pytest can actually import the plugins the
-suite needs (chiefly `pytest_asyncio` — `pytest.ini` sets
+`full_unit` will hand to pytest can import the plugins the suite needs and
+that each installed distribution satisfies its canonical PEP 508 requirement
+from `pyproject.toml[project.optional-dependencies].test` (chiefly
+`pytest_asyncio` — `pytest.ini` sets
 `asyncio_mode = auto`, so without the plugin every `async def test_*`
 fails at collection with "async def functions are not natively
 supported").
 
-When a plugin is missing, the step's recovery path runs in two
-attempts:
+When an import is missing or an installed version is outside its declared
+range, the step's recovery path runs in two attempts:
 
 1. **Trusted pins (always tried first).** Installs
    `TRUSTED_TEST_PINS` (a hardcoded, version-pinned set defined in
@@ -225,8 +227,8 @@ attempts:
    project-extras path is REFUSED — the step reports `fail` and the
    operator is asked to review the diff before installing manually.
 
-If both attempts still leave a plugin missing, the step reports
-`fail` with the missing-package list and the canonical recovery
+If both attempts still leave an import or version unsatisfied, the step reports
+`fail` with the distribution name, installed version, required range, and canonical recovery
 command (`<interp> -m pip install '.[test]'`) so the operator can
 fix it manually.
 
@@ -239,7 +241,7 @@ errors that looked like regressions. The canonical test-deps live in
 NOT maintain a hand-edited duplicate list.
 
 Override: `PR_VALIDATE_NO_AUTO_INSTALL=1` disables the auto-recover
-`pip install` (the step still detects + reports the missing packages,
+`pip install` (the step still detects + reports unsatisfied requirements,
 it just won't mutate the host Python). Use this in CI sandboxes that
 must keep the runner image read-only.
 
