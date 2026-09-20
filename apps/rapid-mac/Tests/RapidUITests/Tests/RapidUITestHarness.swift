@@ -465,7 +465,7 @@ final class RapidUITestHarness {
                 return attempt
             }
 
-            let observedPhase: String?
+            var observedPhase: String?
             let transportResult: DragTransportFile.Result?
             do {
                 observedPhase = completionIsVisible()
@@ -478,6 +478,17 @@ final class RapidUITestHarness {
                 return attempt
             }
             guard terminateFileDragSource(dragSource) else { return attempt }
+            // Helper shutdown is the final source-session boundary. Re-read
+            // the destination acknowledgement after that bounded wait so a
+            // completion that arrived during termination always vetoes replay.
+            if observedPhase == nil {
+                do {
+                    observedPhase = try DropEventFile.completedPhase(at: dropEventFile)
+                } catch {
+                    XCTFail("could not read final UI-test drop marker: \(error)")
+                    return attempt
+                }
+            }
             if FileDropRetryPolicy.shouldRetry(
                 completedDrop: observedPhase != nil,
                 transportFailed: transportResult?.isAuthoritativeFailure == true,

@@ -158,11 +158,16 @@ def test_xcui_runner_launches_production_bundle_with_fake_sidecar():
         "guard terminateFileDragSource(dragSource)", result_index
     )
     retry_decision_index = retry_loop.index("FileDropRetryPolicy.shouldRetry(")
+    final_marker_read_index = retry_loop.index(
+        "observedPhase = try DropEventFile.completedPhase(at: dropEventFile)",
+        termination_index,
+    )
     assert (
         launch_index
         < gesture_index
         < result_index
         < termination_index
+        < final_marker_read_index
         < retry_decision_index
     )
     assert (
