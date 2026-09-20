@@ -78,6 +78,12 @@ def install_served_architecture_bindings() -> None:
         setattr(shim, "Model", package.Model)  # noqa: B010
         setattr(shim, "ModelConfig", package.ModelConfig)  # noqa: B010
         sys.modules[target] = shim
+        # a previously imported pinned child leaves a stale attribute on
+        # the parent package; ``from mlx_vlm.models import <model_type>``
+        # resolves through that attribute, so it must be updated too.
+        parent = sys.modules.get("mlx_vlm.models")
+        if parent is not None:
+            setattr(parent, model_type, shim)
 
 
 logger = logging.getLogger(__name__)

@@ -362,6 +362,12 @@ def install_served_architecture_bindings() -> None:
         setattr(shim, "Model", package.Model)  # noqa: B010
         setattr(shim, "ModelConfig", package.ModelConfig)  # noqa: B010
         sys.modules[target] = shim
+        # a previously imported pinned child leaves a stale attribute on
+        # the parent package; ``from mlx_vlm.models import <model_type>``
+        # resolves through that attribute, so it must be updated too.
+        parent = sys.modules.get("mlx_vlm.models")
+        if parent is not None:
+            setattr(parent, model_type, shim)
 
 
 logger = logging.getLogger(__name__)""",
@@ -836,6 +842,40 @@ def test_binding_hook_replaces_stale_architecture_bindings(monkeypatch, tmp_path
     assert rebound.ModelConfig.__module__.startswith(
         "rapid_mlx.models.mlx_vlm_vendored."
     )
+
+
+def test_binding_hook_updates_parent_package_attribute(monkeypatch, tmp_path):
+    """A stale attribute on the parent package must be re-bound too:
+    ``from mlx_vlm.models import <model_type>`` resolves through it."""
+    import sys
+    from types import ModuleType
+
+    from rapid_mlx.models.mlx_vlm_vendored.speculative.drafters import (
+        load_drafter,
+    )
+
+    stale_child = ModuleType("mlx_vlm.models.dflash2")
+    stale_child.Model = object
+    stale_child.ModelConfig = object
+    models_pkg = ModuleType("mlx_vlm.models")
+    models_pkg.__path__ = []
+    models_pkg.dflash2 = stale_child
+    monkeypatch.setitem(sys.modules, "mlx_vlm.models", models_pkg)
+    monkeypatch.setitem(sys.modules, "mlx_vlm.models.dflash2", stale_child)
+
+    root = ModuleType("mlx_vlm")
+    root.__path__ = []
+    utils = ModuleType("mlx_vlm.utils")
+    utils.get_model_path = lambda value, **kwargs: Path(value)
+    utils.load_model = lambda path, **kwargs: object()
+    monkeypatch.setitem(sys.modules, "mlx_vlm", root)
+    monkeypatch.setitem(sys.modules, "mlx_vlm.utils", utils)
+
+    load_drafter(str(Path("/repo/dflash2")), kind="dflash")
+    rebound = sys.modules["mlx_vlm.models.dflash2"]
+    assert rebound is not stale_child
+    assert rebound.Model.__module__.startswith("rapid_mlx.models.mlx_vlm_vendored.")
+    assert models_pkg.dflash2 is rebound
 
 
 def test_qwen35_decoder_layer_routes_qwen3_next_to_moe():
