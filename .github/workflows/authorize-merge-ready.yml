@@ -55,8 +55,30 @@ jobs:
                     status.context === "merge-ready-head" &&
                     status.state === "success",
                 );
-              const before = successfulAuthorization(await listStatuses());
-              if (before) {
+              const restoreAuthorization = async (authorization) =>
+                github.rest.repos.createCommitStatus({
+                  owner: context.repo.owner,
+                  repo: context.repo.repo,
+                  sha: headSha,
+                  state: "success",
+                  context: "merge-ready-head",
+                  description:
+                    authorization.description ||
+                    "Authorized ready label on this exact head",
+                  target_url: authorization.target_url || statusUrl,
+                });
+
+              const beforeStatuses = await listStatuses();
+              const latestBefore = beforeStatuses.find(
+                (status) => status.context === "merge-ready-head",
+              );
+              if (latestBefore?.state === "success") {
+                return;
+              }
+              const interruptedSuccess =
+                successfulAuthorization(beforeStatuses);
+              if (interruptedSuccess) {
+                await restoreAuthorization(interruptedSuccess);
                 return;
               }
 
@@ -74,17 +96,7 @@ jobs:
 
               const racedSuccess = successfulAuthorization(await listStatuses());
               if (racedSuccess) {
-                await github.rest.repos.createCommitStatus({
-                  owner: context.repo.owner,
-                  repo: context.repo.repo,
-                  sha: headSha,
-                  state: "success",
-                  context: "merge-ready-head",
-                  description:
-                    racedSuccess.description ||
-                    "Authorized ready label on this exact head",
-                  target_url: racedSuccess.target_url || statusUrl,
-                });
+                await restoreAuthorization(racedSuccess);
               }
               return;
             }

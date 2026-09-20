@@ -291,6 +291,29 @@ def test_delayed_head_update_does_not_overwrite_fresh_authorization():
     assert result["calls"] == [["list-statuses"]]
 
 
+def test_rerun_restores_success_left_behind_newer_failure():
+    result = _run_authorization_script(
+        labels=["merge-ready-mac"],
+        action="synchronize",
+        statuses_before=[
+            {"context": "merge-ready-head", "state": "failure"},
+            {
+                "context": "merge-ready-head",
+                "state": "success",
+                "description": "Authorized merge-ready-mac on this exact head",
+            },
+        ],
+    )
+
+    assert result["calls"] == [
+        ["list-statuses"],
+        ["status", "success"],
+    ]
+    assert result["statusArgs"][-1]["description"] == (
+        "Authorized merge-ready-mac on this exact head"
+    )
+
+
 def test_concurrent_fresh_authorization_is_restored_after_head_failure():
     result = _run_authorization_script(
         labels=["merge-ready-mac"],
