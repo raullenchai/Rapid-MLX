@@ -20,8 +20,12 @@ import mlx.core as mx
 from safetensors import safe_open
 
 from ...fp8 import transform_fp8_weights
+# Documented pinned redirects: quant_utils/utils live at the mlx_vlm root
+# and are vendored by later slices (quant_utils exists in this package;
+# utils is step-3e scope).
+from mlx_vlm.utils import get_model_path
+
 from ...quant_utils import get_quantization_params
-from ...utils import get_model_path
 
 
 def _safetensor_files(model_path: Path) -> List[Path]:
@@ -183,7 +187,16 @@ class MTPSplitter:
                     by_file.setdefault(filename, []).append(key)
             if by_file:
                 for filename, keys in by_file.items():
-                    yield source_path / filename, keys
+                    # Rapid upstream-bugfix (documented deviation): shard
+                    # filenames come from an untrusted safetensors index;
+                    # resolve and reject anything outside the model dir.
+                    shard = (source_path / filename).resolve()
+                    if not shard.is_relative_to(source_path.resolve()):
+                        raise ValueError(
+                            "safetensors index entry escapes the model "
+                            f"directory: {filename!r}"
+                        )
+                    yield shard, keys
                 return
 
         for file in _safetensor_files(source_path):

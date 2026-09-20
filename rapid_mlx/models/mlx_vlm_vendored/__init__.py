@@ -310,13 +310,18 @@ vendored copy differs by exactly the deviations listed):
   class imports → pinned upstream (drafter families outside the served
   set, their closures are not vendored), and ``load_drafter``'s lazy
   ``...utils`` → pinned ``mlx_vlm.utils`` (load/get_model_path are step-3e
-  scope)), ``compatibility.py`` (digest
+  scope); upstream-bugfix: ``DRAFTER_KIND_BY_MODEL_TYPE`` gains
+  ``dflash2``/``qwen3_dflash`` → ``dflash`` — pinned 0.7.1 omits the served
+  DFlash model types, so an explicit wrong ``--draft-kind`` dispatched them
+  through the wrong round loop), ``compatibility.py`` (digest
   ``e360a7f03f25da810229ab04f5a68c667cc3831d291c3c22c03e1a0efa0ee2c4``),
   ``mtp_base.py`` (digest
   ``3e071843a4fabca2f7be20c15b04ab1e45ac178d4fa63d7f108684787a2262ab``),
   ``mtp_split.py`` (digest
-  ``55afe4b6341ee97d764da90af3d404b0cc86a2a355d198b1d4d299be8040ed2f``) —
-  verbatim, no deviations;
+  ``55afe4b6341ee97d764da90af3d404b0cc86a2a355d198b1d4d299be8040ed2f``;
+  upstream-bugfix: ``iter_selected`` resolves index shard paths and rejects
+  entries outside the model directory — pinned 0.7.1 joins untrusted
+  ``weight_map`` filenames directly);
   ``glm5_next_mtp/`` (digests ``__init__``
   ``ce16dd3c620b86198ba0a616dc845e3feb424b53f27ff827edf05a88147f4085``,
   ``config``

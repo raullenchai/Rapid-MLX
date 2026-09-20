@@ -34,8 +34,22 @@ def _install_fake_runtime(monkeypatch, released_type):
 
     speculative = ModuleType("mlx_vlm.speculative")
     speculative.__path__ = []
+    # Distinct pinned and vendored registries: install_glm5_mtp_compatibility
+    # imports the pinned drafter package AND its implementation submodule
+    # (the pinned class object pinned load_model resolves), alongside the
+    # vendored package it swaps for 3c consumers.
     drafters = ModuleType("mlx_vlm.speculative.drafters")
     drafters.__path__ = []
+    pinned_drafters = ModuleType("mlx_vlm.speculative.drafters")
+    pinned_drafters.__path__ = []
+    pinned_package = ModuleType("mlx_vlm.speculative.drafters.glm5_next_mtp")
+    pinned_package.__path__ = []
+    pinned_package.Glm5NextMTPDraftModel = released_type
+    pinned_implementation = ModuleType(
+        "mlx_vlm.speculative.drafters.glm5_next_mtp.glm5_next_mtp"
+    )
+    pinned_package.glm5_next_mtp = pinned_implementation
+    pinned_drafters.glm5_next_mtp = pinned_package
     package = ModuleType(
         "rapid_mlx.models.mlx_vlm_vendored.speculative.drafters.glm5_next_mtp"
     )
@@ -54,13 +68,15 @@ def _install_fake_runtime(monkeypatch, released_type):
         "mlx_vlm.models": models,
         "mlx_vlm.models.linear": linear_module,
         "mlx_vlm.speculative": speculative,
-        "mlx_vlm.speculative.drafters": drafters,
+        "mlx_vlm.speculative.drafters": pinned_drafters,
+        "mlx_vlm.speculative.drafters.glm5_next_mtp": pinned_package,
+        pinned_implementation.__name__: pinned_implementation,
         "rapid_mlx.models.mlx_vlm_vendored.speculative.drafters": drafters,
         "rapid_mlx.models.mlx_vlm_vendored.speculative.drafters.glm5_next_mtp": package,
         implementation.__name__: implementation,
     }.items():
         monkeypatch.setitem(sys.modules, name, module)
-    return package, implementation
+    return package, implementation, pinned_package
 
 
 def test_stateless_drafter_detection_covers_marker_signature_and_invalid_call():
@@ -82,7 +98,7 @@ def test_install_is_noop_for_future_stateless_upstream(monkeypatch):
         def __call__(self, tokens, hidden, cache, position, target_model):
             pass
 
-    package, _ = _install_fake_runtime(monkeypatch, FutureDrafter)
+    package, _, _ = _install_fake_runtime(monkeypatch, FutureDrafter)
     monkeypatch.setattr(glm5_compat, "_INSTALLED", False)
 
     assert glm5_compat.install_glm5_mtp_compatibility() is False
@@ -95,13 +111,18 @@ def test_installed_adapter_binds_and_runs_both_output_heads(monkeypatch):
         def validate_target_compatibility(self, target):
             self.validated = target
 
-    package, implementation = _install_fake_runtime(monkeypatch, ReleasedDrafter)
+    package, implementation, pinned_package = _install_fake_runtime(
+        monkeypatch, ReleasedDrafter
+    )
     monkeypatch.setattr(glm5_compat, "_INSTALLED", False)
 
     assert glm5_compat.install_glm5_mtp_compatibility() is True
     adapted = package.Glm5NextMTPDraftModel
     assert adapted is implementation.Glm5NextMTPDraftModel
     assert adapted is package.Model
+    # The swap must also reach the pinned registry: the pinned package's
+    # class object is what pinned load_model resolves at construction.
+    assert pinned_package.Glm5NextMTPDraftModel is adapted
     assert adapted.__name__ == "Glm5NextMTPDraftModel"
     assert glm5_compat.is_installed() is True
 

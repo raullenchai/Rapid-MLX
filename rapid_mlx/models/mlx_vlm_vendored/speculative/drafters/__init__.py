@@ -30,6 +30,12 @@ DRAFTER_KIND_BY_MODEL_TYPE = {
     "laguna": "dflash",
     "muse_glimmer_assistant": "dflash",
     "qwen3_dspark": "dflash",
+    # Rapid upstream-bugfix (documented deviation): pinned 0.7.1 omits the
+    # served DFlash families' model types, so an explicit wrong --draft-kind
+    # (e.g. "mtp") dispatched them through the wrong round loop instead of
+    # being overridden here.
+    "dflash2": "dflash",
+    "qwen3_dflash": "dflash",
 }
 
 DEFAULT_DRAFTER_KIND = "dflash"
