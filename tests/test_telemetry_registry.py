@@ -83,7 +83,6 @@ def test_release_one_event_set_is_present():
             "agent_configure_failed",
             "telemetry_opted_out",
             "telemetry_opted_in",
-            "feedback_opened",
         }
     )
 

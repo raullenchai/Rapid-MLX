@@ -434,10 +434,6 @@
       "props": {
         "via": {"kind": "enum", "enum": "opt_via", "required": true}
       }
-    },
-    "feedback_opened": {
-      "_about": "Is the voice channel (the Discord invite, sec 1.4) found at all.",
-      "props": {}
     }
   }
 }
