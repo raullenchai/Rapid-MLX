@@ -269,6 +269,20 @@ DEVIATIONS = {
         if self.embed_tokens is None:""",
         ),
     ],
+    "dflash2/config.py": [
+        (
+            """        if "runtime_block_size" not in flat:
+            # Rapid upstream-bugfix (documented deviation): pinned 0.7.1
+            # indexes flat["block_size"], crashing with KeyError on an
+            # otherwise valid config that relies on the dataclass default.
+            default_block_size = cls.__dataclass_fields__["block_size"].default
+            flat["runtime_block_size"] = min(
+                5, int(flat.get("block_size", default_block_size))
+            )""",
+            """        if "runtime_block_size" not in flat:
+            flat["runtime_block_size"] = min(5, int(flat["block_size"]))""",
+        ),
+    ],
     "qwen3_dflash/config.py": [
         (
             """        # Rapid upstream-bugfix (documented deviation): pinned 0.7.1
@@ -1411,6 +1425,54 @@ def test_read_drafter_config_degrades_non_object_json(tmp_path):
 
     (tmp_path / "config.json").write_text("[1, 2]")
     assert _read_drafter_config(tmp_path) == {}
+
+
+def test_dflash2_config_default_block_size_no_keyerror():
+    """A config without block_size must derive runtime_block_size from
+    the dataclass default, not crash with KeyError (r21 finding)."""
+    from rapid_mlx.models.mlx_vlm_vendored.speculative.drafters.dflash2 import (
+        config as dflash2_config_module,
+    )
+
+    cfg = dflash2_config_module.DFlash2Config.from_dict(
+        {
+            "model_type": "dflash2",
+            "num_attention_heads": 1,
+            "num_key_value_heads": 1,
+            "head_dim": 1,
+            "vocab_size": 300000,
+            "max_position_embeddings": 1,
+            "block_size": 16,
+            "num_target_layers": 1,
+            "target_layer_ids": [0],
+            "conv_kernel_size": 2,
+            "conv_group_size": 1,
+            "selector_rank": 1,
+            "selector_top_k": 1,
+            "dflash_config": {},
+        }
+    )
+    assert cfg.runtime_block_size == 5  # min(5, block_size 16)
+
+    minimal = dflash2_config_module.DFlash2Config.from_dict(
+        {
+            "model_type": "dflash2",
+            "num_attention_heads": 1,
+            "num_key_value_heads": 1,
+            "head_dim": 1,
+            "vocab_size": 300000,
+            "max_position_embeddings": 1,
+            "num_target_layers": 1,
+            "target_layer_ids": [0],
+            "conv_kernel_size": 2,
+            "conv_group_size": 1,
+            "selector_rank": 1,
+            "selector_top_k": 1,
+            "dflash_config": {},
+        }
+    )
+    assert minimal.block_size == 16  # dataclass default
+    assert minimal.runtime_block_size == 5  # min(5, default 16), no KeyError
 
 
 def test_qwen35_decoder_layer_routes_qwen3_next_to_moe():

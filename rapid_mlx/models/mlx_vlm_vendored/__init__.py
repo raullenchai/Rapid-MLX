@@ -413,7 +413,11 @@ vendored copy differs by exactly the deviations listed):
   ``af864e1190a2eca902adb31cf2ad21e88dc5d2892b3a3d21b2e75b37798930f3``,
   ``dflash2``
   ``19287b0e436c6750ccabfcdfb1388dea4123d6da506adea511ce16269a95e8f0``) —
-  verbatim, internal imports only. The MTP/dflash round-loop fixes from
+  verbatim, internal imports only; ``config.py`` upstream-bugfix:
+  ``from_dict`` derives ``runtime_block_size`` from the dataclass
+  ``block_size`` default when the config omits it — pinned 0.7.1
+  indexes ``flat["block_size"]`` and crashes with ``KeyError``. The
+  MTP/dflash round-loop fixes from
   the step-3b coordinator slices apply unchanged: the drafters consume
   the vendored ``cache_state``/``common`` via package-relative imports.
   Consumers: ``speculative/native_mtp/runtime.py`` and

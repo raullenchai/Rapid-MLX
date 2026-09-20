@@ -137,7 +137,13 @@ class DFlash2Config(DFlashConfig):
             flat["rope_scaling"] = rope_parameters
 
         if "runtime_block_size" not in flat:
-            flat["runtime_block_size"] = min(5, int(flat["block_size"]))
+            # Rapid upstream-bugfix (documented deviation): pinned 0.7.1
+            # indexes flat["block_size"], crashing with KeyError on an
+            # otherwise valid config that relies on the dataclass default.
+            default_block_size = cls.__dataclass_fields__["block_size"].default
+            flat["runtime_block_size"] = min(
+                5, int(flat.get("block_size", default_block_size))
+            )
 
         signature = inspect.signature(cls).parameters
         return cls(**{key: value for key, value in flat.items() if key in signature})
