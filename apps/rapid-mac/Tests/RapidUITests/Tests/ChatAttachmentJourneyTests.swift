@@ -14,7 +14,6 @@ final class ChatAttachmentJourneyTests: XCTestCase {
     }
 
     func testFileDropRetryPolicyIsBoundedAndCompletionAware() {
-        XCTAssertEqual(FileDropRetryPolicy.retryQuiescenceTimeout, 1)
         XCTAssertEqual(
             FileDropRetryPolicy.observationTimeout(settleTimeout: 10),
             4.5
@@ -30,6 +29,7 @@ final class ChatAttachmentJourneyTests: XCTestCase {
         XCTAssertTrue(
             FileDropRetryPolicy.shouldRetry(
                 completedDrop: false,
+                transportFailed: true,
                 attempt: 1,
                 maximumAttempts: 2
             )
@@ -37,6 +37,7 @@ final class ChatAttachmentJourneyTests: XCTestCase {
         XCTAssertFalse(
             FileDropRetryPolicy.shouldRetry(
                 completedDrop: false,
+                transportFailed: true,
                 attempt: 2,
                 maximumAttempts: 2
             )
@@ -44,6 +45,15 @@ final class ChatAttachmentJourneyTests: XCTestCase {
         XCTAssertFalse(
             FileDropRetryPolicy.shouldRetry(
                 completedDrop: true,
+                transportFailed: true,
+                attempt: 1,
+                maximumAttempts: 2
+            )
+        )
+        XCTAssertFalse(
+            FileDropRetryPolicy.shouldRetry(
+                completedDrop: false,
+                transportFailed: false,
                 attempt: 1,
                 maximumAttempts: 2
             )
@@ -76,6 +86,35 @@ final class ChatAttachmentJourneyTests: XCTestCase {
         try "entered".write(to: marker, atomically: true, encoding: .utf8)
         XCTAssertThrowsError(try DropEventFile.completedPhase(at: marker)) { error in
             XCTAssertEqual(error as? DropEventFile.EventError, .invalidPhase("entered"))
+        }
+    }
+
+    func testDragTransportResultFailsClosed() throws {
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("rapid-drag-result-\(UUID().uuidString)")
+        let result = directory.appendingPathComponent("result.txt")
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+
+        XCTAssertNil(try DragTransportFile.result(at: result))
+        try "none".write(to: result, atomically: true, encoding: .utf8)
+        XCTAssertEqual(
+            try DragTransportFile.result(at: result),
+            DragTransportFile.Result.none
+        )
+        XCTAssertTrue(try XCTUnwrap(DragTransportFile.result(at: result)).isAuthoritativeFailure)
+        try "copy".write(to: result, atomically: true, encoding: .utf8)
+        XCTAssertEqual(
+            try DragTransportFile.result(at: result),
+            DragTransportFile.Result.copy
+        )
+        XCTAssertFalse(try XCTUnwrap(DragTransportFile.result(at: result)).isAuthoritativeFailure)
+        try "unknown".write(to: result, atomically: true, encoding: .utf8)
+        XCTAssertThrowsError(try DragTransportFile.result(at: result)) { error in
+            XCTAssertEqual(
+                error as? DragTransportFile.ResultError,
+                .invalidResult("unknown")
+            )
         }
     }
 

@@ -61,23 +61,43 @@ enum FileDropRetryPolicy {
     // hosted runner, but bounded so a transport miss reaches its one allowed
     // fresh-session retry promptly.
     static let completionObservationTimeout: TimeInterval = 4.5
-    // Once the first helper has terminated and the replacement is ready, keep
-    // observing the product-owned marker for one final bounded interval before
-    // issuing another physical gesture. This closes the late-acknowledgement
-    // window without turning a transport retry into an unbounded wait.
-    static let retryQuiescenceTimeout: TimeInterval = 1
-
     static func observationTimeout(settleTimeout: TimeInterval) -> TimeInterval {
         min(max(0, settleTimeout), completionObservationTimeout)
     }
 
     static func shouldRetry(
         completedDrop: Bool,
+        transportFailed: Bool,
         attempt: Int,
         maximumAttempts: Int
     ) -> Bool {
         !completedDrop
+            && transportFailed
             && attempt < maximumAttempts
+    }
+}
+
+enum DragTransportFile {
+    enum Result: String {
+        case notStarted = "not-started"
+        case none
+        case copy
+        case other
+
+        var isAuthoritativeFailure: Bool { self == .notStarted || self == .none }
+    }
+
+    enum ResultError: Error, Equatable {
+        case invalidResult(String)
+    }
+
+    static func result(at url: URL, fileManager: FileManager = .default) throws -> Result? {
+        guard fileManager.fileExists(atPath: url.path) else { return nil }
+        let value = try String(contentsOf: url, encoding: .utf8)
+        guard let result = Result(rawValue: value) else {
+            throw ResultError.invalidResult(value)
+        }
+        return result
     }
 }
 
@@ -342,10 +362,12 @@ final class RapidUITestHarness {
     /// test source for the xcui workflow contract). A landed drop is treated as
     /// one whose chip settles (exists and is hittable). The product's compose
     /// destination emits a test-only marker after `performDragOperation`
-    /// consumes the drop. A gesture with no completion marker may be retried
-    /// once within the original settle budget. A consumed drop is never
-    /// retried: if its chip does not appear, the test still exposes the
-    /// product/AX regression. The
+    /// consumes the drop. The drag-source helper separately records AppKit's
+    /// final transport result. A gesture is retried only when that result is
+    /// authoritatively `none`/`not-started`; temporary absence of a product
+    /// marker is never treated as failure. A consumed drop is never retried:
+    /// if its chip does not appear, the test still exposes the product/AX
+    /// regression. The
     /// chip is never dereferenced before it exists, so a not-yet-matched
     /// ``firstMatch`` cannot throw (#2481).
     /// Callers without an expected chip (the unsupported-file negative case)
@@ -364,7 +386,7 @@ final class RapidUITestHarness {
             return 0
         }
         guard let chip = chip else {
-            let (dragSource, source, dropTarget) = launchFileDragSource(
+            let (dragSource, source, dropTarget, _) = launchFileDragSource(
                 url: url,
                 dropFirstGesture: simulateMissedFirstGesture
             )
@@ -393,53 +415,14 @@ final class RapidUITestHarness {
         }
         for attempt in 1...maximumAttempts {
             // Each bounded attempt owns a fresh helper process. A missed
-            // gesture is a transport failure only when the product's
-            // completion marker is absent; recycling the helper clears the
-            // stale AppKit drag/mouse session without retrying a consumed
-            // product drop.
-            let (dragSource, source, dropTarget) = launchFileDragSource(
+            // gesture is a transport failure only when AppKit's source-side
+            // session result says it never started or ended with no accepted
+            // operation. Recycling the helper clears the stale AppKit
+            // drag/mouse session without guessing from marker latency.
+            let (dragSource, source, dropTarget, transportResultFile) = launchFileDragSource(
                 url: url,
                 dropFirstGesture: simulateMissedFirstGesture && attempt == 1
             )
-
-            // Relaunching the helper is an intentional quiescence boundary.
-            // Observe through one final bounded interval after that potentially
-            // slow operation. A late acknowledgement from attempt 1 therefore
-            // suppresses the second gesture instead of racing a point-in-time
-            // marker check.
-            if attempt > 1 {
-                var latePhase: String?
-                var markerReadError: Error?
-                _ = waitUntil(timeout: FileDropRetryPolicy.retryQuiescenceTimeout) {
-                    do {
-                        latePhase = try DropEventFile.completedPhase(at: self.dropEventFile)
-                        return latePhase != nil
-                    } catch {
-                        markerReadError = error
-                        return true
-                    }
-                }
-                if let markerReadError {
-                    _ = terminateFileDragSource(dragSource)
-                    XCTFail(
-                        "could not read UI-test drop marker before retry: \(markerReadError)"
-                    )
-                    return attempt
-                }
-                if latePhase != nil {
-                    guard terminateFileDragSource(dragSource) else { return attempt }
-                    if waitUntil(timeout: dropSettleTimeout, condition: {
-                        chip.exists && chip.isHittable
-                    }) {
-                        return attempt - 1
-                    }
-                    XCTFail(
-                        "consumed attachment drop did not render its chip "
-                            + "within \(dropSettleTimeout)s; retry suppressed"
-                    )
-                    return attempt - 1
-                }
-            }
             source.click(forDuration: 1, thenDragTo: dropTarget)
             // Startup, termination and the blocking synthetic gesture are
             // bounded separately. Each completed gesture gets the full,
@@ -461,6 +444,9 @@ final class RapidUITestHarness {
                 Date() >= completionObservationStart
                     && FileManager.default.fileExists(atPath: self.dropEventFile.path)
             }
+            let transportResultIsVisible = {
+                FileManager.default.fileExists(atPath: transportResultFile.path)
+            }
 
             // The drop-completion marker and the product render arrive
             // independently. First wait briefly for either authoritative
@@ -472,6 +458,7 @@ final class RapidUITestHarness {
             _ = waitUntil(timeout: observationTimeout) {
                 chipIsSettled()
                     || completionIsVisible()
+                    || transportResultIsVisible()
             }
             if chipIsSettled() {
                 guard terminateFileDragSource(dragSource) else { return attempt }
@@ -479,18 +466,21 @@ final class RapidUITestHarness {
             }
 
             let observedPhase: String?
+            let transportResult: DragTransportFile.Result?
             do {
                 observedPhase = completionIsVisible()
                     ? try DropEventFile.completedPhase(at: dropEventFile)
                     : nil
+                transportResult = try DragTransportFile.result(at: transportResultFile)
             } catch {
                 _ = terminateFileDragSource(dragSource)
-                XCTFail("could not read valid UI-test drop marker after gesture: \(error)")
+                XCTFail("could not read valid UI-test drag result after gesture: \(error)")
                 return attempt
             }
             guard terminateFileDragSource(dragSource) else { return attempt }
             if FileDropRetryPolicy.shouldRetry(
                 completedDrop: observedPhase != nil,
+                transportFailed: transportResult?.isAuthoritativeFailure == true,
                 attempt: attempt,
                 maximumAttempts: maximumAttempts
             ) {
@@ -503,7 +493,9 @@ final class RapidUITestHarness {
             }
             XCTFail(
                 "dropped attachment chip did not settle within \(dropSettleTimeout)s "
-                    + "(drop phase: \(observedPhase ?? "not performed"), attempts: \(attempt))"
+                    + "(drop phase: \(observedPhase ?? "not performed"), "
+                    + "transport: \(transportResult?.rawValue ?? "missing"), "
+                    + "attempts: \(attempt))"
             )
             return attempt
         }
@@ -513,11 +505,15 @@ final class RapidUITestHarness {
     private func launchFileDragSource(
         url: URL,
         dropFirstGesture: Bool
-    ) -> (app: XCUIApplication, source: XCUIElement, target: XCUIElement) {
+    ) -> (app: XCUIApplication, source: XCUIElement, target: XCUIElement, result: URL) {
         let dragSource = XCUIApplication(bundleIdentifier: "com.rapidmlx.rapid-uitest-host")
+        let resultFile = testHome.appendingPathComponent(
+            "drag-transport-\(UUID().uuidString).txt"
+        )
         dragSource.launchEnvironment = [
             "RAPID_XCUI_DRAG_FILE": url.path,
             "RAPID_XCUI_DROP_FIRST_GESTURE": dropFirstGesture ? "1" : "0",
+            "RAPID_XCUI_DRAG_RESULT_FILE": resultFile.path,
         ]
         dragSource.launch()
         // Track the helper immediately after launch. If any subsequent setup
@@ -540,7 +536,7 @@ final class RapidUITestHarness {
             waitUntil(timeout: 10) { dropTarget.isHittable },
             "compose drop target never became hittable before drag"
         )
-        return (dragSource, source, dropTarget)
+        return (dragSource, source, dropTarget, resultFile)
     }
 
     private func terminateFileDragSource(_ dragSource: XCUIApplication) -> Bool {

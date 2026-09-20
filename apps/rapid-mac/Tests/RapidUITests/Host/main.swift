@@ -8,13 +8,15 @@ import AppKit
 final class FileDragView: NSView, NSDraggingSource {
     let fileURL: URL
     private let dropsFirstGesture: Bool
+    private let resultURL: URL?
     private var startedDragging = false
     private var gestureCount = 0
     private var dropsCurrentGesture = false
 
-    init(fileURL: URL, dropsFirstGesture: Bool) {
+    init(fileURL: URL, dropsFirstGesture: Bool, resultURL: URL?) {
         self.fileURL = fileURL
         self.dropsFirstGesture = dropsFirstGesture
+        self.resultURL = resultURL
         super.init(frame: .zero)
         setAccessibilityElement(true)
         setAccessibilityRole(.button)
@@ -45,7 +47,10 @@ final class FileDragView: NSView, NSDraggingSource {
     override func mouseDragged(with event: NSEvent) {
         guard !startedDragging else { return }
         startedDragging = true
-        if dropsCurrentGesture { return }
+        if dropsCurrentGesture {
+            recordResult("not-started")
+            return
+        }
         let item = NSDraggingItem(pasteboardWriter: fileURL as NSURL)
         item.setDraggingFrame(bounds, contents: NSWorkspace.shared.icon(forFile: fileURL.path))
         beginDraggingSession(with: [item], event: event, source: self)
@@ -55,6 +60,29 @@ final class FileDragView: NSView, NSDraggingSource {
         _ session: NSDraggingSession,
         sourceOperationMaskFor context: NSDraggingContext
     ) -> NSDragOperation { .copy }
+
+    func draggingSession(
+        _ session: NSDraggingSession,
+        endedAt screenPoint: NSPoint,
+        operation: NSDragOperation
+    ) {
+        if operation.contains(.copy) {
+            recordResult("copy")
+        } else if operation.isEmpty {
+            recordResult("none")
+        } else {
+            recordResult("other")
+        }
+    }
+
+    private func recordResult(_ result: String) {
+        guard let resultURL else { return }
+        do {
+            try result.write(to: resultURL, atomically: true, encoding: .utf8)
+        } catch {
+            fatalError("could not record UI-test drag result: \(error)")
+        }
+    }
 
 }
 
@@ -77,7 +105,10 @@ if let path = ProcessInfo.processInfo.environment["RAPID_XCUI_DRAG_FILE"] {
     panel.title = "Drag attachment"
     panel.contentView = FileDragView(
         fileURL: URL(fileURLWithPath: path),
-        dropsFirstGesture: ProcessInfo.processInfo.environment["RAPID_XCUI_DROP_FIRST_GESTURE"] == "1"
+        dropsFirstGesture: ProcessInfo.processInfo.environment["RAPID_XCUI_DROP_FIRST_GESTURE"] == "1",
+        resultURL: ProcessInfo.processInfo.environment["RAPID_XCUI_DRAG_RESULT_FILE"].map {
+            URL(fileURLWithPath: $0)
+        }
     )
     panel.level = .floating
     panel.makeKeyAndOrderFront(nil)

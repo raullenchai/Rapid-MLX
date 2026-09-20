@@ -81,6 +81,7 @@ def test_xcui_runner_launches_production_bundle_with_fake_sidecar():
         MAC / "Tests/RapidUITests/Tests/ChatAttachmentJourneyTests.swift"
     ).read_text()
     chat_view = (MAC / "Sources/Rapid/UI/ChatView.swift").read_text()
+    drag_host = (MAC / "Tests/RapidUITests/Host/main.swift").read_text()
 
     assert "build/Rapid-MLX Desktop.app" in runner
     assert "lsregister" in runner
@@ -124,8 +125,9 @@ def test_xcui_runner_launches_production_bundle_with_fake_sidecar():
     assert "let maximumAttempts = 2" in harness
     assert "FileDropRetryPolicy.observationTimeout(" in harness
     assert "completionObservationTimeout" in harness
-    assert "retryQuiescenceTimeout" in harness
     assert "FileDropRetryPolicy.shouldRetry(" in harness
+    assert "transportFailed:" in harness
+    assert "DragTransportFile.result(" in harness
     assert "simulateCompletionVisibilityDelay: TimeInterval = 0" in harness
     assert "completionIsVisible()" in harness
     assert "func testFileDropRetryPolicyIsBoundedAndCompletionAware()" in chat_source
@@ -148,21 +150,29 @@ def test_xcui_runner_launches_production_bundle_with_fake_sidecar():
         "private func launchFileDragSource", 1
     )[0]
     launch_index = retry_loop.index("launchFileDragSource(")
-    quiescence_index = retry_loop.index("FileDropRetryPolicy.retryQuiescenceTimeout")
-    suppression_index = retry_loop.index("if latePhase != nil")
     gesture_index = retry_loop.index(
         "source.click(forDuration: 1, thenDragTo: dropTarget)"
     )
+    result_index = retry_loop.index("DragTransportFile.result(at: transportResultFile)")
     termination_index = retry_loop.index(
-        "terminateFileDragSource(dragSource)", gesture_index
+        "guard terminateFileDragSource(dragSource)", result_index
     )
+    retry_decision_index = retry_loop.index("FileDropRetryPolicy.shouldRetry(")
     assert (
         launch_index
-        < quiescence_index
-        < suppression_index
         < gesture_index
+        < result_index
         < termination_index
+        < retry_decision_index
     )
+    assert (
+        '"RAPID_XCUI_DRAG_RESULT_FILE": resultFile.path' in harness
+        and 'environment["RAPID_XCUI_DRAG_RESULT_FILE"]' in drag_host
+    )
+    assert "endedAt screenPoint: NSPoint" in drag_host
+    assert 'recordResult("copy")' in drag_host
+    assert 'recordResult("none")' in drag_host
+    assert 'recordResult("not-started")' in drag_host
     assert "try DropEventFile.clear(at: dropEventFile)" in harness
     assert harness.index("try DropEventFile.clear(at: dropEventFile)") < harness.index(
         "for attempt in 1...maximumAttempts"
