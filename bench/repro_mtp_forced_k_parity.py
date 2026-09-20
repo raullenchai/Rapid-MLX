@@ -360,6 +360,7 @@ def main() -> int:
                     "attempts": counter.attempts,
                     "accepts": counter.accepts,
                     "verify_calls": verify_calls,
+                    "n_tokens": len(tokens),
                     "elapsed_seconds": elapsed,
                     "decode_elapsed_seconds": decode_elapsed,
                     "decode_tok_per_sec": (
