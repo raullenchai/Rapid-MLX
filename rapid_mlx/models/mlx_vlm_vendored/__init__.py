@@ -341,9 +341,11 @@ vendored copy differs by exactly the deviations listed):
   under a per-destination advisory lock so concurrent splits cannot
   interleave destination moves, shard filenames from the safetensors
   index are validated lexically (absolute paths and ``..`` traversal
-  rejected while HF cache snapshot symlinks still load), and a
-  malformed index (non-object document or ``weight_map``) raises a
-  clear ``ValueError`` — pinned 0.7.1
+  rejected) and symlinked shards must resolve inside the model
+  directory or the repository's own HF blob cache — pinned 0.7.1
+  followed any symlink — and a malformed index (non-object document or
+  ``weight_map``, non-string filename entries) raises a clear
+  ``ValueError`` — pinned 0.7.1
   writes directly into the destination, so a pre-existing directory
   keeps stale tokenizer files and a mid-way failure pairs new weights
   with an old ``config.json``;

@@ -55,7 +55,14 @@ def _weight_map(model_path: Path) -> Dict[str, str]:
             f"malformed safetensors index {index_path.name}: "
             "weight_map must be an object"
         )
-    return index.get("weight_map", {})
+    weight_map = index["weight_map"]
+    for filename in weight_map.values():
+        if not isinstance(filename, str):
+            raise ValueError(
+                f"malformed safetensors index {index_path.name}: "
+                f"non-string filename entry {filename!r}"
+            )
+    return weight_map
 
 
 def _is_mlx_safetensors(file: Path) -> bool:
@@ -200,19 +207,33 @@ class MTPSplitter:
                 if self.select_keys(key, text_config):
                     by_file.setdefault(filename, []).append(key)
             if by_file:
+                # Rapid upstream-bugfix (documented deviation): shard
+                # filenames come from an untrusted safetensors index.
+                # Absolute paths and '..' traversal are rejected lexically;
+                # symlinks are followed but the resolved target must stay
+                # inside the model directory or the repository's own HF
+                # blob cache (snapshot shards symlink into ../blobs).
+                resolved_source = source_path.resolve()
+                allowed_roots = [resolved_source]
+                blobs_root = resolved_source.parent.parent / "blobs"
+                if resolved_source.parent.name == "snapshots" and blobs_root.is_dir():
+                    allowed_roots.append(blobs_root.resolve())
                 for filename, keys in by_file.items():
-                    # Rapid upstream-bugfix (documented deviation): shard
-                    # filenames come from an untrusted safetensors index;
-                    # reject absolute paths and '..' traversal lexically —
-                    # resolving would also reject the trusted snapshot
-                    # symlinks normal HF cache layouts use for shards.
                     shard = Path(filename)
                     if shard.is_absolute() or ".." in shard.parts:
                         raise ValueError(
                             "safetensors index entry escapes the model "
                             f"directory: {filename!r}"
                         )
-                    yield source_path / shard, keys
+                    resolved_shard = (source_path / shard).resolve()
+                    if not any(
+                        resolved_shard.is_relative_to(root) for root in allowed_roots
+                    ):
+                        raise ValueError(
+                            "safetensors index entry escapes the model "
+                            f"directory: {filename!r}"
+                        )
+                    yield resolved_shard, keys
                 return
 
         for file in _safetensor_files(source_path):

@@ -797,22 +797,40 @@ from ...utils import get_model_path
 """,
         ),
         (
-            """                for filename, keys in by_file.items():
-                    # Rapid upstream-bugfix (documented deviation): shard
-                    # filenames come from an untrusted safetensors index;
-                    # reject absolute paths and '..' traversal lexically —
-                    # resolving would also reject the trusted snapshot
-                    # symlinks normal HF cache layouts use for shards.
+            """            if by_file:
+                # Rapid upstream-bugfix (documented deviation): shard
+                # filenames come from an untrusted safetensors index.
+                # Absolute paths and '..' traversal are rejected lexically;
+                # symlinks are followed but the resolved target must stay
+                # inside the model directory or the repository's own HF
+                # blob cache (snapshot shards symlink into ../blobs).
+                resolved_source = source_path.resolve()
+                allowed_roots = [resolved_source]
+                blobs_root = resolved_source.parent.parent / "blobs"
+                if resolved_source.parent.name == "snapshots" and blobs_root.is_dir():
+                    allowed_roots.append(blobs_root.resolve())
+                for filename, keys in by_file.items():
                     shard = Path(filename)
                     if shard.is_absolute() or ".." in shard.parts:
                         raise ValueError(
                             "safetensors index entry escapes the model "
                             f"directory: {filename!r}"
                         )
-                    yield source_path / shard, keys
+                    resolved_shard = (source_path / shard).resolve()
+                    if not any(
+                        resolved_shard.is_relative_to(root) for root in allowed_roots
+                    ):
+                        raise ValueError(
+                            "safetensors index entry escapes the model "
+                            f"directory: {filename!r}"
+                        )
+                    yield resolved_shard, keys
+                return
 """,
-            """                for filename, keys in by_file.items():
+            """            if by_file:
+                for filename, keys in by_file.items():
                     yield source_path / filename, keys
+                return
 """,
         ),
         (
@@ -832,7 +850,14 @@ from ...utils import get_model_path
             f"malformed safetensors index {index_path.name}: "
             "weight_map must be an object"
         )
-    return index.get("weight_map", {})""",
+    weight_map = index["weight_map"]
+    for filename in weight_map.values():
+        if not isinstance(filename, str):
+            raise ValueError(
+                f"malformed safetensors index {index_path.name}: "
+                f"non-string filename entry {filename!r}"
+            )
+    return weight_map""",
             """def _weight_map(model_path: Path) -> Dict[str, str]:
     index_path = model_path / "model.safetensors.index.json"
     if not index_path.exists():
@@ -990,16 +1015,30 @@ def test_mtp_splitter_rejects_index_shards_outside_model_dir(tmp_path):
     with pytest.raises(ValueError, match="escapes the model directory"):
         list(absolute.iter_selected(source, {}))
 
-    # HF cache snapshots use trusted symlinks into the cache blobs dir;
-    # the lexical guard must keep yielding them.
+    # HF hub snapshot layouts keep shards as trusted symlinks into the
+    # repository's sibling blobs directory; those must keep loading.
+    hub = tmp_path / "hub" / "models--org--m"
+    snapshot = hub / "snapshots" / "rev"
+    snapshot.mkdir(parents=True)
+    blobs = hub / "blobs"
+    blobs.mkdir()
+    blob = blobs / "abc123"
+    blob.write_bytes(b"x")
     linked = AllKeys()
-    (source / "shard.safetensors").symlink_to(outside)
-    (source / "model.safetensors.index.json").write_text(
+    (snapshot / "model.safetensors.index.json").write_text(
         json.dumps({"weight_map": {"blk.0.mlp": "shard.safetensors"}})
     )
-    assert list(linked.iter_selected(source, {})) == [
-        (source / "shard.safetensors", ["blk.0.mlp"])
-    ]
+    (snapshot / "shard.safetensors").symlink_to(blob)
+    assert list(linked.iter_selected(snapshot, {})) == [(blob.resolve(), ["blk.0.mlp"])]
+
+    # a symlink pointing outside the model directory and its repository
+    # blob cache is rejected
+    (snapshot / "model.safetensors.index.json").write_text(
+        json.dumps({"weight_map": {"blk.0.mlp": "evil-link.safetensors"}})
+    )
+    (snapshot / "evil-link.safetensors").symlink_to(outside)
+    with pytest.raises(ValueError, match="escapes the model directory"):
+        list(linked.iter_selected(snapshot, {}))
 
 
 def test_mtp_split_weight_map_rejects_malformed_index(tmp_path):
@@ -1016,6 +1055,11 @@ def test_mtp_split_weight_map_rejects_malformed_index(tmp_path):
         _weight_map(source)
     (source / "model.safetensors.index.json").write_text(json.dumps({"weight_map": []}))
     with pytest.raises(ValueError, match="weight_map must be an object"):
+        _weight_map(source)
+    (source / "model.safetensors.index.json").write_text(
+        json.dumps({"weight_map": {"k": 17}})
+    )
+    with pytest.raises(ValueError, match="non-string filename entry"):
         _weight_map(source)
     (source / "model.safetensors.index.json").write_text(
         json.dumps({"weight_map": {"k": "model-00001.safetensors"}})
