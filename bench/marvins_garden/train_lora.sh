@@ -40,7 +40,7 @@ python -m mlx_lm lora \
   --max-seq-length 1024 \
   --adapter-path "$ADAPTER" \
   --save-every "$SAVE_EVERY" \
-  "${RESUME_ARGS[@]}"
+  ${RESUME_ARGS[@]:+"${RESUME_ARGS[@]}"}
 
 echo "adapter written to $ADAPTER"
 echo "evaluate with:"

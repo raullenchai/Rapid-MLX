@@ -1,0 +1,26 @@
+{
+  "adapter": "/Users/raullenstudio/orca/workspaces/rapid-mlx/decision-bonsai/bench/marvins_garden/adapters/marvins-garden-v2",
+  "model": "/Volumes/NVMe-4T/huggingface/hub/models--prism-ml--Ternary-Bonsai-27B-mlx-2bit/snapshots/70f75f3ad081ab840a42f3304c02c27e7f89bfb7",
+  "overall": {
+    "accuracy": 0.0,
+    "n": 30
+  },
+  "per_suite": {
+    "coding": {
+      "accuracy": 0.0,
+      "n": 10,
+      "passed": 0
+    },
+    "general": {
+      "accuracy": 0.0,
+      "n": 10,
+      "passed": 0
+    },
+    "reasoning": {
+      "accuracy": 0.0,
+      "n": 10,
+      "passed": 0
+    }
+  },
+  "wall_seconds": 128.0597028330085
+}

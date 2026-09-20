@@ -85,13 +85,16 @@ Regenerating with the committed seed must reproduce the committed files —
 | `abstain` | coverage/accuracy at a confidence threshold (fallback routing) |
 | `ms_per_decision` | wall time per decision, `generated_tokens: 0` by construction |
 
-## Serving path (planned)
+## Serving contract (planned)
 
 The eval script is the executable spec for a future `/v1/classify` endpoint:
-chat-template prefill, one forward pass, letter-token softmax. Until that
-endpoint exists (public API change — needs review), the same behavior can be
-approximated over the OpenAI-compatible server with `max_tokens=1` +
-`logprobs`, at the risk of the winning letter falling outside `top_logprobs`.
+chat-template prefill, one forward pass, letter-token softmax. **Each
+adapter is paired with a serving template mode** (see perf doc, Finding 1):
+serve `marvins-garden` with `--think-mode disabled`, serve
+`marvins-garden-v15` with `--think-mode enabled` (the mlx-lm training
+view). The mode must travel with the adapter. Until the endpoint exists,
+`max_tokens=1` + `logprobs` approximates it with a known top-k failure
+mode.
 
 ## Training gotcha (durable lesson)
 

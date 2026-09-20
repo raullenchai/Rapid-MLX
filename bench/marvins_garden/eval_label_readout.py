@@ -57,23 +57,33 @@ def _tokenize_letter(tokenizer, letter: str) -> list[int]:
     return ids
 
 
-def _apply_chat(tokenizer, user_content: str) -> list[int]:
+def _apply_chat(tokenizer, user_content: str, think_mode: str = "disabled") -> list[int]:
     messages = [{"role": "user", "content": user_content}]
+    # think_mode="enabled" renders the EXACT mlx-lm ChatDataset training view
+    # (qwen3-family templates append a think opener) — used to verify
+    # train/eval position matching; default disables thinking for serving.
+    for kwargs in ({"enable_thinking": think_mode == "disabled"}, {}):
+        try:
+            text = tokenizer.apply_chat_template(
+                messages, add_generation_prompt=True, tokenize=False, **kwargs
+            )
+            break
+        except TypeError:
+            continue
+    else:
+        raise RuntimeError("apply_chat_template failed")
     try:
-        text = tokenizer.apply_chat_template(messages, add_generation_prompt=True, tokenize=False)
         return tokenizer.encode(text)
-    except AttributeError:
-        hf = tokenizer._tokenizer
-        text = hf.apply_chat_template(messages, add_generation_prompt=True, tokenize=False)
-        return hf.encode(text, add_special_tokens=False)
+    except TypeError:
+        return tokenizer._tokenizer.encode(text, add_special_tokens=False)
 
 
-def read_letter_probs(model, tokenizer, prompt: str, candidates: list[str]):
+def read_letter_probs(model, tokenizer, prompt: str, candidates: list[str], think_mode: str = "disabled"):
     """One forward pass; return {letter: probability} plus token count."""
     import mlx.core as mx
     import numpy as np
 
-    tokens = _apply_chat(tokenizer, prompt)
+    tokens = _apply_chat(tokenizer, prompt, think_mode=think_mode)
     logits = model(mx.array(tokens)[None])
     last = np.array(logits[0, -1], copy=False).astype(np.float64)
     letter_to_ids = {render.letter_for(i): _tokenize_letter(tokenizer, render.letter_for(i))
@@ -97,7 +107,7 @@ def _softmax_np(x):
     return e / e.sum()
 
 
-def fit_temperature(model, tokenizer, rows, styles, limit: int, correct_letter_of) -> float:
+def fit_temperature(model, tokenizer, rows, styles, limit: int, correct_letter_of, think_mode: str = "disabled") -> float:
     """NLL grid search over T on TRAIN pairs (deterministic, no leakage)."""
     import numpy as np
 
@@ -109,7 +119,7 @@ def fit_temperature(model, tokenizer, rows, styles, limit: int, correct_letter_o
         avg = None
         for style in styles:
             prompt = _render_row(row, style)
-            probs, _ = read_letter_probs(model, tokenizer, prompt, row["candidates"])
+            probs, _ = read_letter_probs(model, tokenizer, prompt, row["candidates"], think_mode)
             letters = sorted(probs)
             logp = np.log(np.array([probs[l] for l in letters]) + 1e-12)
             avg = logp if avg is None else avg + logp
@@ -165,10 +175,12 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--styles", default="base", help="comma list from: " + ",".join(render.STYLES))
     parser.add_argument("--temperature", type=float, default=None, help="skip fitting, use this T")
     parser.add_argument("--calibrate-limit", type=int, default=256)
-    parser.add_argument("--abstain", type=float, default=0.0)
+    parser.add_argument("--think-mode", choices=("disabled", "enabled"), default="disabled",
+                        help="enabled = render the mlx-lm training-time template (think opener present)")
     parser.add_argument("--limit", type=int, default=None)
     parser.add_argument("--output", type=Path, default=None)
     parser.add_argument("--dump", type=Path, default=None, help="per-sample predictions JSONL")
+    parser.add_argument("--abstain", type=float, default=0.0)
     args = parser.parse_args(argv)
 
     styles = [s.strip() for s in args.styles.split(",") if s.strip()]
@@ -189,7 +201,7 @@ def main(argv: list[str] | None = None) -> int:
 
     if args.temperature is None:
         cal_rows = [json.loads(l) for l in args.calibrate_pairs.read_text(encoding="utf-8").splitlines() if l.strip()]
-        temperature = fit_temperature(model, tokenizer, cal_rows, styles, args.calibrate_limit, correct_letter_of)
+        temperature = fit_temperature(model, tokenizer, cal_rows, styles, args.calibrate_limit, correct_letter_of, args.think_mode)
         print(f"fitted temperature T={temperature:.2f} on {min(args.calibrate_limit, len(cal_rows))} train samples")
     else:
         temperature = args.temperature
@@ -205,7 +217,7 @@ def main(argv: list[str] | None = None) -> int:
         avg = None
         n_tokens = 0
         for style in styles:
-            probs, n_tokens = read_letter_probs(model, tokenizer, _render_row(row, style), row["candidates"])
+            probs, n_tokens = read_letter_probs(model, tokenizer, _render_row(row, style), row["candidates"], args.think_mode)
             logp = np.log(np.array([probs[l] for l in letters]) + 1e-12)
             avg = logp if avg is None else avg + logp
         avg /= len(styles)

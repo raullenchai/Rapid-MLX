@@ -72,6 +72,55 @@ existing prefix cache absorbs it in the serving path. Shorter prompts and
 a resident-decision-model lane come after `/v1/classify` (public API —
 needs review sign-off).
 
+## Night session (2026-09-19 → 09-20): data v2, GPU instability, template-drift breakthrough
+
+Final matrix (held-out 192, temperature 1.0):
+
+| Arm | Single-pass | Ensemble | ECE | flip both-correct | routing |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| base zero-shot | 40.1% | — | 0.281 | 0.0% | 20.3% |
+| v1 (640-group data) | 92.19% | 93.23% | 0.093 | 85.4% | 81.3% |
+| **v1.5 = v1 + 150it continuation on v2 data** | **94.79%** | **94.79%** | **0.021/0.032** | **89.6%** | **91.7%** |
+
+v1.5 is the release candidate. Beats Jev's published 93.21% single-pass
+(own-eval caveat unchanged), and the weak routing family moved 81→92%.
+
+### Finding 1: adapter ⇄ serving template pairing is load-bearing
+
+mlx-lm's ChatDataset renders the chat template WITHOUT disabling thinking,
+so qwen3-family training views end `...assistant\nidensea\n` while our
+serving readout used `enable_thinking=False` (no opener) — a one-position
+readout drift. Each adapter has a matched serving format:
+
+- `marvins-garden` (v1): serve with think-mode DISABLED (92.19%).
+- `marvins-garden-v15` (release candidate): serve with think-mode ENABLED
+  (the training view) — 94.79%; the SAME adapter with the serving template
+  drops to 83.9%, and v1 measured the other way round (92.19% disabled vs
+  83.9% enabled).
+
+`eval_label_readout.py --think-mode {disabled,enabled}` encodes this, and
+`/v1/classify` MUST render with the adapter's recorded mode (store the
+mode beside the adapter — open item).
+
+### Finding 2: GPU stability envelope on the shared host
+
+Two v2 runs died to Metal GPU hangs (batch 4 at ~70 min, then batch 2
+runs repeatedly at ~50–70 min, one `InnocentVictim` system-wide reset).
+Stable envelope found: **batch 1** (63 GB peak vs 118/229) never hung, but
+needs the segmented driver (`train_segment_loop.sh`: short segments,
+`--resume-adapter-file` chaining, per-segment deterministic reshuffle —
+mlx-lm reads datasets IN ORDER, so resume without reshuffle never sees
+the data tail). Warm-restart cycling at LR 3e-5 still degraded the final
+adapter (40% — a noisy-snapshot failure); the robust pattern that
+actually improved things was **continuation of a converged adapter at low
+LR (1e-5) for a short window**, not from-scratch restarts or long
+warm-restart chains.
+
+### Data v2
+
+1280 groups (routing-weighted 50/25/25), wider context/RAM tiers, more
+briefs. 2368 train pairs. Committed, validator PASS, 14/14 tests.
+
 ## IQ tax (measured, 2026-09-19) — and the v1.1 Pareto point
 
 `iq_probe.py` A/Bs base vs base+adapter on the repo's OWN eval suites

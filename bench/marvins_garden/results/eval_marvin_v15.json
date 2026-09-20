@@ -1,0 +1,43 @@
+{
+  "abstain": {
+    "accuracy_when_covered": 0.8385416666666666,
+    "coverage": 1.0,
+    "threshold": 0.0
+  },
+  "accuracy": 0.8385416666666666,
+  "adapter": "/Users/raullenstudio/orca/workspaces/rapid-mlx/decision-bonsai/bench/marvins_garden/adapters/marvins-garden-v15",
+  "ece_15bin": 0.05714076176351195,
+  "flip_both_members_correct": 0.71875,
+  "mean_confidence_correct": 0.9094751875675928,
+  "mean_confidence_wrong": 0.6752790589404585,
+  "model": "/Volumes/NVMe-4T/huggingface/hub/models--prism-ml--Ternary-Bonsai-27B-mlx-2bit/snapshots/70f75f3ad081ab840a42f3304c02c27e7f89bfb7",
+  "n_groups": 96,
+  "n_samples": 192,
+  "pairs": "/Users/raullenstudio/orca/workspaces/rapid-mlx/decision-bonsai/bench/marvins_garden/data/pairs_heldout.jsonl",
+  "per_family": {
+    "injection_guard": {
+      "accuracy": 1.0,
+      "n": 48
+    },
+    "model_routing": {
+      "accuracy": 0.7083333333333334,
+      "n": 96
+    },
+    "tool_gate": {
+      "accuracy": 0.9375,
+      "n": 48
+    }
+  },
+  "schema_version": 1,
+  "styles": [
+    "base"
+  ],
+  "temperature": 1.0,
+  "timing": {
+    "forward_passes_per_decision": 1,
+    "generated_tokens": 0,
+    "mean_prefill_tokens": 357.4270833333333,
+    "ms_per_decision": 1734.4899446616182,
+    "total_seconds": 333.0220693750307
+  }
+}
