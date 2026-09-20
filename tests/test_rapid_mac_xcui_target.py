@@ -147,8 +147,20 @@ def test_xcui_runner_launches_production_bundle_with_fake_sidecar():
     retry_loop = harness.split("for attempt in 1...maximumAttempts", 1)[1].split(
         "private func launchFileDragSource", 1
     )[0]
-    assert "launchFileDragSource(" in retry_loop
-    assert "terminateFileDragSource(dragSource)" in retry_loop
+    launch_index = retry_loop.index("launchFileDragSource(")
+    quiescence_index = retry_loop.index("FileDropRetryPolicy.retryQuiescenceTimeout")
+    suppression_index = retry_loop.index("if latePhase != nil")
+    gesture_index = retry_loop.index("source.click(forDuration: 1, thenDragTo: dropTarget)")
+    termination_index = retry_loop.index(
+        "terminateFileDragSource(dragSource)", gesture_index
+    )
+    assert (
+        launch_index
+        < quiescence_index
+        < suppression_index
+        < gesture_index
+        < termination_index
+    )
     assert "try DropEventFile.clear(at: dropEventFile)" in harness
     assert harness.index("try DropEventFile.clear(at: dropEventFile)") < harness.index(
         "for attempt in 1...maximumAttempts"
