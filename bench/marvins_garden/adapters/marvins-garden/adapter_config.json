@@ -8,7 +8,7 @@
     "grad_accumulation_steps": 1,
     "grad_checkpoint": false,
     "iters": 400,
-    "learning_rate": 0.0001,
+    "learning_rate": 3e-05,
     "lora_parameters": {
         "rank": 8,
         "dropout": 0.0,

@@ -18,7 +18,7 @@ MODEL="${MODEL:-prism-ml/Ternary-Bonsai-27B-mlx-2bit}"
 ADAPTER="${ADAPTER:-$HERE/adapters/marvins-garden}"
 ITERS="${ITERS:-800}"
 BATCH="${BATCH:-2}"
-LR="${LR:-1.0e-4}"
+LR="${LR:-3.0e-5}"
 LAYERS="${LAYERS:-24}"
 
 python -m mlx_lm lora \
