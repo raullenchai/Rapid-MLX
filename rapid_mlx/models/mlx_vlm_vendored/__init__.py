@@ -321,9 +321,11 @@ vendored copy differs by exactly the deviations listed):
   ``55afe4b6341ee97d764da90af3d404b0cc86a2a355d198b1d4d299be8040ed2f``;
   upstream-bugfix: ``iter_selected`` resolves index shard paths and rejects
   entries outside the model directory — pinned 0.7.1 joins untrusted
-  ``weight_map`` filenames directly; upstream-bugfix: ``split`` defaults
-  ``block_size`` only when ``None`` and rejects values below 1 — pinned
-  0.7.1 replaced an explicit 0 via ``or`` and accepted negatives;
+  ``weight_map`` filenames directly; upstream-bugfix: ``split`` validates
+  every configuration argument before creating the output directory,
+  defaults ``block_size`` only when ``None``, and rejects values below 2
+  (the drafting loops crash on block_size 1 with an empty concatenate) —
+  pinned 0.7.1 replaced an explicit 0 via ``or`` and accepted negatives;
   redirects: the unserved ``deepseek_v4_dspark`` detection import → pinned
   upstream (family not vendored));
   ``glm5_next_mtp/`` (digests ``__init__``
@@ -346,7 +348,12 @@ vendored copy differs by exactly the deviations listed):
   ``split``
   ``0cd02dacee282ed6702ab49863f4c300f1acab9e5d2ed3c56a835cad0c2dc128``;
   redirects: ``models.qwen3_5{,_moe}.{config,language}`` and
-  ``models.cache`` → pinned upstream, step-3c-3 scope;
+  ``models.cache`` → pinned upstream, step-3c-3 scope; ``split.py``
+  upstream-bugfix: ``Qwen3NextMTPSplitter.postprocess`` stacks per-expert
+  ``weight_scales``/``weight_biases`` into the ``switch_mlp`` layout
+  alongside the weights — pinned 0.7.1 stacked only weights, so
+  quantized Qwen3-Next checkpoints kept per-expert scale names the
+  runtime cannot resolve;
   upstream-bugfix: ``accept_verified_tokens_batch`` promotes a scalar
   ``_next_position`` to per-row positions before applying heterogeneous
   replay right-padding — pinned 0.7.1 skips the correction for scalars,

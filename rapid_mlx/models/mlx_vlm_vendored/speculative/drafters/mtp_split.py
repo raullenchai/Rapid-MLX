@@ -236,6 +236,19 @@ class MTPSplitter:
             source_config = json.load(f)
         text_config = self.read_text_config(source_config)
 
+        # Rapid upstream-bugfix (documented deviation): validate every
+        # configuration argument BEFORE creating or writing the output —
+        # rejected input must not leave a partially generated directory.
+        # Minimum supported block size is 2: with 1 the MTP drafting loops
+        # feed an empty token list into ``mx.concatenate`` and crash.
+        resolved_block_size = (
+            self.depth(text_config) + self.block_size_extra
+            if block_size is None
+            else int(block_size)
+        )
+        if resolved_block_size < 2:
+            raise ValueError(f"block_size must be >= 2, got {block_size!r}")
+
         selected: Dict[str, mx.array] = {}
         source_is_mlx = False
         for file, keys in self.iter_selected(source_path, text_config):
@@ -274,17 +287,6 @@ class MTPSplitter:
             metadata={"format": "mlx"},
         )
 
-        depth = self.depth(text_config)
-        # Rapid upstream-bugfix (documented deviation): pinned 0.7.1 used
-        # ``block_size or ...``, silently replacing an explicit 0 with the
-        # depth-derived default and letting negative values through — both
-        # produce a checkpoint whose drafting loop later fails on an empty
-        # concatenate. Default only when None; reject below the minimum.
-        resolved_block_size = (
-            depth + self.block_size_extra if block_size is None else int(block_size)
-        )
-        if resolved_block_size < 1:
-            raise ValueError(f"block_size must be >= 1, got {block_size!r}")
         draft_config = {
             "model_type": self.output_model_type,
             "text_config": text_config,

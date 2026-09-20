@@ -99,11 +99,19 @@ class Qwen3NextMTPSplitter(MTPSplitter):
         for prefix in prefixes:
             base = prefix[: -len(".experts")]
             for proj in ("gate_proj", "up_proj", "down_proj"):
-                keys = [f"{prefix}.{e}.{proj}.weight" for e in range(n_experts)]
-                if all(k in tensors for k in keys):
-                    tensors[f"{base}.switch_mlp.{proj}.weight"] = mx.stack(
-                        [tensors.pop(k) for k in keys]
-                    )
+                # Rapid upstream-bugfix (documented deviation): quantized
+                # checkpoints carry per-expert ``_scales``/``_biases``;
+                # stack them alongside the weights so the runtime sees a
+                # consistent switch_mlp layout (mirrors the gate_up_proj
+                # handling above).
+                for suffix in ("weight", "weight_scales", "weight_biases"):
+                    keys = [
+                        f"{prefix}.{e}.{proj}.{suffix}" for e in range(n_experts)
+                    ]
+                    if all(k in tensors for k in keys):
+                        tensors[f"{base}.switch_mlp.{proj}.{suffix}"] = mx.stack(
+                            [tensors.pop(k) for k in keys]
+                        )
 
     def quantization_from_source(self, tensors, source_config):
         if not any(key.endswith(".scales") for key in tensors):

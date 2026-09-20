@@ -150,6 +150,30 @@ REDIRECTS = {
 # (file, vendored hunk, upstream hunk). Applying redirects then reverting
 # these hunks must reproduce the pinned upstream bytes exactly.
 DEVIATIONS = {
+    "qwen3_5_mtp/split.py": [
+        (
+            """            for proj in ("gate_proj", "up_proj", "down_proj"):
+                # Rapid upstream-bugfix (documented deviation): quantized
+                # checkpoints carry per-expert ``_scales``/``_biases``;
+                # stack them alongside the weights so the runtime sees a
+                # consistent switch_mlp layout (mirrors the gate_up_proj
+                # handling above).
+                for suffix in ("weight", "weight_scales", "weight_biases"):
+                    keys = [
+                        f"{prefix}.{e}.{proj}.{suffix}" for e in range(n_experts)
+                    ]
+                    if all(k in tensors for k in keys):
+                        tensors[f"{base}.switch_mlp.{proj}.{suffix}"] = mx.stack(
+                            [tensors.pop(k) for k in keys]
+                        )""",
+            """            for proj in ("gate_proj", "up_proj", "down_proj"):
+                keys = [f"{prefix}.{e}.{proj}.weight" for e in range(n_experts)]
+                if all(k in tensors for k in keys):
+                    tensors[f"{base}.switch_mlp.{proj}.weight"] = mx.stack(
+                        [tensors.pop(k) for k in keys]
+                    )""",
+        ),
+    ],
     "qwen3_5_mtp/qwen3_5_mtp.py": [
         (
             """                # Rapid upstream-bugfix (documented deviation): pinned
@@ -194,18 +218,26 @@ DEVIATIONS = {
     ],
     "mtp_split.py": [
         (
-            """        depth = self.depth(text_config)
-        # Rapid upstream-bugfix (documented deviation): pinned 0.7.1 used
-        # ``block_size or ...``, silently replacing an explicit 0 with the
-        # depth-derived default and letting negative values through — both
-        # produce a checkpoint whose drafting loop later fails on an empty
-        # concatenate. Default only when None; reject below the minimum.
+            """        text_config = self.read_text_config(source_config)
+
+        # Rapid upstream-bugfix (documented deviation): validate every
+        # configuration argument BEFORE creating or writing the output —
+        # rejected input must not leave a partially generated directory.
+        # Minimum supported block size is 2: with 1 the MTP drafting loops
+        # feed an empty token list into ``mx.concatenate`` and crash.
         resolved_block_size = (
-            depth + self.block_size_extra if block_size is None else int(block_size)
+            self.depth(text_config) + self.block_size_extra
+            if block_size is None
+            else int(block_size)
         )
-        if resolved_block_size < 1:
-            raise ValueError(f"block_size must be >= 1, got {block_size!r}")
-        draft_config = {
+        if resolved_block_size < 2:
+            raise ValueError(f"block_size must be >= 2, got {block_size!r}")
+""",
+            """        text_config = self.read_text_config(source_config)
+""",
+        ),
+        (
+            """        draft_config = {
             "model_type": self.output_model_type,
             "text_config": text_config,
             "block_size": resolved_block_size,""",
@@ -483,8 +515,8 @@ def test_mtp_split_block_size_resolution(tmp_path):
     )
 
     splitter = StubSplitter()
-    for bad in (0, -3):
-        with pytest.raises(ValueError, match="block_size must be >= 1"):
+    for bad in (0, 1, -3):
+        with pytest.raises(ValueError, match="block_size must be >= 2"):
             splitter.split(
                 str(source), str(tmp_path / f"out-bad-{bad}"), block_size=bad
             )
