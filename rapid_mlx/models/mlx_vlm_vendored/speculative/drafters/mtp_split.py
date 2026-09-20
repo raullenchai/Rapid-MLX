@@ -260,6 +260,7 @@ class MTPSplitter:
         # splits must not share one), swap it in only after every save and
         # copy succeeds, and keep the old destination as a backup until the
         # staged checkpoint is installed.
+        output_path.parent.mkdir(parents=True, exist_ok=True)
         staging = Path(
             tempfile.mkdtemp(
                 prefix=f".{output_path.name}.mtp-split-",
@@ -326,27 +327,32 @@ class MTPSplitter:
                 if src.exists():
                     shutil.copy(src, staging / name)
 
-            # Install: move the old destination aside, put the staged
-            # checkpoint in place, and restore the old one if the install
-            # rename fails — the destination is never destroyed before its
-            # replacement exists.
-            backup = output_path.with_name(f".{output_path.name}.mtp-split-bak")
-            if backup.is_dir() and not backup.is_symlink():
-                shutil.rmtree(backup)
-            elif backup.exists() or backup.is_symlink():
-                backup.unlink()
+            # Install: move the old destination aside into a unique,
+            # exclusively-created backup owned by this invocation, put the
+            # staged checkpoint in place, and restore the old one if the
+            # install rename fails — the destination is never destroyed
+            # before its replacement exists.
+            backup = None
             if output_path.exists() or output_path.is_symlink():
-                os.replace(output_path, backup)
+                backup = Path(
+                    tempfile.mkdtemp(
+                        prefix=f".{output_path.name}.mtp-split-bak-",
+                        dir=str(output_path.parent),
+                    )
+                )
+                try:
+                    os.replace(output_path, backup)
+                except OSError:
+                    shutil.rmtree(backup, ignore_errors=True)
+                    raise
             try:
                 os.replace(staging, output_path)
             except OSError:
-                if backup.exists():
+                if backup is not None and backup.exists():
                     os.replace(backup, output_path)
                 raise
-            if backup.is_dir() and not backup.is_symlink():
-                shutil.rmtree(backup)
-            elif backup.exists() or backup.is_symlink():
-                backup.unlink()
+            if backup is not None:
+                shutil.rmtree(backup, ignore_errors=True)
             return output_path
         finally:
             if staging.is_dir() and not staging.is_symlink():

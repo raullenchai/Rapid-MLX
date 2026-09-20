@@ -494,6 +494,7 @@ import shutil""",
         # splits must not share one), swap it in only after every save and
         # copy succeeds, and keep the old destination as a backup until the
         # staged checkpoint is installed.
+        output_path.parent.mkdir(parents=True, exist_ok=True)
         staging = Path(
             tempfile.mkdtemp(
                 prefix=f".{output_path.name}.mtp-split-",
@@ -566,27 +567,32 @@ import shutil""",
                 if src.exists():
                     shutil.copy(src, staging / name)
 
-            # Install: move the old destination aside, put the staged
-            # checkpoint in place, and restore the old one if the install
-            # rename fails — the destination is never destroyed before its
-            # replacement exists.
-            backup = output_path.with_name(f".{output_path.name}.mtp-split-bak")
-            if backup.is_dir() and not backup.is_symlink():
-                shutil.rmtree(backup)
-            elif backup.exists() or backup.is_symlink():
-                backup.unlink()
+            # Install: move the old destination aside into a unique,
+            # exclusively-created backup owned by this invocation, put the
+            # staged checkpoint in place, and restore the old one if the
+            # install rename fails — the destination is never destroyed
+            # before its replacement exists.
+            backup = None
             if output_path.exists() or output_path.is_symlink():
-                os.replace(output_path, backup)
+                backup = Path(
+                    tempfile.mkdtemp(
+                        prefix=f".{output_path.name}.mtp-split-bak-",
+                        dir=str(output_path.parent),
+                    )
+                )
+                try:
+                    os.replace(output_path, backup)
+                except OSError:
+                    shutil.rmtree(backup, ignore_errors=True)
+                    raise
             try:
                 os.replace(staging, output_path)
             except OSError:
-                if backup.exists():
+                if backup is not None and backup.exists():
                     os.replace(backup, output_path)
                 raise
-            if backup.is_dir() and not backup.is_symlink():
-                shutil.rmtree(backup)
-            elif backup.exists() or backup.is_symlink():
-                backup.unlink()
+            if backup is not None:
+                shutil.rmtree(backup, ignore_errors=True)
             return output_path
         finally:
             if staging.is_dir() and not staging.is_symlink():
@@ -1018,6 +1024,53 @@ def test_mtp_split_does_not_tear_existing_output(tmp_path, monkeypatch):
     monkeypatch.setattr(mtp_split_module.shutil, "copy", lambda s, d, **k: None)
     StubSplitter().split(str(source), str(dest))
     assert (dest / "config.json").read_text() != "stale"
+    assert (dest / "model.safetensors").exists()
+    assert not list(tmp_path.glob(".*mtp-split-*"))
+
+
+def test_mtp_split_creates_missing_output_parents(tmp_path):
+    """An output whose parent directory does not exist yet must work
+    (r20 finding): only the parent is created up front."""
+    import mlx.core as mx
+
+    from rapid_mlx.models.mlx_vlm_vendored.speculative.drafters.mtp_split import (
+        MTPSplitter,
+    )
+
+    class StubSplitter(MTPSplitter):
+        output_model_type = "qwen3_5_mtp"
+        tokenizer_files = []
+
+        def select_keys(self, key, text_config):
+            return True
+
+        def depth(self, text_config):
+            return 3
+
+        def transform(self, tensors, text_config, source_is_mlx):
+            return {"w": mx.zeros((1,))}
+
+        def quantization(self, weights, source_config, text_config, quant_opts):
+            return None
+
+    source = tmp_path / "src"
+    source.mkdir()
+    (source / "config.json").write_text(
+        json.dumps(
+            {
+                "model_type": "qwen3_5",
+                "text_config": {"model_type": "qwen3_5", "num_hidden_layers": 4},
+            }
+        )
+    )
+    mx.save_safetensors(
+        str(source / "model.safetensors"),
+        {"w": mx.zeros((1,))},
+        metadata={"format": "mlx"},
+    )
+    dest = tmp_path / "nested" / "deep" / "out"
+    StubSplitter().split(str(source), str(dest))
+    assert (dest / "config.json").exists()
     assert (dest / "model.safetensors").exists()
     assert not list(tmp_path.glob(".*mtp-split-*"))
 
