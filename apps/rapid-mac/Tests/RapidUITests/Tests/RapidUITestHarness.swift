@@ -487,8 +487,19 @@ final class RapidUITestHarness {
                 continue
             }
 
-            let remaining = max(0, settleDeadline.timeIntervalSinceNow)
-            if waitUntil(timeout: remaining, condition: chipIsSettled) {
+            // A source-side `.copy` is authoritative acceptance even if the
+            // destination marker has not become visible yet. Keep the same
+            // post-gesture deadline alive for the independent marker/render
+            // signals; never turn accepted transport into an immediate fail.
+            let acceptedDrop = observedPhase != nil || transportResult == .copy
+            if acceptedDrop {
+                let acceptedRemaining = max(0, settleDeadline.timeIntervalSinceNow)
+                _ = waitUntil(timeout: acceptedRemaining) {
+                    chipIsSettled() || completionIsVisible()
+                }
+            }
+            let chipRemaining = max(0, settleDeadline.timeIntervalSinceNow)
+            if waitUntil(timeout: chipRemaining, condition: chipIsSettled) {
                 return attempt
             }
             XCTFail(

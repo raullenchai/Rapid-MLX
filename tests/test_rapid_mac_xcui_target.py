@@ -173,6 +173,10 @@ def test_xcui_runner_launches_production_bundle_with_fake_sidecar():
     assert 'recordResult("copy")' in drag_host
     assert 'recordResult("none")' in drag_host
     assert 'recordResult("not-started")' in drag_host
+    assert (
+        "let acceptedDrop = observedPhase != nil || transportResult == .copy" in harness
+    )
+    assert "chipIsSettled() || completionIsVisible()" in harness
     assert "try DropEventFile.clear(at: dropEventFile)" in harness
     assert harness.index("try DropEventFile.clear(at: dropEventFile)") < harness.index(
         "for attempt in 1...maximumAttempts"
