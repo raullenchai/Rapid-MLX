@@ -286,7 +286,7 @@ def test_claim_active_day_prunes_rows_by_write_time(fake_home):
     """The table stays bounded, and the clock that bounds it is write time.
 
     Retention cannot key off the day a row *names* — see
-    ``test_a_past_cutoff_day_survives_a_later_prune`` for what that
+    ``test_claim_active_day_is_once_per_day_for_a_date_past_the_cutoff`` for what that
     breaks. So age a row the only way that is now meaningful: rewrite
     its ``claimed_at`` to long ago, then make a fresh claim and watch it
     go.
@@ -708,6 +708,36 @@ def test_a_key_that_cannot_be_encoded_is_nothing_to_emit(fake_home):
     assert crossing is not None and crossing.count == 1
 
 
+def test_a_host_with_no_home_directory_is_nothing_to_emit(monkeypatch):
+    """Every public entry point, on a container with no resolvable home.
+
+    ``Path.home()`` raises ``RuntimeError`` — not an ``OSError`` — when
+    neither ``$HOME`` nor the passwd database names a home, which is the
+    ordinary shape of ``docker --user 1000:1000`` with no HOME, or
+    OpenShift's random uid. The call that resolves it runs before
+    ``_run``'s guard, so a narrow catch there makes the whole module
+    raise on exactly those hosts.
+
+    Deliberately does NOT use the ``fake_home`` fixture: that fixture
+    sets ``HOME``, which is precisely what this host does not have, and
+    is why 100% line coverage did not notice.
+    """
+    from rapid_mlx.telemetry import store
+
+    def no_home():
+        raise RuntimeError("Could not determine home directory.")
+
+    monkeypatch.setattr(Path, "home", staticmethod(no_home))
+    monkeypatch.delenv("HOME", raising=False)
+    store._reset_quarantine_latch_for_tests()
+
+    assert store.record("k") is None
+    assert store.claim_active_day() is False
+    assert store.note_model_served("m") == 0
+    assert store.first_run_date() is None
+    assert store.days_since_first_run_bucket() is None
+
+
 def test_no_caller_input_escapes_as_an_exception(fake_home):
     """The backstop itself: a non-storage error inside the work returns.
 
@@ -761,6 +791,40 @@ def test_quarantine_does_not_delete_a_racing_process_wal(fake_home, monkeypatch)
     quarantined_wal = list(fake_home.glob(".rapid-mlx/telemetry.db.corrupt-*-wal"))
     assert len(quarantined_wal) == 1
     assert quarantined_wal[0].read_bytes() == b"stale wal"
+
+
+def test_quarantine_rechecks_identity_after_moving_the_siblings(fake_home, monkeypatch):
+    """The sibling renames sit between the first check and the rename.
+
+    Nothing here is atomic across processes, so the identity can change
+    during those two syscalls: another process quarantines and recreates
+    one step earlier than we do. The late re-check is what stops us
+    renaming its healthy database aside.
+    """
+    from rapid_mlx.telemetry import store
+
+    db = store.db_path()
+    store.record("k")
+    doomed = store._db_identity()
+    db.write_bytes(b"not a database")
+    (db.with_name(db.name + "-wal")).write_bytes(b"stale wal")
+
+    real_rename = Path.rename
+
+    def rename_and_let_b_win_the_race(self, target):
+        result = real_rename(self, target)
+        if self.name.endswith("-wal"):
+            # "Process B" got there first: a different inode now.
+            db.unlink()
+            db.write_bytes(b"process B's fresh database")
+        return result
+
+    monkeypatch.setattr(Path, "rename", rename_and_let_b_win_the_race)
+    assert store._quarantine_corrupt_db(doomed) is True
+    assert db.read_bytes() == b"process B's fresh database", (
+        "the identity changed while the siblings were moving and the "
+        "rename went ahead anyway"
+    )
 
 
 def test_chmod_failure_does_not_stop_the_store(fake_home, monkeypatch):

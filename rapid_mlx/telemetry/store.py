@@ -197,10 +197,19 @@ def _db_identity() -> tuple[int, int] | None:
 
     Captured *before* an attempt so a failure can be tied to the exact
     file that produced it. See :func:`_quarantine_corrupt_db`.
+
+    The guard is ``Exception`` because ``db_path()`` is not only a
+    ``stat``: it resolves ``Path.home()``, which raises ``RuntimeError``
+    — not an ``OSError`` — when neither ``$HOME`` nor the passwd
+    database names a home. That is the ordinary shape of a container run
+    under an anonymous uid (``docker --user 1000:1000`` with no HOME,
+    OpenShift's random uid), and this call is the one step into the
+    module that runs before ``_run``'s own guard, so a narrow catch here
+    makes every public function raise on exactly those hosts.
     """
     try:
         info = db_path().stat()
-    except OSError:
+    except Exception:
         return None
     return (info.st_dev, info.st_ino)
 
@@ -235,9 +244,16 @@ def _quarantine_corrupt_db(identity: tuple[int, int] | None) -> bool:
             # against it, and do not spend this process's one rename.
             return True
         _quarantined = True
+        # ``db_path()`` cannot raise here: if it could, the
+        # ``_db_identity()`` above would have returned ``None``, which
+        # never equals a non-``None`` ``identity``, and we would already
+        # have returned.
         path = db_path()
+        # A second-resolution stamp collides when two quarantines land in
+        # the same second and ``rename`` replaces silently, so the pid
+        # disambiguates them.
         stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
-        target = path.with_name(f"{path.name}.corrupt-{stamp}")
+        target = path.with_name(f"{path.name}.corrupt-{stamp}-{os.getpid()}")
         # The WAL/SHM siblings belong to the corrupt file and must travel
         # with it: a leftover WAL next to a freshly created database is
         # itself a corruption source.
@@ -251,9 +267,16 @@ def _quarantine_corrupt_db(identity: tuple[int, int] | None) -> bool:
         # later open gets "disk I/O error", which :func:`_is_corruption`
         # deliberately does not treat as corruption, so the store would
         # go quietly dead for the life of the process. Doing the siblings
-        # while ``path`` still holds the corrupt inode closes that
-        # window, and renaming instead of unlinking means a mistake is
-        # recoverable rather than a deletion.
+        # while ``path`` still holds the corrupt inode *narrows* that
+        # window; it does not close it. Nothing here is atomic across
+        # processes, so another process can still quarantine and recreate
+        # between the identity check and the rename. That residual race
+        # is bounded and self-healing — SQLite discards a WAL whose
+        # header does not match the database beside it, so the loser
+        # recreates and only counters are lost, and ``serve`` is
+        # unaffected — which is why it is tolerated rather than locked.
+        # Renaming instead of unlinking keeps even that case
+        # recoverable.
         for suffix in ("-wal", "-shm"):
             try:
                 path.with_name(path.name + suffix).rename(
@@ -261,6 +284,10 @@ def _quarantine_corrupt_db(identity: tuple[int, int] | None) -> bool:
                 )
             except OSError:
                 pass
+        # Re-checked as late as possible: the sibling renames above sit
+        # between the first check and this one.
+        if _db_identity() != identity:
+            return True
         try:
             path.rename(target)
         except OSError:
