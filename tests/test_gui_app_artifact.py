@@ -81,6 +81,24 @@ def test_workflow_builds_once_and_consumes_verified_artifact():
     assert "codesign --verify --deep --strict" in consumer_source
 
 
+def test_gui_artifact_producer_uses_trusted_mac_only_after_promotion():
+    """Fork PR code must never reach the trusted Mac artifact producer.
+
+    The promotion classifier has executable fork/head-repository coverage in
+    ``test_ci_lane_promotion.py``. This contract pins the other half of that
+    boundary: the Manzanita producer is allocated only when that classifier
+    emits ``full_gate=true``, and it receives no repository secrets.
+    """
+    workflow = yaml.safe_load(WORKFLOW.read_text())
+    producer = workflow["jobs"]["gui-app-build"]
+    condition = str(producer["if"])
+    producer_source = json.dumps(producer)
+
+    assert producer["runs-on"] == "manzanita-standard"
+    assert "needs.changes.outputs.full_gate == 'true'" in condition
+    assert "secrets." not in producer_source
+
+
 def test_required_gui_contract_job_runs_artifact_tests():
     jobs = yaml.safe_load(WORKFLOW.read_text())["jobs"]
     contract_source = json.dumps(jobs["gui-harness-contracts"])
