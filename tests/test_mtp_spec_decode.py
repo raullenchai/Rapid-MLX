@@ -3958,6 +3958,16 @@ def test_mtp_buffers_rotating_target_cache_and_preserves_rejection_boundary():
     assert extracted.keys.shape[0] == 1
     assert mx.array_equal(extracted.keys, buffered.keys)
 
+    class _Composite:
+        def __init__(self):
+            self.caches = (RotatingKVCache(max_size=8, keep=0),)
+
+    composite = _Composite()
+    composite_tree = [composite]
+    _buffer_mtp_target_cache(composite_tree, requested_depth=2)
+    assert isinstance(composite.caches, tuple)
+    assert isinstance(composite.caches[0], BufferedRotatingKVCache)
+
 
 def test_mtp_keeps_attention_sink_cache_unmodified_and_parks_safely():
     """Unsupported cache layouts fall through before drafting, never mid-stream."""
@@ -4034,6 +4044,45 @@ def test_generator_publishes_buffered_cache_into_scheduler_owned_list():
     )
 
     assert isinstance(scheduler_cache[0], BufferedRotatingKVCache)
+
+
+def test_generator_parks_after_a_verify_when_next_depth_is_not_recoverable(
+    monkeypatch,
+):
+    """A cache becoming unsafe between rounds parks before the next draft."""
+    import rapid_mlx.spec_decode.mtp.generator as generator_mod
+    from rapid_mlx.spec_decode.mtp.accept_counter import MTPAcceptCounter
+    from rapid_mlx.spec_decode.mtp.generator import mtp_generate_step
+
+    calls = 0
+
+    def _admission(_cache, desired, **_kwargs):
+        nonlocal calls
+        calls += 1
+        return desired if calls == 1 else 0
+
+    monkeypatch.setattr(generator_mod, "_safe_prompt_lookup_draft_count", _admission)
+    model = _MockedQwen35Model(
+        backbone_outputs=[7, 11, 12, 13, 14, 15],
+        mtp_outputs=[11, 12, 13],
+    )
+    timing: dict[str, float] = {}
+    emitted = list(
+        mtp_generate_step(
+            mx.array([1], dtype=mx.uint32),
+            model,
+            max_tokens=6,
+            max_k=3,
+            disable_auto_k=True,
+            accept_counter=MTPAcceptCounter(),
+            timing_stats=timing,
+        )
+    )
+
+    assert [token for token, _lp, _drafted in emitted] == [7, 11, 12, 13, 14, 15]
+    assert model._mtp_cursor == 3
+    assert calls == 2
+    assert timing["mtp_cache_fallthroughs"] == 1
 
 
 def test_safe_draft_count_admits_snapshot_only_caches_only_when_declared():
