@@ -290,7 +290,10 @@ struct AudioClient {
         URL(string: "http://127.0.0.1:\(port)")!
     }
 
+    /// Every request in this client routes through here, so the desktop
+    /// client header rides along with the per-launch bearer.
     private func applyBearer(_ request: inout URLRequest, _ bearer: String?) {
+        request.applyRapidClientHeader()
         if let bearer, !bearer.isEmpty {
             request.setValue("Bearer \(bearer)", forHTTPHeaderField: "Authorization")
         }

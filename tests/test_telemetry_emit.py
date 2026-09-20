@@ -321,18 +321,22 @@ def test_mark_first_session_true_once_then_false(fake_home):
 
 
 def test_session_start_models_loaded_redacted(opted_in, stub_queue):
-    """Local paths must collapse to "<local>" — not leak home dirs."""
+    """Local paths must collapse to "<local>" — not leak home dirs.
+
+    A catalog ``hf_path`` reports as its catalog ALIAS (the telemetry model
+    id rule), not as the repo id it was written as.
+    """
     from rapid_mlx.telemetry import emit
 
     emit.session_start(
         subcommand="serve",
         models_loaded=[
-            "mlx-community/Qwen3.5-9B-4bit",  # public, passes through
+            "mlx-community/Qwen3.5-9B-4bit",  # catalog hf_path → its alias
             "/Users/alice/secret-checkout",  # local, redacted
         ],
     )
     loaded = stub_queue[0]["session"]["models_loaded"]
-    assert "mlx-community/Qwen3.5-9B-4bit" in loaded
+    assert "qwen3.5-9b-4bit" in loaded
     assert "<local>" in loaded
     assert "alice" not in repr(loaded)
 
@@ -544,13 +548,13 @@ def test_session_start_swallows_internal_bug(opted_in, monkeypatch, stub_queue):
     Round 19 codex catch: ``hash_flag_names`` is no longer called from
     inside ``session_start`` (flag names are pre-extracted in cli.py).
     Pin the same property against the helper that IS still inside the
-    emit path: ``normalize_model_path``."""
+    emit path: ``telemetry_model_id``."""
     from rapid_mlx.telemetry import emit
 
     def boom(*args, **kwargs):
         raise RuntimeError("synthetic redact failure")
 
-    monkeypatch.setattr(emit, "normalize_model_path", boom)
+    monkeypatch.setattr(emit, "telemetry_model_id", boom)
     # Must not raise:
     emit.session_start(subcommand="serve", models_loaded=["org/model"])
 

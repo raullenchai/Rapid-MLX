@@ -41,6 +41,15 @@ class ModelEntry:
     # architectures may be served by explicit local path without introducing
     # an alias that points at a nonexistent artifact.
     experimental: bool = False
+    # Privacy-safe model identity for telemetry, computed ONCE at load time
+    # from the resolved checkpoint (``rapid_mlx.telemetry.model_id``). Stored
+    # here because the registry entry is the only place that knows what was
+    # actually loaded: ``model_name`` may be an operator-chosen
+    # ``--served-model-name`` and the request's ``model`` field is whatever
+    # the HTTP client typed. Defaults to the literal ``"<custom>"`` (rather
+    # than importing telemetry into this import-light module) so an entry
+    # built by a code path that does not stamp it reports nothing.
+    telemetry_model_id: str = "<custom>"
 
     def matches(self, name: str) -> bool:
         """Check if a request model name matches this entry."""

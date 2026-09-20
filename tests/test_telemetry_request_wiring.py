@@ -109,7 +109,11 @@ async def test_nonstreaming_completion_emits_request_event(monkeypatch):
     assert kw["endpoint"] == "/v1/chat/completions"
     assert kw["stream"] is False
     assert kw["status"] == 200
-    assert kw["model_alias"] == "test-model"
+    # The client's ``request.model`` is NEVER what is reported. The route
+    # resolves the loaded model's ``telemetry_model_id``; with no registry
+    # and no loaded catalog model in this harness, that is ``<custom>``.
+    assert kw["model_alias"] == "<custom>"
+    assert "test-model" not in repr(kw)
     # The call site passes the RAW UA through; emit.request buckets it
     # (asserted separately). It must READ the header, not drop it.
     assert kw["caller_agent"] == "claude-cli/1.4.2"

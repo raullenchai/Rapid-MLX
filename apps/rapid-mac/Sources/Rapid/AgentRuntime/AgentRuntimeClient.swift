@@ -519,6 +519,7 @@ final class AgentRuntimeClient: Sendable {
         request.httpMethod = method
         request.timeoutInterval = requestTimeout
         request.setValue("application/json", forHTTPHeaderField: "Accept")
+        request.applyRapidClientHeader()
         if let bearerToken, !bearerToken.isEmpty {
             request.setValue("Bearer \(bearerToken)", forHTTPHeaderField: "Authorization")
         }

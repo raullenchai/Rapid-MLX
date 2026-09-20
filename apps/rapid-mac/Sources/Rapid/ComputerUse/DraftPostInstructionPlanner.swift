@@ -220,6 +220,7 @@ struct LocalDraftPostInstructionPlanner: DraftPostInstructionPlanning {
         request.timeoutInterval = 60
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
         request.setValue("application/json", forHTTPHeaderField: "Accept")
+        request.applyRapidClientHeader()
         request.setValue("Bearer \(bearerToken)", forHTTPHeaderField: "Authorization")
         request.httpBody = try Self.requestBody(
             instruction: trimmed,

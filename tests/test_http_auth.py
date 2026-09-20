@@ -32,9 +32,14 @@ def test_harness_model_discovery_uses_same_bearer(monkeypatch):
         runner = AgentTestRunner(Mock(), base_url="http://127.0.0.1:8000/v1")
 
     assert runner.model_id == "secured-model"
+    # The bearer rides alongside the Rapid-owned client label; neither
+    # may displace the other.
     get.assert_called_once_with(
         "http://127.0.0.1:8000/v1/models",
-        headers={"Authorization": "Bearer harness-secret"},
+        headers={
+            "Authorization": "Bearer harness-secret",
+            "X-Rapid-Client": "rapid-agents",
+        },
         timeout=5,
     )
 

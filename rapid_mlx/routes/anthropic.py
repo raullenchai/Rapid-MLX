@@ -840,6 +840,11 @@ async def create_anthropic_message(
                         if request is not None
                         else None
                     ),
+                    caller_client=(
+                        request.headers.get("x-rapid-client")
+                        if request is not None
+                        else None
+                    ),
                 ),
                 request,
                 engine=engine,
@@ -1200,10 +1205,11 @@ async def create_anthropic_message(
         # TTFT == total latency here (a non-streaming response is delivered
         # in one shot); the streaming path reports true TTFT.
         from rapid_mlx.telemetry import emit as _telemetry_emit
+        from rapid_mlx.telemetry.model_id import served_model_id as _served_model_id
 
         _telemetry_emit.request(
             endpoint="/v1/messages",
-            model_alias=anthropic_request.model,
+            model_alias=_served_model_id(anthropic_request.model),
             stream=False,
             tool_call_used=bool(tool_calls),
             prompt_tokens=output.prompt_tokens,
@@ -1213,6 +1219,9 @@ async def create_anthropic_message(
             status=200,
             caller_agent=(
                 request.headers.get("user-agent") if request is not None else None
+            ),
+            caller_client=(
+                request.headers.get("x-rapid-client") if request is not None else None
             ),
         )
         return Response(
@@ -1612,6 +1621,7 @@ async def _stream_anthropic_messages(
     prepared_images: list | None = None,
     prepared_videos: list | None = None,
     caller_agent: str | None = None,
+    caller_client: str | None = None,
 ) -> AsyncIterator[str]:
     """Stream Anthropic Messages API SSE events.
 
@@ -1651,6 +1661,8 @@ async def _stream_anthropic_messages(
         caller_agent: inbound HTTP ``User-Agent`` from the route request,
             passed straight to ``emit.request`` (bucketed to an allowlist
             in ``redact`` — never stored raw). Task C caller attribution.
+        caller_client: inbound ``X-Rapid-Client`` header. Same contract;
+            honoured only when it carries one of our own closed labels.
     """
     msg_id = f"msg_{uuid.uuid4().hex[:24]}"
     start_time = time.perf_counter()
@@ -3232,10 +3244,11 @@ async def _stream_anthropic_messages(
         completion_tokens / _decode_seconds if _decode_seconds > 0 else tokens_per_sec
     )
     from rapid_mlx.telemetry import emit as _telemetry_emit
+    from rapid_mlx.telemetry.model_id import served_model_id as _served_model_id
 
     _telemetry_emit.request(
         endpoint="/v1/messages",
-        model_alias=anthropic_request.model,
+        model_alias=_served_model_id(anthropic_request.model),
         stream=True,
         tool_call_used=bool(tool_calls),
         prompt_tokens=prompt_tokens,
@@ -3247,4 +3260,5 @@ async def _stream_anthropic_messages(
         tps=_decode_tps,
         status=200,
         caller_agent=caller_agent,
+        caller_client=caller_client,
     )

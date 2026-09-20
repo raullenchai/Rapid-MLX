@@ -31,6 +31,8 @@ from typing import Any
 
 import requests
 
+from ..client_header import RAPID_CLIENT_BENCH
+from ..http_auth import rapid_mlx_client_headers
 from .benchmark_contracts import public_prompt, registered_workload
 from .hardware import collect, run_conditions
 
@@ -147,7 +149,11 @@ def _failure_code(error: Exception) -> str:
 
 def _peak_memory_mib(base_url: str) -> int | None:
     try:
-        response = requests.get(f"{base_url}/status", timeout=5)
+        response = requests.get(
+            f"{base_url}/status",
+            headers=rapid_mlx_client_headers(RAPID_CLIENT_BENCH),
+            timeout=5,
+        )
         response.raise_for_status()
         peak = response.json().get("metal", {}).get("peak_memory_gb")
         value = float(peak)
@@ -446,6 +452,7 @@ def _download_video_artifact_unbounded(
 
     with requests.get(
         f"{base_url}/videos/{job_id}/content",
+        headers=rapid_mlx_client_headers(RAPID_CLIENT_BENCH),
         stream=True,
         timeout=60,
     ) as response:
@@ -632,7 +639,12 @@ def _run_image(
         total = case["warmup_rounds"] + case["measured_rounds"]
         for index in range(total):
             started = time.perf_counter()
-            response = requests.post(endpoint, json=payload, timeout=3600)
+            response = requests.post(
+                endpoint,
+                json=payload,
+                headers=rapid_mlx_client_headers(RAPID_CLIENT_BENCH),
+                timeout=3600,
+            )
             _raise_for_status(response, phase="image benchmark request")
             result = response.json()
             duration_ms = (time.perf_counter() - started) * 1000
@@ -708,7 +720,10 @@ def _run_video(
         _report(progress, f"{case['case_id']:<16} round 1/1  generating...")
         started = time.perf_counter()
         response = requests.post(
-            f"{server['base_url']}/videos", data=payload, timeout=30
+            f"{server['base_url']}/videos",
+            data=payload,
+            headers=rapid_mlx_client_headers(RAPID_CLIENT_BENCH),
+            timeout=30,
         )
         _raise_for_status(response, phase="video benchmark request")
         job = response.json()
@@ -724,6 +739,7 @@ def _run_video(
             time.sleep(min(_VIDEO_POLL_INTERVAL_S, remaining))
             response = requests.get(
                 f"{server['base_url']}/videos/{job['id']}",
+                headers=rapid_mlx_client_headers(RAPID_CLIENT_BENCH),
                 timeout=min(10, max(0.001, deadline - time.monotonic())),
             )
             _raise_for_status(response, phase="video benchmark status poll")

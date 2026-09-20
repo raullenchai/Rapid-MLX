@@ -28,7 +28,8 @@ from pathlib import Path
 
 import httpx
 
-from ..http_auth import rapid_mlx_auth_headers
+from ..client_header import RAPID_CLIENT_AGENTS
+from ..http_auth import rapid_mlx_client_headers
 from .base import AgentProfile
 
 logger = logging.getLogger(__name__)
@@ -268,7 +269,7 @@ def _api_call(
     resp = httpx.post(
         f"{base_url}/chat/completions",
         json=payload,
-        headers=rapid_mlx_auth_headers(),
+        headers=rapid_mlx_client_headers(RAPID_CLIENT_AGENTS),
         timeout=timeout,
     )
     resp.raise_for_status()
@@ -567,7 +568,7 @@ def _test_streaming_tool_call(base_url: str, model_id: str) -> TestResult:
             "POST",
             f"{base_url}/chat/completions",
             json=payload,
-            headers=rapid_mlx_auth_headers(),
+            headers=rapid_mlx_client_headers(RAPID_CLIENT_AGENTS),
             timeout=60,
         ) as resp:
             tool_chunks = []
@@ -697,7 +698,7 @@ def _test_streaming_basic(base_url: str, model_id: str) -> TestResult:
             "POST",
             f"{base_url}/chat/completions",
             json=payload,
-            headers=rapid_mlx_auth_headers(),
+            headers=rapid_mlx_client_headers(RAPID_CLIENT_AGENTS),
             timeout=30,
         ) as resp:
             for line in resp.iter_lines():
@@ -1433,7 +1434,7 @@ class AgentTestRunner:
             try:
                 resp = httpx.get(
                     f"{base_url}/models",
-                    headers=rapid_mlx_auth_headers(),
+                    headers=rapid_mlx_client_headers(RAPID_CLIENT_AGENTS),
                     timeout=5,
                 )
                 self.model_id = resp.json()["data"][0]["id"]
@@ -1444,7 +1445,9 @@ class AgentTestRunner:
         """Check if the Rapid-MLX server is running."""
         try:
             r = httpx.get(
-                f"{self.base_url.rstrip('/').rsplit('/v1', 1)[0]}/health", timeout=3
+                f"{self.base_url.rstrip('/').rsplit('/v1', 1)[0]}/health",
+                headers=rapid_mlx_client_headers(RAPID_CLIENT_AGENTS),
+                timeout=3,
             )
             return r.status_code == 200
         except Exception:

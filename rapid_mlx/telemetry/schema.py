@@ -59,7 +59,10 @@ class PlatformInfo:
 class SessionPayload:
     subcommand: str  # "serve" | "agents" | "bench" | "chat" | "doctor" | "models"
     duration_seconds: int | None = None  # session_end only; None on session_start
-    models_loaded: tuple[str, ...] = ()  # HF repo IDs only (normalized)
+    # ``telemetry_model_id`` values: a catalog alias, a proven-public HF
+    # repo id, ``"<local>"`` or ``"<custom>"`` — never a caller-supplied or
+    # operator-chosen name (see ``telemetry/model_id.py``).
+    models_loaded: tuple[str, ...] = ()
     # Schema v1 back-compat slot. Round 4 removed runtime emission of
     # ``engine`` from the emit helpers (it was a free-form ``str`` slot
     # with no information content while ``BatchedEngine`` is the only
@@ -87,6 +90,9 @@ class SessionPayload:
 @dataclass(frozen=True)
 class RequestPayload:
     endpoint: str  # "/v1/chat/completions" etc.
+    # A ``telemetry_model_id``, NOT ``request.model``: the identity of the
+    # model that actually served the request, reduced to a catalog alias /
+    # proven-public repo id / ``"<local>"`` / ``"<custom>"``.
     model_alias: str
     stream: bool
     tool_call_used: bool
@@ -213,7 +219,7 @@ def sample_preview_payload(
         timestamp=_utc_now_iso(),
         session=SessionPayload(
             subcommand="serve",
-            models_loaded=("mlx-community/Qwen3.5-9B-4bit",),
+            models_loaded=("qwen3.5-9b-4bit",),
             flag_names=("port", "host"),
         ),
     )
@@ -250,7 +256,7 @@ def sample_request_preview_payload(
         timestamp=_utc_now_iso(),
         request=RequestPayload(
             endpoint="/v1/chat/completions",
-            model_alias="mlx-community/Qwen3.5-9B-4bit",
+            model_alias="qwen3.5-9b-4bit",
             stream=True,
             tool_call_used=True,
             prompt_tokens_bucket=bucket_tokens(420),
