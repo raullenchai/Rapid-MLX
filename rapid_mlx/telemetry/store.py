@@ -141,6 +141,14 @@ class BucketCrossing:
     when this install already had a counter at that bucket before we
     started tracking buckets for it (so the milestone is real but we
     cannot claim we watched it happen).
+
+    ``observed_existing`` is **unreachable from rows this module writes**
+    — every counter it creates starts at zero with its bucket tracked
+    from the first increment. It is kept deliberately, for the case the
+    name describes: a ``counters`` row that arrives with a count already
+    past a threshold and no ``last_bucket``, which is what a future
+    import, backfill or schema migration would produce. Emitting such a
+    milestone as ``crossed_now`` would be a lie about when it happened.
     """
 
     key: str
@@ -229,17 +237,32 @@ def _quarantine_corrupt_db(identity: tuple[int, int] | None) -> bool:
         _quarantined = True
         path = db_path()
         stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+        target = path.with_name(f"{path.name}.corrupt-{stamp}")
+        # The WAL/SHM siblings belong to the corrupt file and must travel
+        # with it: a leftover WAL next to a freshly created database is
+        # itself a corruption source.
+        #
+        # They move FIRST, and they move rather than being deleted. Both
+        # halves matter. Once ``path`` has been renamed it names nothing,
+        # so another process can create a fresh database (and a fresh
+        # WAL) there immediately — anything we then do to those names by
+        # path hits *its* live files, not ours. Deleting a live WAL out
+        # from under an open connection does not even fail loudly: every
+        # later open gets "disk I/O error", which :func:`_is_corruption`
+        # deliberately does not treat as corruption, so the store would
+        # go quietly dead for the life of the process. Doing the siblings
+        # while ``path`` still holds the corrupt inode closes that
+        # window, and renaming instead of unlinking means a mistake is
+        # recoverable rather than a deletion.
+        for suffix in ("-wal", "-shm"):
+            try:
+                path.with_name(path.name + suffix).rename(
+                    target.with_name(target.name + suffix)
+                )
+            except OSError:
+                pass
         try:
-            path.rename(path.with_name(f"{path.name}.corrupt-{stamp}"))
-            # The WAL/SHM siblings belong to the file we just moved
-            # aside; a leftover WAL next to a freshly created database is
-            # itself a corruption source.
-            for suffix in ("-wal", "-shm"):
-                sibling = path.with_name(path.name + suffix)
-                try:
-                    sibling.unlink()
-                except OSError:
-                    pass
+            path.rename(target)
         except OSError:
             return False
     return True
@@ -376,21 +399,49 @@ def _run(work: Callable[[sqlite3.Connection], _T], default: _T) -> _T:
     emit") immediately rather than blocking a caller twice. Failures
     from opening the database and from the work itself are handled the
     same way: either one means we have nothing to say.
+
+    The guard is ``Exception``, not a list of storage errors. "Telemetry
+    must never break ``serve``" is a promise about *every* way this code
+    can fail, and the interesting ones are not all ``sqlite3.Error``: a
+    key carrying a lone surrogate — exactly what ``os.fsdecode`` hands
+    back for an undecodable byte in a filename — raises
+    ``UnicodeEncodeError`` (a ``ValueError``) from inside
+    ``conn.execute`` when the driver encodes the parameter, and a
+    caller-supplied ``datetime`` can raise from ``astimezone``. A
+    narrower guard would let those reach a request path, which is the
+    one thing this module exists to prevent. ``KeyboardInterrupt``,
+    ``SystemExit`` and ``GeneratorExit`` are ``BaseException`` and still
+    propagate: swallowing a shutdown would be a different bug.
     """
     identity = _db_identity()
     try:
         return _attempt(work)
-    except (sqlite3.Error, OSError) as exc:
+    except Exception as exc:
         if not (_is_corruption(exc) and _quarantine_corrupt_db(identity)):
             return default
     try:
         return _attempt(work)
-    except (sqlite3.Error, OSError):
+    except Exception:
         return default
 
 
 def _valid_key(key: str) -> bool:
-    return isinstance(key, str) and 0 < len(key) <= MAX_KEY_LENGTH
+    """A key we are willing to put in the database.
+
+    The UTF-8 check is not decoration: a lone surrogate (``"\ud800"``,
+    the normal result of ``os.fsdecode`` on an undecodable filename
+    byte) is a perfectly ordinary ``str`` of ordinary length that the
+    sqlite3 driver cannot encode. Rejecting it here turns a would-be
+    exception into the documented "nothing to emit", and keeps the
+    ``_run`` guard as a backstop rather than the only defence.
+    """
+    if not isinstance(key, str) or not 0 < len(key) <= MAX_KEY_LENGTH:
+        return False
+    try:
+        key.encode("utf-8")
+    except UnicodeEncodeError:
+        return False
+    return True
 
 
 def record(key: str) -> BucketCrossing | None:
@@ -449,9 +500,20 @@ def record(key: str) -> BucketCrossing | None:
 
 
 def _as_day(value: date | datetime | str | None) -> str:
+    """The UTC calendar day ``value`` falls on, as ``YYYY-MM-DD``.
+
+    A *naive* ``datetime`` is read as UTC rather than as local time.
+    Every docstring here says UTC, and ``astimezone`` on a naive value
+    silently assumes the machine's zone — so a caller that built its
+    timestamp in UTC and dropped the tzinfo (the common shape) would
+    land on the wrong day for every hour of offset around midnight, and
+    would do it differently on each machine.
+    """
     if value is None:
         return datetime.now(timezone.utc).strftime("%Y-%m-%d")
     if isinstance(value, datetime):
+        if value.tzinfo is None:
+            value = value.replace(tzinfo=timezone.utc)
         return value.astimezone(timezone.utc).strftime("%Y-%m-%d")
     if isinstance(value, date):
         return value.strftime("%Y-%m-%d")
@@ -466,33 +528,34 @@ def claim_active_day(utc_date: date | datetime | str | None = None) -> bool:
     Everyone else, and every failure, gets ``False`` (under-reporting a
     DAU is conservative; double-reporting it is a lie).
     """
-    day = _as_day(utc_date)
 
     def work(conn: sqlite3.Connection) -> bool:
+        day = _as_day(utc_date)
+        now = datetime.now(timezone.utc)
         with _transaction(conn):
             cursor = conn.execute(
                 "INSERT OR IGNORE INTO active_days (day, claimed_at) VALUES (?, ?)",
-                (day, datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")),
+                (day, now.strftime("%Y-%m-%dT%H:%M:%SZ")),
             )
             claimed = cursor.rowcount == 1
             if claimed:
-                # ISO dates sort lexicographically, so a string compare
-                # is a date compare. Only prune on the day we claimed —
-                # a losing racer has no reason to touch the table.
-                cutoff = (
-                    datetime.now(timezone.utc)
-                    - timedelta(days=ACTIVE_DAY_RETENTION_DAYS)
-                ).strftime("%Y-%m-%d")
-                # Never prune the row this very transaction inserted. A
-                # claim for a date already past the cutoff would other-
-                # wise insert and delete itself in one transaction and
-                # still return ``True``, so every later caller would
-                # "win" that same date too — the once-per-day contract
-                # broken for exactly the dates a wrong clock produces.
-                conn.execute(
-                    "DELETE FROM active_days WHERE day < ? AND day <> ?",
-                    (cutoff, day),
+                # Retention is measured from when the row was WRITTEN,
+                # never from the day it names. Pruning by ``day`` looks
+                # equivalent and is not: a row naming a date already past
+                # the cutoff is born prunable, so the next claim of any
+                # other day deletes it and that same date can be won all
+                # over again — the once-per-day contract broken for
+                # exactly the dates a wrong or rolled-back clock
+                # produces. By write time, a row this install just
+                # created survives its full window whatever date it
+                # carries. ISO timestamps sort lexicographically, so the
+                # string compare is a time compare. Only prune on the
+                # claim that won — a losing racer has no reason to touch
+                # the table.
+                cutoff = (now - timedelta(days=ACTIVE_DAY_RETENTION_DAYS)).strftime(
+                    "%Y-%m-%dT%H:%M:%SZ"
                 )
+                conn.execute("DELETE FROM active_days WHERE claimed_at < ?", (cutoff,))
         return claimed
 
     return _run(work, False)
@@ -538,9 +601,9 @@ def first_run_date(now: datetime | None = None) -> str | None:
     the cohort stamp is stable for the life of the install. ``None`` on
     any storage failure.
     """
-    today = _as_day(now)
 
     def work(conn: sqlite3.Connection) -> str | None:
+        today = _as_day(now)
         with _transaction(conn):
             conn.execute(
                 "INSERT OR IGNORE INTO install_facts (key, value)"
@@ -568,9 +631,13 @@ def days_since_first_run_bucket(now: datetime | None = None) -> str | None:
         return None
     try:
         first = datetime.strptime(stored, "%Y-%m-%d").date()
-    except ValueError:
+        # ``_as_day`` runs outside ``_run`` here, so it carries its own
+        # guard: a caller-supplied ``datetime`` can raise from
+        # ``astimezone``, and a cohort hint is never worth an exception
+        # on a request path.
+        today = datetime.strptime(_as_day(now), "%Y-%m-%d").date()
+    except Exception:
         return None
-    today = datetime.strptime(_as_day(now), "%Y-%m-%d").date()
     days = (today - first).days
     if days <= 0:
         return "0"

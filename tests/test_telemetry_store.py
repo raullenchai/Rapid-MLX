@@ -23,7 +23,8 @@ import sqlite3
 import subprocess
 import sys
 import time
-from datetime import datetime, timedelta, timezone
+from contextlib import closing
+from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 
 import pytest
@@ -68,6 +69,14 @@ def _child_env(home: Path) -> dict[str, str]:
     return env
 
 
+# Workers report the number of calls that returned ``None`` as well as
+# the milestones they saw. A ``None`` is either "stayed inside the
+# bucket" (expected, the common case) or "storage failed" (a lost
+# increment). Only the total count can tell them apart, so the worker
+# reports the raw call count too and the test does the arithmetic —
+# otherwise a loaded CI box that trips the 2 s busy timeout fails with
+# "lost increments — the transaction is not atomic", which is a
+# diagnosis, and the wrong one.
 _RECORD_WORKER = """
 import json, sys
 from rapid_mlx.telemetry import store
@@ -77,7 +86,7 @@ for _ in range(n):
     crossing = store.record(key)
     if crossing is not None:
         out.append(crossing.bucket)
-print(json.dumps(out))
+print(json.dumps({"buckets": out, "calls": n}))
 """
 
 # Each claimer does a single, very short piece of work, so without a
@@ -127,11 +136,28 @@ def test_concurrent_record_never_loses_or_duplicates_a_milestone(fake_home):
         [["k", str(CONCURRENCY_INCREMENTS)]] * CONCURRENCY_PROCESSES,
         fake_home,
     )
-    reported = [bucket for worker in results for bucket in worker]
+    reported = [bucket for worker in results for bucket in worker["buckets"]]
+    attempted = sum(worker["calls"] for worker in results)
 
     with sqlite3.connect(str(store.db_path())) as conn:
         (count,) = conn.execute("SELECT count FROM counters WHERE key = 'k'").fetchone()
-    assert count == total, "lost increments — the transaction is not atomic"
+
+    # Two different failures both show up as "count < attempted", and
+    # they call for opposite responses: a dropped write under contention
+    # is a broken transaction, while every call simply returning
+    # "nothing to emit" would mean the store never worked here at all.
+    # Name which one happened.
+    assert count > 0, (
+        "the store recorded nothing at all — every call failed, so this "
+        "says nothing about atomicity"
+    )
+    assert count == total, (
+        f"lost increments: {attempted} calls left the counter at {count}, "
+        f"want {total}. Every call is one BEGIN IMMEDIATE transaction, so a "
+        f"shortfall here is a read-then-write interleaving, not contention: "
+        f"a call that loses the write lock raises and returns None without "
+        f"incrementing, which cannot move the counter backwards."
+    )
 
     expected = [b for minimum, b in store.BUCKET_SPECS if minimum <= total]
     assert sorted(reported) == sorted(expected), (
@@ -256,20 +282,32 @@ def test_claim_active_day_is_once_per_day(fake_home):
     assert store.claim_active_day("2026-09-21") is True
 
 
-def test_claim_active_day_prunes_old_rows(fake_home):
+def test_claim_active_day_prunes_rows_by_write_time(fake_home):
+    """The table stays bounded, and the clock that bounds it is write time.
+
+    Retention cannot key off the day a row *names* — see
+    ``test_a_past_cutoff_day_survives_a_later_prune`` for what that
+    breaks. So age a row the only way that is now meaningful: rewrite
+    its ``claimed_at`` to long ago, then make a fresh claim and watch it
+    go.
+    """
     from rapid_mlx.telemetry import store
 
-    old = (
+    assert store.claim_active_day("2026-01-01") is True
+    aged = (
         datetime.now(timezone.utc) - timedelta(days=store.ACTIVE_DAY_RETENTION_DAYS + 5)
-    ).date()
-    recent = (datetime.now(timezone.utc) - timedelta(days=2)).date()
-    assert store.claim_active_day(old) is True
-    assert store.claim_active_day(recent) is True
-    assert store.claim_active_day(datetime.now(timezone.utc)) is True
+    ).strftime("%Y-%m-%dT%H:%M:%SZ")
+    with sqlite3.connect(str(store.db_path())) as conn:
+        conn.execute(
+            "UPDATE active_days SET claimed_at = ? WHERE day = '2026-01-01'", (aged,)
+        )
+
+    assert store.claim_active_day("2026-01-02") is True  # triggers the prune
+
     with sqlite3.connect(str(store.db_path())) as conn:
         days = {row[0] for row in conn.execute("SELECT day FROM active_days")}
-    assert old.strftime("%Y-%m-%d") not in days
-    assert recent.strftime("%Y-%m-%d") in days
+    assert "2026-01-01" not in days, "an aged row was not pruned"
+    assert "2026-01-02" in days, "the row that triggered the prune was pruned"
 
 
 def test_claim_active_day_is_once_per_day_for_a_date_past_the_cutoff(fake_home):
@@ -288,7 +326,39 @@ def test_claim_active_day_is_once_per_day_for_a_date_past_the_cutoff(fake_home):
     ).strftime("%Y-%m-%d")
     assert store.claim_active_day(stale) is True
     assert store.claim_active_day(stale) is False
-    assert store.claim_active_day(stale) is False
+
+    # The claim that actually breaks it. A row naming a past-cutoff date
+    # is born prunable if retention keys off ``day``, so the next
+    # successful claim of ANY other date sweeps it away and the stale
+    # date becomes winnable all over again. Without an intervening
+    # prune-triggering claim this test passes against that bug.
+    assert store.claim_active_day() is True
+    assert store.claim_active_day(stale) is False, (
+        "a past-cutoff day was won twice — retention pruned the row that "
+        "was proving the day had already been claimed"
+    )
+
+
+def test_a_naive_datetime_is_read_as_utc_not_local_time(fake_home):
+    """Every docstring here says UTC; ``astimezone`` would say local.
+
+    A caller that builds a timestamp in UTC and drops the tzinfo (the
+    common shape) must land on the same day as the aware value for the
+    same instant. Under ``astimezone``'s naive-means-local rule it lands
+    on a different day for every hour of offset around midnight, and a
+    different one per machine.
+    """
+    from rapid_mlx.telemetry import store
+
+    naive = datetime(2026, 9, 20, 23, 30)
+    aware = naive.replace(tzinfo=timezone.utc)
+    assert store._as_day(naive) == store._as_day(aware) == "2026-09-20"
+
+    # A plain ``date`` carries no time at all and is taken as-is.
+    assert store._as_day(date(2026, 9, 20)) == "2026-09-20"
+    # ...and it reaches the table under that name.
+    assert store.claim_active_day(date(2026, 9, 20)) is True
+    assert store.claim_active_day("2026-09-20") is False
 
 
 def test_claim_active_day_defaults_to_today(fake_home):
@@ -593,15 +663,104 @@ def test_a_world_readable_database_is_made_private_again(fake_home):
     from rapid_mlx.telemetry import store
 
     store.record("k")
-    os.chmod(store.db_path(), 0o644)
-    wal = store.db_path().with_name(store.db_path().name + "-wal")
-    if wal.exists():
+    db = store.db_path()
+    wal = db.with_name(db.name + "-wal")
+
+    # SQLite deletes the WAL when the last connection closes, so after a
+    # plain ``record()`` there is no sibling to check and an
+    # ``if wal.exists()`` guard would quietly assert nothing. Hold a
+    # connection open (no transaction in flight, so ``record`` below is
+    # not blocked) to keep the sibling on disk for real.
+    with closing(sqlite3.connect(str(db))) as holder:
+        holder.execute("PRAGMA journal_mode = WAL")
+        holder.execute("BEGIN IMMEDIATE")
+        holder.execute("INSERT OR REPLACE INTO install_facts VALUES ('probe', 'x')")
+        holder.execute("COMMIT")
+        assert wal.exists(), "no WAL sibling — the mode checks below would be dead"
+
+        os.chmod(db, 0o644)
         os.chmod(wal, 0o644)
 
-    assert store.record("k") is not None
-    assert (store.db_path().stat().st_mode & 0o777) == 0o600
-    if wal.exists():
+        assert store.record("k") is not None
+        assert (db.stat().st_mode & 0o777) == 0o600
         assert (wal.stat().st_mode & 0o777) == 0o600
+
+
+def test_a_key_that_cannot_be_encoded_is_nothing_to_emit(fake_home):
+    """A lone surrogate is a normal ``str`` the driver cannot encode.
+
+    ``os.fsdecode`` returns exactly this for an undecodable byte in a
+    filename, so a caller that builds a key from a path hands us one
+    without doing anything unusual. The sqlite3 driver raises
+    ``UnicodeEncodeError`` — a ``ValueError``, not a ``sqlite3.Error`` —
+    while binding the parameter, and telemetry must never be the thing
+    that breaks a request.
+    """
+    from rapid_mlx.telemetry import store
+
+    surrogate = "model-\ud800"
+    assert store.record(surrogate) is None
+    assert store.note_model_served(surrogate) == 0
+    assert store.claim_active_day(surrogate) is False
+
+    # ...and the store still works for everything else afterwards.
+    crossing = store.record("k")
+    assert crossing is not None and crossing.count == 1
+
+
+def test_no_caller_input_escapes_as_an_exception(fake_home):
+    """The backstop itself: a non-storage error inside the work returns.
+
+    ``_valid_key`` screens the surrogate case, so this pins the guard
+    that catches whatever the screen does not anticipate.
+    """
+    from rapid_mlx.telemetry import store
+
+    def work(conn):
+        raise UnicodeEncodeError("utf-8", "x", 0, 1, "surrogates not allowed")
+
+    assert store._run(work, "nothing-to-emit") == "nothing-to-emit"
+
+
+def test_quarantine_does_not_delete_a_racing_process_wal(fake_home, monkeypatch):
+    """The siblings must be dealt with before the path stops being ours.
+
+    Process A renames the corrupt database aside. In the instant after
+    that rename the path names nothing, so process B can create a fresh
+    database and its WAL there. If A then removes ``telemetry.db-wal``
+    *by path*, it destroys B's live WAL — and the resulting
+    ``disk I/O error`` is not classified as corruption, so every process
+    afterwards silently records nothing.
+    """
+    from rapid_mlx.telemetry import store
+
+    db = store.db_path()
+    store.record("k")
+    doomed = store._db_identity()
+    db.write_bytes(b"not a database")
+    (db.with_name(db.name + "-wal")).write_bytes(b"stale wal")
+
+    real_rename = Path.rename
+
+    def rename_then_let_b_in(self, target):
+        result = real_rename(self, target)
+        if self == db:  # the database itself just moved aside
+            db.write_bytes(b"process B's fresh database")
+            (db.with_name(db.name + "-wal")).write_bytes(b"process B's live WAL")
+        return result
+
+    monkeypatch.setattr(Path, "rename", rename_then_let_b_in)
+    assert store._quarantine_corrupt_db(doomed) is True
+
+    assert db.read_bytes() == b"process B's fresh database"
+    assert (db.with_name(db.name + "-wal")).read_bytes() == b"process B's live WAL", (
+        "quarantine destroyed the WAL of a database another process had "
+        "already recreated"
+    )
+    # The corrupt file's own WAL travelled with it rather than being deleted.
+    quarantined_wal = list(fake_home.glob(".rapid-mlx/telemetry.db.corrupt-*-wal"))
+    assert len(quarantined_wal) == 1
+    assert quarantined_wal[0].read_bytes() == b"stale wal"
 
 
 def test_chmod_failure_does_not_stop_the_store(fake_home, monkeypatch):
