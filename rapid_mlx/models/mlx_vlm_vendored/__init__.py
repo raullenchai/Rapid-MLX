@@ -359,8 +359,11 @@ vendored copy differs by exactly the deviations listed):
   upstream-bugfix: ``TextConfig.from_dict`` routes the Qwen3-Next model
   types to the MoE config — pinned 0.7.1 keyed the decision on "moe" in
   the model type, so Qwen3-Next checkpoints resolved dense decoder
-  layers; ``qwen3_5_mtp.py`` upstream-bugfix: ``draft_block`` returns
-  the DFlash2-shaped empty proposal for ``block_size <= 1`` — pinned
+  layers; ``qwen3_5_mtp.py`` upstream-bugfixes: the decoder class routes
+  the Qwen3-Next family to ``Qwen3_5MoeDecoderLayer`` (pinned 0.7.1 keyed
+  the choice on "moe" in the model type, instantiating dense layers over
+  MoE checkpoints), and ``draft_block`` returns the DFlash2-shaped empty
+  proposal for ``block_size <= 1`` before consuming seed state — pinned
   0.7.1 crashes on an empty concatenate; ``split.py``
   upstream-bugfix: ``Qwen3NextMTPSplitter.postprocess`` stacks per-expert
   ``scales``/``biases`` into the ``switch_mlp`` layout

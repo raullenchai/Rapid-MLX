@@ -38,9 +38,13 @@ class Qwen3_5MTPDraftModel(nn.Module):
             hidden_size, eps=text_config.rms_norm_eps
         )
         self.pre_fc_norm_hidden = nn.RMSNorm(hidden_size, eps=text_config.rms_norm_eps)
+        # Rapid upstream-bugfix (documented deviation): pinned 0.7.1 keyed
+        # the decoder class on "moe" appearing in the model type, so the
+        # Qwen3-Next family instantiated dense layers over MoE checkpoints.
+        cfg_model_type = getattr(text_config, "model_type", "")
         layer_cls = (
             Qwen3_5MoeDecoderLayer
-            if "moe" in getattr(text_config, "model_type", "")
+            if "moe" in cfg_model_type or cfg_model_type.startswith("qwen3_next")
             else Qwen3_5DecoderLayer
         )
         self.layers = [
@@ -430,20 +434,21 @@ class Qwen3_5MTPDraftModel(nn.Module):
         tokens: List[mx.array] = []
         self._round_appended = 0
 
+        # Rapid upstream-bugfix (documented deviation): pinned 0.7.1
+        # crashes on mx.concatenate with an empty token list when
+        # block_size <= 1; return the DFlash2-shaped empty proposal
+        # BEFORE any seed-state consumption so a rejected round keeps the
+        # cached drafting state.
+        if block_size <= 1:
+            batch = 1 if isinstance(last_bonus, int) else int(last_bonus.shape[0])
+            return mx.zeros((batch, 0), dtype=token_dtype)
+
         if self._seed_token is not None and self._seed_hidden is not None:
             tok = self._seed_token.astype(token_dtype)
             h_prev = self._seed_hidden
             tokens.append(tok)
             self._seed_token = None
             self._seed_hidden = None
-
-        if block_size <= 1:
-            # Rapid upstream-bugfix (documented deviation): pinned 0.7.1
-            # crashes on mx.concatenate with an empty token list when
-            # block_size <= 1; return the DFlash2-shaped empty proposal,
-            # matching the guarded base drafter.
-            batch = 1 if isinstance(last_bonus, int) else int(last_bonus.shape[0])
-            return mx.zeros((batch, 0), dtype=token_dtype)
 
         while len(tokens) < block_size - 1:
             h_prev = self._forward_token(tok, h_prev, token_dtype)

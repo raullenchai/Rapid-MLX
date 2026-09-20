@@ -243,16 +243,33 @@ DEVIATIONS = {
     ],
     "qwen3_5_mtp/qwen3_5_mtp.py": [
         (
-            """        if block_size <= 1:
-            # Rapid upstream-bugfix (documented deviation): pinned 0.7.1
-            # crashes on mx.concatenate with an empty token list when
-            # block_size <= 1; return the DFlash2-shaped empty proposal,
-            # matching the guarded base drafter.
+            """        # Rapid upstream-bugfix (documented deviation): pinned 0.7.1
+        # crashes on mx.concatenate with an empty token list when
+        # block_size <= 1; return the DFlash2-shaped empty proposal
+        # BEFORE any seed-state consumption so a rejected round keeps the
+        # cached drafting state.
+        if block_size <= 1:
             batch = 1 if isinstance(last_bonus, int) else int(last_bonus.shape[0])
             return mx.zeros((batch, 0), dtype=token_dtype)
 
-        while len(tokens) < block_size - 1:""",
-            """        while len(tokens) < block_size - 1:""",
+        if self._seed_token is not None and self._seed_hidden is not None:""",
+            """        if self._seed_token is not None and self._seed_hidden is not None:""",
+        ),
+        (
+            """        # Rapid upstream-bugfix (documented deviation): pinned 0.7.1 keyed
+        # the decoder class on "moe" appearing in the model type, so the
+        # Qwen3-Next family instantiated dense layers over MoE checkpoints.
+        cfg_model_type = getattr(text_config, "model_type", "")
+        layer_cls = (
+            Qwen3_5MoeDecoderLayer
+            if "moe" in cfg_model_type or cfg_model_type.startswith("qwen3_next")
+            else Qwen3_5DecoderLayer
+        )""",
+            """        layer_cls = (
+            Qwen3_5MoeDecoderLayer
+            if "moe" in getattr(text_config, "model_type", "")
+            else Qwen3_5DecoderLayer
+        )""",
         ),
         (
             """                # Rapid upstream-bugfix (documented deviation): pinned
@@ -693,6 +710,43 @@ def test_qwen35_text_config_routes_qwen3_next_to_moe():
     assert isinstance(dense, config_module.DenseTextConfig)
 
 
+def test_qwen35_decoder_layer_routes_qwen3_next_to_moe():
+    """The drafter's decoder class must follow the config routing."""
+
+    from rapid_mlx.models.mlx_vlm_vendored.speculative.drafters.qwen3_5_mtp import (
+        config as config_module,
+    )
+    from rapid_mlx.models.mlx_vlm_vendored.speculative.drafters.qwen3_5_mtp import (
+        qwen3_5_mtp as qwen_module,
+    )
+
+    cfg = qwen_module.Qwen3_5MTPConfig(
+        model_type="qwen3_5_mtp",
+        text_config=config_module.MoeTextConfig(
+            model_type="qwen3_next",
+            hidden_size=4,
+            num_hidden_layers=1,
+            num_attention_heads=1,
+            num_key_value_heads=1,
+            head_dim=2,
+            linear_num_value_heads=1,
+            linear_num_key_heads=1,
+            linear_key_head_dim=1,
+            linear_value_head_dim=1,
+            linear_conv_kernel_dim=1,
+            moe_intermediate_size=2,
+            num_experts=2,
+            num_experts_per_tok=1,
+            shared_expert_intermediate_size=2,
+            rms_norm_eps=1e-5,
+            vocab_size=8,
+            max_position_embeddings=8,
+        ),
+    )
+    drafter = qwen_module.Qwen3_5MTPDraftModel(cfg)
+    assert isinstance(drafter.layers[0], qwen_module.Qwen3_5MoeDecoderLayer)
+
+
 def test_qwen_mtp_draft_block_one_returns_empty_proposal():
     """The served qwen drafter shares the guarded block_size floor."""
     import mlx.core as mx
@@ -702,8 +756,10 @@ def test_qwen_mtp_draft_block_one_returns_empty_proposal():
     )
 
     drafter = qwen_module.Qwen3_5MTPDraftModel.__new__(qwen_module.Qwen3_5MTPDraftModel)
-    drafter._seed_token = None
-    drafter._seed_hidden = None
+    seed_token = mx.array([[7]], dtype=mx.int32)
+    seed_hidden = mx.zeros((1, 1, 2))
+    drafter._seed_token = seed_token
+    drafter._seed_hidden = seed_hidden
     drafter._round_appended = 0
     drafter._input_embed = object()
     drafter._lm_head_fn = lambda value: value
@@ -711,6 +767,10 @@ def test_qwen_mtp_draft_block_one_returns_empty_proposal():
         5, mx.zeros((1, 1, 1)), None, 1, None, token_dtype=mx.int32, greedy=True
     )
     assert out.shape == (1, 0)
+    # the guard precedes seed-state consumption: the cached seed survives
+    assert drafter._seed_token is seed_token
+    assert drafter._seed_hidden is seed_hidden
+    assert drafter._round_appended == 0
 
 
 def test_dflash_bind_re_resolves_target_embeddings():
