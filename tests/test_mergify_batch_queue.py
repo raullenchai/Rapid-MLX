@@ -120,7 +120,7 @@ def test_ready_authorization_is_bound_to_the_exact_head_commit():
     )
 
     assert workflow["on"] == {
-        "pull_request_target": {"types": ["labeled", "synchronize"]}
+        "pull_request_target": {"types": ["labeled", "synchronize", "unlabeled"]}
     }
     assert "concurrency" not in workflow
     assert workflow["permissions"] == {}
@@ -291,9 +291,7 @@ def test_fresh_authorization_removes_the_bot_owned_stale_notice():
 
 
 def test_comment_cleanup_failure_does_not_revoke_exact_head_authorization():
-    result = _run_authorization_script(
-        labels=["merge-ready-mac"], fail_comments=True
-    )
+    result = _run_authorization_script(labels=["merge-ready-mac"], fail_comments=True)
 
     assert result["calls"] == [
         ["status", "pending"],
@@ -312,6 +310,7 @@ def test_head_update_notice_is_actionable_without_mutating_authorization():
     job = workflow["jobs"]["notify-stale-ready-head"]
 
     assert "github.event.action == 'synchronize'" in job["if"]
+    assert "github.event.action == 'unlabeled'" in job["if"]
     assert "head.repo.full_name == github.repository" in job["if"]
     assert job["permissions"] == {
         "issues": "write",
@@ -344,6 +343,7 @@ def _run_head_update_notice(
     statuses: list[dict[str, str]] | None = None,
     refreshed_statuses: list[dict[str, str]] | None = None,
     comments: list[dict[str, object]] | None = None,
+    action: str = "synchronize",
 ) -> list[list[object]]:
     workflow = yaml.load(
         (ROOT / ".github/workflows/authorize-merge-ready.yml").read_text(),
@@ -359,6 +359,7 @@ def _run_head_update_notice(
             "statuses": statuses or [],
             "refreshedStatuses": refreshed_statuses,
             "comments": comments or [],
+            "action": action,
         }
     )
     harness = f"""
@@ -369,7 +370,10 @@ let pullCalls = 0;
 const context = {{
   repo: {{ owner: "owner", repo: "repo" }},
   issue: {{ number: 42 }},
-  payload: {{ pull_request: {{ head: {{ sha: "head-sha" }} }} }},
+  payload: {{
+    action: scenario.action,
+    pull_request: {{ head: {{ sha: "head-sha" }} }},
+  }},
 }};
 const github = {{
   paginate: async (method, args) => method(args).then((response) => response.data),
@@ -406,6 +410,7 @@ const github = {{
       }},
       createComment: async (args) => calls.push(["create", args.body]),
       updateComment: async (args) => calls.push(["update", args.body]),
+      deleteComment: async (args) => calls.push(["delete", args.comment_id]),
     }},
   }},
 }};
@@ -473,13 +478,53 @@ def test_head_update_notice_skips_newer_heads_and_fresh_authorization():
         ["statuses"],
         ["get"],
     ]
-    assert _run_head_update_notice(refreshed_labels=[]) == [
+    assert _run_head_update_notice(
+        refreshed_labels=[],
+        comments=[
+            {
+                "id": 7,
+                "body": "<!-- merge-ready-stale-head --> old",
+                "user": {"login": "github-actions[bot]"},
+            }
+        ],
+    ) == [
         ["get"],
         ["statuses"],
         ["comments"],
         ["statuses"],
         ["get"],
+        ["delete", 7],
     ]
+
+
+def test_ready_label_removal_clears_an_existing_stale_notice():
+    calls = _run_head_update_notice(
+        action="unlabeled",
+        labels=[],
+        comments=[
+            {
+                "id": 7,
+                "body": "<!-- merge-ready-stale-head --> old",
+                "user": {"login": "github-actions[bot]"},
+            }
+        ],
+    )
+
+    assert calls == [["get"], ["comments"], ["get"], ["delete", 7]]
+
+    newer_head_calls = _run_head_update_notice(
+        action="unlabeled",
+        live_head="newer-head",
+        labels=[],
+        comments=[
+            {
+                "id": 7,
+                "body": "<!-- merge-ready-stale-head --> old",
+                "user": {"login": "github-actions[bot]"},
+            }
+        ],
+    )
+    assert newer_head_calls == [["get"], ["comments"], ["get"], ["delete", 7]]
 
 
 def test_status_or_live_pull_failure_remains_fail_closed():

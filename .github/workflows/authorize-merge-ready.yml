@@ -2,7 +2,7 @@ name: Bind merge-ready to head
 
 on:
   pull_request_target:
-    types: [labeled, synchronize]
+    types: [labeled, synchronize, unlabeled]
 
 permissions: {}
 
@@ -124,9 +124,12 @@ jobs:
   notify-stale-ready-head:
     if: >-
       github.event.pull_request.head.repo.full_name == github.repository &&
-      github.event.action == 'synchronize' &&
-      (contains(github.event.pull_request.labels.*.name, 'merge-ready') ||
-       contains(github.event.pull_request.labels.*.name, 'merge-ready-mac'))
+      ((github.event.action == 'synchronize' &&
+        (contains(github.event.pull_request.labels.*.name, 'merge-ready') ||
+         contains(github.event.pull_request.labels.*.name, 'merge-ready-mac'))) ||
+       (github.event.action == 'unlabeled' &&
+        (github.event.label.name == 'merge-ready' ||
+         github.event.label.name == 'merge-ready-mac')))
     runs-on: ubuntu-latest
     concurrency:
       group: merge-ready-stale-notice-${{ github.event.pull_request.number }}
@@ -147,7 +150,10 @@ jobs:
               repo: context.repo.repo,
               pull_number: context.issue.number,
             });
-            if (livePull.head.sha !== eventHead) {
+            if (
+              context.payload.action === "synchronize" &&
+              livePull.head.sha !== eventHead
+            ) {
               return;
             }
 
@@ -156,6 +162,46 @@ jobs:
               .filter((name) =>
                 name === "merge-ready" || name === "merge-ready-mac",
               );
+            if (context.payload.action === "unlabeled") {
+              if (readyLabels.length !== 0) {
+                return;
+              }
+              const comments = await github.paginate(
+                github.rest.issues.listComments,
+                {
+                  owner: context.repo.owner,
+                  repo: context.repo.repo,
+                  issue_number: context.issue.number,
+                  per_page: 100,
+                },
+              );
+              const staleNotice = comments.find(
+                (comment) =>
+                  comment.user?.login === "github-actions[bot]" &&
+                  comment.body?.includes(marker),
+              );
+              if (!staleNotice) {
+                return;
+              }
+              const { data: refreshedPull } = await github.rest.pulls.get({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                pull_number: context.issue.number,
+              });
+              const refreshedReadyLabels = refreshedPull.labels.filter(
+                (label) =>
+                  label.name === "merge-ready" ||
+                  label.name === "merge-ready-mac",
+              );
+              if (refreshedReadyLabels.length === 0) {
+                await github.rest.issues.deleteComment({
+                  owner: context.repo.owner,
+                  repo: context.repo.repo,
+                  comment_id: staleNotice.id,
+                });
+              }
+              return;
+            }
             if (readyLabels.length === 0) {
               return;
             }
@@ -233,6 +279,13 @@ jobs:
                 name === "merge-ready" || name === "merge-ready-mac",
               );
             if (refreshedReadyLabels.length === 0) {
+              if (existing) {
+                await github.rest.issues.deleteComment({
+                  owner: context.repo.owner,
+                  repo: context.repo.repo,
+                  comment_id: existing.id,
+                });
+              }
               return;
             }
             if (existing) {
