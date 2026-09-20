@@ -123,10 +123,7 @@ def test_xcui_runner_launches_production_bundle_with_fake_sidecar():
     assert 'matching(identifier: "RapidUITests.FileDragSource")' in harness
     assert "let maximumAttempts = 2" in harness
     assert "FileDropRetryPolicy.observationTimeout(" in harness
-    assert "- retryGestureBudget" in harness
-    assert "- retrySessionRestartBudget" in harness
-    assert "- minimumRetryBudget" in harness
-    assert "- observationSchedulingSlack" in harness
+    assert "completionObservationTimeout" in harness
     assert "FileDropRetryPolicy.shouldRetry(" in harness
     assert "simulateCompletionVisibilityDelay: TimeInterval = 0" in harness
     assert "completionIsVisible()" in harness
@@ -146,6 +143,11 @@ def test_xcui_runner_launches_production_bundle_with_fake_sidecar():
     assert "launchFileDragSource(" in harness
     assert "terminateFileDragSource(dragSource)" in harness
     assert "simulateMissedFirstGesture && attempt == 1" in harness
+    assert "try DropEventFile.clear(at: dropEventFile)" in harness
+    assert harness.index("try DropEventFile.clear(at: dropEventFile)") < harness.index(
+        "for attempt in 1...maximumAttempts"
+    )
+    assert "retry suppressed" in harness
     assert "XCTAssertEqual(delayedChipAttempts, 1)" in chat_source
     assert "simulateCompletionVisibilityDelay: 3" in chat_source
     assert 'let dropTarget = element("rapid.chat.compose")' in harness

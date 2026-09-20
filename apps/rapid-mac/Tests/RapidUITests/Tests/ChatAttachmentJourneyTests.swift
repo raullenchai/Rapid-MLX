@@ -15,66 +15,36 @@ final class ChatAttachmentJourneyTests: XCTestCase {
 
     func testFileDropRetryPolicyIsBoundedAndCompletionAware() {
         XCTAssertEqual(
-            FileDropRetryPolicy.observationTimeout(remainingTime: 10),
-            0.5
-        )
-        XCTAssertEqual(
-            FileDropRetryPolicy.observationTimeout(remainingTime: 14),
+            FileDropRetryPolicy.observationTimeout(settleTimeout: 10),
             4.5
         )
         XCTAssertEqual(
-            FileDropRetryPolicy.observationTimeout(remainingTime: 2),
+            FileDropRetryPolicy.observationTimeout(settleTimeout: 4.5),
+            4.5
+        )
+        XCTAssertEqual(
+            FileDropRetryPolicy.observationTimeout(settleTimeout: -1),
             0
         )
         XCTAssertTrue(
             FileDropRetryPolicy.shouldRetry(
                 completedDrop: false,
                 attempt: 1,
-                maximumAttempts: 2,
-                remainingTime: FileDropRetryPolicy.retryGestureBudget
-                    + FileDropRetryPolicy.retrySessionRestartBudget
-                    + FileDropRetryPolicy.minimumRetryBudget
-            )
-        )
-        XCTAssertFalse(
-            FileDropRetryPolicy.shouldRetry(
-                completedDrop: false,
-                attempt: 1,
-                maximumAttempts: 2,
-                remainingTime: FileDropRetryPolicy.retryGestureBudget
-                    + FileDropRetryPolicy.minimumRetryBudget
-            )
-        )
-        XCTAssertFalse(
-            FileDropRetryPolicy.shouldRetry(
-                completedDrop: false,
-                attempt: 1,
-                maximumAttempts: 2,
-                remainingTime: FileDropRetryPolicy.minimumRetryBudget
+                maximumAttempts: 2
             )
         )
         XCTAssertFalse(
             FileDropRetryPolicy.shouldRetry(
                 completedDrop: false,
                 attempt: 2,
-                maximumAttempts: 2,
-                remainingTime: FileDropRetryPolicy.minimumRetryBudget
+                maximumAttempts: 2
             )
         )
         XCTAssertFalse(
             FileDropRetryPolicy.shouldRetry(
                 completedDrop: true,
                 attempt: 1,
-                maximumAttempts: 2,
-                remainingTime: FileDropRetryPolicy.minimumRetryBudget
-            )
-        )
-        XCTAssertFalse(
-            FileDropRetryPolicy.shouldRetry(
-                completedDrop: false,
-                attempt: 1,
-                maximumAttempts: 2,
-                remainingTime: FileDropRetryPolicy.minimumRetryBudget - 0.001
+                maximumAttempts: 2
             )
         )
     }
