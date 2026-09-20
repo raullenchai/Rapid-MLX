@@ -35,6 +35,7 @@ def pair_to_chat(row: dict) -> dict:
 
 def convert(pairs_path: Path, out_path: Path) -> int:
     n = 0
+    out_path.parent.mkdir(parents=True, exist_ok=True)
     with pairs_path.open(encoding="utf-8") as src, out_path.open("w", encoding="utf-8") as dst:
         for line in src:
             if not line.strip():
@@ -49,7 +50,7 @@ def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--data-dir", type=Path, default=HERE / "data")
     args = parser.parse_args(argv)
-    for name, out_name in (("pairs_train.jsonl", "sft_train.jsonl"), ("pairs_heldout.jsonl", "sft_valid.jsonl")):
+    for name, out_name in (("pairs_train.jsonl", "sft/train.jsonl"), ("pairs_heldout.jsonl", "sft/valid.jsonl")):
         src = args.data_dir / name
         dst = args.data_dir / out_name
         count = convert(src, dst)

@@ -24,8 +24,9 @@ LAYERS="${LAYERS:-24}"
 python -m mlx_lm lora \
   --model "$MODEL" \
   --train \
-  --data "$HERE/data/sft_train.jsonl,$HERE/data/sft_valid.jsonl" \
+  --data "$HERE/data/sft" \
   --fine-tune-type lora \
+  --mask-prompt \
   --num-layers "$LAYERS" \
   --batch-size "$BATCH" \
   --iters "$ITERS" \

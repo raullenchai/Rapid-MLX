@@ -88,6 +88,15 @@ endpoint exists (public API change — needs review), the same behavior can be
 approximated over the OpenAI-compatible server with `max_tokens=1` +
 `logprobs`, at the risk of the winning letter falling outside `top_logprobs`.
 
+## Training gotcha (durable lesson)
+
+`mlx_lm.lora` computes loss over the FULL sequence by default. With ~300
+prompt tokens and a 1-letter completion, the decision signal is ~1/300 of
+the gradient and the adapter learns to model prompts while the readout
+stays at chance (observed: val loss 0.048, heldout accuracy 41% ≈ base
+40.1%). `--mask-prompt` is MANDATORY for this pipeline: val loss then
+starts at ~ln(n_candidates) and the letter itself is optimized.
+
 ## Non-goals / honesty
 
 - No standard public benchmark exists for this task class; heldout numbers
