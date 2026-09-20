@@ -202,8 +202,8 @@ rationale is genuinely overkill.
 
 Verifies that the same Python interpreter `targeted_tests` and
 `full_unit` will hand to pytest can import the plugins the suite needs and
-that each installed distribution satisfies its canonical PEP 508 requirement
-from `pyproject.toml[project.optional-dependencies].test` (chiefly
+that each distribution in the required import roster satisfies its canonical
+PEP 508 requirement from `pyproject.toml[project.optional-dependencies].test` (chiefly
 `pytest_asyncio` — `pytest.ini` sets
 `asyncio_mode = auto`, so without the plugin every `async def test_*`
 fails at collection with "async def functions are not natively

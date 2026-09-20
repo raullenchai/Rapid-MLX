@@ -51,7 +51,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from packaging.markers import default_environment
-from packaging.requirements import Requirement
+from packaging.requirements import InvalidRequirement, Requirement
 from packaging.utils import canonicalize_name
 from packaging.version import InvalidVersion, Version
 
@@ -115,6 +115,7 @@ DARWIN_ONLY_TEST_IMPORTS = frozenset({"mlx_vlm", "mlx_audio"})
 # update this constant too (and the unit test that pins it).
 TEST_EXTRAS_NAME = "test"
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
+TARGET_METADATA_TIMEOUT_SECONDS = 15
 
 # Files whose modification by an external PR makes the auto-install
 # path UNSAFE — installing from the PR's working tree would let the
@@ -265,11 +266,25 @@ def _target_metadata(
 ) -> tuple[dict[str, str], dict[str, str | None], str | None]:
     """Read marker environment + installed versions from ``interpreter``."""
 
-    proc = subprocess.run(  # noqa: S603
-        [interpreter, "-c", _TARGET_METADATA_PROBE, json.dumps(distribution_names)],
-        capture_output=True,
-        text=True,
-    )
+    try:
+        proc = subprocess.run(  # noqa: S603
+            [
+                interpreter,
+                "-c",
+                _TARGET_METADATA_PROBE,
+                json.dumps(distribution_names),
+            ],
+            capture_output=True,
+            text=True,
+            timeout=TARGET_METADATA_TIMEOUT_SECONDS,
+        )
+    except subprocess.TimeoutExpired:
+        return (
+            {},
+            {},
+            "target interpreter metadata probe timed out after "
+            f"{TARGET_METADATA_TIMEOUT_SECONDS}s",
+        )
     if proc.returncode != 0:
         diagnostic = (proc.stderr or proc.stdout or "").strip()
         return {}, {}, diagnostic or f"metadata probe exited {proc.returncode}"
@@ -395,7 +410,22 @@ def check_test_env(python: str | None = None) -> TestEnvStatus:
     pytest_asyncio twice could trip a "plugin already registered" warning).
     """
     interp = python or sys.executable
-    requirements = canonical_test_requirements()
+    try:
+        requirements = canonical_test_requirements()
+    except (
+        OSError,
+        KeyError,
+        TypeError,
+        tomllib.TOMLDecodeError,
+        InvalidRequirement,
+    ) as error:
+        import_names = tuple(pkg for pkg, _, _ in REQUIRED_TEST_PACKAGES)
+        return TestEnvStatus(
+            ok=False,
+            missing=import_names,
+            message=f"canonical .[{TEST_EXTRAS_NAME}] requirements invalid: {error}",
+            interpreter=interp,
+        )
     distribution_names = [pkg for _, pkg, _ in REQUIRED_TEST_PACKAGES]
     environment, versions, metadata_error = _target_metadata(interp, distribution_names)
     if metadata_error:

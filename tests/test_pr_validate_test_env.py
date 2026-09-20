@@ -25,6 +25,7 @@ from pathlib import Path
 from unittest.mock import patch
 
 import pytest
+from packaging.requirements import InvalidRequirement
 
 # Standard pyproject parser — stdlib on 3.11+, vendored tomli marker
 # on 3.10 (already an existing dev dep).
@@ -321,6 +322,40 @@ class TestCheckTestEnv:
         assert (
             environment["implementation_version"] == expected["implementation_version"]
         )
+
+    def test_target_metadata_timeout_fails_closed(self):
+        import subprocess
+
+        with patch(
+            "scripts.pr_validate._test_env.subprocess.run",
+            side_effect=subprocess.TimeoutExpired(["python"], 15),
+        ):
+            environment, versions, error = _target_metadata("/hung/python", ["pytest"])
+
+        assert environment == {}
+        assert versions == {}
+        assert error == "target interpreter metadata probe timed out after 15s"
+
+    @pytest.mark.parametrize(
+        "error",
+        [
+            FileNotFoundError("pyproject.toml missing"),
+            KeyError("optional-dependencies"),
+            InvalidRequirement("not a valid requirement @@@"),
+        ],
+    )
+    def test_invalid_canonical_requirements_fail_as_status(self, error):
+        with patch(
+            "scripts.pr_validate._test_env.canonical_test_requirements",
+            side_effect=error,
+        ):
+            status = check_test_env()
+
+        assert status.ok is False
+        assert status.missing == tuple(
+            import_name for import_name, _, _ in REQUIRED_TEST_PACKAGES
+        )
+        assert "canonical .[test] requirements invalid" in status.message
 
 
 # ---------------------------------------------------------------------------
