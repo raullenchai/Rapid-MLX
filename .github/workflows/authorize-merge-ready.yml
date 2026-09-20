@@ -14,9 +14,6 @@ jobs:
       (github.event.label.name == 'merge-ready' ||
        github.event.label.name == 'merge-ready-mac')
     runs-on: ubuntu-latest
-    concurrency:
-      group: merge-ready-stale-notice-${{ github.event.pull_request.number }}
-      cancel-in-progress: false
     permissions:
       issues: write
       pull-requests: read
@@ -92,8 +89,8 @@ jobs:
             // The commit status is the authoritative queue gate. Removing an
             // obsolete explanatory comment must not invalidate an otherwise
             // successful exact-head authorization if the Issues API has a
-            // transient failure. The shared per-PR concurrency group prevents
-            // the synchronize job from racing this cleanup.
+            // transient failure. The notice job performs its own final
+            // post-write recheck to reconcile concurrent synchronize events.
             try {
               const marker = "<!-- merge-ready-stale-head -->";
               const comments = await github.paginate(
@@ -318,18 +315,66 @@ jobs:
               }
               return;
             }
+            let writtenNotice;
             if (existing) {
-              await github.rest.issues.updateComment({
+              const { data } = await github.rest.issues.updateComment({
                 owner: context.repo.owner,
                 repo: context.repo.repo,
                 comment_id: existing.id,
                 body,
               });
+              writtenNotice = data;
             } else {
-              await github.rest.issues.createComment({
+              const { data } = await github.rest.issues.createComment({
                 owner: context.repo.owner,
                 repo: context.repo.repo,
                 issue_number: context.issue.number,
                 body,
               });
+              writtenNotice = data;
+            }
+
+            // Authorization is security-critical and deliberately does not
+            // share this advisory job's lossy concurrency queue. Close the
+            // remaining race in the other direction: if authorization, label
+            // removal, or a newer push won while the comment was being
+            // written, immediately remove the obsolete notice.
+            const postWriteStatuses = await github.paginate(
+              github.rest.repos.listCommitStatusesForRef,
+              {
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                ref: eventHead,
+                per_page: 100,
+              },
+            );
+            const postWriteAuthorization = postWriteStatuses.find(
+              (status) => status.context === "merge-ready-head",
+            );
+            const { data: postWritePull } = await github.rest.pulls.get({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              pull_number: context.issue.number,
+            });
+            const postWriteReadyLabels = postWritePull.labels.filter(
+              (label) =>
+                label.name === "merge-ready" ||
+                label.name === "merge-ready-mac",
+            );
+            if (
+              postWriteAuthorization?.state === "success" ||
+              postWritePull.head.sha !== eventHead ||
+              postWriteReadyLabels.length === 0
+            ) {
+              try {
+                await github.rest.issues.deleteComment({
+                  owner: context.repo.owner,
+                  repo: context.repo.repo,
+                  comment_id: writtenNotice.id,
+                });
+              } catch (error) {
+                core.warning(
+                  `Could not remove stale merge-ready notice: ${error.message}`,
+                );
+              }
             }

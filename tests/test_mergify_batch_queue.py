@@ -130,10 +130,7 @@ def test_ready_authorization_is_bound_to_the_exact_head_commit():
     assert "merge-ready" in job["if"]
     assert "merge-ready-mac" in job["if"]
     assert "github.event.action == 'labeled'" in job["if"]
-    assert job["concurrency"] == {
-        "group": "merge-ready-stale-notice-${{ github.event.pull_request.number }}",
-        "cancel-in-progress": "false",
-    }
+    assert "concurrency" not in job
     assert job["permissions"] == {
         "issues": "write",
         "pull-requests": "read",
@@ -342,6 +339,7 @@ def _run_head_update_notice(
     refreshed_labels: list[str] | None = None,
     statuses: list[dict[str, str]] | None = None,
     refreshed_statuses: list[dict[str, str]] | None = None,
+    post_statuses: list[dict[str, str]] | None = None,
     comments: list[dict[str, object]] | None = None,
     action: str = "synchronize",
     fail_delete: bool = False,
@@ -359,6 +357,7 @@ def _run_head_update_notice(
             "refreshedLabels": refreshed_labels,
             "statuses": statuses or [],
             "refreshedStatuses": refreshed_statuses,
+            "postStatuses": post_statuses,
             "comments": comments or [],
             "action": action,
             "failDelete": fail_delete,
@@ -400,9 +399,11 @@ const github = {{
       statusCalls += 1;
       calls.push(["statuses"]);
       return {{
-        data: statusCalls === 1 || scenario.refreshedStatuses === null
+        data: statusCalls === 1
           ? scenario.statuses
-          : scenario.refreshedStatuses,
+          : statusCalls === 2 || scenario.postStatuses === null
+            ? (scenario.refreshedStatuses ?? scenario.statuses)
+            : scenario.postStatuses,
       }};
     }} }},
     issues: {{
@@ -410,8 +411,14 @@ const github = {{
         calls.push(["comments"]);
         return {{ data: scenario.comments }};
       }},
-      createComment: async (args) => calls.push(["create", args.body]),
-      updateComment: async (args) => calls.push(["update", args.body]),
+      createComment: async (args) => {{
+        calls.push(["create", args.body]);
+        return {{ data: {{ id: 99, body: args.body }} }};
+      }},
+      updateComment: async (args) => {{
+        calls.push(["update", args.body]);
+        return {{ data: {{ id: args.comment_id, body: args.body }} }};
+      }},
       deleteComment: async (args) => {{
         calls.push(["delete", args.comment_id]);
         if (scenario.failDelete) throw new Error("delete failure");
@@ -445,10 +452,13 @@ def test_head_update_notice_creates_or_updates_one_actionable_comment():
         "statuses",
         "get",
         "create",
+        "statuses",
+        "get",
     ]
-    assert "merge-ready-stale-head" in created[-1][1]
-    assert "remove and re-apply" in created[-1][1]
-    assert "head-sha" in created[-1][1]
+    created_comment = next(call for call in created if call[0] == "create")
+    assert "merge-ready-stale-head" in created_comment[1]
+    assert "remove and re-apply" in created_comment[1]
+    assert "head-sha" in created_comment[1]
 
     updated = _run_head_update_notice(
         comments=[
@@ -466,6 +476,8 @@ def test_head_update_notice_creates_or_updates_one_actionable_comment():
         "statuses",
         "get",
         "update",
+        "statuses",
+        "get",
     ]
 
 
@@ -560,6 +572,25 @@ def test_fresh_authorization_self_heals_a_leftover_notice():
         ["delete", 7],
         ["warning", "Could not remove stale merge-ready notice: delete failure"],
     ]
+
+
+def test_notice_post_write_recheck_closes_authorization_race():
+    calls = _run_head_update_notice(
+        post_statuses=[{"context": "merge-ready-head", "state": "success"}]
+    )
+
+    assert [call[0] for call in calls] == [
+        "get",
+        "statuses",
+        "comments",
+        "statuses",
+        "get",
+        "create",
+        "statuses",
+        "get",
+        "delete",
+    ]
+    assert calls[-1] == ["delete", 99]
 
 
 def test_status_or_live_pull_failure_remains_fail_closed():
