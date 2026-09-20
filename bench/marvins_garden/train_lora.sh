@@ -20,6 +20,11 @@ ITERS="${ITERS:-800}"
 BATCH="${BATCH:-2}"
 LR="${LR:-3.0e-5}"
 LAYERS="${LAYERS:-24}"
+SAVE_EVERY="${SAVE_EVERY:-100}"
+RESUME_ARGS=()
+if [[ -n "${RESUME_FROM:-}" && -f "${RESUME_FROM}" ]]; then
+  RESUME_ARGS=(--resume-adapter-file "$RESUME_FROM")
+fi
 
 python -m mlx_lm lora \
   --model "$MODEL" \
@@ -34,7 +39,8 @@ python -m mlx_lm lora \
   --steps-per-eval 50 \
   --max-seq-length 1024 \
   --adapter-path "$ADAPTER" \
-  --save-every 200
+  --save-every "$SAVE_EVERY" \
+  "${RESUME_ARGS[@]}"
 
 echo "adapter written to $ADAPTER"
 echo "evaluate with:"
