@@ -281,6 +281,7 @@ final class MCPCatalog {
             throw CatalogError.serverNotRunning
         }
         var req = URLRequest(url: url)
+        req.applyRapidClientHeader()
         // Same per-launch bearer the chat stream uses (`ChatStreamClient`).
         if let bearer = ep.bearer, !bearer.isEmpty {
             req.setValue("Bearer \(bearer)", forHTTPHeaderField: "Authorization")

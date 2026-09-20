@@ -664,7 +664,11 @@ struct VideoClient: VideoClientProtocol, @unchecked Sendable {
         return request
     }
 
+    /// Both the shared ``request(path:port:bearer:)`` builder and the ad-hoc
+    /// ``list`` request route through here, so the desktop client header rides
+    /// along with the per-launch bearer.
     private func applyBearer(_ request: inout URLRequest, _ bearer: String?) {
+        request.applyRapidClientHeader()
         if let bearer, !bearer.isEmpty {
             request.setValue("Bearer \(bearer)", forHTTPHeaderField: "Authorization")
         }
