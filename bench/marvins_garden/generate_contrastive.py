@@ -94,33 +94,39 @@ ROUTE_PREFERENCE: dict[str, tuple[str, ...]] = {
 }
 
 ROUTE_TASKS: tuple[str, ...] = tuple(ROUTE_PREFERENCE)
-CTX_TIERS: tuple[int, ...] = (2048, 8192, 16384, 32768, 40000, 65536, 100000)
-RAM_TIERS: tuple[int, ...] = (8, 16, 18, 24, 32, 64)
+CTX_TIERS: tuple[int, ...] = (2048, 8192, 16384, 32768, 40000, 65536, 100000, 131072)
+RAM_TIERS: tuple[int, ...] = (8, 12, 16, 18, 21, 24, 28, 32, 48, 64)
 
 _ROUTE_BRIEFS: dict[str, tuple[str, ...]] = {
     "chat": (
         "Customer small talk and quick questions; tone matters, answers are short.",
         "Companion-style chat with a returning user; stay warm and consistent.",
+        "Interactive brainstorming banter; many short turns, low stakes.",
     ),
     "summarize": (
         "Summarize a pasted newsletter into five bullets for the user.",
         "Condense meeting notes into action items; nothing leaves the device.",
+        "Boil a long forum thread down to the two decisions that were made.",
     ),
     "translate": (
         "Translate product strings en->de with glossary terms respected.",
         "Translate a two-paragraph email en->ja, polite register.",
+        "Translate UI error messages en->fr, keep placeholders intact.",
     ),
     "tool_agent": (
         "Multi-step agent turn: read a file, then draft a reply from its contents.",
         "Agent loop that must call host tools and respect a tight round budget.",
+        "Agent must reconcile three local files into one consistent record.",
     ),
     "coding": (
         "Refactor a Django view and explain the migration path.",
         "Debug a failing pytest module and propose the patch.",
+        "Write a migration script for a 400-line legacy parser module.",
     ),
     "reasoning": (
         "Untangle a multi-constraint scheduling puzzle with numeric bounds.",
         "Grade a chain of quantitative claims against the supplied tables.",
+        "Derive the closed form for a recurrence and sanity-check it numerically.",
     ),
 }
 
@@ -607,17 +613,30 @@ def generate_family_groups(family: str, seed: int, n_groups: int, first_index: i
     return groups
 
 
+# v2 family weights: routing is the hard family (8-way menu) and gets the
+# largest share; the binaries are easier per sample.
+FAMILY_WEIGHTS: dict[str, float] = {
+    "model_routing": 0.50,
+    "tool_gate": 0.25,
+    "injection_guard": 0.25,
+}
+
+
+def _split_by_weights(total: int) -> dict[str, int]:
+    names = list(_FAMILIES)
+    counts = {name: int(total * FAMILY_WEIGHTS[name]) for name in names}
+    counts[names[0]] += total - sum(counts.values())
+    return counts
+
+
 def generate_dataset(seed: int, n_groups: int, heldout_groups: int) -> tuple[list[dict[str, Any]], list[dict[str, Any]], dict[str, Any]]:
     """Generate the full dataset split by family, groups kept whole per split."""
     train: list[dict[str, Any]] = []
     heldout: list[dict[str, Any]] = []
-    family_names = list(_FAMILIES)
-    per_family = {name: n_groups // len(family_names) for name in family_names}
-    per_family[family_names[0]] += n_groups - sum(per_family.values())
-    heldout_per = {name: heldout_groups // len(family_names) for name in family_names}
-    heldout_per[family_names[0]] += heldout_groups - sum(heldout_per.values())
+    per_family = _split_by_weights(n_groups)
+    heldout_per = _split_by_weights(heldout_groups)
     cursor = 0
-    for name in family_names:
+    for name in _FAMILIES:
         total = per_family[name]
         h = heldout_per[name]
         heldout.extend(generate_family_groups(name, seed, h, cursor))
@@ -648,7 +667,7 @@ def _write_jsonl(path: Path, rows: list[dict[str, Any]]) -> None:
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--seed", type=int, default=20260919)
-    parser.add_argument("--groups", type=int, default=640)
+    parser.add_argument("--groups", type=int, default=1280)
     parser.add_argument("--heldout-groups", type=int, default=96)
     parser.add_argument("--out-dir", type=Path, default=Path(__file__).resolve().parent / "data")
     args = parser.parse_args(argv)
