@@ -14,7 +14,17 @@ import mlx.core as mx
 from rapid_mlx.models.mlx_vlm_vendored.cache import (
     BatchPoolingCache,
     BatchRotatingKVCache,
+    BufferedRotatingKVCache,
 )
+
+
+def test_buffered_rotating_extract_rejects_an_invalid_row():
+    cache = BufferedRotatingKVCache(max_size=8)
+    item = mx.zeros((1, 1, 1, 4))
+    cache.update_and_fetch(item, item)
+
+    with pytest.raises(IndexError):
+        cache.extract(1)
 
 
 def test_batch_rotating_merge_with_content():

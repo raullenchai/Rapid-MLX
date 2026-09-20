@@ -198,6 +198,49 @@ def _safe_prompt_lookup_draft_count(
     return 0
 
 
+def _buffer_mtp_target_cache(model_cache, requested_depth: int) -> None:
+    """Give keep=0 rotating target caches transactional verify slack.
+
+    A plain rotating cache overwrites its oldest committed rows once its
+    sliding window fills, so a rejected MTP block can no longer be rewound.
+    The buffered variant keeps a small temporal tail beyond the visible
+    attention window.  Entries with attention sinks (``keep > 0``) retain
+    their native cache and are handled by the fail-safe admission check.
+    """
+    if requested_depth <= 0:
+        return
+
+    from mlx_lm.models.cache import RotatingKVCache as LMRotatingKVCache
+
+    from rapid_mlx.models.mlx_vlm_vendored.cache import (
+        BufferedRotatingKVCache,
+    )
+    from rapid_mlx.models.mlx_vlm_vendored.cache import (
+        RotatingKVCache as VendoredRotatingKVCache,
+    )
+
+    buffer_size = max(32, min(128, max(1, int(requested_depth)) * 8))
+
+    def _buffer(entry):
+        children = getattr(entry, "caches", None)
+        if children is not None:
+            buffered = tuple(_buffer(child) for child in children)
+            entry.caches = buffered if isinstance(children, tuple) else list(buffered)
+            return entry
+        if isinstance(entry, BufferedRotatingKVCache):
+            entry.buffer_size = max(entry.buffer_size, buffer_size)
+            return entry
+        if (
+            isinstance(entry, (LMRotatingKVCache, VendoredRotatingKVCache))
+            and int(getattr(entry, "keep", 0)) == 0
+        ):
+            return BufferedRotatingKVCache.from_cache(entry, buffer_size=buffer_size)
+        return entry
+
+    for index, entry in enumerate(model_cache):
+        model_cache[index] = _buffer(entry)
+
+
 patch_arrays_cache_rollback_state()
 
 logger = logging.getLogger(__name__)
@@ -546,6 +589,17 @@ def mtp_generate_step(
         n_main = len(model.layers)
         model_cache = prompt_cache[:n_main]
         mtp_cache = prompt_cache[n_main:] or model.make_mtp_cache()
+
+    # Sliding-window targets need a few hidden rows beyond the visible
+    # attention window so a rejected speculative block remains reversible.
+    # The admission guard below still parks at K=0 for cache types that cannot
+    # provide that guarantee (including rotating caches with attention sinks).
+    _buffer_mtp_target_cache(model_cache, max_k)
+    if prompt_cache is not None:
+        # ``model_cache`` is a slice of the scheduler-owned list. Publish the
+        # replacements back so finish/remove bookkeeping never observes the
+        # stale ring-cache objects while the generator advances buffered ones.
+        prompt_cache[: len(model_cache)] = model_cache
 
     _prompt_lookup_index = (
         PromptLookupIndex(
@@ -1202,6 +1256,17 @@ def mtp_generate_step(
             return
         _controller.record(k_used, charged, accepts)
 
+    def _admit_mtp_depth(desired: int) -> int:
+        """Bound the next verify block to a rollback-safe target depth."""
+        admitted = _safe_prompt_lookup_draft_count(
+            model_cache,
+            desired,
+            snapshot_rollback=_snapshot_rollback_verify,
+        )
+        if desired > 0 and admitted == 0:
+            _timing_add("mtp_cache_fallthroughs", 1.0)
+        return admitted
+
     while ntoks < max_tokens:
         round_start_perf = time.perf_counter()
         if pending_drafts is None:
@@ -1254,13 +1319,18 @@ def mtp_generate_step(
                     pending_drafts = lookup_drafts
                     pending_is_prompt_lookup = True
                 elif next_k >= 1:
-                    # Chain-of-K: generate ``next_k`` drafts cascaded via
-                    # MTP. next_k==1 is the plain single-draft path.
-                    d_toks, d_lps, d_alps, d_xtcs = _draft_chain_timed(
-                        hidden_at_main, main_tok, prev_tokens, next_k
-                    )
-                    pending_drafts = list(zip(d_toks, d_lps, d_alps, d_xtcs))
-                    pending_is_prompt_lookup = False
+                    next_k = _admit_mtp_depth(next_k)
+                    if next_k == 0:
+                        pending_drafts = None
+                        pending_is_prompt_lookup = False
+                    else:
+                        # Chain-of-K: generate ``next_k`` drafts cascaded via
+                        # MTP. next_k==1 is the plain single-draft path.
+                        d_toks, d_lps, d_alps, d_xtcs = _draft_chain_timed(
+                            hidden_at_main, main_tok, prev_tokens, next_k
+                        )
+                        pending_drafts = list(zip(d_toks, d_lps, d_alps, d_xtcs))
+                        pending_is_prompt_lookup = False
                 else:
                     # Parking again: no draft. Next round enters this
                     # branch with ``pending_drafts is None`` and pays no
@@ -1658,39 +1728,33 @@ def mtp_generate_step(
                     pending_drafts = lookup_drafts
                     pending_is_prompt_lookup = True
                 elif next_k >= 1:
-                    # Chain-carry: on all-accept the mtp_cache must
-                    # advance by one extra position for the just-accepted
-                    # LAST draft so the head's attention sees it before
-                    # predicting the next round's first draft. The old
-                    # K=1 code did this via ``cache_commit`` on the
-                    # single _step_mtp call, which batched
-                    # ``(align_h=hidden_at_last_accepted_pre, align_tok=
-                    # accepted_draft, next_id=bonus_tok)`` into one
-                    # mtp_forward with 2 positions. We replicate here
-                    # only when this round was all-accept — on partial
-                    # accept the reject path already trims mtp_cache to
-                    # ``accepted_count`` positions and the residual
-                    # doesn't need a carry (its own hidden is what the
-                    # first chain call conditions on).
-                    if accepted_count == k_len:
-                        # Position of last accepted draft is at index
-                        # ``accepted_count - 1`` in the k+1-length hidden.
-                        # For k_len=1 all-accept, this is hidden[:, 0:1].
-                        align_h = hidden[:, accepted_count - 1 : accepted_count, :]
-                        align_tok = draft_toks_arr[accepted_count - 1]
-                        cache_commit = (align_h, align_tok)
+                    next_k = _admit_mtp_depth(next_k)
+                    if next_k == 0:
+                        pending_drafts = None
+                        pending_is_prompt_lookup = False
                     else:
-                        cache_commit = None
-                    last_committed_tok = mx.array([last_committed_tok_id], mx.uint32)
-                    d_toks, d_lps, d_alps, d_xtcs = _draft_chain_timed(
-                        last_committed_hidden,
-                        last_committed_tok,
-                        prev_tokens,
-                        next_k,
-                        cache_commit=cache_commit,
-                    )
-                    pending_drafts = list(zip(d_toks, d_lps, d_alps, d_xtcs))
-                    pending_is_prompt_lookup = False
+                        # Chain-carry: on all-accept the mtp_cache must
+                        # advance by one extra position for the just-accepted
+                        # LAST draft so the head's attention sees it before
+                        # predicting the next round's first draft.
+                        if accepted_count == k_len:
+                            align_h = hidden[:, accepted_count - 1 : accepted_count, :]
+                            align_tok = draft_toks_arr[accepted_count - 1]
+                            cache_commit = (align_h, align_tok)
+                        else:
+                            cache_commit = None
+                        last_committed_tok = mx.array(
+                            [last_committed_tok_id], mx.uint32
+                        )
+                        d_toks, d_lps, d_alps, d_xtcs = _draft_chain_timed(
+                            last_committed_hidden,
+                            last_committed_tok,
+                            prev_tokens,
+                            next_k,
+                            cache_commit=cache_commit,
+                        )
+                        pending_drafts = list(zip(d_toks, d_lps, d_alps, d_xtcs))
+                        pending_is_prompt_lookup = False
                 else:
                     pending_drafts = None
                     pending_is_prompt_lookup = False
