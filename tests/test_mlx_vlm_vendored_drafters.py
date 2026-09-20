@@ -308,9 +308,10 @@ DEVIATIONS = {
             # numeric string passed validation and reached runtime code as
             # a str.
             flat["runtime_block_size"] = int(runtime_block_size)
-            if flat["runtime_block_size"] < 2:
+            if not 2 <= flat["runtime_block_size"] <= flat.get("block_size", 16):
                 raise ValueError(
-                    f"runtime_block_size must be >= 2, got {runtime_block_size!r}"
+                    "runtime_block_size must be between 2 and block_size "
+                    f"({flat.get('block_size', 16)}), got {runtime_block_size!r}"
                 )
         rope_parameters = flat.pop("rope_parameters", None)""",
             """        rope_parameters = flat.pop("rope_parameters", None)""",
@@ -754,6 +755,28 @@ def load_drafter(
                 "sidecar loading does not support loader options: "
                 + ", ".join(sorted(kwargs))
             )
+        quantization = config.get("quantization") or config.get(
+            "quantization_config"
+        )
+        if quantization is not None:
+            # Validate before constructing the model: malformed or legacy
+            # metadata must fail with an actionable error, not an opaque
+            # TypeError/KeyError mid-load.
+            if not isinstance(quantization, dict):
+                raise ValueError(
+                    "checkpoint quantization metadata must be an object, "
+                    f"got {type(quantization).__name__}"
+                )
+            missing = [
+                field
+                for field in ("group_size", "bits")
+                if field not in quantization
+            ]
+            if missing:
+                raise ValueError(
+                    "checkpoint quantization metadata is missing required "
+                    "fields: " + ", ".join(missing)
+                )
         import mlx.core as mx
         import mlx.nn as nn
 
@@ -763,9 +786,6 @@ def load_drafter(
         for shard in _sidecar_weight_shards(path):
             weights.update(mx.load(str(shard)))
         weights = family_model.sanitize(weights)
-        quantization = config.get("quantization") or config.get(
-            "quantization_config"
-        )
         if quantization is not None:
             nn.quantize(
                 family_model,
@@ -929,11 +949,24 @@ import shutil""",
         ),
         (
             """            selected: Dict[str, mx.array] = {}
-            source_is_mlx = False
+            # Rapid upstream-bugfix (documented deviation): pinned 0.7.1
+            # took the MLX-source path when ANY selected shard carried MLX
+            # metadata, so a mixed-format sharded checkpoint skipped
+            # sanitization for every shard; require a uniform format.
+            source_is_mlx: Optional[bool] = None
             for file, keys in self.iter_selected(source_path, text_config):
                 if self.supports_mlx_source:
-                    source_is_mlx = source_is_mlx or _is_mlx_safetensors(file)
+                    is_mlx = _is_mlx_safetensors(file)
+                    if source_is_mlx is None:
+                        source_is_mlx = is_mlx
+                    elif source_is_mlx != is_mlx:
+                        raise ValueError(
+                            "mixed safetensors formats in checkpoint: shards "
+                            "must be uniformly MLX or uniformly non-MLX"
+                        )
                 selected.update(self.load_shard(file, keys))
+            if source_is_mlx is None:
+                source_is_mlx = False
             if not selected:
                 raise ValueError(f"No MTP tensors found in {source_path}.")
 
@@ -1041,7 +1074,14 @@ import shutil""",
             return output_path
         finally:
             if staging.is_dir() and not staging.is_symlink():
-                shutil.rmtree(staging, ignore_errors=True)
+                try:
+                    shutil.rmtree(staging)
+                except OSError as exc:
+                    logging.getLogger(__name__).warning(
+                        "failed to remove staging directory %s: %s",
+                        staging,
+                        exc,
+                    )
 """,
             """        selected: Dict[str, mx.array] = {}
         source_is_mlx = False
@@ -1492,6 +1532,64 @@ def test_mtp_split_updates_through_output_symlink(tmp_path):
         p for p in tmp_path.glob(".*mtp-split-*") if not p.name.endswith("-lock")
     ]
     assert not leftovers
+
+
+def test_mtp_split_rejects_mixed_format_shards(tmp_path, monkeypatch):
+    """A uniform shard format is required: pinned 0.7.1 took the MLX path
+    when any shard carried MLX metadata, skipping sanitization for mixed
+    checkpoints."""
+    import mlx.core as mx
+
+    from rapid_mlx.models.mlx_vlm_vendored.speculative.drafters import mtp_split
+    from rapid_mlx.models.mlx_vlm_vendored.speculative.drafters.mtp_split import (
+        MTPSplitter,
+    )
+
+    class StubSplitter(MTPSplitter):
+        output_model_type = "qwen3_5_mtp"
+        tokenizer_files = ["tokenizer.json"]
+        supports_mlx_source = True
+
+        def select_keys(self, key, text_config):
+            return True
+
+        def depth(self, text_config):
+            return 3
+
+        def transform(self, tensors, text_config, source_is_mlx):
+            return {"w": mx.zeros((1,))}
+
+        def quantization(self, weights, source_config, text_config, quant_opts):
+            return None
+
+    source = tmp_path / "src"
+    source.mkdir()
+    (source / "config.json").write_text(
+        json.dumps(
+            {
+                "model_type": "qwen3_5",
+                "text_config": {"model_type": "qwen3_5", "num_hidden_layers": 4},
+            }
+        )
+    )
+    mx.save_safetensors(
+        str(source / "model.safetensors"),
+        {"w": mx.zeros((1,))},
+        metadata={"format": "mlx"},
+    )
+    mx.save_safetensors(str(source / "extra.safetensors"), {"v": mx.zeros((1,))})
+    (source / "tokenizer.json").write_text("{}")
+
+    calls = {"n": 0}
+
+    def fake_is_mlx(file):
+        calls["n"] += 1
+        return file.name == "model.safetensors"
+
+    monkeypatch.setattr(mtp_split, "_is_mlx_safetensors", fake_is_mlx)
+    with pytest.raises(ValueError, match="mixed safetensors formats"):
+        StubSplitter().split(str(source), str(tmp_path / "out"))
+    assert calls["n"] >= 2
 
 
 def test_mtp_split_rejects_escaping_fallback_shard(tmp_path):
@@ -2487,6 +2585,32 @@ def test_binding_sidecar_loads_vendored_family_directly(monkeypatch, tmp_path):
     assert type(quant_drafter).__name__ == "DFlashDraftModel"
     assert any("scales" in k for k, _ in tree_flatten(quant_drafter.parameters()))
 
+    # malformed quantization metadata fails with an actionable error
+    repo_bad = tmp_path / "sidecar-bad-quant"
+    repo_bad.mkdir()
+    (repo_bad / "config.json").write_text(
+        json.dumps(
+            {
+                "model_type": "qwen3",
+                "quantization_config": {"group_size": 64},
+                "dflash_config": {"mask_token_id": 1, "causal": False},
+            }
+        )
+    )
+    with pytest.raises(ValueError, match="missing required fields"):
+        load_drafter(str(repo_bad), kind="dflash")
+    (repo_bad / "config.json").write_text(
+        json.dumps(
+            {
+                "model_type": "qwen3",
+                "quantization_config": 17,
+                "dflash_config": {"mask_token_id": 1, "causal": False},
+            }
+        )
+    )
+    with pytest.raises(ValueError, match="must be an object"):
+        load_drafter(str(repo_bad), kind="dflash")
+
 
 def test_binding_unsupported_backbone_falls_through(monkeypatch, tmp_path):
     """An unrecognized dflash_config-bearing type keeps its raw type and
@@ -2599,8 +2723,10 @@ def test_qwen3_dflash_config_coerces_runtime_block_size():
     config = DFlashConfig.from_dict({"runtime_block_size": "8"})
     assert config.runtime_block_size == 8
     assert isinstance(config.runtime_block_size, int)
-    with pytest.raises(ValueError, match="runtime_block_size must be >= 2"):
+    with pytest.raises(ValueError, match="between 2 and block_size"):
         DFlashConfig.from_dict({"runtime_block_size": "1"})
+    with pytest.raises(ValueError, match="between 2 and block_size"):
+        DFlashConfig.from_dict({"runtime_block_size": "99"})
 
 
 def test_dflash2_config_rejects_inherited_causal():
@@ -2744,7 +2870,7 @@ def test_dflash_config_rejects_runtime_block_size_below_two():
         config as dflash_config_module,
     )
 
-    with pytest.raises(ValueError, match="runtime_block_size must be >= 2"):
+    with pytest.raises(ValueError, match="between 2 and block_size"):
         dflash_config_module.DFlashConfig.from_dict(
             {"dflash_config": {"runtime_block_size": 1}}
         )

@@ -324,11 +324,24 @@ class MTPSplitter:
         )
         try:
             selected: Dict[str, mx.array] = {}
-            source_is_mlx = False
+            # Rapid upstream-bugfix (documented deviation): pinned 0.7.1
+            # took the MLX-source path when ANY selected shard carried MLX
+            # metadata, so a mixed-format sharded checkpoint skipped
+            # sanitization for every shard; require a uniform format.
+            source_is_mlx: Optional[bool] = None
             for file, keys in self.iter_selected(source_path, text_config):
                 if self.supports_mlx_source:
-                    source_is_mlx = source_is_mlx or _is_mlx_safetensors(file)
+                    is_mlx = _is_mlx_safetensors(file)
+                    if source_is_mlx is None:
+                        source_is_mlx = is_mlx
+                    elif source_is_mlx != is_mlx:
+                        raise ValueError(
+                            "mixed safetensors formats in checkpoint: shards "
+                            "must be uniformly MLX or uniformly non-MLX"
+                        )
                 selected.update(self.load_shard(file, keys))
+            if source_is_mlx is None:
+                source_is_mlx = False
             if not selected:
                 raise ValueError(f"No MTP tensors found in {source_path}.")
 
@@ -436,7 +449,14 @@ class MTPSplitter:
             return output_path
         finally:
             if staging.is_dir() and not staging.is_symlink():
-                shutil.rmtree(staging, ignore_errors=True)
+                try:
+                    shutil.rmtree(staging)
+                except OSError as exc:
+                    logging.getLogger(__name__).warning(
+                        "failed to remove staging directory %s: %s",
+                        staging,
+                        exc,
+                    )
 
     @staticmethod
     def _install_staged(output_path: Path, staging: Path) -> None:

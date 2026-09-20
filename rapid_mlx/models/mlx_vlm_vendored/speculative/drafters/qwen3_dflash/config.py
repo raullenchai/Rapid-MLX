@@ -62,9 +62,10 @@ class DFlashConfig(BaseModelConfig):
             # numeric string passed validation and reached runtime code as
             # a str.
             flat["runtime_block_size"] = int(runtime_block_size)
-            if flat["runtime_block_size"] < 2:
+            if not 2 <= flat["runtime_block_size"] <= flat.get("block_size", 16):
                 raise ValueError(
-                    f"runtime_block_size must be >= 2, got {runtime_block_size!r}"
+                    "runtime_block_size must be between 2 and block_size "
+                    f"({flat.get('block_size', 16)}), got {runtime_block_size!r}"
                 )
         rope_parameters = flat.pop("rope_parameters", None)
         if isinstance(rope_parameters, Mapping):

@@ -413,6 +413,28 @@ def load_drafter(
                 "sidecar loading does not support loader options: "
                 + ", ".join(sorted(kwargs))
             )
+        quantization = config.get("quantization") or config.get(
+            "quantization_config"
+        )
+        if quantization is not None:
+            # Validate before constructing the model: malformed or legacy
+            # metadata must fail with an actionable error, not an opaque
+            # TypeError/KeyError mid-load.
+            if not isinstance(quantization, dict):
+                raise ValueError(
+                    "checkpoint quantization metadata must be an object, "
+                    f"got {type(quantization).__name__}"
+                )
+            missing = [
+                field
+                for field in ("group_size", "bits")
+                if field not in quantization
+            ]
+            if missing:
+                raise ValueError(
+                    "checkpoint quantization metadata is missing required "
+                    "fields: " + ", ".join(missing)
+                )
         import mlx.core as mx
         import mlx.nn as nn
 
@@ -422,9 +444,6 @@ def load_drafter(
         for shard in _sidecar_weight_shards(path):
             weights.update(mx.load(str(shard)))
         weights = family_model.sanitize(weights)
-        quantization = config.get("quantization") or config.get(
-            "quantization_config"
-        )
         if quantization is not None:
             nn.quantize(
                 family_model,
