@@ -47,19 +47,33 @@ such a repo:
   format), a non-finite one (``nan`` / ``inf`` / ``1e999`` all parse as
   floats) and a future-dated one are none of them proof.
 
+**What counts as a Hub round trip.** Only a call that CANNOT be satisfied
+from the local cache. The two remaining ``note_hub_fetch`` call sites —
+``_download_gate._model_info_with_timeout`` and
+``server._prefetch_routing_metadata`` — both go through
+``huggingface_hub``'s ``model_info``, a plain API call with no cache
+fallback that raises ``GatedRepoError`` on the 401 a gated repo answers to
+an anonymous client.
+
+``server._prefetch_config_for_text_lane_guard`` used to be a third site and
+is NOT one any more (PR #3606 adversarial round). It calls
+``hf_hub_download``, which swallows a failed HEAD — 401/403 included — into
+``head_call_error`` and then returns the cached pointer file if one exists.
+A gated repo whose ``config.json`` had been cached by an earlier
+token-authenticated pull therefore "succeeded" there with no token in
+sight, and the recorded marker made this module report ``org/gated-name``
+indefinitely, across processes. A success that the cache can fabricate is
+not evidence.
+
 **Why not ``token=False``?** The obvious hardening — take the proof from a
 *forced*-anonymous request rather than inferring anonymity afterwards — is
-not available here without changing what the product downloads. The three
-``note_hub_fetch`` call sites are all on the download path
-(``_download_gate._model_info_with_timeout``,
-``server._prefetch_routing_metadata``,
-``server._prefetch_config_for_text_lane_guard``); forcing ``token=False``
-there would make an authenticated user's private/gated pull fail 401 where
-it succeeds today. Passing it only when we already believe there is no token
-would produce a byte-identical request (``huggingface_hub`` sends no
+not available without changing what the product downloads. Both remaining
+call sites are on the download path; forcing ``token=False`` there would
+make an authenticated user's private/gated pull fail 401 where it succeeds
+today. Passing it only when we already believe there is no token would
+produce a byte-identical request (``huggingface_hub`` sends no
 ``Authorization`` header when it cannot resolve a token), so it would buy no
-safety for the cost of three touched download sites. The ambient check stays,
-fail-closed, backed by the three rules above.
+safety. The ambient check stays, fail-closed, backed by the rules above.
 
 **Limit, stated honestly.** Proof of anonymity is recorded when we touch the
 Hub, so a model that was already in the HF cache before this shipped (or was
@@ -274,7 +288,14 @@ def _is_fresh(stamp: float, now: float) -> bool:
 
 
 def _revoke_proof(repo_id: str) -> None:
-    """Drop any stored proof for ``repo_id``, in memory and on disk."""
+    """Drop any stored proof for ``repo_id``, in memory and on disk.
+
+    On-disk revocation is **best effort**: an unwritable or read-only cache
+    swallows the ``OSError`` and the marker survives. In-process that is
+    masked — the auth latch outranks any stored proof for the rest of this
+    process — but a later *anonymous* process sharing that cache will still
+    believe the marker until the TTL retires it.
+    """
     with _proven_lock:
         _proven_public.pop(repo_id, None)
     path = _marker_path(repo_id)

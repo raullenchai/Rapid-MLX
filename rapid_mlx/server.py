@@ -2011,10 +2011,23 @@ def _prefetch_config_for_text_lane_guard(model_ref: str) -> None:
         hf_hub_download(model_ref, "config.json")
     except Exception:  # noqa: BLE001 — best-effort probe, never fatal
         return
-    # Same proof-of-public rule as ``_prefetch_routing_metadata`` above.
-    from .telemetry.model_id import note_hub_fetch
-
-    note_hub_fetch(model_ref)
+    # NO ``note_hub_fetch`` here, deliberately (PR #3606 adversarial round).
+    #
+    # A non-raising ``hf_hub_download`` is NOT evidence that the repo is
+    # public. ``huggingface_hub`` swallows a failed HEAD — including the
+    # 401/403 a gated repo answers to an anonymous client — into
+    # ``head_call_error`` and then returns the CACHED pointer file if one
+    # exists (``file_download.py``: "Couldn't make a HEAD call => let's try
+    # to find a local file"). So a gated repo whose ``config.json`` was
+    # cached by an earlier token-authenticated pull "succeeds" here with no
+    # token in sight, and recording that as proof persisted a marker that
+    # made ``telemetry_model_id`` report ``org/gated-name`` forever.
+    #
+    # The other two touch points stay proof sources because
+    # ``HfApi().model_info`` is a plain API call with no cache fallback: it
+    # raises ``GatedRepoError`` on 401. Dropping the call here costs only
+    # demand signal for repos whose FIRST Hub contact is this prefetch, and
+    # under-reporting is this module's documented bias.
 
 
 def _reject_text_lane_only_mllm_pack(model_name: str, load_path: str) -> None:

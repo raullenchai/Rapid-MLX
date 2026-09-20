@@ -10,10 +10,11 @@ surface makes it concrete: ``claude-*`` / ``gpt-*`` names deliberately fall
 through to the default engine, so a default switch repoints them.
 
 The fix: resolve the identity once, next to ``get_engine``, keyed on the
-ENGINE OBJECT, and carry that immutable string to the emit. Each test below
-has a control that drives the same path WITHOUT the captured value and
-shows the event flipping to model B — so a regression that drops the
-threading cannot pass these silently.
+ENGINE OBJECT, and carry that immutable string to the emit. Each behaviour
+test below is written so that deleting the production hop it covers turns
+it red (mutations M11-M21 in the PR body record each one); two of them
+additionally ship an explicit CONTROL that drives the same path WITHOUT the
+captured value and shows the event flipping to model B.
 """
 
 from __future__ import annotations

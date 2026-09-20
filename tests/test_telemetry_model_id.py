@@ -250,6 +250,21 @@ def test_cannot_tell_is_fail_closed_but_never_latches(monkeypatch):
     assert mid.hf_auth_in_use() is False
 
 
+def test_cannot_tell_never_records_proof(monkeypatch):
+    """The other half of the tri-state. "Cannot tell" most often means a
+    token IS configured and ``get_token()`` merely blew up reading it — so
+    it can never be read as "definitely anonymous"."""
+    repo = "acme-corp/gated-finetune"
+    monkeypatch.setattr(mid, "hf_auth_state", lambda: None)
+    mid.note_hub_fetch(repo)
+    marker = mid._marker_path(repo)
+    assert marker is not None and not mid.os.path.exists(marker)
+
+    monkeypatch.setattr(mid, "hf_auth_state", lambda: False)
+    mid._reset_for_tests()
+    assert mid.telemetry_model_id(repo) == "<custom>"
+
+
 def test_cannot_tell_never_destroys_proof(monkeypatch):
     """THE regression this tri-state exists for.
 
@@ -683,7 +698,15 @@ def test_model_info_probe_records_the_proof(monkeypatch):
     assert mid.telemetry_model_id(repo) == repo
 
 
-def test_text_lane_config_prefetch_records_the_proof(monkeypatch):
+def test_text_lane_config_prefetch_records_no_proof(monkeypatch):
+    """A ``hf_hub_download`` that returns is NOT evidence of a public repo.
+
+    ``huggingface_hub`` swallows a failed HEAD — the 401/403 a gated repo
+    answers an anonymous client included — and returns the CACHED file if
+    one is there. A gated repo whose ``config.json`` was cached by an
+    earlier token-authenticated pull therefore "succeeds" here with no
+    token in sight. This site must record nothing.
+    """
     import huggingface_hub
 
     from rapid_mlx import server
@@ -696,7 +719,9 @@ def test_text_lane_config_prefetch_records_the_proof(monkeypatch):
     )
     repo = "someone/other-public-mlx"
     server._prefetch_config_for_text_lane_guard(repo)
-    assert mid.telemetry_model_id(repo) == repo
+    assert mid.telemetry_model_id(repo) == "<custom>"
+    mid._reset_for_tests()
+    assert mid.telemetry_model_id(repo) == "<custom>"
 
 
 # ---------------------------------------------- user intent always wins
