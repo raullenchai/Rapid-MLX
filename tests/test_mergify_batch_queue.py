@@ -164,6 +164,7 @@ def _run_authorization_script(
     fail_get: bool = False,
     fail_comments: bool = False,
     comments: list[dict[str, object]] | None = None,
+    cleanup_live_head: str = "head-sha",
 ) -> dict[str, object]:
     """Execute the exact github-script body against deterministic API mocks."""
 
@@ -182,6 +183,7 @@ def _run_authorization_script(
             "failGet": fail_get,
             "failComments": fail_comments,
             "comments": comments or [],
+            "cleanupLiveHead": cleanup_live_head,
         }
     )
     harness = f"""
@@ -189,6 +191,7 @@ const scenario = {scenario};
 const calls = [];
 const statusArgs = [];
 let statusCalls = 0;
+let pullCalls = 0;
 process.env.GITHUB_RUN_ATTEMPT = String(scenario.runAttempt);
 const context = {{
   repo: {{ owner: "owner", repo: "repo" }},
@@ -203,10 +206,11 @@ const github = {{
   paginate: async (method, args) => method(args).then((response) => response.data),
   rest: {{
     pulls: {{ get: async () => {{
+      pullCalls += 1;
       calls.push(["get"]);
       if (scenario.failGet) throw new Error("get failure");
       return {{ data: {{
-        head: {{ sha: scenario.liveHead }},
+        head: {{ sha: pullCalls === 1 ? scenario.liveHead : scenario.cleanupLiveHead }},
         labels: scenario.labels.map((name) => ({{ name }})),
       }} }};
     }} }},
@@ -267,7 +271,7 @@ def test_fresh_authorization_removes_the_bot_owned_stale_notice():
         comments=[
             {
                 "id": 7,
-                "body": "<!-- merge-ready-stale-head --> old",
+                "body": "<!-- merge-ready-stale-head:head-sha --> old",
                 "user": {"login": "github-actions[bot]"},
             },
             {
@@ -283,6 +287,7 @@ def test_fresh_authorization_removes_the_bot_owned_stale_notice():
         ["get"],
         ["status", "success"],
         ["comments"],
+        ["get"],
         ["delete", 7],
     ]
 
@@ -296,6 +301,45 @@ def test_comment_cleanup_failure_does_not_revoke_exact_head_authorization():
         ["status", "success"],
         ["comments"],
         ["warning", "Could not remove stale merge-ready notice: comments failure"],
+    ]
+
+
+def test_old_authorization_does_not_delete_a_new_heads_notice():
+    result = _run_authorization_script(
+        labels=["merge-ready-mac"],
+        comments=[
+            {
+                "id": 7,
+                "body": "<!-- merge-ready-stale-head:new-head --> newer",
+                "user": {"login": "github-actions[bot]"},
+            }
+        ],
+    )
+
+    assert result["calls"] == [
+        ["status", "pending"],
+        ["get"],
+        ["status", "success"],
+        ["comments"],
+    ]
+
+    pushed_during_cleanup = _run_authorization_script(
+        labels=["merge-ready-mac"],
+        cleanup_live_head="new-head",
+        comments=[
+            {
+                "id": 7,
+                "body": "<!-- merge-ready-stale-head:head-sha --> old",
+                "user": {"login": "github-actions[bot]"},
+            }
+        ],
+    )
+    assert pushed_during_cleanup["calls"] == [
+        ["status", "pending"],
+        ["get"],
+        ["status", "success"],
+        ["comments"],
+        ["get"],
     ]
 
 
@@ -456,7 +500,7 @@ def test_head_update_notice_creates_or_updates_one_actionable_comment():
         "get",
     ]
     created_comment = next(call for call in created if call[0] == "create")
-    assert "merge-ready-stale-head" in created_comment[1]
+    assert "merge-ready-stale-head:head-sha" in created_comment[1]
     assert "remove and re-apply" in created_comment[1]
     assert "head-sha" in created_comment[1]
 
@@ -464,7 +508,7 @@ def test_head_update_notice_creates_or_updates_one_actionable_comment():
         comments=[
             {
                 "id": 7,
-                "body": "<!-- merge-ready-stale-head --> old",
+                "body": "<!-- merge-ready-stale-head:old-head --> old",
                 "user": {"type": "Bot", "login": "github-actions[bot]"},
             }
         ]
@@ -501,7 +545,7 @@ def test_head_update_notice_skips_newer_heads_and_fresh_authorization():
         comments=[
             {
                 "id": 7,
-                "body": "<!-- merge-ready-stale-head --> old",
+                "body": "<!-- merge-ready-stale-head:old-head --> old",
                 "user": {"login": "github-actions[bot]"},
             }
         ],
@@ -522,7 +566,7 @@ def test_ready_label_removal_clears_an_existing_stale_notice():
         comments=[
             {
                 "id": 7,
-                "body": "<!-- merge-ready-stale-head --> old",
+                "body": "<!-- merge-ready-stale-head:old-head --> old",
                 "user": {"login": "github-actions[bot]"},
             }
         ],
@@ -537,7 +581,7 @@ def test_ready_label_removal_clears_an_existing_stale_notice():
         comments=[
             {
                 "id": 7,
-                "body": "<!-- merge-ready-stale-head --> old",
+                "body": "<!-- merge-ready-stale-head:old-head --> old",
                 "user": {"login": "github-actions[bot]"},
             }
         ],
@@ -549,7 +593,7 @@ def test_fresh_authorization_self_heals_a_leftover_notice():
     comments = [
         {
             "id": 7,
-            "body": "<!-- merge-ready-stale-head --> old",
+            "body": "<!-- merge-ready-stale-head:head-sha --> old",
             "user": {"login": "github-actions[bot]"},
         }
     ]
