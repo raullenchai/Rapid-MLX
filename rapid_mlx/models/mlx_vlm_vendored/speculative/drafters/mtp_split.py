@@ -44,7 +44,18 @@ def _weight_map(model_path: Path) -> Dict[str, str]:
     if not index_path.exists():
         return {}
     with open(index_path) as f:
-        return json.load(f).get("weight_map", {})
+        index = json.load(f)
+    # Rapid upstream-bugfix (documented deviation): pinned 0.7.1 assumes
+    # both the index document and ``weight_map`` are objects; a malformed
+    # index crashed with ``AttributeError`` instead of a clear error.
+    if not isinstance(index, dict) or not isinstance(
+        index.get("weight_map", {}), dict
+    ):
+        raise ValueError(
+            f"malformed safetensors index {index_path.name}: "
+            "weight_map must be an object"
+        )
+    return index.get("weight_map", {})
 
 
 def _is_mlx_safetensors(file: Path) -> bool:
@@ -192,14 +203,16 @@ class MTPSplitter:
                 for filename, keys in by_file.items():
                     # Rapid upstream-bugfix (documented deviation): shard
                     # filenames come from an untrusted safetensors index;
-                    # resolve and reject anything outside the model dir.
-                    shard = (source_path / filename).resolve()
-                    if not shard.is_relative_to(source_path.resolve()):
+                    # reject absolute paths and '..' traversal lexically —
+                    # resolving would also reject the trusted snapshot
+                    # symlinks normal HF cache layouts use for shards.
+                    shard = Path(filename)
+                    if shard.is_absolute() or ".." in shard.parts:
                         raise ValueError(
                             "safetensors index entry escapes the model "
                             f"directory: {filename!r}"
                         )
-                    yield shard, keys
+                    yield source_path / shard, keys
                 return
 
         for file in _safetensor_files(source_path):

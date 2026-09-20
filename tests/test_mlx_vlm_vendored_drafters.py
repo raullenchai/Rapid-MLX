@@ -800,18 +800,45 @@ from ...utils import get_model_path
             """                for filename, keys in by_file.items():
                     # Rapid upstream-bugfix (documented deviation): shard
                     # filenames come from an untrusted safetensors index;
-                    # resolve and reject anything outside the model dir.
-                    shard = (source_path / filename).resolve()
-                    if not shard.is_relative_to(source_path.resolve()):
+                    # reject absolute paths and '..' traversal lexically —
+                    # resolving would also reject the trusted snapshot
+                    # symlinks normal HF cache layouts use for shards.
+                    shard = Path(filename)
+                    if shard.is_absolute() or ".." in shard.parts:
                         raise ValueError(
                             "safetensors index entry escapes the model "
                             f"directory: {filename!r}"
                         )
-                    yield shard, keys
+                    yield source_path / shard, keys
 """,
             """                for filename, keys in by_file.items():
                     yield source_path / filename, keys
 """,
+        ),
+        (
+            """def _weight_map(model_path: Path) -> Dict[str, str]:
+    index_path = model_path / "model.safetensors.index.json"
+    if not index_path.exists():
+        return {}
+    with open(index_path) as f:
+        index = json.load(f)
+    # Rapid upstream-bugfix (documented deviation): pinned 0.7.1 assumes
+    # both the index document and ``weight_map`` are objects; a malformed
+    # index crashed with ``AttributeError`` instead of a clear error.
+    if not isinstance(index, dict) or not isinstance(
+        index.get("weight_map", {}), dict
+    ):
+        raise ValueError(
+            f"malformed safetensors index {index_path.name}: "
+            "weight_map must be an object"
+        )
+    return index.get("weight_map", {})""",
+            """def _weight_map(model_path: Path) -> Dict[str, str]:
+    index_path = model_path / "model.safetensors.index.json"
+    if not index_path.exists():
+        return {}
+    with open(index_path) as f:
+        return json.load(f).get("weight_map", {})""",
         ),
     ],
 }
@@ -962,6 +989,38 @@ def test_mtp_splitter_rejects_index_shards_outside_model_dir(tmp_path):
     )
     with pytest.raises(ValueError, match="escapes the model directory"):
         list(absolute.iter_selected(source, {}))
+
+    # HF cache snapshots use trusted symlinks into the cache blobs dir;
+    # the lexical guard must keep yielding them.
+    linked = AllKeys()
+    (source / "shard.safetensors").symlink_to(outside)
+    (source / "model.safetensors.index.json").write_text(
+        json.dumps({"weight_map": {"blk.0.mlp": "shard.safetensors"}})
+    )
+    assert list(linked.iter_selected(source, {})) == [
+        (source / "shard.safetensors", ["blk.0.mlp"])
+    ]
+
+
+def test_mtp_split_weight_map_rejects_malformed_index(tmp_path):
+    """A malformed safetensors index must raise a clear ValueError, not
+    crash with AttributeError inside the split or detection path."""
+    from rapid_mlx.models.mlx_vlm_vendored.speculative.drafters.mtp_split import (
+        _weight_map,
+    )
+
+    source = tmp_path / "model"
+    source.mkdir()
+    (source / "model.safetensors.index.json").write_text("[]")
+    with pytest.raises(ValueError, match="weight_map must be an object"):
+        _weight_map(source)
+    (source / "model.safetensors.index.json").write_text(json.dumps({"weight_map": []}))
+    with pytest.raises(ValueError, match="weight_map must be an object"):
+        _weight_map(source)
+    (source / "model.safetensors.index.json").write_text(
+        json.dumps({"weight_map": {"k": "model-00001.safetensors"}})
+    )
+    assert _weight_map(source) == {"k": "model-00001.safetensors"}
 
 
 def test_qwen_mtp_batch_replay_corrects_scalar_position_for_ragged_rows():

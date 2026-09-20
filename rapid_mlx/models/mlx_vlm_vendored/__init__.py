@@ -339,7 +339,11 @@ vendored copy differs by exactly the deviations listed):
   old destination is preserved as a backup and restored if the install
   rename fails, ``output == source`` is rejected, and the install runs
   under a per-destination advisory lock so concurrent splits cannot
-  interleave destination moves — pinned 0.7.1
+  interleave destination moves, shard filenames from the safetensors
+  index are validated lexically (absolute paths and ``..`` traversal
+  rejected while HF cache snapshot symlinks still load), and a
+  malformed index (non-object document or ``weight_map``) raises a
+  clear ``ValueError`` — pinned 0.7.1
   writes directly into the destination, so a pre-existing directory
   keeps stale tokenizer files and a mid-way failure pairs new weights
   with an old ``config.json``;
