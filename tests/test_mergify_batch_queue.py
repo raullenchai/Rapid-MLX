@@ -147,7 +147,7 @@ def test_ready_authorization_is_bound_to_the_exact_head_commit():
     assert "github.rest.pulls.get" in script
     assert "github.rest.repos.listCommitStatusesForRef" in script
     assert "livePull.head.sha === context.payload.pull_request.head.sha" in script
-    assert "github.paginate" not in script
+    assert "github.paginate" in script
     assert "github.rest.issues" not in script
     assert "merge-requeue" not in script
     assert "checkout" not in script.lower()
@@ -203,6 +203,7 @@ const context = {{
   }},
 }};
 const github = {{
+  paginate: async (method, args) => method(args).then((response) => response.data),
   rest: {{
     pulls: {{ get: async () => {{
       calls.push(["get"]);

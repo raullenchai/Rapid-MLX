@@ -39,15 +39,16 @@ jobs:
               // before and after writing failure: this makes every possible
               // interleaving converge to success when a fresh authorization
               // exists, without relying on lossy Actions concurrency queues.
-              const listStatuses = async () => {
-                const { data } = await github.rest.repos.listCommitStatusesForRef({
-                  owner: context.repo.owner,
-                  repo: context.repo.repo,
-                  ref: headSha,
-                  per_page: 100,
-                });
-                return data;
-              };
+              const listStatuses = async () =>
+                github.paginate(
+                  github.rest.repos.listCommitStatusesForRef,
+                  {
+                    owner: context.repo.owner,
+                    repo: context.repo.repo,
+                    ref: headSha,
+                    per_page: 100,
+                  },
+                );
               const successfulAuthorization = (statuses) =>
                 statuses.find(
                   (status) =>
