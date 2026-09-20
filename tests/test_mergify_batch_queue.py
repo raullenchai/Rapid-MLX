@@ -165,6 +165,7 @@ def _run_authorization_script(
     live_head: str = "head-sha",
     fail_status_call: int | None = None,
     fail_get: bool = False,
+    fail_comments: bool = False,
     comments: list[dict[str, object]] | None = None,
 ) -> dict[str, object]:
     """Execute the exact github-script body against deterministic API mocks."""
@@ -182,6 +183,7 @@ def _run_authorization_script(
             "liveHead": live_head,
             "failStatusCall": fail_status_call,
             "failGet": fail_get,
+            "failComments": fail_comments,
             "comments": comments or [],
         }
     )
@@ -220,13 +222,17 @@ const github = {{
     issues: {{
       listComments: async () => {{
         calls.push(["comments"]);
+        if (scenario.failComments) throw new Error("comments failure");
         return {{ data: scenario.comments }};
       }},
       deleteComment: async (args) => calls.push(["delete", args.comment_id]),
     }},
   }},
 }};
-const core = {{ setFailed: (message) => calls.push(["failed", message]) }};
+const core = {{
+  setFailed: (message) => calls.push(["failed", message]),
+  warning: (message) => calls.push(["warning", message]),
+}};
 (async () => {{
   try {{
     await (async () => {{
@@ -253,8 +259,8 @@ def test_initial_authorization_publishes_success_for_the_exact_head():
     assert result["calls"] == [
         ["status", "pending"],
         ["get"],
-        ["comments"],
         ["status", "success"],
+        ["comments"],
     ]
 
 
@@ -278,9 +284,23 @@ def test_fresh_authorization_removes_the_bot_owned_stale_notice():
     assert result["calls"] == [
         ["status", "pending"],
         ["get"],
+        ["status", "success"],
         ["comments"],
         ["delete", 7],
+    ]
+
+
+def test_comment_cleanup_failure_does_not_revoke_exact_head_authorization():
+    result = _run_authorization_script(
+        labels=["merge-ready-mac"], fail_comments=True
+    )
+
+    assert result["calls"] == [
+        ["status", "pending"],
+        ["get"],
         ["status", "success"],
+        ["comments"],
+        ["warning", "Could not remove stale merge-ready notice: comments failure"],
     ]
 
 

@@ -74,12 +74,27 @@ jobs:
               ? `Authorized ${present[0]} on this exact head`
               : "Apply exactly one merge-ready label";
 
-            // Do not leave the previous head's warning visible after the
-            // maintainer has completed the prescribed exact-head remedy.
-            // Cleanup happens before success is published so a failed GitHub
-            // API call cannot leave a successful authorization beside a false
-            // stale warning.
-            if (authorized) {
+            await github.rest.repos.createCommitStatus({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              sha: headSha,
+              state,
+              context: "merge-ready-head",
+              description,
+              target_url: statusUrl,
+            });
+
+            if (!authorized) {
+              core.setFailed(description);
+              return;
+            }
+
+            // The commit status is the authoritative queue gate. Removing an
+            // obsolete explanatory comment must not invalidate an otherwise
+            // successful exact-head authorization if the Issues API has a
+            // transient failure. The shared per-PR concurrency group prevents
+            // the synchronize job from racing this cleanup.
+            try {
               const marker = "<!-- merge-ready-stale-head -->";
               const comments = await github.paginate(
                 github.rest.issues.listComments,
@@ -102,21 +117,8 @@ jobs:
                   comment_id: staleNotice.id,
                 });
               }
-            }
-
-            await github.rest.repos.createCommitStatus({
-              owner: context.repo.owner,
-              repo: context.repo.repo,
-              sha: headSha,
-              state,
-              context: "merge-ready-head",
-              description,
-              target_url: statusUrl,
-            });
-
-            if (!authorized) {
-              core.setFailed(description);
-              return;
+            } catch (error) {
+              core.warning(`Could not remove stale merge-ready notice: ${error.message}`);
             }
 
   notify-stale-ready-head:
