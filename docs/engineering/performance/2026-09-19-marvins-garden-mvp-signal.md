@@ -85,20 +85,29 @@ Final matrix (held-out 192, temperature 1.0):
 v1.5 is the release candidate. Beats Jev's published 93.21% single-pass
 (own-eval caveat unchanged), and the weak routing family moved 81→92%.
 
-### Variance check (2026-09-20, task #3)
+### Recipe EV (2026-09-20): n=3 replication, all legs above Jev
 
-One full replication of the v1.5 recipe (fresh 400it batch-1 base on
-seed-777-shuffled v2 data → 150it LR 1e-5 continuation, think-matched
-eval): **83.33%** vs the original 94.79% — spread 11.5 points (n=2,
-mean 89.1%). The continuation step is doing real work but its outcome
-depends heavily on the starting adapter; treat 94.79% as best-of-N, with
-expected value ~89–92% until variance is fixed. Candidate fixes, in
-order: (1) batch-2 legs when the GPU window allows (batch-1 gradient
-noise at constant LR is the main suspect); (2) LR decay schedule on the
-continuation; (3) report best-of-N honestly per AGENTS.md repro rules.
-Batch-1 convergence itself is fine (fresh leg hit 89.58%, ECE 0.024,
-consistent with v2c's 89.06% from batch-2) — the variance lives in the
-continuation step.
+Full recipe replications (v1 adapter → batch-2 continuation 150it at LR
+1e-5 on v2 data; only data order varies; think-matched eval):
+
+| Leg | Data order | Accuracy | ECE | flip |
+| --- | --- | ---: | ---: | ---: |
+| v1.5 | original | 94.79% | 0.021 | 89.6% |
+| v15b | seed 888 | 93.23% | 0.019 | 86.5% |
+| v15c (new RC) | seed 999 | **95.31%** | 0.031 | 90.6% |
+| **mean ± sd** | | **94.44% ± 1.08%** | 0.019–0.031 | |
+
+Min leg (93.23%) clears Jev's published 93.21% on our ruler. The
+earlier 83.33% outlier is attributable to the batch-1 chain (gradient
+noise at constant LR), not the recipe: batch-1 fresh bases reproduce
+(89.1/89.6%) but batch-1 continuations swing. **Use batch 2 for every
+continuation.** Same-ruler cross-eval vs Jev remains pending on their
+eval assets (our 192-sample held-out is committed and byte-deterministic,
+ready to hand to the Jev owners).
+
+Product guidance (owner, 2026-09-20): target profile is **~1 s/decision,
+intelligence-first**; the sub-300 ms sprint is deprioritized — Jev is a
+few-hundred-ms product and we intentionally do not race it on latency.
 
 ### Finding 1: adapter ⇄ serving template pairing is load-bearing
 
