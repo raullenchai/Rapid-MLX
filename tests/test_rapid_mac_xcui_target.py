@@ -150,7 +150,9 @@ def test_xcui_runner_launches_production_bundle_with_fake_sidecar():
     launch_index = retry_loop.index("launchFileDragSource(")
     quiescence_index = retry_loop.index("FileDropRetryPolicy.retryQuiescenceTimeout")
     suppression_index = retry_loop.index("if latePhase != nil")
-    gesture_index = retry_loop.index("source.click(forDuration: 1, thenDragTo: dropTarget)")
+    gesture_index = retry_loop.index(
+        "source.click(forDuration: 1, thenDragTo: dropTarget)"
+    )
     termination_index = retry_loop.index(
         "terminateFileDragSource(dragSource)", gesture_index
     )
