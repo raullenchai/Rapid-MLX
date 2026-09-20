@@ -145,6 +145,35 @@ jobs:
           script: |
             const marker = "<!-- merge-ready-stale-head -->";
             const eventHead = context.payload.pull_request.head.sha;
+            async function removeStaleNoticeBestEffort() {
+              try {
+                const comments = await github.paginate(
+                  github.rest.issues.listComments,
+                  {
+                    owner: context.repo.owner,
+                    repo: context.repo.repo,
+                    issue_number: context.issue.number,
+                    per_page: 100,
+                  },
+                );
+                const staleNotice = comments.find(
+                  (comment) =>
+                    comment.user?.login === "github-actions[bot]" &&
+                    comment.body?.includes(marker),
+                );
+                if (staleNotice) {
+                  await github.rest.issues.deleteComment({
+                    owner: context.repo.owner,
+                    repo: context.repo.repo,
+                    comment_id: staleNotice.id,
+                  });
+                }
+              } catch (error) {
+                core.warning(
+                  `Could not remove stale merge-ready notice: ${error.message}`,
+                );
+              }
+            }
             const { data: livePull } = await github.rest.pulls.get({
               owner: context.repo.owner,
               repo: context.repo.repo,
@@ -219,6 +248,7 @@ jobs:
               (status) => status.context === "merge-ready-head",
             );
             if (latestAuthorization?.state === "success") {
+              await removeStaleNoticeBestEffort();
               return;
             }
 

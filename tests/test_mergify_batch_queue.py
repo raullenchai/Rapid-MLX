@@ -344,6 +344,7 @@ def _run_head_update_notice(
     refreshed_statuses: list[dict[str, str]] | None = None,
     comments: list[dict[str, object]] | None = None,
     action: str = "synchronize",
+    fail_delete: bool = False,
 ) -> list[list[object]]:
     workflow = yaml.load(
         (ROOT / ".github/workflows/authorize-merge-ready.yml").read_text(),
@@ -360,6 +361,7 @@ def _run_head_update_notice(
             "refreshedStatuses": refreshed_statuses,
             "comments": comments or [],
             "action": action,
+            "failDelete": fail_delete,
         }
     )
     harness = f"""
@@ -410,10 +412,14 @@ const github = {{
       }},
       createComment: async (args) => calls.push(["create", args.body]),
       updateComment: async (args) => calls.push(["update", args.body]),
-      deleteComment: async (args) => calls.push(["delete", args.comment_id]),
+      deleteComment: async (args) => {{
+        calls.push(["delete", args.comment_id]);
+        if (scenario.failDelete) throw new Error("delete failure");
+      }},
     }},
   }},
 }};
+const core = {{ warning: (message) => calls.push(["warning", message]) }};
 (async () => {{
   await (async () => {{
 {script}
@@ -467,7 +473,7 @@ def test_head_update_notice_skips_newer_heads_and_fresh_authorization():
     assert _run_head_update_notice(live_head="newer-head") == [["get"]]
     assert _run_head_update_notice(
         statuses=[{"context": "merge-ready-head", "state": "success"}]
-    ) == [["get"], ["statuses"]]
+    ) == [["get"], ["statuses"], ["comments"]]
     assert _run_head_update_notice(
         refreshed_statuses=[{"context": "merge-ready-head", "state": "success"}]
     ) == [["get"], ["statuses"], ["comments"], ["statuses"]]
@@ -525,6 +531,35 @@ def test_ready_label_removal_clears_an_existing_stale_notice():
         ],
     )
     assert newer_head_calls == [["get"], ["comments"], ["get"], ["delete", 7]]
+
+
+def test_fresh_authorization_self_heals_a_leftover_notice():
+    comments = [
+        {
+            "id": 7,
+            "body": "<!-- merge-ready-stale-head --> old",
+            "user": {"login": "github-actions[bot]"},
+        }
+    ]
+    statuses = [{"context": "merge-ready-head", "state": "success"}]
+
+    assert _run_head_update_notice(statuses=statuses, comments=comments) == [
+        ["get"],
+        ["statuses"],
+        ["comments"],
+        ["delete", 7],
+    ]
+    assert _run_head_update_notice(
+        statuses=statuses,
+        comments=comments,
+        fail_delete=True,
+    ) == [
+        ["get"],
+        ["statuses"],
+        ["comments"],
+        ["delete", 7],
+        ["warning", "Could not remove stale merge-ready notice: delete failure"],
+    ]
 
 
 def test_status_or_live_pull_failure_remains_fail_closed():
