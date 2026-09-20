@@ -70,6 +70,14 @@ def test_the_scheme_wins_over_the_bit_width(name, expected):
         "some-model-awq",
         "some-model-gptq",
         "some-model-5bit",
+        # Float widths the enum has no name for. This enum already treats
+        # precision as a quant value (bf16 / fp16 ARE values), so reporting
+        # an FP8 checkpoint as "no marker at all" would be the one lie the
+        # enum cannot correct later.
+        "acme/model-fp8",
+        "acme/model-fp32",
+        "acme/model-bf8",
+        "acme/model-nf4",
     ],
 )
 def test_an_unnamed_quantization_is_other_not_free_text(name):
@@ -110,3 +118,32 @@ def test_known_tokens_all_resolve_to_themselves_or_their_canonical_form():
         token = quant_token(f"model-{raw}")
         assert token in values
         assert token != "unknown"
+
+
+@pytest.mark.parametrize(
+    "name",
+    [
+        # A fiscal quarter, not a 4-bit checkpoint: the token is ``2026q4``,
+        # and the marker patterns are anchored so it cannot match.
+        "acme/model-2026q4",
+        # Version and parameter-count tokens next to nothing quant-shaped.
+        "qwen3-vl-30b",
+        "deepseek-v3.2-exp",
+        "mlx-community/Qwen3-VL-8B-Instruct",
+    ],
+)
+def test_version_and_size_tokens_are_not_read_as_quantization(name):
+    """False positives are worse than 'unknown': they would report a
+    quantization the checkpoint does not have."""
+
+    assert quant_token(name) == "unknown"
+
+
+def test_every_canonical_value_has_a_precedence_rank():
+    """``quant_token`` ranks its matches; a table value with no rank would
+    raise KeyError on the first name that hits it, in a telemetry path whose
+    whole contract is that it cannot take ``serve`` down."""
+
+    from rapid_mlx.telemetry.quant import _RANK
+
+    assert canonical_quant_values() - {"unknown"} == set(_RANK)

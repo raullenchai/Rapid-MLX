@@ -48,10 +48,17 @@ _CANONICAL_BY_TOKEN: dict[str, str] = {
     "dwq": "dwq",
 }
 
-#: A token that *looks* like a quantization marker but is not in the table
-#: above resolves to ``other`` rather than ``unknown``: we did recognize a
-#: quantization, we just have no canonical name for it yet.
-_QUANT_SHAPED_RE = re.compile(r"^(?:q\d+|\d+bit|\d+bpw|int\d+|[a-z]{2}fp\d+|awq|gptq)$")
+#: A token that *looks* like a quantization or precision marker but is not in
+#: the table above resolves to ``other`` rather than ``unknown``: we did
+#: recognize a quantization, we just have no canonical name for it yet. The
+#: float widths are ``[a-z]{0,2}fp\d+`` / ``bf\d+`` rather than only the
+#: two-letter form, so ``-fp8`` and ``-fp32`` land on ``other`` like ``bf16``
+#: and ``fp16`` land on themselves -- this enum already treats precision as a
+#: quant value, and reporting an FP8 checkpoint as "no marker at all" would be
+#: a lie in the one direction the enum cannot correct later.
+_QUANT_SHAPED_RE = re.compile(
+    r"^(?:q\d+|\d+bit|\d+bpw|int\d+|[a-z]{0,2}fp\d+|bf\d+|nf\d+|awq|gptq)$"
+)
 
 #: Precedence when a name carries more than one marker, most specific
 #: first. ``gpt-oss-20b-mxfp4-q8`` is an MXFP4 checkpoint that happens to
@@ -72,6 +79,9 @@ _PRECEDENCE: tuple[str, ...] = (
     "other",
 )
 _RANK: dict[str, int] = {value: index for index, value in enumerate(_PRECEDENCE)}
+# Every value the table can produce needs a rank, or the ``min`` below
+# raises KeyError on the first name that hits the unranked value.
+# ``tests/test_telemetry_quant.py`` pins this in both directions.
 
 #: No marker at all: an unquantized repo, or a name that simply does not say.
 UNKNOWN = "unknown"
