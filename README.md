@@ -594,6 +594,7 @@ Top three things that go wrong:
 ## Community & Support
 
 - **Discord:** [Join the Rapid-MLX community](https://discord.gg/nZcXkUjY5R) for live help and local-AI discussion.
+- **Tell us what you want:** run `rapid-mlx feedback` (or `--no-open` to just print the link) — it opens that same Discord invite. Telemetry can only show us what people do; the Discord is where you tell us why.
 - **Twitter / X:** Follow [@rapidmlx](https://x.com/rapidmlx) for releases, benchmarks, and project updates.
 - **Questions & builds:** Ask or share in [GitHub Discussions](https://github.com/raullenchai/Rapid-MLX/discussions).
 - **Feedback & ideas:** [Report a bug, request a model, or propose a feature](https://github.com/raullenchai/Rapid-MLX/issues/new/choose).

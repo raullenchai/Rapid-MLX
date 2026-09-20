@@ -9,8 +9,9 @@ Fires at most once per machine, only when:
 - ``--no-telemetry`` is not set on this run.
 - ``stdin`` is a tty (we are not in a pipe / CI / daemon-spawn).
 - The current subcommand is interactive (``serve``, ``chat``, etc.) —
-  not ``version``, ``help``, ``models``, ``ps``, ``info``, or any
-  read-only / one-shot command where a prompt would be intrusive.
+  not ``version``, ``help``, ``models``, ``ps``, ``info``,
+  ``feedback``, or any read-only / one-shot command where a prompt
+  would be intrusive.
 
 The disclosure copy is intentionally short: 6 lines, links to README,
 defaults to NO. We never nag — declining writes ``consent=False`` so
@@ -42,6 +43,10 @@ _NON_INTERACTIVE_SUBCOMMANDS = frozenset(
         "ps",
         "info",
         "telemetry",
+        # ``feedback`` prints an invite link and opens it. Interrupting
+        # that with a telemetry disclosure would be the worst possible
+        # moment to ask -- the user is on their way to tell us something.
+        "feedback",
     }
 )
 

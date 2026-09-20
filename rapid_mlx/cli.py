@@ -11431,6 +11431,80 @@ def upgrade_command(args):
     sys.exit(result.returncode)
 
 
+# The community Discord invite — the same one the README badge and
+# rapidmlx.com already link to. One constant so the CLI, the docs and
+# the desktop app cannot drift apart.
+FEEDBACK_URL = "https://discord.gg/nZcXkUjY5R"
+
+# Environment markers that mean "there is no browser on this machine, or
+# opening one would land on the wrong screen": an SSH session and the
+# usual CI runners. Deliberately a local tuple rather than an import from
+# ``rapid_mlx.telemetry.state`` — ``feedback`` reads no telemetry state
+# at all, and that independence is the point of the command.
+_FEEDBACK_NO_BROWSER_ENV = (
+    "SSH_CONNECTION",
+    "SSH_CLIENT",
+    "SSH_TTY",
+    "CI",
+    "GITHUB_ACTIONS",
+    "GITLAB_CI",
+    "CIRCLECI",
+    "TRAVIS",
+    "BUILDKITE",
+    "JENKINS_URL",
+    "TEAMCITY_VERSION",
+)
+
+
+def _feedback_should_open_browser() -> bool:
+    """True only for a human at a local terminal.
+
+    A redirected stdout (``rapid-mlx feedback > url.txt``), an SSH
+    session, or a CI runner gets the printed URL and nothing else —
+    spawning a browser there is either impossible or lands on somebody
+    else's screen.
+    """
+    import os
+
+    if any(os.environ.get(name) for name in _FEEDBACK_NO_BROWSER_ENV):
+        return False
+    try:
+        return bool(sys.stdout.isatty())
+    except (AttributeError, ValueError, OSError):
+        # A closed or exotic stdout — treat it as non-interactive.
+        return False
+
+
+def feedback_command(args) -> None:
+    """Open the community Discord — the project's voice channel.
+
+    Deliberately inert: it reads no telemetry state, attaches nothing,
+    and sends nothing. It behaves identically whether telemetry is on,
+    off, or has never been asked about. Telemetry can only ever say
+    *what* people do; this is where they get to say *why*.
+    """
+    print()
+    print("  Tell us what you want from Rapid-MLX — which models, which")
+    print("  integrations, what broke. We read every message.")
+    print()
+    print(f"  {FEEDBACK_URL}")
+    print()
+
+    if getattr(args, "no_open", False) or not _feedback_should_open_browser():
+        return
+
+    # Best-effort convenience on top of the printed URL, never a
+    # requirement: a machine with no browser, a broken ``BROWSER`` env
+    # var, or a sandbox that blocks the launch must not turn asking for
+    # the invite link into a non-zero exit.
+    import webbrowser
+
+    try:
+        webbrowser.open(FEEDBACK_URL)
+    except Exception:
+        pass
+
+
 def telemetry_command(args) -> None:
     """Manage anonymous usage telemetry — see Issue #236.
 
@@ -13860,6 +13934,19 @@ Examples:
         help="Delete the consent + client-id files (next run re-prompts)",
     )
 
+    # Feedback — the voice channel. Telemetry says what people do; only
+    # people say why. Read-only and send-nothing by construction: it
+    # prints an invite link and (interactively) opens it.
+    feedback_parser = subparsers.add_parser(
+        "feedback",
+        help="Tell us what you want from Rapid-MLX (opens the community Discord)",
+    )
+    feedback_parser.add_argument(
+        "--no-open",
+        action="store_true",
+        help="Print the invite link without opening a browser",
+    )
+
     # Share subcommand — expose a local serve behind a public rapidmlx.com URL.
     from rapid_mlx.share.cli import register as _register_share
 
@@ -14033,6 +14120,10 @@ def main():
     # / ``preview`` / ``enable`` are excluded for consistency; their
     # observability value is near zero.
     #
+    # ``feedback`` is excluded on the same principle: the command whose
+    # whole promise is "tell us what you want, nothing is attached" must
+    # not be the one command that quietly posts a session event.
+    #
     # ``_just_collected_consent`` skips the run that JUST collected
     # first-time opt-in (round 3 codex catch): the disclosure copy
     # promises "nothing from before this prompt or from a session you
@@ -14057,7 +14148,7 @@ def main():
     _session_models_requested: list[str] = []
     if (
         getattr(args, "command", None) is not None
-        and args.command != "telemetry"
+        and args.command not in ("telemetry", "feedback")
         and not _just_collected_consent
     ):
         import atexit as _atexit
@@ -14517,6 +14608,8 @@ def main():
         doctor_command(args)
     elif args.command == "telemetry":
         telemetry_command(args)
+    elif args.command == "feedback":
+        feedback_command(args)
     elif args.command == "share":
         from rapid_mlx.share.cli import share_command
 
