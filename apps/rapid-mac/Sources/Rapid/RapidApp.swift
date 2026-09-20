@@ -549,6 +549,16 @@ struct RapidApp: App {
                 Toggle("Show Server Log", isOn: $showLogs)
                     .keyboardShortcut("l", modifiers: [.command, .shift])
             }
+            // Help → Tell Us What You Want…  The voice channel. The menu
+            // bar is where a user looks for "how do I reach these
+            // people", and the answer is the same Discord invite the
+            // README and `rapid-mlx feedback` open. Opening a link is
+            // all it does — nothing is attached, nothing is reported.
+            CommandGroup(after: .help) {
+                Button("Tell Us What You Want…") {
+                    NSWorkspace.shared.open(CommunityLinks.discordInvite)
+                }
+            }
             CommandMenu("Go") {
                 Button("Command Palette…") {
                     NSApp.activate(ignoringOtherApps: true)
