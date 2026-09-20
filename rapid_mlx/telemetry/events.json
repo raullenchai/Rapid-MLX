@@ -1,0 +1,439 @@
+{
+  "registry_version": 1,
+  "_about": [
+    "Telemetry v2 event registry — the SINGLE source of truth for what may go",
+    "on the wire. Python (rapid_mlx/telemetry/registry.py) and Swift",
+    "(apps/rapid-mac/Sources/Rapid/Telemetry/TelemetryRegistry.swift) both read",
+    "THIS file; a pytest drift check asserts the Swift-bundled copy is",
+    "byte-identical, so the two cannot diverge.",
+    "Rules: every event property is an enum, a bool, a small bounded int, or a",
+    "model_id (pattern- and length-capped). There is no free-form string kind.",
+    "A breaking change (rename / re-mean / remove a key) needs a NEW event name;",
+    "additive OPTIONAL properties are safe in place.",
+    "Nothing in this file transmits on its own — see telemetry-design.md sec 4."
+  ],
+
+  "model_id": {
+    "_about": [
+      "telemetry_model_id (design sec 1.3): the catalog alias when the model is",
+      "in aliases.json; else the public 'org/name' only when an anonymous Hub",
+      "fetch proved it public; else one of the reserved placeholders. Gated,",
+      "not-found, token-authenticated, local-path and --served-model-name values",
+      "are always '<custom>'. Never request.model. The pattern and the length cap",
+      "are defence in depth, not the classifier: the classifier lives in block 2.",
+      "The 'org/name' half mirrors redact._HF_REPO_RE."
+    ],
+    "reserved": ["<custom>", "<local>"],
+    "pattern": "^(<custom>|<local>|[A-Za-z0-9._-]{1,96}(/[A-Za-z0-9._-]{1,96})?)$",
+    "max_length": 128
+  },
+
+  "enums": {
+    "surface": {
+      "_about": "Design sec 1.2. Which Rapid component emitted the event.",
+      "values": ["cli", "server", "desktop"]
+    },
+    "channel": {
+      "_about": "Design sec 1.2. Release channel of the running build.",
+      "values": ["stable", "rc"]
+    },
+    "os": {
+      "_about": "platform.system().lower() as redact.platform_info() already reports it.",
+      "values": ["darwin", "linux", "windows", "other"]
+    },
+    "arch": {
+      "_about": "platform.machine() as redact.platform_info() already reports it.",
+      "values": ["arm64", "x86_64", "other"]
+    },
+    "chip": {
+      "_about": [
+        "Today redact._read_chip_brand() returns the raw sysctl brand string,",
+        "which is free-form and sec 1.5 forbids on the wire. This enum is the",
+        "closed vocabulary chip_tier.classify_chip_tier() already parses:",
+        "an M<generation> token crossed with VARIANT_BASE / _PRO / _MAX / _ULTRA.",
+        "'apple-other' covers an Apple chip whose generation is past this list;",
+        "'intel' covers Intel Macs; 'other' covers non-Darwin and unknown."
+      ],
+      "values": [
+        "m1", "m1-pro", "m1-max", "m1-ultra",
+        "m2", "m2-pro", "m2-max", "m2-ultra",
+        "m3", "m3-pro", "m3-max", "m3-ultra",
+        "m4", "m4-pro", "m4-max", "m4-ultra",
+        "m5", "m5-pro", "m5-max", "m5-ultra",
+        "m6", "m6-pro", "m6-max", "m6-ultra",
+        "apple-other", "intel", "other"
+      ]
+    },
+    "days_since_first_run_bucket": {
+      "_about": "Design sec 1.2 cohort stamp — the veteran/newcomer split.",
+      "values": ["0", "1", "2-6", "7-29", "30+"]
+    },
+    "count_bucket": {
+      "_about": [
+        "Design sec 1.3, Orca's scale, reproduced exactly and in order. A bucket",
+        "event is a MILESTONE, not volume: the only valid chart is 'unique",
+        "installs that reached bucket >= N'. Summing these is meaningless."
+      ],
+      "values": [
+        "1", "2", "3_4", "5_9", "10_19", "20_49",
+        "50_99", "100_199", "200_499", "500_999", "1000_plus"
+      ]
+    },
+    "bucket_source": {
+      "_about": "Whether this process observed the crossing or found the bucket already reached.",
+      "values": ["crossed_now", "observed_existing"]
+    },
+    "result": {
+      "_about": "Design sec 1.3, inference_bucket_reached. Counters are kept per outcome.",
+      "values": ["ok", "failed"]
+    },
+    "endpoint": {
+      "_about": [
+        "Exactly telemetry/emit.py _ALLOWED_ENDPOINTS, which is already the",
+        "shipped allow-list for the v1 'request' event, plus 'other'. Anything",
+        "outside it collapses to 'other' — see emit._normalize_endpoint()."
+      ],
+      "values": [
+        "/v1/chat/completions",
+        "/v1/completions",
+        "/v1/embeddings",
+        "/v1/audio/transcriptions",
+        "/v1/messages",
+        "/v1/images/generations",
+        "other"
+      ]
+    },
+    "caller": {
+      "_about": [
+        "The label half of telemetry/redact.py _CALLER_AGENT_MARKERS, de-duped,",
+        "plus the two escape hatches normalize_caller_agent() already returns.",
+        "Block 2 adds X-Rapid-Client, which resolves to the SAME labels; the raw",
+        "User-Agent never leaves the machine (sec 1.5)."
+      ],
+      "values": [
+        "claude-code", "cursor", "aider", "cline", "continue",
+        "openai-python", "openai-node", "anthropic-sdk", "litellm",
+        "langchain", "llamaindex", "ollama",
+        "python-httpx", "python-requests", "node-fetch", "axios",
+        "curl", "okhttp", "go-http",
+        "unknown", "other"
+      ]
+    },
+    "model_type": {
+      "_about": [
+        "Derived from model_aliases._VALID_MODALITIES ({text, text-diffusion,",
+        "video-gen, image-gen, embedding}) with the alias flag",
+        "supports_image_input splitting 'text' into llm vs vlm — the loader",
+        "comment at model_aliases.py:183 states exactly that a VLM checkpoint",
+        "keeps modality='text'. 'vision' is in _RESERVED_MODALITIES (no dispatch",
+        "path yet) and is therefore NOT a separate value here."
+      ],
+      "values": [
+        "llm", "vlm", "embedding", "image-gen", "video-gen",
+        "text-diffusion", "audio", "other"
+      ]
+    },
+    "quant": {
+      "_about": [
+        "There is no canonical quantization enum in the engine, so this is the",
+        "observed closed set of quant tokens carried by rapid_mlx/aliases.json",
+        "alias names (4bit, 8bit, 6bit, bf16, 2bit, 3bit, mxfp4, q4/q8, dwq,",
+        "fp16, nvfp4). 'other' absorbs anything new so a fresh alias can never",
+        "put an unknown token on the wire; 'unknown' means we could not tell."
+      ],
+      "values": [
+        "2bit", "3bit", "4bit", "6bit", "8bit",
+        "bf16", "fp16", "mxfp4", "nvfp4", "dwq",
+        "other", "unknown"
+      ]
+    },
+    "size_bucket": {
+      "_about": [
+        "Download footprint of the pulled checkpoint, bucketed. The design doc",
+        "names the property but not a scale, so this is a new log-ish GB scale",
+        "chosen to straddle the RAM tiers the recommender already reasons about",
+        "(8 / 16 / 32 / 64 GB). Half-open [lower, upper) like redact's buckets."
+      ],
+      "values": [
+        "lt_1gb", "1_2gb", "2_4gb", "4_8gb", "8_16gb",
+        "16_32gb", "32_64gb", "64gb_plus", "unknown"
+      ]
+    },
+    "pull_source": {
+      "_about": "Design sec 1.3 — which origin served the weights. Mirror health.",
+      "values": ["mirror", "hf"]
+    },
+    "pull_error_class": {
+      "_about": "Design sec 1.3, model_pull_failed. Verbatim from the table.",
+      "values": ["network", "gated", "disk_full", "not_found", "other"]
+    },
+    "serve_error_class": {
+      "_about": "Design sec 1.3, model_serve_failed. Verbatim from the table.",
+      "values": [
+        "unsupported_architecture", "insufficient_memory",
+        "corrupt_weights", "download_failed", "other"
+      ]
+    },
+    "agent": {
+      "_about": [
+        "Exactly the agent profiles `rapid-mlx agents` can configure — one YAML",
+        "per agent in rapid_mlx/agents/profiles/ (the same glob pyproject ships",
+        "as package-data), read from each profile's `name` field. Plus 'other'.",
+        "NOTE: the design doc's illustrative list names cursor and cline; those",
+        "are CALLER labels (they talk to the server), not configurable agent",
+        "profiles, so they are not here."
+      ],
+      "values": [
+        "aider", "claude-code", "codex", "continue", "deepseek-harness",
+        "hermes", "kilo-code", "langchain", "opencode", "openhands",
+        "pydanticai", "qwen-code", "smolagents", "other"
+      ]
+    },
+    "agent_error_class": {
+      "_about": [
+        "The failure modes rapid_mlx/agents/setup.py can actually reach:",
+        "no_safe_setup_flow  -> setup.py:230 'does not have a first-class safe setup flow'",
+        "config_invalid      -> setup.py:97 '<path> must contain a YAML mapping'",
+        "config_changed      -> setup.py:242/246 '<path> changed after preview'",
+        "config_write_failed -> an OSError out of the atomic-write / backup path",
+        "server_not_ready    -> setup.py:276 'server is not ready at <root>'",
+        "server_no_models    -> setup.py:280 'server at <root> reported no models'",
+        "model_not_advertised-> setup.py:282 'server does not advertise model ...'"
+      ],
+      "values": [
+        "no_safe_setup_flow", "config_invalid", "config_changed",
+        "config_write_failed", "server_not_ready", "server_no_models",
+        "model_not_advertised", "other"
+      ]
+    },
+    "capability": {
+      "_about": [
+        "Design sec 1.3: 'enum from real rejection sites'. Every value below is",
+        "backed by a live rejection in the engine; nothing is aspirational.",
+        "image_input_unsupported        -> api/utils.py:1804, routes/anthropic.py:719",
+        "video_input_unsupported        -> api/utils.py:1810",
+        "audio_input_unsupported        -> api/utils.py:1810/1848/2068",
+        "embeddings_unavailable         -> routes/embeddings.py:68/108, cli.py:3506",
+        "image_generation_unavailable   -> routes/images.py:194/308/551",
+        "video_generation_unavailable   -> routes/video.py:680/1107",
+        "multi_sample_unsupported       -> routes/chat.py:4275, routes/completions.py:104/113",
+        "logprobs_unsupported           -> routes/completions.py:371 (HTTP 501), :149",
+        "logit_bias_unsupported         -> routes/chat.py:4326",
+        "structured_output_unsupported  -> routes/completions.py:264, routes/chat.py:5295,",
+        "                                  routes/responses.py:1096/1127, api/anthropic_adapter.py:925",
+        "tool_type_unsupported          -> api/responses_adapter.py:105",
+        "stateless_api_only             -> routes/responses.py:904 (previous_response_id)",
+        "fim_suffix_unsupported         -> routes/completions.py:88",
+        "context_length_exceeded        -> service/helpers.py:4919",
+        "speculative_decoding_unsupported -> cli.py:2658/2767/2899, server.py:2261",
+        "mcp_unsupported                -> cli.py:4873",
+        "speech_capability_unsupported  -> routes/audio.py:554/605/1991/3029/3056/3114",
+        "runtime_extra_missing          -> routes/audio.py:1510/2099, routes/video.py:840,",
+        "                                  routes/embeddings.py:75",
+        "response_format_unsupported    -> routes/images.py:324/588",
+        "perf_overrides_unsupported     -> routes/residency.py:166/190",
+        "Deliberately absent (no rejection site exists): tool calling wholesale,",
+        "reasoning/thinking controls, a Batch or Files API, blanket streaming."
+      ],
+      "values": [
+        "image_input_unsupported",
+        "video_input_unsupported",
+        "audio_input_unsupported",
+        "embeddings_unavailable",
+        "image_generation_unavailable",
+        "video_generation_unavailable",
+        "multi_sample_unsupported",
+        "logprobs_unsupported",
+        "logit_bias_unsupported",
+        "structured_output_unsupported",
+        "tool_type_unsupported",
+        "stateless_api_only",
+        "fim_suffix_unsupported",
+        "context_length_exceeded",
+        "speculative_decoding_unsupported",
+        "mcp_unsupported",
+        "speech_capability_unsupported",
+        "runtime_extra_missing",
+        "response_format_unsupported",
+        "perf_overrides_unsupported",
+        "other"
+      ]
+    },
+    "opt_via": {
+      "_about": [
+        "Design sec 1.3. An env kill switch forbids all upload, so it is by",
+        "design unobservable and is NOT a value here."
+      ],
+      "values": ["cli", "settings"]
+    }
+  },
+
+  "common_props": {
+    "_about": [
+      "Design sec 1.2 — stamped on EVERY event, validated by validate_common()",
+      "before the transport initialises (fail closed). Dropped vs. 0.14.3:",
+      "country (GeoIP is off), the dead 'engine' slot, the constant 'status'.",
+      "The two pattern-capped kinds ('version', 'uuid') exist only here; event",
+      "properties may not use them."
+    ],
+    "app_version": {
+      "kind": "version",
+      "pattern": "^[0-9]{1,3}\\.[0-9]{1,4}\\.[0-9]{1,4}(rc[0-9]{1,3}|\\.dev[0-9]{1,6})?$",
+      "max_length": 32,
+      "required": true
+    },
+    "surface": {"kind": "enum", "enum": "surface", "required": true},
+    "os": {"kind": "enum", "enum": "os", "required": true},
+    "os_version": {
+      "_about": "major.minor only — redact.platform_info() already truncates it.",
+      "kind": "version",
+      "pattern": "^[0-9]{1,4}\\.[0-9]{1,4}$",
+      "max_length": 10,
+      "required": true
+    },
+    "arch": {"kind": "enum", "enum": "arch", "required": true},
+    "chip": {"kind": "enum", "enum": "chip", "required": true},
+    "memory_gb": {
+      "_about": "redact.bucket_memory_gb() — rounded to whole GB, never exact bytes.",
+      "kind": "int",
+      "min": 0,
+      "max": 4096,
+      "required": true
+    },
+    "python_version": {
+      "_about": "Engine surfaces only; the desktop app omits it.",
+      "kind": "version",
+      "pattern": "^[0-9]{1,2}\\.[0-9]{1,3}$",
+      "max_length": 8,
+      "required": false
+    },
+    "install_id": {"kind": "uuid", "required": true},
+    "session_id": {"kind": "uuid", "required": true},
+    "channel": {"kind": "enum", "enum": "channel", "required": true},
+    "nth_model_served": {
+      "_about": "Cohort stamp: distinct models this install has EVER served, at emit time.",
+      "kind": "int",
+      "min": 0,
+      "max": 10000,
+      "required": true
+    },
+    "days_since_first_run_bucket": {
+      "kind": "enum",
+      "enum": "days_since_first_run_bucket",
+      "required": true
+    }
+  },
+
+  "events": {
+    "app_opened": {
+      "_about": "Launches. Common props carry everything that matters.",
+      "props": {}
+    },
+    "active_day": {
+      "_about": [
+        "Once per install per UTC day, on the first successful inference — DAU",
+        "and retention that still work for a server that runs for weeks.",
+        "The design table writes 'surface' against this row; surface is already a",
+        "common prop on every event, so repeating it here would put the same key",
+        "on the payload twice. It is not duplicated."
+      ],
+      "props": {}
+    },
+    "model_pulled": {
+      "_about": "What people want to run, and whether the mirror served it.",
+      "props": {
+        "model": {"kind": "model_id", "required": true},
+        "source": {"kind": "enum", "enum": "pull_source", "required": true},
+        "size_bucket": {"kind": "enum", "enum": "size_bucket", "required": true}
+      }
+    },
+    "model_pull_failed": {
+      "_about": "_failed twin: same identifying props, all optional, plus error_class.",
+      "twin_of": "model_pulled",
+      "props": {
+        "model": {"kind": "model_id", "required": false},
+        "source": {"kind": "enum", "enum": "pull_source", "required": false},
+        "size_bucket": {"kind": "enum", "enum": "size_bucket", "required": false},
+        "error_class": {"kind": "enum", "enum": "pull_error_class", "required": true}
+      }
+    },
+    "model_served": {
+      "_about": "What people actually run.",
+      "props": {
+        "model": {"kind": "model_id", "required": true},
+        "model_type": {"kind": "enum", "enum": "model_type", "required": true},
+        "auto_selected": {"kind": "bool", "required": true},
+        "quant": {"kind": "enum", "enum": "quant", "required": true}
+      }
+    },
+    "model_serve_failed": {
+      "_about": [
+        "What people want and CANNOT have — the highest-value row in the table.",
+        "The design table also lists 'architecture (allow-list, else other)'. It",
+        "is NOT here: the architecture string comes straight out of a",
+        "checkpoint's config.json (see cli.py:6122) and the engine holds no",
+        "allow-list to close it against, so shipping it would mean either a",
+        "free-form string (forbidden by sec 1.5) or an invented enum. It lands",
+        "when a real allow-list exists; error_class already separates",
+        "unsupported_architecture from the other failure modes."
+      ],
+      "twin_of": "model_served",
+      "props": {
+        "model": {"kind": "model_id", "required": false},
+        "model_type": {"kind": "enum", "enum": "model_type", "required": false},
+        "auto_selected": {"kind": "bool", "required": false},
+        "quant": {"kind": "enum", "enum": "quant", "required": false},
+        "error_class": {"kind": "enum", "enum": "serve_error_class", "required": true}
+      }
+    },
+    "capability_rejected": {
+      "_about": "Features people reach for that we do not have.",
+      "props": {
+        "capability": {"kind": "enum", "enum": "capability", "required": true},
+        "model_type": {"kind": "enum", "enum": "model_type", "required": true}
+      }
+    },
+    "inference_bucket_reached": {
+      "_about": [
+        "Which models / APIs / clients carry real load, and how many installs hit",
+        "repeated failures. One event per local counter threshold crossing:",
+        "O(log n) events, no timing trail, no sampling. Read it as unique",
+        "installs that reached bucket >= N — never as a sum."
+      ],
+      "props": {
+        "model": {"kind": "model_id", "required": true},
+        "endpoint": {"kind": "enum", "enum": "endpoint", "required": true},
+        "caller": {"kind": "enum", "enum": "caller", "required": true},
+        "result": {"kind": "enum", "enum": "result", "required": true},
+        "count_bucket": {"kind": "enum", "enum": "count_bucket", "required": true},
+        "bucket_source": {"kind": "enum", "enum": "bucket_source", "required": true}
+      }
+    },
+    "agent_configured": {
+      "_about": "Which integrations matter.",
+      "props": {
+        "agent": {"kind": "enum", "enum": "agent", "required": true}
+      }
+    },
+    "agent_configure_failed": {
+      "_about": "_failed twin: same identifying props, all optional, plus error_class.",
+      "twin_of": "agent_configured",
+      "props": {
+        "agent": {"kind": "enum", "enum": "agent", "required": false},
+        "error_class": {"kind": "enum", "enum": "agent_error_class", "required": true}
+      }
+    },
+    "telemetry_opted_out": {
+      "_about": "The cost of default-on, measured. Sent once, then silence.",
+      "props": {
+        "via": {"kind": "enum", "enum": "opt_via", "required": true}
+      }
+    },
+    "telemetry_opted_in": {
+      "_about": "The other half of the same measurement.",
+      "props": {
+        "via": {"kind": "enum", "enum": "opt_via", "required": true}
+      }
+    }
+  }
+}
