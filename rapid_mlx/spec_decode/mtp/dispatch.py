@@ -62,6 +62,16 @@ _MTP_INJECT_DISPATCH: dict[str, tuple[str, str]] = {
         "rapid_mlx.spec_decode.mtp.qwen4_exp_inject",
         "inject_qwen4_exp_mtp_support",
     ),
+    # Gemma 4 assistant-sidecar MTP. Eligibility remains explicit-sidecar-only
+    # in detect.py; registering the family here does not auto-enable it.
+    "gemma4": (
+        "rapid_mlx.spec_decode.mtp.gemma4_inject",
+        "inject_mtp_support",
+    ),
+    "gemma4_unified": (
+        "rapid_mlx.spec_decode.mtp.gemma4_inject",
+        "inject_mtp_support",
+    ),
 }
 
 
@@ -85,6 +95,14 @@ _MTP_VALIDATE_DISPATCH: dict[str, tuple[str, str]] = {
     "qwen4_exp": (
         "rapid_mlx.spec_decode.mtp.qwen4_exp_inject",
         "validate_qwen4_exp_mtp_support",
+    ),
+    "gemma4": (
+        "rapid_mlx.spec_decode.mtp.gemma4_inject",
+        "validate_mtp_support",
+    ),
+    "gemma4_unified": (
+        "rapid_mlx.spec_decode.mtp.gemma4_inject",
+        "validate_mtp_support",
     ),
 }
 

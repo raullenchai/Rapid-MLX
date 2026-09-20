@@ -85,6 +85,14 @@ _SUPPORTED_MODEL_TYPES: frozenset[str] = frozenset(
     }
 )
 
+# Gemma 4 carries no native MTP head. These outer model types become eligible
+# only when the operator explicitly supplies a separately-qualified assistant
+# sidecar. Keep text-only implementation types out of the public boot gate: the
+# loaded user-facing checkpoint is one of the outer wrappers below.
+_EXTERNAL_SIDECAR_MODEL_TYPES: frozenset[str] = frozenset(
+    {"gemma4", "gemma4_unified"}
+)
+
 
 @dataclass(frozen=True)
 class _DetectionResult:
@@ -157,13 +165,10 @@ def detect_mtp_eligibility(
             non-dict) returns ``MTPEligibility.NONE`` — used by the CLI
             so callers can pass ``model_auto_config.get_config(path)``
             output unguarded.
-        has_external_sidecar: Accepted for compatibility with the
-            legacy CLI flag surface, but currently does not promote any
-            architecture. Qwen3.5 / Qwen3.6 eligibility requires
-            ``mtp_num_hidden_layers >= 1`` in the base config
-            (root or ``text_config``) because their MTP head is part of
-            the target checkpoint. Gemma 4 sidecar promotion remains
-            disabled until it passes end-to-end greedy-lossless validation.
+        has_external_sidecar: Promote only an explicitly allowlisted Gemma 4
+            outer architecture whose MTP head lives in a separate assistant
+            checkpoint. Native-MTP families still require their head metadata
+            in the target checkpoint; a sidecar cannot manufacture it.
 
     Returns:
         :class:`MTPEligibility` value. Detection is conservative — any
@@ -197,6 +202,21 @@ def _detect_mtp_eligibility_verbose(
             MTPEligibility.NONE, None, 0, "model_type missing or not a string"
         )
 
+    if model_type in _EXTERNAL_SIDECAR_MODEL_TYPES:
+        if has_external_sidecar:
+            return _DetectionResult(
+                MTPEligibility.CHAIN,
+                model_type,
+                1,
+                "explicit external assistant sidecar",
+            )
+        return _DetectionResult(
+            MTPEligibility.NONE,
+            model_type,
+            0,
+            "external assistant sidecar required",
+        )
+
     if model_type not in _SUPPORTED_MODEL_TYPES:
         return _DetectionResult(
             MTPEligibility.NONE,
@@ -205,7 +225,6 @@ def _detect_mtp_eligibility_verbose(
             f"model_type {model_type!r} not in MTP allowlist",
         )
 
-    _ = has_external_sidecar
     num_mtp_layers = _mtp_num_hidden_layers(config)
     if num_mtp_layers <= 0:
         # MTP-capable model_type but MTP weights not present on this

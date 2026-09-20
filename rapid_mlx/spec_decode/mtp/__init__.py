@@ -22,17 +22,18 @@ The public API the CLI / scheduler hooks into is intentionally tiny:
   :mod:`rapid_mlx.routes.metrics`.
 * :func:`detect_mtp_eligibility` — returns
   :class:`MTPEligibility` for a given HF-style ``config.json`` dict.
-  Only Qwen3.5 / Qwen3.6 with ``mtp_num_hidden_layers >= 1`` are
-  eligible. Other architectures (Qwen3.0/3.1, Llama, Mistral) return
+  Native-MTP families require their advertised head metadata; Gemma 4 outer
+  wrappers additionally qualify only when the operator explicitly supplies a
+  separately validated assistant sidecar. Other architectures return
   ``MTPEligibility.NONE``.
 * :func:`mtp_generate_step` — the chain MTP generation loop vendored
   from mlx-lm PR #990 (``mlx_lm/generate.py::mtp_generate_step``).
   Requires the loaded model to expose ``mtp_forward(hidden,
-  next_token_ids, mtp_cache)``, ``return_hidden=True`` in
-  ``__call__``, ``n_confirmed`` in ``__call__``, and
-  ``make_mtp_cache()``. The model-side injection helper that adds
-  those methods to an in-memory ``mlx_lm.models.qwen3_5.TextModel``
-  lives at :func:`rapid_mlx.spec_decode.mtp.qwen3_5_inject.inject_mtp_support`.
+  next_token_ids, mtp_cache)``, ``make_mtp_cache()``, and target-forward
+  semantics that return logits plus hidden state. Text targets implement that
+  through ``__call__(return_hidden=True, n_confirmed=...)``; multimodal wrappers
+  may preserve their ordinary call contract and provide ``mtp_target_forward``
+  instead.
 * :func:`patch_arrays_cache_rollback_state` — adds a ``rollback_state``
   slot to mlx-lm's ``ArraysCache``. Required by both the model-side
   GatedDeltaNet ``_process_chunk`` split (saves the conv/SSM snapshot

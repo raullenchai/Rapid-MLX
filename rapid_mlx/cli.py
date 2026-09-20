@@ -5389,10 +5389,11 @@ def serve_command(args):
         if eligibility is MTPEligibility.NONE:
             if has_sidecar:
                 print(
-                    "error: MTP speculative-config requires a supported "
-                    "checkpoint with mtp_num_hidden_layers >= 1 in "
-                    "config.json. Assistant sidecars are reserved for future "
-                    "validated support and do not make this model eligible.",
+                    "error: MTP speculative-config sidecar is not supported "
+                    "for this checkpoint architecture. Native-MTP targets "
+                    "must advertise an MTP head in config.json; external "
+                    "assistant sidecars are accepted only for explicitly "
+                    "qualified target families.",
                     file=sys.stderr,
                 )
             else:

@@ -388,13 +388,11 @@ def mtp_generate_step(
       returning logits of shape ``(B, N, vocab_size)``.
     * Implements ``make_mtp_cache()`` returning a list of caches the
       MTP transformer layers can write into.
-    * Accepts ``return_hidden=True`` in ``__call__`` and returns
-      ``(logits, hidden)`` where ``hidden`` is the pre-norm backbone
-      hidden state at every position.
-    * Accepts ``n_confirmed=int`` in ``__call__`` (used by the
-      GatedDeltaNet layer to snapshot its SSM/conv state at the
-      confirmed boundary so the generator can roll back on draft
-      rejection).
+    * Exposes target-forward semantics returning ``(logits, hidden)`` where
+      ``hidden`` is the pre-norm backbone state at every position. Text targets
+      accept ``return_hidden=True`` / ``n_confirmed=int`` in ``__call__``;
+      multimodal wrappers may expose the same narrow contract through
+      ``mtp_target_forward`` while keeping ordinary ``__call__`` unchanged.
 
     The :func:`rapid_mlx.spec_decode.mtp.qwen3_5_inject.inject_mtp_support`
     helper installs all four on a freshly-loaded
@@ -425,6 +423,16 @@ def mtp_generate_step(
     xtc_special_tokens = xtc_special_tokens or []
     if accept_counter is None:
         accept_counter = get_global_counter()
+
+    # Most text targets expose the extended MTP forward contract directly on
+    # ``model.__call__``. Multimodal wrappers must preserve their ordinary
+    # public call shape, so they may instead expose this narrow protocol that
+    # delegates to the injected inner text model.
+    _target_forward = getattr(model, "mtp_target_forward", None)
+    if _target_forward is None:
+        _target_forward = model
+    if not callable(_target_forward):
+        raise TypeError("MTP target forward surface is not callable")
 
     def _uniform(*, shape=None):
         kwargs = {"key": lane_rng.next_key()} if lane_rng is not None else {}
@@ -736,7 +744,7 @@ def mtp_generate_step(
     ):
         """Run backbone and optionally retain each processor position boundary."""
         with mx.stream(generation_stream):
-            logits, hidden = model(
+            logits, hidden = _target_forward(
                 yy[None],
                 cache=model_cache,
                 return_hidden=True,
@@ -949,7 +957,7 @@ def mtp_generate_step(
         while total > 1:
             n = min(prefill_step_size, total - 1)
             if embeddings is not None:
-                _, hidden = model(
+                _, hidden = _target_forward(
                     yy[:n][None],
                     cache=model_cache,
                     return_hidden=True,
@@ -957,7 +965,9 @@ def mtp_generate_step(
                 )
                 embeddings = embeddings[n:]
             else:
-                _, hidden = model(yy[:n][None], cache=model_cache, return_hidden=True)
+                _, hidden = _target_forward(
+                    yy[:n][None], cache=model_cache, return_hidden=True
+                )
             model.mtp_forward(hidden, yy[1 : n + 1][None], mtp_cache)
             quantize_cache_fn(mtp_cache)
             quantize_cache_fn(model_cache)

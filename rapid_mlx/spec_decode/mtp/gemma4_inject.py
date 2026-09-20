@@ -478,7 +478,7 @@ def inject_mtp_support(
             init weights. Same fail-closed default as ``qwen3_5_inject``.
 
     Returns:
-        ``True`` when the four contract surfaces attach and — under the
+        ``True`` when the MTP contract surfaces attach and — under the
         real-sidecar path — weights load without missing tensors.
         ``False`` on any refusal (never raises).
     """
@@ -1246,6 +1246,7 @@ test_make_mtp_cache_slots_are_generator_safe`
     try:
         _delegate_forward = None
         _delegate_cache = None
+        _delegate_target_forward = None
         if model is not inner:
 
             def _delegate_forward(
@@ -1266,6 +1267,17 @@ test_make_mtp_cache_slots_are_generator_safe`
             def _delegate_cache(_self):
                 return inner.make_mtp_cache()
 
+            def _delegate_target_forward(_self, *args, **kwargs):
+                """Run the injected inner text target for MTP verification.
+
+                This deliberately does not replace the outer multimodal
+                wrapper's ``__call__``. Ordinary image/text inference keeps
+                its existing input and output contract; only the MTP generator
+                opts into logits + hidden-state semantics through this method.
+                """
+
+                return inner(*args, **kwargs)
+
         # Commit: class swap first so the surfaces are visible via the
         # inner's own method resolution, then set attributes on inner
         # + (optionally) delegate onto the outer.
@@ -1275,6 +1287,9 @@ test_make_mtp_cache_slots_are_generator_safe`
             model.mtp = inner.mtp
             model.mtp_forward = _types.MethodType(_delegate_forward, model)
             model.make_mtp_cache = _types.MethodType(_delegate_cache, model)
+            model.mtp_target_forward = _types.MethodType(
+                _delegate_target_forward, model
+            )
             # Codex round-11 blocking fix: mirror the static batch-size
             # gate onto the OUTER wrapper. Schedulers that inspect the
             # caller-visible ``model`` object (not the buried inner
@@ -1308,6 +1323,7 @@ test_make_mtp_cache_slots_are_generator_safe`
                     "mtp",
                     "mtp_forward",
                     "make_mtp_cache",
+                    "mtp_target_forward",
                     "mtp_max_batch_size",
                 ):
                     # Direct __dict__ removal first (fast path), then
@@ -1344,7 +1360,7 @@ test_make_mtp_cache_slots_are_generator_safe`
 
 
 def validate_mtp_support(model: Any) -> bool:
-    """Verify the four contract surfaces attached to ``model``.
+    """Verify the MTP contract surfaces attached to ``model``.
 
     Same shape as :func:`qwen3_5_inject.validate_mtp_support`. Returns
     ``True`` when the injection landed and the model is ready to be
@@ -1412,6 +1428,7 @@ def validate_mtp_support(model: Any) -> bool:
             "mtp",
             "mtp_forward",
             "make_mtp_cache",
+            "mtp_target_forward",
             "mtp_max_batch_size",
         ):
             if not hasattr(model, attr):
@@ -1459,6 +1476,12 @@ def validate_mtp_support(model: Any) -> bool:
         if not callable(getattr(model, "make_mtp_cache", None)):
             logger.warning(
                 "[mtp.validate.gemma4] outer wrapper's make_mtp_cache is not callable."
+            )
+            return False
+        if not callable(getattr(model, "mtp_target_forward", None)):
+            logger.warning(
+                "[mtp.validate.gemma4] outer wrapper's mtp_target_forward "
+                "is not callable."
             )
             return False
     return True

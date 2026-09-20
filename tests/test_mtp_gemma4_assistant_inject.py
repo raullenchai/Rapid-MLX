@@ -561,17 +561,14 @@ def test_make_mtp_cache_slots_are_generator_safe():
 # ---------------------------------------------------------------------------
 
 
-def test_dispatcher_does_not_route_gemma4_families_to_this_module():
-    """Gemma 4 assistant-sidecar MTP stays unregistered until lossless.
-
-    The injector module remains unit-tested directly in this file, but
-    dispatcher registration is the supported runtime surface. July 2026
-    server A/B found greedy output divergence, so the dispatcher must not
-    expose Gemma 4 MTP yet.
-    """
+def test_dispatcher_routes_gemma4_outer_families_to_this_module():
+    """The two public Gemma 4 wrapper types route to this injector."""
     from rapid_mlx.spec_decode.mtp import dispatch as _dispatch
 
-    for mt in ("gemma4", "gemma4_unified", "gemma4_text", "gemma4_unified_text"):
+    for mt in ("gemma4", "gemma4_unified"):
+        assert mt in _dispatch._MTP_INJECT_DISPATCH
+        assert mt in _dispatch._MTP_VALIDATE_DISPATCH
+    for mt in ("gemma4_text", "gemma4_unified_text"):
         assert mt not in _dispatch._MTP_INJECT_DISPATCH
         assert mt not in _dispatch._MTP_VALIDATE_DISPATCH
 
@@ -681,12 +678,8 @@ def test_gemma4_text_modelargs_carries_fields_this_module_reads():
     )
 
 
-def test_dispatcher_does_not_call_gemma4_inject(monkeypatch):
-    """A Gemma 4 dispatch request fails closed without calling the injector.
-
-    This is the runtime guard that prevents an explicit sidecar flag from
-    reaching the unvalidated assistant path.
-    """
+def test_dispatcher_calls_gemma4_inject_with_explicit_sidecar(monkeypatch):
+    """Gemma 4 dispatch preserves the exact explicit sidecar identity."""
     from rapid_mlx.spec_decode.mtp import dispatch as _dispatch
     from rapid_mlx.spec_decode.mtp import gemma4_inject
 
@@ -713,8 +706,14 @@ def test_dispatcher_does_not_call_gemma4_inject(monkeypatch):
         mtp_sidecar=sentinel_sidecar,
         allow_random_init=False,
     )
-    assert result is False
-    assert calls == []
+    assert result is True
+    assert calls == [
+        {
+            "model": sentinel_model,
+            "mtp_sidecar": sentinel_sidecar,
+            "allow_random_init": False,
+        }
+    ]
 
 
 # ---------------------------------------------------------------------------
@@ -723,13 +722,10 @@ def test_dispatcher_does_not_call_gemma4_inject(monkeypatch):
 
 
 def test_inject_delegates_surfaces_to_outer_wrapper():
-    """When called with an outer VLM wrapper, the THREE attribute surfaces
-    (.mtp / .mtp_forward / .make_mtp_cache) delegate to the inner text model.
+    """An outer VLM wrapper exposes a narrow MTP-only target-forward method.
 
-    The extended ``__call__(return_hidden, n_confirmed)`` signature is
-    deliberately NOT delegated on the outer — matches the Qwen3.5
-    contract (all callers unwrap outer → inner before invoking the
-    extended signature).
+    The outer ``__call__`` remains unchanged; the generator opts into the
+    extended inner text-model contract through ``mtp_target_forward``.
     """
     from rapid_mlx.spec_decode.mtp.gemma4_inject import inject_mtp_support
 
@@ -742,7 +738,11 @@ def test_inject_delegates_surfaces_to_outer_wrapper():
         def __init__(self, lm):
             self.language_model = lm
 
+        def __call__(self, *args, **kwargs):
+            return ("ordinary-outer-call", args, kwargs)
+
     outer = _FakeOuterVLM(inner)
+    outer_call_impl = type(outer).__call__
 
     result = inject_mtp_support(outer, allow_random_init=True)
     assert result is True
@@ -754,6 +754,13 @@ def test_inject_delegates_surfaces_to_outer_wrapper():
     # wrapper too, so schedulers that inspect the caller-visible
     # object can gate B>1 dispatch statically.
     assert getattr(outer, "mtp_max_batch_size", None) == 1
+    assert callable(getattr(outer, "mtp_target_forward", None))
+    assert type(outer).__call__ is outer_call_impl
+    assert outer("sentinel", mode="ordinary") == (
+        "ordinary-outer-call",
+        ("sentinel",),
+        {"mode": "ordinary"},
+    )
 
     # make_mtp_cache returns a list from the inner scaffold — assert
     # it's a real list of cache instances.
@@ -848,7 +855,13 @@ def test_validate_refuses_when_outer_wrapper_missing_delegated_surface():
     # delegations while leaving the inner correctly patched.
     # Codex round-11: also strip mtp_max_batch_size (now a required
     # delegated surface).
-    for attr in ("mtp", "mtp_forward", "make_mtp_cache", "mtp_max_batch_size"):
+    for attr in (
+        "mtp",
+        "mtp_forward",
+        "make_mtp_cache",
+        "mtp_target_forward",
+        "mtp_max_batch_size",
+    ):
         if hasattr(outer, attr):
             delattr(outer, attr)
 
