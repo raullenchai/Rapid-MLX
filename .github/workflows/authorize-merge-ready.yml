@@ -10,12 +10,9 @@ jobs:
   authorize-ready-head:
     if: >-
       github.event.pull_request.head.repo.full_name == github.repository &&
-      ((github.event.action == 'labeled' &&
-        (github.event.label.name == 'merge-ready' ||
-         github.event.label.name == 'merge-ready-mac')) ||
-       (github.event.action == 'synchronize' &&
-        (contains(github.event.pull_request.labels.*.name, 'merge-ready') ||
-         contains(github.event.pull_request.labels.*.name, 'merge-ready-mac'))))
+      github.event.action == 'labeled' &&
+      (github.event.label.name == 'merge-ready' ||
+       github.event.label.name == 'merge-ready-mac')
     runs-on: ubuntu-latest
     permissions:
       pull-requests: read
@@ -27,108 +24,6 @@ jobs:
           script: |
             const headSha = context.payload.pull_request.head.sha;
             const statusUrl = `${context.serverUrl}/${context.repo.owner}/${context.repo.repo}/pull/${context.issue.number}`;
-
-            if (context.payload.action === "synchronize") {
-              // A ready label authorizes one immutable head. A push must make
-              // the stale authorization visible instead of leaving Mergify
-              // silently waiting for a status that can never appear.
-              //
-              // A label delivery may execute concurrently. Any successful
-              // authorization on this *new SHA* can only have come from a
-              // fresh label event after the push, so preserve it. Check both
-              // before and after writing failure: this makes every possible
-              // interleaving converge to success when a fresh authorization
-              // exists, without relying on lossy Actions concurrency queues.
-              const listStatuses = async () =>
-                github.paginate(
-                  github.rest.repos.listCommitStatusesForRef,
-                  {
-                    owner: context.repo.owner,
-                    repo: context.repo.repo,
-                    ref: headSha,
-                    per_page: 100,
-                  },
-                );
-              const successfulAuthorization = (statuses) =>
-                statuses.find(
-                  (status) =>
-                    status.context === "merge-ready-head" &&
-                    status.state === "success",
-                );
-              const restoreAuthorization = async (authorization) =>
-                github.rest.repos.createCommitStatus({
-                  owner: context.repo.owner,
-                  repo: context.repo.repo,
-                  sha: headSha,
-                  state: "success",
-                  context: "merge-ready-head",
-                  description:
-                    authorization.description ||
-                    "Authorized ready label on this exact head",
-                  target_url: authorization.target_url || statusUrl,
-                });
-
-              const failureDescription =
-                "Head changed — remove and re-apply the ready label";
-              const beforeStatuses = await listStatuses();
-              const authorizationsBefore = beforeStatuses.filter(
-                (status) => status.context === "merge-ready-head",
-              );
-              const latestBefore = authorizationsBefore[0];
-              if (latestBefore?.state === "success") {
-                return;
-              }
-              // Only our own recognizable failure may revive the success
-              // immediately behind it. Another failure can represent a real
-              // revocation (for example, both ready labels present) and must
-              // remain authoritative over older successes.
-              const interruptedSuccess = authorizationsBefore[1];
-              if (
-                latestBefore?.state === "failure" &&
-                latestBefore.description === failureDescription &&
-                interruptedSuccess?.state === "success"
-              ) {
-                await restoreAuthorization(interruptedSuccess);
-                return;
-              }
-
-              const statusIdsBefore = new Set(
-                beforeStatuses.map((status) => String(status.id)),
-              );
-              const { data: staleFailure } =
-                await github.rest.repos.createCommitStatus({
-                  owner: context.repo.owner,
-                  repo: context.repo.repo,
-                  sha: headSha,
-                  state: "failure",
-                  context: "merge-ready-head",
-                  description: failureDescription,
-                  target_url: statusUrl,
-                });
-
-              // Consider only statuses that appeared after our first snapshot
-              // and keep their API recency order. A newer failure from label
-              // validation (for example, both ready labels present) must beat
-              // every success behind it. We restore only when *our own*
-              // failure is newest and a fresh success landed just before it.
-              const newAuthorizations = (await listStatuses()).filter(
-                (status) =>
-                  status.context === "merge-ready-head" &&
-                  !statusIdsBefore.has(String(status.id)),
-              );
-              const latestNewAuthorization = newAuthorizations[0];
-              const racedSuccess = newAuthorizations.find(
-                (status) => status.state === "success",
-              );
-              if (
-                latestNewAuthorization?.state !== "success" &&
-                String(latestNewAuthorization?.id) === String(staleFailure.id) &&
-                racedSuccess
-              ) {
-                await restoreAuthorization(racedSuccess);
-              }
-              return;
-            }
 
             // A historical Actions rerun must not replay an old labeled event.
             // A maintainer can always create a fresh authorization event by
@@ -188,4 +83,97 @@ jobs:
             if (!authorized) {
               core.setFailed(description);
               return;
+            }
+
+  notify-stale-ready-head:
+    if: >-
+      github.event.pull_request.head.repo.full_name == github.repository &&
+      github.event.action == 'synchronize' &&
+      (contains(github.event.pull_request.labels.*.name, 'merge-ready') ||
+       contains(github.event.pull_request.labels.*.name, 'merge-ready-mac'))
+    runs-on: ubuntu-latest
+    permissions:
+      issues: write
+      pull-requests: read
+      statuses: read
+    steps:
+      - name: Explain stale exact-head authorization
+        uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3  # v9.0.0
+        with:
+          script: |
+            const marker = "<!-- merge-ready-stale-head -->";
+            const eventHead = context.payload.pull_request.head.sha;
+            const { data: livePull } = await github.rest.pulls.get({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              pull_number: context.issue.number,
+            });
+            if (livePull.head.sha !== eventHead) {
+              return;
+            }
+
+            const readyLabels = livePull.labels
+              .map((label) => label.name)
+              .filter((name) =>
+                name === "merge-ready" || name === "merge-ready-mac",
+              );
+            if (readyLabels.length === 0) {
+              return;
+            }
+
+            const statuses = await github.paginate(
+              github.rest.repos.listCommitStatusesForRef,
+              {
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                ref: eventHead,
+                per_page: 100,
+              },
+            );
+            const latestAuthorization = statuses.find(
+              (status) => status.context === "merge-ready-head",
+            );
+            if (latestAuthorization?.state === "success") {
+              return;
+            }
+
+            const shortHead = eventHead.slice(0, 12);
+            const body = `${marker}
+            ⚠️ **Merge-ready authorization is stale for \`${shortHead}\`.**
+
+            This pull request was pushed after its ready label was applied. The
+            label authorizes one immutable commit only, so the queue will not
+            admit this head. Review the new diff, then remove and re-apply
+            exactly one of \`merge-ready\` or \`merge-ready-mac\`.
+
+            If a fresh authorization completed while this notice was being
+            posted, no further action is needed; the exact-head status remains
+            authoritative.`;
+            const comments = await github.paginate(
+              github.rest.issues.listComments,
+              {
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                issue_number: context.issue.number,
+                per_page: 100,
+              },
+            );
+            const existing = comments.find(
+              (comment) =>
+                comment.user?.type === "Bot" && comment.body?.includes(marker),
+            );
+            if (existing) {
+              await github.rest.issues.updateComment({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                comment_id: existing.id,
+                body,
+              });
+            } else {
+              await github.rest.issues.createComment({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                issue_number: context.issue.number,
+                body,
+              });
             }

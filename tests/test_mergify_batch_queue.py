@@ -129,7 +129,7 @@ def test_ready_authorization_is_bound_to_the_exact_head_commit():
     assert "head.repo.full_name == github.repository" in job["if"]
     assert "merge-ready" in job["if"]
     assert "merge-ready-mac" in job["if"]
-    assert "github.event.action == 'synchronize'" in job["if"]
+    assert "github.event.action == 'labeled'" in job["if"]
     assert job["permissions"] == {
         "pull-requests": "read",
         "statuses": "write",
@@ -145,9 +145,8 @@ def test_ready_authorization_is_bound_to_the_exact_head_commit():
     assert "present.length === 1" in script
     assert "GITHUB_RUN_ATTEMPT" in script
     assert "github.rest.pulls.get" in script
-    assert "github.rest.repos.listCommitStatusesForRef" in script
     assert "livePull.head.sha === context.payload.pull_request.head.sha" in script
-    assert "github.paginate" in script
+    assert "github.paginate" not in script
     assert "github.rest.issues" not in script
     assert "merge-requeue" not in script
     assert "checkout" not in script.lower()
@@ -161,9 +160,6 @@ def _run_authorization_script(
     live_head: str = "head-sha",
     fail_status_call: int | None = None,
     fail_get: bool = False,
-    action: str = "labeled",
-    statuses_before: list[dict[str, str]] | None = None,
-    statuses_after: list[dict[str, str]] | None = None,
 ) -> dict[str, object]:
     """Execute the exact github-script body against deterministic API mocks."""
 
@@ -180,9 +176,6 @@ def _run_authorization_script(
             "liveHead": live_head,
             "failStatusCall": fail_status_call,
             "failGet": fail_get,
-            "action": action,
-            "statusesBefore": statuses_before or [],
-            "statusesAfter": statuses_after or [],
         }
     )
     harness = f"""
@@ -190,20 +183,17 @@ const scenario = {scenario};
 const calls = [];
 const statusArgs = [];
 let statusCalls = 0;
-let listCalls = 0;
 process.env.GITHUB_RUN_ATTEMPT = String(scenario.runAttempt);
 const context = {{
   repo: {{ owner: "owner", repo: "repo" }},
   issue: {{ number: 42 }},
   serverUrl: "https://github.example",
   payload: {{
-    action: scenario.action,
     label: {{ name: scenario.eventLabel }},
     pull_request: {{ head: {{ sha: "head-sha" }} }},
   }},
 }};
 const github = {{
-  paginate: async (method, args) => method(args).then((response) => response.data),
   rest: {{
     pulls: {{ get: async () => {{
       calls.push(["get"]);
@@ -218,13 +208,6 @@ const github = {{
       statusArgs.push(args);
       calls.push(["status", args.state]);
       if (scenario.failStatusCall === statusCalls) throw new Error("status failure");
-      return {{ data: {{ ...args, id: `created-${{statusCalls}}` }} }};
-    }}, listCommitStatusesForRef: async () => {{
-      listCalls += 1;
-      calls.push(["list-statuses"]);
-      return {{
-        data: listCalls === 1 ? scenario.statusesBefore : scenario.statusesAfter,
-      }};
     }} }},
   }},
 }};
@@ -259,178 +242,124 @@ def test_initial_authorization_publishes_success_for_the_exact_head():
     ]
 
 
-def test_head_update_publishes_actionable_failure_on_the_new_head():
-    result = _run_authorization_script(labels=["merge-ready-mac"], action="synchronize")
+def test_head_update_notice_is_actionable_without_mutating_authorization():
+    workflow = yaml.load(
+        (ROOT / ".github/workflows/authorize-merge-ready.yml").read_text(),
+        Loader=yaml.BaseLoader,
+    )
+    job = workflow["jobs"]["notify-stale-ready-head"]
 
-    assert result["calls"] == [
-        ["list-statuses"],
-        ["status", "failure"],
-        ["list-statuses"],
-    ]
-    assert result["statusArgs"] == [
+    assert "github.event.action == 'synchronize'" in job["if"]
+    assert "head.repo.full_name == github.repository" in job["if"]
+    assert job["permissions"] == {
+        "issues": "write",
+        "pull-requests": "read",
+        "statuses": "read",
+    }
+    (step,) = job["steps"]
+    script = step["with"]["script"]
+    assert "livePull.head.sha !== eventHead" in script
+    assert 'status.context === "merge-ready-head"' in script
+    assert 'latestAuthorization?.state === "success"' in script
+    assert "remove and re-apply" in script
+    assert "github.rest.issues.updateComment" in script
+    assert "github.rest.issues.createComment" in script
+    assert "github.rest.repos.createCommitStatus" not in script
+    assert "checkout" not in script.lower()
+
+
+def _run_head_update_notice(
+    *,
+    live_head: str = "head-sha",
+    labels: list[str] | None = None,
+    statuses: list[dict[str, str]] | None = None,
+    comments: list[dict[str, object]] | None = None,
+) -> list[list[object]]:
+    workflow = yaml.load(
+        (ROOT / ".github/workflows/authorize-merge-ready.yml").read_text(),
+        Loader=yaml.BaseLoader,
+    )
+    script = workflow["jobs"]["notify-stale-ready-head"]["steps"][0]["with"]["script"]
+    scenario = json.dumps(
         {
-            "owner": "owner",
-            "repo": "repo",
-            "sha": "head-sha",
-            "state": "failure",
-            "context": "merge-ready-head",
-            "description": "Head changed — remove and re-apply the ready label",
-            "target_url": "https://github.example/owner/repo/pull/42",
+            "liveHead": live_head,
+            "labels": labels if labels is not None else ["merge-ready-mac"],
+            "statuses": statuses or [],
+            "comments": comments or [],
         }
-    ]
-
-
-def test_delayed_head_update_does_not_overwrite_fresh_authorization():
-    result = _run_authorization_script(
-        labels=["merge-ready-mac"],
-        action="synchronize",
-        statuses_before=[
-            {"id": 1, "context": "merge-ready-head", "state": "success"},
-        ],
     )
-
-    assert result["calls"] == [["list-statuses"]]
-
-
-def test_rerun_repairs_our_interrupted_failure_only():
-    result = _run_authorization_script(
-        labels=["merge-ready-mac"],
-        action="synchronize",
-        statuses_before=[
-            {
-                "id": 2,
-                "context": "merge-ready-head",
-                "state": "failure",
-                "description": "Head changed — remove and re-apply the ready label",
-            },
-            {
-                "id": 1,
-                "context": "merge-ready-head",
-                "state": "success",
-                "description": "Authorized merge-ready-mac on this exact head",
-            },
-        ],
+    harness = f"""
+const scenario = {scenario};
+const calls = [];
+const context = {{
+  repo: {{ owner: "owner", repo: "repo" }},
+  issue: {{ number: 42 }},
+  payload: {{ pull_request: {{ head: {{ sha: "head-sha" }} }} }},
+}};
+const github = {{
+  paginate: async (method, args) => method(args).then((response) => response.data),
+  rest: {{
+    pulls: {{ get: async () => {{
+      calls.push(["get"]);
+      return {{ data: {{
+        head: {{ sha: scenario.liveHead }},
+        labels: scenario.labels.map((name) => ({{ name }})),
+      }} }};
+    }} }},
+    repos: {{ listCommitStatusesForRef: async () => {{
+      calls.push(["statuses"]);
+      return {{ data: scenario.statuses }};
+    }} }},
+    issues: {{
+      listComments: async () => {{
+        calls.push(["comments"]);
+        return {{ data: scenario.comments }};
+      }},
+      createComment: async (args) => calls.push(["create", args.body]),
+      updateComment: async (args) => calls.push(["update", args.body]),
+    }},
+  }},
+}};
+(async () => {{
+  await (async () => {{
+{script}
+  }})();
+  process.stdout.write(JSON.stringify(calls));
+}})();
+"""
+    completed = subprocess.run(
+        ["node", "-e", harness],
+        check=True,
+        capture_output=True,
+        text=True,
     )
+    return json.loads(completed.stdout)
 
-    assert result["calls"] == [
-        ["list-statuses"],
-        ["status", "success"],
-    ]
-    assert result["statusArgs"][-1]["description"] == (
-        "Authorized merge-ready-mac on this exact head"
+
+def test_head_update_notice_creates_or_updates_one_actionable_comment():
+    created = _run_head_update_notice()
+    assert [call[0] for call in created] == ["get", "statuses", "comments", "create"]
+    assert "merge-ready-stale-head" in created[-1][1]
+    assert "remove and re-apply" in created[-1][1]
+    assert "head-sha" in created[-1][1]
+
+    updated = _run_head_update_notice(
+        comments=[
+            {
+                "id": 7,
+                "body": "<!-- merge-ready-stale-head --> old",
+                "user": {"type": "Bot"},
+            }
+        ]
     )
+    assert [call[0] for call in updated] == ["get", "statuses", "comments", "update"]
 
 
-def test_deliberate_failure_never_revives_older_success():
-    result = _run_authorization_script(
-        labels=["merge-ready-mac"],
-        action="synchronize",
-        statuses_before=[
-            {
-                "id": 2,
-                "context": "merge-ready-head",
-                "state": "failure",
-                "description": "Apply exactly one merge-ready label",
-            },
-            {"id": 1, "context": "merge-ready-head", "state": "success"},
-        ],
-    )
-
-    assert result["calls"] == [
-        ["list-statuses"],
-        ["status", "failure"],
-        ["list-statuses"],
-    ]
-
-
-def test_our_failure_does_not_skip_intervening_revocation():
-    result = _run_authorization_script(
-        labels=["merge-ready-mac"],
-        action="synchronize",
-        statuses_before=[
-            {
-                "id": 3,
-                "context": "merge-ready-head",
-                "state": "failure",
-                "description": "Head changed — remove and re-apply the ready label",
-            },
-            {
-                "id": 2,
-                "context": "merge-ready-head",
-                "state": "failure",
-                "description": "Apply exactly one merge-ready label",
-            },
-            {"id": 1, "context": "merge-ready-head", "state": "success"},
-        ],
-    )
-
-    assert result["calls"] == [
-        ["list-statuses"],
-        ["status", "failure"],
-        ["list-statuses"],
-    ]
-
-
-def test_concurrent_fresh_authorization_is_restored_after_head_failure():
-    result = _run_authorization_script(
-        labels=["merge-ready-mac"],
-        action="synchronize",
-        statuses_after=[
-            {
-                "id": "created-1",
-                "context": "merge-ready-head",
-                "state": "failure",
-            },
-            {
-                "id": "fresh-success",
-                "context": "merge-ready-head",
-                "state": "success",
-                "description": "Authorized merge-ready-mac on this exact head",
-                "target_url": "https://github.example/owner/repo/pull/42",
-            },
-        ],
-    )
-
-    assert result["calls"] == [
-        ["list-statuses"],
-        ["status", "failure"],
-        ["list-statuses"],
-        ["status", "success"],
-    ]
-    assert result["statusArgs"][-1]["description"] == (
-        "Authorized merge-ready-mac on this exact head"
-    )
-
-
-def test_newer_deliberate_failure_beats_racing_success():
-    result = _run_authorization_script(
-        labels=["merge-ready", "merge-ready-mac"],
-        action="synchronize",
-        statuses_after=[
-            {
-                "id": "deliberate-failure",
-                "context": "merge-ready-head",
-                "state": "failure",
-                "description": "Apply exactly one merge-ready label",
-            },
-            {
-                "id": "fresh-success",
-                "context": "merge-ready-head",
-                "state": "success",
-            },
-            {
-                "id": "created-1",
-                "context": "merge-ready-head",
-                "state": "failure",
-            },
-        ],
-    )
-
-    assert result["calls"] == [
-        ["list-statuses"],
-        ["status", "failure"],
-        ["list-statuses"],
-    ]
+def test_head_update_notice_skips_newer_heads_and_fresh_authorization():
+    assert _run_head_update_notice(live_head="newer-head") == [["get"]]
+    assert _run_head_update_notice(
+        statuses=[{"context": "merge-ready-head", "state": "success"}]
+    ) == [["get"], ["statuses"]]
 
 
 def test_status_or_live_pull_failure_remains_fail_closed():
