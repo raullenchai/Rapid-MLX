@@ -156,7 +156,10 @@ struct ImageClient {
 
     // MARK: - Shared
 
+    /// Every request in this client routes through here, so the desktop
+    /// client header rides along with the per-launch bearer.
     private func applyBearer(_ req: inout URLRequest, _ bearer: String?) {
+        req.applyRapidClientHeader()
         if let bearer, !bearer.isEmpty {
             req.setValue("Bearer \(bearer)", forHTTPHeaderField: "Authorization")
         }

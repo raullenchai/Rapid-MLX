@@ -130,6 +130,7 @@ struct MemoryExtractor {
         var request = URLRequest(url: url)
         request.httpMethod = "POST"
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        request.applyRapidClientHeader()
         request.timeoutInterval = requestTimeout
 
         if let bearerToken, !bearerToken.isEmpty {

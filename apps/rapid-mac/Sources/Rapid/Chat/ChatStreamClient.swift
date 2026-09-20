@@ -399,6 +399,7 @@ struct ChatStreamClient {
         req.httpMethod = "POST"
         req.setValue("application/json", forHTTPHeaderField: "Content-Type")
         req.setValue("text/event-stream", forHTTPHeaderField: "Accept")
+        req.applyRapidClientHeader()
         // #17 desktop-half: per-launch bearer secret. ChatViewModel
         // passes ``server.activeBearer`` here; the embedded
         // rapid-mlx checks the matching ``RAPID_MLX_API_KEY`` env.

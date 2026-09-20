@@ -461,6 +461,7 @@ enum ServerProfileFetcher {
         req.httpMethod = "GET"
         req.timeoutInterval = requestTimeout
         req.setValue("application/json", forHTTPHeaderField: "Accept")
+        req.applyRapidClientHeader()
         if let bearer, !bearer.isEmpty {
             req.setValue("Bearer \(bearer)", forHTTPHeaderField: "Authorization")
         }

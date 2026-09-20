@@ -1906,7 +1906,8 @@ def test_run_local_executes_image_protocol_and_excludes_warmup(
         finally:
             served["open"] = False
 
-    def post(url: str, *, json: dict, timeout: float) -> _Response:
+    def post(url: str, *, json: dict, headers: dict, timeout: float) -> _Response:
+        assert headers["X-Rapid-Client"] == "rapid-bench"
         calls.append({"url": url, "json": json, "timeout": timeout})
         return _Response({"data": [{"b64_json": _png_base64(1024, 1024)}]})
 
@@ -2222,11 +2223,13 @@ def test_run_local_executes_video_protocol_and_polls_to_completion(
         finally:
             served["open"] = False
 
-    def post(url: str, *, data: dict, timeout: float) -> _Response:
+    def post(url: str, *, data: dict, headers: dict, timeout: float) -> _Response:
+        assert headers["X-Rapid-Client"] == "rapid-bench"
         posts.append({"url": url, "data": data, "timeout": timeout})
         return _Response({"id": "job-1", "status": "queued"})
 
-    def get(url: str, *, timeout: float) -> _Response:
+    def get(url: str, *, headers: dict, timeout: float) -> _Response:
+        assert headers["X-Rapid-Client"] == "rapid-bench"
         if url.endswith("/status"):
             return _Response({"metal": {"peak_memory_gb": 12.5}})
         status = next(job_states)
@@ -2399,7 +2402,10 @@ def test_video_download_worker_logic_streams_and_closes(
 
     content_response = ContentResponse({})
 
-    def get(url: str, *, stream: bool, timeout: float) -> ContentResponse:
+    def get(
+        url: str, *, headers: dict, stream: bool, timeout: float
+    ) -> ContentResponse:
+        assert headers["X-Rapid-Client"] == "rapid-bench"
         assert url == "http://local/v1/videos/job-1/content"
         assert stream is True
         assert timeout == 60

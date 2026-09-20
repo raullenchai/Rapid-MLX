@@ -152,7 +152,10 @@ def test_attached_smoke_uses_api_key_from_environment(monkeypatch):
         )
 
     assert result.passed is True
-    assert observed == {"Authorization": "Bearer bench-secret"}
+    assert observed == {
+        "Authorization": "Bearer bench-secret",
+        "X-Rapid-Client": "rapid-bench",
+    }
 
 
 def test_smoke_fail_when_no_four_in_response(capsys):

@@ -349,6 +349,7 @@ actor LocalComputerUseVisualGrounder: LocalWorkflowGrounding {
         request.timeoutInterval = max(1, configuration.deadline.timeInterval)
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
         request.setValue("application/json", forHTTPHeaderField: "Accept")
+        request.applyRapidClientHeader()
         if let bearer = configuration.bearerToken {
             request.setValue("Bearer \(bearer)", forHTTPHeaderField: "Authorization")
         }

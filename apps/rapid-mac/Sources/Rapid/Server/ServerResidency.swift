@@ -444,6 +444,7 @@ struct ServerResidencyClient {
             url: URL(string: "http://127.0.0.1:\(port)\(path)")!
         )
         request.setValue("application/json", forHTTPHeaderField: "Accept")
+        request.applyRapidClientHeader()
         if let bearer, !bearer.isEmpty {
             request.setValue("Bearer \(bearer)", forHTTPHeaderField: "Authorization")
         }

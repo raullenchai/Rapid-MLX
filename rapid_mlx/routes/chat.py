@@ -5484,6 +5484,14 @@ async def _create_chat_completion_impl(
         _caller_ua = (
             raw_request.headers.get("user-agent") if raw_request is not None else None
         )
+        # ``X-Rapid-Client`` — set by every Rapid-owned client. Also passed
+        # RAW; ``normalize_caller_agent`` accepts it only when it is one of
+        # our own closed labels and otherwise ignores it.
+        _caller_client = (
+            raw_request.headers.get("x-rapid-client")
+            if raw_request is not None
+            else None
+        )
         if use_guided and json_schema:
             # Constrained streaming: run guided generation buffered, then
             # synthesize an SSE stream from the buffered output. Falls
@@ -5500,6 +5508,7 @@ async def _create_chat_completion_impl(
                         response_id=response_id,
                         strict_mode=strict_mode,
                         caller_agent=_caller_ua,
+                        caller_client=_caller_client,
                         **chat_kwargs,
                     ),
                     raw_request,
@@ -5538,6 +5547,7 @@ async def _create_chat_completion_impl(
                         response_id=response_id,
                         request_id=response_id,
                         caller_agent=_caller_ua,
+                        caller_client=_caller_client,
                         **chat_kwargs,
                     ),
                     raw_request,
@@ -5558,6 +5568,7 @@ async def _create_chat_completion_impl(
             response_id=response_id,
             request_id=response_id,
             caller_agent=_caller_ua,
+            caller_client=_caller_client,
             _client_disconnect_state=_client_disconnect_state,
             **chat_kwargs,
         )
@@ -6705,6 +6716,7 @@ async def _create_chat_completion_impl(
     # response. TTFT == total latency here (a non-streaming response is
     # delivered in one shot); the streaming path reports true TTFT.
     from rapid_mlx.telemetry import emit as _telemetry_emit
+    from rapid_mlx.telemetry.model_id import served_model_id as _served_model_id
 
     # Client-side degeneracy check (#1250): only when telemetry is enabled,
     # run the local ``looks_like_garbage`` heuristic on the VISIBLE content
@@ -6717,7 +6729,7 @@ async def _create_chat_completion_impl(
 
     _telemetry_emit.request(
         endpoint="/v1/chat/completions",
-        model_alias=request.model,
+        model_alias=_served_model_id(request.model),
         stream=False,
         tool_call_used=bool(tool_calls),
         prompt_tokens=output.prompt_tokens,
@@ -6727,6 +6739,11 @@ async def _create_chat_completion_impl(
         status=200,
         caller_agent=(
             raw_request.headers.get("user-agent") if raw_request is not None else None
+        ),
+        caller_client=(
+            raw_request.headers.get("x-rapid-client")
+            if raw_request is not None
+            else None
         ),
         output_degenerate=_output_degenerate,
     )
@@ -6766,6 +6783,7 @@ async def stream_chat_completion(
     response_id: str | None = None,
     created: int | None = None,
     caller_agent: str | None = None,
+    caller_client: str | None = None,
     _client_disconnect_state: list[bool] | None = None,
     **kwargs,
 ) -> AsyncIterator[str]:
@@ -6787,6 +6805,9 @@ async def stream_chat_completion(
             unbucketed — ``emit.request`` funnels it through
             ``normalize_caller_agent`` (never stored raw). ``None`` when
             the header is absent or telemetry is off.
+        caller_client: Raw inbound ``X-Rapid-Client`` header, same
+            contract: bucketed by ``normalize_caller_agent``, which
+            ignores any value outside our own closed label set.
         _client_disconnect_state: Private route/guard coordination latch.
             True means the consumer disappeared and post-stream recovery must
             not synthesize terminal frames for the dead connection.
@@ -8127,6 +8148,7 @@ async def stream_chat_completion(
             getattr(processor, "_tool_calls_emitted_to_wire", 0) > 0
         )
         from rapid_mlx.telemetry import emit as _telemetry_emit
+        from rapid_mlx.telemetry.model_id import served_model_id as _served_model_id
 
         # #1250 canary on the visible streamed content — the accumulated
         # assistant text (reasoning is separate). Runs locally, only the
@@ -8138,7 +8160,7 @@ async def stream_chat_completion(
 
         _telemetry_emit.request(
             endpoint="/v1/chat/completions",
-            model_alias=request.model,
+            model_alias=_served_model_id(request.model),
             stream=True,
             tool_call_used=_tool_call_used,
             prompt_tokens=prompt_tokens,
@@ -8147,6 +8169,7 @@ async def stream_chat_completion(
             tps=_decode_tps,
             status=200,
             caller_agent=caller_agent,
+            caller_client=caller_client,
             output_degenerate=_output_degenerate,
         )
 
@@ -8195,6 +8218,7 @@ async def stream_chat_completion_guided(
     response_id: str | None = None,
     strict_mode: bool = False,
     caller_agent: str | None = None,
+    caller_client: str | None = None,
     **kwargs,
 ) -> AsyncIterator[str]:
     """Stream chat completion with json_schema constrained decoding.
@@ -8443,6 +8467,7 @@ async def stream_chat_completion_guided(
                     created=_sse_created,
                     request_id=response_id,
                     caller_agent=caller_agent,
+                    caller_client=caller_client,
                     **kwargs,
                 ),
             )
@@ -8622,6 +8647,7 @@ async def stream_chat_completion_strict_postgen(
     *,
     response_id: str | None = None,
     caller_agent: str | None = None,
+    caller_client: str | None = None,
     **kwargs,
 ) -> AsyncIterator[str]:
     """R12-4 — streaming variant of post-generate strict enforcement.
@@ -8775,6 +8801,7 @@ async def stream_chat_completion_strict_postgen(
         response_id=response_id,
         created=created,
         caller_agent=caller_agent,
+        caller_client=caller_client,
         **kwargs,
     )
     try:

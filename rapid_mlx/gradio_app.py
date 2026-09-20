@@ -29,6 +29,9 @@ except ImportError:
     gr = None
 import requests
 
+from .client_header import RAPID_CLIENT_GRADIO
+from .http_auth import rapid_mlx_client_headers
+
 
 def encode_file_to_base64(file_path: str) -> tuple[str, str]:
     """
@@ -229,6 +232,7 @@ def create_chat_function(server_url: str, max_tokens: int, temperature: float):
         try:
             response = requests.post(
                 f"{server_url}/v1/chat/completions",
+                headers=rapid_mlx_client_headers(RAPID_CLIENT_GRADIO),
                 json={
                     "model": "default",
                     "messages": messages,
@@ -366,6 +370,7 @@ Note: Make sure the rapid-mlx server is running with a multimodal model:
             try:
                 response = requests.post(
                     f"{args.server_url}/v1/chat/completions",
+                    headers=rapid_mlx_client_headers(RAPID_CLIENT_GRADIO),
                     json={
                         "model": "default",
                         "messages": messages,

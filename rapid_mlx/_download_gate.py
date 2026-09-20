@@ -326,12 +326,13 @@ def pin_main_ref(repo_id: str, revision: str) -> None:
 # ---------------------------------------------------------------------------
 
 
-def _variant_marker_path(repo_id: str) -> str:
-    """The HF-cache path holding a ``--bits/--format`` pulled variant name.
+def rapid_cache_marker_path(repo_id: str, name: str) -> str:
+    """Path of a Rapid-MLX marker file for ``repo_id`` inside the HF cache.
 
-    Lives under a Rapid-MLX-owned directory beside the Hub-managed
-    ``refs/``/``snapshots/`` trees, so Hub cache scans never interpret the
-    variant as a commit hash. Pure path computation — no network, no state.
+    Markers live under a Rapid-MLX-owned directory beside the Hub-managed
+    ``refs/``/``snapshots/`` trees, so Hub cache scans never interpret one
+    as a commit hash, and they are deleted together with the cached repo.
+    Pure path computation — no network, no state.
     """
     try:
         from huggingface_hub.constants import HF_HUB_CACHE
@@ -343,8 +344,13 @@ def _variant_marker_path(repo_id: str) -> str:
         HF_HUB_CACHE,
         f"models--{repo_id.replace('/', '--')}",
         ".rapid-mlx",
-        "variant",
+        name,
     )
+
+
+def _variant_marker_path(repo_id: str) -> str:
+    """The HF-cache path holding a ``--bits/--format`` pulled variant name."""
+    return rapid_cache_marker_path(repo_id, "variant")
 
 
 def persist_pulled_variant(repo_id: str, variant: str) -> bool:
@@ -478,6 +484,13 @@ def _model_info_with_timeout(repo_id: str, timeout: float):
         raise TimeoutError(f"model_info({repo_id!r}) exceeded {timeout}s")
     if "error" in result:
         raise result["error"]
+    # A metadata call that succeeds without a Hub token proves the repo is
+    # public: a gated or private repo answers 401/403 to an anonymous
+    # client. That is the ONLY evidence telemetry accepts before it may
+    # report a non-catalog ``org/name``. Never raises.
+    from .telemetry.model_id import note_hub_fetch
+
+    note_hub_fetch(repo_id)
     return result.get("info")
 
 

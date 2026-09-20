@@ -4147,6 +4147,7 @@ final class ServerManager {
         guard let url = URL(string: "http://\(host):\(activePort)/healthz") else { return false }
         var request = URLRequest(url: url)
         request.httpMethod = "GET"
+        request.applyRapidClientHeader()
         request.timeoutInterval = 1.5
         do {
             let (_, response) = try await healthSession.data(for: request)

@@ -1115,6 +1115,40 @@ def resolve_profile(name: str) -> AliasProfile | None:
     return None
 
 
+def catalog_alias_for(name: str) -> str | None:
+    """The BUILT-IN catalog alias covering ``name``, or ``None``.
+
+    Matches an alias spelling exactly, or an ``hf_path`` case-insensitively
+    (the Hub is case-insensitive about repo ids, our JSON is not).
+
+    Deliberately narrower than :func:`resolve_profile`: user aliases
+    (``~/.rapid-mlx/aliases``) are NOT consulted. A user alias is a name
+    the user invented — it is their data, not catalog identity, and the
+    telemetry model id (its only caller today) must not carry it.
+
+    Fail-soft: an unreadable registry yields ``None``, never an exception.
+    """
+    if not isinstance(name, str) or not name:
+        return None
+    try:
+        profiles = _load()  # also populates the reverse indexes
+    except Exception:
+        return None
+    if name in profiles:
+        return name
+    # Scanned rather than served from a prebuilt index on purpose: the
+    # module-level reverse index is rebuilt only when ``_aliases`` is
+    # reloaded, and tests that swap in a temporary registry restore
+    # ``_aliases`` without it — a stale index would then answer with an
+    # alias that is not in the live catalog. ~100 entries, and the caller
+    # is a model load or a sampled telemetry emit, so the scan is free.
+    lowered = name.lower()
+    for alias, profile in profiles.items():
+        if profile.hf_path.lower() == lowered:
+            return alias
+    return None
+
+
 def _family_prefix(name: str) -> str:
     """Strip trailing size/quant tokens to get the model-family prefix.
 
