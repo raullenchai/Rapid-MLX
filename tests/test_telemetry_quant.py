@@ -69,6 +69,11 @@ def test_the_scheme_wins_over_the_bit_width(name, expected):
         ("qwen3.8-27b-4bit-fp16", "4bit"),
         ("rapid-mlx/Qwen3.8-27B-4bit-MTP-fp16-MLX", "4bit"),
         ("some-model-bf16-4bit", "4bit"),
+        # Round 2, P2: the same rule in the ``other`` lane. An INT4
+        # checkpoint with bf16 activations is quantized, whatever we call
+        # the scheme.
+        ("acme/model-int4-bf16", "other"),
+        ("acme/model-awq-fp16", "other"),
     ],
 )
 def test_a_bit_width_wins_over_a_precision(name, expected):
@@ -89,10 +94,15 @@ def test_a_dynamic_quant_reports_its_own_width_not_its_companion():
     see and the name reported ``8bit``."""
 
     assert quant_token("mlx-community/Kimi-K2.6-mlx-DQ3_K_M-q8") == "3bit"
-    # An unmapped DQ width is a recognized quantization without a canonical
-    # name, not "no marker at all" — and the drift check will demand a
-    # decision if one ever reaches the catalog.
+    # Round 2, P2: the DQ family mirrors the Q family rather than being a
+    # one-row special case. ``DQ3_K_M`` is exactly as mixed as the
+    # ``Q4_K_M`` this table already normalizes to ``4bit``.
+    assert quant_token("acme/model-DQ4_K_M") == "4bit"
+    assert quant_token("acme/model-DQ8_0") == "8bit"
+    # A DQ width with no enum value falls through, like ``q5`` does: a
+    # recognized quantization without a canonical name, not "no marker".
     assert quant_token("acme/model-DQ5_K_M") == "other"
+    assert quant_token("acme/model-q5") == "other"
 
 
 @pytest.mark.parametrize(

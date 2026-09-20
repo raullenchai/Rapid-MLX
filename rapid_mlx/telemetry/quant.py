@@ -46,11 +46,19 @@ _CANONICAL_BY_TOKEN: dict[str, str] = {
     "mxfp4": "mxfp4",
     "nvfp4": "nvfp4",
     "dwq": "dwq",
-    # ``mlx-community/Kimi-K2.6-mlx-DQ3_K_M-q8``: a DQ3 dynamic quant that
-    # also carries ``q8``. Without this row the name reports ``8bit`` for a
-    # 3-bit-dominant checkpoint, because ``q8`` is the only token either
-    # regex can see.
+    # The DQ (dynamic-quant) family, mirroring the ``q<n>`` rows above.
+    # ``mlx-community/Kimi-K2.6-mlx-DQ3_K_M-q8`` is a DQ3 checkpoint that
+    # also carries ``q8``; without these rows it reported ``8bit`` for a
+    # 3-bit-dominant checkpoint, because ``q8`` was the only token either
+    # regex could see. A ``DQ3_K_M`` mixture is exactly as mixed as the
+    # ``Q4_K_M`` this table already normalizes to ``4bit``, so it gets the
+    # same treatment rather than a rule of its own; widths with no enum
+    # value (``dq5``, like ``q5``) still fall through to ``other``.
+    "dq2": "2bit",
     "dq3": "3bit",
+    "dq4": "4bit",
+    "dq6": "6bit",
+    "dq8": "8bit",
 }
 
 #: A token that *looks* like a quantization or precision marker but is not in
@@ -90,9 +98,15 @@ _PRECEDENCE: tuple[str, ...] = (
     "4bit",
     "6bit",
     "8bit",
+    # Round 2, P2: ``other`` sits ABOVE the precisions for the same reason
+    # the widths do. ``acme/model-int4-bf16`` is an INT4 checkpoint whose
+    # activations are bf16; reporting ``bf16`` would put it in the "not
+    # quantized" bucket, which is round-1's P1 surviving in the ``other``
+    # lane. No catalog name hits this today; it is closed so the rule is
+    # one rule rather than two.
+    "other",
     "bf16",
     "fp16",
-    "other",
 )
 _RANK: dict[str, int] = {value: index for index, value in enumerate(_PRECEDENCE)}
 # Every value the table can produce needs a rank, or the ``min`` below
@@ -126,13 +140,19 @@ def quant_token(alias_or_path: str) -> str:
     ``"other"`` when it carries one we have no canonical name for. It
     never returns a substring of the input.
 
-    **Emitters must pass the resolved ``hf_path``, not the alias.** A
-    catalog alias is free to omit the quantization it was built at —
-    ``gpt-oss-20b`` alone reports ``unknown`` while its checkpoint
-    ``mlx-community/gpt-oss-20b-MXFP4-Q8`` reports ``mxfp4`` — and 34 of
-    the 215 catalog aliases are in that position today. The ``hf_path``
-    is also what ``telemetry_model_id`` already resolves, so it costs the
-    caller nothing.
+    **Emitters should prefer the resolved ``hf_path``, and fall back to
+    the alias when the path yields ``unknown``.** Neither string is
+    reliable alone, and the two disagree for 36 of the 215 catalog
+    aliases: in 26 of those the alias omits the quantization its
+    checkpoint states (``gpt-oss-20b`` -> ``unknown``, while
+    ``mlx-community/gpt-oss-20b-MXFP4-Q8`` -> ``mxfp4``), and in the
+    other 10 it runs the other way (``lfm2.5-2.6b-4bit`` -> ``4bit``,
+    while ``LiquidAI/LFM2.5-2.6B-MLX`` -> ``unknown``; likewise the
+    ``minicpm5-*-4bit``, ``wan2.x-*-bf16`` and ``ornith-*-bf16`` rows).
+    Preferring the path and falling back on ``unknown`` is right in both
+    directions. The path is also what ``telemetry_model_id`` already
+    resolves, so it costs the caller nothing. Enforcing this on the
+    emitter side is issue #3610.
     """
 
     found: list[str] = []
