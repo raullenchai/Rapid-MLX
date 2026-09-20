@@ -57,34 +57,47 @@ struct MemoryConfirmationRetryPolicy {
 }
 
 enum FileDropRetryPolicy {
-    static let minimumRetryBudget: TimeInterval = 3
-    // XCUI's blocking synthetic drag takes about 3.5 seconds on both Studio
-    // and hosted runners before the retried drop can begin settling.
-    static let retryGestureBudget: TimeInterval = 4
-    // `waitUntil` polls at 100 ms and its final poll can cross the requested
-    // timeout. Keep several polling intervals outside the observation window
-    // so a genuinely missed first gesture still owns the full retry budget.
-    static let observationSchedulingSlack: TimeInterval = 0.5
-
-    static func observationTimeout(remainingTime: TimeInterval) -> TimeInterval {
-        max(
-            0,
-            remainingTime
-                - retryGestureBudget
-                - minimumRetryBudget
-                - observationSchedulingSlack
-        )
+    // Long enough to observe the product-owned completion marker on the slow
+    // hosted runner, but bounded so a transport miss reaches its one allowed
+    // fresh-session retry promptly.
+    static let completionObservationTimeout: TimeInterval = 4.5
+    static func observationTimeout(settleTimeout: TimeInterval) -> TimeInterval {
+        min(max(0, settleTimeout), completionObservationTimeout)
     }
 
     static func shouldRetry(
         completedDrop: Bool,
+        transportFailed: Bool,
         attempt: Int,
-        maximumAttempts: Int,
-        remainingTime: TimeInterval
+        maximumAttempts: Int
     ) -> Bool {
         !completedDrop
+            && transportFailed
             && attempt < maximumAttempts
-            && remainingTime >= retryGestureBudget + minimumRetryBudget
+    }
+}
+
+enum DragTransportFile {
+    enum Result: String {
+        case notStarted = "not-started"
+        case none
+        case copy
+        case other
+
+        var isAuthoritativeFailure: Bool { self == .notStarted || self == .none }
+    }
+
+    enum ResultError: Error, Equatable {
+        case invalidResult(String)
+    }
+
+    static func result(at url: URL, fileManager: FileManager = .default) throws -> Result? {
+        guard fileManager.fileExists(atPath: url.path) else { return nil }
+        let value = try String(contentsOf: url, encoding: .utf8)
+        guard let result = Result(rawValue: value) else {
+            throw ResultError.invalidResult(value)
+        }
+        return result
     }
 }
 
@@ -130,6 +143,7 @@ final class RapidUITestHarness {
     private var portReservation: Int32?
     private var originalPasteboardItems: [[NSPasteboard.PasteboardType: Data]]?
     private var ownedPasteboardChangeCount: Int?
+    private var activeFileDragSource: XCUIApplication?
 
     private static func reserveLoopbackPort() throws -> (descriptor: Int32, port: Int) {
         let descriptor = Darwin.socket(AF_INET, SOCK_STREAM, 0)
@@ -245,6 +259,9 @@ final class RapidUITestHarness {
     }
 
     func shutDown() {
+        if let activeFileDragSource {
+            _ = terminateFileDragSource(activeFileDragSource)
+        }
         app.terminate()
         _ = app.wait(for: .notRunning, timeout: 5)
         releasePortReservation()
@@ -345,10 +362,12 @@ final class RapidUITestHarness {
     /// test source for the xcui workflow contract). A landed drop is treated as
     /// one whose chip settles (exists and is hittable). The product's compose
     /// destination emits a test-only marker after `performDragOperation`
-    /// consumes the drop. A gesture with no completion marker may be retried
-    /// once within the original settle budget. A consumed drop is never
-    /// retried: if its chip does not appear, the test still exposes the
-    /// product/AX regression. The
+    /// consumes the drop. The drag-source helper separately records AppKit's
+    /// final transport result. A gesture is retried only when that result is
+    /// authoritatively `none`/`not-started`; temporary absence of a product
+    /// marker is never treated as failure. A consumed drop is never retried:
+    /// if its chip does not appear, the test still exposes the product/AX
+    /// regression. The
     /// chip is never dereferenced before it exists, so a not-yet-matched
     /// ``firstMatch`` cannot throw (#2481).
     /// Callers without an expected chip (the unsupported-file negative case)
@@ -357,57 +376,58 @@ final class RapidUITestHarness {
     func dragFile(
         _ url: URL,
         expectedChip chip: XCUIElement? = nil,
-        dropSettleTimeout: TimeInterval = 12,
+        dropSettleTimeout: TimeInterval = 14,
         simulateMissedFirstGesture: Bool = false,
         simulateChipVisibilityDelay: TimeInterval = 0,
         simulateCompletionVisibilityDelay: TimeInterval = 0
     ) -> Int {
-        let dragSource = XCUIApplication(bundleIdentifier: "com.rapidmlx.rapid-uitest-host")
-        dragSource.launchEnvironment = [
-            "RAPID_XCUI_DRAG_FILE": url.path,
-            "RAPID_XCUI_DROP_FIRST_GESTURE": simulateMissedFirstGesture ? "1" : "0",
-        ]
-        dragSource.launch()
-        defer { dragSource.terminate() }
-        let source = dragSource.descendants(matching: .any)
-            .matching(identifier: "RapidUITests.FileDragSource").firstMatch
-        XCTAssertTrue(source.waitForExistence(timeout: 15))
-        // Exercise the native text editor itself. The editor must explicitly
-        // register for file URLs; otherwise AppKit inserts the path as text
-        // before SwiftUI's enclosing drop destination can handle the event.
-        let dropTarget = element("rapid.chat.compose")
-        XCTAssertTrue(dropTarget.waitForExistence(timeout: 10))
-        // The synthetic drop must land on a laid-out, frontmost target. The
-        // compose field can exist in the AX tree before it has reached its
-        // final frame after a model start / re-layout; dragging against a
-        // pre-layout frame is how a drop gets silently lost (#2481).
-        XCTAssertTrue(waitUntil(timeout: 10) { dropTarget.isHittable },
-                      "compose drop target never became hittable before drag")
-
+        guard dropSettleTimeout > 0 else {
+            XCTFail("file-drop settle timeout must be positive")
+            return 0
+        }
         guard let chip = chip else {
+            let (dragSource, source, dropTarget, _) = launchFileDragSource(
+                url: url,
+                dropFirstGesture: simulateMissedFirstGesture
+            )
+            // Preserve scope-based cleanup for the negative unsupported-file
+            // journey as well as requiring an orderly shutdown on its normal
+            // path. An interrupted gesture must not leak a helper into a later
+            // XCUITest.
+            defer {
+                if dragSource.state != .notRunning {
+                    _ = terminateFileDragSource(dragSource)
+                }
+            }
             source.click(forDuration: 1, thenDragTo: dropTarget)
+            guard terminateFileDragSource(dragSource) else { return 1 }
             return 1
         }
-        var settleDeadline: Date?
         let maximumAttempts = 2
+        do {
+            // Clear once for the whole logical drop. Never clear between
+            // attempts: an acknowledgement that arrives while the helper is
+            // being recycled must prevent replay of a consumed product drop.
+            try DropEventFile.clear(at: dropEventFile)
+        } catch {
+            XCTFail("could not clear UI-test drop marker before gesture: \(error)")
+            return 1
+        }
         for attempt in 1...maximumAttempts {
-            do {
-                try DropEventFile.clear(at: dropEventFile)
-            } catch {
-                XCTFail("could not clear UI-test drop marker before gesture: \(error)")
-                return attempt
-            }
+            // Each bounded attempt owns a fresh helper process. A missed
+            // gesture is a transport failure only when AppKit's source-side
+            // session result says it never started or ended with no accepted
+            // operation. Recycling the helper clears the stale AppKit
+            // drag/mouse session without guessing from marker latency.
+            let (dragSource, source, dropTarget, transportResultFile) = launchFileDragSource(
+                url: url,
+                dropFirstGesture: simulateMissedFirstGesture && attempt == 1
+            )
             source.click(forDuration: 1, thenDragTo: dropTarget)
-            if settleDeadline == nil {
-                // `dropSettleTimeout` describes post-gesture observation and
-                // retry time; do not spend it while XCUI is blocking inside
-                // the first synthetic drag.
-                settleDeadline = Date().addingTimeInterval(dropSettleTimeout)
-            }
-            guard let settleDeadline else {
-                XCTFail("drop settle deadline was not initialized")
-                return attempt
-            }
+            // Startup, termination and the blocking synthetic gesture are
+            // bounded separately. Each completed gesture gets the full,
+            // honest post-gesture settle window.
+            let settleDeadline = Date().addingTimeInterval(dropSettleTimeout)
             // Simulation delays model post-gesture observation latency. Anchor
             // them after the blocking drag returns so its duration cannot
             // accidentally satisfy the delay before the probe begins.
@@ -424,52 +444,136 @@ final class RapidUITestHarness {
                 Date() >= completionObservationStart
                     && FileManager.default.fileExists(atPath: self.dropEventFile.path)
             }
+            let transportResultIsVisible = {
+                FileManager.default.fileExists(atPath: transportResultFile.path)
+            }
 
             // The drop-completion marker and the product render arrive
             // independently. First wait briefly for either authoritative
             // signal, then spend the rest of the original budget on an
             // observed drop's chip.
-            // Observe until only the bounded retry budget remains. A fixed,
-            // shorter probe can mistake a scheduler-delayed completion marker
-            // for a missed gesture and duplicate an already-consumed drop.
             let observationTimeout = FileDropRetryPolicy.observationTimeout(
-                remainingTime: settleDeadline.timeIntervalSinceNow
+                settleTimeout: settleDeadline.timeIntervalSinceNow
             )
             _ = waitUntil(timeout: observationTimeout) {
                 chipIsSettled()
                     || completionIsVisible()
+                    || transportResultIsVisible()
             }
-            if chipIsSettled() { return attempt }
+            if chipIsSettled() {
+                guard terminateFileDragSource(dragSource) else { return attempt }
+                return attempt
+            }
 
-            let observedPhase: String?
+            var observedPhase: String?
+            let transportResult: DragTransportFile.Result?
             do {
                 observedPhase = completionIsVisible()
                     ? try DropEventFile.completedPhase(at: dropEventFile)
                     : nil
+                transportResult = try DragTransportFile.result(at: transportResultFile)
             } catch {
-                XCTFail("could not read valid UI-test drop marker after gesture: \(error)")
+                _ = terminateFileDragSource(dragSource)
+                XCTFail("could not read valid UI-test drag result after gesture: \(error)")
                 return attempt
+            }
+            guard terminateFileDragSource(dragSource) else { return attempt }
+            // Helper shutdown is the final source-session boundary. Re-read
+            // the destination acknowledgement after that bounded wait so a
+            // completion that arrived during termination always vetoes replay.
+            if observedPhase == nil {
+                do {
+                    observedPhase = try DropEventFile.completedPhase(at: dropEventFile)
+                } catch {
+                    XCTFail("could not read final UI-test drop marker: \(error)")
+                    return attempt
+                }
             }
             if FileDropRetryPolicy.shouldRetry(
                 completedDrop: observedPhase != nil,
+                transportFailed: transportResult?.isAuthoritativeFailure == true,
                 attempt: attempt,
-                maximumAttempts: maximumAttempts,
-                remainingTime: settleDeadline.timeIntervalSinceNow
+                maximumAttempts: maximumAttempts
             ) {
                 continue
             }
 
-            let remaining = max(0, settleDeadline.timeIntervalSinceNow)
-            if waitUntil(timeout: remaining, condition: chipIsSettled) {
+            // A source-side `.copy` is authoritative acceptance even if the
+            // destination marker has not become visible yet. Keep the same
+            // post-gesture deadline alive for the independent marker/render
+            // signals; never turn accepted transport into an immediate fail.
+            let acceptedDrop = observedPhase != nil || transportResult == .copy
+            if acceptedDrop {
+                let acceptedRemaining = max(0, settleDeadline.timeIntervalSinceNow)
+                _ = waitUntil(timeout: acceptedRemaining) {
+                    chipIsSettled() || completionIsVisible()
+                }
+            }
+            let chipRemaining = max(0, settleDeadline.timeIntervalSinceNow)
+            if waitUntil(timeout: chipRemaining, condition: chipIsSettled) {
                 return attempt
             }
             XCTFail(
                 "dropped attachment chip did not settle within \(dropSettleTimeout)s "
-                    + "(drop phase: \(observedPhase ?? "not performed"), attempts: \(attempt))"
+                    + "(drop phase: \(observedPhase ?? "not performed"), "
+                    + "transport: \(transportResult?.rawValue ?? "missing"), "
+                    + "attempts: \(attempt))"
             )
             return attempt
         }
         return maximumAttempts
+    }
+
+    private func launchFileDragSource(
+        url: URL,
+        dropFirstGesture: Bool
+    ) -> (app: XCUIApplication, source: XCUIElement, target: XCUIElement, result: URL) {
+        let dragSource = XCUIApplication(bundleIdentifier: "com.rapidmlx.rapid-uitest-host")
+        let resultFile = testHome.appendingPathComponent(
+            "drag-transport-\(UUID().uuidString).txt"
+        )
+        dragSource.launchEnvironment = [
+            "RAPID_XCUI_DRAG_FILE": url.path,
+            "RAPID_XCUI_DROP_FIRST_GESTURE": dropFirstGesture ? "1" : "0",
+            "RAPID_XCUI_DRAG_RESULT_FILE": resultFile.path,
+        ]
+        dragSource.launch()
+        // Track the helper immediately after launch. If any subsequent setup
+        // assertion aborts this journey, harness shutdown still owns and
+        // terminates the process before the next test starts.
+        activeFileDragSource = dragSource
+        let source = dragSource.descendants(matching: .any)
+            .matching(identifier: "RapidUITests.FileDragSource").firstMatch
+        XCTAssertTrue(source.waitForExistence(timeout: 15))
+
+        // Exercise the native text editor itself. The editor must explicitly
+        // register for file URLs; otherwise AppKit inserts the path as text
+        // before SwiftUI's enclosing drop destination can handle the event.
+        let dropTarget = element("rapid.chat.compose")
+        XCTAssertTrue(dropTarget.waitForExistence(timeout: 10))
+        // The synthetic drop must land on a laid-out target. The compose field
+        // can exist in the AX tree before its final frame after model start or
+        // after the helper is relaunched for a bounded retry.
+        XCTAssertTrue(
+            waitUntil(timeout: 10) { dropTarget.isHittable },
+            "compose drop target never became hittable before drag"
+        )
+        return (dragSource, source, dropTarget, resultFile)
+    }
+
+    private func terminateFileDragSource(_ dragSource: XCUIApplication) -> Bool {
+        if dragSource.state == .notRunning {
+            activeFileDragSource = nil
+            return true
+        }
+        dragSource.terminate()
+        let terminated = dragSource.wait(for: .notRunning, timeout: 5)
+        if !terminated {
+            XCTFail("file-drag helper did not terminate; retry suppressed")
+        } else {
+            activeFileDragSource = nil
+        }
+        return terminated
     }
 
     func pasteImage(_ url: URL) throws {

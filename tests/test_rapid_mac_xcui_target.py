@@ -81,6 +81,7 @@ def test_xcui_runner_launches_production_bundle_with_fake_sidecar():
         MAC / "Tests/RapidUITests/Tests/ChatAttachmentJourneyTests.swift"
     ).read_text()
     chat_view = (MAC / "Sources/Rapid/UI/ChatView.swift").read_text()
+    drag_host = (MAC / "Tests/RapidUITests/Host/main.swift").read_text()
 
     assert "build/Rapid-MLX Desktop.app" in runner
     assert "lsregister" in runner
@@ -123,10 +124,10 @@ def test_xcui_runner_launches_production_bundle_with_fake_sidecar():
     assert 'matching(identifier: "RapidUITests.FileDragSource")' in harness
     assert "let maximumAttempts = 2" in harness
     assert "FileDropRetryPolicy.observationTimeout(" in harness
-    assert "- retryGestureBudget" in harness
-    assert "- minimumRetryBudget" in harness
-    assert "- observationSchedulingSlack" in harness
+    assert "completionObservationTimeout" in harness
     assert "FileDropRetryPolicy.shouldRetry(" in harness
+    assert "transportFailed:" in harness
+    assert "DragTransportFile.result(" in harness
     assert "simulateCompletionVisibilityDelay: TimeInterval = 0" in harness
     assert "completionIsVisible()" in harness
     assert "func testFileDropRetryPolicyIsBoundedAndCompletionAware()" in chat_source
@@ -140,11 +141,52 @@ def test_xcui_runner_launches_production_bundle_with_fake_sidecar():
     assert 'recordUITestFileDrop("performed")' in chat_view
     assert "try? phase.write" not in chat_view
     assert 'fatalError("could not record completed UI-test file drop' in chat_view
-    assert (
-        '"RAPID_XCUI_DROP_FIRST_GESTURE": simulateMissedFirstGesture ? "1" : "0"'
-        in harness
-    )
+    assert '"RAPID_XCUI_DROP_FIRST_GESTURE": dropFirstGesture ? "1" : "0"' in harness
     assert "XCTAssertEqual(recoveredAttempts, 2)" in chat_source
+    assert "launchFileDragSource(" in harness
+    assert "terminateFileDragSource(dragSource)" in harness
+    assert "simulateMissedFirstGesture && attempt == 1" in harness
+    retry_loop = harness.split("for attempt in 1...maximumAttempts", 1)[1].split(
+        "private func launchFileDragSource", 1
+    )[0]
+    launch_index = retry_loop.index("launchFileDragSource(")
+    gesture_index = retry_loop.index(
+        "source.click(forDuration: 1, thenDragTo: dropTarget)"
+    )
+    result_index = retry_loop.index("DragTransportFile.result(at: transportResultFile)")
+    termination_index = retry_loop.index(
+        "guard terminateFileDragSource(dragSource)", result_index
+    )
+    retry_decision_index = retry_loop.index("FileDropRetryPolicy.shouldRetry(")
+    final_marker_read_index = retry_loop.index(
+        "observedPhase = try DropEventFile.completedPhase(at: dropEventFile)",
+        termination_index,
+    )
+    assert (
+        launch_index
+        < gesture_index
+        < result_index
+        < termination_index
+        < final_marker_read_index
+        < retry_decision_index
+    )
+    assert (
+        '"RAPID_XCUI_DRAG_RESULT_FILE": resultFile.path' in harness
+        and 'environment["RAPID_XCUI_DRAG_RESULT_FILE"]' in drag_host
+    )
+    assert "endedAt screenPoint: NSPoint" in drag_host
+    assert 'recordResult("copy")' in drag_host
+    assert 'recordResult("none")' in drag_host
+    assert 'recordResult("not-started")' in drag_host
+    assert (
+        "let acceptedDrop = observedPhase != nil || transportResult == .copy" in harness
+    )
+    assert "chipIsSettled() || completionIsVisible()" in harness
+    assert "try DropEventFile.clear(at: dropEventFile)" in harness
+    assert harness.index("try DropEventFile.clear(at: dropEventFile)") < harness.index(
+        "for attempt in 1...maximumAttempts"
+    )
+    assert "retry suppressed" in harness
     assert "XCTAssertEqual(delayedChipAttempts, 1)" in chat_source
     assert "simulateCompletionVisibilityDelay: 3" in chat_source
     assert 'let dropTarget = element("rapid.chat.compose")' in harness
@@ -184,6 +226,8 @@ def test_xcui_runner_launches_production_bundle_with_fake_sidecar():
     assert "activeHarness?.shutDown()" in source
     assert "activeHarness = harness" in source
     assert "app.wait(for: .notRunning, timeout: 5)" in harness
+    assert "private var activeFileDragSource: XCUIApplication?" in harness
+    assert "activeFileDragSource = dragSource" in harness
     assert "terminateFakeSidecars()" in harness
     assert "isExecutableFile" in harness
     assert "RapidUITests-$(date +%s)-$$.xcresult" in runner
