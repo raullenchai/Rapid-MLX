@@ -1,0 +1,26 @@
+{
+  "adapter": null,
+  "model": "/Volumes/NVMe-4T/huggingface/hub/models--prism-ml--Ternary-Bonsai-27B-mlx-2bit/snapshots/70f75f3ad081ab840a42f3304c02c27e7f89bfb7",
+  "overall": {
+    "accuracy": 0.7,
+    "n": 30
+  },
+  "per_suite": {
+    "coding": {
+      "accuracy": 0.7,
+      "n": 10,
+      "passed": 7
+    },
+    "general": {
+      "accuracy": 0.8,
+      "n": 10,
+      "passed": 8
+    },
+    "reasoning": {
+      "accuracy": 0.6,
+      "n": 10,
+      "passed": 6
+    }
+  },
+  "wall_seconds": 180.37724791601067
+}
