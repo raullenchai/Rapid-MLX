@@ -238,7 +238,10 @@ for name in names:
     except importlib.metadata.PackageNotFoundError:
         versions[name] = None
 
-implementation_version = platform.python_version()
+implementation = sys.implementation.version
+implementation_version = f"{implementation.major}.{implementation.minor}.{implementation.micro}"
+if implementation.releaselevel != "final":
+    implementation_version += implementation.releaselevel[0] + str(implementation.serial)
 environment = {
     "implementation_name": sys.implementation.name,
     "implementation_version": implementation_version,
@@ -247,6 +250,7 @@ environment = {
     "platform_release": platform.release(),
     "platform_system": platform.system(),
     "platform_version": platform.version(),
+    "platform_python_implementation": platform.python_implementation(),
     "python_full_version": platform.python_version(),
     "python_version": ".".join(platform.python_version_tuple()[:2]),
     "sys_platform": sys.platform,

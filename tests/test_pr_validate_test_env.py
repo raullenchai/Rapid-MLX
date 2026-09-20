@@ -18,6 +18,7 @@ Three contracts pinned:
 
 from __future__ import annotations
 
+import json
 import os
 import sys
 from pathlib import Path
@@ -274,23 +275,52 @@ class TestCheckTestEnv:
             sys.executable not in status.install_hint or sys.executable == fake_python
         )
 
-    def test_distribution_versions_come_from_the_probed_interpreter(self):
-        """The gate must inspect the same interpreter that later runs pytest."""
-        from importlib.metadata import version
+    def test_distribution_versions_come_from_the_probed_interpreter(self, tmp_path):
+        """A distinct executable proves the helper does not inspect itself."""
+        payload = {
+            "environment": {
+                "implementation_name": "pypy",
+                "implementation_version": "7.3.19",
+                "os_name": "posix",
+                "platform_machine": "test-machine",
+                "platform_release": "test-release",
+                "platform_system": "TestOS",
+                "platform_version": "test-version",
+                "platform_python_implementation": "PyPy",
+                "python_full_version": "3.11.11",
+                "python_version": "3.11",
+                "sys_platform": "test-platform",
+            },
+            "versions": {"pytest": "7.4.4", "pillow": "10.4.0"},
+        }
+        fake_python = tmp_path / "controlled-python"
+        fake_python.write_text(
+            "#!/bin/sh\n" + "printf '%s\\n' " + repr(json.dumps(payload)) + "\n"
+        )
+        fake_python.chmod(0o755)
 
         environment, versions, error = _target_metadata(
-            sys.executable, ["pytest", "pytest-asyncio", "pillow"]
+            str(fake_python), ["pytest", "pillow"]
         )
 
         assert error is None
-        assert environment["python_full_version"] == ".".join(
-            str(part) for part in sys.version_info[:3]
+        assert environment == payload["environment"]
+        assert versions == payload["versions"]
+
+    def test_target_marker_environment_matches_current_interpreter(self):
+        from packaging.markers import default_environment
+
+        environment, _, error = _target_metadata(sys.executable, ["pytest"])
+
+        assert error is None
+        expected = default_environment()
+        assert (
+            environment["platform_python_implementation"]
+            == expected["platform_python_implementation"]
         )
-        assert versions == {
-            "pytest": version("pytest"),
-            "pytest-asyncio": version("pytest-asyncio"),
-            "pillow": version("pillow"),
-        }
+        assert (
+            environment["implementation_version"] == expected["implementation_version"]
+        )
 
 
 # ---------------------------------------------------------------------------
