@@ -561,8 +561,24 @@ logger = logging.getLogger(__name__)""",
         ),
         (
             """    path = get_model_path(path_or_repo)
-    install_served_architecture_bindings(_peek_drafter_model_type(path))""",
-            """    path = get_model_path(path_or_repo)""",
+    config = _read_drafter_config(path)
+    peeked = _normalized_drafter_model_type(config)
+    install_served_architecture_bindings(peeked)
+    resolved = resolve_drafter_kind(path, kind)
+    raw_type = config.get("model_type") or config.get("speculators_model_type")
+    if peeked in _SERVED_ARCHITECTURE_FAMILIES and peeked != raw_type:
+        # Rapid upstream-bugfix (documented deviation): a backbone-declared
+        # sidecar's config.json still declares the backbone type, so pinned
+        # load_model would dispatch to the backbone architecture module and
+        # construct a backbone model from drafter weights. Construct the
+        # normalized family's vendored model directly from its own config.
+        package = importlib.import_module(f"{__name__}.{peeked}")
+        family_model = package.Model(package.ModelConfig.from_dict(config))
+        return family_model, resolved
+    return load_model(path, **kwargs), resolved""",
+            """    path = get_model_path(path_or_repo)
+    resolved = resolve_drafter_kind(path, kind)
+    return load_model(path, **kwargs), resolved""",
         ),
         (
             """    try:
@@ -643,6 +659,22 @@ import uuid""",
 import importlib
 import json
 import shutil""",
+        ),
+        (
+            """def _allowed_checkpoint_roots(source_path: Path) -> List[Path]:
+    # Checkpoint content must resolve inside the checkpoint directory or
+    # the repository's own HF blob cache (snapshot entries symlink into
+    # the sibling ``blobs`` directory).
+    resolved_source = source_path.resolve()
+    allowed_roots = [resolved_source]
+    blobs_root = resolved_source.parent.parent / "blobs"
+    if resolved_source.parent.name == "snapshots" and blobs_root.is_dir():
+        allowed_roots.append(blobs_root.resolve())
+    return allowed_roots
+
+
+""",
+            """""",
         ),
         (
             """        text_config = self.read_text_config(source_config)
@@ -744,11 +776,7 @@ import shutil""",
             # the generated output; resolve each sidecar and require it
             # to stay inside the checkpoint directory or the
             # repository's own HF blob cache.
-            resolved_source = source_path.resolve()
-            allowed_roots = [resolved_source]
-            blobs_root = resolved_source.parent.parent / "blobs"
-            if resolved_source.parent.name == "snapshots" and blobs_root.is_dir():
-                allowed_roots.append(blobs_root.resolve())
+            allowed_roots = _allowed_checkpoint_roots(source_path)
             for name in self.tokenizer_files:
                 src = source_path / name
                 if not src.exists():
@@ -941,11 +969,7 @@ import shutil""",
                 # symlinks are followed but the resolved target must stay
                 # inside the model directory or the repository's own HF
                 # blob cache (snapshot shards symlink into ../blobs).
-                resolved_source = source_path.resolve()
-                allowed_roots = [resolved_source]
-                blobs_root = resolved_source.parent.parent / "blobs"
-                if resolved_source.parent.name == "snapshots" and blobs_root.is_dir():
-                    allowed_roots.append(blobs_root.resolve())
+                allowed_roots = _allowed_checkpoint_roots(source_path)
                 for filename, keys in by_file.items():
                     shard = Path(filename)
                     if shard.is_absolute() or ".." in shard.parts:
@@ -968,6 +992,33 @@ import shutil""",
                 for filename, keys in by_file.items():
                     yield source_path / filename, keys
                 return
+""",
+        ),
+        (
+            """        # Rapid upstream-bugfix (documented deviation): the fallback
+        # shards must obey the same confinement as indexed shards — an
+        # untrusted checkpoint must not make the splitter read files
+        # outside the checkpoint/HF blob roots.
+        allowed_roots = _allowed_checkpoint_roots(source_path)
+        for file in _safetensor_files(source_path):
+            resolved_file = file.resolve()
+            if not any(
+                resolved_file.is_relative_to(root) for root in allowed_roots
+            ):
+                raise ValueError(
+                    "safetensors shard escapes the checkpoint directory: "
+                    f"{file.name!r}"
+                )
+            with safe_open(file, framework="mlx") as f:
+                keys = [key for key in f.keys() if self.select_keys(key, text_config)]
+            if keys:
+                yield file, keys
+""",
+            """        for file in _safetensor_files(source_path):
+            with safe_open(file, framework="mlx") as f:
+                keys = [key for key in f.keys() if self.select_keys(key, text_config)]
+            if keys:
+                yield file, keys
 """,
         ),
         (
@@ -1229,6 +1280,49 @@ def test_mtp_split_updates_through_output_symlink(tmp_path):
         p for p in tmp_path.glob(".*mtp-split-*") if not p.name.endswith("-lock")
     ]
     assert not leftovers
+
+
+def test_mtp_split_rejects_escaping_fallback_shard(tmp_path):
+    """Fallback *.safetensors shards obey the same confinement as indexed
+    shards — a symlinked shard outside the checkpoint/blob roots must be
+    rejected."""
+    import mlx.core as mx
+
+    from rapid_mlx.models.mlx_vlm_vendored.speculative.drafters.mtp_split import (
+        MTPSplitter,
+    )
+
+    class StubSplitter(MTPSplitter):
+        output_model_type = "qwen3_5_mtp"
+        tokenizer_files: tuple = ()
+
+        def select_keys(self, key, text_config):
+            return True
+
+        def depth(self, text_config):
+            return 3
+
+        def transform(self, tensors, text_config, source_is_mlx):
+            return {"w": mx.zeros((1,))}
+
+        def quantization(self, weights, source_config, text_config, quant_opts):
+            return None
+
+    source = tmp_path / "src"
+    source.mkdir()
+    (source / "config.json").write_text(
+        json.dumps(
+            {
+                "model_type": "qwen3_5",
+                "text_config": {"model_type": "qwen3_5", "num_hidden_layers": 4},
+            }
+        )
+    )
+    outside = tmp_path / "outside.safetensors"
+    mx.save_safetensors(str(outside), {"w": mx.zeros((1,))})
+    (source / "model.safetensors").symlink_to(outside)
+    with pytest.raises(ValueError, match="escapes the checkpoint directory"):
+        list(StubSplitter().iter_selected(source, {}))
 
 
 def test_mtp_split_rejects_escaping_tokenizer_sidecar(tmp_path):
@@ -1968,6 +2062,43 @@ def test_binding_peek_resolves_backbone_declared_dflash2(tmp_path):
         json.dumps({"model_type": "qwen3_dflash", "dflash_config": {}})
     )
     assert _peek_drafter_model_type(declared) == "qwen3_dflash"
+
+
+def test_binding_sidecar_loads_vendored_family_directly(monkeypatch, tmp_path):
+    """A backbone-declared sidecar must construct the vendored family
+    directly: pinned load_model would dispatch on the raw backbone type
+    and build a backbone model from drafter weights."""
+    import sys
+    from types import ModuleType
+
+    from rapid_mlx.models.mlx_vlm_vendored.speculative.drafters import load_drafter
+
+    root = ModuleType("mlx_vlm")
+    root.__path__ = []
+    utils = ModuleType("mlx_vlm.utils")
+
+    def forbidden_load_model(path, **kwargs):
+        raise AssertionError("sidecar load must not dispatch through load_model")
+
+    utils.get_model_path = lambda value, **kwargs: Path(value)
+    utils.load_model = forbidden_load_model
+    monkeypatch.setitem(sys.modules, "mlx_vlm", root)
+    monkeypatch.setitem(sys.modules, "mlx_vlm.utils", utils)
+
+    repo = tmp_path / "sidecar"
+    repo.mkdir()
+    (repo / "config.json").write_text(
+        json.dumps(
+            {
+                "model_type": "qwen3",
+                "dflash_config": {"mask_token_id": 1, "causal": False},
+            }
+        )
+    )
+    drafter, resolved = load_drafter(str(repo), kind="dflash")
+    assert type(drafter).__name__ == "DFlashDraftModel"
+    assert type(drafter).__module__.startswith("rapid_mlx.models.mlx_vlm_vendored.")
+    assert resolved == "dflash"
 
 
 def test_qwen3_dflash_config_coerces_runtime_block_size():

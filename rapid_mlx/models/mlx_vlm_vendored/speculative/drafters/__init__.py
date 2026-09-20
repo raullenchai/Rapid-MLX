@@ -316,8 +316,20 @@ def load_drafter(
     from mlx_vlm.utils import get_model_path, load_model
 
     path = get_model_path(path_or_repo)
-    install_served_architecture_bindings(_peek_drafter_model_type(path))
+    config = _read_drafter_config(path)
+    peeked = _normalized_drafter_model_type(config)
+    install_served_architecture_bindings(peeked)
     resolved = resolve_drafter_kind(path, kind)
+    raw_type = config.get("model_type") or config.get("speculators_model_type")
+    if peeked in _SERVED_ARCHITECTURE_FAMILIES and peeked != raw_type:
+        # Rapid upstream-bugfix (documented deviation): a backbone-declared
+        # sidecar's config.json still declares the backbone type, so pinned
+        # load_model would dispatch to the backbone architecture module and
+        # construct a backbone model from drafter weights. Construct the
+        # normalized family's vendored model directly from its own config.
+        package = importlib.import_module(f"{__name__}.{peeked}")
+        family_model = package.Model(package.ModelConfig.from_dict(config))
+        return family_model, resolved
     return load_model(path, **kwargs), resolved
 
 

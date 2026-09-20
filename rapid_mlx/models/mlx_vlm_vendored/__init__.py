@@ -348,8 +348,9 @@ vendored copy differs by exactly the deviations listed):
   directory or the repository's own HF blob cache — pinned 0.7.1
   followed any symlink — and a malformed index (non-object document,
   missing or non-object ``weight_map``, non-string filename entries)
-  raises a clear ``ValueError`` and tokenizer sidecars are confined to
-  the checkpoint directory or the repository's own HF blob cache —
+  raises a clear ``ValueError``, tokenizer sidecars are confined to
+  the checkpoint directory or the repository's own HF blob cache, and
+  fallback ``*.safetensors`` shards obey the same confinement —
   pinned 0.7.1
   writes directly into the destination, so a pre-existing directory
   keeps stale tokenizer files and a mid-way failure pairs new weights
@@ -415,8 +416,11 @@ vendored copy differs by exactly the deviations listed):
   architecture from drafter weights; ``resolve_drafter_kind`` resolves
   against the same normalized type, so an explicit wrong
   ``--draft-kind`` on a backbone-declared sidecar is overridden instead
-  of dispatching the DFlash drafter through the MTP loop; unvendored
-  families fall through to the pinned modules. The registry's ``_read_drafter_config``
+  of dispatching the DFlash drafter through the MTP loop, and such
+  sidecars construct the vendored family directly (the unchanged
+  ``config.json`` would otherwise make pinned ``load_model`` dispatch
+  to the backbone architecture module); unvendored families fall
+  through to the pinned modules. The registry's ``_read_drafter_config``
   degrades a non-object ``config.json`` to the documented empty dict —
   pinned 0.7.1 returns any decoded JSON value and crashes
   ``resolve_drafter_kind`` on ``config.get()``. The DFlash runtime loads

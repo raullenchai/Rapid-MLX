@@ -65,6 +65,18 @@ def _weight_map(model_path: Path) -> Dict[str, str]:
     return weight_map
 
 
+def _allowed_checkpoint_roots(source_path: Path) -> List[Path]:
+    # Checkpoint content must resolve inside the checkpoint directory or
+    # the repository's own HF blob cache (snapshot entries symlink into
+    # the sibling ``blobs`` directory).
+    resolved_source = source_path.resolve()
+    allowed_roots = [resolved_source]
+    blobs_root = resolved_source.parent.parent / "blobs"
+    if resolved_source.parent.name == "snapshots" and blobs_root.is_dir():
+        allowed_roots.append(blobs_root.resolve())
+    return allowed_roots
+
+
 def _is_mlx_safetensors(file: Path) -> bool:
     with safe_open(file, framework="mlx") as f:
         return (f.metadata() or {}).get("format") == "mlx"
@@ -213,11 +225,7 @@ class MTPSplitter:
                 # symlinks are followed but the resolved target must stay
                 # inside the model directory or the repository's own HF
                 # blob cache (snapshot shards symlink into ../blobs).
-                resolved_source = source_path.resolve()
-                allowed_roots = [resolved_source]
-                blobs_root = resolved_source.parent.parent / "blobs"
-                if resolved_source.parent.name == "snapshots" and blobs_root.is_dir():
-                    allowed_roots.append(blobs_root.resolve())
+                allowed_roots = _allowed_checkpoint_roots(source_path)
                 for filename, keys in by_file.items():
                     shard = Path(filename)
                     if shard.is_absolute() or ".." in shard.parts:
@@ -236,7 +244,20 @@ class MTPSplitter:
                     yield resolved_shard, keys
                 return
 
+        # Rapid upstream-bugfix (documented deviation): the fallback
+        # shards must obey the same confinement as indexed shards — an
+        # untrusted checkpoint must not make the splitter read files
+        # outside the checkpoint/HF blob roots.
+        allowed_roots = _allowed_checkpoint_roots(source_path)
         for file in _safetensor_files(source_path):
+            resolved_file = file.resolve()
+            if not any(
+                resolved_file.is_relative_to(root) for root in allowed_roots
+            ):
+                raise ValueError(
+                    "safetensors shard escapes the checkpoint directory: "
+                    f"{file.name!r}"
+                )
             with safe_open(file, framework="mlx") as f:
                 keys = [key for key in f.keys() if self.select_keys(key, text_config)]
             if keys:
@@ -362,11 +383,7 @@ class MTPSplitter:
             # the generated output; resolve each sidecar and require it
             # to stay inside the checkpoint directory or the
             # repository's own HF blob cache.
-            resolved_source = source_path.resolve()
-            allowed_roots = [resolved_source]
-            blobs_root = resolved_source.parent.parent / "blobs"
-            if resolved_source.parent.name == "snapshots" and blobs_root.is_dir():
-                allowed_roots.append(blobs_root.resolve())
+            allowed_roots = _allowed_checkpoint_roots(source_path)
             for name in self.tokenizer_files:
                 src = source_path / name
                 if not src.exists():
