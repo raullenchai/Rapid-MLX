@@ -54,11 +54,45 @@ def test_spellings_normalize_to_one_canonical_token(name, expected):
         ("mlx-community/gpt-oss-120b-MXFP4-Q4", "mxfp4"),
         ("some-model-4bit-dwq", "dwq"),
         ("some-model-8bit-nvfp4", "nvfp4"),
-        ("some-model-bf16-4bit", "bf16"),
     ],
 )
 def test_the_scheme_wins_over_the_bit_width(name, expected):
     assert quant_token(name) == expected
+
+
+@pytest.mark.parametrize(
+    ("name", "expected"),
+    [
+        # Review round 1, P1: the real catalog entry this got wrong. A
+        # 4-bit checkpoint with an fp16 MTP head must not report fp16,
+        # i.e. must not land in the "not quantized" bucket.
+        ("qwen3.8-27b-4bit-fp16", "4bit"),
+        ("rapid-mlx/Qwen3.8-27B-4bit-MTP-fp16-MLX", "4bit"),
+        ("some-model-bf16-4bit", "4bit"),
+    ],
+)
+def test_a_bit_width_wins_over_a_precision(name, expected):
+    assert quant_token(name) == expected
+
+
+def test_a_precision_still_wins_when_there_is_no_width():
+    """The other half of the rule: bf16 / fp16 stay reachable."""
+
+    assert quant_token("north-mini-code-bf16") == "bf16"
+    assert quant_token("mlx-community/North-Mini-Code-1.0-bf16") == "bf16"
+    assert quant_token("some-model-fp16") == "fp16"
+
+
+def test_a_dynamic_quant_reports_its_own_width_not_its_companion():
+    """Review round 1, P2: ``DQ3_K_M-q8`` is a 3-bit-dominant checkpoint.
+    Before ``dq3`` was mapped, ``q8`` was the only token either regex could
+    see and the name reported ``8bit``."""
+
+    assert quant_token("mlx-community/Kimi-K2.6-mlx-DQ3_K_M-q8") == "3bit"
+    # An unmapped DQ width is a recognized quantization without a canonical
+    # name, not "no marker at all" — and the drift check will demand a
+    # decision if one ever reaches the catalog.
+    assert quant_token("acme/model-DQ5_K_M") == "other"
 
 
 @pytest.mark.parametrize(

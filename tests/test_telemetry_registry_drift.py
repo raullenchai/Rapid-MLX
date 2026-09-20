@@ -316,7 +316,8 @@ CATALOG = REPO_ROOT / "rapid_mlx" / "aliases.json"
 # marker" shape; if it drifts wider than the module's, the test gets stricter,
 # which is the safe direction.
 QUANT_SHAPED = re.compile(
-    r"^(?:q\d+|\d+bit|\d+bpw|int\d+|[a-z]{0,2}fp\d+|bf\d+|dwq|awq|gptq|nf4)$"
+    r"^(?:q\d+|dq\d+|\d+bit|\d+bpw|int\d+|[a-z]{0,2}fp\d+|bf\d+"
+    r"|nf\d+|dwq|awq|gptq)$"
 )
 
 # Spellings we see in the catalog, have decided NOT to give a canonical token,
@@ -333,14 +334,40 @@ def catalog() -> dict:
     return json.loads(CATALOG.read_text(encoding="utf-8"))
 
 
+#: Alias fields that hold a Hugging Face repo id. ``hf_path`` is the served
+#: checkpoint; the draft entries are separate repos with their own quant
+#: spelling in the name, and review round 1 caught that skipping them left a
+#: hole in the drift net for 22 catalog entries.
+REPO_ID_FIELDS = (
+    "hf_path",
+    "mtp_draft_model",
+    "native_mtp_draft_model",
+    "ddtree_draft_model",
+    "dflash_draft_model",
+)
+
+
 def _catalog_names(catalog: dict) -> list[str]:
-    """Every alias spelling AND every checkpoint path in the catalog."""
+    """Every alias spelling AND every repo id the catalog names."""
 
     names: list[str] = []
     for alias, entry in catalog.items():
         names.append(alias)
-        names.append(entry["hf_path"])
+        for field in REPO_ID_FIELDS:
+            value = entry.get(field)
+            if value:
+                names.append(value)
     return names
+
+
+def test_the_draft_repo_fields_are_really_in_the_catalog():
+    """If a field is renamed, ``_catalog_names`` must not go quietly blind."""
+
+    catalog = json.loads(CATALOG.read_text(encoding="utf-8"))
+    present = {field for entry in catalog.values() for field in entry}
+    assert set(REPO_ID_FIELDS) <= present, (
+        f"REPO_ID_FIELDS no longer match aliases.json: {sorted(present)}"
+    )
 
 
 def test_every_catalog_name_maps_inside_the_quant_enum(registry, catalog):

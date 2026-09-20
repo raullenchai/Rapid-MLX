@@ -46,6 +46,11 @@ _CANONICAL_BY_TOKEN: dict[str, str] = {
     "mxfp4": "mxfp4",
     "nvfp4": "nvfp4",
     "dwq": "dwq",
+    # ``mlx-community/Kimi-K2.6-mlx-DQ3_K_M-q8``: a DQ3 dynamic quant that
+    # also carries ``q8``. Without this row the name reports ``8bit`` for a
+    # 3-bit-dominant checkpoint, because ``q8`` is the only token either
+    # regex can see.
+    "dq3": "3bit",
 }
 
 #: A token that *looks* like a quantization or precision marker but is not in
@@ -57,25 +62,36 @@ _CANONICAL_BY_TOKEN: dict[str, str] = {
 #: quant value, and reporting an FP8 checkpoint as "no marker at all" would be
 #: a lie in the one direction the enum cannot correct later.
 _QUANT_SHAPED_RE = re.compile(
-    r"^(?:q\d+|\d+bit|\d+bpw|int\d+|[a-z]{0,2}fp\d+|bf\d+|nf\d+|awq|gptq)$"
+    r"^(?:q\d+|dq\d+|\d+bit|\d+bpw|int\d+|[a-z]{0,2}fp\d+|bf\d+|nf\d+|awq|gptq)$"
 )
 
 #: Precedence when a name carries more than one marker, most specific
-#: first. ``gpt-oss-20b-mxfp4-q8`` is an MXFP4 checkpoint that happens to
-#: keep 8-bit companions, and ``...-4bit-dwq`` is a DWQ checkpoint; the
-#: scheme is the interesting half, and without this order ``dwq`` and
-#: ``mxfp4`` would be unreachable enum values.
+#: first.
+#:
+#: A quantization SCHEME outranks a bit width: ``gpt-oss-20b-mxfp4-q8`` is
+#: an MXFP4 checkpoint that happens to keep 8-bit companions, and
+#: ``...-4bit-dwq`` is a DWQ checkpoint. Without that, ``dwq`` and
+#: ``mxfp4`` would be unreachable enum values, since those names always
+#: carry a width too.
+#:
+#: A PRECISION does NOT, and this is the opposite call on purpose.
+#: ``qwen3.8-27b-4bit-fp16`` (``rapid-mlx/Qwen3.8-27B-4bit-MTP-fp16-MLX``)
+#: is a 4-bit checkpoint with an fp16 MTP head; ranking ``fp16`` first put
+#: a 4-bit model in the "not quantized" bucket, which is the one error the
+#: enum cannot correct later. ``bf16`` / ``fp16`` still win when the name
+#: carries no width at all (``north-mini-code-bf16``), so they stay
+#: reachable. Review round 1, P1.
 _PRECEDENCE: tuple[str, ...] = (
     "dwq",
     "mxfp4",
     "nvfp4",
-    "bf16",
-    "fp16",
     "2bit",
     "3bit",
     "4bit",
     "6bit",
     "8bit",
+    "bf16",
+    "fp16",
     "other",
 )
 _RANK: dict[str, int] = {value: index for index, value in enumerate(_PRECEDENCE)}
@@ -109,6 +125,14 @@ def quant_token(alias_or_path: str) -> str:
     Returns ``"unknown"`` when the name carries no quantization marker and
     ``"other"`` when it carries one we have no canonical name for. It
     never returns a substring of the input.
+
+    **Emitters must pass the resolved ``hf_path``, not the alias.** A
+    catalog alias is free to omit the quantization it was built at —
+    ``gpt-oss-20b`` alone reports ``unknown`` while its checkpoint
+    ``mlx-community/gpt-oss-20b-MXFP4-Q8`` reports ``mxfp4`` — and 34 of
+    the 215 catalog aliases are in that position today. The ``hf_path``
+    is also what ``telemetry_model_id`` already resolves, so it costs the
+    caller nothing.
     """
 
     found: list[str] = []

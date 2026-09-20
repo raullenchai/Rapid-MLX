@@ -218,6 +218,29 @@ def test_output_is_printable_on_an_ascii_stdout(monkeypatch, opened):
     assert "Tell us what you want" in out
 
 
+def test_end_to_end_output_is_printable_on_an_ascii_stdout(tmp_path):
+    """The in-process check above cannot see anything main() prints around
+    the handler. ``PYTHONIOENCODING=ascii:strict`` puts a real ASCII stdout
+    under the whole dispatch path."""
+    import os
+
+    env = os.environ.copy()
+    env["HOME"] = str(tmp_path)
+    env["PYTHONIOENCODING"] = "ascii:strict"
+    r = subprocess.run(
+        [sys.executable, "-m", "rapid_mlx.cli", "feedback", "--no-open"],
+        capture_output=True,
+        text=True,
+        env=env,
+        timeout=60,
+        check=False,
+    )
+    assert r.returncode == 0, r.stderr
+    assert FEEDBACK_URL in r.stdout
+    assert "UnicodeEncodeError" not in r.stderr
+    r.stdout.encode("ascii")  # the whole stream, not just the URL line
+
+
 def test_the_subcommand_help_is_printable_on_an_ascii_stdout(monkeypatch):
     """The other thing this command writes to stdout: its own --help."""
     import rapid_mlx.cli as cli
@@ -277,9 +300,25 @@ def _run_opted_in(argv, home):
     thread = _threading.Thread(target=server.serve_forever, daemon=True)
     thread.start()
 
+    from rapid_mlx.telemetry.state import CI_ENV_VARS, DO_NOT_TRACK_ENV
+
     env = os.environ.copy()
     env["HOME"] = str(home)
+    # Review round 1, P1: every kill switch has to come OUT of the child's
+    # environment, not just ``RAPID_MLX_TELEMETRY``. A developer with
+    # ``DO_NOT_TRACK=1`` exported — or any CI runner, since CI markers
+    # disable telemetry too — would otherwise run this test with telemetry
+    # off, which is precisely the blind spot the test exists to close: the
+    # control run captures nothing and the assertion cannot go red.
+    for name in (DO_NOT_TRACK_ENV, *CI_ENV_VARS):
+        env.pop(name, None)
     env.pop("RAPID_MLX_TELEMETRY", None)
+    # Point the transport at the collector BEFORE the opt-in run, so no leg
+    # of this test can reach the production endpoint.
+    env["RAPID_MLX_TELEMETRY_DEBUG"] = "1"
+    env["RAPID_MLX_TELEMETRY_ENDPOINT"] = (
+        f"http://127.0.0.1:{server.server_port}/v1/events"
+    )
     try:
         enable = subprocess.run(
             [sys.executable, "-m", "rapid_mlx.cli", "telemetry", "enable"],
@@ -290,10 +329,6 @@ def _run_opted_in(argv, home):
             check=False,
         )
         assert enable.returncode == 0, enable.stderr
-        env["RAPID_MLX_TELEMETRY_DEBUG"] = "1"
-        env["RAPID_MLX_TELEMETRY_ENDPOINT"] = (
-            f"http://127.0.0.1:{server.server_port}/v1/events"
-        )
         result = subprocess.run(
             [sys.executable, "-m", "rapid_mlx.cli", *argv],
             capture_output=True,
