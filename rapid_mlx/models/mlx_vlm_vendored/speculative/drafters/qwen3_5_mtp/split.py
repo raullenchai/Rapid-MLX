@@ -108,7 +108,19 @@ class Qwen3NextMTPSplitter(MTPSplitter):
                     keys = [
                         f"{prefix}.{e}.{proj}.{suffix}" for e in range(n_experts)
                     ]
-                    if all(k in tensors for k in keys):
+                    present = [k for k in keys if k in tensors]
+                    if present and len(present) != len(keys):
+                        # Rapid upstream-bugfix (documented deviation): pinned
+                        # 0.7.1 silently skipped a partially present expert
+                        # group and saved an incomplete checkpoint that only
+                        # failed at load time.
+                        missing = [k for k in keys if k not in tensors]
+                        raise ValueError(
+                            "incomplete expert group for "
+                            f"{base}.switch_mlp.{proj}.{suffix}: missing "
+                            + ", ".join(missing)
+                        )
+                    if present:
                         tensors[f"{base}.switch_mlp.{proj}.{suffix}"] = mx.stack(
                             [tensors.pop(k) for k in keys]
                         )

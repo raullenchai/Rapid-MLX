@@ -74,7 +74,7 @@ rapid_mlx/models/mlx_vlm_vendored/speculative/drafters/dflash2/dflash2.py 5
 rapid_mlx/models/mlx_vlm_vendored/speculative/drafters/glm5_next_mtp/glm5_next_mtp.py 20
 rapid_mlx/models/mlx_vlm_vendored/speculative/drafters/glm5_next_mtp/split.py 1
 rapid_mlx/models/mlx_vlm_vendored/speculative/drafters/mtp_base.py 1
-rapid_mlx/models/mlx_vlm_vendored/speculative/drafters/mtp_split.py 4
+rapid_mlx/models/mlx_vlm_vendored/speculative/drafters/mtp_split.py 3
 rapid_mlx/models/mlx_vlm_vendored/speculative/drafters/qwen3_5_mtp/qwen3_5_mtp.py 10
 rapid_mlx/models/mlx_vlm_vendored/speculative/drafters/qwen3_5_mtp/split.py 1
 rapid_mlx/models/mlx_vlm_vendored/speculative/drafters/qwen3_dflash/dflash.py 4

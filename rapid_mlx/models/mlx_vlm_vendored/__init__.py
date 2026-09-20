@@ -343,9 +343,9 @@ vendored copy differs by exactly the deviations listed):
   index are validated lexically (absolute paths and ``..`` traversal
   rejected) and symlinked shards must resolve inside the model
   directory or the repository's own HF blob cache — pinned 0.7.1
-  followed any symlink — and a malformed index (non-object document or
-  ``weight_map``, non-string filename entries) raises a clear
-  ``ValueError`` — pinned 0.7.1
+  followed any symlink — and a malformed index (non-object document,
+  missing or non-object ``weight_map``, non-string filename entries)
+  raises a clear ``ValueError`` — pinned 0.7.1
   writes directly into the destination, so a pre-existing directory
   keeps stale tokenizer files and a mid-way failure pairs new weights
   with an old ``config.json``;
@@ -380,7 +380,10 @@ vendored copy differs by exactly the deviations listed):
   the choice on "moe" in the model type, instantiating dense layers over
   MoE checkpoints), and ``draft_block`` returns the DFlash2-shaped empty
   proposal for ``block_size <= 1`` before consuming seed state — pinned
-  0.7.1 crashes on an empty concatenate. The drafter registry also
+  0.7.1 crashes on an empty concatenate; ``split.py``
+  ``postprocess`` rejects a partially present expert group with the
+  missing keys listed instead of silently saving an incomplete
+  checkpoint — pinned 0.7.1 skipped the group. The drafter registry also
   installs a Rapid binding hook: ``load_drafter`` pre-registers a
   package-compatible ``sys.modules`` shim for the loaded family (from
   ``glm5_next_mtp``, ``qwen3_5_mtp``, ``qwen3_dflash``, ``dflash2``)

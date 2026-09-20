@@ -325,7 +325,19 @@ DEVIATIONS = {
                     keys = [
                         f"{prefix}.{e}.{proj}.{suffix}" for e in range(n_experts)
                     ]
-                    if all(k in tensors for k in keys):
+                    present = [k for k in keys if k in tensors]
+                    if present and len(present) != len(keys):
+                        # Rapid upstream-bugfix (documented deviation): pinned
+                        # 0.7.1 silently skipped a partially present expert
+                        # group and saved an incomplete checkpoint that only
+                        # failed at load time.
+                        missing = [k for k in keys if k not in tensors]
+                        raise ValueError(
+                            "incomplete expert group for "
+                            f"{base}.switch_mlp.{proj}.{suffix}: missing "
+                            + ", ".join(missing)
+                        )
+                    if present:
                         tensors[f"{base}.switch_mlp.{proj}.{suffix}"] = mx.stack(
                             [tensors.pop(k) for k in keys]
                         )""",
@@ -843,14 +855,12 @@ from ...utils import get_model_path
     # Rapid upstream-bugfix (documented deviation): pinned 0.7.1 assumes
     # both the index document and ``weight_map`` are objects; a malformed
     # index crashed with ``AttributeError`` instead of a clear error.
-    if not isinstance(index, dict) or not isinstance(
-        index.get("weight_map", {}), dict
-    ):
+    weight_map = index.get("weight_map") if isinstance(index, dict) else None
+    if not isinstance(weight_map, dict):
         raise ValueError(
             f"malformed safetensors index {index_path.name}: "
             "weight_map must be an object"
         )
-    weight_map = index["weight_map"]
     for filename in weight_map.values():
         if not isinstance(filename, str):
             raise ValueError(
@@ -1060,6 +1070,9 @@ def test_mtp_split_weight_map_rejects_malformed_index(tmp_path):
         json.dumps({"weight_map": {"k": 17}})
     )
     with pytest.raises(ValueError, match="non-string filename entry"):
+        _weight_map(source)
+    (source / "model.safetensors.index.json").write_text(json.dumps({"meta": {}}))
+    with pytest.raises(ValueError, match="weight_map must be an object"):
         _weight_map(source)
     (source / "model.safetensors.index.json").write_text(
         json.dumps({"weight_map": {"k": "model-00001.safetensors"}})
@@ -1440,6 +1453,32 @@ def test_qwen3_next_postprocess_stacks_quantized_expert_metadata():
         for expert in range(2):
             for suffix in ("weight", "scales", "biases"):
                 assert f"blk.0.experts.{expert}.{proj}.{suffix}" not in tensors
+
+
+def test_qwen3_next_postprocess_rejects_partial_expert_group():
+    """A partially present expert group must fail loudly instead of
+    saving an incomplete checkpoint (pinned 0.7.1 skipped it silently)."""
+    import mlx.core as mx
+
+    from rapid_mlx.models.mlx_vlm_vendored.speculative.drafters.qwen3_5_mtp import (
+        split as qwen_split_module,
+    )
+
+    splitter = qwen_split_module.Qwen3NextMTPSplitter()
+    tensors = {
+        "blk.0.experts.0.gate_proj.weight": mx.full((2, 1), 1),
+        "blk.0.experts.1.gate_proj.weight": mx.full((2, 1), 2),
+        "blk.0.experts.2.gate_proj.weight": mx.full((2, 1), 3),
+    }
+    with pytest.raises(ValueError, match="incomplete expert group"):
+        splitter.postprocess(tensors, {"num_experts": 4})
+    # a fully absent group stays a no-op (non-quantized suffixes)
+    tensors = {
+        "blk.0.experts.0.gate_proj.weight": mx.full((2, 1), 1),
+        "blk.0.experts.1.gate_proj.weight": mx.full((2, 1), 2),
+    }
+    splitter.postprocess(tensors, {"num_experts": 2})
+    assert "blk.0.switch_mlp.gate_proj.weight" in tensors
 
 
 def test_qwen35_text_config_routes_qwen3_next_to_moe():

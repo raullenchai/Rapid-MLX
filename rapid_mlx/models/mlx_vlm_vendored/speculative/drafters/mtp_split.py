@@ -48,14 +48,12 @@ def _weight_map(model_path: Path) -> Dict[str, str]:
     # Rapid upstream-bugfix (documented deviation): pinned 0.7.1 assumes
     # both the index document and ``weight_map`` are objects; a malformed
     # index crashed with ``AttributeError`` instead of a clear error.
-    if not isinstance(index, dict) or not isinstance(
-        index.get("weight_map", {}), dict
-    ):
+    weight_map = index.get("weight_map") if isinstance(index, dict) else None
+    if not isinstance(weight_map, dict):
         raise ValueError(
             f"malformed safetensors index {index_path.name}: "
             "weight_map must be an object"
         )
-    weight_map = index["weight_map"]
     for filename in weight_map.values():
         if not isinstance(filename, str):
             raise ValueError(
