@@ -6,6 +6,7 @@ summary statistics, and limitations.
 
 ## Reports
 
+- [Gemma 4 26B-A4B assistant-sidecar MTP qualification](2026-09-20-gemma4-assistant-mtp.md)
 - [Qwen3.6-35B-A3B compiled decode replay qualification](2026-09-13-qwen36-compiled-decode.md)
 - [Qwen3.6-35B-A3B native text-cache qualification](2026-09-13-qwen36-mllm-native-text-cache.md)
 - [Qwen3.6-35B-A3B fused GDN decode qualification](2026-09-12-qwen36-35b-fused-gdn-decode.md)

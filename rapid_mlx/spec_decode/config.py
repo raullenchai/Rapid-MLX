@@ -84,6 +84,16 @@ def _positive_int(value: Any, key: str) -> int | None:
     return value
 
 
+def _non_negative_int(value: Any, key: str) -> int | None:
+    if value is None:
+        return None
+    if isinstance(value, bool) or not isinstance(value, int):
+        raise SpeculativeConfigError(f"{key} must be a non-negative integer")
+    if value < 0:
+        raise SpeculativeConfigError(f"{key} must be a non-negative integer")
+    return value
+
+
 def _positive_float(value: Any, key: str) -> float | None:
     if value is None:
         return None
@@ -162,8 +172,14 @@ def parse_speculative_config(value: str | None) -> SpeculativeConfig | None:
     config = SpeculativeConfig(
         method=method,
         model=_optional_string(payload.get("model"), "model"),
-        num_speculative_tokens=_positive_int(
-            payload.get("num_speculative_tokens"), "num_speculative_tokens"
+        num_speculative_tokens=(
+            _non_negative_int(
+                payload.get("num_speculative_tokens"), "num_speculative_tokens"
+            )
+            if method == "mtp"
+            else _positive_int(
+                payload.get("num_speculative_tokens"), "num_speculative_tokens"
+            )
         ),
         tree_budget=_positive_int(payload.get("tree_budget"), "tree_budget"),
         disable_auto_k=_optional_bool(payload.get("disable_auto_k"), "disable_auto_k"),
@@ -193,6 +209,16 @@ def parse_speculative_config(value: str | None) -> SpeculativeConfig | None:
         raise SpeculativeConfigError(
             "backend='native' is serial and cannot use continuous_batching=true"
         )
+    if config.method == "mtp" and config.num_speculative_tokens == 0:
+        if config.disable_auto_k is not True:
+            raise SpeculativeConfigError(
+                "MTP num_speculative_tokens=0 is a validation baseline and "
+                "requires disable_auto_k=true"
+            )
+        if config.continuous_batching is True:
+            raise SpeculativeConfigError(
+                "MTP num_speculative_tokens=0 cannot use continuous_batching=true"
+            )
     return config
 
 

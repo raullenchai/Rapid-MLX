@@ -16,6 +16,7 @@ import argparse
 import hashlib
 import json
 import sys
+import time
 from pathlib import Path
 from typing import Any
 
@@ -79,6 +80,50 @@ def _token_sha256(tokens: tuple[int, ...]) -> str:
     ).hexdigest()
 
 
+def _loaded_model_type(model: Any) -> str | None:
+    """Resolve the architecture label from common loaded-model shapes."""
+
+    candidates = (
+        getattr(model, "model_type", None),
+        getattr(getattr(model, "args", None), "model_type", None),
+        getattr(getattr(model, "config", None), "model_type", None),
+        getattr(getattr(model, "language_model", None), "model_type", None),
+        getattr(
+            getattr(getattr(model, "language_model", None), "args", None),
+            "model_type",
+            None,
+        ),
+        getattr(
+            getattr(getattr(model, "language_model", None), "config", None),
+            "model_type",
+            None,
+        ),
+    )
+    for candidate in candidates:
+        if isinstance(candidate, str) and candidate:
+            return candidate
+    return None
+
+
+def _format_prompt(tokenizer: Any, prompt: str, *, chat_template: bool) -> str:
+    """Optionally mirror the server's one-user-message chat-template input."""
+
+    if not chat_template:
+        return prompt
+    apply = getattr(tokenizer, "apply_chat_template", None)
+    if not callable(apply):
+        raise RuntimeError("tokenizer does not expose apply_chat_template")
+    formatted = apply(
+        [{"role": "user", "content": prompt}],
+        tokenize=False,
+        add_generation_prompt=True,
+        enable_thinking=False,
+    )
+    if not isinstance(formatted, str) or not formatted:
+        raise RuntimeError("tokenizer returned an empty/non-string chat template")
+    return formatted
+
+
 def _parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--model", default=_DEFAULT_MODEL)
@@ -90,6 +135,14 @@ def _parse_args() -> argparse.Namespace:
         help=f"Number of built-in prompts to run (default: {len(_BENCH_PROMPTS)})",
     )
     parser.add_argument("--prompt-text", help="Run one explicit prompt instead")
+    parser.add_argument(
+        "--chat-template",
+        action="store_true",
+        help=(
+            "Wrap each prompt as one user message with add_generation_prompt "
+            "and enable_thinking=false, matching the default server chat path"
+        ),
+    )
     parser.add_argument("--max-tokens", type=int, default=128)
     parser.add_argument("--seed", type=int, default=0)
     parser.add_argument(
@@ -111,10 +164,10 @@ def _render_markdown(report: dict[str, Any]) -> None:
     print("- sampling: greedy (`temp=0`)")
     print("- reference: same Rapid generator with speculation parked at K=0\n")
     print(
-        "| Prompt | stock/K=0 | K | attempts | accepts | verify calls | "
+        "| Prompt | stock/K=0 | K | decode tok/s | attempts | accepts | verify calls | "
         "complete | K=0 parity | first divergence | source |"
     )
-    print("|---:|---|---:|---:|---:|---:|---|---|---|---|")
+    print("|---:|---|---:|---:|---:|---:|---:|---|---|---|---|")
     for prompt in report["prompts"]:
         stock_matches = prompt["stock_vs_k0_first_divergence"] is None
         for row in prompt["rows"]:
@@ -129,7 +182,8 @@ def _render_markdown(report: dict[str, Any]) -> None:
             )
             print(
                 f"| {prompt['index']} | {'yes' if stock_matches else 'no'} | "
-                f"{row['k']} | {row['attempts']} | {row['accepts']} | "
+                f"{row['k']} | {row['decode_tok_per_sec']:.2f} | "
+                f"{row['attempts']} | {row['accepts']} | "
                 f"{row['verify_calls']} | "
                 f"{'yes' if row['complete'] else 'no'} | "
                 f"{'yes' if row['matches_k0'] else 'no'} | {divergence_text} | "
@@ -168,17 +222,21 @@ def main() -> int:
     from mlx_lm.generate import stream_generate
     from mlx_lm.sample_utils import make_sampler
 
-    from rapid_mlx.spec_decode.mtp import MTPAcceptCounter
-    from rapid_mlx.spec_decode.mtp.generator import mtp_generate_step
-    from rapid_mlx.spec_decode.mtp.qwen3_5_inject import (
-        inject_mtp_support,
-        validate_mtp_support,
+    from rapid_mlx.spec_decode.mtp import (
+        MTPAcceptCounter,
+        dispatch_mtp_inject,
+        dispatch_mtp_validate,
     )
+    from rapid_mlx.spec_decode.mtp.generator import mtp_generate_step
 
     model, tokenizer = load(args.model)
     stop_tokens = _tokenizer_stop_tokens(tokenizer)
     stock_by_prompt: list[tuple[int, ...]] = []
-    for index, prompt in enumerate(prompts):
+    formatted_prompts = tuple(
+        _format_prompt(tokenizer, prompt, chat_template=args.chat_template)
+        for prompt in prompts
+    )
+    for index, prompt in enumerate(formatted_prompts):
         print(f"[fixed-k-consistency] stock AR prompt {index + 1}", file=sys.stderr)
         tokens: list[int] = []
         for response in stream_generate(
@@ -193,17 +251,41 @@ def main() -> int:
                 break
         stock_by_prompt.append(tuple(tokens))
 
-    if not inject_mtp_support(model, mtp_sidecar=sidecar):
-        raise RuntimeError(f"MTP injection failed for {args.model!r} with {sidecar!r}")
-    if not validate_mtp_support(model):
+    model_type = _loaded_model_type(model)
+    if model_type is None:
+        raise RuntimeError(f"Could not resolve model_type for {args.model!r}")
+    if not dispatch_mtp_inject(model, model_type, mtp_sidecar=sidecar):
+        raise RuntimeError(
+            f"MTP injection failed for {args.model!r} "
+            f"(model_type={model_type!r}) with {sidecar!r}"
+        )
+    if not dispatch_mtp_validate(model, model_type):
         raise RuntimeError("MTP validation failed after injection")
-    inner = model.language_model if hasattr(model, "language_model") else model
+    # Multimodal wrappers may preserve their public __call__ and expose the
+    # MTP-only target contract through mtp_target_forward. Older text wrappers
+    # are still driven through their patched inner model.
+    generator_model = (
+        model
+        if callable(getattr(model, "mtp_target_forward", None))
+        else getattr(model, "language_model", model)
+    )
 
     prompt_reports: list[dict[str, Any]] = []
     activity_valid = True
-    for index, prompt in enumerate(prompts):
+    for index, prompt in enumerate(formatted_prompts):
         prompt_ids = mx.array(tokenizer.encode(prompt), mx.uint32)
-        runs: dict[int, tuple[tuple[int, ...], tuple[bool, ...], Any, int, str]] = {}
+        runs: dict[
+            int,
+            tuple[
+                tuple[int, ...],
+                tuple[bool, ...],
+                Any,
+                int,
+                str,
+                float,
+                float,
+            ],
+        ] = {}
         for k in args.k_values:
             print(f"[fixed-k-consistency] prompt {index + 1} K={k}", file=sys.stderr)
             mx.random.seed(args.seed)
@@ -211,9 +293,10 @@ def main() -> int:
             timing: dict[str, float] = {}
             tokens: list[int] = []
             from_draft: list[bool] = []
+            started = time.perf_counter()
             for token, _logprobs, drafted in mtp_generate_step(
                 prompt_ids,
-                inner,
+                generator_model,
                 max_tokens=args.max_tokens,
                 temp=0.0,
                 accept_counter=counter,
@@ -227,6 +310,9 @@ def main() -> int:
                 from_draft.append(bool(drafted))
                 if token_id in stop_tokens or len(tokens) >= args.max_tokens:
                     break
+            elapsed = time.perf_counter() - started
+            prompt_eval = float(timing.get("prompt_eval_seconds", 0.0))
+            decode_elapsed = max(0.0, elapsed - prompt_eval)
             runs[k] = (
                 tuple(tokens),
                 tuple(from_draft),
@@ -237,12 +323,22 @@ def main() -> int:
                 else "max_tokens"
                 if len(tokens) == args.max_tokens
                 else "early_termination",
+                elapsed,
+                decode_elapsed,
             )
 
         control = runs[0][0]
         rows = []
         for k in args.k_values:
-            tokens, sources, counter, verify_calls, termination = runs[k]
+            (
+                tokens,
+                sources,
+                counter,
+                verify_calls,
+                termination,
+                elapsed,
+                decode_elapsed,
+            ) = runs[k]
             divergence = _first_divergence(control, tokens)
             divergence_index = divergence["index"] if divergence else None
             source = None
@@ -264,6 +360,14 @@ def main() -> int:
                     "attempts": counter.attempts,
                     "accepts": counter.accepts,
                     "verify_calls": verify_calls,
+                    "n_tokens": len(tokens),
+                    "elapsed_seconds": elapsed,
+                    "decode_elapsed_seconds": decode_elapsed,
+                    "decode_tok_per_sec": (
+                        max(0, len(tokens) - 1) / decode_elapsed
+                        if decode_elapsed > 0
+                        else 0.0
+                    ),
                     "token_sha256": _token_sha256(tokens),
                     "matches_k0": divergence is None,
                     "first_divergence": divergence,
@@ -273,7 +377,8 @@ def main() -> int:
         prompt_reports.append(
             {
                 "index": index + 1,
-                "prompt": prompt,
+                "prompt": prompts[index],
+                "chat_template": args.chat_template,
                 "stock_token_sha256": _token_sha256(stock_by_prompt[index]),
                 "stock_vs_k0_first_divergence": _first_divergence(
                     stock_by_prompt[index], control

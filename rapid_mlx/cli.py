@@ -2809,6 +2809,12 @@ def _normalize_speculative_config_or_exit(args):
             if config.continuous_batching is None
             else config.continuous_batching
         )
+        # K=0 is a same-generator serial validation baseline, not a positive
+        # speculative depth. A qualified alias would otherwise inherit its
+        # continuous-MTP default when the JSON omits ``continuous_batching``
+        # and silently stop being the requested baseline.
+        if config.num_speculative_tokens == 0:
+            args.mtp_continuous_batching = False
         args.mtp_allow_dynamic_membership = config.allow_dynamic_membership
         if (
             continuous_was_explicit
@@ -5391,10 +5397,11 @@ def serve_command(args):
         if eligibility is MTPEligibility.NONE:
             if has_sidecar:
                 print(
-                    "error: MTP speculative-config requires a supported "
-                    "checkpoint with mtp_num_hidden_layers >= 1 in "
-                    "config.json. Assistant sidecars are reserved for future "
-                    "validated support and do not make this model eligible.",
+                    "error: MTP speculative-config sidecar is not supported "
+                    "for this checkpoint architecture. Native-MTP targets "
+                    "must advertise an MTP head in config.json; external "
+                    "assistant sidecars are accepted only for explicitly "
+                    "qualified target families.",
                     file=sys.stderr,
                 )
             else:

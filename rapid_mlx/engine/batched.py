@@ -278,7 +278,8 @@ def _run_dispatch_mtp_inject(
 
     * :data:`_DISPATCH_ATTACHED` — family injector attached the MTP
       contract to ``model`` (``mtp_forward`` / ``make_mtp_cache`` /
-      ``mtp``). Happy path.
+      ``mtp`` and, for multimodal wrappers, ``mtp_target_forward``).
+      Happy path.
     * :data:`_DISPATCH_UNRESOLVED` — could not resolve
       ``config.json::model_type`` for ``model_name`` (offline HF cache
       race, missing local config, etc.). Soft-skip: the CLI already

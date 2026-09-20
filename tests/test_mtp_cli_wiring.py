@@ -4,10 +4,9 @@
 Coverage for the four surfaces PR-A ships:
 
 1. ``detect_mtp_eligibility(..., has_external_sidecar=True)`` — Gemma 4
-   unified base checkpoint (no baked-in MTP head) stays NONE even when
-   the CLI has resolved a config ``model`` sidecar path. Qwen3.5 /
-   Qwen3.6 eligibility is unaffected (their MTP head is baked into the
-   target; a sidecar does not manufacture a missing head).
+   outer checkpoints become eligible only with an explicit assistant sidecar.
+   Native-MTP families are unaffected (a sidecar does not manufacture a
+   missing head in those targets).
 
 2. ``rapid_mlx.cli`` argparse — the legacy ``--mtp-sidecar`` flag is not
    exposed; MTP sidecars come from ``--speculative-config`` only.
@@ -41,14 +40,8 @@ pytestmark = pytest.mark.requires_mlx
 # ---------------------------------------------------------------------------
 
 
-def test_detect_sidecar_does_not_promote_gemma4_unified_missing_mtp_layers():
-    """Base Gemma 4 unified checkpoint + sidecar stays NONE.
-
-    Local July 2026 A/B validation of ``mlx-community/gemma-4-12B-it-4bit`` +
-    ``google/gemma-4-12B-it-assistant`` still diverges from the greedy
-    no-spec server output, so sidecar mode must not promote Gemma 4 into
-    MTP eligibility until a lossless implementation lands.
-    """
+def test_detect_sidecar_promotes_gemma4_unified_missing_mtp_layers():
+    """Gemma 4 unified becomes eligible only with an explicit sidecar."""
     from rapid_mlx.spec_decode.mtp import (
         MTPEligibility,
         detect_mtp_eligibility,
@@ -57,17 +50,13 @@ def test_detect_sidecar_does_not_promote_gemma4_unified_missing_mtp_layers():
     config = {"model_type": "gemma4_unified"}  # no mtp_num_hidden_layers
     assert detect_mtp_eligibility(config) is MTPEligibility.NONE
     assert (
-        detect_mtp_eligibility(config, has_external_sidecar=True) is MTPEligibility.NONE
+        detect_mtp_eligibility(config, has_external_sidecar=True)
+        is MTPEligibility.CHAIN
     )
 
 
-def test_detect_sidecar_does_not_promote_gemma4_unified_zero_mtp_layers():
-    """Explicit ``mtp_num_hidden_layers: 0`` + sidecar stays NONE too.
-
-    Same shape as the base 12B checkpoint after someone hand-edited
-    the config to stamp a zero on it. Sidecar-mode must still fail
-    closed for Gemma 4 until lossless validation passes.
-    """
+def test_detect_sidecar_promotes_gemma4_unified_zero_mtp_layers():
+    """The external assistant, not target metadata, supplies Gemma 4 MTP."""
     from rapid_mlx.spec_decode.mtp import (
         MTPEligibility,
         detect_mtp_eligibility,
@@ -76,7 +65,8 @@ def test_detect_sidecar_does_not_promote_gemma4_unified_zero_mtp_layers():
     config = {"model_type": "gemma4_unified", "mtp_num_hidden_layers": 0}
     assert detect_mtp_eligibility(config) is MTPEligibility.NONE
     assert (
-        detect_mtp_eligibility(config, has_external_sidecar=True) is MTPEligibility.NONE
+        detect_mtp_eligibility(config, has_external_sidecar=True)
+        is MTPEligibility.CHAIN
     )
 
 
@@ -107,23 +97,35 @@ def test_detect_sidecar_no_effect_on_qwen3_5_missing_mtp():
     )
 
 
-def test_detect_sidecar_no_effect_on_gemma4_multimodal():
-    """Multimodal ``gemma4`` (Gemma4ForConditionalGeneration) — sidecar
-    does NOT promote to CHAIN.
-
-    ``gemma4_unified`` is the ONLY lineage on the sidecar-allowlist for
-    PR-A because that's the only one with a verified external assistant
-    drafter today (``google/gemma-4-*-it-assistant``). Multimodal
-    ``gemma4`` (26B-A4B / e2b / e4b) stays NONE regardless of the
-    sidecar flag — a future release can add it once the multimodal
-    drafter lineage lands.
-    """
+def test_detect_sidecar_promotes_gemma4_multimodal_outer_wrapper():
+    """The public multimodal Gemma 4 wrapper delegates to its text target."""
     from rapid_mlx.spec_decode.mtp import (
         MTPEligibility,
         detect_mtp_eligibility,
     )
 
     config = {"model_type": "gemma4", "mtp_num_hidden_layers": 0}
+    assert detect_mtp_eligibility(config) is MTPEligibility.NONE
+    assert (
+        detect_mtp_eligibility(config, has_external_sidecar=True)
+        is MTPEligibility.CHAIN
+    )
+
+
+def test_detect_sidecar_refuses_gemma4_shared_kv_target():
+    """Shortened producer-only cache layouts are not yet sidecar-safe."""
+    from rapid_mlx.spec_decode.mtp import (
+        MTPEligibility,
+        detect_mtp_eligibility,
+    )
+
+    config = {
+        "model_type": "gemma4",
+        "text_config": {
+            "num_hidden_layers": 35,
+            "num_kv_shared_layers": 20,
+        },
+    }
     assert (
         detect_mtp_eligibility(config, has_external_sidecar=True) is MTPEligibility.NONE
     )
@@ -281,7 +283,7 @@ def test_scheduler_config_mtp_model_type_round_trip():
     assert cfg.mtp_model_type == "gemma4_unified"
 
 
-def test_config_vetted_mtp_support_allowlist_is_qwen_only():
+def test_config_vetted_mtp_support_allowlist_matches_runtime_families():
     """Alias-profile false is only bypassed for config-vetted Qwen MTP."""
 
     from rapid_mlx.scheduler import _config_vetted_mtp_supports_spec_decode
@@ -289,7 +291,8 @@ def test_config_vetted_mtp_support_allowlist_is_qwen_only():
     assert _config_vetted_mtp_supports_spec_decode("qwen3_5") is True
     assert _config_vetted_mtp_supports_spec_decode("qwen3_5_moe") is True
     assert _config_vetted_mtp_supports_spec_decode("qwen4_exp") is True
-    assert _config_vetted_mtp_supports_spec_decode("gemma4_unified") is False
+    assert _config_vetted_mtp_supports_spec_decode("gemma4") is True
+    assert _config_vetted_mtp_supports_spec_decode("gemma4_unified") is True
     assert _config_vetted_mtp_supports_spec_decode(None) is False
 
 

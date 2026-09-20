@@ -2420,7 +2420,14 @@ def _config_vetted_mtp_supports_spec_decode(model_type: str | None) -> bool:
     narrowly tied to the model families this MTP runtime supports.
     """
 
-    return model_type in {"qwen3_5", "qwen3_5_moe", "hy_v3", "qwen4_exp"}
+    return model_type in {
+        "qwen3_5",
+        "qwen3_5_moe",
+        "hy_v3",
+        "qwen4_exp",
+        "gemma4",
+        "gemma4_unified",
+    }
 
 
 def _replay_dspark_committed(

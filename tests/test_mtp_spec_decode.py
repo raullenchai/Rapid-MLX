@@ -2844,6 +2844,64 @@ class _CacheAdvancingQwen35Model(_MockedQwen35Model):
         return super().mtp_forward(hidden, next_token_ids, mtp_cache)
 
 
+class _DelegatedTargetForwardModel(_MockedQwen35Model):
+    """Outer-wrapper double whose ordinary call path must stay untouched."""
+
+    def __init__(self, backbone_outputs: list[int], mtp_outputs: list[int]):
+        super().__init__(backbone_outputs, mtp_outputs)
+        self.target_forward_embeddings: list[bool] = []
+
+    def __call__(self, *_args, **_kwargs):
+        raise AssertionError("ordinary outer __call__ must not serve MTP")
+
+    def mtp_target_forward(self, inputs, **kwargs):
+        self.target_forward_embeddings.append(
+            kwargs.get("input_embeddings") is not None
+        )
+        return _MockedQwen35Model.__call__(self, inputs, **kwargs)
+
+
+def test_generator_uses_delegated_target_forward_during_embedding_prefill():
+    """The wrapper protocol covers both embedding prefill and decode."""
+    from rapid_mlx.spec_decode.mtp.generator import mtp_generate_step
+
+    model = _DelegatedTargetForwardModel(
+        backbone_outputs=[7, 8, 9],
+        mtp_outputs=[8, 9],
+    )
+    prompt = mx.array([1, 2, 3], dtype=mx.uint32)
+    embeddings = mx.zeros((3, model.hidden_size))
+
+    generated = mtp_generate_step(
+        prompt,
+        model,
+        input_embeddings=embeddings,
+        max_tokens=1,
+        max_k=0,
+        disable_auto_k=True,
+    )
+    token, _logprobs, from_draft = next(generated)
+
+    assert token == 9
+    assert from_draft is False
+    assert model.target_forward_embeddings == [True, False]
+
+
+def test_generator_rejects_noncallable_target_forward_surface():
+    from rapid_mlx.spec_decode.mtp.generator import mtp_generate_step
+
+    model = _MockedQwen35Model([7], [])
+    model.mtp_target_forward = object()
+    generated = mtp_generate_step(
+        mx.array([1], dtype=mx.uint32),
+        model,
+        max_tokens=1,
+    )
+
+    with pytest.raises(TypeError, match="target forward surface is not callable"):
+        next(generated)
+
+
 def test_generator_emits_first_token_from_backbone_then_draft():
     """First yield comes from the backbone (``from_draft=False``); on
     accept the second yield is the MTP draft (``from_draft=True``).
