@@ -1,12 +1,14 @@
 import argparse
 import re
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Dict, Optional
 
 import mlx.core as mx
 
 from ....fp8 import make_quantization_config
 from ..mtp_split import MTPSplitter
+from .config import TextConfig
 from .qwen3_5_mtp import Qwen3_5MTPDraftModel
 
 # top-level ``mtp.*`` norms that follow the zero-centered (weight + 1.0) RMSNorm
@@ -29,6 +31,18 @@ class Qwen3_5MTPSplitter(MTPSplitter):
     depth_field = "mtp_num_hidden_layers"
     block_size_extra = 2
     supports_mlx_source = True
+
+    def sanitize_ctx(self, text_config: dict):
+        # The drafter model's expert-completeness check needs the backbone
+        # expert count; the splitter passes it through the context namespace
+        # (dense backbones simply carry 0).
+        return SimpleNamespace(
+            config=SimpleNamespace(
+                num_experts=getattr(
+                    TextConfig.from_dict(text_config), "num_experts", 0
+                )
+            )
+        )
 
     def select_keys(self, key: str, text_config: dict) -> bool:
         return key.startswith("mtp.")

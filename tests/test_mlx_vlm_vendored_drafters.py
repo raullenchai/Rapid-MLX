@@ -318,6 +318,62 @@ DEVIATIONS = {
     ],
     "qwen3_5_mtp/split.py": [
         (
+            """import argparse
+import re
+from pathlib import Path
+from types import SimpleNamespace
+from typing import Dict, Optional
+
+import mlx.core as mx
+
+from ....fp8 import make_quantization_config
+from ..mtp_split import MTPSplitter
+from .config import TextConfig
+from .qwen3_5_mtp import Qwen3_5MTPDraftModel""",
+            """import argparse
+import re
+from pathlib import Path
+from typing import Dict, Optional
+
+import mlx.core as mx
+
+from ....fp8 import make_quantization_config
+from ..mtp_split import MTPSplitter
+from .qwen3_5_mtp import Qwen3_5MTPDraftModel""",
+        ),
+        (
+            """class Qwen3_5MTPSplitter(MTPSplitter):
+    output_model_type = "qwen3_5_mtp"
+    draft_model_cls = Qwen3_5MTPDraftModel
+    tie_word_embeddings_default = True
+    depth_field = "mtp_num_hidden_layers"
+    block_size_extra = 2
+    supports_mlx_source = True
+
+    def sanitize_ctx(self, text_config: dict):
+        # The drafter model's expert-completeness check needs the backbone
+        # expert count; the splitter passes it through the context namespace
+        # (dense backbones simply carry 0).
+        return SimpleNamespace(
+            config=SimpleNamespace(
+                num_experts=getattr(
+                    TextConfig.from_dict(text_config), "num_experts", 0
+                )
+            )
+        )
+
+""",
+            """class Qwen3_5MTPSplitter(MTPSplitter):
+    output_model_type = "qwen3_5_mtp"
+    draft_model_cls = Qwen3_5MTPDraftModel
+    tie_word_embeddings_default = True
+    depth_field = "mtp_num_hidden_layers"
+    block_size_extra = 2
+    supports_mlx_source = True
+
+""",
+        ),
+        (
             """            for proj in ("gate_proj", "up_proj", "down_proj"):
                 # Rapid upstream-bugfix (documented deviation): quantized
                 # checkpoints carry per-expert ``_scales``/``_biases``;
@@ -397,7 +453,13 @@ DEVIATIONS = {
         # checkpoint with experts 0..k (k < num_experts - 1) stacked
         # undersized switch_mlp tensors; compare against the configured
         # expert count and raise with the missing keys.
-        n_experts = int(getattr(getattr(self, "config", None), "num_experts", 0) or 0)
+        config = getattr(self, "config", None)
+        text_cfg = getattr(config, "text_config", None)
+        n_experts = int(
+            getattr(text_cfg, "num_experts", 0)
+            or getattr(config, "num_experts", 0)
+            or 0
+        )
         for (expert_prefix, projection, suffix), expert_keys in groups.items():
             experts = sorted(expert_keys)
             if experts != list(range(len(experts))):
@@ -514,6 +576,7 @@ DEVIATIONS = {
         (
             """import importlib
 import importlib.machinery
+import importlib.util
 import json
 import logging
 import sys
@@ -571,14 +634,31 @@ def install_served_architecture_bindings(model_type: Optional[str] = None) -> No
         for name, value in vars(existing).items():
             if name not in ("Model", "ModelConfig"):
                 setattr(shim, name, value)  # noqa: B010
+        setattr(
+            shim,
+            "__spec__",
+            getattr(existing, "__spec__", None)
+            or importlib.machinery.ModuleSpec(target, loader=None, is_package=True),
+        )
     else:
-        setattr(shim, "__path__", [])
-    setattr(
-        shim,
-        "__spec__",
-        getattr(existing, "__spec__", None)
-        or importlib.machinery.ModuleSpec(target, loader=None, is_package=True),
-    )
+        # The canonical package may not be imported yet; take the search
+        # locations from its discovered module spec so submodule imports
+        # (``...<model_type>.config``) resolve against the real package.
+        spec = None
+        try:
+            spec = importlib.util.find_spec(target)
+        except (ImportError, AttributeError, ValueError):
+            spec = None
+        if spec is not None and spec.submodule_search_locations:
+            setattr(shim, "__path__", list(spec.submodule_search_locations))
+            setattr(shim, "__spec__", spec)
+        else:
+            setattr(shim, "__path__", [])
+            setattr(
+                shim,
+                "__spec__",
+                importlib.machinery.ModuleSpec(target, loader=None, is_package=True),
+            )
     setattr(shim, "Model", package.Model)  # noqa: B010
     setattr(shim, "ModelConfig", package.ModelConfig)  # noqa: B010
     sys.modules[target] = shim
@@ -1141,10 +1221,10 @@ import shutil""",
                     "safetensors shard escapes the checkpoint directory: "
                     f"{file.name!r}"
                 )
-            with safe_open(file, framework="mlx") as f:
+            with safe_open(resolved_file, framework="mlx") as f:
                 keys = [key for key in f.keys() if self.select_keys(key, text_config)]
             if keys:
-                yield file, keys
+                yield resolved_file, keys
 """,
             """        for file in _safetensor_files(source_path):
             with safe_open(file, framework="mlx") as f:
@@ -2007,6 +2087,113 @@ def test_qwen35_sanitize_rejects_incomplete_expert_group():
     }
     with pytest.raises(ValueError, match="is incomplete"):
         qwen3_5_module.Qwen3_5MTPDraftModel.sanitize(stub, tensors)
+
+
+def test_qwen35_splitter_sanitize_ctx_carries_num_experts():
+    """The splitter supplies the backbone expert count to the drafter's
+    completeness check; dense backbones carry 0 and skip the check."""
+    from rapid_mlx.models.mlx_vlm_vendored.speculative.drafters.qwen3_5_mtp.split import (
+        Qwen3_5MTPSplitter,
+    )
+
+    fields = {
+        "hidden_size": 8,
+        "num_hidden_layers": 1,
+        "num_attention_heads": 2,
+        "linear_num_value_heads": 2,
+        "linear_num_key_heads": 2,
+        "linear_key_head_dim": 4,
+        "linear_value_head_dim": 4,
+        "linear_conv_kernel_dim": 2,
+        "num_experts_per_tok": 1,
+        "shared_expert_intermediate_size": 8,
+        "moe_intermediate_size": 8,
+        "rms_norm_eps": 1e-5,
+        "vocab_size": 16,
+        "num_key_value_heads": 2,
+        "max_position_embeddings": 32,
+        "intermediate_size": 8,
+    }
+    ctx = Qwen3_5MTPSplitter().sanitize_ctx(
+        {"model_type": "qwen3_moe", "num_experts": 6, **fields}
+    )
+    assert ctx.config.num_experts == 6
+    dense_ctx = Qwen3_5MTPSplitter().sanitize_ctx({"model_type": "qwen3_5", **fields})
+    assert dense_ctx.config.num_experts == 0
+
+
+_TEXT_FIELDS = {
+    "hidden_size": 8,
+    "num_hidden_layers": 1,
+    "num_attention_heads": 2,
+    "linear_num_value_heads": 2,
+    "linear_num_key_heads": 2,
+    "linear_key_head_dim": 4,
+    "linear_value_head_dim": 4,
+    "linear_conv_kernel_dim": 2,
+    "num_experts_per_tok": 1,
+    "shared_expert_intermediate_size": 8,
+    "moe_intermediate_size": 8,
+    "rms_norm_eps": 1e-5,
+    "vocab_size": 16,
+    "num_key_value_heads": 2,
+    "max_position_embeddings": 32,
+    "intermediate_size": 8,
+}
+
+
+def test_qwen35_splitter_run_sanitize_rejects_incomplete_experts():
+    """run_sanitize feeds the ctx into sanitize, so a truncated expert
+    group fails loudly instead of stacking undersized tensors."""
+    import mlx.core as mx
+
+    from rapid_mlx.models.mlx_vlm_vendored.speculative.drafters.qwen3_5_mtp.split import (
+        Qwen3_5MTPSplitter,
+    )
+
+    tensors = {
+        f"blk.0.experts.{e}.gate_proj.weight": mx.zeros((2, 2)) for e in range(2)
+    }
+    with pytest.raises(ValueError, match="is incomplete"):
+        Qwen3_5MTPSplitter().run_sanitize(
+            tensors,
+            {"model_type": "qwen3_moe", "num_experts": 4, **_TEXT_FIELDS},
+        )
+
+
+def test_binding_shim_preserves_canonical_submodule_path(monkeypatch, tmp_path):
+    """A shim built before the canonical package was imported must still
+    expose the canonical search locations, so submodule imports such as
+    ``...<family>.config`` resolve instead of failing on an empty path."""
+    import importlib
+    import sys
+
+    from rapid_mlx.models.mlx_vlm_vendored.speculative.drafters import (
+        install_served_architecture_bindings,
+    )
+
+    canon = tmp_path / "glm5_next_mtp"
+    canon.mkdir()
+    (canon / "__init__.py").write_text("CANONICAL = True\n")
+    (canon / "config.py").write_text("MARKER = 41\n")
+    parent = sys.modules.get("mlx_vlm.models")
+    assert parent is not None
+    monkeypatch.setattr(
+        parent, "__path__", list(parent.__path__) + [str(tmp_path)], raising=False
+    )
+    sys.modules.pop("mlx_vlm.models.glm5_next_mtp", None)
+    if hasattr(parent, "glm5_next_mtp"):
+        del parent.glm5_next_mtp
+
+    install_served_architecture_bindings("glm5_next_mtp")
+    shim = sys.modules["mlx_vlm.models.glm5_next_mtp"]
+    from rapid_mlx.models.mlx_vlm_vendored.speculative.drafters import (
+        glm5_next_mtp as vendored_pkg,
+    )
+
+    assert shim.Model is vendored_pkg.Model
+    config_mod = importlib.import_module("mlx_vlm.models.glm5_next_mtp.config")
+    assert config_mod.MARKER == 41
 
 
 def test_qwen3_next_postprocess_rejects_partial_expert_group():

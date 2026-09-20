@@ -1,5 +1,6 @@
 import importlib
 import importlib.machinery
+import importlib.util
 import json
 import logging
 import sys
@@ -89,14 +90,31 @@ def install_served_architecture_bindings(model_type: Optional[str] = None) -> No
         for name, value in vars(existing).items():
             if name not in ("Model", "ModelConfig"):
                 setattr(shim, name, value)  # noqa: B010
+        setattr(
+            shim,
+            "__spec__",
+            getattr(existing, "__spec__", None)
+            or importlib.machinery.ModuleSpec(target, loader=None, is_package=True),
+        )
     else:
-        setattr(shim, "__path__", [])
-    setattr(
-        shim,
-        "__spec__",
-        getattr(existing, "__spec__", None)
-        or importlib.machinery.ModuleSpec(target, loader=None, is_package=True),
-    )
+        # The canonical package may not be imported yet; take the search
+        # locations from its discovered module spec so submodule imports
+        # (``...<model_type>.config``) resolve against the real package.
+        spec = None
+        try:
+            spec = importlib.util.find_spec(target)
+        except (ImportError, AttributeError, ValueError):
+            spec = None
+        if spec is not None and spec.submodule_search_locations:
+            setattr(shim, "__path__", list(spec.submodule_search_locations))
+            setattr(shim, "__spec__", spec)
+        else:
+            setattr(shim, "__path__", [])
+            setattr(
+                shim,
+                "__spec__",
+                importlib.machinery.ModuleSpec(target, loader=None, is_package=True),
+            )
     setattr(shim, "Model", package.Model)  # noqa: B010
     setattr(shim, "ModelConfig", package.ModelConfig)  # noqa: B010
     sys.modules[target] = shim

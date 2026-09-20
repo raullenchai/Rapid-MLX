@@ -540,7 +540,13 @@ class Qwen3_5MTPDraftModel(nn.Module):
         # checkpoint with experts 0..k (k < num_experts - 1) stacked
         # undersized switch_mlp tensors; compare against the configured
         # expert count and raise with the missing keys.
-        n_experts = int(getattr(getattr(self, "config", None), "num_experts", 0) or 0)
+        config = getattr(self, "config", None)
+        text_cfg = getattr(config, "text_config", None)
+        n_experts = int(
+            getattr(text_cfg, "num_experts", 0)
+            or getattr(config, "num_experts", 0)
+            or 0
+        )
         for (expert_prefix, projection, suffix), expert_keys in groups.items():
             experts = sorted(expert_keys)
             if experts != list(range(len(experts))):

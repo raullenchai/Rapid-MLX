@@ -258,10 +258,10 @@ class MTPSplitter:
                     "safetensors shard escapes the checkpoint directory: "
                     f"{file.name!r}"
                 )
-            with safe_open(file, framework="mlx") as f:
+            with safe_open(resolved_file, framework="mlx") as f:
                 keys = [key for key in f.keys() if self.select_keys(key, text_config)]
             if keys:
-                yield file, keys
+                yield resolved_file, keys
 
     def transform(
         self, tensors: Dict[str, mx.array], text_config: dict, source_is_mlx: bool

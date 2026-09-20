@@ -425,7 +425,10 @@ vendored copy differs by exactly the deviations listed):
   ``load_model`` dispatch to the backbone architecture module) with the
   same index validation and shard confinement as ``MTPSplitter``,
   read quantization metadata from ``quantization`` or
-  ``quantization_config``, and reject loader options explicitly). The registry's ``_read_drafter_config``
+  ``quantization_config``, and reject loader options explicitly); the
+  shim preserves the canonical package's discovered search locations
+  when it has not been imported yet so submodule imports keep
+  resolving). The registry's ``_read_drafter_config``
   degrades a non-object ``config.json`` to the documented empty dict —
   pinned 0.7.1 returns any decoded JSON value and crashes
   ``resolve_drafter_kind`` on ``config.get()``. The DFlash runtime loads
