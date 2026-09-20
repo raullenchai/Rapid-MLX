@@ -1,0 +1,26 @@
+{
+  "adapter": "bench/marvins_garden/adapters/marvins-garden-v11",
+  "model": "/Volumes/NVMe-4T/huggingface/hub/models--prism-ml--Ternary-Bonsai-27B-mlx-2bit/snapshots/70f75f3ad081ab840a42f3304c02c27e7f89bfb7",
+  "overall": {
+    "accuracy": 0.6,
+    "n": 30
+  },
+  "per_suite": {
+    "coding": {
+      "accuracy": 0.6,
+      "n": 10,
+      "passed": 6
+    },
+    "general": {
+      "accuracy": 0.6,
+      "n": 10,
+      "passed": 6
+    },
+    "reasoning": {
+      "accuracy": 0.6,
+      "n": 10,
+      "passed": 6
+    }
+  },
+  "wall_seconds": 233.67804699996486
+}

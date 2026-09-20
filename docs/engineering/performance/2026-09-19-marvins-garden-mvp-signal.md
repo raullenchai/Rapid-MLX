@@ -72,29 +72,34 @@ existing prefix cache absorbs it in the serving path. Shorter prompts and
 a resident-decision-model lane come after `/v1/classify` (public API —
 needs review sign-off).
 
-## IQ tax (measured, 2026-09-19)
+## IQ tax (measured, 2026-09-19) — and the v1.1 Pareto point
 
 `iq_probe.py` A/Bs base vs base+adapter on the repo's OWN eval suites
 (generation mode, official `run_eval.py` graders and prompt wrappers,
 `enable_thinking=False`):
 
-| Suite | base | +adapter |
-| --- | ---: | ---: |
-| reasoning (MATH-500 ×10) | 60% | 0% |
-| general (MMLU-Pro ×10) | 80% | 40% |
-| coding (executed ×10) | 70% | 0% |
-| overall | 70% | 13% |
+| Suite | base | v1 adapter | v1.1 (+8% identity mix) |
+| --- | ---: | ---: | ---: |
+| reasoning (MATH-500 ×10) | 60% | 0% | 60% |
+| general (MMLU-Pro ×10) | 80% | 40% | 60% |
+| coding (executed ×10) | 70% | 0% | 60% |
+| overall | 70% | 13% | 60% |
+| **decision held-out** | 40.1% | **92.2%** | **85.4%** |
 
-Diagnosis: task-mode collapse, not knowledge erasure — simple factual QA
-still answers correctly ("Red Planet?" → "Mars"), but out-of-distribution
-prompts get first-token scrambled (math → "!"). 400 iters of letter-only
-supervision with no identity anchor.
+Diagnosis of v1: task-mode collapse, not knowledge erasure — simple
+factual QA still answers correctly, but out-of-distribution prompts get
+first-token scrambled. The 8% identity mix recovers +47 IQ points at a
+cost of −6.8 decision points (ECE 0.093 → 0.234).
 
-Mitigations, in deployment order: (1) lane isolation — the adapter loads
-ONLY in the classify lane; chat keeps the bare base, tax = 0 by
-construction; (2) v1.1 data mixing: ~15% ordinary instruction→prose
-samples as identity anchors (running); (3) reduced adapter strength as
-fallback.
+**Deployment decision:** two adapters, two lanes.
+
+- `marvins-garden` (v1): decision lane ONLY, 92.2% — chat never loads it,
+  so the IQ tax is 0 by construction in the chat lane.
+- `marvins-garden-v11` (v1.1): for any reuse where mixed traffic is
+  possible — 85.4% decision + 60% general.
+
+Next lever for the Pareto frontier: grow decision data (routing is the
+weak family) at fixed identity proportion, rather than raising the mix.
 
 ## Open items
 
