@@ -141,17 +141,19 @@ jobs:
             }
 
             const shortHead = eventHead.slice(0, 12);
-            const body = `${marker}
-            ⚠️ **Merge-ready authorization is stale for \`${shortHead}\`.**
-
-            This pull request was pushed after its ready label was applied. The
-            label authorizes one immutable commit only, so the queue will not
-            admit this head. Review the new diff, then remove and re-apply
-            exactly one of \`merge-ready\` or \`merge-ready-mac\`.
-
-            If a fresh authorization completed while this notice was being
-            posted, no further action is needed; the exact-head status remains
-            authoritative.`;
+            const body = [
+              marker,
+              `⚠️ **Merge-ready authorization is stale for \`${shortHead}\`.**`,
+              "",
+              "This pull request was pushed after its ready label was applied. " +
+                "The label authorizes one immutable commit only, so the queue " +
+                "will not admit this head. Review the new diff, then remove " +
+                "and re-apply exactly one of `merge-ready` or `merge-ready-mac`.",
+              "",
+              "If a fresh authorization completed while this notice was being " +
+                "posted, no further action is needed; the exact-head status " +
+                "remains authoritative.",
+            ].join("\n");
             const comments = await github.paginate(
               github.rest.issues.listComments,
               {

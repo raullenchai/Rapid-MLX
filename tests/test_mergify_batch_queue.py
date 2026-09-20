@@ -265,7 +265,7 @@ def test_head_update_notice_is_actionable_without_mutating_authorization():
     assert "livePull.head.sha !== eventHead" in script
     assert 'status.context === "merge-ready-head"' in script
     assert 'latestAuthorization?.state === "success"' in script
-    assert "remove and re-apply" in script
+    assert "re-apply exactly one" in script
     assert "github.rest.issues.updateComment" in script
     assert "github.rest.issues.createComment" in script
     assert 'comment.user?.login === "github-actions[bot]"' in script
