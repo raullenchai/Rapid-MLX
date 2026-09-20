@@ -427,13 +427,17 @@ def test_catalog_alias_for_is_fail_soft(monkeypatch):
     assert aliases.catalog_alias_for("qwen3.5-9b-4bit") is None
 
 
-def test_catalog_alias_for_without_a_reverse_index(monkeypatch):
+def test_catalog_alias_for_reads_the_live_registry(monkeypatch):
+    """A test elsewhere that swaps in a temporary registry must not be able to
+    leave a stale reverse index answering for the real catalog."""
     import rapid_mlx.model_aliases as aliases
+    from rapid_mlx.model_profile import ModelProfile
 
-    monkeypatch.setattr(aliases, "_hf_lower_to_alias", None)
+    monkeypatch.setattr(
+        aliases, "_aliases", {"temp-alias": ModelProfile(hf_path="org/Temp-Model")}
+    )
+    assert aliases.catalog_alias_for("org/temp-model") == "temp-alias"
     assert aliases.catalog_alias_for("mlx-community/Qwen3.5-9B-4bit") is None
-    # The direct alias lookup still answers.
-    assert aliases.catalog_alias_for("qwen3.5-9b-4bit") == "qwen3.5-9b-4bit"
 
 
 # ------------------------------------------------ where the proof is taken

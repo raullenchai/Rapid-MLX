@@ -105,12 +105,6 @@ _aliases: dict[str, "AliasProfile"] | None = None
 # in JSON order wins. The contract is "any profile valid for this
 # path" rather than "the canonical alias", so this is fine.
 _hf_to_alias: dict[str, str] | None = None
-# Case-folded twin of ``_hf_to_alias``. The Hub treats repo ids
-# case-insensitively, so ``MLX-Community/Qwen3.5-9B-4bit`` and
-# ``mlx-community/Qwen3.5-9B-4bit`` are the same catalog model; the
-# case-sensitive index above stays as-is because the loader uses it to
-# recover the exact spelling. Built in the same pass as ``_hf_to_alias``.
-_hf_lower_to_alias: dict[str, str] | None = None
 
 
 class RetiredModelAliasError(ValueError):
@@ -751,7 +745,7 @@ def _coerce(alias: str, value: object) -> AliasProfile:
 
 
 def _load() -> dict[str, AliasProfile]:
-    global _aliases, _hf_to_alias, _hf_lower_to_alias
+    global _aliases, _hf_to_alias
     if _aliases is None:
         path = os.path.join(os.path.dirname(__file__), "aliases.json")
         with open(path) as f:
@@ -766,12 +760,9 @@ def _load() -> dict[str, AliasProfile]:
         # Build reverse index in JSON-insertion order so the "first alias
         # wins" rule is deterministic.
         index: dict[str, str] = {}
-        lower_index: dict[str, str] = {}
         for alias, profile in parsed.items():
             index.setdefault(profile.hf_path, alias)
-            lower_index.setdefault(profile.hf_path.lower(), alias)
         _aliases, _hf_to_alias = parsed, index
-        _hf_lower_to_alias = lower_index
     return _aliases
 
 
@@ -1145,8 +1136,16 @@ def catalog_alias_for(name: str) -> str | None:
         return None
     if name in profiles:
         return name
-    if _hf_lower_to_alias is not None:
-        return _hf_lower_to_alias.get(name.lower())
+    # Scanned rather than served from a prebuilt index on purpose: the
+    # module-level reverse index is rebuilt only when ``_aliases`` is
+    # reloaded, and tests that swap in a temporary registry restore
+    # ``_aliases`` without it — a stale index would then answer with an
+    # alias that is not in the live catalog. ~100 entries, and the caller
+    # is a model load or a sampled telemetry emit, so the scan is free.
+    lowered = name.lower()
+    for alias, profile in profiles.items():
+        if profile.hf_path.lower() == lowered:
+            return alias
     return None
 
 
