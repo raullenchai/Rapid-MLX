@@ -9,6 +9,8 @@ and fails if that rule is removed.
 
 from __future__ import annotations
 
+from types import SimpleNamespace
+
 import pytest
 
 from rapid_mlx.telemetry import model_id as mid
@@ -263,3 +265,256 @@ def opted_in_queue(tmp_path, monkeypatch):
     monkeypatch.setattr(emit, "get_queue", lambda: _Q())
     yield captured
     emit._reset_for_tests()
+
+
+# ----------------------------------------------- fail-soft / edge coverage
+#
+# ``telemetry_model_id`` sits on the request and model-load paths, so every
+# branch below is a "telemetry must never break the product" guarantee: each
+# one has to be exercised, or we are shipping an error path nobody ran.
+
+
+def test_hf_auth_assumes_authenticated_when_hub_is_unavailable(monkeypatch):
+    """No huggingface_hub → we cannot prove anonymity, so we assume a token."""
+    import sys
+
+    monkeypatch.setitem(sys.modules, "huggingface_hub", None)
+    assert _REAL_HF_AUTH_IN_USE() is True
+
+
+def test_hf_auth_assumes_authenticated_when_get_token_raises(monkeypatch):
+    import huggingface_hub
+
+    def _boom():
+        raise RuntimeError("unreadable token file")
+
+    monkeypatch.setattr(huggingface_hub, "get_token", _boom)
+    assert _REAL_HF_AUTH_IN_USE() is True
+
+
+def test_hf_auth_false_when_no_token_anywhere(monkeypatch):
+    import huggingface_hub
+
+    monkeypatch.setattr(huggingface_hub, "get_token", lambda: None)
+    assert _REAL_HF_AUTH_IN_USE() is False
+
+
+def test_marker_path_is_none_when_the_cache_layout_is_unavailable(monkeypatch):
+    import rapid_mlx._download_gate as gate
+
+    def _boom(*_a, **_k):
+        raise RuntimeError("no cache")
+
+    monkeypatch.setattr(gate, "rapid_cache_marker_path", _boom)
+    assert mid._marker_path("org/name") is None
+    # Both callers degrade to "no proof" rather than raising.
+    mid.note_hub_fetch("org/name")
+    mid._reset_for_tests()
+    assert mid.is_proven_public("org/name") is False
+
+
+def test_note_hub_fetch_ignores_non_repo_references():
+    mid.note_hub_fetch("qwen3.5-9b-4bit")  # bare alias, not a repo id
+    mid.note_hub_fetch("/Users/alice/model")
+    mid.note_hub_fetch(None)  # type: ignore[arg-type]
+    assert mid.is_proven_public("qwen3.5-9b-4bit") is False
+
+
+def test_note_hub_fetch_is_idempotent_and_marker_aware():
+    repo = "someone/public-community-mlx"
+    mid.note_hub_fetch(repo)  # writes the marker
+    mid.note_hub_fetch(repo)  # in-process short circuit
+    mid._reset_for_tests()
+    mid.note_hub_fetch(repo)  # marker already on disk
+    assert mid.is_proven_public(repo) is True
+
+
+def test_note_hub_fetch_survives_an_unwritable_cache(monkeypatch):
+    monkeypatch.setattr(
+        mid.os,
+        "makedirs",
+        lambda *_a, **_k: (_ for _ in ()).throw(OSError("read-only")),
+    )
+    mid.note_hub_fetch("someone/public-community-mlx")  # must not raise
+
+
+def test_is_proven_public_swallows_a_broken_filesystem(monkeypatch):
+    monkeypatch.setattr(
+        mid.os.path, "exists", lambda *_a, **_k: (_ for _ in ()).throw(OSError("boom"))
+    )
+    assert mid.is_proven_public("someone/public-community-mlx") is False
+
+
+def test_unreadable_reference_is_treated_as_local(monkeypatch):
+    """An ``os.path.exists`` that refuses the string (NUL byte, bad encoding)
+    resolves to ``<local>``, never to the string itself."""
+    assert mid.telemetry_model_id("org/na\x00me") == "<local>"
+
+
+def test_telemetry_model_id_swallows_an_internal_bug(monkeypatch):
+    import rapid_mlx.model_aliases as aliases
+
+    def _boom(_name):
+        raise RuntimeError("catalog exploded")
+
+    monkeypatch.setattr(aliases, "catalog_alias_for", _boom)
+    assert mid.telemetry_model_id("someone/public-community-mlx") == "<custom>"
+
+
+def test_served_model_id_when_the_config_cannot_be_imported(monkeypatch):
+    import sys
+
+    monkeypatch.setitem(sys.modules, "rapid_mlx.config.server_config", None)
+    assert mid.served_model_id("anything") == "<custom>"
+
+
+def test_served_model_id_when_the_registry_lookup_raises(_config):
+    class _Raising:
+        def __bool__(self):
+            return True
+
+        def get_entry(self, _name=None):
+            raise KeyError("no models loaded")
+
+    _config.model_registry = _Raising()
+    _config.model_path = "mlx-community/Qwen3.5-9B-4bit"
+    # The registry could not answer, so the resolved checkpoint does.
+    assert mid.served_model_id("qwen3.5-9b-4bit") == "qwen3.5-9b-4bit"
+
+
+def test_served_model_id_recomputes_when_the_entry_has_no_stamp(_config):
+    _config.model_registry = _Registry(_Entry("", "mlx-community/Qwen3.5-9B-4bit"))
+    assert mid.served_model_id(None) == "qwen3.5-9b-4bit"
+
+
+def test_served_model_id_caps_a_stamped_value(_config):
+    _config.model_registry = _Registry(_Entry("a" * 200, "acme/private"))
+    assert mid.served_model_id("x") == "<custom>"
+
+
+def test_served_model_id_passes_sentinels_through(_config):
+    _config.model_registry = _Registry(_Entry("<local>", "/Users/alice/model"))
+    assert mid.served_model_id("x") == "<local>"
+
+
+def test_served_model_id_swallows_a_broken_config(monkeypatch, _config):
+    class _Exploding:
+        def __bool__(self):
+            raise RuntimeError("config is broken")
+
+    _config.model_registry = _Exploding()
+    assert mid.served_model_id("x") == "<custom>"
+
+
+# --------------------------------------------------- catalog lookup itself
+
+
+def test_catalog_alias_for_rejects_non_names():
+    from rapid_mlx.model_aliases import catalog_alias_for
+
+    assert catalog_alias_for("") is None
+    assert catalog_alias_for(None) is None  # type: ignore[arg-type]
+    assert catalog_alias_for(123) is None  # type: ignore[arg-type]
+
+
+def test_catalog_alias_for_is_fail_soft(monkeypatch):
+    import rapid_mlx.model_aliases as aliases
+
+    def _boom():
+        raise RuntimeError("aliases.json is corrupt")
+
+    monkeypatch.setattr(aliases, "_load", _boom)
+    assert aliases.catalog_alias_for("qwen3.5-9b-4bit") is None
+
+
+def test_catalog_alias_for_without_a_reverse_index(monkeypatch):
+    import rapid_mlx.model_aliases as aliases
+
+    monkeypatch.setattr(aliases, "_hf_lower_to_alias", None)
+    assert aliases.catalog_alias_for("mlx-community/Qwen3.5-9B-4bit") is None
+    # The direct alias lookup still answers.
+    assert aliases.catalog_alias_for("qwen3.5-9b-4bit") == "qwen3.5-9b-4bit"
+
+
+# ------------------------------------------------ where the proof is taken
+#
+# The proof is only worth anything if the download path actually records it.
+# These drive the two Hub touch points that call ``note_hub_fetch``.
+
+
+def test_model_info_probe_records_the_proof(monkeypatch):
+    """``_model_info_with_timeout`` is our first anonymous Hub touch on a cold
+    pull; a success there is what licenses reporting the repo id."""
+    from rapid_mlx import _download_gate
+
+    class _FakeApi:
+        def model_info(self, repo_id, files_metadata=False):
+            return SimpleNamespace(sha="deadbeef", siblings=[])
+
+    import huggingface_hub
+
+    monkeypatch.setattr(huggingface_hub, "HfApi", _FakeApi)
+    repo = "someone/public-community-mlx"
+    assert mid.telemetry_model_id(repo) == "<custom>"
+    _download_gate._model_info_with_timeout(repo, 5.0)
+    assert mid.telemetry_model_id(repo) == repo
+
+
+def test_text_lane_config_prefetch_records_the_proof(monkeypatch):
+    import huggingface_hub
+
+    from rapid_mlx import server
+
+    monkeypatch.setattr(
+        huggingface_hub, "hf_hub_download", lambda *a, **k: "/tmp/config.json"
+    )
+    monkeypatch.setattr(
+        "rapid_mlx.model_metadata.hub_offline_mode_active", lambda: False
+    )
+    repo = "someone/other-public-mlx"
+    server._prefetch_config_for_text_lane_guard(repo)
+    assert mid.telemetry_model_id(repo) == repo
+
+
+# ---------------------------------------------- user intent always wins
+#
+# The fail-soft wrappers swallow bugs, never the user's Ctrl-C. Each of the
+# three entry points is checked separately because each owns its own
+# ``except (KeyboardInterrupt, SystemExit): raise`` clause.
+
+
+def _raise_keyboard_interrupt(*_a, **_k):
+    raise KeyboardInterrupt
+
+
+def test_note_hub_fetch_does_not_swallow_keyboard_interrupt(monkeypatch):
+    monkeypatch.setattr(mid, "hf_auth_in_use", _raise_keyboard_interrupt)
+    with pytest.raises(KeyboardInterrupt):
+        mid.note_hub_fetch("someone/public-community-mlx")
+
+
+def test_telemetry_model_id_does_not_swallow_keyboard_interrupt(monkeypatch):
+    monkeypatch.setattr(mid, "_looks_local", _raise_keyboard_interrupt)
+    with pytest.raises(KeyboardInterrupt):
+        mid.telemetry_model_id("someone/public-community-mlx")
+
+
+def test_served_model_id_does_not_swallow_keyboard_interrupt(monkeypatch, _config):
+    class _Interrupting:
+        def __bool__(self):
+            raise KeyboardInterrupt
+
+    _config.model_registry = _Interrupting()
+    with pytest.raises(KeyboardInterrupt):
+        mid.served_model_id("x")
+
+
+def test_a_reference_the_filesystem_refuses_is_local(monkeypatch):
+    """``os.path.exists`` can raise on an undecodable name; that is not a
+    reason to report the name."""
+
+    def _boom(_path):
+        raise OSError("name too long")
+
+    monkeypatch.setattr(mid.os.path, "exists", _boom)
+    assert mid._looks_local("some-unreadable-name") is True

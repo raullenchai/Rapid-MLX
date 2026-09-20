@@ -153,7 +153,9 @@ def is_proven_public(repo_id: str) -> bool:
             if repo_id in _proven_public:
                 return True
         path = _marker_path(repo_id)
-        return bool(path) and os.path.exists(path)
+        if path is None:
+            return False
+        return os.path.exists(path)
     except Exception:
         return False
 

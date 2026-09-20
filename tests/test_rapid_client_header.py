@@ -311,3 +311,34 @@ def test_gradio_chat_sends_the_header(monkeypatch):
     chat = gradio_app.create_chat_function("http://127.0.0.1:8000", 64, 0.7)
     chat({"text": "hi", "files": []}, [])
     assert _header_of(recorded) == "rapid-gradio"
+
+
+def test_cli_server_ready_probe_sends_the_header(monkeypatch):
+    """``rapid-mlx chat`` polls the server it spawned; that poll is a Rapid
+    client too."""
+    import requests
+
+    from rapid_mlx import cli
+
+    recorded: dict = {}
+
+    class _Resp:
+        status_code = 200
+
+    def _fake_get(url, **kwargs):
+        recorded["url"] = url
+        recorded.update(kwargs)
+        return _Resp()
+
+    monkeypatch.setattr(requests, "get", _fake_get)
+    monkeypatch.setattr(cli.sys.stderr, "isatty", lambda: False, raising=False)
+
+    class _Proc:
+        returncode = None
+
+        def poll(self):
+            return None
+
+    cli._wait_for_chat_server("http://127.0.0.1:8000", _Proc(), timeout_s=5)
+    assert recorded["url"].endswith("/health/ready")
+    assert _header_of(recorded) == "rapid-cli-chat"
