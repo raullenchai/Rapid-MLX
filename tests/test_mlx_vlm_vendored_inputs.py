@@ -31,7 +31,7 @@ from rapid_mlx.models.mlx_vlm_vendored import inputs as vendored_inputs
 _UPSTREAM_REGION_SHA256 = (
     "ac610b0e2c157de878b17ec9f5ebaa8bf2c75000e44c09d84b5c17dbaf7c7b5f"
 )
-_VENDOR_DEVIATION_COUNT = 7
+_VENDOR_DEVIATION_COUNT = 9
 
 _REGION_FUNCTIONS = [
     "load_image",
@@ -79,7 +79,7 @@ def test_vendored_region_matches_reviewed_sources():
     vendored_path = Path(inspect.getsourcefile(vendored_inputs))
     vendored_source = vendored_path.read_text()
     assert hashlib.sha256(vendored_source.encode()).hexdigest() == (
-        "a688bdc97b69daab6e25d189ede7b69ce7859b30df0175d624ae1ff165ef277c"
+        "6eea1f742229a223750e69de29dd4a41e1fc5157ee8674a6851a2aa0ca83d199"
     )
     deviation_comments = [
         token.string
@@ -89,7 +89,7 @@ def test_vendored_region_matches_reviewed_sources():
     ]
     assert len(deviation_comments) == _VENDOR_DEVIATION_COUNT
     assert sum("(redirect)" in comment for comment in deviation_comments) == 3
-    assert sum("(upstream-bugfix)" in comment for comment in deviation_comments) == 3
+    assert sum("(upstream-bugfix)" in comment for comment in deviation_comments) == 5
     assert sum("(dual-namespace)" in comment for comment in deviation_comments) == 1
 
 
