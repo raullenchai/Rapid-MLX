@@ -72,6 +72,40 @@ existing prefix cache absorbs it in the serving path. Shorter prompts and
 a resident-decision-model lane come after `/v1/classify` (public API —
 needs review sign-off).
 
+## Same-ruler cross-eval vs Jev (2026-09-20): Marvin wins on identical items
+
+Protocol (`cross_eval_jev.py`): Jev (`jev-latest`, TypeSafe SystemOne
+API) answers OUR 192-sample held-out set. Same items, same information:
+the state carries our policy+facts verbatim; our letter menu is
+translated into Jev's native `choice` criteria (name → description).
+Scoring formulas identical to our eval (argmax vs label, confidence =
+selected probability, 15-bin ECE).
+
+| Same ruler | Jev `jev-latest` | Marvin recipe (n=3) | Marvin v15c (best) |
+| --- | ---: | ---: | ---: |
+| **Accuracy** | 93.23% | **94.44% ± 1.08%** | **95.31%** |
+| ECE 15-bin | 0.102 | 0.019–0.031 | 0.031 |
+| injection_guard | 100% | 100% | 100% |
+| model_routing | 87.5% | 91.7–94.8% | **94.8%** |
+| tool_gate | 97.9% | 89.6–93.8% | 91.7% |
+| latency / decision | 0.19 s p50 (hosted API, incl. RTT) | ~1.1 s (local, M3 Ultra) | |
+
+Reading:
+
+- Jev scores 93.23% on our ruler vs its published 93.21% elsewhere —
+  near-exact agreement, which validates the ruler as fair. On that
+  fair ruler, **every Marvin recipe replication beats Jev** (min leg
+  93.23% ≥, mean +1.2, best +2.1 points), with 3–5× better calibration.
+- Family pattern: Marvin wins where policy constraints bind (routing:
+  memory/context/vision feasibility chains), Jev edges the binary
+  tool gate. Injection guard ties at 100%.
+- Latency is as the owner directed: Jev is a few-hundred-ms hosted
+  product; Marvin targets ~1 s local with intelligence-first. Not
+  hardware-comparable (API RTT vs local inference); recorded for
+  context.
+- Caveats: one-directional (their ruler still unavailable); 192
+  samples; single API snapshot of jev-latest (2026-09-10 release).
+
 ## Night session (2026-09-19 → 09-20): data v2, GPU instability, template-drift breakthrough
 
 Final matrix (held-out 192, temperature 1.0):
