@@ -326,11 +326,20 @@ DEVIATIONS = {
                         f"{prefix}.{e}.{proj}.{suffix}" for e in range(n_experts)
                     ]
                     present = [k for k in keys if k in tensors]
+                    # Rapid upstream-bugfix (documented deviation): pinned
+                    # 0.7.1 silently skipped missing or partial expert
+                    # groups and saved an incomplete checkpoint that only
+                    # failed at load time. Once a prefix is detected every
+                    # weight projection must carry all ``num_experts``
+                    # entries; quantization metadata stays optional but
+                    # must be complete when present.
+                    if not present and suffix == "weight":
+                        raise ValueError(
+                            "incomplete expert group for "
+                            f"{base}.switch_mlp.{proj}.{suffix}: missing "
+                            + ", ".join(keys)
+                        )
                     if present and len(present) != len(keys):
-                        # Rapid upstream-bugfix (documented deviation): pinned
-                        # 0.7.1 silently skipped a partially present expert
-                        # group and saved an incomplete checkpoint that only
-                        # failed at load time.
                         missing = [k for k in keys if k not in tensors]
                         raise ValueError(
                             "incomplete expert group for "
@@ -771,7 +780,9 @@ import shutil""",
         try:
             os.replace(staging, output_path)
         except OSError:
-            if backup is not None and backup.exists():
+            # is_symlink() covers broken symlinks, which exists() misses —
+            # a moved-aside broken destination must still be restored.
+            if backup is not None and (backup.exists() or backup.is_symlink()):
                 os.replace(backup, output_path)
             raise
         if backup is not None:
@@ -1108,6 +1119,64 @@ def test_mtp_split_updates_through_output_symlink(tmp_path):
         p for p in tmp_path.glob(".*mtp-split-*") if not p.name.endswith("-lock")
     ]
     assert not leftovers
+
+
+def test_mtp_split_restores_broken_symlink_destination(tmp_path, monkeypatch):
+    """A broken-symlink destination moved aside must be restored after an
+    install failure — backup.exists() is False for broken symlinks."""
+    import mlx.core as mx
+
+    from rapid_mlx.models.mlx_vlm_vendored.speculative.drafters import (
+        mtp_split as mtp_split_module,
+    )
+    from rapid_mlx.models.mlx_vlm_vendored.speculative.drafters.mtp_split import (
+        MTPSplitter,
+    )
+
+    class StubSplitter(MTPSplitter):
+        output_model_type = "qwen3_5_mtp"
+        tokenizer_files = ["tokenizer.json"]
+
+        def select_keys(self, key, text_config):
+            return True
+
+        def depth(self, text_config):
+            return 3
+
+        def transform(self, tensors, text_config, source_is_mlx):
+            return {"w": mx.zeros((1,))}
+
+        def quantization(self, weights, source_config, text_config, quant_opts):
+            return None
+
+    source = tmp_path / "src"
+    source.mkdir()
+    (source / "config.json").write_text(
+        json.dumps(
+            {
+                "model_type": "qwen3_5",
+                "text_config": {"model_type": "qwen3_5", "num_hidden_layers": 4},
+            }
+        )
+    )
+    mx.save_safetensors(
+        str(source / "model.safetensors"),
+        {"w": mx.zeros((1,))},
+        metadata={"format": "mlx"},
+    )
+    (source / "tokenizer.json").write_text("{}")
+
+    link = tmp_path / "broken-out"
+    link.symlink_to(tmp_path / "gone-target")
+
+    def failing_copy(src, dst, **kwargs):
+        raise OSError("simulated copy failure")
+
+    monkeypatch.setattr(mtp_split_module.shutil, "copy", failing_copy)
+    with pytest.raises(OSError, match="simulated copy failure"):
+        StubSplitter().split(str(source), str(link))
+    assert link.is_symlink()
+    assert not link.exists()
 
 
 def test_mtp_split_weight_map_rejects_malformed_index(tmp_path):
@@ -1531,13 +1600,22 @@ def test_qwen3_next_postprocess_rejects_partial_expert_group():
     }
     with pytest.raises(ValueError, match="incomplete expert group"):
         splitter.postprocess(tensors, {"num_experts": 4})
-    # a fully absent group stays a no-op (non-quantized suffixes)
-    tensors = {
+    # an entirely missing weight projection also fails loudly
+    partial = {
         "blk.0.experts.0.gate_proj.weight": mx.full((2, 1), 1),
         "blk.0.experts.1.gate_proj.weight": mx.full((2, 1), 2),
     }
-    splitter.postprocess(tensors, {"num_experts": 2})
-    assert "blk.0.switch_mlp.gate_proj.weight" in tensors
+    with pytest.raises(ValueError, match="incomplete expert group"):
+        splitter.postprocess(partial, {"num_experts": 2})
+    # a complete prefix with absent quantization suffixes stays a no-op
+    complete = {
+        f"blk.0.experts.{e}.{proj}.weight": mx.full((2, 1), e + 1)
+        for e in range(2)
+        for proj in ("gate_proj", "up_proj", "down_proj")
+    }
+    splitter.postprocess(complete, {"num_experts": 2})
+    assert "blk.0.switch_mlp.gate_proj.weight" in complete
+    assert "blk.0.switch_mlp.gate_proj.scales" not in complete
 
 
 def test_qwen35_text_config_routes_qwen3_next_to_moe():

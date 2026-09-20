@@ -416,7 +416,9 @@ class MTPSplitter:
         try:
             os.replace(staging, output_path)
         except OSError:
-            if backup is not None and backup.exists():
+            # is_symlink() covers broken symlinks, which exists() misses —
+            # a moved-aside broken destination must still be restored.
+            if backup is not None and (backup.exists() or backup.is_symlink()):
                 os.replace(backup, output_path)
             raise
         if backup is not None:

@@ -109,11 +109,20 @@ class Qwen3NextMTPSplitter(MTPSplitter):
                         f"{prefix}.{e}.{proj}.{suffix}" for e in range(n_experts)
                     ]
                     present = [k for k in keys if k in tensors]
+                    # Rapid upstream-bugfix (documented deviation): pinned
+                    # 0.7.1 silently skipped missing or partial expert
+                    # groups and saved an incomplete checkpoint that only
+                    # failed at load time. Once a prefix is detected every
+                    # weight projection must carry all ``num_experts``
+                    # entries; quantization metadata stays optional but
+                    # must be complete when present.
+                    if not present and suffix == "weight":
+                        raise ValueError(
+                            "incomplete expert group for "
+                            f"{base}.switch_mlp.{proj}.{suffix}: missing "
+                            + ", ".join(keys)
+                        )
                     if present and len(present) != len(keys):
-                        # Rapid upstream-bugfix (documented deviation): pinned
-                        # 0.7.1 silently skipped a partially present expert
-                        # group and saved an incomplete checkpoint that only
-                        # failed at load time.
                         missing = [k for k in keys if k not in tensors]
                         raise ValueError(
                             "incomplete expert group for "

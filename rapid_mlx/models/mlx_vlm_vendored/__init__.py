@@ -338,8 +338,9 @@ vendored copy differs by exactly the deviations listed):
   and swaps it into place only after every save and copy succeeds — the
   old destination is preserved as a unique, nonexistent backup path and
   restored if the install rename fails (a symlinked destination moves
-  aside cleanly — pinned 0.7.1's pre-created backup directory rejected
-  it with ``IsADirectoryError``), ``output == source`` is rejected, and the install runs
+  aside cleanly, including broken symlinks — pinned 0.7.1's pre-created
+  backup directory rejected symlinks with ``IsADirectoryError``),
+  ``output == source`` is rejected, and the install runs
   under a per-destination advisory lock so concurrent splits cannot
   interleave destination moves, shard filenames from the safetensors
   index are validated lexically (absolute paths and ``..`` traversal
@@ -383,9 +384,11 @@ vendored copy differs by exactly the deviations listed):
   MoE checkpoints), and ``draft_block`` returns the DFlash2-shaped empty
   proposal for ``block_size <= 1`` before consuming seed state — pinned
   0.7.1 crashes on an empty concatenate; ``split.py``
-  ``postprocess`` rejects a partially present expert group with the
-  missing keys listed instead of silently saving an incomplete
-  checkpoint — pinned 0.7.1 skipped the group. The drafter registry also
+  ``postprocess`` requires every weight projection of a detected expert
+  prefix to carry all ``num_experts`` entries (missing or partial groups
+  raise with the missing keys listed instead of silently saving an
+  incomplete checkpoint — pinned 0.7.1 skipped them), while quantization
+  metadata stays optional but must be complete when present. The drafter registry also
   installs a Rapid binding hook: ``load_drafter`` pre-registers a
   package-compatible ``sys.modules`` shim for the loaded family (from
   ``glm5_next_mtp``, ``qwen3_5_mtp``, ``qwen3_dflash``, ``dflash2``)
