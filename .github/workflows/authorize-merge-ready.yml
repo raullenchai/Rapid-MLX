@@ -92,6 +92,9 @@ jobs:
       (contains(github.event.pull_request.labels.*.name, 'merge-ready') ||
        contains(github.event.pull_request.labels.*.name, 'merge-ready-mac'))
     runs-on: ubuntu-latest
+    concurrency:
+      group: merge-ready-stale-notice-${{ github.event.pull_request.number }}
+      cancel-in-progress: false
     permissions:
       issues: write
       pull-requests: read
@@ -160,8 +163,24 @@ jobs:
             );
             const existing = comments.find(
               (comment) =>
-                comment.user?.type === "Bot" && comment.body?.includes(marker),
+                comment.user?.login === "github-actions[bot]" &&
+                comment.body?.includes(marker),
             );
+            const latestStatuses = await github.paginate(
+              github.rest.repos.listCommitStatusesForRef,
+              {
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                ref: eventHead,
+                per_page: 100,
+              },
+            );
+            const refreshedAuthorization = latestStatuses.find(
+              (status) => status.context === "merge-ready-head",
+            );
+            if (refreshedAuthorization?.state === "success") {
+              return;
+            }
             if (existing) {
               await github.rest.issues.updateComment({
                 owner: context.repo.owner,

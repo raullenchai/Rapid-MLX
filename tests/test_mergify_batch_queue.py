@@ -256,6 +256,10 @@ def test_head_update_notice_is_actionable_without_mutating_authorization():
         "pull-requests": "read",
         "statuses": "read",
     }
+    assert job["concurrency"] == {
+        "group": "merge-ready-stale-notice-${{ github.event.pull_request.number }}",
+        "cancel-in-progress": "false",
+    }
     (step,) = job["steps"]
     script = step["with"]["script"]
     assert "livePull.head.sha !== eventHead" in script
@@ -264,6 +268,7 @@ def test_head_update_notice_is_actionable_without_mutating_authorization():
     assert "remove and re-apply" in script
     assert "github.rest.issues.updateComment" in script
     assert "github.rest.issues.createComment" in script
+    assert 'comment.user?.login === "github-actions[bot]"' in script
     assert "github.rest.repos.createCommitStatus" not in script
     assert "checkout" not in script.lower()
 
@@ -273,6 +278,7 @@ def _run_head_update_notice(
     live_head: str = "head-sha",
     labels: list[str] | None = None,
     statuses: list[dict[str, str]] | None = None,
+    refreshed_statuses: list[dict[str, str]] | None = None,
     comments: list[dict[str, object]] | None = None,
 ) -> list[list[object]]:
     workflow = yaml.load(
@@ -285,12 +291,14 @@ def _run_head_update_notice(
             "liveHead": live_head,
             "labels": labels if labels is not None else ["merge-ready-mac"],
             "statuses": statuses or [],
+            "refreshedStatuses": refreshed_statuses,
             "comments": comments or [],
         }
     )
     harness = f"""
 const scenario = {scenario};
 const calls = [];
+let statusCalls = 0;
 const context = {{
   repo: {{ owner: "owner", repo: "repo" }},
   issue: {{ number: 42 }},
@@ -307,8 +315,13 @@ const github = {{
       }} }};
     }} }},
     repos: {{ listCommitStatusesForRef: async () => {{
+      statusCalls += 1;
       calls.push(["statuses"]);
-      return {{ data: scenario.statuses }};
+      return {{
+        data: statusCalls === 1 || scenario.refreshedStatuses === null
+          ? scenario.statuses
+          : scenario.refreshedStatuses,
+      }};
     }} }},
     issues: {{
       listComments: async () => {{
@@ -338,7 +351,13 @@ const github = {{
 
 def test_head_update_notice_creates_or_updates_one_actionable_comment():
     created = _run_head_update_notice()
-    assert [call[0] for call in created] == ["get", "statuses", "comments", "create"]
+    assert [call[0] for call in created] == [
+        "get",
+        "statuses",
+        "comments",
+        "statuses",
+        "create",
+    ]
     assert "merge-ready-stale-head" in created[-1][1]
     assert "remove and re-apply" in created[-1][1]
     assert "head-sha" in created[-1][1]
@@ -348,11 +367,17 @@ def test_head_update_notice_creates_or_updates_one_actionable_comment():
             {
                 "id": 7,
                 "body": "<!-- merge-ready-stale-head --> old",
-                "user": {"type": "Bot"},
+                "user": {"type": "Bot", "login": "github-actions[bot]"},
             }
         ]
     )
-    assert [call[0] for call in updated] == ["get", "statuses", "comments", "update"]
+    assert [call[0] for call in updated] == [
+        "get",
+        "statuses",
+        "comments",
+        "statuses",
+        "update",
+    ]
 
 
 def test_head_update_notice_skips_newer_heads_and_fresh_authorization():
@@ -360,6 +385,9 @@ def test_head_update_notice_skips_newer_heads_and_fresh_authorization():
     assert _run_head_update_notice(
         statuses=[{"context": "merge-ready-head", "state": "success"}]
     ) == [["get"], ["statuses"]]
+    assert _run_head_update_notice(
+        refreshed_statuses=[{"context": "merge-ready-head", "state": "success"}]
+    ) == [["get"], ["statuses"], ["comments"], ["statuses"]]
 
 
 def test_status_or_live_pull_failure_remains_fail_closed():
