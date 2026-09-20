@@ -61,6 +61,11 @@ enum FileDropRetryPolicy {
     // hosted runner, but bounded so a transport miss reaches its one allowed
     // fresh-session retry promptly.
     static let completionObservationTimeout: TimeInterval = 4.5
+    // Once the first helper has terminated and the replacement is ready, keep
+    // observing the product-owned marker for one final bounded interval before
+    // issuing another physical gesture. This closes the late-acknowledgement
+    // window without turning a transport retry into an unbounded wait.
+    static let retryQuiescenceTimeout: TimeInterval = 1
 
     static func observationTimeout(settleTimeout: TimeInterval) -> TimeInterval {
         min(max(0, settleTimeout), completionObservationTimeout)
@@ -381,27 +386,41 @@ final class RapidUITestHarness {
             )
 
             // Relaunching the helper is an intentional quiescence boundary.
-            // Re-check after that potentially slow operation so a late
-            // acknowledgement from attempt 1 cannot be erased or replayed.
+            // Observe through one final bounded interval after that potentially
+            // slow operation. A late acknowledgement from attempt 1 therefore
+            // suppresses the second gesture instead of racing a point-in-time
+            // marker check.
             if attempt > 1 {
-                do {
-                    if try DropEventFile.completedPhase(at: dropEventFile) != nil {
-                        guard terminateFileDragSource(dragSource) else { return attempt }
-                        if waitUntil(timeout: dropSettleTimeout, condition: {
-                            chip.exists && chip.isHittable
-                        }) {
-                            return attempt - 1
-                        }
-                        XCTFail(
-                            "consumed attachment drop did not render its chip "
-                                + "within \(dropSettleTimeout)s; retry suppressed"
-                        )
+                var latePhase: String?
+                var markerReadError: Error?
+                _ = waitUntil(timeout: FileDropRetryPolicy.retryQuiescenceTimeout) {
+                    do {
+                        latePhase = try DropEventFile.completedPhase(at: self.dropEventFile)
+                        return latePhase != nil
+                    } catch {
+                        markerReadError = error
+                        return true
+                    }
+                }
+                if let markerReadError {
+                    _ = terminateFileDragSource(dragSource)
+                    XCTFail(
+                        "could not read UI-test drop marker before retry: \(markerReadError)"
+                    )
+                    return attempt
+                }
+                if latePhase != nil {
+                    guard terminateFileDragSource(dragSource) else { return attempt }
+                    if waitUntil(timeout: dropSettleTimeout, condition: {
+                        chip.exists && chip.isHittable
+                    }) {
                         return attempt - 1
                     }
-                } catch {
-                    _ = terminateFileDragSource(dragSource)
-                    XCTFail("could not read UI-test drop marker before retry: \(error)")
-                    return attempt
+                    XCTFail(
+                        "consumed attachment drop did not render its chip "
+                            + "within \(dropSettleTimeout)s; retry suppressed"
+                    )
+                    return attempt - 1
                 }
             }
             source.click(forDuration: 1, thenDragTo: dropTarget)
