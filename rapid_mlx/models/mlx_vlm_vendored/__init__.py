@@ -417,10 +417,11 @@ vendored copy differs by exactly the deviations listed):
   against the same normalized type, so an explicit wrong
   ``--draft-kind`` on a backbone-declared sidecar is overridden instead
   of dispatching the DFlash drafter through the MTP loop, and such
-  sidecars construct the vendored family directly (the unchanged
-  ``config.json`` would otherwise make pinned ``load_model`` dispatch
-  to the backbone architecture module); unvendored families fall
-  through to the pinned modules. The registry's ``_read_drafter_config``
+  sidecars construct the vendored family directly and mirror pinned
+  ``load_model``'s weight pipeline (sanitize, quantize, strict load,
+  eval — the unchanged ``config.json`` would otherwise make pinned
+  ``load_model`` dispatch to the backbone architecture module);
+  unvendored families fall through to the pinned modules. The registry's ``_read_drafter_config``
   degrades a non-object ``config.json`` to the documented empty dict —
   pinned 0.7.1 returns any decoded JSON value and crashes
   ``resolve_drafter_kind`` on ``config.get()``. The DFlash runtime loads

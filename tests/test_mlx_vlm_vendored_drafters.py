@@ -571,9 +571,44 @@ logger = logging.getLogger(__name__)""",
         # sidecar's config.json still declares the backbone type, so pinned
         # load_model would dispatch to the backbone architecture module and
         # construct a backbone model from drafter weights. Construct the
-        # normalized family's vendored model directly from its own config.
+        # normalized family's vendored model directly and mirror pinned
+        # load_model's weight pipeline: sanitize, quantize per the
+        # checkpoint's quantization config, load strict, and eval.
+        import mlx.core as mx
+        import mlx.nn as nn
+
         package = importlib.import_module(f"{__name__}.{peeked}")
         family_model = package.Model(package.ModelConfig.from_dict(config))
+        weights = {}
+        index_path = path / "model.safetensors.index.json"
+        if index_path.exists():
+            with open(index_path) as f:
+                weight_map = json.load(f).get("weight_map", {})
+            shard_files = sorted(
+                {path / name for name in weight_map.values() if isinstance(name, str)}
+            )
+        else:
+            shard_files = sorted(
+                shard
+                for shard in path.glob("*.safetensors")
+                if not shard.name.endswith("consolidated.safetensors")
+            )
+        if not shard_files:
+            raise ValueError(f"no safetensors found in {path}")
+        for shard in shard_files:
+            weights.update(mx.load(str(shard)))
+        weights = family_model.sanitize(weights)
+        if (quantization := config.get("quantization")) is not None:
+            nn.quantize(
+                family_model,
+                group_size=quantization["group_size"],
+                bits=quantization["bits"],
+                mode=quantization.get("mode", "affine"),
+                class_predicate=lambda p, m: f"{p}.scales" in weights
+                and hasattr(m, "to_quantized"),
+            )
+        family_model.load_weights(list(weights.items()), strict=True)
+        mx.eval(family_model.parameters())
         return family_model, resolved
     return load_model(path, **kwargs), resolved""",
             """    path = get_model_path(path_or_repo)
@@ -2085,6 +2120,9 @@ def test_binding_sidecar_loads_vendored_family_directly(monkeypatch, tmp_path):
     monkeypatch.setitem(sys.modules, "mlx_vlm", root)
     monkeypatch.setitem(sys.modules, "mlx_vlm.utils", utils)
 
+    import mlx.core as mx
+    from mlx.utils import tree_flatten
+
     repo = tmp_path / "sidecar"
     repo.mkdir()
     (repo / "config.json").write_text(
@@ -2095,10 +2133,31 @@ def test_binding_sidecar_loads_vendored_family_directly(monkeypatch, tmp_path):
             }
         )
     )
+    # save a known parameter set: the loaded drafter must carry these
+    # weights, proving the direct branch loads the checkpoint instead of
+    # serving randomly initialized parameters.
+    from rapid_mlx.models.mlx_vlm_vendored.speculative.drafters.qwen3_dflash.config import (
+        DFlashConfig,
+    )
+    from rapid_mlx.models.mlx_vlm_vendored.speculative.drafters.qwen3_dflash.dflash import (
+        DFlashDraftModel,
+    )
+
+    reference = DFlashDraftModel(DFlashConfig(mask_token_id=1))
+    mx.eval(reference.parameters())
+    mx.save_safetensors(
+        str(repo / "model.safetensors"), dict(tree_flatten(reference.parameters()))
+    )
+    del reference
     drafter, resolved = load_drafter(str(repo), kind="dflash")
     assert type(drafter).__name__ == "DFlashDraftModel"
     assert type(drafter).__module__.startswith("rapid_mlx.models.mlx_vlm_vendored.")
     assert resolved == "dflash"
+    saved = dict(tree_flatten(drafter.parameters()))
+    original = mx.load(str(repo / "model.safetensors"))
+    assert set(saved) == set(original)
+    for key in ("fc.weight", "layers.0.self_attn.q_proj.weight"):
+        assert mx.array_equal(saved[key], original[key]), key
 
 
 def test_qwen3_dflash_config_coerces_runtime_block_size():
