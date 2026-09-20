@@ -463,7 +463,8 @@ logger = logging.getLogger(__name__)""",
         (
             """import json
 import os
-import shutil""",
+import shutil
+import tempfile""",
             """import json
 import shutil""",
         ),
@@ -482,44 +483,168 @@ import shutil""",
         )
         if resolved_block_size < 2:
             raise ValueError(f"block_size must be >= 2, got {block_size!r}")
+        if output_path.resolve() == source_path.resolve():
+            raise ValueError("output must differ from the source checkpoint")
 
         # Rapid upstream-bugfix (documented deviation): pinned 0.7.1 writes
         # directly into the destination, so a pre-existing directory keeps
         # stale tokenizer files and a failure after the weight save leaves
         # new weights paired with an old config.json. Build the complete
-        # checkpoint in a fresh sibling staging directory and swap it in
-        # only after every save and copy succeeds.
-        staging = output_path.parent / f".{output_path.name}.mtp-split-tmp"
-        if staging.is_dir() and not staging.is_symlink():
-            shutil.rmtree(staging)
-        staging.mkdir(parents=True)
+        # checkpoint in a unique sibling staging directory (concurrent
+        # splits must not share one), swap it in only after every save and
+        # copy succeeds, and keep the old destination as a backup until the
+        # staged checkpoint is installed.
+        staging = Path(
+            tempfile.mkdtemp(
+                prefix=f".{output_path.name}.mtp-split-",
+                dir=str(output_path.parent),
+            )
+        )
+        try:
 """,
             """        text_config = self.read_text_config(source_config)
 
 """,
         ),
         (
-            """        mx.save_safetensors(
-            str(staging / "model.safetensors"),""",
-            """        mx.save_safetensors(
-            str(output_path / "model.safetensors"),""",
-        ),
-        (
-            """        with open(staging / "config.json", "w") as f:
-            json.dump(dict(sorted(draft_config.items())), f, indent=2)
+            """            selected: Dict[str, mx.array] = {}
+            source_is_mlx = False
+            for file, keys in self.iter_selected(source_path, text_config):
+                if self.supports_mlx_source:
+                    source_is_mlx = source_is_mlx or _is_mlx_safetensors(file)
+                selected.update(self.load_shard(file, keys))
+            if not selected:
+                raise ValueError(f"No MTP tensors found in {source_path}.")
 
-        for name in self.tokenizer_files:
-            src = source_path / name
-            if src.exists():
-                shutil.copy(src, staging / name)
+            q_bits = quant_opts.get("q_bits")
+            q_mode = quant_opts.get("q_mode")
+            quantize = q_bits is not None or q_mode is not None
+            fp8_target_quantization = None
+            if quantize:
+                fp8_target_quantization = get_quantization_params(
+                    quant_opts.get("q_group_size"), q_bits, q_mode or "affine"
+                )
+            selected, transformed_quantization = transform_fp8_weights(
+                selected,
+                source_config,
+                target_quantization=fp8_target_quantization,
+            )
+            if transformed_quantization is not None:
+                source_config = dict(source_config)
+                source_config["quantization"] = transformed_quantization
+                source_config["quantization_config"] = transformed_quantization
+            weights = self.transform(selected, text_config, source_is_mlx)
+            quantization = self.quantization(
+                weights, source_config, text_config, quant_opts
+            )
 
-        if output_path.is_dir() and not output_path.is_symlink():
-            shutil.rmtree(output_path)
-        elif output_path.exists() or output_path.is_symlink():
-            output_path.unlink()
-        os.replace(staging, output_path)
-        return output_path""",
-            """        with open(output_path / "config.json", "w") as f:
+            mx.eval(list(weights.values()))
+            mx.save_safetensors(
+                str(staging / "model.safetensors"),
+                weights,
+                metadata={"format": "mlx"},
+            )
+
+            draft_config = {
+                "model_type": self.output_model_type,
+                "text_config": text_config,
+                "block_size": resolved_block_size,
+                "tie_word_embeddings": bool(
+                    text_config.get("tie_word_embeddings", self.tie_word_embeddings_default)
+                ),
+            }
+            draft_config.update(self.extra_config(text_config))
+            if quantization is not None:
+                draft_config["quantization"] = quantization
+                draft_config["quantization_config"] = quantization
+
+            with open(staging / "config.json", "w") as f:
+                json.dump(dict(sorted(draft_config.items())), f, indent=2)
+
+            for name in self.tokenizer_files:
+                src = source_path / name
+                if src.exists():
+                    shutil.copy(src, staging / name)
+
+            # Install: move the old destination aside, put the staged
+            # checkpoint in place, and restore the old one if the install
+            # rename fails — the destination is never destroyed before its
+            # replacement exists.
+            backup = output_path.with_name(f".{output_path.name}.mtp-split-bak")
+            if backup.is_dir() and not backup.is_symlink():
+                shutil.rmtree(backup)
+            elif backup.exists() or backup.is_symlink():
+                backup.unlink()
+            if output_path.exists() or output_path.is_symlink():
+                os.replace(output_path, backup)
+            try:
+                os.replace(staging, output_path)
+            except OSError:
+                if backup.exists():
+                    os.replace(backup, output_path)
+                raise
+            if backup.is_dir() and not backup.is_symlink():
+                shutil.rmtree(backup)
+            elif backup.exists() or backup.is_symlink():
+                backup.unlink()
+            return output_path
+        finally:
+            if staging.is_dir() and not staging.is_symlink():
+                shutil.rmtree(staging, ignore_errors=True)
+""",
+            """        selected: Dict[str, mx.array] = {}
+        source_is_mlx = False
+        for file, keys in self.iter_selected(source_path, text_config):
+            if self.supports_mlx_source:
+                source_is_mlx = source_is_mlx or _is_mlx_safetensors(file)
+            selected.update(self.load_shard(file, keys))
+        if not selected:
+            raise ValueError(f"No MTP tensors found in {source_path}.")
+
+        q_bits = quant_opts.get("q_bits")
+        q_mode = quant_opts.get("q_mode")
+        quantize = q_bits is not None or q_mode is not None
+        fp8_target_quantization = None
+        if quantize:
+            fp8_target_quantization = get_quantization_params(
+                quant_opts.get("q_group_size"), q_bits, q_mode or "affine"
+            )
+        selected, transformed_quantization = transform_fp8_weights(
+            selected,
+            source_config,
+            target_quantization=fp8_target_quantization,
+        )
+        if transformed_quantization is not None:
+            source_config = dict(source_config)
+            source_config["quantization"] = transformed_quantization
+            source_config["quantization_config"] = transformed_quantization
+        weights = self.transform(selected, text_config, source_is_mlx)
+        quantization = self.quantization(
+            weights, source_config, text_config, quant_opts
+        )
+
+        mx.eval(list(weights.values()))
+        mx.save_safetensors(
+            str(output_path / "model.safetensors"),
+            weights,
+            metadata={"format": "mlx"},
+        )
+
+        depth = self.depth(text_config)
+        draft_config = {
+            "model_type": self.output_model_type,
+            "text_config": text_config,
+            "block_size": int(block_size or depth + self.block_size_extra),
+            "tie_word_embeddings": bool(
+                text_config.get("tie_word_embeddings", self.tie_word_embeddings_default)
+            ),
+        }
+        draft_config.update(self.extra_config(text_config))
+        if quantization is not None:
+            draft_config["quantization"] = quantization
+            draft_config["quantization_config"] = quantization
+
+        with open(output_path / "config.json", "w") as f:
             json.dump(dict(sorted(draft_config.items())), f, indent=2)
 
         for name in self.tokenizer_files:
@@ -527,18 +652,8 @@ import shutil""",
             if src.exists():
                 shutil.copy(src, output_path / name)
 
-        return output_path""",
-        ),
-        (
-            """        draft_config = {
-            "model_type": self.output_model_type,
-            "text_config": text_config,
-            "block_size": resolved_block_size,""",
-            """        depth = self.depth(text_config)
-        draft_config = {
-            "model_type": self.output_model_type,
-            "text_config": text_config,
-            "block_size": int(block_size or depth + self.block_size_extra),""",
+        return output_path
+""",
         ),
         (
             """        )
@@ -904,7 +1019,117 @@ def test_mtp_split_does_not_tear_existing_output(tmp_path, monkeypatch):
     StubSplitter().split(str(source), str(dest))
     assert (dest / "config.json").read_text() != "stale"
     assert (dest / "model.safetensors").exists()
-    assert not list(tmp_path.glob(".*mtp-split-tmp"))
+    assert not list(tmp_path.glob(".*mtp-split-*"))
+
+
+def test_mtp_split_rejects_source_output_aliasing(tmp_path):
+    """split(source, source) must be rejected before anything is written
+    (r19 finding): installing over the source would destroy it."""
+    import mlx.core as mx
+
+    from rapid_mlx.models.mlx_vlm_vendored.speculative.drafters.mtp_split import (
+        MTPSplitter,
+    )
+
+    class StubSplitter(MTPSplitter):
+        output_model_type = "qwen3_5_mtp"
+        tokenizer_files = []
+
+        def select_keys(self, key, text_config):
+            return True
+
+        def depth(self, text_config):
+            return 3
+
+        def transform(self, tensors, text_config, source_is_mlx):
+            return {"w": mx.zeros((1,))}
+
+        def quantization(self, weights, source_config, text_config, quant_opts):
+            return None
+
+    source = tmp_path / "src"
+    source.mkdir()
+    (source / "config.json").write_text(
+        json.dumps(
+            {
+                "model_type": "qwen3_5",
+                "text_config": {"model_type": "qwen3_5", "num_hidden_layers": 4},
+            }
+        )
+    )
+    mx.save_safetensors(
+        str(source / "model.safetensors"),
+        {"w": mx.zeros((1,))},
+        metadata={"format": "mlx"},
+    )
+    with pytest.raises(ValueError, match="output must differ"):
+        StubSplitter().split(str(source), str(source))
+    assert (source / "model.safetensors").exists()
+    assert not list(tmp_path.glob(".*mtp-split-*"))
+
+
+def test_mtp_split_restores_destination_when_install_fails(tmp_path, monkeypatch):
+    """If the staging install rename fails, the old destination must be
+    restored (r19 finding)."""
+    import mlx.core as mx
+
+    from rapid_mlx.models.mlx_vlm_vendored.speculative.drafters import (
+        mtp_split as mtp_split_module,
+    )
+    from rapid_mlx.models.mlx_vlm_vendored.speculative.drafters.mtp_split import (
+        MTPSplitter,
+    )
+
+    class StubSplitter(MTPSplitter):
+        output_model_type = "qwen3_5_mtp"
+        tokenizer_files = []
+
+        def select_keys(self, key, text_config):
+            return True
+
+        def depth(self, text_config):
+            return 3
+
+        def transform(self, tensors, text_config, source_is_mlx):
+            return {"w": mx.zeros((1,))}
+
+        def quantization(self, weights, source_config, text_config, quant_opts):
+            return None
+
+    source = tmp_path / "src"
+    source.mkdir()
+    (source / "config.json").write_text(
+        json.dumps(
+            {
+                "model_type": "qwen3_5",
+                "text_config": {"model_type": "qwen3_5", "num_hidden_layers": 4},
+            }
+        )
+    )
+    mx.save_safetensors(
+        str(source / "model.safetensors"),
+        {"w": mx.zeros((1,))},
+        metadata={"format": "mlx"},
+    )
+    dest = tmp_path / "out"
+    dest.mkdir()
+    (dest / "config.json").write_text("old")
+
+    real_replace = mtp_split_module.os.replace
+    calls = {"n": 0}
+
+    def failing_replace(a, b):
+        calls["n"] += 1
+        if calls["n"] == 2:  # the staging -> destination install rename
+            raise OSError("simulated install failure")
+        return real_replace(a, b)
+
+    monkeypatch.setattr(mtp_split_module.os, "replace", failing_replace)
+    with pytest.raises(OSError, match="simulated install failure"):
+        StubSplitter().split(str(source), str(dest))
+    # the old destination came back and no staging leftovers remain
+    assert (dest / "config.json").read_text() == "old"
+    assert not list(tmp_path.glob(".*mtp-split-*"))
 
 
 def test_qwen3_next_postprocess_stacks_quantized_expert_metadata():

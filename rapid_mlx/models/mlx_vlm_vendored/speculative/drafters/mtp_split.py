@@ -14,6 +14,7 @@ import importlib
 import json
 import os
 import shutil
+import tempfile
 from pathlib import Path
 from typing import Dict, Iterable, List, Optional, Tuple
 
@@ -248,82 +249,108 @@ class MTPSplitter:
         )
         if resolved_block_size < 2:
             raise ValueError(f"block_size must be >= 2, got {block_size!r}")
+        if output_path.resolve() == source_path.resolve():
+            raise ValueError("output must differ from the source checkpoint")
 
         # Rapid upstream-bugfix (documented deviation): pinned 0.7.1 writes
         # directly into the destination, so a pre-existing directory keeps
         # stale tokenizer files and a failure after the weight save leaves
         # new weights paired with an old config.json. Build the complete
-        # checkpoint in a fresh sibling staging directory and swap it in
-        # only after every save and copy succeeds.
-        staging = output_path.parent / f".{output_path.name}.mtp-split-tmp"
-        if staging.is_dir() and not staging.is_symlink():
-            shutil.rmtree(staging)
-        staging.mkdir(parents=True)
-        selected: Dict[str, mx.array] = {}
-        source_is_mlx = False
-        for file, keys in self.iter_selected(source_path, text_config):
-            if self.supports_mlx_source:
-                source_is_mlx = source_is_mlx or _is_mlx_safetensors(file)
-            selected.update(self.load_shard(file, keys))
-        if not selected:
-            raise ValueError(f"No MTP tensors found in {source_path}.")
-
-        q_bits = quant_opts.get("q_bits")
-        q_mode = quant_opts.get("q_mode")
-        quantize = q_bits is not None or q_mode is not None
-        fp8_target_quantization = None
-        if quantize:
-            fp8_target_quantization = get_quantization_params(
-                quant_opts.get("q_group_size"), q_bits, q_mode or "affine"
+        # checkpoint in a unique sibling staging directory (concurrent
+        # splits must not share one), swap it in only after every save and
+        # copy succeeds, and keep the old destination as a backup until the
+        # staged checkpoint is installed.
+        staging = Path(
+            tempfile.mkdtemp(
+                prefix=f".{output_path.name}.mtp-split-",
+                dir=str(output_path.parent),
             )
-        selected, transformed_quantization = transform_fp8_weights(
-            selected,
-            source_config,
-            target_quantization=fp8_target_quantization,
         )
-        if transformed_quantization is not None:
-            source_config = dict(source_config)
-            source_config["quantization"] = transformed_quantization
-            source_config["quantization_config"] = transformed_quantization
-        weights = self.transform(selected, text_config, source_is_mlx)
-        quantization = self.quantization(
-            weights, source_config, text_config, quant_opts
-        )
+        try:
+            selected: Dict[str, mx.array] = {}
+            source_is_mlx = False
+            for file, keys in self.iter_selected(source_path, text_config):
+                if self.supports_mlx_source:
+                    source_is_mlx = source_is_mlx or _is_mlx_safetensors(file)
+                selected.update(self.load_shard(file, keys))
+            if not selected:
+                raise ValueError(f"No MTP tensors found in {source_path}.")
 
-        mx.eval(list(weights.values()))
-        mx.save_safetensors(
-            str(staging / "model.safetensors"),
-            weights,
-            metadata={"format": "mlx"},
-        )
+            q_bits = quant_opts.get("q_bits")
+            q_mode = quant_opts.get("q_mode")
+            quantize = q_bits is not None or q_mode is not None
+            fp8_target_quantization = None
+            if quantize:
+                fp8_target_quantization = get_quantization_params(
+                    quant_opts.get("q_group_size"), q_bits, q_mode or "affine"
+                )
+            selected, transformed_quantization = transform_fp8_weights(
+                selected,
+                source_config,
+                target_quantization=fp8_target_quantization,
+            )
+            if transformed_quantization is not None:
+                source_config = dict(source_config)
+                source_config["quantization"] = transformed_quantization
+                source_config["quantization_config"] = transformed_quantization
+            weights = self.transform(selected, text_config, source_is_mlx)
+            quantization = self.quantization(
+                weights, source_config, text_config, quant_opts
+            )
 
-        draft_config = {
-            "model_type": self.output_model_type,
-            "text_config": text_config,
-            "block_size": resolved_block_size,
-            "tie_word_embeddings": bool(
-                text_config.get("tie_word_embeddings", self.tie_word_embeddings_default)
-            ),
-        }
-        draft_config.update(self.extra_config(text_config))
-        if quantization is not None:
-            draft_config["quantization"] = quantization
-            draft_config["quantization_config"] = quantization
+            mx.eval(list(weights.values()))
+            mx.save_safetensors(
+                str(staging / "model.safetensors"),
+                weights,
+                metadata={"format": "mlx"},
+            )
 
-        with open(staging / "config.json", "w") as f:
-            json.dump(dict(sorted(draft_config.items())), f, indent=2)
+            draft_config = {
+                "model_type": self.output_model_type,
+                "text_config": text_config,
+                "block_size": resolved_block_size,
+                "tie_word_embeddings": bool(
+                    text_config.get("tie_word_embeddings", self.tie_word_embeddings_default)
+                ),
+            }
+            draft_config.update(self.extra_config(text_config))
+            if quantization is not None:
+                draft_config["quantization"] = quantization
+                draft_config["quantization_config"] = quantization
 
-        for name in self.tokenizer_files:
-            src = source_path / name
-            if src.exists():
-                shutil.copy(src, staging / name)
+            with open(staging / "config.json", "w") as f:
+                json.dump(dict(sorted(draft_config.items())), f, indent=2)
 
-        if output_path.is_dir() and not output_path.is_symlink():
-            shutil.rmtree(output_path)
-        elif output_path.exists() or output_path.is_symlink():
-            output_path.unlink()
-        os.replace(staging, output_path)
-        return output_path
+            for name in self.tokenizer_files:
+                src = source_path / name
+                if src.exists():
+                    shutil.copy(src, staging / name)
+
+            # Install: move the old destination aside, put the staged
+            # checkpoint in place, and restore the old one if the install
+            # rename fails — the destination is never destroyed before its
+            # replacement exists.
+            backup = output_path.with_name(f".{output_path.name}.mtp-split-bak")
+            if backup.is_dir() and not backup.is_symlink():
+                shutil.rmtree(backup)
+            elif backup.exists() or backup.is_symlink():
+                backup.unlink()
+            if output_path.exists() or output_path.is_symlink():
+                os.replace(output_path, backup)
+            try:
+                os.replace(staging, output_path)
+            except OSError:
+                if backup.exists():
+                    os.replace(backup, output_path)
+                raise
+            if backup.is_dir() and not backup.is_symlink():
+                shutil.rmtree(backup)
+            elif backup.exists() or backup.is_symlink():
+                backup.unlink()
+            return output_path
+        finally:
+            if staging.is_dir() and not staging.is_symlink():
+                shutil.rmtree(staging, ignore_errors=True)
 
 
 # base model_type -> "module_path:ClassName" (lazy so importing this module is cheap)
