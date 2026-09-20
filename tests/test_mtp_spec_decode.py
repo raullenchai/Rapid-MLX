@@ -3939,6 +3939,12 @@ def test_mtp_buffers_rotating_target_cache_and_preserves_rejection_boundary():
     assert buffered.buffer_size == 32
     assert can_advance(buffered, 3)
 
+    # A later request may ask the scheduler-owned cache for a deeper verify
+    # block. Reusing the already-buffered object must grow its slack in place.
+    _buffer_mtp_target_cache(caches, requested_depth=8)
+    assert caches[0] is buffered
+    assert buffered.buffer_size == 64
+
     verify = mx.arange(4, 8, dtype=mx.float32).reshape(1, 1, 4, 1)
     buffered.update_and_fetch(verify, verify)
     assert trim_all(caches, 3)
