@@ -535,12 +535,29 @@ class Qwen3_5MTPDraftModel(nn.Module):
                     int(expert)
                 ] = key
 
+        # Rapid upstream-bugfix (documented deviation): pinned 0.7.1 only
+        # checks that discovered indexes are contiguous from zero, so a
+        # checkpoint with experts 0..k (k < num_experts - 1) stacked
+        # undersized switch_mlp tensors; compare against the configured
+        # expert count and raise with the missing keys.
+        n_experts = int(getattr(getattr(self, "config", None), "num_experts", 0) or 0)
         for (expert_prefix, projection, suffix), expert_keys in groups.items():
             experts = sorted(expert_keys)
             if experts != list(range(len(experts))):
                 raise ValueError(
                     f"Qwen MTP expert indexes are not contiguous for {expert_prefix}: "
                     f"{experts}."
+                )
+            if n_experts and experts != list(range(n_experts)):
+                missing = [
+                    f"{expert_prefix}.{expert}.{projection}.{suffix}"
+                    for expert in range(n_experts)
+                    if expert not in expert_keys
+                ]
+                raise ValueError(
+                    f"Qwen MTP expert group for {expert_prefix}.{projection}."
+                    f"{suffix} is incomplete: expected {n_experts} experts, "
+                    f"found {len(experts)}; missing: " + ", ".join(missing)
                 )
             base = expert_prefix[: -len(".experts")]
             out[f"{base}.switch_mlp.{projection}.{suffix}"] = mx.stack(

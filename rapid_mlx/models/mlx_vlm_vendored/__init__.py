@@ -423,7 +423,9 @@ vendored copy differs by exactly the deviations listed):
   ``load_model``'s weight pipeline (sanitize, quantize, strict load,
   eval — the unchanged ``config.json`` would otherwise make pinned
   ``load_model`` dispatch to the backbone architecture module) with the
-  same index validation and shard confinement as ``MTPSplitter``). The registry's ``_read_drafter_config``
+  same index validation and shard confinement as ``MTPSplitter``,
+  read quantization metadata from ``quantization`` or
+  ``quantization_config``, and reject loader options explicitly). The registry's ``_read_drafter_config``
   degrades a non-object ``config.json`` to the documented empty dict —
   pinned 0.7.1 returns any decoded JSON value and crashes
   ``resolve_drafter_kind`` on ``config.get()``. The DFlash runtime loads

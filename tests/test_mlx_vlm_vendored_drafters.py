@@ -11,7 +11,7 @@ import inspect
 import json
 import sys
 from pathlib import Path
-from types import ModuleType
+from types import ModuleType, SimpleNamespace
 
 import pytest
 
@@ -392,6 +392,41 @@ DEVIATIONS = {
         )""",
         ),
         (
+            """        # Rapid upstream-bugfix (documented deviation): pinned 0.7.1 only
+        # checks that discovered indexes are contiguous from zero, so a
+        # checkpoint with experts 0..k (k < num_experts - 1) stacked
+        # undersized switch_mlp tensors; compare against the configured
+        # expert count and raise with the missing keys.
+        n_experts = int(getattr(getattr(self, "config", None), "num_experts", 0) or 0)
+        for (expert_prefix, projection, suffix), expert_keys in groups.items():
+            experts = sorted(expert_keys)
+            if experts != list(range(len(experts))):
+                raise ValueError(
+                    f"Qwen MTP expert indexes are not contiguous for {expert_prefix}: "
+                    f"{experts}."
+                )
+            if n_experts and experts != list(range(n_experts)):
+                missing = [
+                    f"{expert_prefix}.{expert}.{projection}.{suffix}"
+                    for expert in range(n_experts)
+                    if expert not in expert_keys
+                ]
+                raise ValueError(
+                    f"Qwen MTP expert group for {expert_prefix}.{projection}."
+                    f"{suffix} is incomplete: expected {n_experts} experts, "
+                    f"found {len(experts)}; missing: " + ", ".join(missing)
+                )
+            base = expert_prefix[: -len(".experts")]""",
+            """        for (expert_prefix, projection, suffix), expert_keys in groups.items():
+            experts = sorted(expert_keys)
+            if experts != list(range(len(experts))):
+                raise ValueError(
+                    f"Qwen MTP expert indexes are not contiguous for {expert_prefix}: "
+                    f"{experts}."
+                )
+            base = expert_prefix[: -len(".experts")]""",
+        ),
+        (
             """                # Rapid upstream-bugfix (documented deviation): pinned
                 # 0.7.1 skips the padding correction for a scalar
                 # _next_position, so shorter rows keep too-large position
@@ -631,7 +666,14 @@ def load_drafter(
         # construct a backbone model from drafter weights. Construct the
         # normalized family's vendored model directly and mirror pinned
         # load_model's weight pipeline: sanitize, quantize per the
-        # checkpoint's quantization config, load strict, and eval.
+        # checkpoint's quantization config, load strict, and eval. Loader
+        # options are rejected explicitly instead of being silently
+        # discarded by the direct path.
+        if kwargs:
+            raise ValueError(
+                "sidecar loading does not support loader options: "
+                + ", ".join(sorted(kwargs))
+            )
         import mlx.core as mx
         import mlx.nn as nn
 
@@ -641,7 +683,10 @@ def load_drafter(
         for shard in _sidecar_weight_shards(path):
             weights.update(mx.load(str(shard)))
         weights = family_model.sanitize(weights)
-        if (quantization := config.get("quantization")) is not None:
+        quantization = config.get("quantization") or config.get(
+            "quantization_config"
+        )
+        if quantization is not None:
             nn.quantize(
                 family_model,
                 group_size=quantization["group_size"],
@@ -1947,6 +1992,23 @@ def test_qwen3_next_postprocess_stacks_quantized_expert_metadata():
                 assert f"blk.0.experts.{expert}.{proj}.{suffix}" not in tensors
 
 
+def test_qwen35_sanitize_rejects_incomplete_expert_group():
+    """Discovered expert indexes must match the configured expert count —
+    pinned 0.7.1 stacked undersized tensors for experts 0..k."""
+    import mlx.core as mx
+
+    from rapid_mlx.models.mlx_vlm_vendored.speculative.drafters.qwen3_5_mtp import (
+        qwen3_5_mtp as qwen3_5_module,
+    )
+
+    stub = SimpleNamespace(config=SimpleNamespace(num_experts=4))
+    tensors = {
+        f"blk.0.experts.{e}.gate_proj.weight": mx.zeros((2, 2)) for e in range(2)
+    }
+    with pytest.raises(ValueError, match="is incomplete"):
+        qwen3_5_module.Qwen3_5MTPDraftModel.sanitize(stub, tensors)
+
+
 def test_qwen3_next_postprocess_rejects_partial_expert_group():
     """A partially present expert group must fail loudly instead of
     saving an incomplete checkpoint (pinned 0.7.1 skipped it silently)."""
@@ -2198,14 +2260,45 @@ def test_binding_sidecar_loads_vendored_family_directly(monkeypatch, tmp_path):
     reference = DFlashDraftModel(DFlashConfig(mask_token_id=1))
     mx.eval(reference.parameters())
     mx.save_safetensors(
-        str(repo / "model.safetensors"), dict(tree_flatten(reference.parameters()))
+        str(repo / "model.safetensors"),
+        dict(tree_flatten(reference.parameters())),
     )
+    flat = dict(tree_flatten(reference.parameters()))
     del reference
     drafter, resolved = load_drafter(str(repo), kind="dflash")
     assert type(drafter).__name__ == "DFlashDraftModel"
     assert type(drafter).__module__.startswith("rapid_mlx.models.mlx_vlm_vendored.")
     assert resolved == "dflash"
     saved = dict(tree_flatten(drafter.parameters()))
+    assert mx.array_equal(saved["fc.weight"], flat["fc.weight"])
+
+    # loader options are rejected explicitly on the sidecar path
+    with pytest.raises(ValueError, match="does not support loader options"):
+        load_drafter(str(repo), kind="dflash", lazy=True)
+
+    # a quantization_config-only checkpoint still quantizes and loads
+    repo_q = tmp_path / "sidecar-quant"
+    repo_q.mkdir()
+    (repo_q / "config.json").write_text(
+        json.dumps(
+            {
+                "model_type": "qwen3",
+                "quantization_config": {"group_size": 64, "bits": 4},
+                "dflash_config": {"mask_token_id": 1, "causal": False},
+            }
+        )
+    )
+    quant_ref = DFlashDraftModel(DFlashConfig(mask_token_id=1))
+    import mlx.nn as nn
+
+    nn.quantize(quant_ref, group_size=64, bits=4)
+    mx.eval(quant_ref.parameters())
+    mx.save_safetensors(
+        str(repo_q / "model.safetensors"), dict(tree_flatten(quant_ref.parameters()))
+    )
+    quant_drafter, _ = load_drafter(str(repo_q), kind="dflash")
+    assert type(quant_drafter).__name__ == "DFlashDraftModel"
+    assert any("scales" in k for k, _ in tree_flatten(quant_drafter.parameters()))
 
 
 def test_binding_unsupported_backbone_falls_through(monkeypatch, tmp_path):

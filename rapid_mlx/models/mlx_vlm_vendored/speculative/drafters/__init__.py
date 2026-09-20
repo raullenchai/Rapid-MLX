@@ -387,7 +387,14 @@ def load_drafter(
         # construct a backbone model from drafter weights. Construct the
         # normalized family's vendored model directly and mirror pinned
         # load_model's weight pipeline: sanitize, quantize per the
-        # checkpoint's quantization config, load strict, and eval.
+        # checkpoint's quantization config, load strict, and eval. Loader
+        # options are rejected explicitly instead of being silently
+        # discarded by the direct path.
+        if kwargs:
+            raise ValueError(
+                "sidecar loading does not support loader options: "
+                + ", ".join(sorted(kwargs))
+            )
         import mlx.core as mx
         import mlx.nn as nn
 
@@ -397,7 +404,10 @@ def load_drafter(
         for shard in _sidecar_weight_shards(path):
             weights.update(mx.load(str(shard)))
         weights = family_model.sanitize(weights)
-        if (quantization := config.get("quantization")) is not None:
+        quantization = config.get("quantization") or config.get(
+            "quantization_config"
+        )
+        if quantization is not None:
             nn.quantize(
                 family_model,
                 group_size=quantization["group_size"],
