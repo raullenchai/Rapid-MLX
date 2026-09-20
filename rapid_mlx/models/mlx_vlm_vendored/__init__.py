@@ -350,9 +350,9 @@ vendored copy differs by exactly the deviations listed):
   redirects: ``models.qwen3_5{,_moe}.{config,language}`` and
   ``models.cache`` → pinned upstream, step-3c-3 scope; ``split.py``
   upstream-bugfix: ``Qwen3NextMTPSplitter.postprocess`` stacks per-expert
-  ``weight_scales``/``weight_biases`` into the ``switch_mlp`` layout
+  ``scales``/``biases`` into the ``switch_mlp`` layout
   alongside the weights — pinned 0.7.1 stacked only weights, so
-  quantized Qwen3-Next checkpoints kept per-expert scale names the
+  quantized Qwen3-Next checkpoints kept per-expert quantization metadata the
   runtime cannot resolve;
   upstream-bugfix: ``accept_verified_tokens_batch`` promotes a scalar
   ``_next_position`` to per-row positions before applying heterogeneous

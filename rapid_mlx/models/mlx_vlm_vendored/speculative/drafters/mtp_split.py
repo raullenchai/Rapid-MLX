@@ -230,7 +230,6 @@ class MTPSplitter:
             source, revision=revision, force_download=force_download
         )
         output_path = Path(output)
-        output_path.mkdir(parents=True, exist_ok=True)
 
         with open(source_path / "config.json") as f:
             source_config = json.load(f)
@@ -249,6 +248,7 @@ class MTPSplitter:
         if resolved_block_size < 2:
             raise ValueError(f"block_size must be >= 2, got {block_size!r}")
 
+        output_path.mkdir(parents=True, exist_ok=True)
         selected: Dict[str, mx.array] = {}
         source_is_mlx = False
         for file, keys in self.iter_selected(source_path, text_config):

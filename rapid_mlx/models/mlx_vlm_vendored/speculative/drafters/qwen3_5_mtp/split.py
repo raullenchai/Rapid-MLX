@@ -104,7 +104,7 @@ class Qwen3NextMTPSplitter(MTPSplitter):
                 # stack them alongside the weights so the runtime sees a
                 # consistent switch_mlp layout (mirrors the gate_up_proj
                 # handling above).
-                for suffix in ("weight", "weight_scales", "weight_biases"):
+                for suffix in ("weight", "scales", "biases"):
                     keys = [
                         f"{prefix}.{e}.{proj}.{suffix}" for e in range(n_experts)
                     ]

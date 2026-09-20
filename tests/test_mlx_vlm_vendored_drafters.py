@@ -158,7 +158,7 @@ DEVIATIONS = {
                 # stack them alongside the weights so the runtime sees a
                 # consistent switch_mlp layout (mirrors the gate_up_proj
                 # handling above).
-                for suffix in ("weight", "weight_scales", "weight_biases"):
+                for suffix in ("weight", "scales", "biases"):
                     keys = [
                         f"{prefix}.{e}.{proj}.{suffix}" for e in range(n_experts)
                     ]
@@ -232,8 +232,11 @@ DEVIATIONS = {
         )
         if resolved_block_size < 2:
             raise ValueError(f"block_size must be >= 2, got {block_size!r}")
+
+        output_path.mkdir(parents=True, exist_ok=True)
 """,
             """        text_config = self.read_text_config(source_config)
+
 """,
         ),
         (
@@ -246,6 +249,17 @@ DEVIATIONS = {
             "model_type": self.output_model_type,
             "text_config": text_config,
             "block_size": int(block_size or depth + self.block_size_extra),""",
+        ),
+        (
+            """        )
+        output_path = Path(output)
+
+        with open(source_path / "config.json") as f:""",
+            """        )
+        output_path = Path(output)
+        output_path.mkdir(parents=True, exist_ok=True)
+
+        with open(source_path / "config.json") as f:""",
         ),
         (
             """from ...fp8 import transform_fp8_weights
@@ -516,10 +530,11 @@ def test_mtp_split_block_size_resolution(tmp_path):
 
     splitter = StubSplitter()
     for bad in (0, 1, -3):
+        out_bad = tmp_path / f"out-bad-{bad}"
         with pytest.raises(ValueError, match="block_size must be >= 2"):
-            splitter.split(
-                str(source), str(tmp_path / f"out-bad-{bad}"), block_size=bad
-            )
+            splitter.split(str(source), str(out_bad), block_size=bad)
+        # rejected input must not create the output directory
+        assert not out_bad.exists()
 
     default_out = tmp_path / "out-default"
     splitter.split(str(source), str(default_out))
@@ -528,6 +543,39 @@ def test_mtp_split_block_size_resolution(tmp_path):
     explicit_out = tmp_path / "out-explicit"
     splitter.split(str(source), str(explicit_out), block_size=2)
     assert json.loads((explicit_out / "config.json").read_text())["block_size"] == 2
+
+
+def test_qwen3_next_postprocess_stacks_quantized_expert_metadata():
+    """Per-expert scales/biases stack into the switch_mlp layout."""
+    import mlx.core as mx
+
+    from rapid_mlx.models.mlx_vlm_vendored.speculative.drafters.qwen3_5_mtp import (
+        split as qwen_split_module,
+    )
+
+    splitter = qwen_split_module.Qwen3NextMTPSplitter()
+    tensors = {}
+    for expert in range(2):
+        for proj, shape in (
+            ("gate_proj", (2, 1)),
+            ("up_proj", (2, 1)),
+            ("down_proj", (1, 2)),
+        ):
+            tensors[f"blk.0.experts.{expert}.{proj}.weight"] = mx.full(
+                shape, expert + 1
+            )
+            tensors[f"blk.0.experts.{expert}.{proj}.scales"] = mx.full((1,), expert + 1)
+            tensors[f"blk.0.experts.{expert}.{proj}.biases"] = mx.zeros((1,))
+    splitter.postprocess(tensors, {"num_experts": 2})
+
+    for proj in ("gate_proj", "up_proj", "down_proj"):
+        stacked = tensors[f"blk.0.switch_mlp.{proj}.weight"]
+        assert stacked.shape[0] == 2
+        assert f"blk.0.switch_mlp.{proj}.scales" in tensors
+        assert f"blk.0.switch_mlp.{proj}.biases" in tensors
+        for expert in range(2):
+            for suffix in ("weight", "scales", "biases"):
+                assert f"blk.0.experts.{expert}.{proj}.{suffix}" not in tensors
 
 
 def test_detect_mtp_splitter_resolves_pinned_dspark_module(tmp_path, monkeypatch):
