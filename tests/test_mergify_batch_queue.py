@@ -284,20 +284,26 @@ def test_delayed_head_update_does_not_overwrite_fresh_authorization():
         labels=["merge-ready-mac"],
         action="synchronize",
         statuses_before=[
-            {"context": "merge-ready-head", "state": "success"},
+            {"id": 1, "context": "merge-ready-head", "state": "success"},
         ],
     )
 
     assert result["calls"] == [["list-statuses"]]
 
 
-def test_rerun_restores_success_left_behind_newer_failure():
+def test_rerun_repairs_our_interrupted_failure_only():
     result = _run_authorization_script(
         labels=["merge-ready-mac"],
         action="synchronize",
         statuses_before=[
-            {"context": "merge-ready-head", "state": "failure"},
             {
+                "id": 2,
+                "context": "merge-ready-head",
+                "state": "failure",
+                "description": "Head changed — remove and re-apply the ready label",
+            },
+            {
+                "id": 1,
                 "context": "merge-ready-head",
                 "state": "success",
                 "description": "Authorized merge-ready-mac on this exact head",
@@ -314,18 +320,41 @@ def test_rerun_restores_success_left_behind_newer_failure():
     )
 
 
+def test_deliberate_failure_never_revives_older_success():
+    result = _run_authorization_script(
+        labels=["merge-ready-mac"],
+        action="synchronize",
+        statuses_before=[
+            {
+                "id": 2,
+                "context": "merge-ready-head",
+                "state": "failure",
+                "description": "Apply exactly one merge-ready label",
+            },
+            {"id": 1, "context": "merge-ready-head", "state": "success"},
+        ],
+    )
+
+    assert result["calls"] == [
+        ["list-statuses"],
+        ["status", "failure"],
+        ["list-statuses"],
+    ]
+
+
 def test_concurrent_fresh_authorization_is_restored_after_head_failure():
     result = _run_authorization_script(
         labels=["merge-ready-mac"],
         action="synchronize",
         statuses_after=[
             {
+                "id": 3,
                 "context": "merge-ready-head",
                 "state": "success",
                 "description": "Authorized merge-ready-mac on this exact head",
                 "target_url": "https://github.example/owner/repo/pull/42",
             },
-            {"context": "merge-ready-head", "state": "failure"},
+            {"id": 2, "context": "merge-ready-head", "state": "failure"},
         ],
     )
 

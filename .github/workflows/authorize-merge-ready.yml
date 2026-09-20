@@ -68,6 +68,8 @@ jobs:
                   target_url: authorization.target_url || statusUrl,
                 });
 
+              const failureDescription =
+                "Head changed — remove and re-apply the ready label";
               const beforeStatuses = await listStatuses();
               const latestBefore = beforeStatuses.find(
                 (status) => status.context === "merge-ready-head",
@@ -75,15 +77,23 @@ jobs:
               if (latestBefore?.state === "success") {
                 return;
               }
-              const interruptedSuccess =
-                successfulAuthorization(beforeStatuses);
-              if (interruptedSuccess) {
+              // Only our own recognizable failure may revive the success
+              // immediately behind it. Another failure can represent a real
+              // revocation (for example, both ready labels present) and must
+              // remain authoritative over older successes.
+              const interruptedSuccess = successfulAuthorization(beforeStatuses);
+              if (
+                latestBefore?.state === "failure" &&
+                latestBefore.description === failureDescription &&
+                interruptedSuccess
+              ) {
                 await restoreAuthorization(interruptedSuccess);
                 return;
               }
 
-              const failureDescription =
-                "Head changed — remove and re-apply the ready label";
+              const statusIdsBefore = new Set(
+                beforeStatuses.map((status) => String(status.id)),
+              );
               await github.rest.repos.createCommitStatus({
                 owner: context.repo.owner,
                 repo: context.repo.repo,
@@ -94,7 +104,16 @@ jobs:
                 target_url: statusUrl,
               });
 
-              const racedSuccess = successfulAuthorization(await listStatuses());
+              // Trust only a success that appeared after our first snapshot.
+              // This proves it came from a label authorization racing this
+              // delivery rather than from stale history hidden by a newer,
+              // deliberate failure.
+              const racedSuccess = (await listStatuses()).find(
+                (status) =>
+                  status.context === "merge-ready-head" &&
+                  status.state === "success" &&
+                  !statusIdsBefore.has(String(status.id)),
+              );
               if (racedSuccess) {
                 await restoreAuthorization(racedSuccess);
               }
