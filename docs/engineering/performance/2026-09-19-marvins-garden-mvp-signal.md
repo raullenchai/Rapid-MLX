@@ -85,6 +85,21 @@ Final matrix (held-out 192, temperature 1.0):
 v1.5 is the release candidate. Beats Jev's published 93.21% single-pass
 (own-eval caveat unchanged), and the weak routing family moved 81→92%.
 
+### Variance check (2026-09-20, task #3)
+
+One full replication of the v1.5 recipe (fresh 400it batch-1 base on
+seed-777-shuffled v2 data → 150it LR 1e-5 continuation, think-matched
+eval): **83.33%** vs the original 94.79% — spread 11.5 points (n=2,
+mean 89.1%). The continuation step is doing real work but its outcome
+depends heavily on the starting adapter; treat 94.79% as best-of-N, with
+expected value ~89–92% until variance is fixed. Candidate fixes, in
+order: (1) batch-2 legs when the GPU window allows (batch-1 gradient
+noise at constant LR is the main suspect); (2) LR decay schedule on the
+continuation; (3) report best-of-N honestly per AGENTS.md repro rules.
+Batch-1 convergence itself is fine (fresh leg hit 89.58%, ECE 0.024,
+consistent with v2c's 89.06% from batch-2) — the variance lives in the
+continuation step.
+
 ### Finding 1: adapter ⇄ serving template pairing is load-bearing
 
 mlx-lm's ChatDataset renders the chat template WITHOUT disabling thinking,
