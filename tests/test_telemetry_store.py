@@ -272,6 +272,25 @@ def test_claim_active_day_prunes_old_rows(fake_home):
     assert recent.strftime("%Y-%m-%d") in days
 
 
+def test_claim_active_day_is_once_per_day_for_a_date_past_the_cutoff(fake_home):
+    """Pruning must not delete the row the same transaction just claimed.
+
+    A machine whose clock is wrong (or a caller holding a stale date)
+    claims a day older than the retention cutoff. If the prune in that
+    same transaction removes the row it just inserted, the claim leaves
+    no trace and *every* later caller wins the same day — the
+    once-per-day contract inverted exactly where it is hardest to spot.
+    """
+    from rapid_mlx.telemetry import store
+
+    stale = (
+        datetime.now(timezone.utc) - timedelta(days=store.ACTIVE_DAY_RETENTION_DAYS + 5)
+    ).strftime("%Y-%m-%d")
+    assert store.claim_active_day(stale) is True
+    assert store.claim_active_day(stale) is False
+    assert store.claim_active_day(stale) is False
+
+
 def test_claim_active_day_defaults_to_today(fake_home):
     from rapid_mlx.telemetry import store
 
@@ -530,11 +549,59 @@ def test_quarantine_returns_false_when_the_rename_fails(fake_home, monkeypatch):
     """An unwritable state dir must not turn into an exception."""
     from rapid_mlx.telemetry import store
 
+    store.record("k")  # a real database...
+    store.db_path().write_bytes(b"not a database")  # ...that is now corrupt
+
     def boom(self, target):
         raise OSError("read-only file system")
 
     monkeypatch.setattr(Path, "rename", boom)
-    assert store._quarantine_corrupt_db() is False
+    assert store._quarantine_corrupt_db(store._db_identity()) is False
+
+
+def test_quarantine_leaves_a_database_another_process_already_recreated(fake_home):
+    """The latch is per process; the file it guards is shared.
+
+    Process A finds the database corrupt, renames it aside, recreates it
+    and starts counting again. Process B, which hit the same corruption
+    a moment earlier, then reaches its own quarantine — and must not
+    rename A's healthy database away with A's counters in it.
+    """
+    from rapid_mlx.telemetry import store
+
+    assert store.record("k") is not None  # a real database exists
+    doomed = store._db_identity()  # what "process B" is about to fail on
+    store.db_path().write_bytes(b"this is not a database")
+    store._reset_quarantine_latch_for_tests()
+    assert store.record("k") is not None  # "process A": renamed + recreated
+    store._reset_quarantine_latch_for_tests()  # "process B": a fresh latch
+
+    assert store._quarantine_corrupt_db(doomed) is True  # retry, do not rename
+    assert len(list(fake_home.glob(".rapid-mlx/telemetry.db.corrupt-*"))) == 1
+    # A's counter is still there, and B's latch was not spent.
+    crossing = store.record("k")
+    assert crossing is not None and crossing.count == 2
+
+
+def test_a_world_readable_database_is_made_private_again(fake_home):
+    """0600 is a promise about the file, not only about its creation.
+
+    ``sqlite3.connect`` creates the file under the ambient umask; a
+    process killed before the ``chmod`` (or an older build) leaves a
+    world-readable database that no later run would ever repair.
+    """
+    from rapid_mlx.telemetry import store
+
+    store.record("k")
+    os.chmod(store.db_path(), 0o644)
+    wal = store.db_path().with_name(store.db_path().name + "-wal")
+    if wal.exists():
+        os.chmod(wal, 0o644)
+
+    assert store.record("k") is not None
+    assert (store.db_path().stat().st_mode & 0o777) == 0o600
+    if wal.exists():
+        assert (wal.stat().st_mode & 0o777) == 0o600
 
 
 def test_chmod_failure_does_not_stop_the_store(fake_home, monkeypatch):
@@ -586,6 +653,9 @@ def test_run_retries_once_after_quarantining_a_corrupt_db(fake_home):
     """A corruption raised by the *work* (not the connect) also retries."""
     from rapid_mlx.telemetry import store
 
+    # A corruption error out of the *work* means real pages were read,
+    # so the precondition is a database that already exists.
+    store.record("seed")
     calls = []
 
     def work(conn):
@@ -603,7 +673,7 @@ def test_run_gives_up_after_the_bounded_number_of_attempts(fake_home, monkeypatc
     """The retry budget is exactly one even if quarantining keeps working."""
     from rapid_mlx.telemetry import store
 
-    monkeypatch.setattr(store, "_quarantine_corrupt_db", lambda: True)
+    monkeypatch.setattr(store, "_quarantine_corrupt_db", lambda _identity: True)
     calls = []
 
     def work(conn):

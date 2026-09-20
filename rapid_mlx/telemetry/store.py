@@ -36,8 +36,11 @@ What this module stores:
 function swallows ``sqlite3`` and ``OSError`` failures — read-only
 ``HOME``, a locked or corrupt database, a full disk — and returns the
 "nothing to emit" value (``None`` / ``False`` / ``0``). A corrupt
-database is renamed aside once per process and recreated. No call blocks
-longer than :data:`BUSY_TIMEOUT_SECONDS`.
+database is renamed aside once per process and recreated. No single
+database operation waits longer than :data:`BUSY_TIMEOUT_SECONDS`; a
+call that opens, transacts and (once) retries can therefore wait a small
+multiple of it, which is why callers on a request path run these off the
+event loop.
 
 Nothing here transmits anything. Callers decide what (if anything) to
 emit, and the consent gate in :mod:`rapid_mlx.telemetry.state` still
@@ -181,32 +184,64 @@ def _is_corruption(exc: BaseException) -> bool:
     )
 
 
-def _quarantine_corrupt_db() -> bool:
-    """Rename a corrupt database aside so the next call recreates it.
+def _db_identity() -> tuple[int, int] | None:
+    """``(device, inode)`` of the database file, or ``None`` if absent.
+
+    Captured *before* an attempt so a failure can be tied to the exact
+    file that produced it. See :func:`_quarantine_corrupt_db`.
+    """
+    try:
+        info = db_path().stat()
+    except OSError:
+        return None
+    return (info.st_dev, info.st_ino)
+
+
+def _quarantine_corrupt_db(identity: tuple[int, int] | None) -> bool:
+    """Rename the corrupt database aside so the next call recreates it.
 
     Returns ``True`` if a retry is worth attempting. Once per process:
     see ``_quarantined``.
+
+    ``identity`` is the ``(device, inode)`` observed before the failing
+    attempt, and the rename happens **only** if the path still names
+    that same file. The latch is per process but the file is shared by
+    every process on the install: while this process was failing,
+    another one may already have quarantined the same corrupt database
+    and recreated a healthy one at the same path. Renaming by path alone
+    would move *that* database aside — discarding the counters it has
+    already started restoring — and do it again for every process that
+    was mid-failure. A changed (or vanished) inode means someone else
+    did the work, so there is nothing to quarantine and the retry should
+    simply run against the new file.
+
+    The check and the rename both hold ``_quarantine_lock`` so two
+    threads in this process cannot both decide to rename.
     """
     global _quarantined
     with _quarantine_lock:
         if _quarantined:
             return False
+        if identity is None or _db_identity() != identity:
+            # Someone else already swapped a healthy database in. Retry
+            # against it, and do not spend this process's one rename.
+            return True
         _quarantined = True
-    path = db_path()
-    stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
-    try:
-        path.rename(path.with_name(f"{path.name}.corrupt-{stamp}"))
-        # The WAL/SHM siblings belong to the file we just moved aside; a
-        # leftover WAL next to a freshly created database is itself a
-        # corruption source.
-        for suffix in ("-wal", "-shm"):
-            sibling = path.with_name(path.name + suffix)
-            try:
-                sibling.unlink()
-            except OSError:
-                pass
-    except OSError:
-        return False
+        path = db_path()
+        stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+        try:
+            path.rename(path.with_name(f"{path.name}.corrupt-{stamp}"))
+            # The WAL/SHM siblings belong to the file we just moved
+            # aside; a leftover WAL next to a freshly created database is
+            # itself a corruption source.
+            for suffix in ("-wal", "-shm"):
+                sibling = path.with_name(path.name + suffix)
+                try:
+                    sibling.unlink()
+                except OSError:
+                    pass
+        except OSError:
+            return False
     return True
 
 
@@ -231,6 +266,32 @@ def _enable_wal(conn: sqlite3.Connection) -> None:
         pass
 
 
+def _enforce_private_mode(path: Path) -> None:
+    """Keep the database and its WAL siblings owner-only.
+
+    The file holds no secrets, but it is the user's machine's activity
+    and nobody else's business, and the module docstring promises 0600.
+    Checking on every connect rather than only on creation is what makes
+    that promise true: ``sqlite3.connect`` creates the file under the
+    ambient umask, so a process killed in the microseconds before the
+    ``chmod`` — or a database written by an older build — would
+    otherwise stay world-readable for the life of the install, silently.
+    The mode is compared first, so the common case costs a ``stat`` and
+    no syscall beyond it. A filesystem without POSIX modes raises
+    ``OSError`` and is tolerated: a readable database beats none.
+    """
+    for candidate in (
+        path,
+        path.with_name(path.name + "-wal"),
+        path.with_name(path.name + "-shm"),
+    ):
+        try:
+            if (candidate.stat().st_mode & 0o777) != 0o600:
+                os.chmod(candidate, 0o600)
+        except OSError:
+            pass
+
+
 def _connect() -> sqlite3.Connection:
     """Open (creating on first use) the telemetry database.
 
@@ -241,19 +302,12 @@ def _connect() -> sqlite3.Connection:
     """
     path = db_path()
     path.parent.mkdir(parents=True, exist_ok=True)
-    existed = path.exists()
     conn = sqlite3.connect(
         str(path), timeout=BUSY_TIMEOUT_SECONDS, isolation_level=None
     )
     try:
-        if not existed:
-            # Before anything is written: the file holds no secrets, but
-            # it is the user's machine's activity and nobody else's
-            # business.
-            try:
-                os.chmod(path, 0o600)
-            except OSError:
-                pass
+        # Before anything is written.
+        _enforce_private_mode(path)
         conn.execute(f"PRAGMA busy_timeout = {int(BUSY_TIMEOUT_SECONDS * 1000)}")
         _enable_wal(conn)
         conn.execute("PRAGMA synchronous = NORMAL")
@@ -323,10 +377,11 @@ def _run(work: Callable[[sqlite3.Connection], _T], default: _T) -> _T:
     from opening the database and from the work itself are handled the
     same way: either one means we have nothing to say.
     """
+    identity = _db_identity()
     try:
         return _attempt(work)
     except (sqlite3.Error, OSError) as exc:
-        if not (_is_corruption(exc) and _quarantine_corrupt_db()):
+        if not (_is_corruption(exc) and _quarantine_corrupt_db(identity)):
             return default
     try:
         return _attempt(work)
@@ -428,7 +483,16 @@ def claim_active_day(utc_date: date | datetime | str | None = None) -> bool:
                     datetime.now(timezone.utc)
                     - timedelta(days=ACTIVE_DAY_RETENTION_DAYS)
                 ).strftime("%Y-%m-%d")
-                conn.execute("DELETE FROM active_days WHERE day < ?", (cutoff,))
+                # Never prune the row this very transaction inserted. A
+                # claim for a date already past the cutoff would other-
+                # wise insert and delete itself in one transaction and
+                # still return ``True``, so every later caller would
+                # "win" that same date too — the once-per-day contract
+                # broken for exactly the dates a wrong clock produces.
+                conn.execute(
+                    "DELETE FROM active_days WHERE day < ? AND day <> ?",
+                    (cutoff, day),
+                )
         return claimed
 
     return _run(work, False)
