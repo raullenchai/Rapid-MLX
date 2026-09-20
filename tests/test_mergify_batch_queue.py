@@ -276,6 +276,7 @@ def test_head_update_notice_is_actionable_without_mutating_authorization():
 def _run_head_update_notice(
     *,
     live_head: str = "head-sha",
+    refreshed_live_head: str | None = None,
     labels: list[str] | None = None,
     statuses: list[dict[str, str]] | None = None,
     refreshed_statuses: list[dict[str, str]] | None = None,
@@ -289,6 +290,7 @@ def _run_head_update_notice(
     scenario = json.dumps(
         {
             "liveHead": live_head,
+            "refreshedLiveHead": refreshed_live_head,
             "labels": labels if labels is not None else ["merge-ready-mac"],
             "statuses": statuses or [],
             "refreshedStatuses": refreshed_statuses,
@@ -299,6 +301,7 @@ def _run_head_update_notice(
 const scenario = {scenario};
 const calls = [];
 let statusCalls = 0;
+let pullCalls = 0;
 const context = {{
   repo: {{ owner: "owner", repo: "repo" }},
   issue: {{ number: 42 }},
@@ -308,9 +311,14 @@ const github = {{
   paginate: async (method, args) => method(args).then((response) => response.data),
   rest: {{
     pulls: {{ get: async () => {{
+      pullCalls += 1;
       calls.push(["get"]);
       return {{ data: {{
-        head: {{ sha: scenario.liveHead }},
+        head: {{
+          sha: pullCalls === 1 || scenario.refreshedLiveHead === null
+            ? scenario.liveHead
+            : scenario.refreshedLiveHead,
+        }},
         labels: scenario.labels.map((name) => ({{ name }})),
       }} }};
     }} }},
@@ -356,6 +364,7 @@ def test_head_update_notice_creates_or_updates_one_actionable_comment():
         "statuses",
         "comments",
         "statuses",
+        "get",
         "create",
     ]
     assert "merge-ready-stale-head" in created[-1][1]
@@ -376,6 +385,7 @@ def test_head_update_notice_creates_or_updates_one_actionable_comment():
         "statuses",
         "comments",
         "statuses",
+        "get",
         "update",
     ]
 
@@ -388,6 +398,13 @@ def test_head_update_notice_skips_newer_heads_and_fresh_authorization():
     assert _run_head_update_notice(
         refreshed_statuses=[{"context": "merge-ready-head", "state": "success"}]
     ) == [["get"], ["statuses"], ["comments"], ["statuses"]]
+    assert _run_head_update_notice(refreshed_live_head="newer-head") == [
+        ["get"],
+        ["statuses"],
+        ["comments"],
+        ["statuses"],
+        ["get"],
+    ]
 
 
 def test_status_or_live_pull_failure_remains_fail_closed():

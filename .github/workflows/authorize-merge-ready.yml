@@ -181,6 +181,14 @@ jobs:
             if (refreshedAuthorization?.state === "success") {
               return;
             }
+            const { data: refreshedPull } = await github.rest.pulls.get({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              pull_number: context.issue.number,
+            });
+            if (refreshedPull.head.sha !== eventHead) {
+              return;
+            }
             if (existing) {
               await github.rest.issues.updateComment({
                 owner: context.repo.owner,
