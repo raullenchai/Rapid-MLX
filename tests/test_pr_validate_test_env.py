@@ -211,7 +211,7 @@ class TestCheckTestEnv:
         assert f"'.[{TEST_EXTRAS_NAME}]'" in status.install_hint
         assert str(python) in status.install_hint
 
-    def test_batch_fail_with_individual_passes_is_treated_as_fail(self, tmp_path):
+    def test_batch_fail_with_individual_passes_is_treated_as_fail(self):
         """Codex r1 BLOCKING: previously a batch-import failure that
         re-probed clean per-module returned ``ok=True``. That hides a
         real failure mode pytest hits at startup (plugin registration
@@ -224,16 +224,42 @@ class TestCheckTestEnv:
 
         from scripts.pr_validate import _test_env as mod
 
-        # The batch probe is the FIRST call (one combined "import X;
-        # import Y" command); individual probes are subsequent calls.
-        # We construct a side_effect list that returns a non-zero
-        # CompletedProcess for the batch and zero for each individual.
+        # Keep the metadata probe separate from the import probe.  Mocking every
+        # subprocess call made this test accidentally consume the batch result
+        # as metadata, so it passed through the wrong failure path on macOS and
+        # failed on Linux where the active package roster is smaller.
+        target_environment = {
+            "implementation_name": "cpython",
+            "implementation_version": "3.12.14",
+            "os_name": "posix",
+            "platform_machine": "x86_64",
+            "platform_release": "test-release",
+            "platform_system": "Linux",
+            "platform_version": "test-version",
+            "platform_python_implementation": "CPython",
+            "python_full_version": "3.12.14",
+            "python_version": "3.12",
+            "sys_platform": "linux",
+        }
+        target_versions = {
+            "pytest": "8.4.2",
+            "pytest-asyncio": "0.26.0",
+            "aiohttp": "3.12.15",
+            "pillow": "11.3.0",
+            # These are inactive under the Linux markers, but include them to
+            # prove the target interpreter returned the full requested map.
+            "mlx-vlm": None,
+            "mlx-audio": None,
+        }
+
+        # After metadata is fixed above, the batch import is the first mocked
+        # subprocess call; individual probes are subsequent calls.
         batch_stderr = (
             "Traceback (most recent call last):\n"
             "  File '<string>', line 1, in <module>\n"
             "RuntimeError: simulated plugin-order collision\n"
         )
-        n_packages = len(mod.required_test_packages_for_platform())
+        n_packages = len(mod.required_test_packages_for_platform("linux"))
         results = [
             subprocess.CompletedProcess(
                 args=[], returncode=1, stdout="", stderr=batch_stderr
@@ -243,7 +269,13 @@ class TestCheckTestEnv:
                 for _ in range(n_packages)
             ],
         ]
-        with patch("scripts.pr_validate._test_env.subprocess.run", side_effect=results):
+        with (
+            patch(
+                "scripts.pr_validate._test_env._target_metadata",
+                return_value=(target_environment, target_versions, None),
+            ),
+            patch("scripts.pr_validate._test_env.subprocess.run", side_effect=results),
+        ):
             status = mod.check_test_env(python="/fake/python")
 
         assert status.ok is False, (
