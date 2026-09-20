@@ -165,9 +165,13 @@ def _read_drafter_config(model_path) -> dict:
     empty dict when the config can't be read."""
     try:
         with open(model_path / "config.json") as f:
-            return json.load(f)
+            config = json.load(f)
     except (FileNotFoundError, json.JSONDecodeError, OSError):
         return {}
+    # Rapid upstream-bugfix (documented deviation): pinned 0.7.1 returns
+    # any decoded JSON value; a non-object config crashes resolve_drafter_kind
+    # on config.get(). Degrade to the documented empty-dict contract.
+    return config if isinstance(config, dict) else {}
 
 
 def _peek_drafter_model_type(model_path) -> Optional[str]:

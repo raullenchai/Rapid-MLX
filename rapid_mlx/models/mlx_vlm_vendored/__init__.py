@@ -373,8 +373,12 @@ vendored copy differs by exactly the deviations listed):
   production drafters; existing entries that do not match the vendored
   classes (an earlier pinned import, a pre-swap GLM shim) are re-bound
   so no stale implementation is served; unvendored families fall
-  through to the pinned modules. The DFlash runtime loads through the vendored registry
-  (vendored-first, pinned availability guard); ``split.py``
+  through to the pinned modules. The registry's ``_read_drafter_config``
+  degrades a non-object ``config.json`` to the documented empty dict —
+  pinned 0.7.1 returns any decoded JSON value and crashes
+  ``resolve_drafter_kind`` on ``config.get()``. The DFlash runtime loads
+  through the vendored registry (vendored-first, pinned availability
+  guard); ``split.py``
   upstream-bugfix: ``Qwen3NextMTPSplitter.postprocess`` stacks per-expert
   ``scales``/``biases`` into the ``switch_mlp`` layout
   alongside the weights — pinned 0.7.1 stacked only weights, so

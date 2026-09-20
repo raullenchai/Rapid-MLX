@@ -270,6 +270,13 @@ class DFlashDraftModel(nn.Module):
         token_dtype: mx.Dtype = mx.int32,
     ) -> mx.array:
         mask_id = int(self.config.mask_token_id)
+        if block_size <= 1:
+            # Rapid upstream-bugfix (documented deviation): pinned 0.7.1
+            # builds masks with block_size - 1 entries, so block_size <= 1
+            # produces an empty or invalid block; return the DFlash2-shaped
+            # empty proposal before any mask allocation.
+            batch = 1 if isinstance(last_bonus, int) else int(last_bonus.shape[0])
+            return mx.zeros((batch, 0), dtype=token_dtype)
         if isinstance(last_bonus, int):
             block = mx.array(
                 [[last_bonus] + [mask_id] * (block_size - 1)],
@@ -304,6 +311,13 @@ class DFlashDraftModel(nn.Module):
                 token_dtype,
             )
         mask_id = int(self.config.mask_token_id)
+        if block_size <= 1:
+            # Rapid upstream-bugfix (documented deviation): pinned 0.7.1
+            # builds masks with block_size - 1 entries, so block_size <= 1
+            # produces an empty or invalid block; return the DFlash2-shaped
+            # empty proposal before any mask allocation.
+            batch = 1 if isinstance(last_bonus, int) else int(last_bonus.shape[0])
+            return mx.zeros((batch, 0), dtype=token_dtype)
         if isinstance(last_bonus, int):
             block = mx.array(
                 [[last_bonus] + [mask_id] * (block_size - 1)],

@@ -208,6 +208,56 @@ DEVIATIONS = {
     ],
     "qwen3_dflash/dflash.py": [
         (
+            """        mask_id = int(self.config.mask_token_id)
+        if block_size <= 1:
+            # Rapid upstream-bugfix (documented deviation): pinned 0.7.1
+            # builds masks with block_size - 1 entries, so block_size <= 1
+            # produces an empty or invalid block; return the DFlash2-shaped
+            # empty proposal before any mask allocation.
+            batch = 1 if isinstance(last_bonus, int) else int(last_bonus.shape[0])
+            return mx.zeros((batch, 0), dtype=token_dtype)
+        if isinstance(last_bonus, int):
+            block = mx.array(
+                [[last_bonus] + [mask_id] * (block_size - 1)],
+                dtype=token_dtype,
+            )
+        else:
+            B = last_bonus.shape[0]""",
+            """        mask_id = int(self.config.mask_token_id)
+        if isinstance(last_bonus, int):
+            block = mx.array(
+                [[last_bonus] + [mask_id] * (block_size - 1)],
+                dtype=token_dtype,
+            )
+        else:
+            B = last_bonus.shape[0]""",
+        ),
+        (
+            """        mask_id = int(self.config.mask_token_id)
+        if block_size <= 1:
+            # Rapid upstream-bugfix (documented deviation): pinned 0.7.1
+            # builds masks with block_size - 1 entries, so block_size <= 1
+            # produces an empty or invalid block; return the DFlash2-shaped
+            # empty proposal before any mask allocation.
+            batch = 1 if isinstance(last_bonus, int) else int(last_bonus.shape[0])
+            return mx.zeros((batch, 0), dtype=token_dtype)
+        if isinstance(last_bonus, int):
+            block = mx.array(
+                [[last_bonus] + [mask_id] * (block_size - 1)],
+                dtype=token_dtype,
+            )
+        else:
+            batch = last_bonus.shape[0]""",
+            """        mask_id = int(self.config.mask_token_id)
+        if isinstance(last_bonus, int):
+            block = mx.array(
+                [[last_bonus] + [mask_id] * (block_size - 1)],
+                dtype=token_dtype,
+            )
+        else:
+            batch = last_bonus.shape[0]""",
+        ),
+        (
             """    def bind(self, target_model) -> "DFlashDraftModel":
         # Rapid upstream-bugfix (documented deviation): pinned 0.7.1
         # resolved the embeddings only when unset, so resetting with a
@@ -217,6 +267,20 @@ DEVIATIONS = {
         if self.embed_tokens is None:""",
             """    def bind(self, target_model) -> "DFlashDraftModel":
         if self.embed_tokens is None:""",
+        ),
+    ],
+    "qwen3_dflash/config.py": [
+        (
+            """        # Rapid upstream-bugfix (documented deviation): pinned 0.7.1
+        # accepts any runtime_block_size; sizes below 2 crash the drafting
+        # loops (block_size 1 leaves an empty masked tail).
+        runtime_block_size = flat.get("runtime_block_size")
+        if runtime_block_size is not None and int(runtime_block_size) < 2:
+            raise ValueError(
+                f"runtime_block_size must be >= 2, got {runtime_block_size!r}"
+            )
+        rope_parameters = flat.pop("rope_parameters", None)""",
+            """        rope_parameters = flat.pop("rope_parameters", None)""",
         ),
     ],
     "qwen3_5_mtp/split.py": [
@@ -377,6 +441,22 @@ logger = logging.getLogger(__name__)""",
             """    install_served_architecture_bindings()
     path = get_model_path(path_or_repo)""",
             """    path = get_model_path(path_or_repo)""",
+        ),
+        (
+            """    try:
+        with open(model_path / "config.json") as f:
+            config = json.load(f)
+    except (FileNotFoundError, json.JSONDecodeError, OSError):
+        return {}
+    # Rapid upstream-bugfix (documented deviation): pinned 0.7.1 returns
+    # any decoded JSON value; a non-object config crashes resolve_drafter_kind
+    # on config.get(). Degrade to the documented empty-dict contract.
+    return config if isinstance(config, dict) else {}""",
+            """    try:
+        with open(model_path / "config.json") as f:
+            return json.load(f)
+    except (FileNotFoundError, json.JSONDecodeError, OSError):
+        return {}""",
         ),
     ],
     "mtp_split.py": [
@@ -876,6 +956,64 @@ def test_binding_hook_updates_parent_package_attribute(monkeypatch, tmp_path):
     assert rebound is not stale_child
     assert rebound.Model.__module__.startswith("rapid_mlx.models.mlx_vlm_vendored.")
     assert models_pkg.dflash2 is rebound
+
+
+def test_dflash_draft_block_below_two_returns_empty_proposal():
+    """block_size <= 1 must return the DFlash2-shaped empty proposal
+    before mask allocation, without invoking the sampler (r17 finding)."""
+    from types import SimpleNamespace
+
+    import mlx.core as mx
+
+    from rapid_mlx.models.mlx_vlm_vendored.speculative.drafters.qwen3_dflash import (
+        dflash as dflash_module,
+    )
+
+    drafter = dflash_module.DFlashDraftModel.__new__(dflash_module.DFlashDraftModel)
+    drafter.config = SimpleNamespace(mask_token_id=7)
+    drafter.argmax_from_hidden = lambda value: value
+
+    def fail_sampler(_logits):
+        raise AssertionError("sampler must not run for an empty proposal")
+
+    out = drafter.draft_block(
+        mx.array([[3]], dtype=mx.int32),
+        mx.zeros((1, 1, 2)),
+        [],
+        1,
+        fail_sampler,
+        token_dtype=mx.int32,
+    )
+    assert out.shape == (1, 0)
+    out2 = drafter.draft_block_greedy(
+        5,
+        mx.zeros((1, 1, 2)),
+        [],
+        0,
+        fail_sampler,
+        token_dtype=mx.int32,
+    )
+    assert out2.shape == (1, 0)
+
+
+def test_dflash_config_rejects_runtime_block_size_below_two():
+    from rapid_mlx.models.mlx_vlm_vendored.speculative.drafters.qwen3_dflash import (
+        config as dflash_config_module,
+    )
+
+    with pytest.raises(ValueError, match="runtime_block_size must be >= 2"):
+        dflash_config_module.DFlashConfig.from_dict(
+            {"dflash_config": {"runtime_block_size": 1}}
+        )
+
+
+def test_read_drafter_config_degrades_non_object_json(tmp_path):
+    from rapid_mlx.models.mlx_vlm_vendored.speculative.drafters import (
+        _read_drafter_config,
+    )
+
+    (tmp_path / "config.json").write_text("[1, 2]")
+    assert _read_drafter_config(tmp_path) == {}
 
 
 def test_qwen35_decoder_layer_routes_qwen3_next_to_moe():
