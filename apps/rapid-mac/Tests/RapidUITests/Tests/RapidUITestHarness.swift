@@ -123,6 +123,7 @@ final class RapidUITestHarness {
     private var portReservation: Int32?
     private var originalPasteboardItems: [[NSPasteboard.PasteboardType: Data]]?
     private var ownedPasteboardChangeCount: Int?
+    private var activeFileDragSource: XCUIApplication?
 
     private static func reserveLoopbackPort() throws -> (descriptor: Int32, port: Int) {
         let descriptor = Darwin.socket(AF_INET, SOCK_STREAM, 0)
@@ -238,6 +239,9 @@ final class RapidUITestHarness {
     }
 
     func shutDown() {
+        if let activeFileDragSource {
+            _ = terminateFileDragSource(activeFileDragSource)
+        }
         app.terminate()
         _ = app.wait(for: .notRunning, timeout: 5)
         releasePortReservation()
@@ -355,6 +359,10 @@ final class RapidUITestHarness {
         simulateChipVisibilityDelay: TimeInterval = 0,
         simulateCompletionVisibilityDelay: TimeInterval = 0
     ) -> Int {
+        guard dropSettleTimeout > 0 else {
+            XCTFail("file-drop settle timeout must be positive")
+            return 0
+        }
         guard let chip = chip else {
             let (dragSource, source, dropTarget) = launchFileDragSource(
                 url: url,
@@ -366,8 +374,7 @@ final class RapidUITestHarness {
             // XCUITest.
             defer {
                 if dragSource.state != .notRunning {
-                    dragSource.terminate()
-                    _ = dragSource.wait(for: .notRunning, timeout: 5)
+                    _ = terminateFileDragSource(dragSource)
                 }
             }
             source.click(forDuration: 1, thenDragTo: dropTarget)
@@ -513,6 +520,10 @@ final class RapidUITestHarness {
             "RAPID_XCUI_DROP_FIRST_GESTURE": dropFirstGesture ? "1" : "0",
         ]
         dragSource.launch()
+        // Track the helper immediately after launch. If any subsequent setup
+        // assertion aborts this journey, harness shutdown still owns and
+        // terminates the process before the next test starts.
+        activeFileDragSource = dragSource
         let source = dragSource.descendants(matching: .any)
             .matching(identifier: "RapidUITests.FileDragSource").firstMatch
         XCTAssertTrue(source.waitForExistence(timeout: 15))
@@ -533,10 +544,16 @@ final class RapidUITestHarness {
     }
 
     private func terminateFileDragSource(_ dragSource: XCUIApplication) -> Bool {
+        if dragSource.state == .notRunning {
+            activeFileDragSource = nil
+            return true
+        }
         dragSource.terminate()
         let terminated = dragSource.wait(for: .notRunning, timeout: 5)
         if !terminated {
             XCTFail("file-drag helper did not terminate; retry suppressed")
+        } else {
+            activeFileDragSource = nil
         }
         return terminated
     }

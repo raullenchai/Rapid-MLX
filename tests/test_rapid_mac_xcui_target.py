@@ -144,6 +144,11 @@ def test_xcui_runner_launches_production_bundle_with_fake_sidecar():
     assert "launchFileDragSource(" in harness
     assert "terminateFileDragSource(dragSource)" in harness
     assert "simulateMissedFirstGesture && attempt == 1" in harness
+    retry_loop = harness.split("for attempt in 1...maximumAttempts", 1)[1].split(
+        "private func launchFileDragSource", 1
+    )[0]
+    assert "launchFileDragSource(" in retry_loop
+    assert "terminateFileDragSource(dragSource)" in retry_loop
     assert "try DropEventFile.clear(at: dropEventFile)" in harness
     assert harness.index("try DropEventFile.clear(at: dropEventFile)") < harness.index(
         "for attempt in 1...maximumAttempts"
@@ -188,6 +193,8 @@ def test_xcui_runner_launches_production_bundle_with_fake_sidecar():
     assert "activeHarness?.shutDown()" in source
     assert "activeHarness = harness" in source
     assert "app.wait(for: .notRunning, timeout: 5)" in harness
+    assert "private var activeFileDragSource: XCUIApplication?" in harness
+    assert "activeFileDragSource = dragSource" in harness
     assert "terminateFakeSidecars()" in harness
     assert "isExecutableFile" in harness
     assert "RapidUITests-$(date +%s)-$$.xcresult" in runner
