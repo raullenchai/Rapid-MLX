@@ -104,6 +104,25 @@ def _loaded_model_type(model: Any) -> str | None:
     return None
 
 
+def _format_prompt(tokenizer: Any, prompt: str, *, chat_template: bool) -> str:
+    """Optionally mirror the server's one-user-message chat-template input."""
+
+    if not chat_template:
+        return prompt
+    apply = getattr(tokenizer, "apply_chat_template", None)
+    if not callable(apply):
+        raise RuntimeError("tokenizer does not expose apply_chat_template")
+    formatted = apply(
+        [{"role": "user", "content": prompt}],
+        tokenize=False,
+        add_generation_prompt=True,
+        enable_thinking=False,
+    )
+    if not isinstance(formatted, str) or not formatted:
+        raise RuntimeError("tokenizer returned an empty/non-string chat template")
+    return formatted
+
+
 def _parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--model", default=_DEFAULT_MODEL)
@@ -115,6 +134,14 @@ def _parse_args() -> argparse.Namespace:
         help=f"Number of built-in prompts to run (default: {len(_BENCH_PROMPTS)})",
     )
     parser.add_argument("--prompt-text", help="Run one explicit prompt instead")
+    parser.add_argument(
+        "--chat-template",
+        action="store_true",
+        help=(
+            "Wrap each prompt as one user message with add_generation_prompt "
+            "and enable_thinking=false, matching the default server chat path"
+        ),
+    )
     parser.add_argument("--max-tokens", type=int, default=128)
     parser.add_argument("--seed", type=int, default=0)
     parser.add_argument(
@@ -203,7 +230,11 @@ def main() -> int:
     model, tokenizer = load(args.model)
     stop_tokens = _tokenizer_stop_tokens(tokenizer)
     stock_by_prompt: list[tuple[int, ...]] = []
-    for index, prompt in enumerate(prompts):
+    formatted_prompts = tuple(
+        _format_prompt(tokenizer, prompt, chat_template=args.chat_template)
+        for prompt in prompts
+    )
+    for index, prompt in enumerate(formatted_prompts):
         print(f"[fixed-k-consistency] stock AR prompt {index + 1}", file=sys.stderr)
         tokens: list[int] = []
         for response in stream_generate(
@@ -239,7 +270,7 @@ def main() -> int:
 
     prompt_reports: list[dict[str, Any]] = []
     activity_valid = True
-    for index, prompt in enumerate(prompts):
+    for index, prompt in enumerate(formatted_prompts):
         prompt_ids = mx.array(tokenizer.encode(prompt), mx.uint32)
         runs: dict[int, tuple[tuple[int, ...], tuple[bool, ...], Any, int, str]] = {}
         for k in args.k_values:
@@ -311,7 +342,8 @@ def main() -> int:
         prompt_reports.append(
             {
                 "index": index + 1,
-                "prompt": prompt,
+                "prompt": prompts[index],
+                "chat_template": args.chat_template,
                 "stock_token_sha256": _token_sha256(stock_by_prompt[index]),
                 "stock_vs_k0_first_divergence": _first_divergence(
                     stock_by_prompt[index], control
