@@ -78,6 +78,9 @@ def can_trim(cache: Any, n: int) -> bool:
 
 def can_advance(cache: Any, n: int) -> bool:
     """Return whether a forward can append ``n + 1`` tokens and still roll back."""
+    amount_check = getattr(cache, "can_advance", None)
+    if callable(amount_check):
+        return bool(amount_check(n))
     if not can_trim(cache, n):
         return False
     for leaf in _leaf_caches(cache):

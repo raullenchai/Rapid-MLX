@@ -3464,8 +3464,9 @@ def test_quantized_argmax_matches_materialized_qlinear_logits():
     assert fused.tolist() == reference.tolist()
 
 
-def test_generator_k3_restores_ssm_state_at_partial_accept_boundary():
+def test_generator_k3_restores_ssm_state_at_partial_accept_boundary(monkeypatch):
     """Rejecting draft 2 restores GDN state after y + accepted draft 1."""
+    import rapid_mlx.spec_decode.mtp.generator as generator_mod
     from rapid_mlx.spec_decode.mtp.accept_counter import MTPAcceptCounter
     from rapid_mlx.spec_decode.mtp.generator import mtp_generate_step
 
@@ -3485,6 +3486,8 @@ def test_generator_k3_restores_ssm_state_at_partial_accept_boundary():
             return False
 
     class SnapshotModel(_MockedQwen35Model):
+        mtp_wide_verify_rollback_supported = True
+
         def __init__(self):
             super().__init__([7, 11, 12, 13, 14], [11, 99, 13])
             self.layers = [object()]
@@ -3501,6 +3504,9 @@ def test_generator_k3_restores_ssm_state_at_partial_accept_boundary():
             return result
 
     ssm = SnapshotSSMCache()
+    monkeypatch.setattr(
+        generator_mod, "gated_delta_snapshot_rollback_installed", lambda: True
+    )
     emitted = list(
         mtp_generate_step(
             mx.array([1], dtype=mx.uint32),
@@ -3520,8 +3526,9 @@ def test_generator_k3_restores_ssm_state_at_partial_accept_boundary():
     assert ssm.rollback_state is None
 
 
-def test_generator_legacy_ssm_snapshot_is_limited_to_one_token():
+def test_generator_legacy_ssm_snapshot_is_limited_to_one_token(monkeypatch):
     """The legacy tuple restores K=1 and fails closed for a K>1 rollback."""
+    import rapid_mlx.spec_decode.mtp.generator as generator_mod
     from rapid_mlx.spec_decode.mtp.accept_counter import MTPAcceptCounter
     from rapid_mlx.spec_decode.mtp.generator import mtp_generate_step
 
@@ -3541,6 +3548,8 @@ def test_generator_legacy_ssm_snapshot_is_limited_to_one_token():
             return False
 
     class LegacySnapshotModel(_MockedQwen35Model):
+        mtp_wide_verify_rollback_supported = True
+
         def __init__(self, *, max_k):
             super().__init__([7, 99, 0, 0, 0], list(range(11, 11 + max_k)))
             self.layers = [object()]
@@ -3552,6 +3561,9 @@ def test_generator_legacy_ssm_snapshot_is_limited_to_one_token():
                 cache[0][0], cache[0][1] = mx.array([999]), mx.array([999])
             return result
 
+    monkeypatch.setattr(
+        generator_mod, "gated_delta_snapshot_rollback_installed", lambda: True
+    )
     k1_cache = LegacySSMCache()
     list(
         mtp_generate_step(
@@ -3904,6 +3916,179 @@ def test_generator_prompt_lookup_falls_through_when_cache_cannot_recover(monkeyp
     )
 
     assert timing["prompt_lookup_cache_fallthroughs"] == 1
+
+
+def test_mtp_buffers_rotating_target_cache_and_preserves_rejection_boundary():
+    """A wrapped sliding window can verify K rows and rewind the rejected tail."""
+    from mlx_lm.models.cache import RotatingKVCache
+
+    from rapid_mlx.cache_rollback import can_advance, trim_all
+    from rapid_mlx.models.mlx_vlm_vendored.cache import BufferedRotatingKVCache
+    from rapid_mlx.spec_decode.mtp.generator import _buffer_mtp_target_cache
+
+    rotating = RotatingKVCache(max_size=4, keep=0)
+    for token in range(4):
+        item = mx.full((1, 1, 1, 1), float(token))
+        rotating.update_and_fetch(item, item)
+    assert not can_advance(rotating, 3)
+
+    caches = [rotating]
+    _buffer_mtp_target_cache(caches, requested_depth=3)
+    buffered = caches[0]
+    assert isinstance(buffered, BufferedRotatingKVCache)
+    assert buffered.buffer_size == 32
+    assert can_advance(buffered, 3)
+
+    # A later request may ask the scheduler-owned cache for a deeper verify
+    # block. Reusing the already-buffered object must grow its slack in place.
+    _buffer_mtp_target_cache(caches, requested_depth=8)
+    assert caches[0] is buffered
+    assert buffered.buffer_size == 64
+
+    verify = mx.arange(4, 8, dtype=mx.float32).reshape(1, 1, 4, 1)
+    buffered.update_and_fetch(verify, verify)
+    assert trim_all(caches, 3)
+    assert buffered.offset == 5
+    assert buffered._idx == 5
+    assert buffered.keys[0, 0, : buffered._idx, 0].tolist() == [
+        0.0,
+        1.0,
+        2.0,
+        3.0,
+        4.0,
+    ]
+
+    extracted = buffered.extract(0)
+    assert isinstance(extracted, BufferedRotatingKVCache)
+    assert extracted.offset == buffered.offset
+    assert extracted.keys.shape[0] == 1
+    assert mx.array_equal(extracted.keys, buffered.keys)
+
+    class _Composite:
+        def __init__(self):
+            self.caches = (RotatingKVCache(max_size=8, keep=0),)
+
+    composite = _Composite()
+    composite_tree = [composite]
+    _buffer_mtp_target_cache(composite_tree, requested_depth=2)
+    assert isinstance(composite.caches, tuple)
+    assert isinstance(composite.caches[0], BufferedRotatingKVCache)
+
+
+def test_mtp_keeps_attention_sink_cache_unmodified_and_parks_safely():
+    """Unsupported cache layouts fall through before drafting, never mid-stream."""
+    from mlx_lm.models.cache import RotatingKVCache
+
+    from rapid_mlx.spec_decode.mtp.accept_counter import MTPAcceptCounter
+    from rapid_mlx.spec_decode.mtp.generator import (
+        _buffer_mtp_target_cache,
+        mtp_generate_step,
+    )
+
+    sink_cache = RotatingKVCache(max_size=4, keep=1)
+    caches = [sink_cache]
+    _buffer_mtp_target_cache(caches, requested_depth=3)
+    assert caches[0] is sink_cache
+
+    baseline_cache = RotatingKVCache(max_size=4, keep=0)
+    baseline = [baseline_cache]
+    _buffer_mtp_target_cache(baseline, requested_depth=0)
+    assert baseline[0] is baseline_cache
+
+    class _NonRecoverableCache:
+        def is_trimmable(self):
+            return False
+
+    class _UnsafeCacheModel(_MockedQwen35Model):
+        def __init__(self):
+            super().__init__([7, 8, 9], [31, 31, 31])
+            self.layers = [object()]
+
+    timing: dict[str, float] = {}
+    emitted = list(
+        mtp_generate_step(
+            mx.array([1], dtype=mx.uint32),
+            _UnsafeCacheModel(),
+            prompt_cache=[_NonRecoverableCache()],
+            max_tokens=3,
+            max_k=3,
+            disable_auto_k=True,
+            accept_counter=MTPAcceptCounter(),
+            timing_stats=timing,
+        )
+    )
+
+    assert [token for token, _lp, drafted in emitted] == [7, 8, 9]
+    assert all(not drafted for _token, _lp, drafted in emitted)
+    assert timing["mtp_cache_fallthroughs"] == 2
+
+
+def test_generator_publishes_buffered_cache_into_scheduler_owned_list():
+    """The generator and scheduler must retain the same replacement objects."""
+    from mlx_lm.models.cache import RotatingKVCache
+
+    from rapid_mlx.models.mlx_vlm_vendored.cache import BufferedRotatingKVCache
+    from rapid_mlx.spec_decode.mtp.accept_counter import MTPAcceptCounter
+    from rapid_mlx.spec_decode.mtp.generator import mtp_generate_step
+
+    class _SlidingModel(_MockedQwen35Model):
+        def __init__(self):
+            super().__init__([7], [31])
+            self.layers = [object()]
+
+    scheduler_cache = [RotatingKVCache(max_size=4, keep=0)]
+    list(
+        mtp_generate_step(
+            mx.array([1], dtype=mx.uint32),
+            _SlidingModel(),
+            prompt_cache=scheduler_cache,
+            max_tokens=1,
+            max_k=3,
+            disable_auto_k=True,
+            accept_counter=MTPAcceptCounter(),
+        )
+    )
+
+    assert isinstance(scheduler_cache[0], BufferedRotatingKVCache)
+
+
+def test_generator_parks_after_a_verify_when_next_depth_is_not_recoverable(
+    monkeypatch,
+):
+    """A cache becoming unsafe between rounds parks before the next draft."""
+    import rapid_mlx.spec_decode.mtp.generator as generator_mod
+    from rapid_mlx.spec_decode.mtp.accept_counter import MTPAcceptCounter
+    from rapid_mlx.spec_decode.mtp.generator import mtp_generate_step
+
+    calls = 0
+
+    def _admission(_cache, desired, **_kwargs):
+        nonlocal calls
+        calls += 1
+        return desired if calls == 1 else 0
+
+    monkeypatch.setattr(generator_mod, "_safe_prompt_lookup_draft_count", _admission)
+    model = _MockedQwen35Model(
+        backbone_outputs=[7, 11, 12, 13, 14, 15],
+        mtp_outputs=[11, 12, 13],
+    )
+    timing: dict[str, float] = {}
+    emitted = list(
+        mtp_generate_step(
+            mx.array([1], dtype=mx.uint32),
+            model,
+            max_tokens=6,
+            max_k=3,
+            disable_auto_k=True,
+            accept_counter=MTPAcceptCounter(),
+            timing_stats=timing,
+        )
+    )
+
+    assert [token for token, _lp, _drafted in emitted] == [7, 11, 12, 13, 14, 15]
+    assert model._mtp_cursor == 3
+    assert calls == 2
+    assert timing["mtp_cache_fallthroughs"] == 1
 
 
 def test_safe_draft_count_admits_snapshot_only_caches_only_when_declared():

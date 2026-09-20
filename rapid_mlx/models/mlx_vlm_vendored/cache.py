@@ -2121,6 +2121,40 @@ class BufferedRotatingKVCache(RotatingKVCache):
     def is_trimmable(self):
         return True
 
+    def can_advance(self, n: int) -> bool:
+        """The next ``n + 1`` rows retain enough slack to rewind ``n``.
+
+        ``update_and_fetch`` sizes the live buffer for the whole incoming
+        block before it discards old committed rows.  Unlike the ring cache,
+        speculative rows therefore cannot overwrite the rollback boundary.
+        """
+        return self.keep == 0 and int(n) >= 0
+
+    def extract(self, index: int) -> "BufferedRotatingKVCache":
+        """Extract one batch row without losing the speculative slack type."""
+        if self.keys is None:
+            if index != 0:
+                raise IndexError(index)
+            extracted = type(self)(
+                self.max_size, self.keep, buffer_size=self.buffer_size
+            )
+            extracted.offset = self.offset
+            extracted._idx = self._idx
+            extracted.start_position = self.start_position
+            return extracted
+        batch_size = int(self.keys.shape[0])
+        if index < 0:
+            index += batch_size
+        if index < 0 or index >= batch_size:
+            raise IndexError(index)
+        extracted = type(self)(self.max_size, self.keep, buffer_size=self.buffer_size)
+        extracted.offset = self.offset
+        extracted._idx = self._idx
+        extracted.start_position = self.start_position
+        extracted.keys = self.keys[index : index + 1]
+        extracted.values = self.values[index : index + 1]
+        return extracted
+
     def make_mask(
         self, N: int, window_size: Optional[int] = None, return_array: bool = False
     ):
