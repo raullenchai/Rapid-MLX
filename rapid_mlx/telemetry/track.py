@@ -6,6 +6,7 @@ from __future__ import annotations
 import threading
 from collections.abc import Mapping
 from dataclasses import dataclass
+from datetime import date, datetime, timezone
 from typing import Protocol
 
 import rapid_mlx
@@ -31,6 +32,9 @@ _context: _ProcessContext | None = None
 _context_resolved = False
 _surface: str | None = None
 _app_opened_attempted = False
+_cohort_lock = threading.Lock()
+_cohort_day: date | None = None
+_cohort_bucket: str | None = None
 
 
 def _set_surface(surface: str) -> None:
@@ -92,19 +96,36 @@ def _upload_allowed() -> bool:
     return consent_runtime.upload_allowed()
 
 
-def track(
+def _utc_day() -> date:
+    """Return the current UTC day through a narrow test seam."""
+    return datetime.now(timezone.utc).date()
+
+
+def _days_since_first_run_bucket() -> str | None:
+    """Read the durable cohort stamp at most once per UTC day."""
+    global _cohort_bucket, _cohort_day
+    today = _utc_day()
+    with _cohort_lock:
+        if _cohort_day != today:
+            bucket = store.days_since_first_run_bucket()
+            _cohort_bucket = bucket
+            _cohort_day = today
+        return _cohort_bucket
+
+
+def _track_accepted(
     event: str,
     props: Mapping[str, object],
     *,
     nth_model_served: int | None = None,
-) -> None:
-    """Queue one registry-approved v2 event without blocking or raising."""
+) -> bool:
+    """Queue one registry-approved v2 event and report sender acceptance."""
     try:
         if not _upload_allowed():
-            return
+            return False
         context = _process_context()
         if context is None:
-            return
+            return False
 
         # ``note_model_served`` uses zero as its failure sentinel. A real
         # successful note is always at least one, so zero must stay off wire.
@@ -116,22 +137,32 @@ def track(
             app_version=context.app_version,
             channel=context.channel,
             nth_model_served=nth,
-            days_since_first_run_bucket=store.days_since_first_run_bucket(),
+            days_since_first_run_bucket=_days_since_first_run_bucket(),
             platform=context.platform,
         )
         if common is None:
-            return
+            return False
         item = envelope.build_batch_item(event, props, common)
         if item is None:
-            return
+            return False
 
         # Importing the sender registers an at-fork hook, so defer it until an
         # event has passed every earlier gate.
         from rapid_mlx.telemetry import posthog_sender
 
-        posthog_sender.get_sender().capture(item)
+        return posthog_sender.get_sender().capture(item)
     except Exception:
-        return
+        return False
+
+
+def track(
+    event: str,
+    props: Mapping[str, object],
+    *,
+    nth_model_served: int | None = None,
+) -> None:
+    """Queue one registry-approved v2 event without blocking or raising."""
+    _track_accepted(event, props, nth_model_served=nth_model_served)
 
 
 def _emit_app_opened(surface: str) -> None:
@@ -164,21 +195,25 @@ def start_lifecycle(surface: str) -> None:
 
 
 def emit_active_day(*, _store: _ActiveDayStore = store) -> None:
-    """Emit only for the first successful-inference claim of this UTC day."""
+    """Record today's claim only when the sender accepts ``active_day``."""
     try:
         if not _upload_allowed():
             return
-        if _store.claim_active_day() is True:
-            track("active_day", {})
+        if _track_accepted("active_day", {}):
+            _store.claim_active_day()
     except Exception:
         return
 
 
 def _reset_for_tests() -> None:
     """Clear process memoization and lifecycle latches."""
-    global _app_opened_attempted, _context, _context_resolved, _surface
+    global _app_opened_attempted, _cohort_bucket, _cohort_day
+    global _context, _context_resolved, _surface
     with _context_lock:
         _context = None
         _context_resolved = False
         _surface = None
         _app_opened_attempted = False
+    with _cohort_lock:
+        _cohort_day = None
+        _cohort_bucket = None

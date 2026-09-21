@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+import ast
 import json
 import os
 import subprocess
@@ -10,6 +11,7 @@ import sys
 import threading
 import uuid
 from collections.abc import Iterator, Mapping
+from datetime import date
 from http.server import BaseHTTPRequestHandler, HTTPServer
 from pathlib import Path
 from types import SimpleNamespace
@@ -18,8 +20,14 @@ import pytest
 
 import rapid_mlx
 import rapid_mlx.cli as cli
-import rapid_mlx.server as server_module
-from rapid_mlx.telemetry import consent_runtime, emit, posthog_sender, state
+from rapid_mlx.telemetry import (
+    common_props,
+    consent_runtime,
+    emit,
+    posthog_sender,
+    redact,
+    state,
+)
 from rapid_mlx.telemetry import track as track_module
 from rapid_mlx.telemetry.build_gate import ReleaseStamp
 from rapid_mlx.telemetry.common_props import PlatformFacts
@@ -31,6 +39,7 @@ from rapid_mlx.telemetry.consent_decision import (
 )
 
 REAL_UPLOAD_ALLOWED = consent_runtime.upload_allowed
+REAL_READ_PLATFORM_FACTS = common_props.read_platform_facts
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 STAMP = ReleaseStamp(channel="stable", posthog_key="phc_" + "a" * 32)
@@ -55,6 +64,13 @@ class RecordingSender:
         self.calls += 1
         self.items.append(dict(item))
         return True
+
+
+class RefusingSender(RecordingSender):
+    def capture(self, item: Mapping[str, object]) -> bool:
+        self.calls += 1
+        self.items.append(dict(item))
+        return False
 
 
 class ExplodingMapping(Mapping[str, object]):
@@ -225,7 +241,8 @@ def test_registry_is_the_only_event_gate(monkeypatch):
 
 def test_zero_nth_model_served_is_omitted(monkeypatch):
     sender = inject_sender(monkeypatch)
-    track_module.track("app_opened", {}, nth_model_served=0)
+    result = track_module.track("app_opened", {}, nth_model_served=0)
+    assert result is None
     [item] = sender.items
     properties = item["properties"]
     assert isinstance(properties, dict)
@@ -321,9 +338,9 @@ def test_cli_lifecycle_failure_cannot_escape(monkeypatch):
         consent_runtime, "detect_role", lambda: ProcessRole.HEADLESS_CLI
     )
     monkeypatch.setattr(
-        posthog_sender,
-        "install_atexit",
-        lambda: (_ for _ in ()).throw(RuntimeError("hook failed")),
+        track_module,
+        "start_lifecycle",
+        lambda surface: (_ for _ in ()).throw(RuntimeError("lifecycle failed")),
     )
     cli._start_v2_lifecycle("models")
 
@@ -339,13 +356,39 @@ def test_shared_lifecycle_rejects_invalid_surface_and_denial(monkeypatch):
     assert calls == []
 
 
-@pytest.mark.parametrize(("claimed", "expected"), [(True, 1), (False, 0)])
-def test_active_day_requires_successful_claim(monkeypatch, claimed, expected):
+def test_shared_lifecycle_failure_cannot_escape(monkeypatch):
+    monkeypatch.setattr(
+        posthog_sender,
+        "install_atexit",
+        lambda: (_ for _ in ()).throw(RuntimeError("hook failed")),
+    )
+    track_module.start_lifecycle("cli")
+
+
+def test_active_day_claims_after_sender_acceptance(monkeypatch):
+    sender = inject_sender(monkeypatch)
     calls: list[str] = []
-    monkeypatch.setattr(track_module, "track", lambda event, props: calls.append(event))
-    fake_store = SimpleNamespace(claim_active_day=lambda: claimed)
+    original_capture = sender.capture
+
+    def capture(item: Mapping[str, object]) -> bool:
+        calls.append("capture")
+        return original_capture(item)
+
+    monkeypatch.setattr(sender, "capture", capture)
+    fake_store = SimpleNamespace(claim_active_day=lambda: calls.append("claim") or True)
     track_module.emit_active_day(_store=fake_store)
-    assert calls == ["active_day"] * expected
+    assert [item["event"] for item in sender.items] == ["active_day"]
+    assert calls == ["capture", "claim"]
+
+
+def test_active_day_sender_refusal_does_not_claim_day(monkeypatch):
+    sender = RefusingSender()
+    monkeypatch.setattr(posthog_sender, "get_sender", lambda: sender)
+    fake_store = SimpleNamespace(
+        claim_active_day=lambda: pytest.fail("refused event claimed the day")
+    )
+    track_module.emit_active_day(_store=fake_store)
+    assert sender.calls == 1
 
 
 def test_active_day_denial_precedes_store_claim(monkeypatch):
@@ -385,8 +428,9 @@ _CLI_SUBPROCESS = """
 import sys
 import rapid_mlx
 from rapid_mlx import cli
-from rapid_mlx.telemetry import build_gate
+from rapid_mlx.telemetry import build_gate, track
 from rapid_mlx.telemetry.build_gate import ReleaseStamp
+from rapid_mlx.telemetry.common_props import PlatformFacts
 
 case = sys.argv[1]
 mode = sys.argv[2]
@@ -394,8 +438,17 @@ if case != "unofficial":
     build_gate.official_build = lambda: ReleaseStamp("stable", "phc_" + "a" * 32)
 if case == "pre_cutoff":
     rapid_mlx.__version__ = "0.14.3"
+else:
+    rapid_mlx.__version__ = "0.15.1"
+track.common_props.read_platform_facts = lambda: PlatformFacts(
+    os="darwin",
+    os_version="25.3",
+    arch="arm64",
+    chip="m3-ultra",
+    memory_gb=64,
+    python_version="3.11",
+)
 if mode == "baseline":
-    from rapid_mlx.telemetry import track
     track.start_lifecycle = lambda surface: None
 sys.argv = ["rapid-mlx"]
 if case == "no_telemetry":
@@ -550,10 +603,10 @@ def test_allowed_official_cli_posts_one_app_opened_to_loopback(tmp_path):
     assert items[0]["properties"]["surface"] == "cli"
 
 
-def test_platform_cached_but_cohort_stamp_read_per_event(monkeypatch):
+def test_platform_and_cohort_stamp_cached_within_utc_day(monkeypatch):
     sender = inject_sender(monkeypatch)
     facts_calls = 0
-    days = iter(("0", "1"))
+    bucket_calls = 0
 
     def facts() -> PlatformFacts:
         nonlocal facts_calls
@@ -561,18 +614,36 @@ def test_platform_cached_but_cohort_stamp_read_per_event(monkeypatch):
         return FACTS
 
     monkeypatch.setattr(track_module.common_props, "read_platform_facts", facts)
-    monkeypatch.setattr(
-        track_module.store, "days_since_first_run_bucket", lambda: next(days)
-    )
+
+    def bucket() -> str:
+        nonlocal bucket_calls
+        bucket_calls += 1
+        return "7-29"
+
+    monkeypatch.setattr(track_module.store, "days_since_first_run_bucket", bucket)
     track_module.track("app_opened", {})
     track_module.track("active_day", {})
     assert facts_calls == 1
+    assert bucket_calls == 1
     assert [
         item["properties"]["days_since_first_run_bucket"] for item in sender.items
-    ] == [
-        "0",
-        "1",
-    ]
+    ] == ["7-29", "7-29"]
+
+
+def test_cohort_stamp_reread_after_utc_day_rollover(monkeypatch):
+    sender = inject_sender(monkeypatch)
+    days = iter((date(2026, 9, 21), date(2026, 9, 21), date(2026, 9, 22)))
+    buckets = iter(("7-29", "30+"))
+    monkeypatch.setattr(track_module, "_utc_day", lambda: next(days))
+    monkeypatch.setattr(
+        track_module.store, "days_since_first_run_bucket", lambda: next(buckets)
+    )
+    track_module.track("app_opened", {})
+    track_module.track("active_day", {})
+    track_module.track("active_day", {})
+    assert [
+        item["properties"]["days_since_first_run_bucket"] for item in sender.items
+    ] == ["7-29", "7-29", "30+"]
 
 
 def test_surface_rejects_invalid_and_cannot_change_after_context(monkeypatch):
@@ -593,23 +664,64 @@ def test_none_common_props_drops_event(monkeypatch):
     assert sender.items == []
 
 
-def test_active_day_store_failure_is_swallowed(monkeypatch):
+def test_incomplete_non_apple_platform_drops_event_without_raising(monkeypatch):
+    sender = inject_sender(monkeypatch)
     monkeypatch.setattr(
-        track_module,
-        "track",
-        lambda event, props: pytest.fail("claim failure must not emit"),
+        redact,
+        "platform_info",
+        lambda: {
+            "os": "linux",
+            "os_version": None,
+            "arch": "x86_64",
+            "chip": None,
+            "memory_gb": None,
+            "python_version": "3.11",
+        },
     )
+    monkeypatch.setattr(
+        track_module.common_props, "read_platform_facts", REAL_READ_PLATFORM_FACTS
+    )
+    track_module.track("app_opened", {})
+    assert sender.items == []
+
+
+def test_active_day_store_failure_is_swallowed(monkeypatch):
+    sender = inject_sender(monkeypatch)
     fake_store = SimpleNamespace(
         claim_active_day=lambda: (_ for _ in ()).throw(RuntimeError("store failed"))
     )
     track_module.emit_active_day(_store=fake_store)
+    assert [item["event"] for item in sender.items] == ["active_day"]
 
 
 def test_server_shutdown_flush_is_best_effort(monkeypatch):
+    # Execute the real function body without importing the MLX-bound server
+    # module, so Linux CI covers this best-effort guard too.
+    server_path = REPO_ROOT / "rapid_mlx" / "server.py"
+    tree = ast.parse(server_path.read_text())
+    flush_node = next(
+        node
+        for node in tree.body
+        if isinstance(node, ast.FunctionDef) and node.name == "_flush_v2_telemetry"
+    )
+    namespace: dict[str, object] = {
+        "logger": SimpleNamespace(debug=lambda message: None)
+    }
+    exec(
+        compile(
+            ast.Module(body=[flush_node], type_ignores=[]),
+            str(server_path),
+            "exec",
+        ),
+        namespace,
+    )
+    flush = namespace["_flush_v2_telemetry"]
+    assert callable(flush)
+
     calls: list[str] = []
     sender = SimpleNamespace(flush=lambda timeout: calls.append(f"flushed:{timeout}"))
     monkeypatch.setattr(posthog_sender, "get_sender", lambda: sender)
-    server_module._flush_v2_telemetry()
+    flush()
     assert calls == ["flushed:2.0"]
 
     monkeypatch.setattr(
@@ -617,11 +729,14 @@ def test_server_shutdown_flush_is_best_effort(monkeypatch):
         "flush",
         lambda timeout: (_ for _ in ()).throw(RuntimeError("flush failed")),
     )
-    server_module._flush_v2_telemetry()
+    flush()
 
 
 @pytest.mark.asyncio
+@pytest.mark.requires_mlx
 async def test_lifespan_shutdown_drains_v2_once(monkeypatch):
+    import rapid_mlx.server as server_module
+
     calls: list[str] = []
     sender = posthog_sender.PostHogSender(
         post=lambda url, body, timeout: calls.append("post") or 200,
@@ -654,7 +769,38 @@ async def test_lifespan_shutdown_drains_v2_once(monkeypatch):
     sender.close(0.5)
 
 
+def test_server_entrypoint_lifecycle_source_contract():
+    tree = ast.parse((REPO_ROOT / "rapid_mlx" / "server.py").read_text())
+    main = next(
+        node
+        for node in tree.body
+        if isinstance(node, ast.FunctionDef) and node.name == "main"
+    )
+    startup_index = next(
+        index
+        for index, node in enumerate(main.body)
+        if isinstance(node, ast.Expr)
+        and isinstance(node.value, ast.Call)
+        and ast.unparse(node.value.func) == "consent_runtime.startup"
+    )
+    lifecycle_index = next(
+        index
+        for index, node in enumerate(main.body)
+        if isinstance(node, ast.Expr)
+        and isinstance(node.value, ast.Call)
+        and ast.unparse(node.value.func) == "telemetry_v2.start_lifecycle"
+    )
+    lifecycle_call = main.body[lifecycle_index]
+    assert lifecycle_index == startup_index + 2
+    assert len(lifecycle_call.value.args) == 1
+    assert isinstance(lifecycle_call.value.args[0], ast.Constant)
+    assert lifecycle_call.value.args[0].value == "server"
+
+
+@pytest.mark.requires_mlx
 def test_server_module_entrypoint_starts_shared_v2_lifecycle(monkeypatch):
+    import rapid_mlx.server as server_module
+
     class StopAfterLifecycleError(Exception):
         pass
 

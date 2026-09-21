@@ -605,6 +605,11 @@ def _reset_for_tests() -> None:
 
 
 def _flush_at_exit() -> None:
+    """Drain for at most two seconds during interpreter shutdown.
+
+    A black-holed endpoint can therefore add up to about two seconds to a
+    short CLI command at exit. This bounded delay is intentional Orca parity.
+    """
     sender = get_sender()
     with sender._lock:
         sender._closing = True
@@ -616,7 +621,9 @@ def install_atexit() -> None:
 
     Import registers only the idempotent fork-safety hook. Neither import nor
     ``close()`` registers an exit callback; only this explicit call hooks the
-    sender into interpreter shutdown.
+    sender into interpreter shutdown. A black-holed endpoint can add up to
+    about two seconds to a short CLI command at exit; the bounded delay is
+    intentional Orca parity.
     """
     global _atexit_installed
     with _sender_lock:
