@@ -1489,6 +1489,7 @@ fi
 PYTHONNOUSERSITE=1 python3 "$REPO_ROOT/scripts/write-sidecar-stamp.py" \
     "$STAMP" "$OFFICIAL_RELEASE" "$SIDECAR_REVISION" "$SIDECAR_DIRTY"
 
+# --- telemetry release stamp (begin) ---
 # Telemetry v2 transmits only when the installed package contains the release
 # stamp AND build_gate can prove that the running code is a non-editable,
 # non-source install. Write only into the fresh sidecar stage: the checkout
@@ -1502,6 +1503,8 @@ if [[ "$OFFICIAL_RELEASE" == "1" ]]; then
             'from importlib.metadata import version; print(version("rapid-mlx"))'
     )"
     echo "==> stamping telemetry release v$SIDECAR_ENGINE_VERSION -> $TELEMETRY_STAMP"
+    # No --force by design: a wheel carrying a different stamp must fail an
+    # official build instead of silently replacing its provenance.
     PYTHONNOUSERSITE=1 python3 "$ENGINE_ROOT/scripts/write_release_stamp.py" \
         --version "$SIDECAR_ENGINE_VERSION" \
         --dest "$TELEMETRY_STAMP"
@@ -1510,6 +1513,7 @@ else
     # non-official build silent if RAPID_MLX_WHEEL points at stamped bytes.
     rm -f "$TELEMETRY_STAMP"
 fi
+# --- telemetry release stamp (end) ---
 
 # Run the gate through the exact interpreter and package tree that ship. This
 # also proves that pip's non-editable local-directory install is accepted by

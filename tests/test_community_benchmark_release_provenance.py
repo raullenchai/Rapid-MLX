@@ -18,6 +18,7 @@ from __future__ import annotations
 
 import importlib.util
 import json
+import re
 import subprocess
 from pathlib import Path
 from typing import Any
@@ -41,6 +42,23 @@ from tests.ingestion_contract import (
 REPO = Path(__file__).resolve().parents[1]
 ACTION = REPO / ".github/actions/desktop-releasable/action.yml"
 BUILD_SIDECAR = REPO / "apps/rapid-mac/scripts/build-sidecar.sh"
+DESKTOP_BUILD = REPO / "apps/rapid-mac/scripts/build.sh"
+DESKTOP_ENV_FILES = (
+    BUILD_SIDECAR,
+    DESKTOP_BUILD,
+    ACTION,
+    REPO / ".github/workflows/rapid-mac-release.yml",
+    REPO / ".github/workflows/auto-release.yml",
+    REPO / ".github/workflows/rapid-mac-ci.yml",
+)
+
+
+def _clean_environment_commands(text: str) -> list[str]:
+    """Return logical lines that clear the inherited environment."""
+
+    logical_text = re.sub(r"\\[ \t]*\n[ \t]*", " ", text)
+    clean_env = re.compile(r"(?:\benv[ \t]+-(?:i\b|(?=[ \t]))|\bexec[ \t]+-c\b)")
+    return [line for line in logical_text.splitlines() if clean_env.search(line)]
 
 
 @pytest.fixture(autouse=True)
@@ -139,17 +157,57 @@ def test_the_sidecar_checks_the_telemetry_gate_with_its_bundled_python() -> None
     assert stamp_offset < package_offset
 
 
+def test_the_telemetry_stamp_write_and_removal_stay_in_opposite_branches() -> None:
+    text = BUILD_SIDECAR.read_text()
+    begin = text.index("# --- telemetry release stamp (begin) ---")
+    end = text.index("# --- telemetry release stamp (end) ---", begin)
+    block = text[begin:end]
+
+    branch = re.search(
+        r'if \[\[ "\$OFFICIAL_RELEASE" == "1" \]\]; then\n'
+        r"(?P<official>.*?)^else\n(?P<source>.*?)^fi$",
+        block,
+        re.MULTILINE | re.DOTALL,
+    )
+    assert branch is not None
+    assert 'python3 "$ENGINE_ROOT/scripts/write_release_stamp.py"' in branch.group(
+        "official"
+    )
+    assert 'rm -f "$TELEMETRY_STAMP"' in branch.group("source")
+
+
+def test_the_sidecar_cache_key_separates_official_and_source_stages() -> None:
+    text = DESKTOP_BUILD.read_text()
+    assert 'SIDECAR_OFFICIAL_RELEASE="${RAPID_MLX_OFFICIAL_RELEASE:-0}"' in text
+    assert (
+        'SIDECAR_CACHE_KEY="v2:${SIDECAR_SOURCE_SHA}:${SIDECAR_RECIPE_HASH}:'
+        '${SIDECAR_OFFICIAL_RELEASE}"' in text
+    )
+
+
 def test_every_clean_sidecar_environment_keeps_telemetry_disabled() -> None:
-    """A stripped environment must restore both build-machine kill switches."""
+    """Every stripped environment must restore both build-machine switches."""
 
-    text = (REPO / "apps/rapid-mac/scripts/build-sidecar.sh").read_text()
-    clean_environment_lines = [line for line in text.splitlines() if "env -i" in line]
-
-    assert clean_environment_lines
-    for line in clean_environment_lines:
+    commands = [
+        (path, line)
+        for path in DESKTOP_ENV_FILES
+        for line in _clean_environment_commands(path.read_text())
+    ]
+    assert commands
+    for path, line in commands:
         assert (
             "RAPID_MLX_TELEMETRY=0" in line and "DO_NOT_TRACK=1" in line
-        ) or "TELEMETRY_OFF_ENV" in line, line
+        ) or "TELEMETRY_OFF_ENV" in line, f"{path}: {line}"
+
+
+def test_clean_environment_scanner_catches_supported_spellings() -> None:
+    commands = _clean_environment_commands(
+        "env -i \\\n            RAPID_MLX_TELEMETRY=0 DO_NOT_TRACK=1 command\n"
+        "env - RAPID_MLX_TELEMETRY=0 DO_NOT_TRACK=1 command\n"
+        "exec -c env RAPID_MLX_TELEMETRY=0 DO_NOT_TRACK=1 command\n"
+    )
+    assert len(commands) == 3
+    assert "env -i RAPID_MLX_TELEMETRY=0" in " ".join(commands[0].split())
 
 
 def test_desktop_build_and_release_lanes_keep_both_kill_switches() -> None:
@@ -158,13 +216,14 @@ def test_desktop_build_and_release_lanes_keep_both_kill_switches() -> None:
     action = ACTION.read_text()
     mac_release = (REPO / ".github/workflows/rapid-mac-release.yml").read_text()
     auto_release = (REPO / ".github/workflows/auto-release.yml").read_text()
+    mac_ci = (REPO / ".github/workflows/rapid-mac-ci.yml").read_text()
 
     assert "TELEMETRY_OFF_ENV=(RAPID_MLX_TELEMETRY=0 DO_NOT_TRACK=1)" in sidecar
     assert 'export "${TELEMETRY_OFF_ENV[@]}"' in sidecar
     assert "export RAPID_MLX_TELEMETRY=0 DO_NOT_TRACK=1" in build
     assert action.count('RAPID_MLX_TELEMETRY: "0"') >= 2
     assert action.count('DO_NOT_TRACK: "1"') >= 2
-    for workflow in (mac_release, auto_release):
+    for workflow in (mac_release, auto_release, mac_ci):
         assert 'RAPID_MLX_TELEMETRY: "0"' in workflow
         assert 'DO_NOT_TRACK: "1"' in workflow
     assert auto_release.count("RAPID_MLX_TELEMETRY=0 DO_NOT_TRACK=1") >= 2

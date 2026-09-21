@@ -308,7 +308,7 @@ def _run_stamp_step(tmp_path: Path, fake_git_dir: Path, official: str):
     # This helper exercises only the community benchmark provenance stamp.
     # Telemetry release stamping has its own installed-package proof and needs
     # the real staged interpreter, which this lightweight fixture omits.
-    end = text.index("# Telemetry v2 transmits")
+    end = text.index("# --- telemetry release stamp (begin) ---")
     fragment = tmp_path / "step6b.sh"
     fragment.write_text(text[start:end])
 
