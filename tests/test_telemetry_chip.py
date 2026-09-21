@@ -94,6 +94,7 @@ def test_an_apple_generation_outside_the_enum_is_apple_other(brand, expected):
     [
         # Real machdep.cpu.brand_string form on an Intel Mac.
         ("Intel(R) Core(TM) i7-9750H CPU @ 2.60GHz", "intel"),
+        ("Intel(R) Core(TM) i9-9980HK CPU @ 2.40GHz", "intel"),
         ("Intel(R) Xeon(R) W-2140B CPU @ 3.20GHz", "intel"),
         # Bare prose form.
         ("Intel Core i9", "intel"),
@@ -120,6 +121,9 @@ def test_an_intel_brand_string_maps_to_intel(brand, expected):
         # An incidental M<n> in an unrelated string — chip_tier's
         # documented non-Apple rejection.
         "BMW M3",
+        # Round 1, P2-3: the tightened intel matcher must not claim
+        # unrelated words that merely share the prefix.
+        "Intelligence Core",
         # The virtualized brand string: "apple" is not a standalone
         # token, so the reused parser (deliberately) does not claim it.
         "VirtualApple @ 2.50GHz processor with 2 cores",
@@ -127,6 +131,22 @@ def test_an_intel_brand_string_maps_to_intel(brand, expected):
     ],
 )
 def test_unrecognized_strings_map_to_other(brand):
+    assert chip_token(brand) == "other"
+
+
+@pytest.mark.parametrize(
+    "brand",
+    [
+        # Round 1, P2-1: a generation token longer than int()'s 4300-digit
+        # conversion limit made classify_chip_tier raise ValueError
+        # before the guard existed. Both the Apple-prefixed and the bare
+        # (profile-key) form reach the int() conversion.
+        "Apple M" + "9" * 5000,
+        "M" + "9" * 5000,
+    ],
+    ids=["apple-prefixed", "bare"],
+)
+def test_an_absurdly_long_generation_token_never_raises(brand):
     assert chip_token(brand) == "other"
 
 

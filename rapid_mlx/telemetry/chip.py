@@ -17,13 +17,19 @@ quantization through ``quant.quant_token()``. Nothing calls it yet; it
 lands first so the mapping can be reviewed and drift-pinned against the
 registry in isolation (``tests/test_telemetry_chip.py``).
 
+Known limit: a translated (Rosetta) Python reports ``VirtualApple @
+2.50GHz processor`` — no standalone ``apple`` token, no ``M<n>`` — so
+such Macs report ``other`` and undercount Apple silicon.
+
 The contract, in the order it matters:
 
 * the return value is ALWAYS one of ``events.json`` ->
   ``enums.chip.values`` — never a slice of the input, so a brand string
   can never ride the wire;
 * it never raises: a non-string, an empty string, or unparseable
-  garbage collapses to ``other``;
+  garbage — even a brand string whose generation token is thousands of
+  digits long, which would overflow ``int()`` inside the classifier —
+  collapses to ``other``;
 * generation/variant parsing is delegated to
   :func:`rapid_mlx.chip_tier.classify_chip_tier` (case-insensitive,
   whitespace-tolerant, accepts the bare ``"M4 Pro"`` profile-key form,
@@ -35,13 +41,15 @@ from __future__ import annotations
 
 from rapid_mlx.chip_tier import VARIANT_BASE, classify_chip_tier
 
-#: The ``M<generation>[-<variant>]`` half of the ``chip`` enum, verbatim
-#: from ``events.json`` -> ``enums.chip.values``. A literal, like quant's
-#: token table, so it can be eyeballed against the registry;
-#: ``tests/test_telemetry_chip.py`` drift-pins it in BOTH directions — a
-#: new registry generation fails the round-trip test until it is added
-#: here, and a stale token here fails the subset test.
-_M_CHIP_VALUES: frozenset[str] = frozenset(
+#: The closed ``chip`` enum, verbatim from ``events.json`` ->
+#: ``enums.chip.values``. A literal, like quant's token table, so it can
+#: be eyeballed against the registry — and the gate every composed
+#: ``m<generation>[-<variant>]`` token must pass before it is returned,
+#: so the set is load-bearing in production, not just in the drift test.
+#: That test pins it in BOTH directions: a new registry generation fails
+#: the round-trip test until it is added here, and a stale token here
+#: fails the subset test.
+_CHIP_VALUES: frozenset[str] = frozenset(
     {
         "m1",
         "m1-pro",
@@ -67,14 +75,10 @@ _M_CHIP_VALUES: frozenset[str] = frozenset(
         "m6-pro",
         "m6-max",
         "m6-ultra",
+        "apple-other",
+        "intel",
+        "other",
     }
-)
-
-#: Every value :func:`chip_token` can return: the M-series tokens above
-#: plus the enum's three non-M fallbacks. The drift test asserts this is
-#: a subset of the registry enum.
-_CHIP_VALUES: frozenset[str] = _M_CHIP_VALUES | frozenset(
-    {"apple-other", "intel", "other"}
 )
 
 
@@ -101,7 +105,16 @@ def chip_token(brand: str | None) -> str:
         # exception and never input-shaped text.
         return "other"
 
-    tier = classify_chip_tier(brand)
+    try:
+        tier = classify_chip_tier(brand)
+    except Exception:
+        # classify_chip_tier is not contractually total: a pathological
+        # brand string — a generation token longer than int()'s 4300-digit
+        # conversion limit — raises ValueError from the regex handler
+        # (round 1, P2-1). The closed-enum contract outranks it: degrade
+        # to "other", never propagate.
+        return "other"
+
     if tier.is_apple_silicon:
         # ChipTier guarantees generation is an int whenever
         # is_apple_silicon is True.
@@ -109,18 +122,23 @@ def chip_token(brand: str | None) -> str:
             token = f"m{tier.generation}"
         else:
             token = f"m{tier.generation}-{tier.variant.lower()}"
-        if token in _M_CHIP_VALUES:
+        if token in _CHIP_VALUES:
             return token
-        # Apple silicon, but a generation the closed list does not carry:
-        # the dedicated fallback rather than a fabricated "m9".
+        # Apple silicon, but a generation the closed list does not carry
+        # (a composed token can never equal a fallback value): the
+        # dedicated fallback rather than a fabricated "m9".
         return "apple-other"
 
     # Not Apple M-series. classify_chip_tier lumps Intel in with every
     # other unknown, so the one distinction the enum still carries is
     # recovered from the brand string itself: real sysctl output on an
     # Intel Mac reads "Intel(R) Core(TM) i7-9750H ...", i.e. a token that
-    # STARTS with "intel", and the bare "Intel Core i9" form does too.
-    if any(part.startswith("intel") for part in brand.lower().split()):
+    # is exactly "intel" or starts with "intel(" (the parenthesised
+    # form). A bare prefix match would claim unrelated words —
+    # "Intelligence Core" — so it is deliberately tighter.
+    if any(
+        part == "intel" or part.startswith("intel(") for part in brand.lower().split()
+    ):
         return "intel"
     # "", "   ", "Apple Silicon", "Unknown", "x86_64", "BMW M3", ... —
     # the redact fallbacks and unrecognized strings, exactly "other".
