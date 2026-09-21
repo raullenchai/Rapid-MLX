@@ -19,6 +19,7 @@ from __future__ import annotations
 import copy
 import re
 import time
+import uuid
 from datetime import datetime, timedelta, timezone
 from typing import NoReturn
 
@@ -142,8 +143,11 @@ def test_served_sample_round_trips_through_the_registry():
 def test_item_shape_for_an_event_with_props():
     item = env.build_batch_item("model_served", _served_sample(), _common_sample())
     assert item is not None
-    # The privacy red line: exactly these four top-level fields.
-    assert set(item) == {"event", "distinct_id", "timestamp", "properties"}
+    # The privacy red line: exactly these five top-level fields.
+    assert set(item) == {"uuid", "event", "distinct_id", "timestamp", "properties"}
+    item_uuid = item["uuid"]
+    assert isinstance(item_uuid, str)
+    assert str(uuid.UUID(item_uuid)) == item_uuid
     assert item["event"] == "model_served"
     assert item["distinct_id"] == _UUID
     timestamp = item["timestamp"]
@@ -174,6 +178,14 @@ def test_item_shape_for_an_event_without_props():
     # (never copied under a second name) as distinct_id.
     assert item["distinct_id"] == properties["install_id"]
     assert "distinct_id" not in properties
+
+
+def test_each_item_gets_a_fresh_uuid():
+    first = env.build_batch_item("app_opened", {}, _common_sample())
+    second = env.build_batch_item("app_opened", {}, _common_sample())
+    assert first is not None
+    assert second is not None
+    assert first["uuid"] != second["uuid"]
 
 
 def test_item_snapshots_the_validated_props_not_the_caller_dicts():
@@ -327,6 +339,43 @@ def test_build_batch_frames_items_for_the_wire():
     }
 
 
+@pytest.mark.parametrize(
+    "bad_uuid",
+    [None, 123, "", "not-a-uuid", object()],
+)
+def test_build_batch_rejects_missing_or_malformed_item_uuid(bad_uuid):
+    item = env.build_batch_item("app_opened", {}, _common_sample())
+    assert item is not None
+    if bad_uuid is None:
+        del item["uuid"]
+    else:
+        item["uuid"] = bad_uuid
+    assert env.build_batch([item], "k") is None
+
+
+def test_snapshot_item_rejects_uuid_object_instead_of_coercing_it():
+    item = {"uuid": uuid.UUID(_UUID), "event": "app_opened", "properties": {}}
+    assert env._snapshot_item(item) is None
+
+
+@pytest.mark.parametrize(
+    "spelling",
+    [
+        "6F1B1D3E-4A2B-4C9D-8E7F-0A1B2C3D4E5F",
+        "{6f1b1d3e-4a2b-4c9d-8e7f-0a1b2c3d4e5f}",
+        "urn:uuid:6f1b1d3e-4a2b-4c9d-8e7f-0a1b2c3d4e5f",
+        "6f1b1d3e4a2b4c9d8e7f0a1b2c3d4e5f",
+    ],
+)
+def test_build_batch_normalizes_uuid_spellings(spelling):
+    item = env.build_batch_item("app_opened", {}, _common_sample())
+    assert item is not None
+    item["uuid"] = spelling
+    batch = env.build_batch([item], "k")
+    assert batch is not None
+    assert batch["batch"][0]["uuid"] == "6f1b1d3e-4a2b-4c9d-8e7f-0a1b2c3d4e5f"
+
+
 def test_build_batch_rejects_an_empty_sequence():
     assert env.build_batch([], "phc_test_key") is None
 
@@ -394,10 +443,10 @@ def test_build_batch_copies_items_without_a_properties_mapping():
     extra to snapshot.
     """
 
-    items: list[dict[str, object]] = [{"event": "app_opened"}]
+    items: list[dict[str, object]] = [{"uuid": _UUID, "event": "app_opened"}]
     assert env.build_batch(items, "k") == {
         "api_key": "k",
-        "batch": [{"event": "app_opened"}],
+        "batch": [{"uuid": _UUID, "event": "app_opened"}],
     }
 
 

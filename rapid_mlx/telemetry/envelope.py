@@ -8,7 +8,7 @@ Telemetry v2 ships Orca-style product events to PostHog Cloud's
 
 where every item is exactly::
 
-    {"event": <name>, "distinct_id": <install_id>,
+    {"uuid": <event UUID>, "event": <name>, "distinct_id": <install_id>,
      "timestamp": <ISO-8601 UTC with "Z", second precision>,
      "properties": {...}}
 
@@ -39,6 +39,7 @@ whole item instead, so an event prop can never shadow a common one.
 
 from __future__ import annotations
 
+import uuid
 from collections.abc import Mapping, Sequence
 from datetime import datetime, timezone
 
@@ -77,10 +78,11 @@ def build_batch_item(
     """Shape one registry-validated event into one PostHog batch item.
 
     ``props`` and ``common`` are validated by the registry first; EITHER
-    failing drops the whole item. ``occurred_at`` defaults to now (UTC);
-    a naive value is read as UTC and any non-datetime drops the item.
-    Never raises: hostile mappings (methods that explode) drop the item
-    like any other rejection.
+    failing drops the whole item. A fresh top-level ``uuid`` gives PostHog
+    an idempotency key that remains stable through transport retries.
+    ``occurred_at`` defaults to now (UTC); a naive value is read as UTC
+    and any non-datetime drops the item. Never raises: hostile mappings
+    (methods that explode) drop the item like any other rejection.
     """
 
     try:
@@ -110,6 +112,7 @@ def build_batch_item(
         properties[_GEOIP_DISABLE_KEY] = True
         properties[_PROCESS_PERSON_PROFILE_KEY] = False
         return {
+            "uuid": str(uuid.uuid4()),
             "event": event_name,
             "distinct_id": common_props["install_id"],
             "timestamp": _utc_timestamp(moment),
@@ -120,18 +123,24 @@ def build_batch_item(
         return None
 
 
-def _snapshot_item(item: Mapping[str, object]) -> dict[str, object]:
+def _snapshot_item(item: Mapping[str, object]) -> dict[str, object] | None:
     """One-level copy of an item: the item itself plus its ``properties``.
 
-    ``build_batch_item`` nests exactly one level, so copying those two
-    layers is what makes the envelope immune to later caller edits: the
-    sender queues items between build and POST, and a write into
-    ``item["properties"]`` in that window would otherwise reach the wire
-    without ever passing the registry — the one non-fail-closed seam in
-    this module.
+    The top-level ``uuid`` must be a string parseable as a UUID. It is
+    normalized to the canonical lowercase, hyphenated spelling so equivalent
+    inputs cannot become distinct PostHog deduplication keys.
+    ``build_batch_item`` nests exactly one level, so copying the item and its
+    properties makes the envelope immune to later caller edits.
     """
 
     snapshot = dict(item)
+    item_uuid = snapshot.get("uuid")
+    if not isinstance(item_uuid, str):
+        return None
+    try:
+        snapshot["uuid"] = str(uuid.UUID(item_uuid))
+    except ValueError:
+        return None
     properties = snapshot.get("properties")
     if isinstance(properties, Mapping):
         snapshot["properties"] = dict(properties)
@@ -158,7 +167,12 @@ def build_batch(
             return None
         if len(items) == 0 or len(items) > MAX_BATCH_ITEMS:
             return None
-        batch: list[dict[str, object]] = [_snapshot_item(item) for item in items]
+        batch: list[dict[str, object]] = []
+        for item in items:
+            snapshot = _snapshot_item(item)
+            if snapshot is None:
+                return None
+            batch.append(snapshot)
         return {"api_key": api_key, "batch": batch}
     except Exception:
         # Garbage in, None out — see build_batch_item.

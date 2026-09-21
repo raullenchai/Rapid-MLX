@@ -123,6 +123,9 @@ ALLOWED_RAPID_MLX_ENV_VARS: frozenset[str] = frozenset(
         # interpreter is inspected; it does not route a request or mutate server
         # behavior. Invalid values are ignored by doctor.
         "RAPID_MLX_RUNTIME_PYTHON",
+        # Loopback-only test override for the telemetry endpoint. A non-loopback
+        # value is ignored, so it cannot route telemetry to a third party.
+        "RAPID_MLX_POSTHOG_URL",
         "RAPID_MLX_DISABLE_VERSION_CHECK",  # opt-out of version check
         "RAPID_MLX_PROFILE_VERBOSE",  # debug verbosity for profile logs
         # Local-only archive location for reproducible benchmark records. It
