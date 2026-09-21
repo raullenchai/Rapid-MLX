@@ -86,9 +86,12 @@ _QUANT_SHAPED_RE = re.compile(
 #: ``qwen3.8-27b-4bit-fp16`` (``rapid-mlx/Qwen3.8-27B-4bit-MTP-fp16-MLX``)
 #: is a 4-bit checkpoint with an fp16 MTP head; ranking ``fp16`` first put
 #: a 4-bit model in the "not quantized" bucket, which is the one error the
-#: enum cannot correct later. ``bf16`` / ``fp16`` still win when the name
-#: carries no width at all (``north-mini-code-bf16``), so they stay
-#: reachable. Review round 1, P1.
+#: enum cannot correct later. ``other`` outranks them for the same reason
+#: (see its entry below), so a precision wins only when the name carries
+#: no width AND no other quant-shaped token at all
+#: (``north-mini-code-bf16`` -> ``bf16``, but ``...-awq-fp16`` ->
+#: ``other``). That keeps both precisions reachable without letting them
+#: mask a quantization. Review rounds 1 and 2, P1/P2.
 _PRECEDENCE: tuple[str, ...] = (
     "dwq",
     "mxfp4",
