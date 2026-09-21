@@ -288,14 +288,13 @@ struct GitHubStarPromptCoordinatorTests {
             try await Task.sleep(for: .milliseconds(10))
         }
         request.cancel()
+        await #expect(throws: CancellationError.self) {
+            try await request.value
+        }
         let recordedPIDs = try #require(
             pids,
             "the helper must publish both the shell and descendant PIDs before cancellation"
         )
-
-        await #expect(throws: CancellationError.self) {
-            try await request.value
-        }
 
         let reapDeadline = clock.now.advanced(by: .seconds(3))
         while recordedPIDs.contains(where: { kill($0, 0) == 0 }), clock.now < reapDeadline {
