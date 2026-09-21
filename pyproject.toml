@@ -555,7 +555,7 @@ rapid_mlx = [
     # copy; tests/test_telemetry_registry_drift.py holds the two together.
     "telemetry/events.json",
     # Telemetry v2 release stamp -- written ONLY by the release workflow
-    # (scripts/write_release_stamp.py in .github/workflows/publish.yml, before
+    # (scripts/write_release_stamp.py in both PyPI release workflows, before
     # `python -m build`) and NEVER committed (.gitignore covers
     # rapid_mlx/telemetry/_release_stamp.json). Absent in checkouts by design:
     # setuptools ignores a missing glob, so a checkout build simply ships no

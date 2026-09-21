@@ -91,6 +91,7 @@ def _load_build_gate() -> ModuleType:
 build_gate = cast(_BuildGate, _load_build_gate())
 
 #: PostHog **public, write-only** project token for the Rapid-MLX project.
+#: Verify it in PostHog project settings for project 619833 (US Cloud).
 #: PostHog project API keys (``phc_…``) are explicitly safe to embed in
 #: public apps — they can only ingest events, never read them, and the
 #: stamp exists precisely so only official builds ingest. Override for

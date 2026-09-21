@@ -28,6 +28,7 @@ from __future__ import annotations
 
 import argparse
 import importlib.util
+import stat
 import sys
 import tarfile
 import zipfile
@@ -104,7 +105,15 @@ def _read_stamp_from_wheel(path: Path) -> str:
     """Extract the stamp text from a wheel (a zip archive)."""
     try:
         with zipfile.ZipFile(path) as archive:
-            raw = archive.read("/".join(_STAMP_PARTS))
+            member_name = "/".join(_STAMP_PARTS)
+            member = archive.getinfo(member_name)
+            mode = member.external_attr >> 16
+            file_type = stat.S_IFMT(mode)
+            if member.is_dir() or (
+                member.create_system == 3 and file_type not in (0, stat.S_IFREG)
+            ):
+                raise KeyError(member_name)
+            raw = archive.read(member)
     except KeyError:
         raise ValueError(
             f"{path.name}: wheel is missing {'/'.join(_STAMP_PARTS)} — "
@@ -122,12 +131,15 @@ def _read_stamp_from_sdist(path: Path) -> str:
             for member in archive.getmembers():
                 # The sdist wraps everything in one top-level directory;
                 # match on the trailing package-relative path so either
-                # spelling is found. A DIRECTORY named like the stamp is
-                # not a stamp: extractfile() yields None and we keep looking.
+                # spelling is found. A non-regular member named like the stamp
+                # is not a stamp; skip it without asking tarfile to dereference
+                # a potentially missing or hostile link target.
                 if PurePosixPath(member.name).parts[-3:] != _STAMP_PARTS:
                     continue
+                if not member.isfile():
+                    continue
                 handle = archive.extractfile(member)
-                if handle is None:
+                if handle is None:  # pragma: no cover - isfile() guarantees it
                     continue
                 return _decode(handle.read(), path.name)
     except tarfile.TarError as exc:

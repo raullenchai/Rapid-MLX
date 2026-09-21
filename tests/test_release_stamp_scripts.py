@@ -3,8 +3,8 @@
 
 Telemetry v2 transmits ONLY from official builds, and the ONLY writer of
 ``rapid_mlx/telemetry/_release_stamp.json`` is
-``scripts/write_release_stamp.py`` invoked by ``.github/workflows/publish.yml``
-before ``python -m build``. These tests pin:
+``scripts/write_release_stamp.py`` invoked by the release workflows before
+``python -m build``. These tests pin:
 
 * the channel derivation table (including hostile spellings that must
   fail the release job instead of writing a mislabelled stamp),
@@ -23,9 +23,13 @@ never runs in the default CI lanes where ``build`` is not installed.
 
 from __future__ import annotations
 
+import ast
 import io
 import json
 import os
+import re
+import shutil
+import stat
 import subprocess
 import sys
 import tarfile
@@ -190,6 +194,32 @@ def test_default_dest_is_this_worktrees_package_tree():
     )
     assert default_dest() == expected
     assert expected.parents[2] == REPO_ROOT
+
+
+def test_default_dest_is_independent_of_the_current_working_directory(
+    monkeypatch, tmp_path
+):
+    monkeypatch.chdir(tmp_path)
+    assert default_dest() == (
+        REPO_ROOT / "rapid_mlx" / "telemetry" / build_gate.RELEASE_STAMP_NAME
+    )
+
+
+def test_release_stamp_is_declared_as_setuptools_package_data():
+    pyproject = (REPO_ROOT / "pyproject.toml").read_text(encoding="utf-8")
+    section = re.search(
+        r"(?ms)^\[tool\.setuptools\.package-data\]\s*$"
+        r"(?P<body>.*?)(?=^\[|\Z)",
+        pyproject,
+    )
+    assert section is not None
+    rapid_mlx = re.search(
+        r"(?ms)^rapid_mlx\s*=\s*\[(?P<items>.*?)^\]",
+        section.group("body"),
+    )
+    assert rapid_mlx is not None
+    items = ast.literal_eval("[" + rapid_mlx.group("items") + "]")
+    assert "telemetry/_release_stamp.json" in items
 
 
 @pytest.mark.parametrize("version", ["latest", "", "1.2.3+local"])
@@ -361,6 +391,13 @@ def _make_wheel(
     return path
 
 
+def _add_wheel_symlink(archive: zipfile.ZipFile, member: str) -> None:
+    info = zipfile.ZipInfo(member)
+    info.create_system = 3
+    info.external_attr = (stat.S_IFLNK | 0o777) << 16
+    archive.writestr(info, "missing-target")
+
+
 def _make_sdist(
     dist: Path,
     version: str = "0.15.0rc1",
@@ -368,6 +405,8 @@ def _make_sdist(
     *,
     prefixed: bool = True,
     stamp_as_directory: bool = False,
+    stamp_as_symlink: bool = False,
+    decoy_stamp: bool = False,
 ) -> Path:
     """A synthetic sdist; *prefixed=False* stores members at the tar root."""
     path = dist / f"rapid_mlx-{version}.tar.gz"
@@ -383,6 +422,8 @@ def _make_sdist(
     with tarfile.open(path, "w:gz") as tf:
         add("pyproject.toml", b"[project]\nname = 'rapid-mlx'\n")
         add("rapid_mlx/__init__.py", b"")
+        if decoy_stamp:
+            add(f"docs/{build_gate.RELEASE_STAMP_NAME}", _stamp_text().encode())
         if stamp is not None:
             payload = stamp if isinstance(stamp, bytes) else stamp.encode("utf-8")
             if stamp_as_directory:
@@ -393,6 +434,13 @@ def _make_sdist(
                 )
             else:
                 add(f"rapid_mlx/telemetry/{build_gate.RELEASE_STAMP_NAME}", payload)
+        elif stamp_as_symlink:
+            info = tarfile.TarInfo(
+                f"{prefix}rapid_mlx/telemetry/{build_gate.RELEASE_STAMP_NAME}"
+            )
+            info.type = tarfile.SYMTYPE
+            info.linkname = "missing-target"
+            tf.addfile(info)
     return path
 
 
@@ -441,12 +489,52 @@ def test_verify_missing_stamp_in_sdist(tmp_path):
         verify_dist(dist)
 
 
+def test_verify_sdist_ignores_same_filename_outside_package_path(tmp_path):
+    dist = tmp_path / "dist"
+    dist.mkdir()
+    _make_wheel(dist, stamp=_stamp_text("rc"))
+    _make_sdist(dist, stamp=None, decoy_stamp=True)
+    with pytest.raises(ValueError, match="sdist is missing"):
+        verify_dist(dist)
+
+
+def test_verify_wheel_ignores_same_filename_outside_package_path(tmp_path):
+    dist = tmp_path / "dist"
+    dist.mkdir()
+    wheel = _make_wheel(dist, stamp=None)
+    with zipfile.ZipFile(wheel, "a") as archive:
+        archive.writestr(f"docs/{build_gate.RELEASE_STAMP_NAME}", _stamp_text("rc"))
+    _make_sdist(dist, stamp=_stamp_text("rc"))
+    with pytest.raises(ValueError, match="wheel is missing"):
+        verify_dist(dist)
+
+
 def test_verify_sdist_stamp_member_that_is_a_directory_is_not_a_stamp(tmp_path):
     dist = tmp_path / "dist"
     dist.mkdir()
     _make_wheel(dist, stamp=_stamp_text("rc"))
     _make_sdist(dist, stamp=None, stamp_as_directory=True)
     with pytest.raises(ValueError, match="sdist is missing"):
+        verify_dist(dist)
+
+
+def test_verify_sdist_stamp_member_that_is_a_symlink_is_not_a_stamp(tmp_path):
+    dist = tmp_path / "dist"
+    dist.mkdir()
+    _make_wheel(dist, stamp=_stamp_text("rc"))
+    _make_sdist(dist, stamp=None, stamp_as_symlink=True)
+    with pytest.raises(ValueError, match="sdist is missing"):
+        verify_dist(dist)
+
+
+def test_verify_wheel_stamp_member_that_is_a_symlink_is_not_a_stamp(tmp_path):
+    dist = tmp_path / "dist"
+    dist.mkdir()
+    wheel = _make_wheel(dist, stamp=None)
+    with zipfile.ZipFile(wheel, "a") as archive:
+        _add_wheel_symlink(archive, WHEEL_STAMP_MEMBER)
+    _make_sdist(dist, stamp=_stamp_text("rc"))
+    with pytest.raises(ValueError, match="wheel is missing"):
         verify_dist(dist)
 
 
@@ -630,7 +718,89 @@ def test_bare_venv_runs_both_release_stamp_scripts_from_outside_repo(tmp_path):
     assert "release stamp verified in wheel and sdist" in proc.stdout
 
 
+# ------------------------------------------------------ workflow contracts
+
+
+def test_release_artifact_matrix_stamps_and_verifies_publishable_builds():
+    workflow = (
+        REPO_ROOT / ".github" / "workflows" / "release-artifact-matrix.yml"
+    ).read_text(encoding="utf-8")
+    stamp_step = workflow.index("- name: Write the telemetry release stamp")
+    build_step = workflow.index("- name: Build and validate distributions")
+    verify_step = workflow.index("- name: Verify the telemetry release stamp")
+    manifest_step = workflow.index("- name: Create release artifact manifest")
+    assert stamp_step < build_step < verify_step < manifest_step
+    stamp_block = workflow[stamp_step:build_step]
+    verify_block = workflow[verify_step:manifest_step]
+    assert "if: inputs.publish && startsWith(inputs.ref, 'v')" in stamp_block
+    assert "REF: ${{ inputs.ref }}" in stamp_block
+    assert 'write_release_stamp.py --version "$REF"' in stamp_block
+    assert "if: inputs.publish" in verify_block
+    assert "${{" not in "\n".join(
+        line for line in stamp_block.splitlines() if line.lstrip().startswith("run:")
+    )
+
+
+def test_release_artifact_matrix_has_a_final_stamp_gate_before_pypi():
+    workflow = (
+        REPO_ROOT / ".github" / "workflows" / "release-artifact-matrix.yml"
+    ).read_text(encoding="utf-8")
+    publish = workflow.index("- name: Publish exact candidate to PyPI")
+    preceding_step = workflow.rfind("      - name:", 0, publish)
+    block = workflow[preceding_step:publish]
+    assert "Verify the telemetry release stamp immediately before PyPI" in block
+    assert "EXPECTED_VERSION: ${{ needs.build-candidate.outputs.version }}" in block
+    assert (
+        'python scripts/verify_release_stamp.py candidate/dist/ --version "$EXPECTED_VERSION"'
+        in block
+    )
+
+
+def test_legacy_publish_workflow_only_runs_for_engine_release_tags():
+    workflow = (REPO_ROOT / ".github" / "workflows" / "publish.yml").read_text(
+        encoding="utf-8"
+    )
+    build_job = workflow.split("jobs:\n", 1)[1].split("    steps:\n", 1)[0]
+    assert "if: startsWith(github.event.release.tag_name, 'v')" in build_job
+
+
+def test_ci_runs_the_real_release_stamp_build_once():
+    workflow = (REPO_ROOT / ".github" / "workflows" / "ci.yml").read_text(
+        encoding="utf-8"
+    )
+    assert "Install package builder for release-stamp integration test" in workflow
+    assert "Run real release-stamp package build" in workflow
+    assert "--run-slow -m slow" in workflow
+    assert "test_real_build_ships_the_stamp_in_wheel_and_sdist" in workflow
+
+
 # ------------------------------------------- real build (slow, opt-in)
+
+
+def _project_version() -> str:
+    pyproject = (REPO_ROOT / "pyproject.toml").read_text(encoding="utf-8")
+    project = re.search(r"(?ms)^\[project\]\s*$(?P<body>.*?)(?=^\[|\Z)", pyproject)
+    assert project is not None
+    version = re.search(r'(?m)^version\s*=\s*"(?P<version>[^"]+)"\s*$', project["body"])
+    assert version is not None
+    return version["version"]
+
+
+def _copy_tracked_tree(dest: Path) -> None:
+    tracked = subprocess.run(
+        ["git", "ls-files", "-z"],
+        cwd=REPO_ROOT,
+        capture_output=True,
+        check=True,
+    ).stdout.split(b"\0")
+    for raw_path in tracked:
+        if not raw_path:
+            continue
+        relative = Path(os.fsdecode(raw_path))
+        source = REPO_ROOT / relative
+        target = dest / relative
+        target.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copy2(source, target)
 
 
 @pytest.mark.slow
@@ -640,26 +810,44 @@ def test_real_build_ships_the_stamp_in_wheel_and_sdist(tmp_path):
     Proves the packaging chain end to end: the stamp written into
     ``rapid_mlx/telemetry/`` reaches the sdist (plain setuptools includes
     package_data globs when no MANIFEST.in exists) and the wheel built
-    from that sdist. Needs the ``build`` package and network access for
-    build isolation, so it is marked slow and skipped when ``build`` is
-    absent (the CI unit lanes do not install it).
+    from that sdist. It builds from a temporary copy containing only
+    Git-tracked files, so an interrupted test can never leave an official-build
+    stamp in the checkout. Needs the ``build`` package and network access for
+    build isolation, so it is marked slow and skipped when ``build`` is absent.
     """
     pytest.importorskip("build")
-    stamp_path, _ = write_stamp("v0.15.0rc1")
-    try:
-        assert stamp_path == default_dest() and stamp_path.exists()
-        out = tmp_path / "dist"
-        subprocess.run(
-            [sys.executable, "-m", "build", "--outdir", str(out)],
-            cwd=str(REPO_ROOT),
-            capture_output=True,
-            text=True,
-            check=True,
-        )
-        results = verify_dist(out, expected_version="v0.15.0rc1")
-        assert [stamp.channel for _, stamp in results] == ["rc", "rc"]
-    finally:
-        # The stamp is never committed and must not leak into the worktree:
-        # other tests (and git status) rely on its absence.
-        stamp_path.unlink(missing_ok=True)
-    assert not stamp_path.exists()
+    real_stamp = default_dest()
+    assert not real_stamp.exists()
+    source = tmp_path / "source"
+    _copy_tracked_tree(source)
+    version = _project_version()
+    copied_stamp = source / "rapid_mlx" / "telemetry" / build_gate.RELEASE_STAMP_NAME
+    subprocess.run(
+        [
+            sys.executable,
+            str(REPO_ROOT / "scripts" / "write_release_stamp.py"),
+            "--version",
+            version,
+            "--dest",
+            str(copied_stamp),
+        ],
+        cwd=source,
+        capture_output=True,
+        text=True,
+        check=True,
+    )
+    out = tmp_path / "dist"
+    subprocess.run(
+        [sys.executable, "-m", "build", "--outdir", str(out)],
+        cwd=source,
+        capture_output=True,
+        text=True,
+        check=True,
+    )
+    results = verify_dist(out, expected_version=version)
+    expected_channel = derive_channel(version)
+    assert [stamp.channel for _, stamp in results] == [
+        expected_channel,
+        expected_channel,
+    ]
+    assert not real_stamp.exists()
