@@ -302,3 +302,106 @@ def test_model_type_enum_covers_every_alias_modality(registry):
     assert (_VALID_MODALITIES - {"text"}) <= declared
     assert {"llm", "vlm"} <= declared
     assert not (_RESERVED_MODALITIES & declared)
+
+
+# ``quant`` is the fourth such enum, and the one the catalog can move under:
+# every new alias ships a quantization spelling in its name. The registry
+# carries ONE canonical token per concept (``q4`` normalizes to ``4bit``), so
+# these three tests pin the normalization in both directions.
+
+CATALOG = REPO_ROOT / "rapid_mlx" / "aliases.json"
+
+# Deliberately NOT the module's own regex — a copy of it would make the test
+# tautological. This is an independently written "looks like a quantization
+# marker" shape; if it drifts wider than the module's, the test gets stricter,
+# which is the safe direction.
+QUANT_SHAPED = re.compile(
+    r"^(?:q\d+|dq\d+|\d+bit|\d+bpw|int\d+|[a-z]{0,2}fp\d+|bf\d+"
+    r"|nf\d+|dwq|awq|gptq)$"
+)
+
+# Spellings we see in the catalog, have decided NOT to give a canonical token,
+# and therefore accept as ``other``. Every entry is a deliberate decision:
+#   5bpw -> ``qwen3.8-27b-mixed-3.5bpw``, a mixed 3.5-bits-per-weight
+#           checkpoint that no single bit-width token describes honestly.
+# A spelling that is in neither this set nor the module's table fails below,
+# which is the point: the registry cannot fall behind the catalog silently.
+ACCEPTED_AS_OTHER = {"5bpw"}
+
+
+@pytest.fixture(scope="module")
+def catalog() -> dict:
+    return json.loads(CATALOG.read_text(encoding="utf-8"))
+
+
+#: Alias fields that hold a Hugging Face repo id. ``hf_path`` is the served
+#: checkpoint; the draft entries are separate repos with their own quant
+#: spelling in the name, and review round 1 caught that skipping them left a
+#: hole in the drift net for 22 catalog entries.
+REPO_ID_FIELDS = (
+    "hf_path",
+    "mtp_draft_model",
+    "native_mtp_draft_model",
+    "ddtree_draft_model",
+    "dflash_draft_model",
+)
+
+
+def _catalog_names(catalog: dict) -> list[str]:
+    """Every alias spelling AND every repo id the catalog names."""
+
+    names: list[str] = []
+    for alias, entry in catalog.items():
+        names.append(alias)
+        for field in REPO_ID_FIELDS:
+            value = entry.get(field)
+            if value:
+                names.append(value)
+    return names
+
+
+def test_the_draft_repo_fields_are_really_in_the_catalog():
+    """If a field is renamed, ``_catalog_names`` must not go quietly blind."""
+
+    catalog = json.loads(CATALOG.read_text(encoding="utf-8"))
+    present = {field for entry in catalog.values() for field in entry}
+    assert set(REPO_ID_FIELDS) <= present, (
+        f"REPO_ID_FIELDS no longer match aliases.json: {sorted(present)}"
+    )
+
+
+def test_every_catalog_name_maps_inside_the_quant_enum(registry, catalog):
+    from rapid_mlx.telemetry.quant import quant_token
+
+    allowed = set(registry["enums"]["quant"]["values"])
+    for name in _catalog_names(catalog):
+        token = quant_token(name)
+        assert token in allowed, f"{name} -> {token!r}, outside the quant enum"
+
+
+def test_no_catalog_quant_spelling_is_unrecognized(catalog):
+    """A new alias spelling must be mapped on purpose, not absorbed."""
+
+    from rapid_mlx.telemetry.quant import known_quant_tokens
+
+    known = known_quant_tokens() | ACCEPTED_AS_OTHER
+    seen: set[str] = set()
+    for name in _catalog_names(catalog):
+        for raw in re.findall(r"[a-z0-9]+", name.lower()):
+            if QUANT_SHAPED.match(raw):
+                seen.add(raw)
+    unmapped = sorted(seen - known)
+    assert not unmapped, (
+        f"catalog quant spellings with no canonical token: {unmapped}; map "
+        "them in rapid_mlx/telemetry/quant.py or accept them as 'other' here"
+    )
+    # And the mapping is not dead weight: the catalog really does use it.
+    assert seen, "no quant spellings found in the catalog at all?"
+
+
+def test_quant_enum_and_the_normalizer_agree_exactly(registry):
+    """Neither side may grow a value the other does not know about."""
+
+    from rapid_mlx.telemetry.quant import canonical_quant_values
+
+    assert canonical_quant_values() == set(registry["enums"]["quant"]["values"])
