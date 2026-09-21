@@ -308,6 +308,12 @@ async def create_completion(request: CompletionRequest, raw_request: Request):
             },
         )
     engine = get_engine(request.model)
+    # Codex P1 on #3600: capture the telemetry identity WITH the engine and
+    # carry it to the terminal emit; re-resolving the registry at request
+    # completion can name a model that a mid-request swap made current.
+    from rapid_mlx.telemetry.model_id import engine_telemetry_id
+
+    _served_telemetry_id = engine_telemetry_id(engine)
     await ensure_engine_ready(engine)
 
     # Pre-flight admission gate (C4). Reservation is released by the
@@ -395,6 +401,7 @@ async def create_completion(request: CompletionRequest, raw_request: Request):
                         prompts[0],
                         request,
                         request_id_holder=_completion_rid_holder,
+                        served_telemetry_id=_served_telemetry_id,
                         caller_agent=raw_request.headers.get("user-agent")
                         if raw_request is not None
                         else None,
@@ -676,7 +683,7 @@ async def create_completion(request: CompletionRequest, raw_request: Request):
 
         _telemetry_emit.request(
             endpoint="/v1/completions",
-            model_alias=_served_model_id(request.model),
+            model_alias=_served_telemetry_id or _served_model_id(request.model),
             stream=False,
             tool_call_used=False,
             prompt_tokens=total_prompt_tokens,
@@ -730,6 +737,7 @@ async def stream_completion(
     request_id_holder: list | None = None,
     caller_agent: str | None = None,
     caller_client: str | None = None,
+    served_telemetry_id: str | None = None,
 ) -> AsyncIterator[str]:
     """Stream completion response.
 
@@ -1026,7 +1034,7 @@ async def stream_completion(
 
     _telemetry_emit.request(
         endpoint="/v1/completions",
-        model_alias=_served_model_id(request.model),
+        model_alias=served_telemetry_id or _served_model_id(request.model),
         stream=True,
         tool_call_used=False,
         prompt_tokens=_ptok,

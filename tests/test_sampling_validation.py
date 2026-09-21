@@ -358,6 +358,7 @@ def _stub_chat_impl(monkeypatch) -> dict:
         engine,
         _commit_state,
         _admission_acquired,
+        served_telemetry_id=None,
     ):
         captured["called"] = True
         captured["request"] = request

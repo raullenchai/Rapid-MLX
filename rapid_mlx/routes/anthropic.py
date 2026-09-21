@@ -642,6 +642,12 @@ async def create_anthropic_message(
     if not (anthropic_request.model or "").startswith(("claude-", "gpt-")):
         _validate_model_name(anthropic_request.model)
     engine = get_engine(anthropic_request.model)
+    # Codex P1 on #3600: capture the telemetry identity WITH the engine and
+    # carry it to the terminal emit; re-resolving the registry at request
+    # completion can name a model that a mid-request swap made current.
+    from rapid_mlx.telemetry.model_id import engine_telemetry_id
+
+    _served_telemetry_id = engine_telemetry_id(engine)
     await ensure_engine_ready(engine)
 
     # Pre-flight admission gate (C4) — see routes/chat.py for rationale.
@@ -831,6 +837,7 @@ async def create_anthropic_message(
                     openai_request,
                     anthropic_request,
                     request_id_holder=_anth_rid_holder,
+                    served_telemetry_id=_served_telemetry_id,
                     prompt_tokens_estimate=_ctx_prompt_tokens,
                     prepared_messages=messages,
                     prepared_images=images,
@@ -1209,7 +1216,8 @@ async def create_anthropic_message(
 
         _telemetry_emit.request(
             endpoint="/v1/messages",
-            model_alias=_served_model_id(anthropic_request.model),
+            model_alias=_served_telemetry_id
+            or _served_model_id(anthropic_request.model),
             stream=False,
             tool_call_used=bool(tool_calls),
             prompt_tokens=output.prompt_tokens,
@@ -1622,6 +1630,7 @@ async def _stream_anthropic_messages(
     prepared_videos: list | None = None,
     caller_agent: str | None = None,
     caller_client: str | None = None,
+    served_telemetry_id: str | None = None,
 ) -> AsyncIterator[str]:
     """Stream Anthropic Messages API SSE events.
 
@@ -3248,7 +3257,7 @@ async def _stream_anthropic_messages(
 
     _telemetry_emit.request(
         endpoint="/v1/messages",
-        model_alias=_served_model_id(anthropic_request.model),
+        model_alias=served_telemetry_id or _served_model_id(anthropic_request.model),
         stream=True,
         tool_call_used=bool(tool_calls),
         prompt_tokens=prompt_tokens,

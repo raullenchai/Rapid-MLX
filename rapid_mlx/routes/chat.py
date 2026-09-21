@@ -3669,6 +3669,13 @@ async def create_chat_completion(request: ChatCompletionRequest, raw_request: Re
     """
     _validate_model_name(request.model)
     engine = get_engine(request.model)
+    from rapid_mlx.telemetry.model_id import engine_telemetry_id
+
+    # Codex P1 on #3600: the telemetry identity is captured HERE, with the
+    # engine, and carried to the terminal emit. Resolving it again at
+    # completion would re-read a registry that a resident-model swap may
+    # have repointed mid-request.
+    _served_telemetry_id = engine_telemetry_id(engine)
     await ensure_engine_ready(engine)
 
     # Admission reservation is acquired LATER — after cheap validation
@@ -3682,7 +3689,12 @@ async def create_chat_completion(request: ChatCompletionRequest, raw_request: Re
     _admission_acquired = [False]
     try:
         return await _create_chat_completion_impl(
-            request, raw_request, engine, _commit_state, _admission_acquired
+            request,
+            raw_request,
+            engine,
+            _commit_state,
+            _admission_acquired,
+            _served_telemetry_id,
         )
     except asyncio.CancelledError as exc:
         _raise_lifecycle_cancel_or_reraise(engine, exc)
@@ -4076,6 +4088,7 @@ async def _create_chat_completion_impl(
     engine,
     _commit_state: list[bool],
     _admission_acquired: list[bool],
+    served_telemetry_id: str | None = None,
 ):
     """Inner impl for ``create_chat_completion``.
 
@@ -5509,6 +5522,7 @@ async def _create_chat_completion_impl(
                         strict_mode=strict_mode,
                         caller_agent=_caller_ua,
                         caller_client=_caller_client,
+                        served_telemetry_id=served_telemetry_id,
                         **chat_kwargs,
                     ),
                     raw_request,
@@ -5548,6 +5562,7 @@ async def _create_chat_completion_impl(
                         request_id=response_id,
                         caller_agent=_caller_ua,
                         caller_client=_caller_client,
+                        served_telemetry_id=served_telemetry_id,
                         **chat_kwargs,
                     ),
                     raw_request,
@@ -5569,6 +5584,7 @@ async def _create_chat_completion_impl(
             request_id=response_id,
             caller_agent=_caller_ua,
             caller_client=_caller_client,
+            served_telemetry_id=served_telemetry_id,
             _client_disconnect_state=_client_disconnect_state,
             **chat_kwargs,
         )
@@ -6734,7 +6750,7 @@ async def _create_chat_completion_impl(
 
     _telemetry_emit.request(
         endpoint="/v1/chat/completions",
-        model_alias=_served_model_id(request.model),
+        model_alias=served_telemetry_id or _served_model_id(request.model),
         stream=False,
         tool_call_used=bool(tool_calls),
         prompt_tokens=output.prompt_tokens,
@@ -6789,6 +6805,7 @@ async def stream_chat_completion(
     created: int | None = None,
     caller_agent: str | None = None,
     caller_client: str | None = None,
+    served_telemetry_id: str | None = None,
     _client_disconnect_state: list[bool] | None = None,
     **kwargs,
 ) -> AsyncIterator[str]:
@@ -8165,7 +8182,7 @@ async def stream_chat_completion(
 
         _telemetry_emit.request(
             endpoint="/v1/chat/completions",
-            model_alias=_served_model_id(request.model),
+            model_alias=served_telemetry_id or _served_model_id(request.model),
             stream=True,
             tool_call_used=_tool_call_used,
             prompt_tokens=prompt_tokens,
@@ -8224,6 +8241,7 @@ async def stream_chat_completion_guided(
     strict_mode: bool = False,
     caller_agent: str | None = None,
     caller_client: str | None = None,
+    served_telemetry_id: str | None = None,
     **kwargs,
 ) -> AsyncIterator[str]:
     """Stream chat completion with json_schema constrained decoding.
@@ -8473,6 +8491,7 @@ async def stream_chat_completion_guided(
                     request_id=response_id,
                     caller_agent=caller_agent,
                     caller_client=caller_client,
+                    served_telemetry_id=served_telemetry_id,
                     **kwargs,
                 ),
             )
@@ -8653,6 +8672,7 @@ async def stream_chat_completion_strict_postgen(
     response_id: str | None = None,
     caller_agent: str | None = None,
     caller_client: str | None = None,
+    served_telemetry_id: str | None = None,
     **kwargs,
 ) -> AsyncIterator[str]:
     """R12-4 — streaming variant of post-generate strict enforcement.
@@ -8807,6 +8827,7 @@ async def stream_chat_completion_strict_postgen(
         created=created,
         caller_agent=caller_agent,
         caller_client=caller_client,
+        served_telemetry_id=served_telemetry_id,
         **kwargs,
     )
     try:
