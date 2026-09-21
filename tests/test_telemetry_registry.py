@@ -228,6 +228,22 @@ def test_python_version_is_optional_for_the_desktop_surface():
     assert reg.validate_common(props) is not None
 
 
+def test_cohort_props_are_optional_when_the_store_cannot_answer():
+    """The two cohort stamps are optional on purpose: a read-only HOME,
+    a locked or corrupt database means the store cannot answer, and
+    dropping EVERY event over it would blind telemetry on exactly the
+    machines having trouble. Absence must validate — analysts read it
+    as "unknown", never as 0 / first day."""
+
+    props = _common()
+    del props["nth_model_served"]
+    del props["days_since_first_run_bucket"]
+    accepted = reg.validate_common(props)
+    assert accepted is not None
+    assert "nth_model_served" not in accepted
+    assert "days_since_first_run_bucket" not in accepted
+
+
 def test_non_uuid_install_id_is_dropped():
     assert reg.validate_common(_common(install_id="not-a-uuid")) is None
 
