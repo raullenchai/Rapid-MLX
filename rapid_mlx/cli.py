@@ -14104,13 +14104,20 @@ def main():
     # disclosure before any model load logs scroll past.
     _just_collected_consent = False
     if getattr(args, "command", None) is not None:
-        from rapid_mlx.telemetry import maybe_prompt_for_consent
+        from rapid_mlx.telemetry import consent_runtime, maybe_prompt_for_consent
         from rapid_mlx.telemetry.state import set_cli_kill_switch
 
         # ``--no-telemetry`` is a per-run override; thread it into the
         # process-level kill switch so every emit site sees it without
         # having to plumb the flag through every signature.
         set_cli_kill_switch(getattr(args, "no_telemetry", False))
+
+        # Telemetry v2 default-on wiring (T11): resolve the consent
+        # decision, deliver the disclosure notice to stderr, then apply
+        # the locked, merging write-back -- in that order, before any
+        # emit or heavy subcommand work. The v1 prompt below stays
+        # exactly where it is until T13 removes the v1 wire.
+        consent_runtime.startup()
 
         _just_collected_consent = maybe_prompt_for_consent(
             args.command,
