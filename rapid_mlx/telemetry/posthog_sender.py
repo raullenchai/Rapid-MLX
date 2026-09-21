@@ -1,0 +1,531 @@
+# SPDX-License-Identifier: Apache-2.0
+"""PostHog Cloud sender — transport, bounded queue, and burst caps.
+
+This is the telemetry v2 sender component: it accepts already-built
+batch items (what :func:`rapid_mlx.telemetry.envelope.build_batch_item`
+produced), enforces Orca-style volume limits, and POSTs batches to
+PostHog Cloud. Behaviour is modelled on Orca's
+``src/main/telemetry/client.ts`` + ``burst-cap.ts``.
+
+Wire contract
+=============
+
+Events reach PostHog Cloud by POSTing JSON to the ``/batch/`` endpoint
+(:data:`POSTHOG_BATCH_URL`)::
+
+    {"api_key": <project api key>, "batch": [<item>, ...]}
+
+Each item is exactly ``{"event", "distinct_id", "timestamp",
+"properties"}``. At most ``envelope.MAX_BATCH_ITEMS`` (100) items go in
+one request — the sender chunks longer queues itself. Bodies are
+JSON-encoded compactly and sent with a fixed ``User-Agent:
+rapid-mlx-telemetry``.
+
+The five drop reasons
+=====================
+
+``capture()`` is bounded, lossy, and never raises. An item is dropped
+(returns ``False``, by design silently) when ANY of these holds:
+
+1. **Not an official build** — the official-build gate returns ``None``
+   (developer checkout, editable install, CI machine, fork rebuild).
+2. **Permission withdrawn** — ``allowed()`` reads ``False`` at capture
+   time (environment kill switch active, or consent does not currently
+   permit upload). Checked LIVE on every capture, like Orca, so a user
+   who withdraws mid-session goes dark on the very next event.
+3. **Per-event burst cap** — the event name's token bucket (30 events
+   per rolling minute, lazy refill, capacity bounded) is empty.
+   Unknown event names must not create unbounded buckets: the bucket
+   registry itself is capped at 64 names, beyond which items drop.
+4. **Per-session ceiling** — this process has already accepted 1000
+   items.
+5. **Queue full** — the in-memory queue holds 5000 items; the NEW item
+   is dropped (never the oldest, and never by blocking the caller).
+
+Each cap overflow logs ONCE per cap per process at debug level, then
+stays silent for the rest of the process.
+
+Bounded IN-MEMORY buffering — not durable
+=========================================
+
+The queue holds accepted items in process memory only. If the process
+exits, crashes, or a flush POST fails, those events are gone: this is
+best-effort product analytics, not a durable pipeline. Nothing here
+writes to disk, and a failed batch is dropped rather than retried more
+than once (at most ONE immediate retry for 5xx / transport failures;
+4xx is never retried).
+
+This module is a pure addition: no emitter calls it yet, the v1
+transport (:mod:`rapid_mlx.telemetry.transport`) is untouched, and
+nothing in ``serve`` imports it. Importing this module starts no
+thread and opens no socket — the flush daemon starts lazily on the
+first ACCEPTED capture, and the wiring PR will call
+:func:`install_atexit` once at startup for the shutdown flush.
+"""
+
+from __future__ import annotations
+
+import atexit
+import json
+import logging
+import os
+import threading
+import time
+from collections.abc import Callable, Mapping
+from urllib.error import HTTPError
+from urllib.parse import urlparse
+from urllib.request import Request, urlopen
+
+from rapid_mlx.telemetry import build_gate, emit, envelope, state
+from rapid_mlx.telemetry.build_gate import ReleaseStamp
+
+logger = logging.getLogger(__name__)
+
+#: PostHog Cloud batch ingest (US region).
+POSTHOG_BATCH_URL = "https://us.i.posthog.com/batch/"
+
+#: Test-only URL override. Honoured ONLY when it points at loopback —
+#: a user must not be able to redirect telemetry at a third party by
+#: accident, and tests must never hit production.
+POSTHOG_URL_ENV = "RAPID_MLX_POSTHOG_URL"
+
+DEFAULT_POST_TIMEOUT_S = 5.0
+USER_AGENT = "rapid-mlx-telemetry"
+
+#: Burst caps (Orca's burst-cap.ts): 30 events per rolling minute per
+#: event name, 64 distinct event names, 1000 accepted items per process,
+#: 5000 queued items — in that check order inside ``capture``.
+PER_EVENT_BURST = 30
+PER_EVENT_REFILL_PERIOD_S = 60.0
+MAX_EVENT_BUCKETS = 64
+SESSION_ITEM_CEILING = 1000
+MAX_QUEUE_ITEMS = 5000
+
+#: The flush daemon drains when this many items are queued, or when
+#: this much time has passed since the first queued item.
+FLUSH_THRESHOLD = 20
+FLUSH_INTERVAL_S = 10.0
+
+#: Wake-up slice while items are pending, so an injectable clock's
+#: advance is noticed promptly. An idle sender (empty queue) parks on
+#: the wake event instead and costs nothing.
+_POLL_S = 0.1
+
+
+def _is_loopback_url(url: str) -> bool:
+    """True iff ``url`` targets loopback — the only allowed override.
+
+    Same rule as the v1 transport: the match is on the parsed netloc,
+    never a substring, and a malformed port fails closed here rather
+    than surfacing later from inside the POST.
+    """
+    try:
+        parts = urlparse(url)
+        _ = parts.port  # force port validation; raises ValueError if malformed
+    except (TypeError, ValueError):
+        return False
+    if parts.scheme not in ("http", "https"):
+        return False
+    host = (parts.hostname or "").lower()
+    return host in ("localhost", "127.0.0.1", "::1")
+
+
+def _resolve_posthog_url() -> str:
+    """The POST target: production, plus the loopback-only test override.
+
+    Resolved per drain so env changes take effect live. A set-but-
+    non-loopback override is IGNORED (production stays in place) —
+    unlike the v1 transport's fail-closed ``None``, because this sender
+    must keep behaving normally for real users when a stale test env
+    var leaks into their environment.
+    """
+    raw = os.environ.get(POSTHOG_URL_ENV)
+    if raw is not None and _is_loopback_url(raw):
+        return raw
+    return POSTHOG_BATCH_URL
+
+
+def default_post(url: str, body: bytes, timeout: float) -> int:
+    """Stdlib transport: ``(url, body, timeout) -> HTTP status``.
+
+    HTTP-level outcomes come back as the status code — ``urlopen``
+    raises ``HTTPError`` for >=400, and the code is unwrapped here so
+    the sender's retry policy sees a status like the contract promises.
+    Transport failures (DNS, refused connection, timeout) RAISE; the
+    sender treats them like 5xx and retries once.
+    """
+    req = Request(
+        url,
+        data=body,
+        method="POST",
+        headers={"Content-type": "application/json", "User-agent": USER_AGENT},
+    )
+    try:
+        with urlopen(req, timeout=timeout) as resp:
+            return int(resp.status)
+    except HTTPError as e:
+        # HTTPError holds a file-like response body; close it explicitly
+        # so the socket does not linger across retries.
+        e.close()
+        return int(e.code)
+
+
+def _default_allowed() -> bool:
+    """Default permission check until the v2 default-on wiring lands.
+
+    True only when no environment kill switch is active AND the v1
+    consent machinery currently permits upload. Read live on every
+    capture.
+    """
+    if state._env_kill_switch_active():
+        return False
+    return emit.is_enabled()
+
+
+class _TokenBucket:
+    """Lazy-refill token bucket: 30 events per rolling minute, bounded."""
+
+    __slots__ = ("tokens", "updated_at")
+
+    def __init__(self, *, now: float) -> None:
+        self.tokens = float(PER_EVENT_BURST)
+        self.updated_at = now
+
+    def try_take(self, now: float) -> bool:
+        elapsed = now - self.updated_at
+        if elapsed > 0.0:
+            refill = elapsed * (PER_EVENT_BURST / PER_EVENT_REFILL_PERIOD_S)
+            # Capacity-bounded: idling never stores more than one burst.
+            self.tokens = min(float(PER_EVENT_BURST), self.tokens + refill)
+            self.updated_at = now
+        if self.tokens < 1.0:
+            return False
+        self.tokens -= 1.0
+        return True
+
+
+class PostHogSender:
+    """Accepts built envelope items, enforces the caps, POSTs batches.
+
+    Every public method is best-effort: it never raises, and it never
+    blocks the caller beyond an explicit ``timeout`` budget. The flush
+    thread starts lazily on the first accepted capture and is a daemon,
+    so it never keeps the interpreter alive.
+    """
+
+    def __init__(
+        self,
+        *,
+        post: Callable[[str, bytes, float], int] | None = None,
+        clock: Callable[[], float] | None = None,
+        gate: Callable[[], ReleaseStamp | None] | None = None,
+        allowed: Callable[[], bool] | None = None,
+    ) -> None:
+        self._post = post if post is not None else default_post
+        self._clock = clock if clock is not None else time.monotonic
+        self._gate = gate if gate is not None else build_gate.official_build
+        self._allowed = allowed if allowed is not None else _default_allowed
+        self._post_timeout = DEFAULT_POST_TIMEOUT_S
+        self._lock = threading.Lock()
+        self._lifecycle_lock = threading.Lock()
+        self._wake = threading.Event()
+        self._thread: threading.Thread | None = None
+        self._queue: list[dict[str, object]] = []
+        self._first_queued_at: float | None = None
+        self._buckets: dict[str, _TokenBucket] = {}
+        self._accepted = 0
+        self._force = False
+        self._draining = False
+        self._closed = False
+        self._cap_logged: set[str] = set()
+
+    # ----------------------------------------------------------------- API
+
+    def capture(self, item: Mapping[str, object]) -> bool:
+        """Accept one built item; ``True`` iff it was queued for sending.
+
+        Never raises, never blocks, O(1). Drops (returns ``False``) for
+        any of the five reasons in the module docstring.
+        """
+        try:
+            return self._capture(item)
+        except Exception:
+            # Hostile items (a mapping whose accessors explode) drop like
+            # any other rejection. KeyboardInterrupt / SystemExit are not
+            # Exception subclasses and still propagate untouched.
+            return False
+
+    def flush(self, timeout: float = 2.0) -> None:
+        """Bounded synchronous drain for shutdown.
+
+        Asks the flush thread to drain everything currently queued and
+        waits up to ``timeout`` seconds (real wall-clock time, not the
+        injectable clock — the shutdown budget must hold regardless of
+        test clocks) for the queue to empty AND any in-flight POST to
+        finish, so a returned ``flush`` means everything accepted before
+        it was sent or permanently dropped. Returns with items still
+        pending if that could not happen in time (e.g. a hung POST).
+        Never raises; safe to call after :meth:`close`.
+        """
+        with self._lock:
+            if not self._queue and not self._draining:
+                return
+            self._force = True
+        self._wake.set()
+        deadline = time.monotonic() + max(0.0, timeout)
+        while True:
+            with self._lock:
+                if not self._queue and not self._draining:
+                    return
+                if self._queue:
+                    # Items that arrived mid-flush must drain too.
+                    self._force = True
+            remaining = deadline - time.monotonic()
+            if remaining <= 0.0:
+                return
+            self._wake.wait(timeout=min(_POLL_S, remaining))
+
+    def close(self, timeout: float = 2.0) -> None:
+        """Stop accepting captures and drain what is queued. Idempotent.
+
+        Registers nothing global — process-exit wiring lives in
+        :func:`install_atexit`. After ``close()`` every ``capture``
+        returns ``False``.
+        """
+        with self._lock:
+            if self._closed:
+                return
+            self._closed = True
+        self._wake.set()
+        with self._lifecycle_lock:
+            thread = self._thread
+        if thread is not None:
+            thread.join(timeout=max(0.0, timeout))
+
+    # ------------------------------------------------------------ internals
+
+    def _capture(self, item: Mapping[str, object]) -> bool:
+        if self._closed:
+            return False
+        # Gate and permission are LIVE per capture: a build that stops
+        # being official, or a user who withdraws mid-session, goes dark
+        # on the very next event.
+        if self._gate() is None:
+            return False
+        if not self._allowed():
+            return False
+        event = item.get("event") if isinstance(item, Mapping) else None
+        if not isinstance(event, str) or not event:
+            # The per-event caps key off the event name; an item without
+            # one cannot be accounted for, so it never queues.
+            return False
+        # One-level snapshot (the item plus a nested ``properties``
+        # mapping), the same shape ``envelope`` guards with: a caller
+        # mutating an item between capture and flush must not be able to
+        # change what reaches the wire.
+        snapshot = dict(item)
+        props = snapshot.get("properties")
+        if isinstance(props, Mapping):
+            snapshot["properties"] = dict(props)
+        now = self._clock()
+        with self._lock:
+            if self._closed:
+                # ``close()`` landed while this capture sat between the
+                # outer check and here: a late arrival against a
+                # flushing client is dropped.
+                return False
+            drop_reason = self._admit_locked(event, now)
+            log_cap: str | None = None
+            if drop_reason is None:
+                self._queue.append(snapshot)
+                self._accepted += 1
+                if self._first_queued_at is None:
+                    self._first_queued_at = now
+            elif drop_reason not in self._cap_logged:
+                log_cap = drop_reason
+                self._cap_logged.add(drop_reason)
+        if drop_reason is not None:
+            if log_cap is not None:
+                logger.debug(
+                    "posthog cap %s reached; further drops of this cap "
+                    "stay silent for this process",
+                    log_cap,
+                )
+            return False
+        self._ensure_thread()
+        self._wake.set()
+        return True
+
+    def _admit_locked(self, event: str, now: float) -> str | None:
+        """The cap checks, under the lock. ``None`` means admitted.
+
+        Check order is the docstring order: burst bucket, session
+        ceiling, queue. A dropped item never displaces a queued one.
+        """
+        bucket = self._buckets.get(event)
+        if bucket is None:
+            # Bounded registry: unknown event names beyond the cap drop
+            # instead of growing the mapping without limit.
+            if len(self._buckets) >= MAX_EVENT_BUCKETS:
+                return "event-bucket-registry"
+            bucket = _TokenBucket(now=now)
+            self._buckets[event] = bucket
+        if not bucket.try_take(now):
+            return "per-event-burst"
+        if self._accepted >= SESSION_ITEM_CEILING:
+            return "session-ceiling"
+        if len(self._queue) >= MAX_QUEUE_ITEMS:
+            return "queue-full"
+        return None
+
+    def _ensure_thread(self) -> None:
+        with self._lifecycle_lock:
+            if self._thread is not None and self._thread.is_alive():
+                return
+            thread = threading.Thread(
+                target=self._run, name="rapid-mlx-posthog", daemon=True
+            )
+            thread.start()
+            self._thread = thread
+
+    def _run(self) -> None:
+        try:
+            while True:
+                with self._lock:
+                    if self._closed:
+                        break
+                    queued = len(self._queue)
+                    forced = self._force
+                    first = self._first_queued_at
+                if queued == 0:
+                    # Nothing pending: park until the next capture, a
+                    # forced flush, or close().
+                    self._wake.wait()
+                    self._wake.clear()
+                    continue
+                due = (
+                    forced
+                    or queued >= FLUSH_THRESHOLD
+                    or (first is not None and self._clock() - first >= FLUSH_INTERVAL_S)
+                )
+                if due:
+                    self._drain()
+                else:
+                    self._wake.wait(timeout=_POLL_S)
+                    self._wake.clear()
+            # Closed: one final drain so shutdown loses nothing already
+            # queued.
+            self._drain()
+        except Exception:
+            # The flush thread must never take the process down. The
+            # expected source is a hostile injectable (clock/gate);
+            # anything already queued stays for a later flush or close.
+            pass
+
+    def _drain(self) -> None:
+        """Pop everything queued and POST it in chunks. Never raises."""
+        with self._lock:
+            batch = list(self._queue)
+            self._queue.clear()
+            self._first_queued_at = None
+            self._force = False
+            # ``_draining`` covers the whole POST phase so ``flush`` can
+            # wait for it, and is set in the SAME critical section as the
+            # pop so no observer can see "empty queue, not draining".
+            if batch:
+                self._draining = True
+        if not batch:
+            return
+        try:
+            stamp = self._gate()
+            if stamp is None:
+                # The build stopped being official between capture and
+                # flush: drop the batch, fail closed.
+                return
+            url = _resolve_posthog_url()
+            for start in range(0, len(batch), envelope.MAX_BATCH_ITEMS):
+                chunk = batch[start : start + envelope.MAX_BATCH_ITEMS]
+                payload = envelope.build_batch(chunk, stamp.posthog_key)
+                if payload is None:
+                    # build_batch rejected the envelope (e.g. a tampered
+                    # key): drop the chunk rather than send malformed.
+                    continue
+                body = json.dumps(payload, separators=(",", ":")).encode("utf-8")
+                self._send_chunk(url, body)
+        except Exception:
+            # A bad item (non-JSON-serializable) or a hostile gate drops
+            # the rest of this drain — nothing raises out of the thread.
+            return
+        finally:
+            with self._lock:
+                self._draining = False
+
+    def _send_chunk(self, url: str, body: bytes) -> None:
+        """POST one chunk with the one-retry discipline.
+
+        2xx: done. 4xx: retrying will not change the answer — drop.
+        5xx or a transport failure: ONE immediate retry, then drop for
+        good. No retry storm, nothing raised.
+        """
+        try:
+            status = self._post(url, body, self._post_timeout)
+        except Exception:
+            status = None
+        if isinstance(status, int) and 200 <= status < 300:
+            return
+        if isinstance(status, int) and 400 <= status < 500:
+            return
+        try:
+            self._post(url, body, self._post_timeout)
+        except Exception:
+            pass
+
+
+# -------------------------------------------------------------- singleton
+
+_sender: PostHogSender | None = None
+_sender_lock = threading.Lock()
+_atexit_installed = False
+
+
+def get_sender() -> PostHogSender:
+    """Process-singleton sender, constructed on first call.
+
+    Constructing (and importing) starts no thread and opens no socket;
+    the flush daemon starts on the first ACCEPTED capture.
+    """
+    global _sender
+    if _sender is not None:
+        return _sender
+    with _sender_lock:
+        if _sender is None:
+            _sender = PostHogSender()
+    return _sender
+
+
+def _reset_for_tests() -> None:
+    """Drop the singleton (closing the old one). Tests-only seam."""
+    global _sender
+    with _sender_lock:
+        sender, _sender = _sender, None
+    if sender is not None:
+        sender.close(timeout=0.5)
+
+
+def _flush_at_exit() -> None:
+    get_sender().flush(2.0)
+
+
+def install_atexit() -> None:
+    """Register the process-exit flush. Idempotent; called by the wiring PR.
+
+    Nothing global is registered by import or by ``close()`` — only an
+    explicit ``install_atexit()`` hooks the sender into interpreter
+    shutdown.
+    """
+    global _atexit_installed
+    with _sender_lock:
+        if _atexit_installed:
+            return
+        _atexit_installed = True
+    atexit.register(_flush_at_exit)
