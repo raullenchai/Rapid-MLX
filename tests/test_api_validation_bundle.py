@@ -99,7 +99,12 @@ class TestValidateModelName:
             },
         )
         assert r.status_code == 404
-        assert "wrong-model" in r.json()["detail"]
+        # #3564: the 404 now carries the OpenAI-shaped envelope with the stable
+        # ``model_not_found`` code (a bare FastAPI app surfaces a dict detail
+        # under ``detail``). The client's own requested id is still echoed.
+        err = r.json()["detail"]["error"]
+        assert err["code"] == "model_not_found"
+        assert "wrong-model" in err["message"]
 
 
 # ---------------------------------------------------------------------------

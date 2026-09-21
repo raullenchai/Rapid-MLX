@@ -5737,9 +5737,14 @@ async def _create_chat_completion_impl(
                 # Engine-owned cancellation is lifecycle control, never a
                 # guided failure eligible for unconstrained fallback.
                 if _consume_guided_lifecycle_cancel(engine, exc):
+                    # Stable ``model_replacement`` code so a model swap under a
+                    # guided chat request reads as "ask again", not the generic
+                    # failure card (was a bare-string 503).
+                    from ..request import lifecycle_cancel_error_payload
+
                     raise HTTPException(
                         status_code=503,
-                        detail="Request cancelled by model replacement",
+                        detail={"error": lifecycle_cancel_error_payload()},
                     ) from exc
                 raise asyncio.CancelledError() from exc
             except HTTPException:
