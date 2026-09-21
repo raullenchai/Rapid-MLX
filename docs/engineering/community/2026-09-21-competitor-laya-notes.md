@@ -36,3 +36,30 @@ Convai Innovations; playground/benchmark/skill by the site author.
 4. Positioning: NOT "open-source Jev alternative" (taken) but "complex
    decisions with real constraints, calibration, and overnight custom lanes —
    the 322M class cannot read long facts". Prove with the eval above.
+
+## Same-ruler measurement (2026-09-21, `convaiinnovations/laya` 0.3.5)
+
+384-item held-out set, literal mapping (state = our full prompt, criteria =
+candidate texts). Machine: M3 Ultra, CPU/MPS, 14 s total.
+
+| family | Laya covered-acc | Marvin v15c |
+| --- | --- | --- |
+| injection_guard (96) | 0.562 | 1.000 |
+| tool_gate (96) | 0.552 | 0.948 |
+| model_routing (192) | 0.062 | 0.932 |
+| **macro** | **0.310** | **0.9531** |
+
+Coverage 384/384 (its choice head returns probabilities over a CLOSED option
+vocabulary — invented candidates matched or hallucinated in). Routing at 6.2%
+is worse than the 33.9% letter prior: it defaults to model names from its own
+training distribution regardless of the policy text in the state.
+
+**Caveat (honesty):** the literal mapping is not Laya-favorable — its
+criteria interface expects short phrase options; hand-written semantic
+criteria per family could lift guard/gate. Routing semantics (policy → model)
+cannot be saved by rewording: the model ignored the policy. Conclusion
+stands in the owner's framing: Laya is faster and simpler, we are slower and
+(same-ruler) much more accurate. Its sellable regime — fixed short options at
+21 ms — is a different product; ours is arbitrary menus + policy reasoning.
+
+Dump: bench/marvins_garden/results/laya_large_dump.jsonl
