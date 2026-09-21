@@ -1,0 +1,129 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>The Router's Vigil — Marvin's Garden</title>
+<style>
+  html,body{margin:0;height:100%;background:#0c100e;color:#c8cec4;font:14px/1.4 Menlo,monospace;overflow:hidden}
+  #wrap{display:flex;flex-direction:column;height:100%}
+  #bar{display:flex;gap:14px;align-items:center;padding:10px 16px;background:#131815;border-bottom:1px solid #1f2622}
+  #bar b{color:#86de94;letter-spacing:2px}
+  button{background:#1d2521;color:#c8cec4;border:1px solid #2c3630;border-radius:6px;padding:6px 14px;cursor:pointer;font:inherit}
+  button:hover{background:#26302a}
+  canvas{flex:1;width:100%;display:block}
+</style>
+</head>
+<body>
+<div id="wrap">
+  <div id="bar">
+    <b>THE ROUTER'S VIGIL</b>
+    <button id="watch">▶ Watch Marvin (replay real round)</button>
+    <button id="live">⚔ You defend (Marvin assists)</button>
+    <span id="status">loading…</span>
+  </div>
+  <canvas id="cv"></canvas>
+</div>
+<script>
+const cv=document.getElementById('cv'),ctx=cv.getContext('2d');
+let W=0,H=0;function resize(){W=cv.width=innerWidth;H=cv.height=innerHeight-42}addEventListener('resize',resize);resize();
+
+const PORTALS=[
+ {n:"bonsai-1.7b-2bit",ram:8,ctx:8192,v:0},{n:"minicpm5-2b-4bit",ram:8,ctx:8192,v:1},
+ {n:"qwen3.5-4b-4bit",ram:16,ctx:32768,v:0},{n:"qwen3.5-9b-4bit",ram:18,ctx:32768,v:0},
+ {n:"bonsai-27b-2bit",ram:24,ctx:32768,v:0},{n:"qwen3-coder-30b-4bit",ram:24,ctx:65536,v:0},
+ {n:"deepseek-r1-32b-4bit",ram:32,ctx:65536,v:0},{n:"qwen3.8-27b-4bit",ram:32,ctx:131072,v:1}];
+const P_W=140,P_H=64;
+function portalPos(i){const row=i<4?0:1,col=i%4;const x=W/2+(col-1.5)*(P_W+38),y=H-150+row*(P_H+26);return{x,y}}
+
+const S={events:null,mode:null,t0:0,hp:5,score:0,combo:0,flash:0,liveQueue:null,liveBusy:false,breaches:0,total:0};
+
+function hpHearts(){let s='';for(let i=0;i<5;i++)s+=i<S.hp?'♥':'♡';return s}
+function drawPortal(i,hot){const p=portalPos(i),pl=PORTALS[i];ctx.save();
+ ctx.strokeStyle=hot?'#86de94':'#2c3630';ctx.lineWidth=hot?3:1.5;
+ ctx.strokeRect(p.x-P_W/2,p.y,P_W,P_H);
+ if(hot){ctx.fillStyle='rgba(134,222,148,0.12)';ctx.fillRect(p.x-P_W/2,p.y,P_W,P_H)}
+ ctx.fillStyle=hot?'#c9f5cf':'#8a968c';ctx.font='11px Menlo';ctx.textAlign='center';
+ ctx.fillText(pl.n,p.x,p.y+20);
+ ctx.fillText(`ram≥${pl.ram}GB ctx≤${(pl.ctx/1024)|0}k ${pl.v?'👁':'  '}`,p.x,p.y+40);ctx.restore()}
+function drawAll(){
+ ctx.fillStyle='#0c100e';ctx.fillRect(0,0,W,H);
+ ctx.fillStyle='#131815';ctx.fillRect(0,0,W,64);
+ ctx.fillStyle='#86de94';ctx.font='16px Menlo';ctx.textAlign='left';
+ ctx.fillText('REALM '+hpHearts(),20,26);ctx.fillText('SCORE '+S.score,20,50);
+ ctx.textAlign='center';ctx.fillStyle=S.combo>1?'#e2c678':'#8a968c';
+ ctx.fillText(S.combo>1?`combo ×${S.combo}`:'',W/2,26);
+ ctx.fillStyle='#8a968c';ctx.fillText(`breaches ${S.breaches}/${S.total} · marvin v15c · 0 gen tokens`,W/2,50);
+ for(let i=0;i<8;i++)drawPortal(i,false);
+ if(S.flash>0){ctx.fillStyle=`rgba(232,116,104,${0.25*S.flash})`;ctx.fillRect(0,0,W,H);S.flash-=0.02}
+}
+function drawPacket(e,now){
+ const t=(now-e.t0)/1000,sc=e.scenario;let px,py,label,phase;
+ const sx=W/2,sy=90,hover={x:W/2,y:H/2-90};
+ if(e.kind==='injection_guard'){ // wraith rises from bottom toward the core
+   const rise=Math.min(1,t/0.9);px=sx;py=H-40-(H-40-(H/2+60))*rise;label='wraith';
+   ctx.fillStyle='#3a2028';ctx.beginPath();ctx.arc(px,py,26,0,7);ctx.fill();
+   ctx.strokeStyle=e.decision&&t>1.0?(e.correct?'#86de94':'#e87468'):'#6a3040';ctx.lineWidth=2;ctx.stroke();
+   ctx.fillStyle='#c8cec4';ctx.font='11px Menlo';ctx.textAlign='center';
+   ctx.fillText(String(sc.body).slice(0,58),px,py-38);ctx.fillText(String(sc.body).slice(58,116),px,py-24);
+ }else{
+   const sp=Math.min(1,t/0.5);px=sx;py=sy+(hover.y-sy)*sp;
+   const flyT=(t-1.0)/0.6;let dst;
+   if(e.kind==='model_routing'){const i=PORTALS.findIndex(p=>p.n===e.decision?.pick);if(i<0)i=0;dst=portalPos(i);dst.y+=P_H/2}
+   else{dst={x:W/2,y:H/2+40}}
+   if(flyT>0){const fp=Math.min(1,flyT);px=hover.x+(dst.x-hover.x)*fp;py=hover.y+(dst.y-hover.y)*fp;
+     if(flyT>=1){ctx.fillStyle=e.correct?'#86de94':'#e87468';ctx.beginPath();ctx.arc(px,py,10,0,7);ctx.fill()}}
+   ctx.fillStyle='#1d2521';ctx.strokeStyle='#3d4a42';ctx.lineWidth=1.5;
+   ctx.fillRect(px-70,py-16,140,32);ctx.strokeRect(px-70,py-16,140,32);
+   ctx.fillStyle='#c8cec4';ctx.font='11px Menlo';ctx.textAlign='center';
+   label=e.kind==='model_routing'?`${sc.task_type} · ${(sc.context_tokens/1024)|0}k${sc.needs_vision?' 👁':''}`
+        :String(sc.request).slice(0,34);
+   ctx.fillText(label,px,py+4);
+ }
+ // decision panel (top-2 probabilities) while thinking
+ if(e.decision&&t>0.3&&t<2.1){const pr=Object.entries(e.decision.probs).sort((a,b)=>b[1]-a[1]).slice(0,3);
+   ctx.textAlign='left';ctx.font='11px Menlo';let y=H/2-150;
+   ctx.fillStyle='#8a968c';ctx.fillText('marvin · '+e.kind,e.kind==='model_routing'?W-330:W-330,y-16);
+   pr.forEach(([k,v],j)=>{ctx.fillStyle=j===0?'#86de94':'#4a564e';
+     ctx.fillText(k.slice(0,20),W-330,y);ctx.fillRect(W-140,y-8,120*v,10);y+=18})}
+}
+function endRound(){S.status.textContent=`round over — score ${S.score}, breaches ${S.breaches}/${S.total}`}
+async function playReplay(){
+ S.status.textContent='fetching a real round from the model…';
+ const evs=await (await fetch('/round')).json();
+ S.status.textContent='watching Marvin defend…';S.total=evs.length;
+ S.events=evs.map(e=>({...e,t0:performance.now()/1000+e.t0+2}));
+ S.mode='replay';S.t0=performance.now()/1000;
+ requestAnimationFrame(loop);
+}
+async function liveStep(){
+ if(S.mode!=='live'||S.liveBusy||!S.liveQueue||!S.liveQueue.length)return;
+ S.liveBusy=true;const e=S.liveQueue.shift();
+ e.decision=await(await fetch('/decide',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(e)})).json();
+ e.t0=performance.now()/1000;S.total++;S.liveBusy=false;
+}
+function loop(){
+ const now=performance.now()/1000;drawAll();
+ const evs=S.events||S.liveQueue||[];
+ for(const e of evs){
+   if(e.t0===undefined)continue;
+   const t=now-e.t0;
+   if(t>=0&&t<=2.2)drawPacket(e,now);
+   if(e.scored===undefined&&t>1.6){e.scored=1;
+     if(e.correct){S.combo++;S.score+=10*S.combo}else{S.combo=0;S.hp--;S.breaches++;S.flash=1}}
+ }
+ if(S.mode==='replay'){const last=S.events[S.events.length-1];
+   if(now-last.t0>2.4){endRound();S.mode='done';return}}
+ else if(S.mode==='live'){if(S.hp<=0){endRound();S.mode='done';return}liveStep()}
+ requestAnimationFrame(loop);
+}
+document.getElementById('watch').onclick=()=>{if(S.mode==='replay')return;Object.assign(S,{hp:5,score:0,combo:0,flash:0,breaches:0,total:0});playReplay()};
+document.getElementById('live').onclick=async()=>{if(S.mode==='live')return;
+ Object.assign(S,{hp:5,score:0,combo:0,flash:0,breaches:0,total:0,mode:'live',events:null});
+ S.status.textContent='you defend — click nothing, the Oracle routes itself… (watch mode is the polished one)';
+ const evs=await(await fetch('/round')).json();
+ S.liveQueue=evs.map(e=>({kind:e.kind,scenario:e.scenario,truth:e.truth}));
+ requestAnimationFrame(loop)};
+S.status.textContent='ready — pick a mode';
+</script>
+</body>
+</html>
