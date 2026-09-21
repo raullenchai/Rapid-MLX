@@ -1,0 +1,135 @@
+{
+  "schema_version": 2,
+  "submission_id": "2635d2d546e9",
+  "submitted_at": "2026-07-17T02:32:16+00:00",
+  "hardware": {
+    "chip": "Apple M5",
+    "ram_gb": 16,
+    "cpu_cores": 10,
+    "gpu_cores": 8
+  },
+  "software": {
+    "macos": "26.5.2",
+    "rapid_mlx": "0.10.10",
+    "mlx": "0.32.0",
+    "python": "3.12.13"
+  },
+  "model": {
+    "alias": "qwen3.5-4b-4bit",
+    "hf_path": "mlx-community/Qwen3.5-4B-MLX-4bit"
+  },
+  "config": {
+    "rounds": 5,
+    "warmup_rounds": 1,
+    "sampling": "greedy",
+    "buckets_spec": {
+      "short": {
+        "prompt_tokens": 512,
+        "max_tokens": 128
+      },
+      "long": {
+        "prompt_tokens": 2048,
+        "max_tokens": 512
+      }
+    },
+    "prompt_hash": "3414e7611df5cfbc"
+  },
+  "buckets": {
+    "short": {
+      "decode_tps": {
+        "median": 46.89421665345123,
+        "min": 38.53515682115096,
+        "max": 48.02732793386603,
+        "stddev": 3.4907649280462807
+      },
+      "prefill_tps": {
+        "median": 931.5083127455713,
+        "min": 752.243769173874,
+        "max": 942.317197623722,
+        "stddev": 85.42658506537856
+      },
+      "ttft_ms": {
+        "median": 574.3373329896713,
+        "min": 567.74937499722,
+        "max": 711.205624989816,
+        "stddev": 64.03763391565846
+      },
+      "rounds_raw": [
+        {
+          "decode_tps": 47.17518316606819,
+          "prefill_tps": 942.317197623722,
+          "ttft_ms": 567.74937499722
+        },
+        {
+          "decode_tps": 43.67953101936497,
+          "prefill_tps": 931.5083127455713,
+          "ttft_ms": 574.3373329896713
+        },
+        {
+          "decode_tps": 38.53515682115096,
+          "prefill_tps": 774.786047572157,
+          "ttft_ms": 690.5132090032566
+        },
+        {
+          "decode_tps": 46.89421665345123,
+          "prefill_tps": 937.6009071025346,
+          "ttft_ms": 570.6052500026999
+        },
+        {
+          "decode_tps": 48.02732793386603,
+          "prefill_tps": 752.243769173874,
+          "ttft_ms": 711.205624989816
+        }
+      ]
+    },
+    "long": {
+      "decode_tps": {
+        "median": 45.880021914335146,
+        "min": 45.396623570629615,
+        "max": 46.16277937780664,
+        "stddev": 0.2523356799657635
+      },
+      "prefill_tps": {
+        "median": 1018.238993042951,
+        "min": 977.224619115141,
+        "max": 1030.352836228698,
+        "stddev": 19.352681087136567
+      },
+      "ttft_ms": {
+        "median": 2113.4527499962132,
+        "min": 2088.604917007615,
+        "max": 2202.15491700219,
+        "stddev": 41.38290696709977
+      },
+      "rounds_raw": [
+        {
+          "decode_tps": 45.961645799714056,
+          "prefill_tps": 1030.352836228698,
+          "ttft_ms": 2088.604917007615
+        },
+        {
+          "decode_tps": 45.880021914335146,
+          "prefill_tps": 1025.075895272601,
+          "ttft_ms": 2099.3567499972414
+        },
+        {
+          "decode_tps": 46.16277937780664,
+          "prefill_tps": 1018.238993042951,
+          "ttft_ms": 2113.4527499962132
+        },
+        {
+          "decode_tps": 45.396623570629615,
+          "prefill_tps": 1000.5439565038109,
+          "ttft_ms": 2150.830042010057
+        },
+        {
+          "decode_tps": 45.80527408726606,
+          "prefill_tps": 977.224619115141,
+          "ttft_ms": 2202.15491700219
+        }
+      ]
+    }
+  },
+  "notes": "M5 MacBook Air 16GB, AC power, Low Power Mode off",
+  "peak_ram_mb": 3804
+}
