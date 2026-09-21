@@ -9,8 +9,11 @@ removed — verified by fault injection before merge, not assumed:
    ``events.json`` declares for the given arguments — the registry file
    is loaded HERE, so drift in either direction (a key the module
    invents, a key the registry adds) fails loudly.
-2. Optional fields are omitted, never sentinels; a required cohort
-   field that arrives as ``None`` drops the whole build.
+2. Optional fields are omitted, never sentinels. The two cohort stamps
+   are optional so a local state store that cannot answer (read-only
+   HOME, locked/corrupt db) leaves the block valid: absence reads as
+   "unknown" on the wire, never as 0 / first day — while a REAL 0
+   ("has never served a model") must ship as 0.
 3. Any invalid argument drops the build: the registry's strict
    "drop the WHOLE event" semantics must survive the assembly layer.
 4. Raw chip brand strings never reach the block — only the closed
@@ -139,9 +142,11 @@ def test_key_set_equals_the_declared_required_set_when_python_version_is_none():
     list(product((True, False), repeat=3)),
 )
 def test_every_optional_field_combination(with_python, with_nth, with_days):
-    """``python_version`` is the one OPTIONAL prop — present or omitted,
-    both valid. The two cohort fields are REQUIRED with no "unknown"
-    member, so a ``None`` argument must drop the whole build."""
+    """All three OPTIONAL props — ``python_version`` (engine surfaces
+    only) and the two cohort stamps (omitted when the local store cannot
+    answer) — may be present or absent in any of the 8 combinations, and
+    the key set is exactly the registry's required keys plus the
+    provided optionals."""
     facts = replace(FACTS, python_version="3.11" if with_python else None)
     block = _build(
         platform=facts,
@@ -157,11 +162,29 @@ def test_every_optional_field_combination(with_python, with_nth, with_days):
         )
         if not present
     }
-    if with_nth and with_days:
-        assert block is not None
-        assert set(block) == set(_common_spec()) - omitted
-    else:
-        assert block is None
+    assert block is not None
+    assert set(block) == set(_common_spec()) - omitted
+
+
+def test_zero_is_sent_as_zero_while_none_omits_the_key():
+    """The two cohort meanings must not blur: ``nth_model_served=0`` is
+    a legitimate value ("has never served a model") and
+    ``days_since_first_run_bucket="0"`` a legitimate bucket (first day),
+    so both must SHIP as given — while ``None`` (the local store could
+    not answer) must OMIT the key, because absence is what analysts read
+    as "unknown" on the wire."""
+    served_none_yet = _build(nth_model_served=0, days_since_first_run_bucket="0")
+    assert served_none_yet is not None
+    assert served_none_yet["nth_model_served"] == 0
+    assert served_none_yet["days_since_first_run_bucket"] == "0"
+
+    store_unavailable = _build(
+        nth_model_served=None,
+        days_since_first_run_bucket=None,
+    )
+    assert store_unavailable is not None
+    assert "nth_model_served" not in store_unavailable
+    assert "days_since_first_run_bucket" not in store_unavailable
 
 
 @pytest.mark.parametrize(

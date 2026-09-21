@@ -20,10 +20,16 @@ not advance the counter event N+1 reads). Callers source
 ``nth_model_served`` and ``days_since_first_run_bucket`` from the
 telemetry store beforehand and pass the values in.
 
-Both cohort fields are REQUIRED by the registry and neither defines an
-"unknown" member, so a ``None`` argument can never yield a valid block:
-the key is simply omitted and ``validate_common`` drops the build.
-Nothing is invented to paper over "unknown" — fail closed instead.
+The two cohort fields are OPTIONAL in the registry: when the local state
+store cannot answer (a read-only HOME, a locked or corrupt database —
+``store.days_since_first_run_bucket()`` returns ``None`` by design
+there), the argument is ``None``, the key is omitted, and the block
+still ships. Absence on the wire means "the local store could not
+answer"; analysts must read it as unknown, never as 0 or first day.
+Callers must therefore pass ``None`` — not 0 — when the store could not
+answer: 0 is a legitimate value of ``nth_model_served`` ("has never
+served a model") and sending it would lie about a machine we know
+nothing about.
 
 Privacy rule (design sec 1.5): the block carries closed enums, buckets,
 pattern-capped version strings and UUIDs only. No hostname, no
@@ -164,12 +170,14 @@ def build_common_props(
     garbage in it — makes the WHOLE build ``None`` instead of a
     partially valid block.
 
-    The cohort fields are the one deliberate sharp edge: the registry
-    declares ``nth_model_served`` and ``days_since_first_run_bucket``
-    REQUIRED and defines no "unknown" member for either, so a ``None``
-    argument means the block cannot be valid — the key is omitted (no
-    registry-foreign sentinel is ever sent) and the build drops.
-    Callers must read real values from the telemetry store
+    The cohort fields are OPTIONAL and are omitted when ``None``: the
+    registry sanctions absence exactly for the case where the local
+    state store cannot answer (read-only HOME, locked or corrupt
+    database — ``store.days_since_first_run_bucket()`` returns ``None``
+    by design there). Callers MUST pass ``None`` — not 0 — in that case:
+    on the wire, absence reads as "unknown" (never 0 / first day), while
+    0 is a legitimate ``nth_model_served`` value meaning "has never
+    served a model". Read real values from the store
     (``store.note_model_served`` / ``store.days_since_first_run_bucket``)
     before building; ``note_model_served`` mutates state, so it belongs
     to the emit path, never inside this builder.
@@ -188,7 +196,10 @@ def build_common_props(
     }
     # Version strings and cohort stamps are omitted when unreadable or
     # unknown — never replaced with a sentinel the registry does not
-    # define. A required key left out then drops the whole build.
+    # define. python_version is optional ("engine surfaces only"); the
+    # cohort stamps are optional so a local store that cannot answer
+    # leaves the block valid, their absence meaning "unknown" on the
+    # wire, never 0 / first day.
     if facts.os_version is not None:
         block["os_version"] = facts.os_version
     if facts.python_version is not None:

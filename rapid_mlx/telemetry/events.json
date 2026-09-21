@@ -330,16 +330,28 @@
     "session_id": {"kind": "uuid", "required": true},
     "channel": {"kind": "enum", "enum": "channel", "required": true},
     "nth_model_served": {
-      "_about": "Cohort stamp: distinct models this install has EVER served, at emit time.",
+      "_about": [
+        "Cohort stamp: distinct models this install has EVER served, at emit time.",
+        "OPTIONAL: omitted when the local state store cannot answer (read-only",
+        "HOME, locked or corrupt database — store.days_since_first_run_bucket()",
+        "and the note_model_served read path return None by design there). Analysts",
+        "must treat ABSENCE as 'unknown', never as 0 — 0 legitimately means 'has",
+        "never served a model'."
+      ],
       "kind": "int",
       "min": 0,
       "max": 10000,
-      "required": true
+      "required": false
     },
     "days_since_first_run_bucket": {
+      "_about": [
+        "OPTIONAL: omitted when the local state store cannot answer (read-only",
+        "HOME, locked or corrupt database). Analysts must treat ABSENCE as",
+        "'unknown', never as 0 / first day."
+      ],
       "kind": "enum",
       "enum": "days_since_first_run_bucket",
-      "required": true
+      "required": false
     }
   },
 
