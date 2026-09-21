@@ -11490,8 +11490,13 @@ def feedback_command(args) -> None:
     off, or has never been asked about. Telemetry can only ever say
     *what* people do; this is where they get to say *why*.
     """
+    # ASCII only, deliberately: this text is printed before the URL, and a
+    # terminal whose stdout encoding is ASCII (LC_ALL=C, a `python -X utf8=0`
+    # pipe, some CI runners) raises UnicodeEncodeError on a single em dash --
+    # which would exit 1 without ever showing the invite link, i.e. the one
+    # thing the command exists to do. Same rule as the consent copy.
     print()
-    print("  Tell us what you want from Rapid-MLX — which models, which")
+    print("  Tell us what you want from Rapid-MLX -- which models, which")
     print("  integrations, what broke. We read every message.")
     print()
     print(f"  {FEEDBACK_URL}")
