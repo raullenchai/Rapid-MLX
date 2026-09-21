@@ -58,6 +58,13 @@ _QUANT_TAG_RE = re.compile(
     r"(?:^|[-_./])(?:q[2-8]|[2-8]-?bit)(?:[-_./]|$)", re.IGNORECASE
 )
 
+# Qwen-Image 2.x needs a different mflux model class and text encoder layout.
+# Check it before the broad 1.x name match; "Qwen-Image-Edit-2509" is a 1.x
+# checkpoint revision, so only a delimited 2.x version is rejected here.
+_UNSUPPORTED_QWEN_IMAGE_2_RE = re.compile(
+    r"qwen[-_]image(?:[-_]edit)?[-_]2(?:[._-]\d+|\d)?(?=$|[-_./])"
+)
+
 # mflux/Metal graphs are not re-entrant — a single process-wide lock serializes
 # every generation exactly like the video lane's ``_PROCESS_GENERATION_LOCK``.
 _PROCESS_GENERATION_LOCK = threading.RLock()
@@ -154,6 +161,11 @@ def _detect_family(model_name: str) -> str:
         return "flux2-klein"
     if "z-image" in name or "z_image" in name or "zimage" in name:
         return "z-image"
+    if _UNSUPPORTED_QWEN_IMAGE_2_RE.search(name):
+        raise ImageRuntimeError(
+            f"Qwen-Image 2.x model '{model_name}' is not supported by this "
+            "image runtime yet; refusing to load it as Qwen-Image 1.x."
+        )
     if "qwen-image-edit" in name or "qwen_image_edit" in name:
         return "qwen-image-edit"
     if "qwen-image" in name or "qwen_image" in name:
