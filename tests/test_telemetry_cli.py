@@ -15,8 +15,10 @@ import importlib
 import json
 import subprocess
 import sys
+from types import SimpleNamespace
 
 import pytest
+import yaml
 
 
 @pytest.fixture
@@ -76,6 +78,43 @@ def test_disable_records_false(fake_home):
     assert "disabled" in status.stdout.lower()
     # Must say it WAS prompted — disable=record consent=False, not "never".
     assert "false" in status.stdout.lower() or "consent: false" in status.stdout.lower()
+
+
+def test_disable_then_enable_preserve_v2_migration_fields(fake_home, monkeypatch):
+    import rapid_mlx
+    from rapid_mlx import cli
+    from rapid_mlx.telemetry import consent_runtime, state
+    from rapid_mlx.telemetry.consent_decision import DISCLOSURE_REVISION, ProcessRole
+
+    monkeypatch.setattr(rapid_mlx, "__version__", "0.15.1")
+    path = state.consent_path()
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(
+        "consent: false\n"
+        "desktop_consent: false\n"
+        "prompted_version: 0.11.0\n"
+        "schema_version: 1\n"
+    )
+    consent_runtime._reset_runtime_state_for_tests()
+    consent_runtime.startup(role=ProcessRole.INTERACTIVE_CLI)
+
+    cli.telemetry_command(SimpleNamespace(telemetry_action="disable"))
+    data = yaml.safe_load(path.read_text())
+    assert data["notice_revision_seen"] == DISCLOSURE_REVISION
+    assert data["desktop_consent"] is False
+    consent_runtime._reset_runtime_state_for_tests()
+    assert consent_runtime.resolve(role=ProcessRole.INTERACTIVE_CLI).reason == (
+        "current_refusal"
+    )
+
+    cli.telemetry_command(SimpleNamespace(telemetry_action="enable"))
+    data = yaml.safe_load(path.read_text())
+    assert data["notice_revision_seen"] == DISCLOSURE_REVISION
+    assert data["desktop_consent"] is False
+    consent_runtime._reset_runtime_state_for_tests()
+    decision = consent_runtime.startup(role=ProcessRole.INTERACTIVE_CLI)
+    assert decision.reason == "consented"
+    assert consent_runtime.deliver_notice_if_needed(decision) is False
 
 
 def test_preview_emits_valid_json_payload(fake_home):

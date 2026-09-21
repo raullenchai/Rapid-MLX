@@ -38,11 +38,15 @@ toward synthetic workloads. Users who want to opt in run
 
 from __future__ import annotations
 
+import fcntl
 import os
+import tempfile
 import uuid
+from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
+from typing import Any
 
 import yaml
 
@@ -86,6 +90,77 @@ def client_id_path() -> Path:
 
 def consent_path() -> Path:
     return _default_telemetry_dir() / "telemetry-consent.yaml"
+
+
+def _read_consent_mapping(path: Path) -> dict[str, Any] | None:
+    """Return an absent record as ``{}`` and an unreadable record as None."""
+    try:
+        text = path.read_text()
+    except FileNotFoundError:
+        return {}
+    except (OSError, ValueError):
+        return None
+    try:
+        data = yaml.safe_load(text)
+    except yaml.YAMLError:
+        return None
+    return data if isinstance(data, dict) else None
+
+
+def _atomic_write_consent(path: Path, data: dict[str, Any]) -> None:
+    """Atomically replace the consent path with a mode-0600 YAML mapping."""
+    payload = yaml.safe_dump(data, sort_keys=True).encode()
+    fd, tmp_name = tempfile.mkstemp(
+        prefix=f".{path.name}.", suffix=".tmp", dir=path.parent
+    )
+    tmp = Path(tmp_name)
+    try:
+        try:
+            offset = 0
+            while offset < len(payload):
+                written = os.write(fd, payload[offset:])
+                if written <= 0:
+                    raise OSError("consent write made no progress")
+                offset += written
+            os.fsync(fd)
+        finally:
+            os.close(fd)
+        os.chmod(tmp, 0o600)
+        os.replace(tmp, path)
+    except OSError:
+        try:
+            tmp.unlink()
+        except OSError:
+            pass
+        raise
+
+
+def _locked_merge_consent(
+    merge: Callable[[dict[str, Any]], dict[str, Any]],
+) -> bool:
+    """Read, merge, and atomically replace the consent mapping under flock.
+
+    The sibling lock is permanent so waiters cannot split across different
+    lock-file inodes. A present but unreadable record is preserved unchanged.
+    Replacing the consent path also deliberately replaces a symlink with a
+    regular file, matching the original v1 writer's behavior.
+    """
+    path = consent_path()
+    lock_path = path.with_name(path.name + ".lock")
+    path.parent.mkdir(parents=True, exist_ok=True)
+    lock_fd = os.open(lock_path, os.O_CREAT | os.O_RDWR, 0o600)
+    try:
+        fcntl.flock(lock_fd, fcntl.LOCK_EX)
+        try:
+            data = _read_consent_mapping(path)
+            if data is None:
+                return False
+            _atomic_write_consent(path, merge(data))
+        finally:
+            fcntl.flock(lock_fd, fcntl.LOCK_UN)
+    finally:
+        os.close(lock_fd)
+    return True
 
 
 @dataclass(frozen=True)
@@ -167,29 +242,22 @@ def record_consent(consent: bool, *, rapid_mlx_version: str) -> ConsentState:
         # newest-version record.
         schema_version=CURRENT_CONSENT_SCHEMA_VERSION,
     )
-    path = consent_path()
-    path.parent.mkdir(parents=True, exist_ok=True)
     payload = {
         "consent": state.consent,
         "prompted_at": state.prompted_at,
         "prompted_version": state.prompted_version,
         "schema_version": state.schema_version,
     }
-    # write-then-rename so a SIGINT mid-write can't leave a half-file
-    # that get_consent_state() would silently treat as "never prompted"
+    path = consent_path()
+    # Retain cleanup of the fixed-name temporary used by the original v1
+    # writer. New writes use the shared randomized atomic writer below.
     tmp = path.with_suffix(path.suffix + ".tmp")
-    # Clean up any leftover .tmp from a previous interrupted write so
-    # we never start out with a partial file under our chosen name.
     try:
         tmp.unlink()
     except FileNotFoundError:
         pass
-    tmp.write_text(yaml.safe_dump(payload, sort_keys=True))
-    try:
-        os.chmod(tmp, 0o600)
-    except OSError:
-        pass
-    tmp.replace(path)
+    if not _locked_merge_consent(lambda existing: {**existing, **payload}):
+        raise OSError("telemetry consent record is unreadable")
     return state
 
 

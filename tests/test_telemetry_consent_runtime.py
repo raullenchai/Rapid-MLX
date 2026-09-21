@@ -29,6 +29,8 @@ from __future__ import annotations
 
 import logging
 import os
+import re
+import shlex
 import subprocess
 import sys
 import threading
@@ -182,28 +184,61 @@ def test_read_absent_file_is_all_none(fake_home):
     assert stored == StoredConsent(None, None, None)
 
 
-def test_read_directory_where_file_should_be_is_all_none(fake_home):
+def test_read_directory_where_file_should_be_is_unreadable(fake_home):
     path = consent_path()
     path.parent.mkdir(parents=True, exist_ok=True)
     path.mkdir()  # a directory: read_text() raises IsADirectoryError
-    assert read_stored_consent() == StoredConsent(None, None, None)
+    assert read_stored_consent() is None
 
 
-def test_read_invalid_yaml_is_all_none(fake_home):
+def test_read_invalid_yaml_is_unreadable(fake_home):
     write_consent("consent: [unclosed")
-    assert read_stored_consent() == StoredConsent(None, None, None)
+    assert read_stored_consent() is None
 
 
-def test_read_binary_junk_is_all_none(fake_home):
+def test_read_binary_junk_is_unreadable(fake_home):
     path = write_consent("")
     path.write_bytes(b"\xff\xfe\x00binary")
-    assert read_stored_consent() == StoredConsent(None, None, None)
+    assert read_stored_consent() is None
 
 
-def test_read_non_mapping_documents_are_all_none(fake_home):
+def test_read_non_mapping_documents_are_unreadable(fake_home):
     for text in ("", "- a\n- b\n", "just a scalar\n"):
         write_consent(text)
-        assert read_stored_consent() == StoredConsent(None, None, None)
+        assert read_stored_consent() is None
+
+
+@pytest.mark.parametrize("shape", ["non_mapping", "binary", "bad_yaml", "directory"])
+def test_unreadable_record_fails_closed(fake_home, caplog, shape):
+    path = consent_path()
+    path.parent.mkdir(parents=True, exist_ok=True)
+    if shape == "non_mapping":
+        path.write_text("- not\n- a mapping\n")
+    elif shape == "binary":
+        path.write_bytes(b"\xff\xfe\x00binary")
+    elif shape == "bad_yaml":
+        path.write_text("consent: [unclosed")
+    else:
+        path.mkdir()
+    before = path.read_bytes() if path.is_file() else None
+
+    with caplog.at_level(logging.WARNING, logger="rapid_mlx.telemetry.consent_runtime"):
+        decision = resolve(role=ProcessRole.HEADLESS_CLI)
+        assert resolve() is decision
+
+    assert decision.reason == "read_error"
+    assert decision.upload_now is False
+    assert decision.deliver_notice is False
+    assert decision.write_back == _NO_WB
+    assert upload_allowed() is False
+    warnings = [
+        record for record in caplog.records if record.levelno == logging.WARNING
+    ]
+    assert len(warnings) == 1
+    if before is None:
+        assert path.is_dir()
+    else:
+        assert path.read_bytes() == before
 
 
 def test_read_desktop_shaped_schema1_refusal(fake_home):
@@ -445,33 +480,76 @@ def test_notice_contains_the_required_copy():
     assert "turns anonymous usage reporting on by\ndefault" in NOTICE_TEXT
     assert "including for installs that previously turned it off" in NOTICE_TEXT
     assert "PostHog Cloud" in NOTICE_TEXT
-    assert "rapid-mlx telemetry off" in NOTICE_TEXT
+    assert "rapid-mlx telemetry disable" in NOTICE_TEXT
     assert "RAPID_MLX_TELEMETRY=0" in NOTICE_TEXT
     assert "DO_NOT_TRACK=1" in NOTICE_TEXT
+    assert "IP and location are not recorded" in NOTICE_TEXT
+    assert "no per-person profile is built" in NOTICE_TEXT
+
+
+def test_every_notice_cli_command_is_accepted_by_the_real_parser():
+    from rapid_mlx.cli import build_parser
+
+    commands = re.findall(r"rapid-mlx telemetry [a-z-]+", NOTICE_TEXT)
+    assert commands
+    parser = build_parser()
+    for command in commands:
+        parser.parse_args(shlex.split(command)[1:])
 
 
 def test_notice_goes_to_stderr_never_stdout(fake_home, capsys):
-    assert deliver_notice_if_needed() is True
+    assert deliver_notice_if_needed(resolve(role=ProcessRole.INTERACTIVE_CLI)) is True
     captured = capsys.readouterr()
     assert "NOTICE:" in captured.err
     assert captured.out == ""
 
 
 def test_notice_is_idempotent_per_process(fake_home, capsys):
-    assert deliver_notice_if_needed() is True
+    decision = resolve(role=ProcessRole.INTERACTIVE_CLI)
+    assert deliver_notice_if_needed(decision) is True
     assert deliver_notice_if_needed() is False
     captured = capsys.readouterr()
     assert captured.err.count("NOTICE:") == 1
 
 
-def test_enabled_headless_process_emits_notice_with_existing_marker(fake_home, capsys):
+def test_enabled_headless_process_emits_short_line_with_existing_marker(
+    fake_home, capsys
+):
     write_consent(
         f"consent: true\nprompted_version: 0.15.0\n"
         f"notice_revision_seen: {DISCLOSURE_REVISION}\n"
     )
-    decision = startup()
+    decision = startup(role=ProcessRole.HEADLESS_CLI)
     assert decision.reason == "consented"
-    assert capsys.readouterr().err.count("NOTICE:") == 1
+    captured = capsys.readouterr()
+    assert captured.err == consent_runtime_module.NOTICE_LINE + "\n"
+    assert captured.out == ""
+    assert "shown once" not in captured.err.lower()
+
+
+def test_headless_migration_line_discloses_default_on_override(fake_home, capsys):
+    write_consent(_DESKTOP_REFUSAL)
+    decision = startup(role=ProcessRole.HEADLESS_CLI)
+    assert decision.reason == "legacy_refusal_migrated"
+    captured = capsys.readouterr()
+    assert len(captured.err.splitlines()) == 1
+    assert "turned on by default" in captured.err
+    assert "had turned it off" in captured.err
+    assert captured.out == ""
+
+
+def test_headless_kill_switch_and_sidecar_print_nothing(fake_home, monkeypatch, capsys):
+    monkeypatch.setenv("RAPID_MLX_TELEMETRY", "0")
+    startup(role=ProcessRole.HEADLESS_CLI)
+    captured = capsys.readouterr()
+    assert captured.out == ""
+    assert captured.err == ""
+    consent_runtime_module._reset_runtime_state_for_tests()
+    monkeypatch.delenv("RAPID_MLX_TELEMETRY")
+    startup(role=ProcessRole.SIDECAR)
+    captured = capsys.readouterr()
+    assert captured.out == ""
+    assert captured.err == ""
 
 
 def test_notice_skipped_when_decision_does_not_ask(fake_home, monkeypatch, capsys):
@@ -576,6 +654,59 @@ def test_startup_applies_write_back_once_per_process(fake_home):
     consent_path().write_text("consent: false\nschema_version: 1\n")
     startup()
     assert read_consent_data() == {"consent": False, "schema_version": 1}
+
+
+@pytest.mark.parametrize(
+    "seed, expected_reason",
+    [
+        (None, "fresh_install_notice"),
+        (_DESKTOP_REFUSAL, "legacy_refusal_migrated"),
+        (
+            "consent: true\nprompted_version: 0.15.0\nschema_version: 2\n",
+            "consented_needs_notice",
+        ),
+    ],
+)
+def test_startup_broken_real_fd2_persists_nothing_then_retries(
+    fake_home, capsys, seed, expected_reason
+):
+    if seed is not None:
+        write_consent(seed)
+    path = consent_path()
+    before = path.read_bytes() if path.exists() else None
+    saved_fd2 = os.dup(2)
+    read_fd, write_fd = os.pipe()
+    os.close(read_fd)
+    broken_stderr = None
+    original_stderr = sys.stderr
+    try:
+        os.dup2(write_fd, 2)
+        os.close(write_fd)
+        broken_stderr = os.fdopen(2, "w", closefd=False)
+        sys.stderr = broken_stderr
+        decision = startup(role=ProcessRole.INTERACTIVE_CLI)
+    finally:
+        sys.stderr = original_stderr
+        os.dup2(saved_fd2, 2)
+        os.close(saved_fd2)
+        if broken_stderr is not None:
+            broken_stderr.detach()
+
+    assert decision.reason == expected_reason
+    assert upload_allowed() is False
+    if before is None:
+        assert not path.exists()
+    else:
+        assert path.read_bytes() == before
+
+    consent_runtime_module._reset_runtime_state_for_tests()
+    retried = startup(role=ProcessRole.INTERACTIVE_CLI)
+    assert retried.reason == expected_reason
+    assert "NOTICE:" in capsys.readouterr().err
+    data = read_consent_data()
+    assert data["notice_revision_seen"] == DISCLOSURE_REVISION
+    if expected_reason == "legacy_refusal_migrated":
+        assert data["consent"] is True
 
 
 # ---------------------------------------------------------------------------
@@ -795,7 +926,7 @@ def test_atomic_write_preserves_original_if_tmp_cleanup_fails(fake_home, monkeyp
     monkeypatch.setattr(os, "replace", fail_replace)
     monkeypatch.setattr(Path, "unlink", fail_unlink)
     with pytest.raises(OSError, match="replace failed"):
-        consent_runtime_module._atomic_write(path, {"consent": True})
+        state._atomic_write_consent(path, {"consent": True})
     assert path.read_text() == _DESKTOP_REFUSAL
 
 
@@ -867,6 +998,22 @@ def test_upload_allowed_re_reads_when_file_disappears(fake_home, monkeypatch):
     consent_path().unlink()  # withdrawn record: fingerprint changes
     assert upload_allowed() is False  # a withdrawn record goes dark immediately
     assert len(reads) == 2
+
+
+def test_upload_allowed_fails_closed_if_record_becomes_unreadable(
+    fake_home, monkeypatch
+):
+    write_consent(
+        f"consent: true\nprompted_version: 0.15.0\nschema_version: 2\n"
+        f"notice_revision_seen: {DISCLOSURE_REVISION}\n"
+    )
+    clock, advance = fake_clock()
+    monkeypatch.setattr(consent_runtime_module, "_clock", clock)
+    assert resolve().reason == "consented"
+    assert upload_allowed() is True
+    consent_path().write_text("consent: [unclosed")
+    advance(_consent_runtime_ttl())
+    assert upload_allowed() is False
 
 
 def _consent_runtime_ttl() -> float:
@@ -946,9 +1093,9 @@ def test_cli_main_runs_startup_and_migrates_schema1_refusal(
     assert data["notice_revision_seen"] == DISCLOSURE_REVISION
     assert data["prompted_version"] == _RELEASE_VERSION
     captured = capsys.readouterr()
-    assert "NOTICE:" in captured.err, "the notice goes to stderr"
+    assert "anonymous usage reporting was turned on" in captured.err
     assert "rapid-mlx" in captured.out  # command output is unaffected
-    assert "NOTICE:" not in captured.out
+    assert "anonymous usage reporting" not in captured.out
     # The in-process decision was row 4: this run never uploads.
     assert upload_allowed() is False
 
@@ -985,7 +1132,7 @@ def test_server_main_runs_startup_before_engine_init(fake_home, capsys):
     data = read_consent_data()
     assert data["notice_revision_seen"] == DISCLOSURE_REVISION
     captured = capsys.readouterr()
-    assert "NOTICE:" in captured.err
+    assert "anonymous usage reporting was turned on" in captured.err
     assert upload_allowed() is True
 
 
@@ -1026,7 +1173,7 @@ def test_subprocess_round_trip_desktop_refusal_migration(tmp_path):
     assert "upload_allowed=False" in result.stdout
     assert "notice=True" in result.stdout
     # The notice really went to stderr, never stdout.
-    assert "NOTICE:" in result.stderr
+    assert "anonymous usage reporting was turned on" in result.stderr
     assert "NOTICE:" not in result.stdout
     migrated = (telemetry_dir / "telemetry-consent.yaml").read_text()
     data = yaml.safe_load(migrated)

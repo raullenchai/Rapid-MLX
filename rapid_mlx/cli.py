@@ -14115,14 +14115,20 @@ def main():
         # Telemetry v2 default-on wiring (T11): resolve the consent
         # decision, deliver the disclosure notice to stderr, then apply
         # the locked, merging write-back -- in that order, before any
-        # emit or heavy subcommand work. The v1 prompt below stays
-        # exactly where it is until T13 removes the v1 wire.
-        consent_runtime.startup()
+        # emit or heavy subcommand work. The v1 prompt below remains only
+        # for a pre-cutoff runtime until T13 removes the v1 wire.
+        _consent_decision = consent_runtime.startup()
 
-        _just_collected_consent = maybe_prompt_for_consent(
-            args.command,
-            cli_no_telemetry=getattr(args, "no_telemetry", False),
-        )
+        # The legacy v1 opt-in prompt is only meaningful before the v2
+        # default-on cutoff. Post-cutoff, the v2 disclosure is the complete
+        # consent flow; calling both would present contradictory choices.
+        from rapid_mlx.telemetry.consent_decision import REASON_PRE_CUTOFF_RUNTIME
+
+        if _consent_decision.reason == REASON_PRE_CUTOFF_RUNTIME:
+            _just_collected_consent = maybe_prompt_for_consent(
+                args.command,
+                cli_no_telemetry=getattr(args, "no_telemetry", False),
+            )
 
     # Telemetry session lifecycle — emit session_start once we know what
     # subcommand we're dispatching, register an atexit hook for

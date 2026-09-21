@@ -278,6 +278,42 @@ def test_record_consent_cleans_up_stale_tmp(fake_home):
     assert parsed["consent"] is True
 
 
+def test_record_consent_preserves_v2_and_desktop_fields(fake_home):
+    import yaml
+
+    from rapid_mlx.telemetry import state
+
+    path = state.consent_path()
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(
+        "consent: true\n"
+        "desktop_consent: false\n"
+        "notice_revision_seen: 1\n"
+        "future_key: keepme\n"
+    )
+
+    state.record_consent(False, rapid_mlx_version="0.15.1")
+
+    data = yaml.safe_load(path.read_text())
+    assert data["consent"] is False
+    assert data["desktop_consent"] is False
+    assert data["notice_revision_seen"] == 1
+    assert data["future_key"] == "keepme"
+
+
+def test_record_consent_preserves_unreadable_directory(fake_home):
+    from rapid_mlx.telemetry import state
+
+    path = state.consent_path()
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.mkdir()
+
+    with pytest.raises(OSError, match="record is unreadable"):
+        state.record_consent(False, rapid_mlx_version="0.15.1")
+
+    assert path.is_dir()
+
+
 def test_schema_version_mismatch_treated_as_unprompted(fake_home):
     """A consent file with a schema_version we don't recognize must
     be treated as 'never prompted' so the user gets re-asked under

@@ -11,14 +11,14 @@ ONLY thing that calls it. It turns the decision into process behaviour:
   CLI, desktop sidecar).
 - :func:`kill_switch_active` — env kill switches OR ``--no-telemetry``.
 - :func:`resolve` — the memoized per-process :class:`Decision`.
-- :func:`deliver_notice_if_needed` — write the default-on notice to stderr.
+- :func:`deliver_notice_if_needed` — write the role-appropriate disclosure.
 - :func:`apply_write_back` — atomic, merging, locked write-back.
 - :func:`startup` — resolve + deliver notice + write back, in that order.
 - :func:`upload_allowed` — the single v2 gate the sender consults, with a
   live re-check of the kill switches and the stored ``consent`` so a
   mid-session ``telemetry off`` goes dark on the next capture.
 
-Two deliberate departures from the v1 helpers in ``state.py``:
+Two v2 compatibility rules are load-bearing:
 
 1. The schema-validating v1 consent reader is NEVER called on this path. It
    collapses every record whose ``schema_version`` is not the current one
@@ -30,13 +30,18 @@ Two deliberate departures from the v1 helpers in ``state.py``:
    into :func:`resolve` would start uploading on installs that said no.
    :func:`read_stored_consent` therefore ignores ``schema_version``
    completely and reads the fields it needs straight from the mapping.
-2. The write-back MERGES under a file lock instead of replacing. The v1
-   ``record_consent`` is a whole-file replace that destroys every key it
-   does not know — including ``desktop_consent``, whose loss makes the
-   desktop app re-ask its own consent question. The merge keeps every
-   unknown key verbatim and never bumps ``schema_version``: the desktop
-   owns that field's story, and only ``record_consent`` (v1) mints
-   schema-2 records.
+2. Every Python consent write now uses the locked merge writer in ``state.py``.
+   Unknown keys such as ``desktop_consent`` survive, while the v2 write-back
+   still never bumps ``schema_version``. Atomic replacement deliberately
+   replaces a symlinked consent path with a regular file, matching v1.
+
+The Swift writer does not yet take the sibling lock and still replaces the
+whole file. T12 must add flock + merge there and set
+``RAPID_MLX_PROCESS_ROLE=desktop-sidecar`` for spawned sidecars.
+
+``RAPID_MLX_WATCHDOG_PPID`` implying SIDECAR deliberately includes child
+servers spawned by rapid-mlx on CLI machines: those children ride the parent
+process's marker and must not independently disclose or mutate consent.
 
 The notice goes to raw stderr via ``sys.stderr.write`` — never stdout
 (whose byte-cleanliness many ``--json`` modes depend on) and never the
@@ -46,11 +51,9 @@ disclosure).
 
 from __future__ import annotations
 
-import fcntl
 import logging
 import os
 import sys
-import tempfile
 import threading
 import time
 from collections.abc import Callable
@@ -66,6 +69,7 @@ from rapid_mlx.telemetry import state
 from rapid_mlx.telemetry.consent_decision import (
     DISCLOSURE_REVISION,
     REASON_INVALID_INPUT,
+    REASON_LEGACY_REFUSAL_MIGRATED,
     Decision,
     ProcessRole,
     StoredConsent,
@@ -98,12 +102,13 @@ What is reported: anonymous, metadata-only usage events (chip family,
 OS family, subcommand, coarse timing and performance buckets, anonymous
 crash fingerprints -- never prompts, responses, file paths, or API key
 values). Events are received by PostHog Cloud, a hosted analytics
-service located in the United States. Nothing is reported before this
-notice has been shown.
+service located in the United States. IP and location are not recorded;
+no per-person profile is built. Nothing is reported before this notice
+has been shown.
 
 To turn reporting back off, use any of:
 
-  rapid-mlx telemetry off
+  rapid-mlx telemetry disable
   export RAPID_MLX_TELEMETRY=0
   export DO_NOT_TRACK=1
 
@@ -111,6 +116,24 @@ Opting out takes effect immediately. This notice is shown once per
 disclosure revision; see `rapid-mlx telemetry preview` for the exact
 event shape and the project README's Telemetry section for details.
 """
+
+NOTICE_LINE: Final[str] = (
+    "rapid-mlx: anonymous usage reporting is ON (PostHog Cloud, US; no "
+    "IP/location, no prompts or outputs). Turn off: rapid-mlx telemetry "
+    "disable | RAPID_MLX_TELEMETRY=0 | DO_NOT_TRACK=1. Details: "
+    "https://rapidmlx.com/docs/telemetry"
+)
+
+_NOTICE_MIGRATION_LINE: Final[str] = (
+    "rapid-mlx: anonymous usage reporting was turned on by default in this "
+    "version, including for installs that had turned it off (PostHog Cloud, "
+    "US; no IP/location, no prompts or outputs). Turn off: rapid-mlx telemetry "
+    "disable | RAPID_MLX_TELEMETRY=0 | DO_NOT_TRACK=1. Details: "
+    "https://rapidmlx.com/docs/telemetry"
+)
+
+REASON_READ_ERROR: Final[str] = "read_error"
+_NO_WRITE_BACK: Final = WriteBack(False, False, False)
 
 _ABSENT_CONSENT: Final = StoredConsent(
     consent=None, recorded_version=None, notice_revision_seen=None
@@ -137,7 +160,7 @@ class _LiveCache:
 
     fingerprint: tuple[int, int] | None
     read_at: float
-    stored: StoredConsent
+    stored: StoredConsent | None
 
 
 def _reset_runtime_state_for_tests() -> None:
@@ -189,7 +212,7 @@ def _read_consent_mapping(path: Path) -> dict[str, Any] | None:
     return data
 
 
-def read_stored_consent() -> StoredConsent:
+def read_stored_consent() -> StoredConsent | None:
     """Raw, schema-tolerant read of the consent record.
 
     Never delegates to the schema-validating v1 reader (see module
@@ -201,12 +224,13 @@ def read_stored_consent() -> StoredConsent:
     bool (YAML ``1`` / ``"true"`` do not count); ``recorded_version`` from
     ``prompted_version`` only if it is a str; ``notice_revision_seen``
     from the flat top-level marker only if it is an int that is not a
-    bool. Missing file, unreadable file, or a non-mapping document all
-    yield the all-``None`` record. Never raises.
+    bool. A missing file yields the all-``None`` record. An unreadable file
+    or non-mapping document returns ``None`` so :func:`resolve` can fail
+    closed instead of treating corruption as a fresh install. Never raises.
     """
     data = _read_consent_mapping(state.consent_path())
     if data is None:
-        return _ABSENT_CONSENT
+        return None
     consent = data.get("consent")
     if not isinstance(consent, bool):
         consent = None
@@ -288,12 +312,21 @@ def resolve(role: ProcessRole | None = None) -> Decision:
             return _decision
         detected = detect_role() if role is None else role
         stored = read_stored_consent()
-        decision = decide(
-            stored,
-            detected,
-            kill_switch_active=kill_switch_active(),
-            running_version=_running_version(),
-        )
+        if stored is None:
+            decision = Decision(False, False, _NO_WRITE_BACK, REASON_READ_ERROR)
+        else:
+            decision = decide(
+                stored,
+                detected,
+                kill_switch_active=kill_switch_active(),
+                running_version=_running_version(),
+            )
+        if decision.reason == REASON_READ_ERROR:
+            logger.warning(
+                "Telemetry consent record is unreadable (reason=%s); "
+                "telemetry stays off for this run.",
+                decision.reason,
+            )
         if decision.reason == REASON_INVALID_INPUT:
             logger.warning(
                 "Telemetry consent record is corrupt or unreadable "
@@ -331,13 +364,22 @@ def deliver_notice_if_needed(decision: Decision | None = None) -> bool:
         return False
     if decision is None:
         decision = resolve()
-    headless_enabled = (
-        _resolved_role is ProcessRole.HEADLESS_CLI and decision.upload_now
+    headless_enabled = _resolved_role is ProcessRole.HEADLESS_CLI and (
+        decision.upload_now or decision.reason == REASON_LEGACY_REFUSAL_MIGRATED
     )
-    if not decision.deliver_notice and not headless_enabled:
+    interactive_notice = (
+        _resolved_role is ProcessRole.INTERACTIVE_CLI and decision.deliver_notice
+    )
+    if not interactive_notice and not headless_enabled:
         return False
+    if headless_enabled:
+        notice = (
+            _NOTICE_MIGRATION_LINE if decision.deliver_notice else NOTICE_LINE
+        ) + "\n"
+    else:
+        notice = NOTICE_TEXT
     try:
-        sys.stderr.write(NOTICE_TEXT)
+        sys.stderr.write(notice)
         sys.stderr.flush()
     except (OSError, UnicodeError):
         # Same failure modes consent.py guards: closed pipe / unwritable
@@ -369,42 +411,6 @@ def _merge_write_back(data: dict[str, Any], write_back: WriteBack) -> dict[str, 
     return merged
 
 
-def _atomic_write(path: Path, data: dict[str, Any]) -> None:
-    """Replace ``path`` with ``data`` via tmp file + fsync + rename.
-
-    Mirrors ``community_bench/upload.py``: write-then-rename so a crash
-    mid-write can never leave a half-file that readers would treat as a
-    corrupt record.
-    """
-    payload = yaml.safe_dump(data, sort_keys=True)
-    fd, tmp_name = tempfile.mkstemp(
-        prefix=f".{path.name}.", suffix=".tmp", dir=path.parent
-    )
-    tmp = Path(tmp_name)
-    try:
-        try:
-            encoded = payload.encode()
-            offset = 0
-            while offset < len(encoded):
-                written = os.write(fd, encoded[offset:])
-                if written <= 0:
-                    raise OSError("consent write made no progress")
-                offset += written
-            os.fsync(fd)
-        finally:
-            os.close(fd)
-        os.chmod(tmp, 0o600)
-        os.replace(tmp, path)
-    except OSError:
-        # Leave no .tmp litter behind a failed write or swap; the old
-        # record at ``path`` is untouched (rename never happened).
-        try:
-            tmp.unlink()
-        except OSError:
-            pass
-        raise
-
-
 def _locked_write_back(path: Path, write_back: WriteBack) -> bool:
     """Read-merge-write the consent file under an exclusive sibling lock.
 
@@ -412,25 +418,7 @@ def _locked_write_back(path: Path, write_back: WriteBack) -> bool:
     unlinking would split waiters onto different inodes and defeat the
     serialization (same reasoning as ``rapid_mlx/_mirror.py``).
     """
-    lock_path = path.with_name(path.name + ".lock")
-    path.parent.mkdir(parents=True, exist_ok=True)
-    lock_fd = os.open(lock_path, os.O_CREAT | os.O_RDWR, 0o600)
-    try:
-        fcntl.flock(lock_fd, fcntl.LOCK_EX)
-        try:
-            data = _read_consent_mapping(path)
-            if data is None:
-                # Present but unreadable: merging would risk dropping
-                # unknown keys. Preserve the old record.
-                logger.debug("consent write-back skipped: stored record is unreadable")
-                return False
-            merged = _merge_write_back(data, write_back)
-            _atomic_write(path, merged)
-        finally:
-            fcntl.flock(lock_fd, fcntl.LOCK_UN)
-    finally:
-        os.close(lock_fd)
-    return True
+    return state._locked_merge_consent(lambda data: _merge_write_back(data, write_back))
 
 
 def apply_write_back(write_back: WriteBack | None = None) -> bool:
@@ -465,7 +453,7 @@ def apply_write_back(write_back: WriteBack | None = None) -> bool:
         return False
 
 
-def _live_stored_consent() -> StoredConsent:
+def _live_stored_consent() -> StoredConsent | None:
     """Stored consent with a stat-keyed TTL cache for the capture hot path.
 
     Cache key is ``(st_mtime_ns, st_size)``; entries older than
@@ -517,6 +505,8 @@ def upload_allowed() -> bool:
     if kill_switch_active():
         return False
     stored = _live_stored_consent()
+    if stored is None:
+        return False
     if stored.consent is False:
         return False
     marker_present = (
@@ -540,8 +530,9 @@ def startup(*, role: ProcessRole | None = None) -> Decision:
     """
     global _startup_write_back_done
     decision = resolve(role=role)
-    deliver_notice_if_needed(decision)
+    delivered = deliver_notice_if_needed(decision)
     if not _startup_write_back_done:
         _startup_write_back_done = True
-        apply_write_back(decision.write_back)
+        if not decision.deliver_notice or delivered:
+            apply_write_back(decision.write_back)
     return decision
