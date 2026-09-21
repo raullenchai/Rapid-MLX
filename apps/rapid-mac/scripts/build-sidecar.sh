@@ -1482,6 +1482,48 @@ else
 fi
 PYTHONNOUSERSITE=1 python3 "$REPO_ROOT/scripts/write-sidecar-stamp.py" \
     "$STAMP" "$OFFICIAL_RELEASE" "$SIDECAR_REVISION" "$SIDECAR_DIRTY"
+
+# Telemetry v2 transmits only when the installed package contains the release
+# stamp AND build_gate can prove that the running code is a non-editable,
+# non-source install. Write only into the fresh sidecar stage: the checkout
+# must never be stamped. Derive the channel from the distribution actually
+# bundled above (including rc versions), not from the Desktop tag prefix.
+TELEMETRY_STAMP="$STAGE/site-packages/rapid_mlx/telemetry/_release_stamp.json"
+if [[ "$OFFICIAL_RELEASE" == "1" ]]; then
+    SIDECAR_ENGINE_VERSION="$(
+        PYTHONPATH="$STAGE/site-packages" PYTHONNOUSERSITE=1 \
+            "$STAGE/python/bin/python3.12" -c \
+            'from importlib.metadata import version; print(version("rapid-mlx"))'
+    )"
+    echo "==> stamping telemetry release v$SIDECAR_ENGINE_VERSION -> $TELEMETRY_STAMP"
+    PYTHONNOUSERSITE=1 python3 "$ENGINE_ROOT/scripts/write_release_stamp.py" \
+        --version "$SIDECAR_ENGINE_VERSION" \
+        --dest "$TELEMETRY_STAMP"
+else
+    # A source tree normally has no stamp, but removing one here also keeps a
+    # non-official build silent if RAPID_MLX_WHEEL points at stamped bytes.
+    rm -f "$TELEMETRY_STAMP"
+fi
+
+# Run the gate through the exact interpreter and package tree that ship. This
+# also proves that pip's non-editable local-directory install is accepted by
+# the PEP 610/source-tree checks. Keep the inverse assertion in every cheap
+# dev/smoke build so a stray inherited stamp cannot enable transmission.
+PYTHONPATH="$STAGE/site-packages" PYTHONDONTWRITEBYTECODE=1 PYTHONNOUSERSITE=1 \
+    "$STAGE/python/bin/python3.12" - "$OFFICIAL_RELEASE" <<'PY'
+import sys
+
+from rapid_mlx.telemetry.build_gate import official_build
+
+official = sys.argv[1] == "1"
+result = official_build()
+if (result is not None) != official:
+    raise SystemExit(
+        "telemetry release gate mismatch: "
+        f"official_release={official}, official_build()={result!r}"
+    )
+print(f"telemetry release gate verified: official_build()={result!r}")
+PY
 # Recompile so the stamped package is consistent with the .pyc set shipped
 # alongside it.
 PYTHONNOUSERSITE=1 "$STAGE/python/bin/python3.12" -m compileall -q \

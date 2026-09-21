@@ -92,6 +92,9 @@ def test_the_action_verifies_the_stamp_in_the_built_app() -> None:
     text = ACTION.read_text()
     assert "verify-sidecar-stamp.py" in text
     assert "Verify sidecar provenance stamp in the built app" in text
+    assert '"$SIDECAR/python/bin/python3.12" - "$OFFICIAL_RELEASE"' in text
+    assert "from rapid_mlx.telemetry.build_gate import official_build" in text
+    assert "finished app telemetry gate mismatch" in text
 
 
 def test_the_tag_workflow_marks_only_real_tags_official() -> None:
@@ -115,6 +118,26 @@ def test_the_smoke_sidecar_build_states_its_provenance() -> None:
         "RAPID_MLX_OFFICIAL_RELEASE=0 \\\n            bash apps/rapid-mac/scripts/build-sidecar.sh"
         in text
     )
+
+
+def test_the_sidecar_checks_the_telemetry_gate_with_its_bundled_python() -> None:
+    text = (REPO / "apps/rapid-mac/scripts/build-sidecar.sh").read_text()
+    telemetry_stamp = (
+        'TELEMETRY_STAMP="$STAGE/site-packages/rapid_mlx/telemetry/'
+        '_release_stamp.json"'
+    )
+
+    assert telemetry_stamp in text
+    assert 'python3 "$ENGINE_ROOT/scripts/write_release_stamp.py"' in text
+    assert '--version "$SIDECAR_ENGINE_VERSION"' in text
+    assert 'rm -f "$TELEMETRY_STAMP"' in text
+    assert '"$STAGE/python/bin/python3.12" - "$OFFICIAL_RELEASE"' in text
+    assert "from rapid_mlx.telemetry.build_gate import official_build" in text
+    assert "if (result is not None) != official:" in text
+
+    stamp_offset = text.index(telemetry_stamp)
+    package_offset = text.index("# ----- step 7: package")
+    assert stamp_offset < package_offset
 
 
 def test_every_desktop_releasable_caller_sets_official_release() -> None:
