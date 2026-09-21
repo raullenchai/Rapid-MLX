@@ -114,7 +114,7 @@ struct SidecarBuildScriptTests {
         let script = try String(contentsOf: Self.scriptURL, encoding: .utf8)
         let constraints = try String(contentsOf: Self.constraintsURL, encoding: .utf8)
 
-        #expect(constraints.contains("mflux==0.19.0"),
+        #expect(constraints.contains("mflux==0.20.0"),
                 "The no-deps sidecar install must never float within a range.")
         // The Images tab is only shippable because mflux's module-level
         // `import torch` is deferred into the three torch-only loading modes —
@@ -133,6 +133,8 @@ struct SidecarBuildScriptTests {
                 "The Qwen Image import path must defer PiD's optional torch checkpoint converter.")
         #expect(script.contains(#"importlib.import_module("mflux.models.qwen.variants.txt2img.qwen_image")"#),
                 "The bundle build must prove qwen-image itself imports without torch.")
+        #expect(script.contains(#"importlib.import_module("mflux.models.qwen21.variants.txt2img.qwen_image_21")"#),
+                "The bundle build must prove Qwen-Image 2.1 imports without torch.")
         #expect(script.contains(#"importlib.import_module("rapid_mlx.image.bonsai_runtime")"#),
                 "The bundle build must prove the Desktop-advertised Bonsai adapter imports without torch.")
         #expect(script.contains("SIDECAR_IMAGE_SMOKE_MODEL"),

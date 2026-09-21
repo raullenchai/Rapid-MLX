@@ -202,6 +202,7 @@ final class ImageGenViewModel {
         // text-to-image model and the edit variant) — matching the engine's
         // per-family default, so the bar isn't scaled for a 4-step turbo run
         // that is actually a 20-step one.
+        if alias.localizedCaseInsensitiveContains("qwen-image-2.1") { return 40 }
         if alias.localizedCaseInsensitiveContains("qwen-image") { return 20 }
         if alias.localizedCaseInsensitiveContains("hidream-o1") { return 28 }
         if alias.localizedCaseInsensitiveContains("sd35")
