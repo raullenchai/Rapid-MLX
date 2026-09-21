@@ -4,11 +4,14 @@
 Telemetry v2 is default-on, so ``official_build()`` is the one thing
 standing between a developer machine and PostHog. These tests pin every
 input to the decision: the release stamp file (missing, unreadable,
-malformed, or valid), the PEP 610 ``direct_url.json`` verdict, git
-checkout detection (clone-style directory AND worktree-style file), the
-fail-closed paths, the truth table, and the process cache. No real
+malformed, or valid), the PEP 610 ``direct_url.json`` verdict (absent →
+known-not-editable, present-but-unparseable → fail closed), source-tree
+detection via THIS project's ``pyproject.toml`` beside the package (and
+NOT via any ``.git`` above it — real installs live inside unrelated git
+checkouts: Homebrew's ``/opt/homebrew``, ``~/.pyenv``, project venvs),
+the fail-closed paths, the truth table, and the process cache. No real
 install metadata is consulted — everything is monkeypatched onto
-``tmp_path`` — except two deliberate real-filesystem tests at the end.
+``tmp_path`` — except deliberate real-filesystem tests at the end.
 """
 
 from __future__ import annotations
@@ -26,6 +29,10 @@ from rapid_mlx.telemetry.build_gate import ReleaseStamp
 VALID_KEY = "phc_" + "a" * 20
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
+
+#: Site-packages shape of every real wheel install (pip, Homebrew, pyenv,
+#: project venv), relative to some ancestor directory.
+_SITE_PACKAGES = Path(".venv") / "lib" / "python3.12" / "site-packages"
 
 
 def _write_stamp(directory: Path, channel: str, key: str) -> Path:
@@ -72,24 +79,25 @@ def _fresh_official_build_cache():
 
 
 @pytest.fixture
-def outside_checkout(monkeypatch, tmp_path):
-    """Make the module believe its package dir is under ``tmp_path``.
+def site_packages_install(monkeypatch, tmp_path):
+    """Relocate the module into a fake site-packages tree under ``tmp_path``.
 
-    The real package dir of THIS worktree sits inside a git checkout, so
-    every test that expects ``is_editable_or_source_install() is False``
-    must relocate the walk first.
+    The pyproject lookup then lands inside site-packages, where no
+    ``pyproject.toml`` ever lives — the shape of a real wheel install —
+    so tests that expect ``is_editable_or_source_install() is False``
+    are not contaminated by THIS worktree's real source tree.
     """
     monkeypatch.setattr(
         build_gate,
         "__file__",
-        str(tmp_path / "rapid_mlx" / "telemetry" / "build_gate.py"),
+        str(tmp_path / _SITE_PACKAGES / "rapid_mlx" / "telemetry" / "build_gate.py"),
     )
 
 
 # --------------------------------------------------------------- the stamp
 
 
-def test_missing_stamp_file_reads_as_none(monkeypatch):
+def test_missing_stamp_file_reads_as_none():
     # No monkeypatch of _stamp_path: the real package dir of this repo
     # never contains the stamp (it is not committed) — same verdict.
     assert build_gate.read_release_stamp() is None
@@ -173,7 +181,7 @@ def test_direct_url_editable_true_is_editable(monkeypatch):
     assert build_gate.is_editable_or_source_install() is True
 
 
-@pytest.mark.usefixtures("outside_checkout")
+@pytest.mark.usefixtures("site_packages_install")
 def test_direct_url_editable_false_is_not_editable(monkeypatch):
     payload = _direct_url_payload({"editable": False})
     monkeypatch.setattr(
@@ -182,33 +190,42 @@ def test_direct_url_editable_false_is_not_editable(monkeypatch):
     assert build_gate.is_editable_or_source_install() is False
 
 
-@pytest.mark.usefixtures("outside_checkout")
-def test_direct_url_malformed_json_is_not_proven_editable(monkeypatch):
+@pytest.mark.usefixtures("site_packages_install")
+def test_direct_url_malformed_json_fails_closed(monkeypatch):
+    # A PRESENT direct_url.json that does not parse is UNKNOWN
+    # provenance, not proof of a wheel install: fail closed (True).
     monkeypatch.setattr(
         build_gate, "distribution", lambda _name: _FakeDistribution("{not json")
     )
-    assert build_gate.is_editable_or_source_install() is False
+    assert build_gate.is_editable_or_source_install() is True
 
 
-@pytest.mark.usefixtures("outside_checkout")
-def test_direct_url_json_array_is_not_proven_editable(monkeypatch):
+@pytest.mark.usefixtures("site_packages_install")
+def test_direct_url_json_array_fails_closed(monkeypatch):
+    # Valid JSON, but not an object: same unknown-provenance verdict.
     monkeypatch.setattr(
         build_gate, "distribution", lambda _name: _FakeDistribution("[]")
     )
-    assert build_gate.is_editable_or_source_install() is False
+    assert build_gate.is_editable_or_source_install() is True
 
 
-@pytest.mark.usefixtures("outside_checkout")
-def test_direct_url_missing_dir_info_is_not_proven_editable(monkeypatch):
+@pytest.mark.parametrize(
+    "dir_info",
+    [None, "not-a-mapping"],
+    ids=["dir_info-missing", "dir_info-not-a-dict"],
+)
+@pytest.mark.usefixtures("site_packages_install")
+def test_direct_url_without_dir_info_is_known_not_editable(monkeypatch, dir_info):
+    # dir_info absent (or not a mapping) in a VALID direct_url.json is
+    # exactly how pip records a direct-URL install: known, not editable.
+    payload = _direct_url_payload(dir_info)
     monkeypatch.setattr(
-        build_gate,
-        "distribution",
-        lambda _name: _FakeDistribution(_direct_url_payload(None)),
+        build_gate, "distribution", lambda _name: _FakeDistribution(payload)
     )
     assert build_gate.is_editable_or_source_install() is False
 
 
-@pytest.mark.usefixtures("outside_checkout")
+@pytest.mark.usefixtures("site_packages_install")
 def test_direct_url_editable_non_bool_is_not_proven_editable(monkeypatch):
     payload = _direct_url_payload({"editable": "yes"})
     monkeypatch.setattr(
@@ -217,10 +234,11 @@ def test_direct_url_editable_non_bool_is_not_proven_editable(monkeypatch):
     assert build_gate.is_editable_or_source_install() is False
 
 
-@pytest.mark.usefixtures("outside_checkout")
+@pytest.mark.usefixtures("site_packages_install")
 def test_direct_url_file_absent_is_not_proven_editable(monkeypatch):
     # The normal PyPI-wheel case: distribution metadata readable, but no
-    # direct_url.json at all — not editable, and not unknown provenance.
+    # direct_url.json at all — pip omits it for registry installs. Known
+    # provenance, not editable, and NOT unknown: fail open to False.
     monkeypatch.setattr(
         build_gate, "distribution", lambda _name: _FakeDistribution(None)
     )
@@ -232,7 +250,7 @@ def test_distribution_not_found_fails_closed(monkeypatch):
         raise PackageNotFoundError("rapid-mlx")
 
     monkeypatch.setattr(build_gate, "distribution", raise_pnfe)
-    monkeypatch.setattr(build_gate, "_inside_git_checkout", lambda _start: False)
+    monkeypatch.setattr(build_gate, "_package_is_in_source_tree", lambda _dir: False)
     # Unknown provenance must read as "editable or source" — never send.
     assert build_gate.is_editable_or_source_install() is True
 
@@ -243,63 +261,143 @@ def test_distribution_read_failure_fails_closed(monkeypatch):
             raise OSError("metadata directory unreadable")
 
     monkeypatch.setattr(build_gate, "distribution", lambda _name: _HostileDist())
-    monkeypatch.setattr(build_gate, "_inside_git_checkout", lambda _start: False)
+    monkeypatch.setattr(build_gate, "_package_is_in_source_tree", lambda _dir: False)
     assert build_gate.is_editable_or_source_install() is True
 
 
-# -------------------------------------------------- git checkout detection
+# ------------------------------------------------- source-tree detection
 
 
-def test_git_directory_marks_a_checkout(tmp_path):
-    package = tmp_path / "pkg" / "rapid_mlx"
+@pytest.mark.parametrize("git_style", ["directory", "file"])
+def test_site_packages_inside_a_git_checkout_is_not_source(tmp_path, git_style):
+    # THE acceptance case: Homebrew (/opt/homebrew/.git with the package
+    # ~10 levels below), pyenv (~/.pyenv) and the classic project venv
+    # (~/code/myproject/.venv) all nest site-packages inside a git
+    # checkout. A .git anywhere above proves nothing — and indeed no
+    # pyproject.toml sits beside the package here, so: not source.
+    if git_style == "directory":
+        (tmp_path / ".git").mkdir()  # clone-style: .git is a directory
+    else:
+        (tmp_path / ".git").write_text("gitdir: /somewhere/else/.git/worktrees/wt\n")
+    package = tmp_path / _SITE_PACKAGES / "rapid_mlx"
     package.mkdir(parents=True)
-    (tmp_path / ".git").mkdir()  # clone-style: .git is a directory
-    assert build_gate._inside_git_checkout(package) is True
+    assert build_gate._package_is_in_source_tree(package) is False
 
 
-def test_git_file_marks_a_checkout(tmp_path):
-    # git worktrees keep a .git FILE pointing at the real gitdir; the
-    # walk must not insist on a directory.
-    package = tmp_path / "wt" / "rapid_mlx"
-    package.mkdir(parents=True)
-    (tmp_path / ".git").write_text("gitdir: /somewhere/else/.git/worktrees/wt\n")
-    assert build_gate._inside_git_checkout(package) is True
+def test_package_beside_matching_pyproject_is_source(tmp_path):
+    package = tmp_path / "rapid_mlx"
+    (package / "telemetry").mkdir(parents=True)
+    (tmp_path / "pyproject.toml").write_text(
+        '[project]\nname = "rapid-mlx"\n',
+        encoding="utf-8",
+    )
+    assert build_gate._package_is_in_source_tree(package) is True
 
 
-def test_git_not_found_within_level_bound(tmp_path):
-    # .git exists 15 levels up, but the walk stops after 12 — the bound
-    # wins and the verdict is False.
-    deep = tmp_path
-    for i in range(15):
-        deep = deep / f"level_{i}"
-    deep.mkdir(parents=True)
-    (tmp_path / ".git").mkdir()
-    assert build_gate._inside_git_checkout(deep) is False
+@pytest.mark.parametrize(
+    "pyproject_text",
+    [
+        # A monorepo vendoring us: rapid_mlx/ beside someone else's project.
+        '[project]\nname = "some-monorepo"\n',
+        # Near-miss names must not match: the quotes anchor the value.
+        '[project]\nname = "rapid-mlx-extra"\n',
+        '[project]\nname = "not-rapid-mlx"\n',
+        # The authors array mentions rapid-mlx, but the project does not.
+        '[project]\nname = "vendor-app"\n'
+        'authors = [{name = "rapid-mlx contributors"}]\n',
+        # No name line at all.
+        '[project]\nversion = "0.1.0"\n',
+    ],
+)
+def test_pyproject_for_another_or_vaguely_named_project_is_not_source(
+    tmp_path, pyproject_text
+):
+    package = tmp_path / "rapid_mlx"
+    package.mkdir()
+    (tmp_path / "pyproject.toml").write_text(pyproject_text, encoding="utf-8")
+    assert build_gate._package_is_in_source_tree(package) is False
 
 
-def test_walk_reaching_root_without_git_is_not_a_checkout(tmp_path):
-    # tmp_path sits a handful of levels under the filesystem root with no
-    # .git anywhere above it: the walk hits the root and stops early.
-    assert build_gate._inside_git_checkout(tmp_path) is False
+@pytest.mark.parametrize(
+    "name_line",
+    [
+        'name = "rapid-mlx"',  # canonical
+        "name = 'rapid-mlx'",  # single quotes
+        'name="rapid-mlx"',  # no spaces
+        'name   =   "rapid-mlx"',  # extra spaces
+        '  name = "rapid-mlx"',  # indented (inside [project])
+    ],
+)
+def test_pyproject_name_line_is_matched_tolerantly(tmp_path, name_line):
+    package = tmp_path / "rapid_mlx"
+    package.mkdir()
+    (tmp_path / "pyproject.toml").write_text(
+        f"[project]\n{name_line}\n",
+        encoding="utf-8",
+    )
+    assert build_gate._package_is_in_source_tree(package) is True
 
 
-def test_hostile_filesystem_fails_closed(monkeypatch, tmp_path):
-    # A readable distribution that is not editable, but a filesystem
-    # that refuses the checkout walk (e.g. unreadable parents): the
+def test_unreadable_pyproject_fails_closed(monkeypatch, tmp_path):
+    # A pyproject.toml exists but refuses to be read: the source-tree
     # question cannot be answered, so the answer is True (never send).
+    package = tmp_path / "rapid_mlx"
+    package.mkdir()
+    (tmp_path / "pyproject.toml").write_text('[project]\nname = "rapid-mlx"\n')
+    real_read_text = Path.read_text
+
+    def hostile_read_text(self: Path, *args: object, **kwargs: object) -> str:
+        if self.name == "pyproject.toml":
+            raise PermissionError("hostile filesystem")
+        return real_read_text(self, *args, **kwargs)  # type: ignore[arg-type,return-value]
+
+    monkeypatch.setattr(Path, "read_text", hostile_read_text)
+    assert build_gate._package_is_in_source_tree(package) is True
+
+
+def test_missing_pyproject_is_not_source(tmp_path):
+    # Plain directory without pyproject.toml and without a checkout
+    # interpretation: the site-packages verdict, reached via the same
+    # FileNotFoundError path as any real install.
+    package = tmp_path / "rapid_mlx"
+    package.mkdir()
+    assert build_gate._package_is_in_source_tree(package) is False
+
+
+def test_site_packages_inside_git_is_not_source_via_public_api(monkeypatch, tmp_path):
+    # End-to-end shape of the misclassification the git-walk draft had:
+    # direct_url says wheel-install, .git sits above the venv, and the
+    # verdict must still be "not editable or source" (False = may send).
+    (tmp_path / ".git").mkdir()
+    monkeypatch.setattr(
+        build_gate,
+        "__file__",
+        str(tmp_path / _SITE_PACKAGES / "rapid_mlx" / "telemetry" / "build_gate.py"),
+    )
     monkeypatch.setattr(
         build_gate,
         "distribution",
         lambda _name: _FakeDistribution(_direct_url_payload({"editable": False})),
     )
-    real_exists = Path.exists
+    assert build_gate.is_editable_or_source_install() is False
 
-    def hostile_exists(self: Path, *args: object, **kwargs: object) -> bool:
-        if self.name == ".git":
-            raise PermissionError("hostile filesystem")
-        return real_exists(self)
 
-    monkeypatch.setattr(Path, "exists", hostile_exists)
+def test_source_tree_via_public_api(monkeypatch, tmp_path):
+    # The checkout/sdist shape: rapid_mlx/ directly beside the matching
+    # pyproject.toml — even with a .git present anywhere, the pyproject
+    # is what identifies OUR tree.
+    (tmp_path / ".git").mkdir()
+    (tmp_path / "pyproject.toml").write_text('[project]\nname = "rapid-mlx"\n')
+    monkeypatch.setattr(
+        build_gate,
+        "__file__",
+        str(tmp_path / "rapid_mlx" / "telemetry" / "build_gate.py"),
+    )
+    monkeypatch.setattr(
+        build_gate,
+        "distribution",
+        lambda _name: _FakeDistribution(_direct_url_payload({"editable": False})),
+    )
     assert build_gate.is_editable_or_source_install() is True
 
 
@@ -328,7 +426,9 @@ def test_official_build_truth_table(
         "distribution",
         lambda _name: _FakeDistribution(_direct_url_payload({"editable": False})),
     )
-    monkeypatch.setattr(build_gate, "_inside_git_checkout", lambda _start: source_like)
+    monkeypatch.setattr(
+        build_gate, "_package_is_in_source_tree", lambda _dir: source_like
+    )
     build_gate._reset_for_tests()
     assert build_gate.official_build() == expected
 
@@ -341,7 +441,7 @@ def test_official_build_result_is_cached_until_reset(monkeypatch, tmp_path):
         "distribution",
         lambda _name: _FakeDistribution(_direct_url_payload({"editable": False})),
     )
-    monkeypatch.setattr(build_gate, "_inside_git_checkout", lambda _start: False)
+    monkeypatch.setattr(build_gate, "_package_is_in_source_tree", lambda _dir: False)
     build_gate._reset_for_tests()
     assert build_gate.official_build() is not None
     # The stamp disappears from disk, yet the cached per-process answer
@@ -368,7 +468,7 @@ def test_reset_for_tests_clears_a_stale_negative(monkeypatch, tmp_path):
         "distribution",
         lambda _name: _FakeDistribution(_direct_url_payload({"editable": False})),
     )
-    monkeypatch.setattr(build_gate, "_inside_git_checkout", lambda _start: False)
+    monkeypatch.setattr(build_gate, "_package_is_in_source_tree", lambda _dir: False)
     build_gate._reset_for_tests()
     assert build_gate.official_build() == ReleaseStamp("rc", VALID_KEY)
 
@@ -412,16 +512,31 @@ def test_public_functions_survive_a_hostile_world(monkeypatch, tmp_path):
 
 
 def test_this_checkout_is_not_an_official_build():
-    """This repo's own checkout IS a git checkout — the gate must stay shut.
+    """This repo's own checkout is OUR source tree — the gate must stay shut.
 
     No monkeypatch: the real filesystem must yield ``None`` both because
-    the stamp is not committed and because the walk up from
-    ``rapid_mlx/telemetry`` finds this repo's ``.git`` within the bound.
+    the stamp is not committed and because ``rapid_mlx/`` sits directly
+    beside this repo's ``pyproject.toml`` (``[project]`` name
+    ``rapid-mlx``).
     """
     build_gate._reset_for_tests()
     assert build_gate.official_build() is None
     assert build_gate.read_release_stamp() is None
     assert build_gate.is_editable_or_source_install() is True
+
+
+def test_real_package_dir_sits_beside_this_projects_pyproject():
+    """The real ``rapid_mlx`` package dir is directly beside the real pyproject.
+
+    Pins the ``parent.parent`` arithmetic against the real filesystem:
+    from ``rapid_mlx/telemetry/build_gate.py`` the package directory is
+    ``Path(__file__).parent.parent``, and ITS parent holds the
+    ``pyproject.toml`` whose name line this repo actually ships.
+    """
+    package_dir = Path(build_gate.__file__).parent.parent
+    assert package_dir.name == "rapid_mlx"
+    assert (package_dir.parent / "pyproject.toml").is_file()
+    assert build_gate._package_is_in_source_tree(package_dir) is True
 
 
 def test_release_stamp_is_never_committed_and_is_gitignored():
