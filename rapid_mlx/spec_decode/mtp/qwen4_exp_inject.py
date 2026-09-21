@@ -180,16 +180,6 @@ def inject_qwen4_exp_mtp_support(
             for file in _mtp_weight_files(mtp_sidecar):
                 weights.update(_sanitize_mtp_weights(mx.load(str(file))))
 
-            from rapid_mlx.models.qwen4_exp import ZeroCenteredRMSNorm
-            from rapid_mlx.models.qwen4_norm_convention import (
-                apply_qwen4_norm_convention,
-            )
-
-            receipt = getattr(inner, "norm_convention_receipt", None) or {}
-            apply_qwen4_norm_convention(
-                mtp, weights, ZeroCenteredRMSNorm, receipt.get("source_convention")
-            )
-
             expected = dict(tree_flatten(mtp.parameters()))
             missing = set(expected) - set(weights)
             unexpected = set(weights) - set(expected)
@@ -205,6 +195,23 @@ def inject_qwen4_exp_mtp_support(
                     sorted(missing)[:8],
                     sorted(unexpected)[:8],
                     sorted(mismatched.items())[:8],
+                )
+                return False
+            from rapid_mlx.models.qwen4_exp import ZeroCenteredRMSNorm
+            from rapid_mlx.models.qwen4_norm_convention import (
+                normalize_qwen4_checkpoint,
+            )
+
+            receipt = getattr(inner, "norm_convention_receipt", None) or {}
+            mtp_receipt = normalize_qwen4_checkpoint(mtp, weights, ZeroCenteredRMSNorm)
+            if mtp_receipt is None or mtp_receipt["source_convention"] != receipt.get(
+                "source_convention"
+            ):
+                logger.error(
+                    "[mtp.qwen4] base/MTP RMSNorm convention mismatch: "
+                    "base=%s sidecar=%s",
+                    receipt.get("source_convention"),
+                    mtp_receipt and mtp_receipt["source_convention"],
                 )
                 return False
             mtp.load_weights(list(weights.items()), strict=True)

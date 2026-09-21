@@ -21,8 +21,8 @@ def _norm_targets(model, norm_type, prefix=""):
 def apply_qwen4_norm_convention(model, weights, norm_type, convention, *, prefix=""):
     """Map only the exact zero-centered norm class into its residual ABI.
 
-    MTP inherits the backbone decision because its learned gains cannot
-    reliably classify the source convention independently. Gated GDN norms
+    The checkpoint's attention hyper-connection anchors establish the source
+    convention before this function maps the affected norms. Gated GDN norms
     are a different class, already direct-gamma, and remain unchanged.
     """
     if convention not in ("zero_centered", "direct_gamma"):
