@@ -16,13 +16,28 @@ from unittest import mock
 
 import pytest
 
+from rapid_mlx.telemetry import state
+
+_PROCESS_ROLE_ENV_VARS = (
+    "RAPID_MLX_PROCESS_ROLE",
+    "RAPID_MLX_WATCHDOG_PPID",
+)
+
+
+@pytest.fixture(autouse=True)
+def _clean_telemetry_env(monkeypatch):
+    for name in (
+        state.ENV_VAR,
+        state.DO_NOT_TRACK_ENV,
+        *state.CI_ENV_VARS,
+        *_PROCESS_ROLE_ENV_VARS,
+    ):
+        monkeypatch.delenv(name, raising=False)
+
 
 @pytest.fixture
 def fake_home(tmp_path, monkeypatch):
     monkeypatch.setenv("HOME", str(tmp_path))
-    monkeypatch.delenv("RAPID_MLX_TELEMETRY", raising=False)
-    import rapid_mlx.telemetry.state as state
-
     importlib.reload(state)
     return tmp_path
 

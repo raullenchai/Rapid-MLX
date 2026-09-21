@@ -79,6 +79,10 @@ _DESKTOP_REFUSAL = (
 _MARKER_ONLY_WB = WriteBack(False, False, True)
 _MIGRATE_WB = WriteBack(True, True, True)
 _NO_WB = WriteBack(False, False, False)
+_PROCESS_ROLE_ENV_VARS = (
+    "RAPID_MLX_PROCESS_ROLE",
+    "RAPID_MLX_WATCHDOG_PPID",
+)
 
 
 # ---------------------------------------------------------------------------
@@ -86,31 +90,21 @@ _NO_WB = WriteBack(False, False, False)
 # ---------------------------------------------------------------------------
 
 
-@pytest.fixture
-def fake_home(tmp_path, monkeypatch):
-    """Reroute HOME into tmp and neutralize every env-side decision input.
-
-    Deliberately deletes the CI markers too: on GitHub Actions they are
-    set for every job and would engage the env kill switch, which would
-    make every decision in this file the kill-switch row and test
-    nothing.
-    """
-    monkeypatch.setenv("HOME", str(tmp_path))
+@pytest.fixture(autouse=True)
+def _clean_telemetry_env(monkeypatch):
     for name in (
-        "RAPID_MLX_TELEMETRY",
-        "DO_NOT_TRACK",
-        "RAPID_MLX_PROCESS_ROLE",
-        "RAPID_MLX_WATCHDOG_PPID",
-        "CI",
-        "GITHUB_ACTIONS",
-        "GITLAB_CI",
-        "CIRCLECI",
-        "TRAVIS",
-        "BUILDKITE",
-        "JENKINS_URL",
-        "TEAMCITY_VERSION",
+        state.ENV_VAR,
+        state.DO_NOT_TRACK_ENV,
+        *state.CI_ENV_VARS,
+        *_PROCESS_ROLE_ENV_VARS,
     ):
         monkeypatch.delenv(name, raising=False)
+
+
+@pytest.fixture
+def fake_home(tmp_path, monkeypatch):
+    """Reroute HOME into tmp and reset process-global telemetry state."""
+    monkeypatch.setenv("HOME", str(tmp_path))
     # A post-cutoff release version: the editable venv often reports a
     # pre-cutoff one, which would decide ``pre_cutoff_runtime`` everywhere.
     monkeypatch.setattr(rapid_mlx_module(), "__version__", _RELEASE_VERSION)
@@ -1373,8 +1367,7 @@ def test_subprocess_round_trip_desktop_refusal_migration(tmp_path):
     (telemetry_dir / "telemetry-consent.yaml").write_text(_DESKTOP_REFUSAL)
     driver = tmp_path / "driver.py"
     driver.write_text(
-        "import os, sys\n"
-        f"os.environ['HOME'] = {str(home)!r}\n"
+        "import sys\n"
         "import rapid_mlx\n"
         f"rapid_mlx.__version__ = {_RELEASE_VERSION!r}\n"
         "from rapid_mlx.telemetry import consent_runtime as cr\n"
@@ -1383,7 +1376,7 @@ def test_subprocess_round_trip_desktop_refusal_migration(tmp_path):
         "print('upload_allowed=' + str(cr.upload_allowed()))\n"
         "print('notice=' + str(cr._notice_delivered))\n"
     )
-    env = os.environ.copy()
+    env = _child_env(home)
     env["PYTHONPATH"] = os.pathsep.join((str(_REPO_ROOT), *(p for p in sys.path if p)))
     result = subprocess.run(
         [sys.executable, str(driver)],
@@ -1412,6 +1405,19 @@ def test_subprocess_round_trip_desktop_refusal_migration(tmp_path):
     print(migrated)
 
 
+def _child_env(home: Path) -> dict[str, str]:
+    env = os.environ.copy()
+    env["HOME"] = str(home)
+    for name in (
+        state.ENV_VAR,
+        state.DO_NOT_TRACK_ENV,
+        *state.CI_ENV_VARS,
+        *_PROCESS_ROLE_ENV_VARS,
+    ):
+        env.pop(name, None)
+    return env
+
+
 def _post_cutoff_cli_env(tmp_path: Path, home_name: str) -> tuple[dict[str, str], Path]:
     """Environment for a real CLI whose imported version is post-cutoff."""
     patch_dir = tmp_path / "version-patch"
@@ -1421,16 +1427,11 @@ def _post_cutoff_cli_env(tmp_path: Path, home_name: str) -> tuple[dict[str, str]
     )
     home = tmp_path / home_name
     home.mkdir()
-    env = os.environ.copy()
-    env["HOME"] = str(home)
+    env = _child_env(home)
     pythonpath = [str(patch_dir), str(_REPO_ROOT), *(p for p in sys.path if p)]
     if env.get("PYTHONPATH"):
         pythonpath.append(env["PYTHONPATH"])
     env["PYTHONPATH"] = os.pathsep.join(pythonpath)
-    for name in state.CI_ENV_VARS:
-        env.pop(name, None)
-    env.pop("RAPID_MLX_TELEMETRY", None)
-    env.pop("DO_NOT_TRACK", None)
     return env, home
 
 

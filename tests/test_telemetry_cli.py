@@ -20,36 +20,60 @@ from types import SimpleNamespace
 import pytest
 import yaml
 
+from rapid_mlx.telemetry import state
+
+_PROCESS_ROLE_ENV_VARS = (
+    "RAPID_MLX_PROCESS_ROLE",
+    "RAPID_MLX_WATCHDOG_PPID",
+)
+
+
+@pytest.fixture(autouse=True)
+def _clean_telemetry_env(monkeypatch):
+    for name in (
+        state.ENV_VAR,
+        state.DO_NOT_TRACK_ENV,
+        *state.CI_ENV_VARS,
+        *_PROCESS_ROLE_ENV_VARS,
+    ):
+        monkeypatch.delenv(name, raising=False)
+
 
 @pytest.fixture
 def fake_home(tmp_path, monkeypatch):
     monkeypatch.setenv("HOME", str(tmp_path))
-    monkeypatch.delenv("RAPID_MLX_TELEMETRY", raising=False)
-    import rapid_mlx.telemetry.state as state
-
     importlib.reload(state)
     return tmp_path
 
 
-def _run_cli(*args, env_overrides=None, home=None):
+def _child_env(home, env_overrides=None):
+    import os
+
+    env = os.environ.copy()
+    env["HOME"] = str(home)
+    for name in (
+        state.ENV_VAR,
+        state.DO_NOT_TRACK_ENV,
+        *state.CI_ENV_VARS,
+        *_PROCESS_ROLE_ENV_VARS,
+    ):
+        env.pop(name, None)
+    if env_overrides:
+        env.update(env_overrides)
+    return env
+
+
+def _run_cli(*args, env_overrides=None, home):
     """Spawn the CLI as a subprocess so argparse + dispatch run end-to-end.
 
     In-process invocation would short-circuit ``sys.exit`` and miss
     real-world failure modes (broken imports, missing dispatch case).
     """
-    import os
-
-    env = os.environ.copy()
-    if home is not None:
-        env["HOME"] = str(home)
-    env.pop("RAPID_MLX_TELEMETRY", None)
-    if env_overrides:
-        env.update(env_overrides)
     return subprocess.run(
         [sys.executable, "-m", "rapid_mlx.cli", *args],
         capture_output=True,
         text=True,
-        env=env,
+        env=_child_env(home, env_overrides),
         timeout=30,
         check=False,
     )
@@ -391,12 +415,13 @@ def test_env_kill_switch_via_subprocess(fake_home):
     assert "disabled" in r.stdout.lower()
 
 
-def test_help_lists_telemetry_subcommand():
+def test_help_lists_telemetry_subcommand(fake_home):
     """Bare ``rapid-mlx --help`` must surface the telemetry subcommand
     so users discover it. Regression target: someone refactors the
     subparsers and accidentally drops the registration."""
     r = subprocess.run(
         [sys.executable, "-m", "rapid_mlx.cli", "--help"],
+        env=_child_env(fake_home),
         capture_output=True,
         text=True,
         timeout=15,
@@ -406,9 +431,10 @@ def test_help_lists_telemetry_subcommand():
     assert "telemetry" in r.stdout
 
 
-def test_telemetry_help_lists_all_five_actions():
+def test_telemetry_help_lists_all_five_actions(fake_home):
     r = subprocess.run(
         [sys.executable, "-m", "rapid_mlx.cli", "telemetry", "--help"],
+        env=_child_env(fake_home),
         capture_output=True,
         text=True,
         timeout=15,

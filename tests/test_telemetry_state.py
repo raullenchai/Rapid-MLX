@@ -14,6 +14,24 @@ import importlib
 
 import pytest
 
+from rapid_mlx.telemetry import state
+
+_PROCESS_ROLE_ENV_VARS = (
+    "RAPID_MLX_PROCESS_ROLE",
+    "RAPID_MLX_WATCHDOG_PPID",
+)
+
+
+@pytest.fixture(autouse=True)
+def _clean_telemetry_env(monkeypatch):
+    for name in (
+        state.ENV_VAR,
+        state.DO_NOT_TRACK_ENV,
+        *state.CI_ENV_VARS,
+        *_PROCESS_ROLE_ENV_VARS,
+    ):
+        monkeypatch.delenv(name, raising=False)
+
 
 @pytest.fixture
 def fake_home(tmp_path, monkeypatch):
@@ -24,12 +42,9 @@ def fake_home(tmp_path, monkeypatch):
     documented way to override on POSIX.
     """
     monkeypatch.setenv("HOME", str(tmp_path))
-    monkeypatch.delenv("RAPID_MLX_TELEMETRY", raising=False)
     # Force-reload the state module so any cached path objects (there
     # shouldn't be any, but defence in depth) get rebuilt under the new
     # HOME.
-    import rapid_mlx.telemetry.state as state
-
     importlib.reload(state)
     return tmp_path
 
