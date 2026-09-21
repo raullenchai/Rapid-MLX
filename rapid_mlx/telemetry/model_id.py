@@ -47,8 +47,20 @@ such a repo:
   format), a non-finite one (``nan`` / ``inf`` / ``1e999`` all parse as
   floats) and a future-dated one are none of them proof.
 
-**What counts as a Hub round trip.** Only a call that CANNOT be satisfied
-from the local cache. The two remaining ``note_hub_fetch`` call sites —
+**What counts as a Hub round trip.** A call to the CANONICAL Hub that
+CANNOT be satisfied from the local cache. Both halves are load-bearing.
+
+*Canonical.* ``huggingface_hub`` routes everything through
+``constants.ENDPOINT`` / ``HF_ENDPOINT``, so an operator can point the
+library at an internal HF-compatible registry or a LAN mirror. Such a host
+answers an anonymous 200 for a repo that is *private on the real Hub* — and
+can even redirect one repo id to another, so the 200 may not even describe
+the repo we asked for. Proof is therefore recorded only when the effective
+endpoint is ``https://huggingface.co``; on any other endpoint we record
+nothing and the model reports ``<custom>``. Revocation is deliberately not
+gated this way: dropping proof is always safe.
+
+*Not from cache.* The two remaining ``note_hub_fetch`` call sites —
 ``_download_gate._model_info_with_timeout`` and
 ``server._prefetch_routing_metadata`` — both go through
 ``huggingface_hub``'s ``model_info``, a plain API call with no cache
@@ -75,7 +87,10 @@ produce a byte-identical request (``huggingface_hub`` sends no
 ``Authorization`` header when it cannot resolve a token), so it would buy no
 safety. The ambient check stays, fail-closed, backed by the rules above.
 
-**Limit, stated honestly.** Proof of anonymity is recorded when we touch the
+**Limit, stated honestly.** An operator who sets ``HF_ENDPOINT`` gets no
+non-catalog model names in telemetry at all — the demand signal is traded
+away for the guarantee, in the same conservative direction as everything
+else here. Proof of anonymity is recorded when we touch the
 Hub, so a model that was already in the HF cache before this shipped (or was
 copied in out of band) has no proof and reports ``"<custom>"`` forever unless
 some later Hub call for it succeeds anonymously. That is the conservative
@@ -120,6 +135,16 @@ _HF_TOKEN_ENV_VARS: tuple[str, ...] = (
 
 _PUBLIC_MARKER_NAME = "public-anon-fetch"
 
+#: The only Hub whose "this repo is readable anonymously" we believe.
+#:
+#: Proof means "the public Hugging Face Hub served this repo to a client
+#: with no credentials". An anonymous 200 from somewhere else says nothing
+#: about that: an internal HF-compatible registry, or a LAN mirror that is
+#: simply unauthenticated, answers 200 for a PRIVATE fine-tune — and the
+#: recorded marker would then put ``acme/secret-internal-finetune`` on the
+#: wire and keep it there for the whole TTL.
+_CANONICAL_HF_ENDPOINT = "https://huggingface.co"
+
 #: How long one anonymous Hub success licenses reporting a repo id.
 #:
 #: The exposure this bounds is narrow — one ``org/name`` string for a repo
@@ -155,6 +180,35 @@ _auth_seen = False
 
 
 # ------------------------------------------------------------------- tokens
+
+
+def hub_endpoint_is_canonical() -> bool:
+    """Whether the Hub calls that carry proof go to the real Hub.
+
+    ``huggingface_hub`` routes every request through ``constants.ENDPOINT``
+    (seeded from ``HF_ENDPOINT``), so an operator can point the whole
+    library at an internal registry or a mirror. Both remaining
+    ``note_hub_fetch`` call sites inherit that — which makes their
+    "anonymous success" evidence about *that* host, not about public
+    readability on huggingface.co.
+
+    Fail-closed: anything we cannot read, or cannot recognise as the
+    canonical endpoint, answers ``False`` and no proof is recorded.
+    """
+    raw = ""
+    try:
+        from huggingface_hub import constants as hf_constants
+
+        raw = getattr(hf_constants, "ENDPOINT", "") or ""
+    except Exception:
+        raw = ""
+    if not raw:
+        raw = os.environ.get("HF_ENDPOINT") or ""
+    normalised = raw.strip().rstrip("/").lower()
+    if not normalised:
+        # Neither set: huggingface_hub's own default is the canonical Hub.
+        return True
+    return normalised == _CANONICAL_HF_ENDPOINT
 
 
 def hf_auth_state() -> bool | None:
@@ -200,7 +254,14 @@ def hf_auth_in_use() -> bool:
     global _auth_seen
     if _auth_seen:
         return True
-    state = hf_auth_state()
+    try:
+        state = hf_auth_state()
+    except (KeyboardInterrupt, SystemExit):
+        raise
+    except Exception:
+        # The module's never-raise contract reaches here too: a probe that
+        # explodes is the definition of "cannot tell", so fail closed.
+        return True
     if state is True:
         _auth_seen = True
         return True
@@ -331,12 +392,16 @@ def note_hub_fetch(repo_id: str) -> None:
 
     Never raises: this sits on the download path.
     """
+    global _auth_seen
     try:
         if not isinstance(repo_id, str) or not _HF_REPO_RE.match(repo_id):
             return
         state = True if _auth_seen else hf_auth_state()
         if state is True:
-            hf_auth_in_use()  # latch the observation
+            # Record the observation we just made. Re-probing here (the
+            # old ``hf_auth_in_use()`` call) could miss it: a token
+            # cleared between the two probes left the latch unset.
+            _auth_seen = True
             _revoke_proof(repo_id)
             return
         if state is None:
@@ -345,6 +410,12 @@ def note_hub_fetch(repo_id: str) -> None:
             # either. Revoking on "cannot tell" would let one transient
             # unreadable-token-file error delete, for every future
             # process, a marker that a genuinely anonymous pull earned.
+            return
+        if not hub_endpoint_is_canonical():
+            # Anonymous 200 from an endpoint we do not control is not
+            # evidence of public readability on huggingface.co. Revocation
+            # above is deliberately NOT gated on this — that direction is
+            # always safe.
             return
         now = time.time()
         with _proven_lock:

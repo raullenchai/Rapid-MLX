@@ -231,6 +231,120 @@ def test_a_content_free_marker_is_not_proof():
     assert mid.telemetry_model_id(repo) == "<custom>"
 
 
+# ------------------------------- proof only from the canonical Hub (r2 P1)
+
+
+def test_proof_needs_the_canonical_endpoint(monkeypatch):
+    """An anonymous 200 from an internal registry or a LAN mirror says
+    nothing about public readability on huggingface.co — and such a host
+    answers 200 for a repo that is PRIVATE on the real Hub."""
+    import huggingface_hub.constants as hf_constants
+
+    repo = "acme-corp/secret-internal-finetune"
+    monkeypatch.setattr(hf_constants, "ENDPOINT", "https://hf.acme-corp.internal")
+    mid.note_hub_fetch(repo)
+
+    marker = mid._marker_path(repo)
+    assert marker is not None and not mid.os.path.exists(marker)
+    assert mid.telemetry_model_id(repo) == "<custom>"
+    # And nothing is left for a later process on the canonical endpoint.
+    monkeypatch.setattr(hf_constants, "ENDPOINT", "https://huggingface.co")
+    mid._reset_for_tests()
+    assert mid.telemetry_model_id(repo) == "<custom>"
+
+
+def test_proof_needs_the_canonical_endpoint_via_env(monkeypatch):
+    """Same guard when the library exposes no constant to read."""
+    import huggingface_hub.constants as hf_constants
+
+    monkeypatch.setattr(hf_constants, "ENDPOINT", "")
+    monkeypatch.setenv("HF_ENDPOINT", "https://mirror.acme-corp.internal")
+    assert mid.hub_endpoint_is_canonical() is False
+    repo = "acme-corp/secret-internal-finetune"
+    mid.note_hub_fetch(repo)
+    assert mid.telemetry_model_id(repo) == "<custom>"
+
+
+def test_a_redirecting_endpoint_cannot_mint_proof_for_another_repo(monkeypatch):
+    """The second manifestation: the endpoint 307s ``acme/private-one`` to a
+    genuinely public repo and answers 200. The proof would be recorded
+    under the REQUESTED id, naming the private repo."""
+    import huggingface_hub.constants as hf_constants
+
+    monkeypatch.setattr(hf_constants, "ENDPOINT", "https://redirector.acme.internal")
+    requested = "acme-corp/private-one"
+    mid.note_hub_fetch(requested)  # the 200 was really for someone else
+    assert mid.telemetry_model_id(requested) == "<custom>"
+
+
+def test_the_canonical_endpoint_still_records_proof(monkeypatch):
+    """The guard must not silently switch proof off everywhere."""
+    import huggingface_hub.constants as hf_constants
+
+    repo = "someone/public-community-mlx"
+    monkeypatch.setattr(hf_constants, "ENDPOINT", "https://huggingface.co")
+    assert mid.hub_endpoint_is_canonical() is True
+    mid.note_hub_fetch(repo)
+    assert mid.telemetry_model_id(repo) == repo
+
+
+@pytest.mark.parametrize(
+    "spelling", ["https://huggingface.co/", "HTTPS://HuggingFace.co", "", None]
+)
+def test_canonical_endpoint_spellings(monkeypatch, spelling):
+    """Trailing slash, case, and "unset" all mean the real Hub."""
+    import huggingface_hub.constants as hf_constants
+
+    if spelling is None:
+        monkeypatch.delattr(hf_constants, "ENDPOINT", raising=False)
+        monkeypatch.delenv("HF_ENDPOINT", raising=False)
+    else:
+        monkeypatch.setattr(hf_constants, "ENDPOINT", spelling)
+        monkeypatch.delenv("HF_ENDPOINT", raising=False)
+    assert mid.hub_endpoint_is_canonical() is True
+
+
+def test_unreadable_hub_constants_fall_back_to_the_env(monkeypatch):
+    """No importable ``huggingface_hub`` — the env var still decides, and a
+    foreign endpoint still blocks proof."""
+    import sys
+
+    monkeypatch.setitem(sys.modules, "huggingface_hub", None)
+    monkeypatch.setenv("HF_ENDPOINT", "https://elsewhere.invalid")
+    assert mid.hub_endpoint_is_canonical() is False
+
+
+# ------------------------------------------------- latch / never-raise (r2)
+
+
+def test_note_hub_fetch_latches_the_token_it_observed(monkeypatch):
+    """Record the observation, do not re-probe for it.
+
+    Re-probing lost the latch when the token was cleared between the two
+    probes — the exact laundering the latch exists to prevent.
+    """
+    states = iter([True, False, False, False])
+    monkeypatch.setattr(mid, "hf_auth_state", lambda: next(states))
+    mid.note_hub_fetch("acme-corp/gated-weights")  # observes True
+    assert mid.hf_auth_in_use() is True  # latched, without re-probing
+
+
+def test_hf_auth_in_use_swallows_a_probe_explosion(monkeypatch):
+    """Never-raise reaches this entry point too, and fails closed."""
+
+    def _boom():
+        raise RuntimeError("probe exploded")
+
+    monkeypatch.setattr(mid, "hf_auth_state", _boom)
+    assert mid.hf_auth_in_use() is True
+
+
+def test_hf_auth_in_use_does_not_swallow_keyboard_interrupt(monkeypatch):
+    monkeypatch.setattr(mid, "hf_auth_state", _raise_keyboard_interrupt)
+    with pytest.raises(KeyboardInterrupt):
+        mid.hf_auth_in_use()
+
+
 def test_auth_detection_latches_for_the_process(monkeypatch):
     """A token seen once stays seen: clearing ``HF_TOKEN`` mid-run must not
     launder a gated repo into a reportable public name."""

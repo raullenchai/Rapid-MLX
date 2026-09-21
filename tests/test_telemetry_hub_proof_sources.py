@@ -149,7 +149,7 @@ def test_the_cached_fallback_really_happens(gated_hub):
     assert os.path.exists(path)
 
 
-def test_a_gated_repo_served_from_cache_is_never_proof(gated_hub):
+def test_a_gated_repo_served_from_cache_is_never_proof(gated_hub, monkeypatch):
     """THE P0: gated repo, anonymous probe, cached ``config.json``.
 
     Before the fix this recorded a marker and ``telemetry_model_id``
@@ -157,6 +157,13 @@ def test_a_gated_repo_served_from_cache_is_never_proof(gated_hub):
     re-read the marker from disk.
     """
     from rapid_mlx import server
+
+    # Present the CANONICAL endpoint to the proof guard. The stub Hub this
+    # fixture runs is necessarily a non-canonical endpoint, and the round-2
+    # guard would refuse to record proof for that reason alone — which would
+    # make this test green even if the call site came back. Isolating the
+    # guard keeps the mutation "restore note_hub_fetch here" red.
+    monkeypatch.setattr(mid, "hub_endpoint_is_canonical", lambda: True)
 
     server._prefetch_config_for_text_lane_guard(_GATED_REPO)
 
@@ -188,3 +195,12 @@ def test_bare_model_info_also_raises_for_the_routing_prefetch(gated_hub):
     with pytest.raises(GatedRepoError):
         model_info(_GATED_REPO)
     assert mid.telemetry_model_id(_GATED_REPO) == "<custom>"
+
+
+def test_a_foreign_endpoint_is_not_a_proof_source(gated_hub):
+    """Round-2 P1: this stub IS a foreign endpoint, and an anonymous 200
+    from one proves nothing about huggingface.co. Belt to the braces
+    above: even if a call site recorded here, the endpoint guard refuses."""
+    assert mid.hub_endpoint_is_canonical() is False
+    mid.note_hub_fetch("acme/secret-internal-finetune")
+    assert mid.telemetry_model_id("acme/secret-internal-finetune") == "<custom>"
