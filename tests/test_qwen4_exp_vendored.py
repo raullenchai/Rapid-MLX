@@ -2110,6 +2110,34 @@ def test_qwen4_mtp_inject_loads_complete_local_tensor_contract(tmp_path, monkeyp
     assert (policy.min_ngram, policy.max_ngram, policy.max_tokens) == (16, 64, 8)
 
 
+def test_qwen4_mtp_inject_rejects_opposite_norm_convention(tmp_path, monkeypatch):
+    from mlx.utils import tree_flatten
+
+    from rapid_mlx.spec_decode.mtp import qwen4_exp_inject as inject
+
+    args = _ple_args()
+    args.mtp_num_hidden_layers = 1
+    model = Model(ModelArgs(model_type="qwen4_exp", text_config=asdict(args)))
+    base_weights = dict(tree_flatten(model.parameters()))
+    for path, module in model.named_modules():
+        if type(module) is ZeroCenteredRMSNorm:
+            base_weights[f"{path}.weight"] = mx.ones_like(module.weight)
+    model.sanitize(base_weights)
+    assert model.language_model.norm_convention_receipt["source_convention"] == (
+        "direct_gamma"
+    )
+
+    monkeypatch.setattr(nn, "quantize", lambda *_args, **_kwargs: None)
+    mtp = inject._build_mtp(model.language_model)
+    checkpoint = tmp_path / "opposite-norm.safetensors"
+    mx.save_safetensors(
+        str(checkpoint),
+        {f"mtp.{key}": value for key, value in tree_flatten(mtp.parameters())},
+    )
+    assert inject.inject_qwen4_exp_mtp_support(model, mtp_sidecar=checkpoint) is False
+    assert not hasattr(model.language_model, "mtp")
+
+
 def test_qwen4_mtp_inject_fails_closed_on_guards_tensor_mismatch_and_exception(
     tmp_path,
     monkeypatch,
