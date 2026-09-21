@@ -11,6 +11,9 @@ pickers, never from the model.
 from __future__ import annotations
 
 import random
+import sys
+from pathlib import Path
+sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "bench" / "marvins_garden"))
 from generate_contrastive import (  # noqa: E402
     GATE_CANDIDATES, GATE_DECOYS, GATE_TOOLS, GUARD_CANDIDATES,
     ROUTE_MENU, ROUTE_SPECS, _sample_gate_scenario, _sample_route_scenario,

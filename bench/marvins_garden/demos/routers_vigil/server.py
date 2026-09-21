@@ -22,7 +22,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
 HERE = Path(__file__).resolve().parent
-ROOT = HERE.parent
+ROOT = HERE.parents[1]
 sys.path.insert(0, str(ROOT / "bench" / "marvins_garden"))
 sys.path.insert(0, str(HERE))
 
@@ -98,7 +98,7 @@ class Handler(BaseHTTPRequestHandler):
 
     def do_GET(self):
         if self.path in ("/", "/index.html"):
-            self._send(200, (ROOT / "web" / "index.html").read_bytes(), "text/html; charset=utf-8")
+            self._send(200, (HERE / "index.html").read_bytes(), "text/html; charset=utf-8")
         elif self.path.startswith("/round"):
             events = run_round()
             self._send(200, json.dumps(events).encode(), "application/json")

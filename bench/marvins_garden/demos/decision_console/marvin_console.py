@@ -28,7 +28,8 @@ import time
 from pathlib import Path
 
 HERE = Path(__file__).resolve().parent
-MG_DIR = HERE / "bench" / "marvins_garden"
+ROOT = HERE.parents[1]
+MG_DIR = ROOT / "bench" / "marvins_garden"
 if str(MG_DIR) not in sys.path:
     sys.path.insert(0, str(MG_DIR))
 
@@ -46,7 +47,7 @@ from generate_contrastive import (  # noqa: E402
 )
 from eval_label_readout import read_letter_probs  # noqa: E402
 
-DEFAULT_ADAPTER = HERE / "adapters" / "release" / "marvins-garden-v15c"
+DEFAULT_ADAPTER = ROOT / "adapters" / "release" / "marvins-garden-v15c"
 DEFAULT_MODEL = "prism-ml/Ternary-Bonsai-27B-mlx-2bit"
 LOCAL_SNAPSHOT = ("/Volumes/NVMe-4T/huggingface/hub/models--prism-ml--"
                   "Ternary-Bonsai-27B-mlx-2bit/snapshots/"

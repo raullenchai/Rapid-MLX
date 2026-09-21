@@ -27,7 +27,7 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--n", type=int, default=26)
     ap.add_argument("--model", default="/Volumes/NVMe-4T/huggingface/hub/models--prism-ml--"
                     "Ternary-Bonsai-27B-mlx-2bit/snapshots/70f75f3ad081ab840a42f3304c02c27e7f89bfb7")
-    ap.add_argument("--adapter", default=str(Path(__file__).resolve().parents[1]
+    ap.add_argument("--adapter", default=str(Path(__file__).resolve().parents[2]
                                              / "adapters" / "release" / "marvins-garden-v15c"))
     args = ap.parse_args(argv)
 
