@@ -3729,6 +3729,16 @@ Examples:
 
     args = parser.parse_args()
 
+    # Telemetry v2 default-on wiring (T11): resolve the consent decision,
+    # deliver the disclosure notice to stderr, then apply the locked,
+    # merging write-back -- before any engine/telemetry init. This
+    # entrypoint never runs ``cli.main()``, so without this call a
+    # ``python -m rapid_mlx.server`` process would never see the notice
+    # and never write the marker.
+    from .telemetry import consent_runtime
+
+    consent_runtime.startup(long_lived=True)
+
     from .routes.video import configure_video_jobs
 
     try:
