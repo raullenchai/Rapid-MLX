@@ -120,6 +120,24 @@ def build_batch_item(
         return None
 
 
+def _snapshot_item(item: Mapping[str, object]) -> dict[str, object]:
+    """One-level copy of an item: the item itself plus its ``properties``.
+
+    ``build_batch_item`` nests exactly one level, so copying those two
+    layers is what makes the envelope immune to later caller edits: the
+    sender queues items between build and POST, and a write into
+    ``item["properties"]`` in that window would otherwise reach the wire
+    without ever passing the registry — the one non-fail-closed seam in
+    this module.
+    """
+
+    snapshot = dict(item)
+    properties = snapshot.get("properties")
+    if isinstance(properties, Mapping):
+        snapshot["properties"] = dict(properties)
+    return snapshot
+
+
 def build_batch(
     items: Sequence[Mapping[str, object]],
     api_key: str,
@@ -128,8 +146,11 @@ def build_batch(
 
     ``None`` for an empty sequence, an empty or non-str ``api_key``, or
     more than :data:`MAX_BATCH_ITEMS` items (the caller chunks). Inputs
-    are never mutated: each item is shallow-copied, so edits made after
-    the call cannot reach the wire. Never raises.
+    are never mutated, and the envelope is isolated from later edits:
+    each item is copied one level deep — the item itself plus its
+    nested ``properties`` mapping when present (see
+    :func:`_snapshot_item`) — so writes into ``item["properties"]``
+    after the call cannot reach the wire. Never raises.
     """
 
     try:
@@ -137,7 +158,7 @@ def build_batch(
             return None
         if len(items) == 0 or len(items) > MAX_BATCH_ITEMS:
             return None
-        batch: list[dict[str, object]] = [dict(item) for item in items]
+        batch: list[dict[str, object]] = [_snapshot_item(item) for item in items]
         return {"api_key": api_key, "batch": batch}
     except Exception:
         # Garbage in, None out — see build_batch_item.

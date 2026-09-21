@@ -337,6 +337,10 @@ def test_build_batch_rejects_a_bad_api_key(key):
 
 
 def test_build_batch_enforces_the_100_item_cap():
+    # 100 is PostHog's external /batch/ contract, not an internal knob:
+    # pin the constant itself, otherwise raising it leaves this suite
+    # green (both sides would read the same constant).
+    assert env.MAX_BATCH_ITEMS == 100
     item = env.build_batch_item("app_opened", {}, _common_sample())
     assert item is not None
     assert env.build_batch([item] * env.MAX_BATCH_ITEMS, "k") is not None
@@ -354,6 +358,47 @@ def test_build_batch_does_not_mutate_its_inputs():
     # the envelope is a copy and the input list is untouched.
     batch["batch"][0]["event"] = "edited-after-the-fact"
     assert items == snapshot
+
+
+def test_build_batch_snapshots_nested_properties_against_later_writes():
+    """Writes into ``item["properties"]`` after build_batch must not leak.
+
+    The sender queues items between build and POST; with a shallow copy
+    the nested ``properties`` dict stays aliased to the caller, so a
+    write in that window reaches the wire without ever passing the
+    registry — the one non-fail-closed seam in the module. Red before
+    the one-level snapshot was added: both writes below showed up
+    inside ``batch["batch"][0]["properties"]`` (same object).
+    """
+
+    item = env.build_batch_item("app_opened", {}, _common_sample())
+    assert item is not None
+    items: list[dict[str, object]] = [dict(item)]
+    batch = env.build_batch(items, "k")
+    assert batch is not None
+    envelope_snapshot = copy.deepcopy(batch)
+
+    queued_properties = items[0]["properties"]
+    assert isinstance(queued_properties, dict)
+    queued_properties["chip"] = "LEAKED /Users/alice/secret"  # overwrite
+    queued_properties["prompt"] = "user typed this"  # inject new key
+
+    assert batch == envelope_snapshot
+
+
+def test_build_batch_copies_items_without_a_properties_mapping():
+    """An item with no ``properties`` key still gets its one-level copy.
+
+    build_batch is structural: it does not require build_batch_item's
+    exact shape, so an item without a nested mapping simply has nothing
+    extra to snapshot.
+    """
+
+    items: list[dict[str, object]] = [{"event": "app_opened"}]
+    assert env.build_batch(items, "k") == {
+        "api_key": "k",
+        "batch": [{"event": "app_opened"}],
+    }
 
 
 # --------------------------------------------------------------- never raise
