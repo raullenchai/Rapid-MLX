@@ -80,6 +80,41 @@ def test_disable_records_false(fake_home):
     assert "false" in status.stdout.lower() or "consent: false" in status.stdout.lower()
 
 
+def test_disable_replaces_unreadable_record(fake_home):
+    consent = fake_home / ".rapid-mlx" / "telemetry-consent.yaml"
+    consent.parent.mkdir(parents=True, exist_ok=True)
+    consent.write_text("unknown_key: replace_me\n")
+    consent.chmod(0)
+    result = _run_cli("telemetry", "disable", home=fake_home)
+    assert result.returncode == 0, result.stderr
+    data = yaml.safe_load(consent.read_text())
+    assert data["consent"] is False
+    assert "unknown_key" not in data
+
+
+@pytest.mark.parametrize("action", ["enable", "disable"])
+def test_explicit_consent_persist_failure_is_one_line_error_without_success(
+    fake_home, monkeypatch, capsys, action
+):
+    import rapid_mlx.telemetry as telemetry
+    from rapid_mlx import cli
+
+    def fail_record(*_args, **_kwargs):
+        raise OSError("disk denied")
+
+    monkeypatch.setattr(telemetry, "record_consent", fail_record)
+    with pytest.raises(SystemExit) as raised:
+        cli.telemetry_command(SimpleNamespace(telemetry_action=action))
+    assert raised.value.code == 1
+    captured = capsys.readouterr()
+    assert captured.out == ""
+    assert captured.err.count("\n") == 1
+    assert "could not save telemetry preference" in captured.err.lower()
+    assert "traceback" not in captured.err.lower()
+    assert "enabled" not in captured.err.lower()
+    assert "no data will be sent" not in captured.err.lower()
+
+
 def test_disable_then_enable_preserve_v2_migration_fields(fake_home, monkeypatch):
     import rapid_mlx
     from rapid_mlx import cli
@@ -212,6 +247,18 @@ def test_global_no_telemetry_flag(fake_home):
     assert r.returncode == 0, r.stderr
     assert "cli-flag" in r.stdout.lower()
     assert "disabled" in r.stdout.lower()
+
+
+def test_banner_failure_does_not_block_cli_command(fake_home, monkeypatch, capsys):
+    from rapid_mlx import _banner, cli
+
+    def boom(*_args, **_kwargs):
+        raise RuntimeError("banner failed")
+
+    monkeypatch.setattr(_banner, "should_show_banner", boom)
+    monkeypatch.setattr(sys, "argv", ["rapid-mlx", "version"])
+    cli.main()
+    assert "rapid-mlx" in capsys.readouterr().out
 
 
 def test_session_end_synchronously_drained_before_exit(fake_home):

@@ -43,14 +43,20 @@ whole file. T12 must add flock + merge there and set
 servers spawned by rapid-mlx on CLI machines: those children ride the parent
 process's marker and must not independently disclose or mutate consent.
 
-The notice goes to raw stderr via ``sys.stderr.write`` — never stdout
-(whose byte-cleanliness many ``--json`` modes depend on) and never the
-``logging`` machinery (whose configuration must not be able to silence a
-disclosure).
+The notice goes straight to file descriptor 2 via :func:`os.write` — never
+through Python's buffered ``sys.stderr`` (a reader-less pipe would otherwise
+turn a successful command into exit status 120 during interpreter shutdown),
+never stdout (whose byte-cleanliness many ``--json`` modes depend on), and
+never logging (whose configuration must not be able to silence disclosure).
+
+``ProcessRole.DESKTOP`` is a decision-table role for the Swift application,
+not a role Python detects. A Python caller that nevertheless claims DESKTOP is
+treated as inert: it prints nothing, writes nothing, and never uploads.
 """
 
 from __future__ import annotations
 
+import errno
 import logging
 import os
 import sys
@@ -70,6 +76,7 @@ from rapid_mlx.telemetry.consent_decision import (
     DISCLOSURE_REVISION,
     REASON_INVALID_INPUT,
     REASON_LEGACY_REFUSAL_MIGRATED,
+    REASON_SIDECAR_WAITS_FOR_DESKTOP,
     Decision,
     ProcessRole,
     StoredConsent,
@@ -276,7 +283,12 @@ def detect_role() -> ProcessRole:
         else:
             if ppid > 1:
                 return ProcessRole.SIDECAR
-    if sys.stdin.isatty() and sys.stderr.isatty():
+    try:
+        stdin_isatty = bool(sys.stdin is not None and sys.stdin.isatty())
+        stderr_isatty = bool(sys.stderr is not None and sys.stderr.isatty())
+    except (AttributeError, OSError, ValueError):
+        stdin_isatty = stderr_isatty = False
+    if stdin_isatty and stderr_isatty:
         return ProcessRole.INTERACTIVE_CLI
     return ProcessRole.HEADLESS_CLI
 
@@ -312,7 +324,16 @@ def resolve(role: ProcessRole | None = None) -> Decision:
             return _decision
         detected = detect_role() if role is None else role
         stored = read_stored_consent()
-        if stored is None:
+        if detected is ProcessRole.DESKTOP:
+            # DESKTOP belongs to the Swift owner of the consent record. Python
+            # never detects it; a caller claiming it must be completely inert.
+            decision = Decision(
+                False,
+                False,
+                _NO_WRITE_BACK,
+                REASON_SIDECAR_WAITS_FOR_DESKTOP,
+            )
+        elif stored is None:
             decision = Decision(False, False, _NO_WRITE_BACK, REASON_READ_ERROR)
         else:
             decision = decide(
@@ -349,45 +370,72 @@ def resolve(role: ProcessRole | None = None) -> Decision:
         return _decision
 
 
-def deliver_notice_if_needed(decision: Decision | None = None) -> bool:
-    """Write the default-on disclosure to stderr, once per process.
+def _write_stderr_unbuffered(data: bytes) -> bool:
+    """Write all ``data`` to fd 2 without touching ``sys.stderr``.
+
+    Retries interrupted writes, handles partial progress, and returns False on
+    EPIPE, EBADF, zero progress, or any other OS-level failure. In particular,
+    no bytes remain buffered for CPython to flush during finalization.
+    """
+    offset = 0
+    while offset < len(data):
+        try:
+            written = os.write(2, data[offset:])
+        except OSError as exc:
+            if exc.errno == errno.EINTR:
+                continue
+            return False
+        if written <= 0:
+            return False
+        offset += written
+    return True
+
+
+def deliver_notice_if_needed(
+    decision: Decision | None = None, *, long_lived: bool = False
+) -> bool:
+    """Write the role-appropriate disclosure to fd 2, once per process.
 
     Returns True IFF the notice bytes were fully written by THIS call.
     The latch flips only on success: a failed write keeps
     :func:`upload_allowed` False for rows 1/7, because the privacy
-    invariant is "delivered", not "attempted". OSError / UnicodeError are
-    swallowed (same set as ``consent.maybe_prompt_for_consent``) — a
-    broken stderr must never crash the user's command.
+    invariant is "delivered", not "attempted". For a headless short command,
+    the one-line notice is emitted only when ``decision.deliver_notice`` is
+    true (rows 1/4/7), then the marker silences later invocations. Long-lived
+    server starts additionally emit the one-line reminder on every uploading
+    invocation. Interactive CLI behavior is unchanged. A broken fd 2 never
+    crashes the user's command.
     """
     global _notice_delivered
     if _notice_delivered:
         return False
     if decision is None:
         decision = resolve()
-    headless_enabled = _resolved_role is ProcessRole.HEADLESS_CLI and (
-        decision.upload_now or decision.reason == REASON_LEGACY_REFUSAL_MIGRATED
+    headless_notice = _resolved_role is ProcessRole.HEADLESS_CLI and (
+        decision.deliver_notice or (long_lived and decision.upload_now)
     )
     interactive_notice = (
         _resolved_role is ProcessRole.INTERACTIVE_CLI and decision.deliver_notice
     )
-    if not interactive_notice and not headless_enabled:
+    if not interactive_notice and not headless_notice:
         return False
-    if headless_enabled:
+    if headless_notice:
         notice = (
-            _NOTICE_MIGRATION_LINE if decision.deliver_notice else NOTICE_LINE
+            _NOTICE_MIGRATION_LINE
+            if decision.reason == REASON_LEGACY_REFUSAL_MIGRATED
+            else NOTICE_LINE
         ) + "\n"
     else:
         notice = NOTICE_TEXT
-    try:
-        sys.stderr.write(notice)
-        sys.stderr.flush()
-    except (OSError, UnicodeError):
-        # Same failure modes consent.py guards: closed pipe / unwritable
-        # stderr / ASCII-only stream encoding. programming errors
-        # (AttributeError, ...) propagate so they get noticed.
+    if not _write_stderr_unbuffered(notice.encode("ascii")):
         return False
     _notice_delivered = True
     return True
+
+
+def notice_was_delivered() -> bool:
+    """Whether this process fully delivered the current v2 disclosure."""
+    return _notice_delivered
 
 
 def _merge_write_back(data: dict[str, Any], write_back: WriteBack) -> dict[str, Any]:
@@ -436,7 +484,7 @@ def apply_write_back(write_back: WriteBack | None = None) -> bool:
     decision = resolve()
     if write_back is None:
         write_back = decision.write_back
-    if _resolved_role is ProcessRole.SIDECAR:
+    if _resolved_role in (ProcessRole.SIDECAR, ProcessRole.DESKTOP):
         return False
     if not (
         write_back.set_consent_true
@@ -518,8 +566,12 @@ def upload_allowed() -> bool:
     return True
 
 
-def startup(*, role: ProcessRole | None = None) -> Decision:
+def startup(*, role: ProcessRole | None = None, long_lived: bool = False) -> Decision:
     """One-shot startup: resolve, deliver the notice, apply the write-back.
+
+    ``long_lived=True`` is reserved for server entrypoints and enables their
+    every-start headless reminder; short headless commands disclose only when
+    the decision requires it for the current revision.
 
     The order is load-bearing: rows 1 and 7 permit uploading in this run,
     but only AFTER the notice has actually been delivered, so the notice
@@ -528,11 +580,29 @@ def startup(*, role: ProcessRole | None = None) -> Decision:
     definition called once per entrypoint; repeated calls skip it so a
     memoized decision is never replayed onto a changed disk state).
     """
-    global _startup_write_back_done
-    decision = resolve(role=role)
-    delivered = deliver_notice_if_needed(decision)
-    if not _startup_write_back_done:
+    global _decision, _resolved_role, _startup_write_back_done
+    try:
+        decision = resolve(role=role)
+        delivered = deliver_notice_if_needed(decision, long_lived=long_lived)
+        if not _startup_write_back_done:
+            _startup_write_back_done = True
+            if not decision.deliver_notice or delivered:
+                apply_write_back(decision.write_back)
+        return decision
+    except Exception:
+        # Consent wiring is subordinate to the host command. Unexpected bugs,
+        # exotic stdio, and filesystem surprises all fail closed for this
+        # process and must never alter its success/failure behavior.
+        try:
+            logger.debug(
+                "unexpected telemetry consent startup failure; telemetry "
+                "disabled for this process",
+                exc_info=True,
+            )
+        except Exception:
+            pass
+        blocked = Decision(False, False, _NO_WRITE_BACK, REASON_INVALID_INPUT)
+        _decision = blocked
+        _resolved_role = role if isinstance(role, ProcessRole) else ProcessRole.SIDECAR
         _startup_write_back_done = True
-        if not decision.deliver_notice or delivered:
-            apply_write_back(decision.write_back)
-    return decision
+        return blocked

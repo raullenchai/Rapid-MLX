@@ -27,6 +27,7 @@ every decision ``pre_cutoff_runtime`` and exercise nothing.
 
 from __future__ import annotations
 
+import errno
 import logging
 import os
 import re
@@ -340,6 +341,11 @@ def test_detect_role_stderr_not_tty_is_headless(fake_home, monkeypatch):
     assert detect_role() is ProcessRole.HEADLESS_CLI
 
 
+def test_detect_role_exotic_stderr_failure_is_headless(fake_home, monkeypatch):
+    monkeypatch.setattr(sys, "stderr", _BrokenStream(lambda: None))
+    assert detect_role() is ProcessRole.HEADLESS_CLI
+
+
 # ---------------------------------------------------------------------------
 # kill_switch_active — env switches OR the CLI flag, read live
 # ---------------------------------------------------------------------------
@@ -497,108 +503,135 @@ def test_every_notice_cli_command_is_accepted_by_the_real_parser():
         parser.parse_args(shlex.split(command)[1:])
 
 
-def test_notice_goes_to_stderr_never_stdout(fake_home, capsys):
+def test_notice_goes_to_stderr_never_stdout(fake_home, capfd):
     assert deliver_notice_if_needed(resolve(role=ProcessRole.INTERACTIVE_CLI)) is True
-    captured = capsys.readouterr()
+    captured = capfd.readouterr()
     assert "NOTICE:" in captured.err
     assert captured.out == ""
 
 
-def test_notice_is_idempotent_per_process(fake_home, capsys):
+def test_notice_is_idempotent_per_process(fake_home, capfd):
     decision = resolve(role=ProcessRole.INTERACTIVE_CLI)
     assert deliver_notice_if_needed(decision) is True
     assert deliver_notice_if_needed() is False
-    captured = capsys.readouterr()
+    captured = capfd.readouterr()
     assert captured.err.count("NOTICE:") == 1
 
 
 def test_enabled_headless_process_emits_short_line_with_existing_marker(
-    fake_home, capsys
+    fake_home, capfd
 ):
+    write_consent(
+        f"consent: true\nprompted_version: 0.15.0\n"
+        f"notice_revision_seen: {DISCLOSURE_REVISION}\n"
+    )
+    decision = startup(role=ProcessRole.HEADLESS_CLI, long_lived=True)
+    assert decision.reason == "consented"
+    captured = capfd.readouterr()
+    assert captured.err == consent_runtime_module.NOTICE_LINE + "\n"
+    assert captured.out == ""
+    assert "shown once" not in captured.err.lower()
+
+
+def test_short_headless_command_with_marker_prints_nothing(fake_home, capfd):
     write_consent(
         f"consent: true\nprompted_version: 0.15.0\n"
         f"notice_revision_seen: {DISCLOSURE_REVISION}\n"
     )
     decision = startup(role=ProcessRole.HEADLESS_CLI)
     assert decision.reason == "consented"
-    captured = capsys.readouterr()
-    assert captured.err == consent_runtime_module.NOTICE_LINE + "\n"
+    captured = capfd.readouterr()
+    assert captured.err == ""
     assert captured.out == ""
-    assert "shown once" not in captured.err.lower()
 
 
-def test_headless_migration_line_discloses_default_on_override(fake_home, capsys):
+def test_headless_migration_line_discloses_default_on_override(fake_home, capfd):
     write_consent(_DESKTOP_REFUSAL)
     decision = startup(role=ProcessRole.HEADLESS_CLI)
     assert decision.reason == "legacy_refusal_migrated"
-    captured = capsys.readouterr()
+    captured = capfd.readouterr()
     assert len(captured.err.splitlines()) == 1
     assert "turned on by default" in captured.err
     assert "had turned it off" in captured.err
     assert captured.out == ""
 
 
-def test_headless_kill_switch_and_sidecar_print_nothing(fake_home, monkeypatch, capsys):
+def test_headless_kill_switch_and_sidecar_print_nothing(fake_home, monkeypatch, capfd):
     monkeypatch.setenv("RAPID_MLX_TELEMETRY", "0")
     startup(role=ProcessRole.HEADLESS_CLI)
-    captured = capsys.readouterr()
+    captured = capfd.readouterr()
     assert captured.out == ""
     assert captured.err == ""
     consent_runtime_module._reset_runtime_state_for_tests()
     monkeypatch.delenv("RAPID_MLX_TELEMETRY")
     startup(role=ProcessRole.SIDECAR)
-    captured = capsys.readouterr()
+    captured = capfd.readouterr()
     assert captured.out == ""
     assert captured.err == ""
 
 
-def test_notice_skipped_when_decision_does_not_ask(fake_home, monkeypatch, capsys):
+def test_notice_skipped_when_decision_does_not_ask(fake_home, monkeypatch, capfd):
     monkeypatch.setenv("RAPID_MLX_TELEMETRY", "0")
     decision = resolve()  # kill_switch row: deliver_notice False
     assert decision.deliver_notice is False
     assert deliver_notice_if_needed(decision) is False
-    assert capsys.readouterr().err == ""
+    assert capfd.readouterr().err == ""
 
 
-def test_notice_failure_keeps_upload_blocked(fake_home, monkeypatch, capsys):
+def test_notice_failure_keeps_upload_blocked(fake_home, monkeypatch, capfd):
     decision = resolve()  # row 1
     assert decision.deliver_notice is True
 
-    def boom(*args, **kwargs):
-        raise OSError("closed stderr")
+    real_write = os.write
 
-    original_stderr = sys.stderr
-    monkeypatch.setattr(sys, "stderr", _BrokenStream(boom))
+    def boom(fd, data):
+        if fd == 2:
+            raise OSError("closed stderr")
+        return real_write(fd, data)
+
+    monkeypatch.setattr(os, "write", boom)
     assert deliver_notice_if_needed(decision) is False
     assert upload_allowed() is False  # delivered, not attempted
-    # A later healthy stderr can still deliver it.
-    monkeypatch.setattr(sys, "stderr", original_stderr)
+    # A later healthy fd 2 can still deliver it.
+    monkeypatch.setattr(os, "write", real_write)
     # resolve() is memoized; deliver on a fresh call writes and unlocks.
     assert deliver_notice_if_needed() is True
     assert upload_allowed() is False  # startup has not persisted the marker
-    assert capsys.readouterr().out == ""
+    assert capfd.readouterr().out == ""
+
+
+def test_notice_write_retries_eintr_and_partial_writes(fake_home, monkeypatch):
+    real_write = os.write
+    calls = []
+
+    def interrupted_then_partial(fd, data):
+        if fd != 2:
+            return real_write(fd, data)
+        calls.append(bytes(data))
+        if len(calls) == 1:
+            raise OSError(errno.EINTR, "interrupted")
+        return min(7, len(data))
+
+    monkeypatch.setattr(os, "write", interrupted_then_partial)
+    assert deliver_notice_if_needed(resolve(role=ProcessRole.INTERACTIVE_CLI)) is True
+    assert len(calls) > 2
+    assert sum(len(chunk[:7]) for chunk in calls[1:]) >= len(NOTICE_TEXT.encode())
+
+
+def test_notice_write_zero_progress_is_failure(fake_home, monkeypatch):
+    monkeypatch.setattr(os, "write", lambda _fd, _data: 0)
+    assert deliver_notice_if_needed(resolve(role=ProcessRole.INTERACTIVE_CLI)) is False
+    assert upload_allowed() is False
 
 
 class _BrokenStream:
-    """stderr stand-in whose write raises (closed pipe / encoding)."""
+    """Legacy stderr stand-in retained for detect-role robustness tests."""
 
     def __init__(self, boom) -> None:
         self._boom = boom
 
-    def write(self, *args, **kwargs):
-        self._boom(*args, **kwargs)
-
-    def flush(self) -> None:
-        pass
-
-
-def test_notice_unicode_error_is_swallowed(fake_home, monkeypatch, capsys):
-    def boom(*args, **kwargs):
-        raise UnicodeEncodeError("ascii", "x", 0, 1, "not ascii")
-
-    monkeypatch.setattr(sys, "stderr", _BrokenStream(boom))
-    assert deliver_notice_if_needed() is False
-    assert upload_allowed() is False
+    def isatty(self) -> bool:
+        raise OSError("closed stderr")
 
 
 # ---------------------------------------------------------------------------
@@ -657,6 +690,58 @@ def test_startup_applies_write_back_once_per_process(fake_home):
 
 
 @pytest.mark.parametrize(
+    "failing_step",
+    ["resolve", "deliver_notice_if_needed", "apply_write_back"],
+)
+def test_startup_is_exception_proof_and_fails_closed(
+    fake_home, monkeypatch, failing_step
+):
+    original = getattr(consent_runtime_module, failing_step)
+
+    def boom(*_args, **_kwargs):
+        raise RuntimeError(f"unexpected {failing_step} failure")
+
+    monkeypatch.setattr(consent_runtime_module, failing_step, boom)
+    decision = startup(role=ProcessRole.INTERACTIVE_CLI)
+    assert decision.upload_now is False
+    assert decision.deliver_notice is False
+    monkeypatch.setattr(consent_runtime_module, failing_step, original)
+    assert upload_allowed() is False
+
+
+def test_startup_with_sys_stderr_none_never_raises_or_persists(fake_home, monkeypatch):
+    monkeypatch.setattr(sys, "stderr", None)
+    real_write = os.write
+
+    def closed_fd2(fd, data):
+        if fd == 2:
+            raise OSError(errno.EBADF, "closed stderr")
+        return real_write(fd, data)
+
+    monkeypatch.setattr(os, "write", closed_fd2)
+    decision = startup()
+    assert decision.deliver_notice is True
+    assert upload_allowed() is False
+    assert not consent_path().exists()
+
+
+def test_startup_stays_exception_proof_when_debug_logging_also_fails(
+    fake_home, monkeypatch
+):
+    real_resolve = consent_runtime_module.resolve
+
+    def boom(*_args, **_kwargs):
+        raise RuntimeError("nested failure")
+
+    monkeypatch.setattr(consent_runtime_module, "resolve", boom)
+    monkeypatch.setattr(consent_runtime_module.logger, "debug", boom)
+    decision = startup()
+    assert decision.upload_now is False
+    monkeypatch.setattr(consent_runtime_module, "resolve", real_resolve)
+    assert upload_allowed() is False
+
+
+@pytest.mark.parametrize(
     "seed, expected_reason",
     [
         (None, "fresh_install_notice"),
@@ -668,7 +753,7 @@ def test_startup_applies_write_back_once_per_process(fake_home):
     ],
 )
 def test_startup_broken_real_fd2_persists_nothing_then_retries(
-    fake_home, capsys, seed, expected_reason
+    fake_home, capfd, seed, expected_reason
 ):
     if seed is not None:
         write_consent(seed)
@@ -702,7 +787,7 @@ def test_startup_broken_real_fd2_persists_nothing_then_retries(
     consent_runtime_module._reset_runtime_state_for_tests()
     retried = startup(role=ProcessRole.INTERACTIVE_CLI)
     assert retried.reason == expected_reason
-    assert "NOTICE:" in capsys.readouterr().err
+    assert "NOTICE:" in capfd.readouterr().err
     data = read_consent_data()
     assert data["notice_revision_seen"] == DISCLOSURE_REVISION
     if expected_reason == "legacy_refusal_migrated":
@@ -763,7 +848,7 @@ def test_row6_current_refusal_stays_dark(fake_home):
         "consent: true\nprompted_version: 0.15.0\nschema_version: 2\n",  # row 8
     ],
 )
-def test_sidecar_never_writes_and_never_discloses(fake_home, monkeypatch, capsys, seed):
+def test_sidecar_never_writes_and_never_discloses(fake_home, monkeypatch, capfd, seed):
     monkeypatch.setenv("RAPID_MLX_PROCESS_ROLE", "desktop-sidecar")
     if seed is not None:
         write_consent(seed)
@@ -771,7 +856,7 @@ def test_sidecar_never_writes_and_never_discloses(fake_home, monkeypatch, capsys
     decision = startup()
     assert decision.reason == "sidecar_waits_for_desktop"
     assert decision.deliver_notice is False
-    assert capsys.readouterr().err == ""
+    assert capfd.readouterr().err == ""
     assert upload_allowed() is False
     if seed is None:
         assert not consent_path().exists()
@@ -789,28 +874,49 @@ def test_apply_write_back_is_a_noop_for_sidecars(fake_home, monkeypatch):
     assert not (consent_path().parent / "telemetry-consent.yaml.lock").exists()
 
 
+@pytest.mark.parametrize(
+    "seed",
+    [
+        None,
+        f"notice_revision_seen: {DISCLOSURE_REVISION}\nconsent: true\n",
+    ],
+)
+def test_python_desktop_role_is_inert(fake_home, capfd, seed):
+    if seed is not None:
+        write_consent(seed)
+    before = consent_path().read_bytes() if consent_path().exists() else None
+    decision = startup(role=ProcessRole.DESKTOP, long_lived=True)
+    assert decision.upload_now is False
+    assert deliver_notice_if_needed(decision, long_lived=True) is False
+    assert apply_write_back(_MIGRATE_WB) is False
+    assert upload_allowed() is False
+    assert capfd.readouterr().err == ""
+    after = consent_path().read_bytes() if consent_path().exists() else None
+    assert after == before
+
+
 # ---------------------------------------------------------------------------
 # Kill switch is absolute
 # ---------------------------------------------------------------------------
 
 
-def test_kill_switch_cli_flag_blocks_everything(fake_home, capsys):
+def test_kill_switch_cli_flag_blocks_everything(fake_home, capfd):
     write_consent(_DESKTOP_REFUSAL)
     state.set_cli_kill_switch(True)
     decision = startup()
     assert decision.reason == "kill_switch"
     assert decision.deliver_notice is False
-    assert capsys.readouterr().err == ""
+    assert capfd.readouterr().err == ""
     assert upload_allowed() is False
     # No write-back, no marker: the file is byte-identical.
     assert consent_path().read_text() == _DESKTOP_REFUSAL
 
 
-def test_kill_switch_env_blocks_everything(fake_home, monkeypatch, capsys):
+def test_kill_switch_env_blocks_everything(fake_home, monkeypatch, capfd):
     monkeypatch.setenv("RAPID_MLX_TELEMETRY", "0")
     decision = startup()  # fresh install, would otherwise be row 1
     assert decision.reason == "kill_switch"
-    assert capsys.readouterr().err == ""
+    assert capfd.readouterr().err == ""
     assert not consent_path().exists()
     assert upload_allowed() is False
 
@@ -866,6 +972,71 @@ def test_write_back_preserves_desktop_consent_and_unknown_keys(fake_home):
     assert data["future_unknown_key"] == "keepme"
     assert data["prompted_version"] == _RELEASE_VERSION
     assert data["notice_revision_seen"] == DISCLOSURE_REVISION
+
+
+def test_write_back_falls_back_when_sibling_lock_is_unopenable(fake_home, monkeypatch):
+    path = write_consent("future_key: keepme\n")
+    lock_path = path.with_name(path.name + ".lock")
+    lock_path.write_text("")
+    real_open = os.open
+
+    def deny_lock(candidate, flags, mode=0o777):
+        if Path(candidate) == lock_path:
+            raise PermissionError("root-owned lock")
+        return real_open(candidate, flags, mode)
+
+    monkeypatch.setattr(os, "open", deny_lock)
+    assert apply_write_back(_MARKER_ONLY_WB) is True
+    assert read_consent_data() == {
+        "future_key": "keepme",
+        "notice_revision_seen": DISCLOSURE_REVISION,
+    }
+
+
+def test_write_back_falls_back_when_sibling_lock_cannot_be_acquired(
+    fake_home, monkeypatch
+):
+    write_consent("future_key: keepme\n")
+    real_flock = state.fcntl.flock
+
+    def deny_exclusive(fd, operation):
+        if operation == state.fcntl.LOCK_EX:
+            raise OSError("flock denied")
+        return real_flock(fd, operation)
+
+    monkeypatch.setattr(state.fcntl, "flock", deny_exclusive)
+    assert apply_write_back(_MARKER_ONLY_WB) is True
+    assert read_consent_data() == {
+        "future_key": "keepme",
+        "notice_revision_seen": DISCLOSURE_REVISION,
+    }
+
+
+def test_write_back_takes_exclusive_lock_before_read(fake_home, monkeypatch):
+    path = write_consent("future_key: keepme\n")
+    events = []
+    real_flock = state.fcntl.flock
+    real_read = state._read_consent_mapping
+
+    def spy_flock(fd, operation):
+        events.append(("flock", operation))
+        return real_flock(fd, operation)
+
+    def spy_read(candidate):
+        events.append(("read", candidate))
+        return real_read(candidate)
+
+    monkeypatch.setattr(state.fcntl, "flock", spy_flock)
+    monkeypatch.setattr(state, "_read_consent_mapping", spy_read)
+    assert apply_write_back(_MARKER_ONLY_WB) is True
+    lock_index = events.index(("flock", state.fcntl.LOCK_EX))
+    read_index = events.index(("read", path))
+    assert lock_index < read_index
+
+
+def test_write_back_consent_file_mode_is_0600(fake_home):
+    assert apply_write_back(_MARKER_ONLY_WB) is True
+    assert consent_path().stat().st_mode & 0o777 == 0o600
 
 
 def test_write_back_only_raises_the_marker(fake_home):
@@ -949,6 +1120,23 @@ def test_upload_allowed_row9_and_mid_session_opt_out(fake_home, monkeypatch):
         "consent: false\nprompted_version: 0.15.1\nschema_version: 2\n"
     )
     advance(6.0)  # > _LIVE_CACHE_TTL_SECONDS
+    assert upload_allowed() is False
+
+
+def test_upload_allowed_observes_real_record_consent_opt_out_with_marker(
+    fake_home, monkeypatch
+):
+    write_consent(
+        f"consent: true\nprompted_version: 0.15.0\nschema_version: 2\n"
+        f"notice_revision_seen: {DISCLOSURE_REVISION}\n"
+    )
+    clock, advance = fake_clock()
+    monkeypatch.setattr(consent_runtime_module, "_clock", clock)
+    assert resolve().reason == "consented"
+    assert upload_allowed() is True
+    state.record_consent(False, rapid_mlx_version=_RELEASE_VERSION)
+    assert read_consent_data()["notice_revision_seen"] == DISCLOSURE_REVISION
+    advance(_consent_runtime_ttl())
     assert upload_allowed() is False
 
 
@@ -1079,7 +1267,7 @@ def test_concurrent_write_backs_never_corrupt_or_lose_keys(fake_home, monkeypatc
 
 
 def test_cli_main_runs_startup_and_migrates_schema1_refusal(
-    fake_home, monkeypatch, capsys
+    fake_home, monkeypatch, capfd
 ):
     from rapid_mlx import cli
 
@@ -1092,7 +1280,7 @@ def test_cli_main_runs_startup_and_migrates_schema1_refusal(
     assert data["schema_version"] == 1
     assert data["notice_revision_seen"] == DISCLOSURE_REVISION
     assert data["prompted_version"] == _RELEASE_VERSION
-    captured = capsys.readouterr()
+    captured = capfd.readouterr()
     assert "anonymous usage reporting was turned on" in captured.err
     assert "rapid-mlx" in captured.out  # command output is unaffected
     assert "anonymous usage reporting" not in captured.out
@@ -1101,20 +1289,20 @@ def test_cli_main_runs_startup_and_migrates_schema1_refusal(
 
 
 def test_cli_main_no_telemetry_blocks_notice_and_write_back(
-    fake_home, monkeypatch, capsys
+    fake_home, monkeypatch, capfd
 ):
     from rapid_mlx import cli
 
     write_consent(_DESKTOP_REFUSAL)
     monkeypatch.setattr(sys, "argv", ["rapid-mlx", "--no-telemetry", "version"])
     cli.main()
-    captured = capsys.readouterr()
+    captured = capfd.readouterr()
     assert "NOTICE:" not in captured.err
     assert consent_path().read_text() == _DESKTOP_REFUSAL
     assert upload_allowed() is False
 
 
-def test_server_main_runs_startup_before_engine_init(fake_home, capsys):
+def test_server_main_runs_startup_before_engine_init(fake_home, capfd):
     from rapid_mlx import server
 
     def boom(_args):
@@ -1131,9 +1319,43 @@ def test_server_main_runs_startup_before_engine_init(fake_home, capsys):
 
     data = read_consent_data()
     assert data["notice_revision_seen"] == DISCLOSURE_REVISION
-    captured = capsys.readouterr()
-    assert "anonymous usage reporting was turned on" in captured.err
+    captured = capfd.readouterr()
+    assert "anonymous usage reporting is ON" in captured.err
     assert upload_allowed() is True
+
+
+@pytest.mark.parametrize(
+    ("entrypoint", "argv", "expected_long_lived"),
+    [
+        ("cli", ["rapid-mlx", "version"], False),
+        ("cli", ["rapid-mlx", "serve", "dummy-model"], True),
+        ("server", ["rapid_mlx.server"], True),
+    ],
+)
+def test_entrypoints_classify_only_server_starts_as_long_lived(
+    fake_home, monkeypatch, entrypoint, argv, expected_long_lived
+):
+    class StopAfterStartupError(Exception):
+        pass
+
+    observed = []
+
+    def spy_startup(*, role=None, long_lived=False):
+        observed.append((role, long_lived))
+        raise StopAfterStartupError
+
+    monkeypatch.setattr(consent_runtime_module, "startup", spy_startup)
+    monkeypatch.setattr(sys, "argv", argv)
+    with pytest.raises(StopAfterStartupError):
+        if entrypoint == "cli":
+            from rapid_mlx import cli
+
+            cli.main()
+        else:
+            from rapid_mlx import server
+
+            server.main()
+    assert observed == [(None, expected_long_lived)]
 
 
 # ---------------------------------------------------------------------------
@@ -1161,8 +1383,12 @@ def test_subprocess_round_trip_desktop_refusal_migration(tmp_path):
         "print('upload_allowed=' + str(cr.upload_allowed()))\n"
         "print('notice=' + str(cr._notice_delivered))\n"
     )
+    env = os.environ.copy()
+    env["PYTHONPATH"] = os.pathsep.join((str(_REPO_ROOT), *(p for p in sys.path if p)))
     result = subprocess.run(
         [sys.executable, str(driver)],
+        cwd=_REPO_ROOT,
+        env=env,
         capture_output=True,
         text=True,
         timeout=60,
@@ -1184,6 +1410,87 @@ def test_subprocess_round_trip_desktop_refusal_migration(tmp_path):
     assert data["schema_version"] == 1
     print("--- migrated file ---")
     print(migrated)
+
+
+def _post_cutoff_cli_env(tmp_path: Path, home_name: str) -> tuple[dict[str, str], Path]:
+    """Environment for a real CLI whose imported version is post-cutoff."""
+    patch_dir = tmp_path / "version-patch"
+    patch_dir.mkdir(exist_ok=True)
+    (patch_dir / "sitecustomize.py").write_text(
+        "import rapid_mlx\nrapid_mlx.__version__ = '0.15.1'\n"
+    )
+    home = tmp_path / home_name
+    home.mkdir()
+    env = os.environ.copy()
+    env["HOME"] = str(home)
+    pythonpath = [str(patch_dir), str(_REPO_ROOT), *(p for p in sys.path if p)]
+    if env.get("PYTHONPATH"):
+        pythonpath.append(env["PYTHONPATH"])
+    env["PYTHONPATH"] = os.pathsep.join(pythonpath)
+    for name in state.CI_ENV_VARS:
+        env.pop(name, None)
+    env.pop("RAPID_MLX_TELEMETRY", None)
+    env.pop("DO_NOT_TRACK", None)
+    return env, home
+
+
+def _real_cli_version(env: dict[str, str], **popen_kwargs):
+    return subprocess.Popen(
+        [sys.executable, "-m", "rapid_mlx.cli", "version"],
+        cwd=_REPO_ROOT,
+        env=env,
+        stdout=subprocess.PIPE,
+        text=False,
+        **popen_kwargs,
+    )
+
+
+def test_real_cli_with_fd2_closed_keeps_success_and_stdout_identical(tmp_path):
+    normal_env, _normal_home = _post_cutoff_cli_env(tmp_path, "normal-home")
+    normal = subprocess.run(
+        [sys.executable, "-m", "rapid_mlx.cli", "version"],
+        cwd=_REPO_ROOT,
+        env=normal_env,
+        capture_output=True,
+        timeout=30,
+        check=False,
+    )
+    closed_env, closed_home = _post_cutoff_cli_env(tmp_path, "closed-home")
+    process = _real_cli_version(
+        closed_env,
+        preexec_fn=lambda: os.close(2),
+    )
+    stdout, _ = process.communicate(timeout=30)
+    assert normal.returncode == 0
+    assert process.returncode == 0
+    assert stdout == normal.stdout
+    assert not (closed_home / ".rapid-mlx" / "telemetry-consent.yaml").exists()
+
+
+def test_real_cli_with_readerless_stderr_pipe_exits_zero_and_persists_nothing(
+    tmp_path,
+):
+    normal_env, _normal_home = _post_cutoff_cli_env(tmp_path, "pipe-normal-home")
+    normal = subprocess.run(
+        [sys.executable, "-m", "rapid_mlx.cli", "version"],
+        cwd=_REPO_ROOT,
+        env=normal_env,
+        capture_output=True,
+        timeout=30,
+        check=False,
+    )
+    pipe_env, pipe_home = _post_cutoff_cli_env(tmp_path, "broken-pipe-home")
+    read_fd, write_fd = os.pipe()
+    os.close(read_fd)
+    try:
+        process = _real_cli_version(pipe_env, stderr=write_fd)
+    finally:
+        os.close(write_fd)
+    stdout, _ = process.communicate(timeout=30)
+    assert normal.returncode == 0
+    assert process.returncode == 0
+    assert stdout == normal.stdout
+    assert not (pipe_home / ".rapid-mlx" / "telemetry-consent.yaml").exists()
 
 
 # ---------------------------------------------------------------------------

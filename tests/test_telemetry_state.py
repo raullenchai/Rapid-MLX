@@ -214,6 +214,17 @@ def test_reset_state_removes_both_files(fake_home):
     reset_state()
 
 
+def test_reset_state_removes_sibling_lock_best_effort(fake_home):
+    from rapid_mlx.telemetry import state
+
+    state.record_consent(True, rapid_mlx_version="0.6.33")
+    lock_path = state.consent_path().with_name(state.consent_path().name + ".lock")
+    assert lock_path.exists()
+    state.reset_state()
+    assert not state.consent_path().exists()
+    assert not lock_path.exists()
+
+
 def test_consent_source_reports_origin(fake_home, monkeypatch):
     """The status command shows users *why* telemetry is in its current
     state — verify each source string is correctly reported."""
@@ -299,6 +310,83 @@ def test_record_consent_preserves_v2_and_desktop_fields(fake_home):
     assert data["desktop_consent"] is False
     assert data["notice_revision_seen"] == 1
     assert data["future_key"] == "keepme"
+
+
+def test_record_consent_falls_back_with_chmod_000_lock(fake_home):
+    import yaml
+
+    from rapid_mlx.telemetry import state
+
+    path = state.consent_path()
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text("future_key: keepme\n")
+    lock_path = path.with_name(path.name + ".lock")
+    lock_path.write_text("")
+    lock_path.chmod(0)
+    try:
+        state.record_consent(False, rapid_mlx_version="0.15.1")
+    finally:
+        lock_path.chmod(0o600)
+    data = yaml.safe_load(path.read_text())
+    assert data["consent"] is False
+    assert data["future_key"] == "keepme"
+
+
+def test_record_consent_replaces_unreadable_record_without_notice(fake_home):
+    import yaml
+
+    from rapid_mlx.telemetry import state
+
+    path = state.consent_path()
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text("unknown_key: must_be_replaced\n")
+    path.chmod(0)
+    state.record_consent(False, rapid_mlx_version="0.15.1")
+    data = yaml.safe_load(path.read_text())
+    assert set(data) == {
+        "consent",
+        "prompted_at",
+        "prompted_version",
+        "schema_version",
+    }
+    assert data["consent"] is False
+
+
+def test_record_consent_replaces_unreadable_record_and_marks_delivered_notice(
+    fake_home, monkeypatch
+):
+    import yaml
+
+    import rapid_mlx
+    from rapid_mlx.telemetry import consent_runtime, state
+    from rapid_mlx.telemetry.consent_decision import (
+        DISCLOSURE_REVISION,
+        ProcessRole,
+    )
+
+    monkeypatch.setattr(rapid_mlx, "__version__", "0.15.1")
+    consent_runtime._reset_runtime_state_for_tests()
+    consent_runtime.startup(role=ProcessRole.INTERACTIVE_CLI)
+    path = state.consent_path()
+    path.write_text("unknown_key: must_be_replaced\n")
+    path.chmod(0)
+    state.record_consent(False, rapid_mlx_version="0.15.1")
+    data = yaml.safe_load(path.read_text())
+    assert set(data) == {
+        "consent",
+        "notice_revision_seen",
+        "prompted_at",
+        "prompted_version",
+        "schema_version",
+    }
+    assert data["notice_revision_seen"] == DISCLOSURE_REVISION
+
+
+def test_record_consent_file_mode_is_0600(fake_home):
+    from rapid_mlx.telemetry import state
+
+    state.record_consent(True, rapid_mlx_version="0.15.1")
+    assert state.consent_path().stat().st_mode & 0o777 == 0o600
 
 
 def test_record_consent_preserves_unreadable_directory(fake_home):

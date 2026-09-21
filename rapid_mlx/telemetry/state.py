@@ -137,30 +137,53 @@ def _atomic_write_consent(path: Path, data: dict[str, Any]) -> None:
 
 def _locked_merge_consent(
     merge: Callable[[dict[str, Any]], dict[str, Any]],
+    *,
+    unreadable_replacement: dict[str, Any] | None = None,
 ) -> bool:
     """Read, merge, and atomically replace the consent mapping under flock.
 
     The sibling lock is permanent so waiters cannot split across different
-    lock-file inodes. A present but unreadable record is preserved unchanged.
-    Replacing the consent path also deliberately replaces a symlink with a
-    regular file, matching the original v1 writer's behavior.
+    lock-file inodes. If that permanent lock cannot be opened or acquired
+    (for example, because an earlier sudo run left it root-owned), the write
+    falls back to an unlocked read-merge-atomic-replace: an explicit user
+    choice must not be blocked by stale lock ownership. A present but
+    unreadable record is preserved unless ``unreadable_replacement`` is
+    supplied by the explicit-consent writer. Replacing the consent path also
+    deliberately replaces a symlink with a regular file, matching v1.
     """
     path = consent_path()
     lock_path = path.with_name(path.name + ".lock")
     path.parent.mkdir(parents=True, exist_ok=True)
-    lock_fd = os.open(lock_path, os.O_CREAT | os.O_RDWR, 0o600)
-    try:
-        fcntl.flock(lock_fd, fcntl.LOCK_EX)
-        try:
-            data = _read_consent_mapping(path)
-            if data is None:
+
+    def write_merged() -> bool:
+        data = _read_consent_mapping(path)
+        if data is None:
+            if unreadable_replacement is None:
                 return False
-            _atomic_write_consent(path, merge(data))
+            merged = dict(unreadable_replacement)
+        else:
+            merged = merge(data)
+        _atomic_write_consent(path, merged)
+        return True
+
+    try:
+        lock_fd = os.open(lock_path, os.O_CREAT | os.O_RDWR, 0o600)
+    except OSError:
+        return write_merged()
+    try:
+        try:
+            fcntl.flock(lock_fd, fcntl.LOCK_EX)
+        except OSError:
+            os.close(lock_fd)
+            lock_fd = -1
+            return write_merged()
+        try:
+            return write_merged()
         finally:
             fcntl.flock(lock_fd, fcntl.LOCK_UN)
     finally:
-        os.close(lock_fd)
-    return True
+        if lock_fd >= 0:
+            os.close(lock_fd)
 
 
 @dataclass(frozen=True)
@@ -248,6 +271,15 @@ def record_consent(consent: bool, *, rapid_mlx_version: str) -> ConsentState:
         "prompted_version": state.prompted_version,
         "schema_version": state.schema_version,
     }
+    unreadable_replacement = dict(payload)
+    # If this post-cutoff process actually delivered the v2 disclosure, an
+    # explicit answer replacing an unreadable record may safely carry the
+    # current marker. Without actual delivery the marker must stay absent.
+    from rapid_mlx.telemetry import consent_runtime
+    from rapid_mlx.telemetry.consent_decision import DISCLOSURE_REVISION
+
+    if consent_runtime.notice_was_delivered():
+        unreadable_replacement["notice_revision_seen"] = DISCLOSURE_REVISION
     path = consent_path()
     # Retain cleanup of the fixed-name temporary used by the original v1
     # writer. New writes use the shared randomized atomic writer below.
@@ -256,7 +288,14 @@ def record_consent(consent: bool, *, rapid_mlx_version: str) -> ConsentState:
         tmp.unlink()
     except FileNotFoundError:
         pass
-    if not _locked_merge_consent(lambda existing: {**existing, **payload}):
+    try:
+        persisted = _locked_merge_consent(
+            lambda existing: {**existing, **payload},
+            unreadable_replacement=unreadable_replacement,
+        )
+    except OSError as exc:
+        raise OSError("telemetry consent record is unreadable") from exc
+    if not persisted:
         raise OSError("telemetry consent record is unreadable")
     return state
 
@@ -388,6 +427,15 @@ def reset_state() -> None:
             # the remaining unlinks and the latch clear still run; the collected
             # failures are surfaced at the end.
             failures.append(f"{path}: {exc}")
+    # The sibling flock is intentionally permanent during normal writes, but
+    # reset is an explicit request to remove telemetry state. Its deletion is
+    # best-effort: a stale root-owned lock must not turn an otherwise complete
+    # reset into a false failure.
+    lock_path = consent_path().with_name(consent_path().name + ".lock")
+    try:
+        lock_path.unlink()
+    except OSError:
+        pass
     # Clear the latch regardless of file-removal outcome, so a same-process
     # re-enable can re-earn milestones even if some on-disk cleanup failed.
     try:

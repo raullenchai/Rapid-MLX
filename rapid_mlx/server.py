@@ -3737,7 +3737,7 @@ Examples:
     # and never write the marker.
     from .telemetry import consent_runtime
 
-    consent_runtime.startup()
+    consent_runtime.startup(long_lived=True)
 
     from .routes.video import configure_video_jobs
 
