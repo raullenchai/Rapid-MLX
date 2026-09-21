@@ -45,10 +45,11 @@ for that comparison, so ``0.14.9rc1`` is legacy while ``0.15.0rc1`` /
 already carry the new disclosure code (and this repo publishes release
 candidates to real users), so a refusal recorded there must never be
 reversed. A missing or unparseable ``recorded_version`` is NOT legacy —
-including the ``0.0.0`` sentinel that ``rapid_mlx/__init__.py`` stamps into
-``__version__`` when package metadata is missing (editable / source
-installs): it must take the unparseable branch so a refusal recorded by a
-source checkout is respected whatever its real version. Fail toward
+including every spelling of the version-unknown release triple ``(0, 0,
+0)`` — the sentinel ``rapid_mlx/__init__.py`` stamps into ``__version__``
+when package metadata is missing (editable / source installs): it must
+take the unparseable branch so a refusal recorded by a source checkout is
+respected whatever its real version. Fail toward
 respecting a refusal. A False with the marker present is always a current
 refusal.
 
@@ -202,14 +203,6 @@ _VERSION_PATTERN: Final = re.compile(
     r"([0-9]+)\.([0-9]+)\.([0-9]+)(?:(rc|a|b)([0-9]+)|\.dev([0-9]+))?"
 )
 
-#: The version-unknown sentinel: ``rapid_mlx/__init__.py`` stamps
-#: ``__version__ = "0.0.0"`` whenever package metadata is missing
-#: (editable / source installs), and the state layer writes that string
-#: into the consent record. It is not a real release below the cutoff — a
-#: source checkout may run any real version — so the parser treats it as
-#: unparseable and a refusal recorded beside it is never migrated.
-_VERSION_UNKNOWN_SENTINEL: Final = "0.0.0"
-
 # Pre-release ordering within one X.Y.Z: dev < a < b < rc < final.
 _PHASE_DEV: Final = 0
 _PHASE_ALPHA: Final = 1
@@ -230,21 +223,29 @@ VersionKey: TypeAlias = tuple[int, int, int, int, int]
 def _parse_release_version(version: str) -> VersionKey | None:
     """Parse ``MAJOR.MINOR.PATCH`` with an optional pre-release suffix.
 
-    Returns ``None`` for anything unparseable, including the
-    version-unknown sentinel ``0.0.0`` (see
-    :data:`_VERSION_UNKNOWN_SENTINEL`). In the full key ``0.15.0rc1`` sorts
-    strictly below ``0.15.0``, but the legacy rule compares only the
-    release triple (see :func:`_is_legacy_refusal`) — pre-releases of the
-    cutoff are not legacy.
+    Returns ``None`` for anything unparseable, including every spelling of
+    the version-unknown release triple ``(0, 0, 0)`` — the domain that
+    ``rapid_mlx/__init__.py`` stamps into ``__version__`` when package
+    metadata is missing (editable / source installs). In the full key
+    ``0.15.0rc1`` sorts strictly below ``0.15.0``, but the legacy rule
+    compares only the release triple (see :func:`_is_legacy_refusal`) —
+    pre-releases of the cutoff are not legacy.
     """
-    if version == _VERSION_UNKNOWN_SENTINEL:
-        return None
     match = _VERSION_PATTERN.fullmatch(version)
     if match is None:
         return None
     major = int(match[1])
     minor = int(match[2])
     patch = int(match[3])
+    if (major, minor, patch) == (0, 0, 0):
+        # The release triple (0, 0, 0) is never a real release (earliest
+        # tag is v0.1.0); it is the version-unknown sentinel domain —
+        # ``rapid_mlx/__init__.py`` stamps ``__version__ = "0.0.0"`` when
+        # package metadata is missing, and the consent record may hold any
+        # equivalent spelling. Reject every spelling, with or without a
+        # pre-release suffix, so a refusal recorded beside an unknown
+        # version is never migrated.
+        return None
     phase = match[4]
     if phase is None:
         dev = match[6]
@@ -282,8 +283,9 @@ def _is_legacy_refusal(recorded_version: str | None, *, marker_present: bool) ->
     patch)`` triple is strictly lower than the cutoff's triple; pre-release
     suffixes are ignored, so ``0.14.9rc1`` is legacy while ``0.15.0rc1`` —
     an rc of the cutoff itself, which already carries the new disclosure —
-    is not. Missing, unparseable (including the ``0.0.0`` version-unknown
-    sentinel) → not legacy: fail toward respecting the refusal rather than
+    is not. Missing, unparseable (including any spelling of the
+    ``(0, 0, 0)`` version-unknown sentinel) → not legacy: fail toward
+    respecting the refusal rather than
     guessing it predates the disclosure. A present marker means the refusal
     was recorded under the current disclosure, so it is never legacy
     regardless of the recorded version.

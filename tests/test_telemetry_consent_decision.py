@@ -496,14 +496,47 @@ def test_version_parser_accepts_canonical_shapes():
     assert parse("0.15.0a1") == parse("0.15.0a1")
 
 
+# Every spelling of the version-unknown release triple (0, 0, 0). The
+# exact string rapid_mlx/__init__.py stamps is "0.0.0", but the sentinel
+# domain is the triple, not the string — nothing stops a hand-edited or
+# hostile consent record from holding an equivalent spelling, with or
+# without a pre-release suffix.
+_ALL_ZERO_TRIPLE_SPELLINGS = [
+    "0.0.0",
+    "00.00.00",
+    "0.0.00",
+    "000.000.000",
+    "0.00.0",
+    "0.0.0rc1",
+    "0.0.0.dev1",
+    "0.0.0a1",
+    "0.0.0b1",
+]
+
+
 def test_version_parser_rejects_the_version_unknown_sentinel():
-    # "0.0.0" is the __version__ fallback that rapid_mlx/__init__.py stamps
-    # when package metadata is missing — "version unknown", not a release.
+    # The release triple (0, 0, 0) never occurs as a real release (earliest
+    # tag v0.1.0); it is the version-unknown sentinel domain that
+    # rapid_mlx/__init__.py stamps when package metadata is missing.
+    # EVERY spelling — leading zeros, suffixed or not — must take the
+    # unparseable branch so a refusal recorded beside an unknown version is
+    # never migrated.
     parse = consent_decision_module._parse_release_version
-    assert parse("0.0.0") is None
-    # A SUFFIXED zero build is not the sentinel the state layer writes.
-    assert parse("0.0.0rc1") is not None
-    assert parse("0.0.0.dev1") is not None
+    for spelling in _ALL_ZERO_TRIPLE_SPELLINGS:
+        assert parse(spelling) is None, spelling
+
+
+def test_zero_triple_refusal_spellings_are_respected():
+    # Decision level: a refusal whose recorded version is any (0, 0, 0)
+    # spelling is unparseable → NOT legacy → current refusal, for every
+    # role.
+    for spelling in _ALL_ZERO_TRIPLE_SPELLINGS:
+        for role in _ROLES:
+            decision = _decide_case(False, None, role, spelling, kill=False)
+            assert decision == Decision(False, False, _ALL_OFF, "current_refusal"), (
+                role,
+                spelling,
+            )
 
 
 @pytest.mark.parametrize(
