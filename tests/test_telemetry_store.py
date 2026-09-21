@@ -738,6 +738,45 @@ def test_a_host_with_no_home_directory_is_nothing_to_emit(monkeypatch):
     assert store.days_since_first_run_bucket() is None
 
 
+def test_home_disappearing_mid_call_is_nothing_to_emit(fake_home, monkeypatch):
+    """``db_path()`` is called several times; the environment can move.
+
+    Round 3 guarded the ``_db_identity()`` that runs before ``_run``'s
+    ``try``, and reasoned that the ``db_path()`` inside
+    ``_quarantine_corrupt_db`` could not then fail. That holds only if
+    both calls see the same environment. A process whose HOME is unset
+    while it runs, with a corrupt database already on disk, takes the
+    quarantine branch and hits the later call — and the quarantine
+    decision is evaluated inside ``_run``'s own except clause, so
+    anything it raises replaces the original error and leaves the
+    module.
+    """
+    from rapid_mlx.telemetry import store
+
+    store.record("k")  # a real database...
+    store.db_path().write_bytes(b"not a database")  # ...now corrupt
+
+    real_db_path = store.db_path
+    calls = {"n": 0}
+
+    def db_path_that_stops_working():
+        calls["n"] += 1
+        # The calls, in order: 1 the pre-``try`` identity capture,
+        # 2 the connect, 3 quarantine's own identity re-check, 4 the one
+        # quarantine uses to build the rename target. Only the fourth
+        # may fail — failing earlier makes ``_db_identity`` return
+        # ``None``, which short-circuits quarantine before it gets
+        # there, so the raising line is never reached and the test would
+        # pass against the bug.
+        if calls["n"] == 4:
+            raise RuntimeError("Could not determine home directory.")
+        return real_db_path()
+
+    monkeypatch.setattr(store, "db_path", db_path_that_stops_working)
+    assert store.record("k") is None
+    assert calls["n"] >= 4, "quarantine's own db_path() call was never reached"
+
+
 def test_no_caller_input_escapes_as_an_exception(fake_home):
     """The backstop itself: a non-storage error inside the work returns.
 

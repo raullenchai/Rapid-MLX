@@ -244,10 +244,12 @@ def _quarantine_corrupt_db(identity: tuple[int, int] | None) -> bool:
             # against it, and do not spend this process's one rename.
             return True
         _quarantined = True
-        # ``db_path()`` cannot raise here: if it could, the
+        # ``db_path()`` normally cannot raise here: if it could, the
         # ``_db_identity()`` above would have returned ``None``, which
         # never equals a non-``None`` ``identity``, and we would already
-        # have returned.
+        # have returned. "Normally" because that reasoning assumes the
+        # two calls see the same environment, and nothing guarantees
+        # that — the backstop is the guard around this call in ``_run``.
         path = db_path()
         # A second-resolution stamp collides when two quarantines land in
         # the same second and ``rename`` replaces silently, so the pid
@@ -271,10 +273,14 @@ def _quarantine_corrupt_db(identity: tuple[int, int] | None) -> bool:
         # window; it does not close it. Nothing here is atomic across
         # processes, so another process can still quarantine and recreate
         # between the identity check and the rename. That residual race
-        # is bounded and self-healing — SQLite discards a WAL whose
-        # header does not match the database beside it, so the loser
-        # recreates and only counters are lost, and ``serve`` is
-        # unaffected — which is why it is tolerated rather than locked.
+        # is bounded and self-healing: SQLite discards a WAL whose header
+        # does not match the database beside it, so a loser that has had
+        # its ``-wal`` taken recreates and loses only counters. Losing
+        # ``-shm`` as well can leave real corruption behind, and that is
+        # fine too — the next call finds it and quarantines it, which is
+        # the path this whole function implements. ``serve`` is
+        # unaffected either way, which is why the race is tolerated
+        # rather than locked.
         # Renaming instead of unlinking keeps even that case
         # recoverable.
         for suffix in ("-wal", "-shm"):
@@ -444,7 +450,16 @@ def _run(work: Callable[[sqlite3.Connection], _T], default: _T) -> _T:
     try:
         return _attempt(work)
     except Exception as exc:
-        if not (_is_corruption(exc) and _quarantine_corrupt_db(identity)):
+        # The quarantine decision needs its own guard. It runs inside a
+        # handler, so anything it raises replaces ``exc`` and leaves the
+        # module — and it calls ``db_path()`` again, which can start
+        # failing between two calls if the environment changes under a
+        # running process.
+        try:
+            retry = _is_corruption(exc) and _quarantine_corrupt_db(identity)
+        except Exception:
+            retry = False
+        if not retry:
             return default
     try:
         return _attempt(work)
