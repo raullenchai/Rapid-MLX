@@ -3,9 +3,11 @@
 Reproducible findings from the Slay the Spire lane build
 (`demos/slay_the_spire/`, marvin-garden `e6c4c47`, decision-bonsai `395865129`).
 
-## 1. MLX thread-affinity law (M3 Ultra, macOS 15, mlx-lm 0.31.3)
+## 1. MLX thread-affinity (M3 Ultra, macOS 15, mlx-lm 0.31.3 — scoped claim)
 
-27B 2-bit + LoRA, single forward = 1.1 s. Empirically:
+27B 2-bit + LoRA, single forward = 1.1 s. Empirically on THIS hardware/software
+combination (external review correctly notes this is a tested constraint, not
+a universal law — retest on other stacks):
 
 | load thread | forward thread | result |
 | --- | --- | --- |
@@ -35,9 +37,12 @@ contention (user confirmed the machine was otherwise idle).
   a segment could never complete).
 - Supervisor loop (`nohup bash … ; on crash: resume from latest checkpoint`)
   loses at most `SAVE_EVERY` iters per hang. Verified across 20+ hangs.
-- Hidden cost: each resume resets Adam m/v to zero → an implicit LR spike.
-  Same recipe re-runs of the spire lane landed 38.8–48.2% held-out. Report
-  per-run variance when hang-resume training is involved.
+- Hidden cost: each resume resets Adam m/v to zero → an optimization-trajectory
+  discontinuity consistent with same-recipe reruns landing 38.8–48.2% held-out.
+  The causal attribution is plausible but unproven (no controlled rerun with
+  persisted optimizer state yet) — treat as hypothesis until the optimizer-
+  state resume exists. Report per-run variance whenever hang-resume training
+  is involved.
 - A reboot clears residual Metal state if model loading itself deadlocks
   (3.9 s CPU then stall); plain `mx` matmul keeps working in that state, so
   test with a full `mlx_lm.load`, not a tensor op.
@@ -51,7 +56,9 @@ contention (user confirmed the machine was otherwise idle).
   600 rows the oracle label is Defend **exactly 0 times**. The margin≥1.0
   filter removed every defend-optimal state, so the incoming-damage flip
   dimension (the reason this lane exists) is absent from the data. The model
-  correctly learned "never Defend" (picks Defend 0% of the time).
+  correctly learned "never Defend" (picks Defend 0% of the time). NOTE:
+  this diagnosis is strong but the claim "it explains the overall 38.8%"
+  needs the v2 re-mint as a controlled experiment (fixed data → before/after).
 - Secondary suspect: candidates are listed in hand order → letter position
   correlates with action type (shallow cue).
 - v2 mint fix (not yet run): (a) force defend-optimal scenarios (high
