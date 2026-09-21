@@ -304,6 +304,17 @@ def test_canonical_endpoint_spellings(monkeypatch, spelling):
     assert mid.hub_endpoint_is_canonical() is True
 
 
+@pytest.mark.parametrize("bogus", [123, b"https://huggingface.co", object()])
+def test_a_non_string_endpoint_is_not_canonical(monkeypatch, bogus):
+    """The docstring promises "anything we cannot read answers False" —
+    make that literally true rather than leaving an ``AttributeError`` for
+    a caller's blanket handler to convert."""
+    import huggingface_hub.constants as hf_constants
+
+    monkeypatch.setattr(hf_constants, "ENDPOINT", bogus)
+    assert mid.hub_endpoint_is_canonical() is False
+
+
 def test_unreadable_hub_constants_fall_back_to_the_env(monkeypatch):
     """No importable ``huggingface_hub`` — the env var still decides, and a
     foreign endpoint still blocks proof."""

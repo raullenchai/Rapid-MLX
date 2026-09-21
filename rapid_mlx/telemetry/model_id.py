@@ -204,6 +204,12 @@ def hub_endpoint_is_canonical() -> bool:
         raw = ""
     if not raw:
         raw = os.environ.get("HF_ENDPOINT") or ""
+    if not isinstance(raw, str):
+        # A non-str ``ENDPOINT`` is a library state we cannot read. The
+        # docstring above promises ``False`` for that, so return it here
+        # instead of raising ``AttributeError`` into a caller's blanket
+        # handler and relying on that handler to keep us fail-closed.
+        return False
     normalised = raw.strip().rstrip("/").lower()
     if not normalised:
         # Neither set: huggingface_hub's own default is the canonical Hub.
