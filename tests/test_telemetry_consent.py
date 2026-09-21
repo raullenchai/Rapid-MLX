@@ -11,16 +11,33 @@ explicitly calls out as deal-breakers.
 from __future__ import annotations
 
 import importlib
+import sys
+from unittest import mock
 
 import pytest
+
+from rapid_mlx.telemetry import state
+
+_PROCESS_ROLE_ENV_VARS = (
+    "RAPID_MLX_PROCESS_ROLE",
+    "RAPID_MLX_WATCHDOG_PPID",
+)
+
+
+@pytest.fixture(autouse=True)
+def _clean_telemetry_env(monkeypatch):
+    for name in (
+        state.ENV_VAR,
+        state.DO_NOT_TRACK_ENV,
+        *state.CI_ENV_VARS,
+        *_PROCESS_ROLE_ENV_VARS,
+    ):
+        monkeypatch.delenv(name, raising=False)
 
 
 @pytest.fixture
 def fake_home(tmp_path, monkeypatch):
     monkeypatch.setenv("HOME", str(tmp_path))
-    monkeypatch.delenv("RAPID_MLX_TELEMETRY", raising=False)
-    import rapid_mlx.telemetry.state as state
-
     importlib.reload(state)
     return tmp_path
 
@@ -43,6 +60,48 @@ def test_skips_when_consent_already_recorded(fake_home, monkeypatch, capsys):
     _stub_tty(monkeypatch)
     maybe_prompt_for_consent("serve")
     assert capsys.readouterr().out == ""
+
+
+@pytest.mark.parametrize(
+    "reason",
+    ["fresh_install_notice", "kill_switch", "read_error", "consented"],
+)
+def test_cli_never_calls_v1_prompt_for_post_cutoff_decisions(
+    fake_home, monkeypatch, reason
+):
+    from rapid_mlx import cli
+    from rapid_mlx.telemetry.consent_decision import Decision, WriteBack
+
+    decision = Decision(False, False, WriteBack(False, False, False), reason)
+    monkeypatch.setattr(sys, "argv", ["rapid-mlx", "version"])
+    with (
+        mock.patch(
+            "rapid_mlx.telemetry.consent_runtime.startup", return_value=decision
+        ),
+        mock.patch("rapid_mlx.telemetry.maybe_prompt_for_consent") as prompt,
+    ):
+        cli.main()
+    prompt.assert_not_called()
+
+
+def test_cli_still_calls_v1_prompt_below_cutoff(fake_home, monkeypatch):
+    from rapid_mlx import cli
+    from rapid_mlx.telemetry.consent_decision import Decision, WriteBack
+
+    decision = Decision(
+        False, False, WriteBack(False, False, False), "pre_cutoff_runtime"
+    )
+    monkeypatch.setattr(sys, "argv", ["rapid-mlx", "version"])
+    with (
+        mock.patch(
+            "rapid_mlx.telemetry.consent_runtime.startup", return_value=decision
+        ),
+        mock.patch(
+            "rapid_mlx.telemetry.maybe_prompt_for_consent", return_value=False
+        ) as prompt,
+    ):
+        cli.main()
+    prompt.assert_called_once_with("version", cli_no_telemetry=False)
 
 
 def test_skips_when_env_var_set(fake_home, monkeypatch, capsys):

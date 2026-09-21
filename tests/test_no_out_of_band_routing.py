@@ -526,6 +526,16 @@ ALLOWED_RAPID_MLX_ENV_VARS: frozenset[str] = frozenset(
         # loop in ``_parent_watchdog.py`` and the wire-up at
         # ``cli.py``, ``bench/_server.py``, ``share/cli.py``.
         "RAPID_MLX_WATCHDOG_PPID",
+        # Declared process role for the telemetry v2 consent wiring
+        # (``rapid_mlx/telemetry/consent_runtime.py``). A supervisor —
+        # the desktop app's sidecar spawn, in T12 — sets it to
+        # ``desktop-sidecar`` so the consent runtime classifies the
+        # process as a SIDECAR (never writes the shared consent file,
+        # never emits the disclosure). Pure role signal — never selects
+        # a model, parser, tier, or engine route; any other value is
+        # ignored and detection falls through to the watchdog-ppid /
+        # tty checks.
+        "RAPID_MLX_PROCESS_ROLE",
         # Disk KV cache checkpoint size ceiling (bytes). Bounds the
         # serialized snapshot ``runtime/disk_kv_checkpoint.py`` writes
         # to disk on graceful shutdown so an oversize cache can't

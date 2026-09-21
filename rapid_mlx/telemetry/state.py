@@ -38,11 +38,17 @@ toward synthetic workloads. Users who want to opt in run
 
 from __future__ import annotations
 
+import errno
+import fcntl
 import os
+import tempfile
+import time
 import uuid
+from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
+from typing import Any
 
 import yaml
 
@@ -74,6 +80,11 @@ CI_ENV_VARS = (
 # adding a new data type silently under old consent would be a consent breach.
 CURRENT_CONSENT_SCHEMA_VERSION = 2
 
+_LOCK_RETRY_SECONDS = 1.5
+_LOCK_RETRY_INTERVAL_SECONDS = 0.05
+_lock_retry_clock = time.monotonic
+_lock_retry_sleep = time.sleep
+
 
 def _default_telemetry_dir() -> Path:
     """Resolved at call time so ``HOME`` overrides in tests take effect."""
@@ -86,6 +97,111 @@ def client_id_path() -> Path:
 
 def consent_path() -> Path:
     return _default_telemetry_dir() / "telemetry-consent.yaml"
+
+
+def _read_consent_mapping(path: Path) -> dict[str, Any] | None:
+    """Return an absent record as ``{}`` and an unreadable record as None."""
+    try:
+        text = path.read_text()
+    except FileNotFoundError:
+        return {}
+    except (OSError, ValueError):
+        return None
+    try:
+        data = yaml.safe_load(text)
+    except yaml.YAMLError:
+        return None
+    return data if isinstance(data, dict) else None
+
+
+def _atomic_write_consent(path: Path, data: dict[str, Any]) -> None:
+    """Atomically replace the consent path with a mode-0600 YAML mapping."""
+    payload = yaml.safe_dump(data, sort_keys=True).encode()
+    fd, tmp_name = tempfile.mkstemp(
+        prefix=f".{path.name}.", suffix=".tmp", dir=path.parent
+    )
+    tmp = Path(tmp_name)
+    try:
+        try:
+            offset = 0
+            while offset < len(payload):
+                written = os.write(fd, payload[offset:])
+                if written <= 0:
+                    raise OSError("consent write made no progress")
+                offset += written
+            os.fsync(fd)
+        finally:
+            os.close(fd)
+        os.chmod(tmp, 0o600)
+        os.replace(tmp, path)
+    except OSError:
+        try:
+            tmp.unlink()
+        except OSError:
+            pass
+        raise
+
+
+def _locked_merge_consent(
+    merge: Callable[[dict[str, Any]], dict[str, Any]],
+    *,
+    unreadable_replacement: dict[str, Any] | None = None,
+) -> bool:
+    """Read, merge, and atomically replace the consent mapping under flock.
+
+    The sibling lock is permanent so waiters cannot split across different
+    lock-file inodes. If that permanent lock cannot be opened or acquired
+    (for example, because an earlier sudo run left it root-owned), the write
+    falls back to an unlocked read-merge-atomic-replace: an explicit user
+    choice must not be blocked by stale lock ownership. A present but
+    unreadable record is preserved unless ``unreadable_replacement`` is
+    supplied by the explicit-consent writer. Replacing the consent path also
+    deliberately replaces a symlink with a regular file, matching v1.
+    """
+    path = consent_path()
+    lock_path = path.with_name(path.name + ".lock")
+    path.parent.mkdir(parents=True, exist_ok=True)
+
+    def write_merged() -> bool:
+        data = _read_consent_mapping(path)
+        if data is None:
+            if unreadable_replacement is None:
+                return False
+            merged = dict(unreadable_replacement)
+        else:
+            merged = merge(data)
+        _atomic_write_consent(path, merged)
+        return True
+
+    try:
+        lock_fd = os.open(lock_path, os.O_CREAT | os.O_RDWR, 0o600)
+    except OSError:
+        return write_merged()
+    try:
+        try:
+            deadline = _lock_retry_clock() + _LOCK_RETRY_SECONDS
+            while True:
+                try:
+                    fcntl.flock(lock_fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                    break
+                except OSError as exc:
+                    if exc.errno not in (errno.EACCES, errno.EAGAIN, errno.EINTR):
+                        raise
+                    remaining = deadline - _lock_retry_clock()
+                    if remaining <= 0:
+                        raise
+                    _lock_retry_sleep(min(_LOCK_RETRY_INTERVAL_SECONDS, remaining))
+        except OSError:
+            os.close(lock_fd)
+            lock_fd = -1
+            return write_merged()
+        try:
+            return write_merged()
+        finally:
+            fcntl.flock(lock_fd, fcntl.LOCK_UN)
+    finally:
+        if lock_fd >= 0:
+            os.close(lock_fd)
 
 
 @dataclass(frozen=True)
@@ -167,29 +283,36 @@ def record_consent(consent: bool, *, rapid_mlx_version: str) -> ConsentState:
         # newest-version record.
         schema_version=CURRENT_CONSENT_SCHEMA_VERSION,
     )
-    path = consent_path()
-    path.parent.mkdir(parents=True, exist_ok=True)
     payload = {
         "consent": state.consent,
         "prompted_at": state.prompted_at,
         "prompted_version": state.prompted_version,
         "schema_version": state.schema_version,
     }
-    # write-then-rename so a SIGINT mid-write can't leave a half-file
-    # that get_consent_state() would silently treat as "never prompted"
+    unreadable_replacement = dict(payload)
+    # If this post-cutoff process actually delivered the v2 disclosure, an
+    # explicit answer replacing an unreadable record may safely carry the
+    # current marker. Without actual delivery the marker must stay absent.
+    from rapid_mlx.telemetry import consent_runtime
+    from rapid_mlx.telemetry.consent_decision import DISCLOSURE_REVISION
+
+    if consent_runtime.notice_was_delivered():
+        unreadable_replacement["notice_revision_seen"] = DISCLOSURE_REVISION
+    path = consent_path()
+    # Retain cleanup of the fixed-name temporary used by the original v1
+    # writer. New writes use the shared randomized atomic writer below.
     tmp = path.with_suffix(path.suffix + ".tmp")
-    # Clean up any leftover .tmp from a previous interrupted write so
-    # we never start out with a partial file under our chosen name.
     try:
         tmp.unlink()
     except FileNotFoundError:
         pass
-    tmp.write_text(yaml.safe_dump(payload, sort_keys=True))
     try:
-        os.chmod(tmp, 0o600)
-    except OSError:
-        pass
-    tmp.replace(path)
+        _locked_merge_consent(
+            lambda existing: {**existing, **payload},
+            unreadable_replacement=unreadable_replacement,
+        )
+    except OSError as exc:
+        raise OSError(f"cannot write {path}: {exc}") from exc
     return state
 
 
@@ -320,6 +443,15 @@ def reset_state() -> None:
             # the remaining unlinks and the latch clear still run; the collected
             # failures are surfaced at the end.
             failures.append(f"{path}: {exc}")
+    # The sibling flock is intentionally permanent during normal writes, but
+    # reset is an explicit request to remove telemetry state. Its deletion is
+    # best-effort: a stale root-owned lock must not turn an otherwise complete
+    # reset into a false failure.
+    lock_path = consent_path().with_name(consent_path().name + ".lock")
+    try:
+        lock_path.unlink()
+    except OSError:
+        pass
     # Clear the latch regardless of file-removal outcome, so a same-process
     # re-enable can re-earn milestones even if some on-disk cleanup failed.
     try:

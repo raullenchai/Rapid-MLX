@@ -11529,6 +11529,8 @@ def telemetry_command(args) -> None:
     # subcommands cheap.
     import json
 
+    import yaml
+
     from rapid_mlx import __version__ as rapid_mlx_version  # pragma: no cover
     from rapid_mlx.telemetry import (  # pragma: no cover - dispatch boundary
         consent_source,
@@ -11572,7 +11574,14 @@ def telemetry_command(args) -> None:
         return
 
     if action == "enable":
-        record_consent(True, rapid_mlx_version=rapid_mlx_version)
+        try:
+            record_consent(True, rapid_mlx_version=rapid_mlx_version)
+        except (OSError, ValueError, yaml.YAMLError) as exc:
+            print(
+                f"rapid-mlx: could not save telemetry preference: {exc}",
+                file=sys.stderr,
+            )
+            raise SystemExit(1) from None
         # Generate the client_id eagerly so `preview` immediately after
         # has a real id to show.
         get_or_create_client_id()
@@ -11584,7 +11593,14 @@ def telemetry_command(args) -> None:
         return
 
     if action == "disable":
-        record_consent(False, rapid_mlx_version=rapid_mlx_version)
+        try:
+            record_consent(False, rapid_mlx_version=rapid_mlx_version)
+        except (OSError, ValueError, yaml.YAMLError) as exc:
+            print(
+                f"rapid-mlx: could not save telemetry preference: {exc}",
+                file=sys.stderr,
+            )
+            raise SystemExit(1) from None
         print()
         print("  Telemetry: disabled. No data will be sent.")
         print("  Re-enable anytime with `rapid-mlx telemetry enable`.")
@@ -14104,7 +14120,7 @@ def main():
     # disclosure before any model load logs scroll past.
     _just_collected_consent = False
     if getattr(args, "command", None) is not None:
-        from rapid_mlx.telemetry import maybe_prompt_for_consent
+        from rapid_mlx.telemetry import consent_runtime, maybe_prompt_for_consent
         from rapid_mlx.telemetry.state import set_cli_kill_switch
 
         # ``--no-telemetry`` is a per-run override; thread it into the
@@ -14112,10 +14128,25 @@ def main():
         # having to plumb the flag through every signature.
         set_cli_kill_switch(getattr(args, "no_telemetry", False))
 
-        _just_collected_consent = maybe_prompt_for_consent(
-            args.command,
-            cli_no_telemetry=getattr(args, "no_telemetry", False),
+        # Telemetry v2 default-on wiring (T11): resolve the consent
+        # decision, deliver the disclosure notice to stderr, then apply
+        # the locked, merging write-back -- in that order, before any
+        # emit or heavy subcommand work. The v1 prompt below remains only
+        # for a pre-cutoff runtime until T13 removes the v1 wire.
+        _consent_decision = consent_runtime.startup(
+            long_lived=getattr(args, "command", None) == "serve"
         )
+
+        # The legacy v1 opt-in prompt is only meaningful before the v2
+        # default-on cutoff. Post-cutoff, the v2 disclosure is the complete
+        # consent flow; calling both would present contradictory choices.
+        from rapid_mlx.telemetry.consent_decision import REASON_PRE_CUTOFF_RUNTIME
+
+        if _consent_decision.reason == REASON_PRE_CUTOFF_RUNTIME:
+            _just_collected_consent = maybe_prompt_for_consent(
+                args.command,
+                cli_no_telemetry=getattr(args, "no_telemetry", False),
+            )
 
     # Telemetry session lifecycle — emit session_start once we know what
     # subcommand we're dispatching, register an atexit hook for
