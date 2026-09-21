@@ -1072,6 +1072,16 @@ struct ChatMessage: Identifiable, Codable, Equatable, Hashable {
     ///   * Prose body matches ``shouldFlagToolNotCalled``'s
     ///     numeric-or-short heuristic AND the user's prompt looks
     ///     calculator-shaped (see ``promptLooksCalculatorish``).
+    ///   * When the caller knows WHICH tools were advertised
+    ///     (``advertisedToolNames``), at least one of them could have
+    ///     served the prompt's lane (see ``advertisedToolCouldServe``).
+    ///     "Answered without calling any of the available tools" is
+    ///     only a caution when an available tool was the right call:
+    ///     a chat that advertises web search, weather and document
+    ///     reading has no tool that computes `17 * 23`, so a correct
+    ///     `391` wore the caption for nothing (0.14.3 dogfood,
+    ///     2026-09-18). ``nil`` keeps the pre-existing behaviour for
+    ///     callers that only know "some tools were on".
     ///
     /// The heuristic leans towards firing — a false-negative (a
     /// silent wrong answer) is the bug we're fixing, and the view
@@ -1096,7 +1106,8 @@ struct ChatMessage: Identifiable, Codable, Equatable, Hashable {
         finishReason: String?,
         toolsRequested: Bool,
         toolSucceededThisTurn: Bool = false,
-        promptHadAttachment: Bool = false
+        promptHadAttachment: Bool = false,
+        advertisedToolNames: [String]? = nil
     ) -> Bool {
         // Gate 1: tools must have actually been advertised. Without
         // this gate every short numeric answer would wear the caption.
@@ -1155,7 +1166,155 @@ struct ChatMessage: Identifiable, Codable, Equatable, Hashable {
         // "yes" / "no" assistant reply to a casual question would
         // wear the caption.
         guard promptLooksCalculatorish(userPrompt) else { return false }
+        // Gate 6: one of the advertised tools must actually fit the lane
+        // the prompt is in. The caption's copy — "answered without
+        // calling any of the available tools" — is a claim that a tool
+        // SHOULD have run; when nothing on the roster could have, the
+        // claim is false and each false alarm spends the trust the next
+        // real one needs. Only enforced when the caller names the roster,
+        // and never on a turn that carried an attachment: there the tool
+        // that should have run is `read_document` — the operands live on
+        // the page and reading them IS the job — which no lane table
+        // captures, and Gate 1c already exempts the shapes a page can
+        // answer. Anything it left standing keeps the caption exactly as
+        // before this gate existed (pr_validate codex, run 3).
+        if let advertisedToolNames, !promptHadAttachment {
+            guard advertisedToolCouldServe(prompt: userPrompt, toolNames: advertisedToolNames) else {
+                return false
+            }
+        }
         return true
+    }
+
+    /// Could any tool in `toolNames` have answered `prompt`?
+    ///
+    /// Maps each tool-shaped lane of ``promptLooksCalculatorish`` to the
+    /// capability that serves it and asks whether an advertised tool carries
+    /// that capability. The built-in roster is classified by exact name
+    /// (``builtinToolCapabilities``); anything else — MCP connectors, whose
+    /// names are arbitrary — is classified by the words in its name
+    /// (``capabilities(ofToolNamed:)``): `calculator`, `execute_python`,
+    /// `fetch_url` all read as intended. Words, not substrings, so
+    /// `profile_update` does not read as a file tool. A name that matches
+    /// no word at all is UNCLASSIFIED, and an unclassified tool keeps the
+    /// caption: an MCP `arithmetic` tool can compute `17 * 23`, so a bare
+    /// `390` under it must still be flagged. Erring towards "servable" is
+    /// the safe direction (a caution the user can dismiss, not a silent
+    /// wrong number); the only tools that are known NOT to serve a lane are
+    /// the ones whose purpose is spelled out.
+    ///
+    /// | lane | capability | built-ins | name words |
+    /// | --- | --- | --- | --- |
+    /// | arithmetic / math vocabulary | compute | — | calc, math, python, interpreter, eval, compute, arith, solve, wolfram |
+    /// | live data (weather, prices, news) | network | web_search, browse, weather | search, web, weather, browse, fetch, http, url, news, stock, price, forecast, internet, crawl, scrape |
+    /// | external retrieval (search for, look up) | retrieval | web_search, browse | search, web, browse, fetch, http, url, read, document, doc, pdf, page, file, find, lookup, wiki, retrieve, query |
+    ///
+    /// The local workspace tools (`local_search`, `local_read`,
+    /// `local_write`, `local_trash`, `local_run`) serve none of the three
+    /// lanes. `local_run` can execute Python, but it is "Run development
+    /// command" behind an approval sheet, not a calculator: a model that
+    /// multiplies `17 * 23` in its head instead of asking permission to run
+    /// a shell did the right thing, and a caption telling the user it should
+    /// have run a tool is the false alarm this gate removes (0.14.3 dogfood,
+    /// 2026-09-18, default roster). A dedicated compute tool — `calculator`,
+    /// `code_interpreter`, `execute_python` — is a different matter and
+    /// keeps the caption.
+    static func advertisedToolCouldServe(prompt: String, toolNames: [String]) -> Bool {
+        var roster = Set<ToolCapability>()
+        for name in toolNames {
+            // Unclassified → assume it could have served; keep the caption.
+            guard let caps = capabilities(ofToolNamed: name) else { return true }
+            roster.formUnion(caps)
+        }
+        let lowered = prompt.lowercased()
+        if roster.contains(.compute),
+           promptContainsSelfContainedArithmetic(lowered) || promptContainsMathKeyword(lowered) {
+            return true
+        }
+        if roster.contains(.network), promptAsksForLiveData(lowered) { return true }
+        if roster.contains(.retrieval), promptAsksForExternalRetrieval(lowered) { return true }
+        return false
+    }
+
+    /// What a tool can do for the purposes of ``advertisedToolCouldServe``.
+    enum ToolCapability: Hashable {
+        /// Evaluate arithmetic or run code on demand.
+        case compute
+        /// Reach the network for live data.
+        case network
+        /// Search for or read external material.
+        case retrieval
+    }
+
+    /// Exact-name classification of the tools this app ships. An empty set
+    /// is a real answer ("serves none of the lanes"), distinct from the
+    /// `nil` an unknown name gets from ``capabilities(ofToolNamed:)``.
+    static let builtinToolCapabilities: [String: Set<ToolCapability>] = [
+        "web_search": [.network, .retrieval],
+        "browse": [.network, .retrieval],
+        "weather": [.network],
+        // Reads the user's own attachments by id — grounding for a document
+        // question (Gate 1c), not a way to search for or fetch anything.
+        "read_document": [],
+        "local_search": [],
+        "local_read": [],
+        "local_write": [],
+        "local_trash": [],
+        "local_run": [],
+    ]
+
+    /// Capabilities of a tool judged by its name: built-ins by exact match,
+    /// everything else by the words in the name (split on `_`, `-`, `.`,
+    /// digits and camelCase; a word matches a fragment when it starts with
+    /// it, so `calculator`/`calc`, `urls`/`url`, `searching`/`search`).
+    /// `nil` when no word is recognised.
+    static func capabilities(ofToolNamed name: String) -> Set<ToolCapability>? {
+        if let known = builtinToolCapabilities[name] { return known }
+        let words = toolNameWords(name)
+        func hasAny(_ fragments: [String]) -> Bool {
+            words.contains { word in fragments.contains { word.hasPrefix($0) } }
+        }
+        var caps = Set<ToolCapability>()
+        // Not "code": `code_search` / `code_review` are not calculators, and
+        // `code_interpreter` is caught by "interpreter". An `execute_code`
+        // tool has no recognised word and keeps the caption.
+        if hasAny(["calc", "math", "python", "interpreter", "eval", "compute", "arith", "solve", "wolfram"]) {
+            caps.insert(.compute)
+        }
+        if hasAny(["search", "web", "weather", "browse", "fetch", "http", "url", "news", "stock", "price", "forecast", "internet", "crawl", "scrape"]) {
+            caps.insert(.network)
+        }
+        if hasAny(["search", "web", "browse", "fetch", "http", "url", "read", "document", "doc", "pdf", "page", "file", "find", "lookup", "wiki", "retrieve", "query"]) {
+            caps.insert(.retrieval)
+        }
+        return caps.isEmpty ? nil : caps
+    }
+
+    /// Lower-cased words of a tool name. `fetchURL` → `fetch`, `url`;
+    /// `URLCalculator` → `url`, `calculator`; `execute_python3` → `execute`,
+    /// `python`; `read-document` → `read`, `document`. camelCase splits
+    /// before an uppercase letter that follows a lowercase one, and before
+    /// the last capital of an acronym run when a lowercase letter follows it.
+    static func toolNameWords(_ name: String) -> [String] {
+        let letters = Array(name.unicodeScalars).map(Character.init)
+        var words: [String] = []
+        var current = ""
+        for (index, ch) in letters.enumerated() {
+            guard ch.isLetter else {
+                if !current.isEmpty { words.append(current); current = "" }
+                continue
+            }
+            if ch.isUppercase, !current.isEmpty {
+                let previous = letters[index - 1]
+                let next: Character? = index + 1 < letters.count ? letters[index + 1] : nil
+                let boundary = previous.isLowercase
+                    || (previous.isUppercase && (next?.isLowercase ?? false))
+                if boundary { words.append(current); current = "" }
+            }
+            current.append(ch.lowercased())
+        }
+        if !current.isEmpty { words.append(current) }
+        return words
     }
 
     // MARK: - Issue #513: raw tool-call artifact suppression

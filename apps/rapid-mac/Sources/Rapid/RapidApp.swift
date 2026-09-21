@@ -149,6 +149,22 @@ struct RapidApp: App {
     @NSApplicationDelegateAdaptor(AppDelegate.self) private var appDelegate
 
     init() {
+        // One Desktop per user session, decided before ANYTHING this launch
+        // could leave behind: the crash marker below, and the launch port
+        // sweep further down, which trusts the on-disk sidecar ownership
+        // record and would SIGTERM the RUNNING instance's engine as an
+        // "orphan" before a later guard got to run. A second instance
+        // (`open -n`, a direct `Contents/MacOS/Rapid` exec, a second copy
+        // of the bundle — LaunchServices only enforces
+        // ``LSMultipleInstancesProhibited`` for Finder and `open -a`) used
+        // to start its own sidecar on the same port and leave the first
+        // window on "Couldn't start <model> — check the model files" while
+        // the model was loaded next door (0.14.3 dogfood, 2026-09-18).
+        // Hand the launch to the survivor and leave. Plain `exit`: nothing
+        // has been set up, so there is nothing to tear down. If the survivor
+        // vanished between the check and the hand-off (quit-and-relaunch),
+        // this launch is the only Desktop and carries on.
+        if SingleInstanceGuard.yieldsLaunch() { exit(0) }
         // Install the crash reporter FIRST — every other init step can
         // fatalError under bad disk / permissions state, and we want
         // those abortions to leave a marker for the next launch.
@@ -576,6 +592,32 @@ struct RapidApp: App {
         // status-item menu action. ⌘, is re-wired in ``.commands``.
         Window("Settings", id: "settings") {
             SettingsView()
+                .background {
+                    // Keep Settings out of AppKit window restoration. A quit
+                    // with only Settings open (main closed with ⌘W) used to
+                    // persist "settings" as the whole session, and the next
+                    // launch restored exactly that: a Settings window, no
+                    // main window, and — because ContentView is what starts
+                    // the sidecar — no engine (0.14.3 dogfood, 2026-09-18).
+                    // ``restorationBehavior(.disabled)`` is the SwiftUI
+                    // spelling but needs macOS 15; the AppKit flag it sets
+                    // works on the 14 floor too.
+                    WindowAccessor { window in
+                        window.isRestorable = false
+                    }
+                    .frame(width: 0, height: 0)
+                }
+                .task {
+                    // Heal a session already persisted in that shape: if
+                    // Settings is the first window of this process, this is
+                    // a restoration-only launch, so bring up the main window
+                    // the way a fresh launch would. Never fires for a user
+                    // who opened Settings from a running Desktop, because
+                    // the main window has been attached by then.
+                    if !AppDelegate.shared.hasAttachedMainWindow {
+                        openWindow(id: "main")
+                    }
+                }
                 .tint(RapidTheme.brandAmber)
                 .environment(chatViewModel)
                 .environment(sampling)
@@ -687,11 +729,18 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     /// survive scene re-mount across hide/show cycles.
     var mainWindowCloseInterceptor: MainWindowCloseInterceptor?
 
+    /// Whether SwiftUI has materialised the main window at least once in
+    /// this process. The Settings scene reads it to tell a restoration-only
+    /// launch (Settings came back, main did not) from Settings opened on top
+    /// of a running Desktop.
+    private(set) var hasAttachedMainWindow = false
+
     /// Attach the AppKit-only main-window behaviours once SwiftUI has
     /// materialised its concrete ``NSWindow``. Repeated accessor callbacks
     /// are expected; installation is idempotent for the same window and is
     /// repeated when SwiftUI creates a replacement after a normal close.
     func attachMainWindow(_ window: NSWindow) {
+        hasAttachedMainWindow = true
         let needsInstall = MainWindowCloseInterceptor.shouldReinstall(
             currentAttachedWindow: mainWindowCloseInterceptor?.attachedWindow,
             newWindow: window

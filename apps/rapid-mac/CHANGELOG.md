@@ -18,7 +18,6 @@ can actually understand.
 ## [Unreleased]
 
 ### Fixed
-
 - Community Benchmark: the progress bar no longer cuts through the running
   cheetah while a measurement is in progress. The layout reserved the
   character's visible size (40 pt) but the artwork renders in a ~78 pt box
@@ -35,6 +34,35 @@ can actually understand.
   skipped with a warning when jsonschema is missing"). The script has
   failed closed since PR #582 — every file now FAILs with an install hint
   until `jsonschema>=4.0` is installed — and the header claimed otherwise.
+- **The Desktop no longer burns CPU while idle.** The status dot's breathing
+  animation kept running invisibly after a model finished starting, which
+  committed a frame every refresh and held the app at a quarter of a core on
+  an M3 Ultra and a full core on an M2 Pro with an accessibility pointer.
+  The loop now lives in a view that is removed when there is nothing to
+  signal. Fans, battery and VoiceOver responsiveness at rest all benefit.
+- **Answers keep the quotes the model typed.** Prose outside a code block
+  was being typeset with curly quotes, en dashes and ellipses, so a bare
+  JSON reply rendered as `{ “city”: “Tokyo” }` and pasted as invalid JSON.
+- **Fewer false "answered without calling any of the available tools"
+  cautions.** With the built-in tools (web search, browse, weather, read
+  document, local workspace) a correct answer to plain arithmetic such as
+  `17 * 23` no longer wears the caution: none of those tools is a
+  calculator. The caution still appears when a tool that could have done
+  the job was on offer — a calculator or code-interpreter connector for
+  arithmetic, web search or weather for live data — and for any connector
+  whose name does not say what it does.
+- **A second copy of the app no longer hijacks the first.** Launching
+  Rapid-MLX Desktop again (for example with `open -n`, or by running the
+  binary directly) used to start a second engine on the same port and leave
+  the original window reporting "Couldn't start <model> — check the model
+  files". The second launch now hands off to the running app — reopening its
+  window if it had been closed — and quits before it starts anything.
+- **Relaunching always brings back the main window.** Quitting with only the
+  Settings window open (main window closed with ⌘W) made the next launch
+  restore just Settings — no chat window and, because the chat window is what
+  starts the engine, no engine. Settings is no longer part of window
+  restoration, and a launch that comes back Settings-only opens the main
+  window itself.
 
 ## [0.14.3] — 2026-09-18
 
