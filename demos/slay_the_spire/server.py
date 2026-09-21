@@ -16,6 +16,7 @@ import argparse
 import json
 import random
 import sys
+import threading
 import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
@@ -85,14 +86,20 @@ class Session:
         return gs.render.render_prompt("spire_play", fields, candidates, lines), candidates
 
     def decide_and_apply(self) -> dict:
-        bc = self.bc
-        if bc.outcome != 0:
+        if self.bc.outcome != 0:
             return {"over": True}
+        # Everything touching the engine (C++) or MLX runs on the inference
+        # main thread — concurrent Metal + pybind from HTTP threads segfaults.
+        return marvin_spire.run(Session._step, self)
+
+    @staticmethod
+    def _step(sess) -> dict:
+        bc = sess.bc
         entries = gs.semantic_actions(bc)
-        prompt, candidates = self.prompt_for(entries)
-        decision = marvin_spire.decide(prompt, candidates)
+        prompt, candidates = sess.prompt_for(entries)
+        decision = marvin_spire._decide(prompt, candidates)  # already main-thread
         # oracle for display (engine rollouts) — never decides
-        values = {e["key"]: sts.rollout_value(bc, e["bits"], 48, self.rng.getrandbits(62))
+        values = {e["key"]: sts.rollout_value(bc, e["bits"], 16, sess.rng.getrandbits(62))
                   for e in entries}
         oracle_best = max(values, key=values.get)
         entry = next(e for e in entries if e["key"] == decision["chosen"])
@@ -103,10 +110,11 @@ class Session:
                "probabilities": decision["probabilities"], "latency_ms": decision["latency_ms"],
                "oracle_best": oracle_best, "oracle_agrees": oracle_best == decision["chosen"],
                "oracle_values": {k: round(v, 1) for k, v in values.items()}}
-        self.log.append(rec)
+        sess.log.append(rec)
         return {"decision": {k: rec[k] for k in ("chosen", "confidence", "latency_ms", "oracle_agrees")},
                 "probabilities": decision["probabilities"],
-                "candidates": candidates}
+                "candidates": candidates,
+                "state": sess.snapshot()}
 
     def stats(self) -> dict:
         n = len(self.log)
@@ -168,6 +176,9 @@ if __name__ == "__main__":
     ap = argparse.ArgumentParser()
     ap.add_argument("--port", type=int, default=8765)
     args = ap.parse_args()
-    marvin_spire.load()  # fail fast if model/adapter missing
-    print(f"marvin plays the spire → http://localhost:{args.port}")
-    ThreadingHTTPServer(("127.0.0.1", args.port), Handler).serve_forever()
+    httpd = ThreadingHTTPServer(("127.0.0.1", args.port), Handler)
+    # MLX is main-thread-only (see marvin_spire docstring): serve HTTP from a
+    # daemon thread and let the MAIN thread run the inference worker loop.
+    threading.Thread(target=httpd.serve_forever, daemon=True).start()
+    print(f"marvin plays the spire → http://localhost:{args.port}", flush=True)
+    marvin_spire.start_main_worker()

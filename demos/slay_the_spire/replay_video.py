@@ -121,7 +121,7 @@ def main():
            "-c:v", "libx264", "-pix_fmt", "yuv420p", args.out]
     subprocess.run(cmd, check=True, capture_output=True)
     print(f"{args.out}: {len(steps)} decisions, "
-          f"{sum(1 for s in summaries if s.get('victory'))}/{len(summaries)} victories")
+          f"{sum(1 for s in summaries if s['summary'].get('victory'))}/{len(summaries)} victories")
 
 
 if __name__ == "__main__":

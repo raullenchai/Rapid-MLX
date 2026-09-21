@@ -39,9 +39,24 @@ MARVIN_ADAPTER=../../bench/marvins_garden/adapters/spire \
   100+hp win value), ambiguous states (margin < 1.0) discarded.
 - Trained as a continuation of the v15c routing adapter (LR 1e-5, batch 2,
   3×100 iters, 25% routing replay against forgetting).
-- Held-out accuracy and oracle agreement: see
-  `bench/marvins_garden/results/eval_marvin_spire*.json` and
-  `docs/engineering/performance/`.
+- **Held-out accuracy: 38.8%** (`results/eval_marvin_spire.json`, 600 states,
+  single forward, 1.15 s/decision, ECE 0.116) vs a 33.7% majority-letter
+  prior — a real +5 pt of signal, but **not production quality**. Same recipe
+  re-runs landed 38.8–48.2% (the best run's weights were overwritten mid-
+  night by a later experiment; run-to-run variance under GPU-hang restarts is
+  large because each restart resets Adam state).
+- Recorded match (`spire_demo.mp4`, 3 battles, 46 decisions): **3/3 victories**
+  with **62.5% mean oracle agreement** — the demo shows every probability bar
+  and every mistake, honestly.
+- Root-cause hypothesis for the ceiling: candidates are listed in hand order,
+  so letter position correlates with action type — the model can exploit that
+  shortcut instead of reading monster intent. Next step: **shuffle candidate
+  order at mint time** and re-train (see handoff).
+- Thread-model lesson (cost us a night): MLX Metal command buffers are
+  thread-affine. load + every forward must run on the process MAIN thread;
+  pool-thread forward deadlocks at 0% CPU, cross-thread forward raises
+  `no Stream(cpu, 0)`. `marvin_spire.start_main_worker()` + `run()` encode
+  the working architecture; HTTP threads only marshal JSON.
 
 ## Fair-play rules
 
