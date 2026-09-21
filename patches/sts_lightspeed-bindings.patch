@@ -1,0 +1,184 @@
+diff --git a/bindings/slaythespire.cpp b/bindings/slaythespire.cpp
+index a9afe35..35656fe 100644
+--- a/bindings/slaythespire.cpp
++++ b/bindings/slaythespire.cpp
+@@ -12,6 +12,9 @@
+ 
+ #include "sim/ConsoleSimulator.h"
+ #include "sim/search/ScumSearchAgent2.h"
++#include "sim/search/Action.h"
++#include "sim/search/SimpleAgent.h"
++#include "combat/BattleContext.h"
+ #include "sim/SimHelpers.h"
+ #include "sim/PrintHelpers.h"
+ #include "game/Game.h"
+@@ -21,6 +24,93 @@
+ 
+ using namespace sts;
+ 
++// ─────────────────────────────────────────────────────────────────────────────
++// Combat-layer helpers for Marvin's Garden (StS decision lane)
++// ─────────────────────────────────────────────────────────────────────────────
++
++static std::vector<std::uint32_t> pyLegalActions(const BattleContext &bc) {
++    std::vector<std::uint32_t> out;
++    if (bc.inputState != InputState::PLAYER_NORMAL) return out;
++    for (int idx1 = 0; idx1 < 12; ++idx1) {
++        if (idx1 >= bc.cards.cardsInHand) break;
++        const CardInstance &card = bc.cards.hand[idx1];
++        if (card.requiresTarget()) {
++            for (int t = 0; t < bc.monsters.monsterCount; ++t) {
++                if (!bc.monsters.arr[t].isTargetable()) continue;
++                search::Action a(search::ActionType::CARD, idx1, t);
++                if (a.isValidAction(bc)) out.push_back(a.bits);
++            }
++        } else {
++            search::Action a(search::ActionType::CARD, idx1, 0);
++            if (a.isValidAction(bc)) out.push_back(a.bits);
++        }
++    }
++    out.push_back(search::Action(search::ActionType::END_TURN).bits);
++    return out;
++}
++
++static void pyApplyAction(BattleContext &bc, std::uint32_t bits) {
++    search::Action a(bits);
++    a.execute(bc);
++    bc.inputState = InputState::EXECUTING_ACTIONS;
++    bc.executeActions();
++}
++
++static std::string pyActionDesc(std::uint32_t bits, const BattleContext &bc) {
++    search::Action a(bits);
++    std::ostringstream os;
++    a.printDesc(os, bc);
++    return os.str();
++}
++
++// Rollout winrate of taking `bits` in `bcStart`, evaluated with SimpleAgent
++// playouts. RNGs are re-seeded per rollout for variety.
++static double pyRolloutWinrate(const BattleContext &bcStart, std::uint32_t bits, int n, std::uint64_t seed) {
++    if (n <= 0) n = 1;
++    int wins = 0;
++    for (int i = 0; i < n; ++i) {
++        BattleContext bc(bcStart);
++        const std::uint64_t s = seed + static_cast<std::uint64_t>(i) * 0x9E3779B97F4A7C15ULL;
++        bc.shuffleRng = Random(s);
++        bc.aiRng = Random(s ^ 0xD1B54A32D192ED03ULL);
++        bc.miscRng = Random(s ^ 0xABC98388FB8FAC03ULL);
++        pyApplyAction(bc, bits);
++        if (bc.outcome == Outcome::PLAYER_VICTORY) { ++wins; continue; }
++        if (bc.outcome == Outcome::UNDECIDED) {
++            search::SimpleAgent sa;
++            sa.playoutBattle(bc);
++            if (bc.outcome == Outcome::PLAYER_VICTORY) ++wins;
++        }
++    }
++    return static_cast<double>(wins) / n;
++}
++
++static int pyIncomingDamage(const BattleContext &bc) {
++    search::SimpleAgent sa;
++    return sa.getIncomingDamage(bc);
++}
++
++// Mean value of taking `bits`: victory -> 100 + remaining hp, loss -> -100.
++// Discriminates among actions that all win (by hp preserved).
++static double pyRolloutValue(const BattleContext &bcStart, std::uint32_t bits, int n, std::uint64_t seed) {
++    if (n <= 0) n = 1;
++    double total = 0.0;
++    for (int i = 0; i < n; ++i) {
++        BattleContext bc(bcStart);
++        const std::uint64_t s = seed + static_cast<std::uint64_t>(i) * 0x9E3779B97F4A7C15ULL;
++        bc.shuffleRng = Random(s);
++        bc.aiRng = Random(s ^ 0xD1B54A32D192ED03ULL);
++        bc.miscRng = Random(s ^ 0xABC98388FB8FAC03ULL);
++        pyApplyAction(bc, bits);
++        if (bc.outcome == Outcome::UNDECIDED) {
++            search::SimpleAgent sa;
++            sa.playoutBattle(bc);
++        }
++        total += (bc.outcome == Outcome::PLAYER_VICTORY) ? (100.0 + bc.player.curHp) : -100.0;
++    }
++    return total / n;
++}
++
+ PYBIND11_MODULE(slaythespire, m) {
+     m.doc() = "pybind11 example plugin"; // optional module docstring
+     m.def("play", &sts::py::play, "play Slay the Spire Console");
+@@ -828,6 +918,68 @@ PYBIND11_MODULE(slaythespire, m) {
+         .value("RED_CIRCLET", RelicId::RED_CIRCLET)
+         .value("INVALID", RelicId::INVALID);
+ 
++    // ── combat bindings for Marvin's Garden ──
++    pybind11::class_<BattleContext> battleContext(m, "BattleContext");
++    battleContext.def(pybind11::init<>())
++        .def("init", [](BattleContext &bc, GameContext &gc) { bc.init(gc); })
++        .def("init_encounter", [](BattleContext &bc, GameContext &gc, MonsterEncounter e) { bc.init(gc, e); })
++        .def("clone", [](const BattleContext &bc) { return BattleContext(bc); })
++        .def_readwrite("turn", &BattleContext::turn)
++        .def_property("input_state",
++            [](const BattleContext &bc) { return static_cast<int>(bc.inputState); },
++            [](BattleContext &bc, int v) { bc.inputState = static_cast<InputState>(v); })
++        .def_property("outcome",
++            [](const BattleContext &bc) { return static_cast<int>(bc.outcome); },
++            [](BattleContext &bc, int v) { bc.outcome = static_cast<Outcome>(v); })
++        .def_readwrite("floor_num", &BattleContext::floorNum)
++        .def_readwrite("player", &BattleContext::player)
++        .def_readwrite("monsters", &BattleContext::monsters)
++        .def_readwrite("cards", &BattleContext::cards);
++
++    pybind11::class_<Player> playerCls(m, "Player");
++    playerCls.def(pybind11::init<>())
++        .def_readwrite("cur_hp", &Player::curHp)
++        .def_readwrite("max_hp", &Player::maxHp)
++        .def_readwrite("energy", &Player::energy)
++        .def_readwrite("block", &Player::block);
++
++    pybind11::class_<Monster> monsterCls(m, "Monster");
++    monsterCls.def(pybind11::init<>())
++        .def_property_readonly("id", [](const Monster &mo) { return static_cast<int>(mo.id); })
++        .def_property_readonly("cur_hp", [](const Monster &mo) { return mo.curHp; })
++        .def_property_readonly("max_hp", [](const Monster &mo) { return mo.maxHp; })
++        .def_property_readonly("block", [](const Monster &mo) { return mo.block; })
++        .def_property_readonly("next_move", [](const Monster &mo) { return static_cast<int>(mo.moveHistory[0]); })
++        .def_property_readonly("last_move", [](const Monster &mo) { return static_cast<int>(mo.moveHistory[1]); })
++        .def_property_readonly("strength", [](const Monster &mo) { return mo.strength; })
++        .def_property_readonly("poison", [](const Monster &mo) { return mo.poison; })
++        .def_property_readonly("vulnerable", [](const Monster &mo) { return mo.vulnerable; })
++        .def_property_readonly("weak", [](const Monster &mo) { return mo.weak; });
++
++    pybind11::class_<MonsterGroup> monsterGroupCls(m, "MonsterGroup");
++    monsterGroupCls.def_property_readonly("count", [](const MonsterGroup &mg) { return mg.monsterCount; })
++        .def("get", [](const MonsterGroup &mg, int i) -> const Monster & { return mg.arr[i]; });
++
++    pybind11::class_<CardInstance> cardInstanceCls(m, "CardInstance");
++    cardInstanceCls.def_property_readonly("id", [](const CardInstance &c) { return static_cast<int>(c.getId()); })
++        .def_property_readonly("upgrade_count", [](const CardInstance &c) { return c.getUpgradeCount(); })
++        .def_property_readonly("cost", [](const CardInstance &c) { return static_cast<int>(c.costForTurn); })
++        .def_property_readonly("requires_target", [](const CardInstance &c) { return c.requiresTarget(); });
++
++    pybind11::class_<CardManager> cardManagerCls(m, "CardManager");
++    cardManagerCls.def_property_readonly("cards_in_hand", [](const CardManager &cm) { return cm.cardsInHand; })
++        .def("hand", [](const CardManager &cm, int i) -> const CardInstance & { return cm.hand[i]; })
++        .def_property_readonly("draw_count", [](const CardManager &cm) { return static_cast<int>(cm.drawPile.size()); })
++        .def_property_readonly("discard_count", [](const CardManager &cm) { return static_cast<int>(cm.discardPile.size()); })
++        .def_property_readonly("exhaust_count", [](const CardManager &cm) { return static_cast<int>(cm.exhaustPile.size()); });
++
++    m.def("legal_actions", &pyLegalActions, "enumerate legal card/end-turn actions as 32-bit codes");
++    m.def("apply_action", &pyApplyAction, "apply an action and execute the resulting queue");
++    m.def("action_desc", &pyActionDesc, "human-readable action description");
++    m.def("rollout_winrate", &pyRolloutWinrate, "winrate of an action via SimpleAgent rollouts");
++    m.def("rollout_value", &pyRolloutValue, "mean outcome value of an action (100+hp if win, -100 if loss)");
++    m.def("incoming_damage", &pyIncomingDamage, "total incoming monster damage this turn");
++
+ #ifdef VERSION_INFO
+     m.attr("__version__") = MACRO_STRINGIFY(VERSION_INFO);
+ #else
+diff --git a/pybind11 b/pybind11
+index 787d2c8..a2e59f0 160000
+--- a/pybind11
++++ b/pybind11
+@@ -1 +1 @@
+-Subproject commit 787d2c88cafa4d07fb38c9519c485a86323cfcf4
++Subproject commit a2e59f0e7065404b44dfe92a28aca47ba1378dc4

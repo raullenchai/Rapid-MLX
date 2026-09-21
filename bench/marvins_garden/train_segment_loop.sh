@@ -24,7 +24,7 @@ for i in $(seq 1 "$SEGMENTS"); do
   # mlx-lm reads datasets IN ORDER (no shuffle), so each resumed segment
   # would re-read the head of the file. Reorder deterministically per
   # segment instead — full coverage across segments, valid set untouched.
-  python3 - "$HERE/data/sft/train.jsonl" "$i" <<'EOF'
+  python3 - "${DATA:-$HERE/data/sft}/train.jsonl" "$i" <<'EOF'
 import json, random, sys
 path, seed = sys.argv[1], int(sys.argv[2])
 rows = [json.loads(l) for l in open(path, encoding="utf-8") if l.strip()]

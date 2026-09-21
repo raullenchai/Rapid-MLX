@@ -16,6 +16,7 @@ set -euo pipefail
 HERE="$(cd "$(dirname "$0")" && pwd)"
 MODEL="${MODEL:-prism-ml/Ternary-Bonsai-27B-mlx-2bit}"
 ADAPTER="${ADAPTER:-$HERE/adapters/marvins-garden}"
+DATA="${DATA:-$HERE/data/sft}"
 ITERS="${ITERS:-800}"
 BATCH="${BATCH:-2}"
 LR="${LR:-3.0e-5}"
@@ -29,14 +30,14 @@ fi
 python -m mlx_lm lora \
   --model "$MODEL" \
   --train \
-  --data "$HERE/data/sft" \
+  --data "$DATA" \
   --fine-tune-type lora \
   --mask-prompt \
   --num-layers "$LAYERS" \
   --batch-size "$BATCH" \
   --iters "$ITERS" \
   --learning-rate "$LR" \
-  --steps-per-eval 50 \
+  --steps-per-eval "${STEPS_PER_EVAL:-50}" \
   --max-seq-length 1024 \
   --adapter-path "$ADAPTER" \
   --save-every "$SAVE_EVERY" \
