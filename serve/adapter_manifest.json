@@ -1,0 +1,10 @@
+{
+  "name": "marvins-garden-spire",
+  "lineage": "v15c + spire_play continuation (LR 1e-5, batch 2)",
+  "model": "prism-ml/Ternary-Bonsai-27B-mlx-2bit",
+  "think_mode": "enabled",
+  "max_seq_length": 1024,
+  "letters": "A-H",
+  "families": ["model_routing", "tool_gate", "injection_guard", "spire_play"],
+  "note": "adapter\u21c4template pairing is a serving contract: think_mode and render_prompt must match training exactly"
+}

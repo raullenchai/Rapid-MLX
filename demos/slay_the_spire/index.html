@@ -1,0 +1,118 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Marvin plays Slay the Spire</title>
+<style>
+  :root { color-scheme: dark; }
+  body { margin:0; font-family: Menlo, monospace; background:#101418; color:#d8dee6; }
+  #wrap { display:flex; height:100vh; }
+  /* ── LEFT: Marvin decision panel (the bar chart) ── */
+  #panel { width:360px; min-width:360px; background:#0b0e12; border-right:1px solid #232a33;
+           padding:14px; box-sizing:border-box; display:flex; flex-direction:column; gap:10px; }
+  #panel h1 { font-size:15px; margin:0; color:#7fd0a0; }
+  .stat { font-size:12px; color:#8b98a5; }
+  .stat b { color:#d8dee6; }
+  #latency { font-size:22px; color:#7fd0a0; font-weight:bold; }
+  .barrow { display:flex; align-items:center; gap:8px; font-size:12px; margin:3px 0; }
+  .barrow .lbl { width:150px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+  .barrow .track { flex:1; background:#1a212a; height:16px; position:relative; }
+  .barrow .fill { height:100%; background:#3d6b8f; }
+  .barrow.picked .fill { background:#7fd0a0; }
+  .barrow .pct { width:44px; text-align:right; }
+  .ok { color:#7fd0a0; } .bad { color:#e07b7b; }
+  #log { font-size:11px; color:#5d6b78; overflow-y:auto; flex:1; }
+  /* ── RIGHT: battle ── */
+  #game { flex:1; padding:20px; box-sizing:border-box; display:flex; flex-direction:column; gap:12px; }
+  #monsters .mon, #player { border:1px solid #2a3340; border-radius:8px; padding:10px 14px; }
+  .hpbar { background:#3a1518; height:10px; border-radius:5px; overflow:hidden; margin-top:4px; }
+  .hpbar div { background:#c0392b; height:100%; }
+  #hand { display:flex; gap:8px; flex-wrap:wrap; }
+  .card { background:#1b232e; border:1px solid #33404f; border-radius:6px; padding:6px 10px; font-size:12px; }
+  .card.up { border-color:#7fa650; }
+  #controls button { background:#1b232e; color:#d8dee6; border:1px solid #33404f;
+                     border-radius:6px; padding:8px 14px; font-family:inherit; cursor:pointer; margin-right:8px; }
+  #controls button.primary { border-color:#7fd0a0; color:#7fd0a0; }
+  #intent { font-size:13px; color:#e0b56d; }
+  .over { font-size:20px; padding:16px; }
+</style>
+</head>
+<body>
+<div id="wrap">
+  <div id="panel">
+    <h1>MARVIN · decision readout</h1>
+    <div id="latency">— ms</div>
+    <div class="stat">single forward · 0 generated tokens · <b id="tokcount">—</b> prompt tokens</div>
+    <div class="stat">oracle agreement: <b id="agree">—</b> · decisions: <b id="ndec">0</b></div>
+    <div id="bars"><div class="stat">press ▶ DECIDE to see probabilities</div></div>
+    <div id="log"></div>
+  </div>
+  <div id="game">
+    <div id="controls">
+      <button class="primary" onclick="decide()">▶ DECIDE (Marvin)</button>
+      <button onclick="autoplay()">⏩ auto-play</button>
+      <button onclick="newBattle()">↺ new battle</button>
+      <span id="intent"></span>
+    </div>
+    <div id="monsters"></div>
+    <div id="player"></div>
+    <div id="hand"></div>
+    <div id="status"></div>
+  </div>
+</div>
+<script>
+let auto = null;
+async function j(p, m) { const r = await fetch(p, {method: m||'GET'}); return r.json(); }
+function hpbar(hp, max) { return `<div class="hpbar"><div style="width:${100*hp/max}%"></div></div>`; }
+async function refresh() {
+  const s = await j('/api/state');
+  document.getElementById('monsters').innerHTML = s.monsters.map(m =>
+    `<div class="mon"><b>${m.name}</b> — hp ${m.hp}/${m.max_hp} block ${m.block}${hpbar(m.hp, m.max_hp)}</div>`).join('');
+  document.getElementById('player').innerHTML =
+    `<b>You</b> — hp ${s.player.hp}/${s.player.max_hp} block ${s.player.block} energy ${s.player.energy}/3${hpbar(s.player.hp, s.player.max_hp)}
+     <div class="stat">draw ${s.draw} · discard ${s.discard}</div>`;
+  document.getElementById('hand').innerHTML = s.hand.map(c =>
+    `<div class="card ${c.upgraded?'up':''}">${c.name}${c.upgraded?'+':''}<br><span class="stat">cost ${c.cost}</span></div>`).join('');
+  document.getElementById('intent').textContent = s.over ? '' :
+    `⚔ enemies attack for ${s.incoming} this turn`;
+  document.getElementById('status').innerHTML = s.over ?
+    (s.victory ? '<div class="over ok">VICTORY — the spire yields.</div>'
+               : '<div class="over bad">DEFEAT — Marvin dies at floor 1.</div>') : '';
+  if (s.over && auto) { clearInterval(auto); auto = null; }
+  return s;
+}
+async function decide() {
+  const d = await j('/api/decide', 'POST');
+  if (d.error) { alert(d.error); return; }
+  if (d.over) { await refresh(); return; }
+  document.getElementById('latency').textContent = d.decision.latency_ms + ' ms';
+  const probs = d.probabilities, chosen = d.decision.chosen;
+  const rows = Object.entries(probs).sort((a,b)=>b[1]-a[1]).map(([k,v]) => {
+    const pct = (100*v).toFixed(1);
+    return `<div class="barrow ${k===chosen?'picked':''}">
+      <div class="lbl">${k===chosen?'▶ ':'&nbsp;'}${k}</div>
+      <div class="track"><div class="fill" style="width:${pct}%"></div></div>
+      <div class="pct">${pct}%</div></div>`;
+  }).join('');
+  document.getElementById('bars').innerHTML = rows;
+  const st = await j('/api/stats');
+  document.getElementById('agree').textContent = (100*st.oracle_agreement).toFixed(0)+'%';
+  document.getElementById('ndec').textContent = st.decisions;
+  document.getElementById('latency').title = 'p50 ' + st.latency_ms_p50 + ' ms';
+  document.getElementById('log').innerHTML = st.decisions + ' decisions · p50 ' + st.latency_ms_p50 + ' ms<br>' +
+    (d.decision.oracle_agrees ? '<span class="ok">✓ matches rollout oracle</span>' : '<span class="bad">✗ diverges from oracle</span>');
+  await refresh();
+}
+function autoplay() {
+  if (auto) { clearInterval(auto); auto = null; return; }
+  auto = setInterval(async () => {
+    const s = await j('/api/state');
+    if (!s.over) await decide(); else { clearInterval(auto); auto = null; }
+  }, 1400);
+}
+async function newBattle() { if (auto) { clearInterval(auto); auto=null; } await j('/api/new','POST'); await refresh();
+  document.getElementById('bars').innerHTML = '<div class="stat">press ▶ DECIDE to see probabilities</div>'; }
+refresh();
+</script>
+</body>
+</html>

@@ -1,0 +1,73 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/raullenchai/Rapid-MLX/bench/marvins_garden/schema.json",
+  "title": "Marvin's Garden contrastive decision pair",
+  "description": "One rendered decision sample. Samples come in contrastive pairs (contrast_group) that differ in exactly one audited fact (flip_key) so the correct label flips. Training and evaluation read the same wire shape.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "pair_id",
+    "family",
+    "contrast_group",
+    "input",
+    "candidates",
+    "label",
+    "flip_key",
+    "meta"
+  ],
+  "properties": {
+    "schema_version": {
+      "type": "integer",
+      "const": 1
+    },
+    "pair_id": {
+      "type": "string",
+      "pattern": "^mg-(mroute|tool|inj)-[0-9]{4}-[ab]$"
+    },
+    "family": {
+      "type": "string",
+      "enum": ["model_routing", "tool_gate", "injection_guard"]
+    },
+    "contrast_group": {
+      "type": "string",
+      "pattern": "^mg-(mroute|tool|inj)-[0-9]{4}$"
+    },
+    "input": {
+      "type": "string",
+      "minLength": 40,
+      "description": "The fully rendered user prompt (render.render_prompt, style 'base')."
+    },
+    "candidates": {
+      "type": "array",
+      "items": { "type": "string", "minLength": 1 },
+      "minItems": 2,
+      "maxItems": 8,
+      "uniqueItems": true
+    },
+    "label": {
+      "type": "string",
+      "minLength": 1,
+      "description": "Must be one of candidates (checked by validate.py; not expressible in JSON Schema)."
+    },
+    "flip_key": {
+      "type": "string",
+      "minLength": 1,
+      "description": "The scenario fact that was mutated between the two members of the contrast group."
+    },
+    "meta": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["seed", "generator_version"],
+      "properties": {
+        "seed": { "type": "integer" },
+        "generator_version": { "type": "string" },
+        "scenario": {
+          "type": "object",
+          "additionalProperties": true,
+          "description": "Audit copy of the sampled scenario fields (pre-render)."
+        }
+      }
+    }
+  }
+}
