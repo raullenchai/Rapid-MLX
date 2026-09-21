@@ -377,6 +377,8 @@ def _write_stderr_unbuffered(data: bytes) -> bool:
     EPIPE, EBADF, zero progress, or any other OS-level failure. In particular,
     no bytes remain buffered for CPython to flush during finalization.
     """
+    if sys.__stderr__ is None:
+        return False
     offset = 0
     while offset < len(data):
         try:
@@ -462,9 +464,9 @@ def _merge_write_back(data: dict[str, Any], write_back: WriteBack) -> dict[str, 
 def _locked_write_back(path: Path, write_back: WriteBack) -> bool:
     """Read-merge-write the consent file under an exclusive sibling lock.
 
-    The lock file (``telemetry-consent.yaml.lock``) is never unlinked:
-    unlinking would split waiters onto different inodes and defeat the
-    serialization (same reasoning as ``rapid_mlx/_mirror.py``).
+    Writers never unlink the lock file: unlinking would split waiters onto
+    different inodes and defeat serialization (same reasoning as
+    ``rapid_mlx/_mirror.py``). ``telemetry reset`` removes it best-effort.
     """
     return state._locked_merge_consent(lambda data: _merge_write_back(data, write_back))
 

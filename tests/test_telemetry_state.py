@@ -10,7 +10,10 @@ exact failure mode this issue exists to avoid. Test it directly.
 
 from __future__ import annotations
 
+import errno
 import importlib
+import subprocess
+import sys
 
 import pytest
 
@@ -240,6 +243,27 @@ def test_reset_state_removes_sibling_lock_best_effort(fake_home):
     assert not lock_path.exists()
 
 
+def test_reset_state_reports_marker_enumeration_error(fake_home, monkeypatch):
+    from rapid_mlx.telemetry import state
+
+    state.record_consent(True, rapid_mlx_version="0.6.33")
+    telemetry_dir = state.consent_path().parent
+    real_glob = type(telemetry_dir).glob
+
+    def fail_marker_glob(path, pattern):
+        if path == telemetry_dir and pattern == "activation_seen_*":
+            raise OSError("marker directory denied")
+        return real_glob(path, pattern)
+
+    monkeypatch.setattr(type(telemetry_dir), "glob", fail_marker_glob)
+    with pytest.raises(
+        OSError, match="telemetry reset could not remove:.*marker directory denied"
+    ):
+        state.reset_state()
+
+    assert not state.consent_path().exists()
+
+
 def test_consent_source_reports_origin(fake_home, monkeypatch):
     """The status command shows users *why* telemetry is in its current
     state — verify each source string is correctly reported."""
@@ -327,6 +351,80 @@ def test_record_consent_preserves_v2_and_desktop_fields(fake_home):
     assert data["future_key"] == "keepme"
 
 
+def test_record_consent_falls_back_after_bounded_lock_retry(fake_home, monkeypatch):
+    import yaml
+
+    from rapid_mlx.telemetry import state
+
+    path = state.consent_path()
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text("future_key: keepme\n")
+    lock_path = path.with_name(path.name + ".lock")
+    holder = subprocess.Popen(
+        [
+            sys.executable,
+            "-c",
+            (
+                "import fcntl, os, sys\n"
+                "fd = os.open(sys.argv[1], os.O_CREAT | os.O_RDWR, 0o600)\n"
+                "fcntl.flock(fd, fcntl.LOCK_EX)\n"
+                "print('locked', flush=True)\n"
+                "sys.stdin.buffer.read(1)\n"
+            ),
+            str(lock_path),
+        ],
+        stdin=subprocess.PIPE,
+        stdout=subprocess.PIPE,
+        text=True,
+    )
+    assert holder.stdout is not None
+    assert holder.stdout.readline() == "locked\n"
+
+    now = [0.0]
+    sleeps = []
+
+    def fake_clock():
+        return now[0]
+
+    def fake_sleep(delay):
+        sleeps.append(delay)
+        now[0] += delay
+
+    monkeypatch.setattr(state, "_lock_retry_clock", fake_clock)
+    monkeypatch.setattr(state, "_lock_retry_sleep", fake_sleep)
+    try:
+        state.record_consent(False, rapid_mlx_version="0.15.1")
+    finally:
+        assert holder.stdin is not None
+        holder.stdin.write("x")
+        holder.stdin.close()
+        holder.wait(timeout=5)
+
+    data = yaml.safe_load(path.read_text())
+    assert data["consent"] is False
+    assert data["future_key"] == "keepme"
+    assert sleeps
+    assert sum(sleeps) <= 1.5
+
+
+def test_record_consent_reports_write_path_and_os_error(fake_home, monkeypatch):
+    from rapid_mlx.telemetry import state
+
+    path = state.consent_path()
+
+    def no_space(_path, _data):
+        raise OSError(errno.ENOSPC, "No space left on device")
+
+    monkeypatch.setattr(state, "_atomic_write_consent", no_space)
+    with pytest.raises(OSError) as raised:
+        state.record_consent(False, rapid_mlx_version="0.15.1")
+
+    message = str(raised.value)
+    assert message.startswith(f"cannot write {path}: ")
+    assert "No space left on device" in message
+    assert "unreadable" not in message
+
+
 def test_record_consent_falls_back_with_chmod_000_lock(fake_home):
     import yaml
 
@@ -411,7 +509,7 @@ def test_record_consent_preserves_unreadable_directory(fake_home):
     path.parent.mkdir(parents=True, exist_ok=True)
     path.mkdir()
 
-    with pytest.raises(OSError, match="record is unreadable"):
+    with pytest.raises(OSError, match=r"cannot write .*telemetry-consent.yaml"):
         state.record_consent(False, rapid_mlx_version="0.15.1")
 
     assert path.is_dir()

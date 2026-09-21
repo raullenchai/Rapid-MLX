@@ -38,9 +38,11 @@ toward synthetic workloads. Users who want to opt in run
 
 from __future__ import annotations
 
+import errno
 import fcntl
 import os
 import tempfile
+import time
 import uuid
 from collections.abc import Callable
 from dataclasses import dataclass
@@ -77,6 +79,11 @@ CI_ENV_VARS = (
 # they must re-see and re-accept before any activation event is emitted —
 # adding a new data type silently under old consent would be a consent breach.
 CURRENT_CONSENT_SCHEMA_VERSION = 2
+
+_LOCK_RETRY_SECONDS = 1.5
+_LOCK_RETRY_INTERVAL_SECONDS = 0.05
+_lock_retry_clock = time.monotonic
+_lock_retry_sleep = time.sleep
 
 
 def _default_telemetry_dir() -> Path:
@@ -172,7 +179,18 @@ def _locked_merge_consent(
         return write_merged()
     try:
         try:
-            fcntl.flock(lock_fd, fcntl.LOCK_EX)
+            deadline = _lock_retry_clock() + _LOCK_RETRY_SECONDS
+            while True:
+                try:
+                    fcntl.flock(lock_fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                    break
+                except OSError as exc:
+                    if exc.errno not in (errno.EACCES, errno.EAGAIN, errno.EINTR):
+                        raise
+                    remaining = deadline - _lock_retry_clock()
+                    if remaining <= 0:
+                        raise
+                    _lock_retry_sleep(min(_LOCK_RETRY_INTERVAL_SECONDS, remaining))
         except OSError:
             os.close(lock_fd)
             lock_fd = -1
@@ -289,14 +307,12 @@ def record_consent(consent: bool, *, rapid_mlx_version: str) -> ConsentState:
     except FileNotFoundError:
         pass
     try:
-        persisted = _locked_merge_consent(
+        _locked_merge_consent(
             lambda existing: {**existing, **payload},
             unreadable_replacement=unreadable_replacement,
         )
     except OSError as exc:
-        raise OSError("telemetry consent record is unreadable") from exc
-    if not persisted:
-        raise OSError("telemetry consent record is unreadable")
+        raise OSError(f"cannot write {path}: {exc}") from exc
     return state
 
 

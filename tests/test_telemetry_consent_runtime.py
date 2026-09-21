@@ -613,9 +613,50 @@ def test_notice_write_retries_eintr_and_partial_writes(fake_home, monkeypatch):
 
 
 def test_notice_write_zero_progress_is_failure(fake_home, monkeypatch):
-    monkeypatch.setattr(os, "write", lambda _fd, _data: 0)
+    calls = 0
+
+    def zero_progress(_fd, _data):
+        nonlocal calls
+        calls += 1
+        if calls > 5:
+            raise AssertionError("zero-progress write guard did not stop")
+        return 0
+
+    monkeypatch.setattr(os, "write", zero_progress)
     assert deliver_notice_if_needed(resolve(role=ProcessRole.INTERACTIVE_CLI)) is False
     assert upload_allowed() is False
+
+
+def test_closed_at_exec_fd2_is_never_reused_as_stderr(tmp_path):
+    home = tmp_path / "home"
+    home.mkdir()
+    reused_fd2 = tmp_path / "reused-fd2"
+    env = _child_env(home)
+    env["PYTHONPATH"] = os.pathsep.join(
+        (str(_REPO_ROOT), *(str(path) for path in sys.path if path))
+    )
+    script = (
+        "import os, sys\n"
+        "assert sys.__stderr__ is None\n"
+        "fd = os.open(sys.argv[1], os.O_CREAT | os.O_WRONLY, 0o600)\n"
+        "assert fd == 2\n"
+        "import rapid_mlx\n"
+        "rapid_mlx.__version__ = '0.15.1'\n"
+        "from rapid_mlx.telemetry import consent_runtime as runtime\n"
+        "runtime.startup(role=runtime.ProcessRole.INTERACTIVE_CLI)\n"
+        "os.close(fd)\n"
+    )
+    process = subprocess.run(
+        [sys.executable, "-c", script, str(reused_fd2)],
+        cwd=_REPO_ROOT,
+        env=env,
+        stdout=subprocess.PIPE,
+        preexec_fn=lambda: os.close(2),
+        timeout=30,
+        check=False,
+    )
+    assert process.returncode == 0
+    assert reused_fd2.read_bytes() == b""
 
 
 class _BrokenStream:
@@ -705,6 +746,7 @@ def test_startup_is_exception_proof_and_fails_closed(
 
 def test_startup_with_sys_stderr_none_never_raises_or_persists(fake_home, monkeypatch):
     monkeypatch.setattr(sys, "stderr", None)
+    monkeypatch.setattr(sys, "__stderr__", None)
     real_write = os.write
 
     def closed_fd2(fd, data):
@@ -733,6 +775,28 @@ def test_startup_stays_exception_proof_when_debug_logging_also_fails(
     assert decision.upload_now is False
     monkeypatch.setattr(consent_runtime_module, "resolve", real_resolve)
     assert upload_allowed() is False
+
+
+def test_startup_exception_fallback_is_memoized_and_inert(fake_home, monkeypatch):
+    real_resolve = consent_runtime_module.resolve
+
+    def boom(*_args, **_kwargs):
+        raise RuntimeError("unexpected startup failure")
+
+    monkeypatch.setattr(consent_runtime_module, "resolve", boom)
+    blocked = startup(role=ProcessRole.INTERACTIVE_CLI)
+    monkeypatch.setattr(consent_runtime_module, "resolve", real_resolve)
+
+    assert blocked.reason == "invalid_input"
+    assert blocked.upload_now is False
+    assert blocked.deliver_notice is False
+    assert blocked.write_back == _NO_WB
+    assert resolve() is blocked
+    assert deliver_notice_if_needed() is False
+    assert apply_write_back() is False
+    assert upload_allowed() is False
+    assert consent_runtime_module.notice_was_delivered() is False
+    assert not consent_path().exists()
 
 
 @pytest.mark.parametrize(
@@ -994,7 +1058,7 @@ def test_write_back_falls_back_when_sibling_lock_cannot_be_acquired(
     real_flock = state.fcntl.flock
 
     def deny_exclusive(fd, operation):
-        if operation == state.fcntl.LOCK_EX:
+        if operation == state.fcntl.LOCK_EX | state.fcntl.LOCK_NB:
             raise OSError("flock denied")
         return real_flock(fd, operation)
 
@@ -1023,7 +1087,7 @@ def test_write_back_takes_exclusive_lock_before_read(fake_home, monkeypatch):
     monkeypatch.setattr(state.fcntl, "flock", spy_flock)
     monkeypatch.setattr(state, "_read_consent_mapping", spy_read)
     assert apply_write_back(_MARKER_ONLY_WB) is True
-    lock_index = events.index(("flock", state.fcntl.LOCK_EX))
+    lock_index = events.index(("flock", state.fcntl.LOCK_EX | state.fcntl.LOCK_NB))
     read_index = events.index(("read", path))
     assert lock_index < read_index
 
@@ -1350,6 +1414,77 @@ def test_entrypoints_classify_only_server_starts_as_long_lived(
 
             server.main()
     assert observed == [(None, expected_long_lived)]
+
+
+@pytest.mark.parametrize("entrypoint", ["serve", "server"])
+@pytest.mark.parametrize(
+    ("blocked_state", "expected_reason"),
+    [
+        ("kill_switch", "kill_switch"),
+        ("current_refusal", "current_refusal"),
+        ("pre_cutoff", "pre_cutoff_runtime"),
+        ("read_error", "read_error"),
+    ],
+)
+def test_long_lived_entrypoints_emit_no_notice_when_blocked(
+    fake_home, monkeypatch, capfd, entrypoint, blocked_state, expected_reason
+):
+    if blocked_state == "kill_switch":
+        monkeypatch.setenv("RAPID_MLX_TELEMETRY", "0")
+    elif blocked_state == "current_refusal":
+        write_consent("consent: false\nprompted_version: 0.15.0\nschema_version: 2\n")
+    elif blocked_state == "pre_cutoff":
+        monkeypatch.setattr(rapid_mlx_module(), "__version__", "0.14.9")
+    else:
+        write_consent("consent: [unclosed")
+
+    class StopAfterStartupError(Exception):
+        pass
+
+    real_startup = consent_runtime_module.startup
+    observed = []
+
+    def stop_after_startup(*, role=None, long_lived=False):
+        decision = real_startup(role=role, long_lived=long_lived)
+        observed.append((long_lived, decision.reason))
+        raise StopAfterStartupError
+
+    monkeypatch.setattr(consent_runtime_module, "startup", stop_after_startup)
+    if entrypoint == "serve":
+        monkeypatch.setattr(sys, "argv", ["rapid-mlx", "serve", "dummy-model"])
+    else:
+        monkeypatch.setattr(sys, "argv", ["rapid_mlx.server"])
+    with pytest.raises(StopAfterStartupError):
+        if entrypoint == "serve":
+            from rapid_mlx import cli
+
+            cli.main()
+        else:
+            from rapid_mlx import server
+
+            server.main()
+
+    captured = capfd.readouterr()
+    assert observed == [(True, expected_reason)]
+    assert "anonymous usage reporting is ON" not in captured.err
+    assert "anonymous usage reporting was turned on" not in captured.err
+    assert "NOTICE:" not in captured.err
+    assert "anonymous usage reporting" not in captured.out
+
+
+def test_second_interactive_run_with_marker_emits_nothing(fake_home, capfd):
+    first = startup(role=ProcessRole.INTERACTIVE_CLI)
+    assert first.reason == "fresh_install_notice"
+    assert consent_path().exists()
+    capfd.readouterr()
+
+    consent_runtime_module._reset_runtime_state_for_tests()
+    second = startup(role=ProcessRole.INTERACTIVE_CLI)
+
+    assert second.reason == "marker_authorises"
+    captured = capfd.readouterr()
+    assert captured.out == ""
+    assert captured.err == ""
 
 
 # ---------------------------------------------------------------------------
