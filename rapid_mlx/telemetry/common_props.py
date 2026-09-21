@@ -27,9 +27,10 @@ there), the argument is ``None``, the key is omitted, and the block
 still ships. Absence on the wire means "the local store could not
 answer"; analysts must read it as unknown, never as 0 or first day.
 Callers must therefore pass ``None`` — not 0 — when the store could not
-answer: 0 is a legitimate value of ``nth_model_served`` ("has never
-served a model") and sending it would lie about a machine we know
-nothing about.
+answer: ``store.note_model_served()`` returns 0 only on FAILURE (a
+successful note always returns >= 1), so a failure-0 passed through
+would ship a broken store as a real first-time user; a wire 0 is valid
+only when a store genuinely answered zero.
 
 Privacy rule (design sec 1.5): the block carries closed enums, buckets,
 pattern-capped version strings and UUIDs only. No hostname, no
@@ -113,6 +114,16 @@ def _memory_gb(raw: object) -> int:
     return raw
 
 
+_UNKNOWN_FACTS = PlatformFacts(
+    os="other",
+    os_version=None,
+    arch="other",
+    chip="other",
+    memory_gb=0,
+    python_version=None,
+)
+
+
 def read_platform_facts() -> PlatformFacts:
     """Read the machine-derived half of the block. Never raises.
 
@@ -121,27 +132,32 @@ def read_platform_facts() -> PlatformFacts:
     every field is narrowed to what the registry accepts: the chip
     through the closed :func:`rapid_mlx.telemetry.chip.chip_token`
     mapping, the enums to their fallback member, the version strings to
-    the registry's own patterns. Any failure inside ``platform_info``
-    (a raising ``platform`` function, an exploding sysctl read) degrades
-    the whole snapshot to the unknown values instead of propagating —
-    a build from such a snapshot is then dropped by the registry, which
-    is the fail-closed outcome, not a crash.
+    the registry's own patterns. ANY failure along the way — a raising
+    ``platform`` function, an exploding sysctl read, a registry that
+    cannot load (a wheel missing ``events.json``) — degrades the whole
+    snapshot to the unknown values instead of propagating; a build from
+    such a snapshot is then dropped by the registry, which is the
+    fail-closed outcome, not a crash.
     """
     try:
         info: dict[object, object] = redact.platform_info()
+        raw_chip: object = info.get("chip")
+        return PlatformFacts(
+            os=_enum_member(info.get("os"), "os", "other"),
+            os_version=_pattern_conforming(info.get("os_version"), "os_version"),
+            arch=_enum_member(info.get("arch"), "arch", "other"),
+            chip=chip.chip_token(raw_chip if isinstance(raw_chip, str) else None),
+            memory_gb=_memory_gb(info.get("memory_gb")),
+            python_version=_pattern_conforming(
+                info.get("python_version"), "python_version"
+            ),
+        )
     except Exception:
-        info = {}
-    raw_chip: object = info.get("chip")
-    return PlatformFacts(
-        os=_enum_member(info.get("os"), "os", "other"),
-        os_version=_pattern_conforming(info.get("os_version"), "os_version"),
-        arch=_enum_member(info.get("arch"), "arch", "other"),
-        chip=chip.chip_token(raw_chip if isinstance(raw_chip, str) else None),
-        memory_gb=_memory_gb(info.get("memory_gb")),
-        python_version=_pattern_conforming(
-            info.get("python_version"), "python_version"
-        ),
-    )
+        # ``registry.validate*`` swallow the same failure; the narrowing
+        # helpers call ``load_registry`` outside them, so this guard is
+        # what keeps the never-raises contract. KeyboardInterrupt and
+        # SystemExit are BaseException and still propagate.
+        return _UNKNOWN_FACTS
 
 
 def build_common_props(
@@ -174,15 +190,23 @@ def build_common_props(
     registry sanctions absence exactly for the case where the local
     state store cannot answer (read-only HOME, locked or corrupt
     database — ``store.days_since_first_run_bucket()`` returns ``None``
-    by design there). Callers MUST pass ``None`` — not 0 — in that case:
-    on the wire, absence reads as "unknown" (never 0 / first day), while
-    0 is a legitimate ``nth_model_served`` value meaning "has never
-    served a model". Read real values from the store
+    by design there). Callers MUST pass ``None`` — not 0 — when the
+    store could not answer: ``store.note_model_served()`` returns the
+    count INCLUDING the model just noted (success is always >= 1) and 0
+    only on FAILURE, so a failure-0 passed through would ship a broken
+    store as a real first-time user; a wire 0 is valid only when a
+    store genuinely answered zero. Read real values from the store
     (``store.note_model_served`` / ``store.days_since_first_run_bucket``)
     before building; ``note_model_served`` mutates state, so it belongs
     to the emit path, never inside this builder.
     """
     facts = read_platform_facts() if platform is None else platform
+    if not isinstance(facts, PlatformFacts):
+        # The parameter is typed, but a caller ignoring types (a str, a
+        # bare object) is an invalid argument like any other: fail
+        # closed here rather than raise AttributeError on the attribute
+        # access below.
+        return None
     block: dict[str, object] = {
         "app_version": app_version,
         "surface": surface,

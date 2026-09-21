@@ -609,9 +609,11 @@ def note_model_served(model_id: str) -> int:
     The returned count is the number of *distinct* models this install
     has ever served, including the one just noted — Orca's
     ``nth_repo_added`` idea, which lets any chart split newcomer from
-    veteran with no server-side join. Returns ``0`` when the id is
-    unusable or storage failed; the cohort stamp is optional, so ``0``
-    simply means "no stamp".
+    veteran with no server-side join. A successful call therefore
+    always returns >= 1. A ``0`` return means "could not answer" — the
+    id was unusable or storage failed — never "zero models served":
+    map it to ``None`` for the telemetry wire, where ``common_props``
+    omits the key and analysts read absence as "unknown", never as 0.
     """
     if not _valid_key(model_id):
         return 0

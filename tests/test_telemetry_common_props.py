@@ -327,6 +327,59 @@ def test_read_platform_facts_survives_sysctl_raising(monkeypatch):
     assert _build(platform=facts) is None
 
 
+def test_read_platform_facts_survives_a_registry_that_cannot_load(monkeypatch):
+    """A wheel missing events.json must degrade to the same unknown
+    snapshot as any other unreadable value — the contract is 'never
+    raises', exactly like registry.validate* which swallows the same
+    failure."""
+
+    def boom() -> dict[str, object]:
+        raise FileNotFoundError("events.json missing from the wheel")
+
+    monkeypatch.setattr(registry, "load_registry", boom)
+    facts = read_platform_facts()
+    assert facts == PlatformFacts(
+        os="other",
+        os_version=None,
+        arch="other",
+        chip="other",
+        memory_gb=0,
+        python_version=None,
+    )
+    assert _build(platform=facts) is None
+
+
+def test_build_common_props_survives_a_registry_that_cannot_load(monkeypatch):
+    """The builder itself never raises either. ``platform=None`` makes
+    it read the facts itself — without the guard, the FileNotFoundError
+    would propagate straight out of the builder."""
+
+    def boom() -> dict[str, object]:
+        raise FileNotFoundError("events.json missing from the wheel")
+
+    monkeypatch.setattr(registry, "load_registry", boom)
+    assert (
+        build_common_props(
+            surface="cli",
+            install_id=INSTALL_ID,
+            session_id=SESSION_ID,
+            app_version="0.14.3",
+            channel="stable",
+            nth_model_served=3,
+            days_since_first_run_bucket="7-29",
+        )
+        is None
+    )
+
+
+@pytest.mark.parametrize("hostile", ["darwin", object()])
+def test_a_non_platform_facts_argument_drops_the_build(hostile):
+    """The parameter is typed, but a caller ignoring types must get the
+    fail-closed answer, not an AttributeError: ANY invalid argument
+    makes the whole build None."""
+    assert _build(platform=hostile) is None  # type: ignore[arg-type]
+
+
 def test_read_platform_facts_narrows_malformed_info_to_unknown(monkeypatch):
     """Every narrowing helper holds: off-enum strings, wrong types, a
     bool masquerading as the memory int — all collapse to the
