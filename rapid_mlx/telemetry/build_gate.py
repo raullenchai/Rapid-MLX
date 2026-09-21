@@ -27,7 +27,8 @@ a stamp; both are needed because each one alone is forgeable by accident:
    the path could otherwise describe an install we are not — and silence
    a genuine official build forever. A distribution only counts when
    ``locate_file("rapid_mlx")`` resolves to the running package
-   directory. The verdict must not say ``dir_info.editable == true``, AND
+   directory AND its name is PEP 503-equivalent to ours. The verdict
+   must not say ``dir_info.editable == true``, AND
    the ``rapid_mlx`` package directory must not sit beside this project's
    own ``pyproject.toml``. In a source checkout, an unpacked sdist, or an
    editable install, ``rapid_mlx/`` is directly beside
@@ -77,6 +78,16 @@ RELEASE_STAMP_NAME = "_release_stamp.json"
 #: Distribution name in ``pyproject.toml`` ([project] name) and in
 #: installed metadata — the single name both checks agree on.
 _DISTRIBUTION_NAME = "rapid-mlx"
+
+
+def _pep503_name(name: str) -> str:
+    """PEP 503 name normalization: case-fold, collapse ``-``/``_``/``.`` runs."""
+    return re.sub(r"[-_.]+", "-", name).lower()
+
+
+#: ``_DISTRIBUTION_NAME`` is already PEP 503-normalized; precompute so the
+#: scan loop does not re-normalize the constant for every distribution.
+_DISTRIBUTION_NAME_NORM = _pep503_name(_DISTRIBUTION_NAME)
 
 #: Top-level package directory this module ships in — the argument to
 #: ``Distribution.locate_file`` when binding metadata to running code.
@@ -177,9 +188,13 @@ def _running_distribution(running_dir: Path) -> Distribution | None:
     ``dir_info.editable: true`` earlier on ``sys.path`` would silence a
     genuine official install forever. Bind the metadata to the running
     code instead: a distribution only counts when ``locate_file()`` maps
-    the package directory name onto exactly *running_dir*. ``None`` when
-    nothing matches — unknown provenance. Never raises; distributions are
-    only probed for ``name`` and ``locate_file``.
+    the package directory name onto exactly *running_dir*, and its name
+    is PEP 503-equivalent to ours (a repacked ``Name: rapid_mlx`` must
+    not blind the gate). Cheap comparison first: ``locate_file`` plus one
+    ``resolve()`` avoids parsing METADATA for every installed
+    distribution. ``None`` when nothing matches — unknown provenance.
+    Never raises; distributions are only probed for ``locate_file`` and,
+    after the location matched, ``name``.
     """
     try:
         candidates = list(distributions())
@@ -187,14 +202,16 @@ def _running_distribution(running_dir: Path) -> Distribution | None:
         return None
     for dist in candidates:
         try:
-            if dist.name != _DISTRIBUTION_NAME:
-                continue
             located = dist.locate_file(_PACKAGE_DIRNAME)
             if located is None:
                 continue
             # str() normalizes SimplePath (str | PathLike) for Path().
-            if Path(str(located)).resolve() == running_dir:
-                return dist
+            if Path(str(located)).resolve() != running_dir:
+                continue
+            # The located package dir is ours; only now pay for METADATA.
+            if _pep503_name(dist.name) != _DISTRIBUTION_NAME_NORM:
+                continue
+            return dist
         except Exception:
             continue
     return None

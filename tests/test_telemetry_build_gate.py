@@ -422,6 +422,86 @@ class _IntDist:
         return 42  # type: ignore[return-value]
 
 
+class _SpyDist:
+    """A distribution that records whether its METADATA (name) was read."""
+
+    def __init__(self, base_dir: Path, direct_url: str | None) -> None:
+        self._base_dir = base_dir
+        self._direct_url = direct_url
+        self.name_reads = 0
+
+    @property
+    def name(self) -> str:
+        self.name_reads += 1
+        return "rapid-mlx"
+
+    def locate_file(self, path: str) -> Path:
+        return self._base_dir / path
+
+    def read_text(self, filename: str) -> str | None:
+        if filename == "direct_url.json":
+            return self._direct_url
+        return None
+
+
+@pytest.mark.parametrize("dist_name", ["rapid_mlx", "Rapid-MLX", "rapid.mlx"])
+def test_pep503_equivalent_distribution_names_are_honored(
+    monkeypatch, tmp_path, dist_name
+):
+    # METADATA rewritten to a PEP 503-equivalent Name (e.g. by a repacker)
+    # must not blind the gate: both sides are normalized before compare.
+    package_dir = _point_module_at(monkeypatch, tmp_path)
+    dist = _FakeDist(
+        package_dir.parent, _direct_url_payload({"editable": False}), name=dist_name
+    )
+    monkeypatch.setattr(build_gate, "distributions", lambda: iter([dist]))
+    # False proves the variant-named dist was SELECTED: a skipped dist
+    # would leave provenance unknown (True).
+    assert build_gate.is_editable_or_source_install() is False
+
+
+def test_pep503_non_equivalent_distribution_name_is_skipped(monkeypatch, tmp_path):
+    package_dir = _point_module_at(monkeypatch, tmp_path)
+    dist = _FakeDist(
+        package_dir.parent,
+        _direct_url_payload({"editable": False}),
+        name="rapid-mlx-extra",
+    )
+    monkeypatch.setattr(build_gate, "distributions", lambda: iter([dist]))
+    assert build_gate.is_editable_or_source_install() is True
+
+
+def test_name_metadata_is_read_only_for_a_location_match(monkeypatch, tmp_path):
+    # METADATA parsing (dist.name) is the expensive half of the scan: it
+    # must run only for a distribution whose package dir matches.
+    package_dir = _point_module_at(monkeypatch, tmp_path)
+    elsewhere = _SpyDist(
+        tmp_path / "elsewhere", _direct_url_payload({"editable": True})
+    )
+    here = _SpyDist(package_dir.parent, _direct_url_payload({"editable": False}))
+    monkeypatch.setattr(build_gate, "distributions", lambda: iter([elsewhere, here]))
+    assert build_gate.is_editable_or_source_install() is False
+    assert elsewhere.name_reads == 0
+    assert here.name_reads >= 1
+
+
+def test_location_match_with_hostile_name_is_skipped_fail_closed(monkeypatch, tmp_path):
+    # The location matches, but reading METADATA explodes: skip the dist
+    # (never raise) — with no other match, provenance is unknown.
+    package_dir = _point_module_at(monkeypatch, tmp_path)
+
+    class _HostileNameDist:
+        @property
+        def name(self) -> str:
+            raise RuntimeError("boom")
+
+        def locate_file(self, path: str) -> Path:
+            return package_dir
+
+    monkeypatch.setattr(build_gate, "distributions", lambda: iter([_HostileNameDist()]))
+    assert build_gate.is_editable_or_source_install() is True
+
+
 # ------------------------------------------------- source-tree detection
 
 
