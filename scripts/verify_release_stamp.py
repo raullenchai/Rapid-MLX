@@ -27,30 +27,65 @@ step; it does not weaken or replace any existing verification.
 from __future__ import annotations
 
 import argparse
+import importlib.util
 import sys
 import tarfile
 import zipfile
-from collections.abc import Sequence
+from collections.abc import Callable, Sequence
 from pathlib import Path, PurePosixPath
+from types import ModuleType
+from typing import TYPE_CHECKING, Protocol, cast
 
 _REPO_ROOT = Path(__file__).resolve().parents[1]
 
-# Same rule as write_release_stamp.py: THIS repo tree's build_gate must
-# win over any installed/foreign rapid-mlx on the default path.
-if str(_REPO_ROOT) not in sys.path:
-    sys.path.insert(0, str(_REPO_ROOT))
 
-from rapid_mlx.telemetry import build_gate  # noqa: E402 (repo root first)
+class _ReleaseStamp(Protocol):
+    channel: str
+    posthog_key: str
 
-try:
-    from write_release_stamp import derive_channel
-except ModuleNotFoundError:
-    from scripts.write_release_stamp import derive_channel
 
-try:
+class _BuildGate(Protocol):
+    RELEASE_STAMP_NAME: str
+
+    def _parse_stamp(self, raw: str) -> _ReleaseStamp | None: ...
+
+
+def _load_build_gate() -> ModuleType:
+    """Load this checkout's stdlib-only gate without importing its package."""
+    path = _REPO_ROOT / "rapid_mlx" / "telemetry" / "build_gate.py"
+    name = "_rapid_mlx_release_build_gate"
+    spec = importlib.util.spec_from_file_location(name, path)
+    if spec is None or spec.loader is None:
+        raise ImportError(f"cannot load release build gate from {path}")
+    module = importlib.util.module_from_spec(spec)
+    # dataclasses resolves the module by name while executing @dataclass.
+    sys.modules[name] = module
+    try:
+        spec.loader.exec_module(module)
+    except BaseException:
+        if sys.modules.get(name) is module:
+            del sys.modules[name]
+        raise
+    return module
+
+
+# Do not import ``rapid_mlx.telemetry`` here: its package initializer reaches
+# optional/runtime dependencies absent from the release build-tools venv.
+build_gate = cast(_BuildGate, _load_build_gate())
+
+# Isolated mode omits even the entry-point script's directory from sys.path.
+# Add only scripts/ (never the repo root/package tree) for the two stdlib-only
+# sibling helpers this verifier shares with the release workflow.
+_SCRIPTS_DIR = str(Path(__file__).resolve().parent)
+if _SCRIPTS_DIR not in sys.path:
+    sys.path.insert(0, _SCRIPTS_DIR)
+
+if TYPE_CHECKING:
+    derive_channel: Callable[[str], str]
+    release_files: Callable[[Path], list[Path]]
+else:
     from release_manifest import release_files
-except ModuleNotFoundError:
-    from scripts.release_manifest import release_files
+    from write_release_stamp import derive_channel
 
 #: The last three path components of the stamp inside ANY artifact: the
 #: wheel stores it at ``rapid_mlx/telemetry/<name>``; the sdist nests the
@@ -120,9 +155,7 @@ def _artifact_version(filename: str) -> str:
     )
 
 
-def verify_artifact(
-    path: Path, expected_channel: str | None = None
-) -> build_gate.ReleaseStamp:
+def verify_artifact(path: Path, expected_channel: str | None = None) -> _ReleaseStamp:
     """Assert one artifact carries a valid stamp matching its tag kind.
 
     *expected_channel* (when given) is the channel derived from the
@@ -159,7 +192,7 @@ def verify_artifact(
 
 def verify_dist(
     dist_dir: Path, expected_version: str | None = None
-) -> list[tuple[Path, build_gate.ReleaseStamp]]:
+) -> list[tuple[Path, _ReleaseStamp]]:
     """Verify the stamp in the wheel and sdist of *dist_dir*.
 
     Reuses ``release_manifest.release_files`` so the accepted dist/ shape

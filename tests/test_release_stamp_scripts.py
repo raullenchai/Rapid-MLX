@@ -233,7 +233,7 @@ def test_unparsable_stamp_is_removed(monkeypatch, tmp_path):
     # Force the post-write round-trip to fail: the half-written stamp must
     # be removed so a broken stamp can never linger in the package tree.
     dest = tmp_path / "stamp.json"
-    monkeypatch.setattr(build_gate, "_parse_stamp", lambda raw: None)
+    monkeypatch.setattr(wrs.build_gate, "_parse_stamp", lambda raw: None)
     with pytest.raises(StampError, match="round-trip"):
         write_stamp("0.15.0", dest=dest)
     assert not dest.exists()
@@ -408,8 +408,8 @@ def test_verify_happy_path_both_artifacts_carry_a_matching_stamp(tmp_path):
     dist, wheel, sdist = _populated_dist(tmp_path, stamp=_stamp_text("rc"))
     results = verify_dist(dist)
     assert results == [
-        (wheel, ReleaseStamp("rc", VALID_KEY)),
-        (sdist, ReleaseStamp("rc", VALID_KEY)),
+        (wheel, vrs.build_gate.ReleaseStamp("rc", VALID_KEY)),
+        (sdist, vrs.build_gate.ReleaseStamp("rc", VALID_KEY)),
     ]
     # Cross-checking against the tag the artifacts claim to be: passes.
     assert verify_dist(dist, expected_version="v0.15.0-rc1") == results
@@ -529,6 +529,105 @@ def test_verify_cli_failure(tmp_path, capsys):
     dist, _, _ = _populated_dist(tmp_path, stamp=_stamp_text("stable"))
     assert vrs.main([str(dist), "--version", "v0.15.0-rc1"]) == 1
     assert "does not match" in capsys.readouterr().err
+
+
+# --------------------------------------- bare-interpreter workflow contract
+
+
+def test_bare_venv_runs_both_release_stamp_scripts_from_outside_repo(tmp_path):
+    """The publish scripts need only stdlib, even before package install.
+
+    The release job invokes the writer after installing only ``build`` and
+    ``twine``. A no-pip venv plus ``-I -S`` pins the stronger contract: neither
+    script may obtain Rapid-MLX or any dependency from the test environment.
+    """
+    venv = tmp_path / "bare-venv"
+    subprocess.run(
+        [sys.executable, "-m", "venv", "--without-pip", str(venv)],
+        capture_output=True,
+        text=True,
+        check=True,
+    )
+    python = venv / "bin" / "python"
+    outside = tmp_path / "outside-repo"
+    outside.mkdir()
+    env = os.environ.copy()
+    env.pop(POSTHOG_KEY_ENV, None)
+
+    writer = REPO_ROOT / "scripts" / "write_release_stamp.py"
+    for index, (version, channel) in enumerate(
+        [
+            ("v0.15.0", "stable"),
+            ("v0.15.0-rc1", "rc"),
+            ("0.15.0rc2", "rc"),
+        ]
+    ):
+        dest = outside / f"valid-{index}.json"
+        proc = subprocess.run(
+            [
+                str(python),
+                "-I",
+                "-S",
+                str(writer),
+                "--version",
+                version,
+                "--dest",
+                str(dest),
+            ],
+            cwd=outside,
+            env=env,
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        assert proc.returncode == 0, proc.stderr
+        assert json.loads(dest.read_text(encoding="utf-8"))["channel"] == channel
+
+    for index, version in enumerate(["latest", "v1.2", "0.15.0+local", ""]):
+        dest = outside / f"invalid-{index}.json"
+        proc = subprocess.run(
+            [
+                str(python),
+                "-I",
+                "-S",
+                str(writer),
+                "--version",
+                version,
+                "--dest",
+                str(dest),
+            ],
+            cwd=outside,
+            env=env,
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        assert proc.returncode != 0
+        assert not dest.exists()
+
+    dist = outside / "dist"
+    dist.mkdir()
+    _make_wheel(dist, version="0.15.0", stamp=_stamp_text("stable"))
+    _make_sdist(dist, version="0.15.0", stamp=_stamp_text("stable"))
+    verifier = REPO_ROOT / "scripts" / "verify_release_stamp.py"
+    proc = subprocess.run(
+        [
+            str(python),
+            "-I",
+            "-S",
+            str(verifier),
+            str(dist),
+            "--version",
+            "v0.15.0",
+        ],
+        cwd=outside,
+        env=env,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert proc.returncode == 0, proc.stderr
+    assert "release stamp verified in wheel and sdist" in proc.stdout
 
 
 # ------------------------------------------- real build (slow, opt-in)

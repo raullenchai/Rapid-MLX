@@ -41,25 +41,54 @@ An existing stamp with different content is never overwritten unless
 from __future__ import annotations
 
 import argparse
+import importlib.util
 import json
 import os
 import re
 import sys
 from collections.abc import Mapping, Sequence
 from pathlib import Path
+from types import ModuleType
+from typing import Protocol, cast
 
 _REPO_ROOT = Path(__file__).resolve().parents[1]
 
-# The engine source tree is the repo root two levels up. Put it FIRST on
-# sys.path BEFORE importing build_gate: an interpreter with an installed
-# (or editable, or foreign-worktree) rapid-mlx on its default path must
-# never shadow THIS tree's build_gate — the stamp semantics and the
-# validator the written file is round-tripped through must be this
-# checkout's, because ``python -m build`` packs this checkout.
-if str(_REPO_ROOT) not in sys.path:
-    sys.path.insert(0, str(_REPO_ROOT))
 
-from rapid_mlx.telemetry import build_gate  # noqa: E402 (repo root first)
+class _ReleaseStamp(Protocol):
+    channel: str
+    posthog_key: str
+
+
+class _BuildGate(Protocol):
+    RELEASE_STAMP_NAME: str
+    _POSTHOG_KEY_RE: re.Pattern[str]
+
+    def _parse_stamp(self, raw: str) -> _ReleaseStamp | None: ...
+
+
+def _load_build_gate() -> ModuleType:
+    """Load this checkout's stdlib-only gate without importing its package."""
+    path = _REPO_ROOT / "rapid_mlx" / "telemetry" / "build_gate.py"
+    name = "_rapid_mlx_release_build_gate"
+    spec = importlib.util.spec_from_file_location(name, path)
+    if spec is None or spec.loader is None:
+        raise ImportError(f"cannot load release build gate from {path}")
+    module = importlib.util.module_from_spec(spec)
+    # dataclasses resolves the module by name while executing @dataclass.
+    sys.modules[name] = module
+    try:
+        spec.loader.exec_module(module)
+    except BaseException:
+        if sys.modules.get(name) is module:
+            del sys.modules[name]
+        raise
+    return module
+
+
+# Importing ``rapid_mlx.telemetry`` executes its package initializer and pulls
+# runtime dependencies such as PyYAML. The publish stamp step intentionally has
+# only build tooling installed, so load the stdlib-only source file directly.
+build_gate = cast(_BuildGate, _load_build_gate())
 
 #: PostHog **public, write-only** project token for the Rapid-MLX project.
 #: PostHog project API keys (``phc_…``) are explicitly safe to embed in
