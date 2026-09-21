@@ -149,3 +149,8 @@ TODO.md
 workflow.md
 CLAUDE.md
 0.*-TODO.md
+
+# Telemetry v2 official-build gate — the release stamp is written by the
+# release workflow into rapid_mlx/telemetry/ at publish time ONLY; it must
+# never exist in a checkout (see rapid_mlx/telemetry/build_gate.py).
+rapid_mlx/telemetry/_release_stamp.json
