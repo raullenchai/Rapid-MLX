@@ -2093,6 +2093,7 @@ def test_qwen4_mtp_inject_loads_complete_local_tensor_contract(tmp_path, monkeyp
     args = _ple_args()
     args.mtp_num_hidden_layers = 1
     model = Model(ModelArgs(model_type="qwen4_exp", text_config=asdict(args)))
+    model.sanitize(dict(tree_flatten(model.parameters())))
     monkeypatch.setattr(nn, "quantize", lambda *_args, **_kwargs: None)
     expected_mtp = inject._build_mtp(model.language_model)
     checkpoint = tmp_path / "mtp.safetensors"
@@ -2115,6 +2116,7 @@ def test_qwen4_mtp_inject_fails_closed_on_guards_tensor_mismatch_and_exception(
     caplog,
 ):
     import mlx.nn as nn
+    from mlx.utils import tree_flatten
 
     from rapid_mlx.spec_decode.mtp import qwen4_exp_inject as inject
 
@@ -2134,6 +2136,7 @@ def test_qwen4_mtp_inject_fails_closed_on_guards_tensor_mismatch_and_exception(
     model = Model(ModelArgs(model_type="qwen4_exp", text_config=asdict(args)))
     assert inject.inject_qwen4_exp_mtp_support(model) is False
 
+    model.sanitize(dict(tree_flatten(model.parameters())))
     monkeypatch.setattr(nn, "quantize", lambda *_args, **_kwargs: None)
     bad_checkpoint = tmp_path / "bad.safetensors"
     mx.save_safetensors(str(bad_checkpoint), {"mtp.unexpected": mx.ones((2,))})
