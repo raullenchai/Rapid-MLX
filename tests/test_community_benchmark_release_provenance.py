@@ -24,6 +24,7 @@ from pathlib import Path
 from typing import Any
 
 import pytest
+import yaml
 
 from rapid_mlx.community_bench import atomic_upload, run_builder
 from rapid_mlx.community_bench.publication import (
@@ -223,10 +224,30 @@ def test_desktop_build_and_release_lanes_keep_both_kill_switches() -> None:
     assert "export RAPID_MLX_TELEMETRY=0 DO_NOT_TRACK=1" in build
     assert action.count('RAPID_MLX_TELEMETRY: "0"') >= 2
     assert action.count('DO_NOT_TRACK: "1"') >= 2
-    for workflow in (mac_release, auto_release, mac_ci):
+    for workflow in (mac_release, auto_release):
         assert 'RAPID_MLX_TELEMETRY: "0"' in workflow
         assert 'DO_NOT_TRACK: "1"' in workflow
+    assert 'RAPID_MLX_TELEMETRY: "0"' in mac_ci
     assert auto_release.count("RAPID_MLX_TELEMETRY=0 DO_NOT_TRACK=1") >= 2
+
+
+def test_mac_ci_scopes_both_kill_switches_to_desktop_build_steps() -> None:
+    workflow = yaml.safe_load((REPO / ".github/workflows/rapid-mac-ci.yml").read_text())
+
+    assert "DO_NOT_TRACK" not in workflow.get("env", {})
+    build_steps = [
+        step
+        for job in workflow["jobs"].values()
+        for step in job.get("steps", [])
+        if any(
+            script in str(step.get("run", ""))
+            for script in ("build.sh", "build-sidecar.sh")
+        )
+    ]
+    assert build_steps
+    for step in build_steps:
+        assert step.get("env", {}).get("RAPID_MLX_TELEMETRY") == "0", step
+        assert step.get("env", {}).get("DO_NOT_TRACK") == "1", step
 
 
 def test_every_desktop_releasable_caller_sets_official_release() -> None:
