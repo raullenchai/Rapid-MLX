@@ -885,7 +885,11 @@ class ImageGenerationEngine:
             # Register the progress/cancel reporter on the model's mflux
             # callback registry (present on every txt2img/edit variant).
             registry = getattr(self._model, "callbacks", None)
-            if registry is not None and hasattr(registry, "register"):
+            if (
+                self._model is not None
+                and registry is not None
+                and hasattr(registry, "register")
+            ):
                 registry.register(self._reporter)
                 if self.family == "qwen-image-2.1":
                     from mflux.callbacks.instances.memory_saver import MemorySaver
@@ -969,8 +973,9 @@ class ImageGenerationEngine:
         required by edit-only checkpoints. Unsupported combinations fail loud
         instead of silently ignoring the conditioning image.
         """
-        editing = bool(image_paths)
-        if self.family == "qwen-image-2.1" and editing and len(image_paths) != 1:
+        input_paths = image_paths or []
+        editing = bool(input_paths)
+        if self.family == "qwen-image-2.1" and editing and len(input_paths) != 1:
             raise ImageRuntimeError("Qwen-Image 2.1 img2img accepts one input image.")
         if not editing and not self.supports_generation:
             raise ImageRuntimeError(
@@ -1146,7 +1151,7 @@ class ImageGenerationEngine:
                     if width is None or height is None:
                         from PIL import Image, ImageOps
 
-                        with Image.open(image_paths[0]) as source:
+                        with Image.open(input_paths[0]) as source:
                             source_width, source_height = ImageOps.exif_transpose(
                                 source
                             ).size
@@ -1160,7 +1165,7 @@ class ImageGenerationEngine:
                     resolved_width = width if width is not None else inferred_width
                     resolved_height = height if height is not None else inferred_height
                     result = model.generate_image(
-                        image_path=image_paths[0],
+                        image_path=input_paths[0],
                         image_strength=0.4,
                         height=resolved_height,
                         width=resolved_width,
