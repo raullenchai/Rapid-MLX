@@ -24,6 +24,7 @@ never runs in the default CI lanes where ``build`` is not installed.
 from __future__ import annotations
 
 import ast
+import importlib.util
 import io
 import json
 import os
@@ -798,6 +799,8 @@ def test_release_artifact_matrix_has_a_final_stamp_gate_before_pypi():
 
 def test_legacy_publish_workflow_writes_and_verifies_the_release_stamp():
     workflow_path = REPO_ROOT / ".github" / "workflows" / "publish.yml"
+    workflow = yaml.safe_load(workflow_path.read_text(encoding="utf-8"))
+    assert workflow["env"]["RAPID_MLX_TELEMETRY"] == "0"
     steps = _workflow_job(workflow_path, "build")["steps"]
     write_index, write = _step_named(steps, "Write the telemetry release stamp")
     build_index, _ = _step_named(steps, "Build package (retry on magic-byte collision)")
@@ -880,6 +883,24 @@ def _copy_tracked_tree(dest: Path) -> None:
         shutil.copy2(source, target)
 
 
+def _build_package_available() -> bool:
+    return importlib.util.find_spec("build.__main__") is not None
+
+
+@pytest.mark.parametrize(("spec", "expected"), [(None, False), (object(), True)])
+def test_build_package_probe_requires_module_entrypoint(monkeypatch, spec, expected):
+    probed = []
+
+    def find_spec(name):
+        probed.append(name)
+        return spec
+
+    monkeypatch.setattr(importlib.util, "find_spec", find_spec)
+
+    assert _build_package_available() is expected
+    assert probed == ["build.__main__"]
+
+
 def test_copy_tracked_tree_skips_a_tracked_file_deleted_from_the_worktree(
     monkeypatch, tmp_path
 ):
@@ -909,7 +930,8 @@ def test_real_build_ships_the_stamp_in_wheel_and_sdist(tmp_path):
     stamp in the checkout. Needs the ``build`` package and network access for
     build isolation, so it is marked slow and skipped when ``build`` is absent.
     """
-    pytest.importorskip("build")
+    if not _build_package_available():
+        pytest.skip("build package is not installed")
     real_stamp = default_dest()
     assert not real_stamp.exists()
     source = tmp_path / "source"
