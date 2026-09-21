@@ -20,7 +20,7 @@ install has not seen the *current* disclosure).
  #  consent   marker    role                                            kill upload notice write-back                                    reason
 === ========= ========= =============================================== ==== ====== ====== ============================================== ================================
  0  any       any       any                                             on   no     no     none                                           ``kill_switch``
- -  any       any       any                                             off  no     no     none                                           ``pre_cutoff_runtime`` (only if ``running_version`` parses strictly below C)
+ -  any       any       any                                             off  no     no     none                                           ``pre_cutoff_runtime`` (only if ``running_version``'s release triple is strictly below C)
  1  absent    absent    INTERACTIVE_CLI / HEADLESS_CLI / DESKTOP        off  yes*   yes    ``mark_notice_seen`` only                      ``fresh_install_notice``
  2  absent    absent    SIDECAR                                         off  no     no     none                                           ``sidecar_waits_for_desktop``
  3  absent    present   any (incl. SIDECAR)                             off  yes    no     none                                           ``marker_authorises``
@@ -38,11 +38,19 @@ first upload of the run. Row 4 (the migrating run itself) never uploads at
 all; migration takes effect from the next run.
 
 A row-4 refusal is LEGACY iff ``consent is False`` AND the marker is absent
-AND ``recorded_version`` parses as a release version strictly lower than C.
-Pre-releases of C (e.g. ``0.15.0rc1``) are strictly lower than C, so they are
-legacy. A missing or unparseable ``recorded_version`` is NOT legacy — the
-refusal is treated as current and never auto-migrated (fail toward respecting
-a refusal). A False with the marker present is always a current refusal.
+AND ``recorded_version`` parses as a release whose ``(major, minor, patch)``
+triple is strictly lower than C's triple. Pre-release suffixes are IGNORED
+for that comparison, so ``0.14.9rc1`` is legacy while ``0.15.0rc1`` /
+``0.15.0a1`` / ``0.15.0b2`` / ``0.15.0.dev3`` are NOT: pre-releases of C
+already carry the new disclosure code (and this repo publishes release
+candidates to real users), so a refusal recorded there must never be
+reversed. A missing or unparseable ``recorded_version`` is NOT legacy —
+including the ``0.0.0`` sentinel that ``rapid_mlx/__init__.py`` stamps into
+``__version__`` when package metadata is missing (editable / source
+installs): it must take the unparseable branch so a refusal recorded by a
+source checkout is respected whatever its real version. Fail toward
+respecting a refusal. A False with the marker present is always a current
+refusal.
 
 Three invariants, enforced by tests over the full input cross product:
 
@@ -56,7 +64,8 @@ Three invariants, enforced by tests over the full input cross product:
     automatically (row 6), whatever the role.
 
 ``decide`` never raises: any non-conforming input (wrong types, ``None``
-role, hostile objects) yields the kill-switch-shaped decision (no upload, no
+role, hostile objects — including ``StoredConsent`` subclasses whose fields
+raise when read) yields the kill-switch-shaped decision (no upload, no
 notice, no write-back) with reason ``invalid_input``.
 """
 
@@ -68,9 +77,10 @@ from enum import Enum
 from typing import Final, TypeAlias
 
 #: The first release whose consent-writing code implements the new
-#: default-on disclosure. Refusals recorded by versions strictly below this
-#: cutoff are legacy and may be migrated (row 4); refusals recorded at or
-#: after it are never reversed automatically.
+#: default-on disclosure. Refusals recorded by release triples strictly
+#: below this cutoff are legacy and may be migrated (row 4); refusals
+#: recorded at or after it — including pre-releases of it — are never
+#: reversed automatically.
 DEFAULT_ON_CUTOFF: Final = "0.15.0"
 
 #: Which revision of the disclosure copy this release ships. Bump whenever
@@ -152,10 +162,17 @@ class WriteBack:
 class Decision:
     """The outcome for one run of one process.
 
-    ``upload_now``: telemetry may be uploaded in this run. ``deliver_notice``
-    is True. For rows 1 and 7 the caller MUST deliver the notice BEFORE the
-    first upload; for row 4 ``upload_now`` is False and migration only takes
-    effect from the next run.
+    ``upload_now``: telemetry may be uploaded in this run.
+
+    ``deliver_notice``: when True, the caller MUST deliver the current
+    disclosure notice BEFORE the first upload of this run. Rows 1 and 7
+    return ``upload_now=True`` together with ``deliver_notice=True``; the
+    privacy invariant — nothing is uploaded before the current disclosure
+    revision has been delivered on this install — rests on that ordering.
+
+    ``write_back``: what the caller must persist (see :class:`WriteBack`).
+
+    ``reason``: one of the machine strings in :data:`KNOWN_REASONS`.
     """
 
     upload_now: bool
@@ -175,11 +192,23 @@ _MIGRATE_REFUSAL: Final = WriteBack(
 )
 
 # Strict MAJOR.MINOR.PATCH with an optional pre-release suffix: ``rcN`` /
-# ``aN`` / ``bN`` (attached) or ``.devN`` (dotted). Combined suffixes, other
-# separators, whitespace, ``v`` prefixes and anything else fail to match.
+# ``aN`` / ``bN`` (attached) or ``.devN`` (dotted). ASCII digits only —
+# ``\d`` would also match fullwidth / Arabic-Indic / Devanagari digits,
+# which ``int()`` happily converts and would silently turn a refusal
+# recorded under an unknown version into a legacy one. Combined suffixes,
+# other separators, whitespace, ``v`` prefixes and anything else fail to
+# match.
 _VERSION_PATTERN: Final = re.compile(
-    r"(\d+)\.(\d+)\.(\d+)(?:(rc|a|b)(\d+)|\.dev(\d+))?"
+    r"([0-9]+)\.([0-9]+)\.([0-9]+)(?:(rc|a|b)([0-9]+)|\.dev([0-9]+))?"
 )
+
+#: The version-unknown sentinel: ``rapid_mlx/__init__.py`` stamps
+#: ``__version__ = "0.0.0"`` whenever package metadata is missing
+#: (editable / source installs), and the state layer writes that string
+#: into the consent record. It is not a real release below the cutoff — a
+#: source checkout may run any real version — so the parser treats it as
+#: unparseable and a refusal recorded beside it is never migrated.
+_VERSION_UNKNOWN_SENTINEL: Final = "0.0.0"
 
 # Pre-release ordering within one X.Y.Z: dev < a < b < rc < final.
 _PHASE_DEV: Final = 0
@@ -201,9 +230,15 @@ VersionKey: TypeAlias = tuple[int, int, int, int, int]
 def _parse_release_version(version: str) -> VersionKey | None:
     """Parse ``MAJOR.MINOR.PATCH`` with an optional pre-release suffix.
 
-    Returns ``None`` for anything unparseable. ``0.15.0rc1`` sorts strictly
-    below ``0.15.0`` (pre-releases of the cutoff are legacy).
+    Returns ``None`` for anything unparseable, including the
+    version-unknown sentinel ``0.0.0`` (see
+    :data:`_VERSION_UNKNOWN_SENTINEL`). In the full key ``0.15.0rc1`` sorts
+    strictly below ``0.15.0``, but the legacy rule compares only the
+    release triple (see :func:`_is_legacy_refusal`) — pre-releases of the
+    cutoff are not legacy.
     """
+    if version == _VERSION_UNKNOWN_SENTINEL:
+        return None
     match = _VERSION_PATTERN.fullmatch(version)
     if match is None:
         return None
@@ -235,20 +270,30 @@ def _parse_release_version_or_raise(version: str) -> VersionKey:
 _CUTOFF_KEY: Final[VersionKey] = _parse_release_version_or_raise(DEFAULT_ON_CUTOFF)
 
 
-def _is_legacy_refusal(recorded_version: str | None, *, marker_present: bool) -> bool:
-    """True for a refusal recorded by a version strictly below the cutoff.
+def _release_triple(key: VersionKey) -> tuple[int, int, int]:
+    """The ``(major, minor, patch)`` prefix of a parsed version key."""
+    return key[0], key[1], key[2]
 
-    Missing or unparseable ``recorded_version`` → not legacy: fail toward
-    respecting the refusal rather than guessing it predates the disclosure.
-    A present marker means the refusal was recorded under the current
-    disclosure, so it is never legacy regardless of the recorded version.
+
+def _is_legacy_refusal(recorded_version: str | None, *, marker_present: bool) -> bool:
+    """True for a refusal recorded before the cutoff's release triple.
+
+    LEGACY means the recorded version parses AND its ``(major, minor,
+    patch)`` triple is strictly lower than the cutoff's triple; pre-release
+    suffixes are ignored, so ``0.14.9rc1`` is legacy while ``0.15.0rc1`` —
+    an rc of the cutoff itself, which already carries the new disclosure —
+    is not. Missing, unparseable (including the ``0.0.0`` version-unknown
+    sentinel) → not legacy: fail toward respecting the refusal rather than
+    guessing it predates the disclosure. A present marker means the refusal
+    was recorded under the current disclosure, so it is never legacy
+    regardless of the recorded version.
     """
     if marker_present or recorded_version is None:
         return False
     recorded_key = _parse_release_version(recorded_version)
     if recorded_key is None:
         return False
-    return recorded_key < _CUTOFF_KEY
+    return _release_triple(recorded_key) < _release_triple(_CUTOFF_KEY)
 
 
 def _blocked(reason: str) -> Decision:
@@ -292,15 +337,41 @@ def decide(
     Implements exactly the table in the module docstring. ``running_version``
     is accepted for forward compatibility (and for callers that log it), but
     the decision does not depend on it except for one guard: a
-    ``running_version`` that parses strictly below :data:`DEFAULT_ON_CUTOFF`
-    means this module was backported into an older release that never showed
-    the new disclosure — behave as if the kill switch were active and return
-    the kill-switch decision with reason ``pre_cutoff_runtime``. An
-    unparseable ``running_version`` does not block.
+    ``running_version`` whose release triple parses strictly below
+    :data:`DEFAULT_ON_CUTOFF` means this module was backported into an older
+    release that never showed the new disclosure — behave as if the kill
+    switch were active and return the kill-switch decision with reason
+    ``pre_cutoff_runtime``. An unparseable ``running_version`` does not
+    block.
 
-    Any non-conforming input (wrong types, ``None`` role, hostile objects)
+    Any non-conforming input (wrong types, ``None`` role, hostile objects —
+    including ``StoredConsent`` subclasses whose fields raise when read)
     yields the kill-switch-shaped decision with reason ``invalid_input``.
     """
+    try:
+        return _decide_validated(
+            stored,
+            role,
+            kill_switch_active=kill_switch_active,
+            running_version=running_version,
+        )
+    except Exception:
+        # The isinstance gate admits StoredConsent subclasses, and a hostile
+        # one can raise from a property / __getattribute__ while
+        # _well_formed or the dispatch reads a field. The never-raises
+        # promise covers every such object. KeyboardInterrupt and SystemExit
+        # derive from BaseException, not Exception, and propagate.
+        return _blocked(REASON_INVALID_INPUT)
+
+
+def _decide_validated(
+    stored: StoredConsent,
+    role: ProcessRole,
+    *,
+    kill_switch_active: bool,
+    running_version: str,
+) -> Decision:
+    """Validation and dispatch for :func:`decide` (which guards it)."""
     if not (
         isinstance(stored, StoredConsent)
         and isinstance(role, ProcessRole)
@@ -312,7 +383,9 @@ def decide(
     if kill_switch_active:
         return _blocked(REASON_KILL_SWITCH)
     running_key = _parse_release_version(running_version)
-    if running_key is not None and running_key < _CUTOFF_KEY:
+    if running_key is not None and _release_triple(running_key) < _release_triple(
+        _CUTOFF_KEY
+    ):
         return _blocked(REASON_PRE_CUTOFF_RUNTIME)
     marker_present = (
         stored.notice_revision_seen is not None

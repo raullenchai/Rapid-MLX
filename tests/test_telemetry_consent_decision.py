@@ -7,9 +7,11 @@ The cross-product test enumerates EVERY combination of
   x marker {None, older revision, current, newer}
   x role (4)
   x kill switch {True, False}
-  x recorded_version {None, "garbage", "0.14.3", "0.15.0rc1", "0.15.0", "0.16.2"}
+  x recorded_version {None, "garbage", "0.0.0", "0.14.3", "0.14.9rc1",
+                      "0.14.10", "0.15.0rc1", "0.15.0.dev3", "0.15.0a1",
+                      "0.15.0b2", "0.15.0", "0.16.2"}
 
-(3 x 4 x 4 x 2 x 6 = 576 cases) and checks each against an oracle written
+(3 x 4 x 4 x 2 x 12 = 1152 cases) and checks each against an oracle written
 here as explicit row matching. The oracle shares NO logic with the
 implementation: reason strings, the legacy rule and the marker threshold are
 restated literally below, so any drift in ``consent_decision.py`` turns red.
@@ -23,6 +25,7 @@ from __future__ import annotations
 
 import random
 from pathlib import Path
+from typing import Any
 
 import pytest
 
@@ -64,16 +67,26 @@ _ORACLE_REASONS = frozenset(
     }
 )
 
-#: Independent legacy determination for the fixed recorded_version column of
-#: the cross product. LEGACY = consent is False AND marker absent AND the
-#: recorded version parses strictly below "0.15.0" (pre-releases of the
-#: cutoff sort below it). Missing/unparseable is NEVER legacy; equal is NOT
-#: strictly lower.
+#: Independent legacy determination for the fixed recorded_version column
+#: of the cross product. LEGACY = consent is False AND marker absent AND
+#: the recorded version parses AND its (major, minor, patch) TRIPLE is
+#: strictly below (0, 15, 0); pre-release suffixes are ignored for the
+#: comparison. Missing/unparseable is NEVER legacy; the triple-equal
+#: pre-releases of the cutoff (rc1/dev/a/b — they already carry the new
+#: disclosure code) are NEVER legacy; equal (0.15.0) is NOT strictly lower;
+#: "0.0.0" is rapid_mlx/__init__.py's version-unknown sentinel and is
+#: NEVER legacy (a source checkout may run any real version).
 _ORACLE_LEGACY: dict[str | None, bool] = {
     None: False,
     "garbage": False,
+    "0.0.0": False,
     "0.14.3": True,
-    "0.15.0rc1": True,
+    "0.14.9rc1": True,
+    "0.14.10": True,
+    "0.15.0rc1": False,
+    "0.15.0.dev3": False,
+    "0.15.0a1": False,
+    "0.15.0b2": False,
     "0.15.0": False,
     "0.16.2": False,
 }
@@ -82,7 +95,20 @@ _ORACLE_LEGACY: dict[str | None, bool] = {
 _ORACLE_MARKER_THRESHOLD = 1
 
 _ROLES = list(ProcessRole)
-_RECORDED_VERSIONS = [None, "garbage", "0.14.3", "0.15.0rc1", "0.15.0", "0.16.2"]
+_RECORDED_VERSIONS = [
+    None,
+    "garbage",
+    "0.0.0",
+    "0.14.3",
+    "0.14.9rc1",
+    "0.14.10",
+    "0.15.0rc1",
+    "0.15.0.dev3",
+    "0.15.0a1",
+    "0.15.0b2",
+    "0.15.0",
+    "0.16.2",
+]
 _REVISIONS = [None, 0, 1, 2]  # absent / older / current / newer
 _CONSENTS = [None, False, True]
 _KILL_VALUES = [True, False]
@@ -235,9 +261,20 @@ def test_invariant_b_sidecar_never_writes_and_never_discloses():
 
 
 def test_invariant_c_unparseable_or_at_cutoff_refusal_never_migrated():
-    # (c) A refusal recorded at or after the cutoff (or with an unknown
-    # recorded version) is never reversed automatically.
-    never_migrate = {None, "garbage", "0.15.0", "0.16.2"}
+    # (c) A refusal recorded at or after the cutoff — including its
+    # pre-releases — or with an unknown/unparseable recorded version is
+    # never reversed automatically.
+    never_migrate = {
+        None,
+        "garbage",
+        "0.0.0",
+        "0.15.0rc1",
+        "0.15.0.dev3",
+        "0.15.0a1",
+        "0.15.0b2",
+        "0.15.0",
+        "0.16.2",
+    }
     for case in _all_cases():
         consent, revision, role, recorded, kill = case
         decision = _decide_case(consent, revision, role, recorded, kill)
@@ -296,11 +333,13 @@ def test_row4_legacy_refusal_migrated_but_never_uploads():
 
 
 def test_row5_legacy_refusal_sidecar_waits_for_desktop():
-    decision = _decide_case(False, None, ProcessRole.SIDECAR, "0.15.0rc1", kill=False)
+    decision = _decide_case(False, None, ProcessRole.SIDECAR, "0.14.3", kill=False)
     assert decision == Decision(False, False, _ALL_OFF, "sidecar_waits_for_desktop")
 
 
-@pytest.mark.parametrize("recorded", [None, "garbage", "0.15.0", "0.16.2"])
+@pytest.mark.parametrize(
+    "recorded", [None, "garbage", "0.0.0", "0.15.0rc1", "0.15.0", "0.16.2"]
+)
 def test_row6_current_refusal_is_never_auto_migrated(recorded):
     for role in _ROLES:
         decision = _decide_case(False, None, role, recorded, kill=False)
@@ -342,11 +381,57 @@ def test_kill_switch_beats_every_row_including_marker_present():
 
 
 # ---------------------------------------------------------------------------
+# Legacy rule: release-triple comparison (P1-1 / P1-2 regressions)
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    "recorded", ["0.15.0rc1", "0.15.0.dev3", "0.15.0a1", "0.15.0b2"]
+)
+def test_prerelease_of_cutoff_refusal_is_a_current_refusal(recorded):
+    # Pre-releases of the cutoff already carry the new disclosure code and
+    # are published to real users, so a refusal recorded there (e.g. by
+    # running `rapid-mlx telemetry off` first thing in an rc) is NEVER
+    # auto-migrated — for any role.
+    for role in _ROLES:
+        decision = _decide_case(False, None, role, recorded, kill=False)
+        assert decision == Decision(False, False, _ALL_OFF, "current_refusal"), (
+            role,
+            recorded,
+        )
+
+
+@pytest.mark.parametrize("recorded", ["0.14.3", "0.14.9rc1", "0.14.10"])
+def test_refusal_below_the_cutoff_triple_is_still_legacy(recorded):
+    # Guard against over-correction: strictly-below-triple refusals (with
+    # or without a pre-release suffix) are still legacy and migrate.
+    for role in _ROLES:
+        if role is ProcessRole.SIDECAR:
+            continue
+        decision = _decide_case(False, None, role, recorded, kill=False)
+        assert decision == Decision(False, True, _MIGRATE, "legacy_refusal_migrated"), (
+            role,
+            recorded,
+        )
+
+
+def test_version_unknown_sentinel_refusal_is_respected():
+    # "0.0.0" is rapid_mlx/__init__.py's __version__ fallback when package
+    # metadata is missing (editable / source installs). It is a sentinel
+    # for "version unknown", not a real release below the cutoff, so a
+    # refusal recorded beside it is respected for EVERY role — never
+    # migrated, not even by the official build sharing the consent file.
+    for role in _ROLES:
+        decision = _decide_case(False, None, role, "0.0.0", kill=False)
+        assert decision == Decision(False, False, _ALL_OFF, "current_refusal"), role
+
+
+# ---------------------------------------------------------------------------
 # running_version: pre-cutoff runtime guard
 # ---------------------------------------------------------------------------
 
 
-@pytest.mark.parametrize("running", ["0.14.9", "0.15.0rc1", "0.15.0.dev5", "0.0.1"])
+@pytest.mark.parametrize("running", ["0.14.9", "0.14.9rc1", "0.14.3", "0.0.1"])
 def test_pre_cutoff_runtime_behaves_like_kill_switch(running):
     decision = _decide_case(
         None, None, ProcessRole.INTERACTIVE_CLI, None, kill=False, running=running
@@ -354,8 +439,13 @@ def test_pre_cutoff_runtime_behaves_like_kill_switch(running):
     assert decision == Decision(False, False, _ALL_OFF, "pre_cutoff_runtime"), running
 
 
-@pytest.mark.parametrize("running", ["0.15.0", "0.16.2", "nonsense"])
+@pytest.mark.parametrize(
+    "running", ["0.15.0", "0.15.0rc1", "0.15.0.dev3", "0.16.2", "nonsense", "0.0.0"]
+)
 def test_cutoff_or_unparseable_runtime_does_not_block(running):
+    # Triple-equal pre-releases of the cutoff DO carry the new disclosure
+    # code and run the table normally; the 0.0.0 sentinel (unknown
+    # version) does not block either.
     decision = _decide_case(
         None, None, ProcessRole.INTERACTIVE_CLI, None, kill=False, running=running
     )
@@ -406,6 +496,16 @@ def test_version_parser_accepts_canonical_shapes():
     assert parse("0.15.0a1") == parse("0.15.0a1")
 
 
+def test_version_parser_rejects_the_version_unknown_sentinel():
+    # "0.0.0" is the __version__ fallback that rapid_mlx/__init__.py stamps
+    # when package metadata is missing — "version unknown", not a release.
+    parse = consent_decision_module._parse_release_version
+    assert parse("0.0.0") is None
+    # A SUFFIXED zero build is not the sentinel the state layer writes.
+    assert parse("0.0.0rc1") is not None
+    assert parse("0.0.0.dev1") is not None
+
+
 @pytest.mark.parametrize(
     "garbage",
     [
@@ -426,6 +526,15 @@ def test_version_parser_accepts_canonical_shapes():
         "0.15.0 ",
         "garbage",
         "0.15.0+build1",
+        # Non-ASCII digits: \\d would match these and int() would convert
+        # them, silently turning an unknown-version refusal into a legacy
+        # one. Fullwidth, Arabic-Indic and Devanagari must all fail to
+        # parse.
+        "０.１４.３",
+        "٠.١٤.٣",
+        "०.१४.३",
+        "0.１４.3",
+        "０.14.3",
     ],
 )
 def test_version_parser_rejects_garbage(garbage):
@@ -438,6 +547,79 @@ def test_strict_parse_raises_on_garbage_for_module_constants():
     assert strict("0.15.0") == consent_decision_module._CUTOFF_KEY
     with pytest.raises(ValueError, match="unparseable version constant"):
         strict("garbage")
+
+
+def test_non_ascii_refusals_are_respected_not_migrated():
+    # End to end: a refusal whose recorded version uses non-ASCII digits is
+    # unparseable → NOT legacy → current refusal, refusal respected.
+    for recorded in ("０.１４.３", "٠.١٤.٣", "०.१४.३"):
+        decision = _decide_case(
+            False, None, ProcessRole.INTERACTIVE_CLI, recorded, kill=False
+        )
+        assert decision == Decision(False, False, _ALL_OFF, "current_refusal"), recorded
+
+
+# ---------------------------------------------------------------------------
+# decide never raises: hostile StoredConsent subclasses (P2-2)
+# ---------------------------------------------------------------------------
+
+
+class _ExplodingConsent(StoredConsent):
+    """Constructible StoredConsent whose ``consent`` field raises on read."""
+
+    def __getattribute__(self, name: str) -> Any:
+        if name == "consent":
+            raise RuntimeError("hostile consent field")
+        return object.__getattribute__(self, name)
+
+
+class _ExplodingRevision(StoredConsent):
+    """Same, for the ``notice_revision_seen`` field."""
+
+    def __getattribute__(self, name: str) -> Any:
+        if name == "notice_revision_seen":
+            raise RuntimeError("hostile revision field")
+        return object.__getattribute__(self, name)
+
+
+@pytest.mark.parametrize("kill_switch_active", [True, False], ids=["kill", "no-kill"])
+def test_hostile_raising_stored_consent_yields_invalid_input(kill_switch_active):
+    # isinstance admits subclasses, so the field-level guard cannot catch
+    # this statically: decide must swallow the raise and return the
+    # invalid-input decision — with and without the kill switch.
+    result = decide(
+        _ExplodingConsent(None, None, None),
+        ProcessRole.DESKTOP,
+        kill_switch_active=kill_switch_active,
+        running_version="0.15.0",
+    )
+    assert result == _INVALID_DECISION
+
+
+def test_hostile_raising_revision_field_yields_invalid_input():
+    result = decide(
+        _ExplodingRevision(None, None, None),
+        ProcessRole.INTERACTIVE_CLI,
+        kill_switch_active=False,
+        running_version="0.15.0",
+    )
+    assert result == _INVALID_DECISION
+
+
+def test_keyboard_interrupt_from_hostile_stored_propagates():
+    class _Interrupting(StoredConsent):
+        def __getattribute__(self, name: str) -> Any:
+            if name == "consent":
+                raise KeyboardInterrupt
+            return object.__getattribute__(self, name)
+
+    with pytest.raises(KeyboardInterrupt):
+        decide(
+            _Interrupting(None, None, None),
+            ProcessRole.DESKTOP,
+            kill_switch_active=False,
+            running_version="0.15.0",
+        )
 
 
 # ---------------------------------------------------------------------------
@@ -472,6 +654,8 @@ _HOSTILE_STORED = [
     StoredConsent(None, None, True),  # type: ignore[arg-type]
     StoredConsent(None, None, "1"),  # type: ignore[arg-type]
     StoredConsent(None, None, 1.5),  # type: ignore[arg-type]
+    _ExplodingConsent(None, None, None),
+    _ExplodingRevision(None, None, None),
 ]
 
 _HOSTILE_ROLES = [None, "DESKTOP", 0, object(), [ProcessRole.DESKTOP]]
@@ -497,7 +681,9 @@ def test_fuzz_exactly_one_hostile_slot_yields_invalid_input():
             kill_switch_active=kill,
             running_version=running,  # type: ignore[arg-type]
         )
-        assert result == _INVALID_DECISION, (slot, stored, role, kill, running)
+        # NOTE: ``stored`` is deliberately absent from the failure message —
+        # a hostile instance's repr can itself raise.
+        assert result == _INVALID_DECISION, (slot, role, kill, running)
 
 
 def test_fuzz_valid_random_inputs_never_raise_and_keep_closed_reasons():
