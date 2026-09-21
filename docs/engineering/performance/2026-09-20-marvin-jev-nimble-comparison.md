@@ -1,60 +1,59 @@
 # Marvin vs Jev vs Nimble — a fair comparison
 
-Numbers below are either **measured by us on our ruler** (192-sample
-held-out set, committed and byte-deterministic) or **published self-reports
-by each model's owners**, and the table says which is which. Everything
-comes from `bench/marvins_garden/results/*.json` with reproducible
-commands in the perf log.
+All three models below have been **measured by us on the same ruler** (the
+192-sample held-out set in `bench/marvins_garden/data/pairs_heldout.jsonl`,
+byte-deterministic, never trained on), with identical information and
+identical scoring formulas. Published self-reports are listed separately.
+Raw records: `bench/marvins_garden/results/cross_eval_{jev,nimble}.json`.
 
 ## The table
 
-| Dimension | **Marvin v15c** (ours) | **Jev** (`jev-latest`) | **Nimble** |
+| Dimension | **Marvin v15c** (ours) | **Jev** (`jev-latest`) | **Nimble** (`Bespoke-Nimble-9B`) |
 | --- | --- | --- | --- |
-| Accuracy, same ruler (measured by us) | **94.44% ± 1.08%** (n=3 full replications; best run 95.31%) | 93.23% | *not measurable — no access* |
-| Published self-report | — | 93.21% ✓ agrees with our measurement | 90.12% ⚠ different ruler, never verified by us |
-| Calibration (ECE 15-bin, same ruler) | **0.019–0.031** | 0.102 | unknown |
-| Latency per decision | ~1.1 s on M3 Ultra (local); est. 50–150 ms on a cloud GPU (single forward, not yet measured) | **0.19 s p50** (hosted API incl. RTT) | unknown |
-| Deployment | **runs anywhere the weights fit** — 13.5 GB 2-bit base + 58 MB adapter; local, on-prem, air-gapped | hosted API only | hosted API only |
-| Decision cost | one forward pass, zero generated tokens; batchable | same shape (SystemOne), metered tokens | unknown |
-| Interface | 3 deep lanes; `/v1/classify` spec exists (endpoint pending review) | **productized API**: named questions, choice/noul/score, multi-question batching, usage metering | unknown |
-| Task breadth | deep in its lanes; new families are cheap to mint with the contrastive generator, but out-of-distribution tasks degrade to base (40% zero-shot on our set) | **broad classification face** (tone, billing, spam …) | unknown |
-| Openness | **full pipeline, data, evals, decision logs, RC adapter committed; 14/14 tests** | closed API | closed API |
-| Per-family (same ruler) | routing 91.7–94.8% · tool gate 89.6–93.8% · guard 100% | routing 87.5% · tool gate **97.9%** · guard 100% | — |
+| **Accuracy, same ruler (measured by us)** | **94.44% ± 1.08%** (n=3 full replications; best 95.31%) | 93.23% | 74.48% |
+| Calibration (ECE 15-bin, same ruler) | **0.019–0.031** | 0.102 | 0.151 |
+| Per-family (same ruler) | routing 91.7–94.8% · gate 89.6–93.8% · guard 100% | routing 87.5% · gate **97.9%** · guard 100% | routing 56.3% · gate 85.4% · guard 100% |
+| In-domain published accuracy | — | 93.21% (published; agrees with our ruler ✓) | 90.1% on its own 324-example eval (Jev scored 93.2% there) |
+| Latency per decision | ~1.1 s local M3 Ultra; est. 50–150 ms on cloud GPU | **0.19 s p50** (hosted API incl. RTT) | 2.2 s p50 in our run ⚠ (MPS fallback kernels — not representative; CUDA/H100 is their target) |
+| Base / size | Ternary-Bonsai-27B 2-bit (13.5 GB) + 58 MB adapter | closed | Qwen3.5-9B bf16 (18 GB) + 165 MB adapter, Apache-2.0 |
+| Training data | 2,676 pairs, ours, byte-deterministic, committed | undisclosed | 2,676 curated examples, committed (10 domains; labels model-checked) |
+| Context limit | 32k–128k requests routed by policy | undisclosed | prompts > 2,048 tokens rejected |
+| Deployment | **local / on-prem / air-gapped; Apple Silicon first-class** | hosted API only | self-hosted; reference runner is CUDA-first (Mac works via community paths) |
+| Task breadth | deep in 3 lanes; new families cheap to mint; OOD degrades to base (40%) | **broad classification face** | 10 curated domains + 3 typed questions; authors warn against generalizing |
+| Openness | pipeline + data + evals + RC adapter + tests | closed | **open data, open weights, open recipe** (the recipe ours borrowed) |
 
 ## How to read this fairly
 
-1. **Same-ruler holds only for Marvin vs Jev.** We ran `jev-latest` on our
-   192 items with identical information and identical scoring
-   (`demos/../bench` cross-eval script). Nimble has no public eval we could
-   obtain; its 90.12% is a self-report on its own ruler and is **not**
-   comparable to the same-ruler column.
-2. **The ruler was built by us** — home advantage is possible. Two
-   mitigations: held-out items were never trained on, and Jev's score on
-   our ruler (93.23%) matches its published 93.21% almost exactly, so the
-   ruler does not systematically favor or punish Jev. Even so, treat
-   sub-2-point gaps with humility.
-3. **Latency is not hardware-comparable.** Marvin's 1.1 s is local inference
-   on one M3 Ultra; Jev's 0.19 s is their hosted edge. The product decision
-   (owner, 2026-09-20) is ~1 s intelligence-first — we do not race hosted
-   few-hundred-ms products on latency.
-4. **Where each wins.** Marvin: accuracy under policy constraints
-   (routing +7.3 pts), calibration 3–5× better (real thresholds and
-   abstention), deployment freedom (air-gapped, on-device, per-seat cost ≈
-   electricity). Jev: latency as a service, API maturity, and breadth —
-   if your task is generic classification outside our lanes, Jev today is
-   the safer call. Nimble: unverified on our ruler; on published numbers
-   only it likely sits below both, but we claim nothing we did not measure.
-5. **License gate.** Marvin's base is prism-ml's Ternary-Bonsai-27B; any
-   hosted commercial offering requires a license review before launch
-   (release-owner decision).
+1. **All three columns are now same-ruler.** Nimble was run locally with its
+   own prompt builder and probability math (only the device differs — its
+   reference runner hard-requires CUDA; we ran Apple MPS). Jev was queried
+   through its hosted SystemOne API.
+2. **Domain specificity cuts both ways.** Nimble's routing collapses (56%)
+   because serving-alias policy routing with hardware constraints is outside
+   its curated domains — exactly what its authors warn about. The same model
+   scores 90.1% in-domain on its own eval. Marvin's numbers come from its
+   home distribution too; the honest claim is lane depth, not universality.
+3. **The ruler was built by us.** Mitigations: held-out items were never
+   trained on, and Jev's score on our ruler (93.23%) matches its published
+   93.21% almost exactly. Treat sub-2-point gaps with humility.
+4. **Latency is not hardware-comparable.** Jev's 0.19 s is a hosted edge;
+   Marvin's 1.1 s is local inference (owner's product decision:
+   intelligence-first at ~1 s); Nimble's 2.2 s here reflects missing CUDA
+   kernels on Apple Silicon, not the model.
+5. **Where each wins.** Marvin: same-ruler accuracy, calibration 3–5×
+   better (usable thresholds/abstention), deployment freedom. Jev: hosted
+   latency, API maturity, breadth — the safe call for generic tasks today.
+   Nimble: openness and a great recipe; strongest in its own domains
+   (90.1% in-domain), and the reason our pipeline exists.
+6. **License gate.** Marvin's base is prism-ml's Ternary-Bonsai-27B; any
+   hosted commercial offering needs a license review (release decision).
+   Nimble is Apache-2.0 end to end.
 
 ## Reproduce
 
 ```bash
-# same-ruler Jev cross-eval (key via env only)
+# same-ruler Jev (key via env only)
 JEVAI_KEY=... python bench/marvins_garden/cross_eval_jev.py
-
-# our numbers (see perf doc for the full matrix and training recipe)
-python bench/marvins_garden/eval_label_readout.py --model <snapshot> \
-  --adapter adapters/release/marvins-garden-v15c --temperature 1.0 --think-mode enabled
+# same-ruler Nimble (open weights; downloads ~18 GB base on first run)
+python bench/marvins_garden/cross_eval_nimble.py --adapter <Bespoke-Nimble-9B snapshot>
 ```
