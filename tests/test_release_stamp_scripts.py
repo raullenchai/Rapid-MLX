@@ -37,6 +37,7 @@ import zipfile
 from pathlib import Path
 
 import pytest
+import yaml
 
 from rapid_mlx.telemetry import build_gate
 from rapid_mlx.telemetry.build_gate import ReleaseStamp
@@ -113,6 +114,8 @@ def test_channel_derivation(version: str, expected: str):
         "1.2.3.4",
         "1.2.3+local",  # local version segment
         "1.2.3+local.dev",
+        "0.15.0\n",  # trailing newline on a stable version
+        "0.15.0 ",  # trailing space on a stable version
         "0.15.0rc1\n",  # trailing newline
         " 0.15.0",  # leading space
         "0.15.0rc1 ",  # trailing space
@@ -721,6 +724,19 @@ def test_bare_venv_runs_both_release_stamp_scripts_from_outside_repo(tmp_path):
 # ------------------------------------------------------ workflow contracts
 
 
+def _workflow_job(path: Path, job: str) -> dict:
+    workflow = yaml.safe_load(path.read_text(encoding="utf-8"))
+    return workflow["jobs"][job]
+
+
+def _step_named(steps: list[dict], name: str) -> tuple[int, dict]:
+    matches = [
+        (index, step) for index, step in enumerate(steps) if step.get("name") == name
+    ]
+    assert len(matches) == 1, f"expected exactly one workflow step named {name!r}"
+    return matches[0]
+
+
 def test_release_artifact_matrix_stamps_and_verifies_publishable_builds():
     workflow = (
         REPO_ROOT / ".github" / "workflows" / "release-artifact-matrix.yml"
@@ -742,18 +758,66 @@ def test_release_artifact_matrix_stamps_and_verifies_publishable_builds():
 
 
 def test_release_artifact_matrix_has_a_final_stamp_gate_before_pypi():
-    workflow = (
-        REPO_ROOT / ".github" / "workflows" / "release-artifact-matrix.yml"
-    ).read_text(encoding="utf-8")
-    publish = workflow.index("- name: Publish exact candidate to PyPI")
-    preceding_step = workflow.rfind("      - name:", 0, publish)
-    block = workflow[preceding_step:publish]
-    assert "Verify the telemetry release stamp immediately before PyPI" in block
-    assert "EXPECTED_VERSION: ${{ needs.build-candidate.outputs.version }}" in block
-    assert (
-        'python scripts/verify_release_stamp.py candidate/dist/ --version "$EXPECTED_VERSION"'
-        in block
+    workflow_path = REPO_ROOT / ".github" / "workflows" / "release-artifact-matrix.yml"
+    steps = _workflow_job(workflow_path, "publish")["steps"]
+    download_index, _ = _step_named(steps, "Download candidate distribution")
+    checkout_index, checkout = _step_named(steps, "Checkout the tested release source")
+    verify_index, verify = _step_named(
+        steps, "Verify the telemetry release stamp immediately before PyPI"
     )
+    publish_index, _ = _step_named(
+        steps, "Publish exact candidate to PyPI with attestations"
+    )
+
+    assert download_index < checkout_index < verify_index < publish_index
+    checkouts_after_download = [
+        step
+        for step in steps[download_index + 1 :]
+        if str(step.get("uses", "")).startswith("actions/checkout@")
+    ]
+    assert checkouts_after_download
+    assert all(step.get("with", {}).get("path") for step in checkouts_after_download)
+    assert checkout["with"]["persist-credentials"] is False
+    assert set(checkout["with"]["sparse-checkout"].splitlines()) == {
+        "rapid_mlx/telemetry/build_gate.py",
+        "scripts/release_manifest.py",
+        "scripts/release_version.py",
+        "scripts/verify_release_stamp.py",
+        "scripts/write_release_stamp.py",
+    }
+    assert checkout["with"]["sparse-checkout-cone-mode"] is False
+    checkout_path = checkout["with"]["path"]
+    assert verify["env"] == {
+        "EXPECTED_VERSION": "${{ needs.build-candidate.outputs.version }}"
+    }
+    assert verify["run"] == (
+        f"python3 {checkout_path}/scripts/verify_release_stamp.py "
+        'candidate/dist/ --version "$EXPECTED_VERSION"'
+    )
+
+
+def test_legacy_publish_workflow_writes_and_verifies_the_release_stamp():
+    workflow_path = REPO_ROOT / ".github" / "workflows" / "publish.yml"
+    steps = _workflow_job(workflow_path, "build")["steps"]
+    write_index, write = _step_named(steps, "Write the telemetry release stamp")
+    build_index, _ = _step_named(steps, "Build package (retry on magic-byte collision)")
+    verify_index, verify = _step_named(
+        steps, "Verify the telemetry release stamp in the built artifacts"
+    )
+    manifest_index, _ = _step_named(
+        steps, "Validate distribution metadata and create release manifest"
+    )
+    upload_index, _ = _step_named(steps, "Upload build artifacts")
+
+    assert write_index < build_index < verify_index < manifest_index < upload_index
+    assert write["env"] == {"TAG": "${{ github.event.release.tag_name }}"}
+    assert write["run"] == 'python scripts/write_release_stamp.py --version "$TAG"'
+    assert verify["env"] == {"TAG": "${{ github.event.release.tag_name }}"}
+    assert verify["run"] == (
+        'python scripts/verify_release_stamp.py dist/ --version "$TAG"'
+    )
+    assert "${{" not in write["run"]
+    assert "${{" not in verify["run"]
 
 
 def test_legacy_publish_workflow_only_runs_for_engine_release_tags():
@@ -765,13 +829,24 @@ def test_legacy_publish_workflow_only_runs_for_engine_release_tags():
 
 
 def test_ci_runs_the_real_release_stamp_build_once():
-    workflow = (REPO_ROOT / ".github" / "workflows" / "ci.yml").read_text(
-        encoding="utf-8"
+    steps = _workflow_job(
+        REPO_ROOT / ".github" / "workflows" / "ci.yml", "test-matrix"
+    )["steps"]
+    _, install = _step_named(
+        steps, "Install package builder for release-stamp integration test"
     )
-    assert "Install package builder for release-stamp integration test" in workflow
-    assert "Run real release-stamp package build" in workflow
-    assert "--run-slow -m slow" in workflow
-    assert "test_real_build_ships_the_stamp_in_wheel_and_sdist" in workflow
+    _, run = _step_named(steps, "Run real release-stamp package build")
+    expected_if = "matrix.python-version == '3.11' && matrix.shard == 1"
+    assert install["if"] == expected_if
+    assert install["run"] == "python -m pip install build"
+    assert run["if"] == expected_if
+    assert run["run"] == (
+        "pytest \\\n"
+        "  tests/test_release_stamp_scripts.py::"
+        "test_real_build_ships_the_stamp_in_wheel_and_sdist \\\n"
+        "  --run-slow -m slow \\\n"
+        "  -v --tb=short\n"
+    )
 
 
 # ------------------------------------------- real build (slow, opt-in)
@@ -798,9 +873,28 @@ def _copy_tracked_tree(dest: Path) -> None:
             continue
         relative = Path(os.fsdecode(raw_path))
         source = REPO_ROOT / relative
+        if not source.exists():
+            continue
         target = dest / relative
         target.parent.mkdir(parents=True, exist_ok=True)
         shutil.copy2(source, target)
+
+
+def test_copy_tracked_tree_skips_a_tracked_file_deleted_from_the_worktree(
+    monkeypatch, tmp_path
+):
+    missing = Path("tracked-but-deleted.txt")
+    assert not (REPO_ROOT / missing).exists()
+    result = subprocess.CompletedProcess(
+        args=["git", "ls-files", "-z"],
+        returncode=0,
+        stdout=os.fsencode(missing) + b"\0",
+    )
+    monkeypatch.setattr(subprocess, "run", lambda *args, **kwargs: result)
+
+    _copy_tracked_tree(tmp_path / "copy")
+
+    assert not (tmp_path / "copy" / missing).exists()
 
 
 @pytest.mark.slow

@@ -184,6 +184,7 @@ def _clean_env() -> dict[str, str]:
     # an operator's existing telemetry consent or transient network failures.
     env["RAPID_MLX_DISABLE_VERSION_CHECK"] = "1"
     env["RAPID_MLX_TELEMETRY"] = "0"
+    env["DO_NOT_TRACK"] = "1"
     return env
 
 

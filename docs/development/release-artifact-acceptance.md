@@ -135,11 +135,13 @@ anything other than all four families exactly once. The workflow:
 5. performs the clean-room smoke and runs the strict family matrix against
    the installed wheel.
 
-Runs with `publish=false` deliberately leave the candidate unstamped because
-they accept arbitrary refs and do not create official builds. A `publish=true`
-tag run writes the stamp before the single candidate build, verifies it before
-creating the manifest, and verifies the same manifest-bound bytes again
-immediately before PyPI upload.
+The candidate is stamped only when `publish=true` and `ref` starts with `v`.
+Runs with `publish=false` deliberately leave it unstamped because they accept
+arbitrary refs and do not create official builds. A `publish=true` run with a
+non-tag ref also remains unstamped, then hard-fails at the post-build stamp
+verification. A `publish=true` `v…` tag run writes the stamp before the single
+candidate build, verifies it before creating the manifest, and verifies the
+same manifest-bound bytes again immediately before PyPI upload.
 
 For local runner diagnosis, use the same artifact rather than `pip install .`:
 

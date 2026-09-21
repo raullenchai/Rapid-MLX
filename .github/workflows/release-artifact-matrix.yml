@@ -304,11 +304,20 @@ jobs:
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
         with:
           ref: ${{ needs.build-candidate.outputs.source_sha }}
+          path: source
+          persist-credentials: false
+          sparse-checkout: |
+            rapid_mlx/telemetry/build_gate.py
+            scripts/release_manifest.py
+            scripts/release_version.py
+            scripts/verify_release_stamp.py
+            scripts/write_release_stamp.py
+          sparse-checkout-cone-mode: false
 
       - name: Verify the telemetry release stamp immediately before PyPI
         env:
           EXPECTED_VERSION: ${{ needs.build-candidate.outputs.version }}
-        run: python scripts/verify_release_stamp.py candidate/dist/ --version "$EXPECTED_VERSION"
+        run: python3 source/scripts/verify_release_stamp.py candidate/dist/ --version "$EXPECTED_VERSION"
 
       - name: Publish exact candidate to PyPI with attestations
         # This official action produces PyPI publish attestations by default.
