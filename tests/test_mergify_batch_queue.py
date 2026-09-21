@@ -387,6 +387,8 @@ def _run_head_update_notice(
     comments: list[dict[str, object]] | None = None,
     action: str = "synchronize",
     fail_delete: bool = False,
+    fail_create: bool = False,
+    fail_update: bool = False,
 ) -> list[list[object]]:
     workflow = yaml.load(
         (ROOT / ".github/workflows/authorize-merge-ready.yml").read_text(),
@@ -405,6 +407,8 @@ def _run_head_update_notice(
             "comments": comments or [],
             "action": action,
             "failDelete": fail_delete,
+            "failCreate": fail_create,
+            "failUpdate": fail_update,
         }
     )
     harness = f"""
@@ -457,10 +461,12 @@ const github = {{
       }},
       createComment: async (args) => {{
         calls.push(["create", args.body]);
+        if (scenario.failCreate) throw new Error("create failure");
         return {{ data: {{ id: 99, body: args.body }} }};
       }},
       updateComment: async (args) => {{
         calls.push(["update", args.body]);
+        if (scenario.failUpdate) throw new Error("update failure");
         return {{ data: {{ id: args.comment_id, body: args.body }} }};
       }},
       deleteComment: async (args) => {{
@@ -635,6 +641,70 @@ def test_notice_post_write_recheck_closes_authorization_race():
         "delete",
     ]
     assert calls[-1] == ["delete", 99]
+
+
+def test_notice_write_permission_failures_remain_advisory():
+    create_calls = _run_head_update_notice(fail_create=True)
+    assert [call[0] for call in create_calls] == [
+        "get",
+        "statuses",
+        "comments",
+        "statuses",
+        "get",
+        "create",
+        "warning",
+    ]
+    assert create_calls[-1] == [
+        "warning",
+        "Could not write stale merge-ready notice: create failure",
+    ]
+
+    update_calls = _run_head_update_notice(
+        comments=[
+            {
+                "id": 7,
+                "body": "<!-- merge-ready-stale-head:old-head --> old",
+                "user": {"login": "github-actions[bot]"},
+            }
+        ],
+        fail_update=True,
+    )
+    assert [call[0] for call in update_calls] == [
+        "get",
+        "statuses",
+        "comments",
+        "statuses",
+        "get",
+        "update",
+        "warning",
+    ]
+    assert update_calls[-1] == [
+        "warning",
+        "Could not write stale merge-ready notice: update failure",
+    ]
+
+
+def test_ready_label_removal_comment_failure_remains_advisory():
+    calls = _run_head_update_notice(
+        action="unlabeled",
+        labels=[],
+        comments=[
+            {
+                "id": 7,
+                "body": "<!-- merge-ready-stale-head:old-head --> old",
+                "user": {"login": "github-actions[bot]"},
+            }
+        ],
+        fail_delete=True,
+    )
+
+    assert calls == [
+        ["get"],
+        ["comments"],
+        ["get"],
+        ["delete", 7],
+        ["warning", "Could not remove stale merge-ready notice: delete failure"],
+    ]
 
 
 def test_status_or_live_pull_failure_remains_fail_closed():

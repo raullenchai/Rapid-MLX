@@ -228,11 +228,17 @@ jobs:
                   label.name === "merge-ready-mac",
               );
               if (refreshedReadyLabels.length === 0) {
-                await github.rest.issues.deleteComment({
-                  owner: context.repo.owner,
-                  repo: context.repo.repo,
-                  comment_id: staleNotice.id,
-                });
+                try {
+                  await github.rest.issues.deleteComment({
+                    owner: context.repo.owner,
+                    repo: context.repo.repo,
+                    comment_id: staleNotice.id,
+                  });
+                } catch (error) {
+                  core.warning(
+                    `Could not remove stale merge-ready notice: ${error.message}`,
+                  );
+                }
               }
               return;
             }
@@ -324,22 +330,31 @@ jobs:
               return;
             }
             let writtenNotice;
-            if (existing) {
-              const { data } = await github.rest.issues.updateComment({
-                owner: context.repo.owner,
-                repo: context.repo.repo,
-                comment_id: existing.id,
-                body,
-              });
-              writtenNotice = data;
-            } else {
-              const { data } = await github.rest.issues.createComment({
-                owner: context.repo.owner,
-                repo: context.repo.repo,
-                issue_number: context.issue.number,
-                body,
-              });
-              writtenNotice = data;
+            try {
+              if (existing) {
+                const { data } = await github.rest.issues.updateComment({
+                  owner: context.repo.owner,
+                  repo: context.repo.repo,
+                  comment_id: existing.id,
+                  body,
+                });
+                writtenNotice = data;
+              } else {
+                const { data } = await github.rest.issues.createComment({
+                  owner: context.repo.owner,
+                  repo: context.repo.repo,
+                  issue_number: context.issue.number,
+                  body,
+                });
+                writtenNotice = data;
+              }
+            } catch (error) {
+              // This comment is explanatory only. The missing exact-head
+              // success status still keeps queue admission fail-closed.
+              core.warning(
+                `Could not write stale merge-ready notice: ${error.message}`,
+              );
+              return;
             }
 
             // Authorization is security-critical and deliberately does not
