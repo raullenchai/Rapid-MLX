@@ -72,7 +72,12 @@ def _clean_subprocess_env() -> dict[str, str]:
         "https_proxy",
         "no_proxy",
     }
-    return {k: v for k, v in os.environ.items() if k in keep}
+    env = {k: v for k, v in os.environ.items() if k in keep}
+    # A stamped candidate has the production telemetry key. Keep every child
+    # process opted out even if a caller explicitly enabled telemetry.
+    env["RAPID_MLX_TELEMETRY"] = "0"
+    env["DO_NOT_TRACK"] = "1"
+    return env
 
 
 REPO_ROOT = Path(__file__).resolve().parent.parent

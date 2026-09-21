@@ -5,6 +5,7 @@
 from __future__ import annotations
 
 import importlib.util
+import os
 from pathlib import Path
 
 import pytest
@@ -71,3 +72,18 @@ def test_release_artifacts_rejects_missing_directory(release_smoke, tmp_path):
     """A --dist-dir that does not exist must raise a clear error, not traceback."""
     with pytest.raises(ValueError, match="not a directory"):
         release_smoke.release_artifacts(tmp_path / "does-not-exist")
+
+
+def test_clean_subprocess_env_forces_telemetry_opt_out(release_smoke, monkeypatch):
+    monkeypatch.setenv("RAPID_MLX_TELEMETRY", "1")
+    monkeypatch.setenv("DO_NOT_TRACK", "0")
+    monkeypatch.setenv("CI", "true")
+    monkeypatch.setenv("GITHUB_ACTIONS", "true")
+
+    env = release_smoke._clean_subprocess_env()
+
+    assert env["RAPID_MLX_TELEMETRY"] == "0"
+    assert env["DO_NOT_TRACK"] == "1"
+    assert "CI" not in env
+    assert "GITHUB_ACTIONS" not in env
+    assert env["HOME"] == os.environ["HOME"]

@@ -135,6 +135,14 @@ anything other than all four families exactly once. The workflow:
 5. performs the clean-room smoke and runs the strict family matrix against
    the installed wheel.
 
+The candidate is stamped only when `publish=true` and `ref` starts with `v`.
+Runs with `publish=false` deliberately leave it unstamped because they accept
+arbitrary refs and do not create official builds. A `publish=true` run with a
+non-tag ref also remains unstamped, then hard-fails at the post-build stamp
+verification. A `publish=true` `v…` tag run writes the stamp before the single
+candidate build, verifies it before creating the manifest, and verifies the
+same manifest-bound bytes again immediately before PyPI upload.
+
 For local runner diagnosis, use the same artifact rather than `pip install .`:
 
 ```bash
@@ -179,13 +187,16 @@ runner.
    identity with repository `raullenchai/Rapid-MLX`, workflow
    `release-artifact-matrix.yml`, and environment `pypi`. Trusted Publishing
    then grants a short-lived token only to this workflow’s publish job.
-4. In the same reviewed migration PR, retire the legacy
+4. Confirm the promotion workflow writes the telemetry release stamp before
+   building a publishable tag and verifies it both after the build and
+   immediately before the PyPI upload.
+5. In the same reviewed migration PR, retire the legacy
    `release: published → publish.yml` uploader and change auto-release to
    create a draft GitHub Release. The promotion workflow publishes that draft
    only after PyPI verification and Homebrew dispatch. Do these two changes
    together: keeping both uploaders active would attempt two uploads of the
    same immutable version.
-5. Make the artifact-acceptance workflow a required release check/ruleset
+6. Make the artifact-acceptance workflow a required release check/ruleset
    condition for the protected release PR. The condition is the matrix run
    against the release tag, not an arbitrary branch run.
 

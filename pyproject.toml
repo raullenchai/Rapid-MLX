@@ -554,6 +554,18 @@ rapid_mlx = [
     # nothing to validate against. The desktop app bundles a byte-identical
     # copy; tests/test_telemetry_registry_drift.py holds the two together.
     "telemetry/events.json",
+    # Telemetry v2 release stamp -- written ONLY by the release workflow
+    # (scripts/write_release_stamp.py in both PyPI release workflows, before
+    # `python -m build`) and NEVER committed (.gitignore covers
+    # rapid_mlx/telemetry/_release_stamp.json). Absent in checkouts by design:
+    # setuptools ignores a missing glob, so a checkout build simply ships no
+    # stamp and the official-build gate (rapid_mlx/telemetry/build_gate.py)
+    # keeps telemetry silent. Listed here so the official wheel AND sdist
+    # carry the stamp (plain setuptools -- no MANIFEST.in, no setuptools-scm --
+    # includes package_data globs in the sdist's default file list; pinned by
+    # scripts/verify_release_stamp.py in the publish job and by the slow
+    # real-build test in tests/test_release_stamp_scripts.py).
+    "telemetry/_release_stamp.json",
     # Download-size manifest (hf_path -> footprint bytes) powering the Size
     # column in `rapid-mlx models` and the size line in `rapid-mlx info`.
     # Regenerate with scripts/gen_model_sizes.py when aliases change.
