@@ -73,12 +73,27 @@ jobs:
               --validate-families-json "$FAMILIES"
           fi
 
+      - name: Write the telemetry release stamp
+        # Dry-run candidates may be arbitrary refs and are intentionally
+        # unstamped: only artifacts entering the guarded publish path are
+        # official builds allowed to transmit telemetry.
+        if: inputs.publish && startsWith(inputs.ref, 'v')
+        env:
+          REF: ${{ inputs.ref }}
+        run: python scripts/write_release_stamp.py --version "$REF"
+
       - name: Build and validate distributions
         run: |
           python -m pip install --upgrade pip
           python -m pip install build twine
           python -m build
           twine check dist/*
+
+      - name: Verify the telemetry release stamp
+        if: inputs.publish
+        env:
+          REF: ${{ inputs.ref }}
+        run: python scripts/verify_release_stamp.py dist/ --version "$REF"
 
       - name: Create release artifact manifest
         id: metadata
@@ -203,8 +218,8 @@ jobs:
           path: candidate
 
       - name: Verify manifest before obtaining a PyPI credential
-        # Keep this stdlib-only and inline: this OIDC-bearing job must never
-        # execute a script from the candidate checkout or candidate artifact.
+        # Keep this stdlib-only and inline so the artifact is authenticated
+        # before the later stamp gate executes the tested checkout's verifier.
         env:
           EXPECTED_SHA: ${{ needs.build-candidate.outputs.source_sha }}
           EXPECTED_VERSION: ${{ needs.build-candidate.outputs.version }}
@@ -284,6 +299,25 @@ jobs:
             exit 1
           fi
           echo "Tag ${TAG} still resolves to the tested SHA ${EXPECTED_SHA}"
+
+      - name: Checkout the tested release source
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        with:
+          ref: ${{ needs.build-candidate.outputs.source_sha }}
+          path: source
+          persist-credentials: false
+          sparse-checkout: |
+            rapid_mlx/telemetry/build_gate.py
+            scripts/release_manifest.py
+            scripts/release_version.py
+            scripts/verify_release_stamp.py
+            scripts/write_release_stamp.py
+          sparse-checkout-cone-mode: false
+
+      - name: Verify the telemetry release stamp immediately before PyPI
+        env:
+          EXPECTED_VERSION: ${{ needs.build-candidate.outputs.version }}
+        run: python3 source/scripts/verify_release_stamp.py candidate/dist/ --version "$EXPECTED_VERSION"
 
       - name: Publish exact candidate to PyPI with attestations
         # This official action produces PyPI publish attestations by default.

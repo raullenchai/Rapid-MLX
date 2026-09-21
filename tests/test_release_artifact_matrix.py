@@ -46,6 +46,8 @@ def test_clean_env_drops_source_injection_variables(matrix, monkeypatch):
     monkeypatch.setenv("PYTHONPATH", "/unsafe/source")
     monkeypatch.setenv("PYTHONHOME", "/unsafe/home")
     monkeypatch.setenv("PIP_TARGET", "/unsafe/target")
+    monkeypatch.setenv("RAPID_MLX_TELEMETRY", "1")
+    monkeypatch.setenv("DO_NOT_TRACK", "0")
     env = matrix._clean_env()
     assert "PYTHONPATH" not in env
     assert "PYTHONHOME" not in env
@@ -53,6 +55,7 @@ def test_clean_env_drops_source_injection_variables(matrix, monkeypatch):
     assert env["PYTHONNOUSERSITE"] == "1"
     assert env["RAPID_MLX_DISABLE_VERSION_CHECK"] == "1"
     assert env["RAPID_MLX_TELEMETRY"] == "0"
+    assert env["DO_NOT_TRACK"] == "1"
 
 
 def test_validate_families_json_allows_a_nonempty_diagnostic_subset(matrix):
