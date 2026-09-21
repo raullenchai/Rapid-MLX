@@ -12,24 +12,31 @@ Two INDEPENDENT conditions must hold for :func:`official_build` to return
 a stamp; both are needed because each one alone is forgeable by accident:
 
 1. A release stamp exists. ``_release_stamp.json`` is written ONLY by the
-   release workflow into ``rapid_mlx/telemetry/`` at publish time and is
-   never committed — so a checkout cannot have one. But the stamp alone
-   is not sufficient: an official sdist contains everything the wheel
-   does, so ``pip install -e`` from an unpacked official sdist would sit
-   on a developer's machine with a perfectly valid stamp. (A committed
-   flag or a version-string heuristic is even worse: a fork's build or a
-   repacked wheel would inherit both.)
-2. The install is NOT editable/source-like: the PEP 610
-   ``direct_url.json`` of the ``rapid-mlx`` distribution must not say
-   ``dir_info.editable == true``, AND the ``rapid_mlx`` package directory
-   must not sit beside this project's own ``pyproject.toml``. In a source
-   checkout, an unpacked sdist, or an editable install, ``rapid_mlx/``
-   is directly beside ``pyproject.toml``; in site-packages it never is.
-   An earlier draft walked up looking for ANY ``.git`` entry instead, and
-   that rule was rejected because it misclassifies real official installs
-   that live inside unrelated git checkouts: ``/opt/homebrew`` itself is
-   a git checkout on Apple Silicon (with the package ~10 levels below it
-   in ``Cellar/rapid-mlx/<v>/libexec/...``), ``~/.pyenv`` is one, and the
+   release workflow into ``rapid_mlx/telemetry/`` — next to this module,
+   inside the installed package — at publish time and is never committed,
+   so a checkout cannot have one and a user cannot forge one in the
+   current directory. But the stamp alone is not sufficient: an official
+   sdist contains everything the wheel does, so ``pip install -e`` from
+   an unpacked official sdist would sit on a developer's machine with a
+   perfectly valid stamp. (A committed flag or a version-string heuristic
+   is even worse: a fork's build or a repacked wheel would inherit both.)
+2. The install is NOT editable/source-like. The PEP 610 verdict comes
+   from the distribution BOUND TO THE RUNNING CODE: importlib.metadata
+   resolves by name through ``sys.path`` order, so a stale
+   ``rapid_mlx-*.dist-info`` with ``dir_info.editable: true`` earlier on
+   the path could otherwise describe an install we are not — and silence
+   a genuine official build forever. A distribution only counts when
+   ``locate_file("rapid_mlx")`` resolves to the running package
+   directory. The verdict must not say ``dir_info.editable == true``, AND
+   the ``rapid_mlx`` package directory must not sit beside this project's
+   own ``pyproject.toml``. In a source checkout, an unpacked sdist, or an
+   editable install, ``rapid_mlx/`` is directly beside
+   ``pyproject.toml``; in site-packages it never is. An earlier draft
+   walked up looking for ANY ``.git`` entry instead, and that rule was
+   rejected because it misclassifies real official installs that live
+   inside unrelated git checkouts: ``/opt/homebrew`` itself is a git
+   checkout on Apple Silicon (with the package ~10 levels below it in
+   ``Cellar/rapid-mlx/<v>/libexec/...``), ``~/.pyenv`` is one, and the
    most common pip layout of all is a project venv
    (``~/code/myproject/.venv/lib/python3.x/site-packages/``) inside the
    user's own repo. Identifying OUR tree — the package's parent holding
@@ -41,9 +48,10 @@ a stamp; both are needed because each one alone is forgeable by accident:
    build — only the release workflow's stamp makes it one.
 
 **Failure policy.** Every public function fails closed and never raises:
-a missing, unreadable, or malformed stamp, distribution metadata that
-cannot be read, a ``direct_url.json`` that is PRESENT but unparseable or
-not a JSON object, or a hostile filesystem all resolve to "not an
+a missing, unreadable, or malformed stamp, no distribution bound to the
+running package, metadata that cannot be read, a ``direct_url.json`` that
+is PRESENT but unparseable or not a JSON object, an unreadable
+``pyproject.toml``, or a hostile filesystem all resolve to "not an
 official build" (``None`` / ``True``). Unknown provenance does not
 transmit. Only provenance that is positively known is allowed to read as
 "not editable / not source": an ABSENT ``direct_url.json`` (the normal
@@ -58,7 +66,7 @@ import json
 import re
 from dataclasses import dataclass
 from functools import lru_cache
-from importlib.metadata import distribution
+from importlib.metadata import Distribution, distributions
 from pathlib import Path
 
 #: The stamp file ONLY the release workflow writes into ``rapid_mlx/telemetry/``
@@ -70,6 +78,10 @@ RELEASE_STAMP_NAME = "_release_stamp.json"
 #: installed metadata — the single name both checks agree on.
 _DISTRIBUTION_NAME = "rapid-mlx"
 
+#: Top-level package directory this module ships in — the argument to
+#: ``Distribution.locate_file`` when binding metadata to running code.
+_PACKAGE_DIRNAME = "rapid_mlx"
+
 #: PostHog project keys look like ``phc_<20..80 alphanumerics>``. Anything
 #: else in the stamp means the file was tampered with or truncated.
 _POSTHOG_KEY_RE = re.compile(r"^phc_[A-Za-z0-9]{20,80}$")
@@ -78,13 +90,14 @@ _POSTHOG_KEY_RE = re.compile(r"^phc_[A-Za-z0-9]{20,80}$")
 _VALID_CHANNELS = frozenset({"stable", "rc"})
 
 #: Matches OUR ``[project]`` name assignment in ``pyproject.toml``:
-#: ``name = "rapid-mlx"``, tolerant of spacing, quote style, and leading
-#: indentation. Anchored to whole lines so ``{name = "Rapid-MLX
-#: contributors"}`` inside the authors array (or a like-named package)
-#: cannot match. pyproject.toml is read as text rather than parsed with
-#: tomllib because this repo supports Python 3.10 and tomllib is 3.11+.
+#: ``name = "rapid-mlx"``, tolerant of spacing, quote style, leading
+#: indentation, and an optional trailing comment. Anchored to whole lines
+#: so ``{name = "Rapid-MLX contributors"}`` inside the authors array (or
+#: a like-named package) cannot match. pyproject.toml is read as text
+#: rather than parsed with tomllib because this repo supports Python 3.10
+#: and tomllib is 3.11+.
 _PROJECT_NAME_RE = re.compile(
-    r"(?m)^\s*name\s*=\s*[\"']" + re.escape(_DISTRIBUTION_NAME) + r"[\"']\s*$"
+    r"(?m)^\s*name\s*=\s*[\"']" + re.escape(_DISTRIBUTION_NAME) + r"[\"']\s*(?:#.*)?$"
 )
 
 
@@ -100,7 +113,9 @@ def _stamp_path() -> Path:
     """Locate the stamp relative to this module.
 
     A private function only so tests can monkeypatch the location; the
-    release workflow writes next to this file in the installed package.
+    release workflow writes next to this file in the installed package —
+    nowhere else, and in particular never the current directory, where a
+    user could forge a stamp.
     """
     return Path(__file__).with_name(RELEASE_STAMP_NAME)
 
@@ -138,25 +153,74 @@ def read_release_stamp() -> ReleaseStamp | None:
     return _parse_stamp(raw)
 
 
-def _direct_url_says_editable() -> bool | None:
-    """PEP 610 verdict: editable install? ``None`` when unknowable.
+def _running_package_dir() -> Path | None:
+    """The ``rapid_mlx`` package directory: ``parent.parent`` of this module.
 
-    ``None`` means provenance is UNKNOWN and the caller must fail closed:
-    the distribution metadata could not be read at all, OR a
-    ``direct_url.json`` is present but unparseable / not a JSON object
-    (someone unpacked something we cannot vouch for). Provenance that is
-    positively known reads as ``False`` ("not editable"): the file is
-    ABSENT — pip only writes ``direct_url.json`` for direct-URL, archive,
-    VCS, and editable installs, so a plain PyPI/wheel install has none —
-    or the JSON object has no ``dir_info`` mapping, which is exactly how
-    a direct-URL (non-editable) install is recorded.
+    ``None`` when it cannot be determined: a frozen/embedded interpreter
+    may lack ``__file__`` entirely, and a ``__file__`` of ``None`` breaks
+    ``Path()``. Callers treat ``None`` as unknown provenance.
     """
     try:
-        dist = distribution(_DISTRIBUTION_NAME)
+        return Path(__file__).resolve().parent.parent
+    except Exception:
+        # NameError (no __file__) / TypeError (__file__ = None) and any
+        # path weirdness: the package directory is unknowable.
+        return None
+
+
+def _running_distribution(running_dir: Path) -> Distribution | None:
+    """The installed distribution that actually provides THIS ``rapid_mlx``.
+
+    ``importlib.metadata`` resolves by NAME through ``sys.path`` order,
+    which can hand back metadata for a DIFFERENT install than the package
+    being imported — e.g. a stale ``rapid_mlx-*.dist-info`` with
+    ``dir_info.editable: true`` earlier on ``sys.path`` would silence a
+    genuine official install forever. Bind the metadata to the running
+    code instead: a distribution only counts when ``locate_file()`` maps
+    the package directory name onto exactly *running_dir*. ``None`` when
+    nothing matches — unknown provenance. Never raises; distributions are
+    only probed for ``name`` and ``locate_file``.
+    """
+    try:
+        candidates = list(distributions())
+    except Exception:
+        return None
+    for dist in candidates:
+        try:
+            if dist.name != _DISTRIBUTION_NAME:
+                continue
+            located = dist.locate_file(_PACKAGE_DIRNAME)
+            if located is None:
+                continue
+            # str() normalizes SimplePath (str | PathLike) for Path().
+            if Path(str(located)).resolve() == running_dir:
+                return dist
+        except Exception:
+            continue
+    return None
+
+
+def _direct_url_says_editable(dist: Distribution | None) -> bool | None:
+    """PEP 610 verdict for *dist*: editable install? ``None`` when unknowable.
+
+    ``None`` means provenance is UNKNOWN and the caller must fail closed:
+    no distribution is bound to the running package, the metadata could
+    not be read at all, OR a ``direct_url.json`` is present but
+    unparseable / not a JSON object (someone unpacked something we cannot
+    vouch for). Provenance that is positively known reads as ``False``
+    ("not editable"): the file is ABSENT — pip only writes
+    ``direct_url.json`` for direct-URL, archive, VCS, and editable
+    installs, so a plain PyPI/wheel install has none — or the JSON object
+    has no ``dir_info`` mapping, which is exactly how a direct-URL
+    (non-editable) install is recorded.
+    """
+    if dist is None:
+        # Nothing bound to the running package: unknown provenance.
+        return None
+    try:
         raw = dist.read_text("direct_url.json")
     except Exception:
-        # PackageNotFoundError and any other metadata-read failure:
-        # unknown provenance does not transmit.
+        # Any metadata-read failure: unknown provenance does not transmit.
         return None
     if raw is None:
         return False
@@ -180,12 +244,12 @@ def _direct_url_says_editable() -> bool | None:
 def _package_is_in_source_tree(package_dir: Path) -> bool:
     """True when *package_dir* (the ``rapid_mlx`` package) is OUR source.
 
-    *package_dir* is the ``rapid_mlx`` package directory —
-    ``Path(__file__).parent.parent`` from this module. In a source
-    checkout, an unpacked sdist, or an editable install, its parent
-    holds THIS project's ``pyproject.toml`` (``[project]`` name
-    ``rapid-mlx``); in site-packages it never does. A pyproject.toml for
-    a DIFFERENT project (a monorepo vendoring us) does not count.
+    *package_dir* is the ``rapid_mlx`` package directory (what
+    :func:`_running_package_dir` returns). In a source checkout, an
+    unpacked sdist, or an editable install, its parent holds THIS
+    project's ``pyproject.toml`` (``[project]`` name ``rapid-mlx``); in
+    site-packages it never does. A pyproject.toml for a DIFFERENT project
+    (a monorepo vendoring us) does not count.
     """
     try:
         text = (package_dir.parent / "pyproject.toml").read_text(encoding="utf-8")
@@ -202,16 +266,21 @@ def _package_is_in_source_tree(package_dir: Path) -> bool:
 def is_editable_or_source_install() -> bool:
     """True when this install looks editable or source-like (must not send).
 
-    True when the ``rapid-mlx`` distribution is a PEP 610 editable
-    install, when the package directory sits beside this project's own
-    ``pyproject.toml`` (checkout, unpacked sdist, editable install), or
-    when provenance cannot be determined at all (metadata unreadable, or
-    a ``direct_url.json`` that is present but unparseable). Never raises.
+    True when the distribution bound to the running package is a PEP 610
+    editable install, when provenance is unknown (no matching
+    distribution, unreadable metadata, an unparseable ``direct_url.json``,
+    or no usable ``__file__``), or when the package directory sits beside
+    this project's own ``pyproject.toml`` (checkout, unpacked sdist,
+    editable install). Never raises.
     """
-    if _direct_url_says_editable() is not False:
+    package_dir = _running_package_dir()
+    if package_dir is None:
+        # No usable __file__ (frozen/embedded interpreter): unknowable.
+        return True
+    if _direct_url_says_editable(_running_distribution(package_dir)) is not False:
         # ``True`` = editable; ``None`` = unknown provenance. Both fail closed.
         return True
-    return _package_is_in_source_tree(Path(__file__).parent.parent)
+    return _package_is_in_source_tree(package_dir)
 
 
 @lru_cache(maxsize=1)

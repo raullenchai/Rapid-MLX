@@ -3,21 +3,22 @@
 
 Telemetry v2 is default-on, so ``official_build()`` is the one thing
 standing between a developer machine and PostHog. These tests pin every
-input to the decision: the release stamp file (missing, unreadable,
-malformed, or valid), the PEP 610 ``direct_url.json`` verdict (absent →
-known-not-editable, present-but-unparseable → fail closed), source-tree
-detection via THIS project's ``pyproject.toml`` beside the package (and
-NOT via any ``.git`` above it — real installs live inside unrelated git
-checkouts: Homebrew's ``/opt/homebrew``, ``~/.pyenv``, project venvs),
-the fail-closed paths, the truth table, and the process cache. No real
-install metadata is consulted — everything is monkeypatched onto
+input to the decision: the release stamp file (location, missing,
+unreadable, malformed, or valid), the PEP 610 ``direct_url.json`` verdict
+bound to the RUNNING package (absent → known-not-editable,
+present-but-unparseable → fail closed), source-tree detection via THIS
+project's ``pyproject.toml`` beside the package (and NOT via any
+``.git`` above it — real installs live inside unrelated git checkouts:
+Homebrew's ``/opt/homebrew``, ``~/.pyenv``, project venvs), the
+fail-closed paths, the truth table, and the process cache. Install
+metadata is faked by patching the ``distributions`` iterable; the module
+location is faked by patching ``__file__``. Everything lands on
 ``tmp_path`` — except deliberate real-filesystem tests at the end.
 """
 
 from __future__ import annotations
 
 import json
-from importlib.metadata import PackageNotFoundError
 from pathlib import Path
 
 import pytest
@@ -53,16 +54,70 @@ def _direct_url_payload(dir_info: dict[str, object] | None) -> str:
     return json.dumps(payload)
 
 
-class _FakeDistribution:
-    """Stand-in for ``importlib.metadata.Distribution`` with a canned body."""
+class _FakeDist:
+    """Stand-in for ``importlib.metadata.Distribution``.
 
-    def __init__(self, direct_url: str | None) -> None:
+    ``base_dir`` is what ``locate_file("rapid_mlx")`` joins onto — the
+    real analogue of a dist-info's parent (site-packages). ``None``
+    base_dir makes ``locate_file`` return ``None`` (a hostile/unusable
+    distribution). ``name`` defaults to our distribution name.
+    """
+
+    def __init__(
+        self,
+        base_dir: Path | None,
+        direct_url: str | None,
+        name: str = "rapid-mlx",
+    ) -> None:
+        self._base_dir = base_dir
         self._direct_url = direct_url
+        self._name = name
+
+    @property
+    def name(self) -> str:
+        return self._name
+
+    def locate_file(self, path: str) -> Path | None:
+        if self._base_dir is None:
+            return None
+        return self._base_dir / path
 
     def read_text(self, filename: str) -> str | None:
         if filename == "direct_url.json":
             return self._direct_url
         return None
+
+
+class _ExplosiveDist:
+    """A distribution whose every accessor raises (hostile metadata)."""
+
+    @property
+    def name(self) -> str:
+        raise RuntimeError("boom")
+
+    def locate_file(self, path: str) -> Path:
+        raise RuntimeError("boom")
+
+    def read_text(self, filename: str) -> str | None:
+        raise RuntimeError("boom")
+
+
+def _dist_bound_to_running_package(payload: str | None) -> _FakeDist:
+    """A fake dist whose ``locate_file`` binds it to THIS module's package."""
+    package_dir = Path(build_gate.__file__).resolve().parent.parent
+    return _FakeDist(package_dir.parent, payload)
+
+
+def _point_module_at(monkeypatch, tmp_path) -> Path:
+    """Relocate the module into a fake ``.../site-packages/rapid_mlx`` tree."""
+    package_dir = tmp_path / "site-packages" / "rapid_mlx"
+    (package_dir / "telemetry").mkdir(parents=True, exist_ok=True)
+    monkeypatch.setattr(
+        build_gate,
+        "__file__",
+        str(package_dir / "telemetry" / "build_gate.py"),
+    )
+    return package_dir
 
 
 @pytest.fixture(autouse=True)
@@ -80,21 +135,55 @@ def _fresh_official_build_cache():
 
 @pytest.fixture
 def site_packages_install(monkeypatch, tmp_path):
-    """Relocate the module into a fake site-packages tree under ``tmp_path``.
+    """A fake wheel-install world under ``tmp_path``.
 
-    The pyproject lookup then lands inside site-packages, where no
-    ``pyproject.toml`` ever lives — the shape of a real wheel install —
-    so tests that expect ``is_editable_or_source_install() is False``
-    are not contaminated by THIS worktree's real source tree.
+    The module sits in site-packages (so the pyproject lookup finds
+    nothing — the shape of a real wheel install) and exactly one
+    distribution is bound to it, reporting a non-editable direct_url.
+    Tests that expect ``is_editable_or_source_install() is False`` are
+    thereby isolated from THIS worktree's real source tree and from the
+    test venv's own (editable, other-worktree) metadata.
     """
+    package_dir = _point_module_at(monkeypatch, tmp_path)
     monkeypatch.setattr(
         build_gate,
-        "__file__",
-        str(tmp_path / _SITE_PACKAGES / "rapid_mlx" / "telemetry" / "build_gate.py"),
+        "distributions",
+        lambda: iter(
+            [_dist_bound_to_running_package(_direct_url_payload({"editable": False}))]
+        ),
     )
 
 
 # --------------------------------------------------------------- the stamp
+
+
+def test_stamp_path_is_pinned_to_the_package_directory():
+    # The stamp lives NEXT TO build_gate.py, inside the installed
+    # package — never the current directory, where any user could forge
+    # one. Pins the locator against the module-dir seam.
+    assert build_gate._stamp_path() == Path(build_gate.__file__).with_name(
+        build_gate.RELEASE_STAMP_NAME
+    )
+
+
+def test_real_stamp_location_round_trips_without_patching_the_locator(
+    monkeypatch, tmp_path
+):
+    # Write a valid stamp into a fake package dir and read it back with
+    # the REAL _stamp_path: only __file__ is relocated. This is the
+    # positive end-to-end for the locator — a stamp the release workflow
+    # would have written beside the module is actually found there.
+    package_dir = tmp_path / "site-packages" / "rapid_mlx"
+    (package_dir / "telemetry").mkdir(parents=True)
+    stamp = package_dir / "telemetry" / build_gate.RELEASE_STAMP_NAME
+    stamp.write_text(
+        json.dumps({"channel": "stable", "posthog_key": VALID_KEY}),
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(
+        build_gate, "__file__", str(package_dir / "telemetry" / "build_gate.py")
+    )
+    assert build_gate.read_release_stamp() == ReleaseStamp("stable", VALID_KEY)
 
 
 def test_missing_stamp_file_reads_as_none():
@@ -176,17 +265,15 @@ def test_valid_rc_stamp_round_trips(monkeypatch, tmp_path):
 def test_direct_url_editable_true_is_editable(monkeypatch):
     payload = _direct_url_payload({"editable": True})
     monkeypatch.setattr(
-        build_gate, "distribution", lambda _name: _FakeDistribution(payload)
+        build_gate,
+        "distributions",
+        lambda: iter([_dist_bound_to_running_package(payload)]),
     )
     assert build_gate.is_editable_or_source_install() is True
 
 
 @pytest.mark.usefixtures("site_packages_install")
-def test_direct_url_editable_false_is_not_editable(monkeypatch):
-    payload = _direct_url_payload({"editable": False})
-    monkeypatch.setattr(
-        build_gate, "distribution", lambda _name: _FakeDistribution(payload)
-    )
+def test_direct_url_editable_false_is_not_editable():
     assert build_gate.is_editable_or_source_install() is False
 
 
@@ -195,7 +282,9 @@ def test_direct_url_malformed_json_fails_closed(monkeypatch):
     # A PRESENT direct_url.json that does not parse is UNKNOWN
     # provenance, not proof of a wheel install: fail closed (True).
     monkeypatch.setattr(
-        build_gate, "distribution", lambda _name: _FakeDistribution("{not json")
+        build_gate,
+        "distributions",
+        lambda: iter([_dist_bound_to_running_package("{not json")]),
     )
     assert build_gate.is_editable_or_source_install() is True
 
@@ -204,7 +293,9 @@ def test_direct_url_malformed_json_fails_closed(monkeypatch):
 def test_direct_url_json_array_fails_closed(monkeypatch):
     # Valid JSON, but not an object: same unknown-provenance verdict.
     monkeypatch.setattr(
-        build_gate, "distribution", lambda _name: _FakeDistribution("[]")
+        build_gate,
+        "distributions",
+        lambda: iter([_dist_bound_to_running_package("[]")]),
     )
     assert build_gate.is_editable_or_source_install() is True
 
@@ -218,18 +309,22 @@ def test_direct_url_json_array_fails_closed(monkeypatch):
 def test_direct_url_without_dir_info_is_known_not_editable(monkeypatch, dir_info):
     # dir_info absent (or not a mapping) in a VALID direct_url.json is
     # exactly how pip records a direct-URL install: known, not editable.
-    payload = _direct_url_payload(dir_info)
     monkeypatch.setattr(
-        build_gate, "distribution", lambda _name: _FakeDistribution(payload)
+        build_gate,
+        "distributions",
+        lambda: iter([_dist_bound_to_running_package(_direct_url_payload(dir_info))]),
     )
     assert build_gate.is_editable_or_source_install() is False
 
 
 @pytest.mark.usefixtures("site_packages_install")
 def test_direct_url_editable_non_bool_is_not_proven_editable(monkeypatch):
-    payload = _direct_url_payload({"editable": "yes"})
     monkeypatch.setattr(
-        build_gate, "distribution", lambda _name: _FakeDistribution(payload)
+        build_gate,
+        "distributions",
+        lambda: iter(
+            [_dist_bound_to_running_package(_direct_url_payload({"editable": "yes"}))]
+        ),
     )
     assert build_gate.is_editable_or_source_install() is False
 
@@ -240,29 +335,91 @@ def test_direct_url_file_absent_is_not_proven_editable(monkeypatch):
     # direct_url.json at all — pip omits it for registry installs. Known
     # provenance, not editable, and NOT unknown: fail open to False.
     monkeypatch.setattr(
-        build_gate, "distribution", lambda _name: _FakeDistribution(None)
+        build_gate,
+        "distributions",
+        lambda: iter([_dist_bound_to_running_package(None)]),
     )
     assert build_gate.is_editable_or_source_install() is False
 
 
-def test_distribution_not_found_fails_closed(monkeypatch):
-    def raise_pnfe(_name):
-        raise PackageNotFoundError("rapid-mlx")
+def test_matching_dist_wins_over_a_stale_editable_one(monkeypatch, tmp_path):
+    # Metadata resolves by NAME through sys.path order and can describe a
+    # DIFFERENT install than the one being imported. A stale editable
+    # rapid-mlx dist-info earlier in the list must NOT silence a genuine
+    # wheel install of the running package.
+    package_dir = _point_module_at(monkeypatch, tmp_path)
+    stale = _FakeDist(tmp_path / "elsewhere", _direct_url_payload({"editable": True}))
+    real = _FakeDist(package_dir.parent, _direct_url_payload({"editable": False}))
+    monkeypatch.setattr(build_gate, "distributions", lambda: iter([stale, real]))
+    assert build_gate.is_editable_or_source_install() is False
 
-    monkeypatch.setattr(build_gate, "distribution", raise_pnfe)
-    monkeypatch.setattr(build_gate, "_package_is_in_source_tree", lambda _dir: False)
-    # Unknown provenance must read as "editable or source" — never send.
+
+def test_no_matching_distribution_fails_closed(monkeypatch, tmp_path):
+    # No distribution's locate_file maps onto the running package dir —
+    # whether wrong name or wrong location — so provenance is unknown.
+    package_dir = _point_module_at(monkeypatch, tmp_path)
+    wrong_name = _FakeDist(
+        package_dir.parent, _direct_url_payload({"editable": True}), name="other-pkg"
+    )
+    wrong_location = _FakeDist(
+        tmp_path / "elsewhere", _direct_url_payload({"editable": True})
+    )
+    monkeypatch.setattr(
+        build_gate, "distributions", lambda: iter([wrong_name, wrong_location])
+    )
     assert build_gate.is_editable_or_source_install() is True
 
 
-def test_distribution_read_failure_fails_closed(monkeypatch):
-    class _HostileDist:
+def test_bound_distribution_read_failure_fails_closed(monkeypatch, tmp_path):
+    # A distribution IS bound to the running package, but its metadata
+    # refuses to be read: unknown provenance, fail closed.
+    package_dir = _point_module_at(monkeypatch, tmp_path)
+
+    class _UnreadableDist:
+        name = "rapid-mlx"
+
+        def locate_file(self, path: str) -> Path:
+            return package_dir
+
         def read_text(self, filename: str) -> str | None:
             raise OSError("metadata directory unreadable")
 
-    monkeypatch.setattr(build_gate, "distribution", lambda _name: _HostileDist())
-    monkeypatch.setattr(build_gate, "_package_is_in_source_tree", lambda _dir: False)
+    monkeypatch.setattr(build_gate, "distributions", lambda: iter([_UnreadableDist()]))
     assert build_gate.is_editable_or_source_install() is True
+
+
+def test_distribution_scan_failure_fails_closed(monkeypatch):
+    def boom():
+        raise OSError("metadata scan failed")
+
+    monkeypatch.setattr(build_gate, "distributions", boom)
+    assert build_gate.is_editable_or_source_install() is True
+
+
+def test_hostile_or_unusable_distributions_are_skipped(monkeypatch, tmp_path):
+    # Distributions that raise, or whose locate_file yields nothing (or a
+    # non-path), must be skipped — the well-behaved match further down
+    # the list still gets its verdict honored.
+    package_dir = _point_module_at(monkeypatch, tmp_path)
+    nonlocatable = _FakeDist(None, _direct_url_payload({"editable": True}))
+    good = _FakeDist(package_dir.parent, _direct_url_payload({"editable": False}))
+    monkeypatch.setattr(
+        build_gate,
+        "distributions",
+        lambda: iter([_ExplosiveDist(), nonlocatable, _IntDist(), good]),
+    )
+    assert build_gate.is_editable_or_source_install() is False
+
+
+class _IntDist:
+    """A hostile distribution whose locate_file returns a non-path."""
+
+    @property
+    def name(self) -> str:
+        return "rapid-mlx"
+
+    def locate_file(self, path: str) -> int:
+        return 42  # type: ignore[return-value]
 
 
 # ------------------------------------------------- source-tree detection
@@ -326,6 +483,7 @@ def test_pyproject_for_another_or_vaguely_named_project_is_not_source(
         'name="rapid-mlx"',  # no spaces
         'name   =   "rapid-mlx"',  # extra spaces
         '  name = "rapid-mlx"',  # indented (inside [project])
+        'name = "rapid-mlx"  # ours',  # trailing comment
     ],
 )
 def test_pyproject_name_line_is_matched_tolerantly(tmp_path, name_line):
@@ -369,15 +527,13 @@ def test_site_packages_inside_git_is_not_source_via_public_api(monkeypatch, tmp_
     # direct_url says wheel-install, .git sits above the venv, and the
     # verdict must still be "not editable or source" (False = may send).
     (tmp_path / ".git").mkdir()
+    _point_module_at(monkeypatch, tmp_path)
     monkeypatch.setattr(
         build_gate,
-        "__file__",
-        str(tmp_path / _SITE_PACKAGES / "rapid_mlx" / "telemetry" / "build_gate.py"),
-    )
-    monkeypatch.setattr(
-        build_gate,
-        "distribution",
-        lambda _name: _FakeDistribution(_direct_url_payload({"editable": False})),
+        "distributions",
+        lambda: iter(
+            [_dist_bound_to_running_package(_direct_url_payload({"editable": False}))]
+        ),
     )
     assert build_gate.is_editable_or_source_install() is False
 
@@ -395,9 +551,28 @@ def test_source_tree_via_public_api(monkeypatch, tmp_path):
     )
     monkeypatch.setattr(
         build_gate,
-        "distribution",
-        lambda _name: _FakeDistribution(_direct_url_payload({"editable": False})),
+        "distributions",
+        lambda: iter(
+            [_dist_bound_to_running_package(_direct_url_payload({"editable": False}))]
+        ),
     )
+    assert build_gate.is_editable_or_source_install() is True
+
+
+# ------------------------------------------------- never-raise hard guards
+
+
+def test_missing_dunder_file_fails_closed(monkeypatch):
+    # Frozen/embedded interpreters can lack __file__ entirely: the
+    # package directory is unknowable -> fail closed, never NameError.
+    monkeypatch.delattr(build_gate, "__file__")
+    assert build_gate.is_editable_or_source_install() is True
+
+
+def test_none_dunder_file_fails_closed(monkeypatch):
+    # A __file__ of None (as some embedded embedders set it) must not
+    # explode Path(): fail closed, never TypeError.
+    monkeypatch.setattr(build_gate, "__file__", None)
     assert build_gate.is_editable_or_source_install() is True
 
 
@@ -420,11 +595,14 @@ def test_official_build_truth_table(
         stamp = _write_stamp(tmp_path, "stable", VALID_KEY)
     else:
         stamp = tmp_path / "absent.json"
+    _point_module_at(monkeypatch, tmp_path)
     monkeypatch.setattr(build_gate, "_stamp_path", lambda: stamp)
     monkeypatch.setattr(
         build_gate,
-        "distribution",
-        lambda _name: _FakeDistribution(_direct_url_payload({"editable": False})),
+        "distributions",
+        lambda: iter(
+            [_dist_bound_to_running_package(_direct_url_payload({"editable": False}))]
+        ),
     )
     monkeypatch.setattr(
         build_gate, "_package_is_in_source_tree", lambda _dir: source_like
@@ -435,11 +613,14 @@ def test_official_build_truth_table(
 
 def test_official_build_result_is_cached_until_reset(monkeypatch, tmp_path):
     stamp = _write_stamp(tmp_path, "stable", VALID_KEY)
+    _point_module_at(monkeypatch, tmp_path)
     monkeypatch.setattr(build_gate, "_stamp_path", lambda: stamp)
     monkeypatch.setattr(
         build_gate,
-        "distribution",
-        lambda _name: _FakeDistribution(_direct_url_payload({"editable": False})),
+        "distributions",
+        lambda: iter(
+            [_dist_bound_to_running_package(_direct_url_payload({"editable": False}))]
+        ),
     )
     monkeypatch.setattr(build_gate, "_package_is_in_source_tree", lambda _dir: False)
     build_gate._reset_for_tests()
@@ -463,10 +644,13 @@ def test_reset_for_tests_clears_a_stale_negative(monkeypatch, tmp_path):
     monkeypatch.setattr(
         build_gate, "_stamp_path", lambda: _write_stamp(tmp_path, "rc", VALID_KEY)
     )
+    _point_module_at(monkeypatch, tmp_path)
     monkeypatch.setattr(
         build_gate,
-        "distribution",
-        lambda _name: _FakeDistribution(_direct_url_payload({"editable": False})),
+        "distributions",
+        lambda: iter(
+            [_dist_bound_to_running_package(_direct_url_payload({"editable": False}))]
+        ),
     )
     monkeypatch.setattr(build_gate, "_package_is_in_source_tree", lambda _dir: False)
     build_gate._reset_for_tests()
@@ -497,11 +681,10 @@ def test_read_release_stamp_survives_hostile_bytes(monkeypatch, tmp_path, raw_by
 
 
 def test_public_functions_survive_a_hostile_world(monkeypatch, tmp_path):
-    class _ExplosiveDist:
-        def read_text(self, filename: str) -> str | None:
-            raise RuntimeError("boom")
+    def boom():
+        raise RuntimeError("metadata scan exploded")
 
-    monkeypatch.setattr(build_gate, "distribution", lambda _name: _ExplosiveDist())
+    monkeypatch.setattr(build_gate, "distributions", boom)
     monkeypatch.setattr(build_gate, "_stamp_path", lambda: tmp_path / "nope.json")
     assert build_gate.read_release_stamp() is None
     assert build_gate.is_editable_or_source_install() is True
@@ -528,13 +711,14 @@ def test_this_checkout_is_not_an_official_build():
 def test_real_package_dir_sits_beside_this_projects_pyproject():
     """The real ``rapid_mlx`` package dir is directly beside the real pyproject.
 
-    Pins the ``parent.parent`` arithmetic against the real filesystem:
-    from ``rapid_mlx/telemetry/build_gate.py`` the package directory is
-    ``Path(__file__).parent.parent``, and ITS parent holds the
-    ``pyproject.toml`` whose name line this repo actually ships.
+    Pins the ``parent.parent`` arithmetic against the real filesystem and
+    asserts the module under test is loaded from THIS worktree — the test
+    venv's own rapid-mlx metadata is an EDITABLE install pointing at a
+    different worktree, exactly the stale-metadata mismatch the
+    distribution binding exists to ignore.
     """
-    package_dir = Path(build_gate.__file__).parent.parent
-    assert package_dir.name == "rapid_mlx"
+    package_dir = Path(build_gate.__file__).resolve().parent.parent
+    assert package_dir == (REPO_ROOT / "rapid_mlx").resolve()
     assert (package_dir.parent / "pyproject.toml").is_file()
     assert build_gate._package_is_in_source_tree(package_dir) is True
 
