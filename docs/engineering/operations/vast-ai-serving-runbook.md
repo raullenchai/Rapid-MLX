@@ -81,3 +81,32 @@ Any serving path must carry (from `bench/marvins_garden/README.md`):
 - Production serving = release decision: needs human authorization.
 - API keys live in env only; the demo proxy refuses to boot with keys in argv.
 - No customer data in this demo path; logs are prompts+probs only, retention off.
+
+## Update 2026-09-21 — corrections from external review (GPT-6-Astra)
+
+1. **Latency estimate, revised**: do NOT project ~200 ms from bandwidth math.
+   Conservative planning figure for a 4090, single request, 360-token prefill:
+   **300–800 ms**, low-latency capacity **1–3 RPS** until microbatching is
+   measured. Ternary unpacking kernels can be SLOWER than wider formats
+   (llama.cpp issue #27127).
+2. **Format risk first**: llama.cpp server supports CUDA + `--lora`, but Prism
+   Bonsai-2 quant formats (PQ2_0/PTQ1_0) have an OPEN upstream support request
+   (issue #29058). Lock the exact fork/commit/GGUF type/kernel before renting;
+   if GGUF+LoRA parity fails, stop — the risk is format/kernels, not GPU tier.
+3. **Acceptance gate for any rented-GPU session**: classification agreement
+   ≥99% vs frozen MLX golden corpus; frozen-set accuracy drop ≤0.5 pt; ECE and
+   risk–coverage not visibly degraded; no CPU fallback; p95 target met.
+   Freeze the corpus locally FIRST (token IDs + MLX letter logits + probs).
+4. **Serving architecture**: dynamic prefill microbatching (length buckets +
+   5–15 ms window) is the single-GPU throughput lever; one GPU-owning process;
+   deadline-aware queue returning 429/503 on overload; record queue/tokenize/
+   GPU times separately; ship model/calibration/threshold versions in every
+   response; custom lanes as separate workers or pre-merged adapters (never
+   hot-swap LoRA per request).
+5. **Cost model**: 4090 ≈ $0.74–1.10/h (RunPod) → ~$0.10–0.15/1k decisions at
+   full utilization (2 RPS assumption) but ~$1–1.50/1k at 10% utilization —
+   idle GPU cost dominates early; a session-reservation model beats a fleet.
+6. **API shape**: decision + confidence + `recommended_action`
+   (accept/review/abstain from a customer-configurable loss) + `reason_code` +
+   version fields. Sell "X% auto-coverage at Y dangerous-error rate", not a
+   confidence field.
