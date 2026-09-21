@@ -2306,7 +2306,12 @@ flow_cached_quickstart() {
         "$OUT/start-chatting.json"
     wait_identifier rapid.chat.compose "$OUT/ready.json"
     assert_tree_text "$OUT/ready.json" "chatting with fake-alias, running entirely on your Mac."
-    [[ "$(jq '[.data.ui_elements[]? | select(.value? | strings | startswith("You’re chatting with fake-alias, running entirely on your Mac."))] | length' "$OUT/ready.json")" == 1 ]] \
+    # This PR deliberately disables Markdown smart typography so the
+    # transcript preserves the bytes emitted by the model. Keep this AX
+    # contract on the straight apostrophe the product now renders; matching
+    # the pre-fix curly spelling made a correct, exactly-once welcome look
+    # absent in the merge candidate.
+    [[ "$(jq '[.data.ui_elements[]? | select(.value? | strings | startswith("You\u0027re chatting with fake-alias, running entirely on your Mac."))] | length' "$OUT/ready.json")" == 1 ]] \
         || die "Quickstart welcome was not seeded exactly once after confirmation"
     if jq -e -s 'any(.[]; .event == "command" and .subcommand == "pull")' \
         "$OUT/fake-events.jsonl" >/dev/null; then
