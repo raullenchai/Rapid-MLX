@@ -82,7 +82,7 @@ dependencies = [
     # dedicated bump PR + Phase-0 re-audit rather than pinning here.
     "transformers>=5.0.0,!=5.13.0,<5.16",
     "tokenizers>=0.19.0",
-    "huggingface-hub>=0.23.0",
+    "huggingface-hub>=1.1.0",
     "numpy>=1.24.0",
     "tqdm>=4.66.0",
     # pillow is opt-in via [vision] extras — only the MLLM paths (mllm.py,
@@ -354,7 +354,7 @@ ci-linux = [
     "psutil>=5.9.0",
     "transformers>=5.0.0,!=5.13.0,<5.16",
     "tokenizers>=0.19.0",
-    "huggingface-hub>=0.23.0",
+    "huggingface-hub>=1.1.0",
     "numpy>=1.24.0",
     "tqdm>=4.66.0",
     "requests>=2.28.0",

@@ -1298,13 +1298,35 @@ def _silent_hf_tqdm_class():
     return _SilentTqdm
 
 
-# ``hf_hub_download`` only grew a ``tqdm_class`` kwarg in a huggingface_hub
-# release NEWER than our ``>=0.23.0`` floor — passing it to an older hub raises
-# ``TypeError``. Feature-detect so metadata-bar suppression is a graceful
-# enhancement on modern hubs and a silent no-op (bar leaks, nothing crashes) on
-# old ones, rather than a hard dependency-version bump. Introspected fresh on
-# each call (a handful per pull, cheap) rather than cached — a cached first call
-# made under a mocked ``hf_hub_download`` would otherwise poison the result.
+def _tracking_hf_tqdm_class(*, suppress_progress: bool):
+    """Return a per-call tqdm class that records whether a transfer began.
+
+    Hugging Face constructs the class only after it has decided the cache
+    cannot satisfy the file and entered its HTTP/Xet download path. A warm
+    re-link returns before construction. The class therefore observes the
+    *actual* call after Hub's own file lock, closing the race between a dry-run
+    preflight and another process completing the same blob.
+    """
+    from huggingface_hub.utils import tqdm as _hf_tqdm
+
+    class _TrackingTqdm(_hf_tqdm):  # type: ignore[misc, valid-type]
+        started = False
+        _started_lock = threading.Lock()
+
+        def __init__(self, *args, **kwargs):
+            with self._started_lock:
+                type(self).started = True
+            if suppress_progress:
+                kwargs["disable"] = True
+            super().__init__(*args, **kwargs)
+
+    return _TrackingTqdm
+
+
+# Feature-detect ``tqdm_class`` even though the declared Hub floor supports it:
+# an already-running environment can import Rapid before its dependency update.
+# Introspect fresh on each call (a handful per pull, cheap) rather than caching
+# a first observation made under a mocked or wrapped ``hf_hub_download``.
 def _hf_supports_tqdm_class() -> bool:
     """True iff the installed ``hf_hub_download`` accepts a ``tqdm_class`` kwarg."""
     import inspect
@@ -1325,6 +1347,7 @@ def _hf_fallback_one(
     revision: str,
     cache_dir: Path | None = None,
     suppress_progress: bool = False,
+    out: dict[str, object] | None = None,
 ) -> tuple[bool, str | None]:
     """Download a single file from HuggingFace into the standard cache.
 
@@ -1348,6 +1371,11 @@ def _hf_fallback_one(
     (``HFValidationError``) propagate so a misuse surfaces a real
     stack trace instead of being silently re-routed through the
     ``snapshot_download`` fallback.
+
+    When supplied, ``out`` receives ``network_fetch`` from the downloader's
+    actual post-lock progress construction. A warm blob re-link never enters
+    that path, including when another process populated the blob while this
+    call waited on Hub's file lock.
     """
     from huggingface_hub import hf_hub_download
     from huggingface_hub.errors import EntryNotFoundError, HfHubHTTPError
@@ -1359,13 +1387,18 @@ def _hf_fallback_one(
         "revision": revision,
         "cache_dir": str(cache_dir) if cache_dir else None,
     }
-    # Only forward ``tqdm_class`` when the hub actually accepts it; on the
-    # >=0.23.0 floor it does not, and passing it would raise ``TypeError``.
-    if suppress_progress and _hf_supports_tqdm_class():
-        kwargs["tqdm_class"] = _silent_hf_tqdm_class()
+    tracking_tqdm = None
+    if _hf_supports_tqdm_class():
+        tracking_tqdm = _tracking_hf_tqdm_class(suppress_progress=suppress_progress)
+        kwargs["tqdm_class"] = tracking_tqdm
 
     try:
         path = hf_hub_download(**kwargs)
+        if out is not None:
+            if tracking_tqdm is not None:
+                # This observes the real post-lock path, so another process
+                # filling the blob while we wait still classifies as cached.
+                out["network_fetch"] = bool(tracking_tqdm.started)
         return True, path
     except (
         # Expected network / HF API surface — these are legitimate
@@ -1445,10 +1478,11 @@ def download_with_mirror_fallback(
     "did we fetch at all" (see ``network_fetch``) and for the approximate
     download size, not for per-byte metering. ``pull_command`` uses it to say
     "already cached … (nothing to download)" truthfully (issue #2349).
-    Known, accepted limitation (Atlas 2026-08-26): a non-LFS file with no
-    catalog sha256 that warm re-links a locally-cached blob counts as a fetch
-    (classifies ``"hf"``), because the relink is indistinguishable without
-    downloader instrumentation; LFS weight bytes are exact.
+    Hugging Face's public per-file progress hook distinguishes a warm
+    cached-blob re-link from a real fetch even for non-LFS files whose blob
+    digest is absent from model metadata, without adding a second metadata
+    request. LFS files retain the direct O(1) blob probe as a compatibility
+    fallback for already-running environments with an older Hub import.
 
     Returns True if every file landed in the snapshot dir (mix of R2 +
     HF is fine). Returns False if the caller should fall back to the
@@ -1945,27 +1979,25 @@ def download_with_mirror_fallback(
         #     known, so probe ``blobs/<sha>`` directly — O(1), deterministic,
         #     immune to other workers. If it is present BEFORE the call,
         #     ``hf_hub_download`` only re-links it (zero bytes) -> "cached".
-        #   * Non-LFS files (no catalog sha): the blob key is unknowable ahead
-        #     of time, so a warm relink is indistinguishable from a real fetch
-        #     without downloader instrumentation. Per Atlas decision 2026-08-26
-        #     ((A) documented limitation), these classify "hf" — a no-sha tiny
-        #     non-LFS file showing "Downloaded" only when R2 misses AND its
-        #     blob is already local is an ACCEPTED, bounded edge (the weight
-        #     bytes — the actual transfer a pull exists for — are exact via the
-        #     LFS probe above). Follow-up for full exactness: huggingface_hub
-        #     downloader instrumentation, post-0.13.1 Vector lane.
+        #   * Non-LFS files (no catalog sha): inject Hugging Face's public
+        #     per-file progress hook. It is constructed only when the actual
+        #     post-lock path starts a transfer, so no shared-directory diff,
+        #     mtime guess, private cache path, or extra metadata request is
+        #     needed.
         blob_already_local = False
         if expected_sha256 is not None:
             try:
                 blob_already_local = (repo_root / "blobs" / expected_sha256).is_file()
             except OSError:
                 blob_already_local = False
+        hf_transfer: dict[str, object] = {}
         ok, hf_path = _hf_fallback_one(
             repo_id,
             fname,
             revision,
             cache_dir=cache_root,
             suppress_progress=_should_suppress_hf_bar(fname, expected_size),
+            out=hf_transfer,
         )
         if ok:
             # ``hf_hub_download`` returns the resolved snapshot path
@@ -1981,10 +2013,13 @@ def download_with_mirror_fallback(
                     size = (snap_dir / fname).stat().st_size
             except OSError:
                 size = 0
-            # A warm re-link of an already-local LFS blob transfers no bytes ->
-            # "cached", so `network_fetch`/`transferred_bytes` never mislabel a
-            # warm pull as a download (Codex #2392). Non-LFS re-links (no sha)
-            # are the accepted documented limitation above: they classify "hf".
+            # Prefer the downloader's actual transfer observation. On an
+            # already-running environment with an old Hub import, preserve the
+            # deterministic LFS blob probe; non-LFS retains its legacy
+            # conservative classification until that process restarts.
+            network_fetch = hf_transfer.get("network_fetch")
+            if isinstance(network_fetch, bool):
+                return fname, ("hf" if network_fetch else "cached"), size
             return fname, ("cached" if blob_already_local else "hf"), size
 
         return fname, "miss", 0
@@ -2120,10 +2155,12 @@ def download_with_mirror_fallback(
     # ``r2_hits``/``hf_hits`` are bumped only for files this worker actually
     # fetched: R2 workers return "cached" before fetching when the target
     # already exists, and an HF worker re-linking an already-local blob
-    # classifies "cached" (LFS via the pre-call blob probe; non-LFS via the
-    # resolved blob's pre-pull mtime). A fetched zero-byte file still counts
-    # (its freshly-written blob classifies hf). ``bool(r2_hits) or
-    # bool(hf_hits)`` is therefore foreign-process-immune and O(1).
+    # classifies "cached" (LFS via the pre-call blob probe; non-LFS via Hub's
+    # actual transfer-progress construction). A truly
+    # empty HF object creates no transfer progress because there are no body
+    # bytes to fetch, so it correctly does not turn ``network_fetch`` on.
+    # ``bool(r2_hits) or bool(hf_hits)`` is therefore foreign-process-immune
+    # and O(1).
     if out is not None:
         out["transferred_bytes"] = transferred_bytes
         out["network_fetch"] = bool(r2_hits) or bool(hf_hits)
