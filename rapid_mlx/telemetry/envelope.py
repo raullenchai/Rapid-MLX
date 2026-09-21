@@ -126,10 +126,11 @@ def build_batch_item(
 def _snapshot_item(item: Mapping[str, object]) -> dict[str, object] | None:
     """One-level copy of an item: the item itself plus its ``properties``.
 
-    The top-level ``uuid`` must be a string parseable as a UUID and is
-    preserved byte-for-byte so transport retries retain their deduplication
-    identity. ``build_batch_item`` nests exactly one level, so copying the
-    item and its properties makes the envelope immune to later caller edits.
+    The top-level ``uuid`` must be a string parseable as a UUID. It is
+    normalized to the canonical lowercase, hyphenated spelling so equivalent
+    inputs cannot become distinct PostHog deduplication keys.
+    ``build_batch_item`` nests exactly one level, so copying the item and its
+    properties makes the envelope immune to later caller edits.
     """
 
     snapshot = dict(item)
@@ -137,7 +138,7 @@ def _snapshot_item(item: Mapping[str, object]) -> dict[str, object] | None:
     if not isinstance(item_uuid, str):
         return None
     try:
-        uuid.UUID(item_uuid)
+        snapshot["uuid"] = str(uuid.UUID(item_uuid))
     except ValueError:
         return None
     properties = snapshot.get("properties")

@@ -353,14 +353,22 @@ def test_build_batch_rejects_missing_or_malformed_item_uuid(bad_uuid):
     assert env.build_batch([item], "k") is None
 
 
-def test_build_batch_preserves_the_item_uuid_exactly():
+@pytest.mark.parametrize(
+    "spelling",
+    [
+        "6F1B1D3E-4A2B-4C9D-8E7F-0A1B2C3D4E5F",
+        "{6f1b1d3e-4a2b-4c9d-8e7f-0a1b2c3d4e5f}",
+        "urn:uuid:6f1b1d3e-4a2b-4c9d-8e7f-0a1b2c3d4e5f",
+        "6f1b1d3e4a2b4c9d8e7f0a1b2c3d4e5f",
+    ],
+)
+def test_build_batch_normalizes_uuid_spellings(spelling):
     item = env.build_batch_item("app_opened", {}, _common_sample())
     assert item is not None
-    parseable = "{6f1b1d3e-4a2b-4c9d-8e7f-0a1b2c3d4e5f}"
-    item["uuid"] = parseable
+    item["uuid"] = spelling
     batch = env.build_batch([item], "k")
     assert batch is not None
-    assert batch["batch"][0]["uuid"] == parseable
+    assert batch["batch"][0]["uuid"] == "6f1b1d3e-4a2b-4c9d-8e7f-0a1b2c3d4e5f"
 
 
 def test_build_batch_rejects_an_empty_sequence():

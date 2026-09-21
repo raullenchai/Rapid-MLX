@@ -23,9 +23,11 @@ real network, no real sleeping beyond short event waits.
 
 from __future__ import annotations
 
+import io
 import json
 import logging
 import os
+import signal
 import socket
 import subprocess
 import sys
@@ -35,6 +37,7 @@ import uuid
 from collections.abc import Callable
 from http.server import BaseHTTPRequestHandler, HTTPServer
 from pathlib import Path
+from urllib.error import HTTPError
 
 import pytest
 
@@ -481,6 +484,15 @@ def test_4xx_dropped_without_retry(sender_env):
     s.close(0.5)
 
 
+def test_3xx_dropped_without_retry(sender_env):
+    post = RecordingPost(status=302)
+    s = make_sender(post)
+    assert s.capture(item()) is True
+    s.flush(1.0)
+    assert len(post) == 1
+    s.close(0.5)
+
+
 def test_5xx_retried_once_then_dropped(sender_env):
     post = RecordingPost(status=500)
     s = make_sender(post)
@@ -584,6 +596,91 @@ def test_drain_drops_everything_when_permission_is_withdrawn(sender_env):
     s.flush(1.0)
     assert len(post) == 0
     assert s._draining is False
+    s.close(0.5)
+
+
+@pytest.mark.parametrize("revocation", ["gate", "permission"])
+def test_drain_rechecks_both_gates_before_every_chunk(sender_env, revocation):
+    authorization = {"stamp": STAMP, "allowed": True}
+    entered = threading.Event()
+    release = threading.Event()
+    calls: list[bytes] = []
+
+    def slow_post(url: str, body: bytes, timeout: float) -> int:
+        calls.append(body)
+        if revocation == "gate":
+            authorization["stamp"] = None
+        else:
+            authorization["allowed"] = False
+        entered.set()
+        release.wait(timeout=0.2)
+        return 200
+
+    s = PostHogSender(
+        post=slow_post,
+        clock=FakeClock(),
+        gate=lambda: authorization["stamp"],
+        allowed=lambda: authorization["allowed"],
+    )
+    with s._lock:
+        s._queue.extend(item(f"event-{i}", i) for i in range(250))
+        s._first_queued_at = s._clock()
+    worker = threading.Thread(target=s._drain, daemon=True)
+    worker.start()
+    assert entered.wait(timeout=1.0)
+    release.set()
+    worker.join(timeout=1.0)
+    assert worker.is_alive() is False
+    assert len(calls) == 1
+    s.close(0.5)
+
+
+@pytest.mark.parametrize("revocation", ["gate", "permission"])
+def test_drain_rechecks_both_gates_before_retry(sender_env, revocation):
+    authorization = {"stamp": STAMP, "allowed": True}
+    calls = 0
+
+    def refusing_post(url: str, body: bytes, timeout: float) -> int:
+        nonlocal calls
+        calls += 1
+        if revocation == "gate":
+            authorization["stamp"] = None
+        else:
+            authorization["allowed"] = False
+        return 500
+
+    s = PostHogSender(
+        post=refusing_post,
+        clock=FakeClock(),
+        gate=lambda: authorization["stamp"],
+        allowed=lambda: authorization["allowed"],
+    )
+    assert s.capture(item()) is True
+    s.flush(1.0)
+    assert calls == 1
+    s.close(0.5)
+
+
+def test_drain_rechecks_permission_after_build_before_post(sender_env, monkeypatch):
+    permission = {"allowed": True}
+    post = RecordingPost()
+    real_build_batch = ph.envelope.build_batch
+
+    def build_then_withdraw(items, api_key):
+        payload = real_build_batch(items, api_key)
+        permission["allowed"] = False
+        return payload
+
+    monkeypatch.setattr(ph.envelope, "build_batch", build_then_withdraw)
+    s = PostHogSender(
+        post=post,
+        clock=FakeClock(),
+        gate=lambda: STAMP,
+        allowed=lambda: permission["allowed"],
+    )
+    assert s.capture(item()) is True
+    s.flush(1.0)
+    assert len(post) == 0
     s.close(0.5)
 
 
@@ -746,6 +843,20 @@ def test_hostile_clock_kills_only_the_thread(sender_env):
     s.close(0.5)
 
 
+def test_flush_restarts_a_dead_thread_with_queued_work(sender_env):
+    clock = FakeClock()
+    post = RecordingPost()
+    s = make_sender(post=post, clock=clock)
+    assert s.capture(item()) is True
+    s._clock = lambda: (_ for _ in ()).throw(RuntimeError("clock exploded"))
+    assert wait_for(lambda: s._thread is not None and not s._thread.is_alive())
+    s._clock = clock
+    s.flush(0.2)
+    assert len(post) == 1
+    assert s._queue == []
+    s.close(0.5)
+
+
 def test_second_small_batch_waits_its_own_full_interval(sender_env):
     post = RecordingPost()
     clock = FakeClock()
@@ -766,7 +877,9 @@ def test_capture_snapshots_item_and_properties(sender_env):
     post = RecordingPost()
     s = make_sender(post=post, clock=FakeClock())
     original = item("original", n=7)
+    captured_uuid = original["uuid"]
     assert s.capture(original) is True
+    original["uuid"] = str(uuid.uuid4())
     original["event"] = "mutated"
     properties = original["properties"]
     assert isinstance(properties, dict)
@@ -774,6 +887,7 @@ def test_capture_snapshots_item_and_properties(sender_env):
     properties["secret"] = "late mutation"
     s.flush(1.0)
     [sent] = post.batches()[0]
+    assert sent["uuid"] == captured_uuid
     assert sent["event"] == "original"
     assert sent["properties"] == {"n": 7}
     s.close(0.5)
@@ -788,6 +902,8 @@ def test_fork_child_resets_sender_state_and_locks(sender_env):
 
     lock_held = threading.Event()
     release_lock = threading.Event()
+    sender_lock_held = threading.Event()
+    release_sender_lock = threading.Event()
 
     def hold_parent_lock() -> None:
         with s._lock:
@@ -797,18 +913,31 @@ def test_fork_child_resets_sender_state_and_locks(sender_env):
     holder = threading.Thread(target=hold_parent_lock, daemon=True)
     holder.start()
     assert lock_held.wait(timeout=1.0)
+
+    def hold_sender_lock() -> None:
+        with ph._sender_lock:
+            sender_lock_held.set()
+            release_sender_lock.wait(timeout=2.0)
+
+    sender_lock_holder = threading.Thread(target=hold_sender_lock, daemon=True)
+    sender_lock_holder.start()
+    assert sender_lock_held.wait(timeout=1.0)
     read_fd, write_fd = os.pipe()
     child_pid = os.fork()
     if child_pid == 0:
         os.close(read_fd)
         try:
+            signal.signal(signal.SIGALRM, lambda *_: os._exit(124))
+            signal.alarm(2)
             assert s._queue == []
             assert s._thread is None
             assert s._draining is False
             assert s._force is False
             assert s._lock.acquire(blocking=False)
             s._lock.release()
+            assert get_sender() is singleton
             assert s.capture(item("child")) is True
+            signal.alarm(0)
             os.write(write_fd, b"ok")
             os._exit(0)
         except BaseException as exc:
@@ -817,7 +946,9 @@ def test_fork_child_resets_sender_state_and_locks(sender_env):
 
     os.close(write_fd)
     release_lock.set()
+    release_sender_lock.set()
     holder.join(timeout=1.0)
+    sender_lock_holder.join(timeout=1.0)
     _, status = os.waitpid(child_pid, 0)
     report = os.read(read_fd, 4096)
     os.close(read_fd)
@@ -851,6 +982,7 @@ def test_fork_child_resets_sender_state_and_locks(sender_env):
         42,
         "app_opened",
         {"no_event": 1},
+        {"uuid": "6f1b1d3e-4a2b-4c9d-8e7f-0a1b2c3d4e5f"},
         {"event": None},
         {"event": ""},
         _ExplodingMapping({"event": "boom"}),
@@ -862,6 +994,15 @@ def test_capture_never_raises_on_garbage(sender_env, garbage):
     assert s.capture(garbage) is False  # type: ignore[arg-type]
     s.flush(0.5)
     assert len(post) == 0
+    s.close(0.5)
+
+
+def test_capture_rejects_missing_uuid_individually(sender_env):
+    s = make_sender(RecordingPost())
+    uuidless = item()
+    del uuidless["uuid"]
+    assert [s.capture(uuidless) for _ in range(25)] == [False] * 25
+    assert s._queue == []
     s.close(0.5)
 
 
@@ -907,6 +1048,34 @@ def test_bad_first_chunk_does_not_drop_later_chunks(sender_env):
     s.close(0.5)
 
 
+def test_unbuildable_first_chunk_does_not_drop_two_later_chunks(sender_env, caplog):
+    post = RecordingPost()
+    s = make_sender(post=post, clock=FakeClock())
+    queued = [item(f"event-{i}", n=i) for i in range(250)]
+    del queued[0]["uuid"]
+    with s._lock:
+        s._queue.extend(queued)
+        s._first_queued_at = s._clock()
+    with caplog.at_level(logging.DEBUG, logger=SENDER_LOGGER):
+        s._drain()
+    assert [len(batch) for batch in post.batches()] == [100, 50]
+    assert [
+        record.message
+        for record in caplog.records
+        if "build_batch rejected a chunk" in record.message
+    ] == ["posthog build_batch rejected a chunk; malformed events dropped"]
+    with s._lock:
+        s._queue.append({"event": "still-bad"})
+        s._first_queued_at = s._clock()
+    s._drain()
+    assert [
+        record.message
+        for record in caplog.records
+        if "build_batch rejected a chunk" in record.message
+    ] == ["posthog build_batch rejected a chunk; malformed events dropped"]
+    s.close(0.5)
+
+
 # ------------------------------------------------------------ default seams
 
 
@@ -944,6 +1113,30 @@ def test_install_atexit_registers_once(sender_env, monkeypatch):
     install_atexit()
     assert len(registered) == 1
     registered[0]()  # the exit handler runs clean on an empty sender
+
+
+def test_at_fork_registration_is_idempotent_across_reload(sender_env):
+    code = (
+        "import importlib, os\n"
+        "calls = []\n"
+        "os.register_at_fork = lambda **kwargs: calls.append(kwargs)\n"
+        "import rapid_mlx.telemetry.posthog_sender as m\n"
+        "importlib.reload(m)\n"
+        "ours = [c for c in calls if "
+        "getattr(c.get('after_in_child'), '__module__', '') == m.__name__]\n"
+        "assert len(ours) == 1, calls\n"
+    )
+    proc = subprocess.run(
+        [sys.executable, "-c", code],
+        capture_output=True,
+        text=True,
+        env=dict(os.environ, PYTHONPATH=str(REPO_ROOT)),
+        cwd=str(REPO_ROOT),
+        timeout=30,
+        check=False,
+    )
+    assert proc.returncode == 0, proc.stderr
+    ph._register_at_fork_once()
 
 
 def test_import_starts_no_thread_no_socket_no_mlx(sender_env):
@@ -1096,6 +1289,25 @@ def test_default_post_refuses_redirects(sender_env):
             server.server_close()
         for thread in threads:
             thread.join(timeout=1.0)
+
+
+def test_default_post_closes_http_error_response(sender_env, monkeypatch):
+    response_body = io.BytesIO(b"error")
+    response = HTTPError(
+        POSTHOG_BATCH_URL,
+        500,
+        "server error",
+        hdrs=None,
+        fp=response_body,
+    )
+
+    class RaisingOpener:
+        def open(self, req, timeout):
+            raise response
+
+    monkeypatch.setattr(ph, "build_opener", lambda *handlers: RaisingOpener())
+    assert ph.default_post(POSTHOG_BATCH_URL, b"{}", 1.0) == 500
+    assert response_body.closed
 
 
 def test_default_post_retries_a_500_once(sender_env, stub_posthog, monkeypatch):

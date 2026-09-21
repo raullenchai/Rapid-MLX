@@ -20,8 +20,8 @@ Each item is exactly ``{"uuid", "event", "distinct_id", "timestamp",
 request — the sender chunks longer queues itself. Bodies are JSON-encoded
 compactly and sent with a fixed ``User-Agent: rapid-mlx-telemetry``.
 
-The five drop reasons
-=====================
+The six drop reasons
+====================
 
 ``capture()`` is bounded, lossy, and never raises. An item is dropped
 (returns ``False``, by design silently) when ANY of these holds:
@@ -32,11 +32,13 @@ The five drop reasons
    time (environment kill switch active, or consent does not currently
    permit upload). Checked LIVE on every capture, like Orca, so a user
    who withdraws mid-session goes dark on the very next event.
-3. **Per-session ceiling** — this process has already accepted 1000
+3. **Malformed envelope item** — the top-level ``uuid`` is missing or is
+   not parseable as a UUID, or the event name is missing/empty.
+4. **Per-session ceiling** — this process has already accepted 1000
    items.
-4. **Queue full** — the in-memory queue holds 5000 items; the NEW item
+5. **Queue full** — the in-memory queue holds 5000 items; the NEW item
    is dropped (never the oldest, and never by blocking the caller).
-5. **Per-event burst cap** — the event name's token bucket (30 events
+6. **Per-event burst cap** — the event name's token bucket (30 events
    per rolling minute, lazy refill, capacity bounded) is empty.
    Unknown event names must not create unbounded buckets: the bucket
    registry itself is capped at 64 names, beyond which items drop.
@@ -52,7 +54,13 @@ exits, crashes, or a flush POST fails, those events are gone: this is
 best-effort product analytics, not a durable pipeline. Nothing here
 writes to disk, and a failed batch is dropped rather than retried more
 than once (at most ONE immediate retry for 5xx / transport failures;
-4xx is never retried).
+3xx/4xx is never retried).
+
+The stdlib transport deliberately honours standard proxy environment
+variables; corporate networks commonly require them. A forked child discards
+queued work and synchronization/thread state, but deliberately inherits burst
+buckets and the accepted session count. That conservative accounting prevents
+a fork from resetting volume limits.
 
 This module is a pure addition: no emitter calls it yet, the v1
 transport (:mod:`rapid_mlx.telemetry.transport`) is untouched, and
@@ -154,6 +162,7 @@ def default_post(url: str, body: bytes, timeout: float) -> int:
     the sender's retry policy sees a status like the contract promises.
     Redirects are refused so a 3xx cannot forward telemetry to a new
     origin; its status is returned and the sender drops it without retry.
+    Standard urllib proxy environment variables are honoured by design.
     Transport failures (DNS, refused connection, timeout) RAISE; the
     sender treats them like 5xx and retries once.
     """
@@ -259,6 +268,7 @@ class PostHogSender:
         self._draining = False
         self._closed = False
         self._cap_logged: set[str] = set()
+        self._invalid_batch_logged = False
         _instances.add(self)
 
     # ----------------------------------------------------------------- API
@@ -267,7 +277,7 @@ class PostHogSender:
         """Accept one built item; ``True`` iff it was queued for sending.
 
         Never raises, never blocks, O(1). Drops (returns ``False``) for
-        any of the five reasons in the module docstring.
+        any of the six reasons in the module docstring.
         """
         try:
             return self._capture(item)
@@ -289,6 +299,10 @@ class PostHogSender:
         pending if that could not happen in time (e.g. a hung POST).
         Never raises; safe to call after :meth:`close`.
         """
+        with self._lock:
+            restart_thread = bool(self._queue) and not self._closed
+        if restart_thread:
+            self._ensure_thread()
         with self._lock:
             if not self._queue and not self._draining:
                 return
@@ -336,19 +350,14 @@ class PostHogSender:
             return False
         if not self._allowed():
             return False
-        event = item.get("event") if isinstance(item, Mapping) else None
+        snapshot = envelope._snapshot_item(item)
+        if snapshot is None:
+            return False
+        event = snapshot.get("event")
         if not isinstance(event, str) or not event:
             # The per-event caps key off the event name; an item without
             # one cannot be accounted for, so it never queues.
             return False
-        # One-level snapshot (the item plus a nested ``properties``
-        # mapping), the same shape ``envelope`` guards with: a caller
-        # mutating an item between capture and flush must not be able to
-        # change what reaches the wire.
-        snapshot = dict(item)
-        props = snapshot.get("properties")
-        if isinstance(props, Mapping):
-            snapshot["properties"] = dict(props)
         now = self._clock()
         with self._lock:
             if self._closed:
@@ -460,37 +469,48 @@ class PostHogSender:
         if not batch:
             return
         try:
-            try:
-                stamp = self._gate()
-                if stamp is None or not self._allowed():
-                    # The build stopped being official or permission was
-                    # withdrawn between capture and flush: drop fail closed.
-                    return
-            except Exception:
-                # Permission/gate failures are denials, never permission.
-                return
-            # This narrows the optional type and makes the explicit guard above
-            # observable to a direct _drain regression test if it is removed.
-            assert stamp is not None
-            posthog_key = stamp.posthog_key
             url = _resolve_posthog_url()
             for start in range(0, len(batch), envelope.MAX_BATCH_ITEMS):
+                stamp = self._permission_stamp()
+                if stamp is None:
+                    # Drop this chunk and everything after it when the build
+                    # gate or permission changes during a multi-POST drain.
+                    break
                 chunk = batch[start : start + envelope.MAX_BATCH_ITEMS]
                 try:
-                    payload = envelope.build_batch(chunk, posthog_key)
+                    payload = envelope.build_batch(chunk, stamp.posthog_key)
                     if payload is None:
                         # build_batch rejected the envelope (e.g. a tampered
                         # key): drop the chunk rather than send malformed.
+                        self._log_invalid_batch_once()
                         continue
                     body = json.dumps(payload, separators=(",", ":")).encode("utf-8")
                 except Exception:
                     # A malformed chunk must not discard later chunks that
                     # were already popped from the queue.
                     continue
-                self._send_chunk(url, body)
+                if not self._send_chunk(url, body):
+                    break
         finally:
             with self._lock:
                 self._draining = False
+
+    def _permission_stamp(self) -> ReleaseStamp | None:
+        """Read both live send gates; any exception is a denial."""
+        try:
+            stamp = self._gate()
+            if stamp is None or not self._allowed():
+                return None
+            return stamp
+        except Exception:
+            return None
+
+    def _log_invalid_batch_once(self) -> None:
+        with self._lock:
+            if self._invalid_batch_logged:
+                return
+            self._invalid_batch_logged = True
+        logger.debug("posthog build_batch rejected a chunk; malformed events dropped")
 
     def _after_fork_child(self) -> None:
         """Discard inherited work and replace synchronization in a child."""
@@ -503,25 +523,32 @@ class PostHogSender:
         self._draining = False
         self._force = False
 
-    def _send_chunk(self, url: str, body: bytes) -> None:
+    def _send_chunk(self, url: str, body: bytes) -> bool:
         """POST one chunk with the one-retry discipline.
 
-        2xx: done. 4xx: retrying will not change the answer — drop.
+        Returns ``False`` only when a live gate refuses immediately before an
+        attempt, telling the drain to drop every remaining chunk. 2xx: done.
+        3xx/4xx: retrying will not change the answer — drop this chunk.
         5xx or a transport failure: ONE immediate retry, then drop for
         good. No retry storm, nothing raised.
         """
+        if self._permission_stamp() is None:
+            return False
         try:
             status = self._post(url, body, self._post_timeout)
         except Exception:
             status = None
         if isinstance(status, int) and 200 <= status < 300:
-            return
-        if isinstance(status, int) and 400 <= status < 500:
-            return
+            return True
+        if isinstance(status, int) and 300 <= status < 500:
+            return True
+        if self._permission_stamp() is None:
+            return False
         try:
             self._post(url, body, self._post_timeout)
         except Exception:
             pass
+        return True
 
 
 # -------------------------------------------------------------- singleton
@@ -529,6 +556,7 @@ class PostHogSender:
 _sender: PostHogSender | None = None
 _sender_lock = threading.Lock()
 _atexit_installed = False
+_at_fork_installed = globals().get("_at_fork_installed", False)
 
 
 def _after_fork_child() -> None:
@@ -543,7 +571,16 @@ def _after_fork_child() -> None:
             instance._after_fork_child()
 
 
-os.register_at_fork(after_in_child=_after_fork_child)
+def _register_at_fork_once() -> None:
+    """Register the child reset once, including across module reloads."""
+    global _at_fork_installed
+    if _at_fork_installed:
+        return
+    os.register_at_fork(after_in_child=_after_fork_child)
+    _at_fork_installed = True
+
+
+_register_at_fork_once()
 
 
 def get_sender() -> PostHogSender:
@@ -575,9 +612,9 @@ def _flush_at_exit() -> None:
 def install_atexit() -> None:
     """Register the process-exit flush. Idempotent; called by the wiring PR.
 
-    Nothing global is registered by import or by ``close()`` — only an
-    explicit ``install_atexit()`` hooks the sender into interpreter
-    shutdown.
+    Import registers only the idempotent fork-safety hook. Neither import nor
+    ``close()`` registers an exit callback; only this explicit call hooks the
+    sender into interpreter shutdown.
     """
     global _atexit_installed
     with _sender_lock:
