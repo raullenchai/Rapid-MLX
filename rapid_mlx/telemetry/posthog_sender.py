@@ -592,10 +592,14 @@ def get_sender() -> PostHogSender:
 
 
 def _reset_for_tests() -> None:
-    """Drop the singleton (closing the old one). Tests-only seam."""
-    global _sender
+    """Drop singleton and process-exit wiring. Tests-only seam."""
+    global _atexit_installed, _sender
     with _sender_lock:
         sender, _sender = _sender, None
+        unregister_exit = _atexit_installed
+        _atexit_installed = False
+    if unregister_exit:
+        atexit.unregister(_flush_at_exit)
     if sender is not None:
         sender.close(timeout=0.5)
 

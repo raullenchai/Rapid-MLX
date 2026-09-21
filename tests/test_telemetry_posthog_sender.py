@@ -1126,6 +1126,17 @@ def test_exit_flush_refuses_late_captures(sender_env, monkeypatch):
     s.close(0.5)
 
 
+def test_nonclosing_flush_allows_later_capture(sender_env):
+    post = RecordingPost()
+    s = make_sender(post)
+    assert s.capture(item()) is True
+    s.flush(1.0)
+    assert s.capture(item(n=2)) is True
+    s.flush(1.0)
+    assert len(post) == 2
+    s.close(0.5)
+
+
 def test_get_sender_singleton_and_reset(sender_env):
     first = get_sender()
     assert get_sender() is first
@@ -1142,6 +1153,18 @@ def test_install_atexit_registers_once(sender_env, monkeypatch):
     install_atexit()
     assert len(registered) == 1
     registered[0]()  # the exit handler runs clean on an empty sender
+
+
+def test_reset_unregisters_exit_hook_and_clears_latch(sender_env, monkeypatch):
+    registered: list[Callable[[], None]] = []
+    unregistered: list[Callable[[], None]] = []
+    monkeypatch.setattr(ph.atexit, "register", lambda fn: registered.append(fn))
+    monkeypatch.setattr(ph.atexit, "unregister", lambda fn: unregistered.append(fn))
+    install_atexit()
+    _reset_for_tests()
+    assert unregistered == registered == [ph._flush_at_exit]
+    install_atexit()
+    assert registered == [ph._flush_at_exit, ph._flush_at_exit]
 
 
 def test_at_fork_registration_is_idempotent_across_reload(sender_env):

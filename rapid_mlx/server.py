@@ -698,11 +698,11 @@ def _build_primary_model_lifecycle(engine: object) -> PrimaryModelLifecycle:
 
 
 def _flush_v2_telemetry() -> None:
-    """Close and drain the v2 sender without disturbing server shutdown."""
+    """Drain v2 without permanently closing an embedded/reloaded process."""
     try:
         from rapid_mlx.telemetry import posthog_sender as _posthog_sender
 
-        _posthog_sender._flush_at_exit()
+        _posthog_sender.get_sender().flush(2.0)
     except Exception:
         logger.debug("telemetry v2 flush failed (non-fatal)")
 
@@ -3750,6 +3750,9 @@ Examples:
     from .telemetry import consent_runtime
 
     consent_runtime.startup(long_lived=True)
+    from .telemetry import track as telemetry_v2
+
+    telemetry_v2.start_lifecycle("server")
 
     from .routes.video import configure_video_jobs
 

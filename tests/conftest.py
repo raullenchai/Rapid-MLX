@@ -14,7 +14,6 @@ def _forbid_uninjected_posthog_default_post():
     """Fail the suite if a test sender reaches the production transport seam."""
     from rapid_mlx.telemetry import posthog_sender
 
-    original = posthog_sender.default_post
     calls: list[str] = []
 
     def forbidden(url: str, body: bytes, timeout: float) -> int:
@@ -23,8 +22,22 @@ def _forbid_uninjected_posthog_default_post():
 
     posthog_sender.default_post = forbidden
     yield
-    posthog_sender.default_post = original
     assert calls == []
+
+
+@pytest.fixture(autouse=True)
+def _isolate_v2_telemetry_process_state(monkeypatch):
+    """Keep lifecycle singletons and real atexit hooks out of every test."""
+    from rapid_mlx.telemetry import consent_runtime, posthog_sender, track
+
+    posthog_sender._reset_for_tests()
+    track._reset_for_tests()
+    consent_runtime._reset_runtime_state_for_tests()
+    monkeypatch.setattr(posthog_sender, "install_atexit", lambda: None)
+    yield
+    posthog_sender._reset_for_tests()
+    track._reset_for_tests()
+    consent_runtime._reset_runtime_state_for_tests()
 
 
 # One-time, session-scoped availability probe for the Apple-only ``mlx``

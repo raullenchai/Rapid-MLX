@@ -14013,11 +14013,9 @@ def _start_v2_lifecycle(command: str | None) -> None:
         if consent_runtime.detect_role() is ProcessRole.SIDECAR:
             return
 
-        from rapid_mlx.telemetry import posthog_sender
         from rapid_mlx.telemetry import track as telemetry_v2
 
-        posthog_sender.install_atexit()
-        telemetry_v2._emit_app_opened("server" if command == "serve" else "cli")
+        telemetry_v2.start_lifecycle("server" if command == "serve" else "cli")
     except Exception:
         # Telemetry cannot alter the host command's exit code or output.
         return

@@ -51,8 +51,16 @@ def _process_context() -> _ProcessContext | None:
         if _context_resolved:
             return _context
 
-        # Machine facts are the first operation in the emit path. The frozen
-        # snapshot cannot change during a process and is reused by every event.
+        # The build gate must be the first operation: a developer checkout or
+        # untrusted build must not even read machine facts, much less create an
+        # install id or initialize an emit session.
+        stamp = build_gate.official_build()
+        if stamp is None:
+            _context_resolved = True
+            return None
+
+        # The frozen snapshot cannot change during a process and is reused by
+        # every event.
         platform = common_props.read_platform_facts()
         surface = _surface or "cli"
 
@@ -63,18 +71,25 @@ def _process_context() -> _ProcessContext | None:
         install_id = state.get_or_create_client_id()
         session_id = emit.session_id()
         app_version = rapid_mlx.__version__
-        stamp = build_gate.official_build()
-        if stamp is not None:
-            _context = _ProcessContext(
-                platform=platform,
-                surface=surface,
-                install_id=install_id,
-                session_id=session_id,
-                app_version=app_version,
-                channel=stamp.channel,
-            )
+        _context = _ProcessContext(
+            platform=platform,
+            surface=surface,
+            install_id=install_id,
+            session_id=session_id,
+            app_version=app_version,
+            channel=stamp.channel,
+        )
         _context_resolved = True
         return _context
+
+
+def _upload_allowed() -> bool:
+    """Apply the no-side-effect gates in their required order."""
+    if build_gate.official_build() is None:
+        return False
+    from rapid_mlx.telemetry import consent_runtime
+
+    return consent_runtime.upload_allowed()
 
 
 def track(
@@ -85,6 +100,8 @@ def track(
 ) -> None:
     """Queue one registry-approved v2 event without blocking or raising."""
     try:
+        if not _upload_allowed():
+            return
         context = _process_context()
         if context is None:
             return
@@ -118,8 +135,13 @@ def track(
 
 
 def _emit_app_opened(surface: str) -> None:
-    """Attempt ``app_opened`` once per process for an eligible CLI run."""
+    """Attempt ``app_opened`` once per process for an eligible process."""
     global _app_opened_attempted
+    try:
+        if not _upload_allowed():
+            return
+    except Exception:
+        return
     with _context_lock:
         if _app_opened_attempted:
             return
@@ -128,9 +150,24 @@ def _emit_app_opened(surface: str) -> None:
     track("app_opened", {})
 
 
+def start_lifecycle(surface: str) -> None:
+    """Start one eligible process lifecycle without affecting its host."""
+    try:
+        if surface not in ("cli", "server") or not _upload_allowed():
+            return
+        from rapid_mlx.telemetry import posthog_sender
+
+        posthog_sender.install_atexit()
+        _emit_app_opened(surface)
+    except Exception:
+        return
+
+
 def emit_active_day(*, _store: _ActiveDayStore = store) -> None:
     """Emit only for the first successful-inference claim of this UTC day."""
     try:
+        if not _upload_allowed():
+            return
         if _store.claim_active_day() is True:
             track("active_day", {})
     except Exception:
