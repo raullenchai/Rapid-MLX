@@ -274,26 +274,33 @@ struct GitHubStarPromptCoordinatorTests {
         }
         let clock = ContinuousClock()
         let pidDeadline = clock.now.advanced(by: .seconds(3))
-        while !FileManager.default.fileExists(atPath: pidFile.path), clock.now < pidDeadline {
+        var pids: [pid_t]?
+        while pids == nil, clock.now < pidDeadline {
+            if let pidText = try? String(contentsOf: pidFile, encoding: .utf8)
+                .trimmingCharacters(in: .whitespacesAndNewlines) {
+                let fields = pidText.split(separator: " ")
+                let parsed = fields.compactMap { pid_t($0) }
+                if fields.count == 2, parsed.count == 2 {
+                    pids = parsed
+                    break
+                }
+            }
             try await Task.sleep(for: .milliseconds(10))
         }
-        let pidText = try String(contentsOf: pidFile, encoding: .utf8)
-            .trimmingCharacters(in: .whitespacesAndNewlines)
-        let pids = try pidText.split(separator: " ").map {
-            try #require(pid_t($0))
-        }
-        #expect(pids.count == 2)
-
         request.cancel()
         await #expect(throws: CancellationError.self) {
             try await request.value
         }
+        let recordedPIDs = try #require(
+            pids,
+            "the helper must publish both the shell and descendant PIDs before cancellation"
+        )
 
         let reapDeadline = clock.now.advanced(by: .seconds(3))
-        while pids.contains(where: { kill($0, 0) == 0 }), clock.now < reapDeadline {
+        while recordedPIDs.contains(where: { kill($0, 0) == 0 }), clock.now < reapDeadline {
             try await Task.sleep(for: .milliseconds(10))
         }
-        for pid in pids {
+        for pid in recordedPIDs {
             #expect(kill(pid, 0) == -1 && errno == ESRCH)
         }
     }
