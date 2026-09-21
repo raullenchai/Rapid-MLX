@@ -49,6 +49,10 @@ SIDECAR_BUILD_READY=""
 SIDECAR_BUILD_STARTED=0
 PARALLEL_SIDECAR_COMPLETE=0
 
+# A build host is never a telemetry user. This reaches both serial and
+# process-group sidecar builders and every staged-engine check they perform.
+export RAPID_MLX_TELEMETRY=0 DO_NOT_TRACK=1
+
 validate_sidecar_stage_for_rebuild() {
     local requested="$1"
     local canonical

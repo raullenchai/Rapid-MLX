@@ -56,7 +56,7 @@ def test_release_workflow_runs_content_addressed_real_image_gate() -> None:
     assert '"$V/bin/pip" wheel' in workflow
     assert "--emit-constraints" in workflow
     assert '"$V/bin/pip" check' in workflow
-    assert "HF_HUB_OFFLINE=1 RAPID_MLX_WHEEL=" in workflow
+    assert "RAPID_MLX_TELEMETRY=0 DO_NOT_TRACK=1 HF_HUB_OFFLINE=1" in workflow
     assert '"$SIDE/python/bin/python3.12"' in workflow
     assert '--model "$SIDECAR_GEMMA_SMOKE_MODEL"' in workflow
     assert (

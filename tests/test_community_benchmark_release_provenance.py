@@ -123,8 +123,7 @@ def test_the_smoke_sidecar_build_states_its_provenance() -> None:
 def test_the_sidecar_checks_the_telemetry_gate_with_its_bundled_python() -> None:
     text = (REPO / "apps/rapid-mac/scripts/build-sidecar.sh").read_text()
     telemetry_stamp = (
-        'TELEMETRY_STAMP="$STAGE/site-packages/rapid_mlx/telemetry/'
-        '_release_stamp.json"'
+        'TELEMETRY_STAMP="$STAGE/site-packages/rapid_mlx/telemetry/_release_stamp.json"'
     )
 
     assert telemetry_stamp in text
@@ -138,6 +137,37 @@ def test_the_sidecar_checks_the_telemetry_gate_with_its_bundled_python() -> None
     stamp_offset = text.index(telemetry_stamp)
     package_offset = text.index("# ----- step 7: package")
     assert stamp_offset < package_offset
+
+
+def test_every_clean_sidecar_environment_keeps_telemetry_disabled() -> None:
+    """A stripped environment must restore both build-machine kill switches."""
+
+    text = (REPO / "apps/rapid-mac/scripts/build-sidecar.sh").read_text()
+    clean_environment_lines = [line for line in text.splitlines() if "env -i" in line]
+
+    assert clean_environment_lines
+    for line in clean_environment_lines:
+        assert (
+            "RAPID_MLX_TELEMETRY=0" in line and "DO_NOT_TRACK=1" in line
+        ) or "TELEMETRY_OFF_ENV" in line, line
+
+
+def test_desktop_build_and_release_lanes_keep_both_kill_switches() -> None:
+    sidecar = BUILD_SIDECAR.read_text()
+    build = (REPO / "apps/rapid-mac/scripts/build.sh").read_text()
+    action = ACTION.read_text()
+    mac_release = (REPO / ".github/workflows/rapid-mac-release.yml").read_text()
+    auto_release = (REPO / ".github/workflows/auto-release.yml").read_text()
+
+    assert "TELEMETRY_OFF_ENV=(RAPID_MLX_TELEMETRY=0 DO_NOT_TRACK=1)" in sidecar
+    assert 'export "${TELEMETRY_OFF_ENV[@]}"' in sidecar
+    assert "export RAPID_MLX_TELEMETRY=0 DO_NOT_TRACK=1" in build
+    assert action.count('RAPID_MLX_TELEMETRY: "0"') >= 2
+    assert action.count('DO_NOT_TRACK: "1"') >= 2
+    for workflow in (mac_release, auto_release):
+        assert 'RAPID_MLX_TELEMETRY: "0"' in workflow
+        assert 'DO_NOT_TRACK: "1"' in workflow
+    assert auto_release.count("RAPID_MLX_TELEMETRY=0 DO_NOT_TRACK=1") >= 2
 
 
 def test_every_desktop_releasable_caller_sets_official_release() -> None:

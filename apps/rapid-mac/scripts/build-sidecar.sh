@@ -144,6 +144,12 @@ DEVELOPER_ID="${DEVELOPER_ID:--}"
 SKIP_CODESIGN=0
 SKIP_VERIFY=0
 
+# Product code executed during assembly is build-machine work, even when the
+# staged package carries an official release stamp. Keep both kill switches in
+# the inherited environment and explicitly restore them after every clean-env call.
+TELEMETRY_OFF_ENV=(RAPID_MLX_TELEMETRY=0 DO_NOT_TRACK=1)
+export "${TELEMETRY_OFF_ENV[@]}"
+
 while [ $# -gt 0 ]; do
     case "$1" in
         --out) OUT_DIR="$2"; shift 2 ;;
@@ -1147,7 +1153,7 @@ else
     SMOKE_HOME="$(mktemp -d -t rapid-sidecar-smoke.XXXXXX)"
     trap 'rm -rf "$MACHOS_LIST" "$SMOKE_HOME"' EXIT INT TERM
 
-    SMOKE_OUT="$(env -i HOME="$SMOKE_HOME" PATH=/usr/bin:/bin \
+    SMOKE_OUT="$(env -i "${TELEMETRY_OFF_ENV[@]}" HOME="$SMOKE_HOME" PATH=/usr/bin:/bin \
         "$STAGE/bin/rapid-mlx" --version 2>&1)" || {
         echo "ERR: bundle --version failed:" >&2
         echo "$SMOKE_OUT" >&2
@@ -1165,7 +1171,7 @@ else
     # python3.12 can't find `mlx` in site-packages because the install
     # used `pip --target site-packages/` which isn't on the default
     # interpreter path.
-    IMPORT_OUT="$(env -i HOME="$SMOKE_HOME" PATH=/usr/bin:/bin \
+    IMPORT_OUT="$(env -i "${TELEMETRY_OFF_ENV[@]}" HOME="$SMOKE_HOME" PATH=/usr/bin:/bin \
         PYTHONHOME="$STAGE/python" \
         PYTHONPATH="$STAGE/site-packages" \
         PYTHONNOUSERSITE=1 \
@@ -1189,7 +1195,7 @@ else
     # at build time instead of letting the bundle ship and crash on
     # the user's first gemma-4 / DiffusionGemma launch — same failure
     # class that bit v0.7.7.
-    VLM_OUT="$(env -i HOME="$SMOKE_HOME" PATH=/usr/bin:/bin \
+    VLM_OUT="$(env -i "${TELEMETRY_OFF_ENV[@]}" HOME="$SMOKE_HOME" PATH=/usr/bin:/bin \
         PYTHONHOME="$STAGE/python" \
         PYTHONPATH="$STAGE/site-packages" \
         PYTHONNOUSERSITE=1 \
@@ -1224,7 +1230,7 @@ print("mlx_vlm", mlx_vlm.__version__, "sentencepiece", sentencepiece.__version__
     # register the routes but exits when an audio alias boots; checking the
     # actual loader modules here prevents the desktop from shipping controls
     # that can never complete a request.
-    AUDIO_OUT="$(env -i HOME="$SMOKE_HOME" PATH=/usr/bin:/bin \
+    AUDIO_OUT="$(env -i "${TELEMETRY_OFF_ENV[@]}" HOME="$SMOKE_HOME" PATH=/usr/bin:/bin \
         PYTHONHOME="$STAGE/python" \
         PYTHONPATH="$STAGE/site-packages" \
         PYTHONNOUSERSITE=1 \
@@ -1236,7 +1242,7 @@ print("mlx_vlm", mlx_vlm.__version__, "sentencepiece", sentencepiece.__version__
     }
     echo "    audio import: $AUDIO_OUT"
 
-    VIDEO_OUT="$(env -i HOME="$SMOKE_HOME" PATH=/usr/bin:/bin \
+    VIDEO_OUT="$(env -i "${TELEMETRY_OFF_ENV[@]}" HOME="$SMOKE_HOME" PATH=/usr/bin:/bin \
         PYTHONHOME="$STAGE/python" \
         PYTHONPATH="$STAGE/site-packages" \
         PYTHONNOUSERSITE=1 \
@@ -1298,7 +1304,7 @@ print("mlx_video minimal runtime + VideoToolbox encode/crop OK")' 2>&1)" || {
     # `if X="$(...)" ; then` lets `set -e` see the explicit guard and
     # falls through normally on both success and failure.
     METAL_RC=0
-    if METAL_OUT="$(env -i HOME="$SMOKE_HOME" PATH=/usr/bin:/bin \
+    if METAL_OUT="$(env -i "${TELEMETRY_OFF_ENV[@]}" HOME="$SMOKE_HOME" PATH=/usr/bin:/bin \
         PYTHONHOME="$STAGE/python" \
         PYTHONPATH="$STAGE/site-packages" \
         PYTHONNOUSERSITE=1 \
