@@ -488,6 +488,55 @@ def test_nonstream_guided_user_cancel_is_not_model_replacement():
         )
 
 
+def test_nonstream_guided_lifecycle_cancel_is_model_replacement():
+    """A guided cancellation OWNED by the engine (the primary model was
+    replaced under the request) must surface the stable ``model_replacement``
+    503 envelope so the GUI reads a calm "ask again" -- not the generic failure
+    card. This lane previously raised a bare-string 503 with no code."""
+
+    class _ReplacedEngine(_GuidedEngine):
+        async def generate_with_schema(self, *, messages, json_schema, **kwargs):
+            err = GuidedGenerationCancelledError()
+            # A truthy owning task marks this as a model replacement (vs. a
+            # plain user cancel, which has no lifecycle task and propagates).
+            err.lifecycle_task = object()
+            raise err
+
+        def consume_lifecycle_task_abort(self, task) -> bool:
+            return True
+
+    cfg = reset_config()
+    cfg.engine = _ReplacedEngine()
+    cfg.model_name = "test-model"
+    cfg.model_registry = None
+    app = FastAPI()
+    app.include_router(chat_router)
+    client = TestClient(app)
+
+    response = client.post(
+        "/v1/chat/completions",
+        json={
+            "model": "test-model",
+            "messages": [{"role": "user", "content": "emit json"}],
+            "response_format": {
+                "type": "json_schema",
+                "json_schema": {
+                    "name": "result",
+                    "schema": {"type": "object"},
+                    "strict": False,
+                },
+            },
+        },
+    )
+    assert response.status_code == 503, response.text
+    body = response.json()
+    # A bare FastAPI app surfaces a dict detail under ``detail``; the production
+    # server's handlers unwrap it to ``error`` -- accept either.
+    err = body.get("error") or body.get("detail", {}).get("error")
+    assert err is not None, body
+    assert err["code"] == "model_replacement"
+
+
 _SCHEMA = {
     "type": "object",
     "$defs": {

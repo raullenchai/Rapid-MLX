@@ -515,6 +515,50 @@ class TestEngineAbortClassification:
             == ENGINE_ABORT_CODE_INSUFFICIENT_MEMORY
         )
 
+    def test_canonical_memory_exceptions_classify_by_type_and_errno(self):
+        """Load-time OOM often surfaces as a bare ``MemoryError`` (host RAM
+        exhausted materialising weights) or a POSIX ``OSError(ENOMEM)`` (an
+        mmap/allocation failure) -- NEITHER of which carries allocation-failure
+        wording to match on. They must still classify as memory (right card +
+        ``Retry-After``), so the classifier recognises them by type/errno."""
+        import errno
+
+        from rapid_mlx.request import (
+            ENGINE_ABORT_CODE_INSUFFICIENT_MEMORY,
+            classify_engine_abort,
+        )
+
+        assert (
+            classify_engine_abort(MemoryError())
+            == ENGINE_ABORT_CODE_INSUFFICIENT_MEMORY
+        )
+        assert (
+            classify_engine_abort(OSError(errno.ENOMEM, "Cannot allocate memory"))
+            == ENGINE_ABORT_CODE_INSUFFICIENT_MEMORY
+        )
+        # The ENOMEM strerror also matches by text when it is wrapped and the
+        # errno itself is no longer reachable (e.g. a re-raised RuntimeError).
+        assert (
+            classify_engine_abort(RuntimeError("mmap failed: Cannot allocate memory"))
+            == ENGINE_ABORT_CODE_INSUFFICIENT_MEMORY
+        )
+
+    def test_non_enomem_oserror_is_not_memory(self):
+        """A non-``ENOMEM`` ``OSError`` (a missing/corrupt weight file) is a
+        load failure, NOT a memory shortfall -- it must not be mislabelled OOM
+        just because it is an ``OSError``."""
+        import errno
+
+        from rapid_mlx.request import (
+            ENGINE_ABORT_CODE_ENGINE_ABORTED,
+            classify_engine_abort,
+        )
+
+        assert (
+            classify_engine_abort(FileNotFoundError(errno.ENOENT, "No such file"))
+            == ENGINE_ABORT_CODE_ENGINE_ABORTED
+        )
+
     def test_every_code_is_a_member_of_the_closed_set(self):
         from rapid_mlx.request import ENGINE_ABORT_CODES, classify_engine_abort
 

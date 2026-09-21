@@ -902,7 +902,11 @@ async def test_ensure_engine_ready_releases_on_cancel_and_failure():
     with pytest.raises(HTTPException) as raised:
         await ensure_engine_ready(engine)
     assert raised.value.status_code == 503
+    # A 503 keeps its standard ``Retry-After`` hint; the client tells the OOM
+    # case apart from a generic load failure by the envelope ``code``, not the
+    # header (see tests/test_faithful_error_codes.py).
     assert raised.value.headers == {"Retry-After": "5"}
+    assert raised.value.detail["error"]["code"] == "model_load_failed"
     assert lifecycle.snapshot()["active_request_owners"] == 0
 
     other = FakeEngine(loaded=True)

@@ -2468,8 +2468,17 @@ private struct MessageRow: View {
     private var failureCaption: some View {
         Text(message.errorMessage ?? "The model couldn't complete that request.")
             .font(.footnote)
-            .foregroundStyle(RapidTheme.statusError)
+            .foregroundStyle(failureCaptionTint)
             .frame(maxWidth: .infinity, alignment: .leading)
+    }
+
+    /// A cooperative ``.notice`` — a model swap that superseded the request —
+    /// is not a fault, so it must not wear the red error lane. Tint it
+    /// secondary, the same way the tool-failure chip does for a notice; genuine
+    /// failures stay on ``statusError``.
+    private var failureCaptionTint: Color {
+        if message.failureKind?.severity == .notice { return .secondary }
+        return RapidTheme.statusError
     }
 
     /// A ``.complete`` row can still carry a soft, non-error caption —
