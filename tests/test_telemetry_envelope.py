@@ -353,6 +353,11 @@ def test_build_batch_rejects_missing_or_malformed_item_uuid(bad_uuid):
     assert env.build_batch([item], "k") is None
 
 
+def test_snapshot_item_rejects_uuid_object_instead_of_coercing_it():
+    item = {"uuid": uuid.UUID(_UUID), "event": "app_opened", "properties": {}}
+    assert env._snapshot_item(item) is None
+
+
 @pytest.mark.parametrize(
     "spelling",
     [

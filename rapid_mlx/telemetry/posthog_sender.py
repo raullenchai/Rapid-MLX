@@ -488,6 +488,7 @@ class PostHogSender:
                 except Exception:
                     # A malformed chunk must not discard later chunks that
                     # were already popped from the queue.
+                    # envelope.build_batch_item items are registry-validated and always JSON-serialisable; only a hand-built item can poison a chunk, and dropping it is accepted.
                     continue
                 if not self._send_chunk(url, body):
                     break
@@ -526,6 +527,8 @@ class PostHogSender:
     def _send_chunk(self, url: str, body: bytes) -> bool:
         """POST one chunk with the one-retry discipline.
 
+        The permission check is deliberately duplicated in the drain loop and
+        before each attempt; this per-attempt check is the load-bearing one.
         Returns ``False`` only when a live gate refuses immediately before an
         attempt, telling the drain to drop every remaining chunk. 2xx: done.
         3xx/4xx: retrying will not change the answer — drop this chunk.

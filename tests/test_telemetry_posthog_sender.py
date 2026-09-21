@@ -815,6 +815,19 @@ def test_url_override_rejects_loopback_suffixes(sender_env, monkeypatch, hostile
 # ------------------------------------------------------- thread behaviour
 
 
+def test_empty_flush_never_starts_a_thread_even_after_close(sender_env):
+    idle = make_sender()
+    assert idle._thread is None
+    idle.flush(0.5)
+    assert idle._thread is None
+
+    closed = make_sender()
+    closed.close(0.5)
+    assert closed._thread is None
+    closed.flush(0.5)
+    assert closed._thread is None
+
+
 def test_flush_thread_is_daemon_and_starts_lazily(sender_env):
     s = make_sender()
     assert s._thread is None  # construction starts nothing
