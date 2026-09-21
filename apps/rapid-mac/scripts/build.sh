@@ -49,6 +49,10 @@ SIDECAR_BUILD_READY=""
 SIDECAR_BUILD_STARTED=0
 PARALLEL_SIDECAR_COMPLETE=0
 
+# A build host is never a telemetry user. This reaches both serial and
+# process-group sidecar builders and every staged-engine check they perform.
+export RAPID_MLX_TELEMETRY=0 DO_NOT_TRACK=1
+
 validate_sidecar_stage_for_rebuild() {
     local requested="$1"
     local canonical
@@ -524,12 +528,14 @@ elif [[ ! -d "$ENGINE_ROOT" || ! -f "$ENGINE_ROOT/pyproject.toml" ]]; then
     exit 1
 else
     FORCE_SIDECAR_REBUILD="${FORCE_SIDECAR_REBUILD:-0}"
+    SIDECAR_OFFICIAL_RELEASE="${RAPID_MLX_OFFICIAL_RELEASE:-0}"
     SIDECAR_CACHE_KEY=""
     SIDECAR_CACHE_HIT=0
 
-    # Cache only clean, default-source local builds. A release identity must
-    # sign and verify every Mach-O afresh; a dirty source tree has no stable
-    # commit identity and must not be hidden behind an old bundle.
+    # Cache only clean, default-source local builds. Official and source builds
+    # use distinct keys because the staged package's telemetry stamp differs.
+    # A release identity must sign and verify every Mach-O afresh; a dirty source
+    # tree has no stable commit identity and must not be hidden behind an old bundle.
     if [[ "${CODESIGN_IDENTITY:--}" == "-" && -z "${RAPID_MLX_SOURCE:-}" ]]; then
         SIDECAR_SOURCE_SHA="$(git -C "$ENGINE_ROOT" rev-parse HEAD 2>/dev/null || true)"
         SIDECAR_SOURCE_STATUS="$(git -C "$ENGINE_ROOT" status --porcelain --untracked-files=normal 2>/dev/null || echo unavailable)"
@@ -542,7 +548,7 @@ else
                 | shasum -a 256 \
                 | awk '{print $1}'
             )"
-            SIDECAR_CACHE_KEY="v1:${SIDECAR_SOURCE_SHA}:${SIDECAR_RECIPE_HASH}"
+            SIDECAR_CACHE_KEY="v2:${SIDECAR_SOURCE_SHA}:${SIDECAR_RECIPE_HASH}:${SIDECAR_OFFICIAL_RELEASE}"
             if [[ "$FORCE_SIDECAR_REBUILD" != "1" \
                 && -f "$SIDECAR_CACHE_STAMP" \
                 && "$(cat "$SIDECAR_CACHE_STAMP")" == "$SIDECAR_CACHE_KEY" \

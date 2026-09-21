@@ -691,6 +691,28 @@ def test_official_build_truth_table(
     assert build_gate.official_build() == expected
 
 
+def test_official_build_ignores_runtime_kill_switches(monkeypatch, tmp_path):
+    """The gate identifies release bytes; consent separately controls uploads."""
+
+    stamp = _write_stamp(tmp_path, "stable", VALID_KEY)
+    _point_module_at(monkeypatch, tmp_path)
+    monkeypatch.setattr(build_gate, "_stamp_path", lambda: stamp)
+    monkeypatch.setattr(
+        build_gate,
+        "distributions",
+        lambda: iter(
+            [_dist_bound_to_running_package(_direct_url_payload({"editable": False}))]
+        ),
+    )
+    monkeypatch.setattr(build_gate, "_package_is_in_source_tree", lambda _dir: False)
+    monkeypatch.setenv("RAPID_MLX_TELEMETRY", "0")
+    monkeypatch.setenv("DO_NOT_TRACK", "1")
+    monkeypatch.setenv("CI", "true")
+    monkeypatch.setenv("GITHUB_ACTIONS", "true")
+
+    assert build_gate.official_build() == ReleaseStamp("stable", VALID_KEY)
+
+
 def test_official_build_result_is_cached_until_reset(monkeypatch, tmp_path):
     stamp = _write_stamp(tmp_path, "stable", VALID_KEY)
     _point_module_at(monkeypatch, tmp_path)

@@ -144,6 +144,12 @@ DEVELOPER_ID="${DEVELOPER_ID:--}"
 SKIP_CODESIGN=0
 SKIP_VERIFY=0
 
+# Product code executed during assembly is build-machine work, even when the
+# staged package carries an official release stamp. Keep both kill switches in
+# the inherited environment and explicitly restore them after every clean-env call.
+TELEMETRY_OFF_ENV=(RAPID_MLX_TELEMETRY=0 DO_NOT_TRACK=1)
+export "${TELEMETRY_OFF_ENV[@]}"
+
 while [ $# -gt 0 ]; do
     case "$1" in
         --out) OUT_DIR="$2"; shift 2 ;;
@@ -1147,7 +1153,7 @@ else
     SMOKE_HOME="$(mktemp -d -t rapid-sidecar-smoke.XXXXXX)"
     trap 'rm -rf "$MACHOS_LIST" "$SMOKE_HOME"' EXIT INT TERM
 
-    SMOKE_OUT="$(env -i HOME="$SMOKE_HOME" PATH=/usr/bin:/bin \
+    SMOKE_OUT="$(env -i "${TELEMETRY_OFF_ENV[@]}" HOME="$SMOKE_HOME" PATH=/usr/bin:/bin \
         "$STAGE/bin/rapid-mlx" --version 2>&1)" || {
         echo "ERR: bundle --version failed:" >&2
         echo "$SMOKE_OUT" >&2
@@ -1165,7 +1171,7 @@ else
     # python3.12 can't find `mlx` in site-packages because the install
     # used `pip --target site-packages/` which isn't on the default
     # interpreter path.
-    IMPORT_OUT="$(env -i HOME="$SMOKE_HOME" PATH=/usr/bin:/bin \
+    IMPORT_OUT="$(env -i "${TELEMETRY_OFF_ENV[@]}" HOME="$SMOKE_HOME" PATH=/usr/bin:/bin \
         PYTHONHOME="$STAGE/python" \
         PYTHONPATH="$STAGE/site-packages" \
         PYTHONNOUSERSITE=1 \
@@ -1189,7 +1195,7 @@ else
     # at build time instead of letting the bundle ship and crash on
     # the user's first gemma-4 / DiffusionGemma launch — same failure
     # class that bit v0.7.7.
-    VLM_OUT="$(env -i HOME="$SMOKE_HOME" PATH=/usr/bin:/bin \
+    VLM_OUT="$(env -i "${TELEMETRY_OFF_ENV[@]}" HOME="$SMOKE_HOME" PATH=/usr/bin:/bin \
         PYTHONHOME="$STAGE/python" \
         PYTHONPATH="$STAGE/site-packages" \
         PYTHONNOUSERSITE=1 \
@@ -1224,7 +1230,7 @@ print("mlx_vlm", mlx_vlm.__version__, "sentencepiece", sentencepiece.__version__
     # register the routes but exits when an audio alias boots; checking the
     # actual loader modules here prevents the desktop from shipping controls
     # that can never complete a request.
-    AUDIO_OUT="$(env -i HOME="$SMOKE_HOME" PATH=/usr/bin:/bin \
+    AUDIO_OUT="$(env -i "${TELEMETRY_OFF_ENV[@]}" HOME="$SMOKE_HOME" PATH=/usr/bin:/bin \
         PYTHONHOME="$STAGE/python" \
         PYTHONPATH="$STAGE/site-packages" \
         PYTHONNOUSERSITE=1 \
@@ -1236,7 +1242,7 @@ print("mlx_vlm", mlx_vlm.__version__, "sentencepiece", sentencepiece.__version__
     }
     echo "    audio import: $AUDIO_OUT"
 
-    VIDEO_OUT="$(env -i HOME="$SMOKE_HOME" PATH=/usr/bin:/bin \
+    VIDEO_OUT="$(env -i "${TELEMETRY_OFF_ENV[@]}" HOME="$SMOKE_HOME" PATH=/usr/bin:/bin \
         PYTHONHOME="$STAGE/python" \
         PYTHONPATH="$STAGE/site-packages" \
         PYTHONNOUSERSITE=1 \
@@ -1298,7 +1304,7 @@ print("mlx_video minimal runtime + VideoToolbox encode/crop OK")' 2>&1)" || {
     # `if X="$(...)" ; then` lets `set -e` see the explicit guard and
     # falls through normally on both success and failure.
     METAL_RC=0
-    if METAL_OUT="$(env -i HOME="$SMOKE_HOME" PATH=/usr/bin:/bin \
+    if METAL_OUT="$(env -i "${TELEMETRY_OFF_ENV[@]}" HOME="$SMOKE_HOME" PATH=/usr/bin:/bin \
         PYTHONHOME="$STAGE/python" \
         PYTHONPATH="$STAGE/site-packages" \
         PYTHONNOUSERSITE=1 \
@@ -1482,6 +1488,52 @@ else
 fi
 PYTHONNOUSERSITE=1 python3 "$REPO_ROOT/scripts/write-sidecar-stamp.py" \
     "$STAMP" "$OFFICIAL_RELEASE" "$SIDECAR_REVISION" "$SIDECAR_DIRTY"
+
+# --- telemetry release stamp (begin) ---
+# Telemetry v2 transmits only when the installed package contains the release
+# stamp AND build_gate can prove that the running code is a non-editable,
+# non-source install. Write only into the fresh sidecar stage: the checkout
+# must never be stamped. Derive the channel from the distribution actually
+# bundled above (including rc versions), not from the Desktop tag prefix.
+TELEMETRY_STAMP="$STAGE/site-packages/rapid_mlx/telemetry/_release_stamp.json"
+if [[ "$OFFICIAL_RELEASE" == "1" ]]; then
+    SIDECAR_ENGINE_VERSION="$(
+        PYTHONPATH="$STAGE/site-packages" PYTHONNOUSERSITE=1 \
+            "$STAGE/python/bin/python3.12" -c \
+            'from importlib.metadata import version; print(version("rapid-mlx"))'
+    )"
+    echo "==> stamping telemetry release v$SIDECAR_ENGINE_VERSION -> $TELEMETRY_STAMP"
+    # No --force by design: a wheel carrying a different stamp must fail an
+    # official build instead of silently replacing its provenance.
+    PYTHONNOUSERSITE=1 python3 "$ENGINE_ROOT/scripts/write_release_stamp.py" \
+        --version "$SIDECAR_ENGINE_VERSION" \
+        --dest "$TELEMETRY_STAMP"
+else
+    # A source tree normally has no stamp, but removing one here also keeps a
+    # non-official build silent if RAPID_MLX_WHEEL points at stamped bytes.
+    rm -f "$TELEMETRY_STAMP"
+fi
+# --- telemetry release stamp (end) ---
+
+# Run the gate through the exact interpreter and package tree that ship. This
+# also proves that pip's non-editable local-directory install is accepted by
+# the PEP 610/source-tree checks. Keep the inverse assertion in every cheap
+# dev/smoke build so a stray inherited stamp cannot enable transmission.
+PYTHONPATH="$STAGE/site-packages" PYTHONDONTWRITEBYTECODE=1 PYTHONNOUSERSITE=1 \
+    "$STAGE/python/bin/python3.12" - "$OFFICIAL_RELEASE" <<'PY'
+import sys
+
+from rapid_mlx.telemetry.build_gate import official_build
+
+official = sys.argv[1] == "1"
+result = official_build()
+if (result is not None) != official:
+    raise SystemExit(
+        "telemetry release gate mismatch: "
+        f"official_release={official}, official_build()={result!r}"
+    )
+print(f"telemetry release gate verified: official_build()={result!r}")
+PY
 # Recompile so the stamped package is consistent with the .pyc set shipped
 # alongside it.
 PYTHONNOUSERSITE=1 "$STAGE/python/bin/python3.12" -m compileall -q \

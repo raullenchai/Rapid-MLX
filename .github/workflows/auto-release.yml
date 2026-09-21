@@ -58,6 +58,7 @@ permissions:
 # switch stays on while they run.
 env:
   RAPID_MLX_TELEMETRY: "0"
+  DO_NOT_TRACK: "1"
 
 jobs:
   # 1) Cheap detection on a hosted runner: is this a version bump we should
@@ -421,7 +422,8 @@ jobs:
           # shipped and never publishes a benchmark, so it stamps itself a
           # source build like any other non-release build. Stating it here
           # means the default can change without silently relabelling this.
-          HF_HUB_OFFLINE=1 RAPID_MLX_WHEEL="$CANDIDATE_WHEEL" \
+          RAPID_MLX_TELEMETRY=0 DO_NOT_TRACK=1 HF_HUB_OFFLINE=1 \
+            RAPID_MLX_WHEEL="$CANDIDATE_WHEEL" \
             RAPID_MLX_OFFICIAL_RELEASE=0 \
             bash apps/rapid-mac/scripts/build-sidecar.sh \
             --out "$RUNNER_TEMP/desktop-vision-sidecar-$VERSION"
@@ -430,7 +432,8 @@ jobs:
           # chat-photo families. The build-sidecar invocation proves Qwen;
           # reuse those exact built bytes for an independent Gemma4 request.
           SIDE="$RUNNER_TEMP/desktop-vision-sidecar-$VERSION/rapid-mlx"
-          HF_HUB_OFFLINE=1 PYTHONPATH="$SIDE/site-packages" PYTHONNOUSERSITE=1 \
+          RAPID_MLX_TELEMETRY=0 DO_NOT_TRACK=1 HF_HUB_OFFLINE=1 \
+            PYTHONPATH="$SIDE/site-packages" PYTHONNOUSERSITE=1 \
             "$SIDE/python/bin/python3.12" \
             apps/rapid-mac/scripts/smoke-sidecar-vision.py \
             --sidecar-root "$SIDE" \
