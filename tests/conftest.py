@@ -8,6 +8,25 @@ import sys
 
 import pytest
 
+
+@pytest.fixture(scope="session", autouse=True)
+def _forbid_uninjected_posthog_default_post():
+    """Fail the suite if a test sender reaches the production transport seam."""
+    from rapid_mlx.telemetry import posthog_sender
+
+    original = posthog_sender.default_post
+    calls: list[str] = []
+
+    def forbidden(url: str, body: bytes, timeout: float) -> int:
+        calls.append(url)
+        raise AssertionError("tests must inject PostHogSender(post=...)")
+
+    posthog_sender.default_post = forbidden
+    yield
+    posthog_sender.default_post = original
+    assert calls == []
+
+
 # One-time, session-scoped availability probe for the Apple-only ``mlx``
 # runtime. This is the ONLY place conftest imports it (and even then under
 # try/except); nothing else here should import mlx at module scope, because
