@@ -15,11 +15,10 @@ Events reach PostHog Cloud by POSTing JSON to the ``/batch/`` endpoint
 
     {"api_key": <project api key>, "batch": [<item>, ...]}
 
-Each item is exactly ``{"event", "distinct_id", "timestamp",
-"properties"}``. At most ``envelope.MAX_BATCH_ITEMS`` (100) items go in
-one request — the sender chunks longer queues itself. Bodies are
-JSON-encoded compactly and sent with a fixed ``User-Agent:
-rapid-mlx-telemetry``.
+Each item is exactly ``{"uuid", "event", "distinct_id", "timestamp",
+"properties"}``. At most ``envelope.MAX_BATCH_ITEMS`` (100) items go in one
+request — the sender chunks longer queues itself. Bodies are JSON-encoded
+compactly and sent with a fixed ``User-Agent: rapid-mlx-telemetry``.
 
 The five drop reasons
 =====================
@@ -33,14 +32,14 @@ The five drop reasons
    time (environment kill switch active, or consent does not currently
    permit upload). Checked LIVE on every capture, like Orca, so a user
    who withdraws mid-session goes dark on the very next event.
-3. **Per-event burst cap** — the event name's token bucket (30 events
+3. **Per-session ceiling** — this process has already accepted 1000
+   items.
+4. **Queue full** — the in-memory queue holds 5000 items; the NEW item
+   is dropped (never the oldest, and never by blocking the caller).
+5. **Per-event burst cap** — the event name's token bucket (30 events
    per rolling minute, lazy refill, capacity bounded) is empty.
    Unknown event names must not create unbounded buckets: the bucket
    registry itself is capped at 64 names, beyond which items drop.
-4. **Per-session ceiling** — this process has already accepted 1000
-   items.
-5. **Queue full** — the in-memory queue holds 5000 items; the NEW item
-   is dropped (never the oldest, and never by blocking the caller).
 
 Each cap overflow logs ONCE per cap per process at debug level, then
 stays silent for the rest of the process.
@@ -71,10 +70,11 @@ import logging
 import os
 import threading
 import time
+import weakref
 from collections.abc import Callable, Mapping
 from urllib.error import HTTPError
 from urllib.parse import urlparse
-from urllib.request import Request, urlopen
+from urllib.request import HTTPRedirectHandler, Request, build_opener
 
 from rapid_mlx.telemetry import build_gate, emit, envelope, state
 from rapid_mlx.telemetry.build_gate import ReleaseStamp
@@ -94,7 +94,8 @@ USER_AGENT = "rapid-mlx-telemetry"
 
 #: Burst caps (Orca's burst-cap.ts): 30 events per rolling minute per
 #: event name, 64 distinct event names, 1000 accepted items per process,
-#: 5000 queued items — in that check order inside ``capture``.
+#: 5000 queued items. Closed-form session/queue checks run before the
+#: per-event bucket so rejected items do not consume burst credit.
 PER_EVENT_BURST = 30
 PER_EVENT_REFILL_PERIOD_S = 60.0
 MAX_EVENT_BUCKETS = 64
@@ -148,9 +149,11 @@ def _resolve_posthog_url() -> str:
 def default_post(url: str, body: bytes, timeout: float) -> int:
     """Stdlib transport: ``(url, body, timeout) -> HTTP status``.
 
-    HTTP-level outcomes come back as the status code — ``urlopen``
+    HTTP-level outcomes come back as the status code — the opener
     raises ``HTTPError`` for >=400, and the code is unwrapped here so
     the sender's retry policy sees a status like the contract promises.
+    Redirects are refused so a 3xx cannot forward telemetry to a new
+    origin; its status is returned and the sender drops it without retry.
     Transport failures (DNS, refused connection, timeout) RAISE; the
     sender treats them like 5xx and retries once.
     """
@@ -161,7 +164,7 @@ def default_post(url: str, body: bytes, timeout: float) -> int:
         headers={"Content-type": "application/json", "User-agent": USER_AGENT},
     )
     try:
-        with urlopen(req, timeout=timeout) as resp:
+        with build_opener(_NoRedirect()).open(req, timeout=timeout) as resp:
             return int(resp.status)
     except HTTPError as e:
         # HTTPError holds a file-like response body; close it explicitly
@@ -174,12 +177,12 @@ def _default_allowed() -> bool:
     """Default permission check until the v2 default-on wiring lands.
 
     True only when no environment kill switch is active AND the v1
-    consent machinery currently permits upload. Read live on every
-    capture.
+    consent machinery currently permits upload. This interim check reads
+    consent live on every capture and is not O(1).
     """
     if state._env_kill_switch_active():
         return False
-    return emit.is_enabled()
+    return bool(emit.is_enabled())
 
 
 class _TokenBucket:
@@ -202,6 +205,24 @@ class _TokenBucket:
             return False
         self.tokens -= 1.0
         return True
+
+
+class _NoRedirect(HTTPRedirectHandler):
+    """Turn redirects into their original 3xx ``HTTPError`` response."""
+
+    def redirect_request(
+        self,
+        req: Request,
+        fp: object,
+        code: int,
+        msg: str,
+        headers: object,
+        newurl: str,
+    ) -> None:
+        return None
+
+
+_instances: weakref.WeakSet[PostHogSender] = weakref.WeakSet()
 
 
 class PostHogSender:
@@ -238,6 +259,7 @@ class PostHogSender:
         self._draining = False
         self._closed = False
         self._cap_logged: set[str] = set()
+        _instances.add(self)
 
     # ----------------------------------------------------------------- API
 
@@ -359,9 +381,14 @@ class PostHogSender:
     def _admit_locked(self, event: str, now: float) -> str | None:
         """The cap checks, under the lock. ``None`` means admitted.
 
-        Check order is the docstring order: burst bucket, session
-        ceiling, queue. A dropped item never displaces a queued one.
+        Closed-form checks run first: session ceiling, queue, then burst
+        bucket. A dropped item never displaces a queued one or consumes
+        burst credit unless the burst cap itself is the reason.
         """
+        if self._accepted >= SESSION_ITEM_CEILING:
+            return "session-ceiling"
+        if len(self._queue) >= MAX_QUEUE_ITEMS:
+            return "queue-full"
         bucket = self._buckets.get(event)
         if bucket is None:
             # Bounded registry: unknown event names beyond the cap drop
@@ -372,10 +399,6 @@ class PostHogSender:
             self._buckets[event] = bucket
         if not bucket.try_take(now):
             return "per-event-burst"
-        if self._accepted >= SESSION_ITEM_CEILING:
-            return "session-ceiling"
-        if len(self._queue) >= MAX_QUEUE_ITEMS:
-            return "queue-full"
         return None
 
     def _ensure_thread(self) -> None:
@@ -437,28 +460,48 @@ class PostHogSender:
         if not batch:
             return
         try:
-            stamp = self._gate()
-            if stamp is None:
-                # The build stopped being official between capture and
-                # flush: drop the batch, fail closed.
+            try:
+                stamp = self._gate()
+                if stamp is None or not self._allowed():
+                    # The build stopped being official or permission was
+                    # withdrawn between capture and flush: drop fail closed.
+                    return
+            except Exception:
+                # Permission/gate failures are denials, never permission.
                 return
+            # This narrows the optional type and makes the explicit guard above
+            # observable to a direct _drain regression test if it is removed.
+            assert stamp is not None
+            posthog_key = stamp.posthog_key
             url = _resolve_posthog_url()
             for start in range(0, len(batch), envelope.MAX_BATCH_ITEMS):
                 chunk = batch[start : start + envelope.MAX_BATCH_ITEMS]
-                payload = envelope.build_batch(chunk, stamp.posthog_key)
-                if payload is None:
-                    # build_batch rejected the envelope (e.g. a tampered
-                    # key): drop the chunk rather than send malformed.
+                try:
+                    payload = envelope.build_batch(chunk, posthog_key)
+                    if payload is None:
+                        # build_batch rejected the envelope (e.g. a tampered
+                        # key): drop the chunk rather than send malformed.
+                        continue
+                    body = json.dumps(payload, separators=(",", ":")).encode("utf-8")
+                except Exception:
+                    # A malformed chunk must not discard later chunks that
+                    # were already popped from the queue.
                     continue
-                body = json.dumps(payload, separators=(",", ":")).encode("utf-8")
                 self._send_chunk(url, body)
-        except Exception:
-            # A bad item (non-JSON-serializable) or a hostile gate drops
-            # the rest of this drain — nothing raises out of the thread.
-            return
         finally:
             with self._lock:
                 self._draining = False
+
+    def _after_fork_child(self) -> None:
+        """Discard inherited work and replace synchronization in a child."""
+        self._lock = threading.Lock()
+        self._lifecycle_lock = threading.Lock()
+        self._wake = threading.Event()
+        self._queue = []
+        self._first_queued_at = None
+        self._thread = None
+        self._draining = False
+        self._force = False
 
     def _send_chunk(self, url: str, body: bytes) -> None:
         """POST one chunk with the one-retry discipline.
@@ -488,6 +531,21 @@ _sender_lock = threading.Lock()
 _atexit_installed = False
 
 
+def _after_fork_child() -> None:
+    """Reset every live sender without touching possibly locked state."""
+    global _sender_lock
+    _sender_lock = threading.Lock()
+    singleton = _sender
+    if singleton is not None:
+        singleton._after_fork_child()
+    for instance in list(_instances):
+        if instance is not singleton:
+            instance._after_fork_child()
+
+
+os.register_at_fork(after_in_child=_after_fork_child)
+
+
 def get_sender() -> PostHogSender:
     """Process-singleton sender, constructed on first call.
 
@@ -495,12 +553,10 @@ def get_sender() -> PostHogSender:
     the flush daemon starts on the first ACCEPTED capture.
     """
     global _sender
-    if _sender is not None:
-        return _sender
     with _sender_lock:
         if _sender is None:
             _sender = PostHogSender()
-    return _sender
+        return _sender
 
 
 def _reset_for_tests() -> None:

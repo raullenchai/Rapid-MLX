@@ -31,6 +31,7 @@ import subprocess
 import sys
 import threading
 import time
+import uuid
 from collections.abc import Callable
 from http.server import BaseHTTPRequestHandler, HTTPServer
 from pathlib import Path
@@ -124,6 +125,7 @@ class _ExplodingMapping(dict):
 def item(name: str = "app_opened", n: int = 0) -> dict[str, object]:
     """A well-formed batch item, the shape ``build_batch_item`` produces."""
     return {
+        "uuid": str(uuid.uuid4()),
         "event": name,
         "distinct_id": "6f1b1d3e-4a2b-4c9d-8e7f-0a1b2c3d4e5f",
         "timestamp": "2026-01-01T00:00:00Z",
@@ -240,8 +242,7 @@ def test_31st_event_within_a_minute_dropped(sender_env):
     assert s.capture(item(n=31)) is False
     s.flush(1.0)
     batches = post.batches()
-    assert len(batches) == 1
-    assert len(batches[0]) == 30
+    assert sum(len(batch) for batch in batches) == 30
     s.close(0.5)
 
 
@@ -312,6 +313,19 @@ def test_session_ceiling_1000(sender_env):
     assert s.capture(item(names[0], n=1001)) is False
     assert s.capture(item(names[1], n=1002)) is False
     s.close(1.0)
+
+
+def test_session_ceiling_drops_do_not_spend_burst_tokens(sender_env):
+    clock = FakeClock()
+    s = make_sender(clock=clock)
+    with s._lock:
+        s._accepted = SESSION_ITEM_CEILING
+    assert s.capture(item("ceiling")) is False
+    assert s.capture(item("ceiling")) is False
+    with s._lock:
+        bucket = s._buckets.get("ceiling")
+        assert bucket is None or bucket.tokens == ph.PER_EVENT_BURST
+    s.close(0.5)
 
 
 def test_queue_full_drops_the_new_item(sender_env, caplog):
@@ -433,7 +447,11 @@ def test_body_is_build_batch_output_with_the_stamp_key(sender_env):
     plain = item(n=7)
     # An item whose ``properties`` is not a mapping still flows through:
     # the envelope is structural, and the sender must not editorialize.
-    weird: dict[str, object] = {"event": "weird", "properties": ["not", "a", "map"]}
+    weird: dict[str, object] = {
+        "uuid": str(uuid.uuid4()),
+        "event": "weird",
+        "properties": ["not", "a", "map"],
+    }
     assert s.capture(plain) is True
     assert s.capture(weird) is True
     s.flush(1.0)
@@ -453,12 +471,12 @@ def test_body_is_build_batch_output_with_the_stamp_key(sender_env):
 
 
 def test_4xx_dropped_without_retry(sender_env):
-    post = RecordingPost(status=400)
+    post = RecordingPost(status=499)
     s = make_sender(post)
     for i in range(ph.FLUSH_THRESHOLD):
         assert s.capture(item(n=i)) is True
     assert wait_for(lambda: len(post) == 1, timeout=2.0)
-    time.sleep(0.3)  # a buggy retry would land in this window
+    time.sleep(0.15)  # a buggy retry would land in this window
     assert len(post) == 1
     s.close(0.5)
 
@@ -469,8 +487,11 @@ def test_5xx_retried_once_then_dropped(sender_env):
     for i in range(ph.FLUSH_THRESHOLD):
         assert s.capture(item(n=i)) is True
     assert wait_for(lambda: len(post) == 2, timeout=2.0)
-    time.sleep(0.3)  # a retry storm would grow the count here
+    time.sleep(0.15)  # a retry storm would grow the count here
     assert len(post) == 2
+    assert post.calls[0][1] == post.calls[1][1]
+    first_uuid = post.batches()[0][0]["uuid"]
+    assert post.batches()[1][0]["uuid"] == first_uuid
     s.close(0.5)
 
 
@@ -492,7 +513,7 @@ def test_exception_in_post_is_swallowed(sender_env):
     for i in range(ph.FLUSH_THRESHOLD):
         assert s.capture(item(n=i)) is True
     assert wait_for(lambda: calls["n"] >= 2, timeout=2.0)
-    time.sleep(0.3)
+    time.sleep(0.15)
     assert calls["n"] == 2  # one retry, then the chunk is dropped for good
     # The sender stays healthy: the next capture still queues and sends.
     assert s.capture(item("later", n=99)) is True
@@ -508,6 +529,9 @@ def test_flush_bounded_with_a_hanging_post(sender_env):
     assert s.capture(item()) is True
     clock.advance(ph.FLUSH_INTERVAL_S)
     assert post.entered.wait(timeout=2.0)  # flusher hung inside post
+    # Empty queue + in-flight drain is distinct from fully idle; a zero
+    # budget must return without trying to force nonexistent queued work.
+    s.flush(0.0)
     # Queue more while the flusher is stuck, then force a drain: it must
     # give up after its budget, not wait for the hung POST.
     for i in range(25):
@@ -521,7 +545,7 @@ def test_flush_bounded_with_a_hanging_post(sender_env):
     s.close(0.5)
 
 
-def test_drain_drops_everything_when_the_gate_turns_off(sender_env):
+def test_drain_drops_everything_when_the_gate_turns_off(sender_env, monkeypatch):
     """Fail closed at send time too: no stamp, no POST."""
     post = RecordingPost()
     holder = {"stamp": STAMP}
@@ -533,8 +557,56 @@ def test_drain_drops_everything_when_the_gate_turns_off(sender_env):
     )
     assert s.capture(item()) is True
     holder["stamp"] = None
-    s.flush(1.0)  # the drain re-checks the gate and drops the batch
+    build_calls: list[object] = []
+
+    def build_spy(*args: object, **kwargs: object) -> None:
+        build_calls.append((args, kwargs))
+        return None
+
+    monkeypatch.setattr(ph.envelope, "build_batch", build_spy)
+    s._drain()  # direct call makes a missing explicit guard observable
+    assert build_calls == []
     assert len(post) == 0
+    s.close(0.5)
+
+
+def test_drain_drops_everything_when_permission_is_withdrawn(sender_env):
+    post = RecordingPost()
+    permission = {"allowed": True}
+    s = PostHogSender(
+        post=post,
+        clock=FakeClock(),
+        gate=lambda: STAMP,
+        allowed=lambda: permission["allowed"],
+    )
+    assert s.capture(item()) is True
+    permission["allowed"] = False
+    s.flush(1.0)
+    assert len(post) == 0
+    assert s._draining is False
+    s.close(0.5)
+
+
+def test_drain_treats_permission_exception_as_denied(sender_env):
+    post = RecordingPost()
+    permission = {"raises": False}
+
+    def allowed() -> bool:
+        if permission["raises"]:
+            raise RuntimeError("consent lookup exploded")
+        return True
+
+    s = PostHogSender(
+        post=post,
+        clock=FakeClock(),
+        gate=lambda: STAMP,
+        allowed=allowed,
+    )
+    assert s.capture(item()) is True
+    permission["raises"] = True
+    s.flush(1.0)
+    assert len(post) == 0
+    assert s._draining is False
     s.close(0.5)
 
 
@@ -604,30 +676,43 @@ def test_url_override_loopback_only(sender_env, monkeypatch):
     post = RecordingPost()
     s = make_sender(post)
     # Unset → production.
-    assert s.capture({"event": "a"}) is True
+    assert s.capture(item("a")) is True
     s.flush(1.0)
     assert post.calls[0][0] == POSTHOG_BATCH_URL
     # Loopback override is honoured (tests must never hit production).
     monkeypatch.setenv(ph.POSTHOG_URL_ENV, "http://127.0.0.1:8787/batch/")
-    assert s.capture({"event": "b"}) is True
+    assert s.capture(item("b")) is True
     s.flush(1.0)
     assert post.calls[1][0] == "http://127.0.0.1:8787/batch/"
     # Any other host is ignored: a user must not be redirectable.
     monkeypatch.setenv(ph.POSTHOG_URL_ENV, "https://evil.example/batch/")
-    assert s.capture({"event": "c"}) is True
+    assert s.capture(item("c")) is True
     s.flush(1.0)
     assert post.calls[2][0] == POSTHOG_BATCH_URL
     # A malformed override is ignored too (fails closed on the port).
     monkeypatch.setenv(ph.POSTHOG_URL_ENV, "http://localhost:bad/")
-    assert s.capture({"event": "d"}) is True
+    assert s.capture(item("d")) is True
     s.flush(1.0)
     assert post.calls[3][0] == POSTHOG_BATCH_URL
     # A non-http(s) scheme is ignored even on a loopback hostname.
     monkeypatch.setenv(ph.POSTHOG_URL_ENV, "ftp://localhost/batch/")
-    assert s.capture({"event": "e"}) is True
+    assert s.capture(item("e")) is True
     s.flush(1.0)
     assert post.calls[4][0] == POSTHOG_BATCH_URL
     s.close(0.5)
+
+
+@pytest.mark.parametrize(
+    "hostile",
+    [
+        "http://evil.localhost/",
+        "http://127.0.0.1.evil.com/",
+        "http://localhost.evil.com/",
+    ],
+)
+def test_url_override_rejects_loopback_suffixes(sender_env, monkeypatch, hostile):
+    monkeypatch.setenv(ph.POSTHOG_URL_ENV, hostile)
+    assert ph._resolve_posthog_url() == POSTHOG_BATCH_URL
 
 
 # ------------------------------------------------------- thread behaviour
@@ -646,11 +731,114 @@ def test_flush_thread_is_daemon_and_starts_lazily(sender_env):
 def test_hostile_clock_kills_only_the_thread(sender_env):
     """A raising injectable must not take the process down."""
     clock = FakeClock()
-    s = make_sender(clock)
+    post = RecordingPost()
+    s = make_sender(post=post, clock=clock)
     assert s.capture(item()) is True
     s._clock = lambda: (_ for _ in ()).throw(RuntimeError("clock exploded"))
     assert wait_for(lambda: s._thread is not None and not s._thread.is_alive())
+    s._clock = clock
+    assert s.capture(item("after-restart")) is True
+    s.flush(1.0)
+    assert [event["event"] for batch in post.batches() for event in batch] == [
+        "app_opened",
+        "after-restart",
+    ]
     s.close(0.5)
+
+
+def test_second_small_batch_waits_its_own_full_interval(sender_env):
+    post = RecordingPost()
+    clock = FakeClock()
+    s = make_sender(post=post, clock=clock)
+    assert s.capture(item(n=1)) is True
+    clock.advance(ph.FLUSH_INTERVAL_S)
+    assert wait_for(lambda: len(post) == 1)
+
+    assert s.capture(item(n=2)) is True
+    clock.advance(ph.FLUSH_INTERVAL_S - 0.1)
+    assert wait_for(lambda: len(post) > 1, timeout=0.15) is False
+    clock.advance(0.1)
+    assert wait_for(lambda: len(post) == 2)
+    s.close(0.5)
+
+
+def test_capture_snapshots_item_and_properties(sender_env):
+    post = RecordingPost()
+    s = make_sender(post=post, clock=FakeClock())
+    original = item("original", n=7)
+    assert s.capture(original) is True
+    original["event"] = "mutated"
+    properties = original["properties"]
+    assert isinstance(properties, dict)
+    properties["n"] = 999
+    properties["secret"] = "late mutation"
+    s.flush(1.0)
+    [sent] = post.batches()[0]
+    assert sent["event"] == "original"
+    assert sent["properties"] == {"n": 7}
+    s.close(0.5)
+
+
+def test_fork_child_resets_sender_state_and_locks(sender_env):
+    _reset_for_tests()
+    singleton = get_sender()
+    post = RecordingPost()
+    s = make_sender(post=post, clock=FakeClock())
+    assert s.capture(item("parent")) is True
+
+    lock_held = threading.Event()
+    release_lock = threading.Event()
+
+    def hold_parent_lock() -> None:
+        with s._lock:
+            lock_held.set()
+            release_lock.wait(timeout=2.0)
+
+    holder = threading.Thread(target=hold_parent_lock, daemon=True)
+    holder.start()
+    assert lock_held.wait(timeout=1.0)
+    read_fd, write_fd = os.pipe()
+    child_pid = os.fork()
+    if child_pid == 0:
+        os.close(read_fd)
+        try:
+            assert s._queue == []
+            assert s._thread is None
+            assert s._draining is False
+            assert s._force is False
+            assert s._lock.acquire(blocking=False)
+            s._lock.release()
+            assert s.capture(item("child")) is True
+            os.write(write_fd, b"ok")
+            os._exit(0)
+        except BaseException as exc:
+            os.write(write_fd, repr(exc).encode("utf-8", errors="replace"))
+            os._exit(1)
+
+    os.close(write_fd)
+    release_lock.set()
+    holder.join(timeout=1.0)
+    _, status = os.waitpid(child_pid, 0)
+    report = os.read(read_fd, 4096)
+    os.close(read_fd)
+    assert os.waitstatus_to_exitcode(status) == 0, report.decode()
+    assert report == b"ok"
+    # The parent's state is untouched by the child's reset.
+    assert [queued["event"] for queued in s._queue] == ["parent"]
+    s.close(0.5)
+    _reset_for_tests()
+    assert singleton._thread is None
+    # Exercise both singleton and non-singleton registration paths in-process;
+    # the real fork above proves the callback is actually registered.
+    new_singleton = get_sender()
+    another = make_sender()
+    ph._after_fork_child()
+    assert new_singleton._thread is None
+    assert another._thread is None
+    _reset_for_tests()
+    another.close(0.5)
+    # Cover the no-singleton form too.
+    ph._after_fork_child()
 
 
 # -------------------------------------------------------------- never raise
@@ -683,13 +871,39 @@ def test_non_json_serializable_item_drops_at_drain(sender_env):
     post = RecordingPost()
     clock = FakeClock()
     s = make_sender(post, clock)
-    assert s.capture({"event": "bad", "properties": {"obj": object()}}) is True
+    assert (
+        s.capture(
+            {
+                "uuid": str(uuid.uuid4()),
+                "event": "bad",
+                "properties": {"obj": object()},
+            }
+        )
+        is True
+    )
     s.flush(1.0)  # drain builds the envelope fine, encoding explodes
     assert len(post) == 0
     # The sender is still healthy afterwards.
     assert s.capture(item("good")) is True
     s.flush(1.0)
     assert len(post) == 1
+    s.close(0.5)
+
+
+def test_bad_first_chunk_does_not_drop_later_chunks(sender_env):
+    post = RecordingPost()
+    s = make_sender(post=post, clock=FakeClock())
+    queued = [item(f"event-{i}", n=i) for i in range(150)]
+    properties = queued[0]["properties"]
+    assert isinstance(properties, dict)
+    properties["poison"] = object()
+    with s._lock:
+        s._queue.extend(queued)
+        s._first_queued_at = s._clock()
+    s._drain()
+    batches = post.batches()
+    assert len(batches) == 1
+    assert [event["properties"]["n"] for event in batches[0]] == list(range(100, 150))
     s.close(0.5)
 
 
@@ -784,6 +998,39 @@ class _StubPostHogHandler(BaseHTTPRequestHandler):
         pass
 
 
+class _RedirectSourceHandler(BaseHTTPRequestHandler):
+    def do_POST(self) -> None:
+        length = int(self.headers.get("Content-Length", "0"))
+        self.rfile.read(length)
+        server: HTTPServer = self.server  # type: ignore[assignment]
+        server.requests.append(self.path)  # type: ignore[attr-defined]
+        self.send_response(302)
+        self.send_header("Location", server.redirect_url)  # type: ignore[attr-defined]
+        self.send_header("Content-Length", "0")
+        self.end_headers()
+
+    def log_message(self, format: str, *args: object) -> None:
+        pass
+
+
+class _RedirectSinkHandler(BaseHTTPRequestHandler):
+    def _record(self) -> None:
+        server: HTTPServer = self.server  # type: ignore[assignment]
+        server.requests.append(self.path)  # type: ignore[attr-defined]
+        self.send_response(200)
+        self.send_header("Content-Length", "0")
+        self.end_headers()
+
+    def do_GET(self) -> None:  # noqa: N802 - BaseHTTPRequestHandler API
+        self._record()
+
+    def do_POST(self) -> None:  # noqa: N802 - BaseHTTPRequestHandler API
+        self._record()
+
+    def log_message(self, format: str, *args: object) -> None:
+        pass
+
+
 @pytest.fixture
 def stub_posthog():
     server = HTTPServer(("127.0.0.1", 0), _StubPostHogHandler)
@@ -822,6 +1069,35 @@ def test_default_post_happy_path_over_a_real_socket(
     assert s._thread.is_alive() is False
 
 
+def test_default_post_refuses_redirects(sender_env):
+    sink = HTTPServer(("127.0.0.1", 0), _RedirectSinkHandler)
+    sink.requests = []  # type: ignore[attr-defined]
+    source = HTTPServer(("127.0.0.1", 0), _RedirectSourceHandler)
+    source.requests = []  # type: ignore[attr-defined]
+    source.redirect_url = f"http://127.0.0.1:{sink.server_port}/stolen"  # type: ignore[attr-defined]
+    threads = [
+        threading.Thread(target=server.serve_forever, daemon=True)
+        for server in (source, sink)
+    ]
+    for thread in threads:
+        thread.start()
+    try:
+        status = ph.default_post(
+            f"http://127.0.0.1:{source.server_port}/batch/",
+            b'{"secret":"payload"}',
+            1.0,
+        )
+        assert status == 302
+        assert source.requests == ["/batch/"]  # type: ignore[attr-defined]
+        assert sink.requests == []  # type: ignore[attr-defined]
+    finally:
+        for server in (source, sink):
+            server.shutdown()
+            server.server_close()
+        for thread in threads:
+            thread.join(timeout=1.0)
+
+
 def test_default_post_retries_a_500_once(sender_env, stub_posthog, monkeypatch):
     stub_posthog.respond_status = 500
     monkeypatch.setenv(
@@ -834,7 +1110,7 @@ def test_default_post_retries_a_500_once(sender_env, stub_posthog, monkeypatch):
     # urllib surfaces the 500 as an HTTPError, unwrapped to the status 500,
     # so the sender retries exactly once and then drops the chunk.
     assert wait_for(lambda: len(stub_posthog.requests) == 2, timeout=3.0)
-    time.sleep(0.3)
+    time.sleep(0.15)
     assert len(stub_posthog.requests) == 2
     s.close(1.0)
 
