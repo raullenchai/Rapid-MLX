@@ -182,3 +182,49 @@ def test_text_encoder_guard_uses_qwen3_vl_key_and_width(monkeypatch, tmp_path):
     write_header(3584)
     with pytest.raises(ImageRuntimeError, match="quantized text encoder"):
         engine._verify_text_encoder_not_quantized()  # noqa: SLF001
+
+
+def test_official_snapshot_layout_is_complete_and_detects_missing_shard(
+    monkeypatch, tmp_path
+):
+    import json
+
+    cache = tmp_path / "hub"
+    snapshot = cache / "models--Qwen--Qwen-Image-2.1" / "snapshots" / REVISION
+    files = {
+        "processor/tokenizer.json": "{}",
+        "transformer/diffusion_pytorch_model.safetensors.index.json": json.dumps(
+            {
+                "weight_map": {
+                    "transformer.block.0": "diffusion_pytorch_model-00001-of-00002.safetensors",
+                    "transformer.block.1": "diffusion_pytorch_model-00002-of-00002.safetensors",
+                }
+            }
+        ),
+        "transformer/diffusion_pytorch_model-00001-of-00002.safetensors": "one",
+        "transformer/diffusion_pytorch_model-00002-of-00002.safetensors": "two",
+        "text_encoder/model.safetensors.index.json": json.dumps(
+            {
+                "weight_map": {
+                    "model.language_model.embed_tokens.weight": "model-00001-of-00004.safetensors",
+                    "model.language_model.layers.35.weight": "model-00004-of-00004.safetensors",
+                }
+            }
+        ),
+        "text_encoder/model-00001-of-00004.safetensors": "one",
+        "text_encoder/model-00004-of-00004.safetensors": "four",
+        "vae/diffusion_pytorch_model.safetensors": "vae",
+    }
+    for relative, data in files.items():
+        target = snapshot / relative
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_text(data)
+    monkeypatch.setattr("huggingface_hub.constants.HF_HUB_CACHE", str(cache))
+    assert _download_gate.mflux_missing_weights(REPO) == []
+    assert _download_gate.mflux_local_snapshot(REPO) == str(snapshot)
+    (
+        snapshot / "transformer/diffusion_pytorch_model-00002-of-00002.safetensors"
+    ).unlink()
+    assert _download_gate.mflux_missing_weights(REPO) == [
+        "transformer/diffusion_pytorch_model-00002-of-00002.safetensors"
+    ]
