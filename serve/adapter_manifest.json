@@ -1,10 +1,16 @@
 {
-  "name": "marvins-garden-spire",
-  "lineage": "v15c + spire_play continuation (LR 1e-5, batch 2)",
+  "name": "marvins-garden-v15c",
+  "lineage": "main-lane release candidate (3 families, 95.31% held-out, ECE 0.031; paired recipe n=3 94.44%±1.08)",
   "model": "prism-ml/Ternary-Bonsai-27B-mlx-2bit",
   "think_mode": "enabled",
   "max_seq_length": 1024,
   "letters": "A-H",
-  "families": ["model_routing", "tool_gate", "injection_guard", "spire_play"],
-  "note": "adapter\u21c4template pairing is a serving contract: think_mode and render_prompt must match training exactly"
+  "families": ["model_routing", "tool_gate", "injection_guard"],
+  "benchmarks": {
+    "same_ruler_heldout": {"marvins_garden_v15c": 0.9531, "jev_latest": 0.9323, "laya": 0.310, "nimble_9b_ood": 0.7448, "base_zero_shot": 0.401},
+    "ece_15bin": {"marvins_garden_v15c": 0.031, "jev_latest": 0.102},
+    "latency_ms_local_m3_ultra": 1141
+  },
+  "spire_lane": {"adapter": "bench/marvins_garden/adapters/spire_v2", "heldout_accuracy": 0.54, "baseline_v15c_same_distribution": 0.357, "note": "demo lane, not served by this manifest"},
+  "note": "adapter\u21c4template pairing is a serving contract: think_mode and render_prompt must match training exactly. MARVIN_ADAPTER env overrides the adapter path but MUST keep this manifest's think_mode."
 }

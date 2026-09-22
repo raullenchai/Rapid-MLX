@@ -39,6 +39,23 @@ MARVIN_ADAPTER=../../bench/marvins_garden/adapters/spire \
   100+hp win value), ambiguous states (margin < 1.0) discarded.
 - Trained as a continuation of the v15c routing adapter (LR 1e-5, batch 2,
   3×100 iters, 25% routing replay against forgetting).
+
+**v2 (2026-09-21): mint fixed, 54.0% held-out.** v1's 600 labels contained
+zero Defend-optimal rows — the margin filter silently removed the defensive
+dimension, so the model correctly learned a never-defend prior. v2 mint
+(`generate_spire.py --v2`) injects defend-optimal scenarios, shuffles
+candidate order, and hard-gates label distribution (Defend 34% vs 0).
+Same-ruler on the 300-item v2 held-out: **spire_v2 54.0%** (ECE 0.082) vs
+v15c same-distribution baseline 35.7% — paired +18.3 pts. State-question
+mixing was tested and did not help (53.0% actions, 45.3% probes): let code
+compose state judgments instead of training both readouts into one adapter.
+The recorded demo plays the v2 adapter: `spire_demo.mp4` — 56 decisions,
+**3/3 Act-1 victories** (remaining HP 59/24/35), 59% oracle agreement, log
+in `match_v2.jsonl`. Full write-up:
+`docs/engineering/performance/2026-09-21-spire-v2-mint-fix.md`.
+
+### v1 record (kept for honesty)
+
 - **Held-out accuracy: 38.8%** (`results/eval_marvin_spire.json`, 600 states,
   single forward, 1.15 s/decision, ECE 0.116) vs a 33.7% majority-letter
   prior — a real +5 pt of signal, but **not production quality**. Same recipe

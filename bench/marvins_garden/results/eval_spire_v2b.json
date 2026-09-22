@@ -1,0 +1,35 @@
+{
+  "abstain": {
+    "accuracy_when_covered": 0.53,
+    "coverage": 1.0,
+    "threshold": 0.0
+  },
+  "accuracy": 0.53,
+  "adapter": "adapters/spire_v2b",
+  "ece_15bin": 0.10088156505203603,
+  "flip_both_members_correct": 0.53,
+  "mean_confidence_correct": 0.6419324915884284,
+  "mean_confidence_wrong": 0.5068987291543092,
+  "model": "/Volumes/NVMe-4T/huggingface/hub/models--prism-ml--Ternary-Bonsai-27B-mlx-2bit/snapshots/70f75f3ad081ab840a42f3304c02c27e7f89bfb7",
+  "n_groups": 300,
+  "n_samples": 300,
+  "pairs": "data/pairs_spire_v2_heldout.jsonl",
+  "per_family": {
+    "spire_play": {
+      "accuracy": 0.53,
+      "n": 300
+    }
+  },
+  "schema_version": 1,
+  "styles": [
+    "base"
+  ],
+  "temperature": 0.8,
+  "timing": {
+    "forward_passes_per_decision": 1,
+    "generated_tokens": 0,
+    "mean_prefill_tokens": 328.9866666666667,
+    "ms_per_decision": 1147.7669404165742,
+    "total_seconds": 344.33008212497225
+  }
+}
