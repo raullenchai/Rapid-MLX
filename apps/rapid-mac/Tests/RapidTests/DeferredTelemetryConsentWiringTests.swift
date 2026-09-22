@@ -117,12 +117,21 @@ struct TelemetryNoticeWiringTests {
         let settings = try Self.source("Sources/Rapid/UI/SettingsView.swift")
         for phrase in [
             "on by default", "previously turned telemetry off", "metadata-only",
-            "PostHog Cloud in the United States", "never prompts, responses, file paths, or API key values",
-            "no IP, location, or per-person profile", "Nothing is sent before this notice appears",
+            "the app's to rapidmlx.com's telemetry service", "the bundled engine's to PostHog Cloud (US)",
+            "never your IP or a per-person profile; the app's collector keeps only a coarse country code",
+            "never sends prompts, responses, file paths, or API key values",
+            "Nothing is sent before this notice appears",
             "rapid-mlx telemetry disable", "RAPID_MLX_TELEMETRY=0", "DO_NOT_TRACK=1",
             "https://rapidmlx.com/docs/telemetry",
         ] {
             #expect(banner.contains(phrase), "missing disclosure phrase: \(phrase)")
+        }
+        for phrase in [
+            "the app's to rapidmlx.com's telemetry service",
+            "the bundled engine's to PostHog Cloud (US)",
+            "never your IP or a per-person profile; the app's collector keeps only a coarse country code",
+        ] {
+            #expect(settings.contains(phrase), "Settings missing disclosure phrase: \(phrase)")
         }
         #expect(settings.contains("telemetry is on by default"))
         #expect(settings.contains("https://rapidmlx.com/docs/telemetry"))
@@ -135,6 +144,7 @@ struct TelemetryNoticeWiringTests {
         let normalized = privacy.replacingOccurrences(of: "**", with: "")
             .split(whereSeparator: \.isWhitespace).joined(separator: " ")
         let command = "rapid-mlx telemetry disable"
+        let processors = ["rapidmlx.com's telemetry service", "PostHog Cloud (US)"]
         for phrase in [
             "Starting in 0.15.0, it is on by default after a one-time in-app acknowledgement notice.",
             "This includes installs that turned telemetry off before 0.15.0, which are told about the change in that notice.",
@@ -145,6 +155,10 @@ struct TelemetryNoticeWiringTests {
             #expect(normalized.contains(phrase), "missing privacy phrase: \(phrase)")
         }
         #expect(banner.contains(command), "banner and privacy policy must use the same CLI command")
+        for processor in processors {
+            #expect(banner.contains(processor), "banner missing telemetry processor: \(processor)")
+            #expect(normalized.contains(processor), "privacy policy missing telemetry processor: \(processor)")
+        }
         #expect(!privacy.contains("Default: **off until you make an"))
         #expect(!privacy.contains("only after the same opt-in"))
     }

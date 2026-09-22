@@ -653,6 +653,7 @@ enum TelemetryConsent {
 
 /// Serializes consent mutations away from the main actor. Actor hops preserve
 /// task-local overrides used to isolate telemetry tests from process kill switches.
+/// Its file-lock retry deliberately blocks a cooperative thread for at most `lockRetrySeconds`.
 private actor ConsentWriter {
     func noticePresented(
         version: String,
