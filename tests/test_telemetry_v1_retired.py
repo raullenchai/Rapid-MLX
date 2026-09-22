@@ -286,7 +286,7 @@ def test_real_loopback_serve_can_only_flush_to_posthog(monkeypatch, tmp_path):
         host = address[0] if isinstance(address, tuple) else address
         assert host == "localhost" or ipaddress.ip_address(host).is_loopback
     assert post_urls
-    assert all(url == posthog_sender.POSTHOG_BATCH_URL for url in post_urls)
+    assert all(url == posthog_sender._resolve_posthog_url() for url in post_urls)
     assert legacy_urls == []
     assert sorted(item["event"] for body in post_bodies for item in body["batch"]) == [
         "app_opened",

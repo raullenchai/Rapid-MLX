@@ -114,16 +114,21 @@ def test_reset_state_is_best_effort_when_a_path_cannot_be_removed(fake_home):
 
     # A normally-removable consent file...
     state.record_consent(True, rapid_mlx_version="0.0.0+test")
+    state.get_or_create_client_id()
     assert state.consent_path().exists()
     # ...and a marker path that is a NON-EMPTY DIRECTORY, so unlink() raises
     # OSError (IsADirectoryError) — the glob picks it up like any marker.
     stuck = state.activation_marker_path("first_inference")
     stuck.mkdir(parents=True, exist_ok=True)
     (stuck / "child").write_text("x")
-    state.reset_state()
+    result = state.reset_state()
 
     # Removable state was still removed.
     assert not state.consent_path().exists()
+    assert not state.client_id_path().exists()
+    assert result.client_id.succeeded is True
+    assert len(result.activation_markers) == 1
+    assert result.activation_markers[0].succeeded is False
 
 
 def test_session_id_is_process_stable_and_resettable(fake_home, monkeypatch):
@@ -174,6 +179,12 @@ def test_rotate_client_id_reports_marker_enumeration_failure(fake_home, monkeypa
     )
     with pytest.raises(OSError, match="cannot enumerate activation markers"):
         state.rotate_client_id()
+
+
+def test_claim_activation_marker_is_one_shot_and_rejects_invalid_kind(fake_home):
+    assert state.claim_activation_marker("first_inference") is True
+    assert state.claim_activation_marker("first_inference") is False
+    assert state.claim_activation_marker("../invalid") is False
 
 
 def test_env_kill_switch_wins_over_consent(fake_home, monkeypatch):
@@ -313,24 +324,38 @@ def test_reset_state_empty_home_creates_nothing(fake_home):
     assert result.client_id.existed is False
 
 
-def test_reset_state_reports_client_id_stat_error(fake_home, monkeypatch):
+def test_reset_state_reports_client_id_unlink_error(fake_home, monkeypatch):
     from rapid_mlx.telemetry import state
 
     identity = state.client_id_path()
-    real_stat = type(identity).stat
+    real_unlink = type(identity).unlink
 
-    def fail_identity_stat(path, *args, **kwargs):
+    def fail_identity_unlink(path, *args, **kwargs):
         if path == identity:
             raise PermissionError("denied")
-        return real_stat(path, *args, **kwargs)
+        return real_unlink(path, *args, **kwargs)
 
-    monkeypatch.setattr(type(identity), "stat", fail_identity_stat)
+    monkeypatch.setattr(type(identity), "unlink", fail_identity_unlink)
 
     result = state.reset_state()
 
     assert result.client_id.existed is True
     assert result.client_id.succeeded is False
     assert result.client_id.error_types == ("PermissionError",)
+
+
+def test_reset_state_reports_client_id_rotation_error(fake_home, monkeypatch):
+    state.get_or_create_client_id()
+    monkeypatch.setattr(
+        state,
+        "get_or_create_client_id",
+        lambda: (_ for _ in ()).throw(PermissionError("denied")),
+    )
+
+    result = state.reset_state()
+
+    assert result.client_id.succeeded is True
+    assert result.client_id_rotation_errors == ("PermissionError",)
 
 
 def test_reset_state_removes_sibling_lock_best_effort(fake_home):

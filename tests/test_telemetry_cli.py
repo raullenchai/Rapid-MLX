@@ -5,6 +5,8 @@ from __future__ import annotations
 
 import json
 import os
+import subprocess
+import sys
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -416,6 +418,39 @@ def test_reset_is_best_effort(monkeypatch, capsys):
     assert capsys.readouterr().err == ""
 
 
+def test_reset_reports_marker_failure_separately(monkeypatch, capsys):
+    result = state.ResetStateResult(
+        consent_file=state.ResetItemResult(False, True),
+        consent_lock=state.ResetItemResult(False, True),
+        client_id=state.ResetItemResult(True, True),
+        activation_markers=(state.ResetItemResult(True, False, ("PermissionError",)),),
+    )
+    monkeypatch.setattr(state, "reset_state", lambda: result)
+
+    with pytest.raises(SystemExit, match="1"):
+        cli.telemetry_command(_args("reset"))
+
+    assert "activation marker(s) (PermissionError) remained" in capsys.readouterr().out
+
+
+def test_reset_reports_marker_scan_and_id_rotation_failures(monkeypatch, capsys):
+    result = state.ResetStateResult(
+        consent_file=state.ResetItemResult(False, True),
+        consent_lock=state.ResetItemResult(False, True),
+        client_id=state.ResetItemResult(True, True),
+        activation_marker_scan=state.ResetItemResult(True, False, ("OSError",)),
+        client_id_rotation_errors=("PermissionError",),
+    )
+    monkeypatch.setattr(state, "reset_state", lambda: result)
+
+    with pytest.raises(SystemExit, match="1"):
+        cli.telemetry_command(_args("reset"))
+
+    output = capsys.readouterr().out
+    assert "Activation marker scan (OSError) failed" in output
+    assert "Client ID rotation (PermissionError) failed" in output
+
+
 def test_reset_reports_unwritable_state_and_keeps_files(capsys):
     state.record_consent(True, rapid_mlx_version="0.15.0")
     state.get_or_create_client_id()
@@ -432,6 +467,32 @@ def test_reset_reports_unwritable_state_and_keeps_files(capsys):
     assert "PermissionError" in output
     assert state.consent_path().exists()
     assert state.client_id_path().exists()
+
+
+def test_real_cli_reset_reports_unremovable_marker_not_removed_client_id(tmp_path):
+    telemetry_dir = tmp_path / ".rapid-mlx"
+    marker = telemetry_dir / "activation_seen_server"
+    marker.mkdir(parents=True)
+    client_id = telemetry_dir / "telemetry-client-id"
+    client_id.write_text("old-client-id\n")
+
+    result = subprocess.run(
+        [sys.executable, "-m", "rapid_mlx.cli", "telemetry", "reset"],
+        capture_output=True,
+        text=True,
+        check=False,
+        env=os.environ.copy(),
+    )
+
+    assert result.returncode == 1
+    error_type = "PermissionError" if sys.platform == "darwin" else "IsADirectoryError"
+    assert (
+        f"Reset incomplete: activation marker(s) ({error_type}) remained."
+        in result.stdout
+    )
+    assert "client ID" not in result.stdout
+    assert marker.is_dir()
+    assert not client_id.exists()
 
 
 def test_reset_empty_home_succeeds_without_creating_state(capsys, tmp_path):

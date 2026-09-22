@@ -102,19 +102,33 @@ class ResetStateResult:
     consent_file: ResetItemResult
     consent_lock: ResetItemResult
     client_id: ResetItemResult
+    activation_markers: tuple[ResetItemResult, ...] = ()
+    activation_marker_scan: ResetItemResult = ResetItemResult(False, True)
+    client_id_rotation_errors: tuple[str, ...] = ()
 
     @property
     def incomplete(self) -> bool:
         return any(
             item.existed and not item.succeeded
-            for item in (self.consent_file, self.consent_lock, self.client_id)
-        )
+            for item in (
+                self.consent_file,
+                self.consent_lock,
+                self.client_id,
+                self.activation_marker_scan,
+                *self.activation_markers,
+            )
+        ) or bool(self.client_id_rotation_errors)
 
     @property
     def found_state(self) -> bool:
         return any(
             item.existed
-            for item in (self.consent_file, self.consent_lock, self.client_id)
+            for item in (
+                self.consent_file,
+                self.consent_lock,
+                self.client_id,
+                *self.activation_markers,
+            )
         )
 
 
@@ -513,34 +527,42 @@ def reset_state() -> ResetStateResult:
     consent_result = _remove_reset_item(consent)
     lock_result = _remove_reset_item(lock)
 
-    identity = client_id_path()
+    identity_result = _remove_reset_item(client_id_path())
+
     try:
-        identity.stat()
-    except FileNotFoundError:
-        identity_result = ResetItemResult(existed=False, succeeded=True)
+        marker_paths = tuple(_default_telemetry_dir().glob("activation_seen_*"))
     except OSError as exc:
-        identity_result = ResetItemResult(
+        marker_scan_result = ResetItemResult(
             existed=True,
             succeeded=False,
             error_types=(type(exc).__name__,),
         )
+        marker_results: tuple[ResetItemResult, ...] = ()
     else:
+        marker_scan_result = ResetItemResult(existed=False, succeeded=True)
+        marker_results = tuple(_remove_reset_item(path) for path in marker_paths)
+
+    rotation_errors: tuple[str, ...] = ()
+    marker_cleanup_succeeded = marker_scan_result.succeeded and all(
+        result.succeeded for result in marker_results
+    )
+    if (
+        identity_result.existed
+        and identity_result.succeeded
+        and marker_cleanup_succeeded
+    ):
         try:
-            rotate_client_id()
+            get_or_create_client_id()
         except OSError as exc:
-            error_types = getattr(exc, "error_types", (type(exc).__name__,))
-            identity_result = ResetItemResult(
-                existed=True,
-                succeeded=False,
-                error_types=tuple(error_types),
-            )
-        else:
-            identity_result = ResetItemResult(existed=True, succeeded=True)
+            rotation_errors = (type(exc).__name__,)
 
     return ResetStateResult(
         consent_file=consent_result,
         consent_lock=lock_result,
         client_id=identity_result,
+        activation_markers=marker_results,
+        activation_marker_scan=marker_scan_result,
+        client_id_rotation_errors=rotation_errors,
     )
 
 

@@ -11902,12 +11902,32 @@ def telemetry_command(args) -> None:
                 ("consent lock", result.consent_lock),
                 ("client ID", result.client_id),
             )
-            remained = ", ".join(
+            problems = [
                 f"{label} ({'/'.join(item.error_types)})"
                 for label, item in labels
                 if item.existed and not item.succeeded
+            ]
+            marker_error_types = tuple(
+                dict.fromkeys(
+                    error_type
+                    for item in result.activation_markers
+                    if item.existed and not item.succeeded
+                    for error_type in item.error_types
+                )
             )
-            print(f"  Reset incomplete: {remained} remained.")
+            if marker_error_types:
+                problems.append(
+                    f"activation marker(s) ({'/'.join(marker_error_types)})"
+                )
+            remained = ", ".join(problems)
+            if remained:
+                print(f"  Reset incomplete: {remained} remained.")
+            if not result.activation_marker_scan.succeeded:
+                errors = "/".join(result.activation_marker_scan.error_types)
+                print(f"  Activation marker scan ({errors}) failed.")
+            if result.client_id_rotation_errors:
+                errors = "/".join(result.client_id_rotation_errors)
+                print(f"  Client ID rotation ({errors}) failed.")
             print("  This command emits no telemetry event.")
             print()
             raise SystemExit(1)
