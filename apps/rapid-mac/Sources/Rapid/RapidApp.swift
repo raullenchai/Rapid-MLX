@@ -103,9 +103,9 @@ struct RapidApp: App {
     /// Deep-link channel into the Settings window.
     @State private var settingsRouter: SettingsRouter
     @State private var commandPaletteRequest = CommandPaletteRequestCoordinator()
-    /// App-owned owner of the one-time invitation that follows the first
-    /// successful product outcome. Feature models only publish typed success.
-    @State private var deferredTelemetryConsent: DeferredTelemetryConsentCoordinator
+    /// App-owned one-time launch disclosure. Feature models also publish typed
+    /// successes through it to the existing activation reporter.
+    @State private var telemetryNotice: TelemetryNoticeCoordinator
     /// Local-only post-value GitHub invitation. It shares the typed success
     /// seam above but owns independent quiet-window and backoff policy.
     @State private var githubStarPrompt: GitHubStarPromptCoordinator
@@ -169,11 +169,11 @@ struct RapidApp: App {
         // fatalError under bad disk / permissions state, and we want
         // those abortions to leave a marker for the next launch.
         CrashReporter.install()
-        // Migrate only users who had explicitly changed the legacy
-        // telemetry toggle. An absent value remains undecided/off and is
-        // handled by the post-value consent coordinator.
+        // Reconcile the local sender gate before any launch task can emit.
+        // A disclosure that is still owed remains off until its banner's
+        // onAppear callback successfully merges the shared marker.
         TelemetryConsent.synchronizeExistingDecision()
-        let consentCoordinator = DeferredTelemetryConsentCoordinator()
+        let noticeCoordinator = TelemetryNoticeCoordinator()
         let starPromptCoordinator = GitHubStarPromptCoordinator()
         // #2878 changed the Desktop default from 8000 to 7659. Preserve the
         // old endpoint for upgrades before InstallTracker records this launch;
@@ -305,8 +305,8 @@ struct RapidApp: App {
             customInstructions: customInstructionsConfig,
             memoryStore: memoryStore,
             server: manager,
-            onProductValueDelivered: { [weak consentCoordinator, weak starPromptCoordinator] kind in
-                consentCoordinator?.productValueDelivered(kind)
+            onProductValueDelivered: { [weak noticeCoordinator, weak starPromptCoordinator] kind in
+                noticeCoordinator?.productValueDelivered(kind)
                 starPromptCoordinator?.productValueDelivered(kind)
             }
         )
@@ -355,8 +355,8 @@ struct RapidApp: App {
             server: manager,
             testingReadiness: fixtureReadiness,
             testingHotkeyStart: fixtureHotkeyStart,
-            onProductValueDelivered: { [weak consentCoordinator, weak starPromptCoordinator] kind in
-                consentCoordinator?.productValueDelivered(kind)
+            onProductValueDelivered: { [weak noticeCoordinator, weak starPromptCoordinator] kind in
+                noticeCoordinator?.productValueDelivered(kind)
                 starPromptCoordinator?.productValueDelivered(kind)
             }
         )
@@ -373,8 +373,8 @@ struct RapidApp: App {
         AppDelegate.shared.dockPromptStore = dockPrompt
         _chatViewModel = State(initialValue: chat)
         let imageGenViewModel = ImageGenViewModel(server: manager)
-        imageGenViewModel.observeProductValue { [weak consentCoordinator, weak starPromptCoordinator] kind in
-            consentCoordinator?.productValueDelivered(kind)
+        imageGenViewModel.observeProductValue { [weak noticeCoordinator, weak starPromptCoordinator] kind in
+            noticeCoordinator?.productValueDelivered(kind)
             starPromptCoordinator?.productValueDelivered(kind)
         }
         _imageGen = State(initialValue: imageGenViewModel)
@@ -388,7 +388,7 @@ struct RapidApp: App {
         _memoryStore = State(initialValue: memoryStore)
         _appearance = State(initialValue: appearanceConfig)
         _settingsRouter = State(initialValue: SettingsRouter())
-        _deferredTelemetryConsent = State(initialValue: consentCoordinator)
+        _telemetryNotice = State(initialValue: noticeCoordinator)
         _githubStarPrompt = State(initialValue: starPromptCoordinator)
         // Hand the live singletons to the delegate so the shutdown hook
         // and the AppKit menu-bar tray can reach them without rebuilding
@@ -426,7 +426,7 @@ struct RapidApp: App {
                 .environment(appearance)
                 .environment(settingsRouter)
                 .environment(commandPaletteRequest)
-                .environment(deferredTelemetryConsent)
+                .environment(telemetryNotice)
                 .environment(githubStarPrompt)
                 .environment(installTracker)
                 .environment(quickstart)
@@ -644,7 +644,7 @@ struct RapidApp: App {
                 .environment(mcpApproval)
                 .environment(mcpTools)
                 .environment(perfConfig)
-                .environment(deferredTelemetryConsent)
+                .environment(telemetryNotice)
         }
         .windowResizability(.contentMinSize)
         .defaultSize(width: 900, height: 720)

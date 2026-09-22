@@ -208,28 +208,13 @@ def test_ax_dump_omits_non_finite_numbers_before_json_serialization():
     assert "origin.x.isFinite" in bounds and "extent.height.isFinite" in bounds
 
 
-def test_ax_escape_posts_a_real_key_without_answering_nonmodal_consent():
+def test_ax_escape_posts_a_real_key():
     source = DRIVER.read_text()
     key = source.split('if command == "key" {', 1)[1].split("\n}", 1)[0]
     assert 'wanted == "escape"' in key
     assert "virtualKey: 53" in key
     assert "down.postToPid(pid)" in key
     assert "up.postToPid(pid)" in key
-
-    fresh_install = (
-        HARNESS.read_text().split("flow_fresh_install() {", 1)[1].split("\n}", 1)[0]
-    )
-    assert '"$AX_DRIVER" key "$APP_PID" escape' in fresh_install
-    assert (
-        "wait_identifier TelemetryConsent.PostValueBanner"
-        ' "$OUT/post-value-consent-after-escape.json"'
-    ) in fresh_install
-    assert "TelemetryConsent.PostValue.Decline" in fresh_install
-    assert (
-        "explicit No thanks did not dismiss the telemetry invitation" in fresh_install
-    )
-    assert "dismissed telemetry invitation returned after relaunch" in fresh_install
-
 
 def test_active_switch_selects_the_fresh_native_menu_item_by_identifier():
     """The driver must not report success merely because key events posted."""
@@ -274,31 +259,19 @@ def test_fresh_install_proves_the_telemetry_boundary_with_a_loopback_sink():
     assert '"activation_surface": activation_surface' in sink
     assert '"activation_keys": activation_keys' in sink
     assert 'RAPID_MLX_TELEMETRY_ENDPOINT="http://127.0.0.1:' in fresh_install
-    expected_stages = (
-        "before-onboarding",
-        "before-first-value",
-        "post-value-before-decision",
-        "after-decline",
-        "declined-relaunch",
+    assert "assert_no_telemetry_requests before-onboarding" in fresh_install
+    assert "telemetry notice appeared behind onboarding" in fresh_install
+    assert "wait_identifier TelemetryNotice.Banner" in fresh_install
+    assert ".notice_revision_seen == 1 and (.consent | not)" in fresh_install
+    assert "assert_one_telemetry_request launch-notice" in fresh_install
+    assert "TelemetryNotice.Acknowledge" in fresh_install
+    assert "Got it did not dismiss the telemetry launch notice" in fresh_install
+    assert fresh_install.index("assert_no_telemetry_requests before-onboarding") < (
+        fresh_install.index("wait_identifier TelemetryNotice.Banner")
     )
-    for stage in expected_stages:
-        assert f"assert_no_telemetry_requests {stage}" in fresh_install
-
-    assert "asked for telemetry before the first working feature" in fresh_install
-    assert "did not show exactly one telemetry invitation" in fresh_install
-    assert fresh_install.index("assert_no_telemetry_requests before-first-value") < (
-        fresh_install.index('send_prompt "Say hello in one short sentence."')
+    assert fresh_install.index("wait_identifier TelemetryNotice.Banner") < (
+        fresh_install.index("assert_one_telemetry_request launch-notice")
     )
-    assert fresh_install.index(
-        "assert_no_telemetry_requests post-value-before-decision"
-    ) < fresh_install.index("TelemetryConsent.PostValue.Decline")
-    assert fresh_install.index("relaunch_persona") < fresh_install.index(
-        "assert_no_telemetry_requests declined-relaunch"
-    )
-    assert fresh_install.index("assert_no_telemetry_requests declined-relaunch") < (
-        fresh_install.index("assert_one_telemetry_request settings-opt-in")
-    )
-    assert "Settings.Privacy.TelemetryToggle" in fresh_install
     positive_control = source.split("assert_one_telemetry_request() {", 1)[1].split(
         "\n}", 1
     )[0]
@@ -308,36 +281,23 @@ def test_fresh_install_proves_the_telemetry_boundary_with_a_loopback_sink():
     assert ".requests[0].timestamp >= .not_before" in positive_control
     assert 'sleep "$settling_seconds"' in positive_control
     assert "loopback telemetry sink exited while settling" in positive_control
-    assert "opt_in_not_before" in fresh_install
-    assert "TelemetryConsent.PostValue.Share" in fresh_install
-    assert (
-        "assert_share_activation_requests share-accepted first_chat_reply"
-        in fresh_install
-    )
+    assert "notice_not_before" in fresh_install
+    assert "TelemetryConsent.PostValue" not in fresh_install
+    assert "assert_share_activation_requests default-on-activation first_chat_reply" in fresh_install
     assert "activation_seen_desktop_first_chat_reply" in fresh_install
 
 
-def test_fresh_install_settles_transcript_before_structural_baseline():
-    """A transient scroll affordance must not become golden structure."""
+def test_fresh_install_baselines_notice_before_acknowledgement():
+    """The new disclosure is golden-tested, then removed from steady state."""
     source = HARNESS.read_text()
-    helper_body = source.split("settle_transcript_at_bottom() {", 1)[1].split("\n}", 1)[
-        0
-    ]
-    helper = f"settle_transcript_at_bottom() {{{helper_body}\n}}"
     fresh_install = source.split("flow_fresh_install() {", 1)[1].split("\n}", 1)[0]
 
-    assert 'select(.identifier == "Transcript.JumpToBottom")' in helper
-    assert 'press "$destination" Transcript.JumpToBottom "$press_result"' in helper
-    assert 'select(.identifier == "ChatView.SendOrStopButton")' in helper
-    assert ".bounds.x > $compose_x" in helper
-    assert '--argjson scroll_x "$scroll_x"' in helper
-    assert 'die "Jump to latest did not physically settle' in helper
-
-    banner = fresh_install.index("wait_identifier TelemetryConsent.PostValueBanner")
-    idle = fresh_install.index('wait_send_idle "$OUT/post-value-consent-complete.json"')
-    settle = fresh_install.index("settle_transcript_at_bottom")
-    baseline = fresh_install.index("baseline fresh-install.post-value-consent")
-    assert banner < idle < settle < baseline
+    banner = fresh_install.index("wait_identifier TelemetryNotice.Banner")
+    notice_baseline = fresh_install.index("baseline fresh-install.launch-telemetry-notice")
+    acknowledge = fresh_install.index("TelemetryNotice.Acknowledge")
+    steady_baseline = fresh_install.index("baseline fresh-install.steady")
+    prompt = fresh_install.index('send_prompt "Say hello in one short sentence."')
+    assert banner < notice_baseline < acknowledge < steady_baseline < prompt
 
 
 def test_transcript_settler_waits_for_physical_scroll_stability(tmp_path):

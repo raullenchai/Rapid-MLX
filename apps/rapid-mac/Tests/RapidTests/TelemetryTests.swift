@@ -48,7 +48,6 @@ final class TelemetryTests {
     func disabledUntilConsent() {
         let defaults = freshDefaults()
         #expect(TelemetryConfig.isEnabled(defaults: defaults) == false)
-        #expect(TelemetryConsent.needsDecision(defaults: defaults))
     }
 
     @Test("TelemetryConfig.isEnabled honours an explicit false override")
@@ -134,17 +133,16 @@ final class TelemetryTests {
             == "DO_NOT_TRACK=1")
     }
 
-    @Test("No consent invitation is owed under a kill switch (the engine skips its prompt the same way)")
+    @Test("No launch notice is owed under a kill switch")
     func killSwitchSettlesConsent() {
-        let defaults = freshDefaults()
-        #expect(TelemetryConsent.needsDecision(defaults: defaults, environment: [:]))
+        let directory = try! temporaryTelemetryDirectory("kill-switch-notice")
+        defer { try? FileManager.default.removeItem(at: directory) }
+        #expect(TelemetryConsent.needsNotice(environment: [:], telemetryDirectory: directory))
         for env in [["RAPID_MLX_TELEMETRY": "0"], ["DO_NOT_TRACK": "1"], ["GITHUB_ACTIONS": "true"]] {
-            #expect(!TelemetryConsent.needsDecision(defaults: defaults, environment: env))
+            #expect(!TelemetryConsent.needsNotice(environment: env, telemetryDirectory: directory))
         }
-        // A truthy explicit switch leaves consent in charge — that is how the
-        // golden flows prove the consent boundary against a loopback sink.
-        #expect(TelemetryConsent.needsDecision(
-            defaults: defaults, environment: ["RAPID_MLX_TELEMETRY": "1"]))
+        #expect(TelemetryConsent.needsNotice(
+            environment: ["RAPID_MLX_TELEMETRY": "1"], telemetryDirectory: directory))
     }
 
     @Test("TelemetryConfig.isEnabled honours an explicit true override")
@@ -249,6 +247,8 @@ final class TelemetryTests {
         let defaults = freshDefaults()
         let directory = try temporaryTelemetryDirectory("consent-yes")
         defer { try? FileManager.default.removeItem(at: directory) }
+        try Data("notice_revision_seen: 1\n".utf8)
+            .write(to: directory.appendingPathComponent("telemetry-consent.yaml"))
 
         TelemetryConsent.record(
             enabled: true,
@@ -258,7 +258,6 @@ final class TelemetryTests {
         )
 
         #expect(TelemetryConfig.isEnabled(defaults: defaults))
-        #expect(!TelemetryConsent.needsDecision(defaults: defaults))
         #expect(FileManager.default.fileExists(
             atPath: directory.appendingPathComponent("telemetry-client-id").path
         ))
@@ -310,7 +309,7 @@ final class TelemetryTests {
             telemetryDirectory: directory
         )
 
-        #expect(TelemetryConsent.needsDecision(defaults: defaults))
+        #expect(TelemetryConsent.needsNotice(environment: [:], telemetryDirectory: directory))
         #expect(!TelemetryConfig.isEnabled(defaults: defaults))
     }
 
@@ -331,9 +330,9 @@ final class TelemetryTests {
         )
 
         #expect(!TelemetryConfig.isEnabled(defaults: defaults))
-        #expect(TelemetryConsent.needsDecision(defaults: defaults))
+        #expect(TelemetryConsent.needsNotice(environment: [:], telemetryDirectory: directory))
         #expect(defaults.string(forKey: TelemetryConfig.clientIDKey) == nil)
-        #expect(!defaults.bool(forKey: TelemetryConfig.sharedConsentMigrationKey))
+        #expect(defaults.bool(forKey: TelemetryConfig.sharedConsentMigrationKey))
     }
 
     @Test("shared consent is the source of truth after migration")
@@ -343,7 +342,7 @@ final class TelemetryTests {
         defaults.set(true, forKey: TelemetryConfig.sharedConsentMigrationKey)
         let directory = try temporaryTelemetryDirectory("shared-consent-wins")
         defer { try? FileManager.default.removeItem(at: directory) }
-        try Data("consent: false\ndesktop_consent: false\nprompted_version: 0.11.0\nschema_version: 1\n".utf8)
+        try Data("consent: false\ndesktop_consent: false\nprompted_version: 0.11.0\nnotice_revision_seen: 1\nschema_version: 1\n".utf8)
             .write(to: directory.appendingPathComponent("telemetry-consent.yaml"))
 
         TelemetryConsent.synchronizeExistingDecision(
@@ -353,7 +352,7 @@ final class TelemetryTests {
         )
 
         #expect(!TelemetryConfig.isEnabled(defaults: defaults))
-        #expect(!TelemetryConsent.needsDecision(defaults: defaults))
+        #expect(!TelemetryConsent.needsNotice(environment: [:], telemetryDirectory: directory))
     }
 
     @Test("malformed shared consent line (comment-only value) is tolerated, not a launch crash-loop")
@@ -380,7 +379,7 @@ final class TelemetryTests {
             telemetryDirectory: directory
         )
 
-        #expect(TelemetryConsent.needsDecision(defaults: defaults))
+        #expect(!TelemetryConsent.needsNotice(environment: [:], telemetryDirectory: directory))
         #expect(!TelemetryConfig.isEnabled(defaults: defaults))
     }
 

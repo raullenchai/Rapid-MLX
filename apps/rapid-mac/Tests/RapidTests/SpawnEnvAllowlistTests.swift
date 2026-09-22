@@ -310,7 +310,7 @@ struct SpawnEnvAllowlistTests {
     func emptyAmbientYieldsOnlyInjected() {
         // No allowlisted var present means the result is the desktop-
         // injected layer — bearer + PYTHONUNBUFFERED + HF pinning + the
-        // Desktop prefix-cache autoload opt-out — plus
+        // Desktop prefix-cache autoload opt-out and process role — plus
         // ``PATH``, which is deliberately always set (see
         // ``augmentedToolchainPATH``): a sidecar with no PATH at all
         // cannot resolve any stdio MCP server command. Anything BEYOND
@@ -327,12 +327,27 @@ struct SpawnEnvAllowlistTests {
             "HF_HUB_DISABLE_XET",
             "HF_HUB_DOWNLOAD_TIMEOUT",
             "RAPID_MLX_PREFIX_CACHE_AUTOLOAD",
+            "RAPID_MLX_PROCESS_ROLE",
             "PATH",
         ]
         #expect(Set(env.keys) == expectedKeys)
         // The always-set PATH carries only the fallback toolchain dirs —
         // no HOME means no ``~/.local/bin`` entry.
         #expect(env["PATH"] == "/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin")
+        #expect(env["RAPID_MLX_PROCESS_ROLE"] == "desktop-sidecar")
+    }
+
+    @Test("Desktop sidecar role is always injected and cannot be ambient-spoofed")
+    func desktopSidecarRoleOverridesAmbient() {
+        let env = ServerManager.serveEnvironmentAdditions(
+            bearer: "b",
+            ambient: [
+                "PATH": "/usr/bin",
+                "RAPID_MLX_PROCESS_ROLE": "interactive",
+            ]
+        )
+        #expect(env["RAPID_MLX_PROCESS_ROLE"] == "desktop-sidecar")
+        #expect(!ServerManager.serveEnvironmentAllowlist.contains("RAPID_MLX_PROCESS_ROLE"))
     }
 
     // MARK: - allowlist is documented in source as a Set

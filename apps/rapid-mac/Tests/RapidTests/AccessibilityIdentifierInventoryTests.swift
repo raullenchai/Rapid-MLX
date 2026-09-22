@@ -321,6 +321,18 @@ struct AccessibilityIdentifierInventoryTests {
 
     // MARK: - Settings → Privacy
 
+    @Test("Telemetry launch notice names its banner and acknowledgement")
+    func telemetryNoticeIdentifiers() throws {
+        try assertDeclared(
+            [
+                #""TelemetryNotice.Banner""#,
+                #""TelemetryNotice.Acknowledge""#,
+            ],
+            in: "Sources/Rapid/UI/TelemetryNoticeView.swift",
+            surface: "Telemetry launch notice"
+        )
+    }
+
     /// The second panel `no-dead-controls` stopped on. Same shape of gap as
     /// Tools: a working telemetry switch and three working policy links, none
     /// of them addressable.

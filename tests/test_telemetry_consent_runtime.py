@@ -28,6 +28,7 @@ every decision ``pre_cutoff_runtime`` and exercise nothing.
 from __future__ import annotations
 
 import errno
+import json
 import logging
 import os
 import re
@@ -243,6 +244,30 @@ def test_read_desktop_shaped_schema1_refusal(fake_home):
     assert stored.consent is False, "a collapsed schema-1 refusal would have uploaded"
     assert stored.recorded_version == "0.11.0"
     assert stored.notice_revision_seen is None
+
+
+@pytest.mark.parametrize("consent", [None, True])
+def test_desktop_v2_json_marker_authorises_sidecar(fake_home, consent):
+    """Swift's sorted pretty JSON is valid input for sidecar rows 3/9."""
+    record = {
+        "desktop_consent": True,
+        "notice_revision_seen": DISCLOSURE_REVISION,
+        "prompted_at": "2026-09-21T12:00:00Z",
+        "prompted_version": "0.15.0",
+        "schema_version": 1,
+    }
+    if consent is not None:
+        record["consent"] = consent
+    write_consent(json.dumps(record, indent=2, sort_keys=True) + "\n")
+
+    stored = read_stored_consent()
+    assert stored.consent is consent
+    assert stored.recorded_version == "0.15.0"
+    assert stored.notice_revision_seen == DISCLOSURE_REVISION
+    decision = resolve(role=ProcessRole.SIDECAR)
+    assert decision.reason == ("marker_authorises" if consent is None else "consented")
+    assert decision.upload_now is True
+    assert upload_allowed() is True
 
 
 def test_read_ignores_schema_version_entirely(fake_home):

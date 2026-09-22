@@ -45,7 +45,6 @@ struct SettingsView: View {
     /// onboarding alerts" affordance that brings the prompt back.
     @Environment(DockVisibilityPromptStore.self) private var dockPromptStore
     @Environment(QuickstartCoordinator.self) private var quickstart
-    @Environment(DeferredTelemetryConsentCoordinator.self) private var deferredTelemetryConsent
     @State private var confirmingSetupRestart = false
     @State private var restartingSetup = false
     @AppStorage(VideoFeatureConfig.enabledKey)
@@ -642,7 +641,7 @@ struct SettingsView: View {
         VStack(alignment: .leading, spacing: RapidTheme.Space.xl) {
             SectionHeader(
                 "Privacy",
-                subtitle: "Rapid-MLX is local-first. Prompts, attachments, and model responses never leave your Mac. Anonymous usage data is sent only after you opt in.",
+                subtitle: "Rapid-MLX is local-first. Prompts, attachments, and model responses never leave your Mac. Anonymous metadata telemetry is on by default; turn it off here or at https://rapidmlx.com/docs/telemetry.",
                 emphasis: .page
             )
 
@@ -655,15 +654,11 @@ struct SettingsView: View {
             }
             .toggleStyle(TrailingSettingsToggleStyle())
             .accessibilityIdentifier("Settings.Privacy.TelemetryToggle")
-            // The post-value consent invitation writes the same
-            // preference, so the seeded value can be stale by the time this
-            // panel is first shown...
+            // The launch notice can enable the default-on policy after this
+            // view value was seeded, so refresh whenever the panel appears.
             .onAppear { telemetryEnabled = TelemetryConfig.isEnabled }
-            // ...and it can go stale *while* the panel is open: Settings can be
-            // opened while the invitation is visible, and answering
-            // "Share" there would otherwise leave this switch reading off while
-            // telemetry is running. Re-reading on any defaults change keeps the
-            // two surfaces honest without either one knowing about the other.
+            // A successful disclosure-marker write updates UserDefaults; keep
+            // an already-visible Settings window in sync with that change.
             //
             // `.receive(on: RunLoop.main)` is load-bearing, not ceremony:
             // `didChangeNotification` is delivered on the thread that made the
@@ -731,8 +726,8 @@ struct SettingsView: View {
     /// appeared to correct itself because leaving the panel and returning
     /// rebuilds the view for unrelated reasons.
     ///
-    /// Seeded once and re-read in ``onAppear`` so a change made elsewhere —
-    /// the post-value consent invitation writes the same key — is still reflected.
+    /// Seeded once and re-read in ``onAppear`` so the launch notice's
+    /// default-on transition is reflected if Settings was already constructed.
     @State private var telemetryEnabled = TelemetryConfig.isEnabled
 
     private var telemetryEnabledBinding: Binding<Bool> {
@@ -744,7 +739,7 @@ struct SettingsView: View {
                 // reintroduce the same problem the moment a write is deferred
                 // or rejected.
                 telemetryEnabled = enabled
-                deferredTelemetryConsent.settingsChanged(enabled: enabled)
+                TelemetryConsent.record(enabled: enabled)
             }
         )
     }
