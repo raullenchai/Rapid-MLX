@@ -3,10 +3,13 @@ import importlib.machinery
 import importlib.util
 import json
 import logging
+import os
 import sys
 from pathlib import Path
 from types import ModuleType
 from typing import Any, Optional, Tuple
+
+from .mtp_split import _containing_root, _open_confined
 
 from .dflash2 import DFlash2DraftModel
 from mlx_vlm.speculative.drafters.dspark import DSparkDraftModel
@@ -329,9 +332,12 @@ def resolve_drafter_kind(model_path, kind: Optional[str] = None) -> str:
 
 def _sidecar_weight_shards(path) -> list:
     # Resolve the sidecar's weight shards with the same validation as
-    # MTPSplitter: the index document and ``weight_map`` must be objects
-    # of filename strings, and every shard must resolve inside the
-    # checkpoint directory or the repository's own HF blob cache.
+    # MTPSplitter and return OPEN no-follow descriptors (confined like
+    # the splitter's) so the later weight read cannot be redirected by
+    # a concurrent path swap. The index document and ``weight_map``
+    # must be objects of filename strings, and every shard must resolve
+    # inside the checkpoint directory or the repository's own HF blob
+    # cache.
     index_path = path / "model.safetensors.index.json"
     if index_path.exists():
         with open(index_path) as f:
@@ -370,7 +376,9 @@ def _sidecar_weight_shards(path) -> list:
                 f"safetensors index entry escapes the checkpoint "
                 f"directory: {name!r}"
             )
-        shards.append(resolved_shard)
+        shards.append(
+            _open_confined(resolved_shard, _containing_root(resolved_shard, allowed_roots))
+        )
     if not shards:
         raise ValueError(f"no safetensors found in {path}")
     return shards
@@ -441,8 +449,14 @@ def load_drafter(
         package = importlib.import_module(f"{__name__}.{peeked}")
         family_model = package.Model(package.ModelConfig.from_dict(config))
         weights = {}
-        for shard in _sidecar_weight_shards(path):
-            weights.update(mx.load(str(shard)))
+        for fd in _sidecar_weight_shards(path):
+            try:
+                with os.fdopen(fd, "rb") as f:
+                    weights.update(mx.load(f, format="safetensors"))
+            except BaseException:
+                if not f.closed:
+                    os.close(fd)
+                raise
         weights = family_model.sanitize(weights)
         if quantization is not None:
             nn.quantize(

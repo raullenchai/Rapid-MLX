@@ -352,8 +352,11 @@ vendored copy differs by exactly the deviations listed):
   the checkpoint directory or the repository's own HF blob cache and
   copied through no-follow-opened descriptors, every confined shard
   and sidecar is pinned with component-wise ``O_NOFOLLOW`` opens plus
-  identity checks so a concurrent path swap cannot redirect reads
-  outside the approved roots, fallback ``*.safetensors`` shards obey
+  identity checks and the pinned descriptors stay open through the
+  actual reads (``load_shard`` consumes the descriptor
+  ``iter_selected`` stashed; sidecar-drafter shards are read through
+  their descriptors too), so a concurrent path swap cannot redirect
+  reads outside the approved roots, fallback ``*.safetensors`` shards obey
   the same confinement, the MLX-source path requires a uniform shard
   format across selected shards (pinned 0.7.1 skipped sanitization
   when any shard carried MLX metadata), and staging cleanup failures
