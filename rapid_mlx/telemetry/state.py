@@ -513,19 +513,60 @@ def _remove_reset_item(path: Path) -> ResetItemResult:
 
 
 def reset_state() -> ResetStateResult:
-    """Delete stored preference and rotate an existing identity, best-effort.
+    """Delete stored preference and rotate an existing identity under consent lock.
 
     The native desktop watches for the consent file to disappear and clears
-    its own answer. Every operation is attempted even if another fails. The
+    its own answer. The permanent sibling lock is never removed: doing so
+    would let an already-waiting writer and a new writer lock different inodes
+    and race an opt-out. Once locked, every reset item is attempted even if
+    another fails. The
     result contains only existence/success flags and exception class names, so
     callers can report incomplete cleanup without exposing local paths or OS
-    messages. An empty state directory stays empty: an identity is rotated only
-    when one already existed.
+    messages. An absent state directory stays absent; an identity is rotated
+    only when one already existed. An existing directory may retain the
+    permanent lock file after reset.
     """
     consent = consent_path()
     lock = consent.with_name(consent.name + ".lock")
+    if not consent.parent.exists():
+        return _reset_state_items(consent, ResetItemResult(False, True))
+
+    try:
+        lock_fd = os.open(lock, os.O_CREAT | os.O_RDWR, 0o600)
+    except OSError as exc:
+        return _reset_lock_failure(exc)
+    try:
+        deadline = _lock_retry_clock() + _LOCK_RETRY_SECONDS
+        while True:
+            try:
+                fcntl.flock(lock_fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                break
+            except OSError as exc:
+                if exc.errno not in (errno.EACCES, errno.EAGAIN, errno.EINTR):
+                    return _reset_lock_failure(exc)
+                remaining = deadline - _lock_retry_clock()
+                if remaining <= 0:
+                    return _reset_lock_failure(exc)
+                _lock_retry_sleep(min(_LOCK_RETRY_INTERVAL_SECONDS, remaining))
+        try:
+            return _reset_state_items(consent, ResetItemResult(True, True))
+        finally:
+            fcntl.flock(lock_fd, fcntl.LOCK_UN)
+    finally:
+        os.close(lock_fd)
+
+
+def _reset_lock_failure(exc: OSError) -> ResetStateResult:
+    """Do not mutate consent without the same lock used by both writers."""
+    return ResetStateResult(
+        consent_file=ResetItemResult(False, True),
+        consent_lock=ResetItemResult(True, False, (type(exc).__name__,)),
+        client_id=ResetItemResult(False, True),
+    )
+
+
+def _reset_state_items(consent: Path, lock_result: ResetItemResult) -> ResetStateResult:
     consent_result = _remove_reset_item(consent)
-    lock_result = _remove_reset_item(lock)
 
     identity_result = _remove_reset_item(client_id_path())
 

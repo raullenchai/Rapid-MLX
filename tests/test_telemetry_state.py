@@ -299,16 +299,21 @@ def test_reset_state_removes_preference_and_rotates_identity(fake_home):
     original = get_or_create_client_id()
     assert consent_path().exists()
     assert client_id_path().exists()
+    lock = consent_path().with_name("telemetry-consent.yaml.lock")
+    lock_inode = lock.stat().st_ino
     result = reset_state()
     assert result.consent_file.succeeded is True
     assert result.consent_lock.succeeded is True
     assert result.client_id.succeeded is True
     assert not consent_path().exists()
+    assert lock.exists()
+    assert lock.stat().st_ino == lock_inode
     rotated = client_id_path().read_text().strip()
     assert rotated != original
     # Idempotent — a second reset rotates the still-present client ID.
     second = reset_state()
     assert second.client_id.succeeded is True
+    assert lock.stat().st_ino == lock_inode
     assert client_id_path().read_text().strip() != rotated
 
 
@@ -358,15 +363,36 @@ def test_reset_state_reports_client_id_rotation_error(fake_home, monkeypatch):
     assert result.client_id_rotation_errors == ("PermissionError",)
 
 
-def test_reset_state_removes_sibling_lock_best_effort(fake_home):
+def test_reset_state_preserves_sibling_lock_inode(fake_home):
     from rapid_mlx.telemetry import state
 
     state.record_consent(True, rapid_mlx_version="0.6.33")
     lock_path = state.consent_path().with_name(state.consent_path().name + ".lock")
     assert lock_path.exists()
+    original_inode = lock_path.stat().st_ino
     state.reset_state()
     assert not state.consent_path().exists()
-    assert not lock_path.exists()
+    assert lock_path.stat().st_ino == original_inode
+
+
+def test_reset_does_not_delete_consent_when_sibling_lock_is_busy(fake_home, monkeypatch):
+    from rapid_mlx.telemetry import state
+
+    state.record_consent(False, rapid_mlx_version="0.14.4")
+    original = state.consent_path().read_bytes()
+    moments = iter((0.0, 2.0))
+    monkeypatch.setattr(state, "_lock_retry_clock", lambda: next(moments))
+    monkeypatch.setattr(
+        state.fcntl,
+        "flock",
+        lambda *_args: (_ for _ in ()).throw(BlockingIOError(state.errno.EAGAIN, "busy")),
+    )
+
+    result = state.reset_state()
+
+    assert result.incomplete
+    assert result.consent_lock.error_types == ("BlockingIOError",)
+    assert state.consent_path().read_bytes() == original
 
 
 def test_reset_state_ignores_marker_enumeration_error(fake_home, monkeypatch):
