@@ -109,7 +109,14 @@ def load_runtime(
             "Install with: pip install 'rapid-mlx[dflash]'"
         )
     # Import here, not at module top, so the optional dep stays optional.
-    from mlx_vlm.speculative.drafters import load_drafter
+    # Vendored-first: the availability guard still requires the qualified
+    # pinned runtime — the load path (get_model_path/load_model and the
+    # model-family classes) stays pinned during the transition.
+    import mlx_vlm.speculative.drafters  # noqa: F401
+
+    from rapid_mlx.models.mlx_vlm_vendored.speculative.drafters import (
+        load_drafter,
+    )
 
     load_source = drafter_repo
     if drafter_revision is not None:

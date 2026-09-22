@@ -23,16 +23,19 @@ def have_glm_cache_runtime() -> bool:
         )
 
         install_glm5_mtp_compatibility()
-        # VENDOR-DEVIATION(redirect): vendored text-AR core (step 3a); the
-        # remaining mlx_vlm imports below move in later step-3 slices.
+        # VENDOR-DEVIATION(redirect): vendored text-AR core (step 3a) and
+        # vendored drafter registry (step 3c); the remaining mlx_vlm imports
+        # below move in later step-3 slices.
         from mlx_vlm.models.cache import ArraysCache, PoolingCache
         from mlx_vlm.models.glm5_next import language
-        from mlx_vlm.speculative.drafters import load_drafter  # noqa: F401
-        from mlx_vlm.speculative.drafters.glm5_next_mtp import (  # noqa: F401
-            Glm5NextMTPDraftModel,
-        )
 
         from rapid_mlx.models.mlx_vlm_vendored.generate import ar
+        from rapid_mlx.models.mlx_vlm_vendored.speculative.drafters import (
+            load_drafter,  # noqa: F401
+        )
+        from rapid_mlx.models.mlx_vlm_vendored.speculative.drafters.glm5_next_mtp import (  # noqa: F401,E501
+            Glm5NextMTPDraftModel,
+        )
         from rapid_mlx.patches.glm5_next_runtime import (
             _has_native_glm5_next_runtime,
         )
@@ -107,8 +110,15 @@ def load_runtime(
     """Load one qualified MTP sidecar through mlx-vlm's compatible loader."""
 
     try:
-        from mlx_vlm.speculative.drafters import load_drafter
+        # Availability guard: the load path (get_model_path/load_model and
+        # the model-family classes) is still served by the qualified pinned
+        # mlx-vlm during the transition; the registry itself is vendored.
+        import mlx_vlm.speculative.drafters  # noqa: F401
         from mlx_vlm.utils import get_model_path
+
+        from rapid_mlx.models.mlx_vlm_vendored.speculative.drafters import (
+            load_drafter,
+        )
     except ImportError as exc:
         raise RuntimeError(
             "native MTP requires "
@@ -124,12 +134,13 @@ def load_runtime(
 
     source = str(get_model_path(drafter_repo, revision=drafter_revision))
     drafter, kind = load_drafter(source, kind="mtp")
-    model_type = getattr(getattr(drafter, "config", None), "model_type", None)
+    drafter_any: Any = drafter
+    model_type = getattr(getattr(drafter_any, "config", None), "model_type", None)
     if kind != "mtp" or model_type != expected_model_type:
         raise RuntimeError(
             f"native MTP sidecar architecture mismatch: expected {expected_model_type}"
         )
-    configured_block = int(getattr(drafter.config, "block_size", 0) or 0)
+    configured_block = int(getattr(drafter_any.config, "block_size", 0) or 0)
     if configured_block != block_size:
         raise RuntimeError(
             "native MTP sidecar block-size mismatch: "

@@ -1,0 +1,3412 @@
+"""Vendored drafter registry parity and binding probes (step 3c-1).
+
+The vendored ``speculative/drafters`` package must stay byte-verbatim
+against pinned ``mlx_vlm.speculative.drafters`` @ 0.7.1 except the
+documented import redirects listed in the package ``__init__.py``
+inventory. Every probe here fails closed: an undocumented edit anywhere in
+a drafter module diverges.
+"""
+
+import inspect
+import json
+import sys
+from pathlib import Path
+from types import ModuleType, SimpleNamespace
+
+import pytest
+
+pytest.importorskip("mlx_vlm")
+
+VENDORED_ROOT = (
+    Path(__file__).resolve().parent.parent
+    / "rapid_mlx"
+    / "models"
+    / "mlx_vlm_vendored"
+    / "speculative"
+    / "drafters"
+)
+
+# Documented redirects: (file, vendored line, upstream line). Applying the
+# replacements below to the vendored sources must reproduce the pinned
+# upstream bytes exactly; anything else diverges.
+REDIRECTS = {
+    "__init__.py": [
+        (
+            "from mlx_vlm.speculative.drafters.dspark import DSparkDraftModel\n",
+            "from .dspark import DSparkDraftModel\n",
+        ),
+        (
+            "from mlx_vlm.speculative.drafters.laguna_dflash import LagunaDFlashDraftModel\n",
+            "from .laguna_dflash import LagunaDFlashDraftModel\n",
+        ),
+        (
+            # ruff format wraps this import; the redirect restores upstream bytes.
+            "from mlx_vlm.speculative.drafters.muse_glimmer_assistant import (\n"
+            "    MuseGlimmerAssistantDraftModel,\n)\n",
+            "from .muse_glimmer_assistant import MuseGlimmerAssistantDraftModel\n",
+        ),
+        (
+            "    from mlx_vlm.utils import get_model_path, load_model\n",
+            "    from ...utils import get_model_path, load_model\n",
+        ),
+    ],
+    "glm5_next_mtp/config.py": [
+        (
+            "from mlx_vlm.models.glm5_next.config import TextConfig as Glm5NextTextConfig\n",
+            "from ....models.glm5_next.config import TextConfig as Glm5NextTextConfig\n",
+        ),
+    ],
+    "glm5_next_mtp/glm5_next_mtp.py": [
+        (
+            "from mlx_vlm.models.cache import (\n",
+            "from ....models.cache import (\n",
+        ),
+        (
+            "from mlx_vlm.models.glm5_next.language import Glm5NextAttention, Glm5NextMoE\n",
+            "from ....models.glm5_next.language import Glm5NextAttention, Glm5NextMoE\n",
+        ),
+    ],
+    "glm5_next_mtp/split.py": [
+        (
+            "from mlx_vlm.models.glm5_next.config import TextConfig\n",
+            "from ....models.glm5_next.config import TextConfig\n",
+        ),
+    ],
+    "qwen3_5_mtp/config.py": [
+        (
+            "from mlx_vlm.models.qwen3_5.config import TextConfig as DenseTextConfig\n",
+            "from ....models.qwen3_5.config import TextConfig as DenseTextConfig\n",
+        ),
+        (
+            "from mlx_vlm.models.qwen3_5_moe.config import TextConfig as MoeTextConfig\n",
+            "from ....models.qwen3_5_moe.config import TextConfig as MoeTextConfig\n",
+        ),
+    ],
+    "qwen3_5_mtp/qwen3_5_mtp.py": [
+        (
+            "from mlx_vlm.models.cache import BatchKVCache, KVCache\n",
+            "from ....models.cache import BatchKVCache, KVCache\n",
+        ),
+        (
+            "from mlx_vlm.models.qwen3_5.language import Qwen3_5DecoderLayer\n",
+            "from ....models.qwen3_5.language import Qwen3_5DecoderLayer\n",
+        ),
+        (
+            "from mlx_vlm.models.qwen3_5_moe.language import Qwen3_5MoeDecoderLayer\n",
+            "from ....models.qwen3_5_moe.language import Qwen3_5MoeDecoderLayer\n",
+        ),
+    ],
+    "mtp_split.py": [
+        (
+            "        # Documented pinned redirect: the deepseek_v4_dspark family is\n"
+            "        # outside the served set (not vendored); detection must resolve\n"
+            "        # the pinned splitter module.\n"
+            "        from mlx_vlm.speculative.drafters.deepseek_v4_dspark.split import (\n"
+            "            DeepseekV4DsparkSplitter,\n"
+            "        )\n",
+            "        from .deepseek_v4_dspark.split import DeepseekV4DsparkSplitter\n",
+        ),
+        (
+            '    "qwen3_5": "rapid_mlx.models.mlx_vlm_vendored'
+            '.speculative.drafters.qwen3_5_mtp.split:Qwen3_5MTPSplitter",\n',
+            '    "qwen3_5": "mlx_vlm.speculative.drafters.qwen3_5_mtp.split:Qwen3_5MTPSplitter",\n',
+        ),
+        (
+            '    "qwen3_5_moe": "rapid_mlx.models.mlx_vlm_vendored'
+            '.speculative.drafters.qwen3_5_mtp.split:Qwen3_5MTPSplitter",\n',
+            '    "qwen3_5_moe": "mlx_vlm.speculative.drafters.qwen3_5_mtp.split:Qwen3_5MTPSplitter",\n',
+        ),
+        (
+            '    "qwen3_next": "rapid_mlx.models.mlx_vlm_vendored'
+            '.speculative.drafters.qwen3_5_mtp.split:Qwen3NextMTPSplitter",\n',
+            '    "qwen3_next": "mlx_vlm.speculative.drafters.qwen3_5_mtp.split:Qwen3NextMTPSplitter",\n',
+        ),
+        (
+            '    "glm5_next": "rapid_mlx.models.mlx_vlm_vendored'
+            '.speculative.drafters.glm5_next_mtp.split:Glm5NextMTPSplitter",\n',
+            '    "glm5_next": "mlx_vlm.speculative.drafters.glm5_next_mtp.split:Glm5NextMTPSplitter",\n',
+        ),
+        (
+            '    "glm5_next_text": "rapid_mlx.models.mlx_vlm_vendored'
+            '.speculative.drafters.glm5_next_mtp.split:Glm5NextMTPSplitter",\n',
+            '    "glm5_next_text": "mlx_vlm.speculative.drafters.glm5_next_mtp.split:Glm5NextMTPSplitter",\n',
+        ),
+    ],
+    "qwen3_dflash/dflash.py": [
+        (
+            "from mlx_vlm.models.activations import swiglu\n",
+            "from ....models.activations import swiglu\n",
+        ),
+        (
+            "from mlx_vlm.models.cache import (\n",
+            "from ....models.cache import (\n",
+        ),
+        (
+            "from mlx_vlm.models.rope_utils import initialize_rope\n",
+            "from ....models.rope_utils import initialize_rope\n",
+        ),
+    ],
+}
+
+# Documented upstream-bugfix deviations (see the package inventory):
+# (file, vendored hunk, upstream hunk). Applying redirects then reverting
+# these hunks must reproduce the pinned upstream bytes exactly.
+DEVIATIONS = {
+    "qwen3_5_mtp/config.py": [
+        (
+            """        # Rapid upstream-bugfix (documented deviation): pinned 0.7.1 keyed
+        # the MoE decision on the model type containing "moe", so the
+        # Qwen3-Next family resolved to the dense config and the drafter
+        # instantiated dense decoder layers over MoE checkpoints.
+        model_type = params.get("model_type", "")
+        is_moe = "moe" in model_type or model_type.startswith("qwen3_next")
+        text_config_cls = MoeTextConfig if is_moe else DenseTextConfig""",
+            """        text_config_cls = (
+            MoeTextConfig if "moe" in params.get("model_type", "") else DenseTextConfig
+        )""",
+        ),
+    ],
+    "mtp_base.py": [
+        (
+            """        del cache
+        if self._input_embed is None or self._lm_head_fn is None:
+            raise RuntimeError(
+                "bind(target_model) must be called before draft_block() "
+                "so the drafter can use the target embeddings and LM head."
+            )
+        if block_size <= 1:
+            # Rapid upstream-bugfix (documented deviation): pinned 0.7.1
+            # crashes on mx.concatenate with an empty token list when
+            # block_size <= 1 (also reachable through externally supplied
+            # drafter repos that load_drafter cannot validate). Return the
+            # DFlash2-shaped empty proposal instead.
+            batch = 1 if isinstance(last_bonus, int) else int(last_bonus.shape[0])
+            return mx.zeros((batch, 0), dtype=token_dtype)
+""",
+            """        del cache
+        if self._input_embed is None or self._lm_head_fn is None:
+            raise RuntimeError(
+                "bind(target_model) must be called before draft_block() "
+                "so the drafter can use the target embeddings and LM head."
+            )
+""",
+        ),
+        (
+            """        # Rapid upstream-bugfix (documented deviation): pinned 0.7.1
+        # dropped every row's bonus replay whenever any row lacked one,
+        # leaving the other rows' caches and seeds stale. Mixed presence
+        # is unsupported by the shared uniform-acceptance replay; fail
+        # loudly BEFORE any cache or position mutation.
+        if any(new_tokens) and not all(new_tokens):
+            raise ValueError(
+                "mixed MTP bonus-token presence across replay rows is "
+                "unsupported; all rows must carry a verifier bonus token"
+            )
+        accepted_i = accepted_set.pop()""",
+            """        accepted_i = accepted_set.pop()""",
+        ),
+    ],
+    "qwen3_dflash/dflash.py": [
+        (
+            """        mask_id = int(self.config.mask_token_id)
+        if block_size <= 1:
+            # Rapid upstream-bugfix (documented deviation): pinned 0.7.1
+            # builds masks with block_size - 1 entries, so block_size <= 1
+            # produces an empty or invalid block; return the DFlash2-shaped
+            # empty proposal before any mask allocation.
+            batch = 1 if isinstance(last_bonus, int) else int(last_bonus.shape[0])
+            return mx.zeros((batch, 0), dtype=token_dtype)
+        if isinstance(last_bonus, int):
+            block = mx.array(
+                [[last_bonus] + [mask_id] * (block_size - 1)],
+                dtype=token_dtype,
+            )
+        else:
+            B = last_bonus.shape[0]""",
+            """        mask_id = int(self.config.mask_token_id)
+        if isinstance(last_bonus, int):
+            block = mx.array(
+                [[last_bonus] + [mask_id] * (block_size - 1)],
+                dtype=token_dtype,
+            )
+        else:
+            B = last_bonus.shape[0]""",
+        ),
+        (
+            """        mask_id = int(self.config.mask_token_id)
+        if block_size <= 1:
+            # Rapid upstream-bugfix (documented deviation): pinned 0.7.1
+            # builds masks with block_size - 1 entries, so block_size <= 1
+            # produces an empty or invalid block; return the DFlash2-shaped
+            # empty proposal before any mask allocation.
+            batch = 1 if isinstance(last_bonus, int) else int(last_bonus.shape[0])
+            return mx.zeros((batch, 0), dtype=token_dtype)
+        if isinstance(last_bonus, int):
+            block = mx.array(
+                [[last_bonus] + [mask_id] * (block_size - 1)],
+                dtype=token_dtype,
+            )
+        else:
+            batch = last_bonus.shape[0]""",
+            """        mask_id = int(self.config.mask_token_id)
+        if isinstance(last_bonus, int):
+            block = mx.array(
+                [[last_bonus] + [mask_id] * (block_size - 1)],
+                dtype=token_dtype,
+            )
+        else:
+            batch = last_bonus.shape[0]""",
+        ),
+        (
+            """    def bind(self, target_model) -> "DFlashDraftModel":
+        # Rapid upstream-bugfix (documented deviation): pinned 0.7.1
+        # resolved the embeddings only when unset, so resetting with a
+        # different target kept the previous target's embeddings while
+        # swapping its LM head. Force re-resolution on every bind.
+        self.embed_tokens = None
+        if self.embed_tokens is None:""",
+            """    def bind(self, target_model) -> "DFlashDraftModel":
+        if self.embed_tokens is None:""",
+        ),
+    ],
+    "dflash2/config.py": [
+        (
+            """        if "runtime_block_size" not in flat:
+            # Rapid upstream-bugfix (documented deviation): pinned 0.7.1
+            # indexes flat["block_size"], crashing with KeyError on an
+            # otherwise valid config that relies on the dataclass default.
+            default_block_size = cls.__dataclass_fields__["block_size"].default
+            flat["runtime_block_size"] = min(
+                5, int(flat.get("block_size", default_block_size))
+            )""",
+            """        if "runtime_block_size" not in flat:
+            flat["runtime_block_size"] = min(5, int(flat["block_size"]))""",
+        ),
+        (
+            """            if key in dflash:
+                flat[key] = dflash[key]
+        # Rapid upstream-bugfix (documented deviation): pinned 0.7.1 drops
+        # the inherited ``causal`` flag, so a checkpoint declaring
+        # ``dflash_config.causal`` loaded as non-causal and bypassed the
+        # causal rejection in ``__post_init__``.
+        if "causal" in dflash:
+            flat["is_causal"] = bool(dflash["causal"])
+
+        rope_parameters = flat.pop("rope_parameters", None)""",
+            """            if key in dflash:
+                flat[key] = dflash[key]
+
+        rope_parameters = flat.pop("rope_parameters", None)""",
+        ),
+    ],
+    "qwen3_dflash/config.py": [
+        (
+            """        runtime_block_size = flat.get("runtime_block_size")
+        if runtime_block_size is not None:
+            # Rapid upstream-bugfix (documented deviation): validate and
+            # coerce together — pinned 0.7.1 kept the original value, so a
+            # numeric string passed validation and reached runtime code as
+            # a str.
+            flat["runtime_block_size"] = int(runtime_block_size)
+            if not 2 <= flat["runtime_block_size"] <= flat.get("block_size", 16):
+                raise ValueError(
+                    "runtime_block_size must be between 2 and block_size "
+                    f"({flat.get('block_size', 16)}), got {runtime_block_size!r}"
+                )
+        rope_parameters = flat.pop("rope_parameters", None)""",
+            """        rope_parameters = flat.pop("rope_parameters", None)""",
+        ),
+    ],
+    "qwen3_5_mtp/split.py": [
+        (
+            """import argparse
+import re
+from pathlib import Path
+from types import SimpleNamespace
+from typing import Dict, Optional
+
+import mlx.core as mx
+
+from ....fp8 import make_quantization_config
+from ..mtp_split import MTPSplitter
+from .config import TextConfig
+from .qwen3_5_mtp import Qwen3_5MTPDraftModel""",
+            """import argparse
+import re
+from pathlib import Path
+from typing import Dict, Optional
+
+import mlx.core as mx
+
+from ....fp8 import make_quantization_config
+from ..mtp_split import MTPSplitter
+from .qwen3_5_mtp import Qwen3_5MTPDraftModel""",
+        ),
+        (
+            """class Qwen3_5MTPSplitter(MTPSplitter):
+    output_model_type = "qwen3_5_mtp"
+    draft_model_cls = Qwen3_5MTPDraftModel
+    tie_word_embeddings_default = True
+    depth_field = "mtp_num_hidden_layers"
+    block_size_extra = 2
+    supports_mlx_source = True
+
+    def sanitize_ctx(self, text_config: dict):
+        # The drafter model's expert-completeness check needs the backbone
+        # expert count; the splitter passes it through the context namespace
+        # (dense backbones simply carry 0).
+        return SimpleNamespace(
+            config=SimpleNamespace(
+                num_experts=getattr(
+                    TextConfig.from_dict(text_config), "num_experts", 0
+                )
+            )
+        )
+
+""",
+            """class Qwen3_5MTPSplitter(MTPSplitter):
+    output_model_type = "qwen3_5_mtp"
+    draft_model_cls = Qwen3_5MTPDraftModel
+    tie_word_embeddings_default = True
+    depth_field = "mtp_num_hidden_layers"
+    block_size_extra = 2
+    supports_mlx_source = True
+
+""",
+        ),
+        (
+            """            for proj in ("gate_proj", "up_proj", "down_proj"):
+                # Rapid upstream-bugfix (documented deviation): quantized
+                # checkpoints carry per-expert ``_scales``/``_biases``;
+                # stack them alongside the weights so the runtime sees a
+                # consistent switch_mlp layout (mirrors the gate_up_proj
+                # handling above).
+                for suffix in ("weight", "scales", "biases"):
+                    keys = [
+                        f"{prefix}.{e}.{proj}.{suffix}" for e in range(n_experts)
+                    ]
+                    present = [k for k in keys if k in tensors]
+                    # Rapid upstream-bugfix (documented deviation): pinned
+                    # 0.7.1 silently skipped missing or partial expert
+                    # groups and saved an incomplete checkpoint that only
+                    # failed at load time. Once a prefix is detected every
+                    # weight projection must carry all ``num_experts``
+                    # entries; quantization metadata stays optional but
+                    # must be complete when present.
+                    if not present and suffix == "weight":
+                        raise ValueError(
+                            "incomplete expert group for "
+                            f"{base}.switch_mlp.{proj}.{suffix}: missing "
+                            + ", ".join(keys)
+                        )
+                    if present and len(present) != len(keys):
+                        missing = [k for k in keys if k not in tensors]
+                        raise ValueError(
+                            "incomplete expert group for "
+                            f"{base}.switch_mlp.{proj}.{suffix}: missing "
+                            + ", ".join(missing)
+                        )
+                    if present:
+                        tensors[f"{base}.switch_mlp.{proj}.{suffix}"] = mx.stack(
+                            [tensors.pop(k) for k in keys]
+                        )""",
+            """            for proj in ("gate_proj", "up_proj", "down_proj"):
+                keys = [f"{prefix}.{e}.{proj}.weight" for e in range(n_experts)]
+                if all(k in tensors for k in keys):
+                    tensors[f"{base}.switch_mlp.{proj}.weight"] = mx.stack(
+                        [tensors.pop(k) for k in keys]
+                    )""",
+        ),
+    ],
+    "qwen3_5_mtp/qwen3_5_mtp.py": [
+        (
+            """        # Rapid upstream-bugfix (documented deviation): pinned 0.7.1
+        # crashes on mx.concatenate with an empty token list when
+        # block_size <= 1; return the DFlash2-shaped empty proposal
+        # BEFORE any seed-state consumption so a rejected round keeps the
+        # cached drafting state.
+        if block_size <= 1:
+            batch = 1 if isinstance(last_bonus, int) else int(last_bonus.shape[0])
+            return mx.zeros((batch, 0), dtype=token_dtype)
+
+        if self._seed_token is not None and self._seed_hidden is not None:""",
+            """        if self._seed_token is not None and self._seed_hidden is not None:""",
+        ),
+        (
+            """        # Rapid upstream-bugfix (documented deviation): pinned 0.7.1 keyed
+        # the decoder class on "moe" appearing in the model type, so the
+        # Qwen3-Next family instantiated dense layers over MoE checkpoints.
+        cfg_model_type = getattr(text_config, "model_type", "")
+        layer_cls = (
+            Qwen3_5MoeDecoderLayer
+            if "moe" in cfg_model_type or cfg_model_type.startswith("qwen3_next")
+            else Qwen3_5DecoderLayer
+        )""",
+            """        layer_cls = (
+            Qwen3_5MoeDecoderLayer
+            if "moe" in getattr(text_config, "model_type", "")
+            else Qwen3_5DecoderLayer
+        )""",
+        ),
+        (
+            """        # Rapid upstream-bugfix (documented deviation): pinned 0.7.1 only
+        # checks that discovered indexes are contiguous from zero, so a
+        # checkpoint with experts 0..k (k < num_experts - 1) stacked
+        # undersized switch_mlp tensors; compare against the configured
+        # expert count and raise with the missing keys.
+        config = getattr(self, "config", None)
+        text_cfg = getattr(config, "text_config", None)
+        n_experts = int(
+            getattr(text_cfg, "num_experts", 0)
+            or getattr(config, "num_experts", 0)
+            or 0
+        )
+        for (expert_prefix, projection, suffix), expert_keys in groups.items():
+            experts = sorted(expert_keys)
+            if experts != list(range(len(experts))):
+                raise ValueError(
+                    f"Qwen MTP expert indexes are not contiguous for {expert_prefix}: "
+                    f"{experts}."
+                )
+            if n_experts and experts != list(range(n_experts)):
+                missing = [
+                    f"{expert_prefix}.{expert}.{projection}.{suffix}"
+                    for expert in range(n_experts)
+                    if expert not in expert_keys
+                ]
+                raise ValueError(
+                    f"Qwen MTP expert group for {expert_prefix}.{projection}."
+                    f"{suffix} is incomplete: expected {n_experts} experts, "
+                    f"found {len(experts)}; missing: " + ", ".join(missing)
+                )
+            base = expert_prefix[: -len(".experts")]""",
+            """        for (expert_prefix, projection, suffix), expert_keys in groups.items():
+            experts = sorted(expert_keys)
+            if experts != list(range(len(experts))):
+                raise ValueError(
+                    f"Qwen MTP expert indexes are not contiguous for {expert_prefix}: "
+                    f"{experts}."
+                )
+            base = expert_prefix[: -len(".experts")]""",
+        ),
+        (
+            """                # Rapid upstream-bugfix (documented deviation): pinned
+                # 0.7.1 skips the padding correction for a scalar
+                # _next_position, so shorter rows keep too-large position
+                # ids for the next round. Promote to per-row positions when
+                # the padding is heterogeneous.
+                padding = mx.array(right_padding, dtype=mx.int32)
+                if isinstance(self._next_position, mx.array):
+                    self._next_position = self._next_position - padding
+                elif int(padding.min()) == int(padding.max()):
+                    self._next_position = self._next_position - int(padding.min())
+                else:
+                    self._next_position = mx.full(
+                        (len(right_padding),),
+                        self._next_position,
+                        dtype=mx.int32,
+                    ) - padding
+""",
+            """                if isinstance(self._next_position, mx.array):
+                    self._next_position = self._next_position - mx.array(
+                        right_padding, dtype=mx.int32
+                    )
+""",
+        ),
+        (
+            """            gate_up_scales_key = f"{gate_up_key}_scales"
+            if gate_up_scales_key in out:
+                gate_scales, up_scales = mx.split(
+                    out.pop(gate_up_scales_key), 2, axis=-2
+                )
+                out[f"{prefix}.switch_mlp.gate_proj.scales"] = gate_scales
+                out[f"{prefix}.switch_mlp.up_proj.scales"] = up_scales
+
+            # Rapid upstream-bugfix (documented deviation): pinned 0.7.1
+            # moves the fused scales but leaves the fused biases behind, so
+            # affine-quantized experts lose required quantization metadata.
+            gate_up_biases_key = f"{gate_up_key}_biases"
+            if gate_up_biases_key in out:
+                gate_biases, up_biases = mx.split(
+                    out.pop(gate_up_biases_key), 2, axis=-2
+                )
+                out[f"{prefix}.switch_mlp.gate_proj.biases"] = gate_biases
+                out[f"{prefix}.switch_mlp.up_proj.biases"] = up_biases
+
+            down_key = f"{prefix}.experts.down_proj"
+            out[f"{prefix}.switch_mlp.down_proj.weight"] = out.pop(down_key)
+            if f"{down_key}_scales" in out:
+                out[f"{prefix}.switch_mlp.down_proj.scales"] = out.pop(
+                    f"{down_key}_scales"
+                )
+            if f"{down_key}_biases" in out:
+                out[f"{prefix}.switch_mlp.down_proj.biases"] = out.pop(
+                    f"{down_key}_biases"
+                )""",
+            """            gate_up_scales_key = f"{gate_up_key}_scales"
+            if gate_up_scales_key in out:
+                gate_scales, up_scales = mx.split(
+                    out.pop(gate_up_scales_key), 2, axis=-2
+                )
+                out[f"{prefix}.switch_mlp.gate_proj.scales"] = gate_scales
+                out[f"{prefix}.switch_mlp.up_proj.scales"] = up_scales
+
+            down_key = f"{prefix}.experts.down_proj"
+            out[f"{prefix}.switch_mlp.down_proj.weight"] = out.pop(down_key)
+            if f"{down_key}_scales" in out:
+                out[f"{prefix}.switch_mlp.down_proj.scales"] = out.pop(
+                    f"{down_key}_scales"
+                )""",
+        ),
+    ],
+    "__init__.py": [
+        (
+            """    "qwen3_dspark": "dflash",
+    # Rapid upstream-bugfix (documented deviation): pinned 0.7.1 omits the
+    # served DFlash families' model types, so an explicit wrong --draft-kind
+    # (e.g. "mtp") dispatched them through the wrong round loop instead of
+    # being overridden here.
+    "dflash2": "dflash",
+    "qwen3_dflash": "dflash",
+}
+""",
+            """    "qwen3_dspark": "dflash",
+}
+""",
+        ),
+        (
+            """import importlib
+import importlib.machinery
+import importlib.util
+import json
+import logging
+import os
+import sys
+from pathlib import Path
+from types import ModuleType
+from typing import Any, Iterator, Optional, Tuple
+
+from .mtp_split import _containing_root, _open_confined
+""",
+            """import json
+import logging
+from typing import Any, Optional, Tuple
+""",
+        ),
+        (
+            """DEFAULT_DRAFTER_KIND = "dflash"
+
+# Rapid binding hook (documented deviation): the served drafter families'
+# checkpoint ``model_type`` values. pinned ``load_model`` resolves sidecar
+# architectures through ``mlx_vlm.models.<model_type>``; pre-registering a
+# package-compatible ``sys.modules`` shim that exposes the vendored
+# package's ``Model``/``ModelConfig`` (preserving any existing exports,
+# ``__path__`` and ``__spec__``) makes the pinned loader construct the
+# vendored classes, so the documented runtime fixes reach production
+# drafters. Bindings install lazily, one family per load, and existing
+# entries are re-bound when they do not match the vendored classes — a
+# pinned module imported earlier, or a shim bound before the GLM
+# compatibility swap, must not silently serve a stale implementation.
+# Unvendored families fall through to the pinned modules.
+_SERVED_ARCHITECTURE_FAMILIES = (
+    "glm5_next_mtp",
+    "qwen3_5_mtp",
+    "qwen3_dflash",
+    "dflash2",
+)
+
+
+def install_served_architecture_bindings(model_type: Optional[str] = None) -> None:
+    # Bind one served family's architecture module (lazily, per load).
+    if model_type not in _SERVED_ARCHITECTURE_FAMILIES:
+        return
+    target = f"mlx_vlm.models.{model_type}"
+    package = importlib.import_module(f"{__name__}.{model_type}")
+    existing = sys.modules.get(target)
+    if (
+        existing is not None
+        and getattr(existing, "Model", None) is package.Model
+        and getattr(existing, "ModelConfig", None) is package.ModelConfig
+    ):
+        return
+    # Package-compatible shim: preserve an existing canonical module's
+    # exports (including ``__path__``/``__spec__``) so submodule imports
+    # keep working; only ``Model``/``ModelConfig`` are overridden.
+    shim = ModuleType(target)
+    if existing is not None:
+        setattr(shim, "__path__", getattr(existing, "__path__", []))
+        for name, value in vars(existing).items():
+            if name not in ("Model", "ModelConfig"):
+                setattr(shim, name, value)  # noqa: B010
+        setattr(
+            shim,
+            "__spec__",
+            getattr(existing, "__spec__", None)
+            or importlib.machinery.ModuleSpec(target, loader=None, is_package=True),
+        )
+    else:
+        # The canonical package may not be imported yet; take the search
+        # locations from its discovered module spec so submodule imports
+        # (``...<model_type>.config``) resolve against the real package.
+        spec = None
+        try:
+            spec = importlib.util.find_spec(target)
+        except (ImportError, AttributeError, ValueError):
+            spec = None
+        if spec is not None and spec.submodule_search_locations:
+            setattr(shim, "__path__", list(spec.submodule_search_locations))
+            setattr(shim, "__spec__", spec)
+        else:
+            setattr(shim, "__path__", [])
+            setattr(
+                shim,
+                "__spec__",
+                importlib.machinery.ModuleSpec(target, loader=None, is_package=True),
+            )
+    setattr(shim, "Model", package.Model)  # noqa: B010
+    setattr(shim, "ModelConfig", package.ModelConfig)  # noqa: B010
+    sys.modules[target] = shim
+    # a previously imported pinned child leaves a stale attribute on
+    # the parent package; ``from mlx_vlm.models import <model_type>``
+    # resolves through that attribute, so it must be updated too.
+    parent = sys.modules.get("mlx_vlm.models")
+    if parent is not None:
+        setattr(parent, model_type, shim)
+
+
+logger = logging.getLogger(__name__)""",
+            """DEFAULT_DRAFTER_KIND = "dflash"
+
+logger = logging.getLogger(__name__)""",
+        ),
+        (
+            """def _sidecar_weight_shards(path) -> Iterator[int]:
+    # Resolve the sidecar's weight shards with the same validation as
+    # MTPSplitter and yield OPEN no-follow descriptors (confined like
+    # the splitter's) one at a time, so a failed later open never
+    # accumulates unconsumed descriptors. The index document and
+    # ``weight_map`` must be objects of filename strings, and every
+    # shard must resolve inside the checkpoint directory or the
+    # repository's own HF blob cache.
+    index_path = path / "model.safetensors.index.json"
+    if index_path.exists():
+        with open(index_path) as f:
+            index = json.load(f)
+        weight_map = index.get("weight_map") if isinstance(index, dict) else None
+        if not isinstance(weight_map, dict) or not all(
+            isinstance(name, str) for name in weight_map.values()
+        ):
+            raise ValueError(
+                f"malformed safetensors index {index_path.name}: "
+                "weight_map must be an object of filename strings"
+            )
+        filenames = sorted(set(weight_map.values()))
+    else:
+        filenames = sorted(
+            shard.name
+            for shard in path.glob("*.safetensors")
+            if not shard.name.endswith("consolidated.safetensors")
+        )
+    if not filenames:
+        raise ValueError(f"no safetensors found in {path}")
+    resolved_source = path.resolve()
+    allowed_roots = [resolved_source]
+    blobs_root = resolved_source.parent.parent / "blobs"
+    if resolved_source.parent.name == "snapshots" and blobs_root.is_dir():
+        allowed_roots.append(blobs_root.resolve())
+    for name in filenames:
+        shard = Path(name)
+        if shard.is_absolute() or ".." in shard.parts:
+            raise ValueError(
+                f"safetensors index entry escapes the checkpoint "
+                f"directory: {name!r}"
+            )
+        resolved_shard = (path / shard).resolve()
+        if not any(resolved_shard.is_relative_to(root) for root in allowed_roots):
+            raise ValueError(
+                f"safetensors index entry escapes the checkpoint "
+                f"directory: {name!r}"
+            )
+        yield _open_confined(
+            resolved_shard, _containing_root(resolved_shard, allowed_roots)
+        )
+
+
+def load_drafter(
+    path_or_repo: str, kind: Optional[str] = None, **kwargs
+) -> Tuple[object, str]:""",
+            """def load_drafter(
+    path_or_repo: str, kind: Optional[str] = None, **kwargs
+) -> Tuple[object, str]:""",
+        ),
+        (
+            """    path = get_model_path(path_or_repo)
+    config = _read_drafter_config(path)
+    peeked = _normalized_drafter_model_type(config)
+    install_served_architecture_bindings(peeked)
+    resolved = resolve_drafter_kind(path, kind)
+    raw_type = config.get("model_type") or config.get("speculators_model_type")
+    if peeked in _SERVED_ARCHITECTURE_FAMILIES and peeked != raw_type:
+        # Rapid upstream-bugfix (documented deviation): a backbone-declared
+        # sidecar's config.json still declares the backbone type, so pinned
+        # load_model would dispatch to the backbone architecture module and
+        # construct a backbone model from drafter weights. Construct the
+        # normalized family's vendored model directly and mirror pinned
+        # load_model's weight pipeline: sanitize, quantize per the
+        # checkpoint's quantization config, load strict, and eval. Loader
+        # options are rejected explicitly instead of being silently
+        # discarded by the direct path.
+        if kwargs:
+            raise ValueError(
+                "sidecar loading does not support loader options: "
+                + ", ".join(sorted(kwargs))
+            )
+        quantization = config.get("quantization") or config.get(
+            "quantization_config"
+        )
+        if quantization is not None:
+            # Validate before constructing the model: malformed or legacy
+            # metadata must fail with an actionable error, not an opaque
+            # TypeError/KeyError mid-load.
+            if not isinstance(quantization, dict):
+                raise ValueError(
+                    "checkpoint quantization metadata must be an object, "
+                    f"got {type(quantization).__name__}"
+                )
+            missing = [
+                field
+                for field in ("group_size", "bits")
+                if field not in quantization
+            ]
+            if missing:
+                raise ValueError(
+                    "checkpoint quantization metadata is missing required "
+                    "fields: " + ", ".join(missing)
+                )
+        import mlx.core as mx
+        import mlx.nn as nn
+
+        package = importlib.import_module(f"{__name__}.{peeked}")
+        family_model = package.Model(package.ModelConfig.from_dict(config))
+        weights = {}
+        for fd in _sidecar_weight_shards(path):
+            with os.fdopen(fd, "rb") as f:
+                weights.update(mx.load(f, format="safetensors"))
+        weights = family_model.sanitize(weights)
+        if quantization is not None:
+            nn.quantize(
+                family_model,
+                group_size=quantization["group_size"],
+                bits=quantization["bits"],
+                mode=quantization.get("mode", "affine"),
+                class_predicate=lambda p, m: f"{p}.scales" in weights
+                and hasattr(m, "to_quantized"),
+            )
+        family_model.load_weights(list(weights.items()), strict=True)
+        mx.eval(family_model.parameters())
+        return family_model, resolved
+    return load_model(path, **kwargs), resolved""",
+            """    path = get_model_path(path_or_repo)
+    resolved = resolve_drafter_kind(path, kind)
+    return load_model(path, **kwargs), resolved""",
+        ),
+        (
+            """    try:
+        with open(model_path / "config.json") as f:
+            config = json.load(f)
+    except (FileNotFoundError, json.JSONDecodeError, OSError):
+        return {}
+    # Rapid upstream-bugfix (documented deviation): pinned 0.7.1 returns
+    # any decoded JSON value; a non-object config crashes resolve_drafter_kind
+    # on config.get(). Degrade to the documented empty-dict contract.
+    return config if isinstance(config, dict) else {}""",
+            """    try:
+        with open(model_path / "config.json") as f:
+            return json.load(f)
+    except (FileNotFoundError, json.JSONDecodeError, OSError):
+        return {}""",
+        ),
+        (
+            """# Backbone types whose DFlash sidecar checkpoints declare the backbone
+# model type with a nested ``dflash_config`` object. Unknown types must
+# fall through to the pinned modules unchanged.
+_SIDECAR_BACKBONE_TYPES = ("qwen3",)
+
+
+def _normalized_drafter_model_type(config: dict) -> Optional[str]:
+    model_type = config.get("model_type") or config.get("speculators_model_type")
+    # Rapid upstream-bugfix (documented deviation): supported sidecar
+    # checkpoints declare the backbone model type ("qwen3") and carry the
+    # drafter settings in a nested ``dflash_config`` object — the served
+    # type is normalized only later by the family's ``Config.from_dict``,
+    # so binding on the raw type would skip the vendored shim and let
+    # pinned ``load_model`` construct the backbone architecture instead.
+    # The DFlash2-exclusive selector/conv keys discriminate DFlash2 from
+    # the Qwen3 DFlash layout sharing the same nested object. Unvendored
+    # or unknown families keep their raw type.
+    if (
+        model_type in _SIDECAR_BACKBONE_TYPES
+        and model_type not in _SERVED_ARCHITECTURE_FAMILIES
+        and isinstance(config.get("dflash_config"), dict)
+    ):
+        dflash_config = config["dflash_config"]
+        dflash2_keys = (
+            "conv_kernel_size",
+            "conv_group_size",
+            "selector_rank",
+            "selector_top_k",
+            "input_embedding_scale",
+            "output_multiplier",
+        )
+        if any(key in dflash_config for key in dflash2_keys):
+            return "dflash2"
+        return "qwen3_dflash"
+    return model_type
+
+
+def _peek_drafter_model_type(model_path) -> Optional[str]:
+    return _normalized_drafter_model_type(_read_drafter_config(model_path))""",
+            """def _peek_drafter_model_type(model_path) -> Optional[str]:
+    config = _read_drafter_config(model_path)
+    return config.get("model_type") or config.get("speculators_model_type")""",
+        ),
+        (
+            """    config = _read_drafter_config(model_path)
+    # Rapid upstream-bugfix (documented deviation): resolve against the
+    # normalized model type — pinned 0.7.1 examined the raw backbone type,
+    # so an explicit wrong --draft-kind (e.g. "mtp") on a backbone-declared
+    # sidecar was returned unchanged and dispatched the DFlash drafter
+    # through the MTP loop.
+    model_type = _normalized_drafter_model_type(config)
+    expected = _expected_drafter_kind(model_type, config)""",
+            """    config = _read_drafter_config(model_path)
+    model_type = config.get("model_type") or config.get("speculators_model_type")
+    expected = _expected_drafter_kind(model_type, config)""",
+        ),
+    ],
+    "mtp_split.py": [
+        (
+            """import glob
+import importlib
+import json
+import logging
+import os
+import shutil
+import stat
+import tempfile
+import uuid""",
+            """import glob
+import importlib
+import json
+import shutil""",
+        ),
+        (
+            """def _is_mlx_safetensors(file: Path) -> bool:
+    with safe_open(file, framework="mlx") as f:
+        return (f.metadata() or {}).get("format") == "mlx"
+
+
+def _containing_root(resolved: Path, allowed_roots: List[Path]) -> Path:
+    for root in allowed_roots:
+        if resolved.is_relative_to(root):
+            return root
+    raise ValueError(f"{resolved.name!r} escapes the checkpoint directory")
+
+
+def _open_confined(path: Path, base: Path) -> int:
+    # Rapid upstream-bugfix (documented deviation): resolve-then-open
+    # leaves a window where an untrusted checkpoint can swap a path
+    # component for a symlink between validation and read. Every
+    # component below the confinement base is opened with O_NOFOLLOW
+    # and the opened file's identity is checked against the
+    # confinement-validated path; the descriptor stays open so callers
+    # read the pinned file regardless of later path swaps.
+    resolved = path.resolve()
+    base_resolved = base.resolve()
+    rel_parts = resolved.relative_to(base_resolved).parts
+    fd = os.open(base_resolved, os.O_RDONLY | os.O_DIRECTORY)
+    try:
+        for part in rel_parts[:-1]:
+            next_fd = os.open(
+                part, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW, dir_fd=fd
+            )
+            os.close(fd)
+            fd = next_fd
+        final_fd = os.open(rel_parts[-1], os.O_RDONLY | os.O_NOFOLLOW, dir_fd=fd)
+    finally:
+        os.close(fd)
+    try:
+        st_fd = os.fstat(final_fd)
+        if not stat.S_ISREG(st_fd.st_mode):
+            raise ValueError(f"{path.name!r} is not a regular file")
+        st_path = os.stat(resolved)
+        if (st_fd.st_dev, st_fd.st_ino) != (st_path.st_dev, st_path.st_ino):
+            raise ValueError(f"{path.name!r} changed during validation")
+    except BaseException:
+        os.close(final_fd)
+        raise
+    return final_fd
+
+
+def _safetensors_keys(fd: int) -> List[str]:
+    # Key names from the safetensors header of an already-open descriptor
+    # (8-byte little-endian header length, then a JSON object). Reads use
+    # ``os.pread`` so the descriptor's shared file offset is untouched.
+    prefix = os.pread(fd, 8, 0)
+    header_len = int.from_bytes(prefix, "little") if prefix else 0
+    header = json.loads(os.pread(fd, header_len, 8) or b"{}")
+    return [key for key in header if key != "__metadata__"]
+
+
+""",
+            """def _is_mlx_safetensors(file: Path) -> bool:
+    with safe_open(file, framework="mlx") as f:
+        return (f.metadata() or {}).get("format") == "mlx"
+
+
+""",
+        ),
+        (
+            """    def iter_selected(
+        self, source_path: Path, text_config: dict
+    ) -> Iterable[Tuple[Path, List[str]]]:
+        # Rapid upstream-bugfix (documented deviation): confined shard
+        # descriptors stay open until ``load_shard`` consumes them, so a
+        # concurrent path swap cannot redirect the later weight read.
+        pinned: Dict[Path, int] = {}
+        self._pinned_shard_fds = pinned
+        try:
+            yield from self._iter_selected_confined(source_path, text_config, pinned)
+        finally:
+            for fd in self._pinned_shard_fds.values():
+                os.close(fd)
+            self._pinned_shard_fds = {}
+
+    def _iter_selected_confined(
+        self, source_path: Path, text_config: dict, pinned: Dict[Path, int]
+    ) -> Iterable[Tuple[Path, List[str]]]:""",
+            """    def iter_selected(
+        self, source_path: Path, text_config: dict
+    ) -> Iterable[Tuple[Path, List[str]]]:""",
+        ),
+        (
+            """def _allowed_checkpoint_roots(source_path: Path) -> List[Path]:
+    # Checkpoint content must resolve inside the checkpoint directory or
+    # the repository's own HF blob cache (snapshot entries symlink into
+    # the sibling ``blobs`` directory).
+    resolved_source = source_path.resolve()
+    allowed_roots = [resolved_source]
+    blobs_root = resolved_source.parent.parent / "blobs"
+    if resolved_source.parent.name == "snapshots" and blobs_root.is_dir():
+        allowed_roots.append(blobs_root.resolve())
+    return allowed_roots
+
+
+""",
+            """""",
+        ),
+        (
+            """        text_config = self.read_text_config(source_config)
+
+        # Rapid upstream-bugfix (documented deviation): validate every
+        # configuration argument BEFORE creating or writing the output —
+        # rejected input must not leave a partially generated directory.
+        # Minimum supported block size is 2: with 1 the MTP drafting loops
+        # feed an empty token list into ``mx.concatenate`` and crash.
+        resolved_block_size = (
+            self.depth(text_config) + self.block_size_extra
+            if block_size is None
+            else int(block_size)
+        )
+        if resolved_block_size < 2:
+            raise ValueError(f"block_size must be >= 2, got {block_size!r}")
+        if output_path.resolve() == source_path.resolve():
+            raise ValueError("output must differ from the source checkpoint")
+
+        # Rapid upstream-bugfix (documented deviation): pinned 0.7.1 writes
+        # directly into the destination, so a pre-existing directory keeps
+        # stale tokenizer files and a failure after the weight save leaves
+        # new weights paired with an old config.json. Build the complete
+        # checkpoint in a unique sibling staging directory (concurrent
+        # splits must not share one), swap it in only after every save and
+        # copy succeeds, and keep the old destination as a backup until the
+        # staged checkpoint is installed.
+        output_path.parent.mkdir(parents=True, exist_ok=True)
+        staging = Path(
+            tempfile.mkdtemp(
+                prefix=f".{output_path.name}.mtp-split-",
+                dir=str(output_path.parent),
+            )
+        )
+        try:
+""",
+            """        text_config = self.read_text_config(source_config)
+
+""",
+        ),
+        (
+            """            selected: Dict[str, mx.array] = {}
+            # Rapid upstream-bugfix (documented deviation): pinned 0.7.1
+            # took the MLX-source path when ANY selected shard carried MLX
+            # metadata, so a mixed-format sharded checkpoint skipped
+            # sanitization for every shard; require a uniform format.
+            from typing import Generator, cast
+
+            source_is_mlx: Optional[bool] = None
+            shard_iter = cast(
+                "Generator[Tuple[Path, List[str]], None, None]",
+                self.iter_selected(source_path, text_config),
+            )
+            try:
+                for file, keys in shard_iter:
+                    if self.supports_mlx_source:
+                        is_mlx = _is_mlx_safetensors(file)
+                        if source_is_mlx is None:
+                            source_is_mlx = is_mlx
+                        elif source_is_mlx != is_mlx:
+                            raise ValueError(
+                                "mixed safetensors formats in checkpoint: shards "
+                                "must be uniformly MLX or uniformly non-MLX"
+                            )
+                    selected.update(self.load_shard(file, keys))
+            finally:
+                shard_iter.close()
+            if source_is_mlx is None:
+                source_is_mlx = False
+            if not selected:
+                raise ValueError(f"No MTP tensors found in {source_path}.")
+
+            q_bits = quant_opts.get("q_bits")
+            q_mode = quant_opts.get("q_mode")
+            quantize = q_bits is not None or q_mode is not None
+            fp8_target_quantization = None
+            if quantize:
+                fp8_target_quantization = get_quantization_params(
+                    quant_opts.get("q_group_size"), q_bits, q_mode or "affine"
+                )
+            selected, transformed_quantization = transform_fp8_weights(
+                selected,
+                source_config,
+                target_quantization=fp8_target_quantization,
+            )
+            if transformed_quantization is not None:
+                source_config = dict(source_config)
+                source_config["quantization"] = transformed_quantization
+                source_config["quantization_config"] = transformed_quantization
+            weights = self.transform(selected, text_config, source_is_mlx)
+            quantization = self.quantization(
+                weights, source_config, text_config, quant_opts
+            )
+
+            mx.eval(list(weights.values()))
+            mx.save_safetensors(
+                str(staging / "model.safetensors"),
+                weights,
+                metadata={"format": "mlx"},
+            )
+
+            draft_config = {
+                "model_type": self.output_model_type,
+                "text_config": text_config,
+                "block_size": resolved_block_size,
+                "tie_word_embeddings": bool(
+                    text_config.get("tie_word_embeddings", self.tie_word_embeddings_default)
+                ),
+            }
+            draft_config.update(self.extra_config(text_config))
+            if quantization is not None:
+                draft_config["quantization"] = quantization
+                draft_config["quantization_config"] = quantization
+
+            with open(staging / "config.json", "w") as f:
+                json.dump(dict(sorted(draft_config.items())), f, indent=2)
+
+            # Rapid upstream-bugfix (documented deviation): tokenizer
+            # sidecars are copied through symlinks, so an untrusted
+            # checkpoint could copy an arbitrary readable host file into
+            # the generated output; resolve each sidecar and require it
+            # to stay inside the checkpoint directory or the
+            # repository's own HF blob cache.
+            allowed_roots = _allowed_checkpoint_roots(source_path)
+            for name in self.tokenizer_files:
+                src = source_path / name
+                if not src.exists():
+                    continue
+                resolved = src.resolve()
+                if not any(resolved.is_relative_to(root) for root in allowed_roots):
+                    raise ValueError(
+                        f"tokenizer sidecar escapes the checkpoint "
+                        f"directory: {name!r}"
+                    )
+                # Copy through a no-follow-opened descriptor so the bytes
+                # read are the pinned file's, not whatever the path
+                # resolves to when the copy runs.
+                src_fd = _open_confined(
+                    resolved, _containing_root(resolved, allowed_roots)
+                )
+                with os.fdopen(src_fd, "rb") as fsrc, open(staging / name, "wb") as fdst:
+                    shutil.copyfileobj(fsrc, fdst)
+
+            # Install under a per-destination advisory lock: concurrent
+            # splits' destination moves must not interleave. The old
+            # destination moves into a unique, exclusively-created backup
+            # owned by this invocation; the staged checkpoint replaces it
+            # and the backup is restored if the install rename fails —
+            # the destination is never destroyed before its replacement
+            # exists.
+            import fcntl
+            import stat as stat_module
+
+            lock_path = output_path.parent / f".{output_path.name}.mtp-split-lock"
+            # O_NOFOLLOW + regular-file/owner checks: the predictable lock
+            # path must not become a symlink-following write primitive for
+            # anyone who can write the output directory.
+            lock_fd = os.open(
+                lock_path, os.O_WRONLY | os.O_CREAT | os.O_NOFOLLOW, 0o600
+            )
+            try:
+                lock_stat = os.fstat(lock_fd)
+                if not stat_module.S_ISREG(lock_stat.st_mode):
+                    raise RuntimeError(
+                        f"split lock {lock_path} is not a regular file"
+                    )
+                if lock_stat.st_uid != os.getuid():
+                    raise RuntimeError(
+                        f"split lock {lock_path} is not owned by the current user"
+                    )
+                lock_handle = os.fdopen(lock_fd, "w")
+            except (OSError, RuntimeError):
+                os.close(lock_fd)
+                raise
+            try:
+                fcntl.flock(lock_handle, fcntl.LOCK_EX)
+                self._install_staged(output_path, staging)
+            finally:
+                fcntl.flock(lock_handle, fcntl.LOCK_UN)
+                lock_handle.close()
+            return output_path
+        finally:
+            if staging.is_dir() and not staging.is_symlink():
+                try:
+                    shutil.rmtree(staging)
+                except OSError as exc:
+                    logging.getLogger(__name__).warning(
+                        "failed to remove staging directory %s: %s",
+                        staging,
+                        exc,
+                    )
+""",
+            """        selected: Dict[str, mx.array] = {}
+        source_is_mlx = False
+        for file, keys in self.iter_selected(source_path, text_config):
+            if self.supports_mlx_source:
+                source_is_mlx = source_is_mlx or _is_mlx_safetensors(file)
+            selected.update(self.load_shard(file, keys))
+        if not selected:
+            raise ValueError(f"No MTP tensors found in {source_path}.")
+
+        q_bits = quant_opts.get("q_bits")
+        q_mode = quant_opts.get("q_mode")
+        quantize = q_bits is not None or q_mode is not None
+        fp8_target_quantization = None
+        if quantize:
+            fp8_target_quantization = get_quantization_params(
+                quant_opts.get("q_group_size"), q_bits, q_mode or "affine"
+            )
+        selected, transformed_quantization = transform_fp8_weights(
+            selected,
+            source_config,
+            target_quantization=fp8_target_quantization,
+        )
+        if transformed_quantization is not None:
+            source_config = dict(source_config)
+            source_config["quantization"] = transformed_quantization
+            source_config["quantization_config"] = transformed_quantization
+        weights = self.transform(selected, text_config, source_is_mlx)
+        quantization = self.quantization(
+            weights, source_config, text_config, quant_opts
+        )
+
+        mx.eval(list(weights.values()))
+        mx.save_safetensors(
+            str(output_path / "model.safetensors"),
+            weights,
+            metadata={"format": "mlx"},
+        )
+
+        depth = self.depth(text_config)
+        draft_config = {
+            "model_type": self.output_model_type,
+            "text_config": text_config,
+            "block_size": int(block_size or depth + self.block_size_extra),
+            "tie_word_embeddings": bool(
+                text_config.get("tie_word_embeddings", self.tie_word_embeddings_default)
+            ),
+        }
+        draft_config.update(self.extra_config(text_config))
+        if quantization is not None:
+            draft_config["quantization"] = quantization
+            draft_config["quantization_config"] = quantization
+
+        with open(output_path / "config.json", "w") as f:
+            json.dump(dict(sorted(draft_config.items())), f, indent=2)
+
+        for name in self.tokenizer_files:
+            src = source_path / name
+            if src.exists():
+                shutil.copy(src, output_path / name)
+
+        return output_path""",
+        ),
+        (
+            """    @staticmethod
+    def _install_staged(output_path: Path, staging: Path) -> None:
+        backup = None
+        if output_path.exists() or output_path.is_symlink():
+            # A unique, nonexistent backup path: mkdtemp pre-creates a
+            # directory, which os.replace refuses to overwrite with a
+            # symlinked destination (IsADirectoryError).
+            backup = output_path.parent / (
+                f".{output_path.name}.mtp-split-bak-{uuid.uuid4().hex}"
+            )
+            os.replace(output_path, backup)
+        try:
+            os.replace(staging, output_path)
+        except OSError:
+            # is_symlink() covers broken symlinks, which exists() misses —
+            # a moved-aside broken destination must still be restored.
+            if backup is not None and (backup.exists() or backup.is_symlink()):
+                os.replace(backup, output_path)
+            raise
+        if backup is not None:
+            try:
+                if backup.is_dir() and not backup.is_symlink():
+                    shutil.rmtree(backup)
+                else:
+                    backup.unlink()
+            except OSError:
+                # The new destination is safely installed; surface the
+                # retained duplicate instead of deleting silently.
+                logging.getLogger(__name__).warning(
+                    "failed to remove split backup %s; remove it manually",
+                    backup,
+                )
+""",
+            """""",
+        ),
+        (
+            """def _weight_map(model_path: Path) -> Dict[str, str]:
+    index_path = model_path / "model.safetensors.index.json"
+    if not index_path.exists():
+        return {}
+    with open(index_path) as f:
+        index = json.load(f)
+    # Rapid upstream-bugfix (documented deviation): pinned 0.7.1 assumes
+    # both the index document and ``weight_map`` are objects; a malformed
+    # index crashed with ``AttributeError`` instead of a clear error.
+    weight_map = index.get("weight_map") if isinstance(index, dict) else None
+    if not isinstance(weight_map, dict):
+        raise ValueError(
+            f"malformed safetensors index {index_path.name}: "
+            "weight_map must be an object"
+        )
+    for filename in weight_map.values():
+        if not isinstance(filename, str):
+            raise ValueError(
+                f"malformed safetensors index {index_path.name}: "
+                f"non-string filename entry {filename!r}"
+            )
+    return weight_map
+""",
+            """def _weight_map(model_path: Path) -> Dict[str, str]:
+    index_path = model_path / "model.safetensors.index.json"
+    if not index_path.exists():
+        return {}
+    with open(index_path) as f:
+        return json.load(f).get("weight_map", {})
+""",
+        ),
+        (
+            """            if by_file:
+                # Rapid upstream-bugfix (documented deviation): shard
+                # filenames come from an untrusted safetensors index.
+                # Absolute paths and '..' traversal are rejected lexically;
+                # symlinks are followed but the resolved target must stay
+                # inside the model directory or the repository's own HF
+                # blob cache (snapshot shards symlink into ../blobs).
+                allowed_roots = _allowed_checkpoint_roots(source_path)
+                for filename, keys in by_file.items():
+                    shard = Path(filename)
+                    if shard.is_absolute() or ".." in shard.parts:
+                        raise ValueError(
+                            "safetensors index entry escapes the model "
+                            f"directory: {filename!r}"
+                        )
+                    resolved_shard = (source_path / shard).resolve()
+                    if not any(
+                        resolved_shard.is_relative_to(root) for root in allowed_roots
+                    ):
+                        raise ValueError(
+                            "safetensors index entry escapes the model "
+                            f"directory: {filename!r}"
+                        )
+                    fd = _open_confined(
+                        resolved_shard, _containing_root(resolved_shard, allowed_roots)
+                    )
+                    pinned[resolved_shard] = fd
+                    yield resolved_shard, keys
+                return
+""",
+            """            if by_file:
+                for filename, keys in by_file.items():
+                    yield source_path / filename, keys
+                return
+""",
+        ),
+        (
+            """        # Rapid upstream-bugfix (documented deviation): the fallback
+        # shards must obey the same confinement as indexed shards — an
+        # untrusted checkpoint must not make the splitter read files
+        # outside the checkpoint/HF blob roots.
+        allowed_roots = _allowed_checkpoint_roots(source_path)
+        for file in _safetensor_files(source_path):
+            resolved_file = file.resolve()
+            if not any(
+                resolved_file.is_relative_to(root) for root in allowed_roots
+            ):
+                raise ValueError(
+                    "safetensors shard escapes the checkpoint directory: "
+                    f"{file.name!r}"
+                )
+            fd = _open_confined(
+                resolved_file, _containing_root(resolved_file, allowed_roots)
+            )
+            selected_keys = [
+                key
+                for key in _safetensors_keys(fd)
+                if self.select_keys(key, text_config)
+            ]
+            if selected_keys:
+                pinned[resolved_file] = fd
+                yield resolved_file, selected_keys
+            else:
+                os.close(fd)
+""",
+            """        for file in _safetensor_files(source_path):
+            with safe_open(file, framework="mlx") as f:
+                keys = [key for key in f.keys() if self.select_keys(key, text_config)]
+            if keys:
+                yield file, keys
+""",
+        ),
+        (
+            """    def load_shard(self, file: Path, keys: List[str]) -> Dict[str, mx.array]:
+        # Rapid upstream-bugfix (documented deviation): consume the
+        # descriptor pinned by ``iter_selected`` so the weight read cannot
+        # be redirected by a concurrent path swap; the direct path is kept
+        # for callers that iterate without confinement.
+        fd = self._pinned_shard_fds.pop(file, None) if getattr(
+            self, "_pinned_shard_fds", None
+        ) else None
+        if fd is not None:
+            with os.fdopen(fd, "rb") as f:
+                shard = mx.load(f, format="safetensors")
+            return {key: shard[key] for key in keys}
+        try:
+            with safe_open(file, framework="mlx") as f:
+                return {key: mx.array(f.get_tensor(key)) for key in keys}
+        except (AttributeError, RuntimeError, TypeError):
+            shard = mx.load(str(file))
+            return {key: shard[key] for key in keys}
+
+    def rename(""",
+            """    def load_shard(self, file: Path, keys: List[str]) -> Dict[str, mx.array]:
+        try:
+            with safe_open(file, framework="mlx") as f:
+                return {key: mx.array(f.get_tensor(key)) for key in keys}
+        except (AttributeError, RuntimeError, TypeError):
+            shard = mx.load(str(file))
+            return {key: shard[key] for key in keys}
+
+    def rename(""",
+        ),
+        (
+            """        )
+        output_path = Path(output)
+
+        with open(source_path / "config.json") as f:""",
+            """        )
+        output_path = Path(output)
+        output_path.mkdir(parents=True, exist_ok=True)
+
+        with open(source_path / "config.json") as f:""",
+        ),
+        (
+            """from ...fp8 import transform_fp8_weights
+
+# Documented pinned redirects: quant_utils/utils live at the mlx_vlm root
+# and are vendored by later slices (quant_utils exists in this package;
+# utils is step-3e scope).
+from mlx_vlm.utils import get_model_path
+
+from ...quant_utils import get_quantization_params
+""",
+            """from ...fp8 import transform_fp8_weights
+from ...quant_utils import get_quantization_params
+from ...utils import get_model_path
+""",
+        ),
+    ],
+}
+
+FILES = [
+    "__init__.py",
+    "compatibility.py",
+    "mtp_base.py",
+    "mtp_split.py",
+    "glm5_next_mtp/__init__.py",
+    "glm5_next_mtp/config.py",
+    "glm5_next_mtp/glm5_next_mtp.py",
+    "glm5_next_mtp/split.py",
+    "qwen3_5_mtp/__init__.py",
+    "qwen3_5_mtp/config.py",
+    "qwen3_5_mtp/qwen3_5_mtp.py",
+    "qwen3_5_mtp/split.py",
+    "qwen3_dflash/__init__.py",
+    "qwen3_dflash/config.py",
+    "qwen3_dflash/dflash.py",
+    "qwen3_dflash/parity_check.py",
+    "dflash2/__init__.py",
+    "dflash2/config.py",
+    "dflash2/dflash2.py",
+]
+
+
+def test_vendored_drafter_files_match_upstream_bytes():
+    """Byte parity after reverting the documented import redirects."""
+    import mlx_vlm.speculative.drafters as pinned_pkg
+
+    upstream_root = Path(inspect.getsourcefile(pinned_pkg)).parent
+    diverged = []
+    for rel in FILES:
+        vendored = (VENDORED_ROOT / rel).read_text()
+        for vendored_line, upstream_line in REDIRECTS.get(rel, []):
+            if vendored.count(vendored_line) != 1:
+                diverged.append(f"{rel}: documented redirect line not found")
+                vendored = None
+                break
+            vendored = vendored.replace(vendored_line, upstream_line, 1)
+        if vendored is None:
+            continue
+        for vendored_hunk, upstream_hunk in DEVIATIONS.get(rel, []):
+            if vendored.count(vendored_hunk) != 1:
+                diverged.append(f"{rel}: documented deviation hunk not found")
+                vendored = None
+                break
+            vendored = vendored.replace(vendored_hunk, upstream_hunk, 1)
+        if vendored is None:
+            continue
+        upstream = (upstream_root / rel).read_text()
+        if vendored != upstream:
+            diverged.append(rel)
+    assert diverged == []
+
+
+def test_registry_tables_and_exports():
+    import mlx_vlm.speculative.drafters as pinned_pkg
+
+    from rapid_mlx.models.mlx_vlm_vendored.speculative import drafters as reg
+
+    assert reg.KNOWN_DRAFTER_KINDS == pinned_pkg.KNOWN_DRAFTER_KINDS
+    # The vendored table is the pinned table plus the two documented
+    # upstream-bugfix entries (served DFlash model types).
+    assert pinned_pkg.DRAFTER_KIND_BY_MODEL_TYPE.items() <= (
+        reg.DRAFTER_KIND_BY_MODEL_TYPE.items()
+    )
+    assert set(reg.DRAFTER_KIND_BY_MODEL_TYPE) - set(
+        pinned_pkg.DRAFTER_KIND_BY_MODEL_TYPE
+    ) == {"dflash2", "qwen3_dflash"}
+    assert reg.DEFAULT_DRAFTER_KIND == pinned_pkg.DEFAULT_DRAFTER_KIND
+    # Served families resolve from the vendored package; out-of-scope
+    # families resolve through the documented pinned redirect.
+    assert reg.DFlash2DraftModel.__module__.startswith(
+        "rapid_mlx.models.mlx_vlm_vendored"
+    )
+    assert reg.DFlashDraftModel.__module__.startswith(
+        "rapid_mlx.models.mlx_vlm_vendored"
+    )
+    assert reg.DSparkDraftModel.__module__ == (
+        "mlx_vlm.speculative.drafters.dspark.dspark"
+    )
+
+
+def test_resolve_drafter_kind_auto_detects_served_families(tmp_path):
+    from rapid_mlx.models.mlx_vlm_vendored.speculative.drafters import (
+        resolve_drafter_kind,
+    )
+
+    for model_type, expected in (
+        ("glm5_next_mtp", "mtp"),
+        ("qwen3_5_mtp", "mtp"),
+        ("qwen3_dflash", "dflash"),
+        ("dflash2", "dflash"),
+    ):
+        repo = tmp_path / model_type
+        repo.mkdir()
+        (repo / "config.json").write_text(json.dumps({"model_type": model_type}))
+        assert resolve_drafter_kind(repo) == expected, model_type
+
+
+def test_resolve_drafter_kind_overrides_explicit_wrong_kind(tmp_path):
+    """A DFlash repo given kind="mtp" must be overridden to "dflash"."""
+    from rapid_mlx.models.mlx_vlm_vendored.speculative.drafters import (
+        resolve_drafter_kind,
+    )
+
+    for model_type in ("qwen3_dflash", "dflash2"):
+        repo = tmp_path / model_type
+        repo.mkdir()
+        (repo / "config.json").write_text(json.dumps({"model_type": model_type}))
+        assert resolve_drafter_kind(repo, kind="mtp") == "dflash", model_type
+        assert resolve_drafter_kind(repo, kind="dflash") == "dflash", model_type
+
+
+def test_mtp_splitter_rejects_index_shards_outside_model_dir(tmp_path):
+    """weight_map filenames from an untrusted index must stay in the dir."""
+    from rapid_mlx.models.mlx_vlm_vendored.speculative.drafters.mtp_split import (
+        MTPSplitter,
+    )
+
+    class AllKeys(MTPSplitter):
+        def select_keys(self, key, text_config):
+            return True
+
+    source = tmp_path / "model"
+    source.mkdir()
+    outside = tmp_path / "evil.safetensors"
+    outside.write_bytes(b"x")
+
+    benign = AllKeys()
+    (source / "model-00001.safetensors").write_bytes(b"x")
+    (source / "model.safetensors.index.json").write_text(
+        json.dumps({"weight_map": {"blk.0.mlp": "model-00001.safetensors"}})
+    )
+    yielded = list(benign.iter_selected(source, {}))
+    assert yielded == [(source / "model-00001.safetensors", ["blk.0.mlp"])]
+
+    (source / "model.safetensors.index.json").write_text(
+        json.dumps({"weight_map": {"blk.0.mlp": "../evil.safetensors"}})
+    )
+    with pytest.raises(ValueError, match="escapes the model directory"):
+        list(benign.iter_selected(source, {}))
+
+    absolute = AllKeys()
+    (source / "model.safetensors.index.json").write_text(
+        json.dumps({"weight_map": {"blk.0.mlp": str(outside)}})
+    )
+    with pytest.raises(ValueError, match="escapes the model directory"):
+        list(absolute.iter_selected(source, {}))
+
+    # HF hub snapshot layouts keep shards as trusted symlinks into the
+    # repository's sibling blobs directory; those must keep loading.
+    hub = tmp_path / "hub" / "models--org--m"
+    snapshot = hub / "snapshots" / "rev"
+    snapshot.mkdir(parents=True)
+    blobs = hub / "blobs"
+    blobs.mkdir()
+    blob = blobs / "abc123"
+    blob.write_bytes(b"x")
+    linked = AllKeys()
+    (snapshot / "model.safetensors.index.json").write_text(
+        json.dumps({"weight_map": {"blk.0.mlp": "shard.safetensors"}})
+    )
+    (snapshot / "shard.safetensors").symlink_to(blob)
+    assert list(linked.iter_selected(snapshot, {})) == [(blob.resolve(), ["blk.0.mlp"])]
+
+    # a symlink pointing outside the model directory and its repository
+    # blob cache is rejected
+    (snapshot / "model.safetensors.index.json").write_text(
+        json.dumps({"weight_map": {"blk.0.mlp": "evil-link.safetensors"}})
+    )
+    (snapshot / "evil-link.safetensors").symlink_to(outside)
+    with pytest.raises(ValueError, match="escapes the model directory"):
+        list(linked.iter_selected(snapshot, {}))
+
+
+def test_mtp_split_updates_through_output_symlink(tmp_path):
+    """A symlinked destination is moved aside and replaced (mkdtemp's
+    pre-created backup directory made os.replace fail here)."""
+    import mlx.core as mx
+
+    from rapid_mlx.models.mlx_vlm_vendored.speculative.drafters.mtp_split import (
+        MTPSplitter,
+    )
+
+    class StubSplitter(MTPSplitter):
+        output_model_type = "qwen3_5_mtp"
+        tokenizer_files = ["tokenizer.json"]
+
+        def select_keys(self, key, text_config):
+            return True
+
+        def depth(self, text_config):
+            return 3
+
+        def transform(self, tensors, text_config, source_is_mlx):
+            return {"w": mx.zeros((1,))}
+
+        def quantization(self, weights, source_config, text_config, quant_opts):
+            return None
+
+    source = tmp_path / "src"
+    source.mkdir()
+    (source / "config.json").write_text(
+        json.dumps(
+            {
+                "model_type": "qwen3_5",
+                "text_config": {"model_type": "qwen3_5", "num_hidden_layers": 4},
+            }
+        )
+    )
+    mx.save_safetensors(
+        str(source / "model.safetensors"),
+        {"w": mx.zeros((1,))},
+        metadata={"format": "mlx"},
+    )
+    (source / "tokenizer.json").write_text("{}")
+
+    real = tmp_path / "real-out"
+    real.mkdir()
+    (real / "old.txt").write_text("old")
+    link = tmp_path / "link-out"
+    link.symlink_to(real)
+
+    StubSplitter().split(str(source), str(link))
+    assert not link.is_symlink()
+    assert (link / "model.safetensors").exists()
+    assert (link / "config.json").exists()
+    assert not (link / "old.txt").exists()
+    leftovers = [
+        p for p in tmp_path.glob(".*mtp-split-*") if not p.name.endswith("-lock")
+    ]
+    assert not leftovers
+
+
+def test_mtp_split_rejects_mixed_format_shards(tmp_path, monkeypatch):
+    """A uniform shard format is required: pinned 0.7.1 took the MLX path
+    when any shard carried MLX metadata, skipping sanitization for mixed
+    checkpoints."""
+    import mlx.core as mx
+
+    from rapid_mlx.models.mlx_vlm_vendored.speculative.drafters import mtp_split
+    from rapid_mlx.models.mlx_vlm_vendored.speculative.drafters.mtp_split import (
+        MTPSplitter,
+    )
+
+    class StubSplitter(MTPSplitter):
+        output_model_type = "qwen3_5_mtp"
+        tokenizer_files = ["tokenizer.json"]
+        supports_mlx_source = True
+
+        def select_keys(self, key, text_config):
+            return True
+
+        def depth(self, text_config):
+            return 3
+
+        def transform(self, tensors, text_config, source_is_mlx):
+            return {"w": mx.zeros((1,))}
+
+        def quantization(self, weights, source_config, text_config, quant_opts):
+            return None
+
+    source = tmp_path / "src"
+    source.mkdir()
+    (source / "config.json").write_text(
+        json.dumps(
+            {
+                "model_type": "qwen3_5",
+                "text_config": {"model_type": "qwen3_5", "num_hidden_layers": 4},
+            }
+        )
+    )
+    mx.save_safetensors(
+        str(source / "model.safetensors"),
+        {"w": mx.zeros((1,))},
+        metadata={"format": "mlx"},
+    )
+    mx.save_safetensors(str(source / "extra.safetensors"), {"v": mx.zeros((1,))})
+    (source / "tokenizer.json").write_text("{}")
+
+    calls = {"n": 0}
+
+    def fake_is_mlx(file):
+        calls["n"] += 1
+        return file.name == "model.safetensors"
+
+    monkeypatch.setattr(mtp_split, "_is_mlx_safetensors", fake_is_mlx)
+    with pytest.raises(ValueError, match="mixed safetensors formats"):
+        StubSplitter().split(str(source), str(tmp_path / "out"))
+    assert calls["n"] >= 2
+
+
+def test_mtp_split_load_shard_consumes_pinned_descriptor(tmp_path):
+    """iter_selected keeps the confined descriptor open until load_shard
+    consumes it: swapping the path to a symlink after validation cannot
+    redirect the weight read."""
+    import mlx.core as mx
+
+    from rapid_mlx.models.mlx_vlm_vendored.speculative.drafters.mtp_split import (
+        MTPSplitter,
+    )
+
+    class AllKeys(MTPSplitter):
+        output_model_type = "qwen3_5_mtp"
+        tokenizer_files = []
+        supports_mlx_source = False
+
+        def select_keys(self, key, text_config):
+            return True
+
+    source = tmp_path / "src"
+    source.mkdir()
+    original = mx.zeros((1,))
+    decoy = mx.ones((1,))
+    mx.save_safetensors(str(source / "model.safetensors"), {"w": original})
+    mx.save_safetensors(str(source / "decoy.safetensors"), {"w": decoy})
+
+    splitter = AllKeys()
+    (source / "model.safetensors.index.json").write_text(
+        json.dumps({"weight_map": {"w": "model.safetensors"}})
+    )
+    iterator = splitter.iter_selected(source, {})
+    file, keys = next(iterator)
+    # swap the validated path to point at the decoy after validation
+    (source / "model.safetensors").unlink()
+    (source / "model.safetensors").symlink_to(source / "decoy.safetensors")
+    tensors = splitter.load_shard(file, keys)
+    iterator.close()
+    assert mx.array_equal(tensors["w"], original)
+
+
+def test_sidecar_shard_descriptors_resist_path_swap(tmp_path):
+    """The sidecar loader's descriptors stay pinned: a path swap after
+    validation cannot change which bytes mx.load reads."""
+    import os
+
+    import mlx.core as mx
+
+    from rapid_mlx.models.mlx_vlm_vendored.speculative.drafters import (
+        _sidecar_weight_shards,
+    )
+
+    repo = tmp_path / "sidecar"
+    repo.mkdir()
+    (repo / "model.safetensors.index.json").write_text(
+        json.dumps({"weight_map": {"w": "model.safetensors"}})
+    )
+    original = mx.zeros((1,))
+    decoy = mx.ones((1,))
+    mx.save_safetensors(str(repo / "model.safetensors"), {"w": original})
+    mx.save_safetensors(str(repo / "decoy.safetensors"), {"w": decoy})
+
+    fds = list(_sidecar_weight_shards(repo))
+    assert len(fds) == 1
+    try:
+        (repo / "model.safetensors").unlink()
+        (repo / "model.safetensors").symlink_to(repo / "decoy.safetensors")
+        for fd in fds:
+            with os.fdopen(os.dup(fd), "rb") as f:
+                weights = mx.load(f, format="safetensors")
+            assert mx.array_equal(weights["w"], original)
+    finally:
+        for fd in fds:
+            os.close(fd)
+
+
+def test_sidecar_shards_open_lazily_and_close(tmp_path):
+    """Shard descriptors open one at a time and are closed by the
+    consuming read: a failed later open never leaks the earlier ones."""
+    import os
+
+    import mlx.core as mx
+
+    from rapid_mlx.models.mlx_vlm_vendored.speculative.drafters import (
+        _sidecar_weight_shards,
+    )
+
+    repo = tmp_path / "sidecar"
+    repo.mkdir()
+    (repo / "model.safetensors.index.json").write_text(
+        json.dumps(
+            {
+                "weight_map": {
+                    "w": "model.safetensors",
+                    "v": "zz_missing.safetensors",
+                }
+            }
+        )
+    )
+    mx.save_safetensors(str(repo / "model.safetensors"), {"w": mx.zeros((1,))})
+
+    shards = _sidecar_weight_shards(repo)
+    fd = next(shards)
+    with os.fdopen(fd, "rb") as f:
+        weights = mx.load(f, format="safetensors")
+    assert mx.array_equal(weights["w"], mx.zeros((1,)))
+    with pytest.raises(FileNotFoundError):
+        next(shards)
+    with pytest.raises(OSError):
+        os.fstat(fd)
+
+
+def test_mtp_split_rejects_escaping_fallback_shard(tmp_path):
+    """Fallback *.safetensors shards obey the same confinement as indexed
+    shards — a symlinked shard outside the checkpoint/blob roots must be
+    rejected."""
+    import mlx.core as mx
+
+    from rapid_mlx.models.mlx_vlm_vendored.speculative.drafters.mtp_split import (
+        MTPSplitter,
+    )
+
+    class StubSplitter(MTPSplitter):
+        output_model_type = "qwen3_5_mtp"
+        tokenizer_files: tuple = ()
+
+        def select_keys(self, key, text_config):
+            return True
+
+        def depth(self, text_config):
+            return 3
+
+        def transform(self, tensors, text_config, source_is_mlx):
+            return {"w": mx.zeros((1,))}
+
+        def quantization(self, weights, source_config, text_config, quant_opts):
+            return None
+
+    source = tmp_path / "src"
+    source.mkdir()
+    (source / "config.json").write_text(
+        json.dumps(
+            {
+                "model_type": "qwen3_5",
+                "text_config": {"model_type": "qwen3_5", "num_hidden_layers": 4},
+            }
+        )
+    )
+    outside = tmp_path / "outside.safetensors"
+    mx.save_safetensors(str(outside), {"w": mx.zeros((1,))})
+    (source / "model.safetensors").symlink_to(outside)
+    with pytest.raises(ValueError, match="escapes the checkpoint directory"):
+        list(StubSplitter().iter_selected(source, {}))
+
+
+def test_mtp_split_rejects_escaping_tokenizer_sidecar(tmp_path):
+    """Tokenizer sidecars are confined like weight shards: a symlink to
+    an arbitrary host file must not be copied into the output."""
+    import mlx.core as mx
+
+    from rapid_mlx.models.mlx_vlm_vendored.speculative.drafters.mtp_split import (
+        MTPSplitter,
+    )
+
+    class StubSplitter(MTPSplitter):
+        output_model_type = "qwen3_5_mtp"
+        tokenizer_files = ["tokenizer.json"]
+
+        def select_keys(self, key, text_config):
+            return True
+
+        def depth(self, text_config):
+            return 3
+
+        def transform(self, tensors, text_config, source_is_mlx):
+            return {"w": mx.zeros((1,))}
+
+        def quantization(self, weights, source_config, text_config, quant_opts):
+            return None
+
+    source = tmp_path / "src"
+    source.mkdir()
+    (source / "config.json").write_text(
+        json.dumps(
+            {
+                "model_type": "qwen3_5",
+                "text_config": {"model_type": "qwen3_5", "num_hidden_layers": 4},
+            }
+        )
+    )
+    mx.save_safetensors(
+        str(source / "model.safetensors"),
+        {"w": mx.zeros((1,))},
+        metadata={"format": "mlx"},
+    )
+    secret = tmp_path / "secret.txt"
+    secret.write_text("host secret")
+    (source / "tokenizer.json").symlink_to(secret)
+    with pytest.raises(ValueError, match="tokenizer sidecar escapes"):
+        StubSplitter().split(str(source), str(tmp_path / "out"))
+
+    # a sidecar symlink inside the trusted HF blob cache keeps loading
+    hub = tmp_path / "hub" / "models--org--m"
+    snapshot = hub / "snapshots" / "rev"
+    snapshot.mkdir(parents=True)
+    blobs = hub / "blobs"
+    blobs.mkdir()
+    blob = blobs / "tok"
+    blob.write_text("{}")
+    (snapshot / "config.json").write_text(
+        json.dumps(
+            {
+                "model_type": "qwen3_5",
+                "text_config": {"model_type": "qwen3_5", "num_hidden_layers": 4},
+            }
+        )
+    )
+    mx.save_safetensors(
+        str(snapshot / "model.safetensors"),
+        {"w": mx.zeros((1,))},
+        metadata={"format": "mlx"},
+    )
+    (snapshot / "tokenizer.json").symlink_to(blob)
+    out = tmp_path / "out2"
+    StubSplitter().split(str(snapshot), str(out))
+    assert (out / "tokenizer.json").read_text() == "{}"
+
+
+def test_mtp_split_restores_broken_symlink_destination(tmp_path, monkeypatch):
+    """A broken-symlink destination moved aside must be restored after an
+    install failure — backup.exists() is False for broken symlinks."""
+    import mlx.core as mx
+
+    from rapid_mlx.models.mlx_vlm_vendored.speculative.drafters import (
+        mtp_split as mtp_split_module,
+    )
+    from rapid_mlx.models.mlx_vlm_vendored.speculative.drafters.mtp_split import (
+        MTPSplitter,
+    )
+
+    class StubSplitter(MTPSplitter):
+        output_model_type = "qwen3_5_mtp"
+        tokenizer_files = ["tokenizer.json"]
+
+        def select_keys(self, key, text_config):
+            return True
+
+        def depth(self, text_config):
+            return 3
+
+        def transform(self, tensors, text_config, source_is_mlx):
+            return {"w": mx.zeros((1,))}
+
+        def quantization(self, weights, source_config, text_config, quant_opts):
+            return None
+
+    source = tmp_path / "src"
+    source.mkdir()
+    (source / "config.json").write_text(
+        json.dumps(
+            {
+                "model_type": "qwen3_5",
+                "text_config": {"model_type": "qwen3_5", "num_hidden_layers": 4},
+            }
+        )
+    )
+    mx.save_safetensors(
+        str(source / "model.safetensors"),
+        {"w": mx.zeros((1,))},
+        metadata={"format": "mlx"},
+    )
+    (source / "tokenizer.json").write_text("{}")
+
+    link = tmp_path / "broken-out"
+    link.symlink_to(tmp_path / "gone-target")
+
+    def failing_copy(src, dst, **kwargs):
+        raise OSError("simulated copy failure")
+
+    monkeypatch.setattr(mtp_split_module.shutil, "copyfileobj", failing_copy)
+    with pytest.raises(OSError, match="simulated copy failure"):
+        StubSplitter().split(str(source), str(link))
+    assert link.is_symlink()
+    assert not link.exists()
+
+
+def test_mtp_split_weight_map_rejects_malformed_index(tmp_path):
+    """A malformed safetensors index must raise a clear ValueError, not
+    crash with AttributeError inside the split or detection path."""
+    from rapid_mlx.models.mlx_vlm_vendored.speculative.drafters.mtp_split import (
+        _weight_map,
+    )
+
+    source = tmp_path / "model"
+    source.mkdir()
+    (source / "model.safetensors.index.json").write_text("[]")
+    with pytest.raises(ValueError, match="weight_map must be an object"):
+        _weight_map(source)
+    (source / "model.safetensors.index.json").write_text(json.dumps({"weight_map": []}))
+    with pytest.raises(ValueError, match="weight_map must be an object"):
+        _weight_map(source)
+    (source / "model.safetensors.index.json").write_text(
+        json.dumps({"weight_map": {"k": 17}})
+    )
+    with pytest.raises(ValueError, match="non-string filename entry"):
+        _weight_map(source)
+    (source / "model.safetensors.index.json").write_text(json.dumps({"meta": {}}))
+    with pytest.raises(ValueError, match="weight_map must be an object"):
+        _weight_map(source)
+    (source / "model.safetensors.index.json").write_text(
+        json.dumps({"weight_map": {"k": "model-00001.safetensors"}})
+    )
+    assert _weight_map(source) == {"k": "model-00001.safetensors"}
+
+
+def test_qwen_mtp_batch_replay_corrects_scalar_position_for_ragged_rows():
+    """Heterogeneous right_padding must promote a scalar _next_position.
+
+    Regression probe for the documented upstream-bugfix: pinned 0.7.1
+    skips the padding correction when the tracked position is a scalar,
+    so the shorter replayed row keeps too-large position ids.
+    """
+    import mlx.core as mx
+
+    from rapid_mlx.models.mlx_vlm_vendored.speculative.drafters.qwen3_5_mtp import (
+        qwen3_5_mtp as qwen_module,
+    )
+
+    drafter = qwen_module.Qwen3_5MTPDraftModel.__new__(qwen_module.Qwen3_5MTPDraftModel)
+    drafter._cache = []
+    drafter._round_appended = 0
+    drafter._next_position = 7
+    seeds = []
+    drafter._forward_tokens = lambda tokens, hiddens, token_dtype: mx.zeros((2, 3, 2))
+    drafter._set_seed_from_hidden = lambda last_hidden, sampler, greedy: seeds.append(
+        last_hidden
+    )
+
+    verify_hidden = mx.zeros((2, 3, 2))
+    draft_tokens = mx.array([[10, 11, 0], [20, 21, 0]], dtype=mx.int32)
+    drafter.accept_verified_tokens_batch(
+        verify_hidden,
+        draft_tokens,
+        accepted=[2, 1],
+        new_tokens=[[7], [9]],
+        sampler=None,
+        token_dtype=mx.int32,
+        greedy=True,
+    )
+
+    position = drafter._next_position
+    assert isinstance(position, mx.array)
+    assert position.tolist() == [7, 6]
+    assert len(seeds) == 1
+
+
+def test_mtp_split_block_size_resolution(tmp_path):
+    """block_size defaults only when None; zero/negative are rejected."""
+    from rapid_mlx.models.mlx_vlm_vendored.speculative.drafters.mtp_split import (
+        MTPSplitter,
+    )
+
+    class StubSplitter(MTPSplitter):
+        output_model_type = "qwen3_5_mtp"
+        tokenizer_files = []
+
+        def select_keys(self, key, text_config):
+            return True
+
+        def depth(self, text_config):
+            return 3
+
+        def transform(self, tensors, text_config, source_is_mlx):
+            return {"w": mx.zeros((1,))}
+
+        def quantization(self, weights, source_config, text_config, quant_opts):
+            return None
+
+    source = tmp_path / "src"
+    source.mkdir()
+    (source / "config.json").write_text(
+        json.dumps(
+            {
+                "model_type": "qwen3_5",
+                "text_config": {"model_type": "qwen3_5", "num_hidden_layers": 4},
+            }
+        )
+    )
+    import mlx.core as mx
+
+    mx.save_safetensors(
+        str(source / "model.safetensors"),
+        {"w": mx.zeros((1,))},
+        metadata={"format": "mlx"},
+    )
+    (source / "model.safetensors.index.json").write_text(
+        json.dumps({"weight_map": {"w": "model.safetensors"}})
+    )
+
+    splitter = StubSplitter()
+    for bad in (0, 1, -3):
+        out_bad = tmp_path / f"out-bad-{bad}"
+        with pytest.raises(ValueError, match="block_size must be >= 2"):
+            splitter.split(str(source), str(out_bad), block_size=bad)
+        # rejected input must not create the output directory
+        assert not out_bad.exists()
+
+    default_out = tmp_path / "out-default"
+    splitter.split(str(source), str(default_out))
+    assert json.loads((default_out / "config.json").read_text())["block_size"] == 4
+
+    explicit_out = tmp_path / "out-explicit"
+    splitter.split(str(source), str(explicit_out), block_size=2)
+    assert json.loads((explicit_out / "config.json").read_text())["block_size"] == 2
+
+
+def test_mtp_split_does_not_tear_existing_output(tmp_path, monkeypatch):
+    """A failure after the weight save must not touch a pre-existing
+    destination: the checkpoint is staged and swapped in only after every
+    save and copy succeeds (r18 finding)."""
+    import mlx.core as mx
+
+    from rapid_mlx.models.mlx_vlm_vendored.speculative.drafters import (
+        mtp_split as mtp_split_module,
+    )
+    from rapid_mlx.models.mlx_vlm_vendored.speculative.drafters.mtp_split import (
+        MTPSplitter,
+    )
+
+    class StubSplitter(MTPSplitter):
+        output_model_type = "qwen3_5_mtp"
+        tokenizer_files = ["tokenizer.json"]
+
+        def select_keys(self, key, text_config):
+            return True
+
+        def depth(self, text_config):
+            return 3
+
+        def transform(self, tensors, text_config, source_is_mlx):
+            return {"w": mx.zeros((1,))}
+
+        def quantization(self, weights, source_config, text_config, quant_opts):
+            return None
+
+    source = tmp_path / "src"
+    source.mkdir()
+    (source / "config.json").write_text(
+        json.dumps(
+            {
+                "model_type": "qwen3_5",
+                "text_config": {"model_type": "qwen3_5", "num_hidden_layers": 4},
+            }
+        )
+    )
+    mx.save_safetensors(
+        str(source / "model.safetensors"),
+        {"w": mx.zeros((1,))},
+        metadata={"format": "mlx"},
+    )
+    (source / "model.safetensors.index.json").write_text(
+        json.dumps({"weight_map": {"w": "model.safetensors"}})
+    )
+    (source / "tokenizer.json").write_text("{}")
+
+    dest = tmp_path / "out"
+    dest.mkdir()
+    (dest / "config.json").write_text("stale")
+
+    def failing_copy(src, dst, **kwargs):
+        raise OSError("simulated copy failure")
+
+    monkeypatch.setattr(mtp_split_module.shutil, "copyfileobj", failing_copy)
+    with pytest.raises(OSError, match="simulated copy failure"):
+        StubSplitter().split(str(source), str(dest))
+    # the pre-existing destination is untouched by the failed run
+    assert (dest / "config.json").read_text() == "stale"
+    assert not (dest / "model.safetensors").exists()
+    assert not (dest / "tokenizer.json").exists()
+
+    # a clean run replaces the destination wholesale
+    monkeypatch.setattr(mtp_split_module.shutil, "copyfileobj", lambda s, d, **k: None)
+    StubSplitter().split(str(source), str(dest))
+    assert (dest / "config.json").read_text() != "stale"
+    assert (dest / "model.safetensors").exists()
+    leftovers = [
+        p for p in tmp_path.glob(".*mtp-split-*") if not p.name.endswith("-lock")
+    ]
+    assert not leftovers
+
+
+def test_mtp_split_creates_missing_output_parents(tmp_path):
+    """An output whose parent directory does not exist yet must work
+    (r20 finding): only the parent is created up front."""
+    import mlx.core as mx
+
+    from rapid_mlx.models.mlx_vlm_vendored.speculative.drafters.mtp_split import (
+        MTPSplitter,
+    )
+
+    class StubSplitter(MTPSplitter):
+        output_model_type = "qwen3_5_mtp"
+        tokenizer_files = []
+
+        def select_keys(self, key, text_config):
+            return True
+
+        def depth(self, text_config):
+            return 3
+
+        def transform(self, tensors, text_config, source_is_mlx):
+            return {"w": mx.zeros((1,))}
+
+        def quantization(self, weights, source_config, text_config, quant_opts):
+            return None
+
+    source = tmp_path / "src"
+    source.mkdir()
+    (source / "config.json").write_text(
+        json.dumps(
+            {
+                "model_type": "qwen3_5",
+                "text_config": {"model_type": "qwen3_5", "num_hidden_layers": 4},
+            }
+        )
+    )
+    mx.save_safetensors(
+        str(source / "model.safetensors"),
+        {"w": mx.zeros((1,))},
+        metadata={"format": "mlx"},
+    )
+    dest = tmp_path / "nested" / "deep" / "out"
+    StubSplitter().split(str(source), str(dest))
+    assert (dest / "config.json").exists()
+    assert (dest / "model.safetensors").exists()
+    leftovers = [
+        p for p in tmp_path.glob(".*mtp-split-*") if not p.name.endswith("-lock")
+    ]
+    assert not leftovers
+
+
+def test_mtp_split_rejects_source_output_aliasing(tmp_path):
+    """split(source, source) must be rejected before anything is written
+    (r19 finding): installing over the source would destroy it."""
+    import mlx.core as mx
+
+    from rapid_mlx.models.mlx_vlm_vendored.speculative.drafters.mtp_split import (
+        MTPSplitter,
+    )
+
+    class StubSplitter(MTPSplitter):
+        output_model_type = "qwen3_5_mtp"
+        tokenizer_files = []
+
+        def select_keys(self, key, text_config):
+            return True
+
+        def depth(self, text_config):
+            return 3
+
+        def transform(self, tensors, text_config, source_is_mlx):
+            return {"w": mx.zeros((1,))}
+
+        def quantization(self, weights, source_config, text_config, quant_opts):
+            return None
+
+    source = tmp_path / "src"
+    source.mkdir()
+    (source / "config.json").write_text(
+        json.dumps(
+            {
+                "model_type": "qwen3_5",
+                "text_config": {"model_type": "qwen3_5", "num_hidden_layers": 4},
+            }
+        )
+    )
+    mx.save_safetensors(
+        str(source / "model.safetensors"),
+        {"w": mx.zeros((1,))},
+        metadata={"format": "mlx"},
+    )
+    with pytest.raises(ValueError, match="output must differ"):
+        StubSplitter().split(str(source), str(source))
+    assert (source / "model.safetensors").exists()
+    leftovers = [
+        p for p in tmp_path.glob(".*mtp-split-*") if not p.name.endswith("-lock")
+    ]
+    assert not leftovers
+
+
+def test_mtp_split_restores_destination_when_install_fails(tmp_path, monkeypatch):
+    """If the staging install rename fails, the old destination must be
+    restored (r19 finding)."""
+    import mlx.core as mx
+
+    from rapid_mlx.models.mlx_vlm_vendored.speculative.drafters import (
+        mtp_split as mtp_split_module,
+    )
+    from rapid_mlx.models.mlx_vlm_vendored.speculative.drafters.mtp_split import (
+        MTPSplitter,
+    )
+
+    class StubSplitter(MTPSplitter):
+        output_model_type = "qwen3_5_mtp"
+        tokenizer_files = []
+
+        def select_keys(self, key, text_config):
+            return True
+
+        def depth(self, text_config):
+            return 3
+
+        def transform(self, tensors, text_config, source_is_mlx):
+            return {"w": mx.zeros((1,))}
+
+        def quantization(self, weights, source_config, text_config, quant_opts):
+            return None
+
+    source = tmp_path / "src"
+    source.mkdir()
+    (source / "config.json").write_text(
+        json.dumps(
+            {
+                "model_type": "qwen3_5",
+                "text_config": {"model_type": "qwen3_5", "num_hidden_layers": 4},
+            }
+        )
+    )
+    mx.save_safetensors(
+        str(source / "model.safetensors"),
+        {"w": mx.zeros((1,))},
+        metadata={"format": "mlx"},
+    )
+    dest = tmp_path / "out"
+    dest.mkdir()
+    (dest / "config.json").write_text("old")
+
+    real_replace = mtp_split_module.os.replace
+    calls = {"n": 0}
+
+    def failing_replace(a, b):
+        calls["n"] += 1
+        if calls["n"] == 2:  # the staging -> destination install rename
+            raise OSError("simulated install failure")
+        return real_replace(a, b)
+
+    monkeypatch.setattr(mtp_split_module.os, "replace", failing_replace)
+    with pytest.raises(OSError, match="simulated install failure"):
+        StubSplitter().split(str(source), str(dest))
+    # the old destination came back and no staging leftovers remain
+    assert (dest / "config.json").read_text() == "old"
+    leftovers = [
+        p for p in tmp_path.glob(".*mtp-split-*") if not p.name.endswith("-lock")
+    ]
+    assert not leftovers
+
+
+def test_qwen3_next_postprocess_stacks_quantized_expert_metadata():
+    """Per-expert scales/biases stack into the switch_mlp layout."""
+    import mlx.core as mx
+
+    from rapid_mlx.models.mlx_vlm_vendored.speculative.drafters.qwen3_5_mtp import (
+        split as qwen_split_module,
+    )
+
+    splitter = qwen_split_module.Qwen3NextMTPSplitter()
+    tensors = {}
+    for expert in range(2):
+        for proj, shape in (
+            ("gate_proj", (2, 1)),
+            ("up_proj", (2, 1)),
+            ("down_proj", (1, 2)),
+        ):
+            tensors[f"blk.0.experts.{expert}.{proj}.weight"] = mx.full(
+                shape, expert + 1
+            )
+            tensors[f"blk.0.experts.{expert}.{proj}.scales"] = mx.full((1,), expert + 1)
+            tensors[f"blk.0.experts.{expert}.{proj}.biases"] = mx.zeros((1,))
+    splitter.postprocess(tensors, {"num_experts": 2})
+
+    for proj in ("gate_proj", "up_proj", "down_proj"):
+        stacked = tensors[f"blk.0.switch_mlp.{proj}.weight"]
+        assert stacked.shape[0] == 2
+        assert f"blk.0.switch_mlp.{proj}.scales" in tensors
+        assert f"blk.0.switch_mlp.{proj}.biases" in tensors
+        for expert in range(2):
+            for suffix in ("weight", "scales", "biases"):
+                assert f"blk.0.experts.{expert}.{proj}.{suffix}" not in tensors
+
+
+def test_qwen35_sanitize_rejects_incomplete_expert_group():
+    """Discovered expert indexes must match the configured expert count —
+    pinned 0.7.1 stacked undersized tensors for experts 0..k."""
+    import mlx.core as mx
+
+    from rapid_mlx.models.mlx_vlm_vendored.speculative.drafters.qwen3_5_mtp import (
+        qwen3_5_mtp as qwen3_5_module,
+    )
+
+    stub = SimpleNamespace(config=SimpleNamespace(num_experts=4))
+    tensors = {
+        f"blk.0.experts.{e}.gate_proj.weight": mx.zeros((2, 2)) for e in range(2)
+    }
+    with pytest.raises(ValueError, match="is incomplete"):
+        qwen3_5_module.Qwen3_5MTPDraftModel.sanitize(stub, tensors)
+
+
+def test_qwen35_splitter_sanitize_ctx_carries_num_experts():
+    """The splitter supplies the backbone expert count to the drafter's
+    completeness check; dense backbones carry 0 and skip the check."""
+    from rapid_mlx.models.mlx_vlm_vendored.speculative.drafters.qwen3_5_mtp.split import (
+        Qwen3_5MTPSplitter,
+    )
+
+    fields = {
+        "hidden_size": 8,
+        "num_hidden_layers": 1,
+        "num_attention_heads": 2,
+        "linear_num_value_heads": 2,
+        "linear_num_key_heads": 2,
+        "linear_key_head_dim": 4,
+        "linear_value_head_dim": 4,
+        "linear_conv_kernel_dim": 2,
+        "num_experts_per_tok": 1,
+        "shared_expert_intermediate_size": 8,
+        "moe_intermediate_size": 8,
+        "rms_norm_eps": 1e-5,
+        "vocab_size": 16,
+        "num_key_value_heads": 2,
+        "max_position_embeddings": 32,
+        "intermediate_size": 8,
+    }
+    ctx = Qwen3_5MTPSplitter().sanitize_ctx(
+        {"model_type": "qwen3_moe", "num_experts": 6, **fields}
+    )
+    assert ctx.config.num_experts == 6
+    dense_ctx = Qwen3_5MTPSplitter().sanitize_ctx({"model_type": "qwen3_5", **fields})
+    assert dense_ctx.config.num_experts == 0
+
+
+_TEXT_FIELDS = {
+    "hidden_size": 8,
+    "num_hidden_layers": 1,
+    "num_attention_heads": 2,
+    "linear_num_value_heads": 2,
+    "linear_num_key_heads": 2,
+    "linear_key_head_dim": 4,
+    "linear_value_head_dim": 4,
+    "linear_conv_kernel_dim": 2,
+    "num_experts_per_tok": 1,
+    "shared_expert_intermediate_size": 8,
+    "moe_intermediate_size": 8,
+    "rms_norm_eps": 1e-5,
+    "vocab_size": 16,
+    "num_key_value_heads": 2,
+    "max_position_embeddings": 32,
+    "intermediate_size": 8,
+}
+
+
+def test_qwen35_splitter_run_sanitize_rejects_incomplete_experts():
+    """run_sanitize feeds the ctx into sanitize, so a truncated expert
+    group fails loudly instead of stacking undersized tensors."""
+    import mlx.core as mx
+
+    from rapid_mlx.models.mlx_vlm_vendored.speculative.drafters.qwen3_5_mtp.split import (
+        Qwen3_5MTPSplitter,
+    )
+
+    tensors = {
+        f"blk.0.experts.{e}.gate_proj.weight": mx.zeros((2, 2)) for e in range(2)
+    }
+    with pytest.raises(ValueError, match="is incomplete"):
+        Qwen3_5MTPSplitter().run_sanitize(
+            tensors,
+            {"model_type": "qwen3_moe", "num_experts": 4, **_TEXT_FIELDS},
+        )
+
+
+def test_binding_shim_preserves_canonical_submodule_path(monkeypatch, tmp_path):
+    """A shim built before the canonical package was imported must still
+    expose the canonical search locations, so submodule imports such as
+    ``...<family>.config`` resolve instead of failing on an empty path."""
+    import importlib
+    import sys
+
+    from rapid_mlx.models.mlx_vlm_vendored.speculative.drafters import (
+        install_served_architecture_bindings,
+    )
+
+    canon = tmp_path / "glm5_next_mtp"
+    canon.mkdir()
+    (canon / "__init__.py").write_text("CANONICAL = True\n")
+    (canon / "config.py").write_text("MARKER = 41\n")
+    parent = sys.modules.get("mlx_vlm.models")
+    assert parent is not None
+    monkeypatch.setattr(
+        parent, "__path__", list(parent.__path__) + [str(tmp_path)], raising=False
+    )
+    sys.modules.pop("mlx_vlm.models.glm5_next_mtp", None)
+    if hasattr(parent, "glm5_next_mtp"):
+        del parent.glm5_next_mtp
+
+    install_served_architecture_bindings("glm5_next_mtp")
+    shim = sys.modules["mlx_vlm.models.glm5_next_mtp"]
+    from rapid_mlx.models.mlx_vlm_vendored.speculative.drafters import (
+        glm5_next_mtp as vendored_pkg,
+    )
+
+    assert shim.Model is vendored_pkg.Model
+    config_mod = importlib.import_module("mlx_vlm.models.glm5_next_mtp.config")
+    assert config_mod.MARKER == 41
+
+
+def test_qwen3_next_postprocess_rejects_partial_expert_group():
+    """A partially present expert group must fail loudly instead of
+    saving an incomplete checkpoint (pinned 0.7.1 skipped it silently)."""
+    import mlx.core as mx
+
+    from rapid_mlx.models.mlx_vlm_vendored.speculative.drafters.qwen3_5_mtp import (
+        split as qwen_split_module,
+    )
+
+    splitter = qwen_split_module.Qwen3NextMTPSplitter()
+    tensors = {
+        "blk.0.experts.0.gate_proj.weight": mx.full((2, 1), 1),
+        "blk.0.experts.1.gate_proj.weight": mx.full((2, 1), 2),
+        "blk.0.experts.2.gate_proj.weight": mx.full((2, 1), 3),
+    }
+    with pytest.raises(ValueError, match="incomplete expert group"):
+        splitter.postprocess(tensors, {"num_experts": 4})
+    # an entirely missing weight projection also fails loudly
+    partial = {
+        "blk.0.experts.0.gate_proj.weight": mx.full((2, 1), 1),
+        "blk.0.experts.1.gate_proj.weight": mx.full((2, 1), 2),
+    }
+    with pytest.raises(ValueError, match="incomplete expert group"):
+        splitter.postprocess(partial, {"num_experts": 2})
+    # a complete prefix with absent quantization suffixes stays a no-op
+    complete = {
+        f"blk.0.experts.{e}.{proj}.weight": mx.full((2, 1), e + 1)
+        for e in range(2)
+        for proj in ("gate_proj", "up_proj", "down_proj")
+    }
+    splitter.postprocess(complete, {"num_experts": 2})
+    assert "blk.0.switch_mlp.gate_proj.weight" in complete
+    assert "blk.0.switch_mlp.gate_proj.scales" not in complete
+
+
+def test_qwen35_sanitize_moves_fused_biases():
+    """Fused expert gate_up/down quantization biases must reach the
+    switch_mlp keys — pinned 0.7.1 moved only the scales."""
+    import mlx.core as mx
+
+    from rapid_mlx.models.mlx_vlm_vendored.speculative.drafters.qwen3_5_mtp import (
+        qwen3_5_mtp as qwen3_5_module,
+    )
+
+    weights = {
+        "layer.0.experts.gate_up_proj": mx.zeros((4, 2)),
+        "layer.0.experts.gate_up_proj_scales": mx.ones((4, 1)),
+        "layer.0.experts.gate_up_proj_biases": mx.full((4, 1), 2),
+        "layer.0.experts.down_proj": mx.zeros((2, 4)),
+        "layer.0.experts.down_proj_scales": mx.ones((2, 1)),
+        "layer.0.experts.down_proj_biases": mx.full((2, 1), 3),
+    }
+    out = qwen3_5_module.Qwen3_5MTPDraftModel.sanitize(None, weights)
+    for key in (
+        "layer.0.switch_mlp.gate_proj.biases",
+        "layer.0.switch_mlp.up_proj.biases",
+        "layer.0.switch_mlp.down_proj.biases",
+        "layer.0.switch_mlp.gate_proj.scales",
+        "layer.0.switch_mlp.up_proj.scales",
+        "layer.0.switch_mlp.down_proj.scales",
+    ):
+        assert key in out, key
+    assert "layer.0.experts.gate_up_proj_biases" not in out
+    assert "layer.0.experts.down_proj_biases" not in out
+    assert mx.array_equal(
+        out["layer.0.switch_mlp.down_proj.biases"], mx.full((2, 1), 3)
+    )
+
+
+def test_qwen35_text_config_routes_qwen3_next_to_moe():
+    """Qwen3-Next model types must resolve the MoE config (r10 finding)."""
+    from rapid_mlx.models.mlx_vlm_vendored.speculative.drafters.qwen3_5_mtp import (
+        config as config_module,
+    )
+
+    moe_fields = {
+        "hidden_size": 1,
+        "num_hidden_layers": 1,
+        "num_attention_heads": 1,
+        "linear_num_value_heads": 1,
+        "linear_num_key_heads": 1,
+        "linear_key_head_dim": 1,
+        "linear_value_head_dim": 1,
+        "linear_conv_kernel_dim": 1,
+        "num_experts": 2,
+        "num_experts_per_tok": 1,
+        "shared_expert_intermediate_size": 1,
+        "moe_intermediate_size": 1,
+        "rms_norm_eps": 1e-5,
+        "vocab_size": 1,
+        "num_key_value_heads": 1,
+        "max_position_embeddings": 1,
+        "intermediate_size": 1,
+        "head_dim": 1,
+        "tie_word_embeddings": False,
+        "sliding_window": None,
+    }
+    resolved = config_module.TextConfig.from_dict(
+        {"model_type": "qwen3_next", **moe_fields}
+    )
+    assert isinstance(resolved, config_module.MoeTextConfig)
+    dense = config_module.TextConfig.from_dict({"model_type": "qwen3_5", **moe_fields})
+    assert isinstance(dense, config_module.DenseTextConfig)
+
+
+def test_load_drafter_binds_served_families_to_vendored_modules(monkeypatch, tmp_path):
+    """The registry binding hook must make the pinned loader construct the
+    vendored Model classes for served drafter families."""
+    import sys
+    from types import ModuleType
+
+    from rapid_mlx.models.mlx_vlm_vendored.speculative.drafters import (
+        load_drafter,
+    )
+
+    root = ModuleType("mlx_vlm")
+    root.__path__ = []
+    utils = ModuleType("mlx_vlm.utils")
+    constructed = []
+
+    def fake_load_model(path, **kwargs):
+        # mirrors the pinned dispatch: the architecture module is resolved
+        # through ``mlx_vlm.models.<model_type>`` and its ``Model`` used.
+        target = f"mlx_vlm.models.{path.name}"
+        constructed.append(sys.modules[target].Model.__module__)
+        return object()
+
+    utils.get_model_path = lambda value, **kwargs: Path(value)
+    utils.load_model = fake_load_model
+    monkeypatch.setitem(sys.modules, "mlx_vlm", root)
+    monkeypatch.setitem(sys.modules, "mlx_vlm.utils", utils)
+
+    for family, expected_kind in (("qwen3_5_mtp", "mtp"), ("dflash2", "dflash")):
+        repo = tmp_path / family
+        repo.mkdir()
+        (repo / "config.json").write_text(json.dumps({"model_type": family}))
+        drafter, resolved = load_drafter(str(repo), kind="mtp")
+        assert resolved == expected_kind
+        assert constructed[-1].startswith("rapid_mlx.models.mlx_vlm_vendored."), (
+            f"{family}: served drafter resolved to {constructed[-1]}"
+        )
+    # lazy per-load binding: only the loaded families are bound
+    assert "mlx_vlm.models.qwen3_5_mtp" in sys.modules
+    assert "mlx_vlm.models.dflash2" in sys.modules
+
+
+def test_binding_peek_resolves_backbone_declared_dflash2(tmp_path):
+    """DFlash2 checkpoints declare the backbone model_type with a nested
+    ``dflash_config``; the binding peek must still resolve ``dflash2``."""
+    from rapid_mlx.models.mlx_vlm_vendored.speculative.drafters import (
+        _peek_drafter_model_type,
+    )
+
+    backbone = tmp_path / "backbone-declared"
+    backbone.mkdir()
+    (backbone / "config.json").write_text(
+        json.dumps(
+            {
+                "model_type": "qwen3",
+                "dflash_config": {
+                    "block_size": 8,
+                    "conv_kernel_size": 3,
+                    "selector_rank": 4,
+                },
+            }
+        )
+    )
+    assert _peek_drafter_model_type(backbone) == "dflash2"
+
+    # the Qwen3 DFlash layout shares the nested dflash_config object and
+    # must normalize to qwen3_dflash, not dflash2
+    qwen_dflash = tmp_path / "qwen-dflash"
+    qwen_dflash.mkdir()
+    (qwen_dflash / "config.json").write_text(
+        json.dumps(
+            {
+                "model_type": "qwen3",
+                "dflash_config": {"mask_token_id": 1, "causal": False},
+            }
+        )
+    )
+    assert _peek_drafter_model_type(qwen_dflash) == "qwen3_dflash"
+
+    target = tmp_path / "plain-target"
+    target.mkdir()
+    (target / "config.json").write_text(json.dumps({"model_type": "qwen3"}))
+    assert _peek_drafter_model_type(target) == "qwen3"
+
+    # kind resolution uses the normalized type: an explicit wrong
+    # --draft-kind mtp on a backbone-declared sidecar is overridden
+    from rapid_mlx.models.mlx_vlm_vendored.speculative.drafters import (
+        resolve_drafter_kind,
+    )
+
+    assert resolve_drafter_kind(qwen_dflash, kind="mtp") == "dflash"
+
+    declared = tmp_path / "declared-family"
+    declared.mkdir()
+    (declared / "config.json").write_text(
+        json.dumps({"model_type": "qwen3_dflash", "dflash_config": {}})
+    )
+    assert _peek_drafter_model_type(declared) == "qwen3_dflash"
+
+
+def test_binding_sidecar_loads_vendored_family_directly(monkeypatch, tmp_path):
+    """A backbone-declared sidecar must construct the vendored family
+    directly: pinned load_model would dispatch on the raw backbone type
+    and build a backbone model from drafter weights."""
+    import sys
+    from types import ModuleType
+
+    from rapid_mlx.models.mlx_vlm_vendored.speculative.drafters import load_drafter
+
+    root = ModuleType("mlx_vlm")
+    root.__path__ = []
+    utils = ModuleType("mlx_vlm.utils")
+
+    def forbidden_load_model(path, **kwargs):
+        raise AssertionError("sidecar load must not dispatch through load_model")
+
+    utils.get_model_path = lambda value, **kwargs: Path(value)
+    utils.load_model = forbidden_load_model
+    monkeypatch.setitem(sys.modules, "mlx_vlm", root)
+    monkeypatch.setitem(sys.modules, "mlx_vlm.utils", utils)
+
+    import mlx.core as mx
+    from mlx.utils import tree_flatten
+
+    repo = tmp_path / "sidecar"
+    repo.mkdir()
+    (repo / "config.json").write_text(
+        json.dumps(
+            {
+                "model_type": "qwen3",
+                "dflash_config": {"mask_token_id": 1, "causal": False},
+            }
+        )
+    )
+    # save a known parameter set: the loaded drafter must carry these
+    # weights, proving the direct branch loads the checkpoint instead of
+    # serving randomly initialized parameters.
+    from rapid_mlx.models.mlx_vlm_vendored.speculative.drafters.qwen3_dflash.config import (
+        DFlashConfig,
+    )
+    from rapid_mlx.models.mlx_vlm_vendored.speculative.drafters.qwen3_dflash.dflash import (
+        DFlashDraftModel,
+    )
+
+    reference = DFlashDraftModel(DFlashConfig(mask_token_id=1))
+    mx.eval(reference.parameters())
+    mx.save_safetensors(
+        str(repo / "model.safetensors"),
+        dict(tree_flatten(reference.parameters())),
+    )
+    flat = dict(tree_flatten(reference.parameters()))
+    del reference
+    drafter, resolved = load_drafter(str(repo), kind="dflash")
+    assert type(drafter).__name__ == "DFlashDraftModel"
+    assert type(drafter).__module__.startswith("rapid_mlx.models.mlx_vlm_vendored.")
+    assert resolved == "dflash"
+    saved = dict(tree_flatten(drafter.parameters()))
+    assert mx.array_equal(saved["fc.weight"], flat["fc.weight"])
+
+    # loader options are rejected explicitly on the sidecar path
+    with pytest.raises(ValueError, match="does not support loader options"):
+        load_drafter(str(repo), kind="dflash", lazy=True)
+
+    # a quantization_config-only checkpoint still quantizes and loads
+    repo_q = tmp_path / "sidecar-quant"
+    repo_q.mkdir()
+    (repo_q / "config.json").write_text(
+        json.dumps(
+            {
+                "model_type": "qwen3",
+                "quantization_config": {"group_size": 64, "bits": 4},
+                "dflash_config": {"mask_token_id": 1, "causal": False},
+            }
+        )
+    )
+    quant_ref = DFlashDraftModel(DFlashConfig(mask_token_id=1))
+    import mlx.nn as nn
+
+    nn.quantize(quant_ref, group_size=64, bits=4)
+    mx.eval(quant_ref.parameters())
+    mx.save_safetensors(
+        str(repo_q / "model.safetensors"), dict(tree_flatten(quant_ref.parameters()))
+    )
+    quant_drafter, _ = load_drafter(str(repo_q), kind="dflash")
+    assert type(quant_drafter).__name__ == "DFlashDraftModel"
+    assert any("scales" in k for k, _ in tree_flatten(quant_drafter.parameters()))
+
+    # malformed quantization metadata fails with an actionable error
+    repo_bad = tmp_path / "sidecar-bad-quant"
+    repo_bad.mkdir()
+    (repo_bad / "config.json").write_text(
+        json.dumps(
+            {
+                "model_type": "qwen3",
+                "quantization_config": {"group_size": 64},
+                "dflash_config": {"mask_token_id": 1, "causal": False},
+            }
+        )
+    )
+    with pytest.raises(ValueError, match="missing required fields"):
+        load_drafter(str(repo_bad), kind="dflash")
+    (repo_bad / "config.json").write_text(
+        json.dumps(
+            {
+                "model_type": "qwen3",
+                "quantization_config": 17,
+                "dflash_config": {"mask_token_id": 1, "causal": False},
+            }
+        )
+    )
+    with pytest.raises(ValueError, match="must be an object"):
+        load_drafter(str(repo_bad), kind="dflash")
+
+
+def test_binding_unsupported_backbone_falls_through(monkeypatch, tmp_path):
+    """An unrecognized dflash_config-bearing type keeps its raw type and
+    falls through to the pinned loader (no vendored misclassification)."""
+    import sys
+    from types import ModuleType
+
+    from rapid_mlx.models.mlx_vlm_vendored.speculative.drafters import (
+        _peek_drafter_model_type,
+        load_drafter,
+    )
+
+    repo = tmp_path / "unvendored"
+    repo.mkdir()
+    (repo / "config.json").write_text(
+        json.dumps(
+            {
+                "model_type": "gemma4",
+                "dflash_config": {"conv_kernel_size": 3},
+            }
+        )
+    )
+    assert _peek_drafter_model_type(repo) == "gemma4"
+
+    root = ModuleType("mlx_vlm")
+    root.__path__ = []
+    utils = ModuleType("mlx_vlm.utils")
+    utils.get_model_path = lambda value, **kwargs: Path(value)
+    utils.load_model = lambda path, **kwargs: "pinned-model"
+    monkeypatch.setitem(sys.modules, "mlx_vlm", root)
+    monkeypatch.setitem(sys.modules, "mlx_vlm.utils", utils)
+    drafter, resolved = load_drafter(str(repo), kind="dflash")
+    assert drafter == "pinned-model"
+
+
+def test_binding_sidecar_index_validation(monkeypatch, tmp_path):
+    """The sidecar loader validates its index (object root, string
+    filenames) and confines shards like MTPSplitter."""
+    import mlx.core as mx
+    from mlx.utils import tree_flatten
+
+    from rapid_mlx.models.mlx_vlm_vendored.speculative.drafters import load_drafter
+
+    root = ModuleType("mlx_vlm")
+    root.__path__ = []
+    utils = ModuleType("mlx_vlm.utils")
+    utils.get_model_path = lambda value, **kwargs: Path(value)
+    utils.load_model = lambda path, **kwargs: "pinned-model"
+    monkeypatch.setitem(sys.modules, "mlx_vlm", root)
+    monkeypatch.setitem(sys.modules, "mlx_vlm.utils", utils)
+
+    from rapid_mlx.models.mlx_vlm_vendored.speculative.drafters.qwen3_dflash.config import (
+        DFlashConfig,
+    )
+    from rapid_mlx.models.mlx_vlm_vendored.speculative.drafters.qwen3_dflash.dflash import (
+        DFlashDraftModel,
+    )
+
+    repo = tmp_path / "sidecar"
+    repo.mkdir()
+    (repo / "config.json").write_text(
+        json.dumps(
+            {
+                "model_type": "qwen3",
+                "dflash_config": {"mask_token_id": 1, "causal": False},
+            }
+        )
+    )
+    reference = DFlashDraftModel(DFlashConfig(mask_token_id=1))
+    mx.eval(reference.parameters())
+    flat = dict(tree_flatten(reference.parameters()))
+    del flat["layers.0.self_attn.q_proj.weight"]
+    mx.save_safetensors(str(repo / "shard-a.safetensors"), flat)
+
+    (repo / "model.safetensors.index.json").write_text("[]")
+    with pytest.raises(ValueError, match="weight_map must be an object"):
+        load_drafter(str(repo), kind="dflash")
+
+    (repo / "model.safetensors.index.json").write_text(
+        json.dumps({"weight_map": {"layers.0.self_attn.q_proj.weight": 17}})
+    )
+    with pytest.raises(ValueError, match="weight_map must be an object"):
+        load_drafter(str(repo), kind="dflash")
+
+    (repo / "model.safetensors.index.json").write_text(
+        json.dumps(
+            {
+                "weight_map": {
+                    k: (
+                        "../evil.safetensors"
+                        if k == "fc.weight"
+                        else "shard-a.safetensors"
+                    )
+                    for k in flat
+                }
+            }
+        )
+    )
+    with pytest.raises(ValueError, match="escapes the checkpoint directory"):
+        load_drafter(str(repo), kind="dflash")
+
+
+def test_qwen3_dflash_config_coerces_runtime_block_size():
+    """A numeric-string runtime_block_size must be coerced to int, not
+    retained as a str that reaches runtime code (pinned 0.7.1 kept it)."""
+    from rapid_mlx.models.mlx_vlm_vendored.speculative.drafters.qwen3_dflash.config import (
+        DFlashConfig,
+    )
+
+    config = DFlashConfig.from_dict({"runtime_block_size": "8"})
+    assert config.runtime_block_size == 8
+    assert isinstance(config.runtime_block_size, int)
+    with pytest.raises(ValueError, match="between 2 and block_size"):
+        DFlashConfig.from_dict({"runtime_block_size": "1"})
+    with pytest.raises(ValueError, match="between 2 and block_size"):
+        DFlashConfig.from_dict({"runtime_block_size": "99"})
+
+
+def test_dflash2_config_rejects_inherited_causal():
+    """``dflash_config.causal`` must reach ``is_causal`` so the causal
+    rejection fires; pinned 0.7.1 dropped the flag and silently served a
+    non-causal drafter."""
+    from rapid_mlx.models.mlx_vlm_vendored.speculative.drafters.dflash2.config import (
+        DFlash2Config,
+    )
+
+    dflash = {
+        "conv_kernel_size": 3,
+        "conv_group_size": 1,
+        "selector_rank": 4,
+        "selector_top_k": 8,
+        "mask_token_id": 100,
+    }
+    with pytest.raises(ValueError, match="causal"):
+        DFlash2Config.from_dict(
+            {"model_type": "qwen3", "dflash_config": {**dflash, "causal": True}}
+        )
+    # a non-causal drafter still loads
+    config = DFlash2Config.from_dict(
+        {"model_type": "qwen3", "dflash_config": {**dflash, "causal": False}}
+    )
+    assert config.model_type == "dflash2"
+
+
+def test_binding_hook_replaces_stale_architecture_bindings(monkeypatch, tmp_path):
+    """An existing architecture module that does not match the vendored
+    classes must be re-bound, not skipped."""
+    import sys
+    from types import ModuleType
+
+    from rapid_mlx.models.mlx_vlm_vendored.speculative.drafters import (
+        load_drafter,
+    )
+
+    stale = ModuleType("mlx_vlm.models.dflash2")
+    stale.Model = object
+    stale.ModelConfig = object
+    monkeypatch.setitem(sys.modules, "mlx_vlm.models.dflash2", stale)
+
+    root = ModuleType("mlx_vlm")
+    root.__path__ = []
+    utils = ModuleType("mlx_vlm.utils")
+    utils.get_model_path = lambda value, **kwargs: Path(value)
+    utils.load_model = lambda path, **kwargs: object()
+    monkeypatch.setitem(sys.modules, "mlx_vlm", root)
+    monkeypatch.setitem(sys.modules, "mlx_vlm.utils", utils)
+
+    repo = tmp_path / "dflash2"
+    repo.mkdir()
+    (repo / "config.json").write_text(json.dumps({"model_type": "dflash2"}))
+    load_drafter(str(repo), kind="dflash")
+    rebound = sys.modules["mlx_vlm.models.dflash2"]
+    assert rebound is not stale
+    assert rebound.Model.__module__.startswith("rapid_mlx.models.mlx_vlm_vendored.")
+    assert rebound.ModelConfig.__module__.startswith(
+        "rapid_mlx.models.mlx_vlm_vendored."
+    )
+
+
+def test_binding_hook_updates_parent_package_attribute(monkeypatch, tmp_path):
+    """A stale attribute on the parent package must be re-bound too:
+    ``from mlx_vlm.models import <model_type>`` resolves through it."""
+    import sys
+    from types import ModuleType
+
+    from rapid_mlx.models.mlx_vlm_vendored.speculative.drafters import (
+        load_drafter,
+    )
+
+    stale_child = ModuleType("mlx_vlm.models.dflash2")
+    stale_child.Model = object
+    stale_child.ModelConfig = object
+    models_pkg = ModuleType("mlx_vlm.models")
+    models_pkg.__path__ = []
+    models_pkg.dflash2 = stale_child
+    monkeypatch.setitem(sys.modules, "mlx_vlm.models", models_pkg)
+    monkeypatch.setitem(sys.modules, "mlx_vlm.models.dflash2", stale_child)
+
+    root = ModuleType("mlx_vlm")
+    root.__path__ = []
+    utils = ModuleType("mlx_vlm.utils")
+    utils.get_model_path = lambda value, **kwargs: Path(value)
+    utils.load_model = lambda path, **kwargs: object()
+    monkeypatch.setitem(sys.modules, "mlx_vlm", root)
+    monkeypatch.setitem(sys.modules, "mlx_vlm.utils", utils)
+
+    repo = tmp_path / "dflash2"
+    repo.mkdir()
+    (repo / "config.json").write_text(json.dumps({"model_type": "dflash2"}))
+    load_drafter(str(repo), kind="dflash")
+    rebound = sys.modules["mlx_vlm.models.dflash2"]
+    assert rebound is not stale_child
+    assert rebound.Model.__module__.startswith("rapid_mlx.models.mlx_vlm_vendored.")
+    assert models_pkg.dflash2 is rebound
+
+
+def test_dflash_draft_block_below_two_returns_empty_proposal():
+    """block_size <= 1 must return the DFlash2-shaped empty proposal
+    before mask allocation, without invoking the sampler (r17 finding)."""
+    from types import SimpleNamespace
+
+    import mlx.core as mx
+
+    from rapid_mlx.models.mlx_vlm_vendored.speculative.drafters.qwen3_dflash import (
+        dflash as dflash_module,
+    )
+
+    drafter = dflash_module.DFlashDraftModel.__new__(dflash_module.DFlashDraftModel)
+    drafter.config = SimpleNamespace(mask_token_id=7)
+    drafter.argmax_from_hidden = lambda value: value
+
+    def fail_sampler(_logits):
+        raise AssertionError("sampler must not run for an empty proposal")
+
+    out = drafter.draft_block(
+        mx.array([[3]], dtype=mx.int32),
+        mx.zeros((1, 1, 2)),
+        [],
+        1,
+        fail_sampler,
+        token_dtype=mx.int32,
+    )
+    assert out.shape == (1, 0)
+    out2 = drafter.draft_block_greedy(
+        5,
+        mx.zeros((1, 1, 2)),
+        [],
+        0,
+        fail_sampler,
+        token_dtype=mx.int32,
+    )
+    assert out2.shape == (1, 0)
+
+
+def test_dflash_config_rejects_runtime_block_size_below_two():
+    from rapid_mlx.models.mlx_vlm_vendored.speculative.drafters.qwen3_dflash import (
+        config as dflash_config_module,
+    )
+
+    with pytest.raises(ValueError, match="between 2 and block_size"):
+        dflash_config_module.DFlashConfig.from_dict(
+            {"dflash_config": {"runtime_block_size": 1}}
+        )
+
+
+def test_read_drafter_config_degrades_non_object_json(tmp_path):
+    from rapid_mlx.models.mlx_vlm_vendored.speculative.drafters import (
+        _read_drafter_config,
+    )
+
+    (tmp_path / "config.json").write_text("[1, 2]")
+    assert _read_drafter_config(tmp_path) == {}
+
+
+def test_dflash2_config_default_block_size_no_keyerror():
+    """A config without block_size must derive runtime_block_size from
+    the dataclass default, not crash with KeyError (r21 finding)."""
+    from rapid_mlx.models.mlx_vlm_vendored.speculative.drafters.dflash2 import (
+        config as dflash2_config_module,
+    )
+
+    cfg = dflash2_config_module.DFlash2Config.from_dict(
+        {
+            "model_type": "dflash2",
+            "num_attention_heads": 1,
+            "num_key_value_heads": 1,
+            "head_dim": 1,
+            "vocab_size": 300000,
+            "max_position_embeddings": 1,
+            "block_size": 16,
+            "num_target_layers": 1,
+            "target_layer_ids": [0],
+            "conv_kernel_size": 2,
+            "conv_group_size": 1,
+            "selector_rank": 1,
+            "selector_top_k": 1,
+            "dflash_config": {},
+        }
+    )
+    assert cfg.runtime_block_size == 5  # min(5, block_size 16)
+
+    minimal = dflash2_config_module.DFlash2Config.from_dict(
+        {
+            "model_type": "dflash2",
+            "num_attention_heads": 1,
+            "num_key_value_heads": 1,
+            "head_dim": 1,
+            "vocab_size": 300000,
+            "max_position_embeddings": 1,
+            "num_target_layers": 1,
+            "target_layer_ids": [0],
+            "conv_kernel_size": 2,
+            "conv_group_size": 1,
+            "selector_rank": 1,
+            "selector_top_k": 1,
+            "dflash_config": {},
+        }
+    )
+    assert minimal.block_size == 16  # dataclass default
+    assert minimal.runtime_block_size == 5  # min(5, default 16), no KeyError
+
+
+def test_qwen35_decoder_layer_routes_qwen3_next_to_moe():
+    """The drafter's decoder class must follow the config routing."""
+
+    from rapid_mlx.models.mlx_vlm_vendored.speculative.drafters.qwen3_5_mtp import (
+        config as config_module,
+    )
+    from rapid_mlx.models.mlx_vlm_vendored.speculative.drafters.qwen3_5_mtp import (
+        qwen3_5_mtp as qwen_module,
+    )
+
+    cfg = qwen_module.Qwen3_5MTPConfig(
+        model_type="qwen3_5_mtp",
+        text_config=config_module.MoeTextConfig(
+            model_type="qwen3_next",
+            hidden_size=4,
+            num_hidden_layers=1,
+            num_attention_heads=1,
+            num_key_value_heads=1,
+            head_dim=2,
+            linear_num_value_heads=1,
+            linear_num_key_heads=1,
+            linear_key_head_dim=1,
+            linear_value_head_dim=1,
+            linear_conv_kernel_dim=1,
+            moe_intermediate_size=2,
+            num_experts=2,
+            num_experts_per_tok=1,
+            shared_expert_intermediate_size=2,
+            rms_norm_eps=1e-5,
+            vocab_size=8,
+            max_position_embeddings=8,
+        ),
+    )
+    drafter = qwen_module.Qwen3_5MTPDraftModel(cfg)
+    assert isinstance(drafter.layers[0], qwen_module.Qwen3_5MoeDecoderLayer)
+
+
+def test_qwen_mtp_draft_block_one_returns_empty_proposal():
+    """The served qwen drafter shares the guarded block_size floor."""
+    import mlx.core as mx
+
+    from rapid_mlx.models.mlx_vlm_vendored.speculative.drafters.qwen3_5_mtp import (
+        qwen3_5_mtp as qwen_module,
+    )
+
+    drafter = qwen_module.Qwen3_5MTPDraftModel.__new__(qwen_module.Qwen3_5MTPDraftModel)
+    seed_token = mx.array([[7]], dtype=mx.int32)
+    seed_hidden = mx.zeros((1, 1, 2))
+    drafter._seed_token = seed_token
+    drafter._seed_hidden = seed_hidden
+    drafter._round_appended = 0
+    drafter._input_embed = object()
+    drafter._lm_head_fn = lambda value: value
+    out = drafter.draft_block(
+        5, mx.zeros((1, 1, 1)), None, 1, None, token_dtype=mx.int32, greedy=True
+    )
+    assert out.shape == (1, 0)
+    # the guard precedes seed-state consumption: the cached seed survives
+    assert drafter._seed_token is seed_token
+    assert drafter._seed_hidden is seed_hidden
+    assert drafter._round_appended == 0
+
+
+def test_dflash_bind_re_resolves_target_embeddings():
+    """bind() must not keep a previous target's embeddings (r8 finding)."""
+    from types import SimpleNamespace
+
+    from rapid_mlx.models.mlx_vlm_vendored.speculative.drafters.qwen3_dflash import (
+        dflash as dflash_module,
+    )
+
+    drafter = dflash_module.DFlashDraftModel.__new__(dflash_module.DFlashDraftModel)
+    stale = object()
+    drafter.embed_tokens = stale
+    new_embed = object()
+    head = lambda value: value
+    drafter.bind(SimpleNamespace(embed_tokens=new_embed, lm_head=head))
+    assert drafter.embed_tokens is new_embed
+    assert drafter.lm_head is head
+
+
+def test_mtp_base_rejects_mixed_bonus_presence():
+    """Mixed bonus presence must fail loudly, not skip rows (r8 finding)."""
+    import mlx.core as mx
+
+    from rapid_mlx.models.mlx_vlm_vendored.speculative.drafters.mtp_base import (
+        AutoregressiveMTPDraftModel,
+    )
+
+    class RecordingCache:
+        def __init__(self):
+            self.trimmed = None
+
+        def trim(self, n):
+            self.trimmed = n
+
+    cache = RecordingCache()
+    drafter = AutoregressiveMTPDraftModel.__new__(AutoregressiveMTPDraftModel)
+    drafter._cache = [cache]
+    drafter._next_position = 5
+    drafter._round_appended = 1
+    with pytest.raises(ValueError, match="mixed MTP bonus-token"):
+        drafter.accept_verified_tokens_batch(
+            mx.zeros((2, 2, 1)),
+            mx.zeros((2, 2), dtype=mx.int32),
+            [2, 2],
+            [[5], []],
+            None,
+        )
+    # the reject must precede every cache/position mutation
+    assert cache.trimmed is None
+    assert drafter._next_position == 5
+    assert drafter._round_appended == 1
+
+
+def test_mtp_base_block_size_one_returns_empty_proposal():
+    """block_size <= 1 returns a shaped empty proposal (r8 finding)."""
+    import mlx.core as mx
+
+    from rapid_mlx.models.mlx_vlm_vendored.speculative.drafters.mtp_base import (
+        AutoregressiveMTPDraftModel,
+    )
+
+    drafter = AutoregressiveMTPDraftModel.__new__(AutoregressiveMTPDraftModel)
+    drafter._input_embed = object()
+    drafter._lm_head_fn = lambda value: value
+    out = drafter.draft_block(5, mx.zeros((1, 1, 1)), None, 1, None, greedy=True)
+    assert out.shape == (1, 0)
+
+
+def test_detect_mtp_splitter_resolves_pinned_dspark_module(tmp_path, monkeypatch):
+    """The unserved deepseek_v4_dspark family resolves through pinned."""
+    from rapid_mlx.models.mlx_vlm_vendored.speculative.drafters.mtp_split import (
+        detect_mtp_splitter,
+    )
+
+    class FakeDsparkSplitter:
+        def read_text_config(self, source_config):
+            return {}
+
+        def iter_selected(self, model_path, text_config):
+            yield model_path / "model.safetensors", ["blk.0.weight"]
+
+    split_module = ModuleType("mlx_vlm.speculative.drafters.deepseek_v4_dspark.split")
+    split_module.DeepseekV4DsparkSplitter = FakeDsparkSplitter
+    monkeypatch.setitem(sys.modules, split_module.__name__, split_module)
+
+    source = tmp_path / "src"
+    source.mkdir()
+    (source / "config.json").write_text(
+        json.dumps(
+            {
+                "model_type": "deepseek_v4",
+                "dspark_target_layer_ids": [1, 8],
+            }
+        )
+    )
+    assert isinstance(detect_mtp_splitter(source), FakeDsparkSplitter)
+
+
+def test_load_drafter_rejects_unknown_kind(tmp_path):
+    from rapid_mlx.models.mlx_vlm_vendored.speculative.drafters import load_drafter
+
+    with pytest.raises(ValueError, match="Unknown drafter kind"):
+        load_drafter(str(tmp_path), kind="teleport")
+
+
+def test_runtime_binds_vendored_registry(monkeypatch, tmp_path):
+    """load_runtime must dispatch through the vendored registry seam."""
+    from types import ModuleType
+
+    import mlx_vlm as real_mlx_vlm
+
+    import rapid_mlx.models.mlx_vlm_vendored.speculative.drafters as vendored_registry
+    import rapid_mlx.speculative.native_mtp.runtime as runtime
+
+    calls = []
+
+    def vendored_marker(path, kind=None, **kwargs):
+        calls.append("vendored")
+        raise RuntimeError("VENDORED-SEAM-CALLED")
+
+    def pinned_marker(path, kind=None, **kwargs):
+        calls.append("pinned")
+        raise RuntimeError("PINNED-SEAM-CALLED")
+
+    root = ModuleType("mlx_vlm")
+    root.__path__ = list(real_mlx_vlm.__path__)
+    drafters = ModuleType("mlx_vlm.speculative.drafters")
+    drafters.__path__ = []
+    drafters.load_drafter = pinned_marker
+    utils = ModuleType("mlx_vlm.utils")
+    utils.get_model_path = lambda repo_id, revision=None: str(tmp_path)
+    for name, module in {
+        "mlx_vlm": root,
+        "mlx_vlm.speculative.drafters": drafters,
+        "mlx_vlm.utils": utils,
+    }.items():
+        monkeypatch.setitem(sys.modules, name, module)
+    monkeypatch.setattr(vendored_registry, "load_drafter", vendored_marker)
+
+    with pytest.raises(RuntimeError, match="VENDORED-SEAM-CALLED"):
+        runtime.load_runtime(
+            str(tmp_path),
+            target_revision="t",
+            drafter_revision="d",
+            block_size=8,
+        )
+    assert calls == ["vendored"]

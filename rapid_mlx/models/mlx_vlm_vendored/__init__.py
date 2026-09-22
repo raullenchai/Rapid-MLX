@@ -300,7 +300,190 @@ vendored copy differs by exactly the deviations listed):
   utils ``93d2ed29ac7b7c378536bf09d22eb570d5abb1f2d338dc550e59a84468b6a9ff``.
   ``__init__.py`` is a reduced shim (``VENDOR-DEVIATION(subset-exports)``):
   the upstream init also re-exports ``load_drafter``; the drafter registry
-  and concrete drafters land in a later step-3 slice.
+  lives in this package under ``speculative/drafters/`` (below).
+
+- ``speculative/drafters/`` — the drafter registry and the served drafter
+  families, verbatim from ``mlx_vlm/speculative/drafters`` @ v0.7.1 with
+  the documented upstream-bugfix deviations below
+  (step-3c slice): ``__init__.py`` (registry; upstream digest
+  ``7e9fd507dd4ec5aa880d7b0cd04a9f09fbc60ce34e7471b7fbc61863f68a714f``;
+  redirects: the ``dspark``/``laguna_dflash``/``muse_glimmer_assistant``
+  class imports → pinned upstream (drafter families outside the served
+  set, their closures are not vendored), and ``load_drafter``'s lazy
+  ``...utils`` → pinned ``mlx_vlm.utils`` (load/get_model_path are step-3e
+  scope); upstream-bugfix: ``DRAFTER_KIND_BY_MODEL_TYPE`` gains
+  ``dflash2``/``qwen3_dflash`` → ``dflash`` — pinned 0.7.1 omits the served
+  DFlash model types, so an explicit wrong ``--draft-kind`` dispatched them
+  through the wrong round loop), ``compatibility.py`` (digest
+  ``e360a7f03f25da810229ab04f5a68c667cc3831d291c3c22c03e1a0efa0ee2c4``),
+  ``mtp_base.py`` (digest
+  ``3e071843a4fabca2f7be20c15b04ab1e45ac178d4fa63d7f108684787a2262ab``;
+  upstream-bugfix: ``draft_block`` returns the DFlash2-shaped empty
+  proposal for ``block_size <= 1`` — pinned 0.7.1 crashes on an empty
+  concatenate (reachable through externally supplied drafter repos);
+  upstream-bugfix: ``accept_verified_tokens_batch`` raises on mixed
+  bonus-token presence BEFORE any cache or position mutation — pinned
+  0.7.1 silently skipped every row's replay),
+  ``mtp_split.py`` (digest
+  ``55afe4b6341ee97d764da90af3d404b0cc86a2a355d198b1d4d299be8040ed2f``;
+  upstream-bugfix: ``iter_selected`` resolves index shard paths and rejects
+  entries outside the model directory — pinned 0.7.1 joins untrusted
+  ``weight_map`` filenames directly; upstream-bugfix: ``split`` validates
+  every configuration argument before creating the output directory,
+  defaults ``block_size`` only when ``None``, and rejects values below 2
+  (the drafting loops crash on block_size 1 with an empty concatenate) —
+  pinned 0.7.1 replaced an explicit 0 via ``or`` and accepted negatives;
+  upstream-bugfixes: ``split`` stages the checkpoint in a unique sibling
+  temporary directory (``tempfile.mkdtemp``, removed in a ``finally``)
+  and swaps it into place only after every save and copy succeeds — the
+  old destination is preserved as a unique, nonexistent backup path and
+  restored if the install rename fails (a symlinked destination moves
+  aside cleanly, including broken symlinks — pinned 0.7.1's pre-created
+  backup directory rejected symlinks with ``IsADirectoryError``),
+  ``output == source`` is rejected, and the install runs
+  under a per-destination advisory lock so concurrent splits cannot
+  interleave destination moves, shard filenames from the safetensors
+  index are validated lexically (absolute paths and ``..`` traversal
+  rejected) and symlinked shards must resolve inside the model
+  directory or the repository's own HF blob cache — pinned 0.7.1
+  followed any symlink — and a malformed index (non-object document,
+  missing or non-object ``weight_map``, non-string filename entries)
+  raises a clear ``ValueError``, tokenizer sidecars are confined to
+  the checkpoint directory or the repository's own HF blob cache and
+  copied through no-follow-opened descriptors, every confined shard
+  and sidecar is pinned with component-wise ``O_NOFOLLOW`` opens plus
+  identity checks and the pinned descriptors stay open through the
+  actual reads (``load_shard`` consumes the descriptor
+  ``iter_selected`` stashed; sidecar-drafter shards are read through
+  their descriptors too), so a concurrent path swap cannot redirect
+  reads outside the approved roots, fallback ``*.safetensors`` shards obey
+  the same confinement, the MLX-source path requires a uniform shard
+  format across selected shards (pinned 0.7.1 skipped sanitization
+  when any shard carried MLX metadata), and staging cleanup failures
+  are logged with the retained path instead of silently ignored —
+  pinned 0.7.1
+  writes directly into the destination, so a pre-existing directory
+  keeps stale tokenizer files and a mid-way failure pairs new weights
+  with an old ``config.json``;
+  redirects: the unserved ``deepseek_v4_dspark`` detection import → pinned
+  upstream (family not vendored));
+  ``glm5_next_mtp/`` (digests ``__init__``
+  ``ce16dd3c620b86198ba0a616dc845e3feb424b53f27ff827edf05a88147f4085``,
+  ``config``
+  ``8cd9c04959ab93441968c18199a94d5bad006ccdb02cf58208bb47d4aed4268e``,
+  ``glm5_next_mtp``
+  ``6c9a65e7925ceb92b9d3d086abbd814e289c3b92d9f951dda7fae0c71c23ddaf``,
+  ``split``
+  ``fd44ac09875312a9a3afae793ba7e38671d45555b8d34eb4de4361e3dbfe5f95``;
+  redirects: ``models.glm5_next.{config,language}`` and
+  ``models.cache`` → pinned upstream, the glm5_next family lands in
+  step-3c-2 and ``models/cache.py`` in a later slice);
+  ``qwen3_5_mtp/`` (digests ``__init__``
+  ``2dac026a94d20fac3247e98a14f823d9a2721cd272ff1df73a2bda93d5213191``,
+  ``config``
+  ``4555b3973a8dd77fade607b27d79471b7241fa3eb94b4073887a363b0c367409``,
+  ``qwen3_5_mtp``
+  ``3b2cf5cf0e83393a331fdd95394b812cda749d207a96b9bd4905bc025df85876``,
+  ``split``
+  ``0cd02dacee282ed6702ab49863f4c300f1acab9e5d2ed3c56a835cad0c2dc128``;
+  redirects: ``models.qwen3_5{,_moe}.{config,language}`` and
+  ``models.cache`` → pinned upstream, step-3c-3 scope; ``config.py``
+  upstream-bugfix: ``TextConfig.from_dict`` routes the Qwen3-Next model
+  types to the MoE config — pinned 0.7.1 keyed the decision on "moe" in
+  the model type, so Qwen3-Next checkpoints resolved dense decoder
+  layers; ``qwen3_5_mtp.py`` upstream-bugfixes: the decoder class routes
+  the Qwen3-Next family to ``Qwen3_5MoeDecoderLayer`` (pinned 0.7.1 keyed
+  the choice on "moe" in the model type, instantiating dense layers over
+  MoE checkpoints), and ``draft_block`` returns the DFlash2-shaped empty
+  proposal for ``block_size <= 1`` before consuming seed state — pinned
+  0.7.1 crashes on an empty concatenate; ``split.py``
+  ``postprocess`` requires every weight projection of a detected expert
+  prefix to carry all ``num_experts`` entries (missing or partial groups
+  raise with the missing keys listed instead of silently saving an
+  incomplete checkpoint — pinned 0.7.1 skipped them), while quantization
+  metadata stays optional but must be complete when present;
+  ``qwen3_5_mtp.py`` ``sanitize`` moves the fused expert quantization
+  biases alongside the scales — pinned 0.7.1 left them under the fused
+  keys, dropping required metadata from affine-quantized checkpoints;
+  ``qwen3_dflash/config.py`` coerces ``runtime_block_size`` to ``int``
+  while validating — pinned 0.7.1 kept the original value, so a numeric
+  string reached runtime code as a ``str``; and a retained split backup
+  that fails cleanup is logged instead of silently left behind. The drafter registry also
+  installs a Rapid binding hook: ``load_drafter`` pre-registers a
+  package-compatible ``sys.modules`` shim for the loaded family (from
+  ``glm5_next_mtp``, ``qwen3_5_mtp``, ``qwen3_dflash``, ``dflash2``)
+  exposing the vendored package's ``Model``/``ModelConfig`` so the
+  pinned ``load_model`` dispatch constructs the vendored classes and
+  the runtime fixes reach production drafters; the shim preserves the
+  canonical module's exports (``__path__``/``__spec__``) so submodule
+  imports keep working, and entries that do not match the vendored
+  classes (an earlier pinned import, a pre-swap GLM shim) are re-bound
+  so no stale implementation is served; sidecar checkpoints that
+  declare the backbone model type with a nested ``dflash_config`` are
+  bound as ``dflash2`` when the DFlash2-exclusive selector/conv keys
+  are present and as ``qwen3_dflash`` otherwise — pinned 0.7.1 peeked
+  the raw type and skipped the shim, constructing the backbone
+  architecture from drafter weights; ``resolve_drafter_kind`` resolves
+  against the same normalized type, so an explicit wrong
+  ``--draft-kind`` on a backbone-declared sidecar is overridden instead
+  of dispatching the DFlash drafter through the MTP loop; normalization
+  applies only to the supported ``qwen3`` backbone (unvendored families
+  keep their raw type and fall through to pinned), such sidecars
+  construct the vendored family directly and mirror pinned
+  ``load_model``'s weight pipeline (sanitize, quantize, strict load,
+  eval — the unchanged ``config.json`` would otherwise make pinned
+  ``load_model`` dispatch to the backbone architecture module) with the
+  same index validation and shard confinement as ``MTPSplitter``,
+  read quantization metadata from ``quantization`` or
+  ``quantization_config``, and reject loader options explicitly); the
+  shim preserves the canonical package's discovered search locations
+  when it has not been imported yet so submodule imports keep
+  resolving, and quantization metadata is validated (object with
+  ``group_size``/``bits``) before any model allocation). The registry's ``_read_drafter_config``
+  degrades a non-object ``config.json`` to the documented empty dict —
+  pinned 0.7.1 returns any decoded JSON value and crashes
+  ``resolve_drafter_kind`` on ``config.get()``. The DFlash runtime loads
+  through the vendored registry (vendored-first, pinned availability
+  guard); ``split.py``
+  upstream-bugfix: ``Qwen3NextMTPSplitter.postprocess`` stacks per-expert
+  ``scales``/``biases`` into the ``switch_mlp`` layout
+  alongside the weights — pinned 0.7.1 stacked only weights, so
+  quantized Qwen3-Next checkpoints kept per-expert quantization metadata the
+  runtime cannot resolve;
+  upstream-bugfix: ``accept_verified_tokens_batch`` promotes a scalar
+  ``_next_position`` to per-row positions before applying heterogeneous
+  replay right-padding — pinned 0.7.1 skips the correction for scalars,
+  leaving shorter rows with too-large position ids);
+  ``qwen3_dflash/`` (digests ``__init__``
+  ``929c03a2169b49c25974f4d292d74b35f3f511acdf459e7e29a0c4bf3083f06b``,
+  ``config``
+  ``d7ab8dd8742b2232ece0e1240a316e8df5a647f62a6042614cb966fd146ac31e``,
+  ``dflash``
+  ``4e92910a4f364cccab07c2de1c242177bf62dd849896ba80de32279fc7002cb3``,
+  ``parity_check``
+  ``1712776c25dbeb045190397e3bc683d68f072ecc81c543457f432a033a68b77f``;
+  redirects: ``models.{activations,cache,rope_utils}`` → pinned
+  upstream; upstream-bugfix: ``bind`` re-resolves the target embeddings on every
+  call — pinned 0.7.1 resolved only when unset, so resetting with a
+  different target kept stale embeddings)); ``dflash2/`` (digests ``__init__``
+  ``94b557b7ab3de885bbe98ead9ba9e48828330fc0f76a0bb37d7e396f37d72683``,
+  ``config``
+  ``af864e1190a2eca902adb31cf2ad21e88dc5d2892b3a3d21b2e75b37798930f3``,
+  ``dflash2``
+  ``19287b0e436c6750ccabfcdfb1388dea4123d6da506adea511ce16269a95e8f0``) —
+  verbatim, internal imports only; ``config.py`` upstream-bugfix:
+  ``from_dict`` derives ``runtime_block_size`` from the dataclass
+  ``block_size`` default when the config omits it — pinned 0.7.1
+  indexes ``flat["block_size"]`` and crashes with ``KeyError`` — and
+  propagates an inherited ``dflash_config.causal`` to ``is_causal`` so
+  causal checkpoints hit the documented rejection — pinned 0.7.1
+  dropped the flag and silently served a non-causal drafter. The
+  MTP/dflash round-loop fixes from
+  the step-3b coordinator slices apply unchanged: the drafters consume
+  the vendored ``cache_state``/``common`` via package-relative imports.
+  Consumers: ``speculative/native_mtp/runtime.py`` and
+  ``speculative/native_mtp/glm5_compat.py`` bind this registry
+  (vendored-first, pinned mlx-vlm fallback retained for the transition).
 
 - ``models/`` — verbatim model foundations (step-3b slice): ``base.py``
   (657 lines; upstream digest
