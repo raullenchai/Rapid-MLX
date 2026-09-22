@@ -1,0 +1,34 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!-- Marvin's Garden decision API — launchd keepalive service.
+     Install (once):
+       sudo cp serve/com.marvingarden.api.plist /Library/LaunchDaemons/
+       sudo plutil -lint /Library/LaunchDaemons/com.marvingarden.api.plist
+       sudo launchctl bootstrap system /Library/LaunchDaemons/com.marvingarden.api.plist
+     Stop/uninstall:
+       sudo launchctl bootout system /Library/LaunchDaemons/com.marvingarden.api.plist
+     Edit MARVIN_SERVE_TOKEN below before installing (or source an env file).
+-->
+<plist version="1.0">
+<dict>
+    <key>Label</key><string>com.marvingarden.api</string>
+    <key>ProgramArguments</key>
+    <array>
+        <string>/tmp/rm-mg-venv/bin/python</string>
+        <string>/Users/raullenstudio/orca/workspaces/rapid-mlx/marvin-garden/serve/demo_server.py</string>
+        <string>--port</string><string>8123</string>
+    </array>
+    <key>EnvironmentVariables</key>
+    <dict>
+        <key>MARVIN_SERVE_TOKEN</key><string>CHANGE-ME</string>
+        <key>MARVIN_ADAPTER</key><string>/Users/raullenstudio/orca/workspaces/rapid-mlx/marvin-garden/adapters/release/marvins-garden-v15c</string>
+        <key>MARVIN_RATE_PER_MIN</key><string>30</string>
+        <key>MARVIN_QUEUE_CAP</key><string>8</string>
+    </dict>
+    <key>RunAtLoad</key><true/>
+    <key>KeepAlive</key><true/>
+    <key>ThrottleInterval</key><integer>10</integer>
+    <key>StandardOutPath</key><string>/tmp/marvin_api.log</string>
+    <key>StandardErrorPath</key><string>/tmp/marvin_api.err.log</string>
+</dict>
+</plist>

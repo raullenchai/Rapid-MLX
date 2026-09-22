@@ -29,6 +29,7 @@ import os
 import secrets
 import threading
 import time
+import uuid
 import urllib.parse
 from collections import defaultdict
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -58,6 +59,7 @@ ACCEPT_T = float(os.environ.get("MARVIN_ACCEPT_T", "0.80"))
 REVIEW_T = float(os.environ.get("MARVIN_REVIEW_T", "0.50"))
 RATE_PER_MIN = int(os.environ.get("MARVIN_RATE_PER_MIN", "30"))
 QUEUE_CAP = int(os.environ.get("MARVIN_QUEUE_CAP", "8"))
+LOG_PROMPTS = os.environ.get("MARVIN_LOG_PROMPTS", "0") == "1"
 # Comma-separated IPs exempt from the rate limit (e.g. the load-test host).
 WHITELIST = {ip.strip() for ip in os.environ.get("MARVIN_RATE_WHITELIST", "").split(",") if ip.strip()}
 
@@ -199,8 +201,22 @@ class Handler(BaseHTTPRequestHandler):
         self.send_response(code)
         self.send_header("Content-Type", ctype)
         self.send_header("Content-Length", str(len(body)))
+        # Agents and browser apps call us cross-origin; keep the API open.
+        self.send_header("Access-Control-Allow-Origin", "*")
+        self.send_header("Cache-Control", "no-store")
+        if code in (429, 503):
+            self.send_header("Retry-After", "5")
         self.end_headers()
         self.wfile.write(body)
+
+    def do_OPTIONS(self):
+        self.send_response(204)
+        self.send_header("Access-Control-Allow-Origin", "*")
+        self.send_header("Access-Control-Allow-Methods", "POST, GET, OPTIONS")
+        self.send_header("Access-Control-Allow-Headers", "Authorization, Content-Type")
+        self.send_header("Access-Control-Max-Age", "86400")
+        self.send_header("Content-Length", "0")
+        self.end_headers()
 
     def do_GET(self):
         if urllib.parse.urlparse(self.path).path == "/":
@@ -209,13 +225,21 @@ class Handler(BaseHTTPRequestHandler):
                     .replace("__TOKEN__", Handler.token)
                     .replace("__VER__", f"{MODEL_VERSION} · {ADAPTER_VERSION} · policy {POLICY_VERSION}"))
             self._send(page.encode(), ctype="text/html; charset=utf-8")
+        elif self.path in ("/notice", "/privacy"):
+            md = (HERE / f"{self.path.lstrip('/')}.md").read_text()
+            self._send(md.encode(), ctype="text/plain; charset=utf-8")
         elif self.path == "/healthz":
             self._send({"ok": True})
         else:
             self._send({"error": "not found"}, 404)
 
+    def _client_ip(self) -> str:
+        # Behind a tunnel every socket addr is 127.0.0.1; trust Cloudflare's
+        # injected header for per-client rate limiting.
+        return self.headers.get("CF-Connecting-IP") or self.client_address[0]
+
     def do_POST(self):
-        ip = self.client_address[0]
+        ip = self._client_ip()
         if not rate_ok(ip):
             self._send({"error": "rate limit exceeded"}, 429)
             return
@@ -227,12 +251,25 @@ class Handler(BaseHTTPRequestHandler):
             self._send({"error": "unauthorized"}, 401)
             return
         try:
-            length = min(int(self.headers.get("Content-Length", "0")), 262144)
+            length = int(self.headers.get("Content-Length", "0"))
+        except ValueError:
+            self._send({"error": "bad content-length"}, 400)
+            return
+        if length > 262144:
+            self._send({"error": "payload too large (max 256KB)"}, 413)
+            return
+        try:
             req = json.loads(self.rfile.read(length))
             prompt = str(req["prompt"])
             candidates = [str(c) for c in req["candidates"]]
         except Exception as e:
             self._send({"error": f"bad request: {e}"}, 400)
+            return
+        if not prompt.strip():
+            self._send({"error": "empty prompt"}, 400)
+            return
+        if len(prompt) > 8000:  # 2× the 1024-token serving cap, in chars
+            self._send({"error": "prompt too large (max 8000 chars)"}, 413)
             return
         if not (2 <= len(candidates) <= 8):
             self._send({"error": "candidates must be 2..8"}, 400)
@@ -240,20 +277,30 @@ class Handler(BaseHTTPRequestHandler):
         if len(_RATE) > 4096:  # naive memory guard for the demo
             _RATE.clear()
 
-        decision = marvin_spire.decide(prompt, candidates)
+        request_id = uuid.uuid4().hex[:12]
+        try:
+            decision = marvin_spire.decide(prompt, candidates)
+        except marvin_spire.QueueFullError:
+            self._send({"error": "queue full, retry with backoff",
+                        "request_id": request_id}, 503)
+            return
         action, reason = recommended_action(decision["confidence"])
         resp = {
+            "request_id": request_id,
             "decision": decision["chosen"],
             "confidence": decision["confidence"],
             "probabilities": decision["probabilities"],
             "recommended_action": action,
+            "disposition": {"accept": "auto_decide", "review": "review", "abstain": "abstain"}[action],
             "reason_code": reason,
             "policy_version": POLICY_VERSION,
             "model_version": MODEL_VERSION,
             "adapter_version": ADAPTER_VERSION,
             "latency_ms": decision["latency_ms"],
         }
-        log({"ip": ip, "n_candidates": len(candidates), **resp})
+        log({"ip": ip, "request_id": request_id,
+             "prompt_chars": len(prompt), "n_candidates": len(candidates),
+             **({"prompt": prompt} if LOG_PROMPTS else {}), **resp})
         self._send(resp)
 
 
@@ -274,7 +321,8 @@ def main() -> None:
     print(f"adapter: {adapter or '(manifest default)'} · think_mode={MANIFEST['think_mode']}", flush=True)
 
     marvin_spire.load()
-    httpd = ThreadingHTTPServer(("0.0.0.0", args.port), Handler)
+    bind = os.environ.get("MARVIN_BIND", "127.0.0.1")  # loopback default; tunnel runs on-host
+    httpd = ThreadingHTTPServer((bind, args.port), Handler)
     threading.Thread(target=httpd.serve_forever, daemon=True).start()
     print(f"playground: http://localhost:{args.port}/  (one-time token: {token})", flush=True)
     print(f"api: POST /v1/classify with Authorization: Bearer <token>", flush=True)
