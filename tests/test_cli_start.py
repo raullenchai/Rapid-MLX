@@ -263,7 +263,8 @@ def test_spawn_foreground_serve_forwards_auto_selection(monkeypatch):
     args = _make_args()
     args._model_was_explicit = False
     run_cli._spawn_foreground_serve("qwen3.5-4b-4bit", args)
-    assert captured["env"]["RAPID_MLX_CHAT_SPAWN"] == "auto"
+    assert captured["env"]["RAPID_MLX_CHAT_SPAWN"] == "1"
+    assert captured["env"]["RAPID_MLX_AUTO_SELECTED"] == "1"
 
 
 def test_spawn_no_download_forces_child_offline(monkeypatch):

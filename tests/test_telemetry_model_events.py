@@ -110,6 +110,7 @@ def test_model_type_uses_only_profile_modality(monkeypatch):
             SimpleNamespace(modality="text", supports_image_input=False),
             SimpleNamespace(modality="text", supports_image_input=True),
             SimpleNamespace(modality="image-gen", supports_image_input=False),
+            SimpleNamespace(modality="rogue", supports_image_input=False),
             None,
         )
     )
@@ -120,7 +121,16 @@ def test_model_type_uses_only_profile_modality(monkeypatch):
     assert model_events.model_type("b") == "vlm"
     assert model_events.model_type("c") == "image-gen"
     assert model_events.model_type("d") == "other"
+    assert model_events.model_type("e") == "other"
     assert model_events.model_type(None) == "other"
+
+
+@pytest.mark.parametrize(
+    ("model", "expected"),
+    [("kokoro", "audio"), ("cogvideox-fun-5b-q4", "video-gen")],
+)
+def test_model_type_reaches_registered_non_text_modalities(model, expected):
+    assert model_events.model_type(model) == expected
 
 
 def test_model_type_fails_closed_on_bad_profile(monkeypatch):
@@ -136,7 +146,19 @@ def test_model_type_fails_closed_on_bad_profile(monkeypatch):
     [
         (MemoryError(), "insufficient_memory"),
         (RuntimeError("corrupt safetensor header"), "corrupt_weights"),
-        (RuntimeError("unsupported architecture"), "unsupported_architecture"),
+        (ValueError("Model type future_arch not supported."), "unsupported_architecture"),
+        (
+            ModuleNotFoundError(
+                "No module named 'mlx_lm.models.future_arch'",
+                name="mlx_lm.models.future_arch",
+            ),
+            "unsupported_architecture",
+        ),
+        (
+            ModuleNotFoundError("No module named 'mlx_lm.models.future_arch'"),
+            "unsupported_architecture",
+        ),
+        (FileNotFoundError("model-00001-of-00002.safetensors"), "download_failed"),
         (RuntimeError("unclassified"), "other"),
     ],
 )
@@ -177,7 +199,11 @@ def test_model_served_is_only_note_site_and_maps_zero_to_none(monkeypatch):
     monkeypatch.setattr(
         model_id, "engine_telemetry_id", lambda _engine: "qwen3.5-4b-4bit"
     )
-    monkeypatch.setattr(model_events, "model_type", lambda _name: "llm")
+    monkeypatch.setattr(
+        model_events,
+        "model_type",
+        lambda name: "llm" if name == "qwen3.5-4b-4bit" else "other",
+    )
     monkeypatch.setattr(store, "note_model_served", lambda _model: 0)
     monkeypatch.setattr(
         track_module,
@@ -199,6 +225,126 @@ def test_model_served_is_only_note_site_and_maps_zero_to_none(monkeypatch):
             None,
         )
     ]
+
+
+def test_served_quant_prefers_resolved_hf_path(monkeypatch):
+    calls = []
+    monkeypatch.setattr(model_id, "engine_telemetry_id", lambda _engine: "tmax-9b")
+    monkeypatch.setattr(store, "note_model_served", lambda _model: 1)
+    monkeypatch.setattr(
+        track_module,
+        "track",
+        lambda event, props, **kwargs: calls.append((event, props, kwargs)),
+    )
+
+    model_events.emit_model_served(object(), "tmax-9b", False)
+
+    assert calls[0][1]["quant"] == "4bit"
+
+
+def test_served_quant_falls_back_to_alias_when_profile_resolution_fails(monkeypatch):
+    monkeypatch.setattr(
+        "rapid_mlx.model_aliases.resolve_profile",
+        lambda _name: (_ for _ in ()).throw(RuntimeError("catalog unavailable")),
+    )
+    assert model_events._quant_for_ref("qwen3.5-4b-4bit") == "4bit"
+
+
+@pytest.mark.parametrize("auto_selected", [False, True])
+def test_auto_selected_is_not_hardcoded_on_success(monkeypatch, auto_selected):
+    calls = []
+    monkeypatch.setattr(model_id, "engine_telemetry_id", lambda _engine: "<custom>")
+    monkeypatch.setattr(store, "note_model_served", lambda _model: 1)
+    monkeypatch.setattr(
+        track_module,
+        "track",
+        lambda _event, props, **_kwargs: calls.append(props),
+    )
+    model_events.emit_model_served(object(), "unknown", auto_selected)
+    assert calls[0]["auto_selected"] is auto_selected
+
+
+@pytest.mark.parametrize("auto_selected", [False, True])
+def test_auto_selected_is_not_hardcoded_on_failure(monkeypatch, auto_selected):
+    calls = []
+    monkeypatch.setattr(track_module, "track", lambda _event, props: calls.append(props))
+    model_events.emit_model_serve_failed(
+        RuntimeError("load"), alias_or_path="unknown", auto_selected=auto_selected
+    )
+    assert calls[0]["auto_selected"] is auto_selected
+    model_events._reset_for_tests()
+
+
+def test_failure_uses_only_privacy_reduced_model_on_wire(monkeypatch, tmp_path):
+    hostile = str(tmp_path / "alice-secret" / "weights")
+    calls = []
+    monkeypatch.setattr(track_module, "track", lambda event, props: calls.append(props))
+    model_events.emit_model_serve_failed(RuntimeError("load"), alias_or_path=hostile)
+    assert calls[0]["model"] == "<local>"
+    assert hostile not in repr(calls)
+
+
+def test_failure_prefers_engine_telemetry_identity(monkeypatch):
+    calls = []
+    engine = object()
+    monkeypatch.setattr(model_id, "engine_telemetry_id", lambda value: "tmax-9b")
+    monkeypatch.setattr(track_module, "track", lambda event, props: calls.append(props))
+    model_events.emit_model_serve_failed(RuntimeError("load"), engine=engine)
+    assert calls == [{"error_class": "other", "model": "tmax-9b"}]
+
+
+def test_failure_loses_race_after_payload_build_without_emitting(monkeypatch):
+    calls = []
+
+    def claim_during_build(_value):
+        model_events._serve_failure_claimed = True
+        return "other"
+
+    monkeypatch.setattr(model_events, "model_type", claim_during_build)
+    monkeypatch.setattr(track_module, "track", lambda event, props: calls.append(props))
+    model_events.emit_model_serve_failed(RuntimeError("load"), alias_or_path="unknown")
+    assert calls == []
+
+
+def test_pull_source_is_argument_driven_and_closed(monkeypatch):
+    calls = []
+    monkeypatch.setenv("RAPID_MLX_MODEL_MIRROR", "hf")
+    monkeypatch.setattr(track_module, "track", lambda event, props: calls.append(props))
+    model_events.emit_model_pulled("qwen3.5-4b-4bit", "mirror", 1)
+    model_events.emit_model_pulled("qwen3.5-4b-4bit", "environment", 1)
+    assert [props["source"] for props in calls] == ["mirror"]
+
+
+class _UnprintableError(Exception):
+    def __str__(self):
+        raise RuntimeError("string conversion exploded")
+
+
+def test_emitters_never_raise_and_failed_latch_is_not_burned(monkeypatch):
+    calls = []
+    monkeypatch.setattr(track_module, "track", lambda event, props, **kw: calls.append(event))
+    monkeypatch.setattr(
+        model_id,
+        "telemetry_model_id",
+        lambda value: (_ for _ in ()).throw(_UnprintableError())
+        if value == "poison"
+        else "<custom>",
+    )
+    monkeypatch.setattr(
+        model_id,
+        "engine_telemetry_id",
+        lambda engine: (_ for _ in ()).throw(_UnprintableError())
+        if engine == "poison"
+        else "<custom>",
+    )
+
+    model_events.emit_model_pulled("poison", "hf", 1)
+    model_events.emit_model_pull_failed(RuntimeError("x"), model_ref="poison")
+    model_events.emit_model_served("poison", "unknown", False)
+    model_events.emit_model_serve_failed(_UnprintableError(), alias_or_path="unknown")
+    model_events.emit_model_serve_failed(RuntimeError("valid"), alias_or_path="unknown")
+
+    assert calls == ["model_serve_failed"]
 
 
 def test_serve_failure_latch_claims_before_building(monkeypatch):
@@ -267,7 +413,11 @@ def test_all_four_model_events_reach_exact_loopback_json(monkeypatch):
     monkeypatch.setattr(
         model_id, "engine_telemetry_id", lambda _engine: "qwen3.5-4b-4bit"
     )
-    monkeypatch.setattr(model_events, "model_type", lambda _name: "llm")
+    monkeypatch.setattr(
+        model_events,
+        "model_type",
+        lambda name: "llm" if name == "qwen3.5-4b-4bit" else "other",
+    )
     monkeypatch.setattr(store, "note_model_served", lambda _model: 2)
 
     model_events.emit_model_pulled("qwen3.5-4b-4bit", "mirror", 3 * 1024**3)
@@ -275,7 +425,8 @@ def test_all_four_model_events_reach_exact_loopback_json(monkeypatch):
         TimeoutError(), model_ref="qwen3.5-4b-4bit", source="hf"
     )
     model_events.emit_model_served(object(), "qwen3.5-4b-4bit", True)
-    model_events.emit_model_serve_failed(MemoryError(), alias_or_path="qwen3.5-4b-4bit")
+    hostile_path = "/Users/alice/private-checkout/weights"
+    model_events.emit_model_serve_failed(MemoryError(), alias_or_path=hostile_path)
     sender.flush()
     server.shutdown()
     thread.join(timeout=2)
@@ -303,12 +454,14 @@ def test_all_four_model_events_reach_exact_loopback_json(monkeypatch):
         {
             **common,
             "model": "qwen3.5-4b-4bit",
+            "model_type": "llm",
             "source": "mirror",
             "size_bucket": "2_4gb",
         },
         {
             **common,
             "model": "qwen3.5-4b-4bit",
+            "model_type": "llm",
             "source": "hf",
             "error_class": "network",
         },
@@ -322,10 +475,10 @@ def test_all_four_model_events_reach_exact_loopback_json(monkeypatch):
         },
         {
             **common,
-            "model": "qwen3.5-4b-4bit",
-            "model_type": "llm",
+            "model": "<local>",
+            "model_type": "other",
             "auto_selected": False,
-            "quant": "4bit",
+            "quant": "unknown",
             "error_class": "insufficient_memory",
         },
     ]
@@ -348,3 +501,4 @@ def test_all_four_model_events_reach_exact_loopback_json(monkeypatch):
             strict=True,
         )
     ]
+    assert hostile_path not in repr(events)

@@ -4,11 +4,29 @@
 from __future__ import annotations
 
 import errno
+import functools
+import re
 import threading
 import urllib.error
+from collections.abc import Callable
+from typing import ParamSpec
 
 _serve_failure_lock = threading.Lock()
 _serve_failure_claimed = False
+_P = ParamSpec("_P")
+
+
+def _never_raise(func: Callable[_P, None]) -> Callable[_P, None]:
+    """Keep observability from changing a host command's result or output."""
+
+    @functools.wraps(func)
+    def wrapped(*args: _P.args, **kwargs: _P.kwargs) -> None:
+        try:
+            func(*args, **kwargs)
+        except Exception:
+            return
+
+    return wrapped
 
 
 def size_bucket(size_bytes: int | None) -> str:
@@ -63,6 +81,25 @@ def serve_error_class(exc: BaseException) -> str:
 
     if isinstance(exc, (HfHubHTTPError, RepositoryNotFoundError)):
         return "download_failed"
+    # A missing local/Hub shard is an availability failure, not evidence that
+    # bytes on disk are corrupt. ModuleNotFoundError is handled separately
+    # below because mlx-lm uses it for an unknown architecture module.
+    if isinstance(exc, FileNotFoundError) and not isinstance(
+        exc, ModuleNotFoundError
+    ):
+        return "download_failed"
+    if isinstance(exc, ModuleNotFoundError):
+        missing = exc.name or ""
+        if missing.startswith("mlx_lm.models."):
+            return "unsupported_architecture"
+        text = str(exc)
+        if re.fullmatch(r"No module named ['\"]mlx_lm\.models\.[^'\"]+['\"]", text):
+            return "unsupported_architecture"
+    elif isinstance(exc, ValueError):
+        # mlx-lm/utils.py::_get_classes translates the module import failure to
+        # exactly ``ValueError: Model type <X> not supported.``.
+        if re.fullmatch(r"Model type .+ not supported\.?", str(exc)):
+            return "unsupported_architecture"
     name = type(exc).__name__.lower()
     text = str(exc).lower()
     if "safetensor" in name or any(
@@ -70,16 +107,6 @@ def serve_error_class(exc: BaseException) -> str:
         for marker in ("safetensor", "corrupt", "checksum", "size mismatch")
     ):
         return "corrupt_weights"
-    if any(
-        marker in text
-        for marker in (
-            "unsupported architecture",
-            "unsupported model type",
-            "not supported for this checkpoint",
-            "unknown model type",
-        )
-    ):
-        return "unsupported_architecture"
     return "other"
 
 
@@ -92,22 +119,25 @@ def model_type(alias_or_path: object) -> str:
 
         profile = resolve_profile(alias_or_path)
         if profile is None:
-            return "other"
+            from rapid_mlx.audio.registry import resolve_audio_alias
+
+            return "audio" if resolve_audio_alias(alias_or_path) is not None else "other"
         modality = profile.modality
         if modality == "text":
             return "vlm" if profile.supports_image_input else "llm"
-        if modality in {
-            "embedding",
-            "image-gen",
-            "video-gen",
-            "text-diffusion",
-        }:
-            return modality
+        closed_modalities = {
+            "embedding": "embedding",
+            "image-gen": "image-gen",
+            "video-gen": "video-gen",
+            "text-diffusion": "text-diffusion",
+        }
+        return closed_modalities.get(modality, "other")
     except Exception:
         pass
     return "other"
 
 
+@_never_raise
 def emit_model_pulled(
     model_ref: object, source: object, size_bytes: int | None
 ) -> None:
@@ -120,12 +150,14 @@ def emit_model_pulled(
         "model_pulled",
         {
             "model": telemetry_model_id(model_ref),
+            "model_type": model_type(model_ref),
             "source": source,
             "size_bucket": size_bucket(size_bytes),
         },
     )
 
 
+@_never_raise
 def emit_model_pull_failed(
     exc: BaseException,
     *,
@@ -139,6 +171,7 @@ def emit_model_pull_failed(
     props: dict[str, object] = {"error_class": pull_error_class(exc)}
     if model_ref is not None:
         props["model"] = telemetry_model_id(model_ref)
+        props["model_type"] = model_type(model_ref)
     if source in ("mirror", "hf"):
         props["source"] = source
     if size_bytes is not None:
@@ -146,20 +179,39 @@ def emit_model_pull_failed(
     track("model_pull_failed", props)
 
 
+def _quant_for_ref(alias_or_path: object) -> str:
+    from rapid_mlx.telemetry.quant import quant_token
+
+    quant_ref = alias_or_path if isinstance(alias_or_path, str) else ""
+    if quant_ref:
+        try:
+            from rapid_mlx.model_aliases import resolve_profile
+
+            profile = resolve_profile(quant_ref)
+            if profile is not None and profile.hf_path:
+                resolved_quant = quant_token(profile.hf_path)
+                if resolved_quant != "unknown":
+                    quant_ref = profile.hf_path
+        except Exception:
+            pass
+
+    return quant_token(quant_ref)
+
+
 def _serve_props(
     engine: object, alias_or_path: object, auto_selected: bool
 ) -> dict[str, object]:
     from rapid_mlx.telemetry.model_id import engine_telemetry_id
-    from rapid_mlx.telemetry.quant import quant_token
 
     return {
         "model": engine_telemetry_id(engine),
         "model_type": model_type(alias_or_path),
         "auto_selected": bool(auto_selected),
-        "quant": quant_token(alias_or_path if isinstance(alias_or_path, str) else ""),
+        "quant": _quant_for_ref(alias_or_path),
     }
 
 
+@_never_raise
 def emit_model_served(
     engine: object, alias_or_path: object, auto_selected: bool
 ) -> None:
@@ -172,6 +224,7 @@ def emit_model_served(
     track("model_served", props, nth_model_served=nth or None)
 
 
+@_never_raise
 def emit_model_serve_failed(
     exc: BaseException,
     *,
@@ -184,10 +237,8 @@ def emit_model_serve_failed(
     with _serve_failure_lock:
         if _serve_failure_claimed:
             return
-        _serve_failure_claimed = True
 
     from rapid_mlx.telemetry.model_id import engine_telemetry_id, telemetry_model_id
-    from rapid_mlx.telemetry.quant import quant_token
     from rapid_mlx.telemetry.track import track
 
     props: dict[str, object] = {"error_class": serve_error_class(exc)}
@@ -198,9 +249,14 @@ def emit_model_serve_failed(
     if alias_or_path is not None:
         props["model_type"] = model_type(alias_or_path)
         props["auto_selected"] = bool(auto_selected)
-        props["quant"] = quant_token(
-            alias_or_path if isinstance(alias_or_path, str) else ""
-        )
+        props["quant"] = _quant_for_ref(alias_or_path)
+    # Build every potentially-failing property before claiming the one-shot
+    # latch. A telemetry-only conversion bug must not suppress a later valid
+    # failure event from this process.
+    with _serve_failure_lock:
+        if _serve_failure_claimed:
+            return
+        _serve_failure_claimed = True
     track("model_serve_failed", props)
 
 

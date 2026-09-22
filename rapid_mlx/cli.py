@@ -8157,25 +8157,55 @@ def _format_pull_duration(seconds: float) -> str:
 
 
 def _snapshot_size_bytes(path) -> int:
-    """Sum file sizes under ``path`` (recursively, following symlinks).
+    """Sum one snapshot's unique file payloads without revision double-counts.
 
     The HF cache stores ``snapshots/<rev>/<file>`` as symlinks into
-    ``blobs/<sha>``; ``stat()`` follows the link so the byte count is
-    the real on-disk weight, matching what the user just downloaded.
+    ``blobs/<sha>``. When a repository root is the fallback input, select its
+    active revision rather than walking blobs plus every historical snapshot.
+    Inspect entries without following links, then count each resolved payload
+    inode once so duplicate snapshot links cannot inflate the total.
     Quietly tolerates partial / missing trees so the summary line is
     a print, not a crash, in degenerate cache states.
     """
+    import os as _os
     from pathlib import Path
 
     root = Path(path)
     if not root.exists():
         return 0
+    snapshots = root / "snapshots"
+    if snapshots.is_dir():
+        revision = None
+        try:
+            revision = (root / "refs" / "main").read_text().strip()
+        except OSError:
+            pass
+        if revision and (snapshots / revision).is_dir():
+            root = snapshots / revision
+        else:
+            try:
+                revisions = sorted(p for p in snapshots.iterdir() if p.is_dir())
+            except OSError:
+                revisions = []
+            if not revisions:
+                return 0
+            root = revisions[-1]
     total = 0
+    seen_payloads: set[tuple[int, int]] = set()
     try:
         for entry in root.rglob("*"):
             try:
-                if entry.is_file():
-                    total += entry.stat().st_size
+                link_stat = entry.stat(follow_symlinks=False)
+                if _os.path.islink(entry):
+                    payload_stat = entry.stat()
+                elif entry.is_file():
+                    payload_stat = link_stat
+                else:
+                    continue
+                identity = (payload_stat.st_dev, payload_stat.st_ino)
+                if identity not in seen_payloads:
+                    seen_payloads.add(identity)
+                    total += payload_stat.st_size
             except OSError:
                 continue
     except OSError:
@@ -8333,7 +8363,7 @@ def _print_pull_summary(
         )
 
 
-_pending_model_pull_event: tuple[object, object, object] | None = None
+_pending_model_pull_event: tuple[object, object, object, bool] | None = None
 
 
 def _emit_pull_activation() -> None:
@@ -8352,12 +8382,15 @@ def _emit_pull_activation() -> None:
     from rapid_mlx.telemetry.model_events import emit_model_pulled
 
     if _pending_model_pull_event is not None:
-        repo_id, source, snapshot_dir = _pending_model_pull_event
-        emit_model_pulled(
-            repo_id,
-            source,
-            _snapshot_size_bytes(snapshot_dir) if snapshot_dir is not None else None,
-        )
+        repo_id, source, snapshot_dir, transferred = _pending_model_pull_event
+        if transferred:
+            emit_model_pulled(
+                repo_id,
+                source,
+                _snapshot_size_bytes(snapshot_dir)
+                if snapshot_dir is not None
+                else None,
+            )
 
 
 def _escape_glob_literal(name: str) -> str:
@@ -8601,8 +8634,9 @@ def _pull_repository(
         # impossible to recover from a later bare-repository ``serve``.
         if _owns_variant_marker:
             _sync_pulled_variant_marker(repo_id, _selected_variant)
-            args._telemetry_pull_source = _mirror_out.get("source")
-            args._telemetry_pull_snapshot_dir = snapshot_dir
+        args._telemetry_pull_source = _mirror_out.get("source")
+        args._telemetry_pull_snapshot_dir = snapshot_dir
+        args._telemetry_pull_transferred = _was_cached is not True
         _print_pull_summary(
             repo_id,
             snapshot_dir,
@@ -8709,8 +8743,9 @@ def _pull_repository(
         # serving-choice metadata and therefore performs no marker transition.
         if _owns_variant_marker:
             _sync_pulled_variant_marker(repo_id, _selected_variant)
-            args._telemetry_pull_source = "hf"
-            args._telemetry_pull_snapshot_dir = path
+        args._telemetry_pull_source = "hf"
+        args._telemetry_pull_snapshot_dir = path
+        args._telemetry_pull_transferred = _was_cached is not True
     except HFValidationError as exc:
         from rapid_mlx.telemetry.model_events import emit_model_pull_failed
 
@@ -8883,9 +8918,10 @@ def pull_command(args):
             sys.exit(1)
     global _pending_model_pull_event
     _pending_model_pull_event = (
-        primary_repo,
-        getattr(args, "_telemetry_pull_source", None),
-        getattr(args, "_telemetry_pull_snapshot_dir", None),
+        getattr(primary_args, "_original_alias", None) or primary_repo,
+        getattr(primary_args, "_telemetry_pull_source", None),
+        getattr(primary_args, "_telemetry_pull_snapshot_dir", None),
+        bool(getattr(primary_args, "_telemetry_pull_transferred", False)),
     )
     _emit_pull_activation()
 
@@ -9176,7 +9212,10 @@ def _spawn_chat_server(
     # child stdin is not a TTY). Without this, the child's B2 gate would
     # see a stdin pipe and re-evaluate against a potentially-stale cache.
     child_env = os.environ.copy()
-    child_env["RAPID_MLX_CHAT_SPAWN"] = "auto" if _telemetry_chat_auto_selected else "1"
+    child_env["RAPID_MLX_CHAT_SPAWN"] = "1"
+    child_env.pop("RAPID_MLX_AUTO_SELECTED", None)
+    if _telemetry_chat_auto_selected:
+        child_env["RAPID_MLX_AUTO_SELECTED"] = "1"
     # Parent-PID watchdog (rapid-desktop #449 sibling fix). The
     # SIGTERM-handler + atexit pair installed below cannot fire under
     # SIGKILL of the chat REPL — the spawned ``serve`` would otherwise
@@ -14157,10 +14196,11 @@ def main():
         args._model_was_explicit = getattr(args, "model", None) is not None
         args._telemetry_auto_selected = not args._model_was_explicit
     elif getattr(args, "command", None) == "serve":
-        # The existing internal-spawn marker carries the parent chat path's
-        # first-run choice into the canonical serve child. ``main`` consumes
-        # the marker at the download gate below; no new routing env exists.
-        args._telemetry_auto_selected = os.environ.get("RAPID_MLX_CHAT_SPAWN") == "auto"
+        # Auto-selection is telemetry context, separate from the established
+        # internal-spawn marker whose only valid value remains ``"1"``.
+        args._telemetry_auto_selected = (
+            os.environ.pop("RAPID_MLX_AUTO_SELECTED", "") == "1"
+        )
 
     # Cheetah launch banner. Interactive only — stdout must be a real
     # terminal, not a pipe/redirect, and none of the machine-facing opt-outs
@@ -14572,7 +14612,7 @@ def main():
     # grandchild ``rapid-mlx`` spawn (e.g. a nested invocation from a
     # user hook, a doctor self-probe, or some future hub helper) does
     # NOT inherit the bypass. Codex round-2 BLOCKING #2.
-    _chat_spawn_child = bool(os.environ.pop("RAPID_MLX_CHAT_SPAWN", ""))
+    _chat_spawn_child = os.environ.pop("RAPID_MLX_CHAT_SPAWN", "") == "1"
 
     _GATED_COMMANDS = {"chat", "run", "serve", "pull", "bench"}
     # Attached client (chat/bench pointed at an existing server via

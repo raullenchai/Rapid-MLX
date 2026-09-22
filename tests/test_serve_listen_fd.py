@@ -328,7 +328,9 @@ def stub_heavy_serve_deps(monkeypatch):
     return monkeypatch
 
 
-def test_serve_load_failure_emits_v2_model_failure(stub_heavy_serve_deps, monkeypatch):
+def test_serve_load_failure_emits_v2_model_failure(
+    stub_heavy_serve_deps, monkeypatch, scheduler_config_stub
+):
     from rapid_mlx import server as server_mod
     from rapid_mlx.telemetry import model_events
 

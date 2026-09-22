@@ -29,6 +29,7 @@ from unittest.mock import patch
 import pytest
 
 from rapid_mlx import cli
+from rapid_mlx.telemetry import track as track_module
 
 
 def _make_fake_snapshot(root: Path, total_bytes: int) -> Path:
@@ -86,6 +87,170 @@ def _summary_line(captured: str) -> str:
         if "Downloaded" in line and "in" in line:
             return line
     raise AssertionError(f"summary line missing from stdout, got:\n{captured!r}")
+
+
+@pytest.mark.parametrize(
+    ("alias", "expected_type"),
+    [("tmax-9b", "llm"), ("sdxl-base", "image-gen")],
+)
+def test_real_pull_command_emits_one_primary_event_for_text_and_image(
+    monkeypatch, tmp_path, alias, expected_type
+):
+    snapshot = _make_fake_snapshot(tmp_path / alias, 3 * 1024**2)
+    calls = []
+
+    def fake_pull(args, **_kwargs):
+        args._telemetry_pull_source = "hf"
+        args._telemetry_pull_snapshot_dir = snapshot
+        args._telemetry_pull_transferred = True
+
+    monkeypatch.setattr(cli, "_pull_repository", fake_pull)
+    monkeypatch.setattr(
+        "rapid_mlx.telemetry.emit.activation", lambda **_kwargs: None
+    )
+    monkeypatch.setattr(
+        track_module, "track", lambda event, props: calls.append((event, props))
+    )
+    monkeypatch.setattr(
+        "rapid_mlx._download_gate.image_runtime_assets_for", lambda _repo: ()
+    )
+    monkeypatch.setattr("rapid_mlx.audio.registry.runtime_assets_for", lambda _repo: ())
+    monkeypatch.setattr(
+        "rapid_mlx.audio.registry.runtime_requirements_for", lambda _repo: ()
+    )
+    args = argparse.Namespace(model=alias, bits=None, format=None)
+
+    cli.pull_command(args)
+
+    assert calls == [
+        (
+            "model_pulled",
+            {
+                "model": alias,
+                "model_type": expected_type,
+                "source": "hf",
+                "size_bucket": "lt_1gb",
+            },
+        )
+    ]
+
+
+def test_warm_pull_command_does_not_emit_model_pulled(monkeypatch, tmp_path):
+    snapshot = _make_fake_snapshot(tmp_path / "warm", 1)
+    calls = []
+
+    def fake_pull(args, **_kwargs):
+        args._telemetry_pull_source = "hf"
+        args._telemetry_pull_snapshot_dir = snapshot
+        args._telemetry_pull_transferred = False
+
+    monkeypatch.setattr(cli, "_pull_repository", fake_pull)
+    monkeypatch.setattr("rapid_mlx.telemetry.emit.activation", lambda **_kwargs: None)
+    monkeypatch.setattr(track_module, "track", lambda event, props: calls.append(event))
+    monkeypatch.setattr(
+        "rapid_mlx._download_gate.image_runtime_assets_for", lambda _repo: ()
+    )
+    monkeypatch.setattr("rapid_mlx.audio.registry.runtime_assets_for", lambda _repo: ())
+    monkeypatch.setattr(
+        "rapid_mlx.audio.registry.runtime_requirements_for", lambda _repo: ()
+    )
+
+    cli.pull_command(argparse.Namespace(model="tmax-9b", bits=None, format=None))
+
+    assert calls == []
+
+
+def test_snapshot_size_uses_one_revision_and_deduplicates_symlink_targets(tmp_path):
+    repo = tmp_path / "models--org--model"
+    blobs = repo / "blobs"
+    blobs.mkdir(parents=True)
+    first = blobs / "first"
+    second = blobs / "second"
+    first.write_bytes(b"a" * 7)
+    second.write_bytes(b"b" * 11)
+    current = repo / "snapshots" / "current"
+    stale = repo / "snapshots" / "stale"
+    current.mkdir(parents=True)
+    stale.mkdir(parents=True)
+    (current / "a.safetensors").symlink_to(first)
+    (current / "duplicate.safetensors").symlink_to(first)
+    (stale / "old.safetensors").symlink_to(second)
+    (repo / "refs").mkdir()
+    (repo / "refs" / "main").write_text("current")
+
+    assert cli._snapshot_size_bytes(repo) == 7
+    assert cli._snapshot_size_bytes(current) == 7
+
+
+def test_snapshot_size_falls_back_to_one_sorted_revision(tmp_path):
+    repo = tmp_path / "repo"
+    older = repo / "snapshots" / "aaa"
+    newer = repo / "snapshots" / "zzz"
+    (older / "nested").mkdir(parents=True)
+    (newer / "nested").mkdir(parents=True)
+    (older / "nested" / "old.bin").write_bytes(b"old")
+    (newer / "new.bin").write_bytes(b"newer")
+    assert cli._snapshot_size_bytes(repo) == 5
+
+
+def test_snapshot_size_handles_empty_or_unreadable_revision_directory(
+    tmp_path, monkeypatch
+):
+    from pathlib import Path
+
+    empty_repo = tmp_path / "empty"
+    snapshots = empty_repo / "snapshots"
+    snapshots.mkdir(parents=True)
+    assert cli._snapshot_size_bytes(empty_repo) == 0
+
+    real_iterdir = Path.iterdir
+
+    def fail_for_snapshots(path):
+        if path == snapshots:
+            raise OSError("unreadable")
+        return real_iterdir(path)
+
+    monkeypatch.setattr(Path, "iterdir", fail_for_snapshots)
+    assert cli._snapshot_size_bytes(empty_repo) == 0
+
+
+def test_pull_command_prepares_image_runtime_assets_after_primary(monkeypatch, tmp_path):
+    snapshot = _make_fake_snapshot(tmp_path / "primary", 1)
+    pulls = []
+
+    def fake_pull(args, **kwargs):
+        pulls.append((args.model, kwargs))
+        if len(pulls) == 1:
+            args._telemetry_pull_source = "hf"
+            args._telemetry_pull_snapshot_dir = snapshot
+            args._telemetry_pull_transferred = True
+
+    monkeypatch.setattr(cli, "_pull_repository", fake_pull)
+    monkeypatch.setattr("rapid_mlx.telemetry.emit.activation", lambda **_kwargs: None)
+    monkeypatch.setattr(
+        "rapid_mlx.telemetry.model_events.emit_model_pulled", lambda *_args: None
+    )
+    monkeypatch.setattr(
+        "rapid_mlx._download_gate.image_runtime_assets_for",
+        lambda _repo: (("org/runtime", "revision", ("weights/*",)),),
+    )
+    monkeypatch.setattr("rapid_mlx.audio.registry.runtime_assets_for", lambda _repo: ())
+    monkeypatch.setattr(
+        "rapid_mlx.audio.registry.runtime_requirements_for", lambda _repo: ()
+    )
+
+    cli.pull_command(argparse.Namespace(model="tmax-9b", bits=None, format=None))
+
+    assert pulls == [
+        ("tmax-9b", {}),
+        (
+            "org/runtime",
+            {
+                "allow_patterns_override": ["weights/*"],
+                "revision_override": "revision",
+            },
+        ),
+    ]
 
 
 def test_summary_printed_on_hf_success(
