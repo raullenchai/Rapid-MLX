@@ -36,8 +36,9 @@ Telemetry is anonymous, metadata-only, and on by default beginning with
 0.15.0. `status` is the default action. Use `on` or `off` to change consent,
 `reset-id` to rotate only the anonymous install ID, `preview` to print one
 exact v2 `app_opened` batch item without sending it, and `reset` to rotate the
-ID and turn reporting off. `enable` and `disable` remain aliases for `on` and
-`off` for one release.
+ID and delete the stored preference. The next run is treated as a new install.
+`reset` emits no telemetry event. `enable` and `disable` remain aliases for
+`on` and `off` for one release.
 
 ## `rapid-mlx doctor`
 

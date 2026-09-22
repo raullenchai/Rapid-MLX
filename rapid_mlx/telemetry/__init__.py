@@ -16,7 +16,7 @@ Public API:
 - ``get_consent_state`` — full record (consent bool, when prompted,
   which version prompted them) for ``rapid-mlx telemetry status``.
 - ``record_consent`` — persist a yes/no answer.
-- ``reset_state`` — wipe both consent + client-id files.
+- ``reset_state`` — delete the preference and rotate the client id.
 """
 
 from rapid_mlx.telemetry.state import (
@@ -25,6 +25,7 @@ from rapid_mlx.telemetry.state import (
     get_consent_state,
     get_or_create_client_id,
     is_enabled,
+    read_client_id,
     record_consent,
     reset_state,
 )
@@ -36,5 +37,6 @@ __all__ = [
     "get_or_create_client_id",
     "is_enabled",
     "record_consent",
+    "read_client_id",
     "reset_state",
 ]

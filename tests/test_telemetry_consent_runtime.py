@@ -1668,3 +1668,23 @@ def test_upload_allowed_respects_live_kill_switch_flip(fake_home, monkeypatch):
     assert upload_allowed() is True
     monkeypatch.setenv("DO_NOT_TRACK", "1")
     assert upload_allowed() is False
+
+
+def test_refresh_decision_reloads_explicit_consent_write(fake_home):
+    write_consent("consent: false\nprompted_version: 0.15.0\nschema_version: 2\n")
+    assert resolve().upload_now is False
+    state.record_consent(True, rapid_mlx_version="0.15.1")
+    refreshed = consent_runtime_module.refresh_decision()
+    assert refreshed.upload_now is True
+    assert resolve() is refreshed
+
+
+def test_refresh_decision_fail_closed_roles(fake_home, monkeypatch):
+    monkeypatch.setattr(consent_runtime_module, "_resolved_role", ProcessRole.DESKTOP)
+    assert consent_runtime_module.refresh_decision().upload_now is False
+
+    monkeypatch.setattr(
+        consent_runtime_module, "_resolved_role", ProcessRole.HEADLESS_CLI
+    )
+    monkeypatch.setattr(consent_runtime_module, "read_stored_consent", lambda: None)
+    assert consent_runtime_module.refresh_decision().upload_now is False

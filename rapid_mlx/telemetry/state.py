@@ -337,6 +337,15 @@ def get_or_create_client_id() -> str:
     return new_id
 
 
+def read_client_id() -> str | None:
+    """Return the stored install id without creating or changing any state."""
+    try:
+        value = client_id_path().read_text().strip()
+    except (FileNotFoundError, OSError, ValueError):
+        return None
+    return value or None
+
+
 def session_id() -> str:
     """Return the process's lazily created, stable random session UUID."""
     global _session_id
@@ -430,53 +439,24 @@ def claim_activation_marker(kind: str) -> bool:
 
 
 def reset_state() -> None:
-    """Remove consent + client-id + activation markers. Next run re-prompts.
+    """Delete the stored preference and rotate identity, best-effort.
 
-    Activation dedup is keyed on the install identity: wiping the ``client_id``
-    while leaving the once-per-install ``activation_seen_*`` markers behind
-    would leave the freshly generated identity permanently unable to emit any
-    milestone the old identity already claimed. Reset clears both so a new
-    identity can re-earn its funnel from scratch.
-
-    Attempts EVERY path even when one fails (a single unremovable file must not
-    skip the rest), then raises an aggregated ``OSError`` if any file could not
-    be removed. That last step
-    matters: a caller like ``telemetry reset`` must never print "removed" while
-    consent or client-id state actually survives on disk (which would leave
-    telemetry silently enabled). A file that was already absent is not a
-    failure.
+    The native desktop watches for the consent file to disappear and clears
+    its own answer. Every operation is deliberately fail-silent: reset is a
+    local recovery command and must keep attempting the remaining cleanup when
+    one path is missing, unreadable, or owned by another user.
     """
-    paths = [consent_path(), client_id_path()]
-    try:
-        paths.extend(_default_telemetry_dir().glob("activation_seen_*"))
-    except OSError as exc:
-        # Couldn't even enumerate the markers — record it and press on with the
-        # consent/client-id removals we already know about.
-        failures = [f"{_default_telemetry_dir()}/activation_seen_*: {exc}"]
-    else:
-        failures = []
-    for path in paths:
+    consent = consent_path()
+    lock = consent.with_name(consent.name + ".lock")
+    for path in (consent, lock):
         try:
             path.unlink()
-        except FileNotFoundError:
-            pass  # already gone == the desired post-condition
-        except OSError as exc:
-            # Permission error, a path that is unexpectedly a directory, etc. on
-            # ONE entry must not abort the whole cleanup. Record and continue so
-            # the remaining unlinks and the latch clear still run; the collected
-            # failures are surfaced at the end.
-            failures.append(f"{path}: {exc}")
-    # The sibling flock is intentionally permanent during normal writes, but
-    # reset is an explicit request to remove telemetry state. Its deletion is
-    # best-effort: a stale root-owned lock must not turn an otherwise complete
-    # reset into a false failure.
-    lock_path = consent_path().with_name(consent_path().name + ".lock")
+        except OSError:
+            pass
     try:
-        lock_path.unlink()
+        rotate_client_id()
     except OSError:
         pass
-    if failures:
-        raise OSError("telemetry reset could not remove: " + "; ".join(failures))
 
 
 def _env_kill_switch_reason() -> str | None:

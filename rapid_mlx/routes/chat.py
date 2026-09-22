@@ -3654,9 +3654,8 @@ async def create_chat_completion(request: ChatCompletionRequest, raw_request: Re
     from rapid_mlx.telemetry.model_id import engine_telemetry_id
 
     # Codex P1 on #3600: the telemetry identity is captured HERE, with the
-    # engine, and carried to the terminal emit. Resolving it again at
-    # completion would re-read a registry that a resident-model swap may
-    # have repointed mid-request.
+    # engine and carried with the request. Resolving it again at completion
+    # would re-read a registry that a resident-model swap may have repointed.
     _served_telemetry_id = engine_telemetry_id(engine)
     await ensure_engine_ready(engine)
 
@@ -5470,18 +5469,13 @@ async def _create_chat_completion_impl(
         # separately generated scheduler UUID would make a live request
         # impossible to address.
         response_id = _new_stream_request_id()
-        # Opt-in telemetry (Phase 2.2): the inbound User-Agent for the
-        # streaming ``request`` event's ``caller_agent``. Passed RAW (not
-        # bucketed) — ``emit.request`` funnels it through
-        # ``normalize_caller_agent`` exactly like the non-streaming path.
-        # Threaded as an explicit keyword so it never leaks into the
-        # ``**chat_kwargs`` the engine's ``stream_chat`` receives.
+        # Preserve request attribution for the v2 inference emitter. Thread it
+        # as an explicit keyword so it never leaks into the ``**chat_kwargs``
+        # the engine's ``stream_chat`` receives.
         _caller_ua = (
             raw_request.headers.get("user-agent") if raw_request is not None else None
         )
-        # ``X-Rapid-Client`` — set by every Rapid-owned client. Also passed
-        # RAW; ``normalize_caller_agent`` accepts it only when it is one of
-        # our own closed labels and otherwise ignores it.
+        # ``X-Rapid-Client`` is set by every Rapid-owned client.
         _caller_client = (
             raw_request.headers.get("x-rapid-client")
             if raw_request is not None
@@ -6745,14 +6739,6 @@ async def stream_chat_completion(
             stream stays self-consistent across the guided→unconstrained
             handoff (DeepSeek pr_validate round 5 finding).
         created: Optional pre-computed Unix timestamp. Same rationale.
-        caller_agent: Raw inbound HTTP ``User-Agent`` for the opt-in
-            streaming ``request`` telemetry event. Passed through
-            unbucketed — ``emit.request`` funnels it through
-            ``normalize_caller_agent`` (never stored raw). ``None`` when
-            the header is absent or telemetry is off.
-        caller_client: Raw inbound ``X-Rapid-Client`` header, same
-            contract: bucketed by ``normalize_caller_agent``, which
-            ignores any value outside our own closed label set.
         _client_disconnect_state: Private route/guard coordination latch.
             True means the consumer disappeared and post-stream recovery must
             not synthesize terminal frames for the dead connection.
@@ -6770,14 +6756,6 @@ async def stream_chat_completion(
         if response_id is None:
             response_id = _new_stream_request_id()
         start_time = time.perf_counter()
-        # Opt-in telemetry (Phase 2.2): wall-clock of the FIRST real output
-        # token (content / reasoning / tool_call). This is the meaningful
-        # TTFT for a streaming response — unlike non-streaming, where TTFT
-        # collapses to total latency. Stays ``None`` until the first token
-        # is emitted so an empty / immediately-aborted stream reports no
-        # first-token time. Captured inside the loop, read in the terminal
-        # block below.
-        first_token_ts: float | None = None
 
         # Check if we should include usage in the final chunk
         include_usage = request.stream_options and request.stream_options.include_usage
@@ -7139,20 +7117,6 @@ async def stream_chat_completion(
                 stream_matched_stop = _chunk_matched_stop
 
             for event in processor.process_chunk(output):
-                # Telemetry: stamp TTFT on the first real output token
-                # (content / reasoning / tool_call). Cheap monotonic read
-                # gated to fire once; never touches the wire.
-                if (
-                    first_token_ts is None
-                    and event.type
-                    in (
-                        "content",
-                        "reasoning",
-                        "tool_call",
-                    )
-                    and not _buffer_forced_content
-                ):
-                    first_token_ts = time.perf_counter()
                 if event.type == "content":
                     _event_logprobs = (
                         _build_chunk_logprobs(output) if want_logprobs else None
@@ -7186,21 +7150,15 @@ async def stream_chat_completion(
                                 )
                                 _forced_content_pending.clear()
                                 if _clean_pending:
-                                    if first_token_ts is None:
-                                        first_token_ts = time.perf_counter()
                                     yield _content_sse_chunk(_clean_pending, None)
                             elif not _may_be_tool_wire(_pending_raw):
                                 # A partial candidate diverged into ordinary
                                 # prose (e.g. ``<funx``): replay every held byte.
                                 for _text, _logprobs in _forced_content_pending:
                                     if _text:
-                                        if first_token_ts is None:
-                                            first_token_ts = time.perf_counter()
                                         yield _content_sse_chunk(_text, _logprobs)
                                 _forced_content_pending.clear()
                         else:
-                            if first_token_ts is None:
-                                first_token_ts = time.perf_counter()
                             yield _content_sse_chunk(event.content, _event_logprobs)
                     else:
                         yield _content_sse_chunk(event.content, _event_logprobs)
@@ -7212,8 +7170,6 @@ async def stream_chat_completion(
                         # it cannot be spliced around this reasoning event.
                         _forced_content_pending.clear()
                         _forced_wire_quarantine = True
-                    if first_token_ts is None:
-                        first_token_ts = time.perf_counter()
                     yield _fast_sse_chunk(event.reasoning, "reasoning_content")
 
                 elif event.type == "tool_call":
@@ -7291,8 +7247,6 @@ async def stream_chat_completion(
                         _forced_content_pending.clear()
                     _forced_wire_quarantine = False
                     _forced_quarantine_tail = ""
-                    if first_token_ts is None:
-                        first_token_ts = time.perf_counter()
                     yield _tc_sse
 
                 elif event.type == "finish":
@@ -7360,8 +7314,6 @@ async def stream_chat_completion(
                     finish_output,
                 )
             else:
-                if first_token_ts is None:
-                    first_token_ts = time.perf_counter()
                 yield _fast_sse_chunk(finalize_reasoning, "reasoning_content")
 
         # #447 streaming-parity synthesis (2026-06-26). The non-stream
@@ -7542,8 +7494,6 @@ async def stream_chat_completion(
                 if _contains_structural_tool_wire_leak(_pending_raw):
                     _final_content = _scrub_visible_tool_wire_leaks(_pending_raw)
                     if _final_content:
-                        if first_token_ts is None:
-                            first_token_ts = time.perf_counter()
                         yield _content_sse_chunk(_final_content, None)
                 else:
                     # No payload-bearing structure materialized by stream end:
@@ -7551,8 +7501,6 @@ async def stream_chat_completion(
                     for _text, _logprobs in _forced_content_pending:
                         if not _text:
                             continue
-                        if first_token_ts is None:
-                            first_token_ts = time.perf_counter()
                         yield _content_sse_chunk(_text, _logprobs)
                 _forced_content_pending.clear()
 

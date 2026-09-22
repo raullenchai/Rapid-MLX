@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import json
+from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
@@ -21,10 +22,19 @@ def isolated_telemetry(tmp_path, monkeypatch):
     monkeypatch.delenv("RAPID_MLX_WATCHDOG_PPID", raising=False)
     consent_runtime._reset_runtime_state_for_tests()
     monkeypatch.setattr(state, "_session_id", None)
+    monkeypatch.setattr(cli, "_consent_mutation_event_count", 0)
 
 
 def _args(action: str | None, *, no_telemetry: bool = False) -> SimpleNamespace:
     return SimpleNamespace(telemetry_action=action, no_telemetry=no_telemetry)
+
+
+def _home_snapshot(home: Path) -> dict[str, bytes]:
+    return {
+        str(path.relative_to(home)): path.read_bytes()
+        for path in home.rglob("*")
+        if path.is_file()
+    }
 
 
 @pytest.mark.parametrize(
@@ -106,6 +116,17 @@ def test_status_names_the_active_kill_switch(monkeypatch, capsys):
     )
 
 
+def test_status_reads_existing_id_without_rewriting_it(capsys):
+    path = state.client_id_path()
+    path.parent.mkdir(parents=True)
+    path.write_text("existing-install-id\n")
+    before = path.stat().st_mtime_ns
+    cli.telemetry_command(_args("status"))
+    assert "Install ID: exis…" in capsys.readouterr().out
+    assert path.read_text() == "existing-install-id\n"
+    assert path.stat().st_mtime_ns == before
+
+
 @pytest.mark.parametrize("action", ["on", "enable"])
 def test_on_and_enable_share_the_same_path(action, monkeypatch, capsys):
     calls: list[object] = []
@@ -113,34 +134,33 @@ def test_on_and_enable_share_the_same_path(action, monkeypatch, capsys):
         "rapid_mlx.telemetry.record_consent",
         lambda value, **kwargs: calls.append((value, kwargs)),
     )
-    monkeypatch.setattr(
-        consent_runtime,
-        "apply_write_back",
-        lambda write_back: calls.append(write_back) or True,
-    )
+    monkeypatch.setattr(cli, "_track_telemetry_opted_in", lambda: calls.append("track"))
     monkeypatch.setattr(
         "rapid_mlx.telemetry.get_or_create_client_id", lambda: "install-id"
     )
     cli.telemetry_command(_args(action))
     assert calls[0][0] is True
-    assert calls[1].mark_notice_seen is True
+    assert calls[1] == "track"
     assert "Telemetry: ENABLED" in capsys.readouterr().out
 
 
 def test_on_reports_write_failure(monkeypatch, capsys):
     monkeypatch.setattr(
-        "rapid_mlx.telemetry.record_consent", lambda *_args, **_kwargs: None
+        "rapid_mlx.telemetry.record_consent",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(OSError("denied")),
     )
-    monkeypatch.setattr(consent_runtime, "apply_write_back", lambda _write_back: False)
+    tracked: list[bool] = []
+    monkeypatch.setattr(cli, "_track_telemetry_opted_in", lambda: tracked.append(True))
     with pytest.raises(SystemExit, match="1"):
         cli.telemetry_command(_args("on"))
+    assert tracked == []
     assert "could not save telemetry preference" in capsys.readouterr().err
 
 
 @pytest.mark.parametrize("action", ["off", "disable"])
 def test_off_flushes_opt_out_before_recording_false(action, monkeypatch, capsys):
     order: list[object] = []
-    sender = SimpleNamespace(flush=lambda: order.append("flush"))
+    sender = SimpleNamespace(flush=lambda timeout: order.append(("flush", timeout)))
     monkeypatch.setattr(
         "rapid_mlx.telemetry.track.track",
         lambda event, props: order.append((event, props)),
@@ -153,14 +173,14 @@ def test_off_flushes_opt_out_before_recording_false(action, monkeypatch, capsys)
     cli.telemetry_command(_args(action))
     assert order == [
         ("telemetry_opted_out", {"via": "cli"}),
-        "flush",
+        ("flush", 2.0),
         ("consent", False),
     ]
     assert "Telemetry: disabled" in capsys.readouterr().out
 
 
 def test_off_reports_consent_write_failure(monkeypatch, capsys):
-    sender = SimpleNamespace(flush=lambda: None)
+    sender = SimpleNamespace(flush=lambda _timeout: None)
     monkeypatch.setattr(
         "rapid_mlx.telemetry.track.track", lambda *_args, **_kwargs: None
     )
@@ -174,6 +194,85 @@ def test_off_reports_consent_write_failure(monkeypatch, capsys):
     assert "could not save telemetry preference" in capsys.readouterr().err
 
 
+def test_opt_in_helper_refreshes_delivers_tracks_and_flushes(monkeypatch):
+    from rapid_mlx.telemetry.consent_decision import Decision, WriteBack
+
+    order: list[object] = []
+    decision = Decision(True, True, WriteBack(False, False, True), "notice")
+    monkeypatch.setattr(
+        consent_runtime, "refresh_decision", lambda: order.append("refresh") or decision
+    )
+    monkeypatch.setattr(
+        consent_runtime,
+        "deliver_notice_if_needed",
+        lambda resolved: order.append(("notice", resolved)) or True,
+    )
+    monkeypatch.setattr(
+        consent_runtime,
+        "apply_write_back",
+        lambda write_back: order.append(("write_back", write_back)) or True,
+    )
+    monkeypatch.setattr(
+        "rapid_mlx.telemetry.track.track",
+        lambda event, props: order.append((event, props)),
+    )
+    monkeypatch.setattr(
+        "rapid_mlx.telemetry.posthog_sender.get_sender",
+        lambda: SimpleNamespace(flush=lambda timeout: order.append(("flush", timeout))),
+    )
+
+    cli._track_telemetry_opted_in()
+
+    assert order == [
+        "refresh",
+        ("notice", decision),
+        ("write_back", decision.write_back),
+        ("telemetry_opted_in", {"via": "cli"}),
+        ("flush", 2.0),
+    ]
+
+
+def test_consent_event_helpers_are_bounded_and_fail_silent(monkeypatch):
+    calls: list[str] = []
+    monkeypatch.setattr(cli, "_consent_mutation_event_count", 5)
+    monkeypatch.setattr(
+        "rapid_mlx.telemetry.track.track",
+        lambda *_args, **_kwargs: calls.append("track"),
+    )
+    cli._track_telemetry_opted_out()
+    cli._track_telemetry_opted_in()
+    assert calls == []
+
+    monkeypatch.setattr(cli, "_consent_mutation_event_count", 0)
+    monkeypatch.setattr(
+        "rapid_mlx.telemetry.track.track",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(RuntimeError("unavailable")),
+    )
+    cli._track_telemetry_opted_out()
+
+    from rapid_mlx.telemetry.consent_decision import Decision, WriteBack
+
+    monkeypatch.setattr(cli, "_consent_mutation_event_count", 0)
+    monkeypatch.setattr(
+        consent_runtime,
+        "refresh_decision",
+        lambda: Decision(True, True, WriteBack(False, False, True), "notice"),
+    )
+    monkeypatch.setattr(
+        consent_runtime, "deliver_notice_if_needed", lambda _decision: False
+    )
+    monkeypatch.setattr(consent_runtime, "notice_was_delivered", lambda: False)
+    cli._track_telemetry_opted_in()
+
+    monkeypatch.setattr(cli, "_consent_mutation_event_count", 0)
+    monkeypatch.setattr(
+        consent_runtime,
+        "refresh_decision",
+        lambda: (_ for _ in ()).throw(RuntimeError("unavailable")),
+    )
+    cli._track_telemetry_opted_in()
+
+
 def test_preview_is_one_real_v2_batch_item(capsys):
     cli.telemetry_command(_args("preview"))
     out = capsys.readouterr().out
@@ -185,6 +284,76 @@ def test_preview_is_one_real_v2_batch_item(capsys):
     assert item["properties"]["$geoip_disable"] is True
     assert item["properties"]["$process_person_profile"] is False
     assert item["distinct_id"] == item["properties"]["install_id"]
+    assert "days_since_first_run_bucket" not in item["properties"]
+
+
+def test_preview_never_captures_or_flushes(monkeypatch, capsys):
+    calls: list[object] = []
+    sender = SimpleNamespace(
+        capture=lambda item: calls.append(("capture", item)),
+        flush=lambda *args: calls.append(("flush", args)),
+    )
+    monkeypatch.setattr("rapid_mlx.telemetry.posthog_sender.get_sender", lambda: sender)
+
+    cli.telemetry_command(_args("preview"))
+
+    assert calls == []
+    assert "nothing is sent by this command" in capsys.readouterr().out
+
+
+def test_preview_creates_identity_only_when_upload_is_allowed(monkeypatch, capsys):
+    from rapid_mlx.telemetry import build_gate
+    from rapid_mlx.telemetry.build_gate import ReleaseStamp
+
+    monkeypatch.setattr(
+        build_gate,
+        "official_build",
+        lambda: ReleaseStamp("stable", "phc_12345678901234567890"),
+    )
+    monkeypatch.setattr(consent_runtime, "upload_allowed", lambda: True)
+    cli.telemetry_command(_args("preview"))
+    assert state.client_id_path().exists()
+    assert "nothing is sent by this command" in capsys.readouterr().out
+
+
+@pytest.mark.parametrize("action", ["status", "preview"])
+@pytest.mark.parametrize(
+    ("gate", "no_telemetry"),
+    [
+        ("do_not_track", False),
+        ("rapid_mlx_telemetry", False),
+        ("cli_flag", True),
+        ("stored_refusal", False),
+    ],
+)
+def test_blocked_read_only_commands_leave_home_unchanged(
+    action, gate, no_telemetry, tmp_path, monkeypatch, capsys
+):
+    from rapid_mlx.telemetry import build_gate
+    from rapid_mlx.telemetry.build_gate import ReleaseStamp
+
+    monkeypatch.setattr(
+        build_gate,
+        "official_build",
+        lambda: ReleaseStamp("stable", "phc_12345678901234567890"),
+    )
+    if gate == "do_not_track":
+        monkeypatch.setenv(state.DO_NOT_TRACK_ENV, "1")
+    elif gate == "rapid_mlx_telemetry":
+        monkeypatch.setenv(state.ENV_VAR, "0")
+    elif gate == "stored_refusal":
+        state.record_consent(False, rapid_mlx_version="0.15.0")
+
+    before = _home_snapshot(tmp_path)
+    cli.telemetry_command(_args(action, no_telemetry=no_telemetry))
+    output = capsys.readouterr().out
+
+    assert _home_snapshot(tmp_path) == before
+    if action == "status":
+        assert "Install ID: (not created)" in output
+    else:
+        item = json.loads(output[output.index("{") : output.rindex("}") + 1])
+        assert "days_since_first_run_bucket" not in item["properties"]
 
 
 def test_preview_prints_null_if_common_snapshot_is_invalid(monkeypatch, capsys):
@@ -212,26 +381,27 @@ def test_reset_id_reports_failure(monkeypatch, capsys):
     assert "could not rotate telemetry identity" in capsys.readouterr().err
 
 
-def test_reset_records_false_and_rotates(monkeypatch, capsys):
+def test_reset_deletes_preference_rotates_id_and_emits_no_event(monkeypatch, capsys):
     calls: list[object] = []
+    monkeypatch.setattr(state, "reset_state", lambda: calls.append("reset"))
     monkeypatch.setattr(
-        "rapid_mlx.telemetry.record_consent",
-        lambda value, **_kwargs: calls.append(value),
+        "rapid_mlx.telemetry.track.track",
+        lambda *args, **kwargs: calls.append(("track", args, kwargs)),
     )
-    monkeypatch.setattr(state, "rotate_client_id", lambda: calls.append("rotate"))
     cli.telemetry_command(_args("reset"))
-    assert calls == [False, "rotate"]
-    assert "Telemetry disabled and client ID removed." in capsys.readouterr().out
+    assert calls == ["reset"]
+    output = capsys.readouterr().out
+    assert "deletes your stored preference" in output
+    assert "client ID rotated" in output
+    assert "desktop clears its answer" in output
+    assert "next run is treated as a new install" in output
+    assert "emits no telemetry event" in output
 
 
-def test_reset_reports_failure(monkeypatch, capsys):
-    monkeypatch.setattr(
-        "rapid_mlx.telemetry.record_consent",
-        lambda *_args, **_kwargs: (_ for _ in ()).throw(OSError("denied")),
-    )
-    with pytest.raises(SystemExit, match="1"):
-        cli.telemetry_command(_args("reset"))
-    assert "could not reset telemetry" in capsys.readouterr().err
+def test_reset_is_best_effort(monkeypatch, capsys):
+    monkeypatch.setattr(state, "reset_state", lambda: None)
+    cli.telemetry_command(_args("reset"))
+    assert capsys.readouterr().err == ""
 
 
 def test_unknown_action_is_defensively_rejected(capsys):

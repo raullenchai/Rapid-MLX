@@ -109,13 +109,7 @@ def test_prior_v1_consent_is_reprompted_after_activation_added(fake_home):
     assert is_enabled() is False
 
 
-def test_reset_state_raises_when_a_path_cannot_be_removed(fake_home):
-    """`reset_state` must not silently claim success when state survives on disk
-    (that would leave telemetry enabled while the CLI prints "removed"). It
-    attempts every path, then raises an aggregated OSError naming what it
-    could not remove."""
-    import pytest
-
+def test_reset_state_is_best_effort_when_a_path_cannot_be_removed(fake_home):
     from rapid_mlx.telemetry import state
 
     # A normally-removable consent file...
@@ -126,8 +120,7 @@ def test_reset_state_raises_when_a_path_cannot_be_removed(fake_home):
     stuck = state.activation_marker_path("first_inference")
     stuck.mkdir(parents=True, exist_ok=True)
     (stuck / "child").write_text("x")
-    with pytest.raises(OSError):
-        state.reset_state()
+    state.reset_state()
 
     # Removable state was still removed.
     assert not state.consent_path().exists()
@@ -241,6 +234,16 @@ def test_client_id_idempotent(fake_home):
     assert get_or_create_client_id() == first
 
 
+def test_read_client_id_never_creates_state(fake_home):
+    from rapid_mlx.telemetry.state import client_id_path, read_client_id
+
+    assert read_client_id() is None
+    assert not client_id_path().parent.exists()
+    client_id_path().parent.mkdir(parents=True)
+    client_id_path().write_text("stored-id\n")
+    assert read_client_id() == "stored-id"
+
+
 def test_client_id_user_zeroed_uuid_preserved(fake_home):
     """User can replace client_id with all-zeros to anonymize.
 
@@ -258,7 +261,7 @@ def test_client_id_user_zeroed_uuid_preserved(fake_home):
     assert get_or_create_client_id() == zero
 
 
-def test_reset_state_removes_both_files(fake_home):
+def test_reset_state_removes_preference_and_rotates_identity(fake_home):
     from rapid_mlx.telemetry.state import (
         client_id_path,
         consent_path,
@@ -268,14 +271,16 @@ def test_reset_state_removes_both_files(fake_home):
     )
 
     record_consent(True, rapid_mlx_version="0.6.33")
-    get_or_create_client_id()
+    original = get_or_create_client_id()
     assert consent_path().exists()
     assert client_id_path().exists()
     reset_state()
     assert not consent_path().exists()
-    assert not client_id_path().exists()
-    # Idempotent — second reset_state on missing files must not raise.
+    rotated = client_id_path().read_text().strip()
+    assert rotated != original
+    # Idempotent — a second reset rotates again and still must not raise.
     reset_state()
+    assert client_id_path().read_text().strip() != rotated
 
 
 def test_reset_state_removes_sibling_lock_best_effort(fake_home):
@@ -289,7 +294,7 @@ def test_reset_state_removes_sibling_lock_best_effort(fake_home):
     assert not lock_path.exists()
 
 
-def test_reset_state_reports_marker_enumeration_error(fake_home, monkeypatch):
+def test_reset_state_ignores_marker_enumeration_error(fake_home, monkeypatch):
     from rapid_mlx.telemetry import state
 
     state.record_consent(True, rapid_mlx_version="0.6.33")
@@ -302,10 +307,7 @@ def test_reset_state_reports_marker_enumeration_error(fake_home, monkeypatch):
         return real_glob(path, pattern)
 
     monkeypatch.setattr(type(telemetry_dir), "glob", fail_marker_glob)
-    with pytest.raises(
-        OSError, match="telemetry reset could not remove:.*marker directory denied"
-    ):
-        state.reset_state()
+    state.reset_state()
 
     assert not state.consent_path().exists()
 

@@ -34,10 +34,17 @@ Anonymous, metadata-only usage telemetry. In the 0.15.0 engine it is on by
 default after the disclosure; you can turn it off at any time in Settings →
 Privacy or with `rapid-mlx telemetry off`. The desktop app and its embedded
 `rapid-mlx` engine use the same consent record and random client ID, so one Mac
-is not counted as two installs. The engine's v2 events include app lifecycle,
-coarse model-serving and inference milestones, capability rejections, and
-closed failure categories. They contain only registry-approved enums, booleans,
-UUIDs, version strings, and numeric buckets.
+is not counted as two installs. The 0.15.0 engine reports:
+
+* `app_opened` and `active_day`;
+* `model_pulled`, `model_pull_failed`, `model_served`, and
+  `model_serve_failed`;
+* `capability_rejected` and `inference_bucket_reached`;
+* `agent_configured` and `agent_configure_failed`; and
+* `telemetry_opted_in` and `telemetry_opted_out`.
+
+These v2 events contain only registry-approved enums, booleans, UUIDs, version
+strings, and numeric buckets.
 
 The native desktop client remains on its frozen legacy transport until its
 separate v2 migration. Its existing session and crash events include:
@@ -89,9 +96,11 @@ Settings → Privacy → "Send anonymous usage data" → off. Takes effect
 immediately for both the desktop app and its embedded engine; no further
 events are sent. Already-sent events cannot be retroactively deleted because
 they are not associated with your identity, but the rolling 30-day raw-event
-storage window means they age out. Running `rapid-mlx telemetry reset` turns
-reporting off and rotates the shared random client ID; the desktop remains
-opted out until you turn reporting on again.
+storage window means they age out. `reset` deletes your stored preference and
+rotates the install id; the desktop clears its answer; the next run is treated
+as a new install. On 0.15.0 that next run shows the notice and uses the
+default-on policy. `reset` emits no telemetry event. `reset-id` rotates only
+the install id and keeps the stored preference.
 
 ## Feedback
 

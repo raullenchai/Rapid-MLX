@@ -308,9 +308,8 @@ async def create_completion(request: CompletionRequest, raw_request: Request):
             },
         )
     engine = get_engine(request.model)
-    # Codex P1 on #3600: capture the telemetry identity WITH the engine and
-    # carry it to the terminal emit; re-resolving the registry at request
-    # completion can name a model that a mid-request swap made current.
+    # Capture the model identity with the engine for the v2 inference event;
+    # resolving it at completion could observe a mid-request model swap.
     from rapid_mlx.telemetry.model_id import engine_telemetry_id
 
     _served_telemetry_id = engine_telemetry_id(engine)
@@ -711,12 +710,6 @@ async def stream_completion(
             ``holder[0]``. The route's ``_disconnect_guard`` reads the
             same holder to force-call ``scheduler.abort_request`` on
             client disconnect. ``None`` (default) is a no-op.
-        caller_agent: inbound HTTP User-Agent (task C). Passed straight to
-            ``emit.request`` -> bucketed to an allowlist in ``redact``, never
-            stored raw. Sampled + consent-gated, so a no-op when off.
-        caller_client: inbound ``X-Rapid-Client`` header. Same contract;
-            ``normalize_caller_agent`` honours it only when it carries one
-            of our own closed labels.
     """
     extended_kwargs = build_extended_sampling_kwargs(request)
     # C-01: pass the holder through so the engine can publish the
@@ -741,18 +734,7 @@ async def stream_completion(
     # captured once so all chunks report the same start timestamp.
     completion_id = f"cmpl-{uuid.uuid4().hex[:8]}"
     created_ts = int(time.time())
-    # Task C timing for the streaming ``request`` emit: ``start_time`` anchors
-    # total latency (TTFT delta + decode window); ``_first_token_ts`` records
-    # when the first content chunk is produced so TTFT is true first-token
-    # latency, matching the chat-lane streaming emit.
-    _stream_start = time.perf_counter()
-    _first_token_ts: float | None = None
     if request.echo:
-        # Task C: in echo mode the echoed prompt is the FIRST client-visible
-        # content, so TTFT must be latched at this yield — not at the first
-        # generated token later in the loop (codex r4-B#2). Matches chat-lane
-        # semantics ("first real output token the client sees").
-        _first_token_ts = time.perf_counter()
         echo_data = {
             "id": completion_id,
             "object": "text_completion",
@@ -901,18 +883,6 @@ async def stream_completion(
             _final_metrics = _build_response_metrics(output)
             if _final_metrics is not None:
                 data["metrics"] = _final_metrics.model_dump(exclude_none=True)
-        # Task C: latch the timestamp of the first non-empty content chunk
-        # for a true TTFT on the streaming emit below. This fires only in the
-        # non-JSON, non-echo path (the loop ``continue``s above for
-        # ``_json_mode``, where no client-visible content leaves per-chunk).
-        # Doc'd deferral from codex r3-B#1: in JSON mode the client genuinely
-        # sees NO content until the buffered consolidated emit at stream end,
-        # so the emit's ``_elapsed_stream`` total-latency fallback IS the
-        # correct "client-visible TTFT" (there is no earlier content to
-        # measure) — not an underreport. Echo re-emits the prompt as visible
-        # prefix content, which likewise first leaves at this yield.
-        if _first_token_ts is None and (output.new_text or ""):
-            _first_token_ts = time.perf_counter()
         yield f"data: {json.dumps(data)}\n\n"
 
     # R10-H4: json-mode buffered emit. Run ``extract_json_from_response``

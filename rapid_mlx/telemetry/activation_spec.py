@@ -1,8 +1,8 @@
 # SPDX-License-Identifier: Apache-2.0
-"""Shared local activation markers and inference-success predicate.
+"""Shared activation names, surfaces, and inference-success predicate.
 
-Nothing here transmits or reads consent. The desktop uses the marker names,
-and telemetry v2 uses :func:`is_successful_inference` for active-day events.
+Nothing here transmits or reads consent. Engine and desktop v2 emitters use
+these definitions so the event registry and local marker names stay aligned.
 """
 
 from __future__ import annotations
@@ -56,16 +56,14 @@ CHAT_SPAWN_ENV = "RAPID_MLX_CHAT_SPAWN"
 # Generative endpoints whose successful, non-empty completion counts as
 # engagement.
 #
-# The engine inference scope remains chat-completions engagement in spec v2;
-# v2 adds Desktop milestone kinds and does not expand engine endpoints. This
-# is an explicit, versioned scope decision, not an accidental omission.
+# The engine inference scope is chat-completions engagement.
 # ``/v1/chat/completions`` (streaming + non-streaming) is the dominant surface
 # (all CLI ``chat`` traffic auto-spawns a server that loops through it, plus
 # the bulk of direct API usage) and is the single endpoint instrumented with
-# both a ``request`` event and the ``activation`` emit.
+# for the inference milestone.
 #
 # ``/v1/completions`` (routes/completions.py) and ``/v1/messages``
-# (routes/anthropic.py) are separate, generative, and NOT part of the v1
+# (routes/anthropic.py) are separate, generative, and not part of this
 # engagement contract: an install that inferences exclusively through them is
 # out of scope for the engine's engaged metric by definition. Listing them here without
 # wiring would over-promise coverage the code doesn't deliver; wiring them is a

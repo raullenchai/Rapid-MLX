@@ -586,16 +586,14 @@ def _hard_exit_after_serve() -> None:
     tears down every thread atomically, so the race window cannot open.
 
     ``os._exit`` also skips the atexit pass, and that inventory is
-    load-bearing, not best-effort: the telemetry queue drain +
-    ``session_end`` hook (``telemetry/queue.py`` and the CLI session
-    atexit), the vision media tempfile reaper
-    (``models/mllm.py::TempFileManager``), the ephemeral video job-store
-    rmtree (``routes/video.py``), and the opt-in ``RAPID_PYSAMPLE``
-    report. So the atexit pass is run EXPLICITLY right before exiting —
-    same hooks, same LIFO order, while the process state is still fully
-    intact. Everything that must be persisted by the graceful shutdown
-    itself (prefix cache, memory cache) is already flushed by the
-    FastAPI lifespan shutdown handler BEFORE ``uvicorn.run`` returns.
+    load-bearing, not best-effort: the PostHog sender drain, the vision media
+    tempfile reaper (``models/mllm.py::TempFileManager``), the ephemeral video
+    job-store rmtree (``routes/video.py``), and the opt-in ``RAPID_PYSAMPLE``
+    report. So the atexit pass is run EXPLICITLY right before exiting — same
+    hooks, same LIFO order, while the process state is still fully intact.
+    Everything that must be persisted by the graceful shutdown itself (prefix
+    cache, memory cache) is already flushed by the FastAPI lifespan shutdown
+    handler BEFORE ``uvicorn.run`` returns.
 
     Only the SUCCESS path calls this. Bind failures and other
     ``SystemExit``/exception paths keep their normal propagation so
@@ -11752,8 +11750,14 @@ def feedback_command(args) -> None:
 
 
 def telemetry_command(args) -> None:
-    """Inspect or change anonymous usage telemetry."""
+    """Inspect or change anonymous usage telemetry.
+
+    ``reset`` emits no event by owner decision. It deletes the stored
+    preference, which makes the next run a fresh install under the 0.15.0
+    default-on policy.
+    """
     import json
+    import uuid
 
     import yaml
 
@@ -11766,9 +11770,7 @@ def telemetry_command(args) -> None:
         get_or_create_client_id,
         record_consent,
         state,
-        store,
     )
-    from rapid_mlx.telemetry.consent_decision import WriteBack
     from rapid_mlx.telemetry.posthog_sender import POSTHOG_BATCH_URL
     from rapid_mlx.telemetry.state import (
         client_id_path,
@@ -11783,7 +11785,7 @@ def telemetry_command(args) -> None:
         stamp = build_gate.official_build()
         reporting = decision.upload_now and not cli_no
         upload = stamp is not None and consent_runtime.upload_allowed() and not cli_no
-        install_id = get_or_create_client_id()
+        install_id = state.read_client_id()
         build = (
             f"official ({stamp.channel})"
             if stamp is not None
@@ -11797,7 +11799,8 @@ def telemetry_command(args) -> None:
         print(f"  Reason:     {reason}")
         print(f"  Upload:     {'allowed' if upload else 'blocked'}")
         print(f"  Build:      {build}")
-        print(f"  Install ID: {install_id[:4]}…")
+        shown_install_id = f"{install_id[:4]}…" if install_id else "(not created)"
+        print(f"  Install ID: {shown_install_id}")
         print(
             "  Sent to:    PostHog Cloud (US). No IP, no location, no per-person profile."
         )
@@ -11814,8 +11817,6 @@ def telemetry_command(args) -> None:
     if action in ("on", "enable"):
         try:
             record_consent(True, rapid_mlx_version=rapid_mlx_version)
-            if not consent_runtime.apply_write_back(WriteBack(False, False, True)):
-                raise OSError("could not write the telemetry notice marker")
         except (OSError, ValueError, yaml.YAMLError) as exc:
             print(
                 f"rapid-mlx: could not save telemetry preference: {exc}",
@@ -11850,8 +11851,13 @@ def telemetry_command(args) -> None:
         return
 
     if action == "preview":
-        cid = get_or_create_client_id()
         stamp = build_gate.official_build()
+        upload = stamp is not None and consent_runtime.upload_allowed() and not cli_no
+        cid = (
+            get_or_create_client_id()
+            if upload
+            else (state.read_client_id() or str(uuid.uuid4()))
+        )
         common = common_props.build_common_props(
             surface="cli",
             install_id=cid,
@@ -11859,7 +11865,7 @@ def telemetry_command(args) -> None:
             app_version=rapid_mlx_version,
             channel=stamp.channel if stamp is not None else "stable",
             nth_model_served=None,
-            days_since_first_run_bucket=store.days_since_first_run_bucket(),
+            days_since_first_run_bucket=None,
         )
         sample = (
             envelope.build_batch_item("app_opened", {}, common)
@@ -11888,14 +11894,13 @@ def telemetry_command(args) -> None:
         return
 
     if action == "reset":
-        try:
-            record_consent(False, rapid_mlx_version=rapid_mlx_version)
-            state.rotate_client_id()
-        except (OSError, ValueError, yaml.YAMLError) as exc:
-            print(f"rapid-mlx: could not reset telemetry: {exc}", file=sys.stderr)
-            raise SystemExit(1) from None
+        state.reset_state()
         print()
-        print("  Telemetry disabled and client ID removed.")
+        print("  `reset` deletes your stored preference; client ID rotated.")
+        print(
+            "  The desktop clears its answer; the next run is treated as a new install."
+        )
+        print("  This command emits no telemetry event.")
         print()
         return
 
@@ -14211,7 +14216,7 @@ Examples:
     )
     telemetry_subparsers.add_parser(
         "reset",
-        help="Turn telemetry off and rotate the client ID",
+        help="Delete the stored preference and rotate the client ID",
     )
 
     # Feedback — the voice channel. Telemetry says what people do; only

@@ -68,6 +68,30 @@ def test_no_v1_collector_host_survives_in_engine_package():
     assert hits == []
 
 
+def test_routes_drop_v1_timing_but_keep_v2_inference_inputs():
+    for name in ("chat.py", "anthropic.py", "completions.py"):
+        text = (_PACKAGE / "routes" / name).read_text(encoding="utf-8")
+        assert "_first_token_ts" not in text
+        assert "opt-in telemetry" not in text.lower()
+        for retained in ("caller_agent", "caller_client", "served_telemetry_id"):
+            assert retained in text
+    assert "first_token_ts" not in (_PACKAGE / "routes" / "chat.py").read_text(
+        encoding="utf-8"
+    )
+    assert "_stream_start" not in (_PACKAGE / "routes" / "completions.py").read_text(
+        encoding="utf-8"
+    )
+
+
+def test_shared_inference_success_predicate_remains_total():
+    from rapid_mlx.telemetry.activation_spec import is_successful_inference
+
+    assert is_successful_inference(200, 1) is True
+    assert is_successful_inference(500, 1) is False
+    assert is_successful_inference(200, 0) is False
+    assert is_successful_inference("bad", 1) is False  # type: ignore[arg-type]
+
+
 @pytest.mark.parametrize("consent", (None, False, True))
 @pytest.mark.parametrize("marker", (None, DISCLOSURE_REVISION))
 @pytest.mark.parametrize("role", tuple(ProcessRole))
