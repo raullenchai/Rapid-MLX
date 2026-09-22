@@ -2653,6 +2653,100 @@ def test_mflux_missing_weights_empty_when_complete(tmp_path, monkeypatch):
     assert gate.mflux_missing_weights(repo) == []
 
 
+@pytest.mark.parametrize("repo_symlinked", [False, True])
+def test_mflux_snapshot_accepts_two_hop_shared_hf_blobs(
+    tmp_path, monkeypatch, repo_symlinked
+):
+    """A complete deduplicated HF cache still has locally owned blob links."""
+    cache_root = tmp_path / "hf-cache"
+    repo = _UNPINNED_MFLUX_REPO
+    repo_root = _mflux_repo_root(cache_root, repo)
+    actual_root = (
+        tmp_path / "cold-repo" / repo_root.name if repo_symlinked else repo_root
+    )
+    sha = "d" * 40
+    _seed_mflux_snapshot(actual_root, sha)
+    if repo_symlinked:
+        cache_root.mkdir()
+        repo_root.symlink_to(actual_root, target_is_directory=True)
+    snap = repo_root / "snapshots" / sha
+    owned_blobs = repo_root / "blobs"
+    owned_blobs.mkdir()
+
+    for index, path in enumerate(sorted(snap.rglob("*"))):
+        if not path.is_file():
+            continue
+        payload = path.read_bytes()
+        shared_name = f"{index + 1:064x}"
+        shared = cache_root / "blobs" / shared_name[:2] / shared_name
+        shared.parent.mkdir(parents=True, exist_ok=True)
+        shared.write_bytes(payload)
+        owned = owned_blobs / f"{index + 101:064x}"
+        owned.symlink_to(
+            shared if repo_symlinked else os.path.relpath(shared, owned.parent)
+        )
+        path.unlink()
+        path.symlink_to(os.path.relpath(owned, path.parent))
+
+    monkeypatch.setattr("huggingface_hub.constants.HF_HUB_CACHE", str(cache_root))
+    assert gate.mflux_missing_weights(repo) == []
+    assert gate.mflux_local_snapshot(repo) == str(snap)
+
+
+@pytest.mark.parametrize("escape", ["direct", "foreign", "malformed"])
+def test_mflux_snapshot_rejects_unowned_shared_blob_links(
+    tmp_path, monkeypatch, escape
+):
+    cache_root = tmp_path / "hf-cache"
+    repo = _UNPINNED_MFLUX_REPO
+    repo_root = _mflux_repo_root(cache_root, repo)
+    sha = "d" * 40
+    _seed_mflux_snapshot(repo_root, sha)
+    target = repo_root / "snapshots" / sha / "tokenizer" / "tokenizer.json"
+    target.unlink()
+    shared_name = "a" * 64
+    shared = cache_root / "blobs" / "aa" / shared_name
+    shared.parent.mkdir(parents=True)
+    shared.write_bytes(b"{}")
+    owned = repo_root / "blobs" / ("b" * 64)
+    owned.parent.mkdir()
+    if escape == "direct":
+        target.symlink_to(shared)
+    else:
+        if escape == "foreign":
+            foreign = cache_root / "models--other--repo" / "blobs" / ("c" * 64)
+            foreign.parent.mkdir(parents=True)
+            foreign.symlink_to(shared)
+            target.symlink_to(foreign)
+        else:
+            malformed = cache_root / "blobs" / "wrong" / shared_name
+            malformed.parent.mkdir(parents=True)
+            malformed.write_bytes(b"{}")
+            owned.symlink_to(malformed)
+            target.symlink_to(owned)
+
+    monkeypatch.setattr("huggingface_hub.constants.HF_HUB_CACHE", str(cache_root))
+    assert gate.mflux_missing_weights(repo) == ["tokenizer/tokenizer.json"]
+
+
+def test_mflux_snapshot_rejects_external_component_directory(tmp_path, monkeypatch):
+    cache_root = tmp_path / "hf-cache"
+    repo = _UNPINNED_MFLUX_REPO
+    repo_root = _mflux_repo_root(cache_root, repo)
+    sha = "d" * 40
+    _seed_mflux_snapshot(repo_root, sha)
+    tokenizer = repo_root / "snapshots" / sha / "tokenizer"
+    (tokenizer / "tokenizer.json").unlink()
+    tokenizer.rmdir()
+    foreign = tmp_path / "foreign-tokenizer"
+    foreign.mkdir()
+    (foreign / "tokenizer.json").write_text("{}")
+    tokenizer.symlink_to(foreign, target_is_directory=True)
+
+    monkeypatch.setattr("huggingface_hub.constants.HF_HUB_CACHE", str(cache_root))
+    assert gate.mflux_missing_weights(repo) == ["tokenizer/tokenizer.json"]
+
+
 @pytest.mark.parametrize(
     "omit,expected",
     [

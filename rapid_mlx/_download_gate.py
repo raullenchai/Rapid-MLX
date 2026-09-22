@@ -1692,12 +1692,45 @@ def mflux_missing_weights(repo_id: str) -> list[str] | None:
     repo_root, snap_dir = resolved
 
     repo_root_real = os.path.realpath(repo_root)
+    owned_blobs = os.path.join(repo_root_real, "blobs")
+    shared_blobs = os.path.realpath(os.path.join(os.path.dirname(repo_root), "blobs"))
+
+    def _is_shared_cache_blob(path: str, real: str) -> bool:
+        # Some HF cache installations deduplicate blobs across repositories:
+        # snapshot -> this repo's blobs/<etag> -> hub/blobs/<prefix>/<digest>.
+        # Require both links and the shared store's exact digest layout so a
+        # crafted snapshot cannot borrow an arbitrary file elsewhere on disk.
+        if not os.path.islink(path):
+            return False
+        first_hop = os.path.abspath(
+            os.path.join(os.path.dirname(path), os.readlink(path))
+        )
+        if os.path.realpath(
+            os.path.dirname(first_hop)
+        ) != owned_blobs or not re.fullmatch(
+            r"(?:[0-9a-f]{40}|[0-9a-f]{64})", os.path.basename(first_hop)
+        ):
+            return False
+        second_hop = os.path.abspath(
+            os.path.join(os.path.dirname(first_hop), os.readlink(first_hop))
+        )
+        relative = os.path.relpath(real, shared_blobs).split(os.sep)
+        return (
+            os.path.realpath(second_hop) == real
+            and len(relative) == 2
+            and re.fullmatch(r"[0-9a-f]{64}", relative[1]) is not None
+            and relative[0] == relative[1][:2]
+        )
 
     def _is_nonempty_repo_file(path: str) -> bool:
         if not os.path.isfile(path):
             return False
         real = os.path.realpath(path)
-        if real != repo_root_real and not real.startswith(repo_root_real + os.sep):
+        if (
+            real != repo_root_real
+            and not real.startswith(repo_root_real + os.sep)
+            and not _is_shared_cache_blob(path, real)
+        ):
             return False
         try:
             return os.path.getsize(path) > 0
