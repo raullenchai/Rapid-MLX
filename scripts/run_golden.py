@@ -26,6 +26,7 @@ def call(base, token, payload, timeout=120):
     body = json.dumps(payload).encode()
     req = urllib.request.Request(f"{base.rstrip('/')}/v1/classify", body,
                                  {"Content-Type": "application/json",
+                                  "User-Agent": "trio-flash-golden/1.0",
                                   **({"Authorization": f"Bearer {token}"} if token else {})},
                                  method="POST")
     t0 = time.time()
