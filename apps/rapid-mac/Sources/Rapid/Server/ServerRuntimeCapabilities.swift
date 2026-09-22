@@ -72,9 +72,11 @@ struct ServerRuntimeCapabilities: Equatable, Sendable {
                 standardInput: .nullDevice,
                 standardOutput: standardOutput,
                 standardError: standardError,
-                environmentAdditions: ServerManager.serveEnvironmentAdditions(
-                    bearer: "",
-                    ambient: ambientEnvironment
+                environmentAdditions: EngineProcessEnvironment.sidecar(
+                    ServerManager.serveEnvironmentAdditions(
+                        bearer: "",
+                        ambient: ambientEnvironment
+                    )
                 ),
                 replaceEnvironment: true
             ) { _ in

@@ -789,7 +789,7 @@ final class DownloadManager {
         DownloadManager.applyXetConcurrencyCaps(env: &env)
         DownloadManager.applyDownloadSource(source, env: &env)
         DownloadManager.applyModelsFolderOverride(env: &env)
-        return env
+        return EngineProcessEnvironment.sidecar(env)
     }
 
     /// Issue #503: point a background ``rapid-mlx pull`` at the user's

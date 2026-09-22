@@ -82,9 +82,9 @@ enum DevSnapshot {
         let snapshotSparkleUpdater = SparkleUpdateController(infoDictionary: [:])
         let snapshotWebSearch = WebSearchConfig()
         let snapshotPerfDefaults = UserDefaults(suiteName: "rapid.dev-snapshot.perf")!
-        let snapshotConsent = DeferredTelemetryConsentCoordinator(
-            needsDecision: { false },
-            recordDecision: { _ in },
+        let snapshotConsent = TelemetryNoticeCoordinator(
+            needsNotice: { false },
+            recordPresentation: { .init(persisted: false, uploadAllowedThisRun: false) },
             startTelemetrySession: {}
         )
         let snapshotStarDefaults = UserDefaults(suiteName: "rapid.dev-snapshot.github-star")!
@@ -1116,16 +1116,15 @@ enum DevSnapshot {
             to: "\(dir)/connect-tools.png"
         )
 
-        // Scenario 4: the post-value telemetry invitation.
-        let consentBannerCoordinator = DeferredTelemetryConsentCoordinator(
-            needsDecision: { true },
-            recordDecision: { _ in },
+        // Scenario 4: the default-on telemetry launch notice.
+        let consentBannerCoordinator = TelemetryNoticeCoordinator(
+            needsNotice: { true },
+            recordPresentation: { .init(persisted: true, uploadAllowedThisRun: true) },
             startTelemetrySession: {}
         )
-        consentBannerCoordinator.productValueDelivered(.chatReply)
         render(
             AnyView(
-                DeferredTelemetryConsentBanner()
+                TelemetryNoticeBanner()
                     .environment(consentBannerCoordinator)
                     .frame(width: 720)
                     .background(RapidTheme.canvas)
