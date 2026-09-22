@@ -2106,6 +2106,7 @@ flow_fresh_install() {
     baseline onboarding-direction-d.compact-chooser "$OUT/chooser-settled.json"
     press "$OUT/chooser-settled.json" Quickstart.Footer.Back "$OUT/chooser-back.json"
     wait_identifier Quickstart.Skip "$OUT/welcome-returned.json"
+    assert_no_telemetry_requests before-leaving-onboarding
     local boundary_second policy_not_before
     boundary_second="$(date -u +%s)"
     while [[ "$(date -u +%s)" == "$boundary_second" ]]; do sleep 0.05; done
