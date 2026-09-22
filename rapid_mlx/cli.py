@@ -2101,12 +2101,28 @@ def _ensure_model_downloaded(
         # serves every file the repo declares, populate the HF cache layout
         # ourselves and skip snapshot_download. On any miss we fall through
         # to the normal HuggingFace download below.
-        mirror_ok = _try_mirror_prefetch(
-            model_name,
-            on_pull_start=spinner.stop,
-            revision=pinned_image_revision,
-        )
+        mirror_out: dict[str, object] = {}
+        try:
+            mirror_ok = _try_mirror_prefetch(
+                model_name,
+                on_pull_start=spinner.stop,
+                out=mirror_out,
+                revision=pinned_image_revision,
+            )
+        except Exception as exc:
+            from rapid_mlx.telemetry.model_events import emit_model_pull_failed
+
+            emit_model_pull_failed(
+                exc, model_ref=model_name, source=mirror_out.get("source")
+            )
+            raise
     if mirror_ok:
+        if mirror_out.get("network_fetch") is True:
+            _emit_completed_model_pull(
+                model_name,
+                mirror_out.get("source"),
+                _active_hf_snapshot_path(model_name),
+            )
         return
 
     try:
@@ -2178,6 +2194,9 @@ def _ensure_model_downloaded(
                 "  Check your network or proxy settings and try again.\n",
                 file=sys.stderr,
             )
+            from rapid_mlx.telemetry.model_events import emit_model_pull_failed
+
+            emit_model_pull_failed(TimeoutError(), model_ref=model_name, source="hf")
             sys.exit(1)
         except Exception:
             # Any other metadata failure stays best-effort: an outage, a gated
@@ -2203,14 +2222,22 @@ def _ensure_model_downloaded(
 
         download_revision = pinned_image_revision or resolved_sha
         download_kwargs = {"revision": download_revision} if download_revision else {}
+        cache_root = _hf_cache_root(model_name)
+        before = _blob_identifier(cache_root)
         if allow_patterns:
-            snapshot_download(
+            snapshot_dir = snapshot_download(
                 model_name, allow_patterns=allow_patterns, **download_kwargs
             )
         else:
-            snapshot_download(model_name, **download_kwargs)
+            snapshot_dir = snapshot_download(model_name, **download_kwargs)
+        after = _blob_identifier(cache_root)
         if download_revision:
             pin_main_ref(model_name, download_revision)
+        transferred = mirror_out.get("network_fetch") is True or not (
+            before == after and before != ()
+        )
+        if transferred:
+            _emit_completed_model_pull(model_name, "hf", snapshot_dir)
         print()
     except SystemExit:
         # _check_disk_space aborts via sys.exit(1) — let it through.
@@ -2222,6 +2249,10 @@ def _ensure_model_downloaded(
         # (network, auth) fall through silently — the spawned server's
         # own loader will retry and surface a real error if needed.
         from huggingface_hub.utils import RepositoryNotFoundError
+
+        from rapid_mlx.telemetry.model_events import emit_model_pull_failed
+
+        emit_model_pull_failed(e, model_ref=model_name, source="hf")
 
         if isinstance(e, RepositoryNotFoundError) or "404" in str(e):
             raise RuntimeError(f"Model {model_name!r} not found on HuggingFace") from e
@@ -6536,6 +6567,14 @@ def bench_command(args):
                 print(f"\n  Error loading model: {e}")
             sys.exit(1)
 
+        from rapid_mlx.telemetry.model_events import emit_model_served
+
+        emit_model_served(
+            model,
+            getattr(args, "_original_alias", None) or args.model,
+            bool(getattr(args, "_telemetry_auto_selected", False)),
+        )
+
         scheduler_config = SchedulerConfig(
             max_num_seqs=args.max_num_seqs,
             max_concurrent_requests=getattr(args, "max_concurrent_requests", 256),
@@ -8156,7 +8195,7 @@ def _format_pull_duration(seconds: float) -> str:
     return f"{minutes}m {secs}s"
 
 
-def _snapshot_size_bytes(path) -> int:
+def _snapshot_size_bytes(path) -> int | None:
     """Sum one snapshot's unique file payloads without revision double-counts.
 
     The HF cache stores ``snapshots/<rev>/<file>`` as symlinks into
@@ -8172,13 +8211,13 @@ def _snapshot_size_bytes(path) -> int:
 
     root = Path(path)
     if not root.exists():
-        return 0
+        return None
     snapshots = root / "snapshots"
     if snapshots.is_dir():
         revision = None
         try:
             revision = (root / "refs" / "main").read_text().strip()
-        except OSError:
+        except Exception:
             pass
         if revision and (snapshots / revision).is_dir():
             root = snapshots / revision
@@ -8188,7 +8227,7 @@ def _snapshot_size_bytes(path) -> int:
             except OSError:
                 revisions = []
             if not revisions:
-                return 0
+                return None
             root = revisions[-1]
     total = 0
     seen_payloads: set[tuple[int, int]] = set()
@@ -8210,7 +8249,7 @@ def _snapshot_size_bytes(path) -> int:
                 continue
     except OSError:
         pass
-    return total
+    return total or None
 
 
 def _external_tree_size_bytes(path: str) -> int:
@@ -8256,6 +8295,14 @@ def _narrow_to_subfolder(repo_id: str, snapshot_dir):
     return snapshot_dir
 
 
+def _model_snapshot_size_bytes(repo_id: str, snapshot_dir) -> int | None:
+    """Best-effort size of exactly the catalog-selected checkpoint tree."""
+    try:
+        return _snapshot_size_bytes(_narrow_to_subfolder(repo_id, snapshot_dir))
+    except Exception:
+        return None
+
+
 def _hf_cache_root(repo_id: str):
     """HF cache ``models--<id>`` dir for ``repo_id``, or None.
 
@@ -8278,6 +8325,31 @@ def _hf_cache_root(repo_id: str):
     except Exception:
         _cache_id = repo_id.replace("/", "--")
     return Path(HF_HUB_CACHE) / f"models--{_cache_id}"
+
+
+def _active_hf_snapshot_path(repo_id: str):
+    """Resolve the active local snapshot written by the mirror, if readable."""
+    root = _hf_cache_root(repo_id)
+    if root is None:
+        return None
+    try:
+        revision = (root / "refs" / "main").read_text().strip()
+        snapshot = root / "snapshots" / revision
+        return snapshot if revision and snapshot.is_dir() else root
+    except Exception:
+        return root
+
+
+def _emit_completed_model_pull(repo_id: object, source: object, snapshot_dir) -> None:
+    """Emit one successful transfer without allowing sizing to affect the pull."""
+    from rapid_mlx.telemetry.model_events import emit_model_pulled
+
+    size = (
+        _model_snapshot_size_bytes(str(repo_id), snapshot_dir)
+        if snapshot_dir is not None
+        else None
+    )
+    emit_model_pulled(repo_id, source, size)
 
 
 def _blob_identifier(repo_root) -> tuple[tuple[str, int, int], ...]:
@@ -8346,20 +8418,18 @@ def _print_pull_summary(
     # A filtered pull fetched one folder, but the snapshot root may also
     # hold quant folders left by earlier pulls of a sibling alias. Sizing
     # the root would report those as part of THIS download.
-    snapshot_dir = _narrow_to_subfolder(repo_id, snapshot_dir)
-    size = _snapshot_size_bytes(snapshot_dir)
+    size = _model_snapshot_size_bytes(repo_id, snapshot_dir)
+    size_text = _format_bytes(size) if size is not None else "unknown size"
     # "Already cached" only on a proven no-transfer (``was_cached is True``);
     # ``None`` (unknown) falls through to "Downloaded" rather than a false
     # cache claim.
     if was_cached is True:
         print(
-            f"  Already cached {repo_id} — {_format_bytes(size)} verified "
-            f"(nothing to download)"
+            f"  Already cached {repo_id} — {size_text} verified (nothing to download)"
         )
     else:
         print(
-            f"  Downloaded {repo_id} — {_format_bytes(size)} in "
-            f"{_format_pull_duration(elapsed)}"
+            f"  Downloaded {repo_id} — {size_text} in {_format_pull_duration(elapsed)}"
         )
 
 
@@ -8379,18 +8449,10 @@ def _emit_pull_activation() -> None:
     _telemetry_emit.activation(
         activation_kind=ACTIVATION_MODEL_PULL, surface=SURFACE_CLI
     )
-    from rapid_mlx.telemetry.model_events import emit_model_pulled
-
     if _pending_model_pull_event is not None:
         repo_id, source, snapshot_dir, transferred = _pending_model_pull_event
         if transferred:
-            emit_model_pulled(
-                repo_id,
-                source,
-                _snapshot_size_bytes(snapshot_dir)
-                if snapshot_dir is not None
-                else None,
-            )
+            _emit_completed_model_pull(repo_id, source, snapshot_dir)
 
 
 def _escape_glob_literal(name: str) -> str:
@@ -8516,6 +8578,7 @@ def _pull_repository(
     *,
     allow_patterns_override: list[str] | None = None,
     revision_override: str | None = None,
+    emit_lifecycle_event: bool = True,
 ):
     """Download one repository through the normal mirror/HF pipeline."""
     import time
@@ -8525,6 +8588,9 @@ def _pull_repository(
     from huggingface_hub.utils import RepositoryNotFoundError
 
     repo_id = args.model  # already alias-resolved by main()
+    emit_lifecycle_event = emit_lifecycle_event and bool(
+        getattr(args, "_emit_pull_lifecycle_event", True)
+    )
     t0 = time.monotonic()
 
     # Surface the staleness nudge up front. pull has no ``--json`` form,
@@ -8603,9 +8669,12 @@ def _pull_repository(
             repo_id, allow_patterns=variant_allow, out=_mirror_out
         )
     except Exception as exc:
-        from rapid_mlx.telemetry.model_events import emit_model_pull_failed
+        if emit_lifecycle_event:
+            from rapid_mlx.telemetry.model_events import emit_model_pull_failed
 
-        emit_model_pull_failed(exc, model_ref=repo_id, source=_mirror_out.get("source"))
+            emit_model_pull_failed(
+                exc, model_ref=repo_id, source=_mirror_out.get("source")
+            )
         raise
     if mirror_ok:
         from pathlib import Path
@@ -8747,9 +8816,10 @@ def _pull_repository(
         args._telemetry_pull_snapshot_dir = path
         args._telemetry_pull_transferred = _was_cached is not True
     except HFValidationError as exc:
-        from rapid_mlx.telemetry.model_events import emit_model_pull_failed
+        if emit_lifecycle_event:
+            from rapid_mlx.telemetry.model_events import emit_model_pull_failed
 
-        emit_model_pull_failed(exc, model_ref=repo_id, source="hf")
+            emit_model_pull_failed(exc, model_ref=repo_id, source="hf")
         # Malformed HF repo id (e.g. ``foo/bar/baz``) — surface the same
         # friendly "unknown model" hint the alias path uses instead of a
         # raw stack trace.
@@ -8763,9 +8833,10 @@ def _pull_repository(
         )
         sys.exit(1)
     except Exception as e:
-        from rapid_mlx.telemetry.model_events import emit_model_pull_failed
+        if emit_lifecycle_event:
+            from rapid_mlx.telemetry.model_events import emit_model_pull_failed
 
-        emit_model_pull_failed(e, model_ref=repo_id, source="hf")
+            emit_model_pull_failed(e, model_ref=repo_id, source="hf")
         is_404 = isinstance(e, RepositoryNotFoundError) or (
             "404" in str(e) or "not found" in str(e).lower()
         )
@@ -8860,6 +8931,7 @@ def pull_command(args):
         dependency_args._original_alias = MTP_REPO
         dependency_args.bits = None
         dependency_args.format = None
+        dependency_args._emit_pull_lifecycle_event = False
         path = _pull_repository(
             dependency_args,
             allow_patterns_override=list(MTP_ALLOW_PATTERNS),
@@ -8885,6 +8957,7 @@ def pull_command(args):
         dependency_args._original_alias = asset_repo
         dependency_args.bits = None
         dependency_args.format = None
+        dependency_args._emit_pull_lifecycle_event = False
         _pull_repository(
             dependency_args,
             allow_patterns_override=list(allow_patterns),
@@ -8899,6 +8972,7 @@ def pull_command(args):
         dependency_args._original_alias = asset.repo_id
         dependency_args.bits = None
         dependency_args.format = None
+        dependency_args._emit_pull_lifecycle_event = False
         _pull_repository(
             dependency_args,
             allow_patterns_override=list(asset.allow_patterns),

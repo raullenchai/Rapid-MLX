@@ -1223,7 +1223,7 @@ async def test_real_lifespan_emits_model_served_after_completed_load_once(
     monkeypatch.setattr(server, "_residency_manager", manager)
     monkeypatch.setattr(server, "_primary_model_lifecycle", None)
     monkeypatch.setattr(server, "_primary_lazy_load", lazy_load)
-    monkeypatch.setattr(server, "_primary_idle_unload_seconds", 0.0)
+    monkeypatch.setattr(server, "_primary_idle_unload_seconds", 1.0)
     monkeypatch.setattr(server, "_model_alias", "tmax-9b")
     monkeypatch.setattr(server, "_telemetry_auto_selected", True)
     monkeypatch.setattr(server, "_warmup_primary_engine", AsyncMock())
@@ -1249,6 +1249,8 @@ async def test_real_lifespan_emits_model_served_after_completed_load_once(
         assert calls == []
         await server._primary_model_lifecycle.ensure_loaded()
         await server._primary_model_lifecycle.ensure_loaded()
+    await engine.stop()
+    await server._primary_model_lifecycle.ensure_loaded()
     assert calls == [("tmax-9b", True)]
     with pytest.raises(StopAsyncIteration):
         await lifespan.__anext__()

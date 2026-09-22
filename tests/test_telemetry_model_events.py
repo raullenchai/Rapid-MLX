@@ -11,10 +11,12 @@ import urllib.error
 import uuid
 from datetime import datetime, timezone
 from http.server import BaseHTTPRequestHandler, HTTPServer
+from pathlib import Path
 from types import SimpleNamespace
 
 import httpx
 import pytest
+import requests
 
 import rapid_mlx
 from rapid_mlx.telemetry import (
@@ -86,7 +88,11 @@ def test_size_bucket_is_closed_and_half_open(size, expected):
 
 
 def test_pull_error_classes_are_type_based():
-    from huggingface_hub.utils import GatedRepoError, RepositoryNotFoundError
+    from huggingface_hub.utils import (
+        GatedRepoError,
+        LocalEntryNotFoundError,
+        RepositoryNotFoundError,
+    )
 
     response = httpx.Response(
         404, request=httpx.Request("GET", "https://huggingface.co/org/model")
@@ -101,7 +107,38 @@ def test_pull_error_classes_are_type_based():
     assert model_events.pull_error_class(OSError(errno.ENOSPC, "x")) == "disk_full"
     assert model_events.pull_error_class(urllib.error.URLError("x")) == "network"
     assert model_events.pull_error_class(TimeoutError()) == "network"
+    for exc in (
+        LocalEntryNotFoundError("no cached snapshot"),
+        requests.ConnectionError("private detail"),
+        requests.ConnectTimeout("private detail"),
+        requests.ReadTimeout("private detail"),
+        httpx.ConnectError("private detail"),
+    ):
+        assert model_events.pull_error_class(exc) == "network"
+    wrapped = RuntimeError("outer private detail")
+    wrapped.__cause__ = requests.ConnectionError("inner private detail")
+    assert model_events.pull_error_class(wrapped) == "network"
+    contextual = RuntimeError("outer private detail")
+    contextual.__context__ = requests.ReadTimeout("inner private detail")
+    assert model_events.pull_error_class(contextual) == "network"
+    cyclic = RuntimeError("cycle")
+    cyclic.__cause__ = cyclic
+    assert model_events.pull_error_class(cyclic) == "other"
     assert model_events.pull_error_class(ValueError("x")) == "other"
+
+
+def test_pull_error_event_never_sends_exception_text(monkeypatch):
+    calls = []
+    monkeypatch.setattr(
+        track_module,
+        "track",
+        lambda event, props: calls.append((event, props)),
+    )
+    model_events.emit_model_pull_failed(
+        requests.ConnectionError("token=secret-hostname"), model_ref="tmax-9b"
+    )
+    assert calls[0][1]["error_class"] == "network"
+    assert "secret" not in json.dumps(calls)
 
 
 def test_model_type_uses_only_profile_modality(monkeypatch):
@@ -131,6 +168,30 @@ def test_model_type_uses_only_profile_modality(monkeypatch):
 )
 def test_model_type_reaches_registered_non_text_modalities(model, expected):
     assert model_events.model_type(model) == expected
+
+
+def test_model_served_preserves_image_alias_modality(monkeypatch):
+    calls = []
+    monkeypatch.setattr(store, "note_model_served", lambda _model: 1)
+    monkeypatch.setattr(
+        track_module,
+        "track",
+        lambda event, props, **kwargs: calls.append((event, props, kwargs)),
+    )
+
+    model_events.emit_model_served(object(), "sdxl-base", False)
+
+    assert calls[0][0] == "model_served"
+    assert calls[0][1]["model_type"] == "image-gen"
+
+
+def test_model_pulled_additive_props_are_optional_in_registry():
+    registry = json.loads(
+        (Path(rapid_mlx.__file__).parent / "telemetry" / "events.json").read_text()
+    )
+    props = registry["events"]["model_pulled"]["props"]
+    assert props["model_type"]["required"] is False
+    assert props["size_bucket"]["required"] is False
 
 
 def test_model_type_fails_closed_on_bad_profile(monkeypatch):
@@ -193,6 +254,28 @@ def test_pull_failed_includes_optional_size_bucket(monkeypatch):
         (
             "model_pull_failed",
             {"error_class": "network", "size_bucket": "1_2gb"},
+        )
+    ]
+
+
+def test_model_pulled_omits_unknown_snapshot_size(monkeypatch):
+    calls = []
+    monkeypatch.setattr(
+        track_module,
+        "track",
+        lambda event, props: calls.append((event, props)),
+    )
+
+    model_events.emit_model_pulled("tmax-9b", "hf", None)
+
+    assert calls == [
+        (
+            "model_pulled",
+            {
+                "model": "tmax-9b",
+                "model_type": "llm",
+                "source": "hf",
+            },
         )
     ]
 

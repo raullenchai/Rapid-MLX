@@ -54,16 +54,46 @@ def size_bucket(size_bytes: int | None) -> str:
 
 def pull_error_class(exc: BaseException) -> str:
     """Classify a pull exception without putting its message on the wire."""
-    from huggingface_hub.utils import GatedRepoError, RepositoryNotFoundError
+    import httpx
+    from huggingface_hub.utils import (
+        GatedRepoError,
+        LocalEntryNotFoundError,
+        RepositoryNotFoundError,
+    )
+    from requests import exceptions as requests_exceptions
 
-    if isinstance(exc, GatedRepoError):
-        return "gated"
-    if isinstance(exc, RepositoryNotFoundError):
-        return "not_found"
-    if isinstance(exc, OSError) and exc.errno == errno.ENOSPC:
-        return "disk_full"
-    if isinstance(exc, (urllib.error.URLError, TimeoutError)):
-        return "network"
+    pending: list[BaseException] = [exc]
+    seen: set[int] = set()
+    while pending:
+        current = pending.pop()
+        if id(current) in seen:
+            continue
+        seen.add(id(current))
+        if isinstance(current, GatedRepoError):
+            return "gated"
+        if isinstance(current, RepositoryNotFoundError):
+            return "not_found"
+        if isinstance(current, OSError) and current.errno == errno.ENOSPC:
+            return "disk_full"
+        if isinstance(
+            current,
+            (
+                LocalEntryNotFoundError,
+                requests_exceptions.ConnectionError,
+                requests_exceptions.ConnectTimeout,
+                requests_exceptions.ReadTimeout,
+                httpx.ConnectError,
+                httpx.ConnectTimeout,
+                httpx.ReadTimeout,
+                urllib.error.URLError,
+                TimeoutError,
+            ),
+        ):
+            return "network"
+        if current.__context__ is not None:
+            pending.append(current.__context__)
+        if current.__cause__ is not None:
+            pending.append(current.__cause__)
     return "other"
 
 
@@ -146,15 +176,14 @@ def emit_model_pulled(
 
     if source not in ("mirror", "hf"):
         return
-    track(
-        "model_pulled",
-        {
-            "model": telemetry_model_id(model_ref),
-            "model_type": model_type(model_ref),
-            "source": source,
-            "size_bucket": size_bucket(size_bytes),
-        },
-    )
+    props = {
+        "model": telemetry_model_id(model_ref),
+        "model_type": model_type(model_ref),
+        "source": source,
+    }
+    if size_bytes is not None:
+        props["size_bucket"] = size_bucket(size_bytes)
+    track("model_pulled", props)
 
 
 @_never_raise

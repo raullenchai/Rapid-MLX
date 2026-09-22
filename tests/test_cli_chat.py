@@ -2863,6 +2863,7 @@ def test_spawn_chat_server_sets_chat_spawn_env(monkeypatch, tmp_path):
     """``_spawn_chat_server`` must pass ``RAPID_MLX_CHAT_SPAWN=1`` to the
     child so the child main() bypasses the download gate."""
     captured: dict = {}
+    monkeypatch.setenv("RAPID_MLX_AUTO_SELECTED", "1")
 
     class _FakePopen:
         def __init__(
@@ -3107,6 +3108,23 @@ def test_main_pops_chat_spawn_env_so_grandchildren_do_not_inherit(monkeypatch):
     )
     assert "RAPID_MLX_AUTO_SELECTED" not in os.environ
     assert captured[0]._telemetry_auto_selected is True
+
+
+@pytest.mark.parametrize("raw", ["true", "0"])
+def test_main_rejects_noncanonical_auto_selected_marker(monkeypatch, raw):
+    monkeypatch.setenv("RAPID_MLX_AUTO_SELECTED", raw)
+    captured = []
+    monkeypatch.setattr(cli, "serve_command", lambda args: captured.append(args))
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        ["rapid-mlx", "serve", "mlx-community/some-fake-7b"],
+    )
+
+    cli.main()
+
+    assert captured[0]._telemetry_auto_selected is False
+    assert "RAPID_MLX_AUTO_SELECTED" not in os.environ
 
 
 def test_sigterm_handler_exits_even_if_cleanup_raises(monkeypatch):

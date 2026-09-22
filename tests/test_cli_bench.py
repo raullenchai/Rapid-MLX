@@ -247,6 +247,36 @@ def test_bench_command_loads_weights_on_mlx_step_worker(monkeypatch) -> None:
     )
 
 
+def test_bench_success_emits_model_served(monkeypatch) -> None:
+    """A successful weight load must twin bench's load-failure event."""
+    cli = importlib.import_module("rapid_mlx.cli")
+    from rapid_mlx.telemetry import model_events
+
+    class ServedObservedError(Exception):
+        pass
+
+    model = object()
+    monkeypatch.setattr(cli, "_check_disk_space", lambda *a, **kw: None)
+    monkeypatch.setattr(cli, "_check_memory_capacity", lambda *a, **kw: None)
+    monkeypatch.setattr(cli, "_ensure_model_downloaded", lambda _name: None)
+    monkeypatch.setattr(
+        "rapid_mlx.pflash.resolve_pflash_mode_default",
+        lambda args, *, model_name, is_multimodal=False, **_kw: "off",
+    )
+    _patch_mlx_lm_load(monkeypatch, lambda _name: (model, object()))
+
+    def observe(engine, alias, auto_selected):
+        assert engine is model
+        assert alias == "sdxl-base"
+        assert auto_selected is False
+        raise ServedObservedError
+
+    monkeypatch.setattr(model_events, "emit_model_served", observe)
+
+    with pytest.raises(ServedObservedError):
+        cli.bench_command(_make_freeform_bench_args("sdxl-base"))
+
+
 def _capture_bench_lane_signals(monkeypatch, cli):
     """Wire the bench PFlash default + validation seams to record the
     ``is_multimodal`` / ``is_mllm`` they receive, and abort before the heavy
