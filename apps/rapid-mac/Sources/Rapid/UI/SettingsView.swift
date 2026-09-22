@@ -656,6 +656,7 @@ struct SettingsView: View {
             .accessibilityIdentifier("Settings.Privacy.TelemetryToggle")
             .alert("Couldn't update telemetry setting", isPresented: $telemetryConsentWriteFailed) {
                 Button("OK", role: .cancel) {}
+                    .accessibilityIdentifier("Settings.Privacy.TelemetryWriteErrorDismiss")
             } message: {
                 Text("The setting could not be saved. Anonymous usage reporting may still be on. Check that your Mac has free disk space and try again, or set RAPID_MLX_TELEMETRY=0 before launching Rapid.")
             }
