@@ -670,6 +670,7 @@ def _attach_and_configure(base_url, model, profile, args) -> int:
             build_setup_plan,
             confirm_plan,
         )
+        from rapid_mlx.agents.telemetry import track_agent_configured
 
         try:
             plan = build_setup_plan(
@@ -678,6 +679,7 @@ def _attach_and_configure(base_url, model, profile, args) -> int:
                 model,
                 context_length=context_length,
                 supports_reasoning=supports_reasoning,
+                emit_telemetry=not args.dry_run,
             )
         except (OSError, ValueError) as exc:
             print(f"  {profile.display_name} setup failed: {exc}")
@@ -706,6 +708,7 @@ def _attach_and_configure(base_url, model, profile, args) -> int:
                 _print_instructions(profile, api_base_url, model)
                 return 1
             print(f"  Configured {profile.display_name} at {plan.path}.")
+            track_agent_configured(profile.name)
     else:
         from rapid_mlx.agents.adapter import setup_agent_config
 

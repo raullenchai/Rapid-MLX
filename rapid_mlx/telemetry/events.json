@@ -444,7 +444,7 @@
       }
     },
     "agent_configured": {
-      "_about": "Which integrations matter.",
+      "_about": "Which integrations matter. Emitted only after setup changes configuration and any requested server verification succeeds.",
       "props": {
         "agent": {"kind": "enum", "enum": "agent", "required": true}
       }

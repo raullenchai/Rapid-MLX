@@ -179,6 +179,7 @@ def test_agent_setup_events_cover_success_and_all_failure_classes(
         "model",
     )
     setup.apply_setup_plan(success_plan)
+    agent_telemetry.track_agent_configured(success_plan.agent)
 
     with pytest.raises(ValueError, match="first-class safe setup flow"):
         setup.build_setup_plan("private-profile", base_url, "model")
@@ -265,7 +266,7 @@ def test_agent_setup_events_cover_success_and_all_failure_classes(
         ),
     )
     with pytest.raises(RuntimeError, match="server is not ready"):
-        setup.verify_server(base_url, "model")
+        setup.verify_server(base_url, "model", agent="continue")
 
     monkeypatch.setattr(
         setup.urllib.request,
@@ -273,7 +274,7 @@ def test_agent_setup_events_cover_success_and_all_failure_classes(
         lambda *_args, **_kwargs: Response(503),
     )
     with pytest.raises(RuntimeError, match="health returned HTTP 503"):
-        setup.verify_server(base_url, "model")
+        setup.verify_server(base_url, "model", agent="continue")
 
     responses = iter(
         (
@@ -287,9 +288,9 @@ def test_agent_setup_events_cover_success_and_all_failure_classes(
         setup.urllib.request, "urlopen", lambda *_a, **_k: next(responses)
     )
     with pytest.raises(RuntimeError, match="reported no models"):
-        setup.verify_server(base_url, "model")
+        setup.verify_server(base_url, "model", agent="continue")
     with pytest.raises(RuntimeError, match="does not advertise model"):
-        setup.verify_server(base_url, "missing")
+        setup.verify_server(base_url, "missing", agent="continue")
 
     posthog_sender.get_sender().flush(2.0)
     assert [_event_view(item) for item in _items(loopback_telemetry)] == [
@@ -328,19 +329,22 @@ def test_agent_setup_events_cover_success_and_all_failure_classes(
         },
         {
             "event": "agent_configure_failed",
-            "properties": {"error_class": "server_not_ready"},
+            "properties": {"agent": "continue", "error_class": "server_not_ready"},
         },
         {
             "event": "agent_configure_failed",
-            "properties": {"error_class": "server_not_ready"},
+            "properties": {"agent": "continue", "error_class": "server_not_ready"},
         },
         {
             "event": "agent_configure_failed",
-            "properties": {"error_class": "server_no_models"},
+            "properties": {"agent": "continue", "error_class": "server_no_models"},
         },
         {
             "event": "agent_configure_failed",
-            "properties": {"error_class": "model_not_advertised"},
+            "properties": {
+                "agent": "continue",
+                "error_class": "model_not_advertised",
+            },
         },
     ]
     wire = json.dumps(_items(loopback_telemetry), sort_keys=True)
@@ -378,6 +382,7 @@ def test_every_agent_profile_emits_one_configured_event(
             "test-model",
         )
         setup.apply_setup_plan(plan)
+        agent_telemetry.track_agent_configured(plan.agent)
     else:
         summary = agent_adapter.setup_agent_config(
             profile,
@@ -396,6 +401,132 @@ def test_env_profile_dry_run_emits_nothing(loopback_telemetry):
     profile = get_profile("aider")
     assert profile is not None
     agent_adapter.setup_agent_config(profile, dry_run=True)
+    posthog_sender.get_sender().flush(2.0)
+    assert _items(loopback_telemetry) == []
+
+
+def test_adapter_second_identical_setup_emits_nothing(
+    loopback_telemetry, tmp_path, monkeypatch
+):
+    profile = get_profile("opencode")
+    assert profile is not None
+    monkeypatch.setenv("OPENCODE_HOME", str(tmp_path))
+
+    agent_adapter.setup_agent_config(profile, model_id="test-model")
+    posthog_sender.get_sender().flush(2.0)
+    assert len(_items(loopback_telemetry)) == 1
+
+    agent_adapter.setup_agent_config(profile, model_id="test-model")
+    posthog_sender.get_sender().flush(2.0)
+    assert len(_items(loopback_telemetry)) == 1
+
+
+def test_atomic_write_reports_changed_existing_file(tmp_path):
+    path = tmp_path / "config.json"
+    path.write_text("before", encoding="utf-8")
+    assert agent_adapter._atomic_write(path, "after") is True
+    assert path.read_text(encoding="utf-8") == "after"
+
+
+def test_dry_run_failure_emits_nothing(loopback_telemetry):
+    def explode(*_args, **_kwargs):
+        raise ValueError("broken profile")
+
+    broken = SimpleNamespace(name="aider", render_config=explode)
+    with pytest.raises(ValueError, match="broken profile"):
+        agent_adapter.setup_agent_config(broken, dry_run=True)
+    posthog_sender.get_sender().flush(2.0)
+    assert _items(loopback_telemetry) == []
+
+
+def test_saved_first_class_config_with_dead_server_emits_only_failure(
+    loopback_telemetry, tmp_path, monkeypatch
+):
+    monkeypatch.setattr(
+        setup.continue_dev, "current_config_path", lambda: tmp_path / "continue.json"
+    )
+    monkeypatch.setattr(
+        setup.urllib.request,
+        "urlopen",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            urllib.error.URLError("refused")
+        ),
+    )
+    args = SimpleNamespace(
+        agent_name="continue",
+        base_url="http://127.0.0.1:1/v1",
+        test=False,
+        setup=True,
+        model="test-model",
+        agent_version=None,
+        dry_run=False,
+        yes=True,
+        no_check=False,
+    )
+
+    with pytest.raises(SystemExit) as raised:
+        cli.agents_command(args)
+    assert raised.value.code == 1
+    posthog_sender.get_sender().flush(2.0)
+    assert [_event_view(item) for item in _items(loopback_telemetry)] == [
+        {
+            "event": "agent_configure_failed",
+            "properties": {
+                "agent": "continue",
+                "error_class": "server_not_ready",
+            },
+        }
+    ]
+
+
+def test_first_class_second_identical_setup_emits_nothing(
+    loopback_telemetry, tmp_path, monkeypatch
+):
+    monkeypatch.setattr(
+        setup.continue_dev, "current_config_path", lambda: tmp_path / "continue.json"
+    )
+    args = SimpleNamespace(
+        agent_name="continue",
+        base_url="http://127.0.0.1:8000/v1",
+        test=False,
+        setup=True,
+        model="test-model",
+        agent_version=None,
+        dry_run=False,
+        yes=True,
+        no_check=True,
+    )
+
+    cli.agents_command(args)
+    posthog_sender.get_sender().flush(2.0)
+    assert len(_items(loopback_telemetry)) == 1
+
+    cli.agents_command(args)
+    posthog_sender.get_sender().flush(2.0)
+    assert len(_items(loopback_telemetry)) == 1
+
+
+def test_first_class_dry_run_failure_emits_nothing(
+    loopback_telemetry, tmp_path, monkeypatch
+):
+    (tmp_path / "settings.yaml").write_text("key: [unterminated\n", encoding="utf-8")
+    monkeypatch.setenv("DSH_HOME", str(tmp_path))
+    monkeypatch.setattr(agent_adapter, "fetch_context_window", lambda *_args: 32768)
+    monkeypatch.setattr(agent_adapter, "fetch_reasoning_support", lambda *_args: True)
+    args = SimpleNamespace(
+        agent_name="deepseek-harness",
+        base_url="http://127.0.0.1:8000/v1",
+        test=False,
+        setup=True,
+        model="test-model",
+        agent_version=None,
+        dry_run=True,
+        yes=True,
+        no_check=True,
+    )
+
+    with pytest.raises(state.yaml.YAMLError):
+        cli.agents_command(args)
     posthog_sender.get_sender().flush(2.0)
     assert _items(loopback_telemetry) == []
 
@@ -647,6 +778,41 @@ def test_opt_in_writes_before_capture_and_consent_event_cap_is_five(
     ]
 
 
+def test_opt_in_delivers_required_notice_before_capture(loopback_telemetry, capfd):
+    state.consent_path().write_text(
+        "consent: true\nprompted_version: 0.15.1\n", encoding="utf-8"
+    )
+    consent_runtime._reset_runtime_state_for_tests()
+
+    cli._track_telemetry_opted_in()
+    posthog_sender.get_sender().flush(2.0)
+
+    assert "anonymous usage reporting" in capfd.readouterr().err
+    consent = state.yaml.safe_load(state.consent_path().read_text(encoding="utf-8"))
+    assert consent["notice_revision_seen"] == DISCLOSURE_REVISION
+    assert [_event_view(item) for item in _items(loopback_telemetry)] == [
+        {"event": "telemetry_opted_in", "properties": {"via": "cli"}}
+    ]
+
+
+def test_opt_in_notice_delivery_failure_keeps_upload_latched(
+    loopback_telemetry, monkeypatch
+):
+    state.consent_path().write_text(
+        "consent: true\nprompted_version: 0.15.1\n", encoding="utf-8"
+    )
+    consent_runtime._reset_runtime_state_for_tests()
+    monkeypatch.setattr(
+        consent_runtime, "deliver_notice_if_needed", lambda _decision: False
+    )
+
+    cli._track_telemetry_opted_in()
+    posthog_sender.get_sender().flush(2.0)
+
+    assert consent_runtime.notice_was_delivered() is False
+    assert _items(loopback_telemetry) == []
+
+
 def test_real_cli_enable_and_disable_each_flush_exactly_one_event(
     loopback_telemetry, tmp_path
 ):
@@ -673,17 +839,22 @@ def test_real_cli_enable_and_disable_each_flush_exactly_one_event(
     )
     cli_code = "from rapid_mlx.cli import cli_entrypoint; cli_entrypoint()"
 
-    for initial, action, expected in (
-        (False, "enable", "telemetry_opted_in"),
-        (True, "disable", "telemetry_opted_out"),
+    for home_name, initial, action, expected, marker_present in (
+        ("enable-noticed", False, "enable", "telemetry_opted_in", True),
+        ("disable", True, "disable", "telemetry_opted_out", True),
+        ("enable-needs-notice", False, "enable", "telemetry_opted_in", False),
     ):
-        home = tmp_path / action
+        home = tmp_path / home_name
         consent_dir = home / ".rapid-mlx"
         consent_dir.mkdir(parents=True)
         (consent_dir / "telemetry-consent.yaml").write_text(
             f"consent: {str(initial).lower()}\n"
             "prompted_version: 0.15.1\n"
-            f"notice_revision_seen: {DISCLOSURE_REVISION}\n",
+            + (
+                f"notice_revision_seen: {DISCLOSURE_REVISION}\n"
+                if marker_present
+                else ""
+            ),
             encoding="utf-8",
         )
         before = len(_items(loopback_telemetry))
@@ -710,6 +881,13 @@ def test_real_cli_enable_and_disable_each_flush_exactly_one_event(
         assert result.returncode == 0, result.stderr
         observed = _items(loopback_telemetry)[before:]
         assert [item["event"] for item in observed] == [expected]
+        if action == "enable" and not marker_present:
+            assert "anonymous usage reporting is ON" in result.stderr
+            assert "anonymous usage reporting" not in result.stdout
+            consent = state.yaml.safe_load(
+                (consent_dir / "telemetry-consent.yaml").read_text(encoding="utf-8")
+            )
+            assert consent["notice_revision_seen"] == DISCLOSURE_REVISION
 
 
 def test_reset_from_refusal_emits_no_consent_event(loopback_telemetry):

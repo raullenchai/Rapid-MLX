@@ -64,14 +64,19 @@ def _track_telemetry_opted_out() -> None:
 
 
 def _track_telemetry_opted_in() -> None:
-    """Capture the opt-in event after consent has opened the live gate."""
+    """Deliver any required notice, then capture the opt-in event."""
     if not _claim_consent_mutation_event():
         return
     try:
         from rapid_mlx.telemetry import consent_runtime, posthog_sender
         from rapid_mlx.telemetry.track import track
 
-        consent_runtime.refresh_decision()
+        decision = consent_runtime.refresh_decision()
+        if decision.deliver_notice:
+            delivered = consent_runtime.deliver_notice_if_needed(decision)
+            if not delivered and not consent_runtime.notice_was_delivered():
+                return
+            consent_runtime.apply_write_back(decision.write_back)
         track("telemetry_opted_in", {"via": "cli"})
         posthog_sender.get_sender().flush(2.0)
     except Exception:
@@ -11185,6 +11190,7 @@ def agents_command(args):
                 confirm_plan,
                 verify_server,
             )
+            from rapid_mlx.agents.telemetry import track_agent_configured
 
             # DSH renders a reasoning-effort control from what we write, so
             # it needs the model's real capability, not a blanket claim.
@@ -11205,6 +11211,7 @@ def agents_command(args):
                     model_id,
                     context_length=context_length,
                     supports_reasoning=supports_reasoning,
+                    emit_telemetry=not args.dry_run,
                 )
             except (OSError, ValueError) as exc:
                 print(f"\n  {profile.display_name} setup failed: {exc}\n")
@@ -11231,7 +11238,7 @@ def agents_command(args):
                 print(f"\n  Configured {profile.display_name} at {plan.path}.")
             if not args.no_check:
                 try:
-                    advertised = verify_server(base_url, model_id)
+                    advertised = verify_server(base_url, model_id, agent=profile.name)
                 except RuntimeError as exc:
                     status = (
                         "Configuration was saved"
@@ -11241,6 +11248,10 @@ def agents_command(args):
                     print(f"\n  {status}, but the connection check failed: {exc}\n")
                     sys.exit(1)
                 print(f"  Connection check passed (model: {advertised}).")
+            if plan.changed:
+                # A configured event means a config mutation completed and,
+                # unless the operator explicitly skipped it, verification passed.
+                track_agent_configured(plan.agent)
             print()
             return
 
