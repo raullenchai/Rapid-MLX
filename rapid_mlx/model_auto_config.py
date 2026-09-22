@@ -329,21 +329,6 @@ _MODEL_PATTERNS: list[tuple[re.Pattern, ModelConfig]] = [
             reasoning_parser="qwen3",
         ),
     ),
-    # MiMo-V2.6 Flash (XiaomiMiMo, 309B-A15B hybrid SWA+global attention MoE,
-    # model_type=mimo_v2_flash in the MLX conversions). Its chat template
-    # emits Qwen3-Coder-style XML tool calls
-    # (``<tool_call><function=..><parameter=..>``) and a ``<think>``
-    # scratchpad, so a user who serves the raw HF repo id (rather than the
-    # ``mimo-v2.6-flash-4bit`` alias) still gets both parsers. Text-only in
-    # MLX: the omnimodal vision/audio towers are not loadable by mlx-lm.
-    (
-        re.compile(r"mimo[-_.]v2[-_.]6", re.IGNORECASE),
-        ModelConfig(
-            tool_call_parser="qwen3_coder_xml",
-            reasoning_parser="qwen3",
-            is_moe=True,
-        ),
-    ),
     # Ornith-1.5 (NVIDIA-adjacent open LLM family, MIT) — Qwen3.5 hybrid
     # arch (model_type=qwen3_5 / qwen3_5_moe). The MLX checkpoints are
     # unquantized bf16; the family splits on MoE marker the same way the
