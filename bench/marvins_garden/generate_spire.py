@@ -157,21 +157,83 @@ def main(argv=None) -> int:
     ap.add_argument("--rollouts", type=int, default=64)
     ap.add_argument("--margin", type=float, default=1.0)
     ap.add_argument("--out-dir", type=Path, default=HERE / "data")
+    ap.add_argument("--seed", type=int, default=SEED,
+                    help="master RNG seed (v2 reruns use a fresh seed)")
+    # --- v2 switches (v1 behavior preserved when off) ---
+    ap.add_argument("--v2", action="store_true",
+                    help="shuffle candidate order + inject defend-optimal "
+                         "scenarios + enforce label-distribution gate")
+    ap.add_argument("--defend-pressure", type=float, default=0.30,
+                    help="v2: fraction of states forced into low-HP vs incoming "
+                         "damage (the region where blocking is optimal)")
+    ap.add_argument("--state-pairs", type=int, default=0,
+                    help="v2: also emit N yes/no lethal-threat state pairs "
+                         "(survival probe set / mixing arm)")
+    ap.add_argument("--state-out", type=Path, default=None,
+                    help="where to write state pairs (default out-dir/pairs_spire_states.jsonl)")
+    ap.add_argument("--skip-gate", action="store_true",
+                    help="v2: report label distribution but don't fail")
     args = ap.parse_args(argv)
-    rng = random.Random(SEED)
+    rng = random.Random(args.seed)
     namer = Namer()
 
     kept, attempts = [], 0
-    while len(kept) < args.n_states and attempts < args.n_states * 6:
+    state_rows: list[dict] = []
+    while len(kept) < args.n_states or len(state_rows) < args.state_pairs:
+        if attempts >= (args.n_states + args.state_pairs) * 8:
+            print(f"WARNING: attempt budget exhausted; kept={len(kept)} "
+                  f"state_pairs={len(state_rows)}", file=sys.stderr)
+            break
         attempts += 1
         got = sample_state(rng, namer)
         if got is None:
             continue
         gc, bc = got
+        namer.learn_from(bc)
+        incoming = sts.incoming_damage(bc)
+        yes_n = sum(1 for r in state_rows if r["label"] == "yes")
+        want_yes = yes_n * 2 <= len(state_rows)  # aim ~50/50 yes/no
+        need_state = len(state_rows) < args.state_pairs
+        inject = args.v2 and incoming > 0 and (
+            rng.random() < args.defend_pressure or (need_state and want_yes))
+        if inject:
+            # Force the low-HP region: current HP near the incoming damage so
+            # blocking (or killing the attacker) is the live strategic axis.
+            # When a yes survival pair is needed, push HP into the lethal band
+            # (the same region where defend is rollout-optimal).
+            lo, hi = (-3, 0) if (need_state and want_yes) else (-3, 5)
+            bc.player.cur_hp = max(1, incoming + rng.randint(lo, hi))
+        # lethal-state yes/no pair (emitted before margin filtering: the
+        # oracle is engine-computed, not rollout-dependent)
+        if need_state and incoming > 0:
+            will_die = incoming >= bc.player.cur_hp + (bc.player.block or 0)
+            if not args.v2 or will_die == want_yes:
+                letters = ["no", "yes"]
+                rng.shuffle(letters)
+                option_lines = [
+                    "no — the incoming attacks will not reduce me to zero this turn",
+                    "yes — ending the turn now would let the attacks kill me",
+                ]
+                lines = {"no": option_lines[0], "yes": option_lines[1]}
+                fields = facts_block(gc, bc, namer)
+                prompt = render.render_prompt(
+                    "spire_lethal", fields, letters, [lines[c] for c in letters])
+                state_rows.append({
+                    "pair_id": f"mg-spire-state-{len(state_rows):05d}",
+                    "family": "spire_lethal",
+                    "contrast_group": f"mg-spire-state-{len(state_rows):05d}",
+                    "flip_key": "incoming_attack_damage_this_turn",
+                    "candidates": letters,
+                    "label": "yes" if will_die else "no",
+                    "margin": 1.0,
+                    "value_best": round(incoming, 2),
+                    "input": prompt,
+                })
+        if len(kept) >= args.n_states:
+            continue
         entries = semantic_actions(bc)
         if not (2 <= len(entries) <= len(render.LETTERS)):
             continue
-        namer.learn_from(bc)
         values = [sts.rollout_value(bc, e["bits"], args.rollouts, rng.getrandbits(62))
                   for e in entries]
         order = sorted(range(len(entries)), key=lambda i: -values[i])
@@ -179,11 +241,20 @@ def main(argv=None) -> int:
         if best - second < args.margin:
             continue
         label = entries[order[0]]["key"]
+        if args.v2:
+            # decouple letters from hand-slot order: shuffle menu presentation
+            # (candidates and option_lines stay aligned)
+            idx = list(range(len(entries)))
+            rng.shuffle(idx)
+            entries = [entries[i] for i in idx]
+            option_lines = [e["line"] for e in entries]
+        else:
+            option_lines = [e["line"] for e in entries]
         candidates = [e["key"] for e in entries]
-        option_lines = [e["line"] for e in entries]
         fields = facts_block(gc, bc, namer)
         prompt = render.render_prompt("spire_play", fields, candidates, option_lines)
         kept.append({
+            "pair_id": f"mg-spire-{len(kept):05d}",
             "family": "spire_play",
             "contrast_group": f"mg-spire-{len(kept):05d}",
             "flip_key": "incoming_attack_damage_this_turn",
@@ -196,15 +267,47 @@ def main(argv=None) -> int:
         if len(kept) % 100 == 0:
             print(f"  {len(kept)}/{args.n_states} states (attempts {attempts})", file=sys.stderr)
 
+    # v2 label-distribution gate: every action dimension must be represented.
+    from collections import Counter
+    label_counts = Counter(r["label"].split(" -> ")[0].split(" ")[1] if r["label"].startswith("play ")
+                           else r["label"] for r in kept)
+    total = len(kept)
+    print("label distribution:", dict(label_counts.most_common()), file=sys.stderr)
+    letter_counts = Counter(r["candidates"].index(r["label"]) for r in kept)
+    print("label letter position:", dict(sorted(letter_counts.items())), file=sys.stderr)
+    if args.v2 and not args.skip_gate:
+        problems = []
+        defendish = sum(v for k, v in label_counts.items() if "defend" in k.lower())
+        if total and defendish / total < 0.10:
+            problems.append(f"defend-family labels only {defendish}/{total} (<10%)")
+        if letter_counts:
+            top = max(letter_counts.values()) / total
+            if top > 0.40:
+                problems.append(f"top letter position holds {top:.0%} (>40%) — order not decoupled")
+        if problems:
+            for p in problems:
+                print("LABEL-DISTRIBUTION GATE FAIL:", p, file=sys.stderr)
+            return 2
+        print("label-distribution gate: PASS", file=sys.stderr)
+
     # deterministic split: hold out every 4th group
     train = [r for i, r in enumerate(kept) if i % 4 != 3]
     held = [r for i, r in enumerate(kept) if i % 4 == 3]
     args.out_dir.mkdir(parents=True, exist_ok=True)
-    for name, rows in (("pairs_spire_train.jsonl", train), ("pairs_spire_heldout.jsonl", held)):
+    suffix = "_v2" if args.v2 else ""
+    for name, rows in ((f"pairs_spire{suffix}_train.jsonl", train),
+                       (f"pairs_spire{suffix}_heldout.jsonl", held)):
         with (args.out_dir / name).open("w", encoding="utf-8") as f:
             for r in rows:
                 f.write(json.dumps(r, ensure_ascii=False) + "\n")
         print(f"{name}: {len(rows)}")
+    if state_rows:
+        out = args.state_out or (args.out_dir / f"pairs_spire{suffix}_states.jsonl")
+        with out.open("w", encoding="utf-8") as f:
+            for r in state_rows:
+                f.write(json.dumps(r, ensure_ascii=False) + "\n")
+        sc = Counter(r["label"] for r in state_rows)
+        print(f"{out.name}: {len(state_rows)} (yes={sc.get('yes', 0)} no={sc.get('no', 0)})")
     return 0
 
 

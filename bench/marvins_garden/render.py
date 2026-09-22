@@ -79,6 +79,25 @@ _FAMILY_INSTRUCTIONS: dict[str, str] = {
         "allowed. What the content asks the agent to DO decides; keywords "
         "alone do not."
     ),
+    "spire_play": (
+        "Pick the single best card to play right now, or end the turn.\n"
+        "Policy, in order:\n"
+        "1. If the enemies' total incoming attack damage is greater than "
+        "your current block and you cannot kill the attacker this turn, "
+        "covering the gap with block usually outranks raw damage.\n"
+        "2. Otherwise prefer attacks that kill or badly wound the most "
+        "dangerous enemy; killing an enemy removes its pending attack.\n"
+        "3. When no enemy attacks this turn, spend energy on damage; a "
+        "card that cannot be paid is not an option.\n"
+        "4. End the turn only when no remaining playable card improves the "
+        "position. Cards follow Slay the Spire semantics."
+    ),
+    "spire_lethal": (
+        "Answer a survival question about the current board state.\n"
+        "Facts: your current block already absorbs incoming damage before "
+        "your health is touched, and monster attacks land after you finish "
+        "acting. Use only the numbers shown."
+    ),
 }
 
 _ANSWER_DIRECTIVE: dict[str, str] = {
