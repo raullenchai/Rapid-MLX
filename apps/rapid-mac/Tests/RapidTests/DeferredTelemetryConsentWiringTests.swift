@@ -130,14 +130,21 @@ struct TelemetryNoticeWiringTests {
 
     @Test("The shipped privacy policy states the default-on notice contract")
     func privacyDisclosureContract() throws {
+        let banner = try Self.source("Sources/Rapid/UI/TelemetryNoticeView.swift")
         let privacy = try Self.source("PRIVACY.md")
-        let normalized = privacy.split(whereSeparator: \.isWhitespace).joined(separator: " ")
+        let normalized = privacy.replacingOccurrences(of: "**", with: "")
+            .split(whereSeparator: \.isWhitespace).joined(separator: " ")
+        let command = "rapid-mlx telemetry disable"
         for phrase in [
-            "on by default", "0.15.0", "acknowledgement notice",
+            "Starting in 0.15.0, it is on by default after a one-time in-app acknowledgement notice.",
+            "This includes installs that turned telemetry off before 0.15.0, which are told about the change in that notice.",
+            "A refusal recorded in 0.15.0 or later is never reversed.",
+            "Settings → Privacy", command,
             "RAPID_MLX_TELEMETRY=0", "DO_NOT_TRACK=1",
         ] {
             #expect(normalized.contains(phrase), "missing privacy phrase: \(phrase)")
         }
+        #expect(banner.contains(command), "banner and privacy policy must use the same CLI command")
         #expect(!privacy.contains("Default: **off until you make an"))
         #expect(!privacy.contains("only after the same opt-in"))
     }

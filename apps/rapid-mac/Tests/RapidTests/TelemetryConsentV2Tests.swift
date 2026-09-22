@@ -89,7 +89,6 @@ struct TelemetryConsentV2Tests {
         #expect(FileManager.default.fileExists(atPath: lock.path))
     }
 
-    @MainActor
     @Test("A lock held by another process does not block the main actor")
     func busyLockDoesNotBlockMainActor() async throws {
         let dir = try directory("main-actor-lock")
@@ -100,7 +99,7 @@ struct TelemetryConsentV2Tests {
         locker.executableURL = URL(fileURLWithPath: "/usr/bin/python3")
         locker.arguments = [
             "-c",
-            "import fcntl,sys,time; f=open(sys.argv[1], 'a+'); fcntl.flock(f, fcntl.LOCK_EX); print('ready', flush=True); time.sleep(5)",
+            "import fcntl,sys,time; f=open(sys.argv[1], 'a+'); fcntl.flock(f, fcntl.LOCK_EX); print('ready', flush=True); time.sleep(1.2); fcntl.flock(f, fcntl.LOCK_UN)",
             lockURL.path,
         ]
         locker.environment = [
@@ -117,35 +116,47 @@ struct TelemetryConsentV2Tests {
         let signal = ready.fileHandleForReading.readData(ofLength: 6)
         #expect(String(decoding: signal, as: UTF8.self) == "ready\n")
 
-        var sessionStarted = false
-        let coordinator = TelemetryNoticeCoordinator(
-            needsNotice: { true },
-            recordPresentation: {
-                await TelemetryConsent.noticePresented(
-                    version: "0.15.0",
-                    defaults: self.defaults("main-actor-lock"),
-                    environment: [:],
-                    telemetryDirectory: dir
-                )
-            },
-            startTelemetrySession: { sessionStarted = true }
-        )
         let started = ContinuousClock.now
-        coordinator.noticeDidAppear()
-        let elapsed = started.duration(to: .now)
-        #expect(elapsed < .milliseconds(50))
+        let write = Task {
+            let result = await TelemetryConsent.noticePresented(
+                version: "0.15.0",
+                defaults: self.defaults("main-actor-lock"),
+                environment: [:],
+                telemetryDirectory: dir
+            )
+            return (result, ContinuousClock.now)
+        }
 
-        locker.terminate()
-        let lockerDeadline = ContinuousClock.now.advanced(by: .seconds(2))
-        while locker.isRunning, ContinuousClock.now < lockerDeadline {
+        var previousSample = await MainActor.run { ContinuousClock.now }
+        var maximumGap = Duration.zero
+        while locker.isRunning {
             try await Task.sleep(for: .milliseconds(10))
+            let sample = await MainActor.run { ContinuousClock.now }
+            maximumGap = max(maximumGap, previousSample.duration(to: sample))
+            previousSample = sample
         }
-        #expect(!locker.isRunning)
-        let deadline = ContinuousClock.now.advanced(by: .seconds(3))
-        while !sessionStarted, ContinuousClock.now < deadline {
-            try await Task.sleep(for: .milliseconds(10))
-        }
-        #expect(sessionStarted)
+        let (result, completed) = await write.value
+        #expect(maximumGap < .milliseconds(100))
+        #expect(started.duration(to: completed) >= .seconds(1))
+        #expect(result == .init(persisted: true, uploadAllowedThisRun: true))
+        #expect(FileManager.default.fileExists(atPath: consentURL(dir).path))
+    }
+
+    @Test("A directory chmod failure does not turn a successful consent write into failure")
+    func directoryChmodIsBestEffort() throws {
+        struct InjectedFailure: Error {}
+
+        let dir = try directory("chmod-failure")
+        defer { try? FileManager.default.removeItem(at: dir) }
+        let persisted = TelemetryConsent.writeMergedConsent(
+            updates: ["desktop_consent": true],
+            raiseNoticeRevisionTo: 1,
+            directory: dir,
+            replaceUnreadable: true,
+            setDirectoryPermissions: { _, _ in throw InjectedFailure() }
+        )
+
+        #expect(persisted)
         #expect(FileManager.default.fileExists(atPath: consentURL(dir).path))
     }
 

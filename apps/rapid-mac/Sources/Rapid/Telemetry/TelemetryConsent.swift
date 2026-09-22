@@ -533,7 +533,10 @@ enum TelemetryConsent {
         raiseNoticeRevisionTo revision: Int?,
         directory: URL,
         replaceUnreadable: Bool,
-        customMerge: (([String: Any]) -> [String: Any]?)? = nil
+        customMerge: (([String: Any]) -> [String: Any]?)? = nil,
+        setDirectoryPermissions: (FileManager, URL) throws -> Void = { fm, directory in
+            try fm.setAttributes([.posixPermissions: 0o700], ofItemAtPath: directory.path)
+        }
     ) -> Bool {
         let fm = FileManager.default
         do {
@@ -542,10 +545,12 @@ enum TelemetryConsent {
                 withIntermediateDirectories: true,
                 attributes: [.posixPermissions: 0o700]
             )
-            try fm.setAttributes([.posixPermissions: 0o700], ofItemAtPath: directory.path)
         } catch {
             return false
         }
+        // Persistence is more important than hardening an existing directory.
+        // The atomically replaced consent file is still created as 0600.
+        try? setDirectoryPermissions(fm, directory)
 
         let url = consentURL(in: directory)
         let lockURL = directory.appendingPathComponent(
@@ -646,30 +651,21 @@ enum TelemetryConsent {
     }
 }
 
-/// Serializes consent mutations on a utility queue. The synchronous writer can
-/// wait on a cross-process flock and fsync, so it must never park the UI thread.
-private final class ConsentWriter: @unchecked Sendable {
-    private let queue = DispatchQueue(
-        label: "com.rapidmlx.desktop.telemetry-consent-writer",
-        qos: .utility
-    )
-
+/// Serializes consent mutations away from the main actor. Actor hops preserve
+/// task-local overrides used to isolate telemetry tests from process kill switches.
+private actor ConsentWriter {
     func noticePresented(
         version: String,
         defaults: UserDefaults,
         environment: [String: String],
         telemetryDirectory: URL
     ) async -> TelemetryConsent.NoticePresentationResult {
-        await withCheckedContinuation { continuation in
-            queue.async {
-                continuation.resume(returning: TelemetryConsent.noticePresentedSynchronously(
-                    version: version,
-                    defaults: defaults,
-                    environment: environment,
-                    telemetryDirectory: telemetryDirectory
-                ))
-            }
-        }
+        TelemetryConsent.noticePresentedSynchronously(
+            version: version,
+            defaults: defaults,
+            environment: environment,
+            telemetryDirectory: telemetryDirectory
+        )
     }
 
     func record(
@@ -678,16 +674,11 @@ private final class ConsentWriter: @unchecked Sendable {
         defaults: UserDefaults,
         telemetryDirectory: URL
     ) async {
-        await withCheckedContinuation { continuation in
-            queue.async {
-                TelemetryConsent.recordSynchronously(
-                    enabled: enabled,
-                    version: version,
-                    defaults: defaults,
-                    telemetryDirectory: telemetryDirectory
-                )
-                continuation.resume()
-            }
-        }
+        TelemetryConsent.recordSynchronously(
+            enabled: enabled,
+            version: version,
+            defaults: defaults,
+            telemetryDirectory: telemetryDirectory
+        )
     }
 }
