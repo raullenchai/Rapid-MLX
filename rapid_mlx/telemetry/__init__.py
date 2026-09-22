@@ -1,12 +1,10 @@
 # SPDX-License-Identifier: Apache-2.0
-"""Anonymous opt-in usage telemetry — Phase 1 (consent + plumbing only).
+"""Anonymous, metadata-only product telemetry.
 
-This package owns the consent state, redaction primitives, and event
-schema. **No network code lives here in Phase 1** — the transport,
-collector, and Cloudflare Worker arrive in a follow-up PR. This split
-exists so the privacy mechanism (kill switch, consent file, redaction
-contracts, CLI subcommand) can land and be reviewed in isolation,
-before any byte ever leaves the machine.
+The v2 pipeline validates events against a closed registry and sends
+privacy-hardened batches to PostHog only after the build and consent gates
+allow an upload. Legacy v1 transport, queue, schemas, and prompt code have
+been removed.
 
 See ``docs/telemetry.md`` (or the README "Telemetry" section) for the
 full schema, what we do/do not collect, and how to disable.
@@ -18,18 +16,16 @@ Public API:
 - ``get_consent_state`` — full record (consent bool, when prompted,
   which version prompted them) for ``rapid-mlx telemetry status``.
 - ``record_consent`` — persist a yes/no answer.
-- ``reset_state`` — wipe both consent + client-id files.
-- ``maybe_prompt_for_consent`` — first-run interactive prompt; safe to
-  call from every subcommand (it skips itself when not appropriate).
+- ``reset_state`` — delete the preference and rotate the client id.
 """
 
-from rapid_mlx.telemetry.consent import maybe_prompt_for_consent
 from rapid_mlx.telemetry.state import (
     ConsentState,
     consent_source,
     get_consent_state,
     get_or_create_client_id,
     is_enabled,
+    read_client_id,
     record_consent,
     reset_state,
 )
@@ -40,7 +36,7 @@ __all__ = [
     "get_consent_state",
     "get_or_create_client_id",
     "is_enabled",
-    "maybe_prompt_for_consent",
     "record_consent",
+    "read_client_id",
     "reset_state",
 ]

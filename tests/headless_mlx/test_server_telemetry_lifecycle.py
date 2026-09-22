@@ -9,7 +9,7 @@ from unittest.mock import AsyncMock
 import pytest
 
 import rapid_mlx.server as server
-from rapid_mlx.telemetry import emit, model_events, posthog_sender
+from rapid_mlx.telemetry import model_events, posthog_sender
 
 
 def test_server_shutdown_flush_is_best_effort(monkeypatch):
@@ -42,7 +42,6 @@ async def test_lifespan_load_failure_emits_model_failure(monkeypatch):
     monkeypatch.setattr(server, "_model_alias", "tmax-9b")
     monkeypatch.setattr(server, "_model_path", "/unused/model-path")
     monkeypatch.setattr(server, "_telemetry_auto_selected", True)
-    monkeypatch.setattr(emit, "error", lambda **_kwargs: None)
     monkeypatch.setattr(
         model_events,
         "emit_model_serve_failed",

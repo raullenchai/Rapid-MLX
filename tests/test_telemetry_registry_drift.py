@@ -286,13 +286,6 @@ def test_caller_enum_matches_the_user_agent_marker_table(registry):
     assert declared == {label for _, label in _CALLER_AGENT_MARKERS}
 
 
-def test_endpoint_enum_matches_the_instrumented_route_allowlist(registry):
-    from rapid_mlx.telemetry.emit import _ALLOWED_ENDPOINTS
-
-    declared = set(registry["enums"]["endpoint"]["values"]) - {"other"}
-    assert declared == set(_ALLOWED_ENDPOINTS)
-
-
 def test_model_type_enum_covers_every_alias_modality(registry):
     from rapid_mlx.model_aliases import _RESERVED_MODALITIES, _VALID_MODALITIES
 

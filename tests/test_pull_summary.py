@@ -106,7 +106,6 @@ def test_real_pull_command_emits_one_primary_event_for_text_and_image(
         args._telemetry_pull_transferred = True
 
     monkeypatch.setattr(cli, "_pull_repository", fake_pull)
-    monkeypatch.setattr("rapid_mlx.telemetry.emit.activation", lambda **_kwargs: None)
     monkeypatch.setattr(
         track_module, "track", lambda event, props: calls.append((event, props))
     )
@@ -144,7 +143,6 @@ def test_warm_pull_command_does_not_emit_model_pulled(monkeypatch, tmp_path):
         args._telemetry_pull_transferred = False
 
     monkeypatch.setattr(cli, "_pull_repository", fake_pull)
-    monkeypatch.setattr("rapid_mlx.telemetry.emit.activation", lambda **_kwargs: None)
     monkeypatch.setattr(track_module, "track", lambda event, props: calls.append(event))
     monkeypatch.setattr(
         "rapid_mlx._download_gate.image_runtime_assets_for", lambda _repo: ()
@@ -516,7 +514,6 @@ def test_pull_event_sizes_same_catalog_subfolder_as_summary(monkeypatch, tmp_pat
         handle.truncate(int(1.5 * 1024**3))
     with (sibling / "model.safetensors").open("wb") as handle:
         handle.truncate(3 * 1024**3)
-    monkeypatch.setattr("rapid_mlx.telemetry.emit.activation", lambda **_kwargs: None)
     calls = []
     monkeypatch.setattr(
         model_events,
@@ -609,7 +606,6 @@ def test_pull_command_prepares_image_runtime_assets_after_primary(
             args._telemetry_pull_transferred = True
 
     monkeypatch.setattr(cli, "_pull_repository", fake_pull)
-    monkeypatch.setattr("rapid_mlx.telemetry.emit.activation", lambda **_kwargs: None)
     monkeypatch.setattr(
         "rapid_mlx.telemetry.model_events.emit_model_pulled", lambda *_args: None
     )
@@ -644,7 +640,6 @@ def test_pull_command_suppresses_audio_runtime_asset_lifecycle(monkeypatch):
         pulls.append((args.model, getattr(args, "_emit_pull_lifecycle_event", True)))
 
     monkeypatch.setattr(cli, "_pull_repository", fake_pull)
-    monkeypatch.setattr("rapid_mlx.telemetry.emit.activation", lambda **_kwargs: None)
     monkeypatch.setattr(
         "rapid_mlx._download_gate.image_runtime_assets_for", lambda _repo: ()
     )
@@ -673,7 +668,6 @@ def test_pull_command_suppresses_mtp_runtime_asset_lifecycle(monkeypatch):
 
     monkeypatch.setattr(cli, "_pull_repository", fake_pull)
     monkeypatch.setattr(cli, "_check_disk_space", lambda *_args, **_kwargs: None)
-    monkeypatch.setattr("rapid_mlx.telemetry.emit.activation", lambda **_kwargs: None)
     monkeypatch.setattr(
         "rapid_mlx._download_gate.image_runtime_assets_for", lambda _repo: ()
     )
@@ -909,7 +903,6 @@ def test_hf_fallback_event_is_labelled_hf(monkeypatch, tmp_path) -> None:
     calls = []
     monkeypatch.setattr(cli, "_try_mirror_prefetch", lambda *_args, **_kwargs: False)
     monkeypatch.setattr("huggingface_hub.snapshot_download", download)
-    monkeypatch.setattr("rapid_mlx.telemetry.emit.activation", lambda **_kwargs: None)
     monkeypatch.setattr(
         model_events, "emit_model_pulled", lambda *args: calls.append(args)
     )

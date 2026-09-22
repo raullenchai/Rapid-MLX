@@ -697,7 +697,6 @@ def test_pull_uses_exact_revision_and_data_allowlist(
         "_pull_repository",
         lambda args, **kwargs: calls.append((args.model, kwargs)),
     )
-    monkeypatch.setattr(cli, "_emit_pull_activation", lambda: None)
     args = SimpleNamespace(model=requested)
 
     cli.pull_command(args)
@@ -723,7 +722,6 @@ def test_non_hidream_pull_keeps_the_generic_download_path(
     monkeypatch.setattr(
         cli, "_pull_repository", lambda *args, **kwargs: calls.append((args, kwargs))
     )
-    monkeypatch.setattr(cli, "_emit_pull_activation", lambda: None)
     monkeypatch.setattr(registry, "runtime_assets_for", lambda _repo: ())
     monkeypatch.setattr(registry, "runtime_requirements_for", lambda _repo: ())
     args = SimpleNamespace(model="mlx-community/plain-model")

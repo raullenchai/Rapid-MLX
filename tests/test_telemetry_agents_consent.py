@@ -28,7 +28,7 @@ from rapid_mlx.agents import adapter as agent_adapter
 from rapid_mlx.agents import get_profile, list_profiles, setup
 from rapid_mlx.agents import telemetry as agent_telemetry
 from rapid_mlx.agents.base import AgentConfigSpec
-from rapid_mlx.telemetry import consent_runtime, emit, posthog_sender, state
+from rapid_mlx.telemetry import consent_runtime, posthog_sender, state
 from rapid_mlx.telemetry import track as track_module
 from rapid_mlx.telemetry.build_gate import ReleaseStamp
 from rapid_mlx.telemetry.common_props import PlatformFacts
@@ -76,7 +76,7 @@ def loopback_telemetry(tmp_path, monkeypatch):
     monkeypatch.setattr(rapid_mlx, "__version__", "0.15.1")
     monkeypatch.setattr(track_module.common_props, "read_platform_facts", lambda: FACTS)
     monkeypatch.setattr(state, "get_or_create_client_id", lambda: INSTALL_ID)
-    monkeypatch.setattr(emit, "session_id", lambda: SESSION_ID)
+    monkeypatch.setattr(state, "session_id", lambda: SESSION_ID)
     monkeypatch.setattr(track_module.build_gate, "official_build", lambda: STAMP)
     monkeypatch.setattr(
         track_module.store, "days_since_first_run_bucket", lambda: "7-29"

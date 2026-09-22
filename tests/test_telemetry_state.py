@@ -109,32 +109,82 @@ def test_prior_v1_consent_is_reprompted_after_activation_added(fake_home):
     assert is_enabled() is False
 
 
-def test_reset_state_raises_when_a_path_cannot_be_removed(fake_home):
-    """`reset_state` must not silently claim success when state survives on disk
-    (that would leave telemetry enabled while the CLI prints "removed"). It
-    attempts every path, still clears the in-process latch, then raises an
-    aggregated OSError naming what it could not remove."""
-    import pytest
-
-    from rapid_mlx.telemetry import emit, state
+def test_reset_state_is_best_effort_when_a_path_cannot_be_removed(fake_home):
+    from rapid_mlx.telemetry import state
 
     # A normally-removable consent file...
     state.record_consent(True, rapid_mlx_version="0.0.0+test")
+    state.get_or_create_client_id()
     assert state.consent_path().exists()
     # ...and a marker path that is a NON-EMPTY DIRECTORY, so unlink() raises
     # OSError (IsADirectoryError) — the glob picks it up like any marker.
     stuck = state.activation_marker_path("first_inference")
     stuck.mkdir(parents=True, exist_ok=True)
     (stuck / "child").write_text("x")
-    # Latch a kind so we can assert the latch is cleared despite the failure.
-    emit._activation_latched.add("model_pull")
+    result = state.reset_state()
 
-    with pytest.raises(OSError):
-        state.reset_state()
-
-    # Removable state was still removed and the latch was still cleared.
+    # Removable state was still removed.
     assert not state.consent_path().exists()
-    assert "model_pull" not in emit._activation_latched
+    assert not state.client_id_path().exists()
+    assert result.client_id.succeeded is True
+    assert len(result.activation_markers) == 1
+    assert result.activation_markers[0].succeeded is False
+
+
+def test_session_id_is_process_stable_and_resettable(fake_home, monkeypatch):
+    monkeypatch.setattr(state, "_session_id", None)
+    first = state.session_id()
+    assert state.session_id() == first
+    assert len(first) == 36
+
+
+def test_rotate_client_id_preserves_consent_and_clears_markers(fake_home):
+    state.record_consent(True, rapid_mlx_version="0.15.0")
+    original = state.get_or_create_client_id()
+    marker = state.activation_marker_path("first_inference")
+    marker.touch()
+
+    rotated = state.rotate_client_id()
+
+    assert rotated != original
+    assert not marker.exists()
+    assert state.get_consent_state() is not None
+    assert state.get_consent_state().consent is True
+
+
+def test_rotate_client_id_creates_identity_when_old_one_is_absent(fake_home):
+    assert not state.client_id_path().exists()
+    rotated = state.rotate_client_id()
+    assert state.client_id_path().read_text().strip() == rotated
+
+
+def test_rotate_client_id_reports_unremovable_marker(fake_home):
+    stuck = state.activation_marker_path("first_inference")
+    stuck.mkdir(parents=True)
+    (stuck / "child").touch()
+    with pytest.raises(OSError, match="identity rotation could not remove"):
+        state.rotate_client_id()
+
+
+def test_rotate_client_id_reports_marker_enumeration_failure(fake_home, monkeypatch):
+    class ExplodingTelemetryDir:
+        def __truediv__(self, name):
+            return fake_home / ".rapid-mlx" / name
+
+        def glob(self, _pattern):
+            raise OSError("cannot scan")
+
+    monkeypatch.setattr(
+        state, "_default_telemetry_dir", lambda: ExplodingTelemetryDir()
+    )
+    with pytest.raises(OSError, match="cannot enumerate activation markers"):
+        state.rotate_client_id()
+
+
+def test_claim_activation_marker_is_one_shot_and_rejects_invalid_kind(fake_home):
+    assert state.claim_activation_marker("first_inference") is True
+    assert state.claim_activation_marker("first_inference") is False
+    assert state.claim_activation_marker("../invalid") is False
 
 
 def test_env_kill_switch_wins_over_consent(fake_home, monkeypatch):
@@ -195,6 +245,30 @@ def test_client_id_idempotent(fake_home):
     assert get_or_create_client_id() == first
 
 
+def test_client_id_creation_ignores_chmod_failure(fake_home, monkeypatch):
+    from rapid_mlx.telemetry import state
+
+    monkeypatch.setattr(
+        state.os,
+        "chmod",
+        lambda *_args: (_ for _ in ()).throw(PermissionError("denied")),
+    )
+
+    created = state.get_or_create_client_id()
+
+    assert state.client_id_path().read_text().strip() == created
+
+
+def test_read_client_id_never_creates_state(fake_home):
+    from rapid_mlx.telemetry.state import client_id_path, read_client_id
+
+    assert read_client_id() is None
+    assert not client_id_path().parent.exists()
+    client_id_path().parent.mkdir(parents=True)
+    client_id_path().write_text("stored-id\n")
+    assert read_client_id() == "stored-id"
+
+
 def test_client_id_user_zeroed_uuid_preserved(fake_home):
     """User can replace client_id with all-zeros to anonymize.
 
@@ -212,7 +286,7 @@ def test_client_id_user_zeroed_uuid_preserved(fake_home):
     assert get_or_create_client_id() == zero
 
 
-def test_reset_state_removes_both_files(fake_home):
+def test_reset_state_removes_preference_and_rotates_identity(fake_home):
     from rapid_mlx.telemetry.state import (
         client_id_path,
         consent_path,
@@ -222,28 +296,176 @@ def test_reset_state_removes_both_files(fake_home):
     )
 
     record_consent(True, rapid_mlx_version="0.6.33")
-    get_or_create_client_id()
+    original = get_or_create_client_id()
     assert consent_path().exists()
     assert client_id_path().exists()
-    reset_state()
+    lock = consent_path().with_name("telemetry-consent.yaml.lock")
+    lock_inode = lock.stat().st_ino
+    result = reset_state()
+    assert result.consent_file.succeeded is True
+    assert result.consent_lock.succeeded is True
+    assert result.client_id.succeeded is True
     assert not consent_path().exists()
-    assert not client_id_path().exists()
-    # Idempotent — second reset_state on missing files must not raise.
-    reset_state()
+    assert lock.exists()
+    assert lock.stat().st_ino == lock_inode
+    rotated = client_id_path().read_text().strip()
+    assert rotated != original
+    # Idempotent — a second reset rotates the still-present client ID.
+    second = reset_state()
+    assert second.client_id.succeeded is True
+    assert lock.stat().st_ino == lock_inode
+    assert client_id_path().read_text().strip() != rotated
 
 
-def test_reset_state_removes_sibling_lock_best_effort(fake_home):
+def test_reset_state_empty_home_creates_nothing(fake_home):
+    from rapid_mlx.telemetry import state
+
+    before = list(fake_home.rglob("*"))
+    result = state.reset_state()
+
+    assert list(fake_home.rglob("*")) == before == []
+    assert result.consent_file.existed is False
+    assert result.consent_lock.existed is False
+    assert result.client_id.existed is False
+
+
+def test_reset_state_reports_client_id_unlink_error(fake_home, monkeypatch):
+    from rapid_mlx.telemetry import state
+
+    identity = state.client_id_path()
+    real_unlink = type(identity).unlink
+
+    def fail_identity_unlink(path, *args, **kwargs):
+        if path == identity:
+            raise PermissionError("denied")
+        return real_unlink(path, *args, **kwargs)
+
+    monkeypatch.setattr(type(identity), "unlink", fail_identity_unlink)
+
+    result = state.reset_state()
+
+    assert result.client_id.existed is True
+    assert result.client_id.succeeded is False
+    assert result.client_id.error_types == ("PermissionError",)
+
+
+def test_reset_state_reports_client_id_rotation_error(fake_home, monkeypatch):
+    state.get_or_create_client_id()
+    monkeypatch.setattr(
+        state,
+        "get_or_create_client_id",
+        lambda: (_ for _ in ()).throw(PermissionError("denied")),
+    )
+
+    result = state.reset_state()
+
+    assert result.client_id.succeeded is True
+    assert result.client_id_rotation_errors == ("PermissionError",)
+
+
+def test_reset_state_preserves_sibling_lock_inode(fake_home):
     from rapid_mlx.telemetry import state
 
     state.record_consent(True, rapid_mlx_version="0.6.33")
     lock_path = state.consent_path().with_name(state.consent_path().name + ".lock")
     assert lock_path.exists()
+    original_inode = lock_path.stat().st_ino
     state.reset_state()
     assert not state.consent_path().exists()
-    assert not lock_path.exists()
+    assert lock_path.stat().st_ino == original_inode
 
 
-def test_reset_state_reports_marker_enumeration_error(fake_home, monkeypatch):
+def test_reset_does_not_delete_consent_when_sibling_lock_is_busy(
+    fake_home, monkeypatch
+):
+    from rapid_mlx.telemetry import state
+
+    state.record_consent(False, rapid_mlx_version="0.14.4")
+    original = state.consent_path().read_bytes()
+    moments = iter((0.0, 2.0))
+    monkeypatch.setattr(state, "_lock_retry_clock", lambda: next(moments))
+    monkeypatch.setattr(
+        state.fcntl,
+        "flock",
+        lambda *_args: (_ for _ in ()).throw(
+            BlockingIOError(state.errno.EAGAIN, "busy")
+        ),
+    )
+
+    result = state.reset_state()
+
+    assert result.incomplete
+    assert result.consent_lock.error_types == ("BlockingIOError",)
+    assert state.consent_path().read_bytes() == original
+
+
+def test_reset_does_not_delete_consent_when_lock_cannot_open(fake_home, monkeypatch):
+    from rapid_mlx.telemetry import state
+
+    state.record_consent(False, rapid_mlx_version="0.14.4")
+    original = state.consent_path().read_bytes()
+    lock = state.consent_path().with_name("telemetry-consent.yaml.lock")
+    real_open = state.os.open
+
+    def deny_lock(path, flags, mode=0o777):
+        if path == lock:
+            raise PermissionError("lock denied")
+        return real_open(path, flags, mode)
+
+    monkeypatch.setattr(state.os, "open", deny_lock)
+    result = state.reset_state()
+
+    assert result.incomplete
+    assert result.consent_lock.error_types == ("PermissionError",)
+    assert state.consent_path().read_bytes() == original
+
+
+def test_reset_does_not_delete_consent_on_nonretryable_lock_error(
+    fake_home, monkeypatch
+):
+    from rapid_mlx.telemetry import state
+
+    state.record_consent(False, rapid_mlx_version="0.14.4")
+    original = state.consent_path().read_bytes()
+
+    def fail_lock(_fd, operation):
+        if operation == state.fcntl.LOCK_EX | state.fcntl.LOCK_NB:
+            raise OSError(state.errno.EIO, "lock unavailable")
+
+    monkeypatch.setattr(state.fcntl, "flock", fail_lock)
+    result = state.reset_state()
+
+    assert result.incomplete
+    assert result.consent_lock.error_types == ("OSError",)
+    assert state.consent_path().read_bytes() == original
+
+
+def test_reset_retries_busy_lock_then_uses_it(fake_home, monkeypatch):
+    from rapid_mlx.telemetry import state
+
+    state.record_consent(False, rapid_mlx_version="0.14.4")
+    real_flock = state.fcntl.flock
+    attempts = 0
+    sleeps = []
+
+    def busy_once(fd, operation):
+        nonlocal attempts
+        if operation == state.fcntl.LOCK_EX | state.fcntl.LOCK_NB:
+            attempts += 1
+            if attempts == 1:
+                raise BlockingIOError(state.errno.EAGAIN, "busy")
+        return real_flock(fd, operation)
+
+    monkeypatch.setattr(state.fcntl, "flock", busy_once)
+    monkeypatch.setattr(state, "_lock_retry_sleep", sleeps.append)
+    result = state.reset_state()
+
+    assert result.consent_file.succeeded
+    assert attempts == 2
+    assert len(sleeps) == 1
+
+
+def test_reset_state_ignores_marker_enumeration_error(fake_home, monkeypatch):
     from rapid_mlx.telemetry import state
 
     state.record_consent(True, rapid_mlx_version="0.6.33")
@@ -256,10 +478,7 @@ def test_reset_state_reports_marker_enumeration_error(fake_home, monkeypatch):
         return real_glob(path, pattern)
 
     monkeypatch.setattr(type(telemetry_dir), "glob", fail_marker_glob)
-    with pytest.raises(
-        OSError, match="telemetry reset could not remove:.*marker directory denied"
-    ):
-        state.reset_state()
+    state.reset_state()
 
     assert not state.consent_path().exists()
 

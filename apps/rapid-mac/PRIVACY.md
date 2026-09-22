@@ -30,11 +30,24 @@ own key in Settings → Tools).
 
 ## What we collect (telemetry)
 
-Anonymous, opt-in usage telemetry. Default: **off until you make an
-explicit choice** in the first-run disclosure. You can change that choice
-at any time in Settings → Privacy. When enabled, the desktop app and its
-embedded `rapid-mlx` engine use the same consent record and random client ID,
-so one Mac is not counted as two installs. We collect:
+Anonymous, metadata-only usage telemetry. In the 0.15.0 engine it is on by
+default after the disclosure; you can turn it off at any time in Settings →
+Privacy or with `rapid-mlx telemetry off`. The desktop app and its embedded
+`rapid-mlx` engine use the same consent record and random client ID, so one Mac
+is not counted as two installs. The 0.15.0 engine reports:
+
+* `app_opened` and `active_day`;
+* `model_pulled`, `model_pull_failed`, `model_served`, and
+  `model_serve_failed`;
+* `capability_rejected` and `inference_bucket_reached`;
+* `agent_configured` and `agent_configure_failed`; and
+* `telemetry_opted_in` and `telemetry_opted_out`.
+
+These v2 events contain only registry-approved enums, booleans, UUIDs, version
+strings, and numeric buckets.
+
+The native desktop client remains on its frozen legacy transport until its
+separate v2 migration. Its existing session and crash events include:
 
 * `session_start` — once per app launch. Includes:
   * `client_id` — random UUID stored locally at
@@ -53,15 +66,8 @@ so one Mac is not counted as two installs. We collect:
     locals).
   * App version + macOS version + a short context label (e.g.
     `chat_send`, `download_install`).
-* `activation` — once per install for each first successful text chat reply,
-  delivered dictation transcript, or generated image. A vision-reply milestone
-  is reserved in the event schema but is not sent by this version. The
-  event-specific payload contains only the closed milestone name and
-  `surface: desktop`; it contains no model, timing, count, prompt, response,
-  attachment, transcript, generated image, or path.
-* Embedded-engine `session_start`, `session_end`, `request`, and `error`
-  events — only after the same opt-in. Depending on the bundled engine
-  version, these can include:
+* Embedded-engine v2 events, depending on the bundled engine version, can
+  include:
   * Rapid-MLX version, macOS version, CPU architecture, chip family, memory
     tier, and Python version.
   * Public model aliases, subcommand and feature/flag names (never values).
@@ -79,12 +85,10 @@ Anonymous telemetry does **not** collect:
 * Prompt or response contents from traffic to your `rapid-mlx` server.
 * Tool API keys.
 
-The telemetry endpoint is `https://telemetry.rapidmlx.com/v1/events`.
-The receiving Cloudflare Worker strips client IPs before writing to
-storage. At ingestion it derives a two-letter country code from Cloudflare's
-connection metadata for aggregate reporting (`XX` when unavailable); the IP
-address is never persisted. Source is open: `github.com/raullenchai/rapidmlx.com` under
-`telemetry-worker/`.
+The engine sends only `POST https://us.i.posthog.com/batch/` telemetry
+requests. Every event disables GeoIP enrichment and person-profile creation;
+PostHog receives no IP or location property from Rapid-MLX. The frozen native
+desktop client is migrated separately.
 
 ## Opt out
 
@@ -92,9 +96,11 @@ Settings → Privacy → "Send anonymous usage data" → off. Takes effect
 immediately for both the desktop app and its embedded engine; no further
 events are sent. Already-sent events cannot be retroactively deleted because
 they are not associated with your identity, but the rolling 30-day raw-event
-storage window means they age out. Running `rapid-mlx telemetry reset` removes
-the shared consent and random client ID; the desktop app will ask again rather
-than restoring the old ID.
+storage window means they age out. `reset` deletes your stored preference and
+rotates the install id; the desktop clears its answer; the next run is treated
+as a new install. On 0.15.0 that next run shows the notice and uses the
+default-on policy. `reset` emits no telemetry event. `reset-id` rotates only
+the install id and keeps the stored preference.
 
 ## Feedback
 

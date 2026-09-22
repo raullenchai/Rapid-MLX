@@ -480,7 +480,7 @@ def test_notice_contains_the_required_copy():
     assert "turns anonymous usage reporting on by\ndefault" in NOTICE_TEXT
     assert "including for installs that previously turned it off" in NOTICE_TEXT
     assert "PostHog Cloud" in NOTICE_TEXT
-    assert "rapid-mlx telemetry disable" in NOTICE_TEXT
+    assert "rapid-mlx telemetry off" in NOTICE_TEXT
     assert "RAPID_MLX_TELEMETRY=0" in NOTICE_TEXT
     assert "DO_NOT_TRACK=1" in NOTICE_TEXT
     assert "IP and location are not recorded" in NOTICE_TEXT
@@ -490,11 +490,16 @@ def test_notice_contains_the_required_copy():
 def test_every_notice_cli_command_is_accepted_by_the_real_parser():
     from rapid_mlx.cli import build_parser
 
-    commands = re.findall(r"rapid-mlx telemetry [a-z-]+", NOTICE_TEXT)
-    assert commands
     parser = build_parser()
-    for command in commands:
-        parser.parse_args(shlex.split(command)[1:])
+    for notice in (
+        NOTICE_TEXT,
+        consent_runtime_module.NOTICE_LINE,
+        consent_runtime_module._NOTICE_MIGRATION_LINE,
+    ):
+        commands = re.findall(r"rapid-mlx telemetry [a-z-]+", notice)
+        assert commands
+        for command in commands:
+            parser.parse_args(shlex.split(command)[1:])
 
 
 def test_notice_goes_to_stderr_never_stdout(fake_home, capfd):
@@ -1663,3 +1668,23 @@ def test_upload_allowed_respects_live_kill_switch_flip(fake_home, monkeypatch):
     assert upload_allowed() is True
     monkeypatch.setenv("DO_NOT_TRACK", "1")
     assert upload_allowed() is False
+
+
+def test_refresh_decision_reloads_explicit_consent_write(fake_home):
+    write_consent("consent: false\nprompted_version: 0.15.0\nschema_version: 2\n")
+    assert resolve().upload_now is False
+    state.record_consent(True, rapid_mlx_version="0.15.1")
+    refreshed = consent_runtime_module.refresh_decision()
+    assert refreshed.upload_now is True
+    assert resolve() is refreshed
+
+
+def test_refresh_decision_fail_closed_roles(fake_home, monkeypatch):
+    monkeypatch.setattr(consent_runtime_module, "_resolved_role", ProcessRole.DESKTOP)
+    assert consent_runtime_module.refresh_decision().upload_now is False
+
+    monkeypatch.setattr(
+        consent_runtime_module, "_resolved_role", ProcessRole.HEADLESS_CLI
+    )
+    monkeypatch.setattr(consent_runtime_module, "read_stored_consent", lambda: None)
+    assert consent_runtime_module.refresh_decision().upload_now is False

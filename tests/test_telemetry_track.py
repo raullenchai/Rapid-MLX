@@ -24,7 +24,6 @@ import rapid_mlx.cli as cli
 from rapid_mlx.telemetry import (
     common_props,
     consent_runtime,
-    emit,
     posthog_sender,
     redact,
     state,
@@ -93,7 +92,7 @@ def isolated_emit(monkeypatch, tmp_path):
     monkeypatch.setattr(rapid_mlx, "__version__", "0.15.1")
     monkeypatch.setattr(track_module.common_props, "read_platform_facts", lambda: FACTS)
     monkeypatch.setattr(state, "get_or_create_client_id", lambda: INSTALL_ID)
-    monkeypatch.setattr(emit, "session_id", lambda: SESSION_ID)
+    monkeypatch.setattr(state, "session_id", lambda: SESSION_ID)
     monkeypatch.setattr(track_module.build_gate, "official_build", lambda: STAMP)
     monkeypatch.setattr(consent_runtime, "upload_allowed", lambda: True)
     monkeypatch.setattr(
@@ -173,7 +172,7 @@ def test_unofficial_build_gate_precedes_every_context_side_effect(monkeypatch):
         lambda: pytest.fail("client id touched before build gate"),
     )
     monkeypatch.setattr(
-        emit,
+        state,
         "session_id",
         lambda: pytest.fail("session id touched before build gate"),
     )

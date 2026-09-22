@@ -115,7 +115,7 @@ has been shown.
 
 To turn reporting back off, use any of:
 
-  rapid-mlx telemetry disable
+  rapid-mlx telemetry off
   export RAPID_MLX_TELEMETRY=0
   export DO_NOT_TRACK=1
 
@@ -127,7 +127,7 @@ event shape and the project README's Telemetry section for details.
 NOTICE_LINE: Final[str] = (
     "rapid-mlx: anonymous usage reporting is ON (PostHog Cloud, US; no "
     "IP/location, no prompts or outputs). Turn off: rapid-mlx telemetry "
-    "disable | RAPID_MLX_TELEMETRY=0 | DO_NOT_TRACK=1. Details: "
+    "off | RAPID_MLX_TELEMETRY=0 | DO_NOT_TRACK=1. Details: "
     "https://rapidmlx.com/docs/telemetry"
 )
 
@@ -135,7 +135,7 @@ _NOTICE_MIGRATION_LINE: Final[str] = (
     "rapid-mlx: anonymous usage reporting was turned on by default in this "
     "version, including for installs that had turned it off (PostHog Cloud, "
     "US; no IP/location, no prompts or outputs). Turn off: rapid-mlx telemetry "
-    "disable | RAPID_MLX_TELEMETRY=0 | DO_NOT_TRACK=1. Details: "
+    "off | RAPID_MLX_TELEMETRY=0 | DO_NOT_TRACK=1. Details: "
     "https://rapidmlx.com/docs/telemetry"
 )
 

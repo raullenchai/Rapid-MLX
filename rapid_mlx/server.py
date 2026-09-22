@@ -817,21 +817,6 @@ async def lifespan(app: FastAPI):
                 await _engine.start()
             _emit_primary_model_served_once(_engine)
         except Exception as _start_exc:
-            # Opt-in telemetry (Phase 2.2 error wiring): serve's real weight
-            # load happens HERE in the async lifespan, not in the CLI's
-            # ``load_model()`` (which only does config read + MLLM/LLM
-            # type-detection). A failure here is THE ``serve`` model-load
-            # failure — the CLI-side wiring (PR #1207) cannot see it. Record
-            # a bucketed error (allowlisted category + traceback fingerprint
-            # only, never the model name / message / path), then re-raise so
-            # startup still aborts exactly as before. ``emit.error`` is
-            # ``is_enabled()``-gated and ``@_safe`` → a no-op when telemetry
-            # is off and can never mask the failure.
-            from rapid_mlx.telemetry import emit as _telemetry_emit  # pragma: no cover
-
-            _telemetry_emit.error(
-                category="model_load_failure", exc=_start_exc, phase="startup"
-            )
             from rapid_mlx.telemetry.model_events import emit_model_serve_failed
 
             emit_model_serve_failed(
@@ -1041,14 +1026,6 @@ async def lifespan(app: FastAPI):
     # the production callsite rather than wrapping ``to_thread``
     # test-side (codex PR #667 round 1 BLOCKING-3).
     #
-    # Opt-in telemetry (Phase 2.2 error wiring): a crash while tearing
-    # down is exactly the "process disappeared during shutdown" shape the
-    # signal-observability hooks above were installed for. Record a
-    # bucketed ``shutdown_traceback`` error (allowlisted category/phase +
-    # traceback fingerprint only — no message text or path), then re-raise
-    # so the shutdown path behaves identically. ``emit.error`` is
-    # ``is_enabled()``-gated and ``@_safe`` → a no-op when telemetry is off
-    # and never masks the failure.
     try:
         from .routes.agents import close_agent_service
         from .routes.video import shutdown_video_jobs
@@ -1082,29 +1059,7 @@ async def lifespan(app: FastAPI):
             await _engine.stop()
             logger.info("Engine stopped")
     except Exception as _shutdown_exc:
-        from rapid_mlx.telemetry import emit as _telemetry_emit  # pragma: no cover
-
-        _telemetry_emit.error(
-            category="shutdown_traceback", exc=_shutdown_exc, phase="shutdown"
-        )
         raise
-
-    # Round 19 codex review (PR #532): Drive the telemetry session_end
-    # path here too. ``atexit`` does NOT fire on SIGTERM (systemd /
-    # Docker / Kubernetes graceful stop), so an opted-in user running
-    # ``rapid-mlx serve`` under a service manager would otherwise lose
-    # the lifecycle end event. uvicorn drives this lifespan shutdown
-    # on SIGTERM, so the hook lands. The latch inside the telemetry
-    # emit module ensures the event is sent exactly once even if
-    # atexit fires later as well.
-    try:
-        from rapid_mlx.telemetry import emit as _telemetry_emit
-
-        _telemetry_emit.fire_session_end_hook()
-    except Exception:
-        # Telemetry must never crash the shutdown path. Logged at
-        # debug only -- this is best-effort cleanup.
-        logger.debug("telemetry session_end hook failed (non-fatal)")
 
     _flush_v2_telemetry()
 

@@ -586,16 +586,14 @@ def _hard_exit_after_serve() -> None:
     tears down every thread atomically, so the race window cannot open.
 
     ``os._exit`` also skips the atexit pass, and that inventory is
-    load-bearing, not best-effort: the telemetry queue drain +
-    ``session_end`` hook (``telemetry/queue.py`` and the CLI session
-    atexit), the vision media tempfile reaper
-    (``models/mllm.py::TempFileManager``), the ephemeral video job-store
-    rmtree (``routes/video.py``), and the opt-in ``RAPID_PYSAMPLE``
-    report. So the atexit pass is run EXPLICITLY right before exiting —
-    same hooks, same LIFO order, while the process state is still fully
-    intact. Everything that must be persisted by the graceful shutdown
-    itself (prefix cache, memory cache) is already flushed by the
-    FastAPI lifespan shutdown handler BEFORE ``uvicorn.run`` returns.
+    load-bearing, not best-effort: the PostHog sender drain, the vision media
+    tempfile reaper (``models/mllm.py::TempFileManager``), the ephemeral video
+    job-store rmtree (``routes/video.py``), and the opt-in ``RAPID_PYSAMPLE``
+    report. So the atexit pass is run EXPLICITLY right before exiting — same
+    hooks, same LIFO order, while the process state is still fully intact.
+    Everything that must be persisted by the graceful shutdown itself (prefix
+    cache, memory cache) is already flushed by the FastAPI lifespan shutdown
+    handler BEFORE ``uvicorn.run`` returns.
 
     Only the SUCCESS path calls this. Bind failures and other
     ``SystemExit``/exception paths keep their normal propagation so
@@ -5726,16 +5724,6 @@ def serve_command(args):
         print(f"\n  Error: {e}\n")
         sys.exit(2)
     except Exception as e:
-        # Opt-in telemetry (Phase 2.2 error wiring): record that a model
-        # failed to load on the ``serve`` path. The payload carries only a
-        # bucketed category + a traceback fingerprint (basename:func:lineno
-        # + exception class) — never the model name, message text, or path.
-        # ``emit.error`` is ``is_enabled()``-gated and ``@_safe``, so it is a
-        # no-op when telemetry is off and can never mask the user-facing
-        # error handled just below.
-        from rapid_mlx.telemetry import emit as _telemetry_emit  # pragma: no cover
-
-        _telemetry_emit.error(category="model_load_failure", exc=e, phase="startup")
         from rapid_mlx.telemetry.model_events import emit_model_serve_failed
 
         emit_model_serve_failed(
@@ -6587,13 +6575,6 @@ def bench_command(args):
             else:
                 model, tokenizer = model_load_executor.submit(load, args.model).result()
         except Exception as e:
-            # Opt-in telemetry (Phase 2.2 error wiring): mirror the
-            # ``serve`` path — record a bucketed model-load failure
-            # (category + traceback fingerprint only, no model name /
-            # message / path). ``is_enabled()``-gated + ``@_safe``.
-            from rapid_mlx.telemetry import emit as _telemetry_emit
-
-            _telemetry_emit.error(category="model_load_failure", exc=e, phase="startup")
             from rapid_mlx.telemetry.model_events import emit_model_serve_failed
 
             emit_model_serve_failed(
@@ -8516,18 +8497,8 @@ _pending_model_pull_event: tuple[object, object, object, bool] | None = None
 
 
 def _emit_pull_activation() -> None:
-    """Record one successful user pull, regardless of artifact count."""
+    """Record one successful v2 model pull after all runtime assets complete."""
 
-    # Activation funnel (docs/telemetry-activation.md): a successful pull is
-    # the ``model_pull`` milestone (an activation, NOT inference-engaged).
-    # Runtime assets are part of the same user command, so emit only after the
-    # primary checkpoint and every declared asset have completed.
-    from rapid_mlx.telemetry import emit as _telemetry_emit
-    from rapid_mlx.telemetry.activation_spec import ACTIVATION_MODEL_PULL, SURFACE_CLI
-
-    _telemetry_emit.activation(
-        activation_kind=ACTIVATION_MODEL_PULL, surface=SURFACE_CLI
-    )
     if _pending_model_pull_event is not None:
         repo_id, source, snapshot_dir, transferred = _pending_model_pull_event
         if transferred:
@@ -11779,36 +11750,29 @@ def feedback_command(args) -> None:
 
 
 def telemetry_command(args) -> None:
-    """Manage anonymous usage telemetry — see Issue #236.
+    """Inspect or change anonymous usage telemetry.
 
-    Five actions: ``status`` / ``enable`` / ``disable`` / ``preview`` /
-    ``reset``. Defaults to ``status`` when no action given so users can
-    type ``rapid-mlx telemetry`` and immediately see what's set up.
-
-    ``reset`` emits no consent event by owner decision. Removing a stored
-    ``consent: false`` is therefore an implicit re-opt-in with no event.
+    ``reset`` emits no event by owner decision. It deletes the stored
+    preference, which makes the next run a fresh install under the 0.15.0
+    default-on policy.
     """
-    # Imports kept inside the function so the telemetry package is only
-    # loaded when actually needed — keeps `--help` and unrelated
-    # subcommands cheap.
     import json
+    import uuid
 
     import yaml
 
-    from rapid_mlx import __version__ as rapid_mlx_version  # pragma: no cover
-    from rapid_mlx.telemetry import (  # pragma: no cover - dispatch boundary
-        consent_source,
-        get_consent_state,
+    from rapid_mlx import __version__ as rapid_mlx_version
+    from rapid_mlx.telemetry import (
+        build_gate,
+        common_props,
+        consent_runtime,
+        envelope,
         get_or_create_client_id,
-        is_enabled,
         record_consent,
-        reset_state,
+        state,
     )
-    from rapid_mlx.telemetry.schema import (  # pragma: no cover - dispatch boundary
-        sample_preview_payload,
-        sample_request_preview_payload,
-    )
-    from rapid_mlx.telemetry.state import (  # pragma: no cover
+    from rapid_mlx.telemetry.posthog_sender import POSTHOG_BATCH_URL
+    from rapid_mlx.telemetry.state import (
         client_id_path,
         consent_path,
     )
@@ -11817,27 +11781,40 @@ def telemetry_command(args) -> None:
     cli_no = getattr(args, "no_telemetry", False)
 
     if action == "status":
-        state = get_consent_state()
-        print()
-        print(
-            f"  Telemetry: {'ENABLED' if is_enabled(cli_no_telemetry=cli_no) else 'disabled'}"
+        decision = consent_runtime.resolve()
+        stamp = build_gate.official_build()
+        reporting = decision.upload_now and not cli_no
+        upload = stamp is not None and consent_runtime.upload_allowed() and not cli_no
+        install_id = state.read_client_id()
+        build = (
+            f"official ({stamp.channel})"
+            if stamp is not None
+            else "unofficial build — never transmits"
         )
-        print(f"  Source:    {consent_source(cli_no_telemetry=cli_no)}")
-        if state is not None:
-            print(
-                f"  Consent:   {state.consent} (recorded {state.prompted_at}, "
-                f"by rapid-mlx {state.prompted_version})"
-            )
-        else:
-            print("  Consent:   never prompted")
-        print(f"  Files:     {consent_path()}")
-        print(f"             {client_id_path()}")
+        reason = decision.reason
+        if reason == "kill_switch":
+            reason = f"{reason} ({state.consent_source(cli_no_telemetry=cli_no)})"
         print()
-        print("  Subcommands:  enable | disable | preview | reset")
+        print(f"  Reporting:  {'ON' if reporting else 'OFF'}")
+        print(f"  Reason:     {reason}")
+        print(f"  Upload:     {'allowed' if upload else 'blocked'}")
+        print(f"  Build:      {build}")
+        shown_install_id = f"{install_id[:4]}…" if install_id else "(not created)"
+        print(f"  Install ID: {shown_install_id}")
+        print(
+            "  Sent to:    PostHog Cloud (US). No IP, no location, no per-person profile."
+        )
+        print(
+            "  Turn off:   rapid-mlx telemetry off | RAPID_MLX_TELEMETRY=0 | "
+            "DO_NOT_TRACK=1"
+        )
+        print(f"  Files:      {consent_path()}, {client_id_path()}")
+        print("  Rotate ID:  rapid-mlx telemetry reset-id")
+        print("  Details:    https://rapidmlx.com/docs/telemetry")
         print()
         return
 
-    if action == "enable":
+    if action in ("on", "enable"):
         try:
             record_consent(True, rapid_mlx_version=rapid_mlx_version)
         except (OSError, ValueError, yaml.YAMLError) as exc:
@@ -11852,12 +11829,12 @@ def telemetry_command(args) -> None:
         get_or_create_client_id()
         print()
         print("  Telemetry: ENABLED. Thanks for helping us prioritise.")
-        print("  Disable anytime with `rapid-mlx telemetry disable`.")
+        print("  Turn off anytime with `rapid-mlx telemetry off`.")
         print("  Preview what we'd send: `rapid-mlx telemetry preview`.")
         print()
         return
 
-    if action == "disable":
+    if action in ("off", "disable"):
         _track_telemetry_opted_out()
         try:
             record_consent(False, rapid_mlx_version=rapid_mlx_version)
@@ -11869,49 +11846,101 @@ def telemetry_command(args) -> None:
             raise SystemExit(1) from None
         print()
         print("  Telemetry: disabled. No data will be sent.")
-        print("  Re-enable anytime with `rapid-mlx telemetry enable`.")
+        print("  Turn it on again with `rapid-mlx telemetry on`.")
         print()
         return
 
     if action == "preview":
-        cid = get_or_create_client_id()
-        session_sample = sample_preview_payload(
-            client_id=cid, rapid_mlx_version=rapid_mlx_version
+        stamp = build_gate.official_build()
+        upload = stamp is not None and consent_runtime.upload_allowed() and not cli_no
+        cid = (
+            get_or_create_client_id()
+            if upload
+            else (state.read_client_id() or str(uuid.uuid4()))
         )
-        request_sample = sample_request_preview_payload(
-            client_id=cid, rapid_mlx_version=rapid_mlx_version
+        common = common_props.build_common_props(
+            surface="cli",
+            install_id=cid,
+            session_id=state.session_id(),
+            app_version=rapid_mlx_version,
+            channel=stamp.channel if stamp is not None else "stable",
+            nth_model_served=None,
+            days_since_first_run_bucket=None,
+        )
+        sample = (
+            envelope.build_batch_item("app_opened", {}, common)
+            if common is not None
+            else None
         )
         print()
-        print("  Sample payloads (this is exactly the shape we send):")
+        print(f"  POST {POSTHOG_BATCH_URL}")
+        print("  Sample v2 app_opened batch item (nothing is sent by this command):")
+        print(json.dumps(sample, indent=2, sort_keys=True))
         print()
-        print("  session event:")
-        print(json.dumps(session_sample.to_dict(), indent=2))
+        return
+
+    if action == "reset-id":
+        try:
+            state.rotate_client_id()
+        except OSError as exc:
+            print(
+                f"rapid-mlx: could not rotate telemetry identity: {exc}",
+                file=sys.stderr,
+            )
+            raise SystemExit(1) from None
         print()
-        print("  request event (per completion, sampled) — only bucketed")
-        print("  numbers + booleans; never prompt or response text. The")
-        print("  output_degenerate flag is computed locally and sent as a")
-        print("  bare true/false (#1250):")
-        print(json.dumps(request_sample.to_dict(), indent=2))
+        print("  Telemetry client ID rotated. Consent is unchanged.")
         print()
-        if not is_enabled(cli_no_telemetry=cli_no):
-            print("  Telemetry is currently disabled — nothing is actually sent.")
-            print()
         return
 
     if action == "reset":
-        try:
-            reset_state()
-        except OSError as exc:
-            print()
-            print(f"  Reset incomplete — some files could not be removed: {exc}")
-            print("  Telemetry state may still be present; check ~/.rapid-mlx/.")
-            print()
-            # Non-zero exit so automation (`rapid-mlx telemetry reset` in a
-            # script) sees the failure instead of a false success — state may
-            # still be on disk and telemetry may still be enabled.
-            sys.exit(1)
+        result = state.reset_state()
         print()
-        print("  Removed consent + client-id files. Next interactive run re-prompts.")
+        if result.incomplete:
+            labels = (
+                ("consent file", result.consent_file),
+                ("consent lock", result.consent_lock),
+                ("client ID", result.client_id),
+            )
+            problems = [
+                f"{label} ({'/'.join(item.error_types)})"
+                for label, item in labels
+                if item.existed and not item.succeeded
+            ]
+            marker_error_types = tuple(
+                dict.fromkeys(
+                    error_type
+                    for item in result.activation_markers
+                    if item.existed and not item.succeeded
+                    for error_type in item.error_types
+                )
+            )
+            if marker_error_types:
+                problems.append(
+                    f"activation marker(s) ({'/'.join(marker_error_types)})"
+                )
+            remained = ", ".join(problems)
+            if remained:
+                print(f"  Reset incomplete: {remained} remained.")
+            if not result.activation_marker_scan.succeeded:
+                errors = "/".join(result.activation_marker_scan.error_types)
+                print(f"  Activation marker scan ({errors}) failed.")
+            if result.client_id_rotation_errors:
+                errors = "/".join(result.client_id_rotation_errors)
+                print(f"  Client ID rotation ({errors}) failed.")
+            print("  This command emits no telemetry event.")
+            print()
+            raise SystemExit(1)
+        if not result.found_state:
+            print("  Reset complete: no stored preference or client ID found.")
+            print("  This command emits no telemetry event.")
+            print()
+            return
+        print("  `reset` deletes your stored preference; client ID rotated.")
+        print(
+            "  The desktop clears its answer; the next run is treated as a new install."
+        )
+        print("  This command emits no telemetry event.")
         print()
         return
 
@@ -14199,12 +14228,12 @@ Examples:
         help=argparse.SUPPRESS,
     )
 
-    # Telemetry subcommand — opt-in anonymous usage data (Issue #236).
+    # Telemetry subcommand — default-on anonymous usage data.
     # See rapid_mlx/telemetry/ for what we collect / don't collect, and
     # the README "Telemetry" section for the user-facing summary.
     telemetry_parser = subparsers.add_parser(
         "telemetry",
-        help="Manage anonymous usage telemetry (opt-in)",
+        help="Manage anonymous usage telemetry",
     )
     telemetry_subparsers = telemetry_parser.add_subparsers(
         dest="telemetry_action",
@@ -14213,19 +14242,21 @@ Examples:
     telemetry_subparsers.add_parser(
         "status", help="Show whether telemetry is enabled and why"
     )
-    telemetry_subparsers.add_parser(
-        "enable", help="Opt in to anonymous usage telemetry"
-    )
-    telemetry_subparsers.add_parser(
-        "disable", help="Opt out of anonymous usage telemetry"
-    )
+    telemetry_subparsers.add_parser("on", help="Turn anonymous usage telemetry on")
+    telemetry_subparsers.add_parser("off", help="Turn anonymous usage telemetry off")
+    telemetry_subparsers.add_parser("enable", help="Alias for telemetry on")
+    telemetry_subparsers.add_parser("disable", help="Alias for telemetry off")
     telemetry_subparsers.add_parser(
         "preview",
         help="Print a sample payload showing exactly what telemetry would send",
     )
     telemetry_subparsers.add_parser(
+        "reset-id",
+        help="Rotate the client ID without changing consent",
+    )
+    telemetry_subparsers.add_parser(
         "reset",
-        help="Delete the consent + client-id files (next run re-prompts)",
+        help="Delete the stored preference and rotate the client ID",
     )
 
     # Feedback — the voice channel. Telemetry says what people do; only
@@ -14407,13 +14438,10 @@ def main():
         # user's actual command.
         pass
 
-    # First-run consent prompt — fires at most once per machine, only on
-    # interactive subcommands when stdin is a tty. Safe no-op otherwise.
-    # Must run *before* heavy subcommand work so the user sees the
-    # disclosure before any model load logs scroll past.
-    _just_collected_consent = False
+    # Resolve the v2 default-on decision and deliver any required disclosure
+    # before heavy subcommand work or the first lifecycle event.
     if getattr(args, "command", None) is not None:
-        from rapid_mlx.telemetry import consent_runtime, maybe_prompt_for_consent
+        from rapid_mlx.telemetry import consent_runtime
         from rapid_mlx.telemetry.state import set_cli_kill_switch
 
         # ``--no-telemetry`` is a per-run override; thread it into the
@@ -14421,189 +14449,8 @@ def main():
         # having to plumb the flag through every signature.
         set_cli_kill_switch(getattr(args, "no_telemetry", False))
 
-        # Telemetry v2 default-on wiring (T11): resolve the consent
-        # decision, deliver the disclosure notice to stderr, then apply
-        # the locked, merging write-back -- in that order, before any
-        # emit or heavy subcommand work. The v1 prompt below remains only
-        # for a pre-cutoff runtime until T13 removes the v1 wire.
-        _consent_decision = consent_runtime.startup(
-            long_lived=getattr(args, "command", None) == "serve"
-        )
+        consent_runtime.startup(long_lived=getattr(args, "command", None) == "serve")
         _start_v2_lifecycle(getattr(args, "command", None))
-
-        # The legacy v1 opt-in prompt is only meaningful before the v2
-        # default-on cutoff. Post-cutoff, the v2 disclosure is the complete
-        # consent flow; calling both would present contradictory choices.
-        from rapid_mlx.telemetry.consent_decision import REASON_PRE_CUTOFF_RUNTIME
-
-        if _consent_decision.reason == REASON_PRE_CUTOFF_RUNTIME:
-            _just_collected_consent = maybe_prompt_for_consent(
-                args.command,
-                cli_no_telemetry=getattr(args, "no_telemetry", False),
-            )
-
-    # Telemetry session lifecycle — emit session_start once we know what
-    # subcommand we're dispatching, register an atexit hook for
-    # session_end so the duration covers the whole interactive run
-    # (including ``rapid-mlx chat`` REPLs and ``serve`` processes that
-    # only exit on Ctrl-C). emit.* helpers are individually guarded by
-    # ``is_enabled()`` — when telemetry is off the calls are cheap
-    # no-ops, no payload constructed.
-    #
-    # The ``telemetry`` subcommand itself is excluded: ``telemetry
-    # disable`` / ``reset`` would otherwise queue an event on the way to
-    # turning telemetry OFF — a small but ugly "phone home before
-    # silencing the phone" surprise that codex round 1 caught. ``status``
-    # / ``preview`` / ``enable`` are excluded for consistency; their
-    # observability value is near zero.
-    #
-    # ``feedback`` is excluded on the same principle: the command whose
-    # whole promise is "tell us what you want, nothing is attached" must
-    # not be the one command that quietly posts a session event.
-    #
-    # ``_just_collected_consent`` skips the run that JUST collected
-    # first-time opt-in (round 3 codex catch): the disclosure copy
-    # promises "nothing from before this prompt or from a session you
-    # opted out of", and the current invocation's argv was determined
-    # BEFORE the user said yes. The next run starts the contract clean.
-    #
-    # ``_session_models_requested`` is hoisted outside the conditional so
-    # the alias-resolution block below can append to it unconditionally
-    # without a NameError when telemetry was skipped. The closure
-    # passed to ``session_end`` reads the same list, so populate-then-
-    # emit is naturally ordered.
-    #
-    # Round 19 codex catch on the naming: this list captures models
-    # the user's invocation REQUESTED -- the alias passed argparse
-    # validation -- NOT models the loader confirmed it loaded. A
-    # declined auto-pull or a load failure later in the subcommand
-    # handler still leaves the entry here, which the lifecycle event
-    # surfaces verbatim. Phase 2.2 will replace this with confirmed
-    # load events emitted from ``rapid_mlx/engine/loader.py``; until
-    # then, the field semantics is "alias the session was for" and the
-    # helper docstring spells this out.
-    _session_models_requested: list[str] = []
-    if (
-        getattr(args, "command", None) is not None
-        and args.command not in ("telemetry", "feedback")
-        and not _just_collected_consent
-    ):
-        import atexit as _atexit
-        import sys as _sys
-        import time as _time
-
-        from rapid_mlx.telemetry import emit as _telemetry_emit
-
-        _session_subcommand = args.command
-        _session_started_at = _time.monotonic()
-        # Round 19 codex catch: extract flag names HERE so raw argv
-        # tokens (which include flag VALUES) never cross into the
-        # telemetry helper signatures. The disclosure promise "values
-        # are never even read" is now literally true at the function-
-        # call boundary.
-        from rapid_mlx.telemetry.redact import (
-            hash_flag_names as _telemetry_extract_flag_names,
-        )
-
-        _session_flag_names = _telemetry_extract_flag_names(_sys.argv[1:])
-        # #1272 activation-funnel signals, computed HERE (before dispatch)
-        # where the argparse result is available. Both are session metadata,
-        # never content.
-        #   - first_session: claim the one-time local marker. This block is
-        #     already skipped on the ``_just_collected_consent`` run (the
-        #     disclosure promises "nothing from before this prompt"), so the
-        #     marker is claimed on the first RECORDED session -- exactly once
-        #     per client -- not the first-ever binary run. That is the funnel
-        #     semantic we want ("first session we recorded from this new
-        #     client"); see ``mark_first_session`` for the full rationale
-        #     (codex #1273). Runs regardless of telemetry on/off within this
-        #     block so a later opt-in still sees the marker already set.
-        #   - auto_selected: ``chat`` with no positional model (nargs="?"
-        #     default None) is exactly the auto-select-the-starter path
-        #     (see ``first_run.select_chat_default``), so the wizard's
-        #     contribution to activation is attributable.
-        from rapid_mlx.first_run import mark_first_session as _mark_first_session
-
-        _first_session = _mark_first_session()
-        _auto_selected = (
-            _session_subcommand == "chat" and getattr(args, "model", None) is None
-        )
-        # Round 19 codex NIT: session_start sees an empty IMMUTABLE
-        # snapshot of models_loaded so it does not depend on whether
-        # ``emit.session_start()`` eagerly copies its input. The closure-
-        # captured list keeps mutating until session_end takes its own
-        # snapshot below.
-        _telemetry_emit.session_start(
-            subcommand=_session_subcommand,
-            flag_names=_session_flag_names,
-            models_loaded=(),
-            first_session=_first_session,
-            auto_selected=_auto_selected,
-        )
-
-        def _emit_session_end() -> None:
-            try:
-                # Snapshot the closure-captured list to an immutable
-                # tuple so the payload reflects the exact state at this
-                # call (round 19 NIT).
-                _models_snapshot = tuple(_session_models_requested)
-                _telemetry_emit.session_end(
-                    subcommand=_session_subcommand,
-                    duration_seconds=int(_time.monotonic() - _session_started_at),
-                    models_loaded=_models_snapshot,
-                )
-                # Round 5 codex review caught that the atexit handler
-                # for the queue's ``shutdown`` is registered inside
-                # ``session_start`` (LIFO → runs after this handler),
-                # but relying on that ordering is fragile. Force a
-                # synchronous drain here so ``session_end`` actually
-                # lands regardless of atexit ordering quirks. Idempotent
-                # — the queue's own ``shutdown`` will be a no-op when
-                # it runs later.
-                #
-                # ``session_end`` is best-effort by design (round 7
-                # codex catch): the queue's own ``SHUTDOWN_BUDGET_S``
-                # (2 s) caps user-visible exit latency. A slow or
-                # blackholed collector drops the event — that is the
-                # right trade-off, because making the user wait
-                # ~12 s on every ``serve`` Ctrl-C just to file a
-                # better stat is hostile UX.
-                #
-                # Round 19 codex review closed the previous round-17
-                # SIGTERM gap: ``register_session_end_hook`` is wired
-                # below so the FastAPI lifespan shutdown in
-                # ``rapid_mlx.server`` calls this same function on
-                # SIGTERM (systemd / Docker / Kubernetes graceful
-                # stop). The latch inside the emit module makes the
-                # second invocation a no-op so the event lands exactly
-                # once regardless of which path fires first.
-                #
-                # ``_queue is None`` (telemetry was disabled, so
-                # ``session_end`` no-op'd and never instantiated the
-                # singleton) skips ``get_queue()`` — round 7 catch —
-                # otherwise we'd spawn a daemon thread during
-                # interpreter shutdown for nothing.
-                try:
-                    if _telemetry_emit._queue is not None:
-                        _telemetry_emit._queue.shutdown()
-                except BaseException:
-                    pass
-            except BaseException:
-                # atexit handlers are run during interpreter shutdown;
-                # anything that fires here — including a stray
-                # ``KeyboardInterrupt`` or ``SystemExit`` raised inside
-                # redaction / queue code mid-teardown — is purely noise
-                # at this point because the process is already exiting.
-                # Round 9 codex review caught the previous ``Exception``
-                # catch as too narrow for an atexit context.
-                return
-
-        # Register the same callable for both teardown paths. The
-        # latch in ``fire_session_end_hook`` ensures it runs once
-        # regardless of which path (FastAPI lifespan shutdown OR cli
-        # atexit fallback) fires first.
-        _telemetry_emit.register_session_end_hook(_emit_session_end)
-        _atexit.register(_telemetry_emit.fire_session_end_hook)
 
     # First-run auto-select: ``chat`` / ``run`` invoked with no model arg.
     # Resolve the starter alias HERE — before the alias→path resolution below —
@@ -14748,14 +14595,6 @@ def main():
                     print(f"  Alias: {args.model} → {_audio_hf_id}")
                     args._original_alias = args.model
                     args.model = _audio_hf_id
-        # Round 16 codex catch: record the resolved (or already-canonical)
-        # model so ``session_end`` can report what this invocation loaded.
-        # ``telemetry_model_id`` inside the emit helper reduces this to a
-        # catalog alias / proven-public repo id / ``<local>`` / ``<custom>``,
-        # so we don't need to filter here. Captured after the error-fail path so we never
-        # record a model that failed validation.
-        _session_models_requested.append(args.model)
-
     # --- BEGIN B2: auto-pull confirmation gate -------------------------
     # For subcommands that may trigger a first-time download of a large
     # repo (chat/run/serve/pull/bench), warn the user before kicking off

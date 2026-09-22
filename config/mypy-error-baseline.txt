@@ -112,7 +112,6 @@ rapid_mlx/spec_decode/mtp/qwen3_5_inject.py 5
 rapid_mlx/speculative/ddtree/runtime.py 2
 rapid_mlx/speculative/ddtree/server.py 3
 rapid_mlx/speculative/dflash/server.py 5
-rapid_mlx/telemetry/transport.py 2
 rapid_mlx/tool_parsers/abstract_tool_parser.py 2
 rapid_mlx/tool_parsers/auto_tool_parser.py 1
 rapid_mlx/tool_parsers/deepseek_tool_parser.py 1

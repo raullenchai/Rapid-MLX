@@ -282,20 +282,9 @@ ALLOWED_RAPID_MLX_ENV_VARS: frozenset[str] = frozenset(
         "RAPID_MLX_BASE_URL",
         # Telemetry consent toggle (off/on), not engine routing.
         "RAPID_MLX_TELEMETRY",
-        # Telemetry debug log toggle (stderr trace of POST attempts to
-        # the collector). Pure observability, not engine routing.
+        # Telemetry debug log toggle (stderr trace of v2 internals). Pure
+        # observability, not engine routing.
         "RAPID_MLX_TELEMETRY_DEBUG",
-        # Telemetry collector endpoint override for Phase 2 dev rigs and
-        # local-Worker testing. Production stays on
-        # ``telemetry.rapidmlx.com``; never consulted by the engine.
-        "RAPID_MLX_TELEMETRY_ENDPOINT",
-        # Telemetry request-event sampling rate (0.0–1.0). Bounds the
-        # volume of high-frequency per-API-call ``request`` events so
-        # turning those call sites on doesn't flood the collector. Pure
-        # observability knob — read only by
-        # ``telemetry/emit.py::_request_sample_rate``; never chooses
-        # model / parser / tier / any routing decision.
-        "RAPID_MLX_TELEMETRY_REQUEST_SAMPLE",
         # Port for doctor harness probe checks, not engine routing.
         "RAPID_MLX_PORT",
         # Skip the [Y/n] confirmation prompt before large model downloads

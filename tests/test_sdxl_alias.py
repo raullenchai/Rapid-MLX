@@ -293,7 +293,6 @@ def test_pull_uses_exact_revision_and_data_allowlist(
         "_pull_repository",
         lambda args, **kwargs: calls.append((args.model, kwargs)),
     )
-    monkeypatch.setattr(cli, "_emit_pull_activation", lambda: None)
     cli.pull_command(SimpleNamespace(model=requested))
 
     assert calls == [

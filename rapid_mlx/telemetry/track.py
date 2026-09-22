@@ -68,12 +68,8 @@ def _process_context() -> _ProcessContext | None:
         platform = common_props.read_platform_facts()
         surface = _surface or "cli"
 
-        # Importing emit can initialize no transport; keep it out of module
-        # import so a mere ``import telemetry.track`` stays cheap.
-        from rapid_mlx.telemetry import emit
-
         install_id = state.get_or_create_client_id()
-        session_id = emit.session_id()
+        session_id = state.session_id()
         app_version = rapid_mlx.__version__
         _context = _ProcessContext(
             platform=platform,

@@ -266,7 +266,6 @@ def test_product_alias_pulls_pinned_target_and_mixed_sidecar(monkeypatch):
         "huggingface_hub.snapshot_download", lambda *a, **k: "/snapshot"
     )
     monkeypatch.setattr(artifacts, "verify_mtp_snapshot", lambda path: Path(path))
-    monkeypatch.setattr(cli, "_emit_pull_activation", lambda: None)
     monkeypatch.setattr(
         cli,
         "_check_disk_space",

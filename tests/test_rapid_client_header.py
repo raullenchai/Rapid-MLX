@@ -14,9 +14,6 @@ turns them red — asserting on the constant alone would not.
 
 from __future__ import annotations
 
-import importlib
-from types import SimpleNamespace
-
 import pytest
 
 from rapid_mlx.client_header import (
@@ -79,117 +76,6 @@ def test_every_label_round_trips(label):
 def test_header_is_whitespace_tolerant_but_not_prefix_tolerant():
     assert normalize_caller_agent("curl/8", "  rapid-bench  ") == "rapid-bench"
     assert normalize_caller_agent("curl/8", "rapid-bench-evil") == "curl"
-
-
-# ------------------------------------------------- end-to-end over the route
-
-
-@pytest.fixture
-def telemetry_on(tmp_path, monkeypatch):
-    monkeypatch.setenv("HOME", str(tmp_path))
-    monkeypatch.delenv("RAPID_MLX_TELEMETRY", raising=False)
-
-    import rapid_mlx.telemetry.emit as emit
-    import rapid_mlx.telemetry.state as state
-
-    importlib.reload(state)
-    importlib.reload(emit)
-    emit._reset_for_tests()
-    state.record_consent(True, rapid_mlx_version="0.0.0+test")
-    monkeypatch.setenv("RAPID_MLX_TELEMETRY_REQUEST_SAMPLE", "1")
-    return emit
-
-
-@pytest.fixture
-def captured(telemetry_on, monkeypatch):
-    events: list[dict] = []
-
-    class _StubQueue:
-        def enqueue(self, payload):
-            events.append(payload)
-
-    monkeypatch.setattr(telemetry_on, "get_queue", lambda: _StubQueue())
-    return events
-
-
-class _Engine:
-    preserve_native_tool_format = False
-    tokenizer = SimpleNamespace(
-        chat_template=None,
-        apply_chat_template=lambda *a, **k: "templated",
-        decode=lambda *a, **k: "",
-        encode=lambda *a, **k: [1, 2, 3],
-    )
-
-    async def chat(self, messages, **kwargs):
-        return SimpleNamespace(
-            text="hello there",
-            raw_text="hello there",
-            prompt_tokens=9,
-            completion_tokens=7,
-            finish_reason="stop",
-            tool_calls=None,
-            matched_stop=None,
-            reasoning_text=None,
-            model="test-model",
-        )
-
-
-def _messages_client():
-    from fastapi import FastAPI
-    from fastapi.testclient import TestClient
-
-    from rapid_mlx.config import reset_config
-    from rapid_mlx.routes.anthropic import router
-
-    cfg = reset_config()
-    cfg.engine = _Engine()
-    cfg.model_name = "test-model"
-    cfg.model_registry = None
-    cfg.reasoning_parser_name = None
-
-    app = FastAPI()
-    app.include_router(router)
-    return TestClient(app)
-
-
-def _post(client, headers):
-    return client.post(
-        "/v1/messages",
-        headers=headers,
-        json={
-            "model": "test-model",
-            "max_tokens": 64,
-            "messages": [{"role": "user", "content": "hello"}],
-        },
-    )
-
-
-def test_route_prefers_the_rapid_client_header(captured):
-    pytest.importorskip("mlx")
-    client = _messages_client()
-    resp = _post(
-        client,
-        {"user-agent": "python-httpx/0.27", "x-rapid-client": "rapid-desktop"},
-    )
-    assert resp.status_code == 200, resp.text
-    events = [p["request"] for p in captured if "request" in p]
-    assert events, captured
-    assert events[-1]["caller_agent"] == "rapid-desktop"
-
-
-def test_route_ignores_an_off_list_header(captured):
-    pytest.importorskip("mlx")
-    client = _messages_client()
-    resp = _post(
-        client,
-        {"user-agent": "claude-code/1.0", "x-rapid-client": "acme-internal-tool"},
-    )
-    assert resp.status_code == 200, resp.text
-    events = [p["request"] for p in captured if "request" in p]
-    assert events, captured
-    assert events[-1]["caller_agent"] == "claude-code"
-    assert "acme" not in repr(captured)
 
 
 # ------------------------------------------- every Rapid-owned Python client
