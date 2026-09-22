@@ -105,9 +105,7 @@ def test_real_pull_command_emits_one_primary_event_for_text_and_image(
         args._telemetry_pull_transferred = True
 
     monkeypatch.setattr(cli, "_pull_repository", fake_pull)
-    monkeypatch.setattr(
-        "rapid_mlx.telemetry.emit.activation", lambda **_kwargs: None
-    )
+    monkeypatch.setattr("rapid_mlx.telemetry.emit.activation", lambda **_kwargs: None)
     monkeypatch.setattr(
         track_module, "track", lambda event, props: calls.append((event, props))
     )
@@ -214,7 +212,9 @@ def test_snapshot_size_handles_empty_or_unreadable_revision_directory(
     assert cli._snapshot_size_bytes(empty_repo) == 0
 
 
-def test_pull_command_prepares_image_runtime_assets_after_primary(monkeypatch, tmp_path):
+def test_pull_command_prepares_image_runtime_assets_after_primary(
+    monkeypatch, tmp_path
+):
     snapshot = _make_fake_snapshot(tmp_path / "primary", 1)
     pulls = []
 

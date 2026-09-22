@@ -84,9 +84,7 @@ def serve_error_class(exc: BaseException) -> str:
     # A missing local/Hub shard is an availability failure, not evidence that
     # bytes on disk are corrupt. ModuleNotFoundError is handled separately
     # below because mlx-lm uses it for an unknown architecture module.
-    if isinstance(exc, FileNotFoundError) and not isinstance(
-        exc, ModuleNotFoundError
-    ):
+    if isinstance(exc, FileNotFoundError) and not isinstance(exc, ModuleNotFoundError):
         return "download_failed"
     if isinstance(exc, ModuleNotFoundError):
         missing = exc.name or ""
@@ -121,7 +119,9 @@ def model_type(alias_or_path: object) -> str:
         if profile is None:
             from rapid_mlx.audio.registry import resolve_audio_alias
 
-            return "audio" if resolve_audio_alias(alias_or_path) is not None else "other"
+            return (
+                "audio" if resolve_audio_alias(alias_or_path) is not None else "other"
+            )
         modality = profile.modality
         if modality == "text":
             return "vlm" if profile.supports_image_input else "llm"

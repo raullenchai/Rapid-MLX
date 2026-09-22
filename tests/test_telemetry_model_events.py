@@ -146,7 +146,10 @@ def test_model_type_fails_closed_on_bad_profile(monkeypatch):
     [
         (MemoryError(), "insufficient_memory"),
         (RuntimeError("corrupt safetensor header"), "corrupt_weights"),
-        (ValueError("Model type future_arch not supported."), "unsupported_architecture"),
+        (
+            ValueError("Model type future_arch not supported."),
+            "unsupported_architecture",
+        ),
         (
             ModuleNotFoundError(
                 "No module named 'mlx_lm.models.future_arch'",
@@ -267,7 +270,9 @@ def test_auto_selected_is_not_hardcoded_on_success(monkeypatch, auto_selected):
 @pytest.mark.parametrize("auto_selected", [False, True])
 def test_auto_selected_is_not_hardcoded_on_failure(monkeypatch, auto_selected):
     calls = []
-    monkeypatch.setattr(track_module, "track", lambda _event, props: calls.append(props))
+    monkeypatch.setattr(
+        track_module, "track", lambda _event, props: calls.append(props)
+    )
     model_events.emit_model_serve_failed(
         RuntimeError("load"), alias_or_path="unknown", auto_selected=auto_selected
     )
@@ -322,20 +327,26 @@ class _UnprintableError(Exception):
 
 def test_emitters_never_raise_and_failed_latch_is_not_burned(monkeypatch):
     calls = []
-    monkeypatch.setattr(track_module, "track", lambda event, props, **kw: calls.append(event))
+    monkeypatch.setattr(
+        track_module, "track", lambda event, props, **kw: calls.append(event)
+    )
     monkeypatch.setattr(
         model_id,
         "telemetry_model_id",
-        lambda value: (_ for _ in ()).throw(_UnprintableError())
-        if value == "poison"
-        else "<custom>",
+        lambda value: (
+            (_ for _ in ()).throw(_UnprintableError())
+            if value == "poison"
+            else "<custom>"
+        ),
     )
     monkeypatch.setattr(
         model_id,
         "engine_telemetry_id",
-        lambda engine: (_ for _ in ()).throw(_UnprintableError())
-        if engine == "poison"
-        else "<custom>",
+        lambda engine: (
+            (_ for _ in ()).throw(_UnprintableError())
+            if engine == "poison"
+            else "<custom>"
+        ),
     )
 
     model_events.emit_model_pulled("poison", "hf", 1)
