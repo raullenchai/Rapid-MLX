@@ -100,15 +100,16 @@
         "/v1/audio/transcriptions",
         "/v1/messages",
         "/v1/images/generations",
+        "/v1/responses",
         "other"
       ]
     },
     "caller": {
       "_about": [
         "The label half of telemetry/redact.py _CALLER_AGENT_MARKERS, de-duped,",
-        "plus the two escape hatches normalize_caller_agent() already returns.",
-        "Block 2 adds X-Rapid-Client, which resolves to the SAME labels; the raw",
-        "User-Agent never leaves the machine (sec 1.5)."
+        "plus RAPID_CLIENT_LABELS and the two escape hatches returned by",
+        "normalize_caller_agent(). X-Rapid-Client identifies which first-party",
+        "Rapid surface drove the request; raw headers never leave the machine."
       ],
       "values": [
         "claude-code", "cursor", "aider", "cline", "continue",
@@ -116,6 +117,8 @@
         "langchain", "llamaindex", "ollama",
         "python-httpx", "python-requests", "node-fetch", "axios",
         "curl", "okhttp", "go-http",
+        "rapid-agents", "rapid-bench", "rapid-cli-chat", "rapid-desktop",
+        "rapid-gradio",
         "unknown", "other"
       ]
     },

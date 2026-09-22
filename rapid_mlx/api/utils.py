@@ -1801,11 +1801,28 @@ def validate_content_blocks_for_capabilities(
             else:
                 detail = f"{item_type!r} content blocks"
             if item_type in IMAGE_CONTENT_TYPES and not allow_image:
+                from rapid_mlx.telemetry.inference import emit_capability_rejected
+
+                emit_capability_rejected("image_input_unsupported", model_type="llm")
                 raise UnsupportedContentBlockError(
                     f"Model '{model_name}' is serving text-only; image input "
                     "is unsupported.",
                     code="image_input_unsupported",
                     param="messages.content",
+                )
+            if item_type in VIDEO_CONTENT_TYPES:
+                from rapid_mlx.telemetry.inference import emit_capability_rejected
+
+                emit_capability_rejected(
+                    "video_input_unsupported",
+                    model_type="vlm" if allow_image else "llm",
+                )
+            elif item_type in AUDIO_CONTENT_TYPES:
+                from rapid_mlx.telemetry.inference import emit_capability_rejected
+
+                emit_capability_rejected(
+                    "audio_input_unsupported",
+                    model_type="vlm" if allow_image or allow_video else "llm",
                 )
             raise ValueError(f"Model '{model_name}' does not support {detail}.")
 
@@ -1845,6 +1862,9 @@ def normalize_responses_content_part(item) -> dict:
             normalized_image_url = {"url": url}
         return {"type": "image_url", "image_url": normalized_image_url}
     if item_type == "input_audio":
+        from rapid_mlx.telemetry.inference import emit_capability_rejected
+
+        emit_capability_rejected("audio_input_unsupported")
         raise ValueError("Responses input_audio content blocks are not supported")
     raise ValueError(f"Unsupported Responses content block type: {item_type!r}")
 
@@ -2064,6 +2084,9 @@ def extract_multimodal_content(
                     videos.append(_extract_object_url(item, "video_url"))
 
                 elif item_type in AUDIO_CONTENT_TYPES:
+                    from rapid_mlx.telemetry.inference import emit_capability_rejected
+
+                    emit_capability_rejected("audio_input_unsupported")
                     raise ValueError(
                         "Audio content blocks are not supported on this path."
                     )

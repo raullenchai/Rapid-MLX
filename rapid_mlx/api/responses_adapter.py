@@ -100,6 +100,9 @@ def _raise_unsupported_tool_type(tool_type: str) -> None:
     """
     supported = sorted(SUPPORTED_RESPONSES_TOOL_TYPES)
     aliases = sorted(_RESPONSES_TOOL_TYPE_ALIASES)
+    from rapid_mlx.telemetry.inference import emit_capability_rejected
+
+    emit_capability_rejected("tool_type_unsupported")
     raise HTTPException(
         status_code=400,
         detail={

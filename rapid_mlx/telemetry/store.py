@@ -73,8 +73,10 @@ MAX_KEY_LENGTH = 200
 #: Hard cap on distinct rows in ``counters`` / ``models_served``. A
 #: pathological caller (or a model id that turns out not to be closed
 #: after all) must not grow this file without bound. Past the cap a new
-#: key is ignored; existing keys keep counting.
-MAX_KEYS = 2000
+#: key is ignored; existing keys keep counting. Twelve thousand rows cover
+#: every endpoint/caller/result combination for 35 models; this local SQLite
+#: state remains tiny while avoiding exhaustion on ordinary multi-model hosts.
+MAX_KEYS = 12_000
 
 #: Nothing in here may block a request path. SQLite retries a locked
 #: database internally for at most this long, then raises and we fall

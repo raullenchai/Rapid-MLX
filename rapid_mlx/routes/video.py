@@ -677,6 +677,14 @@ def _video_engine():
 
     engine = get_config().engine
     if engine is None or not getattr(engine, "is_video_gen", False):
+        from rapid_mlx.telemetry.inference import (
+            emit_capability_rejected,
+            model_type_token,
+        )
+
+        emit_capability_rejected(
+            "video_generation_unavailable", model_type=model_type_token(engine)
+        )
         raise HTTPException(
             status_code=409,
             detail={
@@ -837,6 +845,9 @@ def _validate_reference_image(path: Path) -> None:
     try:
         from PIL import Image
     except ImportError as exc:
+        from rapid_mlx.telemetry.inference import emit_capability_rejected
+
+        emit_capability_rejected("runtime_extra_missing", model_type="video-gen")
         raise HTTPException(
             status_code=503,
             detail="image-to-video requires `pip install 'rapid-mlx[video]'`",
@@ -1104,6 +1115,9 @@ async def create_video(
     if negative_prompt is not None:
         negative_prompt = negative_prompt.strip() or None
     if is_ltx25 and (negative_prompt or guidance_scale is not None):
+        from rapid_mlx.telemetry.inference import emit_capability_rejected
+
+        emit_capability_rejected("video_generation_unavailable", model_type="video-gen")
         raise HTTPException(
             status_code=400,
             detail=(

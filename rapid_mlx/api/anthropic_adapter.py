@@ -922,6 +922,9 @@ def _convert_output_config(
     if fmt_type != "json_schema":
         # Mirror the message style of routes/chat.py's 400 responses so
         # error strings on the two surfaces look like siblings.
+        from rapid_mlx.telemetry.inference import emit_capability_rejected
+
+        emit_capability_rejected("structured_output_unsupported")
         raise AnthropicOutputConfigError(
             f"output_config.format.type={fmt_type!r} is not supported on "
             "/v1/messages; only 'json_schema' is accepted. See upstream "

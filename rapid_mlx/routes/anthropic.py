@@ -722,6 +722,15 @@ async def create_anthropic_message(
                         # at the offending block, not a generic union of
                         # everything the guard could in principle reject
                         # (codex r1 NIT).
+                        from rapid_mlx.telemetry.inference import (
+                            emit_capability_rejected,
+                            model_type_token,
+                        )
+
+                        emit_capability_rejected(
+                            "image_input_unsupported",
+                            model_type=model_type_token(engine),
+                        )
                         raise HTTPException(
                             status_code=400,
                             detail=(
@@ -920,6 +929,21 @@ async def create_anthropic_message(
         except HTTPException:
             raise
         except Exception as e:
+            from rapid_mlx.telemetry import inference as _telemetry_inference
+
+            _telemetry_inference.emit_completed_request(
+                model=_served_telemetry_id or "<custom>",
+                endpoint="/v1/messages",
+                caller_agent=(
+                    request.headers.get("user-agent") if request is not None else None
+                ),
+                caller_client=(
+                    request.headers.get("x-rapid-client")
+                    if request is not None
+                    else None
+                ),
+                result="failed",
+            )
             err_msg = str(e)
             err_type = type(e).__name__
             if (
@@ -1201,10 +1225,23 @@ async def create_anthropic_message(
             matched_stop=getattr(output, "matched_stop", None),
         )
 
-        return Response(
+        response = Response(
             content=anthropic_response.model_dump_json(exclude_none=True),
             media_type="application/json",
         )
+        from rapid_mlx.telemetry import inference as _telemetry_inference
+
+        caller_agent, caller_client = _telemetry_inference.request_caller_headers(
+            request
+        )
+        _telemetry_inference.emit_completed_request(
+            model=_served_telemetry_id or "<custom>",
+            endpoint="/v1/messages",
+            caller_agent=caller_agent,
+            caller_client=caller_client,
+            result="ok",
+        )
+        return response
     except asyncio.CancelledError as exc:
         _raise_lifecycle_cancel_or_reraise(engine, exc)
     finally:
@@ -2184,7 +2221,16 @@ async def _stream_anthropic_messages(
         _reasoning_cap_hit = True
         return text[:keep_chars], text[keep_chars:]
 
-    async for output in engine.stream_chat(messages=messages, **chat_kwargs):
+    from rapid_mlx.telemetry import inference as _telemetry_inference
+
+    _generation_stream = _telemetry_inference.emit_failed_on_stream_error(
+        engine.stream_chat(messages=messages, **chat_kwargs),
+        model=served_telemetry_id or "<custom>",
+        endpoint="/v1/messages",
+        caller_agent=caller_agent,
+        caller_client=caller_client,
+    )
+    async for output in _generation_stream:
         delta_text = output.new_text
 
         if hasattr(output, "prompt_tokens") and output.prompt_tokens:
@@ -3171,3 +3217,13 @@ async def _stream_anthropic_messages(
     )
 
     yield f"event: message_stop\ndata: {json.dumps({'type': 'message_stop'})}\n\n"
+
+    from rapid_mlx.telemetry import inference as _telemetry_inference
+
+    _telemetry_inference.emit_completed_request(
+        model=served_telemetry_id or "<custom>",
+        endpoint="/v1/messages",
+        caller_agent=caller_agent,
+        caller_client=caller_client,
+        result="ok",
+    )

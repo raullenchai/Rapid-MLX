@@ -87,7 +87,17 @@ def test_models_route_tags_embedding_alias_exclusively(monkeypatch):
     )
 
 
-def test_serve_rejects_embedding_alias_with_the_embedding_model_hint(capsys):
+def test_serve_rejects_embedding_alias_with_the_embedding_model_hint(
+    monkeypatch, capsys
+):
+    from rapid_mlx.telemetry import inference
+
+    calls: list[tuple[str, str]] = []
+    monkeypatch.setattr(
+        inference,
+        "emit_capability_rejected",
+        lambda value, *, model_type="other": calls.append((value, model_type)),
+    )
     profile = SimpleNamespace(modality="embedding")
     with pytest.raises(SystemExit) as exc_info:
         cli._reject_embedding_alias_serve(profile, "embeddinggemma-300m-6bit")
@@ -95,6 +105,7 @@ def test_serve_rejects_embedding_alias_with_the_embedding_model_hint(capsys):
     err = capsys.readouterr().err
     assert "sentence-embedding alias" in err
     assert "--embedding-model embeddinggemma-300m-6bit" in err
+    assert calls == [("embeddings_unavailable", "embedding")]
 
 
 def test_serve_command_exits_before_any_model_work_for_embedding_alias(

@@ -401,6 +401,38 @@ def test_active_day_claims_before_sender_acceptance(monkeypatch):
     assert calls == ["claim", "capture"]
 
 
+def test_active_day_claim_is_memoized_for_utc_day(monkeypatch):
+    inject_sender(monkeypatch)
+    claims: list[date] = []
+    today = date(2026, 9, 21)
+    monkeypatch.setattr(track_module, "_utc_day", lambda: today)
+    fake_store = SimpleNamespace(claim_active_day=lambda: claims.append(today) or True)
+
+    for _ in range(100):
+        track_module.emit_active_day(_store=fake_store)
+
+    assert claims == [today]
+
+
+def test_active_day_false_claim_is_retried_and_utc_rollover_resets(monkeypatch):
+    sender = inject_sender(monkeypatch)
+    day = [date(2026, 9, 21)]
+    claims = iter([False, True, True])
+    claim_calls: list[None] = []
+    monkeypatch.setattr(track_module, "_utc_day", lambda: day[0])
+    fake_store = SimpleNamespace(
+        claim_active_day=lambda: claim_calls.append(None) or next(claims)
+    )
+
+    track_module.emit_active_day(_store=fake_store)
+    track_module.emit_active_day(_store=fake_store)
+    day[0] = date(2026, 9, 22)
+    track_module.emit_active_day(_store=fake_store)
+
+    assert len(claim_calls) == 3
+    assert [item["event"] for item in sender.items] == ["active_day", "active_day"]
+
+
 def test_active_day_emits_once_when_fresh_store_sees_day_claimed(monkeypatch):
     sender = inject_sender(monkeypatch)
     first_process_store = SimpleNamespace(claim_active_day=lambda: True)

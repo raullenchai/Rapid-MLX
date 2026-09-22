@@ -7,7 +7,7 @@ import math
 import struct
 import time
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Request
 
 from ..api.models import (
     EmbeddingData,
@@ -27,7 +27,9 @@ router = APIRouter()
     "/v1/embeddings",
     dependencies=[Depends(verify_api_key), Depends(check_rate_limit)],
 )
-async def create_embeddings(request: EmbeddingRequest) -> EmbeddingResponse:
+async def create_embeddings(
+    request: EmbeddingRequest, raw_request: Request
+) -> EmbeddingResponse:
     """Create embeddings for the given input text(s)."""
     from ..embedding import EMBEDDINGS_EXTRA_INSTALL_HINT, EmbeddingInputTooLongError
     from ..server import load_embedding_model
@@ -65,6 +67,9 @@ async def create_embeddings(request: EmbeddingRequest) -> EmbeddingResponse:
     # preserved verbatim — base installs without the ``[embeddings]``
     # extra get the same actionable line the CLI probe (H-08) prints.
     if cfg.embedding_model_locked is None:
+        from rapid_mlx.telemetry.inference import emit_capability_rejected
+
+        emit_capability_rejected("embeddings_unavailable")
         raise HTTPException(
             status_code=503,
             detail={
@@ -105,6 +110,9 @@ async def create_embeddings(request: EmbeddingRequest) -> EmbeddingResponse:
             request.model, cfg.embedding_model_locked
         )
         if resolved is None:
+            from rapid_mlx.telemetry.inference import emit_capability_rejected
+
+            emit_capability_rejected("embeddings_unavailable", model_type="embedding")
             raise HTTPException(
                 status_code=400,
                 detail={
@@ -259,7 +267,7 @@ async def create_embeddings(request: EmbeddingRequest) -> EmbeddingResponse:
                 for i, vec in enumerate(embeddings)
             ]
 
-        return EmbeddingResponse(
+        response = EmbeddingResponse(
             data=data,
             model=model_name,
             usage=EmbeddingUsage(
@@ -267,8 +275,25 @@ async def create_embeddings(request: EmbeddingRequest) -> EmbeddingResponse:
                 total_tokens=prompt_tokens,
             ),
         )
+        from rapid_mlx.telemetry import inference as _telemetry_inference
+        from rapid_mlx.telemetry.model_id import engine_telemetry_id
+
+        caller_agent, caller_client = _telemetry_inference.request_caller_headers(
+            raw_request
+        )
+        _telemetry_inference.emit_completed_request(
+            model=engine_telemetry_id(cfg.embedding_engine),
+            endpoint="/v1/embeddings",
+            caller_agent=caller_agent,
+            caller_client=caller_client,
+            result="ok",
+        )
+        return response
 
     except ImportError:
+        from rapid_mlx.telemetry.inference import emit_capability_rejected
+
+        emit_capability_rejected("runtime_extra_missing", model_type="embedding")
         raise HTTPException(
             status_code=503,
             detail="mlx-embeddings not installed. Install with: pip install 'rapid-mlx[embeddings]'",

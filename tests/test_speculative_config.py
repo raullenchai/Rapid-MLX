@@ -334,6 +334,28 @@ def test_speculative_config_mtp_normalizes_to_legacy_spec_decode() -> None:
     assert args._speculative_config.disable_auto_k is True
 
 
+def test_speculative_config_rejects_mllm_with_capability_event(monkeypatch) -> None:
+    from rapid_mlx.cli import _normalize_speculative_config_or_exit
+    from rapid_mlx.telemetry import inference
+
+    calls: list[tuple[str, str]] = []
+    monkeypatch.setattr(
+        inference,
+        "emit_capability_rejected",
+        lambda value, *, model_type="other": calls.append((value, model_type)),
+    )
+    args = _spec_config_args(
+        speculative_config='{"method":"mtp"}',
+        mllm=True,
+    )
+
+    with pytest.raises(SystemExit) as exc_info:
+        _normalize_speculative_config_or_exit(args)
+
+    assert exc_info.value.code == 2
+    assert calls == [("speculative_decoding_unsupported", "vlm")]
+
+
 def test_speculative_config_mtp_populates_runtime_args() -> None:
     from rapid_mlx.cli import _normalize_speculative_config_or_exit
 

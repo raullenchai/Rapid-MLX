@@ -1295,7 +1295,6 @@ def test_serve_command_runs_complete_product_owned_dispatch(monkeypatch, capsys)
     assert "dspark-k4: experimental single-user" in capsys.readouterr().out
 
 
-@pytest.mark.requires_mlx
 @pytest.mark.parametrize(
     ("extra", "message"),
     [
@@ -1305,8 +1304,10 @@ def test_serve_command_runs_complete_product_owned_dispatch(monkeypatch, capsys)
 )
 def test_serve_command_rejects_product_limits(monkeypatch, capsys, extra, message):
     from rapid_mlx import _version_check
+    from rapid_mlx.telemetry import inference
 
     args = _product_serve_args(*extra)
+    telemetry_calls = []
     monkeypatch.setattr(_version_check, "prompt_upgrade_if_available", lambda: False)
     monkeypatch.setattr(
         _version_check, "print_staleness_warning_if_any", lambda **_kwargs: None
@@ -1316,8 +1317,17 @@ def test_serve_command_rejects_product_limits(monkeypatch, capsys, extra, messag
     monkeypatch.setattr(cli, "_check_disk_space", lambda *_a, **_k: None)
     monkeypatch.setattr(artifacts, "download_target_snapshot", lambda: None)
     monkeypatch.setattr(artifacts, "download_mtp_snapshot", lambda: None)
+    monkeypatch.setattr(
+        inference,
+        "emit_capability_rejected",
+        lambda capability, *, model_type="other": telemetry_calls.append(
+            (capability, model_type)
+        ),
+    )
 
     with pytest.raises(SystemExit) as exc:
         cli.serve_command(args)
     assert exc.value.code == 2
     assert message in capsys.readouterr().err
+    expected = [("mcp_unsupported", "llm")] if extra[0] == "--mcp-config" else []
+    assert telemetry_calls == expected
