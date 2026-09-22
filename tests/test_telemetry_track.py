@@ -6,6 +6,7 @@ from __future__ import annotations
 import ast
 import json
 import os
+import socket
 import subprocess
 import sys
 import threading
@@ -774,19 +775,23 @@ def test_server_entrypoint_lifecycle_source_contract():
 
 @pytest.mark.requires_mlx
 def test_server_module_entrypoint_starts_shared_v2_lifecycle(monkeypatch):
+    import rapid_mlx.cli as current_cli
     import rapid_mlx.server as server_module
 
     class StopAfterLifecycleError(Exception):
         pass
 
     calls: list[str] = []
-    monkeypatch.setattr(sys, "argv", ["rapid_mlx.server"])
+    with socket.socket() as probe:
+        probe.bind(("127.0.0.1", 0))
+        port = probe.getsockname()[1]
+    monkeypatch.setattr(sys, "argv", ["rapid_mlx.server", "--port", str(port)])
     monkeypatch.setattr(consent_runtime, "startup", lambda **kwargs: None)
     monkeypatch.setattr(
         track_module, "start_lifecycle", lambda surface: calls.append(surface)
     )
     monkeypatch.setattr(
-        cli,
+        current_cli,
         "_port_preflight_or_die",
         lambda *args, **kwargs: (_ for _ in ()).throw(StopAfterLifecycleError()),
     )
