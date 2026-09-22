@@ -17,7 +17,29 @@ can actually understand.
 
 ## [Unreleased]
 
+## [0.15.0] — 2026-09-22
+
+Rapid-MLX 0.15.0 adds privacy-safe product telemetry with clear local
+controls, expands local image generation and editing with Qwen-Image 2.1,
+and improves Desktop efficiency, reliability, and failure recovery.
+
 ### Added
+- **Privacy-safe telemetry v2 with visible controls.** Official release builds
+  report only validated metadata from a closed registry after the applicable
+  notice has been delivered. The old v1 collector is retired. Users can inspect
+  the live decision and build gate with `rapid-mlx telemetry status`, preview
+  an exact event without sending it, turn reporting off, or reset the local
+  installation identity. Desktop shows the one-time disclosure and exposes the
+  same control in Settings.
+- **Qwen-Image 2.1 generation and editing.** The Server and Images workspace
+  use a dedicated Qwen-Image 2.1 runtime for text-to-image and one-image
+  img2img instead of misrouting the family through the incompatible 1.x path.
+- **Explicit Gemma 4 assistant-sidecar MTP.** Qualified Gemma 4 targets can be
+  paired with a named assistant sidecar without changing ordinary Gemma 4
+  inference or enabling speculation automatically.
+- **A direct feedback route.** `rapid-mlx feedback` and Desktop's Help menu
+  open the community feedback channel without reading telemetry state or
+  attaching diagnostics.
 - **Xiaomi MiMo-V2.6 Flash is in the model picker** as `mimo-v2.6-flash-4bit`
   (experimental, Mac Studio class: 192 GB minimum, about 165 GB resident).
   The 309B-parameter mixture-of-experts model with 15B active parameters
@@ -4006,7 +4028,8 @@ Older versions: see the
 [GitHub Releases page](https://github.com/machinefi/rapid-desktop/releases)
 for auto-generated notes against earlier tags.
 
-[Unreleased]: https://github.com/raullenchai/Rapid-MLX/compare/rapid-mac-v0.14.3...HEAD
+[Unreleased]: https://github.com/raullenchai/Rapid-MLX/compare/rapid-mac-v0.15.0...HEAD
+[0.15.0]: https://github.com/raullenchai/Rapid-MLX/compare/rapid-mac-v0.14.3...rapid-mac-v0.15.0
 [0.14.3]: https://github.com/raullenchai/Rapid-MLX/compare/rapid-mac-v0.14.2...rapid-mac-v0.14.3
 [0.14.2]: https://github.com/raullenchai/Rapid-MLX/compare/rapid-mac-v0.14.1...rapid-mac-v0.14.2
 [0.14.1]: https://github.com/raullenchai/Rapid-MLX/compare/rapid-mac-v0.14.0...rapid-mac-v0.14.1

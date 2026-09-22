@@ -19,9 +19,9 @@
 	<key>CFBundlePackageType</key>
 	<string>APPL</string>
 	<key>CFBundleShortVersionString</key>
-	<string>0.14.3</string>
+	<string>0.15.0</string>
 	<key>CFBundleVersion</key>
-	<string>174</string>
+	<string>175</string>
 	<key>LSMultipleInstancesProhibited</key>
 	<true/>
 	<key>LSMinimumSystemVersion</key>
