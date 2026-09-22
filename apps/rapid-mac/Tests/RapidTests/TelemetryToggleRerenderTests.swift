@@ -74,7 +74,7 @@ struct TelemetryToggleRerenderTests {
         )
     }
 
-    @Test("The setter updates the mirror before recording consent")
+    @Test("The setter updates the mirror and reports a failed durable write")
     func setterUpdatesTheMirror() throws {
         let stripped = try strippedSettingsSource()
         #expect(
@@ -85,8 +85,12 @@ struct TelemetryToggleRerenderTests {
             """
         )
         #expect(
-            stripped.contains("awaitpreviousWrite?.valueawaitTelemetryConsent.record(enabled:enabled)"),
+            stripped.contains("awaitpreviousWrite?.valueletpersisted=awaitTelemetryConsent.record(enabled:enabled)"),
             "The setter must persist the durable choice through the merging consent writer."
+        )
+        #expect(
+            stripped.contains("telemetryEnabled=TelemetryConfig.isEnabledif!persisted{telemetryConsentWriteFailed=true}"),
+            "A failed write must restore the visible stored state and alert the user."
         )
     }
 
