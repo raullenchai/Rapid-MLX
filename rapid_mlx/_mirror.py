@@ -1469,7 +1469,10 @@ def download_with_mirror_fallback(
 ) -> bool:
     """Download ``repo_id`` to the HF cache via R2-first / HF-fallback.
 
-    ``out`` (optional) receives ``out["transferred_bytes"]`` = the total
+    ``out`` (optional) receives ``out["source"]`` = ``"mirror"`` only when
+    every file that needed transfer came from the mirror, otherwise ``"hf"``;
+    this is derived from the per-file outcomes below, never mirror
+    configuration. It also receives ``out["transferred_bytes"]`` = the total
     completed-file bytes of every file actually fetched over the wire this
     pull (R2 + HF-fallback only; warm ``cached`` hits are excluded). This is
     the files' on-disk size after download, NOT a byte-exact wire delta: a
@@ -2164,6 +2167,11 @@ def download_with_mirror_fallback(
     if out is not None:
         out["transferred_bytes"] = transferred_bytes
         out["network_fetch"] = bool(r2_hits) or bool(hf_hits)
+        # A single HF fallback means the mirror did not serve the complete
+        # checkpoint. Warm cache hits are neutral; when every file was already
+        # present, this successful mirror-managed path retains ``mirror`` as
+        # the selected origin rather than guessing from configuration.
+        out["source"] = "hf" if hf_hits or misses else "mirror"
 
     if misses:
         # At least one file we couldn't get from either source. Caller

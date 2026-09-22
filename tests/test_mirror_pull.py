@@ -4351,6 +4351,7 @@ def test_mirror_download_reports_transfer_account_via_out(
     assert out["transferred_bytes"] == 300, (
         "R2 (config.json: 100) + HF (model.safetensors: 200) = 300"
     )
+    assert out["source"] == "hf", "one HF fallback makes the pull source HF"
 
 
 def test_mirror_r2_only_non_lfs_fetch_is_a_transfer(
@@ -4403,6 +4404,7 @@ def test_mirror_r2_only_non_lfs_fetch_is_a_transfer(
     # cross the wire from R2 — the boolean must be True.
     assert out["network_fetch"] is True, "R2-only fetch is still a transfer"
     assert out["transferred_bytes"] == 100
+    assert out["source"] == "mirror"
 
 
 def test_mirror_hf_relink_of_local_blob_is_not_a_fetch(
@@ -4483,6 +4485,7 @@ def test_mirror_hf_relink_of_local_blob_is_not_a_fetch(
         "re-linking a locally-cached blob is NOT a fetch (Codex #2392)"
     )
     assert out["transferred_bytes"] == 0
+    assert out["source"] == "mirror"
 
 
 def test_mirror_non_lfs_warm_relink_reports_cached(
