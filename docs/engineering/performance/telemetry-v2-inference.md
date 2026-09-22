@@ -16,7 +16,7 @@ Worker result after the per-process active-day memo was added:
 `n=500 p50_ms=0.5171 p95_ms=0.6275 max_ms=2.0481`.
 
 The response-path benchmark timed 1,000 calls to the public
-`emit_completed_request()` while the real dedicated telemetry worker performed
+`emit_completed_request()` while the then-current dedicated telemetry worker performed
 the corresponding SQLite update. Each iteration timed only the public call,
 then waited outside the timed region for that real worker item to finish before
 starting the next sample. No latch or replacement worker was used. The test
@@ -24,16 +24,18 @@ suite separately holds the real SQLite write lock in a second process and
 requires both the request-side call and an unrelated `asyncio.to_thread()` call
 to return within 50 ms.
 
-On-loop result: `n=1000 p50_us=4.29 p95_us=5.50 max_us=8.42`. This is executor
-admission/submission latency with an idle queue between samples; it is not a
-claim that scheduling latency is zero. SQLite, active-day, registry, and
-PostHog work run on a dedicated single-worker thread rather than asyncio's
-shared default executor. At most 64 items may be running or queued; a 65th item
-is dropped immediately, so store contention cannot grow an unbounded queue or
-occupy the server's unrelated `asyncio.to_thread()` workers.
+On-loop result: `n=1000 p50_us=4.29 p95_us=5.50 max_us=8.42`. This historical
+measurement used executor admission/submission with an idle queue; review round
+3 replaced that executor with a lazy daemon thread so interpreter shutdown can
+never join a SQLite-blocked telemetry worker. SQLite, active-day, registry, and
+PostHog work still run outside asyncio's shared default executor. At most 64
+items wait in the queue in addition to the item currently running; further
+items are dropped immediately. At process exit queued items are dropped without
+draining or joining, and `fork()` resets the child to a fresh queue and worker
+state.
 
 The worker p50 remains below the T8 1 ms budget, while the request coroutine
-pays the live consent gate plus bounded executor admission and submission.
+pays the live consent gate plus bounded queue admission.
 Successful emits remain after response
 serialization or the streaming terminal marker; generation errors use the
 separate `failed` counter and client disconnects emit nothing.
@@ -54,10 +56,10 @@ inference._record_completed_request(
 
 ## Counter cardinality
 
-The closed registry currently has 8 endpoint values (including `other`), 21
-caller values, and 2 result values: 336 worst-case counter keys per model.
-`store.MAX_KEYS = 12_000` therefore holds every combination for 35 complete
-models (`35 × 336 = 11,760`); the 36th model is where a fully saturated
+The closed registry currently has 8 endpoint values (including `other`), 26
+caller values, and 2 result values: 416 worst-case counter keys per model.
+`store.MAX_KEYS = 12_000` therefore holds every combination for 28 complete
+models (`28 × 416 = 11,648`); the 29th model is where a fully saturated
 worst-case installation begins exhausting new keys. The cap was raised from
 2,000 because that allowed only 5 complete models. Even 12,000 rows remain a
 small local SQLite database, and existing keys continue counting at the cap.

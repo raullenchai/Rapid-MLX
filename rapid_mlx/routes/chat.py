@@ -8284,6 +8284,18 @@ async def stream_chat_completion_guided(
             )
             return f"data: {error_data}\n\n", "data: [DONE]\n\n"
 
+        def _record_model_replacement_failure() -> None:
+            """Count server-side replacement; explicit client cancel is silent."""
+            from rapid_mlx.telemetry import inference as _telemetry_inference
+
+            _telemetry_inference.emit_completed_request(
+                model=served_telemetry_id or "<custom>",
+                endpoint="/v1/chat/completions",
+                caller_agent=caller_agent,
+                caller_client=caller_client,
+                result="failed",
+            )
+
         def _finish_guided_handoff() -> tuple[bool, object | None]:
             finish = getattr(engine, "finish_guided_handoff", None)
             if not callable(finish):
@@ -8302,6 +8314,7 @@ async def stream_chat_completion_guided(
         ) -> tuple[str, str]:
             exc = GuidedGenerationCancelledError(lifecycle_task=lifecycle_task)
             if _consume_guided_lifecycle_cancel(engine, exc):
+                _record_model_replacement_failure()
                 return _model_replacement_terminal_events()
             return _cancelled_terminal_events()
 
@@ -8373,6 +8386,7 @@ async def stream_chat_completion_guided(
             output = await guided_task
         except GuidedGenerationCancelledError as exc:
             if _consume_guided_lifecycle_cancel(engine, exc):
+                _record_model_replacement_failure()
                 for event in _model_replacement_terminal_events():
                     yield event
                 return

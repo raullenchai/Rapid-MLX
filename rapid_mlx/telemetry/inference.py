@@ -3,9 +3,11 @@
 
 from __future__ import annotations
 
+import atexit
+import os
+import queue
 import threading
 from collections.abc import AsyncIterable, AsyncIterator, Callable
-from concurrent.futures import ThreadPoolExecutor
 from functools import partial
 from typing import Any
 
@@ -25,32 +27,93 @@ _MODEL_TYPES = frozenset(
     }
 )
 
-_MAX_INFLIGHT = 64
-_EXECUTOR = ThreadPoolExecutor(
-    max_workers=1,
-    thread_name_prefix="rapid-mlx-telemetry",
-)
-_INFLIGHT = threading.BoundedSemaphore(_MAX_INFLIGHT)
+_MAX_PENDING = 64
+_QUEUE: queue.Queue[Callable[[], None]] = queue.Queue(maxsize=_MAX_PENDING)
+_WORKER: threading.Thread | None = None
+_WORKER_LOCK = threading.Lock()
+_SHUTTING_DOWN = False
+_AT_FORK_INSTALLED = globals().get("_AT_FORK_INSTALLED", False)
+_ATEXIT_INSTALLED = globals().get("_ATEXIT_INSTALLED", False)
 
 
-def _run_admitted(callback: Callable[[], None]) -> None:
-    """Run one admitted item and always return its bounded slot."""
-    try:
-        callback()
-    finally:
-        _INFLIGHT.release()
+def _worker_main(work_queue: queue.Queue[Callable[[], None]]) -> None:
+    """Run queued writes serially on a daemon that never owns process exit."""
+    while True:
+        callback = work_queue.get()
+        try:
+            callback()
+        except Exception:
+            pass
+        finally:
+            work_queue.task_done()
+
+
+def _ensure_worker() -> bool:
+    """Lazily start the process-local daemon worker."""
+    global _WORKER
+    with _WORKER_LOCK:
+        if _SHUTTING_DOWN:
+            return False
+        if _WORKER is not None and _WORKER.is_alive():
+            return True
+        try:
+            worker = threading.Thread(
+                target=_worker_main,
+                args=(_QUEUE,),
+                name="rapid-mlx-inference-telemetry",
+                daemon=True,
+            )
+            worker.start()
+        except Exception:
+            return False
+        _WORKER = worker
+        return True
 
 
 def _submit(callback: Callable[[], None]) -> bool:
     """Submit without blocking; drop when the bounded lane is saturated."""
-    if not _INFLIGHT.acquire(blocking=False):
+    if not _ensure_worker():
         return False
     try:
-        _EXECUTOR.submit(_run_admitted, callback)
-    except Exception:
-        _INFLIGHT.release()
+        _QUEUE.put_nowait(callback)
+    except queue.Full:
         return False
     return True
+
+
+def _drop_pending_at_exit() -> None:
+    """Discard queued writes without waiting for a blocked daemon worker."""
+    global _SHUTTING_DOWN
+    _SHUTTING_DOWN = True
+    while True:
+        try:
+            _QUEUE.get_nowait()
+        except queue.Empty:
+            return
+        else:
+            _QUEUE.task_done()
+
+
+def _after_fork_child() -> None:
+    """Forget inherited thread state; only the forking thread survives."""
+    global _QUEUE, _WORKER, _WORKER_LOCK, _SHUTTING_DOWN
+    _QUEUE = queue.Queue(maxsize=_MAX_PENDING)
+    _WORKER = None
+    _WORKER_LOCK = threading.Lock()
+    _SHUTTING_DOWN = False
+
+
+def _install_lifecycle_hooks() -> None:
+    global _ATEXIT_INSTALLED, _AT_FORK_INSTALLED
+    if not _ATEXIT_INSTALLED:
+        atexit.register(_drop_pending_at_exit)
+        _ATEXIT_INSTALLED = True
+    if not _AT_FORK_INSTALLED and hasattr(os, "register_at_fork"):
+        os.register_at_fork(after_in_child=_after_fork_child)
+        _AT_FORK_INSTALLED = True
+
+
+_install_lifecycle_hooks()
 
 
 def model_type_token(source: object | None) -> str:
@@ -100,6 +163,9 @@ def _record_completed_request(
         safe_model = model_id.telemetry_model_id(model)
         safe_endpoint = emit._normalize_endpoint(endpoint)
         caller = redact.normalize_caller_agent(caller_agent, caller_client)
+        allowed_callers = registry.load_registry()["enums"]["caller"]["values"]
+        if caller not in allowed_callers:
+            caller = "other"
         outcome = result if result in ("ok", "failed") else "failed"
         crossing = store.record(f"inf|{safe_model}|{safe_endpoint}|{caller}|{outcome}")
         if crossing is not None:

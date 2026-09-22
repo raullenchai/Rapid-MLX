@@ -251,8 +251,15 @@ class _FailingEngine:
 
 class _RaisingStreamEngine(_FailingEngine):
     async def stream_chat(self, messages, **kwargs):
+        yield _GenerationOutput(
+            text="partial",
+            new_text="partial",
+            prompt_tokens=3,
+            completion_tokens=1,
+            finish_reason=None,
+            finished=False,
+        )
         raise RuntimeError("stream engine exploded")
-        yield  # establishes async-generator shape
 
 
 class _HealthyEngine:
@@ -1230,7 +1237,7 @@ class TestResponsesStreamFailureEnvelope:
         assert len(emit_calls) == 1
         assert emit_calls[0]["result"] == "failed"
 
-    def test_stream_engine_exception_emits_one_failed_count(
+    def test_stream_engine_exception_after_partial_output_emits_one_failed_count(
         self, raising_stream_client, monkeypatch
     ):
         from rapid_mlx.telemetry import inference

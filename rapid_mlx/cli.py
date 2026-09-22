@@ -4120,6 +4120,13 @@ def serve_command(args):
         require_audio_or_exit(args.model)
 
     _validate_v41_product_spec_flags(args, owns_runtime=_owns_v41_product_download)
+    if _owns_v41_product_download and args.mcp_config:
+        from .telemetry.inference import emit_capability_rejected
+
+        emit_capability_rejected("mcp_unsupported", model_type="llm")
+        message = "error: MCP is not supported by the experimental DeepSeek V4.1 DSpark K4 serial server."
+        print(message, file=sys.stderr)
+        raise SystemExit(2)
     # DDTree has an external experimental runtime and its validated target
     # can be multi-GB. Fail the cheap config/alias/runtime gates before the
     # version prompt and before any model prefetch so a missing dtree-mlx
@@ -4973,16 +4980,6 @@ def serve_command(args):
         os.environ["RAPID_MLX_MCP_CONFIG"] = args.mcp_config
 
     if _owns_v41_product_download:
-        if args.mcp_config:
-            from .telemetry.inference import emit_capability_rejected
-
-            emit_capability_rejected("mcp_unsupported", model_type="llm")
-            print(
-                "error: MCP is not supported by the experimental DeepSeek "
-                "V4.1 DSpark K4 serial server.",
-                file=sys.stderr,
-            )
-            raise SystemExit(2)
         from .models.deepseek_v41_native.server import run_server as run_v41_server
 
         server._sync_config()

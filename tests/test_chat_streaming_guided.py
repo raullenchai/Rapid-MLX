@@ -130,8 +130,16 @@ def _parse_sse_events(text: str) -> tuple[list[dict], bool]:
 
 
 @pytest.mark.asyncio
-async def test_guided_stream_publishes_cancellable_id_before_buffered_output():
+async def test_guided_stream_publishes_cancellable_id_before_buffered_output(
+    monkeypatch,
+):
     """The first SSE event addresses live guided work, not completed work."""
+    from rapid_mlx.telemetry import inference
+
+    emit_calls: list[dict[str, object]] = []
+    monkeypatch.setattr(
+        inference, "emit_completed_request", lambda **kwargs: emit_calls.append(kwargs)
+    )
 
     class _CancellableGuidedEngine(_GuidedEngine):
         def __init__(self):
@@ -198,11 +206,18 @@ async def test_guided_stream_publishes_cancellable_id_before_buffered_output():
     with pytest.raises(StopAsyncIteration):
         await anext(stream)
     assert engine.stream_calls == [], "cancellation must never fall back unconstrained"
+    assert emit_calls == [], "explicit client cancellation is not an inference result"
 
 
 @pytest.mark.asyncio
-async def test_guided_stream_shutdown_consumes_exact_lifecycle_owner():
+async def test_guided_stream_shutdown_consumes_exact_lifecycle_owner(monkeypatch):
     """Shutdown emits the model-replacement terminal and clears its ledger."""
+    from rapid_mlx.telemetry import inference
+
+    emit_calls: list[dict[str, object]] = []
+    monkeypatch.setattr(
+        inference, "emit_completed_request", lambda **kwargs: emit_calls.append(kwargs)
+    )
 
     class _ShutdownGuidedEngine(_GuidedEngine):
         def __init__(self):
@@ -242,12 +257,30 @@ async def test_guided_stream_shutdown_consumes_exact_lifecycle_owner():
     assert events[-1] == "data: [DONE]\n\n"
     assert engine.lifecycle_consumed is True
     assert engine.stream_calls == []
+    assert emit_calls == [
+        {
+            "model": "<custom>",
+            "endpoint": "/v1/chat/completions",
+            "caller_agent": None,
+            "caller_client": None,
+            "result": "failed",
+        }
+    ]
 
 
 @pytest.mark.asyncio
-async def test_shutdown_during_retained_handoff_keeps_replacement_semantics():
+async def test_shutdown_during_retained_handoff_keeps_replacement_semantics(
+    monkeypatch,
+):
     """A retained guided owner carries shutdown cause through handoff."""
     from types import SimpleNamespace
+
+    from rapid_mlx.telemetry import inference
+
+    emit_calls: list[dict[str, object]] = []
+    monkeypatch.setattr(
+        inference, "emit_completed_request", lambda **kwargs: emit_calls.append(kwargs)
+    )
 
     class _ShutdownHandoffEngine(_GuidedEngine):
         def __init__(self):
@@ -290,6 +323,15 @@ async def test_shutdown_during_retained_handoff_keeps_replacement_semantics():
     assert events[-1] == "data: [DONE]\n\n"
     assert engine.lifecycle_consumed is True
     assert engine.stream_calls == []
+    assert emit_calls == [
+        {
+            "model": "<custom>",
+            "endpoint": "/v1/chat/completions",
+            "caller_agent": None,
+            "caller_client": None,
+            "result": "failed",
+        }
+    ]
 
 
 @pytest.mark.asyncio

@@ -8,6 +8,7 @@ import json
 import multiprocessing
 import os
 import sqlite3
+import subprocess
 import sys
 import threading
 import time
@@ -53,11 +54,16 @@ def _hold_telemetry_store_lock(home: str, ready, release) -> None:
 
 @pytest.fixture(autouse=True)
 def _isolated_home_and_kill_switches(monkeypatch, tmp_path):
-    from rapid_mlx.telemetry import state
+    from rapid_mlx.telemetry import inference, state
 
+    # The production worker is process-wide. Keep callbacks submitted by one
+    # test from observing the next test's temporary HOME or monkeypatches.
+    inference._QUEUE.join()
     monkeypatch.setenv("HOME", str(tmp_path))
     for name in (state.ENV_VAR, state.DO_NOT_TRACK_ENV, *state.CI_ENV_VARS):
         monkeypatch.delenv(name, raising=False)
+    yield
+    inference._QUEUE.join()
 
 
 def test_completed_inference_records_one_normalized_counter_and_claims_success(
@@ -107,6 +113,70 @@ def test_completed_inference_records_one_normalized_counter_and_claims_success(
         )
     ]
     assert "secret" not in repr(records + events)
+
+
+@pytest.mark.parametrize(
+    "endpoint",
+    [
+        "/v1/chat/completions",
+        "/v1/embeddings",
+        "/v1/images/generations",
+        "/v1/audio/transcriptions",
+    ],
+)
+def test_rapid_desktop_caller_survives_registry_validation_before_record(
+    monkeypatch, endpoint
+):
+    from rapid_mlx.telemetry import inference, registry
+
+    crossing = SimpleNamespace(bucket="1", bucket_source="crossed_now")
+    keys: list[str] = []
+    events: list[tuple[str, dict[str, object]]] = []
+    monkeypatch.setattr(
+        inference.store, "record", lambda key: keys.append(key) or crossing
+    )
+    monkeypatch.setattr(
+        inference.track_module,
+        "track",
+        lambda event, props: (
+            events.append((event, validated))
+            if (validated := registry.validate(event, props)) is not None
+            else None
+        ),
+    )
+    monkeypatch.setattr(inference.track_module, "emit_active_day", lambda: None)
+
+    inference._record_completed_request(
+        model="<custom>",
+        endpoint=endpoint,
+        caller_agent="hostile-private-agent/1.0",
+        caller_client="rapid-desktop",
+        result="ok",
+    )
+
+    assert keys == [f"inf|<custom>|{endpoint}|rapid-desktop|ok"]
+    assert events[0][1]["caller"] == "rapid-desktop"
+
+
+def test_unknown_normalized_caller_falls_back_before_record(monkeypatch):
+    from rapid_mlx.telemetry import inference
+
+    keys: list[str] = []
+    monkeypatch.setattr(
+        inference.redact, "normalize_caller_agent", lambda *_args: "future-client"
+    )
+    monkeypatch.setattr(inference.store, "record", lambda key: keys.append(key))
+    monkeypatch.setattr(inference.track_module, "emit_active_day", lambda: None)
+
+    inference._record_completed_request(
+        model="<custom>",
+        endpoint="/v1/chat/completions",
+        caller_agent="hostile-private-agent/1.0",
+        caller_client="hostile-client",
+        result="ok",
+    )
+
+    assert keys == ["inf|<custom>|/v1/chat/completions|other|ok"]
 
 
 def test_completed_inference_failure_does_not_claim_active_day(monkeypatch):
@@ -215,15 +285,11 @@ async def test_locked_store_never_blocks_request_coroutine(monkeypatch, tmp_path
     assert process.exitcode == 0
 
 
-def test_executor_is_dedicated_and_submission_failure_never_escapes(monkeypatch):
+def test_worker_start_failure_never_escapes(monkeypatch):
     from rapid_mlx.telemetry import inference
 
-    class BrokenExecutor:
-        def submit(self, *_args, **_kwargs):
-            raise RuntimeError("executor unavailable")
-
     monkeypatch.setattr(inference.track_module, "_upload_allowed", lambda: True)
-    monkeypatch.setattr(inference, "_EXECUTOR", BrokenExecutor())
+    monkeypatch.setattr(inference, "_ensure_worker", lambda: False)
 
     assert (
         inference.emit_completed_request(
@@ -274,10 +340,6 @@ def test_request_caller_headers_is_total():
 def test_worker_overflow_drops_without_blocking(monkeypatch):
     from rapid_mlx.telemetry import inference
 
-    executor = inference.ThreadPoolExecutor(
-        max_workers=1, thread_name_prefix="rapid-mlx-telemetry-test"
-    )
-    semaphore = threading.BoundedSemaphore(inference._MAX_INFLIGHT)
     release = threading.Event()
     started = threading.Event()
 
@@ -285,34 +347,34 @@ def test_worker_overflow_drops_without_blocking(monkeypatch):
         started.set()
         release.wait(5)
 
-    monkeypatch.setattr(inference, "_EXECUTOR", executor)
-    monkeypatch.setattr(inference, "_INFLIGHT", semaphore)
+    monkeypatch.setattr(
+        inference, "_QUEUE", inference.queue.Queue(maxsize=inference._MAX_PENDING)
+    )
+    monkeypatch.setattr(inference, "_WORKER", None)
+    monkeypatch.setattr(inference, "_SHUTTING_DOWN", False)
     try:
         assert inference._submit(blocked)
         assert started.wait(1)
-        for _ in range(inference._MAX_INFLIGHT - 1):
+        for _ in range(inference._MAX_PENDING):
             assert inference._submit(blocked)
         before = time.perf_counter()
         assert inference._submit(blocked) is False
         assert time.perf_counter() - before < 0.050
     finally:
         release.set()
-        executor.shutdown(wait=True)
 
 
 def test_asyncio_run_does_not_drain_saturated_telemetry_lane(monkeypatch, tmp_path):
     from rapid_mlx.telemetry import inference
 
     monkeypatch.setattr(inference.track_module, "_upload_allowed", lambda: True)
-    executor = inference.ThreadPoolExecutor(
-        max_workers=1, thread_name_prefix="rapid-mlx-telemetry-shutdown-test"
-    )
-    monkeypatch.setattr(inference, "_EXECUTOR", executor)
     monkeypatch.setattr(
         inference,
-        "_INFLIGHT",
-        threading.BoundedSemaphore(inference._MAX_INFLIGHT),
+        "_QUEUE",
+        inference.queue.Queue(maxsize=inference._MAX_PENDING),
     )
+    monkeypatch.setattr(inference, "_WORKER", None)
+    monkeypatch.setattr(inference, "_SHUTTING_DOWN", False)
     context = multiprocessing.get_context("spawn")
     ready = context.Event()
     release = context.Event()
@@ -341,8 +403,114 @@ def test_asyncio_run_does_not_drain_saturated_telemetry_lane(monkeypatch, tmp_pa
     finally:
         release.set()
         process.join(timeout=5)
-        executor.shutdown(wait=True)
     assert process.exitcode == 0
+
+
+def test_process_exit_does_not_join_blocked_telemetry_worker(tmp_path):
+    home = tmp_path / "child-home"
+    home.mkdir()
+    server = HTTPServer(("127.0.0.1", 0), _CaptureHandler)
+    server.bodies = []  # type: ignore[attr-defined]
+    sink_thread = threading.Thread(target=server.serve_forever, daemon=True)
+    sink_thread.start()
+    env = os.environ.copy()
+    env.update(
+        {
+            "HOME": str(home),
+            "USER": "rc",
+            "RAPID_MLX_POSTHOG_URL": (f"http://127.0.0.1:{server.server_port}/batch/"),
+        }
+    )
+    try:
+        subprocess.run(
+            [
+                sys.executable,
+                "-c",
+                "from rapid_mlx.telemetry import store; store.record('seed')",
+            ],
+            cwd=REPO_ROOT,
+            env=env,
+            check=True,
+            timeout=3,
+        )
+        db = home / ".rapid-mlx" / "telemetry.db"
+        connection = sqlite3.connect(db)
+        connection.execute("BEGIN IMMEDIATE")
+        script = """
+from rapid_mlx.telemetry import inference
+inference.track_module._upload_allowed = lambda: True
+for _ in range(16):
+    inference.emit_completed_request(
+        model='<custom>', endpoint='/v1/chat/completions',
+        caller_agent=None, caller_client=None, result='ok')
+"""
+        started = time.perf_counter()
+        try:
+            subprocess.run(
+                [sys.executable, "-c", script],
+                cwd=REPO_ROOT,
+                env=env,
+                check=True,
+                timeout=3,
+            )
+        finally:
+            connection.rollback()
+            connection.close()
+        assert time.perf_counter() - started < 3.0
+    finally:
+        server.shutdown()
+        sink_thread.join(timeout=2)
+        server.server_close()
+
+
+@pytest.mark.skipif(not hasattr(os, "fork"), reason="requires os.fork")
+def test_forked_child_starts_fresh_telemetry_worker(monkeypatch):
+    from rapid_mlx.telemetry import inference
+
+    release = threading.Event()
+    started = threading.Event()
+
+    def blocked() -> None:
+        started.set()
+        release.wait(5)
+
+    monkeypatch.setattr(
+        inference, "_QUEUE", inference.queue.Queue(maxsize=inference._MAX_PENDING)
+    )
+    monkeypatch.setattr(inference, "_WORKER", None)
+    monkeypatch.setattr(inference, "_SHUTTING_DOWN", False)
+    assert inference._submit(blocked)
+    assert started.wait(1)
+
+    read_fd, write_fd = os.pipe()
+    child = os.fork()
+    if child == 0:  # pragma: no branch - child exits directly
+        try:
+            os.close(read_fd)
+
+            def report() -> None:
+                os.write(write_fd, b"ran")
+                os._exit(0)
+
+            accepted = inference._submit(report)
+            if not accepted:
+                os._exit(2)
+            deadline = time.monotonic() + 2
+            while time.monotonic() < deadline:
+                time.sleep(0.01)
+            os._exit(3)
+        except BaseException:
+            os._exit(4)
+
+    os.close(write_fd)
+    try:
+        ready, _, _ = __import__("select").select([read_fd], [], [], 3)
+        assert ready and os.read(read_fd, 3) == b"ran"
+        _, status = os.waitpid(child, 0)
+        assert os.waitstatus_to_exitcode(status) == 0
+    finally:
+        os.close(read_fd)
+        release.set()
 
 
 @pytest.mark.asyncio
@@ -351,6 +519,9 @@ async def test_midstream_generation_error_records_failed_without_active_day(
 ):
     from rapid_mlx.telemetry import inference
 
+    # The production daemon intentionally outlives individual requests. Establish
+    # a clean observation boundary before replacing its global worker hooks.
+    inference._QUEUE.join()
     monkeypatch.setattr(inference.track_module, "_upload_allowed", lambda: True)
     events: list[tuple[str, dict[str, object]]] = []
     active_days: list[None] = []
@@ -500,21 +671,78 @@ def test_capability_rejected_requires_closed_model_type_and_never_raises(monkeyp
     ]
 
 
+def test_daemon_worker_lifecycle_branches_are_best_effort(monkeypatch):
+    from rapid_mlx.telemetry import inference
+
+    work_queue = inference.queue.Queue()
+    completed = threading.Event()
+
+    def explode():
+        raise RuntimeError("discarded telemetry failure")
+
+    worker = threading.Thread(
+        target=inference._worker_main,
+        args=(work_queue,),
+        daemon=True,
+    )
+    worker.start()
+    work_queue.put(explode)
+    work_queue.put(completed.set)
+    work_queue.join()
+    assert completed.is_set()
+
+    monkeypatch.setattr(inference, "_SHUTTING_DOWN", True)
+    assert inference._ensure_worker() is False
+    monkeypatch.setattr(inference, "_SHUTTING_DOWN", False)
+    monkeypatch.setattr(
+        inference.threading,
+        "Thread",
+        lambda **_kwargs: (_ for _ in ()).throw(RuntimeError("thread unavailable")),
+    )
+    monkeypatch.setattr(inference, "_WORKER", None)
+    assert inference._ensure_worker() is False
+
+
+def test_exit_hook_drops_queue_and_fork_hook_resets_state(monkeypatch):
+    from rapid_mlx.telemetry import inference
+
+    pending = inference.queue.Queue(maxsize=inference._MAX_PENDING)
+    pending.put(lambda: None)
+    pending.put(lambda: None)
+    monkeypatch.setattr(inference, "_QUEUE", pending)
+    monkeypatch.setattr(inference, "_SHUTTING_DOWN", False)
+
+    inference._drop_pending_at_exit()
+
+    assert inference._SHUTTING_DOWN is True
+    assert pending.empty()
+    assert pending.unfinished_tasks == 0
+
+    inherited_queue = inference._QUEUE
+    inherited_lock = inference._WORKER_LOCK
+    monkeypatch.setattr(inference, "_WORKER", object())
+    inference._after_fork_child()
+
+    assert inference._QUEUE is not inherited_queue
+    assert inference._QUEUE.maxsize == inference._MAX_PENDING
+    assert inference._WORKER is None
+    assert inference._WORKER_LOCK is not inherited_lock
+    assert inference._SHUTTING_DOWN is False
+
+
 @pytest.mark.asyncio
 async def test_capability_rejection_never_blocks_loop_default_executor(monkeypatch):
     from rapid_mlx.telemetry import inference
 
     entered = threading.Event()
     release = threading.Event()
-    executor = inference.ThreadPoolExecutor(
-        max_workers=1, thread_name_prefix="rapid-mlx-telemetry-capability-test"
-    )
-    monkeypatch.setattr(inference, "_EXECUTOR", executor)
     monkeypatch.setattr(
         inference,
-        "_INFLIGHT",
-        threading.BoundedSemaphore(inference._MAX_INFLIGHT),
+        "_QUEUE",
+        inference.queue.Queue(maxsize=inference._MAX_PENDING),
     )
+    monkeypatch.setattr(inference, "_WORKER", None)
+    monkeypatch.setattr(inference, "_SHUTTING_DOWN", False)
     monkeypatch.setattr(inference.track_module, "_upload_allowed", lambda: True)
 
     def blocked_track(*_args, **_kwargs):
@@ -530,7 +758,6 @@ async def test_capability_rejection_never_blocks_loop_default_executor(monkeypat
         assert time.perf_counter() - started < 0.050
     finally:
         release.set()
-        executor.shutdown(wait=True)
 
 
 @pytest.mark.parametrize(
@@ -596,6 +823,91 @@ async def test_legacy_completion_multi_sample_rejection_emits_capability(monkeyp
         await completions.create_completion(request, SimpleNamespace(headers={}))
 
     assert calls == [("multi_sample_unsupported", "other")]
+
+
+@pytest.mark.asyncio
+async def test_responses_stateless_rejection_emits_capability(monkeypatch):
+    from fastapi import HTTPException
+
+    from rapid_mlx.routes import responses
+    from rapid_mlx.telemetry import inference
+
+    calls: list[tuple[str, str]] = []
+    monkeypatch.setattr(
+        inference,
+        "emit_capability_rejected",
+        lambda value, *, model_type="other": calls.append((value, model_type)),
+    )
+    body = json.dumps(
+        {
+            "model": "test-model",
+            "input": "hello",
+            "previous_response_id": "resp_prior",
+        }
+    ).encode()
+
+    async def receive():
+        return {"type": "http.request", "body": body, "more_body": False}
+
+    request = Request(
+        {"type": "http", "method": "POST", "path": "/v1/responses", "headers": []},
+        receive,
+    )
+    with pytest.raises(HTTPException) as exc_info:
+        await responses.create_response(request)
+
+    assert exc_info.value.status_code == 400
+    assert calls == [("stateless_api_only", "other")]
+
+
+@pytest.mark.asyncio
+async def test_residency_perf_rejection_emits_capability(monkeypatch):
+    from fastapi import HTTPException
+
+    from rapid_mlx.routes import residency
+    from rapid_mlx.telemetry import inference
+
+    profile = SimpleNamespace(modality="image-gen")
+    monkeypatch.setattr(residency, "_manager", lambda: object())
+    monkeypatch.setattr(residency, "resolve_profile", lambda _model: profile)
+    calls: list[tuple[str, str]] = []
+    monkeypatch.setattr(
+        inference,
+        "emit_capability_rejected",
+        lambda value, *, model_type="other": calls.append((value, model_type)),
+    )
+
+    request = residency.ModelLoadRequest(
+        model="flux-schnell",
+        performance=residency.ModelPerformanceRequest(prefix_cache_enabled=True),
+    )
+    with pytest.raises(HTTPException) as exc_info:
+        await residency.load_resident_model(request)
+
+    assert exc_info.value.status_code == 422
+    assert calls == [("perf_overrides_unsupported", "image-gen")]
+
+
+def test_context_length_rejection_emits_capability(monkeypatch):
+    from fastapi import HTTPException
+
+    from rapid_mlx.service import helpers
+    from rapid_mlx.telemetry import inference
+
+    engine = SimpleNamespace(modality="text", supports_image_input=False)
+    monkeypatch.setattr(helpers, "get_model_max_context", lambda _engine: 8)
+    calls: list[tuple[str, str]] = []
+    monkeypatch.setattr(
+        inference,
+        "emit_capability_rejected",
+        lambda value, *, model_type="other": calls.append((value, model_type)),
+    )
+
+    with pytest.raises(HTTPException) as exc_info:
+        helpers.enforce_context_length(engine, 8, max_tokens=1)
+
+    assert exc_info.value.status_code == 400
+    assert calls == [("context_length_exceeded", "llm")]
 
 
 @pytest.mark.asyncio
@@ -1262,7 +1574,7 @@ def test_hostile_model_and_result_are_clamped_at_emitter(monkeypatch):
     assert "secret-model" not in repr(events)
 
 
-def test_worst_case_counter_cardinality_supports_35_complete_models():
+def test_worst_case_counter_cardinality_supports_28_complete_models():
     from rapid_mlx.telemetry import registry, store
 
     enums = registry.load_registry()["enums"]
@@ -1271,8 +1583,8 @@ def test_worst_case_counter_cardinality_supports_35_complete_models():
         * len(enums["caller"]["values"])
         * len(enums["result"]["values"])
     )
-    assert keys_per_model == 8 * 21 * 2
-    assert store.MAX_KEYS // keys_per_model == 35
+    assert keys_per_model == 8 * 26 * 2
+    assert store.MAX_KEYS // keys_per_model == 28
 
 
 @pytest.mark.parametrize(
@@ -1294,7 +1606,7 @@ def test_additional_endpoint_has_completed_request_emit(relative_path, endpoint)
 @pytest.mark.parametrize(
     ("relative_path", "failed_count"),
     [
-        ("rapid_mlx/routes/chat.py", 3),
+        ("rapid_mlx/routes/chat.py", 4),
         ("rapid_mlx/routes/completions.py", 1),
         ("rapid_mlx/routes/anthropic.py", 1),
     ],
@@ -1331,8 +1643,18 @@ class _CaptureHandler(BaseHTTPRequestHandler):
         pass
 
 
+@pytest.mark.parametrize(
+    ("endpoint", "client_header", "expected_caller"),
+    [
+        ("/v1/chat/completions", "rapid-desktop", "rapid-desktop"),
+        ("/v1/embeddings", "rapid-desktop", "rapid-desktop"),
+        ("/v1/images/generations", "rapid-desktop", "rapid-desktop"),
+        ("/v1/audio/transcriptions", "rapid-desktop", "rapid-desktop"),
+        ("/v1/chat/completions", "hostile-private-client", "other"),
+    ],
+)
 def test_inference_and_capability_events_reach_loopback_as_exact_json(
-    monkeypatch, tmp_path
+    monkeypatch, tmp_path, endpoint, client_header, expected_caller
 ):
     import rapid_mlx
     from rapid_mlx.telemetry import (
@@ -1392,11 +1714,14 @@ def test_inference_and_capability_events_reach_loopback_as_exact_json(
     thread = threading.Thread(target=server.serve_forever, daemon=True)
     thread.start()
     try:
+        caller_agent, caller_client = inference.request_caller_headers(
+            _request("hostile-private-agent/1.0", client_header)
+        )
         inference._record_completed_request(
             model="neohorse-9b-4bit",
-            endpoint="/v1/chat/completions",
-            caller_agent="cursor/1.0",
-            caller_client=None,
+            endpoint=endpoint,
+            caller_agent=caller_agent,
+            caller_client=caller_client,
             result="ok",
         )
         inference.emit_capability_rejected("logprobs_unsupported", model_type="llm")
@@ -1437,8 +1762,8 @@ def test_inference_and_capability_events_reach_loopback_as_exact_json(
     assert items[0]["properties"] == {
         **expected_common,
         "model": "neohorse-9b-4bit",
-        "endpoint": "/v1/chat/completions",
-        "caller": "cursor",
+        "endpoint": endpoint,
+        "caller": expected_caller,
         "result": "ok",
         "count_bucket": "1",
         "bucket_source": "crossed_now",
