@@ -2735,6 +2735,9 @@ def _normalize_speculative_config_or_exit(args):
             # ``mtp_optimistic``. Hard-reject the flag on every entry
             # point so behavior stays consistent (fail loud > silent
             # ignore).
+            from .telemetry.inference import emit_capability_rejected
+
+            emit_capability_rejected("speculative_decoding_unsupported")
             print(
                 "error: legacy speculative decoding knob mtp_optimistic "
                 "is not supported under the unified spec-decode "
@@ -2844,6 +2847,11 @@ def _normalize_speculative_config_or_exit(args):
             print(f"error: {exc}", file=sys.stderr)
             sys.exit(2)
         if config is not None and getattr(args, "mllm", False):
+            from .telemetry.inference import emit_capability_rejected
+
+            emit_capability_rejected(
+                "speculative_decoding_unsupported", model_type="vlm"
+            )
             print(
                 "error: --mllm is mutually exclusive with an explicit "
                 "speculative-decoding request because the vision lane cannot "
@@ -2985,6 +2993,9 @@ def _preflight_native_mtp_or_exit(args):
     if getattr(args, "mtp_continuous_batching", False):
         unsupported.append("continuous MTP")
     if unsupported:
+        from .telemetry.inference import emit_capability_rejected
+
+        emit_capability_rejected("speculative_decoding_unsupported")
         print(
             "error: native MTP uses a text-only serial server and does not "
             f"support: {', '.join(unsupported)}",
@@ -3589,6 +3600,9 @@ def _reject_embedding_alias_serve(profile, model_name: str) -> None:
     """
     if profile is None or getattr(profile, "modality", "text") != "embedding":
         return
+    from .telemetry.inference import emit_capability_rejected
+
+    emit_capability_rejected("embeddings_unavailable", model_type="embedding")
     print(
         f"error: '{model_name}' is a sentence-embedding alias and has no chat "
         "surface, so it cannot be served as the main model.\n"
@@ -4960,6 +4974,9 @@ def serve_command(args):
 
     if _owns_v41_product_download:
         if args.mcp_config:
+            from .telemetry.inference import emit_capability_rejected
+
+            emit_capability_rejected("mcp_unsupported", model_type="llm")
             print(
                 "error: MCP is not supported by the experimental DeepSeek "
                 "V4.1 DSpark K4 serial server.",

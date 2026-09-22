@@ -899,6 +899,9 @@ async def create_response(request: Request):
     # this field; clients that DO use it would get silent prompt loss
     # on retries because we have no response store, so 400 loudly.
     if responses_request.previous_response_id:
+        from rapid_mlx.telemetry.inference import emit_capability_rejected
+
+        emit_capability_rejected("stateless_api_only")
         raise HTTPException(
             status_code=400,
             detail=(
@@ -1096,6 +1099,15 @@ async def create_response(request: Request):
                 # Parity with the chat-route ``strict_with_tools_unsupported``
                 # gate: constrained-decoding grammar and tool-call grammar
                 # are mutually exclusive on this engine.
+                from rapid_mlx.telemetry.inference import (
+                    emit_capability_rejected,
+                    model_type_token,
+                )
+
+                emit_capability_rejected(
+                    "structured_output_unsupported",
+                    model_type=model_type_token(engine),
+                )
                 raise HTTPException(
                     status_code=400,
                     detail={
@@ -1126,6 +1138,15 @@ async def create_response(request: Request):
             # or switch to /v1/chat/completions) is more
             # actionable.
             if responses_request.stream:
+                from rapid_mlx.telemetry.inference import (
+                    emit_capability_rejected,
+                    model_type_token,
+                )
+
+                emit_capability_rejected(
+                    "structured_output_unsupported",
+                    model_type=model_type_token(engine),
+                )
                 raise HTTPException(
                     status_code=400,
                     detail={

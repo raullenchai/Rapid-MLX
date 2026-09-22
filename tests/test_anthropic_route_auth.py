@@ -168,6 +168,45 @@ def _messages_payload() -> dict:
     }
 
 
+def test_text_model_image_rejection_emits_capability(anthropic_client, monkeypatch):
+    from rapid_mlx.telemetry import inference
+
+    anthropic_client.engine.is_mllm = False
+    calls: list[tuple[str, str]] = []
+    monkeypatch.setattr(
+        inference,
+        "emit_capability_rejected",
+        lambda capability, *, model_type="other": calls.append(
+            (capability, model_type)
+        ),
+    )
+    payload = _messages_payload()
+    payload["messages"] = [
+        {
+            "role": "user",
+            "content": [
+                {
+                    "type": "image",
+                    "source": {
+                        "type": "base64",
+                        "media_type": "image/png",
+                        "data": "AAAA",
+                    },
+                }
+            ],
+        }
+    ]
+
+    response = anthropic_client.client.post(
+        "/v1/messages",
+        headers={"x-api-key": "test-secret"},
+        json=payload,
+    )
+
+    assert response.status_code == 400
+    assert calls == [("image_input_unsupported", "llm")]
+
+
 def test_anthropic_messages_requires_api_key(anthropic_client):
     client = anthropic_client.client
     engine = anthropic_client.engine

@@ -85,6 +85,9 @@ async def create_completion(request: CompletionRequest, raw_request: Request):
     """Create a text completion."""
     _validate_model_name(request.model)
     if request.suffix:
+        from rapid_mlx.telemetry.inference import emit_capability_rejected
+
+        emit_capability_rejected("fim_suffix_unsupported")
         raise HTTPException(
             status_code=400,
             detail=(
@@ -101,6 +104,9 @@ async def create_completion(request: CompletionRequest, raw_request: Request):
     # the OpenAI defaults — accept them silently so well-behaved
     # clients passing the documented default don't see a 400.
     if request.n is not None and request.n > 1:
+        from rapid_mlx.telemetry.inference import emit_capability_rejected
+
+        emit_capability_rejected("multi_sample_unsupported")
         raise HTTPException(
             status_code=400,
             detail=(
@@ -110,6 +116,9 @@ async def create_completion(request: CompletionRequest, raw_request: Request):
             ),
         )
     if request.best_of is not None and request.best_of > 1:
+        from rapid_mlx.telemetry.inference import emit_capability_rejected
+
+        emit_capability_rejected("multi_sample_unsupported")
         raise HTTPException(
             status_code=400,
             detail=(
@@ -146,6 +155,9 @@ async def create_completion(request: CompletionRequest, raw_request: Request):
     # instead of returning partial-but-wrong data. Either knob
     # alone keeps working; only the combination is rejected.
     if request.echo and request.logprobs is not None:
+        from rapid_mlx.telemetry.inference import emit_capability_rejected
+
+        emit_capability_rejected("logprobs_unsupported")
         raise HTTPException(
             status_code=400,
             detail=(
@@ -261,6 +273,9 @@ async def create_completion(request: CompletionRequest, raw_request: Request):
             else request.response_format.get("type")
         )
         if rf_type == "json_schema":
+            from rapid_mlx.telemetry.inference import emit_capability_rejected
+
+            emit_capability_rejected("structured_output_unsupported")
             raise HTTPException(
                 status_code=400,
                 detail={
@@ -373,6 +388,14 @@ async def create_completion(request: CompletionRequest, raw_request: Request):
         # 501. Lift to the top so both branches are covered.
         _want_logprobs = request.logprobs is not None
         if _want_logprobs and not _engine_supports_completion_logprobs(engine):
+            from rapid_mlx.telemetry.inference import (
+                emit_capability_rejected,
+                model_type_token,
+            )
+
+            emit_capability_rejected(
+                "logprobs_unsupported", model_type=model_type_token(engine)
+            )
             raise HTTPException(
                 status_code=501,
                 detail=(
@@ -661,6 +684,60 @@ async def create_completion(request: CompletionRequest, raw_request: Request):
             f"Completion: {total_prompt_tokens} prompt + {total_completion_tokens} completion tokens in {elapsed:.2f}s ({tokens_per_sec:.1f} tok/s)"
         )
 
+        # Opt-in telemetry (caller attribution, task C): record a bucketed
+        # ``request`` event for this completed non-streaming completion.
+        # ``caller_agent`` comes from the inbound User-Agent (bucketed to an
+        # allowlist in ``redact`` — never stored raw); every perf number is
+        # bucketed. ``emit.request`` is sampled + ``is_enabled()``-gated +
+        # ``@_safe``, so this is a cheap no-op when telemetry is off / not
+        # sampled and can never affect the response. TTFT == total latency
+        # here (a non-streaming response is delivered in one shot).
+        #
+        # Ordering: the ``request`` event fires before ``CompletionResponse``
+        # is serialized (doc'd deferral, codex r4-B#1). This exactly matches
+        # the chat lane's order — chat.py also emits its *request* event
+        # before response serialization, and protects only the billing-
+        # critical *activation* funnel by emitting it after the body is
+        # built. The conservative variant of task C wires NO activation
+        # funnel, so there is no post-serialization funnel to guard here.
+        from rapid_mlx.telemetry import emit as _telemetry_emit
+        from rapid_mlx.telemetry.model_id import served_model_id as _served_model_id
+
+        _telemetry_emit.request(
+            endpoint="/v1/completions",
+            model_alias=_served_telemetry_id or _served_model_id(request.model),
+            stream=False,
+            tool_call_used=False,
+            prompt_tokens=total_prompt_tokens,
+            completion_tokens=total_completion_tokens,
+            ttft_ms=elapsed * 1000.0,
+            tps=tokens_per_sec,
+            status=200,
+            caller_agent=raw_request.headers.get("user-agent")
+            if raw_request is not None
+            else None,
+            caller_client=raw_request.headers.get("x-rapid-client")
+            if raw_request is not None
+            else None,
+        )
+        from rapid_mlx.telemetry import inference as _telemetry_inference
+
+        _telemetry_inference.emit_completed_request(
+            model=_served_telemetry_id or "<custom>",
+            endpoint="/v1/completions",
+            caller_agent=(
+                raw_request.headers.get("user-agent")
+                if raw_request is not None
+                else None
+            ),
+            caller_client=(
+                raw_request.headers.get("x-rapid-client")
+                if raw_request is not None
+                else None
+            ),
+            result="ok",
+        )
+
         comp_response = CompletionResponse(
             model=_resolve_model_name(request.model),
             choices=choices,
@@ -938,3 +1015,52 @@ async def stream_completion(
         yield f"data: {json.dumps(usage_data)}\n\n"
 
     yield "data: [DONE]\n\n"
+
+    # Opt-in telemetry (task C): record a bucketed ``request`` event for
+    # this streaming completion, fired only AFTER the terminal ``[DONE]``
+    # marker is yielded + the generator resumes cleanly — matching the chat
+    # lane's documented emit-after-terminal-marker placement. A stream the
+    # client cancels or that raises while delivering ``[DONE]`` raises out
+    # before this line and is deliberately NOT counted (under-counting is
+    # conservative; emitting before ``[DONE]`` would record a false
+    # status-200 success on a disconnected final write). TTFT is true
+    # first-token latency (``_first_token_ts``); tokens come from the
+    # engine's final usage (``_final_usage`` is set on the finish chunk).
+    # Same sampled + consent-gated + ``@_safe`` no-op semantics as the chat
+    # lane.
+    _elapsed_stream = time.perf_counter() - _stream_start
+    _done = getattr(_final_usage, "completion_tokens", None) or 0
+    _ptok = getattr(_final_usage, "prompt_tokens", None) or 0
+    _total_tps = _done / _elapsed_stream if _elapsed_stream > 0 else 0
+    _ttft_seconds = (
+        max(0.0, _first_token_ts - _stream_start)
+        if _first_token_ts is not None
+        else _elapsed_stream
+    )
+    _decode_seconds = _elapsed_stream - _ttft_seconds
+    _decode_tps = _done / _decode_seconds if _decode_seconds > 0 else _total_tps
+    from rapid_mlx.telemetry import emit as _telemetry_emit
+    from rapid_mlx.telemetry.model_id import served_model_id as _served_model_id
+
+    _telemetry_emit.request(
+        endpoint="/v1/completions",
+        model_alias=served_telemetry_id or _served_model_id(request.model),
+        stream=True,
+        tool_call_used=False,
+        prompt_tokens=_ptok,
+        completion_tokens=_done,
+        ttft_ms=_ttft_seconds * 1000.0,
+        tps=_decode_tps,
+        status=200,
+        caller_agent=caller_agent,
+        caller_client=caller_client,
+    )
+    from rapid_mlx.telemetry import inference as _telemetry_inference
+
+    _telemetry_inference.emit_completed_request(
+        model=served_telemetry_id or "<custom>",
+        endpoint="/v1/completions",
+        caller_agent=caller_agent,
+        caller_client=caller_client,
+        result="ok",
+    )

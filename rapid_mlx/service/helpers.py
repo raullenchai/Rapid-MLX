@@ -4942,6 +4942,14 @@ def enforce_context_length(
         f"({int(prompt_tokens)} prompt + {max(0, completion)} completion). "
         "Please reduce the length of the messages or completion."
     )
+    from rapid_mlx.telemetry.inference import (
+        emit_capability_rejected,
+        model_type_token,
+    )
+
+    emit_capability_rejected(
+        "context_length_exceeded", model_type=model_type_token(engine)
+    )
     raise HTTPException(
         status_code=400,
         detail={

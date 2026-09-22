@@ -65,6 +65,9 @@ async def create_embeddings(request: EmbeddingRequest) -> EmbeddingResponse:
     # preserved verbatim — base installs without the ``[embeddings]``
     # extra get the same actionable line the CLI probe (H-08) prints.
     if cfg.embedding_model_locked is None:
+        from rapid_mlx.telemetry.inference import emit_capability_rejected
+
+        emit_capability_rejected("embeddings_unavailable")
         raise HTTPException(
             status_code=503,
             detail={
@@ -105,6 +108,9 @@ async def create_embeddings(request: EmbeddingRequest) -> EmbeddingResponse:
             request.model, cfg.embedding_model_locked
         )
         if resolved is None:
+            from rapid_mlx.telemetry.inference import emit_capability_rejected
+
+            emit_capability_rejected("embeddings_unavailable", model_type="embedding")
             raise HTTPException(
                 status_code=400,
                 detail={
@@ -269,6 +275,9 @@ async def create_embeddings(request: EmbeddingRequest) -> EmbeddingResponse:
         )
 
     except ImportError:
+        from rapid_mlx.telemetry.inference import emit_capability_rejected
+
+        emit_capability_rejected("runtime_extra_missing", model_type="embedding")
         raise HTTPException(
             status_code=503,
             detail="mlx-embeddings not installed. Install with: pip install 'rapid-mlx[embeddings]'",

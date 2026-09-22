@@ -191,6 +191,14 @@ def _image_engine(model_name: str = ""):
         img_engine = getattr(cfg, "engine", None)
 
     if img_engine is None or not getattr(img_engine, "is_image_gen", False):
+        from rapid_mlx.telemetry.inference import (
+            emit_capability_rejected,
+            model_type_token,
+        )
+
+        emit_capability_rejected(
+            "image_generation_unavailable", model_type=model_type_token(img_engine)
+        )
         raise HTTPException(
             status_code=409,
             detail={
@@ -305,6 +313,9 @@ async def create_image(request: ImageGenerationRequest = Body(...)):
     # text-to-image generation is the wrong endpoint. Point the caller to
     # /v1/images/edits instead of silently ignoring the mismatch.
     if not _supports_generation(img_engine):
+        from rapid_mlx.telemetry.inference import emit_capability_rejected
+
+        emit_capability_rejected("image_generation_unavailable", model_type="image-gen")
         raise HTTPException(
             status_code=409,
             detail={
@@ -321,6 +332,9 @@ async def create_image(request: ImageGenerationRequest = Body(...)):
         )
 
     if request.response_format == "url":
+        from rapid_mlx.telemetry.inference import emit_capability_rejected
+
+        emit_capability_rejected("response_format_unsupported", model_type="image-gen")
         raise HTTPException(
             status_code=400,
             detail={
@@ -548,6 +562,9 @@ async def edit_image(
     # /v1/images/edits requires the edit family; a txt2img server points the
     # caller at /v1/images/generations instead of silently ignoring the image.
     if not _supports_editing(img_engine):
+        from rapid_mlx.telemetry.inference import emit_capability_rejected
+
+        emit_capability_rejected("image_generation_unavailable", model_type="image-gen")
         raise HTTPException(
             status_code=409,
             detail={
@@ -578,6 +595,9 @@ async def edit_image(
     if response_format != "b64_json":
         # Reject any non-b64_json value (not just "url"), matching the validated
         # generations contract — the local lane has no object store for URLs.
+        from rapid_mlx.telemetry.inference import emit_capability_rejected
+
+        emit_capability_rejected("response_format_unsupported", model_type="image-gen")
         raise HTTPException(
             status_code=400,
             detail={

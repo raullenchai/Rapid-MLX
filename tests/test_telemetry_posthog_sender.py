@@ -253,6 +253,16 @@ def test_31st_event_within_a_minute_dropped(sender_env):
     s.close(0.5)
 
 
+def test_100_capability_rejections_capture_at_most_30(sender_env):
+    post = RecordingPost()
+    s = make_sender(post)
+    accepted = [s.capture(item("capability_rejected", n=i)) for i in range(100)]
+    assert sum(accepted) == 30
+    s.flush(1.0)
+    assert sum(len(batch) for batch in post.batches()) == 30
+    s.close(0.5)
+
+
 def test_bucket_refills_with_the_clock(sender_env):
     post = RecordingPost()
     clock = FakeClock()
