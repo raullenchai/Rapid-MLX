@@ -552,6 +552,34 @@ async def test_completions_generation_failure_emits_failed(
 
 
 @pytest.mark.asyncio
+async def test_completion_serialization_failure_is_not_counted_as_success(
+    monkeypatch, _registry_config
+):
+    from rapid_mlx.api.models import CompletionRequest
+    from rapid_mlx.routes import completions
+    from rapid_mlx.telemetry import inference
+
+    ctx = _registry_config
+    engine = _SwappingCompletionEngine(ctx.promote_b)
+    ctx.registry.add(_entry(engine, "model-a", _A_PATH, _A_ID), is_default=True)
+    _patch_completions_route(monkeypatch, engine, [])
+    emit_calls = []
+    monkeypatch.setattr(inference, "emit_completed_request", lambda **kw: emit_calls.append(kw))
+    monkeypatch.setattr(
+        completions.CompletionResponse,
+        "model_dump_json",
+        lambda *a, **k: (_ for _ in ()).throw(RuntimeError("serialization failed")),
+    )
+
+    with pytest.raises(RuntimeError, match="serialization failed"):
+        await completions.create_completion(
+            CompletionRequest(model="claude-sonnet-4", prompt="hello"), _RawRequest()
+        )
+
+    assert [call["result"] for call in emit_calls] == ["failed"]
+
+
+@pytest.mark.asyncio
 async def test_completions_http_error_does_not_emit_failed(
     monkeypatch, _registry_config
 ):
@@ -680,6 +708,38 @@ async def test_anthropic_generation_failure_emits_failed(monkeypatch, _registry_
     assert len(emit_calls) == 1
     assert emit_calls[0]["endpoint"] == "/v1/messages"
     assert emit_calls[0]["result"] == "failed"
+
+
+@pytest.mark.asyncio
+async def test_anthropic_serialization_failure_is_not_counted_as_success(
+    monkeypatch, _registry_config
+):
+    from rapid_mlx.routes import anthropic
+    from rapid_mlx.telemetry import inference
+
+    ctx = _registry_config
+    engine = _SwappingChatEngine(ctx.promote_b)
+    ctx.registry.add(_entry(engine, "model-a", _A_PATH, _A_ID), is_default=True)
+    _patch_anthropic_route(monkeypatch, engine, [])
+    emit_calls = []
+    monkeypatch.setattr(inference, "emit_completed_request", lambda **kw: emit_calls.append(kw))
+
+    class Unserializable:
+        def model_dump_json(self, **_kwargs):
+            raise RuntimeError("serialization failed")
+
+    monkeypatch.setattr(
+        anthropic, "openai_to_anthropic", lambda *_args, **_kwargs: Unserializable()
+    )
+    with pytest.raises(RuntimeError, match="serialization failed"):
+        await anthropic.create_anthropic_message(
+            _AnthRawRequest({
+                "model": "claude-sonnet-4", "max_tokens": 32,
+                "messages": [{"role": "user", "content": "say hi"}],
+            })
+        )
+
+    assert emit_calls == []
 
 
 # ------------------------------------------- the two chat stream wrappers

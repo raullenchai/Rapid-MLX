@@ -720,24 +720,6 @@ async def create_completion(request: CompletionRequest, raw_request: Request):
             if raw_request is not None
             else None,
         )
-        from rapid_mlx.telemetry import inference as _telemetry_inference
-
-        _telemetry_inference.emit_completed_request(
-            model=_served_telemetry_id or "<custom>",
-            endpoint="/v1/completions",
-            caller_agent=(
-                raw_request.headers.get("user-agent")
-                if raw_request is not None
-                else None
-            ),
-            caller_client=(
-                raw_request.headers.get("x-rapid-client")
-                if raw_request is not None
-                else None
-            ),
-            result="ok",
-        )
-
         comp_response = CompletionResponse(
             model=_resolve_model_name(request.model),
             choices=choices,
@@ -753,10 +735,23 @@ async def create_completion(request: CompletionRequest, raw_request: Request):
             ),
             metrics=_merge_response_metrics(completed_outputs),
         )
-        return Response(
+        response = Response(
             content=comp_response.model_dump_json(exclude_none=True),
             media_type="application/json",
         )
+        from rapid_mlx.telemetry import inference as _telemetry_inference
+
+        caller_agent, caller_client = _telemetry_inference.request_caller_headers(
+            raw_request
+        )
+        _telemetry_inference.emit_completed_request(
+            model=_served_telemetry_id or "<custom>",
+            endpoint="/v1/completions",
+            caller_agent=caller_agent,
+            caller_client=caller_client,
+            result="ok",
+        )
+        return response
     except asyncio.CancelledError as exc:
         _raise_lifecycle_cancel_or_reraise(engine, exc)
     except HTTPException:

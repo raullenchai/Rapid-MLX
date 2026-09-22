@@ -1255,23 +1255,23 @@ async def create_anthropic_message(
                 request.headers.get("x-rapid-client") if request is not None else None
             ),
         )
-        from rapid_mlx.telemetry import inference as _telemetry_inference
-
-        _telemetry_inference.emit_completed_request(
-            model=_served_telemetry_id or "<custom>",
-            endpoint="/v1/messages",
-            caller_agent=(
-                request.headers.get("user-agent") if request is not None else None
-            ),
-            caller_client=(
-                request.headers.get("x-rapid-client") if request is not None else None
-            ),
-            result="ok",
-        )
-        return Response(
+        response = Response(
             content=anthropic_response.model_dump_json(exclude_none=True),
             media_type="application/json",
         )
+        from rapid_mlx.telemetry import inference as _telemetry_inference
+
+        caller_agent, caller_client = _telemetry_inference.request_caller_headers(
+            request
+        )
+        _telemetry_inference.emit_completed_request(
+            model=_served_telemetry_id or "<custom>",
+            endpoint="/v1/messages",
+            caller_agent=caller_agent,
+            caller_client=caller_client,
+            result="ok",
+        )
+        return response
     except asyncio.CancelledError as exc:
         _raise_lifecycle_cancel_or_reraise(engine, exc)
     finally:
