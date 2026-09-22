@@ -21,7 +21,6 @@ import requests
 import rapid_mlx
 from rapid_mlx.telemetry import (
     consent_runtime,
-    emit,
     envelope,
     model_events,
     model_id,
@@ -55,7 +54,7 @@ def isolated_model_events(monkeypatch, tmp_path):
     monkeypatch.setattr(rapid_mlx, "__version__", "0.15.1")
     monkeypatch.setattr(track_module.common_props, "read_platform_facts", lambda: FACTS)
     monkeypatch.setattr(state, "get_or_create_client_id", lambda: INSTALL_ID)
-    monkeypatch.setattr(emit, "session_id", lambda: SESSION_ID)
+    monkeypatch.setattr(state, "session_id", lambda: SESSION_ID)
     monkeypatch.setattr(track_module.build_gate, "official_build", lambda: STAMP)
     monkeypatch.setattr(posthog_sender.build_gate, "official_build", lambda: STAMP)
     monkeypatch.setattr(consent_runtime, "upload_allowed", lambda: True)
