@@ -2121,7 +2121,7 @@ def _ensure_model_downloaded(
             _emit_completed_model_pull(
                 model_name,
                 mirror_out.get("source"),
-                _active_hf_snapshot_path(model_name),
+                resolve_active_snapshot=True,
             )
         return
 
@@ -2222,19 +2222,20 @@ def _ensure_model_downloaded(
 
         download_revision = pinned_image_revision or resolved_sha
         download_kwargs = {"revision": download_revision} if download_revision else {}
-        cache_root = _hf_cache_root(model_name)
-        before = _blob_identifier(cache_root)
+        before = _model_pull_blob_identifier(model_name)
         if allow_patterns:
             snapshot_dir = snapshot_download(
                 model_name, allow_patterns=allow_patterns, **download_kwargs
             )
         else:
             snapshot_dir = snapshot_download(model_name, **download_kwargs)
-        after = _blob_identifier(cache_root)
+        after = _model_pull_blob_identifier(model_name)
         if download_revision:
             pin_main_ref(model_name, download_revision)
-        transferred = mirror_out.get("network_fetch") is True or not (
-            before == after and before != ()
+        transferred = mirror_out.get("network_fetch") is True or (
+            before is not None
+            and after is not None
+            and not (before == after and before != ())
         )
         if transferred:
             _emit_completed_model_pull(model_name, "hf", snapshot_dir)
@@ -6570,7 +6571,7 @@ def bench_command(args):
         from rapid_mlx.telemetry.model_events import emit_model_served
 
         emit_model_served(
-            model,
+            None,
             getattr(args, "_original_alias", None) or args.model,
             bool(getattr(args, "_telemetry_auto_selected", False)),
         )
@@ -8340,16 +8341,27 @@ def _active_hf_snapshot_path(repo_id: str):
         return root
 
 
-def _emit_completed_model_pull(repo_id: object, source: object, snapshot_dir) -> None:
+def _emit_completed_model_pull(
+    repo_id: object,
+    source: object,
+    snapshot_dir=None,
+    *,
+    resolve_active_snapshot: bool = False,
+) -> None:
     """Emit one successful transfer without allowing sizing to affect the pull."""
-    from rapid_mlx.telemetry.model_events import emit_model_pulled
+    try:
+        from rapid_mlx.telemetry.model_events import emit_model_pulled
 
-    size = (
-        _model_snapshot_size_bytes(str(repo_id), snapshot_dir)
-        if snapshot_dir is not None
-        else None
-    )
-    emit_model_pulled(repo_id, source, size)
+        if resolve_active_snapshot:
+            snapshot_dir = _active_hf_snapshot_path(str(repo_id))
+        size = (
+            _model_snapshot_size_bytes(str(repo_id), snapshot_dir)
+            if snapshot_dir is not None
+            else None
+        )
+        emit_model_pulled(repo_id, source, size)
+    except Exception:
+        return
 
 
 def _blob_identifier(repo_root) -> tuple[tuple[str, int, int], ...]:
@@ -8392,6 +8404,16 @@ def _blob_identifier(repo_root) -> tuple[tuple[str, int, int], ...]:
         except OSError:
             continue
     return tuple(sorted(rows))
+
+
+def _model_pull_blob_identifier(
+    repo_id: str,
+) -> tuple[tuple[str, int, int], ...] | None:
+    """Best-effort blob fingerprint for telemetry transfer accounting."""
+    try:
+        return _blob_identifier(_hf_cache_root(repo_id))
+    except Exception:
+        return None
 
 
 def _print_pull_summary(

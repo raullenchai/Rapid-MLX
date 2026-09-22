@@ -377,7 +377,7 @@
       "_about": "What people want to run, and whether the mirror served it.",
       "props": {
         "model": {"kind": "model_id", "required": true},
-        "model_type": {"kind": "enum", "enum": "model_type", "required": false},
+        "model_type": {"kind": "enum", "enum": "model_type", "required": true},
         "source": {"kind": "enum", "enum": "pull_source", "required": true},
         "size_bucket": {"kind": "enum", "enum": "size_bucket", "required": false}
       }

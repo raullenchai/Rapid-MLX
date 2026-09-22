@@ -250,7 +250,8 @@ def test_bench_command_loads_weights_on_mlx_step_worker(monkeypatch) -> None:
 def test_bench_success_emits_model_served(monkeypatch) -> None:
     """A successful weight load must twin bench's load-failure event."""
     cli = importlib.import_module("rapid_mlx.cli")
-    from rapid_mlx.telemetry import model_events
+    scheduler = importlib.import_module("rapid_mlx.scheduler")
+    from rapid_mlx.telemetry import store
 
     class ServedObservedError(Exception):
         pass
@@ -265,16 +266,50 @@ def test_bench_success_emits_model_served(monkeypatch) -> None:
     )
     _patch_mlx_lm_load(monkeypatch, lambda _name: (model, object()))
 
-    def observe(engine, alias, auto_selected):
-        assert engine is model
-        assert alias == "sdxl-base"
-        assert auto_selected is False
+    events = []
+    rows = []
+
+    def note_model_served(model_id):
+        rows.append(model_id)
+        return 1
+
+    def observe(event, props, **kwargs):
+        events.append((event, props, kwargs))
         raise ServedObservedError
 
-    monkeypatch.setattr(model_events, "emit_model_served", observe)
+    monkeypatch.setattr(store, "note_model_served", note_model_served)
+    monkeypatch.setattr("rapid_mlx.telemetry.track._upload_allowed", lambda: True)
+    monkeypatch.setattr("rapid_mlx.telemetry.track.track", observe)
+    monkeypatch.setattr(
+        scheduler,
+        "SchedulerConfig",
+        lambda **_kwargs: (_ for _ in ()).throw(ServedObservedError()),
+    )
 
+    args = _make_freeform_bench_args("sdxl-base")
+    vars(args).update(
+        max_num_seqs=1,
+        prefill_batch_size=1,
+        completion_batch_size=1,
+        prefix_cache_size=1,
+        no_memory_aware_cache=True,
+        cache_memory_mb=0,
+        cache_memory_percent=0,
+        use_paged_cache=False,
+        paged_cache_block_size=16,
+        max_cache_blocks=1,
+        kv_cache_quantization=False,
+        kv_cache_quantization_bits=8,
+        kv_cache_quantization_group_size=64,
+        kv_cache_min_quantize_tokens=0,
+    )
     with pytest.raises(ServedObservedError):
-        cli.bench_command(_make_freeform_bench_args("sdxl-base"))
+        cli.bench_command(args)
+
+    assert events[0][0] == "model_served"
+    assert events[0][1]["model"] == "sdxl-base"
+    assert events[0][1]["model"] != "<custom>"
+    assert rows == ["sdxl-base"]
 
 
 def _capture_bench_lane_signals(monkeypatch, cli):

@@ -88,6 +88,7 @@ def test_size_bucket_is_closed_and_half_open(size, expected):
 
 
 def test_pull_error_classes_are_type_based():
+    from huggingface_hub.errors import HfHubHTTPError
     from huggingface_hub.utils import (
         GatedRepoError,
         LocalEntryNotFoundError,
@@ -96,6 +97,9 @@ def test_pull_error_classes_are_type_based():
 
     response = httpx.Response(
         404, request=httpx.Request("GET", "https://huggingface.co/org/model")
+    )
+    server_error = httpx.Response(
+        503, request=httpx.Request("GET", "https://huggingface.co/org/model")
     )
     assert (
         model_events.pull_error_class(RepositoryNotFoundError("x", response=response))
@@ -107,6 +111,10 @@ def test_pull_error_classes_are_type_based():
     assert model_events.pull_error_class(OSError(errno.ENOSPC, "x")) == "disk_full"
     assert model_events.pull_error_class(urllib.error.URLError("x")) == "network"
     assert model_events.pull_error_class(TimeoutError()) == "network"
+    assert (
+        model_events.pull_error_class(HfHubHTTPError("x", response=server_error))
+        == "other"
+    )
     for exc in (
         LocalEntryNotFoundError("no cached snapshot"),
         requests.ConnectionError("private detail"),
@@ -185,12 +193,12 @@ def test_model_served_preserves_image_alias_modality(monkeypatch):
     assert calls[0][1]["model_type"] == "image-gen"
 
 
-def test_model_pulled_additive_props_are_optional_in_registry():
+def test_model_pulled_registry_requires_infallible_model_type():
     registry = json.loads(
         (Path(rapid_mlx.__file__).parent / "telemetry" / "events.json").read_text()
     )
     props = registry["events"]["model_pulled"]["props"]
-    assert props["model_type"]["required"] is False
+    assert props["model_type"]["required"] is True
     assert props["size_bucket"]["required"] is False
 
 
@@ -311,6 +319,22 @@ def test_model_served_is_only_note_site_and_maps_zero_to_none(monkeypatch):
             None,
         )
     ]
+
+
+@pytest.mark.parametrize("official", [False, True])
+def test_model_served_ineligible_process_never_creates_store(
+    monkeypatch, tmp_path, official
+):
+    monkeypatch.setattr(
+        track_module.build_gate,
+        "official_build",
+        (lambda: STAMP) if official else (lambda: None),
+    )
+    monkeypatch.setattr(consent_runtime, "upload_allowed", lambda: not official)
+
+    model_events.emit_model_served(None, "tmax-9b", False)
+
+    assert not store.db_path().exists()
 
 
 def test_served_quant_prefers_resolved_hf_path(monkeypatch):

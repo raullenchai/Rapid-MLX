@@ -53,7 +53,11 @@ def size_bucket(size_bytes: int | None) -> str:
 
 
 def pull_error_class(exc: BaseException) -> str:
-    """Classify a pull exception without putting its message on the wire."""
+    """Classify a pull exception without putting its message on the wire.
+
+    A Hub HTTP response, including a 5xx response, is ``other`` because the
+    server answered. ``network`` is reserved for failures to obtain a response.
+    """
     import httpx
     from huggingface_hub.utils import (
         GatedRepoError,
@@ -230,10 +234,14 @@ def _quant_for_ref(alias_or_path: object) -> str:
 def _serve_props(
     engine: object, alias_or_path: object, auto_selected: bool
 ) -> dict[str, object]:
-    from rapid_mlx.telemetry.model_id import engine_telemetry_id
+    from rapid_mlx.telemetry.model_id import engine_telemetry_id, telemetry_model_id
 
     return {
-        "model": engine_telemetry_id(engine),
+        "model": (
+            engine_telemetry_id(engine)
+            if engine is not None
+            else telemetry_model_id(alias_or_path)
+        ),
         "model_type": model_type(alias_or_path),
         "auto_selected": bool(auto_selected),
         "quant": _quant_for_ref(alias_or_path),
@@ -245,12 +253,14 @@ def emit_model_served(
     engine: object, alias_or_path: object, auto_selected: bool
 ) -> None:
     """Emit a successful load and make the sole served-model store note."""
-    from rapid_mlx.telemetry import store
-    from rapid_mlx.telemetry.track import track
+    from rapid_mlx.telemetry import store, track
+
+    if not track._upload_allowed():
+        return
 
     props = _serve_props(engine, alias_or_path, auto_selected)
     nth = store.note_model_served(str(props["model"]))
-    track("model_served", props, nth_model_served=nth or None)
+    track.track("model_served", props, nth_model_served=nth or None)
 
 
 @_never_raise

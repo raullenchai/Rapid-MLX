@@ -295,6 +295,88 @@ def test_real_ensure_model_downloaded_mirror_success_emits_once(monkeypatch, tmp
     assert calls == [("mlx-community/Fake-Model-1B", "mirror", 7)]
 
 
+def test_real_ensure_model_downloaded_mirror_cache_hit_emits_nothing(
+    monkeypatch,
+):
+    from rapid_mlx.telemetry import model_events
+
+    _stub_implicit_download(monkeypatch)
+
+    def mirror_cache_hit(_model, *, out, **_kwargs):
+        out.update(source="mirror", network_fetch=False)
+        return True
+
+    calls = []
+    monkeypatch.setattr(cli, "_try_mirror_prefetch", mirror_cache_hit)
+    monkeypatch.setattr(
+        model_events, "emit_model_pulled", lambda *args: calls.append(args)
+    )
+
+    cli._ensure_model_downloaded("mlx-community/Fake-Model-1B")
+
+    assert calls == []
+
+
+def test_real_ensure_model_downloaded_hf_warm_blob_store_emits_nothing(
+    monkeypatch, tmp_path, capsys
+):
+    from rapid_mlx.telemetry import model_events
+
+    _stub_implicit_download(monkeypatch)
+    repo_id = "mlx-community/Fake-Model-1B"
+    revision = "abc123"
+    cache_root, blob_dir = _hf_snapshot_layout(
+        repo_id, revision, tmp_path, already_cached=True
+    )
+    snapshot = _make_fake_snapshot(blob_dir.parent / "snapshots" / revision, 7)
+    monkeypatch.setattr("huggingface_hub.constants.HF_HUB_CACHE", str(cache_root))
+    monkeypatch.setattr(
+        "huggingface_hub.snapshot_download", lambda *_args, **_kwargs: str(snapshot)
+    )
+    calls = []
+    monkeypatch.setattr(
+        model_events, "emit_model_pulled", lambda *args: calls.append(args)
+    )
+
+    cli._ensure_model_downloaded(repo_id)
+
+    assert "First-time download" in capsys.readouterr().out
+    assert calls == []
+
+
+def test_implicit_pull_telemetry_bookkeeping_never_breaks_success(
+    monkeypatch, tmp_path
+):
+    from rapid_mlx.telemetry import model_events
+
+    _stub_implicit_download(monkeypatch)
+    monkeypatch.setattr("huggingface_hub.constants.HF_HUB_CACHE", None)
+
+    def mirror_fetch(_model, *, out, **_kwargs):
+        out.update(source="mirror", network_fetch=True)
+        return True
+
+    monkeypatch.setattr(cli, "_try_mirror_prefetch", mirror_fetch)
+    monkeypatch.setattr(
+        model_events,
+        "emit_model_pulled",
+        lambda *_args: pytest.fail("unknown snapshot must not emit"),
+    )
+    cli._ensure_model_downloaded("mlx-community/Fake-Model-1B")
+
+    _stub_implicit_download(monkeypatch)
+    snapshot = _make_fake_snapshot(tmp_path / "snapshot", 7)
+    monkeypatch.setattr(
+        "huggingface_hub.snapshot_download", lambda *_args, **_kwargs: str(snapshot)
+    )
+    monkeypatch.setattr(
+        cli,
+        "_hf_cache_root",
+        lambda _repo: (_ for _ in ()).throw(TypeError("bad cache root")),
+    )
+    cli._ensure_model_downloaded("mlx-community/Fake-Model-1B")
+
+
 def test_real_ensure_model_downloaded_forwards_subfolder_patterns(
     monkeypatch, tmp_path
 ):
