@@ -448,6 +448,8 @@ jobs:
         env:
           SKIP_SIDECAR: "1"
           RAPID_BUILD_CONFIG: release
+          RAPID_MLX_TELEMETRY: "0"
+          DO_NOT_TRACK: "1"
         run: ./scripts/build.sh
 
       - name: Verify and package GUI app

@@ -86,6 +86,7 @@ permissions:
 # switch stays on while they run.
 env:
   RAPID_MLX_TELEMETRY: "0"
+  DO_NOT_TRACK: "1"
 
 jobs:
   build:

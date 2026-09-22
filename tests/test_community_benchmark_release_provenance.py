@@ -18,11 +18,13 @@ from __future__ import annotations
 
 import importlib.util
 import json
+import re
 import subprocess
 from pathlib import Path
 from typing import Any
 
 import pytest
+import yaml
 
 from rapid_mlx.community_bench import atomic_upload, run_builder
 from rapid_mlx.community_bench.publication import (
@@ -41,6 +43,23 @@ from tests.ingestion_contract import (
 REPO = Path(__file__).resolve().parents[1]
 ACTION = REPO / ".github/actions/desktop-releasable/action.yml"
 BUILD_SIDECAR = REPO / "apps/rapid-mac/scripts/build-sidecar.sh"
+DESKTOP_BUILD = REPO / "apps/rapid-mac/scripts/build.sh"
+DESKTOP_ENV_FILES = (
+    BUILD_SIDECAR,
+    DESKTOP_BUILD,
+    ACTION,
+    REPO / ".github/workflows/rapid-mac-release.yml",
+    REPO / ".github/workflows/auto-release.yml",
+    REPO / ".github/workflows/rapid-mac-ci.yml",
+)
+
+
+def _clean_environment_commands(text: str) -> list[str]:
+    """Return logical lines that clear the inherited environment."""
+
+    logical_text = re.sub(r"\\[ \t]*\n[ \t]*", " ", text)
+    clean_env = re.compile(r"(?:\benv[ \t]+-(?:i\b|(?=[ \t]))|\bexec[ \t]+-c\b)")
+    return [line for line in logical_text.splitlines() if clean_env.search(line)]
 
 
 @pytest.fixture(autouse=True)
@@ -92,6 +111,9 @@ def test_the_action_verifies_the_stamp_in_the_built_app() -> None:
     text = ACTION.read_text()
     assert "verify-sidecar-stamp.py" in text
     assert "Verify sidecar provenance stamp in the built app" in text
+    assert '"$SIDECAR/python/bin/python3.12" - "$OFFICIAL_RELEASE"' in text
+    assert "from rapid_mlx.telemetry.build_gate import official_build" in text
+    assert "finished app telemetry gate mismatch" in text
 
 
 def test_the_tag_workflow_marks_only_real_tags_official() -> None:
@@ -115,6 +137,117 @@ def test_the_smoke_sidecar_build_states_its_provenance() -> None:
         "RAPID_MLX_OFFICIAL_RELEASE=0 \\\n            bash apps/rapid-mac/scripts/build-sidecar.sh"
         in text
     )
+
+
+def test_the_sidecar_checks_the_telemetry_gate_with_its_bundled_python() -> None:
+    text = (REPO / "apps/rapid-mac/scripts/build-sidecar.sh").read_text()
+    telemetry_stamp = (
+        'TELEMETRY_STAMP="$STAGE/site-packages/rapid_mlx/telemetry/_release_stamp.json"'
+    )
+
+    assert telemetry_stamp in text
+    assert 'python3 "$ENGINE_ROOT/scripts/write_release_stamp.py"' in text
+    assert '--version "$SIDECAR_ENGINE_VERSION"' in text
+    assert 'rm -f "$TELEMETRY_STAMP"' in text
+    assert '"$STAGE/python/bin/python3.12" - "$OFFICIAL_RELEASE"' in text
+    assert "from rapid_mlx.telemetry.build_gate import official_build" in text
+    assert "if (result is not None) != official:" in text
+
+    stamp_offset = text.index(telemetry_stamp)
+    package_offset = text.index("# ----- step 7: package")
+    assert stamp_offset < package_offset
+
+
+def test_the_telemetry_stamp_write_and_removal_stay_in_opposite_branches() -> None:
+    text = BUILD_SIDECAR.read_text()
+    begin = text.index("# --- telemetry release stamp (begin) ---")
+    end = text.index("# --- telemetry release stamp (end) ---", begin)
+    block = text[begin:end]
+
+    branch = re.search(
+        r'if \[\[ "\$OFFICIAL_RELEASE" == "1" \]\]; then\n'
+        r"(?P<official>.*?)^else\n(?P<source>.*?)^fi$",
+        block,
+        re.MULTILINE | re.DOTALL,
+    )
+    assert branch is not None
+    assert 'python3 "$ENGINE_ROOT/scripts/write_release_stamp.py"' in branch.group(
+        "official"
+    )
+    assert 'rm -f "$TELEMETRY_STAMP"' in branch.group("source")
+
+
+def test_the_sidecar_cache_key_separates_official_and_source_stages() -> None:
+    text = DESKTOP_BUILD.read_text()
+    assert 'SIDECAR_OFFICIAL_RELEASE="${RAPID_MLX_OFFICIAL_RELEASE:-0}"' in text
+    assert (
+        'SIDECAR_CACHE_KEY="v2:${SIDECAR_SOURCE_SHA}:${SIDECAR_RECIPE_HASH}:'
+        '${SIDECAR_OFFICIAL_RELEASE}"' in text
+    )
+
+
+def test_every_clean_sidecar_environment_keeps_telemetry_disabled() -> None:
+    """Every stripped environment must restore both build-machine switches."""
+
+    commands = [
+        (path, line)
+        for path in DESKTOP_ENV_FILES
+        for line in _clean_environment_commands(path.read_text())
+    ]
+    assert commands
+    for path, line in commands:
+        assert (
+            "RAPID_MLX_TELEMETRY=0" in line and "DO_NOT_TRACK=1" in line
+        ) or "TELEMETRY_OFF_ENV" in line, f"{path}: {line}"
+
+
+def test_clean_environment_scanner_catches_supported_spellings() -> None:
+    commands = _clean_environment_commands(
+        "env -i \\\n            RAPID_MLX_TELEMETRY=0 DO_NOT_TRACK=1 command\n"
+        "env - RAPID_MLX_TELEMETRY=0 DO_NOT_TRACK=1 command\n"
+        "exec -c env RAPID_MLX_TELEMETRY=0 DO_NOT_TRACK=1 command\n"
+    )
+    assert len(commands) == 3
+    assert "env -i RAPID_MLX_TELEMETRY=0" in " ".join(commands[0].split())
+
+
+def test_desktop_build_and_release_lanes_keep_both_kill_switches() -> None:
+    sidecar = BUILD_SIDECAR.read_text()
+    build = (REPO / "apps/rapid-mac/scripts/build.sh").read_text()
+    action = ACTION.read_text()
+    mac_release = (REPO / ".github/workflows/rapid-mac-release.yml").read_text()
+    auto_release = (REPO / ".github/workflows/auto-release.yml").read_text()
+    mac_ci = (REPO / ".github/workflows/rapid-mac-ci.yml").read_text()
+
+    assert "TELEMETRY_OFF_ENV=(RAPID_MLX_TELEMETRY=0 DO_NOT_TRACK=1)" in sidecar
+    assert 'export "${TELEMETRY_OFF_ENV[@]}"' in sidecar
+    assert "export RAPID_MLX_TELEMETRY=0 DO_NOT_TRACK=1" in build
+    assert action.count('RAPID_MLX_TELEMETRY: "0"') >= 2
+    assert action.count('DO_NOT_TRACK: "1"') >= 2
+    for workflow in (mac_release, auto_release):
+        assert 'RAPID_MLX_TELEMETRY: "0"' in workflow
+        assert 'DO_NOT_TRACK: "1"' in workflow
+    assert 'RAPID_MLX_TELEMETRY: "0"' in mac_ci
+    assert auto_release.count("RAPID_MLX_TELEMETRY=0 DO_NOT_TRACK=1") >= 2
+
+
+def test_mac_ci_scopes_both_kill_switches_to_desktop_build_steps() -> None:
+    workflow = yaml.safe_load((REPO / ".github/workflows/rapid-mac-ci.yml").read_text())
+
+    assert "DO_NOT_TRACK" not in workflow.get("env", {})
+    build_steps = [
+        step
+        for job in workflow["jobs"].values()
+        for step in job.get("steps", [])
+        if any(
+            script in str(step.get("run", ""))
+            for script in ("build.sh", "build-sidecar.sh")
+        )
+    ]
+    assert build_steps
+    for step in build_steps:
+        assert step.get("env", {}).get("RAPID_MLX_TELEMETRY") == "0", step
+        assert step.get("env", {}).get("DO_NOT_TRACK") == "1", step
 
 
 def test_every_desktop_releasable_caller_sets_official_release() -> None:

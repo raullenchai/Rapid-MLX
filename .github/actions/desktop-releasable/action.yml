@@ -241,6 +241,8 @@ runs:
         # identity, so overlap that independent work with Swift compilation.
         PARALLEL_SIDECAR_BUILD: ${{ inputs.parallel_sidecar_build == 'true' && inputs.signed == 'true' && '1' || '0' }}
         OFFICIAL_RELEASE: ${{ inputs.official_release }}
+        RAPID_MLX_TELEMETRY: "0"
+        DO_NOT_TRACK: "1"
       shell: bash
       run: |
         set -euo pipefail
@@ -268,12 +270,31 @@ runs:
     - name: Verify sidecar provenance stamp in the built app
       env:
         OFFICIAL_RELEASE: ${{ inputs.official_release }}
+        RAPID_MLX_TELEMETRY: "0"
+        DO_NOT_TRACK: "1"
       shell: bash
       run: |
         set -euo pipefail
         cd "${{ inputs.checkout_path }}/apps/rapid-mac"
         python3 scripts/verify-sidecar-stamp.py \
           "build/Rapid-MLX Desktop.app" "${OFFICIAL_RELEASE}"
+        SIDECAR="build/Rapid-MLX Desktop.app/Contents/Resources/rapid-mlx"
+        PYTHONPATH="$SIDECAR/site-packages" PYTHONDONTWRITEBYTECODE=1 \
+          PYTHONNOUSERSITE=1 \
+          "$SIDECAR/python/bin/python3.12" - "$OFFICIAL_RELEASE" <<'PY'
+        import sys
+
+        from rapid_mlx.telemetry.build_gate import official_build
+
+        expected = sys.argv[1] == "true"
+        result = official_build()
+        if (result is not None) != expected:
+            raise SystemExit(
+                "finished app telemetry gate mismatch: "
+                f"official_release={expected}, official_build()={result!r}"
+            )
+        print(f"finished app telemetry gate verified: official_build()={result!r}")
+        PY
 
     - name: Bundle size gate (block if .app exceeds cap)
       env:
