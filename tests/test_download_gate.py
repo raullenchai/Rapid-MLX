@@ -2653,13 +2653,22 @@ def test_mflux_missing_weights_empty_when_complete(tmp_path, monkeypatch):
     assert gate.mflux_missing_weights(repo) == []
 
 
-def test_mflux_snapshot_accepts_two_hop_shared_hf_blobs(tmp_path, monkeypatch):
+@pytest.mark.parametrize("repo_symlinked", [False, True])
+def test_mflux_snapshot_accepts_two_hop_shared_hf_blobs(
+    tmp_path, monkeypatch, repo_symlinked
+):
     """A complete deduplicated HF cache still has locally owned blob links."""
     cache_root = tmp_path / "hf-cache"
     repo = _UNPINNED_MFLUX_REPO
     repo_root = _mflux_repo_root(cache_root, repo)
+    actual_root = (
+        tmp_path / "cold-repo" / repo_root.name if repo_symlinked else repo_root
+    )
     sha = "d" * 40
-    _seed_mflux_snapshot(repo_root, sha)
+    _seed_mflux_snapshot(actual_root, sha)
+    if repo_symlinked:
+        cache_root.mkdir()
+        repo_root.symlink_to(actual_root, target_is_directory=True)
     snap = repo_root / "snapshots" / sha
     owned_blobs = repo_root / "blobs"
     owned_blobs.mkdir()
@@ -2673,7 +2682,9 @@ def test_mflux_snapshot_accepts_two_hop_shared_hf_blobs(tmp_path, monkeypatch):
         shared.parent.mkdir(parents=True, exist_ok=True)
         shared.write_bytes(payload)
         owned = owned_blobs / f"{index + 101:064x}"
-        owned.symlink_to(os.path.relpath(shared, owned.parent))
+        owned.symlink_to(
+            shared if repo_symlinked else os.path.relpath(shared, owned.parent)
+        )
         path.unlink()
         path.symlink_to(os.path.relpath(owned, path.parent))
 

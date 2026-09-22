@@ -1705,7 +1705,9 @@ def mflux_missing_weights(repo_id: str) -> list[str] | None:
         first_hop = os.path.abspath(
             os.path.join(os.path.dirname(path), os.readlink(path))
         )
-        if os.path.dirname(first_hop) != owned_blobs or not re.fullmatch(
+        if os.path.realpath(
+            os.path.dirname(first_hop)
+        ) != owned_blobs or not re.fullmatch(
             r"(?:[0-9a-f]{40}|[0-9a-f]{64})", os.path.basename(first_hop)
         ):
             return False
