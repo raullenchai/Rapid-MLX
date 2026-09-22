@@ -28,6 +28,7 @@ every decision ``pre_cutoff_runtime`` and exercise nothing.
 from __future__ import annotations
 
 import errno
+import json
 import logging
 import os
 import re
@@ -83,6 +84,11 @@ _PROCESS_ROLE_ENV_VARS = (
     "RAPID_MLX_PROCESS_ROLE",
     "RAPID_MLX_WATCHDOG_PPID",
 )
+
+
+def _swift_json(object_: dict) -> str:
+    """Match JSONSerialization's sorted, pretty ``"key" : value`` bytes."""
+    return json.dumps(object_, indent=2, sort_keys=True, separators=(",", " : ")) + "\n"
 
 
 # ---------------------------------------------------------------------------
@@ -245,6 +251,30 @@ def test_read_desktop_shaped_schema1_refusal(fake_home):
     assert stored.notice_revision_seen is None
 
 
+@pytest.mark.parametrize("consent", [None, True])
+def test_desktop_v2_json_marker_authorises_sidecar(fake_home, consent):
+    """Swift's sorted pretty JSON is valid input for sidecar rows 3/9."""
+    record = {
+        "desktop_consent": True,
+        "notice_revision_seen": DISCLOSURE_REVISION,
+        "prompted_at": "2026-09-21T12:00:00Z",
+        "prompted_version": "0.15.0",
+        "schema_version": 1,
+    }
+    if consent is not None:
+        record["consent"] = consent
+    write_consent(_swift_json(record))
+
+    stored = read_stored_consent()
+    assert stored.consent is consent
+    assert stored.recorded_version == "0.15.0"
+    assert stored.notice_revision_seen == DISCLOSURE_REVISION
+    decision = resolve(role=ProcessRole.SIDECAR)
+    assert decision.reason == ("marker_authorises" if consent is None else "consented")
+    assert decision.upload_now is True
+    assert upload_allowed() is True
+
+
 def test_read_ignores_schema_version_entirely(fake_home):
     write_consent("consent: true\nprompted_version: 9.9.9\nschema_version: 99\n")
     stored = read_stored_consent()
@@ -284,6 +314,9 @@ def test_read_notice_revision_seen_type_gate(fake_home):
 def test_detect_role_honours_desktop_sidecar_env(fake_home, monkeypatch):
     monkeypatch.setenv("RAPID_MLX_PROCESS_ROLE", "desktop-sidecar")
     assert detect_role() is ProcessRole.SIDECAR
+    decision = startup()
+    assert decision.reason == "sidecar_waits_for_desktop"
+    assert not consent_path().exists()
 
 
 def test_detect_role_ignores_unknown_role_values(fake_home, monkeypatch):

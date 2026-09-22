@@ -4828,7 +4828,9 @@ final class ServerManager {
     /// Desktop-injected (always added, override the allowlist):
     /// ``RAPID_MLX_API_KEY`` (bearer; argv stays clean per #271),
     /// ``PYTHONUNBUFFERED`` (so tqdm reaches our log tail),
-    /// ``HF_HUB_DISABLE_PROGRESS_BARS`` (force bars on), plus
+    /// ``HF_HUB_DISABLE_PROGRESS_BARS`` (force bars on),
+    /// ``RAPID_MLX_PROCESS_ROLE=desktop-sidecar`` (telemetry role; never
+    /// ambient-spoofable), plus
     /// ``HF_HUB_DISABLE_XET`` / ``HF_HUB_DOWNLOAD_TIMEOUT`` (with
     /// ambient pass-through so the power-user override channel
     /// survives the allowlist).
@@ -5016,6 +5018,7 @@ final class ServerManager {
         )
 
         // Layer 2: desktop-injected, always.
+        env = EngineProcessEnvironment.sidecar(env)
         if !bearer.isEmpty {
             env["RAPID_MLX_API_KEY"] = bearer
         }
@@ -5329,7 +5332,7 @@ final class ProcessGroupChild: @unchecked Sendable {
         for (k, v) in environmentAdditions {
             merged[k] = v
         }
-        let envp = merged
+        let envp = EngineProcessEnvironment.sidecar(merged)
             .map { "\($0.key)=\($0.value)" }
             .sorted()
 

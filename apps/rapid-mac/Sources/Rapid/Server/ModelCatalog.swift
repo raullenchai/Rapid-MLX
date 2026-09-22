@@ -2351,7 +2351,7 @@ enum ModelCatalog {
                 selected: hubCacheOverride.path
             )
         }
-        return env
+        return EngineProcessEnvironment.sidecar(env)
     }
 }
 

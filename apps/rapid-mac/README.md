@@ -62,10 +62,13 @@ open it, and drag **Rapid-MLX Desktop** to Applications.
 
 ## Privacy
 
-- **Anonymous telemetry.** From 0.15.0 the engine uses its v2 PostHog wire and
-  is on after the disclosure unless you turn it off. The native Swift client
-  remains on its frozen v1 wire until the desktop migration PR lands. Both use
-  the same local preference and anonymous install ID. Paths are PII-redacted
+- **Default-on telemetry.** Starting in 0.15.0, anonymous telemetry is on by
+  default after a one-time in-app acknowledgement notice and is toggleable in
+  Settings → Privacy or with `rapid-mlx telemetry off`. The app sends its
+  events to `telemetry.rapidmlx.com` (a
+  Cloudflare Worker → R2), while the engine sends its v2 events to PostHog
+  Cloud (US). Both use the same local preference and anonymous install ID so
+  they never double-count an install. Paths are PII-redacted
   (`/Users/<name>/` scrubbed); chat content and attachments are never sent.
 - **Self-update.** Signed releases use Sparkle to check an EdDSA-signed appcast,
   download updates in the background, and install them when Rapid-MLX quits.

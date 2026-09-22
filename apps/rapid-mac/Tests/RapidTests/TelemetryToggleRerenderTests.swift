@@ -53,6 +53,21 @@ struct TelemetryToggleRerenderTests {
         )
     }
 
+    @Test("A process kill switch visibly disables the consent Toggle")
+    func killSwitchDisablesToggle() throws {
+        let stripped = try strippedSettingsSource()
+        #expect(
+            stripped.contains(
+                ".disabled(TelemetryConfig.killSwitchActive(environment:TelemetryConfig.environment))"
+            ),
+            "A process kill switch must disable the control instead of leaving an enabled dead Toggle."
+        )
+        #expect(
+            stripped.contains("Settings.Privacy.TelemetryDisabledReason"),
+            "The disabled control must explain that a process privacy or CI setting forced it off."
+        )
+    }
+
     @Test("The binding's getter reads view state, not the UserDefaults static")
     func getterDoesNotReadTheStaticDirectly() throws {
         let stripped = try strippedSettingsSource()
@@ -74,7 +89,7 @@ struct TelemetryToggleRerenderTests {
         )
     }
 
-    @Test("The setter updates the mirror before recording consent")
+    @Test("The setter updates the mirror and reports a failed durable write")
     func setterUpdatesTheMirror() throws {
         let stripped = try strippedSettingsSource()
         #expect(
@@ -85,8 +100,12 @@ struct TelemetryToggleRerenderTests {
             """
         )
         #expect(
-            stripped.contains("deferredTelemetryConsent.settingsChanged(enabled:enabled)"),
-            "The setter must route the durable choice through the app-owned consent coordinator."
+            stripped.contains("awaitpreviousWrite?.valueletpersisted=awaitTelemetryConsent.record(enabled:enabled)"),
+            "The setter must persist the durable choice through the merging consent writer."
+        )
+        #expect(
+            stripped.contains("telemetryEnabled=TelemetryConfig.isEnabledif!persisted{telemetryConsentWriteFailed=true}"),
+            "A failed write must restore the visible stored state and alert the user."
         )
     }
 
@@ -97,16 +116,15 @@ struct TelemetryToggleRerenderTests {
             stripped.contains(".onAppear{telemetryEnabled=TelemetryConfig.isEnabled}"),
             """
             The panel must re-read the stored value when it appears. The \
-            post-value invitation writes the same preference, so a value \
+            launch notice writes the same preference, so a value \
             seeded at init can be stale by the time Settings is first opened — \
             which would show the opposite of the truth.
             """
         )
     }
 
-    /// `onAppear` alone leaves a real hole: Settings can be opened *over* the
-    /// still-attached post-value invitation, and answering "Share" there would leave
-    /// this already-visible switch reading off while telemetry is running.
+    /// `onAppear` alone leaves a real hole: Settings can be open while the
+    /// launch notice persists its marker and enables the default-on policy.
     @Test("The panel also re-reads consent written while it is visible")
     func panelResyncsOnDefaultsChange() throws {
         let stripped = try strippedSettingsSource()
@@ -124,8 +142,8 @@ struct TelemetryToggleRerenderTests {
             """
             The Privacy panel must observe UserDefaults.didChangeNotification \
             ON THE MAIN RUN LOOP and resync the mirror in the handler. The \
-            post-value consent invitation writes the same key and can \
-            be answered while this panel is already on screen — onAppear will \
+            launch notice writes the same key and can appear while this panel \
+            is already on screen — onAppear will \
             not fire again for that. The hop to main is not ceremony: the \
             notification is delivered on the thread that made the write, so a \
             background write to any key would otherwise mutate SwiftUI @State \

@@ -45,7 +45,6 @@ struct SettingsView: View {
     /// onboarding alerts" affordance that brings the prompt back.
     @Environment(DockVisibilityPromptStore.self) private var dockPromptStore
     @Environment(QuickstartCoordinator.self) private var quickstart
-    @Environment(DeferredTelemetryConsentCoordinator.self) private var deferredTelemetryConsent
     @State private var confirmingSetupRestart = false
     @State private var restartingSetup = false
     @AppStorage(VideoFeatureConfig.enabledKey)
@@ -642,7 +641,7 @@ struct SettingsView: View {
         VStack(alignment: .leading, spacing: RapidTheme.Space.xl) {
             SectionHeader(
                 "Privacy",
-                subtitle: "Rapid-MLX is local-first. Prompts, attachments, and model responses never leave your Mac. Anonymous usage data is sent only after you opt in.",
+                subtitle: "Rapid-MLX is local-first. Prompts, attachments, and model responses never leave your Mac. Anonymous metadata telemetry is on by default; turn it off here, with rapid-mlx telemetry off, or at https://rapidmlx.com/docs/telemetry.",
                 emphasis: .page
             )
 
@@ -650,20 +649,23 @@ struct SettingsView: View {
             Toggle(isOn: telemetryEnabledBinding) {
                 SettingsRowLabel(
                     title: "Send anonymous usage data",
-                    description: "Versions, Mac hardware tier, public model and feature names, coarse performance, redacted crash diagnostics, and error categories. For each first successful text chat reply, dictation, or generated image, only the milestone name and “Desktop” are sent. This version does not send a vision-reply milestone. The collector derives a country code but never stores your IP. Never prompts, responses, attachments, keys, account details, or unredacted user paths."
+                    description: "Versions, Mac hardware tier, public model and feature names, coarse performance, redacted crash diagnostics, and error categories. For each first successful text chat reply, dictation, or generated image, only the milestone name and “Desktop” are sent. This version does not send a vision-reply milestone. Rapid sends these metadata-only events: the app's to rapidmlx.com's telemetry service, the bundled engine's to PostHog Cloud (US)—never your IP or a per-person profile; the app's collector keeps only a coarse country code. Never prompts, responses, attachments, keys, account details, or unredacted user paths."
                 )
             }
             .toggleStyle(TrailingSettingsToggleStyle())
             .accessibilityIdentifier("Settings.Privacy.TelemetryToggle")
-            // The post-value consent invitation writes the same
-            // preference, so the seeded value can be stale by the time this
-            // panel is first shown...
+            .disabled(TelemetryConfig.killSwitchActive(environment: TelemetryConfig.environment))
+            .alert("Couldn't update telemetry setting", isPresented: $telemetryConsentWriteFailed) {
+                Button("OK", role: .cancel) {}
+                    .accessibilityIdentifier("Settings.Privacy.TelemetryWriteErrorDismiss")
+            } message: {
+                Text("The setting could not be saved. Anonymous usage reporting may still be on. Check that your Mac has free disk space and try again, or set RAPID_MLX_TELEMETRY=0 before launching Rapid.")
+            }
+            // The launch notice can enable the default-on policy after this
+            // view value was seeded, so refresh whenever the panel appears.
             .onAppear { telemetryEnabled = TelemetryConfig.isEnabled }
-            // ...and it can go stale *while* the panel is open: Settings can be
-            // opened while the invitation is visible, and answering
-            // "Share" there would otherwise leave this switch reading off while
-            // telemetry is running. Re-reading on any defaults change keeps the
-            // two surfaces honest without either one knowing about the other.
+            // A successful disclosure-marker write updates UserDefaults; keep
+            // an already-visible Settings window in sync with that change.
             //
             // `.receive(on: RunLoop.main)` is load-bearing, not ceremony:
             // `didChangeNotification` is delivered on the thread that made the
@@ -675,6 +677,13 @@ struct SettingsView: View {
                     .receive(on: RunLoop.main)
             ) { _ in
                 telemetryEnabled = TelemetryConfig.isEnabled
+            }
+
+            if TelemetryConfig.killSwitchActive(environment: TelemetryConfig.environment) {
+                Text("Telemetry is disabled for this launch by a process-level privacy or CI setting.")
+                    .font(RapidFont.caption)
+                    .foregroundStyle(RapidTheme.textSecondary)
+                    .accessibilityIdentifier("Settings.Privacy.TelemetryDisabledReason")
             }
 
             SettingsRowDivider()
@@ -731,9 +740,11 @@ struct SettingsView: View {
     /// appeared to correct itself because leaving the panel and returning
     /// rebuilds the view for unrelated reasons.
     ///
-    /// Seeded once and re-read in ``onAppear`` so a change made elsewhere —
-    /// the post-value consent invitation writes the same key — is still reflected.
+    /// Seeded once and re-read in ``onAppear`` so the launch notice's
+    /// default-on transition is reflected if Settings was already constructed.
     @State private var telemetryEnabled = TelemetryConfig.isEnabled
+    @State private var telemetryConsentWrite: Task<Void, Never>?
+    @State private var telemetryConsentWriteFailed = false
 
     private var telemetryEnabledBinding: Binding<Bool> {
         Binding(
@@ -744,7 +755,13 @@ struct SettingsView: View {
                 // reintroduce the same problem the moment a write is deferred
                 // or rejected.
                 telemetryEnabled = enabled
-                deferredTelemetryConsent.settingsChanged(enabled: enabled)
+                let previousWrite = telemetryConsentWrite
+                telemetryConsentWrite = Task {
+                    await previousWrite?.value
+                    let persisted = await TelemetryConsent.record(enabled: enabled)
+                    telemetryEnabled = TelemetryConfig.isEnabled
+                    if !persisted { telemetryConsentWriteFailed = true }
+                }
             }
         )
     }

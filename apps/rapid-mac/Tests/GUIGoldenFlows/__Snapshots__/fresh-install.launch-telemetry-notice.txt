@@ -2,45 +2,28 @@
 AXApplication title="Rapid-MLX"
   AXWindow subrole=AXStandardWindow id="main" title="Rapid-MLX"
     AXGroup subrole=AXHostingView
-      AXGroup id="TelemetryConsent.PostValueBanner" enabled=true
+      AXGroup id="TelemetryNotice.Banner" enabled=true
         AXImage id="chart.bar.xaxis" desc="chart.bar.xaxis" enabled=true
         AXStaticText value=text enabled=true
         AXStaticText value=text enabled=true
-        AXButton id="TelemetryConsent.PostValue.Decline" desc="No thanks" enabled=true
-        AXButton id="TelemetryConsent.PostValue.Share" desc="Share" enabled=true
-        AXButton id="TelemetryConsent.PostValue.Close" desc="Dismiss telemetry invitation" help="Dismiss" enabled=true
+          AXLink subrole=AXTextLink title="https://rapidmlx.com/docs/telemetry"
+        AXButton id="TelemetryNotice.Acknowledge" desc="Got it" enabled=true
       AXSplitGroup id="main, SidebarNavigationSplitView"
         AXGroup subrole=AXHostingView
           AXButton id="Sidebar.NewChat" desc="New Chat" enabled=true
           AXButton id="Sidebar.Images" desc="Images" enabled=true
           AXButton id="Sidebar.Audio" desc="Audio" enabled=true
           AXButton id="Sidebar.Launch" desc="Launch" enabled=true
-          AXScrollArea
-            AXHeading desc="<relative-day>" enabled=true
-            AXButton id="Sidebar.Conversation.Pin.<uuid>" desc="Pin conversation" help="Pin conversation" enabled=true
-            AXPopUpButton id="Sidebar.Conversation.Menu.<uuid>" desc="Conversation actions" enabled=true
-            AXButton id="Sidebar.Conversation.<uuid>" desc="Say hello in one short sentence." enabled=true
-          AXStaticText id="Sidebar.Residency" value=text enabled=true
-          AXProgressIndicator value=number enabled=true
-          AXButton id="Sidebar.Residency.Unload" desc="Unload model and free <size>" help="Unload model and free <size>" enabled=true
-          AXImage id="Sidebar.ResidentModel.lfm2.5-1b-4bit" desc="Lock" enabled=true
-          AXStaticText id="Sidebar.ResidentModel.lfm2.5-1b-4bit" value=text enabled=true
-          AXStaticText id="Sidebar.ResidentModel.lfm2.5-1b-4bit" value=text enabled=true
         AXSplitter value=number enabled=false
         AXGroup subrole=AXHostingView
-          AXScrollArea
-            AXStaticText value=text enabled=true
-            AXButton id="ChatView.Message.Copy.<uuid>" desc="Copy message" help="Copy message" enabled=true
-            AXButton id="ChatView.Message.SelectText.<uuid>" desc="Select text" help="Select text" enabled=true
-            AXButton id="ChatView.Message.Edit.<uuid>" desc="Edit message" help="Edit message" enabled=true
-            AXButton id="ChatView.Message.Delete.<uuid>" desc="Delete message" help="Delete message" enabled=true
-            AXDisclosureTriangle id="ChatView.Message.ReasoningDisclosure.<uuid>" desc="Reasoning" value=bool:false enabled=true
+          AXStaticText value=text enabled=true
+          AXStaticText value=text enabled=true
+          AXStaticText value=text enabled=true
+          AXButton id="GitHub.Star.EmptyState" desc="Star on GitHub" help="Opens the Rapid-MLX repository in your browser" enabled=true
+          AXGroup desc="lfm2.5-1b-4bit isn't downloaded yet, It downloads once (~<size>), then starts in seconds." enabled=true
             AXStaticText value=text enabled=true
             AXStaticText value=text enabled=true
-            AXButton id="ChatView.Message.Copy.<uuid>" desc="Copy response" help="Copy response" enabled=true
-            AXButton id="ChatView.Message.SelectText.<uuid>" desc="Select text" help="Select text" enabled=true
-            AXButton id="ChatView.Message.Retry.<uuid>" desc="Retry response" enabled=true
-            AXButton id="ChatView.Message.Delete.<uuid>" desc="Delete message" help="Delete message" enabled=true
+            AXButton id="Readiness.Action" desc="Download" enabled=true
           AXStaticText value=text enabled=true
           AXScrollArea
             AXTextArea id="rapid.chat.compose" desc="Message compose field" value=empty
@@ -49,7 +32,7 @@ AXApplication title="Rapid-MLX"
           AXButton id="ChatView.PersonalIntelligence.Toggle" desc="Personal Intelligence" value=text enabled=true
           AXPopUpButton id="ModelPickerBar.ModelMenu" desc="Model" help="Choose which model to run" value=text enabled=true
           AXButton id="ModelPickerBar.ModelInfo" desc="Show model details" help="Show model details" enabled=true
-          AXButton id="ChatView.SendOrStopButton" desc="Send message" enabled=false
+          AXButton id="ChatView.SendOrStopButton" desc="Send message" help="Download lfm2.5-1b-4bit before sending." enabled=false
       AXButton id="ContentView.Settings" desc="Settings" help="Settings — ⌘," enabled=true
       AXButton id="ContentView.ToggleLogs" desc="Show logs" help="Show logs" enabled=true
       AXUnknown desc="Server status" enabled=true
