@@ -564,7 +564,9 @@ async def test_completion_serialization_failure_is_not_counted_as_success(
     ctx.registry.add(_entry(engine, "model-a", _A_PATH, _A_ID), is_default=True)
     _patch_completions_route(monkeypatch, engine, [])
     emit_calls = []
-    monkeypatch.setattr(inference, "emit_completed_request", lambda **kw: emit_calls.append(kw))
+    monkeypatch.setattr(
+        inference, "emit_completed_request", lambda **kw: emit_calls.append(kw)
+    )
     monkeypatch.setattr(
         completions.CompletionResponse,
         "model_dump_json",
@@ -722,7 +724,9 @@ async def test_anthropic_serialization_failure_is_not_counted_as_success(
     ctx.registry.add(_entry(engine, "model-a", _A_PATH, _A_ID), is_default=True)
     _patch_anthropic_route(monkeypatch, engine, [])
     emit_calls = []
-    monkeypatch.setattr(inference, "emit_completed_request", lambda **kw: emit_calls.append(kw))
+    monkeypatch.setattr(
+        inference, "emit_completed_request", lambda **kw: emit_calls.append(kw)
+    )
 
     class Unserializable:
         def model_dump_json(self, **_kwargs):
@@ -733,10 +737,13 @@ async def test_anthropic_serialization_failure_is_not_counted_as_success(
     )
     with pytest.raises(RuntimeError, match="serialization failed"):
         await anthropic.create_anthropic_message(
-            _AnthRawRequest({
-                "model": "claude-sonnet-4", "max_tokens": 32,
-                "messages": [{"role": "user", "content": "say hi"}],
-            })
+            _AnthRawRequest(
+                {
+                    "model": "claude-sonnet-4",
+                    "max_tokens": 32,
+                    "messages": [{"role": "user", "content": "say hi"}],
+                }
+            )
         )
 
     assert emit_calls == []
