@@ -1,0 +1,214 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Trio-Flash: Calibrated Decisions in a Single Pass — MachineFi Labs</title>
+<meta name="description" content="Trio-Flash matches a hosted frontier decision model on our benchmark (McNemar p=0.39) with 3.3× better calibration, one forward pass, zero generated tokens. Research post: method, plots, and a Slay the Spire adaptation lane.">
+<meta property="og:title" content="Trio-Flash: Calibrated Decisions in a Single Pass">
+<meta property="og:description" content="One pass. Zero generated tokens. Jev-class accuracy with 3.3× better calibration on our benchmark.">
+<meta property="og:type" content="article">
+<style>
+  :root { --bg:#11100E; --ink:#F3EFEA; --dim:rgba(243,239,234,.62); --line:rgba(243,239,234,.14);
+          --accent:#E8B44A; --good:#7FB069; --mono:'JetBrains Mono',ui-monospace,SFMono-Regular,monospace;
+          --sans:Inter,system-ui,-apple-system,sans-serif; }
+  * { box-sizing:border-box; }
+  body { margin:0; background:var(--bg); color:var(--ink); font-family:var(--sans);
+         line-height:1.65; font-size:16.5px; -webkit-font-smoothing:antialiased; }
+  main { max-width:740px; margin:0 auto; padding:64px 22px 120px; }
+  header.site { max-width:740px; margin:0 auto; padding:26px 22px 0; display:flex; justify-content:space-between;
+                font-family:var(--mono); font-size:13px; letter-spacing:.06em; }
+  header.site a { color:var(--dim); text-decoration:none; }
+  h1 { font-family:var(--mono); font-size:clamp(28px,5vw,40px); line-height:1.15; margin:34px 0 10px; letter-spacing:-.01em; }
+  h2 { font-family:var(--mono); font-size:20px; margin:58px 0 6px; padding-top:26px; border-top:1px solid var(--line); }
+  .kicker { font-family:var(--mono); font-size:12.5px; letter-spacing:.14em; text-transform:uppercase; color:var(--accent); }
+  .standfirst { color:var(--dim); font-size:18px; margin:14px 0 8px; }
+  .meta { font-family:var(--mono); font-size:12.5px; color:var(--dim); margin-bottom:28px; }
+  p { margin:14px 0; }
+  a { color:var(--accent); }
+  strong { color:var(--ink); }
+  .note { color:var(--dim); font-size:14px; }
+  code, .mono { font-family:var(--mono); font-size:.92em; background:rgba(243,239,234,.07); padding:1px 6px; border-radius:4px; }
+  pre { font-family:var(--mono); font-size:13.5px; background:rgba(243,239,234,.055); border:1px solid var(--line);
+        border-radius:10px; padding:16px 18px; overflow-x:auto; line-height:1.55; }
+  figure { margin:26px 0; }
+  figcaption { font-family:var(--mono); font-size:12.5px; color:var(--dim); margin-top:10px; }
+  img.game { width:100%; border-radius:10px; border:1px solid var(--line); display:block; }
+  .ui { border:1px solid var(--line); border-radius:12px; padding:22px; background:rgba(243,239,234,.035); }
+  .ui .q { font-family:var(--mono); font-size:13px; color:var(--dim); margin-bottom:12px; }
+  .bar-row { margin:10px 0; }
+  .bar-label { display:flex; justify-content:space-between; font-family:var(--mono); font-size:13.5px; margin-bottom:4px; }
+  .bar-track { height:14px; background:rgba(243,239,234,.08); border-radius:7px; overflow:hidden; }
+  .bar-fill { height:100%; background:var(--accent); border-radius:7px; }
+  .bar-fill.los { background:rgba(243,239,234,.25); }
+  .badge { display:inline-block; font-family:var(--mono); font-size:12px; letter-spacing:.1em; padding:4px 10px;
+           border-radius:6px; border:1px solid var(--good); color:var(--good); margin-top:12px; }
+  table.data { width:100%; border-collapse:collapse; font-size:15px; margin:18px 0; }
+  table.data th { font-family:var(--mono); font-size:12.5px; letter-spacing:.08em; text-transform:uppercase;
+                  color:var(--dim); text-align:left; border-bottom:1px solid var(--line); padding:8px 10px; }
+  table.data td { padding:9px 10px; border-bottom:1px solid rgba(243,239,234,.08); }
+  table.data td.num { font-family:var(--mono); }
+  .winrow td { background:rgba(232,180,74,.07); }
+  footer { border-top:1px solid var(--line); margin-top:70px; padding-top:22px; font-family:var(--mono);
+           font-size:12.5px; color:var(--dim); }
+  .cta { border:1px solid var(--accent); border-radius:10px; padding:18px 20px; margin-top:14px; }
+  .cta b { font-family:var(--mono); }
+</style>
+</head>
+<body>
+<header class="site"><span>MACHINEFI LABS · RESEARCH</span><span>trio-flash-2026-09</span></header>
+<main>
+  <div class="kicker">Research post · decision models</div>
+  <h1>Trio-Flash: Calibrated Decisions in a Single Pass</h1>
+  <p class="standfirst">Agents often need one bounded choice — which queue, which tool, is this prompt an
+  injection. Trio-Flash answers with real probabilities in a single forward pass and generates
+  no text. On our frozen decision benchmark it matches a hosted frontier decision model on
+  accuracy, with <strong>3.3× better calibration</strong> — running on one machine, fully local.</p>
+  <p class="meta">MachineFi Labs · private research beta · 2026-09</p>
+
+  <h2>1 · The decision, not the paragraph</h2>
+  <p>Generative models are optimized to continue text. When software has to pick — route a ticket,
+  gate a tool call, grade a message — you pay for tokens, latency variance and a parser, and you get
+  a string instead of a probability. Trio-Flash is a model that <strong>chooses once</strong>: given a state
+  and 2–8 allowed actions, it returns a probability for every action and a disposition.</p>
+
+  <h2>2 · What Trio-Flash is</h2>
+  <p>Input state plus a closed candidate set → decision, full probability distribution, and a
+  disposition (<code>auto_decide</code> / <code>review</code> / <code>abstain</code>) driven by measured
+  risk–coverage thresholds. What it does not do: generate free text, answer outside the given
+  candidates, or pretend certainty it does not have. It is a frozen foundation adapted with small
+  trainable modules; every decision is one model pass.</p>
+
+  <figure class="ui">
+    <div class="ui">
+      <div class="q">Decide which model should handle the request — Request: “fix a flaky integration test in CI”</div>
+      <div class="bar-row"><div class="bar-label"><span>▸ A. code-specialist model</span><span>99.1%</span></div>
+        <div class="bar-track"><div class="bar-fill" style="width:99.1%"></div></div></div>
+      <div class="bar-row"><div class="bar-label"><span>B. general chat model</span><span>0.9%</span></div>
+        <div class="bar-track"><div class="bar-fill los" style="width:0.9%"></div></div></div>
+      <span class="badge">AUTO_DECIDE · conf 0.991 · 283 ms · one pass</span>
+    </div>
+    <figcaption>Live output shape. Probabilities over the given candidates only; disposition from calibrated thresholds.</figcaption>
+  </figure>
+
+  <h2>3 · One pass through the model</h2>
+  <p>The readout scores the allowed choices directly at the candidate-token position: one forward
+  pass, softmax restricted to the candidate letters, argmax decides, <strong>zero tokens generated</strong>.
+  That is why latency is deterministic (no decoding) and why the model cannot answer off-schema.
+  Calibration is part of the contract: probabilities are temperature-fit on held-out training data,
+  and the disposition layer refers low-margin cases to a human instead of guessing.</p>
+
+  <h2>4 · What we measured</h2>
+  <p>We built a frozen 192-item decision benchmark — routing, tool gating, prompt-injection
+  guarding — with identical inputs and allowed choices for every system, and scored with identical
+  formulas. Our reference point sanity-checks the ruler: the hosted model scores on our items almost
+  exactly what it publishes on its own.</p>
+  <table class="data">
+    <tr><th>System</th><th>Accuracy (same items)</th><th>ECE 15-bin</th><th>Latency</th></tr>
+    <tr class="winrow"><td><strong>Trio-Flash</strong> (local, single pass)</td><td class="num">95.31%</td><td class="num">0.031</td><td class="num">~1.1 s</td></tr>
+    <tr><td>TypeSafe Jev <code>jev-latest</code> (hosted API)</td><td class="num">93.23%</td><td class="num">0.102</td><td class="num">0.19 s p50</td></tr>
+  </table>
+  <p>On our frozen 192-item decision benchmark, Trio-Flash answered 95.31% correctly; TypeSafe Jev
+  (<code>jev-latest</code>, hosted API) answered 93.23% under the same inputs and allowed choices. The
+  paired difference was not statistically significant — exact McNemar <em>p</em>&nbsp;=&nbsp;0.388 — so this
+  result supports <strong>accuracy parity</strong>, not an accuracy win. The clearer observed difference
+  was calibration: 15-bin ECE was 0.031 for Trio-Flash and 0.102 for Jev — <strong>3.3× lower</strong> under
+  this protocol. These are measurements on our benchmark, not universal rankings; the systems expose
+  probabilities through different interfaces. Trio-Flash is not affiliated with or endorsed by TypeSafe.</p>
+
+  <figure>
+    <svg viewBox="0 0 700 190" width="100%" role="img" aria-label="Accuracy and calibration bars">
+      <text x="0" y="18" fill="#F3EFEA" font-family="JetBrains Mono" font-size="13">Accuracy (same 192 items)</text>
+      <text x="0" y="52" fill="#F3EFEA" font-family="JetBrains Mono" font-size="12">Trio-Flash</text>
+      <rect x="150" y="40" width="519" height="16" rx="8" fill="rgba(243,239,234,.10)"/>
+      <rect x="150" y="40" width="514" height="16" rx="8" fill="#E8B44A"/>
+      <text x="672" y="53" fill="#F3EFEA" font-family="JetBrains Mono" font-size="12">95.31</text>
+      <text x="0" y="82" fill="#F3EFEA" font-family="JetBrains Mono" font-size="12">Jev (hosted)</text>
+      <rect x="150" y="70" width="519" height="16" rx="8" fill="rgba(243,239,234,.10)"/>
+      <rect x="150" y="70" width="504" height="16" rx="8" fill="rgba(243,239,234,.45)"/>
+      <text x="672" y="83" fill="#F3EFEA" font-family="JetBrains Mono" font-size="12">93.23</text>
+      <text x="0" y="128" fill="#F3EFEA" font-family="JetBrains Mono" font-size="13">Calibration error, ECE 15-bin (lower is better)</text>
+      <text x="0" y="162" fill="#F3EFEA" font-family="JetBrains Mono" font-size="12">Trio-Flash</text>
+      <rect x="150" y="150" width="519" height="16" rx="8" fill="rgba(243,239,234,.10)"/>
+      <rect x="150" y="150" width="86" height="16" rx="8" fill="#7FB069"/>
+      <text x="245" y="163" fill="#F3EFEA" font-family="JetBrains Mono" font-size="12">0.031</text>
+      <text x="0" y="188" fill="#F3EFEA" font-family="JetBrains Mono" font-size="12">Jev (hosted)</text>
+      <rect x="150" y="176" width="519" height="0" rx="8" fill="rgba(243,239,234,.10)"/>
+      <rect x="150" y="180" width="283" height="12" rx="6" fill="rgba(243,239,234,.45)"/>
+      <text x="445" y="191" fill="#F3EFEA" font-family="JetBrains Mono" font-size="12">0.102</text>
+    </svg>
+    <figcaption>Accuracy is parity (McNemar p=0.388, exact, n=192). Calibration is not close — and calibration
+    is what makes thresholds and abstention meaningful.</figcaption>
+  </figure>
+
+  <h2>5 · Confidence is part of the output</h2>
+  <p>Accuracy alone is a half-product. On a separate far-out-of-distribution probe (600 items from a
+  game state space the model never trained on), confidence separated in-distribution from
+  out-of-distribution inputs with <strong>AUROC 0.971</strong>. Referring the least-confident 10% cut the
+  observed error rate from 4.7% to <strong>1.7%</strong> at 90% coverage. The disposition layer
+  (<code>auto_decide</code> / <code>review</code> / <code>abstain</code>) turns that curve into a runtime
+  contract: you choose your risk budget, the model keeps it.</p>
+  <figure>
+    <svg viewBox="0 0 700 200" width="100%" role="img" aria-label="Risk-coverage curve">
+      <line x1="60" y1="170" x2="660" y2="170" stroke="rgba(243,239,234,.25)"/>
+      <line x1="60" y1="170" x2="60" y2="20" stroke="rgba(243,239,234,.25)"/>
+      <text x="30" y="26" fill="rgba(243,239,234,.6)" font-family="JetBrains Mono" font-size="11">err%</text>
+      <text x="590" y="190" fill="rgba(243,239,234,.6)" font-family="JetBrains Mono" font-size="11">coverage%</text>
+      <text x="570" y="166" fill="rgba(243,239,234,.6)" font-family="JetBrains Mono" font-size="11">100</text>
+      <text x="295" y="166" fill="rgba(243,239,234,.6)" font-family="JetBrains Mono" font-size="11">90</text>
+      <line x1="315" y1="170" x2="315" y2="40" stroke="rgba(232,180,74,.35)" stroke-dasharray="4 4"/>
+      <circle cx="315" cy="45" r="5" fill="#E8B44A"/>
+      <text x="240" y="36" fill="#F3EFEA" font-family="JetBrains Mono" font-size="12">1.7% @ 90% coverage</text>
+      <circle cx="620" cy="82" r="5" fill="rgba(243,239,234,.55)"/>
+      <text x="480" y="74" fill="rgba(243,239,234,.75)" font-family="JetBrains Mono" font-size="12">4.7% @ full coverage</text>
+      <line x1="320" y1="45" x2="615" y2="82" stroke="#E8B44A" stroke-width="2"/>
+      <text x="70" y="60" fill="rgba(243,239,234,.6)" font-family="JetBrains Mono" font-size="11">far-OOD probe, 600 items</text>
+      <text x="70" y="78" fill="rgba(243,239,234,.45)" font-family="JetBrains Mono" font-size="11">near-OOD: under evaluation</text>
+    </svg>
+    <figcaption>Selective risk: the least-confident 10% is exactly where the dangerous errors live.</figcaption>
+  </figure>
+
+  <h2>6 · A lane outside the training domains</h2>
+  <p>Decision models should adapt overnight to new domains. As a stress test we minted a lane from
+  <em>Slay the Spire</em>: states come from the game engine, labels from deterministic engine rollout
+  values — never model self-grading. An experimental lane trained overnight from engine-generated
+  states reached <strong>54% held-out accuracy</strong> (paired +18.3 points over the base system on the
+  same states), and the recorded match plays it honestly: 56 real decisions, 3 wins out of 3 fights,
+  every probability bar and every mistake visible.</p>
+  <figure>
+    <img class="game" src="assets/spire_1.png" alt="Trio-Flash routing a Slay the Spire combat decision">
+    <figcaption>The engine grades, the model decides: every move shows live probabilities and per-move agreement.</figcaption>
+  </figure>
+  <figure>
+    <img class="game" src="assets/spire_2.png" alt="Mid-fight state with probability bars">
+  </figure>
+  <figure>
+    <img class="game" src="assets/spire_3.png" alt="Late-fight state">
+  </figure>
+
+  <h2>7 · What this result does not establish</h2>
+  <p>No demonstrated accuracy advantage over the hosted reference — parity, measured once, on our
+  benchmark. The abstention curve covers a far-OOD probe only; near-OOD behavior is under
+  evaluation. Labels come from our deterministic generators, which share a distribution with our
+  training data. Local latency (~1.1 s) and hosted latency (0.19 s p50) are not directly comparable —
+  different hardware, different network positions. And the model is not a sole safety control:
+  treat <code>review</code> and <code>abstain</code> as referral, never as permission.</p>
+
+  <h2>8 · Private research beta</h2>
+  <p>Trio-Flash runs as a local, self-contained decision API: bearer auth, per-client rate limits,
+  queue backpressure, structured JSONL audit logs — prompts are not logged by default. Beta access
+  starts with the three decision families above; bring us a decision your system makes repeatedly.</p>
+  <div class="cta">
+    <b>Request beta access</b> — research@machinefi.com · include the decision you automate today, its candidate
+    set, and current latency budget. We onboard in small waves and measure before widening.
+  </div>
+
+  <footer>
+    Trio-Flash · trio-flash-2026-09 · MachineFi Labs research beta — no SLA, no uptime guarantee.
+    Built on properly licensed third-party components; model artifacts and source are not included in
+    the private beta. Full method appendix, sanitized item-level outputs and benchmark protocol:
+    available to beta participants on request.
+  </footer>
+</main>
+</body>
+</html>

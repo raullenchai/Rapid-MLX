@@ -34,6 +34,9 @@ sys.path.insert(0, str(BENCH))
 import render  # noqa: E402
 
 MANIFEST = json.loads((HERE / "adapter_manifest.json").read_text())
+# Serving backend: mlx (Mac, main-thread worker) or llama_cpp (NVIDIA box).
+BACKEND = os.environ.get("MARVIN_BACKEND", "mlx")
+LLM_BASE = os.environ.get("MARVIN_LLM_BASE", "http://127.0.0.1:8080")
 
 
 class MlxBackend:

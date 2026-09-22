@@ -43,7 +43,13 @@ for p in reversed(sys_path):
     if p not in __import__("sys").path:
         __import__("sys").path.insert(0, p)
 
-import marvin_spire  # noqa: E402
+if os.environ.get("MARVIN_BACKEND", "mlx") == "mlx":
+    import marvin_spire  # noqa: E402  (mlx-only dependency; skipped on llama_cpp hosts)
+    marvin_spire.start_main_worker()  # MLX is thread-affine: load+forward on the main thread
+    QueueFullError = marvin_spire.QueueFullError
+else:
+    class QueueFullError(RuntimeError):
+        pass
 import render  # noqa: E402
 
 
@@ -279,10 +285,29 @@ class Handler(BaseHTTPRequestHandler):
 
         request_id = uuid.uuid4().hex[:12]
         try:
-            decision = marvin_spire.decide(prompt, candidates)
-        except marvin_spire.QueueFullError:
+            if BACKEND == "llama_cpp":
+                # NVIDIA path: llama-server letter readout, same contract.
+                import classify_proxy
+                backend = classify_proxy.LlamaCppBackend(LLM_BASE, None)
+                t0 = time.perf_counter()
+                probs = backend.letter_probs(prompt, len(candidates))
+                import render
+                letters = [render.letter_for(i) for i in range(len(candidates))]
+                best = max(letters, key=lambda l: probs[l])
+                decision = {"chosen": candidates[letters.index(best)],
+                            "confidence": probs[best],
+                            "probabilities": {c: probs[render.letter_for(i)]
+                                              for i, c in enumerate(candidates)},
+                            "latency_ms": round((time.perf_counter() - t0) * 1000, 1)}
+            else:
+                decision = marvin_spire.decide(prompt, candidates)
+        except QueueFullError:
             self._send({"error": "queue full, retry with backoff",
                         "request_id": request_id}, 503)
+            return
+        except Exception as e:
+            self._send({"error": f"inference backend error", "detail": str(e)[:120],
+                        "request_id": request_id}, 502)
             return
         action, reason = recommended_action(decision["confidence"])
         resp = {
@@ -320,13 +345,15 @@ def main() -> None:
     adapter = os.environ.get("MARVIN_ADAPTER")
     print(f"adapter: {adapter or '(manifest default)'} · think_mode={MANIFEST['think_mode']}", flush=True)
 
-    marvin_spire.load()
+    if BACKEND == "mlx":
+        marvin_spire.load()
     bind = os.environ.get("MARVIN_BIND", "127.0.0.1")  # loopback default; tunnel runs on-host
     httpd = ThreadingHTTPServer((bind, args.port), Handler)
     threading.Thread(target=httpd.serve_forever, daemon=True).start()
     print(f"playground: http://localhost:{args.port}/  (one-time token: {token})", flush=True)
     print(f"api: POST /v1/classify with Authorization: Bearer <token>", flush=True)
-    marvin_spire.start_main_worker()
+    if BACKEND == "mlx":
+        marvin_spire.start_main_worker()
 
 
 if __name__ == "__main__":

@@ -29,8 +29,8 @@ BENCH = HERE.parent / "bench" / "marvins_garden"
 sys.path.insert(0, str(BENCH))
 import render  # noqa: E402  (single source of letter mapping)
 PAIRS = BENCH / "data-large" / "pairs_heldout.jsonl"
-THRESHOLD_PT = 2.0
-THRESHOLD_AGREE = 0.97
+THRESHOLD_PT = 1.0
+THRESHOLD_AGREE = 0.98  # astra session 5: production gate; 2.0/0.97 was smoke-only
 
 
 def remote_probs(base, key, prompt, n_candidates, timeout=60):
