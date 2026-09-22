@@ -102,30 +102,32 @@ def _utc_day() -> date:
 
 
 def _days_since_first_run_bucket() -> str | None:
-    """Read the durable cohort stamp at most once per UTC day."""
+    """Read and cache a valid durable cohort stamp once per UTC day."""
     global _cohort_bucket, _cohort_day
     today = _utc_day()
     with _cohort_lock:
         if _cohort_day != today:
             bucket = store.days_since_first_run_bucket()
+            if bucket is None:
+                return None
             _cohort_bucket = bucket
             _cohort_day = today
         return _cohort_bucket
 
 
-def _track_accepted(
+def track(
     event: str,
     props: Mapping[str, object],
     *,
     nth_model_served: int | None = None,
-) -> bool:
-    """Queue one registry-approved v2 event and report sender acceptance."""
+) -> None:
+    """Queue one registry-approved v2 event without blocking or raising."""
     try:
         if not _upload_allowed():
-            return False
+            return
         context = _process_context()
         if context is None:
-            return False
+            return
 
         # ``note_model_served`` uses zero as its failure sentinel. A real
         # successful note is always at least one, so zero must stay off wire.
@@ -141,28 +143,18 @@ def _track_accepted(
             platform=context.platform,
         )
         if common is None:
-            return False
+            return
         item = envelope.build_batch_item(event, props, common)
         if item is None:
-            return False
+            return
 
         # Importing the sender registers an at-fork hook, so defer it until an
         # event has passed every earlier gate.
         from rapid_mlx.telemetry import posthog_sender
 
-        return posthog_sender.get_sender().capture(item)
+        posthog_sender.get_sender().capture(item)
     except Exception:
-        return False
-
-
-def track(
-    event: str,
-    props: Mapping[str, object],
-    *,
-    nth_model_served: int | None = None,
-) -> None:
-    """Queue one registry-approved v2 event without blocking or raising."""
-    _track_accepted(event, props, nth_model_served=nth_model_served)
+        return
 
 
 def _emit_app_opened(surface: str) -> None:

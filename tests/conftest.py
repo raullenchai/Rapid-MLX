@@ -1,12 +1,24 @@
 # SPDX-License-Identifier: Apache-2.0
 """Pytest configuration and shared fixtures."""
 
+import importlib.util
 import ipaddress
 import os
 import socket
 import sys
 
 import pytest
+
+
+def _assert_no_uninjected_posthog_posts(calls: list[str]) -> None:
+    """Check that the session transport guard observed no production calls."""
+    assert calls == [], f"uninjected PostHog calls reached default_post: {calls!r}"
+
+
+@pytest.fixture
+def _posthog_transport_guard_assertion():
+    """Expose the session guard assertion for its self-check."""
+    return _assert_no_uninjected_posthog_posts
 
 
 @pytest.fixture(scope="session", autouse=True)
@@ -26,7 +38,7 @@ def _forbid_uninjected_posthog_default_post():
 
     posthog_sender.default_post = forbidden
     yield
-    assert calls == []
+    _assert_no_uninjected_posthog_posts(calls)
 
 
 @pytest.fixture(autouse=True)
@@ -48,31 +60,14 @@ def _isolate_v2_telemetry_process_state(monkeypatch):
     consent_runtime._reset_runtime_state_for_tests()
 
 
-# Lazy, one-time availability probe for the Apple-only ``mlx`` runtime. Nothing
+# One-time availability probe for the Apple-only ``mlx`` runtime. Nothing
 # outside the standard library and pytest is imported at module scope because
 # this file is also loaded by minimal CI jobs that install pytest alone.
 #
-# We probe once up front and remember the result in a module global rather than
-# re-importing mlx per collection/modifyitems call — importing is comparatively
-# expensive and the answer cannot change mid-run. The ``except Exception`` (not
-# just ``ImportError``) also swallows a version that imports but fails at
-# import time (e.g. an unsupported ABI), treating it the same as absent: a test
-# that needs mlx cannot run there anyway. See the ``requires_mlx`` marker
-# documentation in pytest.ini and the auto-skip in ``pytest_collection_modifyitems``
-# below for how this flips the no-MLX leg onto the marker mechanism.
-_HAS_MLX = None
-
-
-def _has_mlx() -> bool:
-    global _HAS_MLX
-    if _HAS_MLX is None:
-        try:
-            import mlx.core  # noqa: F401  (probe only)
-
-            _HAS_MLX = True
-        except Exception:  # noqa: BLE001 - optional; absent/failing == unavailable
-            _HAS_MLX = False
-    return _HAS_MLX
+# Snapshot the installed package before collection can place test doubles in
+# ``sys.modules``. ``find_spec`` avoids importing mlx and keeps the minimal CI
+# environment dependency-free.
+_HAS_MLX = importlib.util.find_spec("mlx") is not None
 
 
 # Environment variables that point at the host's real, machine-specific HF
@@ -574,7 +569,7 @@ def pytest_configure(config):
     config.addinivalue_line(
         "markers",
         "requires_mlx: mark a test that imports or otherwise needs mlx; it is "
-        "auto-skipped on the no-MLX CI leg (see _has_mlx in this module and the "
+        "auto-skipped on the no-MLX CI leg (see _HAS_MLX in this module and the "
         "auto-skip in ``pytest_collection_modifyitems``). Deliberately NOT in "
         "the addopts ``-m`` default, so local dev still runs these when mlx is "
         "present.",
@@ -613,7 +608,7 @@ def pytest_collection_modifyitems(config, items):
     # is what lets a CI step run the whole suite and have mlx-bound tests drop
     # out on their own instead of being hand-curated into an exclusion roster.
     #
-    # Guard on ``not _has_mlx()`` so a dev machine WITH mlx (i.e. the current
+    # Guard on ``not _HAS_MLX`` so a dev machine WITH mlx (i.e. the current
     # host, or the Apple leg) runs these tests normally — the marker only bites
     # when mlx genuinely cannot be imported. We run this in
     # ``pytest_collection_modifyitems`` rather than an autouse fixture so the
@@ -625,7 +620,7 @@ def pytest_collection_modifyitems(config, items):
     # collection time (before modifyitems), which a marker cannot prevent — that
     # is exactly the shape the contract test tests/test_no_mlx_marker_contract.py
     # polices on the no-MLX leg.
-    if not _has_mlx():
+    if not _HAS_MLX:
         skip_no_mlx = pytest.mark.skip(
             reason="requires mlx (not installed on this host)"
         )

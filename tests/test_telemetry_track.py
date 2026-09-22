@@ -12,7 +12,7 @@ import sys
 import threading
 import uuid
 from collections.abc import Iterator, Mapping
-from datetime import date
+from datetime import date, datetime, timezone
 from http.server import BaseHTTPRequestHandler, HTTPServer
 from pathlib import Path
 from types import SimpleNamespace
@@ -346,6 +346,26 @@ def test_cli_lifecycle_failure_cannot_escape(monkeypatch):
     cli._start_v2_lifecycle("models")
 
 
+def test_cli_main_starts_lifecycle_after_consent(monkeypatch, capsys):
+    calls: list[str] = []
+    decision = Decision(True, False, WriteBack(False, False, False), "existing_opt_in")
+    monkeypatch.setattr(
+        consent_runtime,
+        "startup",
+        lambda **kwargs: calls.append("consent") or decision,
+    )
+    monkeypatch.setattr(
+        consent_runtime, "detect_role", lambda: ProcessRole.HEADLESS_CLI
+    )
+    monkeypatch.setattr(
+        track_module, "start_lifecycle", lambda surface: calls.append(surface)
+    )
+    monkeypatch.setattr(sys, "argv", ["rapid-mlx", "models", "--json"])
+    cli.main()
+    capsys.readouterr()
+    assert calls == ["consent", "cli"]
+
+
 def test_shared_lifecycle_rejects_invalid_surface_and_denial(monkeypatch):
     calls: list[str] = []
     monkeypatch.setattr(
@@ -391,6 +411,13 @@ def test_active_day_emits_once_when_fresh_store_sees_day_claimed(monkeypatch):
     track_module.emit_active_day(_store=second_process_store)
 
     assert [item["event"] for item in sender.items] == ["active_day"]
+
+
+def test_active_day_rejects_truthy_non_true_claim(monkeypatch):
+    sender = inject_sender(monkeypatch)
+    fake_store = SimpleNamespace(claim_active_day=lambda: 1)
+    track_module.emit_active_day(_store=fake_store)
+    assert sender.items == []
 
 
 def test_active_day_sender_refusal_after_claim_loses_day(monkeypatch):
@@ -644,6 +671,29 @@ def test_platform_and_cohort_stamp_cached_within_utc_day(monkeypatch):
     ] == ["7-29", "7-29"]
 
 
+def test_cohort_stamp_retries_after_transient_store_failure(monkeypatch):
+    sender = inject_sender(monkeypatch)
+    buckets = iter((None, "7-29"))
+    monkeypatch.setattr(
+        track_module.store, "days_since_first_run_bucket", lambda: next(buckets)
+    )
+    track_module.track("app_opened", {})
+    track_module.track("active_day", {})
+    assert "days_since_first_run_bucket" not in sender.items[0]["properties"]
+    assert sender.items[1]["properties"]["days_since_first_run_bucket"] == "7-29"
+
+
+def test_utc_day_uses_utc_clock_near_local_midnight(monkeypatch):
+    class FakeDatetime:
+        @classmethod
+        def now(cls, tz):
+            assert tz is timezone.utc
+            return datetime(2026, 9, 22, 6, 30, tzinfo=tz)
+
+    monkeypatch.setattr(track_module, "datetime", FakeDatetime)
+    assert track_module._utc_day() == date(2026, 9, 22)
+
+
 def test_cohort_stamp_reread_after_utc_day_rollover(monkeypatch):
     sender = inject_sender(monkeypatch)
     days = iter((date(2026, 9, 21), date(2026, 9, 21), date(2026, 9, 22)))
@@ -709,7 +759,6 @@ def test_active_day_store_failure_is_swallowed(monkeypatch):
 
 
 @pytest.mark.asyncio
-@pytest.mark.requires_mlx
 async def test_lifespan_shutdown_drains_v2_once(monkeypatch):
     import rapid_mlx.server as server_module
 
@@ -745,6 +794,17 @@ async def test_lifespan_shutdown_drains_v2_once(monkeypatch):
     sender.close(0.5)
 
 
+def test_server_shutdown_flush_failure_is_swallowed(monkeypatch):
+    import rapid_mlx.server as server_module
+
+    monkeypatch.setattr(
+        posthog_sender,
+        "get_sender",
+        lambda: (_ for _ in ()).throw(RuntimeError("sender unavailable")),
+    )
+    server_module._flush_v2_telemetry()
+
+
 def test_server_entrypoint_lifecycle_source_contract():
     tree = ast.parse((REPO_ROOT / "rapid_mlx" / "server.py").read_text())
     main = next(
@@ -773,7 +833,6 @@ def test_server_entrypoint_lifecycle_source_contract():
     assert lifecycle_call.value.args[0].value == "server"
 
 
-@pytest.mark.requires_mlx
 def test_server_module_entrypoint_starts_shared_v2_lifecycle(monkeypatch):
     import rapid_mlx.cli as current_cli
     import rapid_mlx.server as server_module
@@ -798,6 +857,15 @@ def test_server_module_entrypoint_starts_shared_v2_lifecycle(monkeypatch):
     with pytest.raises(StopAfterLifecycleError):
         server_module.main()
     assert calls == ["server"]
+
+
+def test_session_transport_guard_assertion_rejects_recorded_post(
+    _posthog_transport_guard_assertion,
+):
+    calls: list[str] = []
+    calls.append("https://us.i.posthog.com/batch/")
+    with pytest.raises(AssertionError, match="uninjected PostHog calls"):
+        _posthog_transport_guard_assertion(calls)
 
 
 def test_ci_kill_switch_is_checked_live_by_default_sender(monkeypatch):
