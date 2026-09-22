@@ -14,6 +14,9 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
+from rapid_mlx.agents.telemetry import (
+    track_agent_configure_failed,
+)
 from rapid_mlx.launch import _common as launch_common
 from rapid_mlx.launch import claude_code, continue_dev
 
@@ -87,13 +90,22 @@ def _serialize(data: dict[str, Any], format: str) -> str:
     return json.dumps(data, indent=2, ensure_ascii=False, sort_keys=True)
 
 
-def _load_yaml_mapping(path: Path) -> dict[str, Any]:
+def _load_yaml_mapping(
+    path: Path, agent: str | None = None, *, emit_telemetry: bool = True
+) -> dict[str, Any]:
     import yaml
 
     if not path.exists() or not path.read_text(encoding="utf-8").strip():
         return {}
-    value = yaml.safe_load(path.read_text(encoding="utf-8"))
+    try:
+        value = yaml.safe_load(path.read_text(encoding="utf-8"))
+    except yaml.YAMLError:
+        if emit_telemetry:
+            track_agent_configure_failed("config_invalid", agent)
+        raise
     if not isinstance(value, dict):
+        if emit_telemetry:
+            track_agent_configure_failed("config_invalid", agent)
         raise ValueError(f"{path} must contain a YAML mapping")
     return value
 
@@ -140,6 +152,8 @@ def build_setup_plan(
     model: str,
     context_length: int | None = None,
     supports_reasoning: bool | None = None,
+    *,
+    emit_telemetry: bool = True,
 ) -> SetupPlan:
     """Build a side-effect-free setup plan for a supported client."""
     if agent in {"claude", "claude-code"}:
@@ -160,9 +174,15 @@ def build_setup_plan(
         )
     if agent in {"deepseek-harness", "dsh"}:
         path = _dsh_settings_path()
-        before = _load_yaml_mapping(path)
+        before = _load_yaml_mapping(
+            path, "deepseek-harness", emit_telemetry=emit_telemetry
+        )
         credentials_path = path.parent / ".credentials.yaml"
-        credentials_before = _load_yaml_mapping(credentials_path)
+        credentials_before = _load_yaml_mapping(
+            credentials_path,
+            "deepseek-harness",
+            emit_telemetry=emit_telemetry,
+        )
         context = context_length if context_length and context_length > 0 else 32768
         # Report the model's ACTUAL reasoning capability rather than
         # asserting the graded ladder for everything we serve.
@@ -227,6 +247,10 @@ def build_setup_plan(
             credentials_before,
             credentials_after,
         )
+    # Reserved for defensive callers. The CLI only routes the three
+    # first-class profiles here, so this outcome is currently unreachable.
+    if emit_telemetry:
+        track_agent_configure_failed("no_safe_setup_flow", agent)
     raise ValueError(f"{agent} does not have a first-class safe setup flow")
 
 
@@ -234,51 +258,68 @@ def apply_setup_plan(plan: SetupPlan) -> Path:
     """Back up the existing config and atomically apply an unchanged plan."""
     # Re-read to prevent overwriting an edit made between preview and consent.
     current = (
-        _load_yaml_mapping(plan.path)
+        _load_yaml_mapping(plan.path, plan.agent)
         if plan.format == "yaml"
         else launch_common.load_json_lenient(plan.path)
     )
     if current != plan.before:
+        track_agent_configure_failed("config_changed", plan.agent)
         raise RuntimeError(f"{plan.path} changed after preview; re-run --setup")
     if plan.credentials_path is not None:
-        credentials_current = _load_yaml_mapping(plan.credentials_path)
+        credentials_current = _load_yaml_mapping(plan.credentials_path, plan.agent)
         if credentials_current != (plan.credentials_before or {}):
+            track_agent_configure_failed("config_changed", plan.agent)
             raise RuntimeError(
                 f"{plan.credentials_path} changed after preview; re-run --setup"
             )
-    launch_common.backup_existing(plan.path)
-    if plan.credentials_path is not None and plan.credentials_after is not None:
-        launch_common.backup_existing(plan.credentials_path)
-        # Publish the harmless loopback sentinel first.  If the later settings
-        # write fails, DSH retains its prior provider selection; the reverse
-        # order would leave a newly-selected Rapid route unable to authenticate.
-        _atomic_write_secure_text(
-            plan.credentials_path,
-            _serialize(plan.credentials_after, "yaml") + "\n",
-        )
-    if plan.format == "yaml":
-        _atomic_write_secure_text(plan.path, _serialize(plan.after, "yaml") + "\n")
-    else:
-        launch_common.atomic_write_json(plan.path, plan.after)
+    try:
+        launch_common.backup_existing(plan.path)
+        if plan.credentials_path is not None and plan.credentials_after is not None:
+            launch_common.backup_existing(plan.credentials_path)
+            # Publish the harmless loopback sentinel first.  If the later settings
+            # write fails, DSH retains its prior provider selection; the reverse
+            # order would leave a newly-selected Rapid route unable to authenticate.
+            _atomic_write_secure_text(
+                plan.credentials_path,
+                _serialize(plan.credentials_after, "yaml") + "\n",
+            )
+        if plan.format == "yaml":
+            _atomic_write_secure_text(plan.path, _serialize(plan.after, "yaml") + "\n")
+        else:
+            launch_common.atomic_write_json(plan.path, plan.after)
+    except BaseException as exc:
+        if isinstance(exc, OSError):
+            track_agent_configure_failed("config_write_failed", plan.agent)
+        raise
     return plan.path
 
 
-def verify_server(base_url: str, expected_model: str, timeout: float = 2.0) -> str:
+def verify_server(
+    base_url: str,
+    expected_model: str,
+    timeout: float = 2.0,
+    *,
+    agent: str,
+) -> str:
     """Verify health and model discovery without performing inference."""
     root = base_url.rstrip("/").removesuffix("/v1")
     try:
         with urllib.request.urlopen(f"{root}/health", timeout=timeout) as response:
             if response.status != 200:
+                track_agent_configure_failed("server_not_ready", agent)
                 raise RuntimeError(f"health returned HTTP {response.status}")
         with urllib.request.urlopen(f"{root}/v1/models", timeout=timeout) as response:
             payload = json.loads(response.read())
     except (urllib.error.URLError, TimeoutError, OSError, json.JSONDecodeError) as exc:
+        track_agent_configure_failed("server_not_ready", agent)
         raise RuntimeError(f"server is not ready at {root}: {exc}") from exc
     models = payload.get("data", []) if isinstance(payload, dict) else []
     ids = [item.get("id") for item in models if isinstance(item, dict)]
     if not ids:
+        track_agent_configure_failed("server_no_models", agent)
         raise RuntimeError(f"server at {root} reported no models")
     if expected_model != "default" and expected_model not in ids and len(ids) != 1:
+        track_agent_configure_failed("model_not_advertised", agent)
         raise RuntimeError(
             f"server does not advertise model {expected_model!r} (found: {', '.join(ids)})"
         )

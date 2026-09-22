@@ -20,6 +20,7 @@ import atexit
 import os
 import shlex
 import sys
+import threading
 from collections.abc import Callable
 
 from rapid_mlx._completion import alias_completer
@@ -32,6 +33,55 @@ from rapid_mlx.model_profile import ModelProfile
 # rate-limit + Range-request passthrough. Override with the env var
 # (set to an empty string to disable the mirror and force HF Hub).
 MIRROR_DEFAULT = "https://models.rapidmlx.com"
+
+_CONSENT_MUTATION_EVENT_LIMIT = 5
+_consent_mutation_event_count = 0
+_consent_mutation_event_lock = threading.Lock()
+
+
+def _claim_consent_mutation_event() -> bool:
+    """Claim a bounded slot before capture; failed captures still consume it."""
+    global _consent_mutation_event_count
+    with _consent_mutation_event_lock:
+        if _consent_mutation_event_count >= _CONSENT_MUTATION_EVENT_LIMIT:
+            return False
+        _consent_mutation_event_count += 1
+        return True
+
+
+def _track_telemetry_opted_out() -> None:
+    """Capture and drain the opt-out event before consent closes the gate."""
+    if not _claim_consent_mutation_event():
+        return
+    try:
+        from rapid_mlx.telemetry import posthog_sender
+        from rapid_mlx.telemetry.track import track
+
+        track("telemetry_opted_out", {"via": "cli"})
+        posthog_sender.get_sender().flush(2.0)
+    except Exception:
+        pass
+
+
+def _track_telemetry_opted_in() -> None:
+    """Deliver any required notice, then capture the opt-in event."""
+    if not _claim_consent_mutation_event():
+        return
+    try:
+        from rapid_mlx.telemetry import consent_runtime, posthog_sender
+        from rapid_mlx.telemetry.track import track
+
+        decision = consent_runtime.refresh_decision()
+        if decision.deliver_notice:
+            delivered = consent_runtime.deliver_notice_if_needed(decision)
+            if not delivered and not consent_runtime.notice_was_delivered():
+                return
+            consent_runtime.apply_write_back(decision.write_back)
+        track("telemetry_opted_in", {"via": "cli"})
+        posthog_sender.get_sender().flush(2.0)
+    except Exception:
+        pass
+
 
 # NOTE: ``argcomplete`` is imported lazily inside ``main()`` instead of
 # at module top. Module-level imports of ``rapid_mlx.cli`` (e.g.
@@ -11142,6 +11192,7 @@ def agents_command(args):
                 confirm_plan,
                 verify_server,
             )
+            from rapid_mlx.agents.telemetry import track_agent_configured
 
             # DSH renders a reasoning-effort control from what we write, so
             # it needs the model's real capability, not a blanket claim.
@@ -11162,6 +11213,7 @@ def agents_command(args):
                     model_id,
                     context_length=context_length,
                     supports_reasoning=supports_reasoning,
+                    emit_telemetry=not args.dry_run,
                 )
             except (OSError, ValueError) as exc:
                 print(f"\n  {profile.display_name} setup failed: {exc}\n")
@@ -11188,7 +11240,7 @@ def agents_command(args):
                 print(f"\n  Configured {profile.display_name} at {plan.path}.")
             if not args.no_check:
                 try:
-                    advertised = verify_server(base_url, model_id)
+                    advertised = verify_server(base_url, model_id, agent=profile.name)
                 except RuntimeError as exc:
                     status = (
                         "Configuration was saved"
@@ -11198,6 +11250,10 @@ def agents_command(args):
                     print(f"\n  {status}, but the connection check failed: {exc}\n")
                     sys.exit(1)
                 print(f"  Connection check passed (model: {advertised}).")
+            if plan.changed:
+                # A configured event means a config mutation completed and,
+                # unless the operator explicitly skipped it, verification passed.
+                track_agent_configured(plan.agent)
             print()
             return
 
@@ -11525,6 +11581,9 @@ def telemetry_command(args) -> None:
     Five actions: ``status`` / ``enable`` / ``disable`` / ``preview`` /
     ``reset``. Defaults to ``status`` when no action given so users can
     type ``rapid-mlx telemetry`` and immediately see what's set up.
+
+    ``reset`` emits no consent event by owner decision. Removing a stored
+    ``consent: false`` is therefore an implicit re-opt-in with no event.
     """
     # Imports kept inside the function so the telemetry package is only
     # loaded when actually needed — keeps `--help` and unrelated
@@ -11584,6 +11643,7 @@ def telemetry_command(args) -> None:
                 file=sys.stderr,
             )
             raise SystemExit(1) from None
+        _track_telemetry_opted_in()
         # Generate the client_id eagerly so `preview` immediately after
         # has a real id to show.
         get_or_create_client_id()
@@ -11595,6 +11655,7 @@ def telemetry_command(args) -> None:
         return
 
     if action == "disable":
+        _track_telemetry_opted_out()
         try:
             record_consent(False, rapid_mlx_version=rapid_mlx_version)
         except (OSError, ValueError, yaml.YAMLError) as exc:

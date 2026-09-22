@@ -370,6 +370,40 @@ def resolve(role: ProcessRole | None = None) -> Decision:
         return _decision
 
 
+def refresh_decision() -> Decision:
+    """Re-resolve the upload decision from disk after an explicit consent write.
+
+    This narrow production seam replaces only the memoized decision and live
+    consent cache. Notice delivery and startup write-back latches are retained.
+    The same lock as :func:`resolve` makes the replacement atomic for capture
+    threads. The process role already resolved at startup is preserved.
+    """
+    global _decision, _resolved_role, _live_cache
+    with _resolve_lock:
+        detected = _resolved_role if _resolved_role is not None else detect_role()
+        stored = read_stored_consent()
+        if detected is ProcessRole.DESKTOP:
+            decision = Decision(
+                False,
+                False,
+                _NO_WRITE_BACK,
+                REASON_SIDECAR_WAITS_FOR_DESKTOP,
+            )
+        elif stored is None:
+            decision = Decision(False, False, _NO_WRITE_BACK, REASON_READ_ERROR)
+        else:
+            decision = decide(
+                stored,
+                detected,
+                kill_switch_active=kill_switch_active(),
+                running_version=_running_version(),
+            )
+        _decision = decision
+        _resolved_role = detected
+        _live_cache = None
+        return decision
+
+
 def _write_stderr_unbuffered(data: bytes) -> bool:
     """Write all ``data`` to fd 2 without touching ``sys.stderr``.
 

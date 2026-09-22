@@ -14,6 +14,7 @@ import subprocess
 from pathlib import Path
 
 from .base import AgentProfile
+from .telemetry import track_agent_configure_failed, track_agent_configured
 
 logger = logging.getLogger(__name__)
 
@@ -166,8 +167,8 @@ def _resolve_config_path(cfg) -> Path:
     return Path(os.path.expanduser(override)) / default.name
 
 
-def _atomic_write(target: Path, content: str) -> None:
-    """Write *content* to *target* atomically, preserving symlinks and mode.
+def _atomic_write(target: Path, content: str) -> bool:
+    """Write changed *content* atomically and report whether bytes changed.
 
     When *target* already exists, its mode bits are copied to the
     replacement file.  When it does not exist, a simple ``write_text``
@@ -185,7 +186,10 @@ def _atomic_write(target: Path, content: str) -> None:
     if not resolved.exists():
         resolved.parent.mkdir(parents=True, exist_ok=True)
         resolved.write_text(content, encoding="utf-8")
-        return
+        return True
+
+    if resolved.read_text(encoding="utf-8") == content:
+        return False
 
     mode = stat.S_IMODE(resolved.stat().st_mode)
 
@@ -199,6 +203,7 @@ def _atomic_write(target: Path, content: str) -> None:
             os.fsync(f.fileno())
         os.chmod(tmp_path, mode)
         os.replace(tmp_path, str(resolved))
+        return True
     except BaseException:
         try:
             os.unlink(tmp_path)
@@ -229,15 +234,30 @@ def setup_agent_config(
 
     Returns a human-readable summary of what was done.
     """
-    rendered = profile.render_config(
-        base_url, model_id, agent_version, context_length=context_length
-    )
-    cfg = profile.get_config_for_version(agent_version)
+
+    def track_failure(error_class: str) -> None:
+        if not dry_run:
+            track_agent_configure_failed(error_class, profile.name)
+
+    try:
+        rendered = profile.render_config(
+            base_url, model_id, agent_version, context_length=context_length
+        )
+        cfg = profile.get_config_for_version(agent_version)
+    except Exception:
+        track_failure("other")
+        raise
 
     hermes_supported_toolsets = None
     if profile.name == "hermes" and isinstance(rendered, str):
-        hermes_supported_toolsets = _hermes_supported_toolsets()
-        rendered = _render_hermes_runtime_toolsets(rendered, hermes_supported_toolsets)
+        try:
+            hermes_supported_toolsets = _hermes_supported_toolsets()
+            rendered = _render_hermes_runtime_toolsets(
+                rendered, hermes_supported_toolsets
+            )
+        except Exception:
+            track_failure("other")
+            raise
 
     if cfg.type == "env":
         lines = []
@@ -248,13 +268,23 @@ def setup_agent_config(
             + "\n".join(lines)
             + "\n\n  (env vars are not persistent — add to your .zshrc/.bashrc for permanent setup)"
         )
+        if not dry_run:
+            track_agent_configured(profile.name)
         return summary
 
     if cfg.path:
-        config_path = _resolve_config_path(cfg)
-        if not dry_run:
-            config_path.parent.mkdir(parents=True, exist_ok=True)
+        try:
+            config_path = _resolve_config_path(cfg)
+            if not dry_run:
+                config_path.parent.mkdir(parents=True, exist_ok=True)
+        except OSError as exc:
+            track_failure("config_write_failed")
+            return f"Cannot prepare config path ({exc}). Check file permissions."
+        except Exception:
+            track_failure("other")
+            raise
 
+        catalog_changed = False
         if profile.name == "codex" and isinstance(rendered, str):
             import json
 
@@ -267,11 +297,12 @@ def setup_agent_config(
             catalog = {"models": [build_codex_model_info(model_id, context_length)]}
             if not dry_run:
                 try:
-                    _atomic_write(
+                    catalog_changed = _atomic_write(
                         catalog_path,
                         json.dumps(catalog, indent=2, ensure_ascii=False) + "\n",
                     )
                 except OSError as exc:
+                    track_failure("config_write_failed")
                     return (
                         f"Cannot write Codex model catalog to {catalog_path} "
                         f"({exc}). Check file permissions."
@@ -285,11 +316,13 @@ def setup_agent_config(
                 hermes_supported_toolsets=hermes_supported_toolsets,
             )
         except OSError as exc:
+            track_failure("other")
             return (
                 f"Cannot read existing config at {config_path} ({exc}). "
                 "Remove or fix it manually, then re-run --setup."
             )
         except _MergeParseError as exc:
+            track_failure("config_invalid")
             return (
                 f"Cannot parse existing config at {config_path} ({exc}). "
                 "Fix or remove it manually, then re-run --setup."
@@ -304,8 +337,9 @@ def setup_agent_config(
             )
 
         try:
-            _atomic_write(config_path, merged_text)
+            config_changed = _atomic_write(config_path, merged_text)
         except OSError as exc:
+            track_failure("config_write_failed")
             return (
                 f"Cannot write config to {config_path} ({exc}). Check file permissions."
             )
@@ -320,8 +354,11 @@ def setup_agent_config(
                 # notes into ~/.codex/config.toml should hear that from us
                 # rather than discover it.
                 summary += "; comments were not"
+        if config_changed or catalog_changed:
+            track_agent_configured(profile.name)
         return summary
 
+    track_failure("other")
     return "No config to write (template not specified)"
 
 

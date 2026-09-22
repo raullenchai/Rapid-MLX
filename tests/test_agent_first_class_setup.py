@@ -91,7 +91,10 @@ def test_verify_server_checks_health_and_models(monkeypatch):
         return Response(json.dumps({"data": [{"id": "served-model"}]}).encode())
 
     monkeypatch.setattr("urllib.request.urlopen", fake_open)
-    assert verify_server("http://localhost:8000/v1", "default") == "served-model"
+    assert (
+        verify_server("http://localhost:8000/v1", "default", agent="deepseek-harness")
+        == "served-model"
+    )
     assert urls == [
         "http://localhost:8000/health",
         "http://localhost:8000/v1/models",
@@ -243,7 +246,9 @@ def test_cli_reports_saved_config_when_connection_check_fails(
     )
     monkeypatch.setattr(
         "rapid_mlx.agents.setup.verify_server",
-        lambda *_args: (_ for _ in ()).throw(RuntimeError("connection refused")),
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            RuntimeError("connection refused")
+        ),
     )
 
     with pytest.raises(SystemExit) as exit_info:
