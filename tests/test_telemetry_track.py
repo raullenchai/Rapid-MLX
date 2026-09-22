@@ -6,6 +6,7 @@ from __future__ import annotations
 import ast
 import json
 import os
+import shutil
 import socket
 import subprocess
 import sys
@@ -738,6 +739,145 @@ def test_allowed_official_cli_posts_one_app_opened_to_loopback(tmp_path):
     assert items[0]["properties"]["surface"] == "cli"
 
 
+@pytest.fixture(scope="module")
+def official_entrypoint_layout(tmp_path_factory):
+    root = tmp_path_factory.mktemp("telemetry-official-entrypoints")
+    site_dir = root / "site-packages"
+    package_dir = site_dir / "rapid_mlx"
+    shutil.copytree(
+        REPO_ROOT / "rapid_mlx",
+        package_dir,
+        ignore=shutil.ignore_patterns("__pycache__", "*.pyc"),
+    )
+    (package_dir / "telemetry" / "_release_stamp.json").write_text(
+        json.dumps({"channel": "rc", "posthog_key": "phc_" + "a" * 32}),
+        encoding="utf-8",
+    )
+    metadata_dir = site_dir / "rapid_mlx-0.15.1.dist-info"
+    metadata_dir.mkdir()
+    (metadata_dir / "METADATA").write_text(
+        "Metadata-Version: 2.1\nName: rapid-mlx\nVersion: 0.15.1\n",
+        encoding="utf-8",
+    )
+
+    hooks_dir = root / "hooks"
+    hooks_dir.mkdir()
+    (hooks_dir / "sitecustomize.py").write_text(
+        """
+from rapid_mlx import cli
+
+def _capture_later_event_and_stop(*_args, **_kwargs):
+    from rapid_mlx.telemetry import posthog_sender, track
+
+    track.track("active_day", {})
+    posthog_sender.get_sender().flush(5.0)
+    raise SystemExit(0)
+
+cli._port_preflight_or_die = _capture_later_event_and_stop
+cli.models_command = _capture_later_event_and_stop
+""".lstrip(),
+        encoding="utf-8",
+    )
+
+    bin_dir = root / "bin"
+    bin_dir.mkdir()
+    console = bin_dir / "rapid-mlx"
+    console.write_text(
+        f"#!{sys.executable}\n"
+        "from rapid_mlx.cli import cli_entrypoint\n"
+        "cli_entrypoint()\n",
+        encoding="utf-8",
+    )
+    console.chmod(0o755)
+    return root, hooks_dir, site_dir, console
+
+
+@pytest.mark.parametrize(
+    ("entrypoint", "role_env", "expected_events", "expected_surface"),
+    [
+        ("module-server", "watchdog", ["active_day"], "cli"),
+        ("cli-serve", "watchdog", ["active_day"], "cli"),
+        ("module-server", "desktop", ["active_day"], "desktop"),
+        ("cli-serve", "desktop", ["active_day"], "desktop"),
+        ("module-server", "standalone", ["app_opened", "active_day"], "server"),
+        ("cli-serve", "standalone", ["app_opened", "active_day"], "server"),
+        ("other-cli", "standalone", ["app_opened", "active_day"], "cli"),
+    ],
+)
+def test_entrypoint_role_surface_matrix(
+    tmp_path,
+    official_entrypoint_layout,
+    entrypoint,
+    role_env,
+    expected_events,
+    expected_surface,
+):
+    root, hooks_dir, site_dir, console = official_entrypoint_layout
+    home = tmp_path / "home"
+    telemetry_dir = home / ".rapid-mlx"
+    telemetry_dir.mkdir(parents=True)
+    (telemetry_dir / "telemetry-consent.yaml").write_text(
+        "consent: true\nprompted_version: 0.15.1\nnotice_revision_seen: 1\n",
+        encoding="utf-8",
+    )
+    fake_model = home / "fake-model"
+    fake_model.mkdir()
+
+    sink = HTTPServer(("127.0.0.1", 0), _CaptureHandler)
+    sink.bodies = []  # type: ignore[attr-defined]
+    thread = threading.Thread(target=sink.serve_forever, daemon=True)
+    thread.start()
+    env = dict(
+        os.environ,
+        HOME=str(home),
+        USER="rc",
+        PATH=f"{root / 'bin'}{os.pathsep}{os.environ.get('PATH', '')}",
+        PYTHONPATH=os.pathsep.join((str(hooks_dir), str(site_dir))),
+        RAPID_MLX_POSTHOG_URL=f"http://127.0.0.1:{sink.server_port}/batch/",
+        RAPID_MLX_DISABLE_VERSION_CHECK="1",
+        HF_HUB_OFFLINE="1",
+        TRANSFORMERS_OFFLINE="1",
+    )
+    for name in (*state.CI_ENV_VARS, state.ENV_VAR, state.DO_NOT_TRACK_ENV):
+        env.pop(name, None)
+    env.pop("RAPID_MLX_PROCESS_ROLE", None)
+    env.pop("RAPID_MLX_WATCHDOG_PPID", None)
+    if role_env == "watchdog":
+        env["RAPID_MLX_WATCHDOG_PPID"] = str(os.getpid())
+    elif role_env == "desktop":
+        env["RAPID_MLX_PROCESS_ROLE"] = "desktop-sidecar"
+
+    if entrypoint == "module-server":
+        command = [sys.executable, "-m", "rapid_mlx.server", "--port", "0"]
+    elif entrypoint == "cli-serve":
+        command = [str(console), "serve", str(fake_model), "--port", "0"]
+    else:
+        command = [str(console), "models", "--json"]
+    try:
+        proc = subprocess.run(
+            command,
+            cwd=home,
+            env=env,
+            capture_output=True,
+            text=True,
+            timeout=30,
+            check=False,
+        )
+    finally:
+        sink.shutdown()
+        thread.join(timeout=2.0)
+        sink.server_close()
+
+    assert proc.returncode == 0, proc.stderr
+    items = [
+        item
+        for body in sink.bodies  # type: ignore[attr-defined]
+        for item in json.loads(body)["batch"]
+    ]
+    assert [item["event"] for item in items] == expected_events
+    assert {item["properties"]["surface"] for item in items} == {expected_surface}
+
+
 def test_platform_and_cohort_stamp_cached_within_utc_day(monkeypatch):
     sender = inject_sender(monkeypatch)
     facts_calls = 0
@@ -915,23 +1055,26 @@ def test_server_entrypoint_lifecycle_source_contract():
         and isinstance(node.value, ast.Call)
         and ast.unparse(node.value.func) == "consent_runtime.startup"
     )
-    lifecycle_index = next(
-        index
-        for index, node in enumerate(main.body)
-        if isinstance(node, ast.Expr)
-        and isinstance(node.value, ast.Call)
-        and ast.unparse(node.value.func) == "telemetry_v2.start_lifecycle"
+    role_assignment = next(
+        node
+        for node in main.body
+        if isinstance(node, ast.Assign)
+        and ast.unparse(node.value) == "consent_runtime.detect_role()"
     )
-    lifecycle_call = main.body[lifecycle_index]
-    role_surface_index = next(
-        index
-        for index, node in enumerate(main.body)
-        if isinstance(node, ast.Expr)
-        and isinstance(node.value, ast.Call)
-        and ast.unparse(node.value.func) == "telemetry_v2.set_surface_for_role"
+    guard = next(
+        node
+        for node in main.body
+        if isinstance(node, ast.If)
+        and ast.unparse(node.test)
+        == "not (telemetry_v2.set_surface_for_role(role) or role is ProcessRole.SIDECAR)"
     )
-    assert role_surface_index == startup_index + 2
-    assert lifecycle_index == role_surface_index + 1
+    assert len(guard.body) == 1
+    lifecycle_call = guard.body[0]
+    assert isinstance(lifecycle_call, ast.Expr)
+    assert isinstance(lifecycle_call.value, ast.Call)
+    assert ast.unparse(lifecycle_call.value.func) == "telemetry_v2.start_lifecycle"
+    assert role_assignment.lineno > main.body[startup_index].lineno
+    assert guard.lineno > role_assignment.lineno
     assert len(lifecycle_call.value.args) == 1
     assert isinstance(lifecycle_call.value.args[0], ast.Constant)
     assert lifecycle_call.value.args[0].value == "server"
