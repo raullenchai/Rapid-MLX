@@ -58,6 +58,7 @@ STAMP = ReleaseStamp(channel="stable", posthog_key="phc_" + "a" * 32)
 SENDER_LOGGER = "rapid_mlx.telemetry.posthog_sender"
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
+_REAL_DEFAULT_POST = ph.default_post
 
 
 # ----------------------------------------------------------------- helpers
@@ -176,7 +177,10 @@ def make_sender(
 ) -> PostHogSender:
     """A sender gated to the test stamp with permission granted."""
     return PostHogSender(
-        post=post, clock=clock, gate=lambda: STAMP, allowed=lambda: True
+        post=post if post is not None else RecordingPost(),
+        clock=clock,
+        gate=lambda: STAMP,
+        allowed=lambda: True,
     )
 
 
@@ -1092,21 +1096,44 @@ def test_unbuildable_first_chunk_does_not_drop_two_later_chunks(sender_env, capl
 # ------------------------------------------------------------ default seams
 
 
-def test_default_allowed_gates_on_env_and_consent(sender_env, monkeypatch):
-    """The default permission check: kill switch or no consent → dark."""
+def test_default_allowed_uses_live_v2_permission(sender_env, monkeypatch):
+    """The default permission reads ``upload_allowed`` on every capture."""
     post = RecordingPost()
-    # The GATE is injected (a source checkout is never an official build);
-    # ``allowed`` stays at its default — that is the seam under test.
-    s = PostHogSender(post=post, clock=FakeClock(), gate=lambda: STAMP)
-    monkeypatch.setenv("CI", "1")
-    assert s.capture(item()) is False
-    monkeypatch.delenv("CI")
-    # Still dark: no consent recorded under the fake HOME.
-    assert s.capture(item()) is False
+    allowed = {"value": True}
+    monkeypatch.setattr(ph.consent_runtime, "upload_allowed", lambda: allowed["value"])
+
+    # Keep v1 enabled so reverting the sender default to emit.is_enabled
+    # makes the second capture incorrectly pass this mutation pin.
     from rapid_mlx.telemetry.state import record_consent
 
-    record_consent(True, rapid_mlx_version="0.0.0+test")
+    record_consent(True, rapid_mlx_version="0.14.3")
+    s = PostHogSender(post=post, clock=FakeClock(), gate=lambda: STAMP)
     assert s.capture(item()) is True
+    allowed["value"] = False
+    assert s.capture(item(n=2)) is False
+    assert s._accepted == 1
+    s.close(0.5)
+
+
+def test_exit_flush_refuses_late_captures(sender_env, monkeypatch):
+    post = RecordingPost()
+    s = make_sender(post)
+    monkeypatch.setattr(ph, "_sender", s)
+    assert s.capture(item()) is True
+    ph._flush_at_exit()
+    assert s.capture(item(n=2)) is False
+    assert len(post) == 1
+    s.close(0.5)
+
+
+def test_nonclosing_flush_allows_later_capture(sender_env):
+    post = RecordingPost()
+    s = make_sender(post)
+    assert s.capture(item()) is True
+    s.flush(1.0)
+    assert s.capture(item(n=2)) is True
+    s.flush(1.0)
+    assert len(post) == 2
     s.close(0.5)
 
 
@@ -1126,6 +1153,18 @@ def test_install_atexit_registers_once(sender_env, monkeypatch):
     install_atexit()
     assert len(registered) == 1
     registered[0]()  # the exit handler runs clean on an empty sender
+
+
+def test_reset_unregisters_exit_hook_and_clears_latch(sender_env, monkeypatch):
+    registered: list[Callable[[], None]] = []
+    unregistered: list[Callable[[], None]] = []
+    monkeypatch.setattr(ph.atexit, "register", lambda fn: registered.append(fn))
+    monkeypatch.setattr(ph.atexit, "unregister", lambda fn: unregistered.append(fn))
+    install_atexit()
+    _reset_for_tests()
+    assert unregistered == registered == [ph._flush_at_exit]
+    install_atexit()
+    assert registered == [ph._flush_at_exit, ph._flush_at_exit]
 
 
 def test_at_fork_registration_is_idempotent_across_reload(sender_env):
@@ -1259,7 +1298,12 @@ def test_default_post_happy_path_over_a_real_socket(
         ph.POSTHOG_URL_ENV,
         f"http://127.0.0.1:{stub_posthog.server_port}/batch/",
     )
-    s = PostHogSender(clock=FakeClock(), gate=lambda: STAMP, allowed=lambda: True)
+    s = PostHogSender(
+        post=_REAL_DEFAULT_POST,
+        clock=FakeClock(),
+        gate=lambda: STAMP,
+        allowed=lambda: True,
+    )
     for i in range(ph.FLUSH_THRESHOLD):
         assert s.capture(item(n=i)) is True
     assert wait_for(lambda: len(stub_posthog.requests) == 1, timeout=3.0)
@@ -1288,7 +1332,7 @@ def test_default_post_refuses_redirects(sender_env):
     for thread in threads:
         thread.start()
     try:
-        status = ph.default_post(
+        status = _REAL_DEFAULT_POST(
             f"http://127.0.0.1:{source.server_port}/batch/",
             b'{"secret":"payload"}',
             1.0,
@@ -1319,7 +1363,7 @@ def test_default_post_closes_http_error_response(sender_env, monkeypatch):
             raise response
 
     monkeypatch.setattr(ph, "build_opener", lambda *handlers: RaisingOpener())
-    assert ph.default_post(POSTHOG_BATCH_URL, b"{}", 1.0) == 500
+    assert _REAL_DEFAULT_POST(POSTHOG_BATCH_URL, b"{}", 1.0) == 500
     assert response_body.closed
 
 
@@ -1329,7 +1373,12 @@ def test_default_post_retries_a_500_once(sender_env, stub_posthog, monkeypatch):
         ph.POSTHOG_URL_ENV,
         f"http://127.0.0.1:{stub_posthog.server_port}/batch/",
     )
-    s = PostHogSender(clock=FakeClock(), gate=lambda: STAMP, allowed=lambda: True)
+    s = PostHogSender(
+        post=_REAL_DEFAULT_POST,
+        clock=FakeClock(),
+        gate=lambda: STAMP,
+        allowed=lambda: True,
+    )
     for i in range(ph.FLUSH_THRESHOLD):
         assert s.capture(item(n=i)) is True
     # urllib surfaces the 500 as an HTTPError, unwrapped to the status 500,
@@ -1346,7 +1395,12 @@ def test_default_post_swallows_connection_refused(sender_env, monkeypatch):
     port = probe.getsockname()[1]
     probe.close()  # nothing listens there any more
     monkeypatch.setenv(ph.POSTHOG_URL_ENV, f"http://127.0.0.1:{port}/batch/")
-    s = PostHogSender(clock=FakeClock(), gate=lambda: STAMP, allowed=lambda: True)
+    s = PostHogSender(
+        post=_REAL_DEFAULT_POST,
+        clock=FakeClock(),
+        gate=lambda: STAMP,
+        allowed=lambda: True,
+    )
     for i in range(ph.FLUSH_THRESHOLD):
         assert s.capture(item(n=i)) is True
     s.flush(2.0)  # both attempts refuse instantly; the chunk is dropped

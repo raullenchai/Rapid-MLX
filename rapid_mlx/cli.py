@@ -14001,6 +14001,26 @@ Examples:
     return parser
 
 
+def _start_v2_lifecycle(command: str | None) -> None:
+    """Start v2 lifecycle telemetry after consent startup has completed."""
+    try:
+        if command is None or command in ("telemetry", "feedback"):
+            return
+
+        from rapid_mlx.telemetry import consent_runtime
+        from rapid_mlx.telemetry.consent_decision import ProcessRole
+
+        if consent_runtime.detect_role() is ProcessRole.SIDECAR:
+            return
+
+        from rapid_mlx.telemetry import track as telemetry_v2
+
+        telemetry_v2.start_lifecycle("server" if command == "serve" else "cli")
+    except Exception:
+        # Telemetry cannot alter the host command's exit code or output.
+        return
+
+
 def main():
     parser = build_parser()
     _version = _resolve_cli_version()
@@ -14136,6 +14156,7 @@ def main():
         _consent_decision = consent_runtime.startup(
             long_lived=getattr(args, "command", None) == "serve"
         )
+        _start_v2_lifecycle(getattr(args, "command", None))
 
         # The legacy v1 opt-in prompt is only meaningful before the v2
         # default-on cutoff. Post-cutoff, the v2 disclosure is the complete

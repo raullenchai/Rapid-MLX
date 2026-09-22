@@ -20,8 +20,8 @@ Each item is exactly ``{"uuid", "event", "distinct_id", "timestamp",
 request — the sender chunks longer queues itself. Bodies are JSON-encoded
 compactly and sent with a fixed ``User-Agent: rapid-mlx-telemetry``.
 
-The six drop reasons
-====================
+The seven drop reasons
+======================
 
 ``capture()`` is bounded, lossy, and never raises. An item is dropped
 (returns ``False``, by design silently) when ANY of these holds:
@@ -42,6 +42,8 @@ The six drop reasons
    per rolling minute, lazy refill, capacity bounded) is empty.
    Unknown event names must not create unbounded buckets: the bucket
    registry itself is capped at 64 names, beyond which items drop.
+7. **Shutdown has started** — the exit flush has latched the sender closed
+   to new captures before draining its existing queue.
 
 Each cap overflow logs ONCE per cap per process at debug level, then
 stays silent for the rest of the process.
@@ -62,12 +64,10 @@ queued work and synchronization/thread state, but deliberately inherits burst
 buckets and the accepted session count. That conservative accounting prevents
 a fork from resetting volume limits.
 
-This module is a pure addition: no emitter calls it yet, the v1
-transport (:mod:`rapid_mlx.telemetry.transport`) is untouched, and
-nothing in ``serve`` imports it. Importing this module starts no
-thread and opens no socket — the flush daemon starts lazily on the
-first ACCEPTED capture, and the wiring PR will call
-:func:`install_atexit` once at startup for the shutdown flush.
+The v1 transport (:mod:`rapid_mlx.telemetry.transport`) remains separate.
+Importing this module starts no thread and opens no socket — the flush daemon
+starts lazily on the first accepted capture, and startup wiring calls
+:func:`install_atexit` for the shutdown flush.
 """
 
 from __future__ import annotations
@@ -84,7 +84,7 @@ from urllib.error import HTTPError
 from urllib.parse import urlparse
 from urllib.request import HTTPRedirectHandler, Request, build_opener
 
-from rapid_mlx.telemetry import build_gate, emit, envelope, state
+from rapid_mlx.telemetry import build_gate, consent_runtime, envelope
 from rapid_mlx.telemetry.build_gate import ReleaseStamp
 
 logger = logging.getLogger(__name__)
@@ -182,18 +182,6 @@ def default_post(url: str, body: bytes, timeout: float) -> int:
         return int(e.code)
 
 
-def _default_allowed() -> bool:
-    """Default permission check until the v2 default-on wiring lands.
-
-    True only when no environment kill switch is active AND the v1
-    consent machinery currently permits upload. This interim check reads
-    consent live on every capture and is not O(1).
-    """
-    if state._env_kill_switch_active():
-        return False
-    return bool(emit.is_enabled())
-
-
 class _TokenBucket:
     """Lazy-refill token bucket: 30 events per rolling minute, bounded."""
 
@@ -254,7 +242,9 @@ class PostHogSender:
         self._post = post if post is not None else default_post
         self._clock = clock if clock is not None else time.monotonic
         self._gate = gate if gate is not None else build_gate.official_build
-        self._allowed = allowed if allowed is not None else _default_allowed
+        self._allowed = (
+            allowed if allowed is not None else consent_runtime.upload_allowed
+        )
         self._post_timeout = DEFAULT_POST_TIMEOUT_S
         self._lock = threading.Lock()
         self._lifecycle_lock = threading.Lock()
@@ -266,6 +256,7 @@ class PostHogSender:
         self._accepted = 0
         self._force = False
         self._draining = False
+        self._closing = False
         self._closed = False
         self._cap_logged: set[str] = set()
         self._invalid_batch_logged = False
@@ -341,7 +332,7 @@ class PostHogSender:
     # ------------------------------------------------------------ internals
 
     def _capture(self, item: Mapping[str, object]) -> bool:
-        if self._closed:
+        if self._closed or self._closing:
             return False
         # Gate and permission are LIVE per capture: a build that stops
         # being official, or a user who withdraws mid-session, goes dark
@@ -360,7 +351,7 @@ class PostHogSender:
             return False
         now = self._clock()
         with self._lock:
-            if self._closed:
+            if self._closed or self._closing:
                 # ``close()`` landed while this capture sat between the
                 # outer check and here: a late arrival against a
                 # flushing client is dropped.
@@ -523,6 +514,7 @@ class PostHogSender:
         self._thread = None
         self._draining = False
         self._force = False
+        self._closing = False
 
     def _send_chunk(self, url: str, body: bytes) -> bool:
         """POST one chunk with the one-retry discipline.
@@ -600,16 +592,28 @@ def get_sender() -> PostHogSender:
 
 
 def _reset_for_tests() -> None:
-    """Drop the singleton (closing the old one). Tests-only seam."""
-    global _sender
+    """Drop singleton and process-exit wiring. Tests-only seam."""
+    global _atexit_installed, _sender
     with _sender_lock:
         sender, _sender = _sender, None
+        unregister_exit = _atexit_installed
+        _atexit_installed = False
+    if unregister_exit:
+        atexit.unregister(_flush_at_exit)
     if sender is not None:
         sender.close(timeout=0.5)
 
 
 def _flush_at_exit() -> None:
-    get_sender().flush(2.0)
+    """Drain for at most two seconds during interpreter shutdown.
+
+    A black-holed endpoint can therefore add up to about two seconds to a
+    short CLI command at exit. This bounded delay is intentional Orca parity.
+    """
+    sender = get_sender()
+    with sender._lock:
+        sender._closing = True
+    sender.flush(2.0)
 
 
 def install_atexit() -> None:
@@ -617,7 +621,9 @@ def install_atexit() -> None:
 
     Import registers only the idempotent fork-safety hook. Neither import nor
     ``close()`` registers an exit callback; only this explicit call hooks the
-    sender into interpreter shutdown.
+    sender into interpreter shutdown. A black-holed endpoint can add up to
+    about two seconds to a short CLI command at exit; the bounded delay is
+    intentional Orca parity.
     """
     global _atexit_installed
     with _sender_lock:

@@ -697,6 +697,16 @@ def _build_primary_model_lifecycle(engine: object) -> PrimaryModelLifecycle:
     )
 
 
+def _flush_v2_telemetry() -> None:
+    """Drain v2 without permanently closing an embedded/reloaded process."""
+    try:
+        from rapid_mlx.telemetry import posthog_sender as _posthog_sender
+
+        _posthog_sender.get_sender().flush(2.0)
+    except Exception:
+        logger.debug("telemetry v2 flush failed (non-fatal)")
+
+
 async def lifespan(app: FastAPI):
     """FastAPI lifespan for startup/shutdown events."""
     global _engine, _mcp_manager, _primary_model_lifecycle
@@ -1059,6 +1069,8 @@ async def lifespan(app: FastAPI):
         # Telemetry must never crash the shutdown path. Logged at
         # debug only -- this is best-effort cleanup.
         logger.debug("telemetry session_end hook failed (non-fatal)")
+
+    _flush_v2_telemetry()
 
 
 app = FastAPI(
@@ -3738,6 +3750,9 @@ Examples:
     from .telemetry import consent_runtime
 
     consent_runtime.startup(long_lived=True)
+    from .telemetry import track as telemetry_v2
+
+    telemetry_v2.start_lifecycle("server")
 
     from .routes.video import configure_video_jobs
 
