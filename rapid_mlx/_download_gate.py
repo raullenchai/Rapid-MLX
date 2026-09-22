@@ -1711,8 +1711,6 @@ def mflux_missing_weights(repo_id: str) -> list[str] | None:
             r"(?:[0-9a-f]{40}|[0-9a-f]{64})", os.path.basename(first_hop)
         ):
             return False
-        if not os.path.islink(first_hop):
-            return False
         second_hop = os.path.abspath(
             os.path.join(os.path.dirname(first_hop), os.readlink(first_hop))
         )

@@ -2729,6 +2729,24 @@ def test_mflux_snapshot_rejects_unowned_shared_blob_links(
     assert gate.mflux_missing_weights(repo) == ["tokenizer/tokenizer.json"]
 
 
+def test_mflux_snapshot_rejects_external_component_directory(tmp_path, monkeypatch):
+    cache_root = tmp_path / "hf-cache"
+    repo = _UNPINNED_MFLUX_REPO
+    repo_root = _mflux_repo_root(cache_root, repo)
+    sha = "d" * 40
+    _seed_mflux_snapshot(repo_root, sha)
+    tokenizer = repo_root / "snapshots" / sha / "tokenizer"
+    (tokenizer / "tokenizer.json").unlink()
+    tokenizer.rmdir()
+    foreign = tmp_path / "foreign-tokenizer"
+    foreign.mkdir()
+    (foreign / "tokenizer.json").write_text("{}")
+    tokenizer.symlink_to(foreign, target_is_directory=True)
+
+    monkeypatch.setattr("huggingface_hub.constants.HF_HUB_CACHE", str(cache_root))
+    assert gate.mflux_missing_weights(repo) == ["tokenizer/tokenizer.json"]
+
+
 @pytest.mark.parametrize(
     "omit,expected",
     [
