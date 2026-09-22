@@ -470,7 +470,7 @@ def _run(work: Callable[[sqlite3.Connection], _T], default: _T) -> _T:
 def _valid_key(key: str) -> bool:
     """A key we are willing to put in the database.
 
-    The UTF-8 check is not decoration: a lone surrogate (``"\ud800"``,
+    The UTF-8 check is not decoration: a lone surrogate (``"\\ud800"``,
     the normal result of ``os.fsdecode`` on an undecodable filename
     byte) is a perfectly ordinary ``str`` of ordinary length that the
     sqlite3 driver cannot encode. Rejecting it here turns a would-be
