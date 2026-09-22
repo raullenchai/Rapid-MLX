@@ -220,6 +220,7 @@ _engine: BaseEngine | None = None
 _prefix_cache_load_task = None  # asyncio.Task | None
 _model_name: str | None = None
 _model_alias: str | None = None  # Short alias used to start the model (if any)
+_telemetry_auto_selected: bool = False
 # Task #292 (Bo R13/R14): operator opt-in for ``/v1/audio/*`` routes on a
 # text-only server. Set to True by ``--enable-audio`` (text mode) or by
 # :func:`rapid_mlx.cli._serve_audio_mode` (audio mode). The audio-mode
@@ -788,6 +789,13 @@ async def lifespan(app: FastAPI):
                 _primary_post_load_done = True
             else:
                 await _engine.start()
+            from rapid_mlx.telemetry.model_events import emit_model_served
+
+            emit_model_served(
+                _engine,
+                _model_alias or _model_path,
+                _telemetry_auto_selected,
+            )
         except Exception as _start_exc:
             # Opt-in telemetry (Phase 2.2 error wiring): serve's real weight
             # load happens HERE in the async lifespan, not in the CLI's
@@ -803,6 +811,14 @@ async def lifespan(app: FastAPI):
 
             _telemetry_emit.error(
                 category="model_load_failure", exc=_start_exc, phase="startup"
+            )
+            from rapid_mlx.telemetry.model_events import emit_model_serve_failed
+
+            emit_model_serve_failed(
+                _start_exc,
+                engine=_engine,
+                alias_or_path=_model_alias or _model_path,
+                auto_selected=_telemetry_auto_selected,
             )
             raise
 

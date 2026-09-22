@@ -4514,6 +4514,9 @@ def serve_command(args):
 
     # Pass alias info to server (for /v1/models)
     server._model_alias = getattr(args, "_original_alias", None)
+    server._telemetry_auto_selected = bool(
+        getattr(args, "_telemetry_auto_selected", False)
+    )
 
     # Task #292: forward the ``--enable-audio`` opt-in to the server
     # module BEFORE ``load_model`` runs — the post-load hook in
@@ -5651,6 +5654,14 @@ def serve_command(args):
         from rapid_mlx.telemetry import emit as _telemetry_emit  # pragma: no cover
 
         _telemetry_emit.error(category="model_load_failure", exc=e, phase="startup")
+        from rapid_mlx.telemetry.model_events import emit_model_serve_failed
+
+        emit_model_serve_failed(
+            e,
+            engine=getattr(server, "_engine", None),
+            alias_or_path=getattr(args, "_original_alias", None) or args.model,
+            auto_selected=bool(getattr(args, "_telemetry_auto_selected", False)),
+        )
         # Show clean error instead of raw traceback. Catch the typed
         # HF exception class for the 404 case; fall back to substring
         # match for legacy callers (older huggingface_hub) and for
@@ -6501,6 +6512,13 @@ def bench_command(args):
             from rapid_mlx.telemetry import emit as _telemetry_emit
 
             _telemetry_emit.error(category="model_load_failure", exc=e, phase="startup")
+            from rapid_mlx.telemetry.model_events import emit_model_serve_failed
+
+            emit_model_serve_failed(
+                e,
+                alias_or_path=getattr(args, "_original_alias", None) or args.model,
+                auto_selected=bool(getattr(args, "_telemetry_auto_selected", False)),
+            )
             # Mirror serve_command: clean message instead of a 30-line
             # traceback when the user typed a missing repo / bad alias.
             from huggingface_hub.utils import RepositoryNotFoundError
@@ -8315,6 +8333,9 @@ def _print_pull_summary(
         )
 
 
+_pending_model_pull_event: tuple[object, object, object] | None = None
+
+
 def _emit_pull_activation() -> None:
     """Record one successful user pull, regardless of artifact count."""
 
@@ -8328,6 +8349,15 @@ def _emit_pull_activation() -> None:
     _telemetry_emit.activation(
         activation_kind=ACTIVATION_MODEL_PULL, surface=SURFACE_CLI
     )
+    from rapid_mlx.telemetry.model_events import emit_model_pulled
+
+    if _pending_model_pull_event is not None:
+        repo_id, source, snapshot_dir = _pending_model_pull_event
+        emit_model_pulled(
+            repo_id,
+            source,
+            _snapshot_size_bytes(snapshot_dir) if snapshot_dir is not None else None,
+        )
 
 
 def _escape_glob_literal(name: str) -> str:
@@ -8535,9 +8565,16 @@ def _pull_repository(
     # R2-first / HuggingFace-fallback per file. Default mirror is
     # ``https://models.rapidmlx.com``; set ``RAPID_MLX_MODEL_MIRROR=""``
     # to force HF only. The function prints its own progress + summary.
-    if revision_override is None and _try_mirror_prefetch(
-        repo_id, allow_patterns=variant_allow, out=_mirror_out
-    ):
+    try:
+        mirror_ok = revision_override is None and _try_mirror_prefetch(
+            repo_id, allow_patterns=variant_allow, out=_mirror_out
+        )
+    except Exception as exc:
+        from rapid_mlx.telemetry.model_events import emit_model_pull_failed
+
+        emit_model_pull_failed(exc, model_ref=repo_id, source=_mirror_out.get("source"))
+        raise
+    if mirror_ok:
         from pathlib import Path
 
         try:
@@ -8564,6 +8601,8 @@ def _pull_repository(
         # impossible to recover from a later bare-repository ``serve``.
         if _owns_variant_marker:
             _sync_pulled_variant_marker(repo_id, _selected_variant)
+            args._telemetry_pull_source = _mirror_out.get("source")
+            args._telemetry_pull_snapshot_dir = snapshot_dir
         _print_pull_summary(
             repo_id,
             snapshot_dir,
@@ -8670,7 +8709,12 @@ def _pull_repository(
         # serving-choice metadata and therefore performs no marker transition.
         if _owns_variant_marker:
             _sync_pulled_variant_marker(repo_id, _selected_variant)
-    except HFValidationError:
+            args._telemetry_pull_source = "hf"
+            args._telemetry_pull_snapshot_dir = path
+    except HFValidationError as exc:
+        from rapid_mlx.telemetry.model_events import emit_model_pull_failed
+
+        emit_model_pull_failed(exc, model_ref=repo_id, source="hf")
         # Malformed HF repo id (e.g. ``foo/bar/baz``) — surface the same
         # friendly "unknown model" hint the alias path uses instead of a
         # raw stack trace.
@@ -8684,6 +8728,9 @@ def _pull_repository(
         )
         sys.exit(1)
     except Exception as e:
+        from rapid_mlx.telemetry.model_events import emit_model_pull_failed
+
+        emit_model_pull_failed(e, model_ref=repo_id, source="hf")
         is_404 = isinstance(e, RepositoryNotFoundError) or (
             "404" in str(e) or "not found" in str(e).lower()
         )
@@ -8834,6 +8881,12 @@ def pull_command(args):
                 f"'rapid-mlx pull {shown}'."
             )
             sys.exit(1)
+    global _pending_model_pull_event
+    _pending_model_pull_event = (
+        primary_repo,
+        getattr(args, "_telemetry_pull_source", None),
+        getattr(args, "_telemetry_pull_snapshot_dir", None),
+    )
     _emit_pull_activation()
 
 
@@ -9052,6 +9105,9 @@ def ps_command(_args):
     print()
 
 
+_telemetry_chat_auto_selected = False
+
+
 def _spawn_chat_server(
     model: str,
     log_path: str,
@@ -9120,7 +9176,7 @@ def _spawn_chat_server(
     # child stdin is not a TTY). Without this, the child's B2 gate would
     # see a stdin pipe and re-evaluate against a potentially-stale cache.
     child_env = os.environ.copy()
-    child_env["RAPID_MLX_CHAT_SPAWN"] = "1"
+    child_env["RAPID_MLX_CHAT_SPAWN"] = "auto" if _telemetry_chat_auto_selected else "1"
     # Parent-PID watchdog (rapid-desktop #449 sibling fix). The
     # SIGTERM-handler + atexit pair installed below cannot fire under
     # SIGKILL of the chat REPL — the spawned ``serve`` would otherwise
@@ -10090,14 +10146,21 @@ def chat_command(args):
                 if getattr(args, "disable_prefix_cache", False)
                 else {}
             )
-            proc, base_url = _spawn_chat_server(
-                args.model,
-                log_path,
-                served_name=original,
-                register_in=_active_procs,
-                log_handle=_log_handle,
-                **privacy_kwargs,
+            global _telemetry_chat_auto_selected
+            _telemetry_chat_auto_selected = not getattr(
+                args, "_model_was_explicit", True
             )
+            try:
+                proc, base_url = _spawn_chat_server(
+                    args.model,
+                    log_path,
+                    served_name=original,
+                    register_in=_active_procs,
+                    log_handle=_log_handle,
+                    **privacy_kwargs,
+                )
+            finally:
+                _telemetry_chat_auto_selected = False
 
         try:
             _wait_for_chat_server(base_url, proc, timeout_s=args.ready_timeout)
@@ -14092,6 +14155,12 @@ def main():
         sys.exit(2)
     if getattr(args, "command", None) in ("chat", "run"):
         args._model_was_explicit = getattr(args, "model", None) is not None
+        args._telemetry_auto_selected = not args._model_was_explicit
+    elif getattr(args, "command", None) == "serve":
+        # The existing internal-spawn marker carries the parent chat path's
+        # first-run choice into the canonical serve child. ``main`` consumes
+        # the marker at the download gate below; no new routing env exists.
+        args._telemetry_auto_selected = os.environ.get("RAPID_MLX_CHAT_SPAWN") == "auto"
 
     # Cheetah launch banner. Interactive only — stdout must be a real
     # terminal, not a pipe/redirect, and none of the machine-facing opt-outs
@@ -14503,7 +14572,7 @@ def main():
     # grandchild ``rapid-mlx`` spawn (e.g. a nested invocation from a
     # user hook, a doctor self-probe, or some future hub helper) does
     # NOT inherit the bypass. Codex round-2 BLOCKING #2.
-    _chat_spawn_child = os.environ.pop("RAPID_MLX_CHAT_SPAWN", "") == "1"
+    _chat_spawn_child = bool(os.environ.pop("RAPID_MLX_CHAT_SPAWN", ""))
 
     _GATED_COMMANDS = {"chat", "run", "serve", "pull", "bench"}
     # Attached client (chat/bench pointed at an existing server via

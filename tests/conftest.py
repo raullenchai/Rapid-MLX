@@ -45,18 +45,25 @@ def _forbid_uninjected_posthog_default_post():
 def _isolate_v2_telemetry_process_state(monkeypatch):
     """Keep lifecycle singletons and real atexit hooks out of every test."""
     try:
-        from rapid_mlx.telemetry import consent_runtime, posthog_sender, track
+        from rapid_mlx.telemetry import (
+            consent_runtime,
+            model_events,
+            posthog_sender,
+            track,
+        )
     except ImportError:
         yield
         return
 
     posthog_sender._reset_for_tests()
     track._reset_for_tests()
+    model_events._reset_for_tests()
     consent_runtime._reset_runtime_state_for_tests()
     monkeypatch.setattr(posthog_sender, "install_atexit", lambda: None)
     yield
     posthog_sender._reset_for_tests()
     track._reset_for_tests()
+    model_events._reset_for_tests()
     consent_runtime._reset_runtime_state_for_tests()
 
 

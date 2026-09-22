@@ -1,0 +1,350 @@
+# SPDX-License-Identifier: Apache-2.0
+"""Model-event invariants and loopback wire contract."""
+
+from __future__ import annotations
+
+import errno
+import http.client
+import json
+import threading
+import urllib.error
+import uuid
+from datetime import datetime, timezone
+from http.server import BaseHTTPRequestHandler, HTTPServer
+from types import SimpleNamespace
+
+import httpx
+import pytest
+
+import rapid_mlx
+from rapid_mlx.telemetry import (
+    consent_runtime,
+    emit,
+    envelope,
+    model_events,
+    model_id,
+    posthog_sender,
+    state,
+    store,
+)
+from rapid_mlx.telemetry import track as track_module
+from rapid_mlx.telemetry.build_gate import ReleaseStamp
+from rapid_mlx.telemetry.common_props import PlatformFacts
+
+STAMP = ReleaseStamp(channel="stable", posthog_key="phc_" + "a" * 32)
+INSTALL_ID = "6f1b1d3e-4a2b-4c9d-8e7f-0a1b2c3d4e5f"
+SESSION_ID = "0a1b2c3d-4e5f-6071-8293-a4b5c6d7e8f9"
+ITEM_ID = uuid.UUID("12345678-1234-5678-9234-567812345678")
+FACTS = PlatformFacts(
+    os="darwin",
+    os_version="25.3",
+    arch="arm64",
+    chip="m3-ultra",
+    memory_gb=64,
+    python_version="3.11",
+)
+
+
+@pytest.fixture(autouse=True)
+def isolated_model_events(monkeypatch, tmp_path):
+    for name in (state.ENV_VAR, state.DO_NOT_TRACK_ENV, *state.CI_ENV_VARS):
+        monkeypatch.delenv(name, raising=False)
+    monkeypatch.setenv("HOME", str(tmp_path))
+    monkeypatch.setattr(rapid_mlx, "__version__", "0.15.1")
+    monkeypatch.setattr(track_module.common_props, "read_platform_facts", lambda: FACTS)
+    monkeypatch.setattr(state, "get_or_create_client_id", lambda: INSTALL_ID)
+    monkeypatch.setattr(emit, "session_id", lambda: SESSION_ID)
+    monkeypatch.setattr(track_module.build_gate, "official_build", lambda: STAMP)
+    monkeypatch.setattr(posthog_sender.build_gate, "official_build", lambda: STAMP)
+    monkeypatch.setattr(consent_runtime, "upload_allowed", lambda: True)
+    monkeypatch.setattr(
+        track_module.store, "days_since_first_run_bucket", lambda: "7-29"
+    )
+    track_module._reset_for_tests()
+    model_events._reset_for_tests()
+    posthog_sender._reset_for_tests()
+    state.set_cli_kill_switch(False)
+    yield
+    posthog_sender._reset_for_tests()
+    track_module._reset_for_tests()
+    model_events._reset_for_tests()
+    state.set_cli_kill_switch(False)
+
+
+@pytest.mark.parametrize(
+    ("size", "expected"),
+    [
+        (None, "unknown"),
+        (-1, "unknown"),
+        (0, "lt_1gb"),
+        (1024**3, "1_2gb"),
+        (64 * 1024**3, "64gb_plus"),
+    ],
+)
+def test_size_bucket_is_closed_and_half_open(size, expected):
+    assert model_events.size_bucket(size) == expected
+
+
+def test_pull_error_classes_are_type_based():
+    from huggingface_hub.utils import GatedRepoError, RepositoryNotFoundError
+
+    response = httpx.Response(
+        404, request=httpx.Request("GET", "https://huggingface.co/org/model")
+    )
+    assert (
+        model_events.pull_error_class(RepositoryNotFoundError("x", response=response))
+        == "not_found"
+    )
+    assert (
+        model_events.pull_error_class(GatedRepoError("x", response=response)) == "gated"
+    )
+    assert model_events.pull_error_class(OSError(errno.ENOSPC, "x")) == "disk_full"
+    assert model_events.pull_error_class(urllib.error.URLError("x")) == "network"
+    assert model_events.pull_error_class(TimeoutError()) == "network"
+    assert model_events.pull_error_class(ValueError("x")) == "other"
+
+
+def test_model_type_uses_only_profile_modality(monkeypatch):
+    profiles = iter(
+        (
+            SimpleNamespace(modality="text", supports_image_input=False),
+            SimpleNamespace(modality="text", supports_image_input=True),
+            SimpleNamespace(modality="image-gen", supports_image_input=False),
+            None,
+        )
+    )
+    monkeypatch.setattr(
+        "rapid_mlx.model_aliases.resolve_profile", lambda _name: next(profiles)
+    )
+    assert model_events.model_type("a") == "llm"
+    assert model_events.model_type("b") == "vlm"
+    assert model_events.model_type("c") == "image-gen"
+    assert model_events.model_type("d") == "other"
+    assert model_events.model_type(None) == "other"
+
+
+def test_model_type_fails_closed_on_bad_profile(monkeypatch):
+    monkeypatch.setattr(
+        "rapid_mlx.model_aliases.resolve_profile",
+        lambda _name: (_ for _ in ()).throw(ValueError("bad registry")),
+    )
+    assert model_events.model_type("catalog-entry") == "other"
+
+
+@pytest.mark.parametrize(
+    ("exc", "expected"),
+    [
+        (MemoryError(), "insufficient_memory"),
+        (RuntimeError("corrupt safetensor header"), "corrupt_weights"),
+        (RuntimeError("unsupported architecture"), "unsupported_architecture"),
+        (RuntimeError("unclassified"), "other"),
+    ],
+)
+def test_serve_error_classes(exc, expected):
+    assert model_events.serve_error_class(exc) == expected
+
+
+def test_serve_download_error_class():
+    from huggingface_hub.errors import HfHubHTTPError
+
+    response = httpx.Response(
+        500, request=httpx.Request("GET", "https://huggingface.co/org/model")
+    )
+    assert (
+        model_events.serve_error_class(HfHubHTTPError("x", response=response))
+        == "download_failed"
+    )
+
+
+def test_pull_failed_includes_optional_size_bucket(monkeypatch):
+    calls: list[tuple[str, dict[str, object]]] = []
+    monkeypatch.setattr(
+        track_module,
+        "track",
+        lambda event, props: calls.append((event, props)),
+    )
+    model_events.emit_model_pull_failed(TimeoutError(), size_bytes=1024**3)
+    assert calls == [
+        (
+            "model_pull_failed",
+            {"error_class": "network", "size_bucket": "1_2gb"},
+        )
+    ]
+
+
+def test_model_served_is_only_note_site_and_maps_zero_to_none(monkeypatch):
+    calls: list[tuple[str, dict[str, object], int | None]] = []
+    monkeypatch.setattr(
+        model_id, "engine_telemetry_id", lambda _engine: "qwen3.5-4b-4bit"
+    )
+    monkeypatch.setattr(model_events, "model_type", lambda _name: "llm")
+    monkeypatch.setattr(store, "note_model_served", lambda _model: 0)
+    monkeypatch.setattr(
+        track_module,
+        "track",
+        lambda event, props, *, nth_model_served=None: calls.append(
+            (event, props, nth_model_served)
+        ),
+    )
+    model_events.emit_model_served(object(), "qwen3.5-4b-4bit", True)
+    assert calls == [
+        (
+            "model_served",
+            {
+                "model": "qwen3.5-4b-4bit",
+                "model_type": "llm",
+                "auto_selected": True,
+                "quant": "4bit",
+            },
+            None,
+        )
+    ]
+
+
+def test_serve_failure_latch_claims_before_building(monkeypatch):
+    calls: list[str] = []
+    monkeypatch.setattr(
+        model_events,
+        "serve_error_class",
+        lambda _exc: calls.append("classify") or "other",
+    )
+    monkeypatch.setattr(track_module, "track", lambda event, props: calls.append(event))
+    model_events.emit_model_serve_failed(RuntimeError("first"))
+    model_events.emit_model_serve_failed(RuntimeError("second"))
+    assert calls == ["classify", "model_serve_failed"]
+
+
+class _CaptureHandler(BaseHTTPRequestHandler):
+    def do_POST(self) -> None:
+        length = int(self.headers["Content-Length"])
+        self.server.bodies.append(self.rfile.read(length))  # type: ignore[attr-defined]
+        self.send_response(200)
+        self.send_header("Content-Length", "2")
+        self.end_headers()
+        self.wfile.write(b"{}")
+
+    def log_message(self, _format: str, *_args: object) -> None:
+        pass
+
+
+def test_all_four_model_events_reach_exact_loopback_json(monkeypatch):
+    server = HTTPServer(("127.0.0.1", 0), _CaptureHandler)
+    server.bodies = []  # type: ignore[attr-defined]
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    monkeypatch.setenv(
+        posthog_sender.POSTHOG_URL_ENV,
+        f"http://127.0.0.1:{server.server_port}/batch/",
+    )
+
+    def loopback_post(_url: str, body: bytes, timeout: float) -> int:
+        connection = http.client.HTTPConnection(
+            "127.0.0.1", server.server_port, timeout=timeout
+        )
+        try:
+            connection.request(
+                "POST",
+                "/batch/",
+                body=body,
+                headers={"Content-Type": "application/json"},
+            )
+            return connection.getresponse().status
+        finally:
+            connection.close()
+
+    sender = posthog_sender.PostHogSender(
+        post=loopback_post, gate=lambda: STAMP, allowed=lambda: True
+    )
+    monkeypatch.setattr(posthog_sender, "get_sender", lambda: sender)
+    monkeypatch.setattr(envelope.uuid, "uuid4", lambda: ITEM_ID)
+
+    class _FixedDatetime(datetime):
+        @classmethod
+        def now(cls, tz=None):
+            return cls(2026, 9, 21, 12, 34, 56, tzinfo=timezone.utc)
+
+    monkeypatch.setattr(envelope, "datetime", _FixedDatetime)
+    monkeypatch.setattr(
+        model_id, "engine_telemetry_id", lambda _engine: "qwen3.5-4b-4bit"
+    )
+    monkeypatch.setattr(model_events, "model_type", lambda _name: "llm")
+    monkeypatch.setattr(store, "note_model_served", lambda _model: 2)
+
+    model_events.emit_model_pulled("qwen3.5-4b-4bit", "mirror", 3 * 1024**3)
+    model_events.emit_model_pull_failed(
+        TimeoutError(), model_ref="qwen3.5-4b-4bit", source="hf"
+    )
+    model_events.emit_model_served(object(), "qwen3.5-4b-4bit", True)
+    model_events.emit_model_serve_failed(MemoryError(), alias_or_path="qwen3.5-4b-4bit")
+    sender.flush()
+    server.shutdown()
+    thread.join(timeout=2)
+    server.server_close()
+
+    bodies = server.bodies  # type: ignore[attr-defined]
+    events = [item for body in bodies for item in json.loads(body)["batch"]]
+    common = {
+        "app_version": "0.15.1",
+        "surface": "cli",
+        "os": "darwin",
+        "os_version": "25.3",
+        "arch": "arm64",
+        "chip": "m3-ultra",
+        "memory_gb": 64,
+        "python_version": "3.11",
+        "install_id": INSTALL_ID,
+        "session_id": SESSION_ID,
+        "channel": "stable",
+        "days_since_first_run_bucket": "7-29",
+        "$geoip_disable": True,
+        "$process_person_profile": False,
+    }
+    expected_props = [
+        {
+            **common,
+            "model": "qwen3.5-4b-4bit",
+            "source": "mirror",
+            "size_bucket": "2_4gb",
+        },
+        {
+            **common,
+            "model": "qwen3.5-4b-4bit",
+            "source": "hf",
+            "error_class": "network",
+        },
+        {
+            **common,
+            "nth_model_served": 2,
+            "model": "qwen3.5-4b-4bit",
+            "model_type": "llm",
+            "auto_selected": True,
+            "quant": "4bit",
+        },
+        {
+            **common,
+            "model": "qwen3.5-4b-4bit",
+            "model_type": "llm",
+            "auto_selected": False,
+            "quant": "4bit",
+            "error_class": "insufficient_memory",
+        },
+    ]
+    assert events == [
+        {
+            "uuid": str(ITEM_ID),
+            "event": name,
+            "distinct_id": INSTALL_ID,
+            "timestamp": "2026-09-21T12:34:56Z",
+            "properties": props,
+        }
+        for name, props in zip(
+            (
+                "model_pulled",
+                "model_pull_failed",
+                "model_served",
+                "model_serve_failed",
+            ),
+            expected_props,
+            strict=True,
+        )
+    ]

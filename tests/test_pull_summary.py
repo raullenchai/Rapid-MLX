@@ -447,6 +447,48 @@ def test_summary_not_printed_on_404(
     assert "Downloaded" not in out, out
 
 
+def test_mirror_exception_emits_pull_failed_before_reraise(monkeypatch) -> None:
+    from rapid_mlx.telemetry import model_events
+
+    failure = RuntimeError("mirror worker failed")
+    calls: list[tuple[BaseException, dict[str, object]]] = []
+    monkeypatch.setattr(
+        model_events,
+        "emit_model_pull_failed",
+        lambda exc, **kwargs: calls.append((exc, kwargs)),
+    )
+    args = argparse.Namespace(model="mlx-community/Qwen3-0.6B-4bit")
+    with (
+        patch.object(cli, "_try_mirror_prefetch", side_effect=failure),
+        pytest.raises(RuntimeError, match="mirror worker failed"),
+    ):
+        cli._pull_repository(args)
+    assert calls == [(failure, {"model_ref": args.model, "source": None})]
+
+
+def test_hf_validation_failure_emits_pull_failed(monkeypatch) -> None:
+    from huggingface_hub.errors import HFValidationError
+
+    from rapid_mlx.telemetry import model_events
+
+    failure = HFValidationError("bad repo id")
+    calls: list[tuple[BaseException, dict[str, object]]] = []
+    monkeypatch.setattr(
+        model_events,
+        "emit_model_pull_failed",
+        lambda exc, **kwargs: calls.append((exc, kwargs)),
+    )
+    args = argparse.Namespace(model="bad/repo/id")
+    with (
+        patch.object(cli, "_try_mirror_prefetch", return_value=False),
+        patch("huggingface_hub.snapshot_download", side_effect=failure),
+        pytest.raises(SystemExit) as excinfo,
+    ):
+        cli._pull_repository(args)
+    assert excinfo.value.code == 1
+    assert calls == [(failure, {"model_ref": args.model, "source": "hf"})]
+
+
 def test_format_pull_duration_units() -> None:
     """Sub-minute keeps decimals; ``>=60s`` switches to ``m`` + ``s``."""
     assert cli._format_pull_duration(0.0) == "0.0s"

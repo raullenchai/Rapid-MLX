@@ -251,6 +251,21 @@ def test_spawn_foreground_child_env(monkeypatch):
     assert captured["env"]["RAPID_MLX_WATCHDOG_PPID"] == str(os.getpid())
 
 
+def test_spawn_foreground_serve_forwards_auto_selection(monkeypatch):
+    from rapid_mlx.run import cli as run_cli
+
+    captured = {}
+    monkeypatch.setattr(
+        run_cli.subprocess,
+        "Popen",
+        lambda cmd, **kwargs: captured.update(cmd=cmd, **kwargs) or object(),
+    )
+    args = _make_args()
+    args._model_was_explicit = False
+    run_cli._spawn_foreground_serve("qwen3.5-4b-4bit", args)
+    assert captured["env"]["RAPID_MLX_CHAT_SPAWN"] == "auto"
+
+
 def test_spawn_no_download_forces_child_offline(monkeypatch):
     """--no-download remains strict inside the canonical serve child."""
     import subprocess as real_subprocess
