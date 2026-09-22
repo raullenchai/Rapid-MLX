@@ -375,7 +375,9 @@ def test_reset_state_preserves_sibling_lock_inode(fake_home):
     assert lock_path.stat().st_ino == original_inode
 
 
-def test_reset_does_not_delete_consent_when_sibling_lock_is_busy(fake_home, monkeypatch):
+def test_reset_does_not_delete_consent_when_sibling_lock_is_busy(
+    fake_home, monkeypatch
+):
     from rapid_mlx.telemetry import state
 
     state.record_consent(False, rapid_mlx_version="0.14.4")
@@ -385,7 +387,9 @@ def test_reset_does_not_delete_consent_when_sibling_lock_is_busy(fake_home, monk
     monkeypatch.setattr(
         state.fcntl,
         "flock",
-        lambda *_args: (_ for _ in ()).throw(BlockingIOError(state.errno.EAGAIN, "busy")),
+        lambda *_args: (_ for _ in ()).throw(
+            BlockingIOError(state.errno.EAGAIN, "busy")
+        ),
     )
 
     result = state.reset_state()
