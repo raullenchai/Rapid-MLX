@@ -162,6 +162,7 @@ def test_real_loopback_serve_can_only_flush_to_posthog(monkeypatch, tmp_path):
         return 200
 
     monkeypatch.setattr(posthog_sender, "default_post", record_post)
+    monkeypatch.setattr(posthog_sender, "FLUSH_THRESHOLD", 1)
 
     # Mutation trap: if a deleted route call such as ``emit.request(...)`` is
     # restored, it resolves this dormant fake and records the retired URL.
@@ -249,6 +250,10 @@ def test_real_loopback_serve_can_only_flush_to_posthog(monkeypatch, tmp_path):
 
     async def exercise() -> None:
         track_module.start_lifecycle("server")
+        deadline = time.monotonic() + 2.0
+        while not post_bodies and time.monotonic() < deadline:
+            await asyncio.sleep(0.01)
+        assert post_bodies
         request = urllib.request.Request(
             f"http://127.0.0.1:{port}/v1/chat/completions",
             data=json.dumps(
@@ -280,9 +285,10 @@ def test_real_loopback_serve_can_only_flush_to_posthog(monkeypatch, tmp_path):
     for address in connects:
         host = address[0] if isinstance(address, tuple) else address
         assert host == "localhost" or ipaddress.ip_address(host).is_loopback
-    assert post_urls == [posthog_sender.POSTHOG_BATCH_URL]
+    assert post_urls
+    assert all(url == posthog_sender.POSTHOG_BATCH_URL for url in post_urls)
     assert legacy_urls == []
-    assert sorted(item["event"] for item in post_bodies[0]["batch"]) == [
+    assert sorted(item["event"] for body in post_bodies for item in body["batch"]) == [
         "app_opened",
         "model_served",
     ]

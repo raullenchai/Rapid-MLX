@@ -480,7 +480,7 @@ def test_notice_contains_the_required_copy():
     assert "turns anonymous usage reporting on by\ndefault" in NOTICE_TEXT
     assert "including for installs that previously turned it off" in NOTICE_TEXT
     assert "PostHog Cloud" in NOTICE_TEXT
-    assert "rapid-mlx telemetry disable" in NOTICE_TEXT
+    assert "rapid-mlx telemetry off" in NOTICE_TEXT
     assert "RAPID_MLX_TELEMETRY=0" in NOTICE_TEXT
     assert "DO_NOT_TRACK=1" in NOTICE_TEXT
     assert "IP and location are not recorded" in NOTICE_TEXT

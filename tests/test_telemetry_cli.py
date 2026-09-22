@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import json
+import os
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -384,7 +385,12 @@ def test_reset_id_reports_failure(monkeypatch, capsys):
 
 def test_reset_deletes_preference_rotates_id_and_emits_no_event(monkeypatch, capsys):
     calls: list[object] = []
-    monkeypatch.setattr(state, "reset_state", lambda: calls.append("reset"))
+    success = state.ResetStateResult(
+        consent_file=state.ResetItemResult(True, True),
+        consent_lock=state.ResetItemResult(True, True),
+        client_id=state.ResetItemResult(True, True),
+    )
+    monkeypatch.setattr(state, "reset_state", lambda: calls.append("reset") or success)
     monkeypatch.setattr(
         "rapid_mlx.telemetry.track.track",
         lambda *args, **kwargs: calls.append(("track", args, kwargs)),
@@ -400,9 +406,39 @@ def test_reset_deletes_preference_rotates_id_and_emits_no_event(monkeypatch, cap
 
 
 def test_reset_is_best_effort(monkeypatch, capsys):
-    monkeypatch.setattr(state, "reset_state", lambda: None)
+    success = state.ResetStateResult(
+        consent_file=state.ResetItemResult(False, True),
+        consent_lock=state.ResetItemResult(False, True),
+        client_id=state.ResetItemResult(False, True),
+    )
+    monkeypatch.setattr(state, "reset_state", lambda: success)
     cli.telemetry_command(_args("reset"))
     assert capsys.readouterr().err == ""
+
+
+def test_reset_reports_unwritable_state_and_keeps_files(capsys):
+    state.record_consent(True, rapid_mlx_version="0.15.0")
+    state.get_or_create_client_id()
+    telemetry_dir = state.consent_path().parent
+    os.chmod(telemetry_dir, 0o500)
+    try:
+        with pytest.raises(SystemExit, match="1"):
+            cli.telemetry_command(_args("reset"))
+    finally:
+        os.chmod(telemetry_dir, 0o700)
+
+    output = capsys.readouterr().out
+    assert "Reset incomplete:" in output
+    assert "PermissionError" in output
+    assert state.consent_path().exists()
+    assert state.client_id_path().exists()
+
+
+def test_reset_empty_home_succeeds_without_creating_state(capsys, tmp_path):
+    cli.telemetry_command(_args("reset"))
+
+    assert list(tmp_path.rglob("*")) == []
+    assert "no stored preference or client ID found" in capsys.readouterr().out
 
 
 def test_unknown_action_is_defensively_rejected(capsys):

@@ -86,6 +86,46 @@ _session_id: str | None = None
 _session_id_lock = threading.Lock()
 
 
+@dataclass(frozen=True)
+class ResetItemResult:
+    """Outcome for one persisted item handled by :func:`reset_state`."""
+
+    existed: bool
+    succeeded: bool
+    error_types: tuple[str, ...] = ()
+
+
+@dataclass(frozen=True)
+class ResetStateResult:
+    """Structured, path-free result for a best-effort telemetry reset."""
+
+    consent_file: ResetItemResult
+    consent_lock: ResetItemResult
+    client_id: ResetItemResult
+
+    @property
+    def incomplete(self) -> bool:
+        return any(
+            item.existed and not item.succeeded
+            for item in (self.consent_file, self.consent_lock, self.client_id)
+        )
+
+    @property
+    def found_state(self) -> bool:
+        return any(
+            item.existed
+            for item in (self.consent_file, self.consent_lock, self.client_id)
+        )
+
+
+class _IdentityRotationError(OSError):
+    """Identity rotation failure retaining safe underlying error classes."""
+
+    def __init__(self, message: str, error_types: tuple[str, ...]) -> None:
+        super().__init__(message)
+        self.error_types = error_types
+
+
 def _default_telemetry_dir() -> Path:
     """Resolved at call time so ``HOME`` overrides in tests take effect."""
     return Path.home() / ".rapid-mlx"
@@ -363,18 +403,23 @@ def rotate_client_id() -> str:
     try:
         paths.extend(_default_telemetry_dir().glob("activation_seen_*"))
     except OSError as exc:
-        raise OSError(f"cannot enumerate activation markers: {exc}") from exc
-    failures: list[str] = []
+        raise _IdentityRotationError(
+            f"cannot enumerate activation markers: {exc}",
+            (type(exc).__name__,),
+        ) from exc
+    failures: list[tuple[str, OSError]] = []
     for path in paths:
         try:
             path.unlink()
         except FileNotFoundError:
             pass
         except OSError as exc:
-            failures.append(f"{path}: {exc}")
+            failures.append((str(path), exc))
     if failures:
-        raise OSError(
-            "telemetry identity rotation could not remove: " + "; ".join(failures)
+        raise _IdentityRotationError(
+            "telemetry identity rotation could not remove: "
+            + "; ".join(f"{path}: {exc}" for path, exc in failures),
+            tuple(dict.fromkeys(type(exc).__name__ for _, exc in failures)),
         )
     return get_or_create_client_id()
 
@@ -438,25 +483,65 @@ def claim_activation_marker(kind: str) -> bool:
         return False
 
 
-def reset_state() -> None:
-    """Delete the stored preference and rotate identity, best-effort.
+def _remove_reset_item(path: Path) -> ResetItemResult:
+    """Remove one reset item while preserving only safe error metadata."""
+    try:
+        path.unlink()
+    except FileNotFoundError:
+        return ResetItemResult(existed=False, succeeded=True)
+    except OSError as exc:
+        return ResetItemResult(
+            existed=True,
+            succeeded=False,
+            error_types=(type(exc).__name__,),
+        )
+    return ResetItemResult(existed=True, succeeded=True)
+
+
+def reset_state() -> ResetStateResult:
+    """Delete stored preference and rotate an existing identity, best-effort.
 
     The native desktop watches for the consent file to disappear and clears
-    its own answer. Every operation is deliberately fail-silent: reset is a
-    local recovery command and must keep attempting the remaining cleanup when
-    one path is missing, unreadable, or owned by another user.
+    its own answer. Every operation is attempted even if another fails. The
+    result contains only existence/success flags and exception class names, so
+    callers can report incomplete cleanup without exposing local paths or OS
+    messages. An empty state directory stays empty: an identity is rotated only
+    when one already existed.
     """
     consent = consent_path()
     lock = consent.with_name(consent.name + ".lock")
-    for path in (consent, lock):
-        try:
-            path.unlink()
-        except OSError:
-            pass
+    consent_result = _remove_reset_item(consent)
+    lock_result = _remove_reset_item(lock)
+
+    identity = client_id_path()
     try:
-        rotate_client_id()
-    except OSError:
-        pass
+        identity.stat()
+    except FileNotFoundError:
+        identity_result = ResetItemResult(existed=False, succeeded=True)
+    except OSError as exc:
+        identity_result = ResetItemResult(
+            existed=True,
+            succeeded=False,
+            error_types=(type(exc).__name__,),
+        )
+    else:
+        try:
+            rotate_client_id()
+        except OSError as exc:
+            error_types = getattr(exc, "error_types", (type(exc).__name__,))
+            identity_result = ResetItemResult(
+                existed=True,
+                succeeded=False,
+                error_types=tuple(error_types),
+            )
+        else:
+            identity_result = ResetItemResult(existed=True, succeeded=True)
+
+    return ResetStateResult(
+        consent_file=consent_result,
+        consent_lock=lock_result,
+        client_id=identity_result,
+    )
 
 
 def _env_kill_switch_reason() -> str | None:

@@ -234,6 +234,20 @@ def test_client_id_idempotent(fake_home):
     assert get_or_create_client_id() == first
 
 
+def test_client_id_creation_ignores_chmod_failure(fake_home, monkeypatch):
+    from rapid_mlx.telemetry import state
+
+    monkeypatch.setattr(
+        state.os,
+        "chmod",
+        lambda *_args: (_ for _ in ()).throw(PermissionError("denied")),
+    )
+
+    created = state.get_or_create_client_id()
+
+    assert state.client_id_path().read_text().strip() == created
+
+
 def test_read_client_id_never_creates_state(fake_home):
     from rapid_mlx.telemetry.state import client_id_path, read_client_id
 
@@ -274,13 +288,49 @@ def test_reset_state_removes_preference_and_rotates_identity(fake_home):
     original = get_or_create_client_id()
     assert consent_path().exists()
     assert client_id_path().exists()
-    reset_state()
+    result = reset_state()
+    assert result.consent_file.succeeded is True
+    assert result.consent_lock.succeeded is True
+    assert result.client_id.succeeded is True
     assert not consent_path().exists()
     rotated = client_id_path().read_text().strip()
     assert rotated != original
-    # Idempotent — a second reset rotates again and still must not raise.
-    reset_state()
+    # Idempotent — a second reset rotates the still-present client ID.
+    second = reset_state()
+    assert second.client_id.succeeded is True
     assert client_id_path().read_text().strip() != rotated
+
+
+def test_reset_state_empty_home_creates_nothing(fake_home):
+    from rapid_mlx.telemetry import state
+
+    before = list(fake_home.rglob("*"))
+    result = state.reset_state()
+
+    assert list(fake_home.rglob("*")) == before == []
+    assert result.consent_file.existed is False
+    assert result.consent_lock.existed is False
+    assert result.client_id.existed is False
+
+
+def test_reset_state_reports_client_id_stat_error(fake_home, monkeypatch):
+    from rapid_mlx.telemetry import state
+
+    identity = state.client_id_path()
+    real_stat = type(identity).stat
+
+    def fail_identity_stat(path, *args, **kwargs):
+        if path == identity:
+            raise PermissionError("denied")
+        return real_stat(path, *args, **kwargs)
+
+    monkeypatch.setattr(type(identity), "stat", fail_identity_stat)
+
+    result = state.reset_state()
+
+    assert result.client_id.existed is True
+    assert result.client_id.succeeded is False
+    assert result.client_id.error_types == ("PermissionError",)
 
 
 def test_reset_state_removes_sibling_lock_best_effort(fake_home):

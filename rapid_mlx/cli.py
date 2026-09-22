@@ -11894,8 +11894,28 @@ def telemetry_command(args) -> None:
         return
 
     if action == "reset":
-        state.reset_state()
+        result = state.reset_state()
         print()
+        if result.incomplete:
+            labels = (
+                ("consent file", result.consent_file),
+                ("consent lock", result.consent_lock),
+                ("client ID", result.client_id),
+            )
+            remained = ", ".join(
+                f"{label} ({'/'.join(item.error_types)})"
+                for label, item in labels
+                if item.existed and not item.succeeded
+            )
+            print(f"  Reset incomplete: {remained} remained.")
+            print("  This command emits no telemetry event.")
+            print()
+            raise SystemExit(1)
+        if not result.found_state:
+            print("  Reset complete: no stored preference or client ID found.")
+            print("  This command emits no telemetry event.")
+            print()
+            return
         print("  `reset` deletes your stored preference; client ID rotated.")
         print(
             "  The desktop clears its answer; the next run is treated as a new install."
