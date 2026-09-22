@@ -654,6 +654,11 @@ struct SettingsView: View {
             }
             .toggleStyle(TrailingSettingsToggleStyle())
             .accessibilityIdentifier("Settings.Privacy.TelemetryToggle")
+            .alert("Couldn't update telemetry setting", isPresented: $telemetryConsentWriteFailed) {
+                Button("OK", role: .cancel) {}
+            } message: {
+                Text("The setting could not be saved. Anonymous usage reporting may still be on. Check that your Mac has free disk space and try again, or set RAPID_MLX_TELEMETRY=0 before launching Rapid.")
+            }
             // The launch notice can enable the default-on policy after this
             // view value was seeded, so refresh whenever the panel appears.
             .onAppear { telemetryEnabled = TelemetryConfig.isEnabled }
@@ -730,6 +735,7 @@ struct SettingsView: View {
     /// default-on transition is reflected if Settings was already constructed.
     @State private var telemetryEnabled = TelemetryConfig.isEnabled
     @State private var telemetryConsentWrite: Task<Void, Never>?
+    @State private var telemetryConsentWriteFailed = false
 
     private var telemetryEnabledBinding: Binding<Bool> {
         Binding(
@@ -743,7 +749,9 @@ struct SettingsView: View {
                 let previousWrite = telemetryConsentWrite
                 telemetryConsentWrite = Task {
                     await previousWrite?.value
-                    await TelemetryConsent.record(enabled: enabled)
+                    let persisted = await TelemetryConsent.record(enabled: enabled)
+                    telemetryEnabled = TelemetryConfig.isEnabled
+                    if !persisted { telemetryConsentWriteFailed = true }
                 }
             }
         )

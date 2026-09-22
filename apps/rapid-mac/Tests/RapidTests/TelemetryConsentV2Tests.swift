@@ -188,6 +188,26 @@ struct TelemetryConsentV2Tests {
         #expect(stored["junk"] as? String == "keep")
     }
 
+    @Test("A failed Settings opt-out reports failure and never claims the sidecar is off")
+    func failedSettingsOptOutIsVisible() async throws {
+        let dir = try directory("settings-write-failure")
+        defer { try? FileManager.default.removeItem(at: dir) }
+        // A directory at the consent path makes atomic replacement fail even
+        // when the containing directory itself is writable.
+        try FileManager.default.createDirectory(at: consentURL(dir), withIntermediateDirectories: false)
+        let userDefaults = defaults("settings-write-failure")
+        userDefaults.set(true, forKey: TelemetryConfig.enabledKey)
+
+        let persisted = await TelemetryConsent.record(
+            enabled: false, version: "0.15.0",
+            defaults: userDefaults, telemetryDirectory: dir
+        )
+
+        #expect(!persisted)
+        #expect(TelemetryConfig.isEnabled(defaults: userDefaults, environment: [:]))
+        #expect(FileManager.default.fileExists(atPath: consentURL(dir).path))
+    }
+
     @Test("Settings on stays locally dark when a presented notice could not persist its marker")
     func settingsOnCannotBypassMissingMarker() async throws {
         let dir = try directory("settings-no-marker")

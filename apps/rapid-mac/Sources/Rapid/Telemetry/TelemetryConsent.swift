@@ -196,13 +196,13 @@ enum TelemetryConsent {
     static func record(
         enabled: Bool,
         version: String = TelemetryClient.currentVersion()
-    ) async {
+    ) async -> Bool {
         // Reports captured while off must never become eligible merely because
         // Settings was switched on later.
         if enabled && !TelemetryConfig.isEnabled {
             CrashReporter.discardPendingCrashReports()
         }
-        await record(
+        return await record(
             enabled: enabled,
             version: version,
             defaults: .standard,
@@ -215,7 +215,7 @@ enum TelemetryConsent {
         version: String,
         defaults: UserDefaults,
         telemetryDirectory: URL
-    ) async {
+    ) async -> Bool {
         await writer.record(
             enabled: enabled,
             version: version,
@@ -229,17 +229,18 @@ enum TelemetryConsent {
         version: String,
         defaults: UserDefaults,
         telemetryDirectory: URL
-    ) {
+    ) -> Bool {
         // Settings never writes the disclosure marker. An explicit "on"
         // therefore becomes effective only when the launch notice has already
         // established the current marker; a failed notice write stays dark.
         let markerSeen = readSharedConsent(at: consentURL(in: telemetryDirectory))?
             .currentNoticeWasSeen == true
         let effectiveEnabled = enabled && markerSeen
-        defaults.set(effectiveEnabled, forKey: TelemetryConfig.enabledKey)
-        if effectiveEnabled {
-            synchronizeClientID(defaults: defaults, telemetryDirectory: telemetryDirectory)
-        }
+        let previousLocalDecision = defaults.object(forKey: TelemetryConfig.enabledKey)
+        // An opt-out immediately silences Desktop while the shared write is
+        // pending. If it fails, restore the real state and report the failure
+        // instead of displaying "off" while a sidecar may still upload.
+        if !enabled { defaults.set(false, forKey: TelemetryConfig.enabledKey) }
         let persisted = writeMergedConsent(
             updates: [
                 "consent": enabled,
@@ -253,7 +254,20 @@ enum TelemetryConsent {
             directory: telemetryDirectory,
             replaceUnreadable: true
         )
-        defaults.set(persisted, forKey: TelemetryConfig.sharedConsentMigrationKey)
+        guard persisted else {
+            if let previousLocalDecision {
+                defaults.set(previousLocalDecision, forKey: TelemetryConfig.enabledKey)
+            } else {
+                defaults.removeObject(forKey: TelemetryConfig.enabledKey)
+            }
+            return false
+        }
+        defaults.set(effectiveEnabled, forKey: TelemetryConfig.enabledKey)
+        defaults.set(true, forKey: TelemetryConfig.sharedConsentMigrationKey)
+        if effectiveEnabled {
+            synchronizeClientID(defaults: defaults, telemetryDirectory: telemetryDirectory)
+        }
+        return true
     }
 
     private static func synchronizeClientID(
@@ -674,7 +688,7 @@ private actor ConsentWriter {
         version: String,
         defaults: UserDefaults,
         telemetryDirectory: URL
-    ) async {
+    ) async -> Bool {
         TelemetryConsent.recordSynchronously(
             enabled: enabled,
             version: version,
