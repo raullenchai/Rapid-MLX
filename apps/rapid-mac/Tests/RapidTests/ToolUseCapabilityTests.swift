@@ -139,6 +139,14 @@ struct ToolUseCapabilityTests {
         #expect(ToolUseCapability.confidence(for: "gpt-oss-20b-4bit") == .known)
     }
 
+    @Test("mimo-v2.6-flash-4bit is .known via the exact allow-list (size-less alias)")
+    func mimoV26FlashIsKnown() {
+        #expect(ToolUseCapability.confidence(for: "mimo-v2.6-flash-4bit") == .known)
+        // A sibling that is not on the allow-list and has no size token
+        // must NOT ride along on the prefix.
+        #expect(ToolUseCapability.confidence(for: "mimo-v2.6-flash-8bit") == .unknown)
+    }
+
     @Test("gemma-4-26b-4bit is .known (cycle-6 cross-model walk)")
     func gemma4_26bIsKnown() {
         #expect(ToolUseCapability.confidence(for: "gemma-4-26b-4bit") == .known)
