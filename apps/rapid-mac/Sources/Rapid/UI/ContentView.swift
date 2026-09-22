@@ -87,7 +87,7 @@ struct ContentView: View {
     @Environment(LocalToolApprovalStore.self) private var localToolApproval
     @Environment(MCPCatalog.self) private var mcpCatalog
     @Environment(MCPToolApprovalStore.self) private var mcpApproval
-    @Environment(DeferredTelemetryConsentCoordinator.self) private var deferredTelemetryConsent
+    @Environment(TelemetryNoticeCoordinator.self) private var telemetryNotice
     @Environment(GitHubStarPromptCoordinator.self) private var githubStarPrompt
     @Environment(SparkleUpdateController.self) private var sparkleUpdater
     @Environment(CommandPaletteRequestCoordinator.self) private var commandPaletteRequest
@@ -618,8 +618,8 @@ struct ContentView: View {
             // by construction any more: the upgrade notice is sticky until the
             // user acknowledges it.
             WhatsNewBanner()
-            if deferredTelemetryConsent.isPresented {
-                DeferredTelemetryConsentBanner()
+            if telemetryNotice.isPresented {
+                TelemetryNoticeBanner()
             }
             if let campaign,
                !UserDefaults.standard.bool(forKey: campaign.dismissalKey) {
@@ -753,7 +753,7 @@ struct ContentView: View {
         return .init(
             isBusy: hasActiveModelWork,
             hasBlockingSurface: quickstartVisible
-                || deferredTelemetryConsent.isPresented
+                || telemetryNotice.isPresented
                 || campaignIsVisible
                 || showConversationSearch
                 || server.pendingMemoryWarning != nil

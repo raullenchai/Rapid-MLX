@@ -6,7 +6,7 @@ import Foundation
 /// The set is a choice rather than a constant because the flows worth
 /// rehearsing differ: tuning the Quickstart wizard wants the flags gone and
 /// nothing else, while checking what a genuinely new Mac sees wants the
-/// conversations and the consent prompt back too. A fixed scope would make the
+/// conversations and the telemetry disclosure back too. A fixed scope would make the
 /// cheap case as destructive as the expensive one.
 struct ReonboardingScope: OptionSet, Sendable {
     let rawValue: Int
@@ -19,7 +19,7 @@ struct ReonboardingScope: OptionSet, Sendable {
     static let preferences = ReonboardingScope(rawValue: 1 << 1)
     /// `conversations.json`. Hard delete, no undo.
     static let conversations = ReonboardingScope(rawValue: 1 << 2)
-    /// The telemetry decision, so the post-value invitation can run again. Shared with
+    /// The telemetry decision, so the launch notice can run again. Shared with
     /// the `rapid-mlx` CLI — see ``ReonboardingReset/confirmation(for:)``.
     static let telemetry = ReonboardingScope(rawValue: 1 << 3)
 }
@@ -57,7 +57,7 @@ enum ReonboardingReset {
         if scope.contains(.telemetry) {
             losses.append(
                 "the telemetry decision — this one is shared with the "
-                    + "rapid-mlx CLI, so the command line will ask again too"
+                    + "rapid-mlx CLI, so the command line will disclose again too"
             )
         }
         if scope.contains(.onboarding) {

@@ -30,11 +30,15 @@ own key in Settings → Tools).
 
 ## What we collect (telemetry)
 
-Anonymous, metadata-only usage telemetry. In the 0.15.0 engine it is on by
-default after the disclosure; you can turn it off at any time in Settings →
-Privacy or with `rapid-mlx telemetry off`. The desktop app and its embedded
-`rapid-mlx` engine use the same consent record and random client ID, so one Mac
-is not counted as two installs. The 0.15.0 engine reports:
+Anonymous, metadata-only usage telemetry. Starting in 0.15.0, it is **on by
+default after a one-time in-app acknowledgement notice**. This includes
+installs that turned telemetry off before 0.15.0, which are told about the
+change in that notice. A refusal recorded in 0.15.0 or later is never reversed.
+You can turn telemetry off in Settings → Privacy, with
+`rapid-mlx telemetry off`, or with the `RAPID_MLX_TELEMETRY=0` or
+`DO_NOT_TRACK=1` kill switch. The desktop app and its embedded `rapid-mlx`
+engine use the same consent record and anonymous install ID, so one Mac is not
+counted as two installs. The 0.15.0 engine reports:
 
 * `app_opened` and `active_day`;
 * `model_pulled`, `model_pull_failed`, `model_served`, and
@@ -46,8 +50,8 @@ is not counted as two installs. The 0.15.0 engine reports:
 These v2 events contain only registry-approved enums, booleans, UUIDs, version
 strings, and numeric buckets.
 
-The native desktop client remains on its frozen legacy transport until its
-separate v2 migration. Its existing session and crash events include:
+The native desktop client reports these events to rapidmlx.com's telemetry
+service:
 
 * `session_start` — once per app launch. Includes:
   * `client_id` — random UUID stored locally at
@@ -66,6 +70,12 @@ separate v2 migration. Its existing session and crash events include:
     locals).
   * App version + macOS version + a short context label (e.g.
     `chat_send`, `download_install`).
+* `activation` — once per install for each first successful text chat reply,
+  delivered dictation transcript, or generated image. A vision-reply milestone
+  is reserved in the event schema but is not sent by this version. The
+  event-specific payload contains only the closed milestone name and
+  `surface: desktop`; it contains no model, timing, count, prompt, response,
+  attachment, transcript, generated image, or path.
 * Embedded-engine v2 events, depending on the bundled engine version, can
   include:
   * Rapid-MLX version, macOS version, CPU architecture, chip family, memory
@@ -86,9 +96,16 @@ Anonymous telemetry does **not** collect:
 * Tool API keys.
 
 The engine sends only `POST https://us.i.posthog.com/batch/` telemetry
-requests. Every event disables GeoIP enrichment and person-profile creation;
-PostHog receives no IP or location property from Rapid-MLX. The frozen native
-desktop client is migrated separately.
+requests to PostHog Cloud (US). Every event disables GeoIP
+enrichment and person-profile creation; PostHog receives no IP or location
+property from Rapid-MLX.
+
+The desktop app sends its own events to
+`https://telemetry.rapidmlx.com/v1/events`. The receiving Cloudflare Worker
+derives a coarse two-letter country code from connection metadata for aggregate
+reporting (`XX` when unavailable), strips client IPs, and writes events to R2;
+the IP address is never stored. Source is open at
+`github.com/raullenchai/rapidmlx.com` under `telemetry-worker/`.
 
 ## Opt out
 

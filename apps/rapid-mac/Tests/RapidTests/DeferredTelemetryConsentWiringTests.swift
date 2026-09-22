@@ -2,8 +2,8 @@ import Foundation
 import Testing
 @testable import Rapid
 
-@Suite("Deferred telemetry consent delivery wiring")
-struct DeferredTelemetryConsentWiringTests {
+@Suite("Telemetry launch notice wiring")
+struct TelemetryNoticeWiringTests {
     private static var packageRoot: URL {
         URL(fileURLWithPath: #filePath)
             .deletingLastPathComponent()
@@ -15,13 +15,13 @@ struct DeferredTelemetryConsentWiringTests {
         try String(contentsOf: packageRoot.appendingPathComponent(path), encoding: .utf8)
     }
 
-    @Test("The app routes all three completed-value signals to one coordinator")
+    @Test("The app owns one launch notice and preserves all activation signals")
     func appOwnsTheSignalFanIn() throws {
         let app = try Self.source("Sources/Rapid/RapidApp.swift")
 
-        #expect(app.contains("let consentCoordinator = DeferredTelemetryConsentCoordinator()"))
+        #expect(app.contains("let noticeCoordinator = TelemetryNoticeCoordinator()"))
         #expect(app.contains("let starPromptCoordinator = GitHubStarPromptCoordinator()"))
-        #expect(app.components(separatedBy: "consentCoordinator?.productValueDelivered(kind)").count - 1 == 3)
+        #expect(app.components(separatedBy: "noticeCoordinator?.productValueDelivered(kind)").count - 1 == 3)
         #expect(app.components(separatedBy: "starPromptCoordinator?.productValueDelivered(kind)").count - 1 == 3)
     }
 
@@ -96,33 +96,71 @@ struct DeferredTelemetryConsentWiringTests {
         #expect(!editing.contains("onProductValueDelivered(.generatedImage)"))
     }
 
-    @Test("The invitation is non-modal, focus-neutral, and fully addressable")
+    @Test("The notice is non-modal, single-action, and fully addressable")
     func bannerInteractionContract() throws {
-        let banner = try Self.source("Sources/Rapid/UI/TelemetryConsentView.swift")
+        let banner = try Self.source("Sources/Rapid/UI/TelemetryNoticeView.swift")
 
-        #expect(banner.contains("Help improve Rapid by sharing anonymous usage data?"))
-        #expect(banner.contains("Change this anytime in Settings → Privacy."))
-        for identifier in ["Banner", "Share", "Decline", "Close"] {
-            #expect(banner.contains("TelemetryConsent.PostValue\(identifier == "Banner" ? "" : ".")\(identifier)"))
-        }
+        #expect(banner.contains("Anonymous telemetry is now on by default"))
+        #expect(banner.contains("Button(\"Got it\")"))
+        #expect(banner.contains("TelemetryNotice.Banner"))
+        #expect(banner.contains("TelemetryNotice.Acknowledge"))
+        #expect(!banner.contains("No thanks"))
+        #expect(!banner.contains("Share"))
         #expect(!banner.contains(".isModal"))
-        #expect(banner.contains("Button(\"No thanks\", role: .cancel) { consent.decline() }"))
-        #expect(!banner.contains(".keyboardShortcut(.cancelAction)"),
-                "Escape belongs to the active app interaction; only an explicit click may decline")
         #expect(!banner.contains("@FocusState"))
+        #expect(banner.contains(".onAppear { notice.noticeDidAppear() }"))
     }
 
-    @Test("Every consent surface discloses the Desktop activation shape and country derivation")
-    func activationDisclosureContract() throws {
-        let banner = try Self.source("Sources/Rapid/UI/TelemetryConsentView.swift")
+    @Test("The launch notice contains the complete default-on disclosure")
+    func disclosureContract() throws {
+        let banner = try Self.source("Sources/Rapid/UI/TelemetryNoticeView.swift")
         let settings = try Self.source("Sources/Rapid/UI/SettingsView.swift")
-
-        for surface in [banner, settings] {
-            #expect(surface.contains("first successful text chat reply, dictation, or generated image"))
-            #expect(surface.contains("does not send a vision-reply milestone"))
-            #expect(surface.contains("only the milestone name and “Desktop”"))
-            #expect(surface.contains("derives a country code but never stores your IP"))
+        for phrase in [
+            "on by default", "previously turned telemetry off", "metadata-only",
+            "the app's to rapidmlx.com's telemetry service", "the bundled engine's to PostHog Cloud (US)",
+            "never your IP or a per-person profile; the app's collector keeps only a coarse country code",
+            "never sends prompts, responses, file paths, or API key values",
+            "Nothing is sent before this notice appears",
+            "rapid-mlx telemetry off", "RAPID_MLX_TELEMETRY=0", "DO_NOT_TRACK=1",
+            "https://rapidmlx.com/docs/telemetry",
+        ] {
+            #expect(banner.contains(phrase), "missing disclosure phrase: \(phrase)")
         }
+        for phrase in [
+            "the app's to rapidmlx.com's telemetry service",
+            "the bundled engine's to PostHog Cloud (US)",
+            "never your IP or a per-person profile; the app's collector keeps only a coarse country code",
+        ] {
+            #expect(settings.contains(phrase), "Settings missing disclosure phrase: \(phrase)")
+        }
+        #expect(settings.contains("telemetry is on by default"))
+        #expect(settings.contains("https://rapidmlx.com/docs/telemetry"))
+    }
+
+    @Test("The shipped privacy policy states the default-on notice contract")
+    func privacyDisclosureContract() throws {
+        let banner = try Self.source("Sources/Rapid/UI/TelemetryNoticeView.swift")
+        let privacy = try Self.source("PRIVACY.md")
+        let normalized = privacy.replacingOccurrences(of: "**", with: "")
+            .split(whereSeparator: \.isWhitespace).joined(separator: " ")
+        let command = "rapid-mlx telemetry off"
+        let processors = ["rapidmlx.com's telemetry service", "PostHog Cloud (US)"]
+        for phrase in [
+            "Starting in 0.15.0, it is on by default after a one-time in-app acknowledgement notice.",
+            "This includes installs that turned telemetry off before 0.15.0, which are told about the change in that notice.",
+            "A refusal recorded in 0.15.0 or later is never reversed.",
+            "Settings → Privacy", command,
+            "RAPID_MLX_TELEMETRY=0", "DO_NOT_TRACK=1",
+        ] {
+            #expect(normalized.contains(phrase), "missing privacy phrase: \(phrase)")
+        }
+        #expect(banner.contains(command), "banner and privacy policy must use the same CLI command")
+        for processor in processors {
+            #expect(banner.contains(processor), "banner missing telemetry processor: \(processor)")
+            #expect(normalized.contains(processor), "privacy policy missing telemetry processor: \(processor)")
+        }
+        #expect(!privacy.contains("Default: **off until you make an"))
+        #expect(!privacy.contains("only after the same opt-in"))
     }
 }
 

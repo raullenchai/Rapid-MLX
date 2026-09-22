@@ -490,6 +490,13 @@ Set `RAPID_GUI_SOURCE_APP` to test a release candidate bundle and
 `RAPID_GUI_GOLDEN_OUT` to choose the artifact directory. Each run records AX
 trees, actions, fake-sidecar events, logs, and a top-level `result.json`.
 
+The `fresh-install` journey always rewrites `CFBundleShortVersionString` to
+`0.15.0` in its isolated, ad-hoc-signed app copy. That is the telemetry v2
+cutoff, so the notice and its accessibility tree stay covered before and after
+the repository's release version changes. `dogfood-isolate.sh` exposes this as
+the test-only `RAPID_TEST_APP_VERSION` environment variable; production code
+continues to read the running bundle version through `Bundle.main`.
+
 ## AX structural baselines
 
 Settled states across the journeys are also fingerprinted as

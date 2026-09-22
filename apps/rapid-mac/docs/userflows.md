@@ -62,19 +62,19 @@ Chat, Images, Audio, and Launch surfaces from the sidebar
 
 ---
 
-## Flow 2 — Telemetry consent (after first value)
+## Flow 2 — Telemetry launch notice
 
-**Trigger.** After the first successful assistant reply, delivered dictation
-transcript, or generated image, when no telemetry decision has been recorded.
+**Trigger.** The production shell first appears and the current disclosure
+revision has not been recorded. Kill switches suppress the notice.
 
-**Expected.** A non-modal banner offers **Share** / **No thanks**
-(`TelemetryConsent.PostValue.Share` / `.Decline`) without covering the result
-or taking composer focus. Decline and close are durable and never re-prompt;
-the decision remains changeable in Settings → Privacy
-(`Settings.Privacy.TelemetryToggle`). Nothing is sent before opt-in.
+**Expected.** A non-modal default-on disclosure appears with one **Got it**
+action (`TelemetryNotice.Acknowledge`) and does not take composer focus. Its
+marker is written only after the banner appears; no telemetry is sent before
+that point. The decision remains changeable in Settings → Privacy
+(`Settings.Privacy.TelemetryToggle`).
 
-**Touches.** `UI/TelemetryConsentView.swift`, `UI/ContentView.swift`
-(`productionShell`), `Telemetry/DeferredTelemetryConsentCoordinator.swift`,
+**Touches.** `UI/TelemetryNoticeView.swift`, `UI/ContentView.swift`
+(`productionShell`), `Telemetry/TelemetryNoticeCoordinator.swift`,
 `Telemetry/TelemetryConsent.swift`,
 `Telemetry/TelemetryConfig.swift`.
 
@@ -706,8 +706,8 @@ Error}`.
 `Launch.Integration.Copy.<tool.id>`, `ConnectTools.{Copy.<label>,Reveal.<label>,
 Close}`.
 
-**Telemetry consent — `UI/TelemetryConsentView.swift`:**
-`TelemetryConsent.PostValue{Banner,.Share,.Decline,.Close}`.
+**Telemetry notice — `UI/TelemetryNoticeView.swift`:**
+`TelemetryNotice.{Banner,Acknowledge}`.
 
 **Banners / misc:** `UI/FailedReplaceBanner.swift`
 `FailedReplaceBanner`, `FailedReplace.{OpenUpdate,Dismiss}`;

@@ -88,9 +88,7 @@ Report privately through GitHub:
   Bearer / Anthropic `x-api-key` auth).
 - `rapid-mlx share` intentionally exposes your server beyond localhost —
   treat the URL it prints as a secret.
-- Anonymous telemetry is **opt-in only** and never collects prompts,
-  completions, file paths, IPs, or API keys. See
-  <https://rapidmlx.com/docs/telemetry.html>.
+- Anonymous telemetry is **on by default from 0.15.0 after a one-time notice**; turn it off in Settings → Privacy, with `rapid-mlx telemetry off`, `RAPID_MLX_TELEMETRY=0`, or `DO_NOT_TRACK=1`. It never collects prompts, completions, file paths, IPs, or API keys. See <https://rapidmlx.com/docs/telemetry.html>.
 - If your threat model forbids piping remote scripts into a shell, use
   `brew install rapid-mlx` or `pip install rapid-mlx` instead of the
   curl one-liner; the curl installer is optional sugar, not the only path.
