@@ -51,6 +51,7 @@ from __future__ import annotations
 
 import os
 import sqlite3
+import stat
 import threading
 from collections.abc import Callable, Iterator
 from contextlib import closing, contextmanager
@@ -119,6 +120,8 @@ _INSTALL_EVIDENCE_FILES: tuple[str, ...] = (
     "session_seen",
     "bench-install-id",
 )
+
+_MAX_CONSENT_BYTES = 4_096
 
 _SCHEMA = (
     "CREATE TABLE IF NOT EXISTS schema_meta ("
@@ -648,34 +651,61 @@ def note_model_served(model_id: str) -> int:
     return _run(work, 0)
 
 
+def _regular_file_date(path: Path) -> date | None:
+    """Return a regular file's UTC mtime date without following symlinks."""
+    try:
+        info = path.lstat()
+        if not stat.S_ISREG(info.st_mode):
+            return None
+        return datetime.fromtimestamp(info.st_mtime, timezone.utc).date()
+    except Exception:
+        return None
+
+
+def _bounded_regular_file_text(path: Path) -> str | None:
+    """Read a small regular file without following symlinks or blocking."""
+    descriptor: int | None = None
+    try:
+        descriptor = os.open(
+            path,
+            os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK,
+        )
+        if not stat.S_ISREG(os.fstat(descriptor).st_mode):
+            return None
+        return os.read(descriptor, _MAX_CONSENT_BYTES).decode("utf-8")
+    except Exception:
+        return None
+    finally:
+        if descriptor is not None:
+            try:
+                os.close(descriptor)
+            except OSError:
+                pass
+
+
 def _seed_first_run_date(now: datetime | None) -> str:
     """Infer an upgrade's first-run date from existing local state.
 
-    Evidence is read-only and best-effort as a unit: an unexpected failure
-    makes today the conservative answer instead of risking telemetry on the
-    request path.
+    Evidence is read-only and independently best-effort: an unusable item is
+    ignored without discarding dates recovered from the other items.
     """
     today = _as_day(now)
+    state_dir = _default_telemetry_dir()
+    evidence: list[date] = []
+    for name in _INSTALL_EVIDENCE_FILES:
+        if found := _regular_file_date(state_dir / name):
+            evidence.append(found)
+
     try:
-        state_dir = _default_telemetry_dir()
-        evidence: list[date] = []
-        for name in _INSTALL_EVIDENCE_FILES:
-            try:
-                modified = (state_dir / name).stat().st_mtime
-            except FileNotFoundError:
-                continue
-            evidence.append(datetime.fromtimestamp(modified, timezone.utc).date())
-
         for marker in state_dir.glob("activation_seen_*"):
-            evidence.append(
-                datetime.fromtimestamp(marker.stat().st_mtime, timezone.utc).date()
-            )
+            if found := _regular_file_date(marker):
+                evidence.append(found)
+    except Exception:
+        pass
 
+    consent_text = _bounded_regular_file_text(state_dir / "telemetry-consent.yaml")
+    if consent_text is not None:
         try:
-            consent_text = (state_dir / "telemetry-consent.yaml").read_text()
-        except FileNotFoundError:
-            pass
-        else:
             consent = yaml.safe_load(consent_text)
             if isinstance(consent, dict) and "prompted_at" in consent:
                 evidence.append(
@@ -683,13 +713,13 @@ def _seed_first_run_date(now: datetime | None) -> str:
                         str(consent["prompted_at"]), "%Y-%m-%dT%H:%M:%SZ"
                     ).date()
                 )
+        except Exception:
+            pass
 
-        if not evidence:
-            return today
-        current = datetime.strptime(today, "%Y-%m-%d").date()
-        return min(min(evidence), current).isoformat()
-    except Exception:
+    if not evidence:
         return today
+    current = datetime.strptime(today, "%Y-%m-%d").date()
+    return min(min(evidence), current).isoformat()
 
 
 def first_run_date(now: datetime | None = None) -> str | None:
