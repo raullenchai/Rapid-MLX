@@ -10,8 +10,9 @@ import threading
 from collections.abc import AsyncIterable, AsyncIterator, Callable
 from functools import partial
 from typing import Any
+from urllib.parse import urlsplit
 
-from rapid_mlx.telemetry import emit, model_id, redact, registry, store
+from rapid_mlx.telemetry import model_id, redact, registry, store
 from rapid_mlx.telemetry import track as track_module
 
 _MODEL_TYPES = frozenset(
@@ -161,7 +162,12 @@ def _record_completed_request(
     """
     try:
         safe_model = model_id.telemetry_model_id(model)
-        safe_endpoint = emit._normalize_endpoint(endpoint)
+        try:
+            endpoint_path = urlsplit(endpoint).path
+        except (TypeError, ValueError):
+            endpoint_path = ""
+        allowed_endpoints = registry.load_registry()["enums"]["endpoint"]["values"]
+        safe_endpoint = endpoint_path if endpoint_path in allowed_endpoints else "other"
         caller = redact.normalize_caller_agent(caller_agent, caller_client)
         allowed_callers = registry.load_registry()["enums"]["caller"]["values"]
         if caller not in allowed_callers:

@@ -684,42 +684,6 @@ async def create_completion(request: CompletionRequest, raw_request: Request):
             f"Completion: {total_prompt_tokens} prompt + {total_completion_tokens} completion tokens in {elapsed:.2f}s ({tokens_per_sec:.1f} tok/s)"
         )
 
-        # Opt-in telemetry (caller attribution, task C): record a bucketed
-        # ``request`` event for this completed non-streaming completion.
-        # ``caller_agent`` comes from the inbound User-Agent (bucketed to an
-        # allowlist in ``redact`` — never stored raw); every perf number is
-        # bucketed. ``emit.request`` is sampled + ``is_enabled()``-gated +
-        # ``@_safe``, so this is a cheap no-op when telemetry is off / not
-        # sampled and can never affect the response. TTFT == total latency
-        # here (a non-streaming response is delivered in one shot).
-        #
-        # Ordering: the ``request`` event fires before ``CompletionResponse``
-        # is serialized (doc'd deferral, codex r4-B#1). This exactly matches
-        # the chat lane's order — chat.py also emits its *request* event
-        # before response serialization, and protects only the billing-
-        # critical *activation* funnel by emitting it after the body is
-        # built. The conservative variant of task C wires NO activation
-        # funnel, so there is no post-serialization funnel to guard here.
-        from rapid_mlx.telemetry import emit as _telemetry_emit
-        from rapid_mlx.telemetry.model_id import served_model_id as _served_model_id
-
-        _telemetry_emit.request(
-            endpoint="/v1/completions",
-            model_alias=_served_telemetry_id or _served_model_id(request.model),
-            stream=False,
-            tool_call_used=False,
-            prompt_tokens=total_prompt_tokens,
-            completion_tokens=total_completion_tokens,
-            ttft_ms=elapsed * 1000.0,
-            tps=tokens_per_sec,
-            status=200,
-            caller_agent=raw_request.headers.get("user-agent")
-            if raw_request is not None
-            else None,
-            caller_client=raw_request.headers.get("x-rapid-client")
-            if raw_request is not None
-            else None,
-        )
         comp_response = CompletionResponse(
             model=_resolve_model_name(request.model),
             choices=choices,
@@ -1041,45 +1005,6 @@ async def stream_completion(
 
     yield "data: [DONE]\n\n"
 
-    # Opt-in telemetry (task C): record a bucketed ``request`` event for
-    # this streaming completion, fired only AFTER the terminal ``[DONE]``
-    # marker is yielded + the generator resumes cleanly — matching the chat
-    # lane's documented emit-after-terminal-marker placement. A stream the
-    # client cancels or that raises while delivering ``[DONE]`` raises out
-    # before this line and is deliberately NOT counted (under-counting is
-    # conservative; emitting before ``[DONE]`` would record a false
-    # status-200 success on a disconnected final write). TTFT is true
-    # first-token latency (``_first_token_ts``); tokens come from the
-    # engine's final usage (``_final_usage`` is set on the finish chunk).
-    # Same sampled + consent-gated + ``@_safe`` no-op semantics as the chat
-    # lane.
-    _elapsed_stream = time.perf_counter() - _stream_start
-    _done = getattr(_final_usage, "completion_tokens", None) or 0
-    _ptok = getattr(_final_usage, "prompt_tokens", None) or 0
-    _total_tps = _done / _elapsed_stream if _elapsed_stream > 0 else 0
-    _ttft_seconds = (
-        max(0.0, _first_token_ts - _stream_start)
-        if _first_token_ts is not None
-        else _elapsed_stream
-    )
-    _decode_seconds = _elapsed_stream - _ttft_seconds
-    _decode_tps = _done / _decode_seconds if _decode_seconds > 0 else _total_tps
-    from rapid_mlx.telemetry import emit as _telemetry_emit
-    from rapid_mlx.telemetry.model_id import served_model_id as _served_model_id
-
-    _telemetry_emit.request(
-        endpoint="/v1/completions",
-        model_alias=served_telemetry_id or _served_model_id(request.model),
-        stream=True,
-        tool_call_used=False,
-        prompt_tokens=_ptok,
-        completion_tokens=_done,
-        ttft_ms=_ttft_seconds * 1000.0,
-        tps=_decode_tps,
-        status=200,
-        caller_agent=caller_agent,
-        caller_client=caller_client,
-    )
     from rapid_mlx.telemetry import inference as _telemetry_inference
 
     _telemetry_inference.emit_completed_request(

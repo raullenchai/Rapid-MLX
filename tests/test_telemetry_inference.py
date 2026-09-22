@@ -1611,23 +1611,16 @@ def test_additional_endpoint_has_completed_request_emit(relative_path, endpoint)
         ("rapid_mlx/routes/anthropic.py", 1),
     ],
 )
-def test_each_v1_terminal_site_has_adjacent_v2_emit(relative_path, failed_count):
+def test_each_terminal_site_uses_only_v2_emit(relative_path, failed_count):
     source = (REPO_ROOT / relative_path).read_text(encoding="utf-8")
-    v1 = "_telemetry_emit.request("
     v2 = "_telemetry_inference.emit_completed_request("
-    assert source.count(v1) == 2
+    assert "_telemetry_emit.request(" not in source
+    assert source.count(v2) >= 2
     assert source.count('result="ok"') >= 2
     assert source.count('result="failed"') == failed_count
     assert source.count("emit_failed_on_stream_error(") == 1
-    cursor = 0
-    for _ in range(2):
-        v1_at = source.index(v1, cursor)
-        next_v1 = source.find(v1, v1_at + len(v1))
-        v2_at = source.index(v2, v1_at + len(v1))
-        assert next_v1 == -1 or v2_at < next_v1
-        call = source[v2_at : source.index('result="ok"', v2_at)]
-        assert "request.model" not in call
-        cursor = v2_at + len(v2)
+    for call in source.split(v2)[1:]:
+        assert "request.model" not in call[: call.index(")") + 1]
 
 
 class _CaptureHandler(BaseHTTPRequestHandler):
@@ -1659,7 +1652,6 @@ def test_inference_and_capability_events_reach_loopback_as_exact_json(
     import rapid_mlx
     from rapid_mlx.telemetry import (
         consent_runtime,
-        emit,
         inference,
         posthog_sender,
         state,
@@ -1684,7 +1676,7 @@ def test_inference_and_capability_events_reach_loopback_as_exact_json(
     monkeypatch.setattr(consent_runtime, "upload_allowed", lambda: True)
     monkeypatch.setattr(track_module.common_props, "read_platform_facts", lambda: facts)
     monkeypatch.setattr(state, "get_or_create_client_id", lambda: install_id)
-    monkeypatch.setattr(emit, "session_id", lambda: session_id)
+    monkeypatch.setattr(state, "session_id", lambda: session_id)
     monkeypatch.setattr(
         track_module.store, "days_since_first_run_bucket", lambda: "7-29"
     )
