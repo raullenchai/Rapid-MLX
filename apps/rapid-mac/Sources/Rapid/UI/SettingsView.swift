@@ -641,7 +641,7 @@ struct SettingsView: View {
         VStack(alignment: .leading, spacing: RapidTheme.Space.xl) {
             SectionHeader(
                 "Privacy",
-                subtitle: "Rapid-MLX is local-first. Prompts, attachments, and model responses never leave your Mac. Anonymous metadata telemetry is on by default; turn it off here or at https://rapidmlx.com/docs/telemetry.",
+                subtitle: "Rapid-MLX is local-first. Prompts, attachments, and model responses never leave your Mac. Anonymous metadata telemetry is on by default; turn it off here, with rapid-mlx telemetry off, or at https://rapidmlx.com/docs/telemetry.",
                 emphasis: .page
             )
 

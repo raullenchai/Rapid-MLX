@@ -35,7 +35,7 @@ default after a one-time in-app acknowledgement notice**. This includes
 installs that turned telemetry off before 0.15.0, which are told about the
 change in that notice. A refusal recorded in 0.15.0 or later is never reversed.
 You can turn telemetry off in Settings → Privacy, with
-`rapid-mlx telemetry disable`, or with the `RAPID_MLX_TELEMETRY=0` or
+`rapid-mlx telemetry off`, or with the `RAPID_MLX_TELEMETRY=0` or
 `DO_NOT_TRACK=1` kill switch. The desktop app and its embedded `rapid-mlx`
 engine use the same consent record and anonymous install ID, so one Mac is not
 counted as two installs. The 0.15.0 engine reports:
@@ -96,7 +96,7 @@ Anonymous telemetry does **not** collect:
 * Tool API keys.
 
 The engine sends only `POST https://us.i.posthog.com/batch/` telemetry
-requests to PostHog Cloud in the United States. Every event disables GeoIP
+requests to PostHog Cloud (US). Every event disables GeoIP
 enrichment and person-profile creation; PostHog receives no IP or location
 property from Rapid-MLX.
 

@@ -64,7 +64,8 @@ open it, and drag **Rapid-MLX Desktop** to Applications.
 
 - **Default-on telemetry.** Starting in 0.15.0, anonymous telemetry is on by
   default after a one-time in-app acknowledgement notice and is toggleable in
-  Settings → Privacy. The app sends its events to `telemetry.rapidmlx.com` (a
+  Settings → Privacy or with `rapid-mlx telemetry off`. The app sends its
+  events to `telemetry.rapidmlx.com` (a
   Cloudflare Worker → R2), while the engine sends its v2 events to PostHog
   Cloud (US). Both use the same local preference and anonymous install ID so
   they never double-count an install. Paths are PII-redacted

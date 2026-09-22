@@ -121,7 +121,7 @@ struct TelemetryNoticeWiringTests {
             "never your IP or a per-person profile; the app's collector keeps only a coarse country code",
             "never sends prompts, responses, file paths, or API key values",
             "Nothing is sent before this notice appears",
-            "rapid-mlx telemetry disable", "RAPID_MLX_TELEMETRY=0", "DO_NOT_TRACK=1",
+            "rapid-mlx telemetry off", "RAPID_MLX_TELEMETRY=0", "DO_NOT_TRACK=1",
             "https://rapidmlx.com/docs/telemetry",
         ] {
             #expect(banner.contains(phrase), "missing disclosure phrase: \(phrase)")
@@ -143,7 +143,7 @@ struct TelemetryNoticeWiringTests {
         let privacy = try Self.source("PRIVACY.md")
         let normalized = privacy.replacingOccurrences(of: "**", with: "")
             .split(whereSeparator: \.isWhitespace).joined(separator: " ")
-        let command = "rapid-mlx telemetry disable"
+        let command = "rapid-mlx telemetry off"
         let processors = ["rapidmlx.com's telemetry service", "PostHog Cloud (US)"]
         for phrase in [
             "Starting in 0.15.0, it is on by default after a one-time in-app acknowledgement notice.",
