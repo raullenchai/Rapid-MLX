@@ -366,6 +366,14 @@ enum ToolUseCapability {
         // safety + tool-edge probes. The mxfp4-q8 quant suffix was the
         // pre-fix sibling miss.
         KnownFamily(prefix: "gpt-oss-", minSizeBillions: 3.0, note: "minimax/harmony parser; cycle-7 safety+tool-edge clean"),
+        // mimo-v2.6 — Xiaomi MiMo-V2.6 Flash (309B-A15B MoE), qwen3_coder_xml
+        // parser. First-hand evidence 2026-09-21 on the M3 Ultra against the
+        // engine's OpenAI surface: a single `get_weather` tool call parsed to
+        // a well-formed `tool_calls` entry with empty content and
+        // finish_reason=tool_calls, plus valid `response_format: json_object`
+        // output. The alias carries no ``\d+b`` token (``v2.6`` is the model
+        // version), so it promotes via the exact allow-list.
+        KnownFamily(prefix: "mimo-v2.6-", minSizeBillions: 3.0, missingSizeAllowList: ["mimo-v2.6-flash-4bit"], note: "qwen3_coder_xml parser; 2026-09-21 M3 Ultra e2e: tool_calls + json_object clean; size-less alias promotes via exact allow-list"),
         // minimax-m2.x — minimax parser, 235B MoE family. Loop verifies
         // the parser path on this family.
         KnownFamily(prefix: "minimax-m", minSizeBillions: 3.0, missingSizeAllowList: ["minimax-m2.5-4bit", "minimax-m2.7-mxfp4"], note: "minimax parser; 235B MoE family; aliases ``minimax-m2.5-4bit`` / ``minimax-m2.7-mxfp4`` have no \\d+b token (the m-version is the model name, not a size) — promote via exact allow-list"),
