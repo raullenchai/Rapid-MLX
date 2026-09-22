@@ -53,12 +53,25 @@ struct TelemetryLifecycleCoordinatorTests {
         #expect(recorder.sessionStarts == 0)
     }
 
+    @Test("A persisted migration policy that defers upload stays dark")
+    func deferredPolicyStaysDark() async {
+        let recorder = Recorder()
+        let coordinator = makeCoordinator(
+            result: .init(persisted: true, uploadAllowedThisRun: false),
+            recorder: recorder
+        )
+
+        await coordinator.start()
+
+        #expect(recorder.policyApplications == 1)
+        #expect(recorder.sessionStarts == 0)
+    }
+
     @Test("Product-value signals still reach the activation reporter seam")
     func productValueReportingRemainsWired() async {
         let recorder = Recorder()
         let coordinator = makeCoordinator(recorder: recorder)
-        coordinator.productValueDelivered(.dictationTranscript)
-        await Task.yield()
+        await coordinator.reportProductValue(.dictationTranscript)
         #expect(recorder.activations == [.dictationTranscript])
         #expect(ProductValueKind.chatReply.telemetryActivationKind == .firstChatReply)
         #expect(ProductValueKind.generatedImage.telemetryActivationKind == .firstImage)

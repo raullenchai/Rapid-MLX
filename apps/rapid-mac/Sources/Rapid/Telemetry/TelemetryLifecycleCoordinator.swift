@@ -53,6 +53,13 @@ final class TelemetryLifecycleCoordinator {
     }
 
     func productValueDelivered(_ kind: ProductValueKind) {
-        Task { await reportActivation(kind) }
+        Task { await reportProductValue(kind) }
+    }
+
+    /// Awaitable seam used by deterministic callers and tests. Product
+    /// surfaces use ``productValueDelivered(_:)`` because their callbacks are
+    /// synchronous, while this method makes completion explicit.
+    func reportProductValue(_ kind: ProductValueKind) async {
+        await reportActivation(kind)
     }
 }
