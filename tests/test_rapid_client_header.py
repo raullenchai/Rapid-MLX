@@ -89,7 +89,7 @@ def telemetry_on(tmp_path, monkeypatch):
     import rapid_mlx.telemetry.emit as emit
     import rapid_mlx.telemetry.state as state
 
-    for name in state.CI_ENV_VARS:
+    for name in (state.ENV_VAR, state.DO_NOT_TRACK_ENV, *state.CI_ENV_VARS):
         monkeypatch.delenv(name, raising=False)
     importlib.reload(state)
     importlib.reload(emit)

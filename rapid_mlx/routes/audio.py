@@ -16,9 +16,18 @@ import wave
 from collections.abc import Callable
 from concurrent.futures import ThreadPoolExecutor
 from contextlib import asynccontextmanager
-from typing import Any
+from typing import Any, cast
 
-from fastapi import APIRouter, Body, Depends, Form, HTTPException, Query, UploadFile
+from fastapi import (
+    APIRouter,
+    Body,
+    Depends,
+    Form,
+    HTTPException,
+    Query,
+    Request,
+    UploadFile,
+)
 from starlette.responses import PlainTextResponse, Response
 
 from ..api.models import AudioMusicRequest, AudioSpeechRequest
@@ -2180,6 +2189,7 @@ async def _run_alignment_request(
 
 @router.post("/v1/audio/transcriptions", dependencies=[Depends(verify_api_key)])
 async def create_transcription(
+    request: Request,
     file: UploadFile,
     # ``model``, ``language``, ``response_format`` are sent as multipart
     # form fields by OpenAI-compatible clients (the official Whisper
@@ -2467,12 +2477,14 @@ async def create_transcription(
         )
 
     from rapid_mlx.telemetry import inference as _telemetry_inference
+    from rapid_mlx.telemetry.model_id import telemetry_model_id
 
+    caller_agent, caller_client = _telemetry_inference.request_caller_headers(request)
     _telemetry_inference.emit_completed_request(
-        model=model or "<custom>",
+        model=telemetry_model_id(_resolve_stt_model(cast(str, model))),
         endpoint="/v1/audio/transcriptions",
-        caller_agent=None,
-        caller_client=None,
+        caller_agent=caller_agent,
+        caller_client=caller_client,
         result="ok",
     )
     return response

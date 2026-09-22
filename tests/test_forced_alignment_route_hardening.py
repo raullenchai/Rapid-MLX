@@ -871,6 +871,7 @@ def test_direct_handler_call_tolerates_unresolved_form_defaults(monkeypatch):
         with pytest.raises(HTTPException) as exc_info:
             asyncio.run(
                 audio_route.create_transcription(
+                    request=None,  # type: ignore[arg-type]
                     file=_UploadLike(_make_tone_wav()),  # type: ignore[arg-type]
                     model_form="definitely-not-a-real-alias",
                     language_form=None,

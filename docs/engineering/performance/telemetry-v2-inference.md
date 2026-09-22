@@ -12,21 +12,29 @@ The database lived under an isolated explicit temporary `HOME`. The
 official-build stamp, consent result, version (`0.15.1`), and Apple Silicon
 platform facts were injected exactly as in the loopback emitter test.
 
-Worker result: `n=500 p50_ms=0.8443 p95_ms=1.2525 max_ms=1.8033`.
+Worker result after the per-process active-day memo was added:
+`n=500 p50_ms=0.5171 p95_ms=0.6275 max_ms=2.0481`.
 
 The response-path benchmark timed 1,000 calls to the public
-`emit_completed_request()` with its real build/consent gate and default-executor
-submission. The worker was replaced with an in-memory completion latch so the
-measurement isolates work that remains on the event loop; the test suite
-separately holds the real SQLite write lock in a second process and requires the
-request-side call to return within 50 ms.
+`emit_completed_request()` while the real dedicated telemetry worker performed
+the corresponding SQLite update. Each iteration timed only the public call,
+then waited outside the timed region for that real worker item to finish before
+starting the next sample. No latch or replacement worker was used. The test
+suite separately holds the real SQLite write lock in a second process and
+requires both the request-side call and an unrelated `asyncio.to_thread()` call
+to return within 50 ms.
 
-On-loop result: `n=1000 p50_us=3.62 p95_us=18.04 max_us=1597.42`. The maximum
-includes executor cold-start; steady-state p50 is 3.62 microseconds. SQLite and
-active-day work are fire-and-forget and cannot delay the response coroutine.
+On-loop result: `n=1000 p50_us=4.29 p95_us=5.50 max_us=8.42`. This is executor
+admission/submission latency with an idle queue between samples; it is not a
+claim that scheduling latency is zero. SQLite, active-day, registry, and
+PostHog work run on a dedicated single-worker thread rather than asyncio's
+shared default executor. At most 64 items may be running or queued; a 65th item
+is dropped immediately, so store contention cannot grow an unbounded queue or
+occupy the server's unrelated `asyncio.to_thread()` workers.
 
-The worker p50 remains below the T8 1 ms budget, while the request coroutine now
-pays only executor submission. Successful emits remain after response
+The worker p50 remains below the T8 1 ms budget, while the request coroutine
+pays the live consent gate plus bounded executor admission and submission.
+Successful emits remain after response
 serialization or the streaming terminal marker; generation errors use the
 separate `failed` counter and client disconnects emit nothing.
 

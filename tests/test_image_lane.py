@@ -738,6 +738,7 @@ def test_route_happy_path_returns_b64(client, monkeypatch):
     _patch_engine(monkeypatch, _FakeImageEngine())
     resp = client.post(
         "/v1/images/generations",
+        headers={"user-agent": "openai-python/1.2", "x-rapid-client": "rapid-desktop"},
         json={"prompt": "a red fox", "size": "512x512", "seed": 42},
     )
     assert resp.status_code == 200
@@ -749,8 +750,8 @@ def test_route_happy_path_returns_b64(client, monkeypatch):
         {
             "model": "<custom>",
             "endpoint": "/v1/images/generations",
-            "caller_agent": None,
-            "caller_client": None,
+            "caller_agent": "openai-python/1.2",
+            "caller_client": "rapid-desktop",
             "result": "ok",
         }
     ]

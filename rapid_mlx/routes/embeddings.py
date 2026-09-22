@@ -7,7 +7,7 @@ import math
 import struct
 import time
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Request
 
 from ..api.models import (
     EmbeddingData,
@@ -27,7 +27,9 @@ router = APIRouter()
     "/v1/embeddings",
     dependencies=[Depends(verify_api_key), Depends(check_rate_limit)],
 )
-async def create_embeddings(request: EmbeddingRequest) -> EmbeddingResponse:
+async def create_embeddings(
+    request: EmbeddingRequest, raw_request: Request
+) -> EmbeddingResponse:
     """Create embeddings for the given input text(s)."""
     from ..embedding import EMBEDDINGS_EXTRA_INSTALL_HINT, EmbeddingInputTooLongError
     from ..server import load_embedding_model
@@ -276,11 +278,14 @@ async def create_embeddings(request: EmbeddingRequest) -> EmbeddingResponse:
         from rapid_mlx.telemetry import inference as _telemetry_inference
         from rapid_mlx.telemetry.model_id import engine_telemetry_id
 
+        caller_agent, caller_client = _telemetry_inference.request_caller_headers(
+            raw_request
+        )
         _telemetry_inference.emit_completed_request(
             model=engine_telemetry_id(cfg.embedding_engine),
             endpoint="/v1/embeddings",
-            caller_agent=None,
-            caller_client=None,
+            caller_agent=caller_agent,
+            caller_client=caller_client,
             result="ok",
         )
         return response

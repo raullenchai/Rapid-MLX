@@ -5494,16 +5494,11 @@ async def _create_chat_completion_impl(
         # impossible to address.
         response_id = _new_stream_request_id()
         # Preserve request attribution for the v2 inference emitter. Thread it
-        # as an explicit keyword so it never leaks into the ``**chat_kwargs``
-        # the engine's ``stream_chat`` receives.
-        _caller_ua = (
-            raw_request.headers.get("user-agent") if raw_request is not None else None
-        )
-        # ``X-Rapid-Client`` is set by every Rapid-owned client.
-        _caller_client = (
-            raw_request.headers.get("x-rapid-client")
-            if raw_request is not None
-            else None
+        # explicitly so it never leaks into the engine's ``**chat_kwargs``.
+        from rapid_mlx.telemetry import inference as _telemetry_inference
+
+        _caller_ua, _caller_client = _telemetry_inference.request_caller_headers(
+            raw_request
         )
         if use_guided and json_schema:
             # Constrained streaming: run guided generation buffered, then
@@ -5834,6 +5829,18 @@ async def _create_chat_completion_impl(
     except HTTPException:
         raise
     except Exception as e:
+        from rapid_mlx.telemetry import inference as _telemetry_inference
+
+        caller_agent, caller_client = _telemetry_inference.request_caller_headers(
+            raw_request
+        )
+        _telemetry_inference.emit_completed_request(
+            model=served_telemetry_id or "<custom>",
+            endpoint="/v1/chat/completions",
+            caller_agent=caller_agent,
+            caller_client=caller_client,
+            result="failed",
+        )
         err_msg = str(e)
         err_type = type(e).__name__
         if isinstance(e, InferenceAbortedError):
@@ -6770,17 +6777,14 @@ async def _create_chat_completion_impl(
     )
     from rapid_mlx.telemetry import inference as _telemetry_inference
 
+    caller_agent, caller_client = _telemetry_inference.request_caller_headers(
+        raw_request
+    )
     _telemetry_inference.emit_completed_request(
         model=served_telemetry_id or "<custom>",
         endpoint="/v1/chat/completions",
-        caller_agent=(
-            raw_request.headers.get("user-agent") if raw_request is not None else None
-        ),
-        caller_client=(
-            raw_request.headers.get("x-rapid-client")
-            if raw_request is not None
-            else None
-        ),
+        caller_agent=caller_agent,
+        caller_client=caller_client,
         result="ok",
     )
 
@@ -8431,6 +8435,15 @@ async def stream_chat_completion_guided(
                         "param": "response_format.json_schema",
                     }
                 }
+                from rapid_mlx.telemetry import inference as _telemetry_inference
+
+                _telemetry_inference.emit_completed_request(
+                    model=served_telemetry_id or "<custom>",
+                    endpoint="/v1/chat/completions",
+                    caller_agent=caller_agent,
+                    caller_client=caller_client,
+                    result="failed",
+                )
                 yield f"data: {json.dumps(_err_envelope)}\n\n"
                 yield "data: [DONE]\n\n"
                 return
@@ -8527,6 +8540,15 @@ async def stream_chat_completion_guided(
                         "param": "response_format.json_schema",
                     }
                 }
+                from rapid_mlx.telemetry import inference as _telemetry_inference
+
+                _telemetry_inference.emit_completed_request(
+                    model=served_telemetry_id or "<custom>",
+                    endpoint="/v1/chat/completions",
+                    caller_agent=caller_agent,
+                    caller_client=caller_client,
+                    result="failed",
+                )
                 yield f"data: {json.dumps(_err_envelope)}\n\n"
                 yield "data: [DONE]\n\n"
                 return
@@ -8621,6 +8643,15 @@ async def stream_chat_completion_guided(
             yield f"data: {usage_chunk.model_dump_json(exclude_none=True)}\n\n"
 
         yield "data: [DONE]\n\n"
+        from rapid_mlx.telemetry import inference as _telemetry_inference
+
+        _telemetry_inference.emit_completed_request(
+            model=served_telemetry_id or "<custom>",
+            endpoint="/v1/chat/completions",
+            caller_agent=caller_agent,
+            caller_client=caller_client,
+            result="ok",
+        )
     finally:
         if cfg.gc_control and gc_was_enabled:
             gc.enable()

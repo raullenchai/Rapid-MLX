@@ -566,7 +566,7 @@ _SCHEMA = {
 _GUIDED_OUTPUT = json.dumps({"label": "red", "items": [{"name": "alpha", "qty": 2}]})
 
 
-def test_streaming_json_schema_routes_through_guided_generation():
+def test_streaming_json_schema_routes_through_guided_generation(monkeypatch):
     """stream=true + json_schema must call generate_with_schema, NOT stream_chat.
 
     The bug class this gates: a refactor that re-wires the stream branch
@@ -576,6 +576,12 @@ def test_streaming_json_schema_routes_through_guided_generation():
     but catastrophic for adversarial / complex schemas.
     """
     engine = _GuidedEngine(guided_text=_GUIDED_OUTPUT)
+    from rapid_mlx.telemetry import inference
+
+    emit_calls: list[dict[str, object]] = []
+    monkeypatch.setattr(
+        inference, "emit_completed_request", lambda **kwargs: emit_calls.append(kwargs)
+    )
     client = _make_client(engine)
 
     payload = {
@@ -636,6 +642,60 @@ def test_streaming_json_schema_routes_through_guided_generation():
     assert saw_role, "first SSE chunk must announce assistant role"
     assert saw_finish, "stream must emit a finish_reason chunk"
     assert "".join(content_parts) == _GUIDED_OUTPUT
+    assert emit_calls == [
+        {
+            "model": "<custom>",
+            "endpoint": "/v1/chat/completions",
+            "caller_agent": "testclient",
+            "caller_client": None,
+            "result": "ok",
+        }
+    ]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("failure_kind", ["guided_exception", "strict_violation"])
+async def test_guided_strict_failures_emit_failed(monkeypatch, failure_kind):
+    from rapid_mlx.telemetry import inference
+
+    engine = _GuidedEngine(
+        guided_text='{"label": 7}',
+        raise_in_guided=failure_kind == "guided_exception",
+    )
+    request = ChatCompletionRequest(
+        model="test-model",
+        stream=True,
+        messages=[{"role": "user", "content": "emit json"}],
+    )
+    emit_calls: list[dict[str, object]] = []
+    monkeypatch.setattr(
+        inference, "emit_completed_request", lambda **kwargs: emit_calls.append(kwargs)
+    )
+
+    events = [
+        event
+        async for event in stream_chat_completion_guided(
+            engine,
+            request.messages,
+            request,
+            _SCHEMA,
+            strict_mode=True,
+            caller_agent="openai-python/1.2",
+            caller_client="rapid-cli-chat",
+            served_telemetry_id="resolved/model",
+        )
+    ]
+
+    assert any("strict_schema_violation" in event for event in events)
+    assert emit_calls == [
+        {
+            "model": "resolved/model",
+            "endpoint": "/v1/chat/completions",
+            "caller_agent": "openai-python/1.2",
+            "caller_client": "rapid-cli-chat",
+            "result": "failed",
+        }
+    ]
 
 
 def test_mllm_streaming_schema_stays_on_scheduler_with_request_processor(

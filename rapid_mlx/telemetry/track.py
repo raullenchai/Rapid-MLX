@@ -35,6 +35,8 @@ _app_opened_attempted = False
 _cohort_lock = threading.Lock()
 _cohort_day: date | None = None
 _cohort_bucket: str | None = None
+_active_day_lock = threading.Lock()
+_active_day_claimed_day: date | None = None
 
 
 def _set_surface(surface: str) -> None:
@@ -188,16 +190,25 @@ def emit_active_day(*, _store: _ActiveDayStore = store) -> None:
     Claim-first ordering is deliberate: if capture is refused after the claim,
     that day's event is lost rather than duplicated.
     """
+    global _active_day_claimed_day
     try:
-        if _upload_allowed() and _store.claim_active_day() is True:
-            track("active_day", {})
+        if not _upload_allowed():
+            return
+        today = _utc_day()
+        with _active_day_lock:
+            if _active_day_claimed_day == today:
+                return
+            if _store.claim_active_day() is not True:
+                return
+            _active_day_claimed_day = today
+        track("active_day", {})
     except Exception:
         return
 
 
 def _reset_for_tests() -> None:
     """Clear process memoization and lifecycle latches."""
-    global _app_opened_attempted, _cohort_bucket, _cohort_day
+    global _active_day_claimed_day, _app_opened_attempted, _cohort_bucket, _cohort_day
     global _context, _context_resolved, _surface
     with _context_lock:
         _context = None
@@ -207,3 +218,5 @@ def _reset_for_tests() -> None:
     with _cohort_lock:
         _cohort_day = None
         _cohort_bucket = None
+    with _active_day_lock:
+        _active_day_claimed_day = None

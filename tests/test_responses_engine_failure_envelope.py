@@ -249,6 +249,12 @@ class _FailingEngine:
         )
 
 
+class _RaisingStreamEngine(_FailingEngine):
+    async def stream_chat(self, messages, **kwargs):
+        raise RuntimeError("stream engine exploded")
+        yield  # establishes async-generator shape
+
+
 class _HealthyEngine:
     """Control engine — produces actual output so the failure guard
     is proven to be narrow (only fires on degenerate outputs)."""
@@ -529,6 +535,32 @@ class _ContentThenReasoningThenToolEngine:
                     "arguments": '{"cmd":"apply_patch <<PATCH\\nPATCH"}',
                 }
             ],
+        )
+
+
+class _ContentThenLateReasoningEngine:
+    preserve_native_tool_format = False
+
+    def __init__(self):
+        self.tokenizer = _Tokenizer()
+
+    async def stream_chat(self, messages, **kwargs):
+        yield _GenerationOutput(
+            text="public answer",
+            new_text="public answer",
+            prompt_tokens=7,
+            completion_tokens=2,
+            finish_reason=None,
+            finished=False,
+            channel="content",
+        )
+        yield _GenerationOutput(
+            text="late private thought",
+            new_text="late private thought",
+            completion_tokens=5,
+            finish_reason="stop",
+            finished=True,
+            channel="reasoning",
         )
 
 
@@ -872,6 +904,13 @@ def healthy_client(monkeypatch):
 
 
 @pytest.fixture
+def raising_stream_client(monkeypatch):
+    holder = _build_client(monkeypatch, _RaisingStreamEngine)
+    yield holder
+    holder.cleanup()
+
+
+@pytest.fixture
 def immediate_stop_client(monkeypatch):
     holder = _build_client(monkeypatch, _ImmediateStopEngine)
     yield holder
@@ -935,6 +974,13 @@ def content_then_reasoning_then_tool_client(monkeypatch):
     cfg = get_config()
     cfg.model_name = "deepseek-v4-flash-0731"
     cfg.tool_call_parser = "deepseek_v4_0731"
+    yield holder
+    holder.cleanup()
+
+
+@pytest.fixture
+def content_then_late_reasoning_client(monkeypatch):
+    holder = _build_client(monkeypatch, _ContentThenLateReasoningEngine)
     yield holder
     holder.cleanup()
 
@@ -1157,10 +1203,72 @@ class TestResponsesNonStreamFailureEnvelope:
 
 
 class TestResponsesStreamFailureEnvelope:
-    def test_stream_emits_response_failed_on_engine_no_output(self, failing_client):
+    def test_late_reasoning_failure_emits_failed_count(
+        self, content_then_late_reasoning_client, monkeypatch
+    ):
+        from rapid_mlx.telemetry import inference
+
+        emit_calls: list[dict[str, object]] = []
+        monkeypatch.setattr(
+            inference,
+            "emit_completed_request",
+            lambda **kwargs: emit_calls.append(kwargs),
+        )
+
+        with content_then_late_reasoning_client.client.stream(
+            "POST",
+            "/v1/responses",
+            json={**PAYLOAD, "stream": True},
+            headers=HEADERS,
+        ) as response:
+            events = _parse_sse("".join(response.iter_text()))
+
+        failed = [data for name, data in events if name == "response.failed"]
+        assert failed[0]["response"]["error"]["code"] == (
+            "invalid_reasoning_event_order"
+        )
+        assert len(emit_calls) == 1
+        assert emit_calls[0]["result"] == "failed"
+
+    def test_stream_engine_exception_emits_one_failed_count(
+        self, raising_stream_client, monkeypatch
+    ):
+        from rapid_mlx.telemetry import inference
+
+        emit_calls: list[dict[str, object]] = []
+        monkeypatch.setattr(
+            inference,
+            "emit_completed_request",
+            lambda **kwargs: emit_calls.append(kwargs),
+        )
+
+        with raising_stream_client.client.stream(
+            "POST",
+            "/v1/responses",
+            json={**PAYLOAD, "stream": True},
+            headers=HEADERS,
+        ) as response:
+            body = "".join(response.iter_text())
+
+        failed = [name for name, _ in _parse_sse(body) if name == "response.failed"]
+        assert failed == ["response.failed"]
+        assert len(emit_calls) == 1
+        assert emit_calls[0]["result"] == "failed"
+
+    def test_stream_emits_response_failed_on_engine_no_output(
+        self, failing_client, monkeypatch
+    ):
         """When the stream produces no text deltas AND zero completion
         tokens, the terminal event must be ``response.failed`` (not
         ``response.completed`` with ``status="completed"``)."""
+        from rapid_mlx.telemetry import inference
+
+        emit_calls: list[dict[str, object]] = []
+        monkeypatch.setattr(
+            inference,
+            "emit_completed_request",
+            lambda **kwargs: emit_calls.append(kwargs),
+        )
         with failing_client.client.stream(
             "POST",
             "/v1/responses",
@@ -1178,6 +1286,9 @@ class TestResponsesStreamFailureEnvelope:
             f"response.completed AND response.failed both emitted — "
             f"the terminal event must be the failure shape. Events: {names}"
         )
+        assert len(emit_calls) == 1
+        assert emit_calls[0]["endpoint"] == "/v1/responses"
+        assert emit_calls[0]["result"] == "failed"
 
     def test_stream_failed_event_carries_error_block(self, failing_client):
         """``response.failed`` payload must echo the same ``{code,
@@ -1279,7 +1390,7 @@ class TestResponsesStreamFailureEnvelope:
         assert failed["response"]["error"]["code"] == "model_no_final_answer"
 
     def test_reasoning_only_stop_stream_emits_response_failed(
-        self, reasoning_only_stop_client
+        self, reasoning_only_stop_client, monkeypatch
     ):
         """GPT-OSS/Harmony can stop after analysis without a final channel.
 
@@ -1288,6 +1399,14 @@ class TestResponsesStreamFailureEnvelope:
         have no final answer to consume. It is also not the immediate EOS
         case above: reasoning bytes and completion tokens were produced.
         """
+        from rapid_mlx.telemetry import inference
+
+        emit_calls: list[dict[str, object]] = []
+        monkeypatch.setattr(
+            inference,
+            "emit_completed_request",
+            lambda **kwargs: emit_calls.append(kwargs),
+        )
         with reasoning_only_stop_client.client.stream(
             "POST",
             "/v1/responses",
@@ -1313,6 +1432,9 @@ class TestResponsesStreamFailureEnvelope:
         assert envelope["output"][0]["summary"][0]["text"] == (
             "I should answer, but I never reach final."
         )
+        assert len(emit_calls) == 1
+        assert emit_calls[0]["endpoint"] == "/v1/responses"
+        assert emit_calls[0]["result"] == "failed"
 
     def test_reasoning_then_whitespace_stop_stream_emits_response_failed(
         self, reasoning_then_whitespace_stop_client

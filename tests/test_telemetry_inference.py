@@ -19,8 +19,23 @@ from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
+from starlette.requests import Request
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
+
+
+def _request(
+    user_agent: str = "openai-python/1.2", client: str = "rapid-cli-chat"
+) -> Request:
+    return Request(
+        {
+            "type": "http",
+            "headers": [
+                (b"user-agent", user_agent.encode()),
+                (b"x-rapid-client", client.encode()),
+            ],
+        }
+    )
 
 
 def _hold_telemetry_store_lock(home: str, ready, release) -> None:
@@ -185,6 +200,14 @@ async def test_locked_store_never_blocks_request_coroutine(monkeypatch, tmp_path
     elapsed = time.perf_counter() - started
     assert elapsed < 0.050, f"request-path telemetry took {elapsed * 1000:.2f} ms"
 
+    default_started = time.perf_counter()
+    await asyncio.to_thread(lambda: None)
+    default_elapsed = time.perf_counter() - default_started
+    assert default_elapsed < 0.050, (
+        "telemetry occupied the loop default executor for "
+        f"{default_elapsed * 1000:.2f} ms"
+    )
+
     release.set()
     loop = asyncio.get_running_loop()
     assert await loop.run_in_executor(None, worker_finished.wait, 5)
@@ -192,15 +215,15 @@ async def test_locked_store_never_blocks_request_coroutine(monkeypatch, tmp_path
     assert process.exitcode == 0
 
 
-def test_executor_submission_failure_never_escapes(monkeypatch):
+def test_executor_is_dedicated_and_submission_failure_never_escapes(monkeypatch):
     from rapid_mlx.telemetry import inference
 
-    class BrokenLoop:
-        def run_in_executor(self, *_args, **_kwargs):
+    class BrokenExecutor:
+        def submit(self, *_args, **_kwargs):
             raise RuntimeError("executor unavailable")
 
     monkeypatch.setattr(inference.track_module, "_upload_allowed", lambda: True)
-    monkeypatch.setattr(inference.asyncio, "get_running_loop", lambda: BrokenLoop())
+    monkeypatch.setattr(inference, "_EXECUTOR", BrokenExecutor())
 
     assert (
         inference.emit_completed_request(
@@ -212,6 +235,114 @@ def test_executor_submission_failure_never_escapes(monkeypatch):
         )
         is None
     )
+
+
+@pytest.mark.parametrize("emitter", ["completed", "capability"])
+def test_public_emitter_gate_failure_never_escapes(monkeypatch, emitter):
+    from rapid_mlx.telemetry import inference
+
+    monkeypatch.setattr(
+        inference.track_module,
+        "_upload_allowed",
+        lambda: (_ for _ in ()).throw(RuntimeError("gate failed")),
+    )
+
+    if emitter == "completed":
+        inference.emit_completed_request(
+            model="<custom>",
+            endpoint="/v1/chat/completions",
+            caller_agent=None,
+            caller_client=None,
+            result="ok",
+        )
+    else:
+        inference.emit_capability_rejected("multi_sample_unsupported")
+
+
+def test_request_caller_headers_is_total():
+    from rapid_mlx.telemetry.inference import request_caller_headers
+
+    class HostileRequest:
+        @property
+        def headers(self):
+            raise RuntimeError("bad request object")
+
+    assert request_caller_headers(None) == (None, None)
+    assert request_caller_headers(HostileRequest()) == (None, None)
+
+
+def test_worker_overflow_drops_without_blocking(monkeypatch):
+    from rapid_mlx.telemetry import inference
+
+    executor = inference.ThreadPoolExecutor(
+        max_workers=1, thread_name_prefix="rapid-mlx-telemetry-test"
+    )
+    semaphore = threading.BoundedSemaphore(inference._MAX_INFLIGHT)
+    release = threading.Event()
+    started = threading.Event()
+
+    def blocked() -> None:
+        started.set()
+        release.wait(5)
+
+    monkeypatch.setattr(inference, "_EXECUTOR", executor)
+    monkeypatch.setattr(inference, "_INFLIGHT", semaphore)
+    try:
+        assert inference._submit(blocked)
+        assert started.wait(1)
+        for _ in range(inference._MAX_INFLIGHT - 1):
+            assert inference._submit(blocked)
+        before = time.perf_counter()
+        assert inference._submit(blocked) is False
+        assert time.perf_counter() - before < 0.050
+    finally:
+        release.set()
+        executor.shutdown(wait=True)
+
+
+def test_asyncio_run_does_not_drain_saturated_telemetry_lane(monkeypatch, tmp_path):
+    from rapid_mlx.telemetry import inference
+
+    monkeypatch.setattr(inference.track_module, "_upload_allowed", lambda: True)
+    executor = inference.ThreadPoolExecutor(
+        max_workers=1, thread_name_prefix="rapid-mlx-telemetry-shutdown-test"
+    )
+    monkeypatch.setattr(inference, "_EXECUTOR", executor)
+    monkeypatch.setattr(
+        inference,
+        "_INFLIGHT",
+        threading.BoundedSemaphore(inference._MAX_INFLIGHT),
+    )
+    context = multiprocessing.get_context("spawn")
+    ready = context.Event()
+    release = context.Event()
+    process = context.Process(
+        target=_hold_telemetry_store_lock,
+        args=(str(tmp_path), ready, release),
+    )
+    process.start()
+    assert ready.wait(5), "lock-holder process did not acquire SQLite write lock"
+
+    async def enqueue() -> None:
+        for _ in range(200):
+            inference.emit_completed_request(
+                model="<custom>",
+                endpoint="/v1/chat/completions",
+                caller_agent=None,
+                caller_client=None,
+                result="ok",
+            )
+
+    try:
+        started = time.perf_counter()
+        asyncio.run(enqueue())
+        elapsed = time.perf_counter() - started
+        assert elapsed < 3.0, f"asyncio.run drained telemetry for {elapsed:.2f}s"
+    finally:
+        release.set()
+        process.join(timeout=5)
+        executor.shutdown(wait=True)
+    assert process.exitcode == 0
 
 
 @pytest.mark.asyncio
@@ -269,6 +400,33 @@ async def test_midstream_generation_error_records_failed_without_active_day(
     ]
 
 
+@pytest.mark.asyncio
+async def test_stream_cancellation_does_not_record_failed(monkeypatch):
+    from rapid_mlx.telemetry import inference
+
+    calls: list[dict[str, object]] = []
+    monkeypatch.setattr(
+        inference, "emit_completed_request", lambda **kwargs: calls.append(kwargs)
+    )
+
+    async def cancelled_stream():
+        yield "first-token"
+        raise asyncio.CancelledError
+
+    guarded = inference.emit_failed_on_stream_error(
+        cancelled_stream(),
+        model="<custom>",
+        endpoint="/v1/chat/completions",
+        caller_agent=None,
+        caller_client=None,
+    )
+    with pytest.raises(asyncio.CancelledError):
+        async for _ in guarded:
+            pass
+
+    assert calls == []
+
+
 @pytest.mark.parametrize("failure", ["record", "track", "active_day"])
 def test_completed_inference_never_raises(monkeypatch, failure):
     from rapid_mlx.telemetry import inference
@@ -308,14 +466,23 @@ def test_capability_rejected_requires_closed_model_type_and_never_raises(monkeyp
         "track",
         lambda event, props: calls.append((event, dict(props))),
     )
-    inference.emit_capability_rejected("mcp_unsupported")
-    inference.emit_capability_rejected(
-        "logprobs_unsupported", model_type=inference.model_type_token(object())
+    inference._record_capability_rejected(
+        capability="mcp_unsupported", model_type="other"
     )
-    inference.emit_capability_rejected("mcp_unsupported", model_type="private-type")
-    inference.emit_capability_rejected("private_capability_name")
+    inference._record_capability_rejected(
+        capability="logprobs_unsupported",
+        model_type=inference.model_type_token(object()),
+    )
+    inference._record_capability_rejected(
+        capability="mcp_unsupported", model_type="private-type"
+    )
+    inference._record_capability_rejected(
+        capability="private_capability_name", model_type="other"
+    )
     monkeypatch.setattr(inference.track_module, "track", lambda *_a, **_k: 1 / 0)
-    inference.emit_capability_rejected("mcp_unsupported")
+    inference._record_capability_rejected(
+        capability="mcp_unsupported", model_type="other"
+    )
 
     assert calls == [
         (
@@ -331,6 +498,39 @@ def test_capability_rejected_requires_closed_model_type_and_never_raises(monkeyp
             {"capability": "mcp_unsupported", "model_type": "other"},
         ),
     ]
+
+
+@pytest.mark.asyncio
+async def test_capability_rejection_never_blocks_loop_default_executor(monkeypatch):
+    from rapid_mlx.telemetry import inference
+
+    entered = threading.Event()
+    release = threading.Event()
+    executor = inference.ThreadPoolExecutor(
+        max_workers=1, thread_name_prefix="rapid-mlx-telemetry-capability-test"
+    )
+    monkeypatch.setattr(inference, "_EXECUTOR", executor)
+    monkeypatch.setattr(
+        inference,
+        "_INFLIGHT",
+        threading.BoundedSemaphore(inference._MAX_INFLIGHT),
+    )
+    monkeypatch.setattr(inference.track_module, "_upload_allowed", lambda: True)
+
+    def blocked_track(*_args, **_kwargs):
+        entered.set()
+        release.wait(5)
+
+    monkeypatch.setattr(inference.track_module, "track", blocked_track)
+    try:
+        inference.emit_capability_rejected("multi_sample_unsupported")
+        assert entered.wait(1)
+        started = time.perf_counter()
+        await asyncio.to_thread(lambda: None)
+        assert time.perf_counter() - started < 0.050
+    finally:
+        release.set()
+        executor.shutdown(wait=True)
 
 
 @pytest.mark.parametrize(
@@ -399,6 +599,282 @@ async def test_legacy_completion_multi_sample_rejection_emits_capability(monkeyp
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("fields", "capability"),
+    [
+        ({"best_of": 2}, "multi_sample_unsupported"),
+        ({"echo": True, "logprobs": 1}, "logprobs_unsupported"),
+    ],
+)
+async def test_legacy_completion_early_rejections_emit_capability(
+    monkeypatch, fields, capability
+):
+    from fastapi import HTTPException
+
+    from rapid_mlx.api.models import CompletionRequest
+    from rapid_mlx.routes import completions
+    from rapid_mlx.telemetry import inference
+
+    calls: list[tuple[str, str]] = []
+    monkeypatch.setattr(completions, "_validate_model_name", lambda _model: None)
+    monkeypatch.setattr(
+        inference,
+        "emit_capability_rejected",
+        lambda value, *, model_type="other": calls.append((value, model_type)),
+    )
+    values = {"model": "ignored", "prompt": "hello", "suffix": None, "n": 1}
+    values.update(fields)
+    request = CompletionRequest.model_construct(**values)
+
+    with pytest.raises(HTTPException):
+        await completions.create_completion(request, _request())
+
+    assert calls == [(capability, "other")]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("fields", "capability"),
+    [
+        ({"suffix": "tail"}, "fim_suffix_unsupported"),
+        (
+            {"response_format": {"type": "json_schema"}, "logprobs": None},
+            "structured_output_unsupported",
+        ),
+    ],
+)
+async def test_legacy_completion_format_rejections_emit_capability(
+    monkeypatch, fields, capability
+):
+    from fastapi import HTTPException
+
+    from rapid_mlx.api.models import CompletionRequest
+    from rapid_mlx.routes import completions
+    from rapid_mlx.telemetry import inference
+
+    calls: list[tuple[str, str]] = []
+    monkeypatch.setattr(completions, "_validate_model_name", lambda _model: None)
+    monkeypatch.setattr(
+        inference,
+        "emit_capability_rejected",
+        lambda value, *, model_type="other": calls.append((value, model_type)),
+    )
+    values = {
+        "model": "ignored",
+        "prompt": "hello",
+        "suffix": None,
+        "n": 1,
+        "best_of": 1,
+        "echo": False,
+    }
+    values.update(fields)
+    request = CompletionRequest.model_construct(**values)
+
+    with pytest.raises(HTTPException):
+        await completions.create_completion(request, _request())
+
+    assert calls == [(capability, "other")]
+
+
+@pytest.mark.asyncio
+async def test_legacy_completion_engine_logprobs_rejection_emits_capability(
+    monkeypatch,
+):
+    from fastapi import HTTPException
+
+    from rapid_mlx.api.models import CompletionRequest
+    from rapid_mlx.routes import completions
+    from rapid_mlx.telemetry import inference
+
+    engine = SimpleNamespace()
+    calls: list[tuple[str, str]] = []
+    monkeypatch.setattr(completions, "_validate_model_name", lambda _model: None)
+    monkeypatch.setattr(completions, "get_engine", lambda _model: engine)
+
+    async def ready(_engine):
+        return None
+
+    monkeypatch.setattr(completions, "ensure_engine_ready", ready)
+    monkeypatch.setattr(completions, "_check_admission_or_503", lambda _engine: None)
+    monkeypatch.setattr(
+        completions, "enforce_context_length_for_prompt", lambda *_a, **_k: None
+    )
+    monkeypatch.setattr(completions, "_resolve_max_tokens", lambda *_a: 8)
+    monkeypatch.setattr(
+        completions, "_engine_supports_completion_logprobs", lambda _engine: False
+    )
+    monkeypatch.setattr(
+        completions, "_release_admission_unless_committed", lambda *_a, **_k: None
+    )
+    monkeypatch.setattr(
+        inference,
+        "emit_capability_rejected",
+        lambda value, *, model_type="other": calls.append((value, model_type)),
+    )
+    request = CompletionRequest.model_construct(
+        model="ignored",
+        prompt="hello",
+        suffix=None,
+        n=1,
+        best_of=1,
+        echo=False,
+        logprobs=1,
+        stream=False,
+        max_tokens=8,
+        temperature=0.0,
+    )
+
+    with pytest.raises(HTTPException, match="does not expose"):
+        await completions.create_completion(request, _request())
+
+    assert calls == [("logprobs_unsupported", "llm")]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("case", ["missing_model", "wrong_model"])
+async def test_embedding_configuration_rejections_emit_capability(monkeypatch, case):
+    from fastapi import HTTPException
+
+    from rapid_mlx.api.models import EmbeddingRequest
+    from rapid_mlx.routes import embeddings
+    from rapid_mlx.telemetry import inference
+
+    fake_embedding = types.ModuleType("rapid_mlx.embedding")
+    fake_embedding.EMBEDDINGS_EXTRA_INSTALL_HINT = "install embeddings"
+    fake_embedding.EmbeddingInputTooLongError = RuntimeError
+    monkeypatch.setitem(sys.modules, "rapid_mlx.embedding", fake_embedding)
+    cfg = SimpleNamespace(
+        embedding_engine=object(),
+        embedding_model_locked=None if case == "missing_model" else "resolved/model",
+    )
+    monkeypatch.setattr(embeddings, "get_config", lambda: cfg)
+    if case == "wrong_model":
+        monkeypatch.setattr(
+            "rapid_mlx.service.helpers._resolve_request_alias_or_default",
+            lambda *_a, **_k: None,
+        )
+    calls: list[tuple[str, str]] = []
+    monkeypatch.setattr(
+        inference,
+        "emit_capability_rejected",
+        lambda value, *, model_type="other": calls.append((value, model_type)),
+    )
+
+    with pytest.raises(HTTPException):
+        await embeddings.create_embeddings(
+            EmbeddingRequest(model="wrong", input="hello"), _request()
+        )
+
+    expected_type = "other" if case == "missing_model" else "embedding"
+    assert calls == [("embeddings_unavailable", expected_type)]
+
+
+@pytest.mark.parametrize(
+    ("helper", "args"),
+    [
+        ("_reject_non_whisper_for_translation", ("org/parakeet",)),
+        ("_reject_word_timestamps_for_non_whisper", ("org/parakeet", ["word"])),
+    ],
+)
+def test_audio_capability_helpers_emit_before_http_error(monkeypatch, helper, args):
+    from fastapi import HTTPException
+
+    from rapid_mlx.routes import audio
+    from rapid_mlx.telemetry import inference
+
+    calls: list[tuple[str, str]] = []
+    monkeypatch.setattr(
+        inference,
+        "emit_capability_rejected",
+        lambda value, *, model_type="other": calls.append((value, model_type)),
+    )
+
+    with pytest.raises(HTTPException):
+        getattr(audio, helper)(*args)
+
+    assert calls == [("speech_capability_unsupported", "audio")]
+
+
+def test_audio_word_timestamp_guard_ignores_empty_model():
+    """Keep the pre-resolution empty-model path free of false capability events."""
+    from rapid_mlx.routes import audio
+
+    assert audio._reject_word_timestamps_for_non_whisper("", ["word"]) is None
+
+
+@pytest.mark.asyncio
+async def test_audio_alignment_wrong_model_emits_before_http_error(monkeypatch):
+    from fastapi import HTTPException
+
+    from rapid_mlx.routes import audio
+    from rapid_mlx.telemetry import inference
+
+    calls: list[tuple[str, str]] = []
+    monkeypatch.setattr(audio, "_resolve_stt_model", lambda _model: "resolved/asr")
+    monkeypatch.setattr(audio, "_is_aligner_model", lambda _model: False)
+    monkeypatch.setattr(
+        inference,
+        "emit_capability_rejected",
+        lambda value, *, model_type="other": calls.append((value, model_type)),
+    )
+
+    with pytest.raises(HTTPException):
+        await audio._run_alignment_request(
+            object(), "asr", "known transcript", None, "json"
+        )
+
+    assert calls == [("speech_capability_unsupported", "audio")]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("case", ["voice_seed", "clone", "qwen_base"])
+async def test_audio_speech_capability_rejections_emit(monkeypatch, case):
+    from fastapi import HTTPException
+
+    from rapid_mlx.api.models import AudioSpeechRequest
+    from rapid_mlx.audio import probe
+    from rapid_mlx.routes import audio
+    from rapid_mlx.telemetry import inference
+
+    fake_tts = types.ModuleType("rapid_mlx.audio.tts")
+    fake_tts.UnsupportedAudioFormatError = RuntimeError
+    fake_tts.is_indextts_model = lambda _model: False
+    fake_tts.is_kokoro_family_model = lambda _model: False
+    fake_tts.is_qwen3_voicedesign_model = lambda _model: False
+    monkeypatch.setitem(sys.modules, "rapid_mlx.audio.tts", fake_tts)
+    monkeypatch.setattr(probe, "require_mlx_audio_tts", lambda: None)
+    monkeypatch.setattr(probe, "require_kokoro_runtime", lambda: None)
+    resolved = "org/Qwen3-TTS-0.6B-Base" if case == "qwen_base" else "org/kokoro"
+    monkeypatch.setattr(audio, "_resolve_tts_model", lambda _model: resolved)
+    monkeypatch.setattr(audio, "_is_clone_capable_model", lambda _model: False)
+    calls: list[tuple[str, str]] = []
+    monkeypatch.setattr(
+        inference,
+        "emit_capability_rejected",
+        lambda value, *, model_type="other": calls.append((value, model_type)),
+    )
+    request = AudioSpeechRequest.model_construct(
+        model="model",
+        input="hello",
+        voice="default",
+        speed=1.0,
+        response_format="wav",
+        sample_rate=None,
+        channels=None,
+        instructions=None,
+        voice_seed=1 if case == "voice_seed" else None,
+        ref_audio="data:audio/wav;base64,AA==" if case == "clone" else None,
+        ref_text="hello" if case == "clone" else None,
+        exaggeration=None,
+    )
+
+    with pytest.raises(HTTPException):
+        await audio.create_speech(request)
+
+    assert calls == [("speech_capability_unsupported", "audio")]
+
+
+@pytest.mark.asyncio
 async def test_embedding_runtime_rejection_emits_capability(monkeypatch):
     from fastapi import HTTPException
 
@@ -437,7 +913,7 @@ async def test_embedding_runtime_rejection_emits_capability(monkeypatch):
 
     with pytest.raises(HTTPException) as exc_info:
         await embeddings.create_embeddings(
-            EmbeddingRequest(model="default", input="hello")
+            EmbeddingRequest(model="default", input="hello"), _request()
         )
 
     assert exc_info.value.status_code == 503
@@ -479,7 +955,7 @@ async def test_embedding_success_emits_completed_request(monkeypatch):
     )
 
     response = await embeddings.create_embeddings(
-        EmbeddingRequest(model="default", input="hello")
+        EmbeddingRequest(model="default", input="hello"), _request()
     )
 
     assert len(response.data) == 1
@@ -487,8 +963,8 @@ async def test_embedding_success_emits_completed_request(monkeypatch):
         {
             "model": "<custom>",
             "endpoint": "/v1/embeddings",
-            "caller_agent": None,
-            "caller_client": None,
+            "caller_agent": "openai-python/1.2",
+            "caller_client": "rapid-cli-chat",
             "result": "ok",
         }
     ]
@@ -610,6 +1086,7 @@ async def test_audio_transcription_success_emits_completed_request(monkeypatch):
     )
 
     result = await audio.create_transcription(
+        request=_request(),
         file=object(),
         model_form="whisper-large-v3",
         language_form=None,
@@ -629,10 +1106,10 @@ async def test_audio_transcription_success_emits_completed_request(monkeypatch):
     assert result is response
     assert calls == [
         {
-            "model": "whisper-large-v3",
+            "model": "<custom>",
             "endpoint": "/v1/audio/transcriptions",
-            "caller_agent": None,
-            "caller_client": None,
+            "caller_agent": "openai-python/1.2",
+            "caller_client": "rapid-cli-chat",
             "result": "ok",
         }
     ]
@@ -660,8 +1137,9 @@ async def test_audio_alignment_success_emits_completed_request(monkeypatch):
     )
 
     result = await audio.create_transcription(
+        request=_request(),
         file=object(),
-        model_form="qwen3-forced-aligner-0.6b",
+        model_form="qwen3-forced-aligner",
         language_form="en",
         response_format_form="json",
         text_form="known transcript",
@@ -814,20 +1292,20 @@ def test_additional_endpoint_has_completed_request_emit(relative_path, endpoint)
 
 
 @pytest.mark.parametrize(
-    "relative_path",
+    ("relative_path", "failed_count"),
     [
-        "rapid_mlx/routes/chat.py",
-        "rapid_mlx/routes/completions.py",
-        "rapid_mlx/routes/anthropic.py",
+        ("rapid_mlx/routes/chat.py", 3),
+        ("rapid_mlx/routes/completions.py", 1),
+        ("rapid_mlx/routes/anthropic.py", 1),
     ],
 )
-def test_each_v1_terminal_site_has_exactly_one_adjacent_v2_emit(relative_path):
+def test_each_v1_terminal_site_has_adjacent_v2_emit(relative_path, failed_count):
     source = (REPO_ROOT / relative_path).read_text(encoding="utf-8")
     v1 = "_telemetry_emit.request("
     v2 = "_telemetry_inference.emit_completed_request("
     assert source.count(v1) == 2
     assert source.count('result="ok"') >= 2
-    assert source.count('result="failed"') == 1
+    assert source.count('result="failed"') == failed_count
     assert source.count("emit_failed_on_stream_error(") == 1
     cursor = 0
     for _ in range(2):

@@ -2780,6 +2780,7 @@ async def _stream_responses(
     created_at = created_at_override or int(time.time())
     start_time = time.perf_counter()
     served_model = cfg.model_name or responses_request.model
+    telemetry_failure_emitted = [False]
 
     # R10-C3: openai-python event models mark ``sequence_number`` as
     # required on every Responses-API event. Monotonic counter starting
@@ -2793,6 +2794,20 @@ async def _stream_responses(
         data["sequence_number"] = _seq[0]
         _seq[0] += 1
         return _sse(event, data)
+
+    def _record_failed() -> None:
+        if telemetry_failure_emitted[0]:
+            return
+        telemetry_failure_emitted[0] = True
+        from rapid_mlx.telemetry import inference as _telemetry_inference
+
+        _telemetry_inference.emit_completed_request(
+            model=served_telemetry_id or "<custom>",
+            endpoint="/v1/responses",
+            caller_agent=caller_agent,
+            caller_client=caller_client,
+            result="failed",
+        )
 
     # response.created — Codex needs this before any deltas.
     # R10-C3: include the same top-level fields the non-streaming response
@@ -3531,7 +3546,17 @@ async def _stream_responses(
                 },
             )
 
-        async for output in engine.stream_chat(messages=messages, **chat_kwargs):
+        from rapid_mlx.telemetry import inference as _telemetry_inference
+
+        engine_stream = _telemetry_inference.emit_failed_on_stream_error(
+            engine.stream_chat(messages=messages, **chat_kwargs),
+            model=served_telemetry_id or "<custom>",
+            endpoint="/v1/responses",
+            caller_agent=caller_agent,
+            caller_client=caller_client,
+            failure_latch=telemetry_failure_emitted,
+        )
+        async for output in engine_stream:
             delta_text = output.new_text
             # Accumulate the RAW model output (pre-filter, pre-router) so the
             # post-loop tool_call parser can see `<tool_call>...</tool_call>`
@@ -4124,6 +4149,7 @@ async def _stream_responses(
                     "tool_choice_unfulfilled",
                 )
                 err_msg = str(err_detail)
+            _record_failed()
             yield _emit(
                 "response.failed",
                 {
@@ -4542,6 +4568,7 @@ async def _stream_responses(
                 if isinstance(part, dict)
             )
         if reasoning_item_finalized and emitted_reasoning != accumulated_reasoning_text:
+            _record_failed()
             yield _emit(
                 "response.failed",
                 {
@@ -4586,6 +4613,7 @@ async def _stream_responses(
                 error_code,
                 completion_tokens,
             )
+            _record_failed()
             yield _emit(
                 "response.failed",
                 {
@@ -4897,6 +4925,7 @@ async def _stream_responses(
                 "(accumulated_text empty, no tool_calls, completion_tokens=0); "
                 "surfacing as response.failed"
             )
+            _record_failed()
             yield _emit(
                 "response.failed",
                 {
@@ -4992,6 +5021,7 @@ async def _stream_responses(
         # a half-stream-then-EOF; matches how the OpenAI cloud
         # Responses API closes errored streams.
         logger.exception("Responses stream failed: %s", e)
+        _record_failed()
         yield _emit(
             "response.failed",
             {

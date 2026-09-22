@@ -3,8 +3,9 @@
 
 from __future__ import annotations
 
-import asyncio
-from collections.abc import AsyncIterable, AsyncIterator
+import threading
+from collections.abc import AsyncIterable, AsyncIterator, Callable
+from concurrent.futures import ThreadPoolExecutor
 from functools import partial
 from typing import Any
 
@@ -23,6 +24,33 @@ _MODEL_TYPES = frozenset(
         "other",
     }
 )
+
+_MAX_INFLIGHT = 64
+_EXECUTOR = ThreadPoolExecutor(
+    max_workers=1,
+    thread_name_prefix="rapid-mlx-telemetry",
+)
+_INFLIGHT = threading.BoundedSemaphore(_MAX_INFLIGHT)
+
+
+def _run_admitted(callback: Callable[[], None]) -> None:
+    """Run one admitted item and always return its bounded slot."""
+    try:
+        callback()
+    finally:
+        _INFLIGHT.release()
+
+
+def _submit(callback: Callable[[], None]) -> bool:
+    """Submit without blocking; drop when the bounded lane is saturated."""
+    if not _INFLIGHT.acquire(blocking=False):
+        return False
+    try:
+        _EXECUTOR.submit(_run_admitted, callback)
+    except Exception:
+        _INFLIGHT.release()
+        return False
+    return True
 
 
 def model_type_token(source: object | None) -> str:
@@ -109,9 +137,7 @@ def emit_completed_request(
     try:
         if not track_module._upload_allowed():
             return
-        loop = asyncio.get_running_loop()
-        loop.run_in_executor(
-            None,
+        _submit(
             partial(
                 _record_completed_request,
                 model=model,
@@ -119,7 +145,7 @@ def emit_completed_request(
                 caller_agent=caller_agent,
                 caller_client=caller_client,
                 result=result,
-            ),
+            )
         )
     except Exception:
         return
@@ -132,12 +158,15 @@ async def emit_failed_on_stream_error(
     endpoint: str,
     caller_agent: str | None,
     caller_client: str | None,
+    failure_latch: list[bool] | None = None,
 ) -> AsyncIterator[Any]:
     """Forward a generation stream and count only non-cancellation failures."""
     try:
         async for item in source:
             yield item
     except Exception:
+        if failure_latch is not None:
+            failure_latch[:] = [True]
         emit_completed_request(
             model=model,
             endpoint=endpoint,
@@ -149,7 +178,23 @@ async def emit_failed_on_stream_error(
 
 
 def emit_capability_rejected(capability: str, *, model_type: str = "other") -> None:
-    """Emit one closed-vocabulary capability rejection without raising."""
+    """Enqueue one closed-vocabulary capability rejection without blocking."""
+    try:
+        if not track_module._upload_allowed():
+            return
+        _submit(
+            partial(
+                _record_capability_rejected,
+                capability=capability,
+                model_type=model_type,
+            )
+        )
+    except Exception:
+        return
+
+
+def _record_capability_rejected(*, capability: str, model_type: str) -> None:
+    """Worker-thread half of :func:`emit_capability_rejected`."""
     try:
         allowed = registry.load_registry()["enums"]["capability"]["values"]
         if capability not in allowed:
@@ -163,3 +208,16 @@ def emit_capability_rejected(capability: str, *, model_type: str = "other") -> N
         )
     except Exception:
         return
+
+
+def request_caller_headers(request: Any | None) -> tuple[str | None, str | None]:
+    """Return the raw caller headers shared by every inference route."""
+    try:
+        if request is None:
+            return None, None
+        return (
+            request.headers.get("user-agent"),
+            request.headers.get("x-rapid-client"),
+        )
+    except Exception:
+        return None, None

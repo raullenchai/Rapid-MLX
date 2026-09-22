@@ -230,3 +230,28 @@ def test_streaming_generation_error_emits_failed_without_success():
             "result": "failed",
         }
     ]
+
+
+def test_empty_engine_stream_uses_stop_iteration_path():
+    calls: list[dict] = []
+    v2_calls: list[dict] = []
+
+    _drive_stream(
+        _FakeEngine([]),
+        _request(),
+        caller_agent=None,
+        emit_calls=calls,
+        v2_calls=v2_calls,
+    )
+
+    assert len(calls) == 1
+    assert calls[0]["completion_tokens"] == 0
+    assert v2_calls == [
+        {
+            "model": "<custom>",
+            "endpoint": "/v1/chat/completions",
+            "caller_agent": None,
+            "caller_client": None,
+            "result": "ok",
+        }
+    ]

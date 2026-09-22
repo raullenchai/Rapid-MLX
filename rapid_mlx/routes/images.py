@@ -10,7 +10,7 @@ import secrets
 import tempfile
 import time
 
-from fastapi import APIRouter, Body, File, Form, HTTPException, UploadFile
+from fastapi import APIRouter, Body, File, Form, HTTPException, Request, UploadFile
 from starlette.responses import JSONResponse
 
 from ..api.models import ImageGenerationRequest, parse_image_size
@@ -298,7 +298,9 @@ def _log_image_performance(
 
 
 @router.post("/v1/images/generations")
-async def create_image(request: ImageGenerationRequest = Body(...)):
+async def create_image(
+    raw_request: Request, request: ImageGenerationRequest = Body(...)
+):
     """Generate one or more images from a text prompt.
 
     Returns the OpenAI ``{created, data:[{b64_json}]}`` envelope. ``url``
@@ -406,11 +408,14 @@ async def create_image(request: ImageGenerationRequest = Body(...)):
     from rapid_mlx.telemetry import inference as _telemetry_inference
     from rapid_mlx.telemetry.model_id import engine_telemetry_id
 
+    caller_agent, caller_client = _telemetry_inference.request_caller_headers(
+        raw_request
+    )
     _telemetry_inference.emit_completed_request(
         model=engine_telemetry_id(img_engine),
         endpoint="/v1/images/generations",
-        caller_agent=None,
-        caller_client=None,
+        caller_agent=caller_agent,
+        caller_client=caller_client,
         result="ok",
     )
     return response

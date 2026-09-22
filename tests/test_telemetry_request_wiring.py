@@ -308,7 +308,8 @@ async def test_in_process_multi_sample_rejection_emits_capability(monkeypatch):
     from rapid_mlx.telemetry import inference
 
     engine = _FakeChatEngine()
-    _patch_route(monkeypatch, engine, [])
+    failed_calls: list[dict] = []
+    _patch_route(monkeypatch, engine, [], failed_calls)
     capability_calls: list[tuple[str, str]] = []
     monkeypatch.setattr(
         inference,
@@ -330,3 +331,4 @@ async def test_in_process_multi_sample_rejection_emits_capability(monkeypatch):
         )
 
     assert capability_calls == [("multi_sample_unsupported", "llm")]
+    assert failed_calls == [], "a deliberate HTTP 4xx is not generation failure"
