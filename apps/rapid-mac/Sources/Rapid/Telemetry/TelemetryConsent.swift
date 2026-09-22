@@ -230,12 +230,8 @@ enum TelemetryConsent {
         defaults: UserDefaults,
         telemetryDirectory: URL
     ) -> Bool {
-        // Settings never writes the disclosure marker. An explicit "on"
-        // therefore becomes effective only when the launch notice has already
-        // established the current marker; a failed notice write stays dark.
-        let markerSeen = readSharedConsent(at: consentURL(in: telemetryDirectory))?
-            .currentNoticeWasSeen == true
-        let effectiveEnabled = enabled && markerSeen
+        // Settings is itself an explicit user choice. The disclosure marker
+        // gates only the automatic default-on path; Settings never writes it.
         let previousLocalDecision = defaults.object(forKey: TelemetryConfig.enabledKey)
         // An opt-out immediately silences Desktop while the shared write is
         // pending. If it fails, restore the real state and report the failure
@@ -262,9 +258,9 @@ enum TelemetryConsent {
             }
             return false
         }
-        defaults.set(effectiveEnabled, forKey: TelemetryConfig.enabledKey)
+        defaults.set(enabled, forKey: TelemetryConfig.enabledKey)
         defaults.set(true, forKey: TelemetryConfig.sharedConsentMigrationKey)
-        if effectiveEnabled {
+        if enabled {
             synchronizeClientID(defaults: defaults, telemetryDirectory: telemetryDirectory)
         }
         return true

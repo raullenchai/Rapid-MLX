@@ -53,6 +53,21 @@ struct TelemetryToggleRerenderTests {
         )
     }
 
+    @Test("A process kill switch visibly disables the consent Toggle")
+    func killSwitchDisablesToggle() throws {
+        let stripped = try strippedSettingsSource()
+        #expect(
+            stripped.contains(
+                ".disabled(TelemetryConfig.killSwitchActive(environment:TelemetryConfig.environment))"
+            ),
+            "A process kill switch must disable the control instead of leaving an enabled dead Toggle."
+        )
+        #expect(
+            stripped.contains("Settings.Privacy.TelemetryDisabledReason"),
+            "The disabled control must explain that a process privacy or CI setting forced it off."
+        )
+    }
+
     @Test("The binding's getter reads view state, not the UserDefaults static")
     func getterDoesNotReadTheStaticDirectly() throws {
         let stripped = try strippedSettingsSource()

@@ -654,6 +654,7 @@ struct SettingsView: View {
             }
             .toggleStyle(TrailingSettingsToggleStyle())
             .accessibilityIdentifier("Settings.Privacy.TelemetryToggle")
+            .disabled(TelemetryConfig.killSwitchActive(environment: TelemetryConfig.environment))
             .alert("Couldn't update telemetry setting", isPresented: $telemetryConsentWriteFailed) {
                 Button("OK", role: .cancel) {}
                     .accessibilityIdentifier("Settings.Privacy.TelemetryWriteErrorDismiss")
@@ -676,6 +677,13 @@ struct SettingsView: View {
                     .receive(on: RunLoop.main)
             ) { _ in
                 telemetryEnabled = TelemetryConfig.isEnabled
+            }
+
+            if TelemetryConfig.killSwitchActive(environment: TelemetryConfig.environment) {
+                Text("Telemetry is disabled for this launch by a process-level privacy or CI setting.")
+                    .font(RapidFont.caption)
+                    .foregroundStyle(RapidTheme.textSecondary)
+                    .accessibilityIdentifier("Settings.Privacy.TelemetryDisabledReason")
             }
 
             SettingsRowDivider()

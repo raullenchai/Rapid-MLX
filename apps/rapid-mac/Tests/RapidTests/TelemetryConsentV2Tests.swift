@@ -208,18 +208,58 @@ struct TelemetryConsentV2Tests {
         #expect(FileManager.default.fileExists(atPath: consentURL(dir).path))
     }
 
-    @Test("Settings on stays locally dark when a presented notice could not persist its marker")
-    func settingsOnCannotBypassMissingMarker() async throws {
-        let dir = try directory("settings-no-marker")
+    @Test("Settings on stays locally dark when the shared consent write fails")
+    func failedSettingsOptInRestoresPreviousState() async throws {
+        let dir = try directory("settings-on-write-failure")
         defer { try? FileManager.default.removeItem(at: dir) }
-        let userDefaults = defaults("settings-no-marker")
-        await TelemetryConsent.record(
+        try FileManager.default.createDirectory(at: consentURL(dir), withIntermediateDirectories: false)
+        let userDefaults = defaults("settings-on-write-failure")
+        userDefaults.set(false, forKey: TelemetryConfig.enabledKey)
+
+        let persisted = await TelemetryConsent.record(
             enabled: true, version: "0.15.0", defaults: userDefaults, telemetryDirectory: dir
         )
+
+        #expect(!persisted)
         #expect(!TelemetryConfig.isEnabled(defaults: userDefaults))
+        #expect(FileManager.default.fileExists(atPath: consentURL(dir).path))
+    }
+
+    @Test("Explicit Settings on below the cutoff enables Desktop and writes shared consent")
+    func explicitSettingsOptInBelowCutoff() async throws {
+        let dir = try directory("settings-on-pre-cutoff")
+        defer { try? FileManager.default.removeItem(at: dir) }
+        let userDefaults = defaults("settings-on-pre-cutoff")
+
+        let persisted = await TelemetryConsent.record(
+            enabled: true, version: "0.14.3", defaults: userDefaults, telemetryDirectory: dir
+        )
+
+        #expect(persisted)
+        #expect(TelemetryConfig.isEnabled(defaults: userDefaults))
         let stored = try json(at: consentURL(dir))
         #expect(stored["consent"] as? Bool == true)
         #expect(stored["desktop_consent"] as? Bool == true)
+        #expect(stored["prompted_version"] as? String == "0.14.3")
+        #expect(stored["notice_revision_seen"] == nil)
+    }
+
+    @Test("Explicit Settings on above the cutoff needs no notice marker")
+    func explicitSettingsOptInAboveCutoffWithoutMarker() async throws {
+        let dir = try directory("settings-on-current-no-marker")
+        defer { try? FileManager.default.removeItem(at: dir) }
+        let userDefaults = defaults("settings-on-current-no-marker")
+
+        let persisted = await TelemetryConsent.record(
+            enabled: true, version: "0.15.0", defaults: userDefaults, telemetryDirectory: dir
+        )
+
+        #expect(persisted)
+        #expect(TelemetryConfig.isEnabled(defaults: userDefaults))
+        let stored = try json(at: consentURL(dir))
+        #expect(stored["consent"] as? Bool == true)
+        #expect(stored["desktop_consent"] as? Bool == true)
+        #expect(stored["prompted_version"] as? String == "0.15.0")
         #expect(stored["notice_revision_seen"] == nil)
     }
 
