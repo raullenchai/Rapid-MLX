@@ -404,6 +404,9 @@ def _spawn_foreground_serve(model: str, args) -> subprocess.Popen:
     # The parent already ran the download-consent gate; suppress the child's
     # own B2 re-prompt (chat spawner pattern).
     child_env["RAPID_MLX_CHAT_SPAWN"] = "1"
+    child_env.pop("RAPID_MLX_AUTO_SELECTED", None)
+    if not getattr(args, "_model_was_explicit", True):
+        child_env["RAPID_MLX_AUTO_SELECTED"] = "1"
     # If the start parent is SIGKILLed, the child self-terminates instead of
     # orphan-locking the model + port.
     child_env["RAPID_MLX_WATCHDOG_PPID"] = str(os.getpid())

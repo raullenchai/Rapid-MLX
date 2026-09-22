@@ -31,6 +31,7 @@ import re
 from dataclasses import replace
 from itertools import product
 from pathlib import Path
+from types import SimpleNamespace
 from uuid import uuid4
 
 import pytest
@@ -250,6 +251,23 @@ def test_read_platform_facts_maps_the_raw_brand_through_chip_token(monkeypatch):
     assert block is not None
     assert block["chip"] == "m3-ultra"
     assert "Apple M3 Ultra" not in repr(block)
+
+
+def test_chip_brand_probe_is_independent_of_path(monkeypatch):
+    calls = []
+
+    def run(command, **kwargs):
+        calls.append((command, kwargs))
+        return SimpleNamespace(stdout="Apple M3 Ultra\n")
+
+    monkeypatch.setenv("PATH", "")
+    monkeypatch.setattr(redact.platform, "system", lambda: "Darwin")
+    monkeypatch.setattr("subprocess.run", run)
+    redact._read_chip_brand.cache_clear()
+
+    assert redact._read_chip_brand() == "Apple M3 Ultra"
+    assert calls[0][0] == ["/usr/sbin/sysctl", "-n", "machdep.cpu.brand_string"]
+    redact._read_chip_brand.cache_clear()
 
 
 def test_read_platform_facts_on_this_machine_builds_a_valid_block():

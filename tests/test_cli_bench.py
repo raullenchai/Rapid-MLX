@@ -247,6 +247,71 @@ def test_bench_command_loads_weights_on_mlx_step_worker(monkeypatch) -> None:
     )
 
 
+def test_bench_success_emits_model_served(monkeypatch) -> None:
+    """A successful weight load must twin bench's load-failure event."""
+    cli = importlib.import_module("rapid_mlx.cli")
+    scheduler = importlib.import_module("rapid_mlx.scheduler")
+    from rapid_mlx.telemetry import store
+
+    class ServedObservedError(Exception):
+        pass
+
+    model = object()
+    monkeypatch.setattr(cli, "_check_disk_space", lambda *a, **kw: None)
+    monkeypatch.setattr(cli, "_check_memory_capacity", lambda *a, **kw: None)
+    monkeypatch.setattr(cli, "_ensure_model_downloaded", lambda _name: None)
+    monkeypatch.setattr(
+        "rapid_mlx.pflash.resolve_pflash_mode_default",
+        lambda args, *, model_name, is_multimodal=False, **_kw: "off",
+    )
+    _patch_mlx_lm_load(monkeypatch, lambda _name: (model, object()))
+
+    events = []
+    rows = []
+
+    def note_model_served(model_id):
+        rows.append(model_id)
+        return 1
+
+    def observe(event, props, **kwargs):
+        events.append((event, props, kwargs))
+        raise ServedObservedError
+
+    monkeypatch.setattr(store, "note_model_served", note_model_served)
+    monkeypatch.setattr("rapid_mlx.telemetry.track._upload_allowed", lambda: True)
+    monkeypatch.setattr("rapid_mlx.telemetry.track.track", observe)
+    monkeypatch.setattr(
+        scheduler,
+        "SchedulerConfig",
+        lambda **_kwargs: (_ for _ in ()).throw(ServedObservedError()),
+    )
+
+    args = _make_freeform_bench_args("sdxl-base")
+    vars(args).update(
+        max_num_seqs=1,
+        prefill_batch_size=1,
+        completion_batch_size=1,
+        prefix_cache_size=1,
+        no_memory_aware_cache=True,
+        cache_memory_mb=0,
+        cache_memory_percent=0,
+        use_paged_cache=False,
+        paged_cache_block_size=16,
+        max_cache_blocks=1,
+        kv_cache_quantization=False,
+        kv_cache_quantization_bits=8,
+        kv_cache_quantization_group_size=64,
+        kv_cache_min_quantize_tokens=0,
+    )
+    with pytest.raises(ServedObservedError):
+        cli.bench_command(args)
+
+    assert events[0][0] == "model_served"
+    assert events[0][1]["model"] == "sdxl-base"
+    assert events[0][1]["model"] != "<custom>"
+    assert rows == ["sdxl-base"]
+
+
 def _capture_bench_lane_signals(monkeypatch, cli):
     """Wire the bench PFlash default + validation seams to record the
     ``is_multimodal`` / ``is_mllm`` they receive, and abort before the heavy

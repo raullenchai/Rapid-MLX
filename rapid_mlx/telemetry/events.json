@@ -377,8 +377,9 @@
       "_about": "What people want to run, and whether the mirror served it.",
       "props": {
         "model": {"kind": "model_id", "required": true},
+        "model_type": {"kind": "enum", "enum": "model_type", "required": true},
         "source": {"kind": "enum", "enum": "pull_source", "required": true},
-        "size_bucket": {"kind": "enum", "enum": "size_bucket", "required": true}
+        "size_bucket": {"kind": "enum", "enum": "size_bucket", "required": false}
       }
     },
     "model_pull_failed": {
@@ -386,6 +387,7 @@
       "twin_of": "model_pulled",
       "props": {
         "model": {"kind": "model_id", "required": false},
+        "model_type": {"kind": "enum", "enum": "model_type", "required": false},
         "source": {"kind": "enum", "enum": "pull_source", "required": false},
         "size_bucket": {"kind": "enum", "enum": "size_bucket", "required": false},
         "error_class": {"kind": "enum", "enum": "pull_error_class", "required": true}

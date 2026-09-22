@@ -2435,6 +2435,15 @@ def test_chat_port_unbound_exits_with_friendly_error(capsys, monkeypatch):
     assert f"127.0.0.1:{dead_port}" in out
 
 
+def test_chat_port_bound_builds_loopback_base_url(monkeypatch):
+    with _fake_server([]) as (port, _payloads):
+        monkeypatch.setattr("builtins.input", lambda _prompt="": "exit")
+        ns = _ns_for_chat(port)
+        ns.base_url = None
+        ns.port = port
+        cli.chat_command(ns)
+
+
 # ----------------------------------------------------------------------
 # D1 — `run` alias for chat
 # ----------------------------------------------------------------------
@@ -2762,6 +2771,27 @@ def test_main_skips_download_gate_when_chat_spawn_env_set(monkeypatch):
     )
 
 
+def test_main_does_not_treat_non_one_chat_spawn_value_as_child(monkeypatch):
+    monkeypatch.setenv("RAPID_MLX_CHAT_SPAWN", "0")
+    monkeypatch.delenv("RAPID_MLX_AUTO_PULL", raising=False)
+    monkeypatch.setattr("sys.stdin.isatty", lambda: True)
+    calls = []
+    monkeypatch.setattr(
+        "rapid_mlx._download_gate.is_repo_cached",
+        lambda *_args, **_kwargs: calls.append("cached") or True,
+    )
+    monkeypatch.setattr(cli, "serve_command", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        ["rapid-mlx", "serve", "mlx-community/some-uncached-fake-7b"],
+    )
+
+    cli.main()
+
+    assert calls == ["cached"]
+
+
 def test_main_skips_size_estimate_in_non_tty_context(monkeypatch):
     """The B2 gate must short-circuit on TTY/env checks BEFORE calling
     ``estimate_repo_size_bytes`` — otherwise every CI run with
@@ -2833,6 +2863,7 @@ def test_spawn_chat_server_sets_chat_spawn_env(monkeypatch, tmp_path):
     """``_spawn_chat_server`` must pass ``RAPID_MLX_CHAT_SPAWN=1`` to the
     child so the child main() bypasses the download gate."""
     captured: dict = {}
+    monkeypatch.setenv("RAPID_MLX_AUTO_SELECTED", "1")
 
     class _FakePopen:
         def __init__(
@@ -2880,7 +2911,44 @@ def test_spawn_chat_server_sets_chat_spawn_env(monkeypatch, tmp_path):
 
     assert captured["env"] is not None
     assert captured["env"].get("RAPID_MLX_CHAT_SPAWN") == "1"
+    assert "RAPID_MLX_AUTO_SELECTED" not in captured["env"]
     assert "--mcp-config" not in captured["cmd"]
+
+
+def test_spawn_chat_server_forwards_auto_selection_separately(monkeypatch, tmp_path):
+    captured: dict = {}
+
+    class _FakePopen:
+        def __init__(self, _cmd, **kwargs):
+            captured.update(kwargs)
+
+        def poll(self):
+            return None
+
+    class _FakeSocket:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args):
+            return False
+
+        def bind(self, _addr):
+            pass
+
+        def getsockname(self):
+            return ("127.0.0.1", 54321)
+
+        def close(self):
+            pass
+
+    monkeypatch.setattr("socket.socket", lambda: _FakeSocket())
+    monkeypatch.setattr("subprocess.Popen", _FakePopen)
+    monkeypatch.setattr(cli, "_telemetry_chat_auto_selected", True)
+
+    cli._spawn_chat_server("qwen3.5-4b-4bit", str(tmp_path / "fake.log"))
+
+    assert captured["env"]["RAPID_MLX_CHAT_SPAWN"] == "1"
+    assert captured["env"]["RAPID_MLX_AUTO_SELECTED"] == "1"
 
 
 def test_spawn_chat_server_forwards_disable_prefix_cache(monkeypatch, tmp_path):
@@ -3025,7 +3093,9 @@ def test_main_pops_chat_spawn_env_so_grandchildren_do_not_inherit(monkeypatch):
     hub plugin), that grandchild would otherwise inherit the bypass
     and skip its own download gate."""
     monkeypatch.setenv("RAPID_MLX_CHAT_SPAWN", "1")
-    monkeypatch.setattr(cli, "serve_command", lambda *_a, **_kw: None)
+    monkeypatch.setenv("RAPID_MLX_AUTO_SELECTED", "1")
+    captured = []
+    monkeypatch.setattr(cli, "serve_command", lambda args: captured.append(args))
     monkeypatch.setattr(
         sys,
         "argv",
@@ -3036,6 +3106,25 @@ def test_main_pops_chat_spawn_env_so_grandchildren_do_not_inherit(monkeypatch):
         "main() must pop the marker so it does not leak to grandchildren; "
         "this is what makes the 'single-use' contract real."
     )
+    assert "RAPID_MLX_AUTO_SELECTED" not in os.environ
+    assert captured[0]._telemetry_auto_selected is True
+
+
+@pytest.mark.parametrize("raw", ["true", "0"])
+def test_main_rejects_noncanonical_auto_selected_marker(monkeypatch, raw):
+    monkeypatch.setenv("RAPID_MLX_AUTO_SELECTED", raw)
+    captured = []
+    monkeypatch.setattr(cli, "serve_command", lambda args: captured.append(args))
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        ["rapid-mlx", "serve", "mlx-community/some-fake-7b"],
+    )
+
+    cli.main()
+
+    assert captured[0]._telemetry_auto_selected is False
+    assert "RAPID_MLX_AUTO_SELECTED" not in os.environ
 
 
 def test_sigterm_handler_exits_even_if_cleanup_raises(monkeypatch):

@@ -333,6 +333,22 @@ def test_orphan_reap_announces_cleaned_files(capsys):
     assert "Cleaned up 2 abandoned download file(s)" in out
 
 
+def test_orphan_reap_failure_does_not_block_pull():
+    """Best-effort orphan cleanup cannot prevent the requested download."""
+    args = argparse.Namespace(model="LiquidAI/LFM2.5-2.6B-MLX", bits=None, format=None)
+    with (
+        patch.object(cli, "_try_mirror_prefetch", return_value=False),
+        patch(
+            "rapid_mlx._download_gate.reap_orphan_incomplete_blobs",
+            side_effect=OSError("unreadable cache"),
+        ),
+        patch("huggingface_hub.snapshot_download", return_value="/cache/x") as snap,
+    ):
+        cli.pull_command(args)
+
+    snap.assert_called_once()
+
+
 def test_catalog_subfolder_narrowing_when_no_selector(capsys):
     """No selector + a catalog subfolder narrows to it (existing behavior)."""
     args = argparse.Namespace(model="LiquidAI/LFM2.5-2.6B-MLX", bits=None, format=None)

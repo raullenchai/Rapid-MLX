@@ -251,6 +251,41 @@ def test_spawn_foreground_child_env(monkeypatch):
     assert captured["env"]["RAPID_MLX_WATCHDOG_PPID"] == str(os.getpid())
 
 
+def test_spawn_foreground_serve_forwards_auto_selection(monkeypatch):
+    from rapid_mlx.run import cli as run_cli
+
+    captured = {}
+    monkeypatch.setenv("RAPID_MLX_AUTO_SELECTED", "stale-parent-value")
+    monkeypatch.setattr(
+        run_cli.subprocess,
+        "Popen",
+        lambda cmd, **kwargs: captured.update(cmd=cmd, **kwargs) or object(),
+    )
+    args = _make_args()
+    args._model_was_explicit = False
+    run_cli._spawn_foreground_serve("qwen3.5-4b-4bit", args)
+    assert captured["env"]["RAPID_MLX_CHAT_SPAWN"] == "1"
+    assert captured["env"]["RAPID_MLX_AUTO_SELECTED"] == "1"
+
+
+def test_spawn_foreground_serve_drops_inherited_auto_selection(monkeypatch):
+    from rapid_mlx.run import cli as run_cli
+
+    captured = {}
+    monkeypatch.setenv("RAPID_MLX_AUTO_SELECTED", "1")
+    monkeypatch.setattr(
+        run_cli.subprocess,
+        "Popen",
+        lambda cmd, **kwargs: captured.update(cmd=cmd, **kwargs) or object(),
+    )
+    args = _make_args()
+    args._model_was_explicit = True
+
+    run_cli._spawn_foreground_serve("qwen3.5-4b-4bit", args)
+
+    assert "RAPID_MLX_AUTO_SELECTED" not in captured["env"]
+
+
 def test_spawn_no_download_forces_child_offline(monkeypatch):
     """--no-download remains strict inside the canonical serve child."""
     import subprocess as real_subprocess

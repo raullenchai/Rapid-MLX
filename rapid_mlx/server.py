@@ -220,6 +220,8 @@ _engine: BaseEngine | None = None
 _prefix_cache_load_task = None  # asyncio.Task | None
 _model_name: str | None = None
 _model_alias: str | None = None  # Short alias used to start the model (if any)
+_telemetry_auto_selected: bool = False
+_telemetry_model_served_emitted: bool = False
 # Task #292 (Bo R13/R14): operator opt-in for ``/v1/audio/*`` routes on a
 # text-only server. Set to True by ``--enable-audio`` (text mode) or by
 # :func:`rapid_mlx.cli._serve_audio_mode` (audio mode). The audio-mode
@@ -685,12 +687,34 @@ def _mirror_primary_lifecycle_state(engine: object, state: str) -> None:
         _residency_manager.set_primary_lifecycle_state(engine, state)
 
 
+def _emit_primary_model_served_once(engine: object) -> None:
+    global _telemetry_model_served_emitted
+    if _telemetry_model_served_emitted:
+        return
+    try:
+        from rapid_mlx.telemetry.model_events import emit_model_served
+
+        emit_model_served(
+            engine,
+            _model_alias or _model_path,
+            _telemetry_auto_selected,
+        )
+    except Exception:
+        pass
+    _telemetry_model_served_emitted = True
+
+
+async def _finish_primary_demand_load_and_emit(engine: object) -> None:
+    await _finish_primary_demand_load()
+    _emit_primary_model_served_once(engine)
+
+
 def _build_primary_model_lifecycle(engine: object) -> PrimaryModelLifecycle:
     return PrimaryModelLifecycle(
         engine,
         lazy_load=_primary_lazy_load,
         idle_unload_seconds=_primary_idle_unload_seconds,
-        on_loaded=_finish_primary_demand_load,
+        on_loaded=lambda: _finish_primary_demand_load_and_emit(engine),
         before_unload=_prepare_primary_idle_unload,
         release_allocator_cache=_release_allocator_cache,
         on_state_change=lambda state: _mirror_primary_lifecycle_state(engine, state),
@@ -710,6 +734,9 @@ def _flush_v2_telemetry() -> None:
 async def lifespan(app: FastAPI):
     """FastAPI lifespan for startup/shutdown events."""
     global _engine, _mcp_manager, _primary_model_lifecycle
+    global _telemetry_model_served_emitted
+
+    _telemetry_model_served_emitted = False
 
     from .routes.agents import start_agent_service_lifecycle
 
@@ -788,6 +815,7 @@ async def lifespan(app: FastAPI):
                 _primary_post_load_done = True
             else:
                 await _engine.start()
+            _emit_primary_model_served_once(_engine)
         except Exception as _start_exc:
             # Opt-in telemetry (Phase 2.2 error wiring): serve's real weight
             # load happens HERE in the async lifespan, not in the CLI's
@@ -803,6 +831,14 @@ async def lifespan(app: FastAPI):
 
             _telemetry_emit.error(
                 category="model_load_failure", exc=_start_exc, phase="startup"
+            )
+            from rapid_mlx.telemetry.model_events import emit_model_serve_failed
+
+            emit_model_serve_failed(
+                _start_exc,
+                engine=_engine,
+                alias_or_path=_model_alias or _model_path,
+                auto_selected=_telemetry_auto_selected,
             )
             raise
 
@@ -2995,10 +3031,12 @@ def configure_primary_model_lifecycle(
     global _primary_lazy_load
     global _primary_idle_unload_seconds
     global _primary_model_lifecycle
+    global _telemetry_model_served_emitted
 
     _primary_lazy_load = bool(lazy_load)
     _primary_idle_unload_seconds = max(0.0, float(idle_unload_seconds))
     _primary_model_lifecycle = None
+    _telemetry_model_served_emitted = False
     get_config().primary_model_lifecycle = None
 
 

@@ -328,6 +328,41 @@ def stub_heavy_serve_deps(monkeypatch):
     return monkeypatch
 
 
+def test_serve_load_failure_emits_v2_model_failure(
+    stub_heavy_serve_deps, monkeypatch, scheduler_config_stub
+):
+    from rapid_mlx import server as server_mod
+    from rapid_mlx.telemetry import model_events
+
+    failure = RuntimeError("unsupported architecture")
+    calls: list[tuple[BaseException, dict[str, object]]] = []
+    stub_heavy_serve_deps.setattr(
+        server_mod,
+        "load_model",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(failure),
+    )
+    monkeypatch.setattr(
+        model_events,
+        "emit_model_serve_failed",
+        lambda exc, **kwargs: calls.append((exc, kwargs)),
+    )
+    ns = _minimal_serve_ns(listen_fd=7)
+    ns._telemetry_auto_selected = True
+    with pytest.raises(SystemExit) as excinfo:
+        cli.serve_command(ns)
+    assert excinfo.value.code == 1
+    assert calls == [
+        (
+            failure,
+            {
+                "engine": server_mod._engine,
+                "alias_or_path": ns._original_alias or ns.model,
+                "auto_selected": True,
+            },
+        )
+    ]
+
+
 def _free_tcp_port(host: str = "127.0.0.1") -> int:
     """Bind a real socket to an OS-assigned port, then release it. The
     port may race with another listener before the test rebinds, but

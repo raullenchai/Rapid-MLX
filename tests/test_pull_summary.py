@@ -24,11 +24,13 @@ from __future__ import annotations
 
 import argparse
 from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import patch
 
 import pytest
 
 from rapid_mlx import cli
+from rapid_mlx.telemetry import track as track_module
 
 
 def _make_fake_snapshot(root: Path, total_bytes: int) -> Path:
@@ -86,6 +88,609 @@ def _summary_line(captured: str) -> str:
         if "Downloaded" in line and "in" in line:
             return line
     raise AssertionError(f"summary line missing from stdout, got:\n{captured!r}")
+
+
+@pytest.mark.parametrize(
+    ("alias", "expected_type"),
+    [("tmax-9b", "llm"), ("sdxl-base", "image-gen")],
+)
+def test_real_pull_command_emits_one_primary_event_for_text_and_image(
+    monkeypatch, tmp_path, alias, expected_type
+):
+    snapshot = _make_fake_snapshot(tmp_path / alias, 3 * 1024**2)
+    calls = []
+
+    def fake_pull(args, **_kwargs):
+        args._telemetry_pull_source = "hf"
+        args._telemetry_pull_snapshot_dir = snapshot
+        args._telemetry_pull_transferred = True
+
+    monkeypatch.setattr(cli, "_pull_repository", fake_pull)
+    monkeypatch.setattr("rapid_mlx.telemetry.emit.activation", lambda **_kwargs: None)
+    monkeypatch.setattr(
+        track_module, "track", lambda event, props: calls.append((event, props))
+    )
+    monkeypatch.setattr(
+        "rapid_mlx._download_gate.image_runtime_assets_for", lambda _repo: ()
+    )
+    monkeypatch.setattr("rapid_mlx.audio.registry.runtime_assets_for", lambda _repo: ())
+    monkeypatch.setattr(
+        "rapid_mlx.audio.registry.runtime_requirements_for", lambda _repo: ()
+    )
+    args = argparse.Namespace(model=alias, bits=None, format=None)
+
+    cli.pull_command(args)
+
+    assert calls == [
+        (
+            "model_pulled",
+            {
+                "model": alias,
+                "model_type": expected_type,
+                "source": "hf",
+                "size_bucket": "lt_1gb",
+            },
+        )
+    ]
+
+
+def test_warm_pull_command_does_not_emit_model_pulled(monkeypatch, tmp_path):
+    snapshot = _make_fake_snapshot(tmp_path / "warm", 1)
+    calls = []
+
+    def fake_pull(args, **_kwargs):
+        args._telemetry_pull_source = "hf"
+        args._telemetry_pull_snapshot_dir = snapshot
+        args._telemetry_pull_transferred = False
+
+    monkeypatch.setattr(cli, "_pull_repository", fake_pull)
+    monkeypatch.setattr("rapid_mlx.telemetry.emit.activation", lambda **_kwargs: None)
+    monkeypatch.setattr(track_module, "track", lambda event, props: calls.append(event))
+    monkeypatch.setattr(
+        "rapid_mlx._download_gate.image_runtime_assets_for", lambda _repo: ()
+    )
+    monkeypatch.setattr("rapid_mlx.audio.registry.runtime_assets_for", lambda _repo: ())
+    monkeypatch.setattr(
+        "rapid_mlx.audio.registry.runtime_requirements_for", lambda _repo: ()
+    )
+
+    cli.pull_command(argparse.Namespace(model="tmax-9b", bits=None, format=None))
+
+    assert calls == []
+
+
+def _stub_implicit_download(monkeypatch):
+    monkeypatch.setattr(cli, "_cache_runnability", lambda _model: False)
+    monkeypatch.setattr(cli, "_offline_hub_mode_active", lambda: False)
+    monkeypatch.setattr(cli, "_check_disk_space", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(cli, "_try_mirror_prefetch", lambda *_args, **_kwargs: False)
+    monkeypatch.setattr(
+        "rapid_mlx._download_gate.call_with_deadline",
+        lambda func, _timeout, *args, **kwargs: func(*args, **kwargs),
+    )
+    monkeypatch.setattr("rapid_mlx._download_gate.pin_main_ref", lambda *_args: None)
+    monkeypatch.setattr(
+        "huggingface_hub.model_info",
+        lambda *_args, **_kwargs: SimpleNamespace(sha="abc123", siblings=[]),
+    )
+
+
+def test_real_ensure_model_downloaded_emits_success_once(monkeypatch, tmp_path):
+    from rapid_mlx.telemetry import model_events
+
+    _stub_implicit_download(monkeypatch)
+    snapshot = _make_fake_snapshot(tmp_path / "snapshot", 1024)
+    monkeypatch.setattr(
+        "huggingface_hub.snapshot_download", lambda *_args, **_kwargs: str(snapshot)
+    )
+    calls = []
+    monkeypatch.setattr(
+        model_events,
+        "emit_model_pulled",
+        lambda *args: calls.append(args),
+    )
+
+    cli._ensure_model_downloaded("mlx-community/Fake-Model-1B")
+
+    assert calls == [("mlx-community/Fake-Model-1B", "hf", 1024)]
+
+
+def test_real_ensure_model_downloaded_emits_failure_with_mocked_hub(monkeypatch):
+    import requests
+
+    from rapid_mlx.telemetry import model_events
+
+    _stub_implicit_download(monkeypatch)
+    failure = requests.ConnectionError("private endpoint")
+    monkeypatch.setattr(
+        "huggingface_hub.snapshot_download",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(failure),
+    )
+    calls = []
+    monkeypatch.setattr(
+        model_events,
+        "emit_model_pull_failed",
+        lambda exc, **kwargs: calls.append((exc, kwargs)),
+    )
+
+    cli._ensure_model_downloaded("mlx-community/Fake-Model-1B")
+
+    assert calls == [
+        (
+            failure,
+            {"model_ref": "mlx-community/Fake-Model-1B", "source": "hf"},
+        )
+    ]
+
+
+def test_real_ensure_model_downloaded_cache_hit_emits_nothing(monkeypatch):
+    from rapid_mlx.telemetry import model_events
+
+    monkeypatch.setattr(cli, "_cache_runnability", lambda _model: True)
+    calls = []
+    monkeypatch.setattr(
+        model_events,
+        "emit_model_pulled",
+        lambda *args: calls.append(("success", args)),
+    )
+    monkeypatch.setattr(
+        model_events,
+        "emit_model_pull_failed",
+        lambda *args, **kwargs: calls.append(("failure", args, kwargs)),
+    )
+
+    cli._ensure_model_downloaded("mlx-community/Fake-Model-1B")
+
+    assert calls == []
+
+
+def test_real_ensure_model_downloaded_mirror_failure_emits_once(monkeypatch):
+    from rapid_mlx.telemetry import model_events
+
+    _stub_implicit_download(monkeypatch)
+    failure = RuntimeError("mirror failed")
+
+    def fail_mirror(_model, *, out, **_kwargs):
+        out["source"] = "mirror"
+        raise failure
+
+    calls = []
+    monkeypatch.setattr(cli, "_try_mirror_prefetch", fail_mirror)
+    monkeypatch.setattr(
+        model_events,
+        "emit_model_pull_failed",
+        lambda exc, **kwargs: calls.append((exc, kwargs)),
+    )
+
+    with pytest.raises(RuntimeError, match="mirror failed"):
+        cli._ensure_model_downloaded("mlx-community/Fake-Model-1B")
+
+    assert calls == [
+        (
+            failure,
+            {"model_ref": "mlx-community/Fake-Model-1B", "source": "mirror"},
+        )
+    ]
+
+
+def test_real_ensure_model_downloaded_mirror_success_emits_once(monkeypatch, tmp_path):
+    from rapid_mlx.telemetry import model_events
+
+    _stub_implicit_download(monkeypatch)
+    snapshot = _make_fake_snapshot(tmp_path / "snapshot", 7)
+
+    def fetch_from_mirror(_model, *, out, **_kwargs):
+        out.update(source="mirror", network_fetch=True)
+        return True
+
+    calls = []
+    monkeypatch.setattr(cli, "_try_mirror_prefetch", fetch_from_mirror)
+    monkeypatch.setattr(cli, "_active_hf_snapshot_path", lambda _repo: snapshot)
+    monkeypatch.setattr(
+        model_events, "emit_model_pulled", lambda *args: calls.append(args)
+    )
+
+    cli._ensure_model_downloaded("mlx-community/Fake-Model-1B")
+
+    assert calls == [("mlx-community/Fake-Model-1B", "mirror", 7)]
+
+
+def test_real_ensure_model_downloaded_mirror_cache_hit_emits_nothing(
+    monkeypatch,
+):
+    from rapid_mlx.telemetry import model_events
+
+    _stub_implicit_download(monkeypatch)
+
+    def mirror_cache_hit(_model, *, out, **_kwargs):
+        out.update(source="mirror", network_fetch=False)
+        return True
+
+    calls = []
+    monkeypatch.setattr(cli, "_try_mirror_prefetch", mirror_cache_hit)
+    monkeypatch.setattr(
+        model_events, "emit_model_pulled", lambda *args: calls.append(args)
+    )
+
+    cli._ensure_model_downloaded("mlx-community/Fake-Model-1B")
+
+    assert calls == []
+
+
+def test_real_ensure_model_downloaded_hf_warm_blob_store_emits_nothing(
+    monkeypatch, tmp_path, capsys
+):
+    from rapid_mlx.telemetry import model_events
+
+    _stub_implicit_download(monkeypatch)
+    repo_id = "mlx-community/Fake-Model-1B"
+    revision = "abc123"
+    cache_root, blob_dir = _hf_snapshot_layout(
+        repo_id, revision, tmp_path, already_cached=True
+    )
+    snapshot = _make_fake_snapshot(blob_dir.parent / "snapshots" / revision, 7)
+    monkeypatch.setattr("huggingface_hub.constants.HF_HUB_CACHE", str(cache_root))
+    monkeypatch.setattr(
+        "huggingface_hub.snapshot_download", lambda *_args, **_kwargs: str(snapshot)
+    )
+    calls = []
+    monkeypatch.setattr(
+        model_events, "emit_model_pulled", lambda *args: calls.append(args)
+    )
+
+    cli._ensure_model_downloaded(repo_id)
+
+    assert "First-time download" in capsys.readouterr().out
+    assert calls == []
+
+
+def test_implicit_pull_telemetry_bookkeeping_never_breaks_success(
+    monkeypatch, tmp_path, capsys
+):
+    from rapid_mlx.telemetry import model_events
+
+    _stub_implicit_download(monkeypatch)
+    monkeypatch.setattr(
+        cli,
+        "_hf_cache_root",
+        lambda _repo: (_ for _ in ()).throw(TypeError("bad cache root")),
+    )
+
+    def mirror_fetch(_model, *, out, **_kwargs):
+        out.update(source="mirror", network_fetch=True)
+        return True
+
+    monkeypatch.setattr(cli, "_try_mirror_prefetch", mirror_fetch)
+    pulled_calls = []
+    monkeypatch.setattr(
+        model_events, "emit_model_pulled", lambda *args: pulled_calls.append(args)
+    )
+    cli._ensure_model_downloaded("mlx-community/Fake-Model-1B")
+    assert pulled_calls == [("mlx-community/Fake-Model-1B", "mirror", None)]
+
+    _stub_implicit_download(monkeypatch)
+    snapshot = _make_fake_snapshot(tmp_path / "snapshot", 7)
+
+    download_calls = []
+
+    def download(repo_id, **_kwargs):
+        download_calls.append(repo_id)
+        return str(snapshot)
+
+    monkeypatch.setattr("huggingface_hub.snapshot_download", download)
+    monkeypatch.setattr(
+        cli,
+        "_hf_cache_root",
+        lambda _repo: (_ for _ in ()).throw(TypeError("bad cache root")),
+    )
+    failed_calls = []
+    monkeypatch.setattr(
+        model_events,
+        "emit_model_pull_failed",
+        lambda *args, **kwargs: failed_calls.append((args, kwargs)),
+    )
+    cli._ensure_model_downloaded("mlx-community/Fake-Model-1B")
+
+    assert "Pre-download skipped" not in capsys.readouterr().out
+    assert failed_calls == []
+    assert download_calls == ["mlx-community/Fake-Model-1B"]
+
+
+def test_implicit_pull_unknown_after_fingerprint_suppresses_success_event(
+    monkeypatch, tmp_path, capsys
+):
+    from rapid_mlx.telemetry import model_events
+
+    _stub_implicit_download(monkeypatch)
+    repo_id = "mlx-community/Fake-Model-1B"
+    cache_root, blob_dir = _hf_snapshot_layout(
+        repo_id, "abc123", tmp_path, already_cached=True
+    )
+    snapshot = _make_fake_snapshot(blob_dir.parent / "snapshots" / "abc123", 7)
+    cache_root_calls = 0
+
+    def transient_cache_root(_repo):
+        nonlocal cache_root_calls
+        cache_root_calls += 1
+        if cache_root_calls == 2:
+            raise OSError("transient cache probe failure")
+        return cache_root / f"models--{repo_id.replace('/', '--')}"
+
+    download_calls = []
+
+    def download(model, **_kwargs):
+        download_calls.append(model)
+        return str(snapshot)
+
+    monkeypatch.setattr(cli, "_hf_cache_root", transient_cache_root)
+    monkeypatch.setattr("huggingface_hub.snapshot_download", download)
+    pulled_calls = []
+    failed_calls = []
+    monkeypatch.setattr(
+        model_events, "emit_model_pulled", lambda *args: pulled_calls.append(args)
+    )
+    monkeypatch.setattr(
+        model_events,
+        "emit_model_pull_failed",
+        lambda *args, **kwargs: failed_calls.append((args, kwargs)),
+    )
+
+    cli._ensure_model_downloaded(repo_id)
+
+    assert "Pre-download skipped" not in capsys.readouterr().out
+    assert pulled_calls == []
+    assert failed_calls == []
+    assert download_calls == [repo_id]
+
+
+def test_real_ensure_model_downloaded_forwards_subfolder_patterns(
+    monkeypatch, tmp_path
+):
+    _stub_implicit_download(monkeypatch)
+    snapshot = _make_fake_snapshot(tmp_path / "snapshot", 1)
+    calls = []
+    monkeypatch.setattr(
+        "rapid_mlx.model_aliases.subfolder_allow_patterns",
+        lambda _model: ["4bit/*"],
+    )
+
+    def download(_model, **kwargs):
+        calls.append(kwargs)
+        return str(snapshot)
+
+    monkeypatch.setattr("huggingface_hub.snapshot_download", download)
+
+    cli._ensure_model_downloaded("mlx-community/Fake-Model-1B")
+
+    assert calls == [{"allow_patterns": ["4bit/*"], "revision": "abc123"}]
+
+
+def test_snapshot_size_uses_one_revision_and_deduplicates_symlink_targets(tmp_path):
+    repo = tmp_path / "models--org--model"
+    blobs = repo / "blobs"
+    blobs.mkdir(parents=True)
+    first = blobs / "first"
+    second = blobs / "second"
+    first.write_bytes(b"a" * 7)
+    second.write_bytes(b"b" * 11)
+    current = repo / "snapshots" / "current"
+    stale = repo / "snapshots" / "stale"
+    current.mkdir(parents=True)
+    stale.mkdir(parents=True)
+    (current / "a.safetensors").symlink_to(first)
+    (current / "duplicate.safetensors").symlink_to(first)
+    (stale / "old.safetensors").symlink_to(second)
+    (repo / "refs").mkdir()
+    (repo / "refs" / "main").write_text("current")
+
+    assert cli._snapshot_size_bytes(repo) == 7
+    assert cli._snapshot_size_bytes(current) == 7
+
+
+def test_snapshot_size_invalid_ref_falls_back_without_raising(tmp_path):
+    repo = tmp_path / "models--org--model"
+    (repo / "refs").mkdir(parents=True)
+    (repo / "refs" / "main").write_bytes(b"\xff\xfe")
+    snapshot = repo / "snapshots" / "abc123"
+    _make_fake_snapshot(snapshot, 5)
+
+    assert cli._snapshot_size_bytes(repo) == 5
+
+
+def test_snapshot_size_missing_or_empty_is_unknown(tmp_path):
+    assert cli._snapshot_size_bytes(tmp_path / "missing") is None
+    empty = tmp_path / "empty"
+    empty.mkdir()
+    assert cli._snapshot_size_bytes(empty) is None
+
+
+def test_pull_event_sizes_same_catalog_subfolder_as_summary(monkeypatch, tmp_path):
+    from rapid_mlx.telemetry import model_events
+
+    snapshot = tmp_path / "snapshot"
+    selected = snapshot / "4bit"
+    sibling = snapshot / "8bit"
+    selected.mkdir(parents=True)
+    sibling.mkdir()
+    with (selected / "model.safetensors").open("wb") as handle:
+        handle.truncate(int(1.5 * 1024**3))
+    with (sibling / "model.safetensors").open("wb") as handle:
+        handle.truncate(3 * 1024**3)
+    monkeypatch.setattr("rapid_mlx.telemetry.emit.activation", lambda **_kwargs: None)
+    calls = []
+    monkeypatch.setattr(
+        model_events,
+        "emit_model_pulled",
+        lambda *args: calls.append(args),
+    )
+    monkeypatch.setattr(
+        cli,
+        "_pending_model_pull_event",
+        ("lfm2.5-2.6b-4bit", "hf", snapshot, True),
+    )
+
+    cli._emit_pull_activation()
+
+    assert calls == [("lfm2.5-2.6b-4bit", "hf", int(1.5 * 1024**3))]
+
+
+def test_snapshot_size_falls_back_to_one_sorted_revision(tmp_path):
+    repo = tmp_path / "repo"
+    older = repo / "snapshots" / "aaa"
+    newer = repo / "snapshots" / "zzz"
+    (older / "nested").mkdir(parents=True)
+    (newer / "nested").mkdir(parents=True)
+    (older / "nested" / "old.bin").write_bytes(b"old")
+    (newer / "new.bin").write_bytes(b"newer")
+    assert cli._snapshot_size_bytes(repo) == 5
+
+
+def test_snapshot_size_handles_empty_or_unreadable_revision_directory(
+    tmp_path, monkeypatch
+):
+    from pathlib import Path
+
+    empty_repo = tmp_path / "empty"
+    snapshots = empty_repo / "snapshots"
+    snapshots.mkdir(parents=True)
+    assert cli._snapshot_size_bytes(empty_repo) is None
+
+    real_iterdir = Path.iterdir
+
+    def fail_for_snapshots(path):
+        if path == snapshots:
+            raise OSError("unreadable")
+        return real_iterdir(path)
+
+    monkeypatch.setattr(Path, "iterdir", fail_for_snapshots)
+    assert cli._snapshot_size_bytes(empty_repo) is None
+
+
+def test_snapshot_helpers_fail_closed_and_resolve_active_revision(
+    monkeypatch, tmp_path
+):
+    monkeypatch.setattr(
+        cli, "_narrow_to_subfolder", lambda *_args: (_ for _ in ()).throw(ValueError())
+    )
+    assert cli._model_snapshot_size_bytes("org/model", tmp_path) is None
+
+    monkeypatch.setattr(cli, "_hf_cache_root", lambda _repo: None)
+    assert cli._active_hf_snapshot_path("org/model") is None
+
+    root = tmp_path / "repo"
+    snapshot = root / "snapshots" / "rev"
+    snapshot.mkdir(parents=True)
+    (root / "refs").mkdir()
+    (root / "refs" / "main").write_text("rev")
+    monkeypatch.setattr(cli, "_hf_cache_root", lambda _repo: root)
+    assert cli._active_hf_snapshot_path("org/model") == snapshot
+
+    (root / "refs" / "main").write_bytes(b"\xff")
+    assert cli._active_hf_snapshot_path("org/model") == root
+
+
+def test_pull_command_prepares_image_runtime_assets_after_primary(
+    monkeypatch, tmp_path
+):
+    snapshot = _make_fake_snapshot(tmp_path / "primary", 1)
+    pulls = []
+
+    def fake_pull(args, **kwargs):
+        pulls.append(
+            (
+                args.model,
+                kwargs,
+                getattr(args, "_emit_pull_lifecycle_event", True),
+            )
+        )
+        if len(pulls) == 1:
+            args._telemetry_pull_source = "hf"
+            args._telemetry_pull_snapshot_dir = snapshot
+            args._telemetry_pull_transferred = True
+
+    monkeypatch.setattr(cli, "_pull_repository", fake_pull)
+    monkeypatch.setattr("rapid_mlx.telemetry.emit.activation", lambda **_kwargs: None)
+    monkeypatch.setattr(
+        "rapid_mlx.telemetry.model_events.emit_model_pulled", lambda *_args: None
+    )
+    monkeypatch.setattr(
+        "rapid_mlx._download_gate.image_runtime_assets_for",
+        lambda _repo: (("org/runtime", "revision", ("weights/*",)),),
+    )
+    monkeypatch.setattr("rapid_mlx.audio.registry.runtime_assets_for", lambda _repo: ())
+    monkeypatch.setattr(
+        "rapid_mlx.audio.registry.runtime_requirements_for", lambda _repo: ()
+    )
+
+    cli.pull_command(argparse.Namespace(model="tmax-9b", bits=None, format=None))
+
+    assert pulls == [
+        ("tmax-9b", {}, True),
+        (
+            "org/runtime",
+            {
+                "allow_patterns_override": ["weights/*"],
+                "revision_override": "revision",
+            },
+            False,
+        ),
+    ]
+
+
+def test_pull_command_suppresses_audio_runtime_asset_lifecycle(monkeypatch):
+    pulls = []
+
+    def fake_pull(args, **kwargs):
+        pulls.append((args.model, getattr(args, "_emit_pull_lifecycle_event", True)))
+
+    monkeypatch.setattr(cli, "_pull_repository", fake_pull)
+    monkeypatch.setattr("rapid_mlx.telemetry.emit.activation", lambda **_kwargs: None)
+    monkeypatch.setattr(
+        "rapid_mlx._download_gate.image_runtime_assets_for", lambda _repo: ()
+    )
+    monkeypatch.setattr(
+        "rapid_mlx.audio.registry.runtime_assets_for",
+        lambda _repo: (
+            SimpleNamespace(repo_id="org/audio-runtime", allow_patterns=()),
+        ),
+    )
+    monkeypatch.setattr(
+        "rapid_mlx.audio.registry.runtime_requirements_for", lambda _repo: ()
+    )
+
+    cli.pull_command(argparse.Namespace(model="tmax-9b", bits=None, format=None))
+
+    assert pulls == [("tmax-9b", True), ("org/audio-runtime", False)]
+
+
+def test_pull_command_suppresses_mtp_runtime_asset_lifecycle(monkeypatch):
+    from rapid_mlx.models.deepseek_v41_native import artifacts
+
+    pulls = []
+
+    def fake_pull(args, **kwargs):
+        pulls.append((args.model, getattr(args, "_emit_pull_lifecycle_event", True)))
+
+    monkeypatch.setattr(cli, "_pull_repository", fake_pull)
+    monkeypatch.setattr(cli, "_check_disk_space", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr("rapid_mlx.telemetry.emit.activation", lambda **_kwargs: None)
+    monkeypatch.setattr(
+        "rapid_mlx._download_gate.image_runtime_assets_for", lambda _repo: ()
+    )
+    monkeypatch.setattr("rapid_mlx.audio.registry.runtime_assets_for", lambda _repo: ())
+    monkeypatch.setattr(
+        "rapid_mlx.audio.registry.runtime_requirements_for", lambda _repo: ()
+    )
+    monkeypatch.setattr(
+        "huggingface_hub.snapshot_download", lambda *_args, **_kwargs: "sidecar"
+    )
+    monkeypatch.setattr(artifacts, "verify_mtp_snapshot", lambda _path: None)
+
+    cli.pull_command(
+        argparse.Namespace(model=artifacts.TARGET_REPO, bits=None, format=None)
+    )
+
+    assert pulls == [(artifacts.TARGET_REPO, True), (artifacts.MTP_REPO, False)]
 
 
 def test_summary_printed_on_hf_success(
@@ -285,6 +890,67 @@ def test_hf_fallback_transfers_bytes_as_download(
     assert "Already cached" not in out, out
 
 
+def test_hf_fallback_event_is_labelled_hf(monkeypatch, tmp_path) -> None:
+    from rapid_mlx.telemetry import model_events
+
+    repo_id = "mlx-community/Qwen3-0.6B-4bit"
+    revision = "abc123" * 6
+    cache_root, blob_dir = _hf_snapshot_layout(
+        repo_id, revision, tmp_path, already_cached=False
+    )
+    snapshot = blob_dir.parent / "snapshots" / revision
+    _make_fake_snapshot(snapshot, 1024)
+    monkeypatch.setattr("huggingface_hub.constants.HF_HUB_CACHE", str(cache_root))
+
+    def download(*_args, **_kwargs):
+        (blob_dir / "new-blob").write_bytes(b"payload")
+        return str(snapshot)
+
+    calls = []
+    monkeypatch.setattr(cli, "_try_mirror_prefetch", lambda *_args, **_kwargs: False)
+    monkeypatch.setattr("huggingface_hub.snapshot_download", download)
+    monkeypatch.setattr("rapid_mlx.telemetry.emit.activation", lambda **_kwargs: None)
+    monkeypatch.setattr(
+        model_events, "emit_model_pulled", lambda *args: calls.append(args)
+    )
+    monkeypatch.setattr(
+        "rapid_mlx._download_gate.image_runtime_assets_for", lambda _repo: ()
+    )
+    monkeypatch.setattr("rapid_mlx.audio.registry.runtime_assets_for", lambda _repo: ())
+    monkeypatch.setattr(
+        "rapid_mlx.audio.registry.runtime_requirements_for", lambda _repo: ()
+    )
+
+    cli.pull_command(argparse.Namespace(model=repo_id, bits=None, format=None))
+
+    assert calls[0][1] == "hf"
+
+
+def test_runtime_asset_pull_suppresses_unpaired_failure_event(monkeypatch):
+    from rapid_mlx.telemetry import model_events
+
+    failure = RuntimeError("runtime asset failed")
+    calls = []
+    monkeypatch.setattr(cli, "_try_mirror_prefetch", lambda *_args, **_kwargs: False)
+    monkeypatch.setattr(
+        "huggingface_hub.snapshot_download",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(failure),
+    )
+    monkeypatch.setattr(
+        model_events,
+        "emit_model_pull_failed",
+        lambda *args, **kwargs: calls.append((args, kwargs)),
+    )
+
+    with pytest.raises(RuntimeError, match="runtime asset failed"):
+        cli._pull_repository(
+            argparse.Namespace(model="org/runtime-asset", bits=None, format=None),
+            emit_lifecycle_event=False,
+        )
+
+    assert calls == []
+
+
 def test_summary_printed_on_mirror_success(
     tmp_path: Path,
     capsys: pytest.CaptureFixture[str],
@@ -445,6 +1111,48 @@ def test_summary_not_printed_on_404(
     assert excinfo.value.code == 1
     out = capsys.readouterr().out
     assert "Downloaded" not in out, out
+
+
+def test_mirror_exception_emits_pull_failed_before_reraise(monkeypatch) -> None:
+    from rapid_mlx.telemetry import model_events
+
+    failure = RuntimeError("mirror worker failed")
+    calls: list[tuple[BaseException, dict[str, object]]] = []
+    monkeypatch.setattr(
+        model_events,
+        "emit_model_pull_failed",
+        lambda exc, **kwargs: calls.append((exc, kwargs)),
+    )
+    args = argparse.Namespace(model="mlx-community/Qwen3-0.6B-4bit")
+    with (
+        patch.object(cli, "_try_mirror_prefetch", side_effect=failure),
+        pytest.raises(RuntimeError, match="mirror worker failed"),
+    ):
+        cli._pull_repository(args)
+    assert calls == [(failure, {"model_ref": args.model, "source": None})]
+
+
+def test_hf_validation_failure_emits_pull_failed(monkeypatch) -> None:
+    from huggingface_hub.errors import HFValidationError
+
+    from rapid_mlx.telemetry import model_events
+
+    failure = HFValidationError("bad repo id")
+    calls: list[tuple[BaseException, dict[str, object]]] = []
+    monkeypatch.setattr(
+        model_events,
+        "emit_model_pull_failed",
+        lambda exc, **kwargs: calls.append((exc, kwargs)),
+    )
+    args = argparse.Namespace(model="bad/repo/id")
+    with (
+        patch.object(cli, "_try_mirror_prefetch", return_value=False),
+        patch("huggingface_hub.snapshot_download", side_effect=failure),
+        pytest.raises(SystemExit) as excinfo,
+    ):
+        cli._pull_repository(args)
+    assert excinfo.value.code == 1
+    assert calls == [(failure, {"model_ref": args.model, "source": "hf"})]
 
 
 def test_format_pull_duration_units() -> None:
