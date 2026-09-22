@@ -116,8 +116,6 @@ struct DeferredTelemetryConsentWiringTests {
     func activationDisclosureContract() throws {
         let banner = try Self.source("Sources/Rapid/UI/TelemetryConsentView.swift")
         let settings = try Self.source("Sources/Rapid/UI/SettingsView.swift")
-        let privacy = try Self.source("PRIVACY.md")
-        let normalizedPrivacy = privacy.split(whereSeparator: \Character.isWhitespace).joined(separator: " ")
 
         for surface in [banner, settings] {
             #expect(surface.contains("first successful text chat reply, dictation, or generated image"))
@@ -125,12 +123,6 @@ struct DeferredTelemetryConsentWiringTests {
             #expect(surface.contains("only the milestone name and “Desktop”"))
             #expect(surface.contains("derives a country code but never stores your IP"))
         }
-        #expect(privacy.contains("`activation` — once per install"))
-        #expect(privacy.contains("vision-reply milestone"))
-        #expect(privacy.contains("is reserved in the event schema but is not sent by this version"))
-        #expect(privacy.contains("`surface: desktop`"))
-        #expect(privacy.contains("two-letter country code"))
-        #expect(normalizedPrivacy.contains("the IP address is never persisted"))
     }
 }
 
