@@ -43,13 +43,39 @@ for p in reversed(sys_path):
     if p not in __import__("sys").path:
         __import__("sys").path.insert(0, p)
 
-if os.environ.get("MARVIN_BACKEND", "mlx") == "mlx":
+BACKEND = os.environ.get("MARVIN_BACKEND", "mlx")
+LLM_BASE = os.environ.get("MARVIN_LLM_BASE", "http://127.0.0.1:8080")
+
+def _vllm_letter_probs(prompt, letters):
+    """Raw-completion readout (no chat template) — 1 token, top logprobs,
+    renormalized over the candidate letters to mirror the Mac last-position
+    readout."""
+    import json as _json, math, urllib.request
+    req = {"model": "trio-flash", "prompt": prompt, "max_tokens": 1,
+           "temperature": 0.0, "logprobs": 20}
+    r = urllib.request.Request(LLM_BASE.rstrip("/") + "/v1/completions",
+                               _json.dumps(req).encode(),
+                               {"Content-Type": "application/json"})
+    with urllib.request.urlopen(r, timeout=60) as resp:
+        data = _json.loads(resp.read())
+    tops = data["choices"][0]["logprobs"]["top_logprobs"][0]  # {token: logprob}
+    cand = {l: -20.0 for l in letters}  # floor for letters outside top-k
+    for tok, lp in tops.items():
+        t = tok.strip()
+        if t in cand:
+            cand[t] = lp
+    m = max(cand.values())
+    exps = {k: math.exp(v - m) for k, v in cand.items()}
+    z = sum(exps.values())
+    return {k: v / z for k, v in exps.items()}
+
+if BACKEND == "mlx":
     import marvin_spire  # noqa: E402  (mlx-only dependency; skipped on llama_cpp hosts)
-    marvin_spire.start_main_worker()  # MLX is thread-affine: load+forward on the main thread
     QueueFullError = marvin_spire.QueueFullError
 else:
     class QueueFullError(RuntimeError):
         pass
+    marvin_spire = None
 import render  # noqa: E402
 
 
@@ -285,14 +311,17 @@ class Handler(BaseHTTPRequestHandler):
 
         request_id = uuid.uuid4().hex[:12]
         try:
-            if BACKEND == "llama_cpp":
-                # NVIDIA path: llama-server letter readout, same contract.
-                import classify_proxy
-                backend = classify_proxy.LlamaCppBackend(LLM_BASE, None)
-                t0 = time.perf_counter()
-                probs = backend.letter_probs(prompt, len(candidates))
+            if BACKEND in ("llama_cpp", "vllm"):
+                # NVIDIA paths: letter readout over the same prompt, same contract.
                 import render
                 letters = [render.letter_for(i) for i in range(len(candidates))]
+                t0 = time.perf_counter()
+                if BACKEND == "vllm":
+                    probs = _vllm_letter_probs(prompt, letters)
+                else:
+                    import classify_proxy
+                    backend = classify_proxy.LlamaCppBackend(LLM_BASE, None)
+                    probs = backend.letter_probs(prompt, len(candidates))
                 best = max(letters, key=lambda l: probs[l])
                 decision = {"chosen": candidates[letters.index(best)],
                             "confidence": probs[best],
