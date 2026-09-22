@@ -584,7 +584,7 @@ import os
 import sys
 from pathlib import Path
 from types import ModuleType
-from typing import Any, Optional, Tuple
+from typing import Any, Iterator, Optional, Tuple
 
 from .mtp_split import _containing_root, _open_confined
 """,
@@ -680,14 +680,14 @@ logger = logging.getLogger(__name__)""",
 logger = logging.getLogger(__name__)""",
         ),
         (
-            """def _sidecar_weight_shards(path) -> list:
+            """def _sidecar_weight_shards(path) -> Iterator[int]:
     # Resolve the sidecar's weight shards with the same validation as
-    # MTPSplitter and return OPEN no-follow descriptors (confined like
-    # the splitter's) so the later weight read cannot be redirected by
-    # a concurrent path swap. The index document and ``weight_map``
-    # must be objects of filename strings, and every shard must resolve
-    # inside the checkpoint directory or the repository's own HF blob
-    # cache.
+    # MTPSplitter and yield OPEN no-follow descriptors (confined like
+    # the splitter's) one at a time, so a failed later open never
+    # accumulates unconsumed descriptors. The index document and
+    # ``weight_map`` must be objects of filename strings, and every
+    # shard must resolve inside the checkpoint directory or the
+    # repository's own HF blob cache.
     index_path = path / "model.safetensors.index.json"
     if index_path.exists():
         with open(index_path) as f:
@@ -707,12 +707,13 @@ logger = logging.getLogger(__name__)""",
             for shard in path.glob("*.safetensors")
             if not shard.name.endswith("consolidated.safetensors")
         )
+    if not filenames:
+        raise ValueError(f"no safetensors found in {path}")
     resolved_source = path.resolve()
     allowed_roots = [resolved_source]
     blobs_root = resolved_source.parent.parent / "blobs"
     if resolved_source.parent.name == "snapshots" and blobs_root.is_dir():
         allowed_roots.append(blobs_root.resolve())
-    shards = []
     for name in filenames:
         shard = Path(name)
         if shard.is_absolute() or ".." in shard.parts:
@@ -726,12 +727,9 @@ logger = logging.getLogger(__name__)""",
                 f"safetensors index entry escapes the checkpoint "
                 f"directory: {name!r}"
             )
-        shards.append(
-            _open_confined(resolved_shard, _containing_root(resolved_shard, allowed_roots))
+        yield _open_confined(
+            resolved_shard, _containing_root(resolved_shard, allowed_roots)
         )
-    if not shards:
-        raise ValueError(f"no safetensors found in {path}")
-    return shards
 
 
 def load_drafter(
@@ -792,13 +790,8 @@ def load_drafter(
         family_model = package.Model(package.ModelConfig.from_dict(config))
         weights = {}
         for fd in _sidecar_weight_shards(path):
-            try:
-                with os.fdopen(fd, "rb") as f:
-                    weights.update(mx.load(f, format="safetensors"))
-            except BaseException:
-                if not f.closed:
-                    os.close(fd)
-                raise
+            with os.fdopen(fd, "rb") as f:
+                weights.update(mx.load(f, format="safetensors"))
         weights = family_model.sanitize(weights)
         if quantization is not None:
             nn.quantize(
@@ -1817,7 +1810,7 @@ def test_sidecar_shard_descriptors_resist_path_swap(tmp_path):
     mx.save_safetensors(str(repo / "model.safetensors"), {"w": original})
     mx.save_safetensors(str(repo / "decoy.safetensors"), {"w": decoy})
 
-    fds = _sidecar_weight_shards(repo)
+    fds = list(_sidecar_weight_shards(repo))
     assert len(fds) == 1
     try:
         (repo / "model.safetensors").unlink()
@@ -1829,6 +1822,42 @@ def test_sidecar_shard_descriptors_resist_path_swap(tmp_path):
     finally:
         for fd in fds:
             os.close(fd)
+
+
+def test_sidecar_shards_open_lazily_and_close(tmp_path):
+    """Shard descriptors open one at a time and are closed by the
+    consuming read: a failed later open never leaks the earlier ones."""
+    import os
+
+    import mlx.core as mx
+
+    from rapid_mlx.models.mlx_vlm_vendored.speculative.drafters import (
+        _sidecar_weight_shards,
+    )
+
+    repo = tmp_path / "sidecar"
+    repo.mkdir()
+    (repo / "model.safetensors.index.json").write_text(
+        json.dumps(
+            {
+                "weight_map": {
+                    "w": "model.safetensors",
+                    "v": "zz_missing.safetensors",
+                }
+            }
+        )
+    )
+    mx.save_safetensors(str(repo / "model.safetensors"), {"w": mx.zeros((1,))})
+
+    shards = _sidecar_weight_shards(repo)
+    fd = next(shards)
+    with os.fdopen(fd, "rb") as f:
+        weights = mx.load(f, format="safetensors")
+    assert mx.array_equal(weights["w"], mx.zeros((1,)))
+    with pytest.raises(FileNotFoundError):
+        next(shards)
+    with pytest.raises(OSError):
+        os.fstat(fd)
 
 
 def test_mtp_split_rejects_escaping_fallback_shard(tmp_path):
