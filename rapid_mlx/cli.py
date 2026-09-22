@@ -8349,9 +8349,9 @@ def _emit_completed_model_pull(
     resolve_active_snapshot: bool = False,
 ) -> None:
     """Emit one successful transfer without allowing sizing to affect the pull."""
-    try:
-        from rapid_mlx.telemetry.model_events import emit_model_pulled
+    from rapid_mlx.telemetry.model_events import emit_model_pulled
 
+    try:
         if resolve_active_snapshot:
             snapshot_dir = _active_hf_snapshot_path(str(repo_id))
         size = (
@@ -8359,9 +8359,9 @@ def _emit_completed_model_pull(
             if snapshot_dir is not None
             else None
         )
-        emit_model_pulled(repo_id, source, size)
     except Exception:
-        return
+        size = None
+    emit_model_pulled(repo_id, source, size)
 
 
 def _blob_identifier(repo_root) -> tuple[tuple[str, int, int], ...]:
@@ -8409,7 +8409,12 @@ def _blob_identifier(repo_root) -> tuple[tuple[str, int, int], ...]:
 def _model_pull_blob_identifier(
     repo_id: str,
 ) -> tuple[tuple[str, int, int], ...] | None:
-    """Best-effort blob fingerprint for telemetry transfer accounting."""
+    """Best-effort blob fingerprint for telemetry transfer accounting.
+
+    ``None`` leaves transfer status unknown, so callers suppress the success
+    event: without both fingerprints, they cannot distinguish a warm cache
+    from a download.
+    """
     try:
         return _blob_identifier(_hf_cache_root(repo_id))
     except Exception:

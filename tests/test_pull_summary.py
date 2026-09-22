@@ -345,36 +345,102 @@ def test_real_ensure_model_downloaded_hf_warm_blob_store_emits_nothing(
 
 
 def test_implicit_pull_telemetry_bookkeeping_never_breaks_success(
-    monkeypatch, tmp_path
+    monkeypatch, tmp_path, capsys
 ):
     from rapid_mlx.telemetry import model_events
 
     _stub_implicit_download(monkeypatch)
-    monkeypatch.setattr("huggingface_hub.constants.HF_HUB_CACHE", None)
+    monkeypatch.setattr(
+        cli,
+        "_hf_cache_root",
+        lambda _repo: (_ for _ in ()).throw(TypeError("bad cache root")),
+    )
 
     def mirror_fetch(_model, *, out, **_kwargs):
         out.update(source="mirror", network_fetch=True)
         return True
 
     monkeypatch.setattr(cli, "_try_mirror_prefetch", mirror_fetch)
+    pulled_calls = []
     monkeypatch.setattr(
-        model_events,
-        "emit_model_pulled",
-        lambda *_args: pytest.fail("unknown snapshot must not emit"),
+        model_events, "emit_model_pulled", lambda *args: pulled_calls.append(args)
     )
     cli._ensure_model_downloaded("mlx-community/Fake-Model-1B")
+    assert pulled_calls == [("mlx-community/Fake-Model-1B", "mirror", None)]
 
     _stub_implicit_download(monkeypatch)
     snapshot = _make_fake_snapshot(tmp_path / "snapshot", 7)
-    monkeypatch.setattr(
-        "huggingface_hub.snapshot_download", lambda *_args, **_kwargs: str(snapshot)
-    )
+
+    download_calls = []
+
+    def download(repo_id, **_kwargs):
+        download_calls.append(repo_id)
+        return str(snapshot)
+
+    monkeypatch.setattr("huggingface_hub.snapshot_download", download)
     monkeypatch.setattr(
         cli,
         "_hf_cache_root",
         lambda _repo: (_ for _ in ()).throw(TypeError("bad cache root")),
     )
+    failed_calls = []
+    monkeypatch.setattr(
+        model_events,
+        "emit_model_pull_failed",
+        lambda *args, **kwargs: failed_calls.append((args, kwargs)),
+    )
     cli._ensure_model_downloaded("mlx-community/Fake-Model-1B")
+
+    assert "Pre-download skipped" not in capsys.readouterr().out
+    assert failed_calls == []
+    assert download_calls == ["mlx-community/Fake-Model-1B"]
+
+
+def test_implicit_pull_unknown_after_fingerprint_suppresses_success_event(
+    monkeypatch, tmp_path, capsys
+):
+    from rapid_mlx.telemetry import model_events
+
+    _stub_implicit_download(monkeypatch)
+    repo_id = "mlx-community/Fake-Model-1B"
+    cache_root, blob_dir = _hf_snapshot_layout(
+        repo_id, "abc123", tmp_path, already_cached=True
+    )
+    snapshot = _make_fake_snapshot(blob_dir.parent / "snapshots" / "abc123", 7)
+    cache_root_calls = 0
+
+    def transient_cache_root(_repo):
+        nonlocal cache_root_calls
+        cache_root_calls += 1
+        if cache_root_calls == 2:
+            raise OSError("transient cache probe failure")
+        return cache_root / f"models--{repo_id.replace('/', '--')}"
+
+    download_calls = []
+
+    def download(model, **_kwargs):
+        download_calls.append(model)
+        return str(snapshot)
+
+    monkeypatch.setattr(cli, "_hf_cache_root", transient_cache_root)
+    monkeypatch.setattr("huggingface_hub.snapshot_download", download)
+    pulled_calls = []
+    failed_calls = []
+    monkeypatch.setattr(
+        model_events, "emit_model_pulled", lambda *args: pulled_calls.append(args)
+    )
+    monkeypatch.setattr(
+        model_events,
+        "emit_model_pull_failed",
+        lambda *args, **kwargs: failed_calls.append((args, kwargs)),
+    )
+
+    cli._ensure_model_downloaded(repo_id)
+
+    assert "Pre-download skipped" not in capsys.readouterr().out
+    assert pulled_calls == []
+    assert failed_calls == []
+    assert download_calls == [repo_id]
 
 
 def test_real_ensure_model_downloaded_forwards_subfolder_patterns(

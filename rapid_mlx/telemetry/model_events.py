@@ -55,8 +55,9 @@ def size_bucket(size_bytes: int | None) -> str:
 def pull_error_class(exc: BaseException) -> str:
     """Classify a pull exception without putting its message on the wire.
 
-    A Hub HTTP response, including a 5xx response, is ``other`` because the
-    server answered. ``network`` is reserved for failures to obtain a response.
+    An ``HfHubHTTPError``, including one for a 5xx response, is ``other``
+    because the server answered. ``network`` is reserved for failures to obtain
+    a response.
     """
     import httpx
     from huggingface_hub.utils import (

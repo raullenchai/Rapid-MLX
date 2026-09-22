@@ -290,15 +290,20 @@ def test_model_pulled_omits_unknown_snapshot_size(monkeypatch):
 
 def test_model_served_is_only_note_site_and_maps_zero_to_none(monkeypatch):
     calls: list[tuple[str, dict[str, object], int | None]] = []
-    monkeypatch.setattr(
-        model_id, "engine_telemetry_id", lambda _engine: "qwen3.5-4b-4bit"
-    )
+    alias_or_path = "/Users/secret/acme-internal-ft"
+    monkeypatch.setattr(model_id, "engine_telemetry_id", lambda _engine: "<local>")
     monkeypatch.setattr(
         model_events,
         "model_type",
-        lambda name: "llm" if name == "qwen3.5-4b-4bit" else "other",
+        lambda name: "llm" if name == alias_or_path else "other",
     )
-    monkeypatch.setattr(store, "note_model_served", lambda _model: 0)
+    noted_models = []
+
+    def note_model_served(model):
+        noted_models.append(model)
+        return 0
+
+    monkeypatch.setattr(store, "note_model_served", note_model_served)
     monkeypatch.setattr(
         track_module,
         "track",
@@ -306,15 +311,16 @@ def test_model_served_is_only_note_site_and_maps_zero_to_none(monkeypatch):
             (event, props, nth_model_served)
         ),
     )
-    model_events.emit_model_served(object(), "qwen3.5-4b-4bit", True)
+    model_events.emit_model_served(object(), alias_or_path, True)
+    assert noted_models == ["<local>"]
     assert calls == [
         (
             "model_served",
             {
-                "model": "qwen3.5-4b-4bit",
+                "model": "<local>",
                 "model_type": "llm",
                 "auto_selected": True,
-                "quant": "4bit",
+                "quant": "unknown",
             },
             None,
         )
