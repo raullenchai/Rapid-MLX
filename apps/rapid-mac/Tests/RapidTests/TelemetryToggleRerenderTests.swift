@@ -116,7 +116,7 @@ struct TelemetryToggleRerenderTests {
             stripped.contains(".onAppear{telemetryEnabled=TelemetryConfig.isEnabled}"),
             """
             The panel must re-read the stored value when it appears. The \
-            launch notice writes the same preference, so a value \
+            launch reconciliation writes the same preference, so a value \
             seeded at init can be stale by the time Settings is first opened — \
             which would show the opposite of the truth.
             """
@@ -124,7 +124,7 @@ struct TelemetryToggleRerenderTests {
     }
 
     /// `onAppear` alone leaves a real hole: Settings can be open while the
-    /// launch notice persists its marker and enables the default-on policy.
+    /// launch reconciliation persists its marker and enables the default-on policy.
     @Test("The panel also re-reads consent written while it is visible")
     func panelResyncsOnDefaultsChange() throws {
         let stripped = try strippedSettingsSource()
@@ -142,7 +142,7 @@ struct TelemetryToggleRerenderTests {
             """
             The Privacy panel must observe UserDefaults.didChangeNotification \
             ON THE MAIN RUN LOOP and resync the mirror in the handler. The \
-            launch notice writes the same key and can appear while this panel \
+            launch reconciliation writes the same key while this panel \
             is already on screen — onAppear will \
             not fire again for that. The hop to main is not ceremony: the \
             notification is delivered on the thread that made the write, so a \

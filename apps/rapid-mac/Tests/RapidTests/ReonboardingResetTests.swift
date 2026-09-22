@@ -133,7 +133,7 @@ struct ReonboardingResetTests {
         )
         #expect(!FileManager.default.fileExists(atPath: consent.path))
         #expect(defaults.object(forKey: TelemetryConfig.enabledKey) == nil,
-                "the launch notice reconciliation is gated on this key being absent")
+                "launch policy reconciliation is gated on this key being absent")
     }
 
     /// The whole-domain wipe also removes Quickstart's own keys, so the

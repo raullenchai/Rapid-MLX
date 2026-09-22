@@ -62,21 +62,18 @@ Chat, Images, Audio, and Launch surfaces from the sidebar
 
 ---
 
-## Flow 2 — Telemetry launch notice
+## Flow 2 — Telemetry controls
 
-**Trigger.** The production shell first appears and the current disclosure
-revision has not been recorded. Kill switches suppress the notice.
+**Trigger.** The app launches and reconciles the current default-on policy.
+Kill switches and explicit refusals remain authoritative.
 
-**Expected.** A non-modal default-on disclosure appears with one **Got it**
-action (`TelemetryNotice.Acknowledge`) and does not take composer focus. Its
-marker is written only after the banner appears; no telemetry is sent before
-that point. The decision remains changeable in Settings → Privacy
-(`Settings.Privacy.TelemetryToggle`).
+**Expected.** Launch is uninterrupted. The decision is visible and changeable
+in Settings → Privacy (`Settings.Privacy.TelemetryToggle`) and through the CLI.
+A failed policy write stays fail-closed and is retried on a later launch.
 
-**Touches.** `UI/TelemetryNoticeView.swift`, `UI/ContentView.swift`
-(`productionShell`), `Telemetry/TelemetryNoticeCoordinator.swift`,
-`Telemetry/TelemetryConsent.swift`,
-`Telemetry/TelemetryConfig.swift`.
+**Touches.** `Telemetry/TelemetryLifecycleCoordinator.swift`,
+`Telemetry/TelemetryConsent.swift`, `Telemetry/TelemetryConfig.swift`, and
+`UI/SettingsView.swift`.
 
 ---
 
@@ -705,9 +702,6 @@ Error}`.
 **Launch / Connect — `UI/ConnectToolsView.swift`:**
 `Launch.Integration.Copy.<tool.id>`, `ConnectTools.{Copy.<label>,Reveal.<label>,
 Close}`.
-
-**Telemetry notice — `UI/TelemetryNoticeView.swift`:**
-`TelemetryNotice.{Banner,Acknowledge}`.
 
 **Banners / misc:** `UI/FailedReplaceBanner.swift`
 `FailedReplaceBanner`, `FailedReplace.{OpenUpdate,Dismiss}`;

@@ -133,15 +133,15 @@ final class TelemetryTests {
             == "DO_NOT_TRACK=1")
     }
 
-    @Test("No launch notice is owed under a kill switch")
+    @Test("No default policy application is owed under a kill switch")
     func killSwitchSettlesConsent() {
         let directory = try! temporaryTelemetryDirectory("kill-switch-notice")
         defer { try? FileManager.default.removeItem(at: directory) }
-        #expect(TelemetryConsent.needsNotice(environment: [:], telemetryDirectory: directory))
+        #expect(TelemetryConsent.needsDefaultPolicyApplication(environment: [:], telemetryDirectory: directory))
         for env in [["RAPID_MLX_TELEMETRY": "0"], ["DO_NOT_TRACK": "1"], ["GITHUB_ACTIONS": "true"]] {
-            #expect(!TelemetryConsent.needsNotice(environment: env, telemetryDirectory: directory))
+            #expect(!TelemetryConsent.needsDefaultPolicyApplication(environment: env, telemetryDirectory: directory))
         }
-        #expect(TelemetryConsent.needsNotice(
+        #expect(TelemetryConsent.needsDefaultPolicyApplication(
             environment: ["RAPID_MLX_TELEMETRY": "1"], telemetryDirectory: directory))
     }
 
@@ -309,7 +309,7 @@ final class TelemetryTests {
             telemetryDirectory: directory
         )
 
-        #expect(TelemetryConsent.needsNotice(environment: [:], telemetryDirectory: directory))
+        #expect(TelemetryConsent.needsDefaultPolicyApplication(environment: [:], telemetryDirectory: directory))
         #expect(!TelemetryConfig.isEnabled(defaults: defaults))
     }
 
@@ -330,7 +330,7 @@ final class TelemetryTests {
         )
 
         #expect(!TelemetryConfig.isEnabled(defaults: defaults))
-        #expect(TelemetryConsent.needsNotice(environment: [:], telemetryDirectory: directory))
+        #expect(TelemetryConsent.needsDefaultPolicyApplication(environment: [:], telemetryDirectory: directory))
         #expect(defaults.string(forKey: TelemetryConfig.clientIDKey) == nil)
         #expect(defaults.bool(forKey: TelemetryConfig.sharedConsentMigrationKey))
     }
@@ -352,7 +352,7 @@ final class TelemetryTests {
         )
 
         #expect(!TelemetryConfig.isEnabled(defaults: defaults))
-        #expect(!TelemetryConsent.needsNotice(environment: [:], telemetryDirectory: directory))
+        #expect(!TelemetryConsent.needsDefaultPolicyApplication(environment: [:], telemetryDirectory: directory))
     }
 
     @Test("malformed shared consent line (comment-only value) is tolerated, not a launch crash-loop")
@@ -379,7 +379,7 @@ final class TelemetryTests {
             telemetryDirectory: directory
         )
 
-        #expect(!TelemetryConsent.needsNotice(environment: [:], telemetryDirectory: directory))
+        #expect(!TelemetryConsent.needsDefaultPolicyApplication(environment: [:], telemetryDirectory: directory))
         #expect(!TelemetryConfig.isEnabled(defaults: defaults))
     }
 
