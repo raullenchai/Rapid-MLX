@@ -17,6 +17,13 @@ can actually understand.
 
 ## [Unreleased]
 
+### Added
+- **Xiaomi MiMo-V2.6 Flash is in the model picker** as `mimo-v2.6-flash-4bit`
+  (experimental, Mac Studio class: 192 GB minimum, about 165 GB resident).
+  The 309B-parameter mixture-of-experts model with 15B active parameters
+  runs text-only in this build; tool calling and JSON output work out of the
+  box, and the Desktop marks its tool support as verified.
+
 ### Fixed
 - Community Benchmark: the progress bar no longer cuts through the running
   cheetah while a measurement is in progress. The layout reserved the
