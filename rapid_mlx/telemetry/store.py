@@ -59,6 +59,8 @@ from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 from typing import TypeVar
 
+import yaml
+
 from rapid_mlx.telemetry.state import _default_telemetry_dir
 
 #: Bumped when the on-disk schema changes incompatibly. Stored in
@@ -111,6 +113,12 @@ _BUCKET_RANK = {name: index for index, name in enumerate(BUCKETS)}
 
 #: ``days_since_first_run_bucket`` values, ascending.
 DAY_BUCKETS: tuple[str, ...] = ("0", "1", "2-6", "7-29", "30+")
+
+_INSTALL_EVIDENCE_FILES: tuple[str, ...] = (
+    "telemetry-client-id",
+    "session_seen",
+    "bench-install-id",
+)
 
 _SCHEMA = (
     "CREATE TABLE IF NOT EXISTS schema_meta ("
@@ -640,26 +648,73 @@ def note_model_served(model_id: str) -> int:
     return _run(work, 0)
 
 
+def _seed_first_run_date(now: datetime | None) -> str:
+    """Infer an upgrade's first-run date from existing local state.
+
+    Evidence is read-only and best-effort as a unit: an unexpected failure
+    makes today the conservative answer instead of risking telemetry on the
+    request path.
+    """
+    today = _as_day(now)
+    try:
+        state_dir = _default_telemetry_dir()
+        evidence: list[date] = []
+        for name in _INSTALL_EVIDENCE_FILES:
+            try:
+                modified = (state_dir / name).stat().st_mtime
+            except FileNotFoundError:
+                continue
+            evidence.append(datetime.fromtimestamp(modified, timezone.utc).date())
+
+        for marker in state_dir.glob("activation_seen_*"):
+            evidence.append(
+                datetime.fromtimestamp(marker.stat().st_mtime, timezone.utc).date()
+            )
+
+        try:
+            consent_text = (state_dir / "telemetry-consent.yaml").read_text()
+        except FileNotFoundError:
+            pass
+        else:
+            consent = yaml.safe_load(consent_text)
+            if isinstance(consent, dict) and "prompted_at" in consent:
+                evidence.append(
+                    datetime.strptime(
+                        str(consent["prompted_at"]), "%Y-%m-%dT%H:%M:%SZ"
+                    ).date()
+                )
+
+        if not evidence:
+            return today
+        current = datetime.strptime(today, "%Y-%m-%d").date()
+        return min(min(evidence), current).isoformat()
+    except Exception:
+        return today
+
+
 def first_run_date(now: datetime | None = None) -> str | None:
     """Return the install's first-run date (``YYYY-MM-DD``), setting it once.
 
     Written by whichever process gets there first and never rewritten, so
-    the cohort stamp is stable for the life of the install. ``None`` on
-    any storage failure.
+    the cohort stamp is stable for the life of the install. An upgrade is
+    seeded from the oldest pre-existing install evidence; a fresh 0.15.0
+    install has no evidence and correctly starts at day 0. ``None`` on any
+    storage failure.
     """
 
     def work(conn: sqlite3.Connection) -> str | None:
-        today = _as_day(now)
         with _transaction(conn):
-            conn.execute(
-                "INSERT OR IGNORE INTO install_facts (key, value)"
-                " VALUES ('first_run_date', ?)",
-                (today,),
-            )
             row = conn.execute(
                 "SELECT value FROM install_facts WHERE key = 'first_run_date'"
             ).fetchone()
-        return str(row[0]) if row else None
+            if row is not None:
+                return str(row[0])
+            seeded = _seed_first_run_date(now)
+            conn.execute(
+                "INSERT INTO install_facts (key, value) VALUES ('first_run_date', ?)",
+                (seeded,),
+            )
+        return seeded
 
     return _run(work, None)
 
