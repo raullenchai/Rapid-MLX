@@ -8055,7 +8055,8 @@ def models_command(args):
 
     # Image aliases carry an operation tag: text-to-image checkpoints use
     # ``[image:gen]`` and instruction-edit checkpoints use ``[image:edit]``;
-    # FLUX.2 Klein accepts both request shapes and uses ``[image:both]``.
+    # FLUX.2 Klein and Qwen-Image 2.1 accept both request shapes and use
+    # ``[image:both]``.
     # Besides keeping both out of chat catalogs, this lets GUI consumers expose
     # the right request shape without guessing capability from the alias.
     if image_profiles:
@@ -8078,6 +8079,7 @@ def models_command(args):
                 "flux2" in folded_path
                 or "flux.2" in folded_path
                 or "klein" in folded_path
+                or folded_path == "qwen/qwen-image-2.1"
             ):
                 kind_tag = "[image:both]"
             elif "qwen-image-edit" in folded_path:
