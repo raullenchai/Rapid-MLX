@@ -185,9 +185,55 @@ require_observed_phase() {
 }
 
 assert_marker_only_consent() {
-    "${PYTHON:-python3}" -c 'import pathlib, sys, yaml
-data = yaml.safe_load(pathlib.Path(sys.argv[1]).read_text(encoding="utf-8"))
-raise SystemExit(0 if isinstance(data, dict) and data.get("notice_revision_seen") == 1 and not data.get("consent") else 1)' "$1"
+    "${PYTHON:-python3}" -c 'import ast, json, pathlib, re, sys, time
+
+def scalar(raw):
+    raw = raw.strip()
+    if raw[:1] in ("\"", "\x27"):
+        try:
+            value = ast.literal_eval(raw)
+        except (SyntaxError, ValueError):
+            return raw
+        return value if isinstance(value, str) else raw
+    raw = raw.split("#", 1)[0].strip()
+    lowered = raw.lower()
+    if lowered in {"true", "yes"}:
+        return True
+    if lowered in {"false", "no"}:
+        return False
+    if re.fullmatch(r"[+-]?\d+", raw):
+        return int(raw)
+    return raw
+
+def load_flat_record(text):
+    try:
+        return json.loads(text)
+    except json.JSONDecodeError:
+        data = {}
+        for line in text.splitlines():
+            if not line.strip() or line.lstrip().startswith("#") or line[:1].isspace():
+                continue
+            key, separator, raw = line.partition(":")
+            if not separator or not raw.strip() or raw.lstrip().startswith("#"):
+                continue
+            data[key.strip()] = scalar(raw)
+        return data
+
+path = pathlib.Path(sys.argv[1])
+deadline = time.monotonic() + 5.0
+while True:
+    try:
+        data = load_flat_record(path.read_text(encoding="utf-8"))
+    except OSError:
+        data = None
+    if (isinstance(data, dict)
+            and type(data.get("notice_revision_seen")) is int
+            and data["notice_revision_seen"] == 1
+            and "consent" not in data):
+        raise SystemExit(0)
+    if time.monotonic() >= deadline:
+        raise SystemExit(1)
+    time.sleep(0.1)' "$1"
 }
 
 recorded_process_has_argv_pair() {
@@ -3145,12 +3191,19 @@ flow_no_dead_controls() {
     press "$OUT/dead-appearance-light.json" Settings.Category.privacy "$OUT/dead-open-privacy-actions.json" \
         || die "Privacy category is not pressable"
     see_main "$OUT/dead-privacy-before.json"
-    local telemetry_before telemetry_after
+    local telemetry_before telemetry_after attempt
     telemetry_before="$(element_field "$OUT/dead-privacy-before.json" Settings.Privacy.TelemetryToggle value)"
     press "$OUT/dead-privacy-before.json" Settings.Privacy.TelemetryToggle "$OUT/dead-privacy-toggle.json" \
         || die "Telemetry toggle is not pressable"
-    see_main "$OUT/dead-privacy-after.json"
-    telemetry_after="$(element_field "$OUT/dead-privacy-after.json" Settings.Privacy.TelemetryToggle value)"
+    telemetry_after=""
+    for attempt in {0..50}; do
+        [[ "$attempt" == 0 ]] || sleep 0.1
+        see_main "$OUT/dead-privacy-after.json"
+        telemetry_after="$(element_field "$OUT/dead-privacy-after.json" Settings.Privacy.TelemetryToggle value)"
+        if [[ -n "$telemetry_after" && "$telemetry_after" != "$telemetry_before" ]]; then
+            break
+        fi
+    done
     [[ -n "$telemetry_before" && -n "$telemetry_after" && "$telemetry_before" != "$telemetry_after" ]] \
         || die "Telemetry toggle accepted AXPress but its value did not change"
     press "$OUT/dead-privacy-after.json" Settings.Privacy.TelemetryToggle "$OUT/dead-privacy-restore.json" \

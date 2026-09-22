@@ -267,7 +267,13 @@ def test_fresh_install_proves_the_telemetry_boundary_with_a_loopback_sink():
     marker_reader = source.split("assert_marker_only_consent() {", 1)[1].split(
         "\n}", 1
     )[0]
-    assert "yaml.safe_load" in marker_reader
+    assert "json.loads" in marker_reader
+    assert "import ast, json, pathlib, re, sys, time" in marker_reader
+    assert "import yaml" not in marker_reader
+    assert 'type(data.get("notice_revision_seen")) is int' in marker_reader
+    assert '"consent" not in data' in marker_reader
+    assert "time.monotonic() + 5.0" in marker_reader
+    assert "time.sleep(0.1)" in marker_reader
     assert "jq" not in marker_reader
     assert "assert_one_telemetry_request launch-notice" in fresh_install
     assert "TelemetryNotice.Acknowledge" in fresh_install
@@ -318,7 +324,7 @@ def test_marker_only_consent_reader_accepts_json_and_yaml(tmp_path):
     for index, contents in enumerate(
         [
             '{"notice_revision_seen": 1}\n',
-            "notice_revision_seen: 1\nfuture:\n  nested: keep\n",
+            "# engine YAML\nnotice_revision_seen: 1 # current disclosure\nfuture:\n  nested: keep\n",
         ]
     ):
         fixture = tmp_path / f"consent-{index}.yaml"
@@ -340,6 +346,18 @@ def test_marker_only_consent_reader_accepts_json_and_yaml(tmp_path):
             text=True,
         )
         assert result.returncode == 0, result.stderr
+
+
+def test_no_dead_controls_polls_for_async_telemetry_toggle_write():
+    source = HARNESS.read_text()
+    flow = source.split("flow_no_dead_controls() {", 1)[1].split("\n}", 1)[0]
+
+    toggle = flow.split(
+        'press "$OUT/dead-privacy-before.json" Settings.Privacy.TelemetryToggle', 1
+    )[1].split('|| die "Telemetry toggle accepted AXPress', 1)[0]
+    assert "for attempt in {0..50}" in toggle
+    assert "sleep 0.1" in toggle
+    assert '"$telemetry_after" != "$telemetry_before"' in toggle
 
 
 def test_fresh_install_baselines_notice_before_acknowledgement():
