@@ -399,6 +399,72 @@ def test_reset_does_not_delete_consent_when_sibling_lock_is_busy(
     assert state.consent_path().read_bytes() == original
 
 
+def test_reset_does_not_delete_consent_when_lock_cannot_open(fake_home, monkeypatch):
+    from rapid_mlx.telemetry import state
+
+    state.record_consent(False, rapid_mlx_version="0.14.4")
+    original = state.consent_path().read_bytes()
+    lock = state.consent_path().with_name("telemetry-consent.yaml.lock")
+    real_open = state.os.open
+
+    def deny_lock(path, flags, mode=0o777):
+        if path == lock:
+            raise PermissionError("lock denied")
+        return real_open(path, flags, mode)
+
+    monkeypatch.setattr(state.os, "open", deny_lock)
+    result = state.reset_state()
+
+    assert result.incomplete
+    assert result.consent_lock.error_types == ("PermissionError",)
+    assert state.consent_path().read_bytes() == original
+
+
+def test_reset_does_not_delete_consent_on_nonretryable_lock_error(
+    fake_home, monkeypatch
+):
+    from rapid_mlx.telemetry import state
+
+    state.record_consent(False, rapid_mlx_version="0.14.4")
+    original = state.consent_path().read_bytes()
+
+    def fail_lock(_fd, operation):
+        if operation == state.fcntl.LOCK_EX | state.fcntl.LOCK_NB:
+            raise OSError(state.errno.EIO, "lock unavailable")
+
+    monkeypatch.setattr(state.fcntl, "flock", fail_lock)
+    result = state.reset_state()
+
+    assert result.incomplete
+    assert result.consent_lock.error_types == ("OSError",)
+    assert state.consent_path().read_bytes() == original
+
+
+def test_reset_retries_busy_lock_then_uses_it(fake_home, monkeypatch):
+    from rapid_mlx.telemetry import state
+
+    state.record_consent(False, rapid_mlx_version="0.14.4")
+    real_flock = state.fcntl.flock
+    attempts = 0
+    sleeps = []
+
+    def busy_once(fd, operation):
+        nonlocal attempts
+        if operation == state.fcntl.LOCK_EX | state.fcntl.LOCK_NB:
+            attempts += 1
+            if attempts == 1:
+                raise BlockingIOError(state.errno.EAGAIN, "busy")
+        return real_flock(fd, operation)
+
+    monkeypatch.setattr(state.fcntl, "flock", busy_once)
+    monkeypatch.setattr(state, "_lock_retry_sleep", sleeps.append)
+    result = state.reset_state()
+
+    assert result.consent_file.succeeded
+    assert attempts == 2
+    assert len(sleeps) == 1
+
+
 def test_reset_state_ignores_marker_enumeration_error(fake_home, monkeypatch):
     from rapid_mlx.telemetry import state
 
