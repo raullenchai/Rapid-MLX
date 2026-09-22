@@ -21,7 +21,7 @@ enum ProductValueKind: Equatable, Sendable {
 @MainActor
 @Observable
 final class TelemetryNoticeCoordinator {
-    typealias Presentation = () -> TelemetryConsent.NoticePresentationResult
+    typealias Presentation = @MainActor () async -> TelemetryConsent.NoticePresentationResult
     typealias ActivationReporter = @MainActor (ProductValueKind) async -> Void
 
     private(set) var isPresented: Bool
@@ -33,7 +33,7 @@ final class TelemetryNoticeCoordinator {
 
     init(
         needsNotice: () -> Bool = { TelemetryConsent.needsNotice() },
-        recordPresentation: @escaping Presentation = { TelemetryConsent.noticePresented() },
+        recordPresentation: @escaping Presentation = { await TelemetryConsent.noticePresented() },
         startTelemetrySession: @escaping () async -> Void = {
             await TelemetrySession.sendStartIfNeeded()
         },
@@ -50,9 +50,11 @@ final class TelemetryNoticeCoordinator {
     func noticeDidAppear() {
         guard isPresented, !presentationAttempted else { return }
         presentationAttempted = true
-        let result = recordPresentation()
-        guard result.persisted, result.uploadAllowedThisRun else { return }
-        Task { await startTelemetrySession() }
+        Task {
+            let result = await recordPresentation()
+            guard result.persisted, result.uploadAllowedThisRun else { return }
+            await startTelemetrySession()
+        }
     }
 
     func acknowledge() {

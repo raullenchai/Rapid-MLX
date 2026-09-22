@@ -85,7 +85,7 @@ struct TelemetryToggleRerenderTests {
             """
         )
         #expect(
-            stripped.contains("TelemetryConsent.record(enabled:enabled)"),
+            stripped.contains("awaitpreviousWrite?.valueawaitTelemetryConsent.record(enabled:enabled)"),
             "The setter must persist the durable choice through the merging consent writer."
         )
     }

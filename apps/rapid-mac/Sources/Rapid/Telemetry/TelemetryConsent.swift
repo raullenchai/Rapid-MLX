@@ -1,6 +1,10 @@
 import Darwin
 import Foundation
 
+// Foundation documents UserDefaults as thread-safe, but does not yet declare
+// the conformance needed to pass an isolated suite to the consent writer.
+extension UserDefaults: @unchecked @retroactive Sendable {}
+
 /// Bridges Desktop telemetry state to rapid-mlx's shared consent record.
 /// JSON is deliberately written into the engine's `.yaml` file: JSON is valid
 /// YAML and lets Desktop preserve fields it does not own without shipping a
@@ -12,6 +16,7 @@ enum TelemetryConsent {
 
     private static let lockRetrySeconds: TimeInterval = 1.5
     private static let lockRetryIntervalMicroseconds: useconds_t = 50_000
+    private static let writer = ConsentWriter()
 
     struct SharedConsent {
         let engine: Bool?
@@ -116,6 +121,20 @@ enum TelemetryConsent {
         defaults: UserDefaults = .standard,
         environment: [String: String] = TelemetryConfig.environment,
         telemetryDirectory: URL = TelemetryIdentity.sharedTelemetryDirectory()
+    ) async -> NoticePresentationResult {
+        await writer.noticePresented(
+            version: version,
+            defaults: defaults,
+            environment: environment,
+            telemetryDirectory: telemetryDirectory
+        )
+    }
+
+    fileprivate static func noticePresentedSynchronously(
+        version: String,
+        defaults: UserDefaults,
+        environment: [String: String],
+        telemetryDirectory: URL
     ) -> NoticePresentationResult {
         guard !isPreCutoffRuntime(version),
               !TelemetryConfig.killSwitchActive(environment: environment),
@@ -177,13 +196,13 @@ enum TelemetryConsent {
     static func record(
         enabled: Bool,
         version: String = TelemetryClient.currentVersion()
-    ) {
+    ) async {
         // Reports captured while off must never become eligible merely because
         // Settings was switched on later.
         if enabled && !TelemetryConfig.isEnabled {
             CrashReporter.discardPendingCrashReports()
         }
-        record(
+        await record(
             enabled: enabled,
             version: version,
             defaults: .standard,
@@ -192,6 +211,20 @@ enum TelemetryConsent {
     }
 
     static func record(
+        enabled: Bool,
+        version: String,
+        defaults: UserDefaults,
+        telemetryDirectory: URL
+    ) async {
+        await writer.record(
+            enabled: enabled,
+            version: version,
+            defaults: defaults,
+            telemetryDirectory: telemetryDirectory
+        )
+    }
+
+    fileprivate static func recordSynchronously(
         enabled: Bool,
         version: String,
         defaults: UserDefaults,
@@ -299,7 +332,8 @@ enum TelemetryConsent {
 
     private static func intValue(_ value: Any?) -> Int? {
         guard let number = value as? NSNumber,
-              CFGetTypeID(number) != CFBooleanGetTypeID()
+              CFGetTypeID(number) != CFBooleanGetTypeID(),
+              !CFNumberIsFloatType(number)
         else { return nil }
         return number.intValue
     }
@@ -456,9 +490,11 @@ enum TelemetryConsent {
     }
 
     private static func yamlScalar(_ value: String) -> Any? {
+        let yaml11True = ["yes", "Yes", "YES", "true", "True", "TRUE", "on", "On", "ON"]
+        let yaml11False = ["no", "No", "NO", "false", "False", "FALSE", "off", "Off", "OFF"]
+        if yaml11True.contains(value) { return true }
+        if yaml11False.contains(value) { return false }
         let lowered = value.lowercased()
-        if ["true", "yes", "on"].contains(lowered) { return true }
-        if ["false", "no", "off"].contains(lowered) { return false }
         if lowered == "null" || value == "~" { return NSNull() }
         if let integer = Int(value) { return integer }
         if let floatingPoint = Double(value), value.contains(".") { return floatingPoint }
@@ -607,5 +643,51 @@ enum TelemetryConsent {
         guard rename(temporaryPath, url.path) == 0 else { return false }
         shouldRemoveTemporary = false
         return true
+    }
+}
+
+/// Serializes consent mutations on a utility queue. The synchronous writer can
+/// wait on a cross-process flock and fsync, so it must never park the UI thread.
+private final class ConsentWriter: @unchecked Sendable {
+    private let queue = DispatchQueue(
+        label: "com.rapidmlx.desktop.telemetry-consent-writer",
+        qos: .utility
+    )
+
+    func noticePresented(
+        version: String,
+        defaults: UserDefaults,
+        environment: [String: String],
+        telemetryDirectory: URL
+    ) async -> TelemetryConsent.NoticePresentationResult {
+        await withCheckedContinuation { continuation in
+            queue.async {
+                continuation.resume(returning: TelemetryConsent.noticePresentedSynchronously(
+                    version: version,
+                    defaults: defaults,
+                    environment: environment,
+                    telemetryDirectory: telemetryDirectory
+                ))
+            }
+        }
+    }
+
+    func record(
+        enabled: Bool,
+        version: String,
+        defaults: UserDefaults,
+        telemetryDirectory: URL
+    ) async {
+        await withCheckedContinuation { continuation in
+            queue.async {
+                TelemetryConsent.recordSynchronously(
+                    enabled: enabled,
+                    version: version,
+                    defaults: defaults,
+                    telemetryDirectory: telemetryDirectory
+                )
+                continuation.resume()
+            }
+        }
     }
 }

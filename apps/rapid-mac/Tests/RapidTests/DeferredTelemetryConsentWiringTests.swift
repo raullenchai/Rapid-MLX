@@ -127,6 +127,20 @@ struct TelemetryNoticeWiringTests {
         #expect(settings.contains("telemetry is on by default"))
         #expect(settings.contains("https://rapidmlx.com/docs/telemetry"))
     }
+
+    @Test("The shipped privacy policy states the default-on notice contract")
+    func privacyDisclosureContract() throws {
+        let privacy = try Self.source("PRIVACY.md")
+        let normalized = privacy.split(whereSeparator: \.isWhitespace).joined(separator: " ")
+        for phrase in [
+            "on by default", "0.15.0", "acknowledgement notice",
+            "RAPID_MLX_TELEMETRY=0", "DO_NOT_TRACK=1",
+        ] {
+            #expect(normalized.contains(phrase), "missing privacy phrase: \(phrase)")
+        }
+        #expect(!privacy.contains("Default: **off until you make an"))
+        #expect(!privacy.contains("only after the same opt-in"))
+    }
 }
 
 private final class ActivationVisionReplyProtocol: URLProtocol, @unchecked Sendable {

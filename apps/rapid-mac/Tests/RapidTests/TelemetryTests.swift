@@ -243,14 +243,14 @@ final class TelemetryTests {
     // MARK: - Shared consent
 
     @Test("accepting records desktop opt-in and engine-compatible shared state")
-    func consentAcceptsAndSharesState() throws {
+    func consentAcceptsAndSharesState() async throws {
         let defaults = freshDefaults()
         let directory = try temporaryTelemetryDirectory("consent-yes")
         defer { try? FileManager.default.removeItem(at: directory) }
         try Data("notice_revision_seen: 1\n".utf8)
             .write(to: directory.appendingPathComponent("telemetry-consent.yaml"))
 
-        TelemetryConsent.record(
+        await TelemetryConsent.record(
             enabled: true,
             version: "0.10.8",
             defaults: defaults,
@@ -272,12 +272,12 @@ final class TelemetryTests {
     }
 
     @Test("declining records consent without creating a client ID")
-    func consentDeclinesWithoutIdentity() throws {
+    func consentDeclinesWithoutIdentity() async throws {
         let defaults = freshDefaults()
         let directory = try temporaryTelemetryDirectory("consent-no")
         defer { try? FileManager.default.removeItem(at: directory) }
 
-        TelemetryConsent.record(
+        await TelemetryConsent.record(
             enabled: false,
             version: "0.10.8",
             defaults: defaults,

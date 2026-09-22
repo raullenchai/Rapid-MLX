@@ -89,6 +89,66 @@ struct TelemetryConsentV2Tests {
         #expect(FileManager.default.fileExists(atPath: lock.path))
     }
 
+    @MainActor
+    @Test("A lock held by another process does not block the main actor")
+    func busyLockDoesNotBlockMainActor() async throws {
+        let dir = try directory("main-actor-lock")
+        defer { try? FileManager.default.removeItem(at: dir) }
+        let lockURL = dir.appendingPathComponent("telemetry-consent.yaml.lock")
+        let locker = Process()
+        let ready = Pipe()
+        locker.executableURL = URL(fileURLWithPath: "/usr/bin/python3")
+        locker.arguments = [
+            "-c",
+            "import fcntl,sys,time; f=open(sys.argv[1], 'a+'); fcntl.flock(f, fcntl.LOCK_EX); print('ready', flush=True); time.sleep(5)",
+            lockURL.path,
+        ]
+        locker.environment = [
+            "HOME": NSHomeDirectory(),
+            "PATH": "/usr/bin:/bin",
+            "USER": "rc",
+        ]
+        locker.standardOutput = ready
+        locker.standardError = Pipe()
+        try locker.run()
+        defer {
+            if locker.isRunning { locker.terminate() }
+        }
+        let signal = ready.fileHandleForReading.readData(ofLength: 6)
+        #expect(String(decoding: signal, as: UTF8.self) == "ready\n")
+
+        var sessionStarted = false
+        let coordinator = TelemetryNoticeCoordinator(
+            needsNotice: { true },
+            recordPresentation: {
+                await TelemetryConsent.noticePresented(
+                    version: "0.15.0",
+                    defaults: self.defaults("main-actor-lock"),
+                    environment: [:],
+                    telemetryDirectory: dir
+                )
+            },
+            startTelemetrySession: { sessionStarted = true }
+        )
+        let started = ContinuousClock.now
+        coordinator.noticeDidAppear()
+        let elapsed = started.duration(to: .now)
+        #expect(elapsed < .milliseconds(50))
+
+        locker.terminate()
+        let lockerDeadline = ContinuousClock.now.advanced(by: .seconds(2))
+        while locker.isRunning, ContinuousClock.now < lockerDeadline {
+            try await Task.sleep(for: .milliseconds(10))
+        }
+        #expect(!locker.isRunning)
+        let deadline = ContinuousClock.now.advanced(by: .seconds(3))
+        while !sessionStarted, ContinuousClock.now < deadline {
+            try await Task.sleep(for: .milliseconds(10))
+        }
+        #expect(sessionStarted)
+        #expect(FileManager.default.fileExists(atPath: consentURL(dir).path))
+    }
+
     @Test("Disclosure marker is raised and never lowered")
     func markerNeverLowers() throws {
         let dir = try directory("raise")
@@ -101,11 +161,11 @@ struct TelemetryConsentV2Tests {
     }
 
     @Test("Settings writes both consent scopes and never touches the notice marker")
-    func settingsWritesBothScopes() throws {
+    func settingsWritesBothScopes() async throws {
         let dir = try directory("settings")
         defer { try? FileManager.default.removeItem(at: dir) }
         try writeJSON(["notice_revision_seen": 9, "junk": "keep"], to: consentURL(dir))
-        TelemetryConsent.record(
+        await TelemetryConsent.record(
             enabled: false, version: "0.15.0rc1",
             defaults: defaults("settings"), telemetryDirectory: dir
         )
@@ -118,11 +178,11 @@ struct TelemetryConsentV2Tests {
     }
 
     @Test("Settings on stays locally dark when a presented notice could not persist its marker")
-    func settingsOnCannotBypassMissingMarker() throws {
+    func settingsOnCannotBypassMissingMarker() async throws {
         let dir = try directory("settings-no-marker")
         defer { try? FileManager.default.removeItem(at: dir) }
         let userDefaults = defaults("settings-no-marker")
-        TelemetryConsent.record(
+        await TelemetryConsent.record(
             enabled: true, version: "0.15.0", defaults: userDefaults, telemetryDirectory: dir
         )
         #expect(!TelemetryConfig.isEnabled(defaults: userDefaults))
@@ -133,7 +193,7 @@ struct TelemetryConsentV2Tests {
     }
 
     @Test(arguments: ["0.14.0", "0.14.9rc1"])
-    func legacyRefusalMigratesAfterPresentation(_ recordedVersion: String) throws {
+    func legacyRefusalMigratesAfterPresentation(_ recordedVersion: String) async throws {
         let dir = try directory("legacy")
         defer { try? FileManager.default.removeItem(at: dir) }
         let userDefaults = defaults("legacy")
@@ -145,7 +205,7 @@ struct TelemetryConsentV2Tests {
         ], to: consentURL(dir))
 
         #expect(TelemetryConsent.needsNotice(environment: [:], telemetryDirectory: dir))
-        let result = TelemetryConsent.noticePresented(
+        let result = await TelemetryConsent.noticePresented(
             version: "0.15.0", defaults: userDefaults, environment: [:], telemetryDirectory: dir
         )
         #expect(result == .init(persisted: true, uploadAllowedThisRun: false))
@@ -159,7 +219,7 @@ struct TelemetryConsentV2Tests {
     }
 
     @Test(arguments: ["0.15.0", "0.15.0rc1", nil, "0.0.0"] as [String?])
-    func currentOrUnknownRefusalIsByteIdentical(_ recordedVersion: String?) throws {
+    func currentOrUnknownRefusalIsByteIdentical(_ recordedVersion: String?) async throws {
         let dir = try directory("current")
         defer { try? FileManager.default.removeItem(at: dir) }
         var record: [String: Any] = ["consent": false, "desktop_consent": false]
@@ -168,7 +228,7 @@ struct TelemetryConsentV2Tests {
         let before = try Data(contentsOf: consentURL(dir))
 
         #expect(!TelemetryConsent.needsNotice(environment: [:], telemetryDirectory: dir))
-        let result = TelemetryConsent.noticePresented(
+        let result = await TelemetryConsent.noticePresented(
             version: "0.15.0", defaults: defaults("current"),
             environment: [:], telemetryDirectory: dir
         )
@@ -194,11 +254,11 @@ struct TelemetryConsentV2Tests {
     }
 
     @Test("Absent consent gets only the disclosure marker")
-    func absentConsentGetsMarkerOnly() throws {
+    func absentConsentGetsMarkerOnly() async throws {
         let dir = try directory("absent")
         defer { try? FileManager.default.removeItem(at: dir) }
         let userDefaults = defaults("absent")
-        let result = TelemetryConsent.noticePresented(
+        let result = await TelemetryConsent.noticePresented(
             version: "0.15.0", defaults: userDefaults, environment: [:], telemetryDirectory: dir
         )
         #expect(result == .init(persisted: true, uploadAllowedThisRun: true))
@@ -210,7 +270,7 @@ struct TelemetryConsentV2Tests {
     }
 
     @Test(arguments: ["0.14.9", "0.15.0", "0.15.0rc1"])
-    func runningVersionGatesTheV2Path(_ runningVersion: String) throws {
+    func runningVersionGatesTheV2Path(_ runningVersion: String) async throws {
         let dir = try directory("runtime-cutoff-\(runningVersion)")
         defer { try? FileManager.default.removeItem(at: dir) }
         let userDefaults = defaults("runtime-cutoff-\(runningVersion)")
@@ -227,7 +287,7 @@ struct TelemetryConsentV2Tests {
         let needsNotice = TelemetryConsent.needsNotice(
             version: runningVersion, environment: [:], telemetryDirectory: dir
         )
-        let result = TelemetryConsent.noticePresented(
+        let result = await TelemetryConsent.noticePresented(
             version: runningVersion, defaults: userDefaults,
             environment: [:], telemetryDirectory: dir
         )
@@ -246,10 +306,10 @@ struct TelemetryConsentV2Tests {
     }
 
     @Test("Settings keeps writing plain consent below the v2 cutoff")
-    func settingsStillWritesBelowCutoff() throws {
+    func settingsStillWritesBelowCutoff() async throws {
         let dir = try directory("pre-cutoff-settings")
         defer { try? FileManager.default.removeItem(at: dir) }
-        TelemetryConsent.record(
+        await TelemetryConsent.record(
             enabled: false, version: "0.14.9",
             defaults: defaults("pre-cutoff-settings"), telemetryDirectory: dir
         )
@@ -261,7 +321,7 @@ struct TelemetryConsentV2Tests {
     }
 
     @Test("Kill switches suppress both notice and marker write")
-    func killSwitchesDoNotWrite() throws {
+    func killSwitchesDoNotWrite() async throws {
         for environment in [
             ["DO_NOT_TRACK": "1"],
             ["RAPID_MLX_TELEMETRY": "0"],
@@ -274,7 +334,7 @@ struct TelemetryConsentV2Tests {
             #expect(!TelemetryConsent.needsNotice(
                 environment: environment, telemetryDirectory: dir
             ))
-            let result = TelemetryConsent.noticePresented(
+            let result = await TelemetryConsent.noticePresented(
                 version: "0.15.0", defaults: defaults("kill"),
                 environment: environment, telemetryDirectory: dir
             )
@@ -284,7 +344,7 @@ struct TelemetryConsentV2Tests {
     }
 
     @Test("Presentation with an unwritable destination leaves existing bytes untouched")
-    func failedPresentationDoesNotWrite() throws {
+    func failedPresentationDoesNotWrite() async throws {
         let parent = try directory("failed-presentation")
         defer { try? FileManager.default.removeItem(at: parent) }
         let notADirectory = parent.appendingPathComponent("blocked")
@@ -292,7 +352,7 @@ struct TelemetryConsentV2Tests {
         try original.write(to: notADirectory)
 
         #expect(TelemetryConsent.needsNotice(environment: [:], telemetryDirectory: notADirectory))
-        let result = TelemetryConsent.noticePresented(
+        let result = await TelemetryConsent.noticePresented(
             version: "0.15.0", defaults: defaults("failed-presentation"),
             environment: [:], telemetryDirectory: notADirectory
         )
@@ -321,8 +381,12 @@ struct TelemetryConsentV2Tests {
     }
 
     @Test(arguments: [
-        ("yes", true), ("YES", true), ("on", true), ("On", true),
-        ("no", false), ("NO", false), ("off", false), ("Off", false),
+        ("yes", true), ("Yes", true), ("YES", true),
+        ("true", true), ("True", true), ("TRUE", true),
+        ("on", true), ("On", true), ("ON", true),
+        ("no", false), ("No", false), ("NO", false),
+        ("false", false), ("False", false), ("FALSE", false),
+        ("off", false), ("Off", false), ("OFF", false),
     ])
     func yaml11BooleansMatchPython(_ scalar: String, _ expected: Bool) throws {
         let dir = try directory("yaml11-\(scalar)")
@@ -332,8 +396,27 @@ struct TelemetryConsentV2Tests {
         #expect(shared.engine == expected)
     }
 
+    @Test(arguments: ["nO", "TrUe", "YeS", "oN", "fAlSe"])
+    func yaml11MixedCaseWordsAreStringsLikePyYAML(_ scalar: String) throws {
+        let dir = try directory("yaml11-string-\(scalar)")
+        defer { try? FileManager.default.removeItem(at: dir) }
+        try write("consent: \(scalar)\n", to: dir)
+        let shared = try #require(TelemetryConsent.readSharedConsent(at: consentURL(dir)))
+        #expect(shared.engine == nil)
+    }
+
+    @Test(arguments: ["1.0", "1.5", "true"])
+    func noticeMarkerRequiresAnIntegerScalar(_ scalar: String) throws {
+        let dir = try directory("integer-marker-\(scalar)")
+        defer { try? FileManager.default.removeItem(at: dir) }
+        try write("notice_revision_seen: \(scalar)\n", to: dir)
+        let shared = try #require(TelemetryConsent.readSharedConsent(at: consentURL(dir)))
+        #expect(shared.noticeRevisionSeen == nil)
+        #expect(TelemetryConsent.needsNotice(environment: [:], telemetryDirectory: dir))
+    }
+
     @Test(arguments: ["", "# comments only\n", "consent: [unclosed\n"])
-    func unreadableDocumentsNeverBecomeAbsent(_ contents: String) throws {
+    func unreadableDocumentsNeverBecomeAbsent(_ contents: String) async throws {
         let dir = try directory("unreadable")
         defer { try? FileManager.default.removeItem(at: dir) }
         try write(contents, to: dir)
@@ -343,7 +426,7 @@ struct TelemetryConsentV2Tests {
         #expect(!TelemetryConsent.needsNotice(
             version: "0.15.0", environment: [:], telemetryDirectory: dir
         ))
-        let result = TelemetryConsent.noticePresented(
+        let result = await TelemetryConsent.noticePresented(
             version: "0.15.0", defaults: defaults("unreadable"),
             environment: [:], telemetryDirectory: dir
         )
@@ -378,11 +461,11 @@ struct TelemetryConsentV2Tests {
     }
 
     @Test("Consent file is 0600 and directory is 0700 after atomic replacement")
-    func secureModes() throws {
+    func secureModes() async throws {
         let dir = try directory("modes")
         defer { try? FileManager.default.removeItem(at: dir) }
         try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: dir.path)
-        TelemetryConsent.record(
+        await TelemetryConsent.record(
             enabled: false, version: "0.15.0", defaults: defaults("modes"), telemetryDirectory: dir
         )
         let fileMode = try #require(
@@ -412,7 +495,7 @@ struct TelemetryConsentV2Tests {
     }
 
     @Test("Simulated launch evidence shows merge and current-refusal no-op")
-    func simulatedLaunchEvidence() throws {
+    func simulatedLaunchEvidence() async throws {
         let root = URL(fileURLWithPath: NSTemporaryDirectory())
             .appendingPathComponent("rapid-consent-v2-evidence-\(UUID().uuidString)")
         defer { try? FileManager.default.removeItem(at: root) }
@@ -427,7 +510,7 @@ struct TelemetryConsentV2Tests {
             "schema_version": 1,
         ], to: consentURL(mergedDirectory))
         let mergeBefore = try String(contentsOf: consentURL(mergedDirectory), encoding: .utf8)
-        _ = TelemetryConsent.noticePresented(
+        _ = await TelemetryConsent.noticePresented(
             version: "0.15.0", defaults: defaults("evidence-merge"),
             environment: [:], telemetryDirectory: mergedDirectory
         )
@@ -447,7 +530,7 @@ struct TelemetryConsentV2Tests {
             "schema_version": 1,
         ], to: consentURL(refusalDirectory))
         let refusalBefore = try Data(contentsOf: consentURL(refusalDirectory))
-        _ = TelemetryConsent.noticePresented(
+        _ = await TelemetryConsent.noticePresented(
             version: "0.15.0", defaults: defaults("evidence-refusal"),
             environment: [:], telemetryDirectory: refusalDirectory
         )

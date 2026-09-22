@@ -729,6 +729,7 @@ struct SettingsView: View {
     /// Seeded once and re-read in ``onAppear`` so the launch notice's
     /// default-on transition is reflected if Settings was already constructed.
     @State private var telemetryEnabled = TelemetryConfig.isEnabled
+    @State private var telemetryConsentWrite: Task<Void, Never>?
 
     private var telemetryEnabledBinding: Binding<Bool> {
         Binding(
@@ -739,7 +740,11 @@ struct SettingsView: View {
                 // reintroduce the same problem the moment a write is deferred
                 // or rejected.
                 telemetryEnabled = enabled
-                TelemetryConsent.record(enabled: enabled)
+                let previousWrite = telemetryConsentWrite
+                telemetryConsentWrite = Task {
+                    await previousWrite?.value
+                    await TelemetryConsent.record(enabled: enabled)
+                }
             }
         )
     }
