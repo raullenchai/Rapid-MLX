@@ -216,6 +216,37 @@ def test_text_model_image_rejection_emits_capability(anthropic_client, monkeypat
     assert calls == [("image_input_unsupported", "llm")]
 
 
+def test_anthropic_engine_failure_emits_failed_inference(anthropic_client, monkeypatch):
+    from rapid_mlx.telemetry import inference
+
+    calls: list[dict[str, object]] = []
+
+    async def fail_chat(*_args, **_kwargs):
+        raise RuntimeError("generation failed")
+
+    monkeypatch.setattr(anthropic_client.engine, "chat", fail_chat)
+    monkeypatch.setattr(
+        inference, "emit_completed_request", lambda **kwargs: calls.append(kwargs)
+    )
+
+    with pytest.raises(RuntimeError, match="generation failed"):
+        anthropic_client.client.post(
+            "/v1/messages",
+            headers={"x-api-key": "test-secret"},
+            json=_messages_payload(),
+        )
+
+    assert calls == [
+        {
+            "model": "<custom>",
+            "endpoint": "/v1/messages",
+            "caller_agent": "testclient",
+            "caller_client": None,
+            "result": "failed",
+        }
+    ]
+
+
 def test_anthropic_messages_requires_api_key(anthropic_client):
     client = anthropic_client.client
     engine = anthropic_client.engine

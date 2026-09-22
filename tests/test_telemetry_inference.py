@@ -201,6 +201,35 @@ def test_completed_inference_failure_does_not_claim_active_day(monkeypatch):
     assert active_days == []
 
 
+class _TypeErrorEndpoint:
+    def decode(self, *_args):
+        raise TypeError("malformed non-string endpoint")
+
+
+@pytest.mark.parametrize("endpoint", [None, _TypeErrorEndpoint()])
+def test_completed_inference_with_non_string_endpoint_falls_back_to_other(
+    monkeypatch, endpoint
+):
+    from rapid_mlx.telemetry import inference
+
+    records: list[str] = []
+    monkeypatch.setattr(inference.track_module, "_upload_allowed", lambda: True)
+    monkeypatch.setattr(
+        inference.store, "record", lambda key: records.append(key) or None
+    )
+
+    inference.emit_completed_request(
+        model="<custom>",
+        endpoint=endpoint,
+        caller_agent=None,
+        caller_client=None,
+        result="failed",
+    )
+    inference._QUEUE.join()
+
+    assert records == ["inf|<custom>|other|unknown|failed"]
+
+
 @pytest.mark.asyncio
 @pytest.mark.parametrize("eligible_case", ["unofficial", "opted_out"])
 async def test_ineligible_completed_request_creates_no_home_state(
@@ -823,6 +852,39 @@ async def test_legacy_completion_multi_sample_rejection_emits_capability(monkeyp
         await completions.create_completion(request, SimpleNamespace(headers={}))
 
     assert calls == [("multi_sample_unsupported", "other")]
+
+
+@pytest.mark.asyncio
+async def test_chat_multi_sample_rejection_emits_capability(monkeypatch):
+    from fastapi import HTTPException
+
+    from rapid_mlx.api.models import ChatCompletionRequest
+    from rapid_mlx.routes import chat
+    from rapid_mlx.telemetry import inference
+
+    engine = SimpleNamespace(modality="text", supports_image_input=False)
+    calls: list[tuple[str, str]] = []
+    monkeypatch.setattr(
+        inference,
+        "emit_capability_rejected",
+        lambda capability, *, model_type="other": calls.append(
+            (capability, model_type)
+        ),
+    )
+    request = ChatCompletionRequest(
+        model="test-model", messages=[{"role": "user", "content": "hello"}]
+    ).model_copy(update={"n": 2})
+
+    with pytest.raises(HTTPException, match="n > 1"):
+        await chat._create_chat_completion_impl(
+            request,
+            _request(),
+            engine,
+            _commit_state=[False],
+            _admission_acquired=[False],
+        )
+
+    assert calls == [("multi_sample_unsupported", "llm")]
 
 
 @pytest.mark.asyncio
