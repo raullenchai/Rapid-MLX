@@ -36,6 +36,10 @@ FAKE_IMAGE_ALIAS="fake-image-alias"
 # (16/24/32 GB hosts fold qwen3.5-4b into the recommended row instead).
 GOLDEN_RAM_GB=8
 GOLDEN_BRAND="Apple M1"
+# The telemetry v2 notice begins at 0.15.0. Pin the throwaway fresh-install
+# bundle to the cutoff so this baseline cannot silently disappear while the
+# source Info.plist still carries an older release version in CI.
+FRESH_INSTALL_APP_VERSION="0.15.0"
 UPDATE_BASELINES=0
 FLOW="all"
 KEEP=0
@@ -804,8 +808,14 @@ start_persona() {
     PERSONA_ENV=("$@")
     PERSONA="$(mktemp -d "/tmp/rapid-golden-${name}.XXXXXX")"
     mkdir -p "$OUT"
-    "$ROOT/scripts/dogfood-isolate.sh" "$APP_SOURCE" "$PERSONA" \
-        > "$OUT/isolated-app.txt" 2> "$OUT/isolate.log"
+    if [[ "$name" == "fresh-install" ]]; then
+        RAPID_TEST_APP_VERSION="$FRESH_INSTALL_APP_VERSION" \
+            "$ROOT/scripts/dogfood-isolate.sh" "$APP_SOURCE" "$PERSONA" \
+            > "$OUT/isolated-app.txt" 2> "$OUT/isolate.log"
+    else
+        "$ROOT/scripts/dogfood-isolate.sh" "$APP_SOURCE" "$PERSONA" \
+            > "$OUT/isolated-app.txt" 2> "$OUT/isolate.log"
+    fi
     local isolated_app
     isolated_app="$(cat "$OUT/isolated-app.txt")"
     BUNDLE_ID="$(/usr/libexec/PlistBuddy -c 'Print :CFBundleIdentifier' "$isolated_app/Contents/Info.plist")"

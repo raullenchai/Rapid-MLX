@@ -296,6 +296,18 @@ def test_fresh_install_proves_the_telemetry_boundary_with_a_loopback_sink():
     assert "activation_seen_desktop_first_chat_reply" in fresh_install
 
 
+def test_fresh_install_pins_the_notice_cutoff_version_in_the_isolated_copy():
+    source = HARNESS.read_text()
+    start_persona = source.split("start_persona() {", 1)[1].split("\n}", 1)[0]
+    dogfood = DOGFOOD.read_text()
+
+    assert 'FRESH_INSTALL_APP_VERSION="0.15.0"' in source
+    assert '[[ "$name" == "fresh-install" ]]' in start_persona
+    assert 'RAPID_TEST_APP_VERSION="$FRESH_INSTALL_APP_VERSION"' in start_persona
+    assert "Set :CFBundleShortVersionString $RAPID_TEST_APP_VERSION" in dogfood
+    assert "test copy only" in dogfood
+
+
 def test_marker_only_consent_reader_accepts_json_and_yaml(tmp_path):
     source = HARNESS.read_text()
     helper_body = source.split("assert_marker_only_consent() {", 1)[1].split("\n}", 1)[

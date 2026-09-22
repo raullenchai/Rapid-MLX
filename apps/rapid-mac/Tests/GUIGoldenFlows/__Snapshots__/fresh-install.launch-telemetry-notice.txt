@@ -6,6 +6,7 @@ AXApplication title="Rapid-MLX"
         AXImage id="chart.bar.xaxis" desc="chart.bar.xaxis" enabled=true
         AXStaticText value=text enabled=true
         AXStaticText value=text enabled=true
+          AXLink subrole=AXTextLink title="https://rapidmlx.com/docs/telemetry"
         AXButton id="TelemetryNotice.Acknowledge" desc="Got it" enabled=true
       AXSplitGroup id="main, SidebarNavigationSplitView"
         AXGroup subrole=AXHostingView
