@@ -353,3 +353,34 @@ def test_dense_alias_hf_paths_have_no_moe_marker(alias: str) -> None:
             f"MoE marker {marker!r} but the alias is tagged as non-hybrid. "
             f"Either the JSON flag is wrong or the alias is misnamed."
         )
+
+
+# Attention-only families whose "hybrid" is sliding-window + global
+# ATTENTION (stock ``KVCache`` + ``RotatingKVCache``), not a recurrent
+# (GDN / Mamba, ``ArraysCache``) mix. ``is_hybrid`` in this registry means
+# the latter — it routes the model onto the serialized prefix-boundary
+# snapshot lane — so these must stay ``false`` and ride the sliding-window
+# lane instead (see ``memory_cache._layer_forbids_trim``).
+SLIDING_WINDOW_ATTENTION_ALIASES = (
+    "gpt-oss-120b",
+    "gemma-4-31b-4bit",
+    "deepseek-v4-flash-0731-mxfp4",
+    "mimo-v2.6-flash-4bit",
+)
+
+
+@pytest.mark.parametrize("alias", SLIDING_WINDOW_ATTENTION_ALIASES)
+def test_sliding_window_attention_aliases_are_not_hybrid(alias: str) -> None:
+    """Sliding-window + global attention is not the ``is_hybrid`` contract.
+
+    ``is_hybrid`` selects the linear-attention / Mamba (``ArraysCache``)
+    handling; a model with only ``KVCache`` / ``RotatingKVCache`` layers
+    must not be routed there, or it loses the ordinary paged / rollback
+    prefix-cache path for no reason.
+    """
+    p = list_profiles()[alias]
+    assert not p.is_hybrid, (
+        f"{alias}: is_hybrid=True — this family mixes sliding-window and "
+        f"global attention (KVCache/RotatingKVCache only); it has no recurrent "
+        f"layers and must not be classified as hybrid."
+    )
