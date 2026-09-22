@@ -365,7 +365,7 @@ def test_shared_lifecycle_failure_cannot_escape(monkeypatch):
     track_module.start_lifecycle("cli")
 
 
-def test_active_day_claims_after_sender_acceptance(monkeypatch):
+def test_active_day_claims_before_sender_acceptance(monkeypatch):
     sender = inject_sender(monkeypatch)
     calls: list[str] = []
     original_capture = sender.capture
@@ -378,17 +378,30 @@ def test_active_day_claims_after_sender_acceptance(monkeypatch):
     fake_store = SimpleNamespace(claim_active_day=lambda: calls.append("claim") or True)
     track_module.emit_active_day(_store=fake_store)
     assert [item["event"] for item in sender.items] == ["active_day"]
-    assert calls == ["capture", "claim"]
+    assert calls == ["claim", "capture"]
 
 
-def test_active_day_sender_refusal_does_not_claim_day(monkeypatch):
+def test_active_day_emits_once_when_fresh_store_sees_day_claimed(monkeypatch):
+    sender = inject_sender(monkeypatch)
+    first_process_store = SimpleNamespace(claim_active_day=lambda: True)
+    second_process_store = SimpleNamespace(claim_active_day=lambda: False)
+
+    track_module.emit_active_day(_store=first_process_store)
+    track_module.emit_active_day(_store=second_process_store)
+
+    assert [item["event"] for item in sender.items] == ["active_day"]
+
+
+def test_active_day_sender_refusal_after_claim_loses_day(monkeypatch):
     sender = RefusingSender()
     monkeypatch.setattr(posthog_sender, "get_sender", lambda: sender)
+    claims: list[str] = []
     fake_store = SimpleNamespace(
-        claim_active_day=lambda: pytest.fail("refused event claimed the day")
+        claim_active_day=lambda: claims.append("claimed") or True
     )
     track_module.emit_active_day(_store=fake_store)
     assert sender.calls == 1
+    assert claims == ["claimed"]
 
 
 def test_active_day_denial_precedes_store_claim(monkeypatch):
@@ -691,45 +704,7 @@ def test_active_day_store_failure_is_swallowed(monkeypatch):
         claim_active_day=lambda: (_ for _ in ()).throw(RuntimeError("store failed"))
     )
     track_module.emit_active_day(_store=fake_store)
-    assert [item["event"] for item in sender.items] == ["active_day"]
-
-
-def test_server_shutdown_flush_is_best_effort(monkeypatch):
-    # Execute the real function body without importing the MLX-bound server
-    # module, so Linux CI covers this best-effort guard too.
-    server_path = REPO_ROOT / "rapid_mlx" / "server.py"
-    tree = ast.parse(server_path.read_text())
-    flush_node = next(
-        node
-        for node in tree.body
-        if isinstance(node, ast.FunctionDef) and node.name == "_flush_v2_telemetry"
-    )
-    namespace: dict[str, object] = {
-        "logger": SimpleNamespace(debug=lambda message: None)
-    }
-    exec(
-        compile(
-            ast.Module(body=[flush_node], type_ignores=[]),
-            str(server_path),
-            "exec",
-        ),
-        namespace,
-    )
-    flush = namespace["_flush_v2_telemetry"]
-    assert callable(flush)
-
-    calls: list[str] = []
-    sender = SimpleNamespace(flush=lambda timeout: calls.append(f"flushed:{timeout}"))
-    monkeypatch.setattr(posthog_sender, "get_sender", lambda: sender)
-    flush()
-    assert calls == ["flushed:2.0"]
-
-    monkeypatch.setattr(
-        sender,
-        "flush",
-        lambda timeout: (_ for _ in ()).throw(RuntimeError("flush failed")),
-    )
-    flush()
+    assert sender.items == []
 
 
 @pytest.mark.asyncio

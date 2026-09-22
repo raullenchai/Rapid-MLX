@@ -195,12 +195,14 @@ def start_lifecycle(surface: str) -> None:
 
 
 def emit_active_day(*, _store: _ActiveDayStore = store) -> None:
-    """Record today's claim only when the sender accepts ``active_day``."""
+    """Claim before capture so only one process emits per install and UTC day.
+
+    Claim-first ordering is deliberate: if capture is refused after the claim,
+    that day's event is lost rather than duplicated.
+    """
     try:
-        if not _upload_allowed():
-            return
-        if _track_accepted("active_day", {}):
-            _store.claim_active_day()
+        if _upload_allowed() and _store.claim_active_day() is True:
+            track("active_day", {})
     except Exception:
         return
 
