@@ -546,7 +546,7 @@ target.write_text(src)
 print("==> mflux torch imports deferred into the 3 torch-only loading modes")
 PY
 
-# mflux 0.19.0's PiD checkpoint converter is imported transitively by every
+# mflux 0.20.0's PiD checkpoint converter is imported transitively by every
 # Qwen Image model even though it is only used for the separate PiD upscaler.
 # Keep that optional PyTorch conversion path lazy too, otherwise selecting the
 # bundled qwen-image alias fails before model construction with
@@ -586,6 +586,7 @@ import sys
 
 importlib.import_module("mflux.models.common.weights.loading.weight_loader")
 importlib.import_module("mflux.models.qwen.variants.txt2img.qwen_image")
+importlib.import_module("mflux.models.qwen21.variants.txt2img.qwen_image_21")
 importlib.import_module("rapid_mlx.image.bonsai_runtime")
 if "torch" in sys.modules:
     raise SystemExit("ERR: mflux still pulls torch at import time")

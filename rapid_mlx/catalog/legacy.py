@@ -23,6 +23,8 @@ def _availability(*, desktop: bool = True) -> dict[str, bool]:
 
 def _image_operations(repo_id: str) -> list[str]:
     folded = repo_id.casefold().replace("_", "-")
+    if "qwen-image-2.1" in folded:
+        return ["text_to_image", "image_to_image"]
     if "flux2" in folded or "flux.2" in folded or "klein" in folded:
         return ["text_to_image", "image_to_image"]
     if "qwen-image-edit" in folded:

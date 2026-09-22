@@ -1448,6 +1448,7 @@ IMAGE_MODEL_REVISIONS: dict[str, str] = {
     "mflux-community/flux-1-schnell-mflux-q4": "bcdbe817ad51175959b2e691e64eca626db30558",
     "mflux-community/flux2-klein-4b-mflux-bf16": "4d8e1bae8eb47c7766705de2cda7dabd6cc4ba67",
     "mflux-community/qwen-image-mflux-q6": "c628fe4392d963557c3013c2709e6d3b67bca79d",
+    "Qwen/Qwen-Image-2.1": "790c92633540aa0cb11d9abf19eb46d861714758",
     "OsaurusAI/Qwen-Image-Edit-mflux-q8": "a458969f2a612433cf036bfc3d8d818ceba29fab",
     HIDREAM_O1_REPO: HIDREAM_O1_REVISION,
     SDXL_REPO: SDXL_REVISION,
@@ -1526,6 +1527,10 @@ def pinned_image_snapshot(repo_id: str) -> str | None:
 _MFLUX_EXTRA_TOKENIZERS: dict[str, tuple[str, ...]] = {
     "mflux-community/flux-1-schnell-mflux-q4": ("tokenizer_2",),
 }
+_MFLUX_TOKENIZER_DIRS: dict[str, tuple[str, ...]] = {
+    # Official Qwen 2.1 stores its Qwen3-VL tokenizer under processor/.
+    "Qwen/Qwen-Image-2.1": ("processor",),
+}
 _MFLUX_EXTRA_COMPONENTS: dict[str, tuple[str, ...]] = {
     "mflux-community/flux-1-schnell-mflux-q4": ("text_encoder_2",),
 }
@@ -1538,6 +1543,14 @@ _MFLUX_SINGLE_FILE_COMPONENTS: dict[str, dict[str, str]] = {
     "mflux-community/flux2-klein-4b-mflux-bf16": {
         "transformer": "diffusion_pytorch_model.safetensors",
         "vae": "diffusion_pytorch_model.safetensors",
+    },
+    "Qwen/Qwen-Image-2.1": {
+        "vae": "diffusion_pytorch_model.safetensors",
+    },
+}
+_MFLUX_INDEX_FILES: dict[str, dict[str, str]] = {
+    "Qwen/Qwen-Image-2.1": {
+        "transformer": "diffusion_pytorch_model.safetensors.index.json",
     },
 }
 
@@ -1713,7 +1726,9 @@ def mflux_missing_weights(repo_id: str) -> list[str] | None:
     # All supported mflux families use these common components. Some
     # checkpoints add family-specific encoders/tokenizers, which are part of
     # the same completeness contract.
-    tokenizers = ("tokenizer",) + _MFLUX_EXTRA_TOKENIZERS.get(repo_id, ())
+    tokenizers = _MFLUX_TOKENIZER_DIRS.get(
+        repo_id, ("tokenizer",)
+    ) + _MFLUX_EXTRA_TOKENIZERS.get(repo_id, ())
     for tokenizer in tokenizers:
         tokenizer_rel = f"{tokenizer}/tokenizer.json"
         if not _is_nonempty_repo_file(os.path.join(snap_dir, tokenizer_rel)):
@@ -1730,8 +1745,11 @@ def mflux_missing_weights(repo_id: str) -> list[str] | None:
             if not _is_nonempty_repo_file(os.path.join(component_dir, single_file)):
                 missing.append(single_rel)
             continue
-        index_rel = f"{component}/model.safetensors.index.json"
-        index_path = os.path.join(component_dir, "model.safetensors.index.json")
+        index_file = _MFLUX_INDEX_FILES.get(repo_id, {}).get(
+            component, "model.safetensors.index.json"
+        )
+        index_rel = f"{component}/{index_file}"
+        index_path = os.path.join(component_dir, index_file)
         if not _is_nonempty_repo_file(index_path):
             missing.append(index_rel)
             continue

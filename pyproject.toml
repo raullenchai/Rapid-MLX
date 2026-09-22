@@ -506,14 +506,15 @@ video = [
 ]
 image = [
     # MLX-native text-to-image / image-edit (FLUX.1-schnell, Qwen-Image,
-    # Qwen-Image-Edit) via mflux. mflux 0.19.0 is the first release compatible
+    # Qwen-Image-Edit, Qwen-Image-2.1) via mflux. mflux 0.20.0 adds Qwen-Image-2.1
     # with MLX 0.32.x; the 0.18.x line pins ``mlx<0.32`` and therefore cannot
     # coexist with the coherence-validated core runtime. Keep a minor cap so
-    # image-lane API changes remain deliberate. mflux requires Python >=3.11
-    # (Rapid-MLX core still supports 3.10, so the image lane preflight gives
-    # 3.10 users an explicit upgrade diagnostic). Model-weight licenses are
+    # image-lane API changes remain deliberate. The Rapid-MLX image extra is
+    # still gated to Python >=3.11 although mflux 0.20 itself allows 3.10;
+    # the image lane preflight gives 3.10 users an explicit upgrade diagnostic.
+    # Model-weight licenses are
     # independent of this runtime and documented per family.
-    "mflux>=0.19.0,<0.20; platform_system == 'Darwin' and python_version >= '3.11'",
+    "mflux>=0.20.0,<0.21; platform_system == 'Darwin' and python_version >= '3.11'",
     # HiDream-O1 reuses the exact Qwen3-VL runtime already validated and
     # bundled by Desktop. Keep this pin coherent with [vision]/the sidecar.
     "mlx-vlm==0.7.1; platform_system == 'Darwin' and python_version >= '3.11'",

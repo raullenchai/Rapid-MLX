@@ -23,7 +23,7 @@ struct ImageCatalogTests {
       ────────────────────────────
       ltx-2.3-mlx-q4        24.0 GiB   [video:gen] notapalindrome/ltx23-mlx-av-q4
 
-      Image models (8 aliases)
+      Image models (9 aliases)
       ────────────────────────────
       Alias                 Size       Kind        HF id
       ────────────────────────────
@@ -35,12 +35,13 @@ struct ImageCatalogTests {
       sdxl-base             6.5 GiB     [image:gen] stabilityai/stable-diffusion-xl-base-1.0
       sd35-large-4bit       15.3 GiB    [image:gen] argmaxinc/mlx-stable-diffusion-3.5-large-4bit-quantized
       qwen-image-edit       34.9 GiB    [image:edit] OsaurusAI/Qwen-Image-Edit-mflux-q8
+      qwen-image-2.1        30.9 GiB    [image:both] Qwen/Qwen-Image-2.1
     """
 
     @Test("parseImageRows extracts image rows and their operation")
     func parsesImageRows() {
         let rows = ModelCatalog.parseImageRows(Self.sample)
-        #expect(rows.count == 8)
+        #expect(rows.count == 9)
 
         let aliases = rows.map(\.alias)
         #expect(aliases.contains("flux2-klein-4b"))
@@ -51,6 +52,7 @@ struct ImageCatalogTests {
         #expect(aliases.contains("sd35-large-4bit"))
         #expect(aliases.contains("flux-schnell"))
         #expect(aliases.contains("qwen-image-edit"))
+        #expect(aliases.contains("qwen-image-2.1"))
         // No chat / video alias leaks in.
         #expect(!aliases.contains("qwen3.6-27b-4bit"))
         #expect(!aliases.contains("ltx-2.3-mlx-q4"))
@@ -81,6 +83,9 @@ struct ImageCatalogTests {
         #expect(qwenEdit?.hfRepo == "OsaurusAI/Qwen-Image-Edit-mflux-q8")
         #expect(qwenEdit?.size == "34.9 GiB")
         #expect(qwenEdit?.capability == .editing)
+        let qwen21 = rows.first { $0.alias == "qwen-image-2.1" }
+        #expect(qwen21?.hfRepo == "Qwen/Qwen-Image-2.1")
+        #expect(qwen21?.capability == .generationAndEditing)
     }
 
     @Test("complete mflux caches are marked downloaded in Images")
@@ -97,6 +102,7 @@ struct ImageCatalogTests {
                 "stabilityai/stable-diffusion-xl-base-1.0",
                 "argmaxinc/mlx-stable-diffusion-3.5-large-4bit-quantized",
                 "OsaurusAI/Qwen-Image-Edit-mflux-q8",
+                "Qwen/Qwen-Image-2.1",
             ]
         )
 
@@ -112,6 +118,7 @@ struct ImageCatalogTests {
         let qwenEdit = cached.first { $0.alias == "qwen-image-edit" }
         #expect(qwenEdit?.cached == true)
         #expect(qwenEdit?.imageCapability == .editing)
+        #expect(cached.first { $0.alias == "qwen-image-2.1" }?.imageCapability == .generationAndEditing)
     }
 
     @Test("image JSON exposes validated minimum-memory floors")
@@ -165,5 +172,6 @@ struct ImageCatalogTests {
         #expect(excluded.contains("sd35-large-4bit"))
         #expect(excluded.contains("flux-schnell"))
         #expect(excluded.contains("qwen-image-edit"))
+        #expect(excluded.contains("qwen-image-2.1"))
     }
 }

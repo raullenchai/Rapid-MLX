@@ -25,6 +25,7 @@ column.
 | `hidream-o1-dev` | Native HiDream | Generate | Required manually | [HiDream-O1 Dev dogfood](../performance/2026-09-04-hidream-o1-dev-dogfood.md) |
 | `sd35-large-4bit` | Native SD3.5 | Generate | Required manually | [SD3.5 Large dogfood](../performance/2026-09-05-sd35-large-dogfood.md) |
 | `qwen-image` | mflux / Qwen Image | Generate | Required manually | [Pinned-checkpoint real server qualification](https://github.com/raullenchai/Rapid-MLX/pull/2157) |
+| `qwen-image-2.1` | mflux / Qwen Image 2.1 q8 on load | Generate + img2img | Required manually | Pending first real-weight qualification |
 | `qwen-image-edit` | mflux / Qwen Image Edit 2509 q8 | Edit | Required manually | [Qwen Image Edit dogfood](../performance/2026-09-05-qwen-image-edit-dogfood.md) |
 <!-- image-release-matrix:end -->
 

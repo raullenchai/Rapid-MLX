@@ -183,7 +183,7 @@ dependency closures:
 | --- | --- | --- | --- |
 | mlx-vlm | `==0.7.1` | MIT | https://github.com/Blaizzy/mlx-vlm |
 | Pillow | `>=10.0` | MIT-CMU | https://github.com/python-pillow/Pillow |
-| mflux | `==0.19.0` | MIT | https://github.com/filipstrand/mflux |
+| mflux | `==0.20.0` | MIT | https://github.com/mflux-community/mflux |
 | mlx-video-with-audio | `==0.1.36` | MIT | https://pypi.org/project/mlx-video-with-audio/ |
 | mlx-arsenal | `==0.12.1` | MIT | https://pypi.org/project/mlx-arsenal/ |
 | LTX 2 MLX runtime (`ltx-core-mlx`, `ltx-pipelines-mlx`) | `0.14.15` (`57952288076766abe27dda3a774b2c24f7346977`) | MIT | https://github.com/MrMoferFRAN/ltx-2-mlx |

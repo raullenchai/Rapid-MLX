@@ -18,6 +18,7 @@ terms before commercial use:
 * ``flux-schnell``     — text→image (``black-forest-labs/FLUX.1-schnell``), 12B
 * ``qwen-image``       — text→image (``Qwen/Qwen-Image``), strongest text-in-image
 * ``qwen-image-edit``  — instruction edit (``Qwen/Qwen-Image-Edit-2509``)
+* ``qwen-image-2.1``   — text→image + img2img (``Qwen/Qwen-Image-2.1``)
 * ``hidream-o1-dev``   — text→image (``HiDream-O1-Image-Dev``), 28-step,
   VAE-free unified pixel transformer (MIT)
 * ``sdxl-base``        — text→image (``Stable Diffusion XL Base 1.0``),
@@ -57,11 +58,10 @@ from .precision import is_packaged_bf16_model
 _QUANT_TAG_RE = re.compile(
     r"(?:^|[-_./])(?:q[2-8]|[2-8]-?bit)(?:[-_./]|$)", re.IGNORECASE
 )
-
-# Qwen-Image 2.x needs a different mflux model class and text encoder layout.
-# Check it before the broad 1.x name match; "Qwen-Image-Edit-2509" is a 1.x
-# checkpoint revision, so only a delimited 2.x version is rejected here.
-_UNSUPPORTED_QWEN_IMAGE_2_RE = re.compile(
+_QWEN_IMAGE_21_RE = re.compile(
+    r"qwen[-_]image(?:[-_]edit)?[-_]v?2(?:[._-]1|1)(?=$|[-_./])"
+)
+_QWEN_IMAGE_2_RE = re.compile(
     r"qwen[-_]image(?:[-_]edit)?[-_]v?2(?:[._-]\d+|\d)?(?=$|[-_./])"
 )
 
@@ -72,6 +72,7 @@ _PROCESS_GENERATION_LOCK = threading.RLock()
 # Default quantization for the on-load quantize path. 4-bit is the 32GB sweet
 # spot (FLUX.1-schnell ~9GB, Qwen-Image ~12GB resident at q4).
 _DEFAULT_QUANTIZE = 4
+_UNSET_QUANTIZE = object()
 
 
 def _release_allocator_cache() -> None:
@@ -141,10 +142,16 @@ class _ProgressReporter:
 def _detect_family(model_name: str) -> str:
     """Map an alias hf_path (or local dir) to a supported mflux family."""
     name = (model_name or "").casefold()
-    if _UNSUPPORTED_QWEN_IMAGE_2_RE.search(name):
+    if _QWEN_IMAGE_2_RE.search(name):
+        if _QWEN_IMAGE_21_RE.search(name) and not re.search(
+            r"qwen[-_]image[-_]edit|qwen[-_]image[-_]v?2(?:[._-]1|1)[-_]edit",
+            name,
+        ):
+            return "qwen-image-2.1"
         raise ImageRuntimeError(
             f"Qwen-Image 2.x model '{model_name}' is not supported by this "
-            "image runtime yet; refusing to load it as Qwen-Image 1.x."
+            "image runtime yet. Only Qwen-Image 2.1 text-to-image and img2img "
+            "are available."
         )
     if "bonsai-image" in name or "bonsai_image" in name:
         return "bonsai-image"
@@ -197,6 +204,7 @@ _DEFAULT_STEPS_BY_FAMILY = {
     "flux-dev": 20,  # non-distilled
     "qwen-image": 20,  # non-distilled 20B
     "qwen-image-edit": 20,
+    "qwen-image-2.1": 40,
     "hidream-o1-dev": 28,
     "sdxl-base": 30,
     "bonsai-image": 4,
@@ -232,18 +240,34 @@ class ImageGenerationEngine:
     """
 
     def __init__(
-        self, model_name: str, *, quantize: int | None = _DEFAULT_QUANTIZE
+        self, model_name: str, *, quantize: int | None | object = _UNSET_QUANTIZE
     ) -> None:
         self.model_name = model_name
         self.family = _detect_family(model_name)
         self.supports_generation = self.family != "qwen-image-edit"
-        self.supports_editing = self.family in {"flux2-klein", "qwen-image-edit"}
+        self.supports_editing = self.family in {
+            "flux2-klein",
+            "qwen-image-edit",
+            "qwen-image-2.1",
+        }
         # Kept for compatibility with callers that distinguish exclusive edit
         # checkpoints. FLUX.2 supports both operations, so it is not edit-only.
         self.is_edit = self.family == "qwen-image-edit"
         self.default_steps = _DEFAULT_STEPS_BY_FAMILY.get(self.family, 4)
-        self.default_edit_steps = 4 if self.family == "flux2-klein" else 20
-        self.default_edit_guidance = None if self.family == "flux2-klein" else 4.0
+        self.default_edit_steps = (
+            40
+            if self.family == "qwen-image-2.1"
+            else 4
+            if self.family == "flux2-klein"
+            else 20
+        )
+        self.default_edit_guidance = (
+            1.0
+            if self.family == "qwen-image-2.1"
+            else None
+            if self.family == "flux2-klein"
+            else 4.0
+        )
         self.supports_negative_prompt = self.family not in _NO_NEGATIVE_PROMPT_FAMILIES
         self._prequantized = self.family in {
             "hidream-o1-dev",
@@ -251,6 +275,16 @@ class ImageGenerationEngine:
             "bonsai-image",
             "sd35-large",
         } or _looks_like_prequantized(model_name)
+        if (
+            self.family == "qwen-image-2.1"
+            and self._prequantized
+            and not Path(model_name).expanduser().is_dir()
+            and "mflux" not in model_name.rsplit("/", 1)[-1].casefold()
+        ):
+            raise ImageRuntimeError(
+                "Qwen-Image 2.1 quantized checkpoints must use mflux format; "
+                "MLX-Serve 4bit/8bit packs cannot be loaded by mflux."
+            )
         # Native backends, pre-quantized mflux repos, and the curated Klein BF16
         # repo all own a packaged local checkpoint that must be handed through
         # ``model_path``. BF16 remains distinct from ``_prequantized`` so the
@@ -259,6 +293,8 @@ class ImageGenerationEngine:
         self._packaged_checkpoint = self._prequantized or is_packaged_bf16_model(
             model_name
         )
+        if quantize is _UNSET_QUANTIZE:
+            quantize = 8 if self.family == "qwen-image-2.1" else _DEFAULT_QUANTIZE
         self._quantize = None if self._packaged_checkpoint else quantize
         self._model = None
         self._prompt_tokenizer = None
@@ -332,7 +368,7 @@ class ImageGenerationEngine:
         ourselves at the exact verified commit rather than let mflux resolve
         and download whatever ``main`` currently points to.
         """
-        if not self._packaged_checkpoint:
+        if not self._packaged_checkpoint and self.family != "qwen-image-2.1":
             return None
         from .._download_gate import (
             IMAGE_MODEL_DATA_FILES,
@@ -448,6 +484,14 @@ class ImageGenerationEngine:
             from mflux.models.qwen.variants.txt2img.qwen_image import QwenImage
 
             return QwenImage(quantize=self._quantize, model_path=model_path)
+        if self.family == "qwen-image-2.1":
+            from mflux.models.qwen21.variants.txt2img.qwen_image_21 import QwenImage21
+
+            return QwenImage21(
+                quantize=self._quantize,
+                model_path=model_path,
+                model_config=ModelConfig.qwen_image_21(),
+            )
 
         from mflux.models.flux.variants.txt2img.flux import Flux1
 
@@ -511,7 +555,7 @@ class ImageGenerationEngine:
 
     def _build_edit_model(self):
         """Instantiate the edit variant for a model that accepts input images."""
-        if self.family == "qwen-image-edit":
+        if self.family in {"qwen-image-edit", "qwen-image-2.1"}:
             return self._build_model()
         if self.family == "flux2-klein":
             from mflux.models.common.config.model_config import ModelConfig
@@ -621,14 +665,23 @@ class ImageGenerationEngine:
         ``embed_tokens.weight``, never the tensor data, so this costs one
         small file read regardless of checkpoint size.
         """
-        if self.family not in {"qwen-image", "qwen-image-edit"}:
+        if self.family not in {"qwen-image", "qwen-image-edit", "qwen-image-2.1"}:
             return
         from .._download_gate import mflux_local_snapshot
 
         snapshot = mflux_local_snapshot(self.model_name)
         if snapshot is None:
             return
-        weight_key = "encoder.embed_tokens.weight"
+        weight_key = (
+            "model.language_model.embed_tokens.weight"
+            if self.family == "qwen-image-2.1"
+            else "encoder.embed_tokens.weight"
+        )
+        expected_hidden_size = (
+            4096
+            if self.family == "qwen-image-2.1"
+            else self._QWEN_TEXT_ENCODER_HIDDEN_SIZE
+        )
         text_encoder_dir = Path(snapshot) / "text_encoder"
         weight_map = self._read_text_encoder_weight_map(text_encoder_dir)
         if weight_map is None:
@@ -704,7 +757,7 @@ class ImageGenerationEngine:
             shard_path is None
             or header is None
             or not shape_is_valid_rank2
-            or shape[-1] != self._QWEN_TEXT_ENCODER_HIDDEN_SIZE
+            or shape[-1] != expected_hidden_size
         ):
             self._raise_quantized_text_encoder_error(
                 weight_key, shard_path or str(text_encoder_dir)
@@ -713,6 +766,11 @@ class ImageGenerationEngine:
     def _raise_quantized_text_encoder_error(
         self, weight_key: str, shard_path: str
     ) -> None:
+        hidden_size = (
+            4096
+            if self.family == "qwen-image-2.1"
+            else self._QWEN_TEXT_ENCODER_HIDDEN_SIZE
+        )
         raise ImageRuntimeError(
             f"Image model '{self.model_name}' packages a quantized text "
             "encoder, which this mflux version cannot load correctly (it "
@@ -720,7 +778,7 @@ class ImageGenerationEngine:
             "mismatch would otherwise surface as an unrelated shape error "
             "deep in generation). Pick a checkpoint with a full-precision "
             f"text encoder. (Found in {shard_path}: {weight_key!r} does not "
-            f"have the expected {self._QWEN_TEXT_ENCODER_HIDDEN_SIZE}-wide "
+            f"have the expected {hidden_size}-wide "
             "last dimension, is missing/unreadable where the index says it "
             "lives, or carries quantization scale/bias tensors.)"
         )
@@ -802,7 +860,11 @@ class ImageGenerationEngine:
         if for_edit is None:
             for_edit = self.is_edit
         desired_mode = "edit" if for_edit else "generation"
-        if self._model is not None and self._loaded_mode not in (None, desired_mode):
+        if (
+            self._model is not None
+            and self._loaded_mode not in (None, desired_mode)
+            and self.family != "qwen-image-2.1"
+        ):
             self._model = None
             self._loaded_mode = None
             _release_allocator_cache()
@@ -823,8 +885,27 @@ class ImageGenerationEngine:
             # Register the progress/cancel reporter on the model's mflux
             # callback registry (present on every txt2img/edit variant).
             registry = getattr(self._model, "callbacks", None)
-            if registry is not None and hasattr(registry, "register"):
+            if (
+                self._model is not None
+                and registry is not None
+                and hasattr(registry, "register")
+            ):
                 registry.register(self._reporter)
+                if self.family == "qwen-image-2.1":
+                    from mflux.callbacks.instances.memory_saver import MemorySaver
+                    from mflux.models.common.vae.tiling_config import TilingConfig
+
+                    # Evict the bf16 Qwen3-VL encoder once its prompt embeds
+                    # are cached. A later, uncached prompt reloads the model.
+                    self._model.tiling_config = TilingConfig()
+                    registry.register(
+                        MemorySaver(
+                            model=self._model,
+                            keep_transformer=True,
+                            cache_limit_bytes=None,
+                            num_seeds=1,
+                        )
+                    )
         return self._model
 
     def request_cancel(self) -> None:
@@ -892,7 +973,10 @@ class ImageGenerationEngine:
         required by edit-only checkpoints. Unsupported combinations fail loud
         instead of silently ignoring the conditioning image.
         """
-        editing = bool(image_paths)
+        input_paths = image_paths or []
+        editing = bool(input_paths)
+        if self.family == "qwen-image-2.1" and editing and len(input_paths) != 1:
+            raise ImageRuntimeError("Qwen-Image 2.1 img2img accepts one input image.")
         if not editing and not self.supports_generation:
             raise ImageRuntimeError(
                 "qwen-image-edit requires at least one input image (image_paths)."
@@ -1025,6 +1109,16 @@ class ImageGenerationEngine:
             self._last_denoise_seconds = None
             self._last_denoise_steps = 0
             try:
+                if self.family == "qwen-image-2.1" and self._model is not None:
+                    cached = getattr(self._model, "prompt_cache", {}) or {}
+                    needs_negative = (guidance or 1.0) > 1.0 and bool(negative_prompt)
+                    if getattr(self._model, "text_encoder", None) is None and (
+                        prompt not in cached
+                        or (needs_negative and negative_prompt not in cached)
+                    ):
+                        self._model = None
+                        self._loaded_mode = None
+                        _release_allocator_cache()
                 if self.family == "hidream-o1-dev":
                     self._validate_hidream_prompt_tokens(prompt)
                     if self._is_cancelled():
@@ -1049,6 +1143,32 @@ class ImageGenerationEngine:
                         image_paths=image_paths,
                         height=None,
                         width=None,
+                        **self._gen_kwargs(
+                            seed, prompt, num_inference_steps, guidance, negative_prompt
+                        ),
+                    )
+                elif editing and self.family == "qwen-image-2.1":
+                    if width is None or height is None:
+                        from PIL import Image, ImageOps
+
+                        with Image.open(input_paths[0]) as source:
+                            source_width, source_height = ImageOps.exif_transpose(
+                                source
+                            ).size
+                        scale = math.sqrt(1024**2 / (source_width * source_height))
+                        inferred_width = max(
+                            256, min(2048, round(source_width * scale / 16) * 16)
+                        )
+                        inferred_height = max(
+                            256, min(2048, round(source_height * scale / 16) * 16)
+                        )
+                    resolved_width = width if width is not None else inferred_width
+                    resolved_height = height if height is not None else inferred_height
+                    result = model.generate_image(
+                        image_path=input_paths[0],
+                        image_strength=0.4,
+                        height=resolved_height,
+                        width=resolved_width,
                         **self._gen_kwargs(
                             seed, prompt, num_inference_steps, guidance, negative_prompt
                         ),

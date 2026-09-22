@@ -216,8 +216,15 @@ family default shown below.
 | `hidream-o1-dev` | Complex compositions | Generate | 16.4 GiB | 32 GB | 28 |
 | `sd35-large-4bit` | Stable Diffusion 3.5 | Generate | 15.3 GiB | 32 GB | 28 |
 | `qwen-image` | Text inside images | Generate | 28.9 GiB | 64 GB | 20 |
+| `qwen-image-2.1` | Text-rich images and img2img | Generate + edit | 30.9 GiB | 32 GB | 40 |
 | `qwen-image-edit` | Precise instruction edits and text changes | Edit | 34.9 GiB | 96 GB | 20 |
 <!-- image-model-matrix:end -->
+
+`qwen-image-2.1` uses mflux 0.20 with an 8-bit transformer and bf16 text
+encoder. Its edit endpoint performs single-image img2img conditioning; the
+separate instruction-edit variant is not yet available upstream. See the
+[family guide](docs/models/families/qwen-image-2.1.md) for request and memory
+behavior.
 
 At 1024×1024 with the four-step Klein default, measured warm generation was
 about **9.2 seconds per image on an M3 Ultra**. On a 32 GB M2 Pro, the q4 path
@@ -525,7 +532,7 @@ multiplication. The regular `qwen3.8-27b-4bit` alias remains unchanged for M3
 and newer Macs; Rapid does not silently swap checkpoint precision.
 
 → [Full RAM tier map + serve flags per tier](https://rapidmlx.com/docs/hardware-tiers.html)
-→ [Every alias, quant, and family (195 text + 10 image + 10 video + 44 audio aliases, 259 total)](https://rapidmlx.com/docs/aliases.html) · interactive at [models.rapidmlx.com](https://models.rapidmlx.com/)
+→ [Every alias, quant, and family (195 text + 11 image + 10 video + 44 audio aliases, 260 total)](https://rapidmlx.com/docs/aliases.html) · interactive at [models.rapidmlx.com](https://models.rapidmlx.com/)
 
 ---
 
