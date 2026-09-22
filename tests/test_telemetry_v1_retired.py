@@ -197,6 +197,16 @@ def test_real_loopback_serve_can_only_flush_to_posthog(monkeypatch, tmp_path):
         is_mllm = False
         supports_guided_generation = False
         tokenizer = None
+        _loaded = False
+
+        async def start(self):
+            self._loaded = True
+
+        async def stop(self):
+            self._loaded = False
+
+        def generate_warmup(self):
+            pass
 
         def build_prompt(self, messages, tools=None, enable_thinking=None):
             return "PROMPT"
@@ -213,6 +223,7 @@ def test_real_loopback_serve_can_only_flush_to_posthog(monkeypatch, tmp_path):
 
     cfg = reset_config()
     cfg.engine = StubEngine()
+    monkeypatch.setattr(server_module, "_engine", cfg.engine)
     cfg.model_name = "test-model"
     cfg.model_registry = None
     cfg.no_thinking = True
@@ -271,5 +282,8 @@ def test_real_loopback_serve_can_only_flush_to_posthog(monkeypatch, tmp_path):
         assert host == "localhost" or ipaddress.ip_address(host).is_loopback
     assert post_urls == [posthog_sender.POSTHOG_BATCH_URL]
     assert legacy_urls == []
-    assert [item["event"] for item in post_bodies[0]["batch"]] == ["app_opened"]
+    assert sorted(item["event"] for item in post_bodies[0]["batch"]) == [
+        "app_opened",
+        "model_served",
+    ]
     assert "rapidmlx.com" not in repr((connects, post_urls, legacy_urls, post_bodies))
