@@ -402,7 +402,18 @@ async def create_image(request: ImageGenerationRequest = Body(...)):
         except Exception:  # noqa: BLE001 — telemetry must never fail the response
             logger.warning("image performance telemetry failed", exc_info=True)
 
-    return {"created": int(time.time()), "data": data, "cancelled": cancelled}
+    response = {"created": int(time.time()), "data": data, "cancelled": cancelled}
+    from rapid_mlx.telemetry import inference as _telemetry_inference
+    from rapid_mlx.telemetry.model_id import engine_telemetry_id
+
+    _telemetry_inference.emit_completed_request(
+        model=engine_telemetry_id(img_engine),
+        endpoint="/v1/images/generations",
+        caller_agent=None,
+        caller_client=None,
+        result="ok",
+    )
+    return response
 
 
 @router.get("/v1/images/progress")

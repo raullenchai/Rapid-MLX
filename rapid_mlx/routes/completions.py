@@ -759,6 +759,27 @@ async def create_completion(request: CompletionRequest, raw_request: Request):
         )
     except asyncio.CancelledError as exc:
         _raise_lifecycle_cancel_or_reraise(engine, exc)
+    except HTTPException:
+        raise
+    except Exception:
+        from rapid_mlx.telemetry import inference as _telemetry_inference
+
+        _telemetry_inference.emit_completed_request(
+            model=_served_telemetry_id or "<custom>",
+            endpoint="/v1/completions",
+            caller_agent=(
+                raw_request.headers.get("user-agent")
+                if raw_request is not None
+                else None
+            ),
+            caller_client=(
+                raw_request.headers.get("x-rapid-client")
+                if raw_request is not None
+                else None
+            ),
+            result="failed",
+        )
+        raise
     finally:
         _release_route_ownership(
             engine,
@@ -878,14 +899,23 @@ async def stream_completion(
     _buffered_text = ""
     _buffered_finish_reason: str | None = None
 
-    async for output in engine.stream_generate(
-        prompt=prompt,
-        max_tokens=_resolve_max_tokens(request.max_tokens),
-        temperature=_resolve_temperature(request.temperature),
-        top_p=_resolve_top_p(request.top_p),
-        stop=request.stop_sequences(),
-        **extended_kwargs,
-    ):
+    from rapid_mlx.telemetry import inference as _telemetry_inference
+
+    _generation_stream = _telemetry_inference.emit_failed_on_stream_error(
+        engine.stream_generate(
+            prompt=prompt,
+            max_tokens=_resolve_max_tokens(request.max_tokens),
+            temperature=_resolve_temperature(request.temperature),
+            top_p=_resolve_top_p(request.top_p),
+            stop=request.stop_sequences(),
+            **extended_kwargs,
+        ),
+        model=served_telemetry_id or "<custom>",
+        endpoint="/v1/completions",
+        caller_agent=caller_agent,
+        caller_client=caller_client,
+    )
+    async for output in _generation_stream:
         if _json_mode:
             # Buffer the text and finish_reason; emit at stream end.
             _buffered_text += output.new_text or ""

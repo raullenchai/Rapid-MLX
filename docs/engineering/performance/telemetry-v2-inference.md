@@ -3,38 +3,53 @@
 Measured on 2026-09-21 on macOS 26.5.2, Apple M3 Ultra, arm64, with Python
 3.12.14 from the validation environment.
 
-The benchmark timed 500 sequential first-bucket crossings. Each sample did one
-real SQLite `store.record()` against an isolated temporary `HOME`, followed by
-one real registry/envelope `track()` call with an injected in-memory sender.
-The official-build stamp, consent result, version (`0.15.1`), and Apple Silicon
-platform facts were injected exactly as in the loopback emitter test. This is a
-deliberately pessimistic workload: production calls `track()` only at the
-logarithmic bucket crossings, while `store.record()` runs once per completed
-request.
+The worker benchmark timed 500 sequential calls to the real worker half of
+`emit_completed_request()` after 50 warmups. Each sample included model,
+endpoint, caller and result normalization; one real SQLite `store.record()`;
+the real registry/envelope `track()` path at bucket crossings with an injected
+in-memory sender; and the successful request's real `emit_active_day()` claim.
+The database lived under an isolated explicit temporary `HOME`. The
+official-build stamp, consent result, version (`0.15.1`), and Apple Silicon
+platform facts were injected exactly as in the loopback emitter test.
 
-Result: `n=500 p50_ms=0.5933 p95_ms=0.7474 max_ms=2.8442`.
+Worker result: `n=500 p50_ms=0.8443 p95_ms=1.2525 max_ms=1.8033`.
 
-The p50 is below the T8 budget of 1 ms. All six call sites are beside the
-existing terminal v1 request emission, after non-streaming generation has
-completed or after the streaming terminal marker has been yielded and the
-generator resumes. The measurement excludes model generation and response
-serialization; it isolates the additive local telemetry work.
+The response-path benchmark timed 1,000 calls to the public
+`emit_completed_request()` with its real build/consent gate and default-executor
+submission. The worker was replaced with an in-memory completion latch so the
+measurement isolates work that remains on the event loop; the test suite
+separately holds the real SQLite write lock in a second process and requires the
+request-side call to return within 50 ms.
 
-Reproduce by timing this body with `time.perf_counter_ns()` for 500 unique keys
-under an explicit temporary `HOME`:
+On-loop result: `n=1000 p50_us=3.62 p95_us=18.04 max_us=1597.42`. The maximum
+includes executor cold-start; steady-state p50 is 3.62 microseconds. SQLite and
+active-day work are fire-and-forget and cannot delay the response coroutine.
+
+The worker p50 remains below the T8 1 ms budget, while the request coroutine now
+pays only executor submission. Successful emits remain after response
+serialization or the streaming terminal marker; generation errors use the
+separate `failed` counter and client disconnects emit nothing.
+
+Reproduce the worker measurement by timing this body with
+`time.perf_counter_ns()` under an explicit temporary `HOME` and the injected
+official-build/consent/context fixtures described above:
 
 ```python
-crossing = store.record(f"bench|model-{i}|/v1/chat/completions|cursor|ok")
-if crossing:
-    track.track(
-        "inference_bucket_reached",
-        {
-            "model": "<custom>",
-            "endpoint": "/v1/chat/completions",
-            "caller": "cursor",
-            "result": "ok",
-            "count_bucket": crossing.bucket,
-            "bucket_source": crossing.bucket_source,
-        },
-    )
+inference._record_completed_request(
+    model="<custom>",
+    endpoint="/v1/chat/completions",
+    caller_agent="cursor/1.0",
+    caller_client=None,
+    result="ok",
+)
 ```
+
+## Counter cardinality
+
+The closed registry currently has 8 endpoint values (including `other`), 21
+caller values, and 2 result values: 336 worst-case counter keys per model.
+`store.MAX_KEYS = 12_000` therefore holds every combination for 35 complete
+models (`35 × 336 = 11,760`); the 36th model is where a fully saturated
+worst-case installation begins exhausting new keys. The cap was raised from
+2,000 because that allowed only 5 complete models. Even 12,000 rows remain a
+small local SQLite database, and existing keys continue counting at the cap.

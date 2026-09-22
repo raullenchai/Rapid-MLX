@@ -3,9 +3,14 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
+import multiprocessing
+import os
+import sqlite3
 import sys
 import threading
+import time
 import types
 import urllib.request
 from collections.abc import Mapping
@@ -16,6 +21,19 @@ from types import SimpleNamespace
 import pytest
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
+
+
+def _hold_telemetry_store_lock(home: str, ready, release) -> None:
+    os.environ["HOME"] = home
+    from rapid_mlx.telemetry import store
+
+    store.record("lock-holder-seed")
+    connection = sqlite3.connect(store.db_path())
+    connection.execute("BEGIN IMMEDIATE")
+    ready.set()
+    release.wait(10)
+    connection.rollback()
+    connection.close()
 
 
 @pytest.fixture(autouse=True)
@@ -50,7 +68,7 @@ def test_completed_inference_records_one_normalized_counter_and_claims_success(
         lambda: active_days.append(None),
     )
 
-    inference.emit_completed_request(
+    inference._record_completed_request(
         model="neohorse-9b-4bit",
         endpoint="https://localhost/v1/chat/completions?token=secret",
         caller_agent="private-agent/99 cursor/1.0",
@@ -87,7 +105,7 @@ def test_completed_inference_failure_does_not_claim_active_day(monkeypatch):
         lambda: active_days.append(None),
     )
 
-    inference.emit_completed_request(
+    inference._record_completed_request(
         model="<custom>",
         endpoint="/not-registered",
         caller_agent=None,
@@ -96,6 +114,159 @@ def test_completed_inference_failure_does_not_claim_active_day(monkeypatch):
     )
 
     assert active_days == []
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("eligible_case", ["unofficial", "opted_out"])
+async def test_ineligible_completed_request_creates_no_home_state(
+    monkeypatch, tmp_path, eligible_case
+):
+    from rapid_mlx.telemetry import consent_runtime, inference
+    from rapid_mlx.telemetry import track as track_module
+
+    if eligible_case == "unofficial":
+        monkeypatch.setattr(track_module.build_gate, "official_build", lambda: None)
+        monkeypatch.setattr(consent_runtime, "upload_allowed", lambda: True)
+    else:
+        monkeypatch.setattr(
+            track_module.build_gate,
+            "official_build",
+            lambda: SimpleNamespace(channel="stable"),
+        )
+        monkeypatch.setattr(consent_runtime, "upload_allowed", lambda: False)
+
+    before = sorted(path.relative_to(tmp_path) for path in tmp_path.rglob("*"))
+    inference.emit_completed_request(
+        model="<custom>",
+        endpoint="/v1/chat/completions",
+        caller_agent=None,
+        caller_client=None,
+        result="ok",
+    )
+    await asyncio.sleep(0)
+    after = sorted(path.relative_to(tmp_path) for path in tmp_path.rglob("*"))
+    assert after == before
+    assert not (tmp_path / ".rapid-mlx" / "telemetry.db").exists()
+
+
+@pytest.mark.asyncio
+async def test_locked_store_never_blocks_request_coroutine(monkeypatch, tmp_path):
+    from rapid_mlx.telemetry import inference
+
+    monkeypatch.setattr(inference.track_module, "_upload_allowed", lambda: True)
+    context = multiprocessing.get_context("spawn")
+    ready = context.Event()
+    release = context.Event()
+    process = context.Process(
+        target=_hold_telemetry_store_lock,
+        args=(str(tmp_path), ready, release),
+    )
+    process.start()
+    assert ready.wait(5), "lock-holder process did not acquire SQLite write lock"
+
+    worker_finished = threading.Event()
+    real_record = inference.store.record
+
+    def observed_record(key):
+        try:
+            return real_record(key)
+        finally:
+            worker_finished.set()
+
+    monkeypatch.setattr(inference.store, "record", observed_record)
+    started = time.perf_counter()
+    inference.emit_completed_request(
+        model="<custom>",
+        endpoint="/v1/chat/completions",
+        caller_agent=None,
+        caller_client=None,
+        result="ok",
+    )
+    elapsed = time.perf_counter() - started
+    assert elapsed < 0.050, f"request-path telemetry took {elapsed * 1000:.2f} ms"
+
+    release.set()
+    loop = asyncio.get_running_loop()
+    assert await loop.run_in_executor(None, worker_finished.wait, 5)
+    process.join(timeout=5)
+    assert process.exitcode == 0
+
+
+def test_executor_submission_failure_never_escapes(monkeypatch):
+    from rapid_mlx.telemetry import inference
+
+    class BrokenLoop:
+        def run_in_executor(self, *_args, **_kwargs):
+            raise RuntimeError("executor unavailable")
+
+    monkeypatch.setattr(inference.track_module, "_upload_allowed", lambda: True)
+    monkeypatch.setattr(inference.asyncio, "get_running_loop", lambda: BrokenLoop())
+
+    assert (
+        inference.emit_completed_request(
+            model="<custom>",
+            endpoint="/v1/chat/completions",
+            caller_agent=None,
+            caller_client=None,
+            result="ok",
+        )
+        is None
+    )
+
+
+@pytest.mark.asyncio
+async def test_midstream_generation_error_records_failed_without_active_day(
+    monkeypatch,
+):
+    from rapid_mlx.telemetry import inference
+
+    monkeypatch.setattr(inference.track_module, "_upload_allowed", lambda: True)
+    events: list[tuple[str, dict[str, object]]] = []
+    active_days: list[None] = []
+    captured = threading.Event()
+
+    def capture(event, props):
+        events.append((event, dict(props)))
+        captured.set()
+
+    monkeypatch.setattr(inference.track_module, "track", capture)
+    monkeypatch.setattr(
+        inference.track_module,
+        "emit_active_day",
+        lambda: active_days.append(None),
+    )
+
+    async def broken_stream():
+        yield "first-token"
+        raise RuntimeError("generation failed")
+
+    guarded = inference.emit_failed_on_stream_error(
+        broken_stream(),
+        model="private hostile model?",
+        endpoint="/v1/chat/completions",
+        caller_agent="cursor/1.0",
+        caller_client=None,
+    )
+    with pytest.raises(RuntimeError, match="generation failed"):
+        async for _ in guarded:
+            pass
+
+    loop = asyncio.get_running_loop()
+    assert await loop.run_in_executor(None, captured.wait, 5)
+    assert active_days == []
+    assert events == [
+        (
+            "inference_bucket_reached",
+            {
+                "model": "<custom>",
+                "endpoint": "/v1/chat/completions",
+                "caller": "cursor",
+                "result": "failed",
+                "count_bucket": "1",
+                "bucket_source": "crossed_now",
+            },
+        )
+    ]
 
 
 @pytest.mark.parametrize("failure", ["record", "track", "active_day"])
@@ -117,7 +288,7 @@ def test_completed_inference_never_raises(monkeypatch, failure):
     monkeypatch.setattr(target, attribute, explode)
 
     assert (
-        inference.emit_completed_request(
+        inference._record_completed_request(
             model="<custom>",
             endpoint="/v1/completions",
             caller_agent=None,
@@ -142,6 +313,7 @@ def test_capability_rejected_requires_closed_model_type_and_never_raises(monkeyp
         "logprobs_unsupported", model_type=inference.model_type_token(object())
     )
     inference.emit_capability_rejected("mcp_unsupported", model_type="private-type")
+    inference.emit_capability_rejected("private_capability_name")
     monkeypatch.setattr(inference.track_module, "track", lambda *_a, **_k: 1 / 0)
     inference.emit_capability_rejected("mcp_unsupported")
 
@@ -272,6 +444,56 @@ async def test_embedding_runtime_rejection_emits_capability(monkeypatch):
     assert calls == [("runtime_extra_missing", "embedding")]
 
 
+@pytest.mark.asyncio
+async def test_embedding_success_emits_completed_request(monkeypatch):
+    from rapid_mlx import server
+    from rapid_mlx.api.models import EmbeddingRequest
+    from rapid_mlx.routes import embeddings
+    from rapid_mlx.telemetry import inference
+
+    fake_embedding = types.ModuleType("rapid_mlx.embedding")
+    fake_embedding.EMBEDDINGS_EXTRA_INSTALL_HINT = "install embeddings"
+    fake_embedding.EmbeddingInputTooLongError = type(
+        "EmbeddingInputTooLongError", (Exception,), {}
+    )
+    monkeypatch.setitem(sys.modules, "rapid_mlx.embedding", fake_embedding)
+    engine = SimpleNamespace(
+        model_name="private-local-embedding",
+        effective_max_length=512,
+        count_tokens=lambda _texts: 2,
+        embed=lambda _texts: [[0.25, 0.75]],
+    )
+    cfg = SimpleNamespace(
+        embedding_engine=engine,
+        embedding_model_locked="embeddinggemma-300m-6bit",
+    )
+    monkeypatch.setattr(embeddings, "get_config", lambda: cfg)
+    monkeypatch.setattr(server, "load_embedding_model", lambda *_a, **_k: None)
+    monkeypatch.setattr(
+        "rapid_mlx.service.helpers._resolve_request_alias_or_default",
+        lambda *_a, **_k: cfg.embedding_model_locked,
+    )
+    calls: list[dict[str, object]] = []
+    monkeypatch.setattr(
+        inference, "emit_completed_request", lambda **kwargs: calls.append(kwargs)
+    )
+
+    response = await embeddings.create_embeddings(
+        EmbeddingRequest(model="default", input="hello")
+    )
+
+    assert len(response.data) == 1
+    assert calls == [
+        {
+            "model": "<custom>",
+            "endpoint": "/v1/embeddings",
+            "caller_agent": None,
+            "caller_client": None,
+            "result": "ok",
+        }
+    ]
+
+
 def test_video_engine_and_runtime_rejections_emit_capabilities(monkeypatch, tmp_path):
     import builtins
 
@@ -366,12 +588,106 @@ async def test_audio_runtime_rejections_emit_capabilities(monkeypatch):
     ]
 
 
+@pytest.mark.asyncio
+async def test_audio_transcription_success_emits_completed_request(monkeypatch):
+    from rapid_mlx.audio import probe
+    from rapid_mlx.routes import audio
+    from rapid_mlx.telemetry import inference
+
+    response = {"text": "transcribed"}
+
+    async def fake_stt_request(**_kwargs):
+        return response
+
+    monkeypatch.setattr(probe, "require_mlx_audio_stt", lambda: None)
+    monkeypatch.setattr(
+        audio, "_reject_word_timestamps_for_non_whisper", lambda *_a: None
+    )
+    monkeypatch.setattr(audio, "_run_stt_request", fake_stt_request)
+    calls: list[dict[str, object]] = []
+    monkeypatch.setattr(
+        inference, "emit_completed_request", lambda **kwargs: calls.append(kwargs)
+    )
+
+    result = await audio.create_transcription(
+        file=object(),
+        model_form="whisper-large-v3",
+        language_form=None,
+        response_format_form="json",
+        text_form=None,
+        context_form=None,
+        timestamp_granularities_bracket_form=None,
+        timestamp_granularities_plain_form=None,
+        model_query=None,
+        language_query=None,
+        response_format_query=None,
+        text_query=None,
+        timestamp_granularities_bracket_query=None,
+        timestamp_granularities_plain_query=None,
+    )
+
+    assert result is response
+    assert calls == [
+        {
+            "model": "whisper-large-v3",
+            "endpoint": "/v1/audio/transcriptions",
+            "caller_agent": None,
+            "caller_client": None,
+            "result": "ok",
+        }
+    ]
+
+
+@pytest.mark.asyncio
+async def test_audio_alignment_success_emits_completed_request(monkeypatch):
+    from rapid_mlx.audio import probe
+    from rapid_mlx.routes import audio
+    from rapid_mlx.telemetry import inference
+
+    response = {"text": "aligned"}
+
+    async def fake_alignment_request(**_kwargs):
+        return response
+
+    monkeypatch.setattr(probe, "require_mlx_audio_stt", lambda: None)
+    monkeypatch.setattr(
+        audio, "_reject_word_timestamps_for_non_whisper", lambda *_a: None
+    )
+    monkeypatch.setattr(audio, "_run_alignment_request", fake_alignment_request)
+    calls: list[dict[str, object]] = []
+    monkeypatch.setattr(
+        inference, "emit_completed_request", lambda **kwargs: calls.append(kwargs)
+    )
+
+    result = await audio.create_transcription(
+        file=object(),
+        model_form="qwen3-forced-aligner-0.6b",
+        language_form="en",
+        response_format_form="json",
+        text_form="known transcript",
+        context_form=None,
+        timestamp_granularities_bracket_form=None,
+        timestamp_granularities_plain_form=None,
+        model_query=None,
+        language_query=None,
+        response_format_query=None,
+        text_query=None,
+        timestamp_granularities_bracket_query=None,
+        timestamp_granularities_plain_query=None,
+    )
+
+    assert result is response
+    assert len(calls) == 1
+    assert calls[0]["endpoint"] == "/v1/audio/transcriptions"
+    assert calls[0]["result"] == "ok"
+
+
 def test_completed_inference_key_stays_within_store_limit(monkeypatch):
     from rapid_mlx.telemetry import inference
 
     keys: list[str] = []
     monkeypatch.setattr(inference.store, "record", lambda key: keys.append(key))
-    inference.emit_completed_request(
+    inference._record_completed_request(
         model="x" * 128,
         endpoint="/v1/chat/completions",
         caller_agent="openai-python/1.0",
@@ -380,6 +696,121 @@ def test_completed_inference_key_stays_within_store_limit(monkeypatch):
     )
     assert len(keys) == 1
     assert len(keys[0]) <= inference.store.MAX_KEY_LENGTH
+
+
+def test_twelve_real_requests_emit_only_bucket_crossings(monkeypatch):
+    from rapid_mlx.telemetry import inference
+
+    events: list[tuple[str, dict[str, object]]] = []
+    monkeypatch.setattr(
+        inference.track_module,
+        "track",
+        lambda event, props: events.append((event, dict(props))),
+    )
+    monkeypatch.setattr(inference.track_module, "emit_active_day", lambda: None)
+
+    for _ in range(12):
+        inference._record_completed_request(
+            model="<custom>",
+            endpoint="/v1/chat/completions",
+            caller_agent="cursor/1.0",
+            caller_client=None,
+            result="ok",
+        )
+
+    assert [props["count_bucket"] for _, props in events] == [
+        "1",
+        "2",
+        "3_4",
+        "5_9",
+        "10_19",
+    ]
+    assert all(name == "inference_bucket_reached" for name, _ in events)
+
+
+def test_preexisting_counter_preserves_observed_existing_source(monkeypatch):
+    from rapid_mlx.telemetry import inference
+
+    key = "inf|<custom>|/v1/chat/completions|cursor|ok"
+    inference.store.record(key)
+    with sqlite3.connect(inference.store.db_path()) as connection:
+        connection.execute(
+            "UPDATE counters SET count = 3, last_bucket = NULL WHERE key = ?", (key,)
+        )
+    events: list[dict[str, object]] = []
+    monkeypatch.setattr(
+        inference.track_module,
+        "track",
+        lambda _event, props: events.append(dict(props)),
+    )
+    monkeypatch.setattr(inference.track_module, "emit_active_day", lambda: None)
+
+    inference._record_completed_request(
+        model="<custom>",
+        endpoint="/v1/chat/completions",
+        caller_agent="cursor/1.0",
+        caller_client=None,
+        result="ok",
+    )
+
+    assert events[0]["bucket_source"] == "observed_existing"
+
+
+def test_hostile_model_and_result_are_clamped_at_emitter(monkeypatch):
+    from rapid_mlx.telemetry import inference
+
+    events: list[dict[str, object]] = []
+    monkeypatch.setattr(
+        inference.store,
+        "record",
+        lambda key: SimpleNamespace(bucket="1", bucket_source="crossed_now", key=key),
+    )
+    monkeypatch.setattr(
+        inference.track_module,
+        "track",
+        lambda _event, props: events.append(dict(props)),
+    )
+
+    inference._record_completed_request(
+        model="private-secret-model?token=x",
+        endpoint="/v1/chat/completions",
+        caller_agent=None,
+        caller_client=None,
+        result="invented",
+    )
+
+    assert events[0]["model"] == "<custom>"
+    assert events[0]["result"] == "failed"
+    assert "secret-model" not in repr(events)
+
+
+def test_worst_case_counter_cardinality_supports_35_complete_models():
+    from rapid_mlx.telemetry import registry, store
+
+    enums = registry.load_registry()["enums"]
+    keys_per_model = (
+        len(enums["endpoint"]["values"])
+        * len(enums["caller"]["values"])
+        * len(enums["result"]["values"])
+    )
+    assert keys_per_model == 8 * 21 * 2
+    assert store.MAX_KEYS // keys_per_model == 35
+
+
+@pytest.mark.parametrize(
+    ("relative_path", "endpoint"),
+    [
+        ("rapid_mlx/routes/responses.py", "/v1/responses"),
+        ("rapid_mlx/routes/embeddings.py", "/v1/embeddings"),
+        ("rapid_mlx/routes/audio.py", "/v1/audio/transcriptions"),
+        ("rapid_mlx/routes/images.py", "/v1/images/generations"),
+    ],
+)
+def test_additional_endpoint_has_completed_request_emit(relative_path, endpoint):
+    source = (REPO_ROOT / relative_path).read_text(encoding="utf-8")
+    assert "emit_completed_request(" in source
+    assert f'endpoint="{endpoint}"' in source
+    assert 'result="ok"' in source
 
 
 @pytest.mark.parametrize(
@@ -394,7 +825,10 @@ def test_each_v1_terminal_site_has_exactly_one_adjacent_v2_emit(relative_path):
     source = (REPO_ROOT / relative_path).read_text(encoding="utf-8")
     v1 = "_telemetry_emit.request("
     v2 = "_telemetry_inference.emit_completed_request("
-    assert source.count(v1) == source.count(v2) == 2
+    assert source.count(v1) == 2
+    assert source.count('result="ok"') >= 2
+    assert source.count('result="failed"') == 1
+    assert source.count("emit_failed_on_stream_error(") == 1
     cursor = 0
     for _ in range(2):
         v1_at = source.index(v1, cursor)
@@ -480,7 +914,7 @@ def test_inference_and_capability_events_reach_loopback_as_exact_json(
     thread = threading.Thread(target=server.serve_forever, daemon=True)
     thread.start()
     try:
-        inference.emit_completed_request(
+        inference._record_completed_request(
             model="neohorse-9b-4bit",
             endpoint="/v1/chat/completions",
             caller_agent="cursor/1.0",

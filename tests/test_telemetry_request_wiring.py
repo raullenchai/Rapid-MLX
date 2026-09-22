@@ -152,6 +152,69 @@ async def test_nonstreaming_completion_emits_request_event(monkeypatch):
     assert kw["output_degenerate"] is None
 
 
+@pytest.mark.asyncio
+async def test_nonstreaming_generation_error_emits_failed(monkeypatch):
+    from rapid_mlx.routes import chat
+
+    class FailingEngine(_FakeChatEngine):
+        async def chat(self, messages, **kwargs):
+            raise RuntimeError("generation exploded")
+
+    calls: list[dict] = []
+    v2_calls: list[dict] = []
+    engine = FailingEngine()
+    _patch_route(monkeypatch, engine, calls, v2_calls)
+
+    with pytest.raises(RuntimeError, match="generation exploded"):
+        await chat._create_chat_completion_impl(
+            _request(),
+            _RawRequest(user_agent="cursor/1.0"),
+            engine,
+            _commit_state=[False],
+            _admission_acquired=[False],
+        )
+
+    assert calls == []
+    assert v2_calls == [
+        {
+            "model": "<custom>",
+            "endpoint": "/v1/chat/completions",
+            "caller_agent": "cursor/1.0",
+            "caller_client": None,
+            "result": "failed",
+        }
+    ]
+
+
+@pytest.mark.asyncio
+async def test_nonstreaming_serialization_failure_is_not_completed(monkeypatch):
+    from rapid_mlx.routes import chat
+
+    calls: list[dict] = []
+    v2_calls: list[dict] = []
+    engine = _FakeChatEngine()
+    _patch_route(monkeypatch, engine, calls, v2_calls)
+
+    def fail_serialization(*_args, **_kwargs):
+        raise RuntimeError("serialization exploded")
+
+    monkeypatch.setattr(
+        chat.ChatCompletionResponse, "model_dump_json", fail_serialization
+    )
+
+    with pytest.raises(RuntimeError, match="serialization exploded"):
+        await chat._create_chat_completion_impl(
+            _request(),
+            _RawRequest(user_agent="cursor/1.0"),
+            engine,
+            _commit_state=[False],
+            _admission_acquired=[False],
+        )
+
+    assert len(calls) == 1
+    assert v2_calls == []
+
+
 class _GarbageChatEngine(_FakeChatEngine):
     async def chat(self, messages, **kwargs):
         from rapid_mlx.engine.base import GenerationOutput

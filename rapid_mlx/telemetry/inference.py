@@ -3,7 +3,12 @@
 
 from __future__ import annotations
 
-from rapid_mlx.telemetry import emit, model_id, redact, store
+import asyncio
+from collections.abc import AsyncIterable, AsyncIterator
+from functools import partial
+from typing import Any
+
+from rapid_mlx.telemetry import emit, model_id, redact, registry, store
 from rapid_mlx.telemetry import track as track_module
 
 _MODEL_TYPES = frozenset(
@@ -50,7 +55,7 @@ def model_type_token(source: object | None) -> str:
         return "other"
 
 
-def emit_completed_request(
+def _record_completed_request(
     *,
     model: str,
     endpoint: str,
@@ -58,11 +63,10 @@ def emit_completed_request(
     caller_client: str | None,
     result: str,
 ) -> None:
-    """Record one completed request and emit only a crossed milestone.
+    """Worker-thread half of :func:`emit_completed_request`.
 
     Callers pass the resolved telemetry model id, never the request's model
-    field. Every operation is best effort because this runs beside the
-    response-finalization telemetry on the generation path.
+    field. Every operation is best effort; no exception can escape the worker.
     """
     try:
         safe_model = model_id.telemetry_model_id(model)
@@ -88,9 +92,68 @@ def emit_completed_request(
         return
 
 
+def emit_completed_request(
+    *,
+    model: str,
+    endpoint: str,
+    caller_agent: str | None,
+    caller_client: str | None,
+    result: str,
+) -> None:
+    """Gate, then enqueue one completed-request update without blocking.
+
+    The official-build and live-consent checks intentionally happen before
+    submitting work. Ineligible processes therefore create no telemetry state.
+    SQLite and capture work always run outside the request coroutine.
+    """
+    try:
+        if not track_module._upload_allowed():
+            return
+        loop = asyncio.get_running_loop()
+        loop.run_in_executor(
+            None,
+            partial(
+                _record_completed_request,
+                model=model,
+                endpoint=endpoint,
+                caller_agent=caller_agent,
+                caller_client=caller_client,
+                result=result,
+            ),
+        )
+    except Exception:
+        return
+
+
+async def emit_failed_on_stream_error(
+    source: AsyncIterable[Any],
+    *,
+    model: str,
+    endpoint: str,
+    caller_agent: str | None,
+    caller_client: str | None,
+) -> AsyncIterator[Any]:
+    """Forward a generation stream and count only non-cancellation failures."""
+    try:
+        async for item in source:
+            yield item
+    except Exception:
+        emit_completed_request(
+            model=model,
+            endpoint=endpoint,
+            caller_agent=caller_agent,
+            caller_client=caller_client,
+            result="failed",
+        )
+        raise
+
+
 def emit_capability_rejected(capability: str, *, model_type: str = "other") -> None:
     """Emit one closed-vocabulary capability rejection without raising."""
     try:
+        allowed = registry.load_registry()["enums"]["capability"]["values"]
+        if capability not in allowed:
+            return
         track_module.track(
             "capability_rejected",
             {

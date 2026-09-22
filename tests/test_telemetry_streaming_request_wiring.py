@@ -201,3 +201,32 @@ def test_streaming_request_event_caller_agent_absent_header():
     # No UA → the route passes None; emit.request maps it to "unknown".
     assert calls[0]["caller_agent"] is None
     assert calls[0]["stream"] is True
+
+
+def test_streaming_generation_error_emits_failed_without_success():
+    class FailingEngine(_FakeEngine):
+        async def stream_chat(self, **kwargs):
+            yield _FakeStreamingOutput("partial", finished=False)
+            raise RuntimeError("mid-stream generation failed")
+
+    calls: list[dict] = []
+    v2_calls: list[dict] = []
+    with pytest.raises(RuntimeError, match="mid-stream generation failed"):
+        _drive_stream(
+            FailingEngine(["partial"]),
+            _request(),
+            caller_agent="cursor/1.9.0",
+            emit_calls=calls,
+            v2_calls=v2_calls,
+        )
+
+    assert calls == []
+    assert v2_calls == [
+        {
+            "model": "<custom>",
+            "endpoint": "/v1/chat/completions",
+            "caller_agent": "cursor/1.9.0",
+            "caller_client": None,
+            "result": "failed",
+        }
+    ]

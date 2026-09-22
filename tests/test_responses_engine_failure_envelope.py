@@ -22,6 +22,7 @@ import importlib.util
 import json
 import sys
 import types
+from contextvars import ContextVar
 from dataclasses import dataclass, field
 from types import SimpleNamespace
 from typing import Any
@@ -759,6 +760,7 @@ _IMPORTED = (
     "rapid_mlx.config.server_config",
     "rapid_mlx.engine",
     "rapid_mlx.engine.base",
+    "rapid_mlx.engine.batched",
     "rapid_mlx.middleware.auth",
     "rapid_mlx.service.helpers",
     "rapid_mlx.routes.responses",
@@ -768,6 +770,7 @@ _PARENT_ATTRS = (
     ("rapid_mlx", "engine"),
     ("rapid_mlx.config", "server_config"),
     ("rapid_mlx.engine", "base"),
+    ("rapid_mlx.engine", "batched"),
     ("rapid_mlx.middleware", "auth"),
     ("rapid_mlx.service", "helpers"),
     ("rapid_mlx.routes", "responses"),
@@ -784,8 +787,14 @@ def _install_lightweight_engine_modules(monkeypatch):
     base_mod.BaseEngine = _BaseEngine
     base_mod.GenerationOutput = _GenerationOutput
 
+    batched_mod = types.ModuleType("rapid_mlx.engine.batched")
+    batched_mod._admission_engine_context = ContextVar(
+        "_admission_engine_context", default=None
+    )
+
     monkeypatch.setitem(sys.modules, "rapid_mlx.engine", engine_pkg)
     monkeypatch.setitem(sys.modules, "rapid_mlx.engine.base", base_mod)
+    monkeypatch.setitem(sys.modules, "rapid_mlx.engine.batched", batched_mod)
 
 
 def _build_client(monkeypatch, engine_factory):
@@ -1067,11 +1076,21 @@ class TestResponsesNonStreamFailureEnvelope:
         assert usage["output_tokens"] == 0, usage
         assert usage["total_tokens"] == 42, usage
 
-    def test_healthy_engine_does_not_trip_failure_guard(self, healthy_client):
+    def test_healthy_engine_does_not_trip_failure_guard(
+        self, healthy_client, monkeypatch
+    ):
         """Narrowness check: the failure guard MUST NOT fire when the
         engine produced any user-visible output. A budget=1 reply
         returning a single ``"ok"`` token must round-trip as
         ``status="completed"``, not ``"failed"``."""
+        from rapid_mlx.telemetry import inference
+
+        emit_calls = []
+        monkeypatch.setattr(
+            inference,
+            "emit_completed_request",
+            lambda **kwargs: emit_calls.append(kwargs),
+        )
         resp = healthy_client.client.post(
             "/v1/responses", json=PAYLOAD, headers=HEADERS
         )
@@ -1080,6 +1099,9 @@ class TestResponsesNonStreamFailureEnvelope:
         assert body["status"] == "completed", body
         assert "error" not in body, body
         assert body["usage"]["output_tokens"] >= 1, body
+        assert len(emit_calls) == 1
+        assert emit_calls[0]["endpoint"] == "/v1/responses"
+        assert emit_calls[0]["result"] == "ok"
 
     def test_immediate_stop_does_not_trip_failure_guard(self, immediate_stop_client):
         """Codex r1 IMPORTANT — narrowed-guard contract.
@@ -1179,10 +1201,20 @@ class TestResponsesStreamFailureEnvelope:
         assert envelope["usage"]["input_tokens"] == 42
         assert envelope["usage"]["output_tokens"] == 0
 
-    def test_healthy_stream_does_not_trip_failure_guard(self, healthy_client):
+    def test_healthy_stream_does_not_trip_failure_guard(
+        self, healthy_client, monkeypatch
+    ):
         """Same narrowness check on the streaming surface: a one-token
         healthy reply must close with ``response.completed``, not the
         failure event."""
+        from rapid_mlx.telemetry import inference
+
+        emit_calls = []
+        monkeypatch.setattr(
+            inference,
+            "emit_completed_request",
+            lambda **kwargs: emit_calls.append(kwargs),
+        )
         with healthy_client.client.stream(
             "POST",
             "/v1/responses",
@@ -1193,6 +1225,9 @@ class TestResponsesStreamFailureEnvelope:
         names = [n for n, _ in _parse_sse(body)]
         assert "response.completed" in names, names
         assert "response.failed" not in names, names
+        assert len(emit_calls) == 1
+        assert emit_calls[0]["endpoint"] == "/v1/responses"
+        assert emit_calls[0]["result"] == "ok"
 
     def test_immediate_stop_stream_does_not_trip_failure_guard(
         self, immediate_stop_client

@@ -2448,23 +2448,34 @@ async def create_transcription(
     require_mlx_audio_stt()
 
     if is_alignment:
-        return await _run_alignment_request(
+        response = await _run_alignment_request(
             file=file,
             model=model,
             text=text,
             language=language,
             response_format=response_format,
         )
+    else:
+        response = await _run_stt_request(
+            file=file,
+            model=model,
+            language=language,
+            response_format=response_format,
+            task="transcribe",
+            timestamp_granularities=timestamp_granularities,
+            context=context_form,
+        )
 
-    return await _run_stt_request(
-        file=file,
-        model=model,
-        language=language,
-        response_format=response_format,
-        task="transcribe",
-        timestamp_granularities=timestamp_granularities,
-        context=context_form,
+    from rapid_mlx.telemetry import inference as _telemetry_inference
+
+    _telemetry_inference.emit_completed_request(
+        model=model or "<custom>",
+        endpoint="/v1/audio/transcriptions",
+        caller_agent=None,
+        caller_client=None,
+        result="ok",
     )
+    return response
 
 
 @router.post("/v1/audio/translations", dependencies=[Depends(verify_api_key)])

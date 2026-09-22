@@ -977,6 +977,9 @@ async def create_response(request: Request):
     if not (responses_request.model or "").startswith(("claude-", "gpt-")):
         _validate_model_name(responses_request.model)
     engine = get_engine(responses_request.model)
+    from rapid_mlx.telemetry.model_id import engine_telemetry_id
+
+    _served_telemetry_id = engine_telemetry_id(engine)
     await ensure_engine_ready(engine)
 
     # Pre-flight admission — same C4 reservation shape the other two
@@ -1446,6 +1449,9 @@ async def create_response(request: Request):
                         request_id_holder=_resp_rid_holder,
                         heartbeat_state=_resp_heartbeat_state,
                         namespace_by_tool=namespace_by_tool,
+                        caller_agent=request.headers.get("user-agent"),
+                        caller_client=request.headers.get("x-rapid-client"),
+                        served_telemetry_id=_served_telemetry_id,
                     ),
                     request,
                     engine=engine,
@@ -2330,10 +2336,21 @@ async def _non_stream(
         created_at=created_at,
         namespace_by_tool=namespace_by_tool,
     )
-    return Response(
+    response = Response(
         content=responses_response.model_dump_json(exclude_none=True),
         media_type="application/json",
     )
+    from rapid_mlx.telemetry import inference as _telemetry_inference
+    from rapid_mlx.telemetry.model_id import engine_telemetry_id
+
+    _telemetry_inference.emit_completed_request(
+        model=engine_telemetry_id(engine),
+        endpoint="/v1/responses",
+        caller_agent=request.headers.get("user-agent"),
+        caller_client=request.headers.get("x-rapid-client"),
+        result="ok",
+    )
+    return response
 
 
 # ---------------------------------------------------------------------------
@@ -2478,6 +2495,9 @@ async def _stream_responses_with_nonprogress_retry(
     request_id_holder: list | None = None,
     heartbeat_state: dict[str, object] | None = None,
     namespace_by_tool: dict[str, str] | None = None,
+    caller_agent: str | None = None,
+    caller_client: str | None = None,
+    served_telemetry_id: str | None = None,
 ) -> AsyncIterator[str]:
     """Hide one DeepSeek reasoning-only stop behind a bounded retry.
 
@@ -2500,6 +2520,9 @@ async def _stream_responses_with_nonprogress_retry(
             request_id_holder=request_id_holder,
             heartbeat_state=heartbeat_state,
             namespace_by_tool=namespace_by_tool,
+            caller_agent=caller_agent,
+            caller_client=caller_client,
+            served_telemetry_id=served_telemetry_id,
         ):
             yield event
         return
@@ -2558,6 +2581,9 @@ async def _stream_responses_with_nonprogress_retry(
         sequence_counter=attempt_sequence,
         emit_initial_lifecycle=False,
         namespace_by_tool=namespace_by_tool,
+        caller_agent=caller_agent,
+        caller_client=caller_client,
+        served_telemetry_id=served_telemetry_id,
     ):
         if committed:
             if heartbeat_state is not None:
@@ -2620,6 +2646,9 @@ async def _stream_responses_with_nonprogress_retry(
         sequence_counter=public_sequence,
         emit_initial_lifecycle=False,
         namespace_by_tool=namespace_by_tool,
+        caller_agent=caller_agent,
+        caller_client=caller_client,
+        served_telemetry_id=served_telemetry_id,
     ):
         yield event
 
@@ -2713,6 +2742,9 @@ async def _stream_responses(
     sequence_counter: list[int] | None = None,
     emit_initial_lifecycle: bool = True,
     namespace_by_tool: dict[str, str] | None = None,
+    caller_agent: str | None = None,
+    caller_client: str | None = None,
+    served_telemetry_id: str | None = None,
 ) -> AsyncIterator[str]:
     """Stream a Responses-API SSE event sequence Codex CLI can parse.
 
@@ -4936,6 +4968,15 @@ async def _stream_responses(
                 "type": "response.completed",
                 "response": completed_response_payload,
             },
+        )
+        from rapid_mlx.telemetry import inference as _telemetry_inference
+
+        _telemetry_inference.emit_completed_request(
+            model=served_telemetry_id or "<custom>",
+            endpoint="/v1/responses",
+            caller_agent=caller_agent,
+            caller_client=caller_client,
+            result="ok",
         )
 
         elapsed = time.perf_counter() - start_time

@@ -265,7 +265,7 @@ async def create_embeddings(request: EmbeddingRequest) -> EmbeddingResponse:
                 for i, vec in enumerate(embeddings)
             ]
 
-        return EmbeddingResponse(
+        response = EmbeddingResponse(
             data=data,
             model=model_name,
             usage=EmbeddingUsage(
@@ -273,6 +273,17 @@ async def create_embeddings(request: EmbeddingRequest) -> EmbeddingResponse:
                 total_tokens=prompt_tokens,
             ),
         )
+        from rapid_mlx.telemetry import inference as _telemetry_inference
+        from rapid_mlx.telemetry.model_id import engine_telemetry_id
+
+        _telemetry_inference.emit_completed_request(
+            model=engine_telemetry_id(cfg.embedding_engine),
+            endpoint="/v1/embeddings",
+            caller_agent=None,
+            caller_client=None,
+            result="ok",
+        )
+        return response
 
     except ImportError:
         from rapid_mlx.telemetry.inference import emit_capability_rejected

@@ -729,6 +729,12 @@ def test_route_400_url_response_format(client, monkeypatch):
 
 
 def test_route_happy_path_returns_b64(client, monkeypatch):
+    from rapid_mlx.telemetry import inference
+
+    emit_calls = []
+    monkeypatch.setattr(
+        inference, "emit_completed_request", lambda **kwargs: emit_calls.append(kwargs)
+    )
     _patch_engine(monkeypatch, _FakeImageEngine())
     resp = client.post(
         "/v1/images/generations",
@@ -739,6 +745,15 @@ def test_route_happy_path_returns_b64(client, monkeypatch):
     assert "created" in body and len(body["data"]) == 1
     raw = base64.b64decode(body["data"][0]["b64_json"])
     assert raw.startswith(_PNG_MAGIC)
+    assert emit_calls == [
+        {
+            "model": "<custom>",
+            "endpoint": "/v1/images/generations",
+            "caller_agent": None,
+            "caller_client": None,
+            "result": "ok",
+        }
+    ]
 
 
 def test_route_logs_measured_klein_step_throughput(client, monkeypatch, caplog):
