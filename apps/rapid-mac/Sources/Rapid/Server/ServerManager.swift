@@ -5018,7 +5018,7 @@ final class ServerManager {
         )
 
         // Layer 2: desktop-injected, always.
-        env["RAPID_MLX_PROCESS_ROLE"] = "desktop-sidecar"
+        env = EngineProcessEnvironment.sidecar(env)
         if !bearer.isEmpty {
             env["RAPID_MLX_API_KEY"] = bearer
         }
@@ -5332,7 +5332,7 @@ final class ProcessGroupChild: @unchecked Sendable {
         for (k, v) in environmentAdditions {
             merged[k] = v
         }
-        let envp = merged
+        let envp = EngineProcessEnvironment.sidecar(merged)
             .map { "\($0.key)=\($0.value)" }
             .sorted()
 

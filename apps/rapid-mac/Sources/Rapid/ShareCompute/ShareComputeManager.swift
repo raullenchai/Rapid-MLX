@@ -202,13 +202,15 @@ final class ShareComputeManager {
         let err = Pipe()
         installDiscardingDrainer(on: out)
         installDiscardingDrainer(on: err)
-        let environment = ServerManager.serveEnvironmentAdditions(
-            bearer: "",
-            ambient: ProcessInfo.processInfo.environment,
-            physicalRAMBytes: MacHardware.detect().physicalRAMBytes,
-            availableRAMBytes: MemoryProbe.snapshot()?.freeBytes ?? 0,
-            supervisorPID: ProcessInfo.processInfo.processIdentifier,
-            modelsFolderOverride: ModelsFolderPreference.validatedOverrideURL()?.path
+        let environment = EngineProcessEnvironment.sidecar(
+            ServerManager.serveEnvironmentAdditions(
+                bearer: "",
+                ambient: ProcessInfo.processInfo.environment,
+                physicalRAMBytes: MacHardware.detect().physicalRAMBytes,
+                availableRAMBytes: MemoryProbe.snapshot()?.freeBytes ?? 0,
+                supervisorPID: ProcessInfo.processInfo.processIdentifier,
+                modelsFolderOverride: ModelsFolderPreference.validatedOverrideURL()?.path
+            )
         )
         let request = Self.spawnRequest(
             model: model,

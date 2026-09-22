@@ -34,6 +34,10 @@ struct TelemetryConsentV2Tests {
         return try #require(try JSONSerialization.jsonObject(with: data) as? [String: Any])
     }
 
+    private func write(_ text: String, to directory: URL) throws {
+        try Data(text.utf8).write(to: consentURL(directory))
+    }
+
     @Test("Marker merge preserves every existing and unknown field")
     func mergePreservesUnknownKeys() throws {
         let dir = try directory("merge")
@@ -205,6 +209,57 @@ struct TelemetryConsentV2Tests {
         #expect(TelemetryConfig.isEnabled(defaults: userDefaults))
     }
 
+    @Test(arguments: ["0.14.9", "0.15.0", "0.15.0rc1"])
+    func runningVersionGatesTheV2Path(_ runningVersion: String) throws {
+        let dir = try directory("runtime-cutoff-\(runningVersion)")
+        defer { try? FileManager.default.removeItem(at: dir) }
+        let userDefaults = defaults("runtime-cutoff-\(runningVersion)")
+        userDefaults.set(true, forKey: TelemetryConfig.enabledKey)
+        try write(
+            "consent: false\nprompted_version: 0.14.3\nlegacy: keep\n",
+            to: dir
+        )
+        let before = try Data(contentsOf: consentURL(dir))
+
+        TelemetryConsent.synchronizeExistingDecision(
+            version: runningVersion, defaults: userDefaults, telemetryDirectory: dir
+        )
+        let needsNotice = TelemetryConsent.needsNotice(
+            version: runningVersion, environment: [:], telemetryDirectory: dir
+        )
+        let result = TelemetryConsent.noticePresented(
+            version: runningVersion, defaults: userDefaults,
+            environment: [:], telemetryDirectory: dir
+        )
+
+        if runningVersion == "0.14.9" {
+            #expect(TelemetryConfig.isEnabled(defaults: userDefaults))
+            #expect(!needsNotice)
+            #expect(result == .init(persisted: false, uploadAllowedThisRun: false))
+            #expect(try Data(contentsOf: consentURL(dir)) == before)
+        } else {
+            #expect(!TelemetryConfig.isEnabled(defaults: userDefaults))
+            #expect(needsNotice)
+            #expect(result == .init(persisted: true, uploadAllowedThisRun: false))
+            #expect(try json(at: consentURL(dir))["notice_revision_seen"] as? Int == 1)
+        }
+    }
+
+    @Test("Settings keeps writing plain consent below the v2 cutoff")
+    func settingsStillWritesBelowCutoff() throws {
+        let dir = try directory("pre-cutoff-settings")
+        defer { try? FileManager.default.removeItem(at: dir) }
+        TelemetryConsent.record(
+            enabled: false, version: "0.14.9",
+            defaults: defaults("pre-cutoff-settings"), telemetryDirectory: dir
+        )
+        let stored = try json(at: consentURL(dir))
+        #expect(stored["consent"] as? Bool == false)
+        #expect(stored["desktop_consent"] as? Bool == false)
+        #expect(stored["prompted_version"] as? String == "0.14.9")
+        #expect(stored["notice_revision_seen"] == nil)
+    }
+
     @Test("Kill switches suppress both notice and marker write")
     func killSwitchesDoNotWrite() throws {
         for environment in [
@@ -263,6 +318,63 @@ struct TelemetryConsentV2Tests {
         #expect(shared.desktop == true)
         #expect(shared.noticeRevisionSeen == 1)
         #expect(shared.promptedVersion == "0.15.0")
+    }
+
+    @Test(arguments: [
+        ("yes", true), ("YES", true), ("on", true), ("On", true),
+        ("no", false), ("NO", false), ("off", false), ("Off", false),
+    ])
+    func yaml11BooleansMatchPython(_ scalar: String, _ expected: Bool) throws {
+        let dir = try directory("yaml11-\(scalar)")
+        defer { try? FileManager.default.removeItem(at: dir) }
+        try write("consent: \(scalar)\n", to: dir)
+        let shared = try #require(TelemetryConsent.readSharedConsent(at: consentURL(dir)))
+        #expect(shared.engine == expected)
+    }
+
+    @Test(arguments: ["", "# comments only\n", "consent: [unclosed\n"])
+    func unreadableDocumentsNeverBecomeAbsent(_ contents: String) throws {
+        let dir = try directory("unreadable")
+        defer { try? FileManager.default.removeItem(at: dir) }
+        try write(contents, to: dir)
+        let before = try Data(contentsOf: consentURL(dir))
+
+        #expect(TelemetryConsent.readSharedConsent(at: consentURL(dir)) == nil)
+        #expect(!TelemetryConsent.needsNotice(
+            version: "0.15.0", environment: [:], telemetryDirectory: dir
+        ))
+        let result = TelemetryConsent.noticePresented(
+            version: "0.15.0", defaults: defaults("unreadable"),
+            environment: [:], telemetryDirectory: dir
+        )
+        #expect(result == .init(persisted: false, uploadAllowedThisRun: false))
+        #expect(try Data(contentsOf: consentURL(dir)) == before)
+    }
+
+    @Test("Unknown nested YAML survives a consent merge")
+    func unknownNestedYAMLSurvivesMerge() throws {
+        let dir = try directory("nested")
+        defer { try? FileManager.default.removeItem(at: dir) }
+        try write(
+            """
+            consent: true
+            future:
+              nested: keep
+              flags:
+                - one
+                - two
+            """ + "\n",
+            to: dir
+        )
+
+        #expect(TelemetryConsent.writeMergedConsent(
+            updates: [:], raiseNoticeRevisionTo: 1,
+            directory: dir, replaceUnreadable: false
+        ))
+        let stored = try json(at: consentURL(dir))
+        let future = try #require(stored["future"] as? [String: Any])
+        #expect(future["nested"] as? String == "keep")
+        #expect(future["flags"] as? [String] == ["one", "two"])
     }
 
     @Test("Consent file is 0600 and directory is 0700 after atomic replacement")

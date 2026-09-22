@@ -304,7 +304,7 @@ final class TelemetryTests {
         defer { try? FileManager.default.removeItem(at: directory) }
 
         TelemetryConsent.synchronizeExistingDecision(
-            version: "0.10.8",
+            version: "0.15.0",
             defaults: defaults,
             telemetryDirectory: directory
         )
@@ -324,7 +324,7 @@ final class TelemetryTests {
             .write(to: directory.appendingPathComponent("telemetry-client-id"))
 
         TelemetryConsent.synchronizeExistingDecision(
-            version: "0.10.8",
+            version: "0.15.0",
             defaults: defaults,
             telemetryDirectory: directory
         )
@@ -346,7 +346,7 @@ final class TelemetryTests {
             .write(to: directory.appendingPathComponent("telemetry-consent.yaml"))
 
         TelemetryConsent.synchronizeExistingDecision(
-            version: "0.10.8",
+            version: "0.15.0",
             defaults: defaults,
             telemetryDirectory: directory
         )
@@ -367,14 +367,14 @@ final class TelemetryTests {
         // Because this parse runs at launch via
         // ``synchronizeExistingDecision``, the trap crash-loops the app
         // on a corrupt shared file (which is written by BOTH the desktop
-        // and the rapid-mlx engine). The contract is "treat a malformed
-        // shared file as absent and re-prompt" — reaching the asserts at
-        // all is the core regression pin.
+        // and the rapid-mlx engine). The v2 contract is "treat a malformed
+        // shared file as unreadable and fail closed without replacing it" —
+        // reaching the asserts at all is the core regression pin.
         try Data("consent:#\n".utf8)
             .write(to: directory.appendingPathComponent("telemetry-consent.yaml"))
 
         TelemetryConsent.synchronizeExistingDecision(
-            version: "0.10.8",
+            version: "0.15.0",
             defaults: defaults,
             telemetryDirectory: directory
         )

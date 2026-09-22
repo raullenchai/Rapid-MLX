@@ -970,7 +970,11 @@ final class BenchmarkProcessBox: @unchecked Sendable {
             arguments: arguments,
             standardInput: .nullDevice,
             standardOutput: standardOutput,
-            standardError: standardError
+            standardError: standardError,
+            environmentAdditions: EngineProcessEnvironment.sidecar(
+                ProcessInfo.processInfo.environment
+            ),
+            replaceEnvironment: true
         )
         child = spawned
         return spawned

@@ -86,6 +86,11 @@ _PROCESS_ROLE_ENV_VARS = (
 )
 
 
+def _swift_json(object_: dict) -> str:
+    """Match JSONSerialization's sorted, pretty ``"key" : value`` bytes."""
+    return json.dumps(object_, indent=2, sort_keys=True, separators=(",", " : ")) + "\n"
+
+
 # ---------------------------------------------------------------------------
 # Fixtures and helpers
 # ---------------------------------------------------------------------------
@@ -258,7 +263,7 @@ def test_desktop_v2_json_marker_authorises_sidecar(fake_home, consent):
     }
     if consent is not None:
         record["consent"] = consent
-    write_consent(json.dumps(record, indent=2, sort_keys=True) + "\n")
+    write_consent(_swift_json(record))
 
     stored = read_stored_consent()
     assert stored.consent is consent
@@ -309,6 +314,9 @@ def test_read_notice_revision_seen_type_gate(fake_home):
 def test_detect_role_honours_desktop_sidecar_env(fake_home, monkeypatch):
     monkeypatch.setenv("RAPID_MLX_PROCESS_ROLE", "desktop-sidecar")
     assert detect_role() is ProcessRole.SIDECAR
+    decision = startup()
+    assert decision.reason == "sidecar_waits_for_desktop"
+    assert not consent_path().exists()
 
 
 def test_detect_role_ignores_unknown_role_values(fake_home, monkeypatch):

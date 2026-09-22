@@ -180,6 +180,12 @@ require_observed_phase() {
     [[ "$observed" == 1 ]] || die "required $phase phase was not observed"
 }
 
+assert_marker_only_consent() {
+    "${PYTHON:-python3}" -c 'import pathlib, sys, yaml
+data = yaml.safe_load(pathlib.Path(sys.argv[1]).read_text(encoding="utf-8"))
+raise SystemExit(0 if isinstance(data, dict) and data.get("notice_revision_seen") == 1 and not data.get("consent") else 1)' "$1"
+}
+
 recorded_process_has_argv_pair() {
     local fake_pid="$1" first="$2" second="$3" command
     command="$(ps -ww -p "$fake_pid" -o command= 2>/dev/null || true)"
@@ -2063,8 +2069,8 @@ flow_fresh_install() {
             || die "post-onboarding shell missing $id"
     done
     baseline fresh-install.launch-telemetry-notice "$OUT/launch-notice-visible.json"
-    jq -e '.notice_revision_seen == 1 and (.consent | not)' \
-        "$PERSONA/home/.rapid-mlx/telemetry-consent.yaml" >/dev/null \
+    assert_marker_only_consent \
+        "$PERSONA/home/.rapid-mlx/telemetry-consent.yaml" \
         || die "launch notice did not persist marker-only default-on state"
     assert_one_telemetry_request launch-notice "$notice_not_before"
     press "$OUT/launch-notice-visible.json" TelemetryNotice.Acknowledge \

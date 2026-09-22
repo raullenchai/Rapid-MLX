@@ -49,10 +49,11 @@ enum TelemetryConsent {
     }
 
     static func synchronizeExistingDecision(
-        version _: String,
+        version: String,
         defaults: UserDefaults,
         telemetryDirectory: URL
     ) {
+        guard !isPreCutoffRuntime(version) else { return }
         let url = consentURL(in: telemetryDirectory)
         let alreadyMigrated = defaults.bool(
             forKey: TelemetryConfig.sharedConsentMigrationKey
@@ -96,10 +97,12 @@ enum TelemetryConsent {
     }
 
     static func needsNotice(
+        version: String = TelemetryClient.currentVersion(),
         environment: [String: String] = TelemetryConfig.environment,
         telemetryDirectory: URL = TelemetryIdentity.sharedTelemetryDirectory()
     ) -> Bool {
-        guard !TelemetryConfig.killSwitchActive(environment: environment),
+        guard !isPreCutoffRuntime(version),
+              !TelemetryConfig.killSwitchActive(environment: environment),
               let mapping = readConsentMapping(at: consentURL(in: telemetryDirectory))
         else { return false }
         return noticeWrite(for: sharedConsent(from: mapping)) != .none
@@ -114,7 +117,8 @@ enum TelemetryConsent {
         environment: [String: String] = TelemetryConfig.environment,
         telemetryDirectory: URL = TelemetryIdentity.sharedTelemetryDirectory()
     ) -> NoticePresentationResult {
-        guard !TelemetryConfig.killSwitchActive(environment: environment),
+        guard !isPreCutoffRuntime(version),
+              !TelemetryConfig.killSwitchActive(environment: environment),
               let initial = readConsentMapping(at: consentURL(in: telemetryDirectory))
         else {
             return NoticePresentationResult(persisted: false, uploadAllowedThisRun: false)
@@ -247,6 +251,13 @@ enum TelemetryConsent {
         return recorded < cutoff
     }
 
+    private static func isPreCutoffRuntime(_ version: String) -> Bool {
+        guard let running = releaseTriple(version),
+              let cutoff = releaseTriple(defaultOnCutoff)
+        else { return false }
+        return running < cutoff
+    }
+
     private static func releaseTriple(_ version: String) -> (Int, Int, Int)? {
         let pattern = #"^([0-9]+)\.([0-9]+)\.([0-9]+)(?:(?:rc|a|b)[0-9]+|\.dev[0-9]+)?$"#
         guard let regex = try? NSRegularExpression(pattern: pattern),
@@ -293,44 +304,182 @@ enum TelemetryConsent {
         return number.intValue
     }
 
-    /// Reads Desktop JSON or the engine's flat YAML mapping. Inline YAML
-    /// comments remain defensively stripped: a comment-only scalar must never
-    /// turn launch into a fatal subscript trap.
+    /// Reads Desktop JSON or the engine's YAML mapping. The small YAML reader
+    /// intentionally accepts only the JSON-compatible mapping/list/scalar
+    /// shapes the Python writer can persist. Unknown nested values are still
+    /// decoded so a later merge does not destroy fields Desktop does not own.
     private static func readConsentMapping(at url: URL) -> [String: Any]? {
         guard FileManager.default.fileExists(atPath: url.path) else { return [:] }
-        guard let data = try? Data(contentsOf: url) else { return nil }
+        guard let data = try? Data(contentsOf: url), !data.isEmpty else { return nil }
         if let json = try? JSONSerialization.jsonObject(with: data),
            let mapping = json as? [String: Any] {
             return mapping
         }
         guard let text = String(data: data, encoding: .utf8) else { return nil }
-        var mapping: [String: Any] = [:]
+        guard let lines = yamlLines(text), !lines.isEmpty else { return nil }
+        var index = 0
+        guard lines[0].indentation == 0,
+              let mapping = parseYAMLMapping(lines, index: &index, indentation: 0),
+              index == lines.count
+        else { return nil }
+        return mapping
+    }
+
+    private struct YAMLLine {
+        let indentation: Int
+        let content: String
+    }
+
+    private static func yamlLines(_ text: String) -> [YAMLLine]? {
+        var result: [YAMLLine] = []
         for rawLine in text.split(whereSeparator: \.isNewline) {
-            let trimmed = rawLine.trimmingCharacters(in: .whitespaces)
-            if trimmed.isEmpty || trimmed.hasPrefix("#") { continue }
-            let pieces = rawLine.split(separator: ":", maxSplits: 1, omittingEmptySubsequences: false)
-            guard pieces.count == 2 else { return nil }
-            let key = pieces[0].trimmingCharacters(in: .whitespaces)
-            guard !key.isEmpty else { return nil }
-            let value = pieces[1]
-                .prefix(while: { $0 != "#" })
+            let line = String(rawLine)
+            let indentation = line.prefix(while: { $0 == " " }).count
+            let remainder = String(line.dropFirst(indentation))
+            guard !remainder.hasPrefix("\t") else { return nil }
+            let content = stripYAMLComment(remainder)
                 .trimmingCharacters(in: .whitespaces)
-            guard !value.isEmpty else { return nil }
-            mapping[key] = yamlScalar(value)
+            if !content.isEmpty { result.append(.init(indentation: indentation, content: content)) }
+        }
+        return result
+    }
+
+    private static func stripYAMLComment(_ value: String) -> String {
+        var singleQuoted = false
+        var doubleQuoted = false
+        var escaped = false
+        var result = ""
+        for character in value {
+            if escaped {
+                result.append(character)
+                escaped = false
+                continue
+            }
+            if character == "\\", doubleQuoted {
+                result.append(character)
+                escaped = true
+                continue
+            }
+            if character == "'", !doubleQuoted { singleQuoted.toggle() }
+            if character == "\"", !singleQuoted { doubleQuoted.toggle() }
+            if character == "#", !singleQuoted, !doubleQuoted,
+               result.isEmpty || result.last?.isWhitespace == true { break }
+            result.append(character)
+        }
+        return result
+    }
+
+    private static func parseYAMLMapping(
+        _ lines: [YAMLLine],
+        index: inout Int,
+        indentation: Int
+    ) -> [String: Any]? {
+        var mapping: [String: Any] = [:]
+        while index < lines.count {
+            let line = lines[index]
+            if line.indentation < indentation { break }
+            guard line.indentation == indentation,
+                  !line.content.hasPrefix("-"),
+                  let separator = line.content.firstIndex(of: ":")
+            else { return nil }
+            let afterSeparator = line.content.index(after: separator)
+            guard afterSeparator == line.content.endIndex
+                    || line.content[afterSeparator].isWhitespace
+            else { return nil }
+            let key = line.content[..<separator].trimmingCharacters(in: .whitespaces)
+            guard !key.isEmpty else { return nil }
+            let rawValue = line.content[afterSeparator...].trimmingCharacters(in: .whitespaces)
+            index += 1
+            if !rawValue.isEmpty {
+                guard let scalar = yamlScalar(rawValue) else { return nil }
+                mapping[key] = scalar
+                continue
+            }
+
+            guard index < lines.count else {
+                mapping[key] = NSNull()
+                continue
+            }
+            let child = lines[index]
+            if child.indentation == indentation, child.content.hasPrefix("-") {
+                guard let sequence = parseYAMLSequence(
+                    lines, index: &index, indentation: indentation
+                ) else { return nil }
+                mapping[key] = sequence
+            } else if child.indentation > indentation {
+                if child.content.hasPrefix("-") {
+                    guard let sequence = parseYAMLSequence(
+                        lines, index: &index, indentation: child.indentation
+                    ) else { return nil }
+                    mapping[key] = sequence
+                } else {
+                    guard let nested = parseYAMLMapping(
+                        lines, index: &index, indentation: child.indentation
+                    ) else { return nil }
+                    mapping[key] = nested
+                }
+            } else {
+                mapping[key] = NSNull()
+            }
         }
         return mapping
     }
 
-    private static func yamlScalar(_ value: String) -> Any {
+    private static func parseYAMLSequence(
+        _ lines: [YAMLLine],
+        index: inout Int,
+        indentation: Int
+    ) -> [Any]? {
+        var values: [Any] = []
+        while index < lines.count {
+            let line = lines[index]
+            if line.indentation < indentation { break }
+            guard line.indentation == indentation,
+                  line.content == "-" || line.content.hasPrefix("- ")
+            else { break }
+            let rawValue = line.content.dropFirst()
+                .trimmingCharacters(in: .whitespaces)
+            index += 1
+            if rawValue.isEmpty {
+                guard index < lines.count, lines[index].indentation > indentation,
+                      let nested = parseYAMLMapping(
+                        lines, index: &index, indentation: lines[index].indentation
+                      )
+                else { return nil }
+                values.append(nested)
+            } else {
+                guard let scalar = yamlScalar(rawValue) else { return nil }
+                values.append(scalar)
+            }
+        }
+        return values
+    }
+
+    private static func yamlScalar(_ value: String) -> Any? {
         let lowered = value.lowercased()
-        if lowered == "true" { return true }
-        if lowered == "false" { return false }
+        if ["true", "yes", "on"].contains(lowered) { return true }
+        if ["false", "no", "off"].contains(lowered) { return false }
         if lowered == "null" || value == "~" { return NSNull() }
         if let integer = Int(value) { return integer }
-        if value.count >= 2,
-           (value.hasPrefix("\"") && value.hasSuffix("\""))
-            || (value.hasPrefix("'") && value.hasSuffix("'")) {
-            return String(value.dropFirst().dropLast())
+        if let floatingPoint = Double(value), value.contains(".") { return floatingPoint }
+        if value.hasPrefix("\"") {
+            guard value.hasSuffix("\""),
+                  let data = value.data(using: .utf8),
+                  let decoded = try? JSONSerialization.jsonObject(
+                    with: data, options: [.fragmentsAllowed]
+                  ) as? String
+            else { return nil }
+            return decoded
+        }
+        if value.hasPrefix("'") {
+            guard value.count >= 2, value.hasSuffix("'") else { return nil }
+            return String(value.dropFirst().dropLast()).replacingOccurrences(of: "''", with: "'")
+        }
+        if value.hasPrefix("[") || value.hasPrefix("{") {
+            guard let data = value.data(using: .utf8),
+                  let decoded = try? JSONSerialization.jsonObject(with: data)
+            else { return nil }
+            return decoded
         }
         return value
     }

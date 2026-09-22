@@ -216,6 +216,7 @@ def test_ax_escape_posts_a_real_key():
     assert "down.postToPid(pid)" in key
     assert "up.postToPid(pid)" in key
 
+
 def test_active_switch_selects_the_fresh_native_menu_item_by_identifier():
     """The driver must not report success merely because key events posted."""
     driver = DRIVER.read_text()
@@ -262,7 +263,12 @@ def test_fresh_install_proves_the_telemetry_boundary_with_a_loopback_sink():
     assert "assert_no_telemetry_requests before-onboarding" in fresh_install
     assert "telemetry notice appeared behind onboarding" in fresh_install
     assert "wait_identifier TelemetryNotice.Banner" in fresh_install
-    assert ".notice_revision_seen == 1 and (.consent | not)" in fresh_install
+    assert "assert_marker_only_consent" in fresh_install
+    marker_reader = source.split("assert_marker_only_consent() {", 1)[1].split(
+        "\n}", 1
+    )[0]
+    assert "yaml.safe_load" in marker_reader
+    assert "jq" not in marker_reader
     assert "assert_one_telemetry_request launch-notice" in fresh_install
     assert "TelemetryNotice.Acknowledge" in fresh_install
     assert "Got it did not dismiss the telemetry launch notice" in fresh_install
@@ -283,8 +289,45 @@ def test_fresh_install_proves_the_telemetry_boundary_with_a_loopback_sink():
     assert "loopback telemetry sink exited while settling" in positive_control
     assert "notice_not_before" in fresh_install
     assert "TelemetryConsent.PostValue" not in fresh_install
-    assert "assert_share_activation_requests default-on-activation first_chat_reply" in fresh_install
+    assert (
+        "assert_share_activation_requests default-on-activation first_chat_reply"
+        in fresh_install
+    )
     assert "activation_seen_desktop_first_chat_reply" in fresh_install
+
+
+def test_marker_only_consent_reader_accepts_json_and_yaml(tmp_path):
+    source = HARNESS.read_text()
+    helper_body = source.split("assert_marker_only_consent() {", 1)[1].split("\n}", 1)[
+        0
+    ]
+    helper = f"assert_marker_only_consent() {{{helper_body}\n}}"
+
+    for index, contents in enumerate(
+        [
+            '{"notice_revision_seen": 1}\n',
+            "notice_revision_seen: 1\nfuture:\n  nested: keep\n",
+        ]
+    ):
+        fixture = tmp_path / f"consent-{index}.yaml"
+        fixture.write_text(contents)
+        result = subprocess.run(
+            [
+                "bash",
+                "-c",
+                f'{helper}\nassert_marker_only_consent "$1"',
+                "_",
+                str(fixture),
+            ],
+            check=False,
+            capture_output=True,
+            env={
+                **os.environ,
+                "PYTHON": sys.executable,
+            },
+            text=True,
+        )
+        assert result.returncode == 0, result.stderr
 
 
 def test_fresh_install_baselines_notice_before_acknowledgement():
@@ -293,7 +336,9 @@ def test_fresh_install_baselines_notice_before_acknowledgement():
     fresh_install = source.split("flow_fresh_install() {", 1)[1].split("\n}", 1)[0]
 
     banner = fresh_install.index("wait_identifier TelemetryNotice.Banner")
-    notice_baseline = fresh_install.index("baseline fresh-install.launch-telemetry-notice")
+    notice_baseline = fresh_install.index(
+        "baseline fresh-install.launch-telemetry-notice"
+    )
     acknowledge = fresh_install.index("TelemetryNotice.Acknowledge")
     steady_baseline = fresh_install.index("baseline fresh-install.steady")
     prompt = fresh_install.index('send_prompt "Say hello in one short sentence."')
