@@ -14319,12 +14319,12 @@ def _start_v2_lifecycle(command: str | None) -> None:
             return
 
         from rapid_mlx.telemetry import consent_runtime
+        from rapid_mlx.telemetry import track as telemetry_v2
         from rapid_mlx.telemetry.consent_decision import ProcessRole
 
-        if consent_runtime.detect_role() is ProcessRole.SIDECAR:
+        role = consent_runtime.detect_role()
+        if telemetry_v2.set_surface_for_role(role) or role is ProcessRole.SIDECAR:
             return
-
-        from rapid_mlx.telemetry import track as telemetry_v2
 
         telemetry_v2.start_lifecycle("server" if command == "serve" else "cli")
     except Exception:

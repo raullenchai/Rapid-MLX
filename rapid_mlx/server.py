@@ -3754,6 +3754,7 @@ Examples:
     consent_runtime.startup(long_lived=True)
     from .telemetry import track as telemetry_v2
 
+    telemetry_v2.set_surface_for_role()
     telemetry_v2.start_lifecycle("server")
 
     from .routes.video import configure_video_jobs

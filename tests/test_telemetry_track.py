@@ -88,6 +88,8 @@ class ExplodingMapping(Mapping[str, object]):
 def isolated_emit(monkeypatch, tmp_path):
     for name in (state.ENV_VAR, state.DO_NOT_TRACK_ENV, *state.CI_ENV_VARS):
         monkeypatch.delenv(name, raising=False)
+    monkeypatch.delenv("RAPID_MLX_PROCESS_ROLE", raising=False)
+    monkeypatch.delenv("RAPID_MLX_WATCHDOG_PPID", raising=False)
     monkeypatch.setenv("HOME", str(tmp_path))
     monkeypatch.setattr(rapid_mlx, "__version__", "0.15.1")
     monkeypatch.setattr(track_module.common_props, "read_platform_facts", lambda: FACTS)
@@ -302,17 +304,51 @@ def test_cli_lifecycle_exclusions(monkeypatch, command):
     assert calls == []
 
 
-def test_cli_lifecycle_skips_sidecar(monkeypatch):
-    calls: list[str] = []
-    monkeypatch.setattr(
-        posthog_sender, "install_atexit", lambda: calls.append("atexit")
-    )
-    monkeypatch.setattr(
-        track_module, "_emit_app_opened", lambda surface: calls.append(surface)
-    )
-    monkeypatch.setattr(consent_runtime, "detect_role", lambda: ProcessRole.SIDECAR)
+def test_cli_sidecar_sets_desktop_surface_without_app_opened(monkeypatch):
+    sender = inject_sender(monkeypatch)
+    monkeypatch.setenv("RAPID_MLX_PROCESS_ROLE", "desktop-sidecar")
     cli._start_v2_lifecycle("serve")
-    assert calls == []
+    track_module.track("active_day", {})
+    track_module.track(
+        "model_served",
+        {
+            "model": "whisper-small",
+            "model_type": "audio",
+            "auto_selected": False,
+            "quant": "unknown",
+        },
+    )
+    assert [item["event"] for item in sender.items] == ["active_day", "model_served"]
+    assert {item["properties"]["surface"] for item in sender.items} == {"desktop"}
+
+
+def test_process_context_falls_back_to_desktop_for_sidecar(monkeypatch):
+    sender = inject_sender(monkeypatch)
+    monkeypatch.setenv("RAPID_MLX_PROCESS_ROLE", "desktop-sidecar")
+    track_module.track("active_day", {})
+    [item] = sender.items
+    assert item["properties"]["surface"] == "desktop"
+
+
+def test_process_context_defaults_to_cli_when_role_detection_fails(monkeypatch):
+    sender = inject_sender(monkeypatch)
+    monkeypatch.setattr(
+        consent_runtime,
+        "detect_role",
+        lambda: (_ for _ in ()).throw(RuntimeError("role unavailable")),
+    )
+    track_module.track("active_day", {})
+    [item] = sender.items
+    assert item["properties"]["surface"] == "cli"
+
+
+def test_watchdog_sidecar_keeps_cli_surface_without_app_opened(monkeypatch):
+    sender = inject_sender(monkeypatch)
+    monkeypatch.setenv("RAPID_MLX_WATCHDOG_PPID", "4242")
+    cli._start_v2_lifecycle("serve")
+    track_module.track("active_day", {})
+    [item] = sender.items
+    assert item["properties"]["surface"] == "cli"
 
 
 @pytest.mark.parametrize(
@@ -365,12 +401,39 @@ def test_cli_main_starts_lifecycle_after_consent(monkeypatch, capsys):
     assert calls == ["consent", "cli"]
 
 
+def test_shared_lifecycle_accepts_desktop_surface_without_app_opened(monkeypatch):
+    calls: list[str] = []
+    monkeypatch.setattr(
+        posthog_sender, "install_atexit", lambda: calls.append("atexit")
+    )
+    monkeypatch.setattr(consent_runtime, "detect_role", lambda: ProcessRole.DESKTOP)
+    track_module.start_lifecycle("server")
+    assert track_module._surface == "desktop"
+    assert calls == []
+
+
+def test_desktop_lifecycle_stays_suppressed_after_context_resolution(monkeypatch):
+    sender = inject_sender(monkeypatch)
+    monkeypatch.setenv("RAPID_MLX_PROCESS_ROLE", "desktop-sidecar")
+    track_module.track("active_day", {})
+    calls: list[str] = []
+    monkeypatch.setattr(
+        posthog_sender, "install_atexit", lambda: calls.append("atexit")
+    )
+    monkeypatch.setattr(
+        track_module, "_emit_app_opened", lambda surface: calls.append(surface)
+    )
+    track_module.start_lifecycle("server")
+    assert [item["event"] for item in sender.items] == ["active_day"]
+    assert calls == []
+
+
 def test_shared_lifecycle_rejects_invalid_surface_and_denial(monkeypatch):
     calls: list[str] = []
     monkeypatch.setattr(
         posthog_sender, "install_atexit", lambda: calls.append("atexit")
     )
-    track_module.start_lifecycle("desktop")
+    track_module.start_lifecycle("mobile")
     monkeypatch.setattr(track_module, "_upload_allowed", lambda: False)
     track_module.start_lifecycle("cli")
     assert calls == []
@@ -744,10 +807,12 @@ def test_cohort_stamp_reread_after_utc_day_rollover(monkeypatch):
 def test_surface_rejects_invalid_and_cannot_change_after_context(monkeypatch):
     inject_sender(monkeypatch)
     track_module._set_surface("desktop")
-    assert track_module._surface is None
+    assert track_module._surface == "desktop"
+    track_module._set_surface("mobile")
+    assert track_module._surface == "desktop"
     track_module.track("app_opened", {})
     track_module._set_surface("server")
-    assert track_module._surface is None
+    assert track_module._surface == "desktop"
 
 
 def test_none_common_props_drops_event(monkeypatch):
@@ -858,7 +923,15 @@ def test_server_entrypoint_lifecycle_source_contract():
         and ast.unparse(node.value.func) == "telemetry_v2.start_lifecycle"
     )
     lifecycle_call = main.body[lifecycle_index]
-    assert lifecycle_index == startup_index + 2
+    role_surface_index = next(
+        index
+        for index, node in enumerate(main.body)
+        if isinstance(node, ast.Expr)
+        and isinstance(node.value, ast.Call)
+        and ast.unparse(node.value.func) == "telemetry_v2.set_surface_for_role"
+    )
+    assert role_surface_index == startup_index + 2
+    assert lifecycle_index == role_surface_index + 1
     assert len(lifecycle_call.value.args) == 1
     assert isinstance(lifecycle_call.value.args[0], ast.Constant)
     assert lifecycle_call.value.args[0].value == "server"
