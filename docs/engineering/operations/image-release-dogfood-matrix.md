@@ -25,7 +25,7 @@ column.
 | `hidream-o1-dev` | Native HiDream | Generate | Required manually | [HiDream-O1 Dev dogfood](../performance/2026-09-04-hidream-o1-dev-dogfood.md) |
 | `sd35-large-4bit` | Native SD3.5 | Generate | Required manually | [SD3.5 Large dogfood](../performance/2026-09-05-sd35-large-dogfood.md) |
 | `qwen-image` | mflux / Qwen Image | Generate | Required manually | [Pinned-checkpoint real server qualification](https://github.com/raullenchai/Rapid-MLX/pull/2157) |
-| `qwen-image-2.1` | mflux / Qwen Image 2.1 q8 on load | Generate + img2img | Required manually | Pending first real-weight qualification |
+| `qwen-image-2.1` | mflux / Qwen Image 2.1 q8 on load | Generate + img2img | Required manually | [Source-environment real-weight dogfood](../performance/2026-09-21-qwen-image-2.1-dogfood.md) |
 | `qwen-image-edit` | mflux / Qwen Image Edit 2509 q8 | Edit | Required manually | [Qwen Image Edit dogfood](../performance/2026-09-05-qwen-image-edit-dogfood.md) |
 <!-- image-release-matrix:end -->
 
@@ -54,9 +54,11 @@ A row passes only when one evidence bundle records all of the following:
    the same server.
 7. Capability-specific path: aliases marked **Generate + edit** must exercise
    both endpoints with a real input image and verify that the edit follows the
-   instruction. Edit-only aliases must remain absent from the generation picker
-   and reject the generation route. Generation-only aliases must remain absent
-   from the edit picker and reject the edit route.
+   instruction. **Generate + img2img** aliases must exercise both endpoints and
+   verify source conditioning and prompt influence; img2img does not promise
+   instruction-edit fidelity. Edit-only aliases must remain absent from the
+   generation picker and reject the generation route. Generation-only aliases
+   must remain absent from the edit picker and reject the edit route.
 
 Do not substitute a two-step or reduced-resolution import smoke for the
 default-request result. Short probes are useful for lifecycle debugging, but
