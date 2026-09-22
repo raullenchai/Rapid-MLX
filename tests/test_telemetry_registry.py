@@ -265,9 +265,29 @@ def test_bad_version_strings_are_dropped():
 def test_rejection_logs_at_most_once_per_event_name(monkeypatch):
     seen: list[str] = []
     monkeypatch.setattr(
-        "rapid_mlx.telemetry.transport._log", lambda msg: seen.append(msg)
+        "rapid_mlx.telemetry.debug_log._log", lambda msg: seen.append(msg)
     )
     monkeypatch.setenv("RAPID_MLX_TELEMETRY_DEBUG", "1")
     for _ in range(50):
         assert reg.validate("model_served", _served(model_type="nope")) is None
     assert len(seen) == 1
+
+
+@pytest.mark.parametrize("value", ("1", "true", "YES"))
+def test_v2_debug_log_writes_only_when_enabled(monkeypatch, capsys, value):
+    from rapid_mlx.telemetry import debug_log
+
+    monkeypatch.setenv(debug_log.DEBUG_ENV, value)
+    assert debug_log.debug_enabled() is True
+    debug_log._log("hello")
+    assert capsys.readouterr().err == "[telemetry] hello\n"
+
+
+@pytest.mark.parametrize("value", ("", "0", "false", "no", "off"))
+def test_v2_debug_log_is_silent_when_disabled(monkeypatch, capsys, value):
+    from rapid_mlx.telemetry import debug_log
+
+    monkeypatch.setenv(debug_log.DEBUG_ENV, value)
+    assert debug_log.debug_enabled() is False
+    debug_log._log("hello")
+    assert capsys.readouterr().err == ""

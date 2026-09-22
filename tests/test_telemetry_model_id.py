@@ -530,57 +530,6 @@ def test_registry_entry_default_is_custom():
     assert entry.telemetry_model_id == "<custom>"
 
 
-# ------------------------------------------------------- the emit boundary
-
-
-def test_emit_request_reapplies_the_rule(opted_in_queue):
-    """Even a call site that regressed to ``request.model`` cannot leak."""
-    from rapid_mlx.telemetry import emit
-
-    emit.request(
-        endpoint="/v1/chat/completions",
-        model_alias="acme-corp/internal-support-model",
-        stream=False,
-        tool_call_used=False,
-        prompt_tokens=1,
-        completion_tokens=1,
-        ttft_ms=1.0,
-        tps=1.0,
-        status=200,
-    )
-    payload = opted_in_queue[0]
-    assert payload["request"]["model_alias"] == "<custom>"
-    assert "acme" not in repr(payload)
-
-
-@pytest.fixture
-def opted_in_queue(tmp_path, monkeypatch):
-    """Telemetry on, sampling forced, queue captured in memory."""
-    import importlib
-
-    monkeypatch.setenv("HOME", str(tmp_path))
-    monkeypatch.delenv("RAPID_MLX_TELEMETRY", raising=False)
-    monkeypatch.setenv("RAPID_MLX_TELEMETRY_REQUEST_SAMPLE", "1")
-
-    import rapid_mlx.telemetry.emit as emit
-    import rapid_mlx.telemetry.state as state
-
-    importlib.reload(state)
-    importlib.reload(emit)
-    emit._reset_for_tests()
-    state.record_consent(True, rapid_mlx_version="0.0.0+test")
-
-    captured: list = []
-
-    class _Q:
-        def enqueue(self, payload):
-            captured.append(payload)
-
-    monkeypatch.setattr(emit, "get_queue", lambda: _Q())
-    yield captured
-    emit._reset_for_tests()
-
-
 # ----------------------------------------------- fail-soft / edge coverage
 #
 # ``telemetry_model_id`` sits on the request and model-load paths, so every

@@ -145,24 +145,6 @@ _SAFE_DEEPSEEK_TOOL_NAME_RE = re.compile(r"^[A-Za-z0-9_-]{1,64}$")
 router = APIRouter()
 
 
-def _degenerate_signal(
-    visible_text: str | None, telemetry_enabled: bool
-) -> bool | None:
-    """#1250 degeneracy canary for the emit sites below.
-
-    Returns ``None`` when telemetry is disabled — the default path skips the
-    heuristic entirely and no work is done. When enabled, runs the LOCAL
-    ``rapid_mlx.coherence.is_degenerate_completion`` on the visible completion
-    and returns only the bool; the text never leaves the host and is not
-    recoverable from the bool.
-    """
-    if not telemetry_enabled:
-        return None
-    from rapid_mlx.coherence import is_degenerate_completion
-
-    return is_degenerate_completion(visible_text)
-
-
 def _tool_call_name(tc) -> str | None:
     """Extract the function name from a tool_call entry regardless of
     shape. Three real shapes seen in production:
@@ -6728,70 +6710,11 @@ async def _create_chat_completion_impl(
         request, getattr(cfg, "reasoning_parser_name", None)
     )
 
-    # Opt-in telemetry (Phase 2.2): record a bucketed ``request`` event for
-    # this completed non-streaming chat completion. ``caller_agent`` comes
-    # from the inbound User-Agent (bucketed to an allowlist in ``redact`` —
-    # never stored raw); every perf number is bucketed. ``emit.request`` is
-    # sampled + ``is_enabled()``-gated + ``@_safe``, so this is a cheap
-    # no-op when telemetry is off / not sampled and can never affect the
-    # response. TTFT == total latency here (a non-streaming response is
-    # delivered in one shot); the streaming path reports true TTFT.
-    from rapid_mlx.telemetry import emit as _telemetry_emit
-    from rapid_mlx.telemetry.model_id import served_model_id as _served_model_id
-
-    # Client-side degeneracy check (#1250): only when telemetry is enabled,
-    # run the local ``looks_like_garbage`` heuristic on the VISIBLE content
-    # and send ONLY the resulting bool — never the text. Empty content stays
-    # ``False`` (already captured by the zero completion-token bucket), so
-    # this is a clean "non-empty output looks like garbage" post-release
-    # canary for the #1234 class. Gated on ``is_enabled()`` so the default
-    # (telemetry off) path does no extra work.
-    _output_degenerate = _degenerate_signal(final_content, _telemetry_emit.is_enabled())
-
-    _telemetry_emit.request(
-        endpoint="/v1/chat/completions",
-        model_alias=served_telemetry_id or _served_model_id(request.model),
-        stream=False,
-        tool_call_used=bool(tool_calls),
-        prompt_tokens=output.prompt_tokens,
-        completion_tokens=output.completion_tokens,
-        ttft_ms=elapsed * 1000.0,
-        tps=tokens_per_sec,
-        status=200,
-        caller_agent=(
-            raw_request.headers.get("user-agent") if raw_request is not None else None
-        ),
-        caller_client=(
-            raw_request.headers.get("x-rapid-client")
-            if raw_request is not None
-            else None
-        ),
-        output_degenerate=_output_degenerate,
-    )
-
-    # Serialize the response FIRST so a serialization failure surfaces as an
-    # error the client sees — not as a "successful inference" we already
-    # counted. ``model_dump_json`` can raise; the activation emit below must be
-    # reached only when the 2xx body is actually built.
     response = Response(
         content=chat_response.model_dump_json(exclude_none=True),
         media_type="application/json",
         headers=response_headers or None,
     )
-
-    # Activation funnel (docs/telemetry-activation.md): a successful, non-empty
-    # inference is the ``first_inference`` engagement milestone. Fired once per
-    # install and UNSAMPLED — distinct from the 10%-sampled ``request`` event
-    # above — so the engaged baseline can't be reconstructed-from-sample. A
-    # 2xx with zero completion tokens (empty generation) does NOT count. Emitted
-    # only after the response above is successfully constructed.
-    from rapid_mlx.telemetry.activation_spec import is_successful_inference
-
-    if is_successful_inference(200, output.completion_tokens):
-        _telemetry_emit.activation(
-            activation_kind="first_inference",
-            surface=_telemetry_emit.server_surface(),
-        )
 
     return response
 
@@ -8130,89 +8053,6 @@ async def stream_chat_completion(
 
         yield "data: [DONE]\n\n"
 
-        # Opt-in telemetry (Phase 2.2): record a bucketed ``request`` event
-        # for this completed STREAMING chat completion. This is the path
-        # real agent traffic (Cursor / Claude Code / Aider) takes, so it is
-        # where ``caller_agent`` + a MEANINGFUL ``ttft_ms`` actually come
-        # from — the non-streaming emit only ever sees one-shot self-tests.
-        #
-        # Emitted AFTER ``[DONE]`` (and any usage chunk) has been yielded so
-        # the terminal wire markers always reach the client first — the
-        # consent check / lazy queue-thread start can never delay stream
-        # completion, and it never touches first-token latency. On the
-        # SUCCESS path only: a client disconnect / early abort raises out of
-        # the loop above and unwinds through ``finally`` below, skipping
-        # this — matching the non-streaming (success-only) emit and how
-        # ``_disconnect_guard`` treats aborts.
-        #
-        # ``ttft_ms`` is wall-clock to the FIRST emitted token (captured in
-        # the loop), not total latency. ``tps`` is the DECODE throughput —
-        # completion tokens over the post-first-token window (total − ttft),
-        # the streaming analogue of the non-streaming ``completion / total``
-        # (where ttft == total collapses the window). Both fall back to the
-        # total-latency numbers when no token was emitted / the decode
-        # window is non-positive. ``emit.request`` is sampled +
-        # ``is_enabled()``-gated + ``@_safe``, so this is a cheap no-op when
-        # telemetry is off / not sampled and can never raise into the
-        # stream. ``caller_agent`` is passed RAW; the helper buckets it via
-        # ``normalize_caller_agent``.
-        if first_token_ts is not None:
-            _ttft_seconds = max(0.0, first_token_ts - start_time)
-        else:
-            _ttft_seconds = elapsed
-        _decode_seconds = elapsed - _ttft_seconds
-        _decode_tps = (
-            completion_tokens / _decode_seconds
-            if _decode_seconds > 0
-            else tokens_per_sec
-        )
-        _tool_call_used = bool(fallback_tool_calls) or (
-            getattr(processor, "_tool_calls_emitted_to_wire", 0) > 0
-        )
-        from rapid_mlx.telemetry import emit as _telemetry_emit
-        from rapid_mlx.telemetry.model_id import served_model_id as _served_model_id
-
-        # #1250 canary on the visible streamed content — the accumulated
-        # assistant text (reasoning is separate). Runs locally, only the
-        # bool is emitted; see ``_degenerate_signal``.
-        _output_degenerate = _degenerate_signal(
-            getattr(processor, "accumulated_text", "") or "",
-            _telemetry_emit.is_enabled(),
-        )
-
-        _telemetry_emit.request(
-            endpoint="/v1/chat/completions",
-            model_alias=served_telemetry_id or _served_model_id(request.model),
-            stream=True,
-            tool_call_used=_tool_call_used,
-            prompt_tokens=prompt_tokens,
-            completion_tokens=completion_tokens,
-            ttft_ms=_ttft_seconds * 1000.0,
-            tps=_decode_tps,
-            status=200,
-            caller_agent=caller_agent,
-            caller_client=caller_client,
-            output_degenerate=_output_degenerate,
-        )
-
-        # Activation funnel (docs/telemetry-activation.md): the streaming
-        # analogue of the non-streaming site above. A successful, non-empty
-        # stream is the ``first_inference`` milestone — once per install,
-        # unsampled. An empty stream (zero completion tokens) does NOT count.
-        #
-        # Placement is intentional: we emit only after the generator drains
-        # normally (all tokens flushed). A stream the client disconnects or
-        # cancels mid-generation raises out before here and is deliberately NOT
-        # counted — under-counting is conservative and never inflates the
-        # engaged funnel, whereas emitting at the first yielded token would
-        # over-count streams that then error out (contradicting "successful").
-        from rapid_mlx.telemetry.activation_spec import is_successful_inference
-
-        if is_successful_inference(200, completion_tokens):
-            _telemetry_emit.activation(
-                activation_kind="first_inference",
-                surface=_telemetry_emit.server_surface(),
-            )
     finally:
         if admission_task is not None and not admission_task.done():
             admission_task.cancel()

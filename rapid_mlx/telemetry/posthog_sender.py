@@ -64,7 +64,7 @@ queued work and synchronization/thread state, but deliberately inherits burst
 buckets and the accepted session count. That conservative accounting prevents
 a fork from resetting volume limits.
 
-The v1 transport (:mod:`rapid_mlx.telemetry.transport`) remains separate.
+This is the engine's only telemetry transport.
 Importing this module starts no thread and opens no socket — the flush daemon
 starts lazily on the first accepted capture, and startup wiring calls
 :func:`install_atexit` for the shutdown flush.

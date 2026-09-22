@@ -45,7 +45,6 @@ def test_kokoro_alias_and_hf_id_declare_g2p_requirement() -> None:
 
 def test_pull_downloads_primary_then_declared_runtime_assets(monkeypatch) -> None:
     calls: list[tuple[str, list[str] | None, str | None, str | None]] = []
-    activations = 0
     preparations = []
 
     def fake_pull_repository(args, *, allow_patterns_override=None):
@@ -58,12 +57,7 @@ def test_pull_downloads_primary_then_declared_runtime_assets(monkeypatch) -> Non
             )
         )
 
-    def fake_activation() -> None:
-        nonlocal activations
-        activations += 1
-
     monkeypatch.setattr(cli, "_pull_repository", fake_pull_repository)
-    monkeypatch.setattr(cli, "_emit_pull_activation", fake_activation)
     monkeypatch.setattr(
         runtime_requirements,
         "prepare_runtime_requirement",
@@ -87,7 +81,6 @@ def test_pull_downloads_primary_then_declared_runtime_assets(monkeypatch) -> Non
             None,
         ),
     ]
-    assert activations == 1
     assert preparations == [
         registry.AudioRuntimeRequirement(kind="spacy_pipeline", name="en_core_web_sm")
     ]
@@ -102,8 +95,6 @@ def test_pull_without_runtime_assets_keeps_single_repository(monkeypatch) -> Non
         "_pull_repository",
         lambda args, **_kwargs: calls.append(args.model),
     )
-    monkeypatch.setattr(cli, "_emit_pull_activation", lambda: None)
-
     cli.pull_command(argparse.Namespace(model="mlx-community/Qwen3-0.6B-4bit"))
 
     assert calls == ["mlx-community/Qwen3-0.6B-4bit"]
@@ -130,38 +121,25 @@ def test_pull_does_not_download_primary_again_when_declared_as_runtime_asset(
         "_pull_repository",
         lambda args, **_kwargs: calls.append(args.model),
     )
-    monkeypatch.setattr(cli, "_emit_pull_activation", lambda: None)
-
     cli.pull_command(argparse.Namespace(model=primary))
 
     assert calls == [primary]
 
 
 def test_runtime_asset_failure_does_not_report_successful_pull(monkeypatch) -> None:
-    activations = 0
-
     def fake_pull_repository(args, **_kwargs):
         if args.model == "prince-canuma/Kokoro-82M":
             raise RuntimeError("asset download failed")
 
-    def fake_activation() -> None:
-        nonlocal activations
-        activations += 1
-
     monkeypatch.setattr(cli, "_pull_repository", fake_pull_repository)
-    monkeypatch.setattr(cli, "_emit_pull_activation", fake_activation)
 
     with pytest.raises(RuntimeError, match="asset download failed"):
         cli.pull_command(argparse.Namespace(model="mlx-community/Kokoro-82M-bf16"))
-
-    assert activations == 0
 
 
 def test_runtime_requirement_failure_does_not_report_successful_pull(
     monkeypatch, capsys
 ) -> None:
-    activations = 0
-
     monkeypatch.setattr(cli, "_pull_repository", lambda *args, **kwargs: None)
     monkeypatch.setattr(
         runtime_requirements,
@@ -173,17 +151,10 @@ def test_runtime_requirement_failure_does_not_report_successful_pull(
         ),
     )
 
-    def fake_activation() -> None:
-        nonlocal activations
-        activations += 1
-
-    monkeypatch.setattr(cli, "_emit_pull_activation", fake_activation)
-
     with pytest.raises(SystemExit) as excinfo:
         cli.pull_command(argparse.Namespace(model="mlx-community/Kokoro-82M-bf16"))
 
     assert excinfo.value.code == 1
-    assert activations == 0
     output = capsys.readouterr().out
     assert "Could not prepare audio runtime" in output
     assert "rapid-mlx[audio]" in output

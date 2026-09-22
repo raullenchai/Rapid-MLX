@@ -3330,16 +3330,6 @@ def _run_tool_parser(
                 return result.content or "", None
             return parse_tool_calls(output_text, request_dict)
     except Exception as e:
-        # Opt-in telemetry (Phase 2.2 error wiring): the configured tool
-        # parser crashed while extracting calls, so we fall back to the
-        # generic text parser below. Record a bucketed ``tool_parse`` error
-        # — allowlisted category/phase + a traceback fingerprint of the
-        # PARSER code path, never the model output being parsed.
-        # ``is_enabled()``-gated + ``@_safe`` → a no-op when telemetry is
-        # off and it never changes the fallback behaviour below.
-        from rapid_mlx.telemetry import emit as _telemetry_emit  # pragma: no cover
-
-        _telemetry_emit.error(category="tool_parse", exc=e, phase="chat")
         logger.warning(f"Tool parser error: {e}")
         if cfg.tool_call_parser == "qwen3_coder_xml":
             return output_text or "", None

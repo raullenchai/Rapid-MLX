@@ -627,9 +627,12 @@ Top three things that go wrong:
 - **Contributing:** Start with [CONTRIBUTING.md](CONTRIBUTING.md). Explore compatible benchmark models with `rapid-mlx benchmark catalog`; runs stay local unless you explicitly share one in the internal beta.
 - **Show support:** [Star this repository](https://github.com/raullenchai/Rapid-MLX) to follow releases and help others discover the project.
 
-**Privacy:** Anonymous telemetry is off by default and requires an explicit
-`rapid-mlx telemetry enable`. Prompts, completions, paths, IP addresses, and API
-keys are never collected. See [what we do and don't collect](https://rapidmlx.com/docs/telemetry.html).
+**Privacy:** Anonymous, metadata-only telemetry is on by default in 0.15.0 and
+is sent in privacy-hardened batches to PostHog Cloud (US). Turn it off with
+`rapid-mlx telemetry off`, `RAPID_MLX_TELEMETRY=0`, or `DO_NOT_TRACK=1`.
+Prompts, completions, paths, IP addresses, locations, and API keys are never
+collected, and no per-person profile is built. See
+[what we do and don't collect](https://rapidmlx.com/docs/telemetry.html).
 
 ---
 

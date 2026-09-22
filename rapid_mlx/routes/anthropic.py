@@ -1202,36 +1202,6 @@ async def create_anthropic_message(
             matched_stop=getattr(output, "matched_stop", None),
         )
 
-        # Opt-in telemetry (caller attribution, task C): record a bucketed
-        # ``request`` event for this completed non-streaming /v1/messages
-        # completion. ``caller_agent`` comes from the inbound User-Agent
-        # (bucketed to an allowlist in ``redact`` — never stored raw); every
-        # perf number is bucketed. ``emit.request`` is sampled +
-        # ``is_enabled()``-gated + ``@_safe``, so this is a cheap no-op when
-        # telemetry is off / not sampled and can never affect the response.
-        # TTFT == total latency here (a non-streaming response is delivered
-        # in one shot); the streaming path reports true TTFT.
-        from rapid_mlx.telemetry import emit as _telemetry_emit
-        from rapid_mlx.telemetry.model_id import served_model_id as _served_model_id
-
-        _telemetry_emit.request(
-            endpoint="/v1/messages",
-            model_alias=_served_telemetry_id
-            or _served_model_id(anthropic_request.model),
-            stream=False,
-            tool_call_used=bool(tool_calls),
-            prompt_tokens=output.prompt_tokens,
-            completion_tokens=output.completion_tokens,
-            ttft_ms=elapsed * 1000.0,
-            tps=tokens_per_sec,
-            status=200,
-            caller_agent=(
-                request.headers.get("user-agent") if request is not None else None
-            ),
-            caller_client=(
-                request.headers.get("x-rapid-client") if request is not None else None
-            ),
-        )
         return Response(
             content=anthropic_response.model_dump_json(exclude_none=True),
             media_type="application/json",
@@ -3231,43 +3201,3 @@ async def _stream_anthropic_messages(
     )
 
     yield f"event: message_stop\ndata: {json.dumps({'type': 'message_stop'})}\n\n"
-
-    # Opt-in telemetry (caller attribution, task C): record a bucketed
-    # ``request`` event for this completed /v1/messages stream. Fired only
-    # AFTER the terminal ``message_stop`` marker is yielded + the generator
-    # resumes cleanly — matching the chat lane's documented emit-after-
-    # terminal-marker placement. A stream the client cancels or that raises
-    # while delivering that final marker raises out before this line and is
-    # deliberately NOT counted (under-counting is conservative; emitting
-    # before ``message_stop`` would record a false status-200 success).
-    # ``caller_agent`` is the inbound User-Agent bucketed to an allowlist in
-    # ``redact`` (never stored raw); ``ttft_ms`` is true first-token latency.
-    # ``emit.request`` is sampled + ``is_enabled()``-gated + ``@_safe``, so
-    # this is a cheap no-op when telemetry is off / not sampled.
-    if _first_token_ts is not None:
-        _ttft_seconds = max(0.0, _first_token_ts - start_time)
-    else:
-        _ttft_seconds = elapsed
-    _decode_seconds = elapsed - _ttft_seconds
-    _decode_tps = (
-        completion_tokens / _decode_seconds if _decode_seconds > 0 else tokens_per_sec
-    )
-    from rapid_mlx.telemetry import emit as _telemetry_emit
-    from rapid_mlx.telemetry.model_id import served_model_id as _served_model_id
-
-    _telemetry_emit.request(
-        endpoint="/v1/messages",
-        model_alias=served_telemetry_id or _served_model_id(anthropic_request.model),
-        stream=True,
-        tool_call_used=bool(tool_calls),
-        prompt_tokens=prompt_tokens,
-        completion_tokens=completion_tokens,
-        # TTFT == true first-token latency when a text token was produced;
-        # on a stream with no text delta (tool-only / empty completion) fall
-        # back to total stream time rather than reporting a false 0.0ms.
-        ttft_ms=_ttft_seconds * 1000.0,
-        tps=_decode_tps,
-        status=200,
-        caller_agent=caller_agent,
-        caller_client=caller_client,
-    )

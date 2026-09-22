@@ -236,7 +236,8 @@ def _run_main_capture_chat(argv, *, stdin_tty=True):
 
     with (
         mock.patch.object(cli, "chat_command", _capture),
-        mock.patch("rapid_mlx.telemetry.maybe_prompt_for_consent", return_value=False),
+        mock.patch("rapid_mlx.telemetry.consent_runtime.startup"),
+        mock.patch.object(cli, "_start_v2_lifecycle"),
         mock.patch(
             "rapid_mlx._version_check.prompt_upgrade_if_available",
             return_value=False,
@@ -342,7 +343,8 @@ def _run_main_gate_probe(
 
     ctx = [
         mock.patch.object(cli, "chat_command", _dispatch),
-        mock.patch("rapid_mlx.telemetry.maybe_prompt_for_consent", return_value=False),
+        mock.patch("rapid_mlx.telemetry.consent_runtime.startup"),
+        mock.patch.object(cli, "_start_v2_lifecycle"),
         mock.patch(
             "rapid_mlx._version_check.prompt_upgrade_if_available",
             return_value=False,
@@ -360,9 +362,9 @@ def _run_main_gate_probe(
                 lambda: (auto_select_alias, starter_cached),
             )
         )
-    with ctx[0], ctx[1], ctx[2], ctx[3], ctx[4], ctx[5], ctx[6], ctx[7]:
+    with ctx[0], ctx[1], ctx[2], ctx[3], ctx[4], ctx[5], ctx[6], ctx[7], ctx[8]:
         if auto_select_alias is not None:
-            with ctx[8]:
+            with ctx[9]:
                 cli.main()
         else:
             cli.main()

@@ -1,6 +1,10 @@
 # Telemetry → Golden Profile design doc
 
-Status: **implemented** (statused 2026-08-18) · Author: raullen + Claude · Date: 2026-06-06
+Status: **superseded by telemetry v2 for 0.15.0** · Author: raullen + Claude · Date: 2026-06-06
+
+This document describes the retired engine v1 wire and is retained only as
+historical context. The current engine client validates events through
+`rapid_mlx/telemetry/events.json` and sends PostHog `/batch/` requests.
 
 This doc covers Phase 2 of the opt-in telemetry pipeline first sketched
 in [Issue #236](https://github.com/raullenchai/Rapid-MLX/issues/236).

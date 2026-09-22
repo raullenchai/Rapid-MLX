@@ -112,11 +112,11 @@ def test_prior_v1_consent_is_reprompted_after_activation_added(fake_home):
 def test_reset_state_raises_when_a_path_cannot_be_removed(fake_home):
     """`reset_state` must not silently claim success when state survives on disk
     (that would leave telemetry enabled while the CLI prints "removed"). It
-    attempts every path, still clears the in-process latch, then raises an
-    aggregated OSError naming what it could not remove."""
+    attempts every path, then raises an aggregated OSError naming what it
+    could not remove."""
     import pytest
 
-    from rapid_mlx.telemetry import emit, state
+    from rapid_mlx.telemetry import state
 
     # A normally-removable consent file...
     state.record_consent(True, rapid_mlx_version="0.0.0+test")
@@ -126,15 +126,61 @@ def test_reset_state_raises_when_a_path_cannot_be_removed(fake_home):
     stuck = state.activation_marker_path("first_inference")
     stuck.mkdir(parents=True, exist_ok=True)
     (stuck / "child").write_text("x")
-    # Latch a kind so we can assert the latch is cleared despite the failure.
-    emit._activation_latched.add("model_pull")
-
     with pytest.raises(OSError):
         state.reset_state()
 
-    # Removable state was still removed and the latch was still cleared.
+    # Removable state was still removed.
     assert not state.consent_path().exists()
-    assert "model_pull" not in emit._activation_latched
+
+
+def test_session_id_is_process_stable_and_resettable(fake_home, monkeypatch):
+    monkeypatch.setattr(state, "_session_id", None)
+    first = state.session_id()
+    assert state.session_id() == first
+    assert len(first) == 36
+
+
+def test_rotate_client_id_preserves_consent_and_clears_markers(fake_home):
+    state.record_consent(True, rapid_mlx_version="0.15.0")
+    original = state.get_or_create_client_id()
+    marker = state.activation_marker_path("first_inference")
+    marker.touch()
+
+    rotated = state.rotate_client_id()
+
+    assert rotated != original
+    assert not marker.exists()
+    assert state.get_consent_state() is not None
+    assert state.get_consent_state().consent is True
+
+
+def test_rotate_client_id_creates_identity_when_old_one_is_absent(fake_home):
+    assert not state.client_id_path().exists()
+    rotated = state.rotate_client_id()
+    assert state.client_id_path().read_text().strip() == rotated
+
+
+def test_rotate_client_id_reports_unremovable_marker(fake_home):
+    stuck = state.activation_marker_path("first_inference")
+    stuck.mkdir(parents=True)
+    (stuck / "child").touch()
+    with pytest.raises(OSError, match="identity rotation could not remove"):
+        state.rotate_client_id()
+
+
+def test_rotate_client_id_reports_marker_enumeration_failure(fake_home, monkeypatch):
+    class ExplodingTelemetryDir:
+        def __truediv__(self, name):
+            return fake_home / ".rapid-mlx" / name
+
+        def glob(self, _pattern):
+            raise OSError("cannot scan")
+
+    monkeypatch.setattr(
+        state, "_default_telemetry_dir", lambda: ExplodingTelemetryDir()
+    )
+    with pytest.raises(OSError, match="cannot enumerate activation markers"):
+        state.rotate_client_id()
 
 
 def test_env_kill_switch_wins_over_consent(fake_home, monkeypatch):

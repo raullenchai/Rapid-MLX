@@ -208,7 +208,6 @@ def test_pull_fetches_all_three_exact_allowlisted_snapshots(
         "_pull_repository",
         lambda args, **kwargs: calls.append((args.model, kwargs)),
     )
-    monkeypatch.setattr(cli, "_emit_pull_activation", lambda: None)
     cli.pull_command(SimpleNamespace(model=requested))
 
     assert "Stability AI Community License" in capsys.readouterr().out
@@ -302,7 +301,6 @@ def test_direct_pull_of_an_auxiliary_repo_keeps_generic_semantics(
     monkeypatch.setattr(
         cli, "_pull_repository", lambda *args, **kwargs: calls.append((args, kwargs))
     )
-    monkeypatch.setattr(cli, "_emit_pull_activation", lambda: None)
     args = SimpleNamespace(model=repo)
     cli.pull_command(args)
 

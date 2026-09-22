@@ -490,11 +490,16 @@ def test_notice_contains_the_required_copy():
 def test_every_notice_cli_command_is_accepted_by_the_real_parser():
     from rapid_mlx.cli import build_parser
 
-    commands = re.findall(r"rapid-mlx telemetry [a-z-]+", NOTICE_TEXT)
-    assert commands
     parser = build_parser()
-    for command in commands:
-        parser.parse_args(shlex.split(command)[1:])
+    for notice in (
+        NOTICE_TEXT,
+        consent_runtime_module.NOTICE_LINE,
+        consent_runtime_module._NOTICE_MIGRATION_LINE,
+    ):
+        commands = re.findall(r"rapid-mlx telemetry [a-z-]+", notice)
+        assert commands
+        for command in commands:
+            parser.parse_args(shlex.split(command)[1:])
 
 
 def test_notice_goes_to_stderr_never_stdout(fake_home, capfd):

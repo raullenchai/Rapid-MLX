@@ -92,7 +92,7 @@ def _log_once(key: str, message: str) -> None:
         return
     _LOGGED.add(key)
     try:
-        from rapid_mlx.telemetry.transport import _log
+        from rapid_mlx.telemetry.debug_log import _log
 
         _log(f"registry: {message}")
     except Exception:  # pragma: no cover - logging must never propagate

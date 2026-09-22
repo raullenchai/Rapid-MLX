@@ -1,5 +1,5 @@
 # SPDX-License-Identifier: Apache-2.0
-"""Consent + client-id state for opt-in telemetry.
+"""Consent, install identity, and process identity for telemetry v2.
 
 Two files live under ``~/.rapid-mlx/``:
 
@@ -27,13 +27,12 @@ The ``is_enabled`` decision precedence (highest first):
    ``TRAVIS``, ``BUILDKITE``, ``JENKINS_URL``, ``TEAMCITY_VERSION``) set to
    a non-empty value — build machines are never users.
 3. Stored consent file → whatever the user answered.
-4. Default → OFF. (Anonymous data collection without explicit opt-in is
-   a non-starter.)
+4. The v2 consent decision table supplies the default-on policy.
 
 There is intentionally no env-var equivalent for forcing ON. CI agents
 silently opting in via ``RAPID_MLX_TELEMETRY=1`` would skew the data
-toward synthetic workloads. Users who want to opt in run
-``rapid-mlx telemetry enable`` once.
+toward synthetic workloads. Users can explicitly choose with
+``rapid-mlx telemetry on`` or ``rapid-mlx telemetry off``.
 """
 
 from __future__ import annotations
@@ -42,6 +41,7 @@ import errno
 import fcntl
 import os
 import tempfile
+import threading
 import time
 import uuid
 from collections.abc import Callable
@@ -74,16 +74,16 @@ CI_ENV_VARS = (
 # schema_version != this is treated as "never prompted" so the user is re-asked
 # under the new disclosure.
 #
-# v1 -> v2: added the unsampled ``activation`` event (docs/telemetry-activation.md).
-# Prior opt-ins consented to a disclosure that never mentioned activation, so
-# they must re-see and re-accept before any activation event is emitted —
-# adding a new data type silently under old consent would be a consent breach.
+# Version 2 is retained for compatibility with consent files already written
+# by the engine and desktop app.
 CURRENT_CONSENT_SCHEMA_VERSION = 2
 
 _LOCK_RETRY_SECONDS = 1.5
 _LOCK_RETRY_INTERVAL_SECONDS = 0.05
 _lock_retry_clock = time.monotonic
 _lock_retry_sleep = time.sleep
+_session_id: str | None = None
+_session_id_lock = threading.Lock()
 
 
 def _default_telemetry_dir() -> Path:
@@ -229,10 +229,7 @@ class ConsentState:
 def get_consent_state() -> ConsentState | None:
     """Return the stored consent record, or ``None`` if never prompted.
 
-    ``None`` is a signal to the caller that the first-run prompt should
-    fire (subject to the other guards in ``consent.maybe_prompt_for_consent``).
-    Malformed files also return ``None`` rather than raising — a corrupt
-    consent record should re-prompt, not crash the CLI.
+    Malformed files return ``None`` rather than raising.
     """
     path = consent_path()
     if not path.exists():
@@ -340,16 +337,48 @@ def get_or_create_client_id() -> str:
     return new_id
 
 
+def session_id() -> str:
+    """Return the process's lazily created, stable random session UUID."""
+    global _session_id
+    if _session_id is not None:
+        return _session_id
+    with _session_id_lock:
+        if _session_id is None:
+            _session_id = str(uuid.uuid4())
+    return _session_id
+
+
+def rotate_client_id() -> str:
+    """Rotate the install id and clear identity-keyed activation markers."""
+    paths = [client_id_path()]
+    try:
+        paths.extend(_default_telemetry_dir().glob("activation_seen_*"))
+    except OSError as exc:
+        raise OSError(f"cannot enumerate activation markers: {exc}") from exc
+    failures: list[str] = []
+    for path in paths:
+        try:
+            path.unlink()
+        except FileNotFoundError:
+            pass
+        except OSError as exc:
+            failures.append(f"{path}: {exc}")
+    if failures:
+        raise OSError(
+            "telemetry identity rotation could not remove: " + "; ".join(failures)
+        )
+    return get_or_create_client_id()
+
+
 def _validate_activation_kind(kind: str) -> None:
     """Reject any ``kind`` not on the fixed allowlist BEFORE it reaches a path.
 
     Defense in depth: ``kind`` is interpolated into a filename, so an
     unvalidated value with ``../`` (or a separator) could escape
     ``~/.rapid-mlx`` and have ``claim_activation_marker`` create dirs/files
-    outside it. Callers in ``emit.activation`` already gate on
-    ``ACTIVATION_KINDS``; validating here makes the state layer safe on its own
-    regardless of caller. Imported lazily to avoid an import cycle
-    (``activation_spec`` is constants-only, but keep state import-light).
+    outside it. Validating here keeps the state layer safe regardless of
+    whether the caller is Python or the desktop. Imported lazily to keep state
+    import-light.
     """
     from rapid_mlx.telemetry.activation_spec import ACTIVATION_KINDS
 
@@ -409,15 +438,9 @@ def reset_state() -> None:
     milestone the old identity already claimed. Reset clears both so a new
     identity can re-earn its funnel from scratch.
 
-    Also clears the in-process activation latch in ``emit`` so a reset followed
-    by re-enabling telemetry *within the same process* can re-earn milestones:
-    the persistent markers are gone, and a stale in-memory latch would
-    otherwise keep suppressing emission. Late import breaks the state<->emit
-    cycle.
-
     Attempts EVERY path even when one fails (a single unremovable file must not
-    skip the rest or the latch clear), then — after clearing the latch — raises
-    an aggregated ``OSError`` if any file could not be removed. That last step
+    skip the rest), then raises an aggregated ``OSError`` if any file could not
+    be removed. That last step
     matters: a caller like ``telemetry reset`` must never print "removed" while
     consent or client-id state actually survives on disk (which would leave
     telemetry silently enabled). A file that was already absent is not a
@@ -451,14 +474,6 @@ def reset_state() -> None:
     try:
         lock_path.unlink()
     except OSError:
-        pass
-    # Clear the latch regardless of file-removal outcome, so a same-process
-    # re-enable can re-earn milestones even if some on-disk cleanup failed.
-    try:
-        from rapid_mlx.telemetry import emit
-
-        emit._reset_activation_latch()
-    except Exception:
         pass
     if failures:
         raise OSError("telemetry reset could not remove: " + "; ".join(failures))
@@ -495,18 +510,15 @@ def _env_kill_switch_active() -> bool:
 
 # Process-level kill switch set by ``cli.py`` when ``--no-telemetry`` is
 # passed. The ``cli_no_telemetry=`` keyword on ``is_enabled`` only helps
-# the few call sites that explicitly thread it through (``status`` /
-# ``preview`` UX); the four event-emit helpers in ``emit.py`` do NOT
-# accept the kwarg (it would balloon every emit-site signature), so they
-# read this flag instead. Set once, after argparse, before any emit.
+# callers that explicitly thread it through; v2's live upload gate reads this
+# flag directly. Set once, after argparse, before any lifecycle event.
 _cli_kill_switch_active = False
 
 
 def set_cli_kill_switch(active: bool) -> None:
     """Mark the current process as ``--no-telemetry``.
 
-    Idempotent and global within the process. ``emit.session_start`` is
-    the first caller affected; it reads the flag via ``is_enabled()``.
+    Idempotent and global within the process.
     """
     global _cli_kill_switch_active
     _cli_kill_switch_active = bool(active)

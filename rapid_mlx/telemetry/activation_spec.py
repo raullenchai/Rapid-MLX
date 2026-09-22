@@ -1,23 +1,13 @@
 # SPDX-License-Identifier: Apache-2.0
-"""Machine-readable half of the activation/engagement spec.
+"""Shared local activation markers and inference-success predicate.
 
-The human spec lives in ``docs/telemetry-activation.md``; this module is
-the code contract it references. The growth dashboard and the repository
-tests both key off ``ACTIVATION_SPEC_VERSION`` — bump it (and update the
-doc) whenever the rules below change.
-
-Nothing here touches the network or reads consent; it is pure definition
-so both ``emit`` (producer) and the tests (verifier) import the same
-constants instead of re-declaring them.
+Nothing here transmits or reads consent. The desktop uses the marker names,
+and telemetry v2 uses :func:`is_successful_inference` for active-day events.
 """
 
 from __future__ import annotations
 
-# Bump in lockstep with docs/telemetry-activation.md whenever what counts
-# as engaged/activated changes (new kind, changed success predicate, ...).
-ACTIVATION_SPEC_VERSION = 2
-
-# The funnel milestones. Each fires at most once per install (client_id).
+# Local milestones. Each marker may be claimed at most once per install id.
 ACTIVATION_FIRST_INFERENCE = "first_inference"
 ACTIVATION_MODEL_PULL = "model_pull"
 ACTIVATION_AGENT_SETUP = "agent_setup"
@@ -55,13 +45,6 @@ DESKTOP_ACTIVATION_KINDS: frozenset[str] = frozenset(
     for kind, surface in ACTIVATION_KIND_SURFACE_PAIRS
     if surface == SURFACE_DESKTOP
 )
-
-
-def is_allowed_activation(activation_kind: str, surface: str) -> bool:
-    """Return whether a milestone is valid on the supplied product surface."""
-    return (activation_kind, surface) in ACTIVATION_KIND_SURFACE_PAIRS
-
-
 # ``rapid-mlx chat`` spawns its own ephemeral ``serve`` and drives it over
 # HTTP, so first_inference is emitted at the server-side success chokepoint
 # for BOTH surfaces. Rather than invent a new env var, we reuse the marker
@@ -86,8 +69,7 @@ CHAT_SPAWN_ENV = "RAPID_MLX_CHAT_SPAWN"
 # engagement contract: an install that inferences exclusively through them is
 # out of scope for the engine's engaged metric by definition. Listing them here without
 # wiring would over-promise coverage the code doesn't deliver; wiring them is a
-# deliberate future item that MUST bump ``ACTIVATION_SPEC_VERSION`` and update the
-# dashboard in lockstep. See docs/telemetry-activation.md.
+# deliberate future item.
 INFERENCE_ENDPOINTS: frozenset[str] = frozenset(
     {
         "/v1/chat/completions",
@@ -100,7 +82,7 @@ def is_successful_inference(status: int, completion_tokens: int) -> bool:
 
     A request is a successful inference iff the HTTP status is 2xx AND the
     generation was non-empty. An error response or an empty completion is
-    explicitly NOT engagement (see docs/telemetry-activation.md).
+    explicitly NOT engagement.
     """
     try:
         status_ok = 200 <= int(status) < 300
