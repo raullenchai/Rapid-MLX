@@ -21,6 +21,7 @@ def isolated_telemetry(tmp_path, monkeypatch):
     monkeypatch.delenv("RAPID_MLX_PROCESS_ROLE", raising=False)
     monkeypatch.delenv("RAPID_MLX_WATCHDOG_PPID", raising=False)
     consent_runtime._reset_runtime_state_for_tests()
+    state.set_cli_kill_switch(False)
     monkeypatch.setattr(state, "_session_id", None)
     monkeypatch.setattr(cli, "_consent_mutation_event_count", 0)
 
