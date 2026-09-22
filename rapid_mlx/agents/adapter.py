@@ -14,6 +14,7 @@ import subprocess
 from pathlib import Path
 
 from .base import AgentProfile
+from .telemetry import track_agent_configure_failed, track_agent_configured
 
 logger = logging.getLogger(__name__)
 
@@ -229,15 +230,25 @@ def setup_agent_config(
 
     Returns a human-readable summary of what was done.
     """
-    rendered = profile.render_config(
-        base_url, model_id, agent_version, context_length=context_length
-    )
-    cfg = profile.get_config_for_version(agent_version)
+    try:
+        rendered = profile.render_config(
+            base_url, model_id, agent_version, context_length=context_length
+        )
+        cfg = profile.get_config_for_version(agent_version)
+    except Exception:
+        track_agent_configure_failed("other", profile.name)
+        raise
 
     hermes_supported_toolsets = None
     if profile.name == "hermes" and isinstance(rendered, str):
-        hermes_supported_toolsets = _hermes_supported_toolsets()
-        rendered = _render_hermes_runtime_toolsets(rendered, hermes_supported_toolsets)
+        try:
+            hermes_supported_toolsets = _hermes_supported_toolsets()
+            rendered = _render_hermes_runtime_toolsets(
+                rendered, hermes_supported_toolsets
+            )
+        except Exception:
+            track_agent_configure_failed("other", profile.name)
+            raise
 
     if cfg.type == "env":
         lines = []
@@ -248,12 +259,21 @@ def setup_agent_config(
             + "\n".join(lines)
             + "\n\n  (env vars are not persistent — add to your .zshrc/.bashrc for permanent setup)"
         )
+        if not dry_run:
+            track_agent_configured(profile.name)
         return summary
 
     if cfg.path:
-        config_path = _resolve_config_path(cfg)
-        if not dry_run:
-            config_path.parent.mkdir(parents=True, exist_ok=True)
+        try:
+            config_path = _resolve_config_path(cfg)
+            if not dry_run:
+                config_path.parent.mkdir(parents=True, exist_ok=True)
+        except OSError as exc:
+            track_agent_configure_failed("config_write_failed", profile.name)
+            return f"Cannot prepare config path ({exc}). Check file permissions."
+        except Exception:
+            track_agent_configure_failed("other", profile.name)
+            raise
 
         if profile.name == "codex" and isinstance(rendered, str):
             import json
@@ -272,6 +292,7 @@ def setup_agent_config(
                         json.dumps(catalog, indent=2, ensure_ascii=False) + "\n",
                     )
                 except OSError as exc:
+                    track_agent_configure_failed("config_write_failed", profile.name)
                     return (
                         f"Cannot write Codex model catalog to {catalog_path} "
                         f"({exc}). Check file permissions."
@@ -285,11 +306,13 @@ def setup_agent_config(
                 hermes_supported_toolsets=hermes_supported_toolsets,
             )
         except OSError as exc:
+            track_agent_configure_failed("other", profile.name)
             return (
                 f"Cannot read existing config at {config_path} ({exc}). "
                 "Remove or fix it manually, then re-run --setup."
             )
         except _MergeParseError as exc:
+            track_agent_configure_failed("config_invalid", profile.name)
             return (
                 f"Cannot parse existing config at {config_path} ({exc}). "
                 "Fix or remove it manually, then re-run --setup."
@@ -306,6 +329,7 @@ def setup_agent_config(
         try:
             _atomic_write(config_path, merged_text)
         except OSError as exc:
+            track_agent_configure_failed("config_write_failed", profile.name)
             return (
                 f"Cannot write config to {config_path} ({exc}). Check file permissions."
             )
@@ -320,8 +344,10 @@ def setup_agent_config(
                 # notes into ~/.codex/config.toml should hear that from us
                 # rather than discover it.
                 summary += "; comments were not"
+        track_agent_configured(profile.name)
         return summary
 
+    track_agent_configure_failed("other", profile.name)
     return "No config to write (template not specified)"
 
 
