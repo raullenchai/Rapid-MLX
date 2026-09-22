@@ -11,7 +11,7 @@ import re
 import threading
 import time
 import uuid
-from collections.abc import AsyncGenerator, AsyncIterator
+from collections.abc import AsyncGenerator, AsyncIterator, Coroutine
 from typing import Any, cast
 
 from fastapi import APIRouter, Depends, HTTPException, Request
@@ -4266,6 +4266,14 @@ async def _create_chat_completion_impl(
 
     # Validate n parameter (only n=1 supported)
     if request.n is not None and request.n > 1:
+        from rapid_mlx.telemetry.inference import (
+            emit_capability_rejected,
+            model_type_token,
+        )
+
+        emit_capability_rejected(
+            "multi_sample_unsupported", model_type=model_type_token(engine)
+        )
         raise HTTPException(
             status_code=400,
             detail="n > 1 is not supported. Rapid-MLX generates one completion per request.",
@@ -4316,6 +4324,14 @@ async def _create_chat_completion_impl(
     # dropping it. We accept {} so defensive clients that always include
     # the field don't break.
     if request.logit_bias:
+        from rapid_mlx.telemetry.inference import (
+            emit_capability_rejected,
+            model_type_token,
+        )
+
+        emit_capability_rejected(
+            "logit_bias_unsupported", model_type=model_type_token(engine)
+        )
         raise HTTPException(
             status_code=400,
             detail="logit_bias is not supported on this server",
@@ -5285,6 +5301,14 @@ async def _create_chat_completion_impl(
             # cannot coexist with the tool-call grammar. OpenAI's
             # cloud API treats this combination as 400 too. Surface
             # the conflict explicitly so clients see the choice.
+            from rapid_mlx.telemetry.inference import (
+                emit_capability_rejected,
+                model_type_token,
+            )
+
+            emit_capability_rejected(
+                "structured_output_unsupported", model_type=model_type_token(engine)
+            )
             incr_strict_request()
             raise HTTPException(
                 status_code=400,
@@ -5470,16 +5494,11 @@ async def _create_chat_completion_impl(
         # impossible to address.
         response_id = _new_stream_request_id()
         # Preserve request attribution for the v2 inference emitter. Thread it
-        # as an explicit keyword so it never leaks into the ``**chat_kwargs``
-        # the engine's ``stream_chat`` receives.
-        _caller_ua = (
-            raw_request.headers.get("user-agent") if raw_request is not None else None
-        )
-        # ``X-Rapid-Client`` is set by every Rapid-owned client.
-        _caller_client = (
-            raw_request.headers.get("x-rapid-client")
-            if raw_request is not None
-            else None
+        # explicitly so it never leaks into the engine's ``**chat_kwargs``.
+        from rapid_mlx.telemetry import inference as _telemetry_inference
+
+        _caller_ua, _caller_client = _telemetry_inference.request_caller_headers(
+            raw_request
         )
         if use_guided and json_schema:
             # Constrained streaming: run guided generation buffered, then
@@ -5810,6 +5829,18 @@ async def _create_chat_completion_impl(
     except HTTPException:
         raise
     except Exception as e:
+        from rapid_mlx.telemetry import inference as _telemetry_inference
+
+        caller_agent, caller_client = _telemetry_inference.request_caller_headers(
+            raw_request
+        )
+        _telemetry_inference.emit_completed_request(
+            model=served_telemetry_id or "<custom>",
+            endpoint="/v1/chat/completions",
+            caller_agent=caller_agent,
+            caller_client=caller_client,
+            result="failed",
+        )
         err_msg = str(e)
         err_type = type(e).__name__
         if isinstance(e, InferenceAbortedError):
@@ -6704,10 +6735,27 @@ async def _create_chat_completion_impl(
         request, getattr(cfg, "reasoning_parser_name", None)
     )
 
+    # Serialize the response FIRST so a serialization failure surfaces as an
+    # error the client sees — not as a "successful inference" we already
+    # counted. ``model_dump_json`` can raise; the activation emit below must be
+    # reached only when the 2xx body is actually built.
     response = Response(
         content=chat_response.model_dump_json(exclude_none=True),
         media_type="application/json",
         headers=response_headers or None,
+    )
+
+    from rapid_mlx.telemetry import inference as _telemetry_inference
+
+    caller_agent, caller_client = _telemetry_inference.request_caller_headers(
+        raw_request
+    )
+    _telemetry_inference.emit_completed_request(
+        model=served_telemetry_id or "<custom>",
+        endpoint="/v1/chat/completions",
+        caller_agent=caller_agent,
+        caller_client=caller_client,
+        result="ok",
     )
 
     return response
@@ -6877,10 +6925,18 @@ async def stream_chat_completion(
         # legacy first-output fallback.
         request_admitted_event = asyncio.Event()
         kwargs["request_admitted_event"] = request_admitted_event
-        engine_stream = engine.stream_chat(
-            messages=messages, is_streaming=True, **kwargs
+        from rapid_mlx.telemetry import inference as _telemetry_inference
+
+        engine_stream = _telemetry_inference.emit_failed_on_stream_error(
+            engine.stream_chat(messages=messages, is_streaming=True, **kwargs),
+            model=served_telemetry_id or "<custom>",
+            endpoint="/v1/chat/completions",
+            caller_agent=caller_agent,
+            caller_client=caller_client,
         )
-        engine_output_task = asyncio.create_task(anext(engine_stream))
+        engine_output_task = asyncio.create_task(
+            cast(Coroutine[Any, Any, Any], anext(engine_stream))
+        )
         first_engine_output_task = engine_output_task
         admission_task = asyncio.create_task(request_admitted_event.wait())
         done, _ = await asyncio.wait(
@@ -8001,6 +8057,16 @@ async def stream_chat_completion(
 
         yield "data: [DONE]\n\n"
 
+        from rapid_mlx.telemetry import inference as _telemetry_inference
+
+        _telemetry_inference.emit_completed_request(
+            model=served_telemetry_id or "<custom>",
+            endpoint="/v1/chat/completions",
+            caller_agent=caller_agent,
+            caller_client=caller_client,
+            result="ok",
+        )
+
     finally:
         if admission_task is not None and not admission_task.done():
             admission_task.cancel()
@@ -8104,6 +8170,18 @@ async def stream_chat_completion_guided(
             )
             return f"data: {error_data}\n\n", "data: [DONE]\n\n"
 
+        def _record_model_replacement_failure() -> None:
+            """Count server-side replacement; explicit client cancel is silent."""
+            from rapid_mlx.telemetry import inference as _telemetry_inference
+
+            _telemetry_inference.emit_completed_request(
+                model=served_telemetry_id or "<custom>",
+                endpoint="/v1/chat/completions",
+                caller_agent=caller_agent,
+                caller_client=caller_client,
+                result="failed",
+            )
+
         def _finish_guided_handoff() -> tuple[bool, object | None]:
             finish = getattr(engine, "finish_guided_handoff", None)
             if not callable(finish):
@@ -8122,6 +8200,7 @@ async def stream_chat_completion_guided(
         ) -> tuple[str, str]:
             exc = GuidedGenerationCancelledError(lifecycle_task=lifecycle_task)
             if _consume_guided_lifecycle_cancel(engine, exc):
+                _record_model_replacement_failure()
                 return _model_replacement_terminal_events()
             return _cancelled_terminal_events()
 
@@ -8193,6 +8272,7 @@ async def stream_chat_completion_guided(
             output = await guided_task
         except GuidedGenerationCancelledError as exc:
             if _consume_guided_lifecycle_cancel(engine, exc):
+                _record_model_replacement_failure()
                 for event in _model_replacement_terminal_events():
                     yield event
                 return
@@ -8255,6 +8335,15 @@ async def stream_chat_completion_guided(
                         "param": "response_format.json_schema",
                     }
                 }
+                from rapid_mlx.telemetry import inference as _telemetry_inference
+
+                _telemetry_inference.emit_completed_request(
+                    model=served_telemetry_id or "<custom>",
+                    endpoint="/v1/chat/completions",
+                    caller_agent=caller_agent,
+                    caller_client=caller_client,
+                    result="failed",
+                )
                 yield f"data: {json.dumps(_err_envelope)}\n\n"
                 yield "data: [DONE]\n\n"
                 return
@@ -8351,6 +8440,15 @@ async def stream_chat_completion_guided(
                         "param": "response_format.json_schema",
                     }
                 }
+                from rapid_mlx.telemetry import inference as _telemetry_inference
+
+                _telemetry_inference.emit_completed_request(
+                    model=served_telemetry_id or "<custom>",
+                    endpoint="/v1/chat/completions",
+                    caller_agent=caller_agent,
+                    caller_client=caller_client,
+                    result="failed",
+                )
                 yield f"data: {json.dumps(_err_envelope)}\n\n"
                 yield "data: [DONE]\n\n"
                 return
@@ -8445,6 +8543,15 @@ async def stream_chat_completion_guided(
             yield f"data: {usage_chunk.model_dump_json(exclude_none=True)}\n\n"
 
         yield "data: [DONE]\n\n"
+        from rapid_mlx.telemetry import inference as _telemetry_inference
+
+        _telemetry_inference.emit_completed_request(
+            model=served_telemetry_id or "<custom>",
+            endpoint="/v1/chat/completions",
+            caller_agent=caller_agent,
+            caller_client=caller_client,
+            result="ok",
+        )
     finally:
         if cfg.gc_control and gc_was_enabled:
             gc.enable()

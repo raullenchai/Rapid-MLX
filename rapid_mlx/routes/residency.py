@@ -163,6 +163,14 @@ async def load_resident_model(request: ModelLoadRequest):
                 "audio",
             }
         ):
+            from rapid_mlx.telemetry.inference import (
+                emit_capability_rejected,
+                model_type_token,
+            )
+
+            emit_capability_rejected(
+                "perf_overrides_unsupported", model_type=model_type_token(profile)
+            )
             raise HTTPException(
                 status_code=422,
                 detail="Performance overrides are only supported for text models.",
@@ -190,6 +198,15 @@ async def load_resident_model(request: ModelLoadRequest):
     except KVCacheQuantizationUnsupportedError as exc:
         # Explicit quantized-KV request the model can't serve (#78):
         # reject before load with the actionable reason.
+        from rapid_mlx.telemetry.inference import (
+            emit_capability_rejected,
+            model_type_token,
+        )
+
+        emit_capability_rejected(
+            "perf_overrides_unsupported",
+            model_type=model_type_token(locals().get("profile")),
+        )
         raise HTTPException(status_code=422, detail=str(exc)) from exc
     except ResidentModelCapacityError as exc:
         projection = exc.replacement_projection

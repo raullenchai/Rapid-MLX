@@ -85,6 +85,9 @@ async def create_completion(request: CompletionRequest, raw_request: Request):
     """Create a text completion."""
     _validate_model_name(request.model)
     if request.suffix:
+        from rapid_mlx.telemetry.inference import emit_capability_rejected
+
+        emit_capability_rejected("fim_suffix_unsupported")
         raise HTTPException(
             status_code=400,
             detail=(
@@ -101,6 +104,9 @@ async def create_completion(request: CompletionRequest, raw_request: Request):
     # the OpenAI defaults — accept them silently so well-behaved
     # clients passing the documented default don't see a 400.
     if request.n is not None and request.n > 1:
+        from rapid_mlx.telemetry.inference import emit_capability_rejected
+
+        emit_capability_rejected("multi_sample_unsupported")
         raise HTTPException(
             status_code=400,
             detail=(
@@ -110,6 +116,9 @@ async def create_completion(request: CompletionRequest, raw_request: Request):
             ),
         )
     if request.best_of is not None and request.best_of > 1:
+        from rapid_mlx.telemetry.inference import emit_capability_rejected
+
+        emit_capability_rejected("multi_sample_unsupported")
         raise HTTPException(
             status_code=400,
             detail=(
@@ -146,6 +155,9 @@ async def create_completion(request: CompletionRequest, raw_request: Request):
     # instead of returning partial-but-wrong data. Either knob
     # alone keeps working; only the combination is rejected.
     if request.echo and request.logprobs is not None:
+        from rapid_mlx.telemetry.inference import emit_capability_rejected
+
+        emit_capability_rejected("logprobs_unsupported")
         raise HTTPException(
             status_code=400,
             detail=(
@@ -261,6 +273,9 @@ async def create_completion(request: CompletionRequest, raw_request: Request):
             else request.response_format.get("type")
         )
         if rf_type == "json_schema":
+            from rapid_mlx.telemetry.inference import emit_capability_rejected
+
+            emit_capability_rejected("structured_output_unsupported")
             raise HTTPException(
                 status_code=400,
                 detail={
@@ -373,6 +388,14 @@ async def create_completion(request: CompletionRequest, raw_request: Request):
         # 501. Lift to the top so both branches are covered.
         _want_logprobs = request.logprobs is not None
         if _want_logprobs and not _engine_supports_completion_logprobs(engine):
+            from rapid_mlx.telemetry.inference import (
+                emit_capability_rejected,
+                model_type_token,
+            )
+
+            emit_capability_rejected(
+                "logprobs_unsupported", model_type=model_type_token(engine)
+            )
             raise HTTPException(
                 status_code=501,
                 detail=(
@@ -676,12 +699,46 @@ async def create_completion(request: CompletionRequest, raw_request: Request):
             ),
             metrics=_merge_response_metrics(completed_outputs),
         )
-        return Response(
+        response = Response(
             content=comp_response.model_dump_json(exclude_none=True),
             media_type="application/json",
         )
+        from rapid_mlx.telemetry import inference as _telemetry_inference
+
+        caller_agent, caller_client = _telemetry_inference.request_caller_headers(
+            raw_request
+        )
+        _telemetry_inference.emit_completed_request(
+            model=_served_telemetry_id or "<custom>",
+            endpoint="/v1/completions",
+            caller_agent=caller_agent,
+            caller_client=caller_client,
+            result="ok",
+        )
+        return response
     except asyncio.CancelledError as exc:
         _raise_lifecycle_cancel_or_reraise(engine, exc)
+    except HTTPException:
+        raise
+    except Exception:
+        from rapid_mlx.telemetry import inference as _telemetry_inference
+
+        _telemetry_inference.emit_completed_request(
+            model=_served_telemetry_id or "<custom>",
+            endpoint="/v1/completions",
+            caller_agent=(
+                raw_request.headers.get("user-agent")
+                if raw_request is not None
+                else None
+            ),
+            caller_client=(
+                raw_request.headers.get("x-rapid-client")
+                if raw_request is not None
+                else None
+            ),
+            result="failed",
+        )
+        raise
     finally:
         _release_route_ownership(
             engine,
@@ -801,14 +858,23 @@ async def stream_completion(
     _buffered_text = ""
     _buffered_finish_reason: str | None = None
 
-    async for output in engine.stream_generate(
-        prompt=prompt,
-        max_tokens=_resolve_max_tokens(request.max_tokens),
-        temperature=_resolve_temperature(request.temperature),
-        top_p=_resolve_top_p(request.top_p),
-        stop=request.stop_sequences(),
-        **extended_kwargs,
-    ):
+    from rapid_mlx.telemetry import inference as _telemetry_inference
+
+    _generation_stream = _telemetry_inference.emit_failed_on_stream_error(
+        engine.stream_generate(
+            prompt=prompt,
+            max_tokens=_resolve_max_tokens(request.max_tokens),
+            temperature=_resolve_temperature(request.temperature),
+            top_p=_resolve_top_p(request.top_p),
+            stop=request.stop_sequences(),
+            **extended_kwargs,
+        ),
+        model=served_telemetry_id or "<custom>",
+        endpoint="/v1/completions",
+        caller_agent=caller_agent,
+        caller_client=caller_client,
+    )
+    async for output in _generation_stream:
         if _json_mode:
             # Buffer the text and finish_reason; emit at stream end.
             _buffered_text += output.new_text or ""
@@ -938,3 +1004,13 @@ async def stream_completion(
         yield f"data: {json.dumps(usage_data)}\n\n"
 
     yield "data: [DONE]\n\n"
+
+    from rapid_mlx.telemetry import inference as _telemetry_inference
+
+    _telemetry_inference.emit_completed_request(
+        model=served_telemetry_id or "<custom>",
+        endpoint="/v1/completions",
+        caller_agent=caller_agent,
+        caller_client=caller_client,
+        result="ok",
+    )

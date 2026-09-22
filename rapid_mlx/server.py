@@ -2251,6 +2251,9 @@ def load_model(
             else "none"
         )
         if existing_spec_decode not in ("none", "mtp"):
+            from .telemetry.inference import emit_capability_rejected
+
+            emit_capability_rejected("speculative_decoding_unsupported")
             raise ValueError(
                 "load_model(mtp=True) conflicts with "
                 f"scheduler_config.spec_decode={existing_spec_decode!r}; "
@@ -2259,6 +2262,9 @@ def load_model(
         if scheduler_config is not None and getattr(
             scheduler_config, "enable_suffix_decoding", False
         ):
+            from .telemetry.inference import emit_capability_rejected
+
+            emit_capability_rejected("speculative_decoding_unsupported")
             raise ValueError(
                 "load_model(mtp=True) conflicts with "
                 "scheduler_config.enable_suffix_decoding=True; pass only one "
@@ -2268,6 +2274,9 @@ def load_model(
             scheduler_config is not None
             and (getattr(scheduler_config, "dflash_drafter_path", "") or "").strip()
         ):
+            from .telemetry.inference import emit_capability_rejected
+
+            emit_capability_rejected("speculative_decoding_unsupported")
             raise ValueError(
                 "load_model(mtp=True) conflicts with "
                 "scheduler_config.dflash_drafter_path; pass only one "

@@ -264,13 +264,23 @@ def _err(response) -> dict:
 
 
 class TestAlignmentDefaults:
-    def test_text_field_alone_aligns_and_defaults_to_verbose_json(self, _stub_aligner):
+    def test_text_field_alone_aligns_and_defaults_to_verbose_json(
+        self, _stub_aligner, monkeypatch
+    ):
         """``text`` with no ``model`` / ``response_format`` must still align.
 
         The plain ``json`` envelope drops ``segments``, so defaulting
         ``response_format`` to it would return a 200 with none of the
         timestamps the caller came for.
         """
+        from rapid_mlx.telemetry import inference
+
+        emit_calls = []
+        monkeypatch.setattr(
+            inference,
+            "emit_completed_request",
+            lambda **kwargs: emit_calls.append(kwargs),
+        )
         client, restore = _mount_audio_app()
         try:
             r = _post(client, {"text": "临终前", "language": "Chinese"})
@@ -296,6 +306,9 @@ class TestAlignmentDefaults:
         assert call["text"] == "临终前"
         assert call["language"] == "Chinese"
         assert _FakeAlignerEngine.last_transcribe is None
+        assert len(emit_calls) == 1
+        assert emit_calls[0]["endpoint"] == "/v1/audio/transcriptions"
+        assert emit_calls[0]["result"] == "ok"
 
     def test_omitted_model_resolves_to_the_registered_aligner(self, _stub_aligner):
         """No ``model`` → the ALIGNER alias, not the ASR default.
@@ -858,6 +871,7 @@ def test_direct_handler_call_tolerates_unresolved_form_defaults(monkeypatch):
         with pytest.raises(HTTPException) as exc_info:
             asyncio.run(
                 audio_route.create_transcription(
+                    request=None,  # type: ignore[arg-type]
                     file=_UploadLike(_make_tone_wav()),  # type: ignore[arg-type]
                     model_form="definitely-not-a-real-alias",
                     language_form=None,

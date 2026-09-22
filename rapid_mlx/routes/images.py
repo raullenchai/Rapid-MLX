@@ -10,7 +10,7 @@ import secrets
 import tempfile
 import time
 
-from fastapi import APIRouter, Body, File, Form, HTTPException, UploadFile
+from fastapi import APIRouter, Body, File, Form, HTTPException, Request, UploadFile
 from starlette.responses import JSONResponse
 
 from ..api.models import ImageGenerationRequest, parse_image_size
@@ -191,6 +191,14 @@ def _image_engine(model_name: str = ""):
         img_engine = getattr(cfg, "engine", None)
 
     if img_engine is None or not getattr(img_engine, "is_image_gen", False):
+        from rapid_mlx.telemetry.inference import (
+            emit_capability_rejected,
+            model_type_token,
+        )
+
+        emit_capability_rejected(
+            "image_generation_unavailable", model_type=model_type_token(img_engine)
+        )
         raise HTTPException(
             status_code=409,
             detail={
@@ -290,7 +298,9 @@ def _log_image_performance(
 
 
 @router.post("/v1/images/generations")
-async def create_image(request: ImageGenerationRequest = Body(...)):
+async def create_image(
+    raw_request: Request, request: ImageGenerationRequest = Body(...)
+):
     """Generate one or more images from a text prompt.
 
     Returns the OpenAI ``{created, data:[{b64_json}]}`` envelope. ``url``
@@ -305,6 +315,9 @@ async def create_image(request: ImageGenerationRequest = Body(...)):
     # text-to-image generation is the wrong endpoint. Point the caller to
     # /v1/images/edits instead of silently ignoring the mismatch.
     if not _supports_generation(img_engine):
+        from rapid_mlx.telemetry.inference import emit_capability_rejected
+
+        emit_capability_rejected("image_generation_unavailable", model_type="image-gen")
         raise HTTPException(
             status_code=409,
             detail={
@@ -321,6 +334,9 @@ async def create_image(request: ImageGenerationRequest = Body(...)):
         )
 
     if request.response_format == "url":
+        from rapid_mlx.telemetry.inference import emit_capability_rejected
+
+        emit_capability_rejected("response_format_unsupported", model_type="image-gen")
         raise HTTPException(
             status_code=400,
             detail={
@@ -388,7 +404,21 @@ async def create_image(request: ImageGenerationRequest = Body(...)):
         except Exception:  # noqa: BLE001 — telemetry must never fail the response
             logger.warning("image performance telemetry failed", exc_info=True)
 
-    return {"created": int(time.time()), "data": data, "cancelled": cancelled}
+    response = {"created": int(time.time()), "data": data, "cancelled": cancelled}
+    from rapid_mlx.telemetry import inference as _telemetry_inference
+    from rapid_mlx.telemetry.model_id import engine_telemetry_id
+
+    caller_agent, caller_client = _telemetry_inference.request_caller_headers(
+        raw_request
+    )
+    _telemetry_inference.emit_completed_request(
+        model=engine_telemetry_id(img_engine),
+        endpoint="/v1/images/generations",
+        caller_agent=caller_agent,
+        caller_client=caller_client,
+        result="ok",
+    )
+    return response
 
 
 @router.get("/v1/images/progress")
@@ -548,6 +578,9 @@ async def edit_image(
     # /v1/images/edits requires the edit family; a txt2img server points the
     # caller at /v1/images/generations instead of silently ignoring the image.
     if not _supports_editing(img_engine):
+        from rapid_mlx.telemetry.inference import emit_capability_rejected
+
+        emit_capability_rejected("image_generation_unavailable", model_type="image-gen")
         raise HTTPException(
             status_code=409,
             detail={
@@ -578,6 +611,9 @@ async def edit_image(
     if response_format != "b64_json":
         # Reject any non-b64_json value (not just "url"), matching the validated
         # generations contract — the local lane has no object store for URLs.
+        from rapid_mlx.telemetry.inference import emit_capability_rejected
+
+        emit_capability_rejected("response_format_unsupported", model_type="image-gen")
         raise HTTPException(
             status_code=400,
             detail={

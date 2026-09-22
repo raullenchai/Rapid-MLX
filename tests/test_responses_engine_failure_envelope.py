@@ -22,6 +22,7 @@ import importlib.util
 import json
 import sys
 import types
+from contextvars import ContextVar
 from dataclasses import dataclass, field
 from types import SimpleNamespace
 from typing import Any
@@ -246,6 +247,19 @@ class _FailingEngine:
             finish_reason="length",
             finished=True,
         )
+
+
+class _RaisingStreamEngine(_FailingEngine):
+    async def stream_chat(self, messages, **kwargs):
+        yield _GenerationOutput(
+            text="partial",
+            new_text="partial",
+            prompt_tokens=3,
+            completion_tokens=1,
+            finish_reason=None,
+            finished=False,
+        )
+        raise RuntimeError("stream engine exploded")
 
 
 class _HealthyEngine:
@@ -531,6 +545,32 @@ class _ContentThenReasoningThenToolEngine:
         )
 
 
+class _ContentThenLateReasoningEngine:
+    preserve_native_tool_format = False
+
+    def __init__(self):
+        self.tokenizer = _Tokenizer()
+
+    async def stream_chat(self, messages, **kwargs):
+        yield _GenerationOutput(
+            text="public answer",
+            new_text="public answer",
+            prompt_tokens=7,
+            completion_tokens=2,
+            finish_reason=None,
+            finished=False,
+            channel="content",
+        )
+        yield _GenerationOutput(
+            text="late private thought",
+            new_text="late private thought",
+            completion_tokens=5,
+            finish_reason="stop",
+            finished=True,
+            channel="reasoning",
+        )
+
+
 class _ToolIntentOnlyStopEngine:
     """Codex semantic stall: promises a repository action, calls no tool."""
 
@@ -759,6 +799,7 @@ _IMPORTED = (
     "rapid_mlx.config.server_config",
     "rapid_mlx.engine",
     "rapid_mlx.engine.base",
+    "rapid_mlx.engine.batched",
     "rapid_mlx.middleware.auth",
     "rapid_mlx.service.helpers",
     "rapid_mlx.routes.responses",
@@ -768,6 +809,7 @@ _PARENT_ATTRS = (
     ("rapid_mlx", "engine"),
     ("rapid_mlx.config", "server_config"),
     ("rapid_mlx.engine", "base"),
+    ("rapid_mlx.engine", "batched"),
     ("rapid_mlx.middleware", "auth"),
     ("rapid_mlx.service", "helpers"),
     ("rapid_mlx.routes", "responses"),
@@ -784,8 +826,14 @@ def _install_lightweight_engine_modules(monkeypatch):
     base_mod.BaseEngine = _BaseEngine
     base_mod.GenerationOutput = _GenerationOutput
 
+    batched_mod = types.ModuleType("rapid_mlx.engine.batched")
+    batched_mod._admission_engine_context = ContextVar(
+        "_admission_engine_context", default=None
+    )
+
     monkeypatch.setitem(sys.modules, "rapid_mlx.engine", engine_pkg)
     monkeypatch.setitem(sys.modules, "rapid_mlx.engine.base", base_mod)
+    monkeypatch.setitem(sys.modules, "rapid_mlx.engine.batched", batched_mod)
 
 
 def _build_client(monkeypatch, engine_factory):
@@ -863,6 +911,13 @@ def healthy_client(monkeypatch):
 
 
 @pytest.fixture
+def raising_stream_client(monkeypatch):
+    holder = _build_client(monkeypatch, _RaisingStreamEngine)
+    yield holder
+    holder.cleanup()
+
+
+@pytest.fixture
 def immediate_stop_client(monkeypatch):
     holder = _build_client(monkeypatch, _ImmediateStopEngine)
     yield holder
@@ -926,6 +981,13 @@ def content_then_reasoning_then_tool_client(monkeypatch):
     cfg = get_config()
     cfg.model_name = "deepseek-v4-flash-0731"
     cfg.tool_call_parser = "deepseek_v4_0731"
+    yield holder
+    holder.cleanup()
+
+
+@pytest.fixture
+def content_then_late_reasoning_client(monkeypatch):
+    holder = _build_client(monkeypatch, _ContentThenLateReasoningEngine)
     yield holder
     holder.cleanup()
 
@@ -1067,11 +1129,21 @@ class TestResponsesNonStreamFailureEnvelope:
         assert usage["output_tokens"] == 0, usage
         assert usage["total_tokens"] == 42, usage
 
-    def test_healthy_engine_does_not_trip_failure_guard(self, healthy_client):
+    def test_healthy_engine_does_not_trip_failure_guard(
+        self, healthy_client, monkeypatch
+    ):
         """Narrowness check: the failure guard MUST NOT fire when the
         engine produced any user-visible output. A budget=1 reply
         returning a single ``"ok"`` token must round-trip as
         ``status="completed"``, not ``"failed"``."""
+        from rapid_mlx.telemetry import inference
+
+        emit_calls = []
+        monkeypatch.setattr(
+            inference,
+            "emit_completed_request",
+            lambda **kwargs: emit_calls.append(kwargs),
+        )
         resp = healthy_client.client.post(
             "/v1/responses", json=PAYLOAD, headers=HEADERS
         )
@@ -1080,6 +1152,9 @@ class TestResponsesNonStreamFailureEnvelope:
         assert body["status"] == "completed", body
         assert "error" not in body, body
         assert body["usage"]["output_tokens"] >= 1, body
+        assert len(emit_calls) == 1
+        assert emit_calls[0]["endpoint"] == "/v1/responses"
+        assert emit_calls[0]["result"] == "ok"
 
     def test_immediate_stop_does_not_trip_failure_guard(self, immediate_stop_client):
         """Codex r1 IMPORTANT — narrowed-guard contract.
@@ -1135,10 +1210,72 @@ class TestResponsesNonStreamFailureEnvelope:
 
 
 class TestResponsesStreamFailureEnvelope:
-    def test_stream_emits_response_failed_on_engine_no_output(self, failing_client):
+    def test_late_reasoning_failure_emits_failed_count(
+        self, content_then_late_reasoning_client, monkeypatch
+    ):
+        from rapid_mlx.telemetry import inference
+
+        emit_calls: list[dict[str, object]] = []
+        monkeypatch.setattr(
+            inference,
+            "emit_completed_request",
+            lambda **kwargs: emit_calls.append(kwargs),
+        )
+
+        with content_then_late_reasoning_client.client.stream(
+            "POST",
+            "/v1/responses",
+            json={**PAYLOAD, "stream": True},
+            headers=HEADERS,
+        ) as response:
+            events = _parse_sse("".join(response.iter_text()))
+
+        failed = [data for name, data in events if name == "response.failed"]
+        assert failed[0]["response"]["error"]["code"] == (
+            "invalid_reasoning_event_order"
+        )
+        assert len(emit_calls) == 1
+        assert emit_calls[0]["result"] == "failed"
+
+    def test_stream_engine_exception_after_partial_output_emits_one_failed_count(
+        self, raising_stream_client, monkeypatch
+    ):
+        from rapid_mlx.telemetry import inference
+
+        emit_calls: list[dict[str, object]] = []
+        monkeypatch.setattr(
+            inference,
+            "emit_completed_request",
+            lambda **kwargs: emit_calls.append(kwargs),
+        )
+
+        with raising_stream_client.client.stream(
+            "POST",
+            "/v1/responses",
+            json={**PAYLOAD, "stream": True},
+            headers=HEADERS,
+        ) as response:
+            body = "".join(response.iter_text())
+
+        failed = [name for name, _ in _parse_sse(body) if name == "response.failed"]
+        assert failed == ["response.failed"]
+        assert len(emit_calls) == 1
+        assert emit_calls[0]["result"] == "failed"
+
+    def test_stream_emits_response_failed_on_engine_no_output(
+        self, failing_client, monkeypatch
+    ):
         """When the stream produces no text deltas AND zero completion
         tokens, the terminal event must be ``response.failed`` (not
         ``response.completed`` with ``status="completed"``)."""
+        from rapid_mlx.telemetry import inference
+
+        emit_calls: list[dict[str, object]] = []
+        monkeypatch.setattr(
+            inference,
+            "emit_completed_request",
+            lambda **kwargs: emit_calls.append(kwargs),
+        )
         with failing_client.client.stream(
             "POST",
             "/v1/responses",
@@ -1156,6 +1293,9 @@ class TestResponsesStreamFailureEnvelope:
             f"response.completed AND response.failed both emitted — "
             f"the terminal event must be the failure shape. Events: {names}"
         )
+        assert len(emit_calls) == 1
+        assert emit_calls[0]["endpoint"] == "/v1/responses"
+        assert emit_calls[0]["result"] == "failed"
 
     def test_stream_failed_event_carries_error_block(self, failing_client):
         """``response.failed`` payload must echo the same ``{code,
@@ -1179,10 +1319,20 @@ class TestResponsesStreamFailureEnvelope:
         assert envelope["usage"]["input_tokens"] == 42
         assert envelope["usage"]["output_tokens"] == 0
 
-    def test_healthy_stream_does_not_trip_failure_guard(self, healthy_client):
+    def test_healthy_stream_does_not_trip_failure_guard(
+        self, healthy_client, monkeypatch
+    ):
         """Same narrowness check on the streaming surface: a one-token
         healthy reply must close with ``response.completed``, not the
         failure event."""
+        from rapid_mlx.telemetry import inference
+
+        emit_calls = []
+        monkeypatch.setattr(
+            inference,
+            "emit_completed_request",
+            lambda **kwargs: emit_calls.append(kwargs),
+        )
         with healthy_client.client.stream(
             "POST",
             "/v1/responses",
@@ -1193,6 +1343,9 @@ class TestResponsesStreamFailureEnvelope:
         names = [n for n, _ in _parse_sse(body)]
         assert "response.completed" in names, names
         assert "response.failed" not in names, names
+        assert len(emit_calls) == 1
+        assert emit_calls[0]["endpoint"] == "/v1/responses"
+        assert emit_calls[0]["result"] == "ok"
 
     def test_immediate_stop_stream_does_not_trip_failure_guard(
         self, immediate_stop_client
@@ -1244,7 +1397,7 @@ class TestResponsesStreamFailureEnvelope:
         assert failed["response"]["error"]["code"] == "model_no_final_answer"
 
     def test_reasoning_only_stop_stream_emits_response_failed(
-        self, reasoning_only_stop_client
+        self, reasoning_only_stop_client, monkeypatch
     ):
         """GPT-OSS/Harmony can stop after analysis without a final channel.
 
@@ -1253,6 +1406,14 @@ class TestResponsesStreamFailureEnvelope:
         have no final answer to consume. It is also not the immediate EOS
         case above: reasoning bytes and completion tokens were produced.
         """
+        from rapid_mlx.telemetry import inference
+
+        emit_calls: list[dict[str, object]] = []
+        monkeypatch.setattr(
+            inference,
+            "emit_completed_request",
+            lambda **kwargs: emit_calls.append(kwargs),
+        )
         with reasoning_only_stop_client.client.stream(
             "POST",
             "/v1/responses",
@@ -1278,6 +1439,9 @@ class TestResponsesStreamFailureEnvelope:
         assert envelope["output"][0]["summary"][0]["text"] == (
             "I should answer, but I never reach final."
         )
+        assert len(emit_calls) == 1
+        assert emit_calls[0]["endpoint"] == "/v1/responses"
+        assert emit_calls[0]["result"] == "failed"
 
     def test_reasoning_then_whitespace_stop_stream_emits_response_failed(
         self, reasoning_then_whitespace_stop_client

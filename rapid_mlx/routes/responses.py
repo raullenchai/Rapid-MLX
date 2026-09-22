@@ -899,6 +899,9 @@ async def create_response(request: Request):
     # this field; clients that DO use it would get silent prompt loss
     # on retries because we have no response store, so 400 loudly.
     if responses_request.previous_response_id:
+        from rapid_mlx.telemetry.inference import emit_capability_rejected
+
+        emit_capability_rejected("stateless_api_only")
         raise HTTPException(
             status_code=400,
             detail=(
@@ -974,6 +977,9 @@ async def create_response(request: Request):
     if not (responses_request.model or "").startswith(("claude-", "gpt-")):
         _validate_model_name(responses_request.model)
     engine = get_engine(responses_request.model)
+    from rapid_mlx.telemetry.model_id import engine_telemetry_id
+
+    _served_telemetry_id = engine_telemetry_id(engine)
     await ensure_engine_ready(engine)
 
     # Pre-flight admission — same C4 reservation shape the other two
@@ -1096,6 +1102,15 @@ async def create_response(request: Request):
                 # Parity with the chat-route ``strict_with_tools_unsupported``
                 # gate: constrained-decoding grammar and tool-call grammar
                 # are mutually exclusive on this engine.
+                from rapid_mlx.telemetry.inference import (
+                    emit_capability_rejected,
+                    model_type_token,
+                )
+
+                emit_capability_rejected(
+                    "structured_output_unsupported",
+                    model_type=model_type_token(engine),
+                )
                 raise HTTPException(
                     status_code=400,
                     detail={
@@ -1126,6 +1141,15 @@ async def create_response(request: Request):
             # or switch to /v1/chat/completions) is more
             # actionable.
             if responses_request.stream:
+                from rapid_mlx.telemetry.inference import (
+                    emit_capability_rejected,
+                    model_type_token,
+                )
+
+                emit_capability_rejected(
+                    "structured_output_unsupported",
+                    model_type=model_type_token(engine),
+                )
                 raise HTTPException(
                     status_code=400,
                     detail={
@@ -1425,6 +1449,9 @@ async def create_response(request: Request):
                         request_id_holder=_resp_rid_holder,
                         heartbeat_state=_resp_heartbeat_state,
                         namespace_by_tool=namespace_by_tool,
+                        caller_agent=request.headers.get("user-agent"),
+                        caller_client=request.headers.get("x-rapid-client"),
+                        served_telemetry_id=_served_telemetry_id,
                     ),
                     request,
                     engine=engine,
@@ -2309,10 +2336,21 @@ async def _non_stream(
         created_at=created_at,
         namespace_by_tool=namespace_by_tool,
     )
-    return Response(
+    response = Response(
         content=responses_response.model_dump_json(exclude_none=True),
         media_type="application/json",
     )
+    from rapid_mlx.telemetry import inference as _telemetry_inference
+    from rapid_mlx.telemetry.model_id import engine_telemetry_id
+
+    _telemetry_inference.emit_completed_request(
+        model=engine_telemetry_id(engine),
+        endpoint="/v1/responses",
+        caller_agent=request.headers.get("user-agent"),
+        caller_client=request.headers.get("x-rapid-client"),
+        result="ok",
+    )
+    return response
 
 
 # ---------------------------------------------------------------------------
@@ -2457,6 +2495,9 @@ async def _stream_responses_with_nonprogress_retry(
     request_id_holder: list | None = None,
     heartbeat_state: dict[str, object] | None = None,
     namespace_by_tool: dict[str, str] | None = None,
+    caller_agent: str | None = None,
+    caller_client: str | None = None,
+    served_telemetry_id: str | None = None,
 ) -> AsyncIterator[str]:
     """Hide one DeepSeek reasoning-only stop behind a bounded retry.
 
@@ -2479,6 +2520,9 @@ async def _stream_responses_with_nonprogress_retry(
             request_id_holder=request_id_holder,
             heartbeat_state=heartbeat_state,
             namespace_by_tool=namespace_by_tool,
+            caller_agent=caller_agent,
+            caller_client=caller_client,
+            served_telemetry_id=served_telemetry_id,
         ):
             yield event
         return
@@ -2537,6 +2581,9 @@ async def _stream_responses_with_nonprogress_retry(
         sequence_counter=attempt_sequence,
         emit_initial_lifecycle=False,
         namespace_by_tool=namespace_by_tool,
+        caller_agent=caller_agent,
+        caller_client=caller_client,
+        served_telemetry_id=served_telemetry_id,
     ):
         if committed:
             if heartbeat_state is not None:
@@ -2599,6 +2646,9 @@ async def _stream_responses_with_nonprogress_retry(
         sequence_counter=public_sequence,
         emit_initial_lifecycle=False,
         namespace_by_tool=namespace_by_tool,
+        caller_agent=caller_agent,
+        caller_client=caller_client,
+        served_telemetry_id=served_telemetry_id,
     ):
         yield event
 
@@ -2692,6 +2742,9 @@ async def _stream_responses(
     sequence_counter: list[int] | None = None,
     emit_initial_lifecycle: bool = True,
     namespace_by_tool: dict[str, str] | None = None,
+    caller_agent: str | None = None,
+    caller_client: str | None = None,
+    served_telemetry_id: str | None = None,
 ) -> AsyncIterator[str]:
     """Stream a Responses-API SSE event sequence Codex CLI can parse.
 
@@ -2727,6 +2780,7 @@ async def _stream_responses(
     created_at = created_at_override or int(time.time())
     start_time = time.perf_counter()
     served_model = cfg.model_name or responses_request.model
+    telemetry_failure_emitted = [False]
 
     # R10-C3: openai-python event models mark ``sequence_number`` as
     # required on every Responses-API event. Monotonic counter starting
@@ -2740,6 +2794,20 @@ async def _stream_responses(
         data["sequence_number"] = _seq[0]
         _seq[0] += 1
         return _sse(event, data)
+
+    def _record_failed() -> None:
+        if telemetry_failure_emitted[0]:
+            return
+        telemetry_failure_emitted[0] = True
+        from rapid_mlx.telemetry import inference as _telemetry_inference
+
+        _telemetry_inference.emit_completed_request(
+            model=served_telemetry_id or "<custom>",
+            endpoint="/v1/responses",
+            caller_agent=caller_agent,
+            caller_client=caller_client,
+            result="failed",
+        )
 
     # response.created — Codex needs this before any deltas.
     # R10-C3: include the same top-level fields the non-streaming response
@@ -3478,7 +3546,17 @@ async def _stream_responses(
                 },
             )
 
-        async for output in engine.stream_chat(messages=messages, **chat_kwargs):
+        from rapid_mlx.telemetry import inference as _telemetry_inference
+
+        engine_stream = _telemetry_inference.emit_failed_on_stream_error(
+            engine.stream_chat(messages=messages, **chat_kwargs),
+            model=served_telemetry_id or "<custom>",
+            endpoint="/v1/responses",
+            caller_agent=caller_agent,
+            caller_client=caller_client,
+            failure_latch=telemetry_failure_emitted,
+        )
+        async for output in engine_stream:
             delta_text = output.new_text
             # Accumulate the RAW model output (pre-filter, pre-router) so the
             # post-loop tool_call parser can see `<tool_call>...</tool_call>`
@@ -4071,6 +4149,7 @@ async def _stream_responses(
                     "tool_choice_unfulfilled",
                 )
                 err_msg = str(err_detail)
+            _record_failed()
             yield _emit(
                 "response.failed",
                 {
@@ -4489,6 +4568,7 @@ async def _stream_responses(
                 if isinstance(part, dict)
             )
         if reasoning_item_finalized and emitted_reasoning != accumulated_reasoning_text:
+            _record_failed()
             yield _emit(
                 "response.failed",
                 {
@@ -4533,6 +4613,7 @@ async def _stream_responses(
                 error_code,
                 completion_tokens,
             )
+            _record_failed()
             yield _emit(
                 "response.failed",
                 {
@@ -4844,6 +4925,7 @@ async def _stream_responses(
                 "(accumulated_text empty, no tool_calls, completion_tokens=0); "
                 "surfacing as response.failed"
             )
+            _record_failed()
             yield _emit(
                 "response.failed",
                 {
@@ -4916,6 +4998,15 @@ async def _stream_responses(
                 "response": completed_response_payload,
             },
         )
+        from rapid_mlx.telemetry import inference as _telemetry_inference
+
+        _telemetry_inference.emit_completed_request(
+            model=served_telemetry_id or "<custom>",
+            endpoint="/v1/responses",
+            caller_agent=caller_agent,
+            caller_client=caller_client,
+            result="ok",
+        )
 
         elapsed = time.perf_counter() - start_time
         tokens_per_sec = completion_tokens / elapsed if elapsed > 0 else 0
@@ -4930,6 +5021,7 @@ async def _stream_responses(
         # a half-stream-then-EOF; matches how the OpenAI cloud
         # Responses API closes errored streams.
         logger.exception("Responses stream failed: %s", e)
+        _record_failed()
         yield _emit(
             "response.failed",
             {

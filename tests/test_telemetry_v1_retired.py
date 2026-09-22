@@ -289,7 +289,9 @@ def test_real_loopback_serve_can_only_flush_to_posthog(monkeypatch, tmp_path):
     assert all(url == posthog_sender._resolve_posthog_url() for url in post_urls)
     assert legacy_urls == []
     assert sorted(item["event"] for body in post_bodies for item in body["batch"]) == [
+        "active_day",
         "app_opened",
+        "inference_bucket_reached",
         "model_served",
     ]
     assert "rapidmlx.com" not in repr((connects, post_urls, legacy_urls, post_bodies))

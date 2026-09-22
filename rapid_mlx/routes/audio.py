@@ -16,9 +16,18 @@ import wave
 from collections.abc import Callable
 from concurrent.futures import ThreadPoolExecutor
 from contextlib import asynccontextmanager
-from typing import Any
+from typing import Any, cast
 
-from fastapi import APIRouter, Body, Depends, Form, HTTPException, Query, UploadFile
+from fastapi import (
+    APIRouter,
+    Body,
+    Depends,
+    Form,
+    HTTPException,
+    Query,
+    Request,
+    UploadFile,
+)
 from starlette.responses import PlainTextResponse, Response
 
 from ..api.models import AudioMusicRequest, AudioSpeechRequest
@@ -551,6 +560,9 @@ def _reject_non_whisper_for_translation(model: str) -> None:
     # source-language output.
     if "/" not in model and model not in STT_MODEL_ALIASES:
         return
+    from rapid_mlx.telemetry.inference import emit_capability_rejected
+
+    emit_capability_rejected("speech_capability_unsupported", model_type="audio")
     raise HTTPException(
         status_code=400,
         detail={
@@ -602,6 +614,9 @@ def _reject_word_timestamps_for_non_whisper(
     # envelope matches the unknown-model path rather than this 400.
     if "/" not in model and model not in STT_MODEL_ALIASES:
         return
+    from rapid_mlx.telemetry.inference import emit_capability_rejected
+
+    emit_capability_rejected("speech_capability_unsupported", model_type="audio")
     raise HTTPException(
         status_code=400,
         detail={
@@ -1507,6 +1522,9 @@ async def _run_stt_request(
         )
 
     except ImportError:
+        from rapid_mlx.telemetry.inference import emit_capability_rejected
+
+        emit_capability_rejected("runtime_extra_missing", model_type="audio")
         raise HTTPException(
             status_code=503,
             detail="mlx-audio not installed. Install with: pip install mlx-audio",
@@ -1988,6 +2006,9 @@ async def _run_alignment_request(
     # upload drains rather than letting ``align()`` raise several
     # megabytes later.
     if not _is_aligner_model(model_name):
+        from rapid_mlx.telemetry.inference import emit_capability_rejected
+
+        emit_capability_rejected("speech_capability_unsupported", model_type="audio")
         raise HTTPException(
             status_code=400,
             detail={
@@ -2096,6 +2117,9 @@ async def _run_alignment_request(
         return _format_stt_response(result, response_format, task="transcribe")
 
     except ImportError:
+        from rapid_mlx.telemetry.inference import emit_capability_rejected
+
+        emit_capability_rejected("runtime_extra_missing", model_type="audio")
         raise HTTPException(
             status_code=503,
             detail="mlx-audio not installed. Install with: pip install mlx-audio",
@@ -2165,6 +2189,7 @@ async def _run_alignment_request(
 
 @router.post("/v1/audio/transcriptions", dependencies=[Depends(verify_api_key)])
 async def create_transcription(
+    request: Request,
     file: UploadFile,
     # ``model``, ``language``, ``response_format`` are sent as multipart
     # form fields by OpenAI-compatible clients (the official Whisper
@@ -2433,23 +2458,36 @@ async def create_transcription(
     require_mlx_audio_stt()
 
     if is_alignment:
-        return await _run_alignment_request(
+        response = await _run_alignment_request(
             file=file,
             model=model,
             text=text,
             language=language,
             response_format=response_format,
         )
+    else:
+        response = await _run_stt_request(
+            file=file,
+            model=model,
+            language=language,
+            response_format=response_format,
+            task="transcribe",
+            timestamp_granularities=timestamp_granularities,
+            context=context_form,
+        )
 
-    return await _run_stt_request(
-        file=file,
-        model=model,
-        language=language,
-        response_format=response_format,
-        task="transcribe",
-        timestamp_granularities=timestamp_granularities,
-        context=context_form,
+    from rapid_mlx.telemetry import inference as _telemetry_inference
+    from rapid_mlx.telemetry.model_id import telemetry_model_id
+
+    caller_agent, caller_client = _telemetry_inference.request_caller_headers(request)
+    _telemetry_inference.emit_completed_request(
+        model=telemetry_model_id(_resolve_stt_model(cast(str, model))),
+        endpoint="/v1/audio/transcriptions",
+        caller_agent=caller_agent,
+        caller_client=caller_client,
+        result="ok",
     )
+    return response
 
 
 @router.post("/v1/audio/translations", dependencies=[Depends(verify_api_key)])
@@ -3026,6 +3064,11 @@ async def create_speech(request: AudioSpeechRequest = Body(...)):
         from ..audio.tts import is_qwen3_voicedesign_model
 
         if voice_seed is not None and not is_qwen3_voicedesign_model(model_name):
+            from rapid_mlx.telemetry.inference import emit_capability_rejected
+
+            emit_capability_rejected(
+                "speech_capability_unsupported", model_type="audio"
+            )
             raise HTTPException(
                 status_code=400,
                 detail={
@@ -3053,6 +3096,11 @@ async def create_speech(request: AudioSpeechRequest = Body(...)):
         clone_capable = _is_clone_capable_model(model_name)
         inline_clone = ref_audio is not None and clone_capable
         if ref_audio is not None and not clone_capable:
+            from rapid_mlx.telemetry.inference import emit_capability_rejected
+
+            emit_capability_rejected(
+                "speech_capability_unsupported", model_type="audio"
+            )
             raise HTTPException(
                 status_code=400,
                 detail={
@@ -3111,6 +3159,11 @@ async def create_speech(request: AudioSpeechRequest = Body(...)):
             and "customvoice" not in _tokens
             and ref_audio is None
         ):
+            from rapid_mlx.telemetry.inference import emit_capability_rejected
+
+            emit_capability_rejected(
+                "speech_capability_unsupported", model_type="audio"
+            )
             raise HTTPException(
                 status_code=400,
                 detail={
