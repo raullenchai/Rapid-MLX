@@ -14,7 +14,7 @@ from concurrent.futures import Future
 from contextlib import contextmanager
 from http.server import BaseHTTPRequestHandler, HTTPServer
 from pathlib import Path
-from types import FunctionType, SimpleNamespace
+from types import FunctionType, ModuleType, SimpleNamespace
 
 import pytest
 
@@ -642,7 +642,16 @@ def test_video_failed_backing_load_emits_nothing(monkeypatch, tmp_path):
     assert emitted == []
 
 
-def test_embedding_emits_only_after_successful_load(monkeypatch):
+@pytest.fixture
+def embedding_mlx_stubs(monkeypatch):
+    mlx = ModuleType("mlx")
+    mlx_core = ModuleType("mlx.core")
+    mlx.core = mlx_core
+    monkeypatch.setitem(sys.modules, "mlx", mlx)
+    monkeypatch.setitem(sys.modules, "mlx.core", mlx_core)
+
+
+def test_embedding_emits_only_after_successful_load(monkeypatch, embedding_mlx_stubs):
     order: list[str] = []
 
     class Engine:
@@ -663,7 +672,7 @@ def test_embedding_emits_only_after_successful_load(monkeypatch):
     assert order == ["load", "model_served"]
 
 
-def test_embedding_load_failure_emits_nothing(monkeypatch):
+def test_embedding_load_failure_emits_nothing(monkeypatch, embedding_mlx_stubs):
     class Engine:
         def __init__(self, model_name, **_kwargs):
             self.model_name = model_name
