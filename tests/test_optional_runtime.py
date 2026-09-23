@@ -6,6 +6,7 @@ from __future__ import annotations
 import sys
 from collections import namedtuple
 from types import SimpleNamespace
+from unittest.mock import AsyncMock
 
 import pytest
 
@@ -126,8 +127,8 @@ def test_missing_lane_is_one_actionable_telemetered_failure(
 
 
 def test_bonsai_engine_preflight_is_missing_vision_failure(monkeypatch, capsys) -> None:
-    from rapid_mlx.models import mllm
     from rapid_mlx import model_aliases, model_metadata
+    from rapid_mlx.models import mllm
 
     real_resolve_profile = model_aliases.resolve_profile
     monkeypatch.setattr(model_aliases, "resolve_model", lambda model: model)
@@ -208,3 +209,134 @@ def test_present_extras_emit_no_failure(monkeypatch) -> None:
     probe.require_audio_or_exit("kokoro")
 
     assert events == []
+
+
+@pytest.mark.parametrize(
+    ("status", "expected"),
+    [("BROKEN", "broken"), ("INCOMPATIBLE", "incompatible")],
+)
+def test_engine_vision_preflight_preserves_runtime_status(
+    monkeypatch, status: str, expected: str
+) -> None:
+    from rapid_mlx.models import mllm
+
+    monkeypatch.setattr(
+        mllm,
+        "vision_runtime_status",
+        lambda: (getattr(mllm.VisionRuntimeStatus, status), "detail"),
+    )
+
+    with pytest.raises(OptionalRuntimeMissing) as caught:
+        mllm._require_mlx_vlm("model")
+
+    assert caught.value.status == expected
+
+
+def test_model_load_optional_failure_passes_through(monkeypatch, tmp_path) -> None:
+    from rapid_mlx import server as server_module
+
+    model_dir = tmp_path / "model"
+    model_dir.mkdir()
+    (model_dir / "config.json").write_text('{"model_type":"llama"}')
+    args = cli.build_parser().parse_args(["serve", str(model_dir), "--no-mllm"])
+    failure = OptionalRuntimeMissing(
+        extra="vision",
+        install_hint="pip install 'rapid-mlx[vision]'",
+        detail="missing vision",
+        status="absent",
+    )
+    monkeypatch.setattr(cli, "_port_preflight_or_die", lambda *_a, **_kw: None)
+    monkeypatch.setattr(cli, "_check_alias_min_memory", lambda *_a, **_kw: None)
+    monkeypatch.setattr(cli, "_check_disk_space", lambda *_a, **_kw: None)
+    monkeypatch.setattr(cli, "_check_memory_capacity", lambda *_a, **_kw: None)
+    monkeypatch.setattr(server_module, "configure_cors_from_env", lambda *_a: [])
+    monkeypatch.setattr(server_module, "configure_trusted_hosts", lambda *_a: None)
+    monkeypatch.setattr(
+        server_module, "configure_model_residency", lambda *_a, **_kw: None
+    )
+    monkeypatch.setattr(
+        server_module,
+        "load_model",
+        lambda *_a, **_kw: (_ for _ in ()).throw(failure),
+    )
+    monkeypatch.setattr(
+        "rapid_mlx.middleware.request_logging.install_request_logging_middleware",
+        lambda *_a: None,
+    )
+
+    with pytest.raises(OptionalRuntimeMissing) as caught:
+        cli.serve_command(args)
+
+    assert caught.value is failure
+
+
+def test_main_routes_optional_failure_to_single_handler(
+    monkeypatch, tmp_path, capsys
+) -> None:
+    from rapid_mlx.telemetry import consent_runtime
+
+    model = tmp_path / "model"
+    model.mkdir()
+    failure = OptionalRuntimeMissing(
+        extra="image",
+        install_hint="pip install 'rapid-mlx[image]'",
+        detail="missing image",
+        status="absent",
+    )
+    events = _capture(monkeypatch)
+    monkeypatch.setattr(consent_runtime, "startup", lambda **_kwargs: None)
+    monkeypatch.setattr(cli, "_start_v2_lifecycle", lambda _command: None)
+    monkeypatch.setattr(
+        cli, "serve_command", lambda _args: (_ for _ in ()).throw(failure)
+    )
+    monkeypatch.setattr(sys, "argv", ["rapid-mlx", "serve", str(model)])
+
+    with pytest.raises(SystemExit, match="2"):
+        cli.main()
+
+    assert "RAPID-MLX-STARTUP-FAILURE: runtime_extra_missing extra=image" in (
+        capsys.readouterr().err
+    )
+    assert len([name for name, _props in events if name == "model_serve_failed"]) == 1
+
+
+@pytest.mark.asyncio
+async def test_lifespan_optional_failure_reuses_cli_handler(monkeypatch) -> None:
+    failure = OptionalRuntimeMissing(
+        extra="audio",
+        install_hint="pip install 'rapid-mlx[audio]'",
+        detail="missing audio",
+        status="absent",
+    )
+    lifecycle = SimpleNamespace(ensure_loaded=AsyncMock(side_effect=failure))
+    engine = SimpleNamespace(_loaded=False)
+    calls = []
+
+    monkeypatch.setattr(server, "_engine", engine)
+    monkeypatch.setattr(server, "_primary_model_lifecycle", lifecycle)
+    monkeypatch.setattr(server, "_primary_lazy_load", False)
+    monkeypatch.setattr(server, "_primary_idle_unload_seconds", 0.0)
+    monkeypatch.setattr(server, "_model_alias", "kokoro")
+    monkeypatch.setattr(server, "_model_path", "/unused")
+    monkeypatch.setattr(server, "_telemetry_auto_selected", False)
+
+    def handle(exc, **kwargs):
+        calls.append((exc, kwargs))
+        raise SystemExit(2)
+
+    monkeypatch.setattr(cli, "_handle_optional_runtime_missing", handle)
+    lifespan = server.lifespan(server.app)
+
+    with pytest.raises(SystemExit, match="2"):
+        await lifespan.__anext__()
+
+    assert calls == [
+        (
+            failure,
+            {
+                "engine": engine,
+                "alias_or_path": "kokoro",
+                "auto_selected": False,
+            },
+        )
+    ]

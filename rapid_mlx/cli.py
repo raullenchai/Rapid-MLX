@@ -3938,17 +3938,13 @@ def _validate_v41_product_spec_flags(args, *, owns_runtime: bool) -> None:
 
 
 def _handle_optional_runtime_missing(
-    exc,
+    exc: OptionalRuntimeMissing,
     *,
     alias_or_path=None,
     engine=None,
     auto_selected: bool = False,
 ) -> None:
     """Render and record the sole terminal result for a missing serve extra."""
-    from rapid_mlx.runtime.optional_runtime import OptionalRuntimeMissing
-
-    if not isinstance(exc, OptionalRuntimeMissing):
-        raise TypeError("expected OptionalRuntimeMissing")
     print(exc.format_user_message(), file=sys.stderr)
     print(
         f"RAPID-MLX-STARTUP-FAILURE: {exc.marker_reason} extra={exc.extra}",

@@ -461,8 +461,12 @@ def require_mlx_vlm_or_exit(model_name: str, *, text_diffusion: bool = False) ->
     status, detail = vision_runtime_status()
     if status is VisionRuntimeStatus.OK:
         return
-    from rapid_mlx.runtime.optional_runtime import OptionalRuntimeMissing
+    from rapid_mlx.runtime.optional_runtime import (
+        OptionalRuntimeMissing,
+        OptionalRuntimeStatus,
+    )
 
+    runtime_status: OptionalRuntimeStatus
     if status is VisionRuntimeStatus.INCOMPATIBLE:
         message = (
             f"error: model {model_name!r} requires the Rapid-MLX vision lane, "
