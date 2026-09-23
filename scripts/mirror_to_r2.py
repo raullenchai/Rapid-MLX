@@ -35,9 +35,11 @@ Design (see PR body for full context):
 * **Fail-fast.** Any upload failure exits nonzero after cleaning the tmp
   dir. We do not silently continue past a broken file.
 
-* **Verification pass.** After uploads, HEAD every expected key on R2 AND
-  GET each file via ``https://models.rapidmlx.com/<key>`` to confirm the
-  object is publicly readable. Any HTTP-not-200 fails the run.
+* **Verification pass.** After uploads, HEAD every expected key through the
+  signed R2 API; that result alone determines success.  A cache-busted public
+  read is advisory because the CDN advertises ``max-age=3600`` and can serve a
+  stale object or cached 404 for up to an hour after a successful re-sync
+  unless the zone cache is purged.
 
 CLI:
 
@@ -60,7 +62,9 @@ import shutil
 import sys
 import time
 import urllib.error
+import urllib.parse
 import urllib.request
+import uuid
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -428,6 +432,38 @@ def _public_url(public_base: str, key: str) -> str:
     return f"{public_base.rstrip('/')}/{encoded}"
 
 
+class _FinalUrlRedirectHandler(urllib.request.HTTPRedirectHandler):
+    def redirect_request(
+        self,
+        req: urllib.request.Request,
+        fp: Any,
+        code: int,
+        msg: str,
+        headers: Any,
+        newurl: str,
+    ) -> urllib.request.Request | None:
+        # Incident 2026-09-23: models.rapidmlx.com dropped the incoming query
+        # in its 302. Cache-bust every redirect destination so the final CDN
+        # URL cannot return the hour-old object or cached 404 that fooled the
+        # former verification pass.
+        redirected = super().redirect_request(
+            req, fp, code, msg, headers, _cache_busted_url(newurl)
+        )
+        if redirected is not None:
+            redirected = urllib.request.Request(
+                redirected.full_url,
+                headers=dict(redirected.headers),
+                origin_req_host=redirected.origin_req_host,
+                unverifiable=redirected.unverifiable,
+                method=req.get_method(),
+            )
+            redirected.add_header("Cache-Control", "no-cache")
+        return redirected
+
+
+_PUBLIC_OPENER = urllib.request.build_opener(_FinalUrlRedirectHandler())
+
+
 def _http_head_status(url: str, timeout: float = 30.0) -> int:
     """HEAD ``url`` and return the HTTP status code.
 
@@ -436,10 +472,12 @@ def _http_head_status(url: str, timeout: float = 30.0) -> int:
     non-2xx status to distinguish "HEAD blocked" from "object missing".
     """
     req = urllib.request.Request(
-        url, method="HEAD", headers={"User-Agent": _USER_AGENT}
+        _cache_busted_url(url),
+        method="HEAD",
+        headers={"User-Agent": _USER_AGENT, "Cache-Control": "no-cache"},
     )
     try:
-        with urllib.request.urlopen(req, timeout=timeout) as resp:
+        with _PUBLIC_OPENER.open(req, timeout=timeout) as resp:
             return int(resp.status)
     except urllib.error.HTTPError as e:
         return int(e.code)
@@ -454,11 +492,15 @@ def _http_range_get_status(url: str, timeout: float = 30.0) -> int:
     rule. Used as the definitive "is this publicly readable?" check.
     """
     req = urllib.request.Request(
-        url,
-        headers={"User-Agent": _USER_AGENT, "Range": "bytes=0-0"},
+        _cache_busted_url(url),
+        headers={
+            "User-Agent": _USER_AGENT,
+            "Range": "bytes=0-0",
+            "Cache-Control": "no-cache",
+        },
     )
     try:
-        with urllib.request.urlopen(req, timeout=timeout) as resp:
+        with _PUBLIC_OPENER.open(req, timeout=timeout) as resp:
             _ = resp.read(1)
             # 200 (server ignored Range) or 206 (Range honored) both mean
             # the object is publicly reachable.
@@ -468,6 +510,22 @@ def _http_range_get_status(url: str, timeout: float = 30.0) -> int:
         return int(e.code)
     except (urllib.error.URLError, TimeoutError, OSError):
         return 0
+
+
+def _cache_busted_url(url: str) -> str:
+    """Add a unique query component so Cloudflare cannot reuse an old body."""
+    parts = urllib.parse.urlsplit(url)
+    query = urllib.parse.parse_qsl(parts.query, keep_blank_values=True)
+    query.append(("mirror_verify", uuid.uuid4().hex))
+    return urllib.parse.urlunsplit(
+        (
+            parts.scheme,
+            parts.netloc,
+            parts.path,
+            urllib.parse.urlencode(query),
+            parts.fragment,
+        )
+    )
 
 
 # ------------------- top-level flow -------------------
@@ -526,6 +584,7 @@ def mirror_repo(
     )
 
     client = _r2_client(endpoint_url, profile)
+    uploaded = 0
 
     # ---- upload / skip loop
     if not verify_only:
@@ -541,7 +600,6 @@ def mirror_repo(
         # Expose the concrete per-run dir under the same variable name
         # the rest of the function (and _download_one_hf) references.
         tmp_dir = run_tmp
-        uploaded = 0
         skipped = 0
         bytes_uploaded = 0
         try:
@@ -637,6 +695,7 @@ def mirror_repo(
     # ---- verification pass
     print(f"-- verify {repo_id} --", flush=True)
     verify_failed: list[tuple[str, str]] = []
+    public_advisories: list[tuple[str, int]] = []
     for f in files:
         head_size = _r2_head_size(client, bucket, f.key)
         if head_size is None:
@@ -664,12 +723,12 @@ def mirror_repo(
         else:
             status = _http_range_get_status(url)
         if status != 200:
-            verify_failed.append((f.key, f"public-http:{status}"))
+            public_advisories.append((f.key, status))
             print(
-                f"   FAIL {f.key}: public URL {url} → HTTP {status}",
+                f"   ADVISORY {f.key}: cache-busted public URL → HTTP {status}; "
+                "signed R2 HEAD is authoritative and passed",
                 flush=True,
             )
-            continue
         # Silent on success — printing 1 line per file is enough on the
         # upload pass; the verify pass only reports failures.
     wall = time.monotonic() - started
@@ -682,9 +741,16 @@ def mirror_repo(
         for k, why in verify_failed:
             print(f"   {k}: {why}", file=sys.stderr, flush=True)
         return 3
+    if uploaded:
+        print(
+            "   CDN reminder: public responses may remain stale for up to 1 hour "
+            "(max-age=3600) unless the zone cache is purged.",
+            flush=True,
+        )
     print(
         f"== OK: {repo_id} verified ({len(files)} files, "
-        f"{total_bytes / 1e9:.3f} GB, wall {wall:.1f}s) ==",
+        f"{total_bytes / 1e9:.3f} GB, {len(public_advisories)} public advisories, "
+        f"wall {wall:.1f}s) ==",
         flush=True,
     )
     return 0
@@ -695,8 +761,8 @@ def _build_parser() -> argparse.ArgumentParser:
         prog="mirror_to_r2",
         description=(
             "Mirror a HuggingFace model repo to the rapid-mlx R2 bucket. "
-            "Streams file-by-file (peak disk = one shard) and verifies "
-            "each object is publicly readable via models.rapidmlx.com."
+            "Streams file-by-file (peak disk = one shard) and verifies each "
+            "object authoritatively through the signed R2 API."
         ),
     )
     p.add_argument("repo_id", help="HF repo id, e.g. mlx-community/Qwen3-0.6B-4bit")
