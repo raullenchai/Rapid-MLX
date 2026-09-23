@@ -9,6 +9,21 @@ import pytest
 from rapid_mlx.speculative.native_mtp import transaction
 
 
+def _install_fake_vendored_ar(monkeypatch, generate_step):
+    """Provide the step-3a hook target without importing MLX in wiring tests."""
+    generate = ModuleType("rapid_mlx.models.mlx_vlm_vendored.generate")
+    generate.__path__ = []
+    ar = ModuleType("rapid_mlx.models.mlx_vlm_vendored.generate.ar")
+    ar.generate_step = generate_step
+    ar.SpeculativePrefill = object()
+    ar.run_speculative_rounds = object()
+    ar.speculative_prefill_kwargs = object()
+    generate.ar = ar
+    monkeypatch.setitem(sys.modules, generate.__name__, generate)
+    monkeypatch.setitem(sys.modules, ar.__name__, ar)
+    return ar
+
+
 class _AppendCache:
     def __init__(self, offset: int = 0):
         self.offset = offset
@@ -695,6 +710,8 @@ def test_generation_hook_replaces_only_speculative_seams(monkeypatch) -> None:
     monkeypatch.setitem(sys.modules, "mlx_vlm", root)
     monkeypatch.setitem(sys.modules, "mlx_vlm.generate", generate)
     monkeypatch.setitem(sys.modules, "mlx_vlm.generate.ar", ar)
+    vendored_ar = _install_fake_vendored_ar(monkeypatch, original_generate_step)
+    monkeypatch.setitem(sys.modules, "mlx", None)
 
     transaction.install_generation_hooks()
 
@@ -703,6 +720,11 @@ def test_generation_hook_replaces_only_speculative_seams(monkeypatch) -> None:
     assert ar.SpeculativePrefill is transaction.SpeculativePrefill
     assert ar.run_speculative_rounds is transaction.run_speculative_rounds
     assert ar.speculative_prefill_kwargs is transaction.speculative_prefill_kwargs
+    assert vendored_ar.SpeculativePrefill is transaction.SpeculativePrefill
+    assert vendored_ar.run_speculative_rounds is transaction.run_speculative_rounds
+    assert vendored_ar.speculative_prefill_kwargs is (
+        transaction.speculative_prefill_kwargs
+    )
 
     class Criteria:
         enable_thinking = True
@@ -782,11 +804,14 @@ def test_generation_hook_passes_non_glm_requests_and_updates_dispatch(
     monkeypatch.setitem(sys.modules, "mlx_vlm.generate", generate)
     monkeypatch.setitem(sys.modules, "mlx_vlm.generate.ar", ar)
     monkeypatch.setitem(sys.modules, "mlx_vlm.generate.dispatch", dispatch)
+    vendored_ar = _install_fake_vendored_ar(monkeypatch, original_generate_step)
+    monkeypatch.setitem(sys.modules, "mlx", None)
 
     transaction.install_generation_hooks()
 
     assert list(ar.generate_step(draft_kind=None)) == [9]
     assert dispatch.generate_step is ar.generate_step
+    assert list(vendored_ar.generate_step(draft_kind=None)) == [9]
 
 
 def test_generation_hook_fails_closed_without_complete_seam(monkeypatch) -> None:
@@ -797,6 +822,8 @@ def test_generation_hook_fails_closed_without_complete_seam(monkeypatch) -> None
     generate.ar = SimpleNamespace(generate_step=object())
     monkeypatch.setitem(sys.modules, "mlx_vlm", root)
     monkeypatch.setitem(sys.modules, "mlx_vlm.generate", generate)
+    _install_fake_vendored_ar(monkeypatch, lambda: iter(()))
+    monkeypatch.setitem(sys.modules, "mlx", None)
 
     with pytest.raises(RuntimeError, match="qualified generation seam"):
         transaction.install_generation_hooks()
