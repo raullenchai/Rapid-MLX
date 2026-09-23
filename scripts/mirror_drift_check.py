@@ -379,7 +379,7 @@ class _MirrorAdmission:
         end = clock() + delay
         self._check_deadline(end)
         with self._condition:
-            if admission_epoch != self.last_halved_epoch:
+            if self.last_halved_epoch is None or admission_epoch > self.last_halved_epoch:
                 self.limit = max(1, self.limit // 2)
                 self.last_halved_epoch = admission_epoch
             self.cooldown_until = max(self.cooldown_until, end)

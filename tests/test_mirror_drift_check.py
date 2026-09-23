@@ -856,6 +856,17 @@ def test_429_halves_once_per_admission_epoch_with_canary_epoch():
     assert gate.limit == 8
     assert gate.limit >= 1
 
+    for epochs, expected_limits in (
+        ((0, 1, 0), (16, 8, 8)),
+        ((0, 0, 1, 0, 1), (16, 16, 8, 8, 8)),
+    ):
+        gate.reset(32, deadline=None)
+        clock_values = iter(float(step) for step in range(len(epochs)))
+        clock = clock_values.__next__
+        for epoch, expected_limit in zip(epochs, expected_limits, strict=True):
+            gate.rate_limited(0.0, clock, epoch)
+            assert gate.limit == expected_limit
+
 
 @pytest.mark.parametrize(
     ("retry_after", "expected_delay", "expected_metric"),
