@@ -988,6 +988,43 @@ def test_sigterm_exits_promptly_with_one_partial_report(tmp_path):
     assert "partial-alias" in error
 
 
+def test_sigterm_handler_is_idempotent_and_uses_one_low_level_write(monkeypatch):
+    partial = drift.AliasReport(
+        "partial-alias",
+        "main",
+        "org/partial",
+        True,
+        "org/partial",
+        "mirrored",
+    )
+    current_handler = [signal.SIG_DFL]
+
+    def install_handler(_signum, handler):
+        previous = current_handler[0]
+        current_handler[0] = handler
+        return previous
+
+    writes = []
+    exit_codes = []
+    monkeypatch.setattr(drift.signal, "signal", install_handler)
+    monkeypatch.setattr(drift.os, "write", lambda fd, data: writes.append((fd, data)))
+    monkeypatch.setattr(drift.os, "_exit", exit_codes.append)
+
+    def audit_then_signal(*_args, progress, **_kwargs):
+        progress.reports = [partial]
+        handler = current_handler[0]
+        handler(signal.SIGTERM, None)
+        handler(signal.SIGTERM, None)
+        return [partial]
+
+    monkeypatch.setattr(drift, "audit", audit_then_signal)
+    assert drift.main(["--fail-on", "never"]) == 0
+    assert exit_codes == [124]
+    assert len(writes) == 1
+    assert writes[0][0] == 2
+    assert writes[0][1].count(b"PARTIAL REPORT") == 1
+
+
 def test_main_restores_previous_sigterm_handler(monkeypatch):
     def previous_handler(_signum, _frame):
         return None
