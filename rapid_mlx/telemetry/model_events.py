@@ -104,42 +104,57 @@ def pull_error_class(exc: BaseException) -> str:
 
 def serve_error_class(exc: BaseException) -> str:
     """Reduce loader failures to the registry's closed serve categories."""
+    from huggingface_hub.errors import HfHubHTTPError
+    from huggingface_hub.utils import RepositoryNotFoundError
+
     from rapid_mlx.request import (
         ENGINE_ABORT_CODE_INSUFFICIENT_MEMORY,
         classify_engine_abort,
     )
 
-    if classify_engine_abort(exc) == ENGINE_ABORT_CODE_INSUFFICIENT_MEMORY:
-        return "insufficient_memory"
-    from huggingface_hub.errors import HfHubHTTPError
-    from huggingface_hub.utils import RepositoryNotFoundError
-
-    if isinstance(exc, (HfHubHTTPError, RepositoryNotFoundError)):
-        return "download_failed"
-    # A missing local/Hub shard is an availability failure, not evidence that
-    # bytes on disk are corrupt. ModuleNotFoundError is handled separately
-    # below because mlx-lm uses it for an unknown architecture module.
-    if isinstance(exc, FileNotFoundError) and not isinstance(exc, ModuleNotFoundError):
-        return "download_failed"
-    if isinstance(exc, ModuleNotFoundError):
-        missing = exc.name or ""
-        if missing.startswith("mlx_lm.models."):
-            return "unsupported_architecture"
-        text = str(exc)
-        if re.fullmatch(r"No module named ['\"]mlx_lm\.models\.[^'\"]+['\"]", text):
-            return "unsupported_architecture"
-    elif isinstance(exc, ValueError):
-        # mlx-lm/utils.py::_get_classes translates the module import failure to
-        # exactly ``ValueError: Model type <X> not supported.``.
-        if re.fullmatch(r"Model type .+ not supported\.?", str(exc)):
-            return "unsupported_architecture"
-    name = type(exc).__name__.lower()
-    text = str(exc).lower()
-    if "safetensor" in name or any(
-        marker in text
-        for marker in ("safetensor", "corrupt", "checksum", "size mismatch")
-    ):
-        return "corrupt_weights"
+    pending: list[BaseException] = [exc]
+    seen: set[int] = set()
+    while pending:
+        current = pending.pop()
+        if id(current) in seen:
+            continue
+        seen.add(id(current))
+        # Classify before following links so the outermost explicit signal wins
+        # over an incidental match deeper in the exception chain.
+        if classify_engine_abort(current) == ENGINE_ABORT_CODE_INSUFFICIENT_MEMORY:
+            return "insufficient_memory"
+        if isinstance(current, (HfHubHTTPError, RepositoryNotFoundError)):
+            return "download_failed"
+        # A missing local/Hub shard is an availability failure, not evidence that
+        # bytes on disk are corrupt. ModuleNotFoundError is handled separately
+        # below because mlx-lm uses it for an unknown architecture module.
+        if isinstance(current, FileNotFoundError) and not isinstance(
+            current, ModuleNotFoundError
+        ):
+            return "download_failed"
+        if isinstance(current, ModuleNotFoundError):
+            missing = current.name or ""
+            if missing.startswith("mlx_lm.models."):
+                return "unsupported_architecture"
+            text = str(current)
+            if re.fullmatch(r"No module named ['\"]mlx_lm\.models\.[^'\"]+['\"]", text):
+                return "unsupported_architecture"
+        elif isinstance(current, ValueError):
+            # mlx-lm/utils.py::_get_classes translates the module import failure to
+            # exactly ``ValueError: Model type <X> not supported.``.
+            if re.fullmatch(r"Model type .+ not supported\.?", str(current)):
+                return "unsupported_architecture"
+        name = type(current).__name__.lower()
+        text = str(current).lower()
+        if "safetensor" in name or any(
+            marker in text
+            for marker in ("safetensor", "corrupt", "checksum", "size mismatch")
+        ):
+            return "corrupt_weights"
+        if current.__context__ is not None:
+            pending.append(current.__context__)
+        if current.__cause__ is not None:
+            pending.append(current.__cause__)
     return "other"
 
 
