@@ -1037,18 +1037,18 @@ def require_audio_or_exit(model_name: str) -> None:
     embedding/vision one.
     """
     import importlib.util
-    import sys
 
     if importlib.util.find_spec("mlx_audio") is not None:
         return
-    print(
-        f"error: model {model_name!r} is an audio alias and requires the "
-        f"optional `mlx-audio` dependency (shipped with the [audio] "
-        f"extra).\n" + AUDIO_EXTRA_INSTALL_HINT,
-        file=sys.stderr,
+    from rapid_mlx.runtime.optional_runtime import OptionalRuntimeMissing
+
+    raise OptionalRuntimeMissing(
+        extra="audio",
+        install_hint=AUDIO_EXTRA_INSTALL_HINT,
+        status="absent",
+        detail=(
+            f"error: model {model_name!r} is an audio alias and requires the "
+            f"optional `mlx-audio` dependency (shipped with the [audio] "
+            f"extra).\n" + AUDIO_EXTRA_INSTALL_HINT
+        ),
     )
-    print(
-        "RAPID-MLX-STARTUP-FAILURE: runtime_extra_missing extra=audio",
-        file=sys.stderr,
-    )
-    sys.exit(2)

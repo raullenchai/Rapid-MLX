@@ -552,6 +552,25 @@ def test_failure_prefers_engine_telemetry_identity(monkeypatch):
     assert calls == [{"error_class": "other", "model": "tmax-9b"}]
 
 
+def test_optional_runtime_failure_class_and_extra_are_structured(monkeypatch):
+    from rapid_mlx.runtime.optional_runtime import OptionalRuntimeMissing
+
+    calls = []
+    failure = OptionalRuntimeMissing(
+        extra="vision",
+        install_hint="pip install 'rapid-mlx[vision]'",
+        detail="private diagnostic detail",
+        status="broken",
+    )
+    monkeypatch.setattr(track_module, "track", lambda event, props: calls.append(props))
+
+    model_events.emit_model_serve_failed(failure)
+
+    assert model_events.serve_error_class(failure) == "missing_extra"
+    assert calls == [{"error_class": "missing_extra", "extra": "vision"}]
+    assert "private diagnostic detail" not in repr(calls)
+
+
 def test_failure_loses_race_after_payload_build_without_emitting(monkeypatch):
     calls = []
 

@@ -85,6 +85,8 @@ service:
     buckets for token counts, time to first token, and decode speed.
   * Closed-set error categories and non-reversible stack fingerprints; no
     exception message or raw traceback.
+  * For a failed model serve caused by a missing optional runtime, the closed
+    extra name (`vision`, `video`, `audio`, or `image`).
 
 Anonymous telemetry does **not** collect:
 

@@ -112,6 +112,10 @@ def pull_error_class(exc: BaseException) -> str:
 def serve_error_class(exc: BaseException) -> str:
     """Reduce loader failures to the registry's closed serve categories."""
     try:
+        from rapid_mlx.runtime.optional_runtime import OptionalRuntimeMissing
+
+        if isinstance(exc, OptionalRuntimeMissing):
+            return "missing_extra"
         from huggingface_hub.errors import HfHubHTTPError
         from huggingface_hub.utils import RepositoryNotFoundError
 
@@ -342,7 +346,13 @@ def emit_model_serve_failed(
     from rapid_mlx.telemetry.model_id import engine_telemetry_id, telemetry_model_id
     from rapid_mlx.telemetry.track import track
 
-    props: dict[str, object] = {"error_class": serve_error_class(exc)}
+    error_class = serve_error_class(exc)
+    props: dict[str, object] = {"error_class": error_class}
+    if error_class == "missing_extra":
+        from rapid_mlx.runtime.optional_runtime import OptionalRuntimeMissing
+
+        if isinstance(exc, OptionalRuntimeMissing):
+            props["extra"] = exc.extra
     if engine is not None:
         props["model"] = engine_telemetry_id(engine)
     elif alias_or_path is not None:

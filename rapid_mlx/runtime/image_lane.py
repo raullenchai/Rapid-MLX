@@ -58,17 +58,22 @@ def require_image_runtime_or_exit(model_name: str | None = None) -> None:
     """Fail before model download when the optional image stack is absent."""
 
     if issue := image_runtime_issue(model_name):
-        print(f"\n  Error: {issue.rstrip()}\n", file=sys.stderr)
+        from .optional_runtime import OptionalRuntimeMissing
+
         reason = (
             "python_version_unsupported"
             if "requires Python 3.11 or newer" in issue
             else "runtime_extra_missing"
         )
-        print(
-            f"RAPID-MLX-STARTUP-FAILURE: {reason} extra=image",
-            file=sys.stderr,
+        raise OptionalRuntimeMissing(
+            extra="image",
+            install_hint="pip install 'rapid-mlx[image]'",
+            detail=f"\n  Error: {issue.rstrip()}\n",
+            status=(
+                "incompatible" if reason == "python_version_unsupported" else "absent"
+            ),
+            marker_reason=reason,
         )
-        raise SystemExit(2)
 
 
 class ImageEngine:

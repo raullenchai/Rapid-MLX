@@ -17,6 +17,7 @@ from fastapi import HTTPException
 
 from rapid_mlx.model_aliases import resolve_profile
 from rapid_mlx.routes import video
+from rapid_mlx.runtime.optional_runtime import OptionalRuntimeMissing
 from rapid_mlx.runtime.video_lane import (
     VideoEngine,
     _submodule_spec_exists_without_import,
@@ -108,9 +109,9 @@ def test_wan_runtime_guard_checks_wan_module(monkeypatch, capsys) -> None:
         lambda parent, child: False,
     )
     monkeypatch.setattr("shutil.which", lambda _: "/opt/homebrew/bin/ffmpeg")
-    with pytest.raises(SystemExit):
+    with pytest.raises(OptionalRuntimeMissing) as exc:
         require_video_runtime_or_exit("Anes1032/Wan2.2-TI2V-5B-mlx-q8")
-    assert "rapid-mlx[video]" in capsys.readouterr().err
+    assert "rapid-mlx[video]" in exc.value.format_user_message()
 
 
 def test_wan_runtime_guard_handles_missing_parent_package(monkeypatch, capsys) -> None:
@@ -123,9 +124,9 @@ def test_wan_runtime_guard_handles_missing_parent_package(monkeypatch, capsys) -
 
     monkeypatch.setattr("importlib.util.find_spec", fake_find_spec)
     monkeypatch.setattr("shutil.which", lambda _: "/opt/homebrew/bin/ffmpeg")
-    with pytest.raises(SystemExit):
+    with pytest.raises(OptionalRuntimeMissing) as exc:
         require_video_runtime_or_exit("Anes1032/Wan2.2-TI2V-5B-mlx-q8")
-    assert "rapid-mlx[video]" in capsys.readouterr().err
+    assert "rapid-mlx[video]" in exc.value.format_user_message()
 
 
 def test_wan_submodule_probe_does_not_import_parent(monkeypatch, tmp_path) -> None:

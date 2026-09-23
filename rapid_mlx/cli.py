@@ -28,6 +28,7 @@ from rapid_mlx._completion import alias_completer
 from rapid_mlx.client_header import RAPID_CLIENT_CLI_CHAT
 from rapid_mlx.http_auth import rapid_mlx_client_headers
 from rapid_mlx.model_profile import ModelProfile
+from rapid_mlx.runtime.optional_runtime import OptionalRuntimeMissing
 
 # Project-default mirror for ``RAPID_MLX_MODEL_MIRROR`` (consumed by
 # ``_try_mirror_prefetch``). Public Cloudflare Worker → R2 bucket, with
@@ -3936,6 +3937,37 @@ def _validate_v41_product_spec_flags(args, *, owns_runtime: bool) -> None:
         raise SystemExit(2)
 
 
+def _handle_optional_runtime_missing(
+    exc,
+    *,
+    alias_or_path=None,
+    engine=None,
+    auto_selected: bool = False,
+) -> None:
+    """Render and record the sole terminal result for a missing serve extra."""
+    from rapid_mlx.runtime.optional_runtime import OptionalRuntimeMissing
+
+    if not isinstance(exc, OptionalRuntimeMissing):
+        raise TypeError("expected OptionalRuntimeMissing")
+    print(exc.format_user_message(), file=sys.stderr)
+    print(
+        f"RAPID-MLX-STARTUP-FAILURE: {exc.marker_reason} extra={exc.extra}",
+        file=sys.stderr,
+    )
+    from rapid_mlx.telemetry.server_start import failed
+
+    failed("preflight")
+    from rapid_mlx.telemetry.model_events import emit_model_serve_failed
+
+    emit_model_serve_failed(
+        exc,
+        engine=engine,
+        alias_or_path=alias_or_path,
+        auto_selected=auto_selected,
+    )
+    raise SystemExit(2)
+
+
 def serve_command(args):
     """Start the OpenAI-compatible server."""
     import logging
@@ -5728,6 +5760,9 @@ def serve_command(args):
             enable_disk_stream=getattr(args, "disk_stream", False),
             disk_stream_cache_gb=getattr(args, "disk_stream_cache_gb", 1.0),
         )
+    except OptionalRuntimeMissing:
+        # All optional-runtime failures converge at the serve dispatch below.
+        raise
     except KVCacheQuantizationUnsupportedError as e:
         from rapid_mlx.telemetry.server_start import failed
 
@@ -14762,7 +14797,17 @@ def main():
         from rapid_mlx.telemetry.server_start import set_failure_stage
 
         set_failure_stage("preflight")
-        serve_command(args)
+        try:
+            serve_command(args)
+        except OptionalRuntimeMissing as exc:
+            from rapid_mlx import server
+
+            _handle_optional_runtime_missing(
+                exc,
+                engine=getattr(server, "_engine", None),
+                alias_or_path=getattr(args, "_original_alias", None) or args.model,
+                auto_selected=bool(getattr(args, "_telemetry_auto_selected", False)),
+            )
     elif args.command == "bench":
         bench_command(args)
     elif args.command == "benchmark":

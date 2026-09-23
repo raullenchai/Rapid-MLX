@@ -137,6 +137,24 @@ def test_optional_property_may_be_absent():
     }
 
 
+def test_missing_extra_property_is_closed_and_conditional():
+    assert reg.validate(
+        "model_serve_failed",
+        {"error_class": "missing_extra", "extra": "vision"},
+    ) == {"error_class": "missing_extra", "extra": "vision"}
+    assert reg.validate(
+        "model_serve_failed",
+        {"error_class": "other", "extra": "vision"},
+    ) == {"error_class": "other"}
+    assert (
+        reg.validate(
+            "model_serve_failed",
+            {"error_class": "missing_extra", "extra": "embeddings"},
+        )
+        is None
+    )
+
+
 @pytest.mark.parametrize("state", ["attempted", "ready"])
 def test_conditional_property_is_dropped_when_condition_is_false(state):
     assert reg.validate(
