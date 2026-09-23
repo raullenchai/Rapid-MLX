@@ -1,0 +1,13 @@
+{
+  "source_repo": "mlx-community/Qwen3.6-35B-A3B-4bit",
+  "revision": "38740b847e4cb78f352aba30aa41c76e08e6eb46",
+  "config_sha256": "970690379c5e41f79dad9d1e5a5bb0a47e8356705af87dd1b939faee520a8d0f",
+  "target_layout": "indexed_safetensors",
+  "target_shards": [
+    "model-00001-of-00004.safetensors",
+    "model-00002-of-00004.safetensors",
+    "model-00003-of-00004.safetensors",
+    "model-00004-of-00004.safetensors"
+  ],
+  "mtp_candidate": null
+}
