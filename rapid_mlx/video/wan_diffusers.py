@@ -11,6 +11,7 @@ from __future__ import annotations
 import json
 import re
 import tempfile
+import threading
 from collections.abc import Callable, Iterator
 from contextlib import contextmanager
 from pathlib import Path
@@ -608,14 +609,66 @@ def diffusers_runtime(root: Path, generator) -> Iterator[tuple[Path, Callable]]:
         temporary.cleanup()
 
 
-def generate_with_runtime(root: Path, generator, generation_kwargs: dict) -> None:
+def _notify_after_materialization(generate: Callable, on_loaded: Callable[[], None]):
+    """Clone a Wan generator and signal after all model loaders succeed."""
+    namespace = dict(generate.__globals__)
+    loader_names = (
+        "load_wan_model",
+        "load_t5_encoder",
+        "load_vae_decoder",
+    )
+    remaining = {name for name in loader_names if callable(namespace.get(name))}
+    if not remaining:
+        return generate
+    lock = threading.Lock()
+
+    for name in tuple(remaining):
+        original = namespace[name]
+
+        def notifying_loader(*args, _name=name, _original=original, **kwargs):
+            result = _original(*args, **kwargs)
+            should_notify = False
+            with lock:
+                remaining.discard(_name)
+                if not remaining:
+                    should_notify = True
+            if should_notify:
+                on_loaded()
+            return result
+
+        namespace[name] = notifying_loader
+
+    scoped = FunctionType(
+        generate.__code__,
+        namespace,
+        generate.__name__,
+        generate.__defaults__,
+        generate.__closure__,
+    )
+    scoped.__kwdefaults__ = generate.__kwdefaults__
+    return scoped
+
+
+def generate_with_runtime(
+    root: Path,
+    generator,
+    generation_kwargs: dict,
+    *,
+    on_loaded: Callable[[], None] | None = None,
+) -> None:
     """Generate through request-local loaders for the official layout."""
     if is_diffusers_wan21_layout(root):
         with diffusers_runtime(root, generator) as (model_view, scoped_generate):
             # The temporary view must not leak into the caller's mapping:
             # replace model_dir on a copy only.
-            scoped_generate(**{**generation_kwargs, "model_dir": str(model_view)})
+            generate = scoped_generate
+            if on_loaded is not None:
+                generate = _notify_after_materialization(generate, on_loaded)
+            generate(**{**generation_kwargs, "model_dir": str(model_view)})
         return
     if _identifies_as_diffusers_wan21(root):
         raise WanBackendError("the Wan 2.1 checkpoint layout is incomplete")
-    generator.generate_video(**generation_kwargs)
+    generate = generator.generate_video
+    if on_loaded is not None:
+        generate = _notify_after_materialization(generate, on_loaded)
+    generate(**generation_kwargs)

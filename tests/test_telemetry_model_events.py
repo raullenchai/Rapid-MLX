@@ -59,6 +59,11 @@ def isolated_model_events(monkeypatch, tmp_path):
     monkeypatch.setattr(posthog_sender.build_gate, "official_build", lambda: STAMP)
     monkeypatch.setattr(consent_runtime, "upload_allowed", lambda: True)
     monkeypatch.setattr(
+        model_events,
+        "_submit_model_served",
+        lambda callback: (callback(), True)[1],
+    )
+    monkeypatch.setattr(
         track_module.store, "days_since_first_run_bucket", lambda: "7-29"
     )
     track_module._reset_for_tests()

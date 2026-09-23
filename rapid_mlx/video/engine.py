@@ -168,7 +168,20 @@ class VideoGenerationEngine:
         kwargs.setdefault("negative_prompt", "")
         kwargs.setdefault("steps", 50)
         kwargs.setdefault("guidance_scale", 6.0)
-        generated = self._submit(lambda: self._generate_sync(**kwargs)).result()
+        on_loaded = kwargs.pop("on_loaded", None)
+
+        def generate_after_load():
+            self._load_sync()
+            if on_loaded is not None:
+                on_loaded()
+            return self._generate_sync(**kwargs)
+
+        function = (
+            generate_after_load
+            if on_loaded is not None
+            else lambda: self._generate_sync(**kwargs)
+        )
+        generated = self._submit(function).result()
         staged: Path | None = None
         try:
             Path(output_path).parent.mkdir(parents=True, exist_ok=True)

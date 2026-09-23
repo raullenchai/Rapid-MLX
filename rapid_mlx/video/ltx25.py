@@ -15,6 +15,7 @@ import sys
 import tarfile
 import tempfile
 import threading
+from collections.abc import Callable
 from pathlib import Path
 
 LTX25_RUNTIME_COMMIT = "57952288076766abe27dda3a774b2c24f7346977"
@@ -424,6 +425,7 @@ class LTX25VideoEngine:
         seed: int,
         image: Path | None,
         conditioning_strength: float | None = None,
+        on_loaded: Callable[[], None] | None = None,
     ) -> None:
         timeout = _generation_timeout_seconds()
         interpreter = embedded_ltx25_interpreter()
@@ -507,6 +509,8 @@ class LTX25VideoEngine:
                     env=environment,
                 )
                 self._process = process
+            if on_loaded is not None:
+                on_loaded()
             process.communicate(input=prompt, timeout=timeout)
             if process.returncode:
                 raise LTX25BackendError(

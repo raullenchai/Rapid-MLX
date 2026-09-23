@@ -7,6 +7,7 @@ import json
 import logging
 import math
 import os
+from collections.abc import Callable
 from pathlib import Path
 
 logger = logging.getLogger(__name__)
@@ -243,6 +244,7 @@ class WanVideoEngine:
         image: Path | None,
         negative_prompt: str | None = None,
         guidance_scale: float | None = None,
+        on_loaded: Callable[[], None] | None = None,
     ) -> None:
         self.validate_request(
             width=width, height=height, num_frames=num_frames, image=image
@@ -279,6 +281,11 @@ class WanVideoEngine:
             generation_kwargs["guide_scale"] = guidance_scale
         from .wan_diffusers import generate_with_runtime
 
-        generate_with_runtime(self.model_path, wan_generator, generation_kwargs)
+        generate_with_runtime(
+            self.model_path,
+            wan_generator,
+            generation_kwargs,
+            on_loaded=on_loaded,
+        )
         if not output_path.is_file() or output_path.stat().st_size == 0:
             raise WanBackendError("Wan generation completed without an MP4 output")
