@@ -26,6 +26,7 @@ check is reported as skipped; the normal scheduled audit needs no secrets.
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import os
 import sys
@@ -37,6 +38,7 @@ import urllib.request
 import uuid
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import asdict, dataclass, field
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
@@ -49,11 +51,14 @@ ROOT = Path(__file__).resolve().parents[1]
 ALIASES_PATH = ROOT / "rapid_mlx" / "aliases.json"
 AUDIO_ALIASES_PATH = ROOT / "rapid_mlx" / "audio" / "aliases.json"
 MAX_WORKERS = 8
+SMALL_NON_LFS_MAX_BYTES = 1024 * 1024
 HF_MIN_INTERVAL_SECONDS = 1.0
 _USER_AGENT = "rapid-mlx mirror-drift-auditor"
 _SEVERITY = {"info": 10, "warning": 20, "error": 30, "never": 10_000}
 _HF_GATE_LOCK = threading.Lock()
 _hf_next_request = 0.0
+_COUNT_LOCK = threading.Lock()
+_request_counts = {"hf": 0, "mirror": 0}
 
 
 @dataclass(frozen=True)
@@ -69,6 +74,21 @@ class HfFile:
     path: str
     size: int | None
     sha256: str | None
+    oid: str | None = None
+
+
+@dataclass(frozen=True)
+class HfRepo:
+    revision: str | None
+    files: list[HfFile]
+
+
+@dataclass(frozen=True)
+class MirrorProbe:
+    status: int
+    size: int | None
+    etag: str | None
+    blob_oid: str | None
 
 
 @dataclass(frozen=True)
@@ -127,6 +147,13 @@ class _FinalUrlRedirectHandler(urllib.request.HTTPRedirectHandler):
             req, fp, code, msg, headers, _cache_busted(newurl)
         )
         if redirected is not None:
+            redirected = urllib.request.Request(
+                redirected.full_url,
+                headers=dict(redirected.headers),
+                origin_req_host=redirected.origin_req_host,
+                unverifiable=redirected.unverifiable,
+                method=req.get_method(),
+            )
             redirected.add_header("Cache-Control", "no-cache")
         return redirected
 
@@ -202,34 +229,73 @@ def _valid_repo_id(repo_id: str) -> bool:
     return bool(owner and separator and name and "/" not in name)
 
 
-def _hf_files(repo_id: str) -> list[HfFile]:
-    _throttle_hf()
-    encoded = "/".join(urllib.parse.quote(part, safe="") for part in repo_id.split("/"))
-    payload = _get_json(f"{HF_API_BASE}/{encoded}?blobs=true")
-    if not isinstance(payload, dict):
+def _model_info(repo_id: str) -> Any:
+    from huggingface_hub import model_info
+
+    return model_info(repo_id, files_metadata=True)
+
+
+def _hf_repo(repo_id: str) -> HfRepo:
+    """Fetch one complete HF repository description, with paced retries."""
+    from huggingface_hub.errors import HfHubHTTPError
+
+    last: BaseException | None = None
+    for attempt in range(5):
+        _throttle_hf()
+        with _COUNT_LOCK:
+            _request_counts["hf"] += 1
+        delay = float(2**attempt)
+        try:
+            info = _model_info(repo_id)
+            break
+        except HfHubHTTPError as error:
+            response = getattr(error, "response", None)
+            status = getattr(response, "status_code", 0)
+            if status < 500 and status != 429:
+                raise
+            last = error
+            retry_after = response.headers.get("Retry-After") if response else None
+            if retry_after and retry_after.isdigit():
+                delay = max(delay, min(float(retry_after), 30.0))
+        except (OSError, TimeoutError) as error:
+            last = error
+        if attempt < 4:
+            time.sleep(delay)
+    else:
+        assert last is not None
+        raise last
+
+    siblings = getattr(info, "siblings", None)
+    if not isinstance(siblings, list):
         raise RuntimeError(f"Hugging Face returned an invalid listing for {repo_id}")
     files: list[HfFile] = []
-    for sibling in payload.get("siblings", []):
-        if not isinstance(sibling, dict):
-            continue
-        path = sibling.get("rfilename")
+    for sibling in siblings:
+        path = getattr(sibling, "rfilename", None)
         if (
             not isinstance(path, str)
             or path.startswith("/")
             or ".." in Path(path).parts
         ):
             continue
-        size = sibling.get("size")
-        lfs = sibling.get("lfs")
-        sha = lfs.get("sha256") if isinstance(lfs, dict) else None
+        size = getattr(sibling, "size", None)
+        lfs = getattr(sibling, "lfs", None)
+        sha = getattr(lfs, "sha256", None) if lfs is not None else None
+        oid = getattr(sibling, "blob_id", None)
         files.append(
             HfFile(
                 path=path,
                 size=size if isinstance(size, int) else None,
                 sha256=sha if isinstance(sha, str) and len(sha) == 64 else None,
+                oid=oid if isinstance(oid, str) else None,
             )
         )
-    return files
+    revision = getattr(info, "sha", None)
+    return HfRepo(revision if isinstance(revision, str) else None, files)
+
+
+def _hf_files(repo_id: str) -> list[HfFile]:
+    """Compatibility helper used by focused callers and tests."""
+    return _hf_repo(repo_id).files
 
 
 def _throttle_hf() -> None:
@@ -243,14 +309,31 @@ def _throttle_hf() -> None:
         _hf_next_request = max(now, _hf_next_request) + HF_MIN_INTERVAL_SECONDS
 
 
-def _required_files(files: list[HfFile], subfolder: str | None) -> list[HfFile]:
-    """Apply the runtime client's allow-pattern and ignorable-file contract."""
+def _selected_files(files: list[HfFile], subfolder: str | None) -> list[HfFile]:
     selected = subfolder.strip("/") if subfolder else None
     return [
         item
         for item in files
-        if item.path != ".gitattributes"
-        and (selected is None or item.path.startswith(f"{selected}/"))
+        if selected is None or item.path.startswith(f"{selected}/")
+    ]
+
+
+def _optional_asset(path: str) -> bool:
+    """Match documentation/metadata assets that the downloader may HF-fallback."""
+    name = Path(path).name.lower()
+    return (
+        name == ".gitattributes"
+        or name.startswith(("readme", "license", "notice", "citation", "authors"))
+        or Path(name).suffix in {".md", ".rst", ".png", ".jpg", ".jpeg", ".gif", ".svg"}
+    )
+
+
+def _required_files(files: list[HfFile], subfolder: str | None) -> list[HfFile]:
+    """Return runtime-required files after the downloader's selection contract."""
+    return [
+        item
+        for item in _selected_files(files, subfolder)
+        if not _optional_asset(item.path)
     ]
 
 
@@ -260,12 +343,45 @@ def _mirror_url(repo_id: str, path: str) -> str:
     return f"{MIRROR_BASE}/{encoded}"
 
 
-def _public_head(repo_id: str, item: HfFile) -> tuple[int, int | None]:
-    response = _request(_mirror_url(repo_id, item.path), method="HEAD")
+def _git_blob_oid(body: bytes) -> str:
+    prefix = f"blob {len(body)}\0".encode()
+    return hashlib.sha1(prefix + body, usedforsecurity=False).hexdigest()
+
+
+def _public_probe(repo_id: str, item: HfFile) -> MirrorProbe:
+    fetch_body = (
+        item.sha256 is None
+        and item.size is not None
+        and item.size <= SMALL_NON_LFS_MAX_BYTES
+    )
+    with _COUNT_LOCK:
+        _request_counts["mirror"] += 1
+    response = _request(
+        _mirror_url(repo_id, item.path), method="GET" if fetch_body else "HEAD"
+    )
     with response:
         status = int(getattr(response, "status", response.getcode()))
         raw_size = response.headers.get("Content-Length")
-        return status, int(raw_size) if raw_size and raw_size.isdigit() else None
+        size = int(raw_size) if raw_size and raw_size.isdigit() else None
+        body = (
+            response.read(SMALL_NON_LFS_MAX_BYTES + 1)
+            if fetch_body and 200 <= status < 300
+            else None
+        )
+        if body is not None and size is None:
+            size = len(body)
+        return MirrorProbe(
+            status=status,
+            size=size,
+            etag=response.headers.get("ETag"),
+            blob_oid=_git_blob_oid(body) if body is not None else None,
+        )
+
+
+def _public_head(repo_id: str, item: HfFile) -> tuple[int, int | None]:
+    """Backward-compatible status/size view for callers that only need HEAD data."""
+    probe = _public_probe(repo_id, item)
+    return probe.status, probe.size
 
 
 def _maybe_r2_client() -> Any | None:
@@ -303,10 +419,8 @@ def _catalog_entries() -> list[dict[str, Any]]:
     return [entry for entry in models if isinstance(entry, dict)]
 
 
-def _audit_alias(
-    spec: AliasSpec,
-    entry: dict[str, Any] | None,
-    r2_client: Any | None,
+def _new_report(
+    spec: AliasSpec, entry: dict[str, Any] | None, has_r2: bool
 ) -> AliasReport:
     catalog_hf_path = entry.get("hf_path") if entry else None
     catalog_hf_path = catalog_hf_path if isinstance(catalog_hf_path, str) else None
@@ -318,7 +432,7 @@ def _audit_alias(
         catalog_present=entry is not None,
         catalog_hf_path=catalog_hf_path,
         catalog_status=str(catalog_status) if catalog_status is not None else None,
-        sha_check="checked" if r2_client is not None else "skipped_no_credentials",
+        sha_check="checked" if has_r2 else "skipped_no_credentials",
     )
     if entry is None:
         report.findings.append(Finding("not_in_catalog", "error"))
@@ -331,47 +445,75 @@ def _audit_alias(
             )
         )
 
-    files = _required_files(_hf_files(spec.hf_path), spec.subfolder)
-    report.checked_files = len(files)
-    missing = 0
-    for item in files:
-        status, mirror_size = _public_head(spec.hf_path, item)
-        if status < 200 or status >= 300:
-            missing += 1
-            report.findings.append(
-                Finding("missing_file", "error", item.path, f"HTTP {status}")
-            )
-            continue
-        if item.size is not None and mirror_size != item.size:
-            report.findings.append(
-                Finding(
-                    "size_mismatch",
-                    "error",
-                    item.path,
-                    f"mirror={mirror_size} hf={item.size}",
-                )
-            )
-        if r2_client is not None and item.sha256 is not None:
-            metadata = _r2_metadata(r2_client, spec.hf_path, item.path)
-            actual = metadata.get("hf-sha256") if metadata is not None else None
-            if actual != item.sha256:
-                report.findings.append(
-                    Finding(
-                        "sha_mismatch",
-                        "error",
-                        item.path,
-                        f"r2={actual or 'missing'} hf={item.sha256}",
-                    )
-                )
-    if entry and entry.get("status") == "mirrored" and files and missing == len(files):
-        report.findings.append(
-            Finding(
-                "false_mirrored",
-                "error",
-                detail="catalog says mirrored; no file is reachable",
-            )
-        )
     return report
+
+
+def _recent_timestamp(value: Any, now: datetime) -> bool:
+    if isinstance(value, (int, float)):
+        stamp = datetime.fromtimestamp(float(value), tz=timezone.utc)
+    elif isinstance(value, str):
+        try:
+            stamp = datetime.fromisoformat(value.replace("Z", "+00:00"))
+        except ValueError:
+            return False
+        if stamp.tzinfo is None:
+            stamp = stamp.replace(tzinfo=timezone.utc)
+    else:
+        return False
+    age = (now - stamp.astimezone(timezone.utc)).total_seconds()
+    return -300 <= age <= 3600
+
+
+def _sync_in_progress(
+    entry: dict[str, Any] | None, now: datetime | None = None
+) -> bool:
+    if not entry:
+        return False
+    if str(entry.get("status", "")).lower() == "partial":
+        return True
+    return _recent_timestamp(
+        entry.get("latest_uploaded"), now or datetime.now(timezone.utc)
+    )
+
+
+def _file_finding(
+    kind: str,
+    item: HfFile,
+    detail: str,
+    *,
+    sync_in_progress: bool,
+) -> Finding:
+    if _optional_asset(item.path):
+        severity = "info"
+    elif sync_in_progress:
+        severity = "warning"
+        detail = f"{detail}; sync in progress"
+    else:
+        severity = "error"
+    return Finding(kind, severity, item.path, detail)
+
+
+def _etag_sha256(etag: str | None) -> str | None:
+    if not etag:
+        return None
+    value = etag.removeprefix("W/").strip('"').lower()
+    return (
+        value
+        if len(value) == 64 and all(char in "0123456789abcdef" for char in value)
+        else None
+    )
+
+
+def _probe_with_metadata(
+    repo_id: str, item: HfFile, r2_client: Any | None
+) -> tuple[MirrorProbe, dict[str, str] | None]:
+    probe = _public_probe(repo_id, item)
+    metadata = (
+        _r2_metadata(r2_client, repo_id, item.path)
+        if r2_client is not None and item.sha256 is not None
+        else None
+    )
+    return probe, metadata
 
 
 def audit(
@@ -390,21 +532,125 @@ def audit(
         if unknown:
             raise ValueError(f"unknown alias(es): {', '.join(sorted(unknown))}")
 
+    with _COUNT_LOCK:
+        _request_counts.update(hf=0, mirror=0)
+
     entries = _catalog_entries()
     by_alias = {
         str(entry["alias"]).lower(): entry for entry in entries if entry.get("alias")
     }
     r2_client = _maybe_r2_client()
-    reports: list[AliasReport] = []
-    with ThreadPoolExecutor(max_workers=max(1, min(workers, MAX_WORKERS))) as pool:
-        futures = {
-            pool.submit(
-                _audit_alias, spec, by_alias.get(spec.alias.lower()), r2_client
-            ): spec
-            for spec in selected
+    pool_size = max(1, min(workers, MAX_WORKERS))
+
+    # One paced model_info call per unique repository, fanned out to every alias.
+    repos: dict[str, HfRepo] = {}
+    repo_errors: dict[str, str] = {}
+    with ThreadPoolExecutor(max_workers=pool_size) as hf_pool:
+        hf_futures = {
+            hf_pool.submit(_hf_repo, repo_id): repo_id
+            for repo_id in {spec.hf_path for spec in selected}
         }
-        for future in as_completed(futures):
-            reports.append(future.result())
+        for hf_future in as_completed(hf_futures):
+            repo_id = hf_futures[hf_future]
+            try:
+                repos[repo_id] = hf_future.result()
+            except Exception as error:
+                repo_errors[repo_id] = str(error).splitlines()[0]
+
+    reports = []
+    report_context: list[
+        tuple[AliasReport, AliasSpec, dict[str, Any] | None, list[HfFile], bool]
+    ] = []
+    probes: dict[tuple[str, str], HfFile] = {}
+    for spec in selected:
+        entry = by_alias.get(spec.alias.lower())
+        report = _new_report(spec, entry, r2_client is not None)
+        if spec.hf_path in repo_errors:
+            report.findings.append(
+                Finding("hf_unavailable", "error", detail=repo_errors[spec.hf_path])
+            )
+            files = []
+        else:
+            files = _selected_files(repos[spec.hf_path].files, spec.subfolder)
+        report.checked_files = len(files)
+        in_progress = _sync_in_progress(entry)
+        report_context.append((report, spec, entry, files, in_progress))
+        reports.append(report)
+        for item in files:
+            probes.setdefault((spec.hf_path, item.path), item)
+
+    # Mirror I/O is globally deduplicated and isolated in its own bounded pool.
+    probe_results: dict[tuple[str, str], tuple[MirrorProbe, dict[str, str] | None]] = {}
+    with ThreadPoolExecutor(max_workers=pool_size) as mirror_pool:
+        mirror_futures = {
+            mirror_pool.submit(_probe_with_metadata, repo_id, item, r2_client): key
+            for key, item in probes.items()
+            for repo_id in [key[0]]
+        }
+        for mirror_future in as_completed(mirror_futures):
+            probe_results[mirror_futures[mirror_future]] = mirror_future.result()
+
+    for report, spec, entry, files, in_progress in report_context:
+        required = _required_files(files, None)
+        missing_required = 0
+        for item in files:
+            probe, metadata = probe_results[(spec.hf_path, item.path)]
+            if probe.status < 200 or probe.status >= 300:
+                if not _optional_asset(item.path):
+                    missing_required += 1
+                report.findings.append(
+                    _file_finding(
+                        "missing_file",
+                        item,
+                        f"HTTP {probe.status}",
+                        sync_in_progress=in_progress,
+                    )
+                )
+                continue
+            if item.size is not None and probe.size != item.size:
+                report.findings.append(
+                    _file_finding(
+                        "size_mismatch",
+                        item,
+                        f"mirror={probe.size} hf={item.size} etag={probe.etag or 'missing'}",
+                        sync_in_progress=in_progress,
+                    )
+                )
+            if item.sha256 is None and item.oid and probe.blob_oid != item.oid:
+                report.findings.append(
+                    _file_finding(
+                        "content_mismatch",
+                        item,
+                        f"mirror_blob={probe.blob_oid or 'missing'} hf_blob={item.oid}",
+                        sync_in_progress=in_progress,
+                    )
+                )
+            if item.sha256 is not None:
+                public_sha = _etag_sha256(probe.etag)
+                metadata_sha = (
+                    metadata.get("hf-sha256") if metadata is not None else None
+                )
+                actual_sha = metadata_sha or public_sha
+                if actual_sha is not None and actual_sha != item.sha256:
+                    report.findings.append(
+                        _file_finding(
+                            "content_mismatch",
+                            item,
+                            f"mirror_sha256={actual_sha} hf_sha256={item.sha256}",
+                            sync_in_progress=in_progress,
+                        )
+                    )
+        if (
+            entry
+            and entry.get("status") == "mirrored"
+            and required
+            and missing_required == len(required)
+        ):
+            detail = "catalog says mirrored; no required file is reachable"
+            severity = "warning" if in_progress else "error"
+            if in_progress:
+                detail += "; sync in progress"
+            report.findings.append(Finding("false_mirrored", severity, detail=detail))
 
     if not only_used and aliases is None:
         shipped_aliases = {spec.alias.lower() for spec in specs}
@@ -480,6 +726,9 @@ def _render_text(reports: list[AliasReport]) -> str:
     counts = _summary_counts(reports)
     summary = " ".join(f"{key}={value}" for key, value in sorted(counts.items()))
     lines.append(f"SUMMARY aliases={len(reports)} {summary}")
+    lines.append(
+        f"REQUESTS hf={_request_counts['hf']} mirror={_request_counts['mirror']}"
+    )
     return "\n".join(lines)
 
 
@@ -544,6 +793,7 @@ def main(argv: list[str] | None = None) -> int:
                     "schema_version": 1,
                     "ok": not failed,
                     "fail_on": args.fail_on,
+                    "requests": dict(_request_counts),
                     "summary": _summary_counts(reports),
                     "aliases": [_report_dict(report) for report in reports],
                 },

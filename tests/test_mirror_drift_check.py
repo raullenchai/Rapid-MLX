@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import importlib.util
 import io
 import json
@@ -11,10 +12,12 @@ import types
 import urllib.error
 import urllib.parse
 import urllib.request
+from datetime import datetime, timezone
 from email.message import Message
 from pathlib import Path
 from typing import Any
 
+import httpx
 import pytest
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -101,7 +104,6 @@ def test_both_alias_schemas_and_allow_list(tmp_path):
     assert [item.path for item in drift._required_files(files, None)] == [
         "4bit/model.safetensors",
         "5bit/model.safetensors",
-        "README.md",
     ]
     assert drift._valid_repo_id("org/repo")
     assert not drift._valid_repo_id("org/repo/extra")
@@ -112,35 +114,99 @@ def test_invalid_alias_file_and_hf_payload(monkeypatch, tmp_path):
     bad.write_text("[]")
     with pytest.raises(ValueError, match="JSON object"):
         drift._load_aliases(bad, bad)
-    monkeypatch.setattr(drift, "_get_json", lambda _url: [])
+    monkeypatch.setattr(
+        drift, "_model_info", lambda _repo: types.SimpleNamespace(siblings="bad")
+    )
+    monkeypatch.setattr(drift, "_throttle_hf", lambda: None)
     with pytest.raises(RuntimeError, match="invalid listing"):
         drift._hf_files("org/repo")
 
 
 def test_hf_listing_filters_unsafe_and_invalid_metadata(monkeypatch):
     sha = "a" * 64
+    siblings = [
+        types.SimpleNamespace(
+            rfilename="model.safetensors",
+            size=9,
+            lfs=types.SimpleNamespace(sha256=sha),
+            blob_id="blob-a",
+        ),
+        types.SimpleNamespace(
+            rfilename="README.md",
+            size="unknown",
+            lfs=types.SimpleNamespace(sha256="short"),
+            blob_id=None,
+        ),
+        types.SimpleNamespace(rfilename="/absolute"),
+        types.SimpleNamespace(rfilename="../escape"),
+        object(),
+    ]
     monkeypatch.setattr(
         drift,
-        "_get_json",
-        lambda _url: {
-            "siblings": [
-                {"rfilename": "model.safetensors", "size": 9, "lfs": {"sha256": sha}},
-                {
-                    "rfilename": "README.md",
-                    "size": "unknown",
-                    "lfs": {"sha256": "short"},
-                },
-                {"rfilename": "/absolute"},
-                {"rfilename": "../escape"},
-                "not-an-object",
-            ]
-        },
+        "_model_info",
+        lambda _repo: types.SimpleNamespace(siblings=siblings, sha="revision"),
     )
     monkeypatch.setattr(drift, "_throttle_hf", lambda: None)
     assert drift._hf_files("org/a b") == [
-        drift.HfFile("model.safetensors", 9, sha),
+        drift.HfFile("model.safetensors", 9, sha, "blob-a"),
         drift.HfFile("README.md", None, None),
     ]
+
+
+def test_model_info_wrapper_and_hf_retry_paths(monkeypatch):
+    import huggingface_hub
+    from huggingface_hub.errors import HfHubHTTPError
+
+    seen = []
+    info = types.SimpleNamespace(siblings=[], sha="revision")
+    monkeypatch.setattr(
+        huggingface_hub,
+        "model_info",
+        lambda repo_id, **kwargs: seen.append((repo_id, kwargs)) or info,
+    )
+    assert drift._model_info("org/repo") is info
+    assert seen == [("org/repo", {"files_metadata": True})]
+
+    limited = HfHubHTTPError(
+        "limited",
+        response=httpx.Response(
+            429,
+            headers={"Retry-After": "2"},
+            request=httpx.Request("GET", "https://huggingface.co"),
+        ),
+    )
+    attempts = iter([limited, info])
+
+    def flaky(_repo):
+        value = next(attempts)
+        if isinstance(value, BaseException):
+            raise value
+        return value
+
+    sleeps = []
+    monkeypatch.setattr(drift, "_model_info", flaky)
+    monkeypatch.setattr(drift, "_throttle_hf", lambda: None)
+    monkeypatch.setattr(drift.time, "sleep", sleeps.append)
+    assert drift._hf_repo("org/repo") == drift.HfRepo("revision", [])
+    assert sleeps == [2.0]
+
+    denied = HfHubHTTPError(
+        "denied",
+        response=httpx.Response(
+            404, request=httpx.Request("GET", "https://huggingface.co")
+        ),
+    )
+    monkeypatch.setattr(
+        drift, "_model_info", lambda _repo: (_ for _ in ()).throw(denied)
+    )
+    with pytest.raises(HfHubHTTPError, match="denied"):
+        drift._hf_repo("org/repo")
+
+    monkeypatch.setattr(
+        drift, "_model_info", lambda _repo: (_ for _ in ()).throw(OSError("down"))
+    )
+    with pytest.raises(OSError, match="down"):
+        drift._hf_repo("org/repo")
 
 
 def test_hf_listing_gate_paces_requests(monkeypatch):
@@ -155,29 +221,37 @@ def test_hf_listing_gate_paces_requests(monkeypatch):
     assert drift._hf_next_request == 12.0
 
 
-def test_every_finding_class_and_optional_sha(monkeypatch):
+def test_every_finding_class_and_optional_sha(monkeypatch, tmp_path):
     sha = "a" * 64
-    specs = {
-        "good": drift.AliasSpec("good", "org/good", None, "main"),
-        "mismatch": drift.AliasSpec("mismatch", "org/right", None, "main"),
-        "false": drift.AliasSpec("false", "org/false", None, "main"),
-        "absent": drift.AliasSpec("absent", "org/absent", None, "audio"),
-    }
+    main = tmp_path / "main.json"
+    audio = tmp_path / "audio.json"
+    main.write_text(
+        json.dumps(
+            {
+                "good": {"hf_path": "org/good"},
+                "mismatch": {"hf_path": "org/right"},
+                "false": {"hf_path": "org/false"},
+            }
+        )
+    )
+    audio.write_text(json.dumps({"absent": {"hf_id": "org/absent"}}))
     files = {
         "org/good": [drift.HfFile("ok", 10, sha)],
         "org/right": [drift.HfFile("wrong-size", 11, None)],
         "org/false": [drift.HfFile("gone", 12, None)],
         "org/absent": [drift.HfFile("present", None, None)],
     }
-    heads = {
-        ("org/good", "ok"): (200, 10),
-        ("org/right", "wrong-size"): (200, 99),
-        ("org/false", "gone"): (404, None),
-        ("org/absent", "present"): (200, None),
+    probes = {
+        ("org/good", "ok"): drift.MirrorProbe(200, 10, None, None),
+        ("org/right", "wrong-size"): drift.MirrorProbe(200, 99, None, None),
+        ("org/false", "gone"): drift.MirrorProbe(404, None, None, None),
+        ("org/absent", "present"): drift.MirrorProbe(200, None, None, None),
     }
-    monkeypatch.setattr(drift, "_hf_files", lambda repo: files[repo])
     monkeypatch.setattr(
-        drift, "_public_head", lambda repo, item: heads[(repo, item.path)]
+        drift, "_hf_repo", lambda repo: drift.HfRepo("rev", files[repo])
+    )
+    monkeypatch.setattr(
+        drift, "_public_probe", lambda repo, item: probes[(repo, item.path)]
     )
     monkeypatch.setattr(drift, "_r2_metadata", lambda *_args: {"hf-sha256": "b" * 64})
     entries = {
@@ -185,20 +259,26 @@ def test_every_finding_class_and_optional_sha(monkeypatch):
         "mismatch": {"hf_path": "org/wrong", "status": "mirrored"},
         "false": {"hf_path": "org/false", "status": "mirrored"},
     }
-    reports = {
-        name: drift._audit_alias(spec, entries.get(name), object())
-        for name, spec in specs.items()
-    }
-    kinds = {finding.kind for report in reports.values() for finding in report.findings}
+    monkeypatch.setattr(
+        drift,
+        "_catalog_entries",
+        lambda: [dict(alias=k, **v) for k, v in entries.items()],
+    )
+    monkeypatch.setattr(drift, "_maybe_r2_client", object)
+    reports = drift.audit(main, audio)
+    kinds = {finding.kind for report in reports for finding in report.findings}
     assert kinds == {
-        "sha_mismatch",
+        "content_mismatch",
         "hf_path_mismatch",
         "size_mismatch",
         "missing_file",
         "false_mirrored",
         "not_in_catalog",
     }
-    assert reports["absent"].state == "findings"
+    assert (
+        next(report for report in reports if report.alias == "absent").state
+        == "findings"
+    )
 
 
 def test_audit_filters_workers_catalog_only_and_unknown(monkeypatch, tmp_path):
@@ -209,7 +289,7 @@ def test_audit_filters_workers_catalog_only_and_unknown(monkeypatch, tmp_path):
     ]
     monkeypatch.setattr(drift, "_catalog_entries", lambda: entries)
     monkeypatch.setattr(drift, "_maybe_r2_client", lambda: None)
-    monkeypatch.setattr(drift, "_hf_files", lambda _repo: [])
+    monkeypatch.setattr(drift, "_hf_repo", lambda _repo: drift.HfRepo("rev", []))
     reports = drift.audit(main, audio, aliases={"good"}, workers=99)
     assert [report.alias for report in reports] == ["good"]
     assert reports[0].state == "ok"
@@ -220,6 +300,136 @@ def test_audit_filters_workers_catalog_only_and_unknown(monkeypatch, tmp_path):
     assert all(report.source != "catalog_only" for report in used)
     with pytest.raises(ValueError, match="unknown alias"):
         drift.audit(main, audio, aliases={"missing"})
+
+
+def test_audit_deduplicates_repo_listings_and_mirror_probes(monkeypatch, tmp_path):
+    main = tmp_path / "main.json"
+    audio = tmp_path / "audio.json"
+    main.write_text(
+        json.dumps(
+            {
+                "first": {"hf_path": "org/shared"},
+                "second": {"hf_path": "org/shared"},
+            }
+        )
+    )
+    audio.write_text("{}")
+    item = drift.HfFile("config.json", 2, None, "x" * 40)
+    hf_calls = []
+    mirror_calls = []
+
+    def hf_repo(repo):
+        hf_calls.append(repo)
+        return drift.HfRepo("revision", [item])
+
+    def public_probe(repo, selected):
+        mirror_calls.append((repo, selected.path))
+        return drift.MirrorProbe(200, 2, '"etag"', "x" * 40)
+
+    monkeypatch.setattr(drift, "_hf_repo", hf_repo)
+    monkeypatch.setattr(drift, "_public_probe", public_probe)
+    monkeypatch.setattr(drift, "_maybe_r2_client", lambda: None)
+    monkeypatch.setattr(
+        drift,
+        "_catalog_entries",
+        lambda: [
+            {"alias": alias, "hf_path": "org/shared", "status": "mirrored"}
+            for alias in ("first", "second")
+        ],
+    )
+    reports = drift.audit(main, audio)
+    assert len(reports) == 2
+    assert hf_calls == ["org/shared"]
+    assert mirror_calls == [("org/shared", "config.json")]
+
+
+def test_optional_assets_and_in_flight_sync_severity(monkeypatch, tmp_path):
+    main = tmp_path / "main.json"
+    audio = tmp_path / "audio.json"
+    main.write_text(
+        json.dumps(
+            {
+                "optional": {"hf_path": "org/optional"},
+                "partial": {"hf_path": "org/partial"},
+                "recent": {"hf_path": "org/recent"},
+                "stable": {"hf_path": "org/stable"},
+            }
+        )
+    )
+    audio.write_text("{}")
+    files = {
+        "org/optional": [drift.HfFile("README.md", 10, None, "a" * 40)],
+        "org/partial": [drift.HfFile("config.json", 10, None, "b" * 40)],
+        "org/recent": [drift.HfFile("tokenizer.json", 10, None, "c" * 40)],
+        "org/stable": [drift.HfFile("preprocessor_config.json", 10, None, "d" * 40)],
+    }
+    now = datetime.now(timezone.utc).isoformat()
+    entries = [
+        {"alias": "optional", "hf_path": "org/optional", "status": "mirrored"},
+        {"alias": "partial", "hf_path": "org/partial", "status": "partial"},
+        {
+            "alias": "recent",
+            "hf_path": "org/recent",
+            "status": "mirrored",
+            "latest_uploaded": now,
+        },
+        {"alias": "stable", "hf_path": "org/stable", "status": "mirrored"},
+    ]
+    monkeypatch.setattr(
+        drift, "_hf_repo", lambda repo: drift.HfRepo("revision", files[repo])
+    )
+    monkeypatch.setattr(
+        drift,
+        "_public_probe",
+        lambda *_args: drift.MirrorProbe(404, None, None, None),
+    )
+    monkeypatch.setattr(drift, "_catalog_entries", lambda: entries)
+    monkeypatch.setattr(drift, "_maybe_r2_client", lambda: None)
+    reports = {report.alias: report for report in drift.audit(main, audio)}
+    assert reports["optional"].findings[0].severity == "info"
+    for alias in ("partial", "recent"):
+        finding = reports[alias].findings[0]
+        assert finding.severity == "warning"
+        assert "sync in progress" in finding.detail
+    assert reports["stable"].findings[0].severity == "error"
+
+
+def test_hf_failure_is_reported_without_aborting(monkeypatch, tmp_path):
+    main = tmp_path / "main.json"
+    audio = tmp_path / "audio.json"
+    main.write_text(json.dumps({"gone": {"hf_path": "org/gone"}}))
+    audio.write_text("{}")
+    monkeypatch.setattr(
+        drift, "_hf_repo", lambda _repo: (_ for _ in ()).throw(RuntimeError("gone"))
+    )
+    monkeypatch.setattr(
+        drift,
+        "_catalog_entries",
+        lambda: [{"alias": "gone", "hf_path": "org/gone", "status": "mirrored"}],
+    )
+    monkeypatch.setattr(drift, "_maybe_r2_client", lambda: None)
+    report = drift.audit(main, audio)[0]
+    assert report.checked_files == 0
+    assert report.findings[-1] == drift.Finding(
+        "hf_unavailable", "error", detail="gone"
+    )
+
+
+def test_probe_size_fallback_timestamps_and_etags(monkeypatch):
+    body = b"{}"
+    monkeypatch.setattr(
+        drift, "_request", lambda *_args, **_kwargs: Response(200, body)
+    )
+    probe = drift._public_probe(
+        "org/repo", drift.HfFile("config.json", len(body), None, "x" * 40)
+    )
+    assert probe.size == len(body)
+    now = datetime.now(timezone.utc)
+    assert drift._recent_timestamp(now.timestamp(), now)
+    assert drift._recent_timestamp(now.replace(tzinfo=None).isoformat(), now)
+    assert not drift._recent_timestamp("invalid", now)
+    assert drift._etag_sha256(f'W/"{"a" * 64}"') == "a" * 64
+    assert drift._etag_sha256('"not-a-sha"') is None
 
 
 def test_catalog_shapes(monkeypatch):
@@ -256,6 +466,7 @@ def test_cache_buster_reaches_redirect_destination_and_cached_404_is_avoided(
     assert parsed.netloc == "dl.example"
     assert urllib.parse.parse_qs(parsed.query)["mirror_drift"]
     assert redirected.get_header("Cache-control") == "no-cache"
+    assert redirected.get_method() == "HEAD"
 
     class RedirectingOpener:
         def open(self, request, timeout):
@@ -275,6 +486,34 @@ def test_cache_buster_reaches_redirect_destination_and_cached_404_is_avoided(
 
     monkeypatch.setattr(drift, "_OPENER", RedirectingOpener())
     assert drift._public_head("org/repo", drift.HfFile("file", 7, None)) == (200, 7)
+
+
+def test_same_size_stale_non_lfs_body_is_content_mismatch(monkeypatch, tmp_path):
+    expected = b'{"model_type":"fresh"}'
+    stale = b'{"model_type":"stale"}'
+    assert len(expected) == len(stale)
+    expected_oid = hashlib.sha1(
+        f"blob {len(expected)}\0".encode() + expected, usedforsecurity=False
+    ).hexdigest()
+    item = drift.HfFile("config.json", len(expected), None, expected_oid)
+    main = tmp_path / "main.json"
+    audio = tmp_path / "audio.json"
+    main.write_text(json.dumps({"stale": {"hf_path": "org/stale"}}))
+    audio.write_text("{}")
+    monkeypatch.setattr(drift, "_hf_repo", lambda _repo: drift.HfRepo("rev", [item]))
+    monkeypatch.setattr(
+        drift,
+        "_catalog_entries",
+        lambda: [{"alias": "stale", "hf_path": "org/stale", "status": "mirrored"}],
+    )
+    monkeypatch.setattr(drift, "_maybe_r2_client", lambda: None)
+    monkeypatch.setattr(
+        drift,
+        "_request",
+        lambda *_args, **_kwargs: Response(200, stale, str(len(stale))),
+    )
+    report = drift.audit(main, audio)[0]
+    assert any(finding.kind == "content_mismatch" for finding in report.findings)
 
 
 def test_request_retries_and_http_errors(monkeypatch):
@@ -476,6 +715,23 @@ def test_mirror_uploader_public_404_is_advisory(monkeypatch, capsys):
     assert "1 public advisories" in output
 
 
+def test_mirror_uploader_zero_byte_head_and_verify_failure(monkeypatch, capsys):
+    item = mirror.FileMeta("empty", 0, "org/repo/empty", None)
+    monkeypatch.setattr(mirror, "_hf_files", lambda _repo: [item])
+    monkeypatch.setattr(mirror, "_r2_client", lambda *_args: object())
+    monkeypatch.setattr(mirror, "_r2_head_size", lambda *_args: 0)
+    head_calls = []
+    monkeypatch.setattr(
+        mirror, "_http_head_status", lambda url: head_calls.append(url) or 200
+    )
+    assert mirror.mirror_repo("org/repo", verify_only=True) == 0
+    assert head_calls
+
+    monkeypatch.setattr(mirror, "_r2_head_size", lambda *_args: 1)
+    assert mirror.mirror_repo("org/repo", verify_only=True) == 3
+    assert "r2-size:1!=0" in capsys.readouterr().err
+
+
 def test_mirror_uploader_prints_cdn_reminder_after_upload(
     monkeypatch, capsys, tmp_path
 ):
@@ -502,6 +758,7 @@ def test_uploader_redirect_and_http_helpers(monkeypatch):
     assert redirected is not None
     assert "mirror_verify=" in redirected.full_url
     assert redirected.get_header("Cache-control") == "no-cache"
+    assert redirected.get_method() == "HEAD"
 
     class Opener:
         def __init__(self, response=None, error=None):

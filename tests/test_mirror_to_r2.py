@@ -19,7 +19,10 @@ mirror extra should collect + skip cleanly rather than fail at import.
 from __future__ import annotations
 
 import importlib.util
+import io
 import sys
+import urllib.request
+from email.message import Message
 from pathlib import Path
 from unittest.mock import MagicMock
 
@@ -94,6 +97,16 @@ def test_cli_parser_rejects_missing_repo_id() -> None:
     p = mirror_to_r2._build_parser()
     with pytest.raises(SystemExit):
         p.parse_args([])
+
+
+def test_redirect_preserves_head_method() -> None:
+    handler = mirror_to_r2._FinalUrlRedirectHandler()
+    request = urllib.request.Request("https://models.example/file", method="HEAD")
+    redirected = handler.redirect_request(
+        request, io.BytesIO(), 302, "Found", Message(), "https://dl.example/file"
+    )
+    assert redirected is not None
+    assert redirected.get_method() == "HEAD"
 
 
 # --------- 2. Content-type router shape ---------

@@ -450,6 +450,13 @@ class _FinalUrlRedirectHandler(urllib.request.HTTPRedirectHandler):
             req, fp, code, msg, headers, _cache_busted_url(newurl)
         )
         if redirected is not None:
+            redirected = urllib.request.Request(
+                redirected.full_url,
+                headers=dict(redirected.headers),
+                origin_req_host=redirected.origin_req_host,
+                unverifiable=redirected.unverifiable,
+                method=req.get_method(),
+            )
             redirected.add_header("Cache-Control", "no-cache")
         return redirected
 

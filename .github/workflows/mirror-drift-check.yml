@@ -24,7 +24,7 @@ jobs:
         shell: bash
         run: |
           set -o pipefail
-          python scripts/mirror_drift_check.py --only-used --workers 2 2>&1 | tee mirror-drift.txt
+          python scripts/mirror_drift_check.py --only-used --workers 8 2>&1 | tee mirror-drift.txt
       - name: Publish readable summary
         if: always()
         shell: bash
