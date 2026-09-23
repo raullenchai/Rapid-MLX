@@ -3128,7 +3128,13 @@ class BatchGenerator:
         )
         if len(self._generation_batch) > 0:
             generation_responses = self._generation_batch.next()
-            self._gen_tokens_counter += len(generation_responses)
+            # VENDOR-DEVIATION(upstream-bugfix): speculative iterator
+            # exhaustion emits one completion-only response (token=None) per
+            # unfinished row. Those sentinels carry terminal state but no
+            # generated token and must not inflate token/TPS statistics.
+            self._gen_tokens_counter += sum(
+                response.token is not None for response in generation_responses
+            )
             self._steps_counter += 1
             if (
                 self._cache_eval_interval > 0

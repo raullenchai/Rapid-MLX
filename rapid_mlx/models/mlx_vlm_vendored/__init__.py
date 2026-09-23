@@ -245,6 +245,8 @@ vendored copy differs by exactly the deviations listed):
     success);
     ``BatchGenerator.remove`` releases a cancelled sole-prefill batch's APC
     blocks;
+    tokenless speculative-exhaustion responses no longer inflate generated
+    token counts or throughput;
     and the three batched sampling sites (``GenerationBatch._step``,
     ``SpeculativeGenerationBatch._start_rounds``,
     ``PromptProcessingBatch.generate``) pass the per-row int uids as

@@ -647,6 +647,42 @@ def test_speculative_rounds_pass_uid_row_ids(monkeypatch):
     assert captured["row_ids"] == [3, 9]
 
 
+def test_batch_generator_does_not_count_tokenless_terminal_responses():
+    """Speculative exhaustion sentinels complete rows without generating tokens."""
+
+    class _ExhaustedBatch:
+        logits_processors = []
+        prompt_cache = []
+
+        def __init__(self):
+            self.active = True
+
+        def __len__(self):
+            return int(self.active)
+
+        def next(self):
+            self.active = False
+            return [
+                types.SimpleNamespace(token=7),
+                types.SimpleNamespace(token=None, finish_reason="length"),
+            ]
+
+    generator = types.SimpleNamespace(
+        _generation_batch=_ExhaustedBatch(),
+        _gen_tokens_counter=0,
+        _steps_counter=0,
+        _cache_eval_interval=0,
+        completion_batch_size=8,
+        _prompt_batch=None,
+        _unprocessed_sequences=[],
+        prefill_batch_size=1,
+    )
+
+    _, responses = vendored_ar.BatchGenerator._next(generator)
+    assert [response.token for response in responses] == [7, None]
+    assert generator._gen_tokens_counter == 1
+
+
 def test_prompt_batch_first_token_passes_uid_row_ids():
     """upstream-bugfix: the post-prefill first-token sample must carry the
     per-row uids as row_ids (upstream passed row_ids=[0]*n)."""
