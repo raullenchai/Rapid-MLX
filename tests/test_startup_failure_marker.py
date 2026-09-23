@@ -145,10 +145,13 @@ def test_sibling_extra_guards_emit_closed_marker_once(
         ),
         (
             """
+            from collections import namedtuple
             from unittest.mock import patch
             import rapid_mlx.runtime.video_lane as lane
 
-            with patch.object(lane, "_default_video_runtime_requirements", return_value=[]), \\
+            Version = namedtuple("Version", "major minor")
+            with patch.object(lane.sys, "version_info", Version(3, 11)), \\
+                 patch.object(lane, "_default_video_runtime_requirements", return_value=[]), \\
                  patch.object(lane, "_resolve_ffmpeg", return_value=None):
                 lane.require_video_runtime_or_exit("wan2.2-ti2v-5b-q8")
             """,
