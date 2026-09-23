@@ -27,6 +27,12 @@ struct ShareComputeModel: Identifiable, Hashable, Sendable {
             title: "Nemotron 3.5 Lightning 30B · 4-bit",
             detail: "Fast reasoning-focused model"
         ),
+        .init(
+            catalogID: "glm-5.3-flash",
+            alias: "glm5.3-flash-4bit",
+            title: "GLM 5.3 Flash · 4-bit",
+            detail: "Highest pool demand · needs 192 GB+ unified memory"
+        ),
     ]
 
     static func sanitizedWorker(_ value: String) -> String {

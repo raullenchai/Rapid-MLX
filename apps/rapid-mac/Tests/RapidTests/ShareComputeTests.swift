@@ -32,6 +32,7 @@ struct ShareComputeTests {
             "qwen3.8-27b",
             "qwen3.6-35b",
             "nemotron-3.5-lightning",
+            "glm-5.3-flash",
         ])
         #expect(ShareComputeModel.supported.allSatisfy {
             !ModelSizing.isAvailable(alias: $0.alias, on: eighteenGB)
