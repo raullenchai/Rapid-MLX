@@ -15,8 +15,12 @@ vendored package except for the documented pinned redirects.
 import inspect
 import types
 
-import mlx.core as mx
 import pytest
+
+pytest.importorskip("mlx")
+pytestmark = pytest.mark.requires_mlx
+
+import mlx.core as mx
 
 import rapid_mlx.models.mlx_vlm_vendored as vendored_pkg
 import rapid_mlx.models.mlx_vlm_vendored.generate as vendored_generate
