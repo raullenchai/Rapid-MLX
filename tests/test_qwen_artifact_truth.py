@@ -4,7 +4,7 @@ import hashlib
 import json
 import os
 import sys
-from dataclasses import replace
+from dataclasses import fields, replace
 from pathlib import Path
 from types import ModuleType
 
@@ -21,6 +21,7 @@ from rapid_mlx.qwen_artifact_layout import (
 from rapid_mlx.runtime.qwen_artifact import (
     ArtifactIdentityStatus,
     ArtifactProbeError,
+    QwenArtifactTruth,
     TargetWeightLayout,
     VerifiedHubSnapshotBinding,
     probe_qwen_artifact,
@@ -336,6 +337,68 @@ def test_noncanonical_hub_subfolder_fails_closed(tmp_path: Path, subfolder: str)
     )
 
 
+@pytest.mark.parametrize("escape_kind", ["blobs", "sibling_revision"])
+def test_hub_subfolder_symlink_escape_fails_closed(tmp_path: Path, escape_kind: str):
+    snapshot, _hub, metadata = _materialize_snapshot(tmp_path, "qwen36_35b_4bit")
+    repo_cache = snapshot.parents[1]
+    if escape_kind == "blobs":
+        target = repo_cache / "blobs"
+    else:
+        target = snapshot.parent / ("f" * 40)
+        target.mkdir()
+    escaped = snapshot / "escaped"
+    escaped.symlink_to(os.path.relpath(target, snapshot), target_is_directory=True)
+    assert (
+        verify_hub_snapshot_binding(
+            escaped,
+            repo_id=metadata["source_repo"],
+            revision=metadata["revision"],
+            subfolder="escaped",
+        )
+        is None
+    )
+
+
+def test_revision_root_symlink_escape_fails_closed(tmp_path: Path):
+    snapshot, _hub, metadata = _materialize_snapshot(tmp_path, "qwen36_35b_4bit")
+    escaped_root = tmp_path / "escaped-revision"
+    snapshot.rename(escaped_root)
+    snapshot.symlink_to(escaped_root, target_is_directory=True)
+    assert (
+        verify_hub_snapshot_binding(
+            snapshot,
+            repo_id=metadata["source_repo"],
+            revision=metadata["revision"],
+        )
+        is None
+    )
+
+
+def test_revision_root_symlink_to_sibling_revision_fails_closed(tmp_path: Path):
+    snapshot, _hub, metadata = _materialize_snapshot(tmp_path, "qwen36_35b_4bit")
+    sibling = snapshot.parent / ("f" * 40)
+    snapshot.rename(sibling)
+    snapshot.symlink_to(sibling.name, target_is_directory=True)
+    assert (
+        verify_hub_snapshot_binding(
+            snapshot,
+            repo_id=metadata["source_repo"],
+            revision=metadata["revision"],
+        )
+        is None
+    )
+
+
+def test_symlinked_repo_cache_ancestor_is_allowed(tmp_path: Path):
+    snapshot, _hub, metadata = _materialize_snapshot(tmp_path, "qwen36_35b_4bit")
+    repo_cache = snapshot.parents[1]
+    resolved_repo_cache = tmp_path / "resolved-repo-cache"
+    repo_cache.rename(resolved_repo_cache)
+    repo_cache.symlink_to(resolved_repo_cache, target_is_directory=True)
+    binding = _binding(snapshot, metadata)
+    assert binding.matches(snapshot)
+
+
 def test_verified_binding_constructor_is_not_a_public_trust_bit(tmp_path: Path):
     with pytest.raises(TypeError, match="verify_hub_snapshot_binding"):
         VerifiedHubSnapshotBinding(  # type: ignore[call-arg]
@@ -358,6 +421,31 @@ def test_binding_for_one_snapshot_cannot_label_another(tmp_path: Path):
     assert truth.source_repo is None
     assert truth.revision is None
     assert truth.verification_id is None
+
+
+def test_artifact_truth_direct_construction_and_replace_cannot_forge_capability(
+    tmp_path: Path,
+):
+    snapshot, _hub, metadata = _materialize_snapshot(tmp_path, "qwen36_35b_4bit")
+    verified = probe_qwen_artifact(snapshot, binding=_binding(snapshot, metadata))
+    unverified = probe_qwen_artifact(snapshot)
+    public_fields = {
+        item.name: getattr(verified, item.name)
+        for item in fields(QwenArtifactTruth)
+        if not item.name.startswith("_")
+    }
+    with pytest.raises(TypeError, match="probe_qwen_artifact"):
+        QwenArtifactTruth(**public_fields)
+    with pytest.raises(TypeError, match="probe_qwen_artifact"):
+        replace(verified, source_repo="attacker/forged")
+    with pytest.raises(TypeError, match="probe_qwen_artifact"):
+        replace(
+            unverified,
+            identity_status=ArtifactIdentityStatus.VERIFIED_HUB_SNAPSHOT,
+            source_repo=metadata["source_repo"],
+            revision=metadata["revision"],
+            verification_id="forged",
+        )
 
 
 @pytest.mark.parametrize(
@@ -475,8 +563,14 @@ def test_conversion_seam_rejects_unverified_and_incomplete_layers(tmp_path: Path
     snapshot, hub, metadata = _materialize_snapshot(tmp_path, "qwen36_35b_4bit")
     unverified = probe_qwen_artifact(snapshot)
     verified = probe_qwen_artifact(snapshot, binding=_binding(snapshot, metadata))
-    with pytest.raises(ArtifactProbeError, match="verified Hub identity"):
+    with pytest.raises(
+        ArtifactProbeError, match="resolver-verified artifact capability"
+    ):
         to_verified_runtime_target(unverified)
-    incomplete = replace(verified, geometry=replace(verified.geometry, layer_types=()))
+    config_path = snapshot / "config.json"
+    config = json.loads(config_path.read_text(encoding="utf-8"))
+    config["text_config"]["layer_types"] = []
+    config_path.write_text(json.dumps(config), encoding="utf-8")
+    incomplete = probe_qwen_artifact(snapshot, binding=_binding(snapshot, metadata))
     with pytest.raises(ArtifactProbeError, match="ordered layer layout"):
         to_verified_runtime_target(incomplete)

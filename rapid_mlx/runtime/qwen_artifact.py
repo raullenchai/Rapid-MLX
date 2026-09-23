@@ -169,22 +169,36 @@ def verify_hub_snapshot_binding(
     if cache_root is None:
         return None
     repo_cache = cache_root / ("models--" + "--".join(repo_parts))
-    snapshot_root = repo_cache / "snapshots" / revision
+    snapshots_dir = repo_cache / "snapshots"
+    snapshot_root = snapshots_dir / revision
+    # The requested revision itself must be the canonical directory entry.
+    # Repo-cache ancestors may be symlinked, but following this final component
+    # could silently relabel a sibling revision as the requested commit.
+    if snapshot_root.is_symlink():
+        return None
     expected = (
         snapshot_root.joinpath(*PurePosixPath(canonical_subfolder).parts)
         if canonical_subfolder is not None
         else snapshot_root
     )
     try:
+        resolved_snapshots_dir = snapshots_dir.resolve(strict=True)
+        resolved_snapshot_root = snapshot_root.resolve(strict=True)
         resolved_expected = expected.resolve(strict=True)
         resolved_actual = Path(snapshot_dir).resolve(strict=True)
         resolved_repo_cache = repo_cache.resolve(strict=True)
     except OSError:
         return None
-    if resolved_actual != resolved_expected or not resolved_actual.is_dir():
+    if (
+        resolved_snapshots_dir.parent != resolved_repo_cache
+        or resolved_snapshot_root.parent != resolved_snapshots_dir
+        or not resolved_snapshot_root.is_dir()
+        or resolved_actual != resolved_expected
+        or not resolved_actual.is_dir()
+    ):
         return None
     try:
-        resolved_expected.relative_to(resolved_repo_cache)
+        resolved_expected.relative_to(resolved_snapshot_root)
     except ValueError:
         return None
     return VerifiedHubSnapshotBinding(
@@ -302,9 +316,18 @@ class MTPLocatorTruth:
         }
 
 
-@dataclass(frozen=True)
+_TRUTH_MINT_TOKEN = object()
+_VERIFIED_RUNTIME_CAPABILITY = object()
+
+
+@dataclass(frozen=True, slots=True, init=False)
 class QwenArtifactTruth:
-    """Frozen, JSON-ready facts about one already-resolved Qwen artifact."""
+    """Privately minted facts about one already-resolved Qwen artifact.
+
+    Public fields remain JSON-ready, but callers cannot construct or replace
+    this object into a verified state. Only a probe with a matching resolver
+    binding retains the private capability accepted by runtime conversion.
+    """
 
     source_repo: str | None
     revision: str | None
@@ -319,6 +342,61 @@ class QwenArtifactTruth:
     quantization: QwenQuantization
     target_weights: TargetWeights
     mtp_locator: MTPLocatorTruth
+    _runtime_capability: object | None = field(init=False, repr=False, compare=False)
+
+    def __init__(
+        self,
+        *,
+        source_repo: str | None,
+        revision: str | None,
+        target_subfolder: str | None,
+        identity_status: ArtifactIdentityStatus,
+        verification_id: str | None,
+        config_sha256: str,
+        outer_model_type: str | None,
+        text_model_type: str | None,
+        mtp_num_hidden_layers: int | None,
+        geometry: QwenGeometry,
+        quantization: QwenQuantization,
+        target_weights: TargetWeights,
+        mtp_locator: MTPLocatorTruth,
+        _runtime_capability: object | None = None,
+        _mint_token: object | None = None,
+    ) -> None:
+        if _mint_token is not _TRUTH_MINT_TOKEN:
+            raise TypeError("QwenArtifactTruth must be minted by probe_qwen_artifact()")
+        if (
+            _runtime_capability is not None
+            and _runtime_capability is not _VERIFIED_RUNTIME_CAPABILITY
+        ):
+            raise TypeError("invalid Qwen artifact runtime capability")
+        verified = _runtime_capability is _VERIFIED_RUNTIME_CAPABILITY
+        if verified != (
+            identity_status is ArtifactIdentityStatus.VERIFIED_HUB_SNAPSHOT
+            and source_repo is not None
+            and revision is not None
+            and verification_id is not None
+        ):
+            raise ValueError("verified artifact fields require resolver capability")
+        if not verified and any(
+            value is not None
+            for value in (source_repo, revision, target_subfolder, verification_id)
+        ):
+            raise ValueError("unverified artifact identity fields must be redacted")
+        object.__setattr__(self, "source_repo", source_repo)
+        object.__setattr__(self, "revision", revision)
+        object.__setattr__(self, "target_subfolder", target_subfolder)
+        object.__setattr__(self, "identity_status", identity_status)
+        object.__setattr__(self, "verification_id", verification_id)
+        object.__setattr__(self, "config_sha256", config_sha256)
+        object.__setattr__(self, "outer_model_type", outer_model_type)
+        object.__setattr__(self, "text_model_type", text_model_type)
+        object.__setattr__(self, "mtp_num_hidden_layers", mtp_num_hidden_layers)
+        object.__setattr__(self, "geometry", geometry)
+        object.__setattr__(self, "quantization", quantization)
+        object.__setattr__(self, "target_weights", target_weights)
+        object.__setattr__(self, "mtp_locator", mtp_locator)
+        object.__setattr__(self, "_runtime_capability", _runtime_capability)
 
     def to_status_dict(self) -> dict[str, Any]:
         """Return the neutral local-status payload for later plan integration."""
@@ -329,7 +407,7 @@ class QwenArtifactTruth:
             "target_subfolder": self.target_subfolder,
             "identity_status": self.identity_status.value,
             "identity_is_immutable": (
-                self.identity_status is ArtifactIdentityStatus.VERIFIED_HUB_SNAPSHOT
+                self._runtime_capability is _VERIFIED_RUNTIME_CAPABILITY
             ),
             "verification_id": self.verification_id,
             "config_sha256": self.config_sha256,
@@ -669,6 +747,10 @@ def probe_qwen_artifact(
         quantization=quantization,
         target_weights=target_weights,
         mtp_locator=mtp_locator,
+        _runtime_capability=(
+            _VERIFIED_RUNTIME_CAPABILITY if verified_binding is not None else None
+        ),
+        _mint_token=_TRUTH_MINT_TOKEN,
     )
 
 
@@ -706,6 +788,10 @@ def to_verified_runtime_target(truth: QwenArtifactTruth):
 
     if not isinstance(truth, QwenArtifactTruth):
         raise ArtifactProbeError("runtime conversion requires QwenArtifactTruth")
+    if truth._runtime_capability is not _VERIFIED_RUNTIME_CAPABILITY:
+        raise ArtifactProbeError(
+            "runtime conversion requires resolver-verified artifact capability"
+        )
     if (
         truth.identity_status is not ArtifactIdentityStatus.VERIFIED_HUB_SNAPSHOT
         or truth.source_repo is None

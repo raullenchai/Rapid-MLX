@@ -17,6 +17,14 @@
   mutable/spoofed revisions, URLs, userinfo, and path-like sources fail closed.
 - Status is redacted: only a validated canonical Hub repo/revision/subfolder
   can be emitted. Local paths and unvalidated source strings are never echoed.
+- `QwenArtifactTruth` is private-token minted. Only a probe whose resolver
+  binding matches the exact snapshot retains the capability required to mint
+  a runtime target; direct construction and `dataclasses.replace` cannot forge
+  verified repo/revision/receipt fields.
+- Subfolder containment is anchored to the resolved requested revision root.
+  Blob/sibling-revision directory escapes and a revision entry symlinked to a
+  sibling commit fail closed, while a symlinked repo-cache ancestor remains
+  supported.
 - Target receipts preserve the canonical index digest, extracted shard set,
   missing-shard state, full ordered layer layout, and—where available—the
   nested MTP symlink/blob id, declared SHA-256, and file size.
@@ -63,7 +71,7 @@ Publish the stored truth only when the integration resolver owns it.
 
 ## Verification
 
-- `337 passed`: artifact truth plus MTP self-contained locator, injector,
+- `343 passed`: artifact truth plus MTP self-contained locator, injector,
   batched-family capability, CLI wiring, and spec-decode suites.
 - Ruff passes on all changed Python files; `git diff --check` passes.
 - The conversion seam was exercised directly against corrected core commit
