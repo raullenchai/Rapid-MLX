@@ -744,12 +744,13 @@ def test_mirror_retry_counters_by_cause(monkeypatch, error, cause):
 
     monkeypatch.setattr(drift, "_OPENER", types.SimpleNamespace(open=open_request))
     drift._reset_retry_state()
+    now = [0.0]
     drift._REQUEST_CONTEXT.kind = "mirror"
     try:
         drift._request(
             "https://example",
-            clock=lambda: 0.0,
-            sleeper=lambda _seconds: None,
+            clock=lambda: now[0],
+            sleeper=lambda seconds: now.__setitem__(0, now[0] + seconds),
         )
     finally:
         drift._REQUEST_CONTEXT.kind = None
@@ -765,12 +766,18 @@ def test_429_shared_cooldown_gates_new_mirror_request(monkeypatch):
     )
     drift._reset_retry_state()
     drift._mirror_cooldown_until = 12.0
+    now = [10.0]
+
+    def pass_cooldown(seconds):
+        events.append(("cooldown", seconds))
+        now[0] += seconds
+
     drift._REQUEST_CONTEXT.kind = "mirror"
     try:
         drift._request(
             "https://example",
-            clock=lambda: 10.0,
-            sleeper=lambda seconds: events.append(("cooldown", seconds)),
+            clock=lambda: now[0],
+            sleeper=pass_cooldown,
         )
     finally:
         drift._REQUEST_CONTEXT.kind = None
@@ -1056,6 +1063,7 @@ def test_exhausted_transient_emits_partial_report(monkeypatch, capsys):
 
     def exhaust(*_args, progress, **_kwargs):
         progress.reports = [partial]
+        drift._reset_retry_state()
         error = TimeoutError("late")
         monkeypatch.setattr(
             drift,

@@ -283,9 +283,11 @@ def _reset_retry_state() -> None:
 def _wait_for_mirror_cooldown(
     clock: Callable[[], float], sleeper: Callable[[float], None]
 ) -> None:
-    with _MIRROR_COOLDOWN_LOCK:
-        delay = max(0.0, _mirror_cooldown_until - clock())
-    if delay:
+    while True:
+        with _MIRROR_COOLDOWN_LOCK:
+            delay = max(0.0, _mirror_cooldown_until - clock())
+        if not delay:
+            return
         sleeper(delay)
 
 
