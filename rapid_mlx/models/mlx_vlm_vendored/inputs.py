@@ -5,10 +5,12 @@ Step 2c of the mlx-vlm dependency retirement (design note:
 ``docs/engineering/design/2026-09-18-vendor-mllm-primitives.md``).
 
 Provenance: the module body below is **byte-verbatim** from upstream
-``utils.py`` lines 1714-2543 (``load_image`` .. ``prepare_inputs``, an
-unbroken region ending right before ``group_images_by_shape``), region
-sha256 ``ac610b0e2c157de878b17ec9f5ebaa8bf2c75000e44c09d84b5c17dbaf7c7b5f``, except the documented deviations in the import block
-below — every non-verbatim line carries a ``# VENDOR-DEVIATION`` sentinel.
+``utils.py`` lines 1714-2807 (``load_image`` .. ``prepare_inputs`` ..
+``group_images_by_shape`` .. ``should_add_special_tokens``, an unbroken
+region), region sha256
+``0c3681fa511baa4c345e6caba42760c7f1632ae2f69706982e39eb2f411b1294``,
+except the documented deviations in the import block below — every
+non-verbatim line carries a ``# VENDOR-DEVIATION`` sentinel.
 The module keeps upstream's logger name so log filtering parity holds
 (``mlx_vlm.apc`` precedent from 2b-2). The upstream parity of every
 vendored function is probed by ``tests/test_mlx_vlm_vendored_inputs.py``.

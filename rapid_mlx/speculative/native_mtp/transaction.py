@@ -42,7 +42,8 @@ class _ThinkingBudgetLogitsProcessor:
         self.budget = int(criteria.thinking_budget)
         if self.budget < 0:
             raise ValueError("thinking_budget must be non-negative")
-        self.start_ids = [int(criteria.thinking_start_token_id)]
+        start_token_id = criteria.thinking_start_token_id
+        self.start_ids = [] if start_token_id is None else [int(start_token_id)]
         self.end_ids = [int(criteria.thinking_end_token_id)]
         forced = getattr(criteria, "_forced_sequence", None)
         self.forced_ids = [int(token) for token in (forced or self.end_ids)]
@@ -59,6 +60,12 @@ class _ThinkingBudgetLogitsProcessor:
             if _last_sequence(context[first:], self.end_ids) >= 0:
                 return logits
         else:
+            # The released criteria documents ``thinking_start_token=None``
+            # as a supported default. Without a preopened prompt there is no
+            # observable boundary from which to start counting, so leave the
+            # logits untouched instead of manufacturing a token id.
+            if not self.start_ids:
+                return logits
             start = _last_sequence(context, self.start_ids)
             if start < 0:
                 return logits

@@ -439,6 +439,27 @@ def test_legacy_thinking_budget_policy_starts_at_emitted_opener(fake_mx) -> None
     assert policy(np.array([1, 2, 8, 4, 5, 6, 7]), scores) is scores
 
 
+def test_legacy_thinking_budget_policy_accepts_default_start_token(fake_mx) -> None:
+    criteria = SimpleNamespace(
+        enable_thinking=True,
+        thinking_budget=1,
+        thinking_start_token_id=None,
+        thinking_end_token_id=7,
+        _forced_sequence=[6, 7],
+        prompt_preopens_thinking=True,
+    )
+    policy = transaction._thinking_budget_policy(criteria, prompt_length=2)
+    scores = np.zeros((1, 10), dtype=np.float32)
+    assert policy(np.array([1, 2, 4]), scores) is scores
+    assert policy(np.array([1, 2, 4, 5]), scores)[0, 6] == 0
+
+    # If neither the prompt nor an explicit start token opens reasoning, the
+    # legacy policy cannot infer a counting boundary and must remain inactive.
+    criteria.prompt_preopens_thinking = False
+    policy = transaction._thinking_budget_policy(criteria, prompt_length=2)
+    assert policy(np.array([1, 2, 4, 5]), scores) is scores
+
+
 class _RoundState:
     def __init__(self, proposals, logits):
         self.proposals = np.array([proposals], dtype=np.int32)

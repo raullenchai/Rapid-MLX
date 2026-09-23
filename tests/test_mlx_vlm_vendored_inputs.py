@@ -29,7 +29,7 @@ import mlx.core as mx
 from rapid_mlx.models.mlx_vlm_vendored import inputs as vendored_inputs
 
 _UPSTREAM_REGION_SHA256 = (
-    "ac610b0e2c157de878b17ec9f5ebaa8bf2c75000e44c09d84b5c17dbaf7c7b5f"
+    "0c3681fa511baa4c345e6caba42760c7f1632ae2f69706982e39eb2f411b1294"
 )
 _VENDOR_DEVIATION_COUNT = 9
 
@@ -71,7 +71,7 @@ def test_vendored_region_matches_reviewed_sources():
     mlx_vlm_utils = pytest.importorskip("mlx_vlm.utils")
     upstream_path = Path(inspect.getsourcefile(mlx_vlm_utils))
     upstream_lines = upstream_path.read_text().splitlines(keepends=True)
-    upstream_region = "".join(upstream_lines[1713:2543])
+    upstream_region = "".join(upstream_lines[1713:2807])
     assert hashlib.sha256(upstream_region.encode()).hexdigest() == (
         _UPSTREAM_REGION_SHA256
     )
@@ -79,7 +79,7 @@ def test_vendored_region_matches_reviewed_sources():
     vendored_path = Path(inspect.getsourcefile(vendored_inputs))
     vendored_source = vendored_path.read_text()
     assert hashlib.sha256(vendored_source.encode()).hexdigest() == (
-        "6eea1f742229a223750e69de29dd4a41e1fc5157ee8674a6851a2aa0ca83d199"
+        "fab357702289e1b8380b4f42173f94970462495fd753633d7e2cf512a62468d5"
     )
     deviation_comments = [
         token.string

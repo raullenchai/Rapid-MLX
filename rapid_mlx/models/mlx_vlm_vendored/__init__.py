@@ -175,7 +175,7 @@ vendored copy differs by exactly the deviations listed):
   ``group_images_by_shape`` .. ``should_add_special_tokens``, an unbroken
   region; the tail past ``prepare_inputs`` was appended in the step-3a
   slice to satisfy ``generate/ar.py``'s helper imports; region sha256
-  ``ac610b0e2c157de878b17ec9f5ebaa8bf2c75000e44c09d84b5c17dbaf7c7b5f``),
+  ``0c3681fa511baa4c345e6caba42760c7f1632ae2f69706982e39eb2f411b1294``),
   except the import block: exactly the names the region references
   (ruff F821 closure), with ``mlx_vlm.models.base`` (``
   BaseImageProcessor``) still resolving upstream and the logger pinned to
