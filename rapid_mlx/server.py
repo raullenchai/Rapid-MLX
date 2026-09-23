@@ -3753,8 +3753,11 @@ Examples:
 
     consent_runtime.startup(long_lived=True)
     from .telemetry import track as telemetry_v2
+    from .telemetry.consent_decision import ProcessRole
 
-    telemetry_v2.start_lifecycle("server")
+    role = consent_runtime.detect_role()
+    if not (telemetry_v2.set_surface_for_role(role) or role is ProcessRole.SIDECAR):
+        telemetry_v2.start_lifecycle("server")
 
     from .routes.video import configure_video_jobs
 

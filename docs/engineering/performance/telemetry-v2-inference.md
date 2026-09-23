@@ -40,6 +40,22 @@ Successful emits remain after response
 serialization or the streaming terminal marker; generation errors use the
 separate `failed` counter and client disconnects emit nothing.
 
+## Surface and audio-model attribution
+
+The Python emitter attributes every event from a process declared as
+`RAPID_MLX_PROCESS_ROLE=desktop-sidecar` to `surface=desktop`. Sidecars do not
+emit `app_opened`; that lifecycle event remains owned by the Desktop app.
+Standalone `serve` processes report `server`, and other CLI commands report
+`cli`. Role detection is also the fallback when a sidecar emitter is reached
+without passing through either Python entry point.
+
+The Desktop dictation client sends its selected audio catalog alias (normally
+`whisper-small`) to `/v1/audio/transcriptions`. The route resolves that alias to
+the checkpoint repo before applying the privacy-safe telemetry model-id rule.
+Resolved repos from the shipped audio catalog now map back to a catalog alias,
+just like text/image catalog repos; non-catalog, local, private, and unproven
+repos retain the existing redaction rules.
+
 Reproduce the worker measurement by timing this body with
 `time.perf_counter_ns()` under an explicit temporary `HOME` and the injected
 official-build/consent/context fixtures described above:

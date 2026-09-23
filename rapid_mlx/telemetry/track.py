@@ -7,10 +7,13 @@ import threading
 from collections.abc import Mapping
 from dataclasses import dataclass
 from datetime import date, datetime, timezone
-from typing import Protocol
+from typing import TYPE_CHECKING, Protocol
 
 import rapid_mlx
 from rapid_mlx.telemetry import build_gate, common_props, envelope, state, store
+
+if TYPE_CHECKING:
+    from rapid_mlx.telemetry.consent_decision import ProcessRole
 
 
 @dataclass(frozen=True)
@@ -42,12 +45,38 @@ _active_day_claimed_day: date | None = None
 def _set_surface(surface: str) -> None:
     """Set the process surface before its first v2 event."""
     global _surface
-    if surface not in ("cli", "server"):
+    if surface not in ("cli", "server", "desktop"):
         return
     with _context_lock:
         if _context_resolved:
             return
         _surface = surface
+
+
+def _surface_from_role(role: ProcessRole | None = None) -> str | None:
+    """Return the surface implied by a desktop-owned process role."""
+    try:
+        from rapid_mlx.telemetry import consent_runtime
+        from rapid_mlx.telemetry.consent_decision import ProcessRole
+
+        resolved_role = consent_runtime.detect_role() if role is None else role
+        if resolved_role is ProcessRole.DESKTOP or (
+            resolved_role is ProcessRole.SIDECAR
+            and consent_runtime.is_desktop_sidecar()
+        ):
+            return "desktop"
+    except Exception:
+        return None
+    return None
+
+
+def set_surface_for_role(role: ProcessRole | None = None) -> bool:
+    """Apply role-derived surface attribution without starting a lifecycle."""
+    surface = _surface_from_role(role)
+    if surface is None:
+        return False
+    _set_surface(surface)
+    return True
 
 
 def _process_context() -> _ProcessContext | None:
@@ -68,7 +97,7 @@ def _process_context() -> _ProcessContext | None:
         # The frozen snapshot cannot change during a process and is reused by
         # every event.
         platform = common_props.read_platform_facts()
-        surface = _surface or "cli"
+        surface = _surface or _surface_from_role() or "cli"
 
         install_id = state.get_or_create_client_id()
         session_id = state.session_id()
@@ -175,6 +204,8 @@ def start_lifecycle(surface: str) -> None:
     """Start one eligible process lifecycle without affecting its host."""
     try:
         if surface not in ("cli", "server") or not _upload_allowed():
+            return
+        if set_surface_for_role():
             return
         from rapid_mlx.telemetry import posthog_sender
 

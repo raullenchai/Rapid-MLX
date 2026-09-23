@@ -7,9 +7,9 @@ acme-internal-support-bot`` — or one serving a private fine-tune by its
 ``org/name`` — that string went on the wire verbatim. This module replaces
 it with an identity that is safe by construction:
 
-1. **Catalog alias** — the model is in the shipped ``aliases.json`` (matched
-   by alias spelling, or by ``hf_path`` case-insensitively). Public by
-   definition: we publish the catalog.
+1. **Catalog alias** — the model is in the shipped text/image or audio
+   ``aliases.json`` (matched by alias spelling, or by its resolved Hub path
+   case-insensitively). Public by definition: we publish the catalogs.
 2. **``org/name``** — only when we have *fresh* proof the repo is public,
    i.e. a Hugging Face Hub call for it succeeded while **no token was in
    use** (see :func:`note_hub_fetch`), within the last
@@ -518,6 +518,11 @@ def telemetry_model_id(model_ref: object) -> str:
         alias = catalog_alias_for(ref)
         if alias is not None:
             return _capped(alias)
+        from rapid_mlx.audio.registry import resolve_audio_alias
+
+        audio_entry = resolve_audio_alias(ref)
+        if audio_entry is not None:
+            return _capped(audio_entry.alias)
         if _HF_REPO_RE.match(ref):
             # Auth outranks stored proof: while a token is in use we cannot
             # tell a public repo from one the token opened, and the repo may

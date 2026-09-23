@@ -56,6 +56,14 @@ def test_catalog_alias_hf_path_match_is_case_insensitive():
     assert mid.telemetry_model_id("MLX-Community/qwen3.5-9b-4BIT") == "qwen3.5-9b-4bit"
 
 
+def test_audio_catalog_alias_by_alias_name():
+    assert mid.telemetry_model_id("whisper-small") == "whisper-small"
+
+
+def test_audio_catalog_alias_matched_by_resolved_hf_path():
+    assert mid.telemetry_model_id("MLX-Community/WHISPER-SMALL-MLX") == "whisper-small"
+
+
 def test_user_alias_is_not_catalog_identity(monkeypatch):
     """A name the USER invented is user data, not catalog identity."""
     import rapid_mlx.user_aliases as user_aliases

@@ -1480,7 +1480,7 @@ async def test_audio_transcription_success_emits_completed_request(monkeypatch):
     assert result is response
     assert calls == [
         {
-            "model": "<custom>",
+            "model": "whisper",
             "endpoint": "/v1/audio/transcriptions",
             "caller_agent": "openai-python/1.2",
             "caller_client": "rapid-cli-chat",
