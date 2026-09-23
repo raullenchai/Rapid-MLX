@@ -100,7 +100,9 @@ the current path.
 - `engine.get_stats()` and `/v1/status` expose only the JSON-safe plan and an
   optional redacted artifact truth. Truth is published only when the exact
   already-selected source revalidates as a canonical immutable Hub snapshot;
-  arbitrary local paths and mutable repo ids omit it.
+  a programmatic canonical HF-cache snapshot path derives its repo id from the
+  validated cache entry, while arbitrary local paths and mutable repo ids omit
+  truth.
 
 ## Next concrete action
 

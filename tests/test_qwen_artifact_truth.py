@@ -538,6 +538,26 @@ def test_resolved_snapshot_probe_derives_only_pinned_local_identity(tmp_path: Pa
     assert truth.revision == metadata["revision"]
     assert str(tmp_path) not in json.dumps(truth.to_status_dict())
 
+    local_path_truth = probe_resolved_qwen_artifact(
+        snapshot,
+        repo_id=str(snapshot),
+    )
+    assert local_path_truth is not None
+    assert local_path_truth.source_repo == metadata["source_repo"]
+    assert local_path_truth.revision == metadata["revision"]
+    assert str(tmp_path) not in json.dumps(local_path_truth.to_status_dict())
+
+    subfolder_snapshot, _hub, subfolder_metadata = _materialize_snapshot(
+        tmp_path, "qwen36_35b_4bit", subfolder="4bit"
+    )
+    subfolder_truth = probe_resolved_qwen_artifact(
+        subfolder_snapshot,
+        repo_id=str(subfolder_snapshot),
+    )
+    assert subfolder_truth is not None
+    assert subfolder_truth.source_repo == subfolder_metadata["source_repo"]
+    assert subfolder_truth.target_subfolder == "4bit"
+
 
 def test_resolved_snapshot_probe_omits_local_and_wrong_repo_paths(tmp_path: Path):
     snapshot, _hub, metadata = _materialize_snapshot(tmp_path, "qwen38_27b_4bit")
@@ -550,6 +570,16 @@ def test_resolved_snapshot_probe_omits_local_and_wrong_repo_paths(tmp_path: Path
         is None
     )
     assert probe_resolved_qwen_artifact(snapshot, repo_id="other/repo") is None
+
+    spoof = (
+        tmp_path
+        / "outside"
+        / ("models--" + metadata["source_repo"].replace("/", "--"))
+        / "snapshots"
+        / metadata["revision"]
+    )
+    spoof.mkdir(parents=True)
+    assert probe_resolved_qwen_artifact(spoof, repo_id=str(spoof)) is None
 
 
 def test_conversion_seam_owns_exact_target_only_mapping(

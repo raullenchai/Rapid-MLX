@@ -785,15 +785,73 @@ def probe_resolved_qwen_artifact(
         return None
     revision = relative.parts[0]
     subfolder = "/".join(relative.parts[1:]) or None
+    canonical_repo_parts = _canonical_repo_id(repo_id)
+    canonical_repo_id = (
+        "/".join(canonical_repo_parts)
+        if canonical_repo_parts is not None
+        else _derive_selected_snapshot_repo_id(artifact_dir, repo_id=repo_id)
+    )
+    if canonical_repo_id is None:
+        return None
     binding = verify_hub_snapshot_binding(
         artifact_dir,
-        repo_id=repo_id,
+        repo_id=canonical_repo_id,
         revision=revision,
         subfolder=subfolder,
     )
     if binding is None:
         return None
     return probe_qwen_artifact(artifact_dir, binding=binding)
+
+
+def _derive_selected_snapshot_repo_id(
+    artifact_dir: Path,
+    *,
+    repo_id: str,
+) -> str | None:
+    """Recover canonical repo identity from the selected HF-cache path.
+
+    ``load_model(<local canonical snapshot>)`` has no separate repository
+    string to preserve. Derivation is permitted only when the supplied value
+    names this exact selected directory and its lexical repo-cache entry lives
+    directly under Hugging Face's configured cache root. The existing binding
+    verifier remains authoritative afterward, including symlink containment.
+    """
+
+    try:
+        supplied = Path(repo_id).expanduser().absolute()
+    except (OSError, TypeError, ValueError):
+        return None
+    if supplied != artifact_dir:
+        return None
+
+    snapshots_dir = next(
+        (parent for parent in artifact_dir.parents if parent.name == "snapshots"),
+        None,
+    )
+    if snapshots_dir is None:
+        return None
+    repo_cache_entry = snapshots_dir.parent
+    cache_root = _configured_hub_cache_root()
+    if cache_root is None:
+        return None
+    try:
+        if repo_cache_entry.parent.resolve(strict=True) != cache_root:
+            return None
+    except OSError:
+        return None
+
+    prefix = "models--"
+    if not repo_cache_entry.name.startswith(prefix):
+        return None
+    encoded_parts = tuple(repo_cache_entry.name[len(prefix) :].split("--"))
+    if len(encoded_parts) not in {1, 2} or any(not part for part in encoded_parts):
+        return None
+    candidate = "/".join(encoded_parts)
+    canonical_parts = _canonical_repo_id(candidate)
+    if canonical_parts is None:
+        return None
+    return "/".join(canonical_parts)
 
 
 def _runtime_cache_geometry(truth: QwenArtifactTruth) -> tuple[tuple[str, str], ...]:
