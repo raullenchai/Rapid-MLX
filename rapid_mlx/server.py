@@ -36,6 +36,7 @@ The server provides:
 
 import argparse
 import asyncio
+import functools
 import gc
 import logging
 import os
@@ -857,6 +858,9 @@ async def lifespan(app: FastAPI):
                 await _engine.start()
             _emit_primary_model_served_once(_engine)
         except Exception as _start_exc:
+            from rapid_mlx.telemetry.server_start import failed
+
+            failed("engine_start")
             from rapid_mlx.telemetry.model_events import emit_model_serve_failed
 
             emit_model_serve_failed(
@@ -3467,6 +3471,26 @@ def register_audio_routes_if_enabled() -> bool:
 # =============================================================================
 
 
+def _capture_start_failures(func):
+    """Lazy exception guard that cannot change standalone-server failures."""
+
+    @functools.wraps(func)
+    def wrapped(*args, **kwargs):
+        try:
+            return func(*args, **kwargs)
+        except BaseException:
+            try:
+                from rapid_mlx.telemetry.server_start import fail_current
+
+                fail_current()
+            except BaseException:
+                pass
+            raise
+
+    return wrapped
+
+
+@_capture_start_failures
 def main():
     """Run the server."""
     if os.environ.get("RAPID_PYSAMPLE"):
@@ -3803,6 +3827,17 @@ Examples:
     role = consent_runtime.detect_role()
     if not (telemetry_v2.set_surface_for_role(role) or role is ProcessRole.SIDECAR):
         telemetry_v2.start_lifecycle("server")
+
+    from .telemetry.server_start import attempted, load_policy, set_failure_stage
+
+    attempted(
+        args.model,
+        load_policy=load_policy(
+            args.model,
+            lazy_load=bool(getattr(args, "lazy_load", False)),
+        ),
+    )
+    set_failure_stage("preflight")
 
     from .routes.video import configure_video_jobs
 
@@ -4199,22 +4234,27 @@ Examples:
             "--force-openai-harmony-streaming and "
             "--no-openai-harmony-streaming are mutually exclusive"
         )
-    load_model(
-        args.model,
-        scheduler_config=scheduler_config,
-        max_tokens=args.max_tokens,
-        max_tokens_is_explicit=_max_tokens_is_explicit,
-        force_mllm=args.mllm,
-        force_text=args.no_mllm,
-        force_hybrid=getattr(args, "force_hybrid", False),
-        no_hybrid=getattr(args, "no_hybrid", False),
-        force_spec_decode=getattr(args, "force_spec_decode", False),
-        no_spec_decode=getattr(args, "no_spec_decode", False),
-        force_openai_harmony_streaming=getattr(
-            args, "force_openai_harmony_streaming", False
-        ),
-        no_openai_harmony_streaming=getattr(args, "no_openai_harmony_streaming", False),
-    )
+    from .telemetry.server_start import failure_stage
+
+    with failure_stage("prepare"):
+        load_model(
+            args.model,
+            scheduler_config=scheduler_config,
+            max_tokens=args.max_tokens,
+            max_tokens_is_explicit=_max_tokens_is_explicit,
+            force_mllm=args.mllm,
+            force_text=args.no_mllm,
+            force_hybrid=getattr(args, "force_hybrid", False),
+            no_hybrid=getattr(args, "no_hybrid", False),
+            force_spec_decode=getattr(args, "force_spec_decode", False),
+            no_spec_decode=getattr(args, "no_spec_decode", False),
+            force_openai_harmony_streaming=getattr(
+                args, "force_openai_harmony_streaming", False
+            ),
+            no_openai_harmony_streaming=getattr(
+                args, "no_openai_harmony_streaming", False
+            ),
+        )
 
     # Stash the endpoint for the post-bind banner, matching the primary CLI.
     _cfg = get_config()

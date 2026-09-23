@@ -17,6 +17,7 @@ Usage:
 
 import argparse
 import atexit
+import functools
 import os
 import shlex
 import sys
@@ -404,6 +405,9 @@ def _port_preflight_or_die(host: str, port: int, *, model: str) -> None:
             try:
                 _sock.bind((probe_host, port))
             except OSError:
+                from rapid_mlx.telemetry.server_start import failed
+
+                failed("bind")
                 # Surface the host we actually collided on so the user
                 # can distinguish "LAN port busy" from "loopback port
                 # already claimed by another rapid-mlx / nc / proxy".
@@ -1845,9 +1849,7 @@ class _StatusSpinner:
         self._enabled = bool(_isatty and _isatty()) and "NO_COLOR" not in os.environ
         self._done = False
         self._start = 0.0
-        self._thread = None
-        import threading
-
+        self._thread: threading.Thread | None = None
         self._stop_event = threading.Event()
         self._lock = threading.Lock()
         # Serializes the worker's frame writes against ``stop``'s clear so the
@@ -1881,7 +1883,6 @@ class _StatusSpinner:
 
     def __enter__(self) -> "_StatusSpinner":
         if self._enabled:
-            import threading
             import time
 
             self._start = time.monotonic()
@@ -1916,9 +1917,8 @@ class _StatusSpinner:
             finally:
                 self._draw_lock.release()
 
-    def __exit__(self, *exc: object) -> bool:
+    def __exit__(self, *exc: object) -> None:
         self.stop()
-        return False
 
 
 def _try_mirror_prefetch(
@@ -2234,8 +2234,10 @@ def _ensure_model_downloaded(
                 file=sys.stderr,
             )
             from rapid_mlx.telemetry.model_events import emit_model_pull_failed
+            from rapid_mlx.telemetry.server_start import failed
 
             emit_model_pull_failed(TimeoutError(), model_ref=model_name, source="hf")
+            failed("resolve")
             sys.exit(1)
         except Exception:
             # Any other metadata failure stays best-effort: an outage, a gated
@@ -2260,14 +2262,15 @@ def _ensure_model_downloaded(
             )
 
         download_revision = pinned_image_revision or resolved_sha
-        download_kwargs = {"revision": download_revision} if download_revision else {}
         before = _model_pull_blob_identifier(model_name)
         if allow_patterns:
             snapshot_dir = snapshot_download(
-                model_name, allow_patterns=allow_patterns, **download_kwargs
+                model_name,
+                allow_patterns=allow_patterns,
+                revision=download_revision,
             )
         else:
-            snapshot_dir = snapshot_download(model_name, **download_kwargs)
+            snapshot_dir = snapshot_download(model_name, revision=download_revision)
         after = _model_pull_blob_identifier(model_name)
         if download_revision:
             pin_main_ref(model_name, download_revision)
@@ -2295,6 +2298,9 @@ def _ensure_model_downloaded(
         emit_model_pull_failed(e, model_ref=model_name, source="hf")
 
         if isinstance(e, RepositoryNotFoundError) or "404" in str(e):
+            from rapid_mlx.telemetry.server_start import failed
+
+            failed("download")
             raise RuntimeError(f"Model {model_name!r} not found on HuggingFace") from e
         print(f"\n  Pre-download skipped ({type(e).__name__}); server will retry.")
 
@@ -4261,6 +4267,8 @@ def serve_command(args):
     # generic prefetch resolves repository HEAD and downloads every file,
     # including unreviewed scripts and samples, before that guarded path runs.
     if _owns_v41_product_download:
+        from rapid_mlx.telemetry.server_start import failure_stage
+
         from .models.deepseek_v41_native.artifacts import (
             MTP_ALLOW_PATTERNS,
             MTP_REPO,
@@ -4270,19 +4278,20 @@ def serve_command(args):
             download_target_snapshot,
         )
 
-        _check_disk_space(
-            args.model,
-            force=getattr(args, "force_disk_check", False),
-            revision_override=TARGET_REVISION,
-        )
-        download_target_snapshot()
-        _check_disk_space(
-            MTP_REPO,
-            force=getattr(args, "force_disk_check", False),
-            revision_override=MTP_REVISION,
-            allow_patterns=list(MTP_ALLOW_PATTERNS),
-        )
-        download_mtp_snapshot()
+        with failure_stage("download"):
+            _check_disk_space(
+                args.model,
+                force=getattr(args, "force_disk_check", False),
+                revision_override=TARGET_REVISION,
+            )
+            download_target_snapshot()
+            _check_disk_space(
+                MTP_REPO,
+                force=getattr(args, "force_disk_check", False),
+                revision_override=MTP_REVISION,
+                allow_patterns=list(MTP_ALLOW_PATTERNS),
+            )
+            download_mtp_snapshot()
     elif _owns_pinned_image_download:
         # Preserve the normal first-run disk guard even though the generic
         # downloader is intentionally bypassed. A complete pinned snapshot is
@@ -5720,6 +5729,9 @@ def serve_command(args):
             disk_stream_cache_gb=getattr(args, "disk_stream_cache_gb", 1.0),
         )
     except KVCacheQuantizationUnsupportedError as e:
+        from rapid_mlx.telemetry.server_start import failed
+
+        failed("prepare")
         # The scheduler/MLLM-lane backstop (#78) rejects an explicit
         # quantized-KV request that the CLI-time resolver could not see (a
         # freshly-downloaded model whose config wasn't readable yet surfaces
@@ -5729,6 +5741,9 @@ def serve_command(args):
         print(f"\n  Error: {e}\n")
         sys.exit(2)
     except Exception as e:
+        from rapid_mlx.telemetry.server_start import failed
+
+        failed("prepare")
         from rapid_mlx.telemetry.model_events import emit_model_serve_failed
 
         emit_model_serve_failed(
@@ -14323,6 +14338,26 @@ def _start_v2_lifecycle(command: str | None) -> None:
         return
 
 
+def _capture_start_failures(func: Callable):
+    """Lazy exception guard so importing the CLI needs no telemetry deps."""
+
+    @functools.wraps(func)
+    def wrapped(*args, **kwargs):
+        try:
+            return func(*args, **kwargs)
+        except BaseException:
+            try:
+                from rapid_mlx.telemetry.server_start import fail_current
+
+                fail_current()
+            except BaseException:
+                pass
+            raise
+
+    return wrapped
+
+
+@_capture_start_failures
 def main():
     parser = build_parser()
     _version = _resolve_cli_version()
@@ -14456,6 +14491,15 @@ def main():
 
         consent_runtime.startup(long_lived=getattr(args, "command", None) == "serve")
         _start_v2_lifecycle(getattr(args, "command", None))
+        if getattr(args, "command", None) == "serve":
+            from rapid_mlx.telemetry.server_start import attempted, load_policy
+
+            selected_model = getattr(args, "model", None)
+            policy = load_policy(
+                selected_model,
+                lazy_load=bool(getattr(args, "lazy_load", False)),
+            )
+            attempted(selected_model, load_policy=policy)
 
     # First-run auto-select: ``chat`` / ``run`` invoked with no model arg.
     # Resolve the starter alias HERE — before the alias→path resolution below —
@@ -14715,6 +14759,9 @@ def main():
     # --- END B2 --------------------------------------------------------
 
     if args.command == "serve":
+        from rapid_mlx.telemetry.server_start import set_failure_stage
+
+        set_failure_stage("preflight")
         serve_command(args)
     elif args.command == "bench":
         bench_command(args)

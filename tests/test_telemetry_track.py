@@ -7,6 +7,7 @@ import ast
 import json
 import os
 import shutil
+import signal
 import socket
 import subprocess
 import sys
@@ -38,6 +39,7 @@ from rapid_mlx.telemetry.consent_decision import (
     StoredConsent,
     WriteBack,
 )
+from rapid_mlx.telemetry.consent_runtime import NOTICE_LINE
 
 REAL_UPLOAD_ALLOWED = consent_runtime.upload_allowed
 REAL_READ_PLATFORM_FACTS = common_props.read_platform_facts
@@ -764,18 +766,75 @@ def official_entrypoint_layout(tmp_path_factory):
     hooks_dir.mkdir()
     (hooks_dir / "sitecustomize.py").write_text(
         """
+import os
+import signal
+import sys
+
 from rapid_mlx import cli
+
+if os.environ.get("RAPID_MLX_TEST_PREFLIGHT_EXIT") == "1":
+    from types import SimpleNamespace
+    from rapid_mlx.runtime import video_lane
+
+    class _PinnedVersion(tuple):
+        major = 3
+        minor = 11
+
+    video_lane.sys = SimpleNamespace(
+        version_info=_PinnedVersion((3, 11)), stderr=sys.stderr
+    )
+    video_lane._default_video_runtime_requirements = lambda _model: [
+        "the `rapid-mlx[video]` Python extra"
+    ]
+    video_lane._resolve_ffmpeg = lambda: "/usr/bin/ffmpeg"
 
 def _capture_later_event_and_stop(*_args, **_kwargs):
     from rapid_mlx.telemetry import posthog_sender, track
 
+    if os.environ.get("RAPID_MLX_TEST_READY") == "1":
+        import asyncio
+
+        import uvicorn
+
+        from rapid_mlx._uvicorn import AcceptingConnectionsServer
+
+        async def app(scope, receive, send):
+            if scope["type"] != "lifespan":
+                return
+            while True:
+                message = await receive()
+                if message["type"] == "lifespan.startup":
+                    await send({"type": "lifespan.startup.complete"})
+                elif message["type"] == "lifespan.shutdown":
+                    await send({"type": "lifespan.shutdown.complete"})
+                    return
+
+        async def start_once():
+            instance = None
+
+            def stop_after_bind():
+                instance.should_exit = True
+
+            instance = AcceptingConnectionsServer(
+                uvicorn.Config(app, host="127.0.0.1", port=0, log_level="error"),
+                on_server_accepting=stop_after_bind,
+            )
+            await instance.serve()
+
+        asyncio.run(start_once())
+        posthog_sender.get_sender().flush(5.0)
+        raise SystemExit(0)
+    if os.environ.get("RAPID_MLX_TEST_SIGKILL") == "1":
+        posthog_sender.get_sender().flush(2.0)
+        os.kill(os.getpid(), signal.SIGKILL)
     track.track("active_day", {})
     posthog_sender.get_sender().flush(5.0)
     raise SystemExit(0)
 
-cli._port_preflight_or_die = _capture_later_event_and_stop
-cli._validate_primary_lifecycle_args = _capture_later_event_and_stop
-cli.models_command = _capture_later_event_and_stop
+if os.environ.get("RAPID_MLX_TEST_PREFLIGHT_EXIT") != "1":
+    cli._port_preflight_or_die = _capture_later_event_and_stop
+    cli._validate_primary_lifecycle_args = _capture_later_event_and_stop
+    cli.models_command = _capture_later_event_and_stop
 """.lstrip(),
         encoding="utf-8",
     )
@@ -796,12 +855,52 @@ cli.models_command = _capture_later_event_and_stop
 @pytest.mark.parametrize(
     ("entrypoint", "role_env", "expected_events", "expected_surface"),
     [
-        ("module-server", "watchdog", ["active_day"], "cli"),
-        ("cli-serve", "watchdog", ["active_day"], "cli"),
-        ("module-server", "desktop", ["active_day"], "desktop"),
-        ("cli-serve", "desktop", ["active_day"], "desktop"),
-        ("module-server", "standalone", ["app_opened", "active_day"], "server"),
-        ("cli-serve", "standalone", ["app_opened", "active_day"], "server"),
+        (
+            "module-server",
+            "watchdog",
+            ["server_start_state", "active_day", "server_start_state"],
+            "cli",
+        ),
+        (
+            "cli-serve",
+            "watchdog",
+            ["server_start_state", "active_day", "server_start_state"],
+            "cli",
+        ),
+        (
+            "module-server",
+            "desktop",
+            ["server_start_state", "active_day", "server_start_state"],
+            "desktop",
+        ),
+        (
+            "cli-serve",
+            "desktop",
+            ["server_start_state", "active_day", "server_start_state"],
+            "desktop",
+        ),
+        (
+            "module-server",
+            "standalone",
+            [
+                "app_opened",
+                "server_start_state",
+                "active_day",
+                "server_start_state",
+            ],
+            "server",
+        ),
+        (
+            "cli-serve",
+            "standalone",
+            [
+                "app_opened",
+                "server_start_state",
+                "active_day",
+                "server_start_state",
+            ],
+            "server",
+        ),
         ("other-cli", "standalone", ["app_opened", "active_day"], "cli"),
     ],
 )
@@ -833,7 +932,13 @@ def test_entrypoint_role_surface_matrix(
         HOME=str(home),
         USER="rc",
         PATH=f"{root / 'bin'}{os.pathsep}{os.environ.get('PATH', '')}",
-        PYTHONPATH=os.pathsep.join((str(hooks_dir), str(site_dir))),
+        PYTHONPATH=os.pathsep.join(
+            (
+                str(hooks_dir),
+                str(site_dir),
+                *(path for path in sys.path if path.endswith("site-packages")),
+            )
+        ),
         RAPID_MLX_POSTHOG_URL=f"http://127.0.0.1:{sink.server_port}/batch/",
         RAPID_MLX_DISABLE_VERSION_CHECK="1",
         HF_HUB_OFFLINE="1",
@@ -881,6 +986,197 @@ def test_entrypoint_role_surface_matrix(
         expected_events.count("app_opened")
     )
     assert {item["properties"]["surface"] for item in items} == {expected_surface}
+    if entrypoint != "other-cli":
+        start_items = [item for item in items if item["event"] == "server_start_state"]
+        assert [item["properties"]["state"] for item in start_items] == [
+            "attempted",
+            "failed",
+        ]
+        assert start_items[-1]["properties"]["failure_stage"] == "preflight"
+        assert len({item["properties"]["session_id"] for item in start_items}) == 1
+
+
+@pytest.mark.parametrize(
+    (
+        "mode_env",
+        "model_arg",
+        "returncode",
+        "expected_states",
+        "video_error_expected",
+    ),
+    [
+        (
+            "RAPID_MLX_TEST_PREFLIGHT_EXIT",
+            "ltx-2.3-mlx-q4",
+            2,
+            ["attempted", "failed"],
+            True,
+        ),
+        (
+            "RAPID_MLX_TEST_SIGKILL",
+            None,
+            -signal.SIGKILL,
+            ["attempted"],
+            False,
+        ),
+    ],
+)
+def test_server_start_exit_delivery_and_crash_gap(
+    tmp_path,
+    official_entrypoint_layout,
+    mode_env,
+    model_arg,
+    returncode,
+    expected_states,
+    video_error_expected,
+):
+    root, hooks_dir, site_dir, console = official_entrypoint_layout
+    home = tmp_path / "home"
+    telemetry_dir = home / ".rapid-mlx"
+    telemetry_dir.mkdir(parents=True)
+    (telemetry_dir / "telemetry-consent.yaml").write_text(
+        "consent: true\nprompted_version: 0.15.1\nnotice_revision_seen: 1\n",
+        encoding="utf-8",
+    )
+    fake_model = home / "fake-model"
+    fake_model.mkdir()
+    sink = HTTPServer(("127.0.0.1", 0), _CaptureHandler)
+    sink.bodies = []  # type: ignore[attr-defined]
+    thread = threading.Thread(target=sink.serve_forever, daemon=True)
+    thread.start()
+    env = dict(
+        os.environ,
+        HOME=str(home),
+        USER="rc",
+        PATH=f"{root / 'bin'}{os.pathsep}{os.environ.get('PATH', '')}",
+        PYTHONPATH=os.pathsep.join(
+            (
+                str(hooks_dir),
+                str(site_dir),
+                *(path for path in sys.path if path.endswith("site-packages")),
+            )
+        ),
+        RAPID_MLX_POSTHOG_URL=f"http://127.0.0.1:{sink.server_port}/batch/",
+        RAPID_MLX_DISABLE_VERSION_CHECK="1",
+        HF_HUB_OFFLINE="1",
+        TRANSFORMERS_OFFLINE="1",
+        **{mode_env: "1"},
+    )
+    for name in (*state.CI_ENV_VARS, state.ENV_VAR, state.DO_NOT_TRACK_ENV):
+        env.pop(name, None)
+    try:
+        selected_model = model_arg or str(fake_model)
+        proc = subprocess.run(
+            [str(console), "serve", selected_model, "--port", "0"],
+            cwd=home,
+            env=env,
+            capture_output=True,
+            text=True,
+            timeout=30,
+            check=False,
+        )
+    finally:
+        sink.shutdown()
+        thread.join(timeout=2.0)
+        sink.server_close()
+
+    assert proc.returncode == returncode
+    # This test owns consent-before-capture and terminal delivery. Alias and
+    # dependency diagnostics belong to other modules, so pin only their stable
+    # public seams instead of byte-comparing their complete output.
+    assert NOTICE_LINE in proc.stderr.splitlines()
+    video_error_prefix = "  Error: video generation requires"
+    assert (
+        any(line.startswith(video_error_prefix) for line in proc.stderr.splitlines())
+        is video_error_expected
+    )
+    items = [
+        item
+        for body in sink.bodies  # type: ignore[attr-defined]
+        for item in json.loads(body)["batch"]
+        if item["event"] == "server_start_state"
+    ]
+    assert [item["properties"]["state"] for item in items] == expected_states
+    if expected_states[-1] == "failed":
+        assert items[-1]["properties"]["failure_stage"] == "preflight"
+
+
+@pytest.mark.parametrize(
+    ("extra_args", "expected_policy", "disabled"),
+    [([], "eager", False), (["--lazy-load"], "lazy", False), ([], None, True)],
+)
+def test_server_start_ready_wire_order_and_opt_out(
+    tmp_path,
+    official_entrypoint_layout,
+    extra_args,
+    expected_policy,
+    disabled,
+):
+    root, hooks_dir, site_dir, console = official_entrypoint_layout
+    home = tmp_path / "home"
+    telemetry_dir = home / ".rapid-mlx"
+    telemetry_dir.mkdir(parents=True)
+    (telemetry_dir / "telemetry-consent.yaml").write_text(
+        "consent: true\nprompted_version: 0.15.1\nnotice_revision_seen: 1\n",
+        encoding="utf-8",
+    )
+    sink = HTTPServer(("127.0.0.1", 0), _CaptureHandler)
+    sink.bodies = []  # type: ignore[attr-defined]
+    thread = threading.Thread(target=sink.serve_forever, daemon=True)
+    thread.start()
+    env = dict(
+        os.environ,
+        HOME=str(home),
+        USER="rc",
+        PATH=f"{root / 'bin'}{os.pathsep}{os.environ.get('PATH', '')}",
+        PYTHONPATH=os.pathsep.join(
+            (
+                str(hooks_dir),
+                str(site_dir),
+                *(path for path in sys.path if path.endswith("site-packages")),
+            )
+        ),
+        RAPID_MLX_POSTHOG_URL=f"http://127.0.0.1:{sink.server_port}/batch/",
+        RAPID_MLX_DISABLE_VERSION_CHECK="1",
+        RAPID_MLX_TEST_READY="1",
+        HF_HUB_OFFLINE="1",
+        TRANSFORMERS_OFFLINE="1",
+    )
+    for name in (*state.CI_ENV_VARS, state.ENV_VAR, state.DO_NOT_TRACK_ENV):
+        env.pop(name, None)
+    if disabled:
+        env[state.ENV_VAR] = "0"
+        env[state.DO_NOT_TRACK_ENV] = "1"
+    try:
+        proc = subprocess.run(
+            [str(console), "serve", "qwen3.5-4b-4bit", "--port", "0", *extra_args],
+            cwd=home,
+            env=env,
+            capture_output=True,
+            text=True,
+            timeout=30,
+            check=False,
+        )
+    finally:
+        sink.shutdown()
+        thread.join(timeout=2.0)
+        sink.server_close()
+
+    assert proc.returncode == 0
+    items = [
+        item
+        for body in sink.bodies  # type: ignore[attr-defined]
+        for item in json.loads(body)["batch"]
+        if item["event"] == "server_start_state"
+    ]
+    if disabled:
+        assert items == []
+        return
+    assert [item["properties"]["state"] for item in items] == ["attempted", "ready"]
+    assert {item["properties"]["model_type"] for item in items} == {"llm"}
+    assert {item["properties"]["load_policy"] for item in items} == {expected_policy}
+    assert len({item["properties"]["session_id"] for item in items}) == 1
+    assert all("failure_stage" not in item["properties"] for item in items)
 
 
 def test_platform_and_cohort_stamp_cached_within_utc_day(monkeypatch):
@@ -1109,6 +1405,7 @@ def test_server_module_entrypoint_starts_shared_v2_lifecycle(monkeypatch):
         pass
 
     calls: list[str] = []
+    sender = inject_sender(monkeypatch)
     with socket.socket() as probe:
         probe.bind(("127.0.0.1", 0))
         port = probe.getsockname()[1]
@@ -1125,6 +1422,10 @@ def test_server_module_entrypoint_starts_shared_v2_lifecycle(monkeypatch):
     with pytest.raises(StopAfterLifecycleError):
         server_module.main()
     assert calls == ["server"]
+    assert [item["properties"]["state"] for item in sender.items] == [
+        "attempted",
+        "failed",
+    ]
 
 
 def test_session_transport_guard_assertion_rejects_recorded_post(

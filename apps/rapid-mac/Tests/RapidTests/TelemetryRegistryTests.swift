@@ -35,6 +35,7 @@ struct TelemetryRegistryTests {
         #expect(registry.registryVersion == 1)
         for name in [
             "app_opened", "active_day", "model_pulled", "model_pull_failed",
+            "server_start_state",
             "model_served", "model_serve_failed", "capability_rejected",
             "inference_bucket_reached", "agent_configured",
             "agent_configure_failed", "telemetry_opted_out",
@@ -58,6 +59,45 @@ struct TelemetryRegistryTests {
         #expect(TelemetryRegistry.decode(data) != nil)
     }
 
+    private func registryData(onlyWhen: Any) throws -> Data {
+        let url = try #require(TelemetryRegistry.resourceURL())
+        let data = try Data(contentsOf: url)
+        var root = try #require(
+            JSONSerialization.jsonObject(with: data) as? [String: Any]
+        )
+        var events = try #require(root["events"] as? [String: Any])
+        var event = try #require(events["server_start_state"] as? [String: Any])
+        var props = try #require(event["props"] as? [String: Any])
+        var failureStage = try #require(props["failure_stage"] as? [String: Any])
+        failureStage["only_when"] = onlyWhen
+        props["failure_stage"] = failureStage
+        event["props"] = props
+        events["server_start_state"] = event
+        root["events"] = events
+        return try JSONSerialization.data(withJSONObject: root)
+    }
+
+    @Test("an empty only_when is rejected even when the conditional property is absent")
+    func rejectsEmptyOnlyWhenEagerly() throws {
+        #expect(TelemetryRegistry.decode(try registryData(
+            onlyWhen: [String: [String]]()
+        )) == nil)
+    }
+
+    @Test("an only_when controller must be a declared property of its event")
+    func rejectsUnknownOnlyWhenController() throws {
+        #expect(TelemetryRegistry.decode(try registryData(
+            onlyWhen: ["undeclared_controller": ["failed"]]
+        )) == nil)
+    }
+
+    @Test("every only_when value must belong to the controller enum")
+    func rejectsUnknownOnlyWhenValue() throws {
+        #expect(TelemetryRegistry.decode(try registryData(
+            onlyWhen: ["state": ["not-a-server-start-state"]]
+        )) == nil)
+    }
+
     // MARK: - Strictness
 
     @Test("a well-formed event passes through unchanged")
@@ -65,6 +105,34 @@ struct TelemetryRegistryTests {
         let out = try #require(registry.validate("model_served", validServe))
         #expect(out.count == 4)
         #expect(out["quant"] == .string("4bit"))
+    }
+
+    @Test("server start state accepts its closed contract and rejects an unknown state")
+    func validatesServerStartState() throws {
+        let out = try #require(registry.validate(
+            "server_start_state",
+            [
+                "state": .string("failed"),
+                "model_type": .string("llm"),
+                "load_policy": .string("eager"),
+                "failure_stage": .string("bind")
+            ]
+        ))
+        #expect(out["failure_stage"] == .string("bind"))
+        #expect(registry.validate(
+            "server_start_state",
+            ["state": .string("exploded")]
+        ) == nil)
+        for state in ["attempted", "ready"] {
+            let filtered = try #require(registry.validate(
+                "server_start_state",
+                [
+                    "state": .string(state),
+                    "failure_stage": .string("bind")
+                ]
+            ))
+            #expect(filtered == ["state": .string(state)])
+        }
     }
 
     @Test("an unknown event name is dropped")

@@ -2262,7 +2262,11 @@ def run_dflash_server(
         return m, p, rt
 
     logger.info("DFlash: loading main model via mlx-vlm: %s", main_model_repo)
-    model, processor, runtime = _dflash_executor.submit(_load_all).result()
+    from rapid_mlx.telemetry.server_start import failure_stage
+
+    # Both target weights and the drafter runtime materialize at this boundary.
+    with failure_stage("prepare"):
+        model, processor, runtime = _dflash_executor.submit(_load_all).result()
 
     app = _build_app(
         model=model,
