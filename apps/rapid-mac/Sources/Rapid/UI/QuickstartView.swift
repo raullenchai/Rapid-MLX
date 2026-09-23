@@ -1436,6 +1436,7 @@ Open the picker any time to switch models.
 /// ``QuickstartCoordinator`` reports the surface should show.
 struct QuickstartView: View {
     @Environment(SettingsRouter.self) private var settingsRouter
+    @AppStorage(ContentView.showLogsKey) private var showLogs = false
 
     /// The ONLY mechanism that opens this app's Settings. It declares a real
     /// ``Window("Settings", id: "settings")`` and no SwiftUI ``Settings``
@@ -4395,16 +4396,27 @@ struct QuickstartView: View {
             message: message
         )
         let diagnosis = FailureDiagnoser.diagnosis(for: kind)
+        let startupFailure: SidecarStartupFailure? = {
+            guard case .crashed(let alias, _) = server.state,
+                  alias == coordinator.selection.alias else { return nil }
+            return server.startupFailure
+        }()
 
         OnboardingOutcomeBlock(
             glyph: Self.failureGlyph(for: kind),
             tone: kind.severity == .notice ? .amber : .error,
             kicker: Self.failureKicker(for: kind, origin: coordinator.step),
             title: Self.failureTitle(for: kind),
-            message: diagnosis.message
+            message: startupFailure?.message ?? diagnosis.message
         ) {
             OnboardingActionLane {
-                if let action = diagnosis.action {
+                if startupFailure != nil {
+                    Button("Open Startup Log") {
+                        showLogs = true
+                    }
+                    .buttonStyle(.onboardingPrimary)
+                    .accessibilityIdentifier("Quickstart.OpenStartupLog")
+                } else if let action = diagnosis.action {
                     Button(action.title) {
                         handleQuickstartFailureAction(action)
                     }
@@ -4897,10 +4909,17 @@ struct QuickstartView: View {
     private func enterRecovery(
         kind: FailureDiagnosis.Kind,
         message: String,
-        origin: QuickstartCoordinator.FailureOrigin
+        origin: QuickstartCoordinator.FailureOrigin,
+        startupFailure: SidecarStartupFailure? = nil
     ) {
         coordinator.enterFailed(message: message, origin: origin)
-        VoiceOverAnnouncer.announce(Self.recoveryAnnouncement(for: kind))
+        if let startupFailure {
+            VoiceOverAnnouncer.announce(
+                "Quickstart didn't finish. \(startupFailure.message) Action: Open Startup Log."
+            )
+        } else {
+            VoiceOverAnnouncer.announce(Self.recoveryAnnouncement(for: kind))
+        }
     }
 
     private func handleServerStateChange() {
@@ -4957,8 +4976,10 @@ struct QuickstartView: View {
             // sending the user back through the download.
             enterRecovery(
                 kind: FailureDiagnoser.modelLoadFailureKind(raw: message),
-                message: QuickstartView.friendlyFailureMessage(raw: message),
-                origin: .start
+                message: server.startupFailure?.message
+                    ?? QuickstartView.friendlyFailureMessage(raw: message),
+                origin: .start,
+                startupFailure: server.startupFailure
             )
         }
     }

@@ -634,6 +634,10 @@ final class ServerManager {
     /// Bounded to `logBufferCapacity` entries.
     private(set) var logLines: [String] = []
 
+    /// Structured failure accepted from this child's stderr during startup.
+    /// The UI uses only its closed message/action mapping, never raw stderr.
+    private(set) var startupFailure: SidecarStartupFailure?
+
     /// Most recent in-process residency load rejections, keyed by the alias
     /// that failed. Per-alias rather than a single global slot so two
     /// concurrent loads of DIFFERENT models cannot clobber each other across
@@ -1602,12 +1606,20 @@ final class ServerManager {
     internal func _testSimulateChildExit(
         expectedStop: Bool,
         status: Int32,
-        reason: Process.TerminationReason
+        reason: Process.TerminationReason,
+        startupFailure: SidecarStartupFailure? = nil,
+        readyObserved: Bool = false
     ) {
         let stubChild = ProcessGroupChild.testStub()
         self.child = stubChild
         self.expectedStop = expectedStop
-        handleChildExit(process: stubChild, status: status, reason: reason)
+        handleChildExit(
+            process: stubChild,
+            status: status,
+            reason: reason,
+            startupFailure: startupFailure,
+            readyObserved: readyObserved
+        )
     }
 
     // MARK: - Persisted "last served" alias (v0.5.3 auto-restart)
@@ -2707,6 +2719,7 @@ final class ServerManager {
         // Clear the log tail from any previous run so the user only
         // sees output relevant to the current process.
         logLines.removeAll(keepingCapacity: true)
+        startupFailure = nil
         downloadProgress.reset()
         // Stop any leftover byte monitor from a previous .starting
         // cycle before kicking a new one — defensive in case the
@@ -2942,10 +2955,15 @@ final class ServerManager {
         // non-blocking; each is constructed here while the handle is live.
         let stdoutDrainer = PipeDrainer(stdoutPipe.fileHandleForReading)
         let stderrDrainer = PipeDrainer(stderrPipe.fileHandleForReading)
-        let makeChunkHandler: (PipeDrainer) -> @Sendable (FileHandle) -> Void = { drainer in
+        let startupFailureCapture = SidecarStartupFailureCapture()
+        let makeChunkHandler: (
+            PipeDrainer,
+            SidecarStartupFailureCapture.Source
+        ) -> @Sendable (FileHandle) -> Void = { drainer, source in
             { [weak self] _ in
                 let data = drainer.drain().data
                 guard !data.isEmpty else { return }
+                startupFailureCapture.ingest(data, source: source)
                 guard let text = String(data: data, encoding: .utf8) else { return }
                 // rapid-mlx's HuggingFace tqdm output uses '\r' to refresh
                 // in place when stderr is not a TTY. Treat both as
@@ -2960,8 +2978,14 @@ final class ServerManager {
                 }
             }
         }
-        stdoutPipe.fileHandleForReading.readabilityHandler = makeChunkHandler(stdoutDrainer)
-        stderrPipe.fileHandleForReading.readabilityHandler = makeChunkHandler(stderrDrainer)
+        stdoutPipe.fileHandleForReading.readabilityHandler = makeChunkHandler(
+            stdoutDrainer,
+            .sidecarStdout
+        )
+        stderrPipe.fileHandleForReading.readabilityHandler = makeChunkHandler(
+            stderrDrainer,
+            .sidecarStderr
+        )
 
         // Termination handler fires on a background queue — must hop
         // back to MainActor before touching state.
@@ -3019,13 +3043,27 @@ final class ServerManager {
             ) { [weak self] proc in
                 let status = proc.terminationStatus
                 let reason = proc.terminationReason
+                let stderrTail = stderrDrainer.drain().data
+                startupFailureCapture.ingest(stderrTail, source: .sidecarStderr)
+                let startupSnapshot = startupFailureCapture.snapshotAtTermination()
+                let tailLines = String(data: stderrTail, encoding: .utf8)?
+                    .split(whereSeparator: { $0 == "\r" || $0 == "\n" })
+                    .map(String.init)
+                    .filter { !$0.isEmpty } ?? []
                 Task { @MainActor [weak self] in
                     guard let self else { return }
                     guard self.child === proc else {
                         // Stale termination from a replaced child — drop.
                         return
                     }
-                    self.handleChildExit(process: proc, status: status, reason: reason)
+                    self.appendLogLines(tailLines)
+                    self.handleChildExit(
+                        process: proc,
+                        status: status,
+                        reason: reason,
+                        startupFailure: startupSnapshot.failure,
+                        readyObserved: startupSnapshot.readyObserved
+                    )
                 }
             }
         } catch {
@@ -3128,7 +3166,7 @@ final class ServerManager {
             if tick > lastProgressAt {
                 lastProgressAt = tick
             }
-            if await probeHealth() {
+            if await probeHealth(startupFailureCapture: startupFailureCapture) {
                 // PR #26 codex meta-review finding 4 (P2): re-check
                 // child identity AFTER the await. ``start()`` is
                 // main-actor reentrant across the ``probeHealth``
@@ -3715,7 +3753,9 @@ final class ServerManager {
     private func handleChildExit(
         process: ProcessGroupChild,
         status: Int32,
-        reason: Process.TerminationReason
+        reason: Process.TerminationReason,
+        startupFailure capturedStartupFailure: SidecarStartupFailure? = nil,
+        readyObserved: Bool = false
     ) {
         let alias: String
         switch state {
@@ -3774,7 +3814,7 @@ final class ServerManager {
         // ``shutdownSync()`` / ``dismissTerminalState()``) so passing
         // ``reachedReadyThisCycle = false`` here just clears
         // ``readyAt`` without touching ``autoRespawnAttempts``.
-        let reachedReadyThisCycle = spawnCycleReachedReady
+        let reachedReadyThisCycle = spawnCycleReachedReady || readyObserved
         applyChildExitBudgetReset(reachedReadyThisCycle: !wasExpected && reachedReadyThisCycle)
         // #20: the child is gone (clean exit or crash). The next
         // launch must not pick up a record pointing at this PID,
@@ -3804,20 +3844,25 @@ final class ServerManager {
             ProcessGroupChild.reapProcessGroupInBackground(processGroupID: process.processGroupID)
         }
         let message: String
-        switch reason {
-        case .exit:
-            message = status == 0
-                ? "The model stopped on its own (no restart was requested)."
-                : "The model stopped unexpectedly."
-        case .uncaughtSignal:
-            // SIGKILL (9) on a model process is almost always the macOS
-            // memory pressure killer — surface an OOM-aware, actionable
-            // message instead of a raw signal number.
-            message = status == 9
-                ? "The model ran out of memory and was stopped. Try a smaller model, or close other apps to free up memory."
-                : "The model stopped unexpectedly."
-        @unknown default:
-            message = "The model stopped unexpectedly."
+        if !reachedReadyThisCycle, let capturedStartupFailure {
+            startupFailure = capturedStartupFailure
+            message = capturedStartupFailure.message
+        } else {
+            switch reason {
+            case .exit:
+                message = status == 0
+                    ? "The model stopped on its own (no restart was requested)."
+                    : "The model stopped unexpectedly."
+            case .uncaughtSignal:
+                // SIGKILL (9) on a model process is almost always the macOS
+                // memory pressure killer — surface an OOM-aware, actionable
+                // message instead of a raw signal number.
+                message = status == 9
+                    ? "The model ran out of memory and was stopped. Try a smaller model, or close other apps to free up memory."
+                    : "The model stopped unexpectedly."
+            @unknown default:
+                message = "The model stopped unexpectedly."
+            }
         }
         state = .crashed(alias: alias, message: message)
         // Issue #270: silent idle-state crash. The user closed every
@@ -4143,18 +4188,33 @@ final class ServerManager {
     /// client and v0.2 has no binary-size constraint to justify
     /// reinventing it. A 1.5 s per-request timeout keeps the poll
     /// loop responsive.
-    private func probeHealth() async -> Bool {
+    private func probeHealth(
+        startupFailureCapture: SidecarStartupFailureCapture? = nil
+    ) async -> Bool {
         guard let url = URL(string: "http://\(host):\(activePort)/healthz") else { return false }
         var request = URLRequest(url: url)
         request.httpMethod = "GET"
         request.applyRapidClientHeader()
         request.timeoutInterval = 1.5
-        do {
-            let (_, response) = try await healthSession.data(for: request)
-            guard let http = response as? HTTPURLResponse else { return false }
-            return (200..<300).contains(http.statusCode)
-        } catch {
-            return false
+        return await withCheckedContinuation { continuation in
+            healthSession.dataTask(with: request) { _, response, error in
+                let statusCode = error == nil
+                    ? (response as? HTTPURLResponse)?.statusCode
+                    : nil
+                let succeeded: Bool
+                if let startupFailureCapture {
+                    // This executes in URLSession's completion before the
+                    // awaiting MainActor continuation or a child-exit task can
+                    // run. The gate records readiness and seals stderr under
+                    // one lock shared with the termination snapshot.
+                    succeeded = startupFailureCapture.recordHealthResponse(
+                        statusCode: statusCode
+                    )
+                } else {
+                    succeeded = statusCode.map { (200..<300).contains($0) } ?? false
+                }
+                continuation.resume(returning: succeeded)
+            }.resume()
         }
     }
 

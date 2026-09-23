@@ -931,6 +931,7 @@ struct ContentView: View {
             sizeText: sizeText(for: alias),
             progress: progressSnapshot,
             failure: readinessFailure,
+            startupFailure: server.startupFailure,
             downloadInFlight: downloads.isDownloading(alias)
         )
     }
@@ -1094,6 +1095,8 @@ struct ContentView: View {
         case .restart(let target):
             chat.clearStaleErrorBanner()
             restartModel(target)
+        case .openStartupLog:
+            showLogs = true
         case .openModelManagement:
             settingsRouter.route(.openModelManagement) {
                 openWindow(id: "settings")

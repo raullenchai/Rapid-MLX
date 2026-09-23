@@ -100,6 +100,7 @@ enum ModelReadiness: Equatable {
         case start(alias: String)
         case retry(alias: String)
         case restart(alias: String)
+        case openStartupLog
         case openModelManagement
 
         var title: String {
@@ -109,6 +110,7 @@ enum ModelReadiness: Equatable {
             case .start:            return "Start"
             case .retry:            return "Retry"
             case .restart:          return "Restart"
+            case .openStartupLog:   return "Open Startup Log"
             case .openModelManagement: return "Open Model Management"
             }
         }
@@ -120,6 +122,7 @@ enum ModelReadiness: Equatable {
             case .start:            return "play.fill"
             case .retry:            return "arrow.clockwise"
             case .restart:          return "arrow.clockwise"
+            case .openStartupLog:   return "terminal"
             case .openModelManagement: return "square.stack.3d.up"
             }
         }
@@ -132,7 +135,7 @@ enum ModelReadiness: Equatable {
         /// The alias this action operates on, when it has one.
         var alias: String? {
             switch self {
-            case .chooseModel, .openModelManagement:
+            case .chooseModel, .openStartupLog, .openModelManagement:
                 return nil
             case .download(let a), .start(let a), .retry(let a), .restart(let a):
                 return a
@@ -246,6 +249,7 @@ enum ModelReadiness: Equatable {
         sizeText: String? = nil,
         progress: ProgressSnapshot? = nil,
         failure: Failure? = nil,
+        startupFailure: SidecarStartupFailure? = nil,
         // True while a download-only job (the ``download`` action, not a
         // serve) is fetching this alias. Lets the banner show progress for a
         // "Download" tap even though the server stays ``.idle`` — the serve
@@ -309,6 +313,13 @@ enum ModelReadiness: Equatable {
         if case .crashed(let crashed, let message) = serverState {
             let name = displayable(crashed)
             if failureApplies(failedAlias: name, selectedAlias: selected) {
+                if let startupFailure {
+                    return .failed(
+                        alias: name,
+                        message: startupFailure.message,
+                        action: .openStartupLog
+                    )
+                }
                 return .failed(
                     alias: name,
                     message: crashMessage(raw: message, alias: name),

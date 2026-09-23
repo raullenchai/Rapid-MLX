@@ -470,12 +470,14 @@ def require_mlx_vlm_or_exit(model_name: str, *, text_diffusion: bool = False) ->
             + _vision_install_hint(),
             file=sys.stderr,
         )
+        marker_reason = "runtime_incompatible"
     elif status is VisionRuntimeStatus.BROKEN:
         print(
             f"error: model {model_name!r} is a vision/multimodal alias, but "
             f"the vision runtime cannot load.\n" + _vlm_broken_install_hint(detail),
             file=sys.stderr,
         )
+        marker_reason = "runtime_broken"
     elif text_diffusion:
         print(
             f"error: model {model_name!r} is a text-diffusion alias and runs "
@@ -484,6 +486,7 @@ def require_mlx_vlm_or_exit(model_name: str, *, text_diffusion: bool = False) ->
             f"extra).\n" + VLM_EXTRA_INSTALL_HINT,
             file=sys.stderr,
         )
+        marker_reason = "runtime_extra_missing"
     else:
         print(
             f"error: model {model_name!r} is a vision/multimodal alias and "
@@ -494,6 +497,11 @@ def require_mlx_vlm_or_exit(model_name: str, *, text_diffusion: bool = False) ->
             "from the base wheel (no mlx-vlm, drops image/vision input).",
             file=sys.stderr,
         )
+        marker_reason = "runtime_extra_missing"
+    print(
+        f"RAPID-MLX-STARTUP-FAILURE: {marker_reason} extra=vision",
+        file=sys.stderr,
+    )
     sys.exit(2)
 
 
