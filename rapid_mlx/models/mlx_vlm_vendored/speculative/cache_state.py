@@ -7,6 +7,14 @@ import mlx.core as mx
 # VENDOR-DEVIATION(redirect): vendored cache lives at the package root.
 from ..cache import BatchRotatingKVCache, CacheList, RotatingKVCache
 
+# VENDOR-DEVIATION(dual-namespace): model implementations remain pinned
+# upstream during step 3b and their make_cache() methods return these classes.
+from mlx_vlm.models.cache import (
+    BatchRotatingKVCache as UpstreamBatchRotatingKVCache,
+)
+from mlx_vlm.models.cache import CacheList as UpstreamCacheList
+from mlx_vlm.models.cache import RotatingKVCache as UpstreamRotatingKVCache
+
 
 class _RotatingCacheTransaction:
     """Record incoming KV while the serving cache keeps its native layout."""
@@ -33,7 +41,11 @@ class _RotatingCacheTransaction:
         self.updates.clear()
 
     def validate(self, lengths):
-        if len(set(lengths)) > 1 and not isinstance(self.cache, BatchRotatingKVCache):
+        # VENDOR-DEVIATION(dual-namespace): transactions may wrap caches
+        # returned by either the vendored fallback or a pinned model.
+        if len(set(lengths)) > 1 and not isinstance(
+            self.cache, (BatchRotatingKVCache, UpstreamBatchRotatingKVCache)
+        ):
             raise RuntimeError("This rotating cache requires uniform acceptance.")
 
     def commit(self, lengths, length):
@@ -70,7 +82,9 @@ def iter_leaf_caches(caches: Iterable[Any]):
     for cache in caches:
         if cache is None:
             continue
-        if isinstance(cache, CacheList):
+        # VENDOR-DEVIATION(dual-namespace): pinned model-owned cache trees use
+        # the upstream container while fallback trees use the vendored one.
+        if isinstance(cache, (CacheList, UpstreamCacheList)):
             yield from iter_leaf_caches(cache.caches)
         else:
             yield cache
@@ -164,7 +178,18 @@ def start_speculative_cache(
     transaction = SpeculativeCacheTransaction(entries, positions, leaves, length)
     try:
         for cache in leaves:
-            if isinstance(cache, (RotatingKVCache, BatchRotatingKVCache)):
+            # VENDOR-DEVIATION(dual-namespace): a pinned model's make_cache()
+            # returns upstream rotating caches, which need the same replay
+            # transaction as vendored fallbacks after a partial acceptance.
+            if isinstance(
+                cache,
+                (
+                    RotatingKVCache,
+                    BatchRotatingKVCache,
+                    UpstreamRotatingKVCache,
+                    UpstreamBatchRotatingKVCache,
+                ),
+            ):
                 # A block append may evict or rotate the serving window. Merely
                 # decrementing its cursor exposes rejected keys on the next
                 # decode. Retain the bounded window and replay accepted KV only.

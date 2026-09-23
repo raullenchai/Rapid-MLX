@@ -6,6 +6,11 @@ import mlx.nn as nn
 
 # VENDOR-DEVIATION(redirect): vendored cache lives at the package root.
 from .. import cache
+
+# VENDOR-DEVIATION(dual-namespace): target model implementations remain
+# pinned during step 3b, so model.make_cache() can return upstream classes.
+from mlx_vlm.models import cache as upstream_cache
+
 from ..models.linear import native_batch_linear
 
 # VENDOR-DEVIATION(redirect): the 2k-line quantized verifier stays on
@@ -67,8 +72,19 @@ def _mtp_shared_kv_from_prompt_cache(
         if keys is None or values is None:
             continue
         if (
-            isinstance(layer_cache, cache.RotatingKVCache)
-            and not isinstance(layer_cache, cache.BufferedRotatingKVCache)
+            # VENDOR-DEVIATION(dual-namespace): preserve temporal ordering for
+            # rotating caches produced by either cache namespace.
+            isinstance(
+                layer_cache,
+                (cache.RotatingKVCache, upstream_cache.RotatingKVCache),
+            )
+            and not isinstance(
+                layer_cache,
+                (
+                    cache.BufferedRotatingKVCache,
+                    upstream_cache.BufferedRotatingKVCache,
+                ),
+            )
             and hasattr(layer_cache, "_temporal_order")
         ):
             keys = layer_cache._temporal_order(keys)
@@ -596,15 +612,34 @@ def _buffer_mtp_target_cache(
     buffer_size = max(32, min(128, max(configured, requested) * 8))
 
     def buffer_entry(entry):
-        if isinstance(entry, cache.CacheList):
+        # VENDOR-DEVIATION(dual-namespace): recurse through both model-owned
+        # upstream trees and vendored fallback trees.
+        if isinstance(entry, (cache.CacheList, upstream_cache.CacheList)):
             entry.caches = tuple(buffer_entry(child) for child in entry.caches)
             return entry
-        if isinstance(entry, cache.BufferedRotatingKVCache):
+        if isinstance(
+            entry,
+            (
+                cache.BufferedRotatingKVCache,
+                upstream_cache.BufferedRotatingKVCache,
+            ),
+        ):
             entry.buffer_size = max(entry.buffer_size, buffer_size)
         elif (
-            isinstance(entry, cache.RotatingKVCache) and getattr(entry, "keep", 0) == 0
+            isinstance(
+                entry,
+                (cache.RotatingKVCache, upstream_cache.RotatingKVCache),
+            )
+            and getattr(entry, "keep", 0) == 0
         ):
-            return cache.BufferedRotatingKVCache.from_cache(
+            # Keep the replacement in the producer's namespace; downstream
+            # model code can use exact-type dispatch for its cache classes.
+            namespace = (
+                upstream_cache
+                if isinstance(entry, upstream_cache.RotatingKVCache)
+                else cache
+            )
+            return namespace.BufferedRotatingKVCache.from_cache(
                 entry, buffer_size=buffer_size
             )
         return entry

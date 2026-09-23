@@ -23,15 +23,23 @@ emitted with a marker the documented filter cannot match — they always
 fail.
 
 Behavioral guarantee: the vendored coordinator binds the vendored cache
-and model foundations; the two deliberately-pinned dependencies (the
-quantized verifier and the eagle3 backend) resolve upstream and are
-pure-array functions, so the cross-namespace calls are identity-safe.
+and model foundations while recognizing cache trees returned by still-pinned
+model implementations in the upstream namespace. The two deliberately-pinned
+dependencies (the quantized verifier and the eagle3 backend) resolve upstream;
+their permitted cross-namespace calls are identity-safe.
 """
 
 import inspect
 from types import SimpleNamespace
 
 import pytest
+
+# This file is part of the explicit Apple-Silicon lane, but the ordinary Linux
+# shard discovers every test module before marker deselection.  Skip before any
+# vendored import can transitively import ``mlx.core``.
+pytest.importorskip("mlx")
+pytest.importorskip("mlx_vlm")
+pytestmark = pytest.mark.requires_mlx
 
 import rapid_mlx.models.mlx_vlm_vendored.cache as vendored_cache
 import rapid_mlx.models.mlx_vlm_vendored.fp8 as vendored_fp8
@@ -46,15 +54,103 @@ import rapid_mlx.models.mlx_vlm_vendored.speculative.dflash as vs_dflash
 import rapid_mlx.models.mlx_vlm_vendored.speculative.mtp as vs_mtp
 import rapid_mlx.models.mlx_vlm_vendored.speculative.utils as vs_utils
 
-pytest.importorskip("mlx_vlm")
-
-
 # Documented behavioral hunks, specified EXACTLY: applying each
 # (vendored → upstream) replacement to the vendored body must reproduce
 # the pinned upstream body byte-for-byte; any other edit inside the
 # function diverges. Each hunk is inventoried in the package
 # ``__init__.py`` and behavior-tested in this module.
 _HUNK_SPECS = {
+    "_RotatingCacheTransaction": (
+        (
+            "        # VENDOR-DEVIATION(dual-namespace): transactions may wrap caches\n"
+            "        # returned by either the vendored fallback or a pinned model.\n"
+            "        if len(set(lengths)) > 1 and not isinstance(\n"
+            "            self.cache, (BatchRotatingKVCache, UpstreamBatchRotatingKVCache)\n"
+            "        ):\n",
+            "        if len(set(lengths)) > 1 and not isinstance(self.cache, BatchRotatingKVCache):\n",
+        ),
+    ),
+    "iter_leaf_caches": (
+        (
+            "        # VENDOR-DEVIATION(dual-namespace): pinned model-owned cache trees use\n"
+            "        # the upstream container while fallback trees use the vendored one.\n"
+            "        if isinstance(cache, (CacheList, UpstreamCacheList)):\n",
+            "        if isinstance(cache, CacheList):\n",
+        ),
+    ),
+    "start_speculative_cache": (
+        (
+            "            # VENDOR-DEVIATION(dual-namespace): a pinned model's make_cache()\n"
+            "            # returns upstream rotating caches, which need the same replay\n"
+            "            # transaction as vendored fallbacks after a partial acceptance.\n"
+            "            if isinstance(\n"
+            "                cache,\n"
+            "                (\n"
+            "                    RotatingKVCache,\n"
+            "                    BatchRotatingKVCache,\n"
+            "                    UpstreamRotatingKVCache,\n"
+            "                    UpstreamBatchRotatingKVCache,\n"
+            "                ),\n"
+            "            ):\n",
+            "            if isinstance(cache, (RotatingKVCache, BatchRotatingKVCache)):\n",
+        ),
+    ),
+    "_mtp_shared_kv_from_prompt_cache": (
+        (
+            "            # VENDOR-DEVIATION(dual-namespace): preserve temporal ordering for\n"
+            "            # rotating caches produced by either cache namespace.\n"
+            "            isinstance(\n"
+            "                layer_cache,\n"
+            "                (cache.RotatingKVCache, upstream_cache.RotatingKVCache),\n"
+            "            )\n"
+            "            and not isinstance(\n"
+            "                layer_cache,\n"
+            "                (\n"
+            "                    cache.BufferedRotatingKVCache,\n"
+            "                    upstream_cache.BufferedRotatingKVCache,\n"
+            "                ),\n"
+            "            )\n",
+            "            isinstance(layer_cache, cache.RotatingKVCache)\n"
+            "            and not isinstance(layer_cache, cache.BufferedRotatingKVCache)\n",
+        ),
+    ),
+    "_buffer_mtp_target_cache": (
+        (
+            "        # VENDOR-DEVIATION(dual-namespace): recurse through both model-owned\n"
+            "        # upstream trees and vendored fallback trees.\n"
+            "        if isinstance(entry, (cache.CacheList, upstream_cache.CacheList)):\n",
+            "        if isinstance(entry, cache.CacheList):\n",
+        ),
+        (
+            "        if isinstance(\n"
+            "            entry,\n"
+            "            (\n"
+            "                cache.BufferedRotatingKVCache,\n"
+            "                upstream_cache.BufferedRotatingKVCache,\n"
+            "            ),\n"
+            "        ):\n",
+            "        if isinstance(entry, cache.BufferedRotatingKVCache):\n",
+        ),
+        (
+            "            isinstance(\n"
+            "                entry,\n"
+            "                (cache.RotatingKVCache, upstream_cache.RotatingKVCache),\n"
+            "            )\n"
+            '            and getattr(entry, "keep", 0) == 0\n',
+            '            isinstance(entry, cache.RotatingKVCache) and getattr(entry, "keep", 0) == 0\n',
+        ),
+        (
+            "            # Keep the replacement in the producer's namespace; downstream\n"
+            "            # model code can use exact-type dispatch for its cache classes.\n"
+            "            namespace = (\n"
+            "                upstream_cache\n"
+            "                if isinstance(entry, upstream_cache.RotatingKVCache)\n"
+            "                else cache\n"
+            "            )\n"
+            "            return namespace.BufferedRotatingKVCache.from_cache(\n",
+            "            return cache.BufferedRotatingKVCache.from_cache(\n",
+        ),
+    ),
     "build_ddtree": (
         (
             "    # VENDOR-DEVIATION(bugfix): pinned upstream validates with ``assert``,\n"
@@ -505,14 +601,65 @@ def test_vendored_foundations_bodies_match_upstream():
 
 
 def test_speculative_core_binds_vendored_foundations():
+    from mlx_vlm.models import cache as upstream_cache
+
     assert vs_mtp.cache is vendored_cache
+    assert vs_mtp.upstream_cache is upstream_cache
     assert vs_cache_state.BatchRotatingKVCache is (vendored_cache.BatchRotatingKVCache)
     assert vs_cache_state.RotatingKVCache is vendored_cache.RotatingKVCache
+    assert vs_cache_state.UpstreamBatchRotatingKVCache is (
+        upstream_cache.BatchRotatingKVCache
+    )
+    assert vs_cache_state.UpstreamRotatingKVCache is upstream_cache.RotatingKVCache
     assert vs_common.LanguageModelOutput is vendored_base.LanguageModelOutput
     assert vs_utils._dflash_rounds.__module__.endswith("vendored.speculative.dflash")
     assert vs_utils.get_speculative_rounds_batch("mtp").__module__.endswith(
         "vendored.speculative.mtp"
     )
+
+
+def test_speculative_core_preserves_upstream_model_cache_namespace():
+    """Pinned model caches must get the same rotating replay and buffering
+    behavior as vendored fallback caches, without changing their namespace."""
+    import mlx.core as mx
+    from mlx_vlm.models import cache as upstream_cache
+
+    rotating = upstream_cache.RotatingKVCache(max_size=4)
+    initial = mx.array([[[[0.0], [1.0], [2.0], [3.0]]]])
+    rotating.update_and_fetch(initial, initial)
+    tree = upstream_cache.CacheList(rotating)
+
+    assert list(vs_cache_state.iter_leaf_caches([tree])) == [rotating]
+    transaction = vs_cache_state.start_speculative_cache([tree], length=3)
+    assert id(rotating) in transaction._rotating
+
+    speculative = mx.array([[[[4.0], [5.0], [6.0]]]])
+    rotating.update_and_fetch(speculative, speculative)
+    transaction.commit([1])
+
+    # Only the first verifier token is retained. Restoring and replaying is
+    # essential here: a simple cursor trim cannot recover the ring entries
+    # overwritten by the rejected tokens.
+    assert rotating.offset == 5
+    ordered = rotating._temporal_order(rotating.keys)
+    assert ordered.reshape(-1).tolist() == [1.0, 2.0, 3.0, 4.0]
+
+    lm = SimpleNamespace(
+        model=SimpleNamespace(layers=[SimpleNamespace(layer_type="attention")])
+    )
+    shared = vs_mtp._mtp_shared_kv_from_prompt_cache(lm, [rotating])
+    assert shared["attention"][0].reshape(-1).tolist() == [1.0, 2.0, 3.0, 4.0]
+
+    prompt_cache = [upstream_cache.CacheList(upstream_cache.RotatingKVCache(8))]
+    draft_model = SimpleNamespace(config=SimpleNamespace(block_size=4))
+    vs_mtp._buffer_mtp_target_cache(prompt_cache, draft_model, draft_block_size=4)
+    buffered = prompt_cache[0].caches[0]
+    assert type(buffered) is upstream_cache.BufferedRotatingKVCache
+
+    batch = upstream_cache.BatchRotatingKVCache(max_size=8, left_padding=[0, 0])
+    batch_transaction = vs_cache_state._RotatingCacheTransaction(batch)
+    batch_transaction.validate([1, 2])
+    batch_transaction.abort()
 
 
 def test_vendored_auto_processor_patch_requires_explicit_remote_code_opt_in(
