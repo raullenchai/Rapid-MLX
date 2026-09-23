@@ -127,7 +127,7 @@ def test_pull_error_classes_are_type_based():
     assert model_events.pull_error_class(wrapped) == "network"
     contextual = RuntimeError("outer private detail")
     contextual.__context__ = requests.ReadTimeout("inner private detail")
-    assert model_events.pull_error_class(contextual) == "network"
+    assert model_events.pull_error_class(contextual) == "other"
     cyclic = RuntimeError("cycle")
     cyclic.__cause__ = cyclic
     assert model_events.pull_error_class(cyclic) == "other"
@@ -142,11 +142,11 @@ def test_pull_error_class_chain_regression():
     )
     outer = RuntimeError("loader wrapper")
     outer.__context__ = RepositoryNotFoundError("context", response=response)
-    outer.__cause__ = GatedRepoError("cause", response=response)
-    outer.__cause__.__cause__ = outer
+    middle = RuntimeError("explicit wrapper")
+    outer.__cause__ = middle
+    middle.__cause__ = GatedRepoError("cause", response=response)
 
-    # pull_error_class has always preferred __cause__ over __context__ and
-    # terminated safely when a chain cycles.
+    # Only the explicit cause chain participates; the stale context is ignored.
     assert model_events.pull_error_class(outer) == "gated"
 
 
@@ -244,14 +244,6 @@ def _chain_serve_exception(inner, shape):
         outer = RuntimeError("loader wrapper")
         outer.__cause__ = inner
         return outer
-    if shape == "context":
-        try:
-            raise inner
-        except BaseException:
-            try:
-                raise RuntimeError("loader wrapper")
-            except RuntimeError as outer:
-                return outer
     outer = RuntimeError("loader wrapper")
     middle = RuntimeError("second loader wrapper")
     outer.__cause__ = middle
@@ -269,11 +261,24 @@ def _chain_serve_exception(inner, shape):
         "other",
     ],
 )
-@pytest.mark.parametrize("shape", ["bare", "cause", "context", "two_levels_deep"])
+@pytest.mark.parametrize("shape", ["bare", "cause", "two_levels_deep"])
 def test_serve_error_classes_across_exception_chain(error_class, shape):
     exc = _chain_serve_exception(_serve_exception(error_class), shape)
 
     assert model_events.serve_error_class(exc) == error_class
+
+
+def test_serve_error_class_ignores_implicit_context():
+    try:
+        raise FileNotFoundError("optional tokenizer probe")
+    except FileNotFoundError:
+        try:
+            raise ValueError("malformed tokenizer config")
+        except ValueError as terminal:
+            exc = terminal
+
+    assert exc.__suppress_context__ is False
+    assert model_events.serve_error_class(exc) == "other"
 
 
 @pytest.mark.parametrize(
@@ -306,7 +311,9 @@ def test_serve_error_class_terminates_on_cycles(error_class):
 )
 def test_serve_error_class_outermost_match_wins(outer_class, inner_class):
     outer = _serve_exception(outer_class)
-    outer.__cause__ = _serve_exception(inner_class)
+    middle = RuntimeError("second loader wrapper")
+    outer.__cause__ = middle
+    middle.__cause__ = _serve_exception(inner_class)
 
     assert model_events.serve_error_class(outer) == outer_class
 
@@ -316,23 +323,45 @@ def test_serve_error_class_base_exceptions_are_other(exc):
     assert model_events.serve_error_class(exc) == "other"
 
 
+def test_serve_error_class_handles_hostile_exception_text():
+    class HostileError(Exception):
+        def __str__(self):
+            raise KeyboardInterrupt
+
+    assert model_events.serve_error_class(HostileError()) == "other"
+
+
+def test_serve_error_class_stops_at_chain_bound():
+    outer = RuntimeError("loader wrapper 0")
+    current = outer
+    for index in range(40):
+        cause = RuntimeError(f"loader wrapper {index + 1}")
+        current.__cause__ = cause
+        current = cause
+    current.__cause__ = MemoryError()
+
+    assert model_events.serve_error_class(outer) == "other"
+
+
 @pytest.mark.parametrize(
-    "exc",
+    ("exc", "expected"),
     [
-        ModuleNotFoundError(
-            "No module named 'mlx_lm.models.future_arch'",
-            name="mlx_lm.models.future_arch",
+        (
+            ModuleNotFoundError(
+                "No module named 'mlx_lm.models.future_arch'",
+                name="mlx_lm.models.future_arch",
+            ),
+            "unsupported_architecture",
         ),
-        ModuleNotFoundError("No module named 'mlx_lm.models.future_arch'"),
-        RuntimeError("corrupt safetensor header"),
+        (
+            ModuleNotFoundError("No module named 'mlx_lm.models.future_arch'"),
+            "unsupported_architecture",
+        ),
+        (ModuleNotFoundError("No module named 'optional_accelerator'"), "other"),
+        (RuntimeError("corrupt safetensor header"), "corrupt_weights"),
     ],
 )
-def test_serve_error_class_preserves_existing_variants(exc):
-    expected = (
-        "unsupported_architecture"
-        if isinstance(exc, ModuleNotFoundError)
-        else "corrupt_weights"
-    )
+def test_serve_error_class_preserves_existing_variants(exc, expected):
     assert model_events.serve_error_class(exc) == expected
 
 
