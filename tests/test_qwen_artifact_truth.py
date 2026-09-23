@@ -27,6 +27,7 @@ from rapid_mlx.runtime.qwen_artifact import (
     VerifiedHubSnapshotBinding,
     probe_qwen_artifact,
     probe_resolved_qwen_artifact,
+    to_runtime_drafter_identity,
     to_verified_runtime_target,
     verify_hub_snapshot_binding,
 )
@@ -243,9 +244,127 @@ def test_qwen38_nested_sidecar_has_symlink_blob_receipt_without_weight_read(
     assert truth.mtp_locator.storage is MTPWeightStorage.SYMLINK
     assert truth.mtp_locator.relative_path == "mtp/model.safetensors"
     assert truth.mtp_locator.hf_blob_id == candidate["blob_id"]
+    assert truth.mtp_locator.content_identity == f"hf_blob:{candidate['blob_id']}"
     assert truth.mtp_locator.declared_sha256 == candidate["declared_sha256"]
     assert truth.mtp_locator.declared_sha256_matches_blob is True
     assert truth.mtp_locator.file_size_bytes == candidate["file_size_bytes"]
+    drafter = to_runtime_drafter_identity(truth)
+    assert isinstance(drafter, qwen_plan.QwenDrafterIdentity)
+    assert drafter.repo == metadata["source_repo"]
+    assert drafter.revision == metadata["revision"]
+    assert drafter.artifact_path == "mtp/model.safetensors"
+    assert drafter.artifact_verification_id == truth.mtp_locator.content_identity
+
+
+@pytest.mark.parametrize("escape_kind", ["outside", "sibling_revision"])
+def test_sidecar_symlinked_parent_escape_has_no_trusted_content_identity(
+    tmp_path: Path, escape_kind: str
+):
+    snapshot, hub, metadata = _materialize_snapshot(tmp_path, "qwen38_27b_4bit")
+    repo_cache = hub / ("models--" + metadata["source_repo"].replace("/", "--"))
+    mtp_dir = snapshot / "mtp"
+    (mtp_dir / "model.safetensors").unlink()
+    (mtp_dir / "model.safetensors.sha256").unlink()
+    mtp_dir.rmdir()
+    if escape_kind == "outside":
+        escaped_dir = tmp_path / "escaped-sidecar"
+    else:
+        escaped_dir = repo_cache / "snapshots" / ("f" * 40) / "mtp"
+    escaped_dir.mkdir(parents=True)
+    blob = repo_cache / "blobs" / metadata["mtp_candidate"]["blob_id"]
+    escaped_candidate = escaped_dir / "model.safetensors"
+    escaped_candidate.symlink_to(os.path.relpath(blob, escaped_dir))
+    mtp_dir.symlink_to(os.path.relpath(escaped_dir, snapshot), target_is_directory=True)
+
+    truth = probe_qwen_artifact(snapshot, binding=_binding(snapshot, metadata))
+    assert truth.mtp_locator.state is MTPWeightPathState.NESTED_MODEL
+    assert truth.mtp_locator.hf_blob_id is None
+    assert truth.mtp_locator.content_identity is None
+    with pytest.raises(ArtifactProbeError, match="trusted sidecar content identity"):
+        to_runtime_drafter_identity(truth)
+
+
+def test_sidecar_symlinked_repo_blobs_dir_has_no_trusted_content_identity(
+    tmp_path: Path,
+):
+    snapshot, hub, metadata = _materialize_snapshot(tmp_path, "qwen38_27b_4bit")
+    repo_cache = hub / ("models--" + metadata["source_repo"].replace("/", "--"))
+    blobs_dir = repo_cache / "blobs"
+    external_blobs = tmp_path / "external-sidecar-blobs"
+    external_blobs.mkdir()
+    for blob in blobs_dir.iterdir():
+        blob.rename(external_blobs / blob.name)
+    blobs_dir.rmdir()
+    blobs_dir.symlink_to(external_blobs, target_is_directory=True)
+
+    truth = probe_qwen_artifact(snapshot, binding=_binding(snapshot, metadata))
+    assert truth.mtp_locator.state is MTPWeightPathState.NESTED_MODEL
+    assert truth.mtp_locator.hf_blob_id is None
+    assert truth.mtp_locator.content_identity is None
+    with pytest.raises(ArtifactProbeError, match="trusted sidecar content identity"):
+        to_runtime_drafter_identity(truth)
+
+
+def test_repointing_sidecar_to_another_direct_repo_blob_changes_identity(
+    tmp_path: Path,
+):
+    snapshot, hub, metadata = _materialize_snapshot(tmp_path, "qwen38_27b_4bit")
+    binding = _binding(snapshot, metadata)
+    before = probe_qwen_artifact(snapshot, binding=binding)
+    repo_cache = hub / ("models--" + metadata["source_repo"].replace("/", "--"))
+    replacement_blob = repo_cache / "blobs" / ("c" * 64)
+    replacement_blob.touch()
+    _replace_with_symlink(snapshot / "mtp" / "model.safetensors", replacement_blob)
+
+    after = probe_qwen_artifact(snapshot, binding=binding)
+    assert before.mtp_locator.content_identity != after.mtp_locator.content_identity
+    drafter = to_runtime_drafter_identity(after)
+    assert drafter.artifact_verification_id == f"hf_blob:{'c' * 64}"
+
+
+def test_regular_sidecar_and_declared_sha_cannot_mint_drafter_identity(
+    tmp_path: Path,
+):
+    snapshot, _hub, metadata = _materialize_snapshot(tmp_path, "qwen36_35b_4bit")
+    sidecar = snapshot / "mtp.safetensors"
+    sidecar.write_bytes(b"untrusted regular sidecar")
+    declared = "d" * 64
+    sidecar.with_name("mtp.safetensors.sha256").write_text(
+        f"{declared}  mtp.safetensors\n", encoding="utf-8"
+    )
+
+    truth = probe_qwen_artifact(snapshot, binding=_binding(snapshot, metadata))
+    assert truth.mtp_locator.state is MTPWeightPathState.ROOT_MTP
+    assert truth.mtp_locator.declared_sha256 == declared
+    assert truth.mtp_locator.hf_blob_id is None
+    assert truth.mtp_locator.content_identity is None
+    with pytest.raises(ArtifactProbeError, match="trusted sidecar content identity"):
+        to_runtime_drafter_identity(truth)
+
+
+def test_drafter_conversion_requires_verified_capability_and_repo_relative_path(
+    tmp_path: Path,
+):
+    subfolder = "weights/4bit"
+    snapshot, _hub, metadata = _materialize_snapshot(
+        tmp_path, "qwen38_27b_4bit", subfolder=subfolder
+    )
+    with pytest.raises(
+        ArtifactProbeError, match="resolver-verified artifact capability"
+    ):
+        to_runtime_drafter_identity(probe_qwen_artifact(snapshot))
+
+    truth = probe_qwen_artifact(
+        snapshot,
+        binding=_binding(snapshot, metadata, subfolder=subfolder),
+    )
+    drafter = to_runtime_drafter_identity(truth)
+    assert drafter.repo == metadata["source_repo"]
+    assert drafter.revision == metadata["revision"]
+    assert drafter.artifact_path == "weights/4bit/mtp/model.safetensors"
+    assert drafter.artifact_verification_id == (
+        f"hf_blob:{metadata['mtp_candidate']['blob_id']}"
+    )
 
 
 def test_root_model_is_categorically_ambiguous_not_head_receipt(tmp_path: Path):
@@ -254,6 +373,7 @@ def test_root_model_is_categorically_ambiguous_not_head_receipt(tmp_path: Path):
     assert _find_mtp_weights_file(snapshot) == snapshot / "model.safetensors"
     assert truth.mtp_locator.state is MTPWeightPathState.ROOT_MODEL_AMBIGUOUS
     assert truth.mtp_locator.hf_blob_id is None
+    assert truth.mtp_locator.content_identity is None
     assert truth.mtp_locator.declared_sha256 is None
     assert "accepted" not in truth.mtp_locator.to_status_dict()
     assert "eligible" not in truth.mtp_locator.to_status_dict()
@@ -668,6 +788,9 @@ def test_receipt_extractor_reproduces_fixture_truth(
         for shard, blob_id in metadata["target_blob_ids"].items()
     }
     assert receipt["mtp_locator"]["hf_blob_id"] == metadata["mtp_candidate"]["blob_id"]
+    assert receipt["mtp_locator"]["content_identity"] == (
+        f"hf_blob:{metadata['mtp_candidate']['blob_id']}"
+    )
     assert len(receipt["geometry"]["layer_types"]) == 64
     assert str(tmp_path) not in json.dumps(receipt)
 

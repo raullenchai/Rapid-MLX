@@ -304,6 +304,7 @@ class MTPLocatorTruth:
     storage: MTPWeightStorage
     file_size_bytes: int | None
     hf_blob_id: str | None
+    content_identity: str | None
     declared_sha256: str | None
     declared_sha256_matches_blob: bool | None
 
@@ -314,6 +315,7 @@ class MTPLocatorTruth:
             "storage": self.storage.value,
             "file_size_bytes": self.file_size_bytes,
             "hf_blob_id": self.hf_blob_id,
+            "content_identity": self.content_identity,
             "declared_sha256": self.declared_sha256,
             "declared_sha256_matches_blob": self.declared_sha256_matches_blob,
         }
@@ -711,16 +713,39 @@ def _declared_sidecar_sha256(candidate: Path) -> str | None:
 
 
 def _hf_blob_id(
-    candidate: Path, binding: VerifiedHubSnapshotBinding | None
+    candidate: Path,
+    *,
+    snapshot_dir: Path,
+    binding: VerifiedHubSnapshotBinding | None,
 ) -> str | None:
     if binding is None or not candidate.is_symlink():
         return None
     try:
         resolved = candidate.resolve(strict=True)
-        blobs_dir = (binding._repo_cache_dir / "blobs").resolve(strict=True)
+        artifact_root = snapshot_dir.resolve(strict=True)
+        resolved_parent = candidate.parent.resolve(strict=True)
     except OSError:
         return None
-    if resolved.parent != blobs_dir or not _HEX_BLOB_ID.fullmatch(resolved.name):
+    if artifact_root != binding._artifact_dir:
+        return None
+    try:
+        resolved_parent.relative_to(artifact_root)
+    except ValueError:
+        return None
+
+    blobs_path = binding._repo_cache_dir / "blobs"
+    if blobs_path.is_symlink():
+        return None
+    try:
+        blobs_dir = blobs_path.resolve(strict=True)
+    except OSError:
+        return None
+    if (
+        blobs_dir.parent != binding._repo_cache_dir
+        or resolved.parent != blobs_dir
+        or not resolved.is_file()
+        or not _HEX_BLOB_ID.fullmatch(resolved.name)
+    ):
         return None
     return resolved.name
 
@@ -744,6 +769,7 @@ def _mtp_locator(
             storage=layout.storage,
             file_size_bytes=None,
             hf_blob_id=None,
+            content_identity=None,
             declared_sha256=None,
             declared_sha256_matches_blob=None,
         )
@@ -752,7 +778,7 @@ def _mtp_locator(
         size = candidate.stat().st_size
     except OSError:
         size = None
-    blob_id = _hf_blob_id(candidate, binding)
+    blob_id = _hf_blob_id(candidate, snapshot_dir=snapshot_dir, binding=binding)
     declared_sha256 = _declared_sidecar_sha256(candidate)
     matches = (
         declared_sha256 == blob_id
@@ -765,6 +791,7 @@ def _mtp_locator(
         storage=layout.storage,
         file_size_bytes=size,
         hf_blob_id=blob_id,
+        content_identity=(f"hf_blob:{blob_id}" if blob_id is not None else None),
         declared_sha256=declared_sha256,
         declared_sha256_matches_blob=matches,
     )
@@ -1068,6 +1095,56 @@ def to_verified_runtime_target(truth: QwenArtifactTruth):
         ) from exc
 
 
+def to_runtime_drafter_identity(truth: QwenArtifactTruth):
+    """Convert a trusted sidecar receipt to the core drafter identity.
+
+    This maps identity only; it does not claim that the drafter is qualified
+    for a runtime mode. Regular files, declared checksums, and locator shapes
+    without a canonical same-repo blob receipt fail closed.
+    """
+
+    if not isinstance(truth, QwenArtifactTruth):
+        raise ArtifactProbeError("drafter conversion requires QwenArtifactTruth")
+    if truth._runtime_capability is not _VERIFIED_RUNTIME_CAPABILITY:
+        raise ArtifactProbeError(
+            "drafter conversion requires resolver-verified artifact capability"
+        )
+    locator = truth.mtp_locator
+    trusted_states = {
+        MTPWeightPathState.ROOT_MTP,
+        MTPWeightPathState.ROOT_MODEL_MTP,
+        MTPWeightPathState.NESTED_MODEL,
+    }
+    if (
+        locator.state not in trusted_states
+        or locator.relative_path is None
+        or locator.content_identity is None
+        or truth.source_repo is None
+        or truth.revision is None
+    ):
+        raise ArtifactProbeError(
+            "drafter conversion requires trusted sidecar content identity"
+        )
+    artifact_path = (
+        PurePosixPath(truth.target_subfolder, locator.relative_path).as_posix()
+        if truth.target_subfolder is not None
+        else locator.relative_path
+    )
+    try:
+        from rapid_mlx.qwen_runtime_plan import QwenDrafterIdentity
+
+        return QwenDrafterIdentity(
+            repo=truth.source_repo,
+            revision=truth.revision,
+            artifact_path=artifact_path,
+            artifact_verification_id=locator.content_identity,
+        )
+    except (ImportError, AttributeError, TypeError, ValueError) as exc:
+        raise ArtifactProbeError(
+            "runtime drafter identity rejected artifact truth"
+        ) from exc
+
+
 __all__ = [
     "ArtifactProbeError",
     "ArtifactIdentityStatus",
@@ -1079,6 +1156,7 @@ __all__ = [
     "TargetWeights",
     "probe_qwen_artifact",
     "probe_resolved_qwen_artifact",
+    "to_runtime_drafter_identity",
     "to_verified_runtime_target",
     "VerifiedHubSnapshotBinding",
     "verify_hub_snapshot_binding",
