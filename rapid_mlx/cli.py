@@ -28,8 +28,8 @@ from rapid_mlx._completion import alias_completer
 from rapid_mlx.client_header import RAPID_CLIENT_CLI_CHAT
 from rapid_mlx.http_auth import rapid_mlx_client_headers
 from rapid_mlx.model_profile import ModelProfile
+from rapid_mlx.runtime.optional_runtime import OptionalRuntimeMissing
 from rapid_mlx.runtime.optional_runtime import (
-    OptionalRuntimeMissing,
     handle_optional_runtime_missing as _handle_optional_runtime_missing,
 )
 

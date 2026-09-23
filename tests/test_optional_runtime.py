@@ -71,13 +71,14 @@ cli._ensure_model_downloaded = lambda *_args, **_kwargs: None
 
 lane = os.environ["RAPID_MLX_TEST_EXTRA_LANE"]
 status = os.environ.get("RAPID_MLX_TEST_EXTRA_STATUS", "absent")
-if lane in {"vision", "bonsai"}:
+if lane in {"vision", "vision-present", "bonsai"}:
     from rapid_mlx.models import mllm
 
     runtime_status = {
         "absent": mllm.VisionRuntimeStatus.ABSENT,
         "broken": mllm.VisionRuntimeStatus.BROKEN,
         "incompatible": mllm.VisionRuntimeStatus.INCOMPATIBLE,
+        "present": mllm.VisionRuntimeStatus.OK,
     }[status]
     mllm.vision_runtime_status = lambda: (runtime_status, "test detail")
 if lane == "video":
@@ -113,6 +114,14 @@ if lane == "bonsai":
     )
     model_metadata.checkpoint_has_multimodal_weights = lambda *_args: False
     model_metadata.config_indicates_multimodal = lambda _config: False
+if lane == "vision-present":
+    from rapid_mlx.telemetry import posthog_sender
+
+    def stop_after_optional_guards(*_args, **_kwargs):
+        posthog_sender.get_sender().flush(5.0)
+        os._exit(0)
+
+    cli._validate_v41_product_spec_flags = stop_after_optional_guards
 """.lstrip(),
         encoding="utf-8",
     )
@@ -316,9 +325,7 @@ def test_real_dispatch_posts_one_actionable_failure_to_loopback(
     assert proc.returncode == 2
     assert "Traceback" not in proc.stderr
     assert f"rapid-mlx[{lane}]" in proc.stderr
-    assert (
-        f"RAPID-MLX-STARTUP-FAILURE: {marker_reason} extra={lane}" in proc.stderr
-    )
+    assert f"RAPID-MLX-STARTUP-FAILURE: {marker_reason} extra={lane}" in proc.stderr
     terminal = [
         item["properties"]
         for item in items
@@ -326,9 +333,7 @@ def test_real_dispatch_posts_one_actionable_failure_to_loopback(
         and item["properties"]["state"] == "failed"
     ]
     failures = [
-        item["properties"]
-        for item in items
-        if item["event"] == "model_serve_failed"
+        item["properties"] for item in items if item["event"] == "model_serve_failed"
     ]
     assert len(terminal) == 1
     assert terminal[0]["failure_stage"] == "preflight"
@@ -352,8 +357,7 @@ def test_standalone_bonsai_dispatch_uses_same_handler_and_loopback_sink(
     assert "Traceback" not in proc.stderr
     assert "rapid-mlx[vision]" in proc.stderr
     assert (
-        "RAPID-MLX-STARTUP-FAILURE: runtime_extra_missing extra=vision"
-        in proc.stderr
+        "RAPID-MLX-STARTUP-FAILURE: runtime_extra_missing extra=vision" in proc.stderr
     )
     terminal = [
         item["properties"]
@@ -362,9 +366,7 @@ def test_standalone_bonsai_dispatch_uses_same_handler_and_loopback_sink(
         and item["properties"]["state"] == "failed"
     ]
     failures = [
-        item["properties"]
-        for item in items
-        if item["event"] == "model_serve_failed"
+        item["properties"] for item in items if item["event"] == "model_serve_failed"
     ]
     assert len(terminal) == 1
     assert terminal[0]["failure_stage"] == "preflight"
@@ -373,6 +375,20 @@ def test_standalone_bonsai_dispatch_uses_same_handler_and_loopback_sink(
     assert failures[0]["extra"] == "vision"
     assert failures[0]["model"] == "bonsai2-27b-2bit"
     assert "detail" not in failures[0]
+
+
+def test_real_dispatch_with_present_vision_extra_emits_no_failure(tmp_path) -> None:
+    proc, items = _run_real_missing_extra_dispatch(
+        tmp_path,
+        lane="vision-present",
+        model="ui-tars-1.5-7b-4bit",
+        status="present",
+    )
+
+    assert proc.returncode == 0
+    assert "RAPID-MLX-STARTUP-FAILURE" not in proc.stderr
+    assert "rapid-mlx[vision]" not in proc.stderr
+    assert not any(item["event"] == "model_serve_failed" for item in items)
 
 
 def test_bonsai_engine_preflight_is_missing_vision_failure(monkeypatch, capsys) -> None:

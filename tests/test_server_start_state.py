@@ -41,6 +41,7 @@ def test_attempted_then_ready_exactly_once(monkeypatch):
 
     assert [props["state"] for _, props in events] == ["attempted", "ready"]
     assert all(name == "server_start_state" for name, _ in events)
+    assert all("failure_stage" not in props for _, props in events)
     assert events[0][1] == {
         "state": "attempted",
         "model_type": "llm",
