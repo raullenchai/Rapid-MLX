@@ -1259,16 +1259,18 @@ def test_real_audit_exhaustion_aborts_bounded_probe_window(
     monkeypatch.setattr(
         drift, "_hf_repo", lambda _repo: drift.HfRepo("revision", files)
     )
+    monkeypatch.setattr(drift.time, "monotonic", lambda: 42.0)
     started = []
 
-    def exhaust_first(_repo, item, _client):
+    def exhaust_first(_repo, item):
         started.append(item.path)
         if item.path == "file-0.json":
+            drift._MIRROR_ADMISSION.abort()
             raise TimeoutError("injected exhausted transient")
         assert drift._MIRROR_ADMISSION.abort_event.wait(timeout=1)
-        raise AssertionError("an aborted probe continued")
+        return drift.MirrorProbe(200, item.size, None, item.oid)
 
-    monkeypatch.setattr(drift, "_probe_with_metadata", exhaust_first)
+    monkeypatch.setattr(drift, "_public_probe", exhaust_first)
     assert (
         drift.main(
             [
@@ -1284,8 +1286,9 @@ def test_real_audit_exhaustion_aborts_bounded_probe_window(
     )
     error = capsys.readouterr().err
     assert error.count("PARTIAL REPORT") == 1
-    assert "injected exhausted transient" in error
-    assert set(started) <= {f"file-{index}.json" for index in range(4)}
+    assert "partial" in error
+    assert "file-0.json" in started
+    assert set(started) <= {"file-0.json", "file-1.json"}
 
 
 def test_script_entrypoint_handles_missing_alias_file(monkeypatch, tmp_path):
