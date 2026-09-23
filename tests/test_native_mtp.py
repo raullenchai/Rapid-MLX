@@ -251,6 +251,7 @@ def test_glm_runtime_structural_probe_and_fail_closed(monkeypatch) -> None:
     generate = ModuleType("mlx_vlm.generate")
     generate.__path__ = []
     ar = ModuleType("mlx_vlm.generate.ar")
+    vendored_ar = ModuleType("rapid_mlx.models.mlx_vlm_vendored.generate.ar")
     for name in (
         "generate_step",
         "SpeculativePrefill",
@@ -258,12 +259,13 @@ def test_glm_runtime_structural_probe_and_fail_closed(monkeypatch) -> None:
         "speculative_prefill_kwargs",
     ):
         setattr(ar, name, object())
+        setattr(vendored_ar, name, object())
     generate.ar = ar
     # The runtime probe now binds the vendored text-AR core (step 3a), so
     # the same fakes must shadow the vendored package names.
     vendored_generate = ModuleType("rapid_mlx.models.mlx_vlm_vendored.generate")
     vendored_generate.__path__ = []
-    vendored_generate.ar = ar
+    vendored_generate.ar = vendored_ar
     models = ModuleType("mlx_vlm.models")
     models.__path__ = []
     cache = ModuleType("mlx_vlm.models.cache")
@@ -300,7 +302,7 @@ def test_glm_runtime_structural_probe_and_fail_closed(monkeypatch) -> None:
         "mlx_vlm.generate": generate,
         "mlx_vlm.generate.ar": ar,
         "rapid_mlx.models.mlx_vlm_vendored.generate": vendored_generate,
-        "rapid_mlx.models.mlx_vlm_vendored.generate.ar": ar,
+        "rapid_mlx.models.mlx_vlm_vendored.generate.ar": vendored_ar,
         "mlx_vlm.models": models,
         "mlx_vlm.models.cache": cache,
         "mlx_vlm.models.glm5_next": glm,
@@ -315,6 +317,9 @@ def test_glm_runtime_structural_probe_and_fail_closed(monkeypatch) -> None:
 
     assert runtime.have_glm_cache_runtime() is True
     delattr(ar, "run_speculative_rounds")
+    assert runtime.have_glm_cache_runtime() is False
+    ar.run_speculative_rounds = object()
+    delattr(vendored_ar, "run_speculative_rounds")
     assert runtime.have_glm_cache_runtime() is False
 
     real_import = builtins.__import__

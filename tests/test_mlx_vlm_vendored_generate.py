@@ -48,6 +48,8 @@ pytest.importorskip("mlx_vlm")
 #   the dual vendored/upstream cache namespace.
 # - ``maybe_quantize_kv_cache``: accept fallback vendored caches and caches
 #   returned by still-upstream model implementations.
+# - ``_generate_module_override``: ignore upstream's default AR exports while
+#   retaining support for an explicitly patched public override.
 # - ``_is_batch_cache_entry`` / ``_make_cache``: accept and preserve both
 #   cache namespaces during continuous-batch conversion.
 # - ``_generate_batch``: the capture-release + None-token bugfix hunks
@@ -72,6 +74,7 @@ _DOCUMENTED_HUNK_BODIES = {
     "SpeculativeGenerationBatch",
     "PromptProcessingBatch",
     "maybe_quantize_kv_cache",
+    "_generate_module_override",
     "_is_batch_cache_entry",
     "_make_cache",
     "prepare_inputs",
@@ -177,6 +180,27 @@ def test_generate_step_signature_matches_upstream():
     assert (
         inspect.signature(vendored_ar.generate_step).parameters.keys()
         == inspect.signature(upstream_ar.generate_step).parameters.keys()
+    )
+
+
+def test_generate_override_keeps_vendored_defaults_but_honors_patches(monkeypatch):
+    """Default upstream exports must not pull vendored batching upstream."""
+    upstream_generate = importlib.import_module("mlx_vlm.generate")
+
+    assert (
+        vendored_ar._generate_module_override(
+            "PromptProcessingBatch", vendored_ar.PromptProcessingBatch
+        )
+        is vendored_ar.PromptProcessingBatch
+    )
+
+    patched = type("PatchedPromptProcessingBatch", (), {})
+    monkeypatch.setattr(upstream_generate, "PromptProcessingBatch", patched)
+    assert (
+        vendored_ar._generate_module_override(
+            "PromptProcessingBatch", vendored_ar.PromptProcessingBatch
+        )
+        is patched
     )
 
 

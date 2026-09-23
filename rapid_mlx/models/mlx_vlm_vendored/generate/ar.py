@@ -184,8 +184,16 @@ class _PositionedTargetSampler:
 
 
 def _generate_module_override(name: str, fallback):
+    # VENDOR-DEVIATION(dual-namespace): the upstream package exports its own
+    # AR symbols by default. Treat only a public symbol patched away from that
+    # default as an override; otherwise keep this vendored module's fallback.
     generate_module = sys.modules.get("mlx_vlm.generate")
-    return getattr(generate_module, name, fallback) if generate_module else fallback
+    if generate_module is None:
+        return fallback
+    candidate = getattr(generate_module, name, fallback)
+    upstream_ar = sys.modules.get("mlx_vlm.generate.ar")
+    upstream_default = getattr(upstream_ar, name, None) if upstream_ar else None
+    return fallback if candidate is upstream_default else candidate
 
 
 def normalize_resize_shape(values):

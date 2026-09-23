@@ -233,6 +233,8 @@ vendored copy differs by exactly the deviations listed):
     ``generate_step`` binds the vendored ``maybe_quantize_kv_cache`` directly,
     and its quantization plus continuous-batch conversion paths recognize both
     fallback vendored caches and caches returned by pinned upstream models;
+    the generation override seam ignores upstream's default AR exports so the
+    vendored batch classes stay active, while honoring explicit public patches;
     ``_merge_prefill_prompt_kwargs`` and the APC mixed-assembly path reject a
     per-row tensor kwarg missing from any row instead of concatenating a
     smaller, row-shifted tensor;
