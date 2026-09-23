@@ -653,15 +653,26 @@ def _apply_probe_result(
                 sync_in_progress=sync_in_progress,
             )
         )
-    if item.sha256 is None and item.oid and probe.blob_oid != item.oid:
-        report.findings.append(
-            _file_finding(
-                "content_mismatch",
-                item,
-                f"mirror_blob={probe.blob_oid or 'missing'} hf_blob={item.oid}",
-                sync_in_progress=sync_in_progress,
+    if item.sha256 is None and item.oid:
+        if probe.blob_oid is None:
+            report.findings.append(
+                Finding(
+                    "content_check",
+                    "info",
+                    item.path,
+                    "unverified: body exceeds "
+                    f"{SMALL_NON_LFS_MAX_BYTES}-byte probe limit",
+                )
             )
-        )
+        elif probe.blob_oid != item.oid:
+            report.findings.append(
+                _file_finding(
+                    "content_mismatch",
+                    item,
+                    f"mirror_blob={probe.blob_oid} hf_blob={item.oid}",
+                    sync_in_progress=sync_in_progress,
+                )
+            )
     if item.sha256 is not None:
         public_sha = _etag_sha256(probe.etag)
         metadata_sha = metadata.get("hf-sha256") if metadata is not None else None

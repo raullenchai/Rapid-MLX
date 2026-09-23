@@ -611,6 +611,33 @@ def test_same_size_stale_non_lfs_body_is_content_mismatch(monkeypatch, tmp_path)
     assert any(finding.kind == "content_mismatch" for finding in report.findings)
 
 
+def test_large_non_lfs_body_without_blob_oid_is_unverified_not_mismatch():
+    size = drift.SMALL_NON_LFS_MAX_BYTES + 1
+    item = drift.HfFile("vocab.json", size, None, "a" * 40)
+    report = drift.AliasReport(
+        "large", "main", "org/large", True, "org/large", "mirrored"
+    )
+
+    drift._apply_probe_result(
+        report,
+        item,
+        drift.MirrorProbe(200, size, None, None),
+        None,
+        has_r2=False,
+        sync_in_progress=False,
+    )
+
+    assert not any(finding.kind == "content_mismatch" for finding in report.findings)
+    assert report.findings == [
+        drift.Finding(
+            "content_check",
+            "info",
+            "vocab.json",
+            "unverified: body exceeds 1048576-byte probe limit",
+        )
+    ]
+
+
 def test_request_retries_and_http_errors(monkeypatch):
     attempts = []
 
