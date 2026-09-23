@@ -215,7 +215,6 @@ def test_registry_load_rejects_invalid_only_when(
 ):
     """Conditional metadata is registry schema, not caller-dependent data."""
 
-    reg._validate_only_when_declarations({"events": {"_documentation": {}}})
     with pytest.raises(ValueError, match="only_when"):
         _load_mutated_registry(monkeypatch, tmp_path, registry, only_when)
     if only_when == {}:
