@@ -35,8 +35,13 @@ struct ShareComputeTests {
             "glm-5.3-flash",
         ])
         #expect(ShareComputeModel.supported.allSatisfy {
-            !ModelSizing.isAvailable(alias: $0.alias, on: eighteenGB)
+            !$0.fits(eighteenGB, catalogEntry: nil)
         })
+        // glm5.3-flash-4bit carries no parameter count in its alias, so the
+        // estimator alone would pass it; the explicit floor must hold.
+        let glm = ShareComputeModel.supported.first { $0.catalogID == "glm-5.3-flash" }!
+        #expect(!glm.fits(Self.hardware(memoryGB: 128), catalogEntry: nil))
+        #expect(glm.fits(Self.hardware(memoryGB: 256), catalogEntry: nil))
     }
 
     @Test("Worker labels match the provider's safe grammar")
