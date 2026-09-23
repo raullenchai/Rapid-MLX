@@ -776,7 +776,11 @@ def test_429_honors_full_retry_after_and_aimd_canary(monkeypatch):
     assert drift._MIRROR_ADMISSION.limit == 4
 
     # A fresh cooldown admits exactly one canary, even when several workers wait.
-    drift._MIRROR_ADMISSION.rate_limited(45.0, lambda: now[0])
+    drift._MIRROR_ADMISSION.rate_limited(
+        45.0,
+        lambda: now[0],
+        drift._MIRROR_ADMISSION.admission_epoch,
+    )
     now[0] += 45.0
     first_open = threading.Event()
     release = threading.Event()
@@ -813,6 +817,91 @@ def test_429_honors_full_retry_after_and_aimd_canary(monkeypatch):
 
     # The second 429 halved 4 -> 2; one full successful window grows it to 3.
     assert drift._MIRROR_ADMISSION.limit == 3
+
+
+def test_429_halves_once_per_admission_epoch_with_canary_epoch():
+    gate = drift._MirrorAdmission()
+    gate.reset(32, deadline=None)
+    now = [0.0]
+    ready = threading.Barrier(2)
+    errors = []
+
+    def limited_worker(delay):
+        try:
+            canary, epoch = gate.acquire(lambda: now[0], lambda _seconds: None)
+            ready.wait(timeout=1)
+            gate.rate_limited(delay, lambda: now[0], epoch)
+            gate.finished(canary=canary, success=False)
+        except BaseException as error:
+            errors.append(error)
+
+    threads = [
+        threading.Thread(target=limited_worker, args=(delay,)) for delay in (10.0, 20.0)
+    ]
+    for thread in threads:
+        thread.start()
+    for thread in threads:
+        thread.join(timeout=1)
+        assert not thread.is_alive()
+
+    assert errors == []
+    assert gate.limit == 16
+    assert gate.cooldown_until == 20.0
+
+    now[0] = 20.0
+    canary, epoch = gate.acquire(lambda: now[0], lambda _seconds: None)
+    assert canary
+    gate.rate_limited(5.0, lambda: now[0], epoch)
+    gate.finished(canary=canary, success=False)
+    assert gate.limit == 8
+    assert gate.limit >= 1
+
+
+@pytest.mark.parametrize(
+    ("retry_after", "expected_delay", "expected_metric"),
+    [
+        ("301", 300.0, {"301"}),
+        ("Wed, 21 Oct 2015 07:28:00 GMT", 1.0, set()),
+        ("later", 1.0, set()),
+        ("²", 1.0, set()),
+        ("0", 1.0, set()),
+        ("-5", 1.0, set()),
+    ],
+)
+def test_retry_after_parsing_is_bounded_and_malformed_safe(
+    monkeypatch, retry_after, expected_delay, expected_metric
+):
+    headers = Message()
+    headers["Retry-After"] = retry_after
+    limited = urllib.error.HTTPError("https://example", 429, "slow down", headers, None)
+    attempts = iter([limited, Response(200)])
+
+    def open_request(*_args, **_kwargs):
+        value = next(attempts)
+        if isinstance(value, BaseException):
+            raise value
+        return value
+
+    monkeypatch.setattr(drift, "_OPENER", types.SimpleNamespace(open=open_request))
+    drift._reset_retry_state(workers=1)
+    now = [0.0]
+    sleeps = []
+    drift._REQUEST_CONTEXT.kind = "mirror"
+    try:
+        response = drift._request(
+            "https://example",
+            clock=lambda: now[0],
+            sleeper=lambda seconds: (
+                sleeps.append(seconds),
+                now.__setitem__(0, now[0] + seconds),
+            ),
+        )
+    finally:
+        drift._REQUEST_CONTEXT.kind = None
+
+    assert response.status == 200
+    assert sleeps == [expected_delay]
+    assert drift._mirror_retry_after_values == expected_metric
 
 
 def test_retry_after_past_deadline_emits_one_partial_report(
@@ -918,7 +1007,11 @@ def test_429_shared_cooldown_gates_new_mirror_request(monkeypatch):
     )
     drift._reset_retry_state()
     now = [10.0]
-    drift._MIRROR_ADMISSION.rate_limited(2.0, lambda: now[0])
+    drift._MIRROR_ADMISSION.rate_limited(
+        2.0,
+        lambda: now[0],
+        drift._MIRROR_ADMISSION.admission_epoch,
+    )
 
     def pass_cooldown(seconds):
         events.append(("cooldown", seconds))

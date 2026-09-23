@@ -294,6 +294,8 @@ class _MirrorAdmission:
         self.cooldown_until = 0.0
         self.canary_pending = False
         self.canary_active = False
+        self.admission_epoch = 0
+        self.last_halved_epoch: int | None = None
         self.successes = 0
         self.deadline: float | None = None
 
@@ -306,6 +308,8 @@ class _MirrorAdmission:
             self.cooldown_until = 0.0
             self.canary_pending = False
             self.canary_active = False
+            self.admission_epoch = 0
+            self.last_halved_epoch = None
             self.successes = 0
             self.deadline = deadline
             self._condition.notify_all()
@@ -343,8 +347,8 @@ class _MirrorAdmission:
         self,
         clock: Callable[[], float],
         sleeper: Callable[[float], None],
-    ) -> bool:
-        """Return whether this admission is the post-cooldown canary."""
+    ) -> tuple[bool, int]:
+        """Return the canary flag and rate-limit epoch for this admission."""
         while True:
             self._check_abort()
             delay = 0.0
@@ -360,19 +364,24 @@ class _MirrorAdmission:
                         if not self.canary_active and self.active == 0:
                             self.canary_active = True
                             self.active += 1
-                            return True
+                            self.admission_epoch += 1
+                            return True, self.admission_epoch
                     elif self.active < self.limit:
                         self.active += 1
-                        return False
+                        return False, self.admission_epoch
                     self._condition.wait(timeout=0.1)
                     continue
             self.wait_delay(delay, clock, sleeper)
 
-    def rate_limited(self, delay: float, clock: Callable[[], float]) -> None:
+    def rate_limited(
+        self, delay: float, clock: Callable[[], float], admission_epoch: int
+    ) -> None:
         end = clock() + delay
         self._check_deadline(end)
         with self._condition:
-            self.limit = max(1, self.limit // 2)
+            if admission_epoch != self.last_halved_epoch:
+                self.limit = max(1, self.limit // 2)
+                self.last_halved_epoch = admission_epoch
             self.cooldown_until = max(self.cooldown_until, end)
             self.canary_pending = True
             self.successes = 0
@@ -427,7 +436,10 @@ def _request(
     is_mirror = getattr(_REQUEST_CONTEXT, "kind", None) == "mirror"
     last: BaseException | None = None
     for attempt in range(5):
-        canary = _MIRROR_ADMISSION.acquire(clock, sleeper) if is_mirror else False
+        if is_mirror:
+            canary, admission_epoch = _MIRROR_ADMISSION.acquire(clock, sleeper)
+        else:
+            canary, admission_epoch = False, 0
         delay = float(2**attempt)
         cause: str
         retry_after: str | None = None
@@ -446,10 +458,20 @@ def _request(
             last = error
             cause = str(error.code)
             retry_after = error.headers.get("Retry-After")
-            if retry_after and retry_after.isdigit():
-                delay = max(delay, min(float(retry_after), MAX_RETRY_AFTER_SECONDS))
-            else:
+            try:
+                if (
+                    retry_after is None
+                    or not retry_after.isascii()
+                    or not retry_after.isdigit()
+                ):
+                    raise ValueError
+                retry_after_seconds = int(retry_after)
+                if retry_after_seconds <= 0:
+                    raise ValueError
+            except (AttributeError, ValueError):
                 retry_after = None
+            else:
+                delay = max(delay, min(retry_after_seconds, MAX_RETRY_AFTER_SECONDS))
         except TimeoutError as error:
             last = error
             cause = "timeout"
@@ -469,7 +491,7 @@ def _request(
                 _record_mirror_retry(cause, delay, retry_after)
                 if cause == "429":
                     try:
-                        _MIRROR_ADMISSION.rate_limited(delay, clock)
+                        _MIRROR_ADMISSION.rate_limited(delay, clock, admission_epoch)
                     except RuntimeError as error:
                         value = retry_after or f"{delay:g}"
                         raise RuntimeError(
