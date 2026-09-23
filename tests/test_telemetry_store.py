@@ -394,17 +394,17 @@ def test_note_model_served_respects_the_cap(fake_home, monkeypatch):
     assert store.note_model_served("c") == 2
 
 
-def test_first_run_date_is_written_once(fake_home):
+def test_first_run_date_before_floor_is_clamped_and_written_once(fake_home):
     from rapid_mlx.telemetry import store
 
-    day_one = datetime(2026, 1, 1, tzinfo=timezone.utc)
-    assert store.first_run_date(day_one) == "2026-01-01"
+    before_release = datetime(2025, 12, 31, 12, 0, tzinfo=timezone.utc)
+    assert store.first_run_date(before_release) == "2026-01-06"
     evidence = fake_home / ".rapid-mlx" / "telemetry-client-id"
     evidence.write_text("existing install")
-    old = datetime(2025, 1, 1, tzinfo=timezone.utc).timestamp()
-    os.utime(evidence, (old, old))
+    newer = datetime(2026, 2, 1, tzinfo=timezone.utc).timestamp()
+    os.utime(evidence, (newer, newer))
     later = datetime(2026, 3, 9, tzinfo=timezone.utc)
-    assert store.first_run_date(later) == "2026-01-01"
+    assert store.first_run_date(later) == "2026-01-06"
 
 
 def test_first_run_date_seeds_bucket_from_old_evidence(fake_home):
@@ -602,6 +602,8 @@ def test_first_run_date_ignores_non_regular_evidence(
         marker_socket.bind(evidence_name)
     else:
         os.mkfifo(marker)
+    old = (now - timedelta(days=15)).timestamp()
+    os.utime(marker, (old, old))
 
     try:
         assert store.first_run_date(now) == "2026-09-20"
@@ -804,8 +806,8 @@ def test_first_run_date_without_evidence_starts_today(fake_home):
 def test_days_since_first_run_bucket_boundaries(fake_home, days, expected):
     from rapid_mlx.telemetry import store
 
-    first = datetime(2026, 1, 1, 12, 0, tzinfo=timezone.utc)
-    assert store.first_run_date(first) == "2026-01-01"
+    first = datetime(2026, 2, 1, 12, 0, tzinfo=timezone.utc)
+    assert store.first_run_date(first) == "2026-02-01"
     assert store.days_since_first_run_bucket(first + timedelta(days=days)) == expected
 
 
@@ -820,7 +822,7 @@ def test_days_since_first_run_bucket_tolerates_a_backwards_clock(fake_home):
 def test_cohort_values_are_in_the_declared_enum(fake_home):
     from rapid_mlx.telemetry import store
 
-    first = datetime(2026, 1, 1, tzinfo=timezone.utc)
+    first = datetime(2026, 2, 1, tzinfo=timezone.utc)
     store.first_run_date(first)
     for days in (0, 1, 3, 10, 90):
         assert (

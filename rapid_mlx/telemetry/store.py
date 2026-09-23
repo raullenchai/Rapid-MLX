@@ -722,7 +722,7 @@ def _seed_first_run_date(now: datetime | None) -> str:
         except Exception:
             pass
 
-    current = datetime.strptime(today, "%Y-%m-%d").date()
+    current = max(datetime.strptime(today, "%Y-%m-%d").date(), FIRST_RUN_EVIDENCE_FLOOR)
     valid_evidence = [
         candidate
         for candidate in evidence
