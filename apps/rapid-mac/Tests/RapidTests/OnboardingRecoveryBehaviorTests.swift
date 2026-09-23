@@ -929,13 +929,26 @@ struct OnboardingRecoveryBehaviorTests {
     @Test("Every recovery arrival posts its announcement")
     func recoveryArrivalsAreWiredToTheAnnouncer() throws {
         let body = try Self.strippedSource("Sources/Rapid/UI/QuickstartView.swift")
-        // The one helper that both changes phase and speaks. If a future edit
-        // splits these, a recovery screen can appear in silence again.
+        // Keep these as precomputed Booleans. Passing the 240+ KiB source body
+        // directly to #expect makes Swift Testing render all of it when the
+        // assertion fails, which can swamp a CI test process before it prints
+        // the failure summary.
+        let changesPhase = body.contains(
+            "coordinator.enterFailed(message:message,origin:origin)"
+        )
+        let announcesStructuredStartupFailure = body.contains(
+            "ifletstartupFailure{VoiceOverAnnouncer.announce("
+                + "\"Quickstartdidn'tfinish.\\(startupFailure.message)"
+                + "Action:OpenStartupLog.\")}"
+        )
+        let announcesGenericRecovery = body.contains(
+            "else{VoiceOverAnnouncer.announce(Self.recoveryAnnouncement(for:kind))}"
+        )
+
+        // The one helper both changes phase and speaks on each branch. If a
+        // future edit splits these, a recovery screen can appear in silence.
         #expect(
-            body.contains(
-                "coordinator.enterFailed(message:message,origin:origin)"
-                + "VoiceOverAnnouncer.announce(Self.recoveryAnnouncement(for:kind))"
-            ),
+            changesPhase && announcesStructuredStartupFailure && announcesGenericRecovery,
             """
             enterRecovery no longer announces after changing phase. A \
             VoiceOver user gets no signal that the screen swapped — which for \
@@ -944,7 +957,10 @@ struct OnboardingRecoveryBehaviorTests {
             """
         )
         // And every route in goes through it rather than around it.
-        #expect(!body.contains("case.cancelled:coordinator.enterFailed("),
+        let cancellationBypassesRecovery = body.contains(
+            "case.cancelled:coordinator.enterFailed("
+        )
+        #expect(!cancellationBypassesRecovery,
                 "the cancellation branch must announce, not call enterFailed directly")
         let directCalls = body.components(separatedBy: "coordinator.enterFailed(").count - 1
         #expect(directCalls == 1,
