@@ -29,9 +29,9 @@ import mlx.core as mx
 from rapid_mlx.models.mlx_vlm_vendored import inputs as vendored_inputs
 
 _UPSTREAM_REGION_SHA256 = (
-    "ac610b0e2c157de878b17ec9f5ebaa8bf2c75000e44c09d84b5c17dbaf7c7b5f"
+    "0c3681fa511baa4c345e6caba42760c7f1632ae2f69706982e39eb2f411b1294"
 )
-_VENDOR_DEVIATION_COUNT = 7
+_VENDOR_DEVIATION_COUNT = 9
 
 _REGION_FUNCTIONS = [
     "load_image",
@@ -44,6 +44,8 @@ _REGION_FUNCTIONS = [
     "resolve_video_sampling",
     "process_inputs",
     "process_inputs_with_fallback",
+    "group_images_by_shape",
+    "should_add_special_tokens",
 ]
 # Excluded from the probe: ``processor_video_sampling``, ``load_video``,
 # ``load_audio``, and ``prepare_inputs`` carry the documented hunks (see
@@ -69,7 +71,7 @@ def test_vendored_region_matches_reviewed_sources():
     mlx_vlm_utils = pytest.importorskip("mlx_vlm.utils")
     upstream_path = Path(inspect.getsourcefile(mlx_vlm_utils))
     upstream_lines = upstream_path.read_text().splitlines(keepends=True)
-    upstream_region = "".join(upstream_lines[1713:2543])
+    upstream_region = "".join(upstream_lines[1713:2807])
     assert hashlib.sha256(upstream_region.encode()).hexdigest() == (
         _UPSTREAM_REGION_SHA256
     )
@@ -77,7 +79,7 @@ def test_vendored_region_matches_reviewed_sources():
     vendored_path = Path(inspect.getsourcefile(vendored_inputs))
     vendored_source = vendored_path.read_text()
     assert hashlib.sha256(vendored_source.encode()).hexdigest() == (
-        "a688bdc97b69daab6e25d189ede7b69ce7859b30df0175d624ae1ff165ef277c"
+        "fab357702289e1b8380b4f42173f94970462495fd753633d7e2cf512a62468d5"
     )
     deviation_comments = [
         token.string
@@ -87,7 +89,7 @@ def test_vendored_region_matches_reviewed_sources():
     ]
     assert len(deviation_comments) == _VENDOR_DEVIATION_COUNT
     assert sum("(redirect)" in comment for comment in deviation_comments) == 3
-    assert sum("(upstream-bugfix)" in comment for comment in deviation_comments) == 3
+    assert sum("(upstream-bugfix)" in comment for comment in deviation_comments) == 5
     assert sum("(dual-namespace)" in comment for comment in deviation_comments) == 1
 
 

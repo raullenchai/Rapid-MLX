@@ -29,6 +29,13 @@ omit =
     # deviation inventory fail closed on drift; the four Rapid-owned resource
     # and namespace deviations are covered by focused behavioral tests.
     rapid_mlx/models/mlx_vlm_vendored/inputs.py
+    # Pinned upstream text-generation core. Exact top-level source-body parity
+    # plus documented-hunk behavioral tests fail closed on drift; the reduced
+    # Rapid-owned generate/__init__.py shim remains measured on Apple Silicon.
+    rapid_mlx/models/mlx_vlm_vendored/generate/ar.py
+    rapid_mlx/models/mlx_vlm_vendored/generate/common.py
+    rapid_mlx/models/mlx_vlm_vendored/generate/types.py
+    rapid_mlx/models/mlx_vlm_vendored/sample_utils.py
     # Test-file mirrors under the package: ``rapid_mlx/_integration_tests``
     # is a symlink farm pointing at ``tests/integrations/``. They are test
     # code — CI executes them via tests/integrations/, not through the

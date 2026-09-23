@@ -5,10 +5,12 @@ Step 2c of the mlx-vlm dependency retirement (design note:
 ``docs/engineering/design/2026-09-18-vendor-mllm-primitives.md``).
 
 Provenance: the module body below is **byte-verbatim** from upstream
-``utils.py`` lines 1714-2543 (``load_image`` .. ``prepare_inputs``, an
-unbroken region ending right before ``group_images_by_shape``), region
-sha256 ``ac610b0e2c157de878b17ec9f5ebaa8bf2c75000e44c09d84b5c17dbaf7c7b5f``, except the documented deviations in the import block
-below — every non-verbatim line carries a ``# VENDOR-DEVIATION`` sentinel.
+``utils.py`` lines 1714-2807 (``load_image`` .. ``prepare_inputs`` ..
+``group_images_by_shape`` .. ``should_add_special_tokens``, an unbroken
+region), region sha256
+``0c3681fa511baa4c345e6caba42760c7f1632ae2f69706982e39eb2f411b1294``,
+except the documented deviations in the import block below — every
+non-verbatim line carries a ``# VENDOR-DEVIATION`` sentinel.
 The module keeps upstream's logger name so log filtering parity holds
 (``mlx_vlm.apc`` precedent from 2b-2). The upstream parity of every
 vendored function is probed by ``tests/test_mlx_vlm_vendored_inputs.py``.
@@ -888,3 +890,285 @@ def prepare_inputs(
                     model_inputs[key] = mx.array(value)
 
     return model_inputs
+
+
+def group_images_by_shape(
+    images: List[Image.Image],
+    disable_grouping: bool = False,
+) -> Tuple[Dict[Tuple[int, int], List[Image.Image]], Dict[Tuple[int, int], List[int]]]:
+    """
+    Group images by their dimensions for efficient batch processing.
+
+    Images with the same dimensions can be stacked and processed together,
+    which is much faster than processing individually (especially on GPU).
+
+    Args:
+        images: List of PIL images to group
+        disable_grouping: If True, each image gets its own group (useful for debugging)
+
+    Returns:
+        grouped_images: Dict mapping shape -> list of images with that shape
+        grouped_indices: Dict mapping shape -> list of original indices
+
+    Example:
+        >>> images = [img_400x300, img_800x600, img_400x300_2]
+        >>> grouped, indices = group_images_by_shape(images)
+        >>> grouped
+        {(300, 400): [img_400x300, img_400x300_2], (600, 800): [img_800x600]}
+        >>> indices
+        {(300, 400): [0, 2], (600, 800): [1]}
+    """
+    if disable_grouping:
+        # Each image in its own group
+        grouped_images = {}
+        grouped_indices = {}
+        for i, img in enumerate(images):
+            shape = (img.height, img.width)
+            # Make each shape unique by adding index
+            unique_shape = (img.height, img.width, i)
+            grouped_images[unique_shape] = [img]
+            grouped_indices[unique_shape] = [i]
+        return grouped_images, grouped_indices
+
+    grouped_images: Dict[Tuple[int, int], List[Image.Image]] = {}
+    grouped_indices: Dict[Tuple[int, int], List[int]] = {}
+
+    for i, img in enumerate(images):
+        shape = (img.height, img.width)
+        if shape not in grouped_images:
+            grouped_images[shape] = []
+            grouped_indices[shape] = []
+        grouped_images[shape].append(img)
+        grouped_indices[shape].append(i)
+
+    return grouped_images, grouped_indices
+
+
+def resolve_eos_token_ids(eos_token_ids, tokenizer) -> List[int]:
+    """Union configured EOS token ids with the tokenizer's own EOS.
+
+    A checkpoint's ``eos_token_id`` can disagree with the token its chat template
+    ends turns on -- Chandra OCR 2 configures ``<|endoftext|>`` but emits
+    ``<|im_end|>`` -- so neither source alone is enough to stop generation.
+    """
+    resolved: List[int] = []
+    for source in (
+        eos_token_ids,
+        getattr(tokenizer, "eos_token_ids", None),
+        getattr(tokenizer, "eos_token_id", None),
+    ):
+        if isinstance(source, int):
+            source = [source]
+        if not isinstance(source, (list, tuple, set)):
+            continue
+        for token_id in source:
+            if isinstance(token_id, int) and token_id not in resolved:
+                resolved.append(token_id)
+    return resolved
+
+
+class StoppingCriteria:
+    def __init__(
+        self,
+        eos_token_ids: List[int],
+        tokenizer=None,
+        additional_eos_token_ids: Optional[List[int]] = None,
+    ):
+        self.tokenizer = tokenizer
+        self.additional_eos_token_ids = list(
+            dict.fromkeys(additional_eos_token_ids or ())
+        )
+        self.reset(eos_token_ids)
+
+    def add_eos_token_ids(self, new_eos_token_ids: Union[int, List[int]] = None):
+        """
+        Add new token IDs to the list of EOS token IDs.
+
+        Args:
+            new_eos_token_ids: Integer, string, or list of integers/strings representing token IDs to add.
+                               If strings are provided, they will be converted to integers if possible.
+        """
+        if new_eos_token_ids is None:
+            return
+
+        if self.tokenizer is None:
+            raise ValueError("Processor is not provided")
+
+        if new_eos_token_ids is not None:
+            if isinstance(new_eos_token_ids, (str, int)):
+                new_eos_token_ids = [new_eos_token_ids]
+            resolved = []
+            for token in new_eos_token_ids:
+                if isinstance(token, int):
+                    resolved.append(token)
+                elif isinstance(token, str):
+                    resolved.append(
+                        self.tokenizer.encode(" " + token, add_special_tokens=False)[-1]
+                    )
+            self.eos_token_ids.extend(resolved)
+
+    def reset(self, eos_token_ids: List[int] = None):
+        resolved = resolve_eos_token_ids(eos_token_ids, self.tokenizer)
+        resolved.extend(
+            token_id
+            for token_id in self.additional_eos_token_ids
+            if token_id not in resolved
+        )
+        if getattr(self, "eos_token_ids", None) != resolved:
+            self.eos_token_ids = resolved
+
+    def __call__(self, input_ids: mx.array) -> bool:
+        return input_ids in self.eos_token_ids
+
+
+class ThinkingBudgetCriteria:
+    """
+    Enforces a budget on thinking tokens.
+
+    Tracks tokens within thinking blocks (between start and end tokens) and
+    forces a closing sequence (e.g. ``\\n</think>``) when budget is exceeded.
+    """
+
+    def __init__(
+        self,
+        tokenizer,
+        thinking_budget: int,
+        thinking_end_token: str = "</think>",
+        thinking_start_token: Optional[str] = None,
+        enable_thinking: bool = False,
+        prompt_preopens_thinking: bool = False,
+    ):
+        self.tokenizer = tokenizer
+        self.thinking_budget = thinking_budget
+        self.enable_thinking = enable_thinking
+        self.prompt_preopens_thinking = prompt_preopens_thinking
+
+        # Resolve token IDs from strings
+        self.thinking_end_token_id = tokenizer.encode(
+            thinking_end_token, add_special_tokens=False
+        )[-1]
+
+        # VENDOR-DEVIATION(upstream-bugfix): the documented default
+        # ``thinking_start_token=None`` crashed at construction because
+        # ``tokenizer.encode(None)`` raises; guard the encode and the span
+        # comparison instead (repro against pinned upstream in
+        # tests/test_mlx_vlm_vendored_generate.py).
+        self.thinking_start_token_id = (
+            tokenizer.encode(thinking_start_token, add_special_tokens=False)[-1]
+            if thinking_start_token is not None
+            else None
+        )
+
+        self._forced_sequence: List[int] = []
+        newline_ids = tokenizer.encode("\n", add_special_tokens=False)
+        if newline_ids:
+            self._forced_sequence.append(newline_ids[-1])
+        self._forced_sequence.append(self.thinking_end_token_id)
+        self._forced_index = 0
+
+        self.in_thinking = self.enable_thinking and self.prompt_preopens_thinking
+        self.thinking_token_count = 0
+        self.budget_exceeded = False
+        self.forced_token_id = None
+
+    def reset_thinking_state(self):
+        """Reset thinking state between generations."""
+        self.in_thinking = self.enable_thinking and self.prompt_preopens_thinking
+        self.thinking_token_count = 0
+        self.budget_exceeded = False
+        self._forced_index = 0
+        # VENDOR-DEVIATION(upstream-bugfix): upstream left a forced token
+        # captured by the previous generation pending here; a later
+        # pop_forced_token_id() would inject it into the new generation
+        # (repro-tested in tests/test_mlx_vlm_vendored_generate.py).
+        self.forced_token_id = None
+
+    def __call__(self, token_id: int) -> Optional[int]:
+        """Process a token and return a forced token ID if budget exceeded, else None."""
+        if (
+            self.enable_thinking
+            and self.thinking_start_token_id is not None
+            and token_id == self.thinking_start_token_id
+        ):
+            self.in_thinking = True
+            return None
+
+        if token_id == self.thinking_end_token_id:
+            self.in_thinking = False
+            self.budget_exceeded = False
+            self._forced_index = 0
+            return None
+
+        if self.in_thinking:
+            self.thinking_token_count += 1
+            if self.thinking_token_count > self.thinking_budget:
+                self.budget_exceeded = True
+
+        if self.budget_exceeded and self._forced_index < len(self._forced_sequence):
+            forced = self._forced_sequence[self._forced_index]
+            self._forced_index += 1
+            self.forced_token_id = forced
+            return forced
+
+        self.forced_token_id = None
+        return None
+
+    def pop_forced_token_id(self) -> Optional[int]:
+        """Return and clear the pending forced token ID, if any."""
+        if self.forced_token_id is None or not self.enable_thinking:
+            return None
+
+        forced_token_id = self.forced_token_id
+        self.forced_token_id = None
+        return forced_token_id
+
+
+def print_array_report(t: mx.array, label: Optional[str]) -> dict:
+    """
+    Return a dictionary report of an MLX array similar to PyTorch's tensor representation.
+    Args:
+        arr: MLX array to analyze
+    Returns:
+        Dictionary containing shape, dtype, value representation, and statistics
+    """
+
+    # Get basic statistics
+    mean_val = mx.mean(t)
+    std_val = mx.std(t)
+    min_val = mx.min(t)
+    max_val = mx.max(t)
+
+    report = {
+        "shape": f"{tuple(t.shape)}",
+        "dtype": str(t.dtype),
+        "value": repr(t),
+        "mean": f"array({mean_val}, dtype={t.dtype})",
+        "std": f"array({std_val}, dtype={t.dtype})",
+        "min": f"array({min_val}, dtype={t.dtype})",
+        "max": f"array({max_val}, dtype={t.dtype})",
+        "label": label if label else "array",
+    }
+
+    # Print each field, handling 'value' specially
+    print("{")
+    for key, value in report.items():
+        if key == "value":
+            print(f" '{key}': {value},")  # No quotes around value
+        else:
+            print(f" '{key}': {repr(value)},")
+    print("}")
+    return report
+
+
+def should_add_special_tokens(model_type: str, processor) -> bool:
+    """Return whether tokenization should add markers outside the chat template."""
+    template_owns_markers = {
+        "gemma3",
+        "gemma3n",
+        "gemma4",
+        "gemma4_unified",
+        "laguna",
+    }
+    if model_type not in template_owns_markers:
+        return True
+    return getattr(processor, "chat_template", None) is None

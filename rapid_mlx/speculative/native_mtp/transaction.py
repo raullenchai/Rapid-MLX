@@ -42,7 +42,8 @@ class _ThinkingBudgetLogitsProcessor:
         self.budget = int(criteria.thinking_budget)
         if self.budget < 0:
             raise ValueError("thinking_budget must be non-negative")
-        self.start_ids = [int(criteria.thinking_start_token_id)]
+        start_token_id = criteria.thinking_start_token_id
+        self.start_ids = [] if start_token_id is None else [int(start_token_id)]
         self.end_ids = [int(criteria.thinking_end_token_id)]
         forced = getattr(criteria, "_forced_sequence", None)
         self.forced_ids = [int(token) for token in (forced or self.end_ids)]
@@ -59,6 +60,12 @@ class _ThinkingBudgetLogitsProcessor:
             if _last_sequence(context[first:], self.end_ids) >= 0:
                 return logits
         else:
+            # The released criteria documents ``thinking_start_token=None``
+            # as a supported default. Without a preopened prompt there is no
+            # observable boundary from which to start counting, so leave the
+            # logits untouched instead of manufacturing a token id.
+            if not self.start_ids:
+                return logits
             start = _last_sequence(context, self.start_ids)
             if start < 0:
                 return logits
@@ -609,7 +616,15 @@ def speculative_prefill_kwargs(draft_kind, _drafter):
 
 def install_generation_hooks() -> None:
     """Inject Rapid's transaction into mlx-vlm's ordinary generation shell."""
-    from mlx_vlm.generate import ar
+    # VENDOR-DEVIATION(redirect): vendored text-AR core (step 3a). The
+    # generation shell (``dispatch``) still reads the PINNED upstream ar
+    # module until the dispatch slice lands, so the hooks must wrap BOTH
+    # modules: the vendored one (bound directly by native_mtp runtime) and
+    # the pinned one (bound by dispatch). Patching only the vendored module
+    # silently unhooked the dispatch path.
+    from mlx_vlm.generate import ar as upstream_ar
+
+    from rapid_mlx.models.mlx_vlm_vendored.generate import ar
 
     required = (
         "generate_step",
@@ -617,10 +632,14 @@ def install_generation_hooks() -> None:
         "run_speculative_rounds",
         "speculative_prefill_kwargs",
     )
-    if not all(hasattr(ar, name) for name in required):
-        raise RuntimeError("mlx-vlm does not expose the qualified generation seam.")
-    released_generate_step = ar.generate_step
-    if not getattr(released_generate_step, "_RAPID_GLM_MTP_CONTEXT", False):
+    for module in (ar, upstream_ar):
+        if not all(hasattr(module, name) for name in required):
+            raise RuntimeError("mlx-vlm does not expose the qualified generation seam.")
+
+    def _install_context_wrapper(ar_module) -> None:
+        released_generate_step = ar_module.generate_step
+        if getattr(released_generate_step, "_RAPID_GLM_MTP_CONTEXT", False):
+            return
 
         @wraps(released_generate_step)
         def generate_step(*args, **kwargs):
@@ -651,14 +670,16 @@ def install_generation_hooks() -> None:
                 _LEGACY_TOKEN_CONTEXT.reset(context_token)
 
         generate_step.__dict__["_RAPID_GLM_MTP_CONTEXT"] = True
-        ar.generate_step = generate_step
+        ar_module.generate_step = generate_step
+
+    for ar_module in (ar, upstream_ar):
+        _install_context_wrapper(ar_module)
 
     # mlx-vlm's public ``stream_generate`` keeps the function imported in
-    # ``generate.dispatch``. Updating only ``generate.ar`` changes the globals
-    # used inside the old function, but does not wrap its entry and therefore
-    # loses reasoning-budget context before speculative rounds. Do this even
-    # on an idempotent install in case dispatch was imported after the first.
-    active_generate_step = ar.generate_step
+    # ``generate.dispatch``. Dispatch reads the PINNED upstream module, so
+    # the identity check compares against upstream's step (vendored and
+    # upstream carry distinct function objects after the step-3a split).
+    active_generate_step = upstream_ar.generate_step
     original_generate_step = getattr(
         active_generate_step, "__wrapped__", active_generate_step
     )
@@ -670,9 +691,14 @@ def install_generation_hooks() -> None:
     except ImportError:
         pass
 
+    # Transaction hooks replace the ar-module speculative bindings in BOTH
+    # modules (vendored for runtime's direct binding, upstream for dispatch).
     ar.SpeculativePrefill = SpeculativePrefill
     ar.run_speculative_rounds = run_speculative_rounds
     ar.speculative_prefill_kwargs = speculative_prefill_kwargs
+    upstream_ar.SpeculativePrefill = SpeculativePrefill
+    upstream_ar.run_speculative_rounds = run_speculative_rounds
+    upstream_ar.speculative_prefill_kwargs = speculative_prefill_kwargs
 
 
 __all__ = [

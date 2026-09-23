@@ -171,9 +171,11 @@ vendored copy differs by exactly the deviations listed):
     ``_save_layer_major_shard`` temp-file cleanup on write failure.
 
 - ``inputs.py`` — verbatim from ``mlx_vlm/utils.py`` @ v0.7.1 lines
-  1714-2543 (``load_image`` .. ``prepare_inputs``, an unbroken region;
-  region sha256
-  ``ac610b0e2c157de878b17ec9f5ebaa8bf2c75000e44c09d84b5c17dbaf7c7b5f``),
+  1714-2807 (``load_image`` .. ``prepare_inputs`` ..
+  ``group_images_by_shape`` .. ``should_add_special_tokens``, an unbroken
+  region; the tail past ``prepare_inputs`` was appended in the step-3a
+  slice to satisfy ``generate/ar.py``'s helper imports; region sha256
+  ``0c3681fa511baa4c345e6caba42760c7f1632ae2f69706982e39eb2f411b1294``),
   except the import block: exactly the names the region references
   (ruff F821 closure), with ``mlx_vlm.models.base`` (``
   BaseImageProcessor``) still resolving upstream and the logger pinned to
@@ -203,4 +205,72 @@ vendored copy differs by exactly the deviations listed):
   ``load_audio``, and ``prepare_inputs``, which carry the hunks above).
   A diff against the pinned tag must show only the header/import block
   and the documented hunks.
+
+- ``sample_utils.py`` — verbatim from ``mlx_vlm/sample_utils.py`` @ v0.7.1
+  (upstream sha256
+  ``b3057b6dcaefe5b0a7c50cb96b70baad4334a2f88f70adc04fe7ec2060f7851c``),
+  no deviations (mlx + stdlib imports only). Consumed by
+  ``generate/ar.py``.
+
+- ``generate/`` — verbatim from ``mlx_vlm/generate`` @ v0.7.1, text AR
+  core only (step-3a slice):
+
+  - ``ar.py`` (upstream sha256
+    ``3ede5d76b292cdecc0da479a0807d081b1918bdc6dfe7e47755b725299888ac2``)
+    except five import redirects:
+    ``..models import cache`` → vendored package root;
+    ``..prompt_utils`` → pinned upstream (design-doc step-2 boundary);
+    ``..speculative.utils`` (both top-level and the lazy
+    ``validate_drafter_compatibility``) → pinned upstream until the
+    speculative slice lands; ``..turboquant`` → pinned upstream
+    (``kv_quant.py`` precedent); ``..utils`` helpers → vendored
+    ``inputs.py`` (incl. the lazy ``process_image``). A pinned upstream cache
+    alias supports the documented dual-namespace conversion hunks below.
+    It also carries in-source ``VENDOR-DEVIATION(upstream-bugfix)`` hunks,
+    each repro-tested in ``tests/test_mlx_vlm_vendored_generate.py``:
+    ``_generate_batch`` closes the wired-limit generator in a ``finally``
+    and skips ``token=None`` terminal responses;
+    ``generate_step`` binds the vendored ``maybe_quantize_kv_cache`` directly,
+    and its quantization plus continuous-batch conversion paths recognize both
+    fallback vendored caches and caches returned by pinned upstream models;
+    the generation override seam ignores upstream's default AR exports so the
+    vendored batch classes stay active, while honoring explicit public patches;
+    ``_merge_prefill_prompt_kwargs`` and the APC mixed-assembly path reject a
+    per-row tensor kwarg missing from any row instead of concatenating a
+    smaller, row-shifted tensor;
+    ``BatchGenerator._build_mixed_prompt_batch``/``_assemble_mixed_prompt_batch``
+    release acquired APC picks on every failed warm assembly and strip the
+    block references from the metas handed to the constructor so the
+    constructor's prepare-guard cannot double-release them (re-attached on
+    success);
+    ``BatchGenerator.remove`` releases a cancelled sole-prefill batch's APC
+    blocks;
+    tokenless speculative-exhaustion responses no longer inflate generated
+    token counts or throughput;
+    and the three batched sampling sites (``GenerationBatch._step``,
+    ``SpeculativeGenerationBatch._start_rounds``,
+    ``PromptProcessingBatch.generate``) pass the per-row int uids as
+    ``row_ids`` instead of upstream's ``[0]*n``, so seeded draws stay
+    independent across rows sharing a generated position.
+  - ``common.py`` (upstream sha256
+    ``c69e7e38a09990404d299b0a8d4be55c8220e60652e67a2456e8177633813ba0``)
+    except two redirects: ``..models import cache`` → vendored root,
+    ``..turboquant`` → pinned upstream, plus a pinned upstream cache alias
+    used only by the documented dual-namespace quantization hunk.
+  - ``types.py`` (upstream sha256
+    ``dff487807bedaa3549c39dea02986ada31a45e9e4c27ab447a207e3fff009f6c``)
+    — verbatim, no deviations.
+  - ``__init__.py`` — **not verbatim**: a reduced-export shim
+    (``VENDOR-DEVIATION(subset-exports)``) re-exporting only the vendored
+    text-AR surface; the upstream init eagerly imports every modality
+    module (dispatch/image/audio/video/diffusion/edit_image), none of
+    which is vendored yet.
+
+  Consumers: ``speculative/native_mtp/runtime.py`` and
+  ``speculative/native_mtp/transaction.py`` import ``ar`` from this
+  package; byte-identical per-function parity is probed in
+  ``tests/test_mlx_vlm_vendored_generate.py`` (every top-level symbol
+  except the documented-hunk bodies listed in that module). A diff against
+  the pinned tag must show only the import-block redirects and the
+  documented hunks above.
 """

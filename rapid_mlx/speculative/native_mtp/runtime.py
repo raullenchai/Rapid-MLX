@@ -23,7 +23,9 @@ def have_glm_cache_runtime() -> bool:
         )
 
         install_glm5_mtp_compatibility()
-        from mlx_vlm.generate import ar
+        # VENDOR-DEVIATION(redirect): vendored text-AR core (step 3a); the
+        # remaining mlx_vlm imports below move in later step-3 slices.
+        from mlx_vlm.generate import ar as upstream_ar
         from mlx_vlm.models.cache import ArraysCache, PoolingCache
         from mlx_vlm.models.glm5_next import language
         from mlx_vlm.speculative.drafters import load_drafter  # noqa: F401
@@ -31,6 +33,7 @@ def have_glm_cache_runtime() -> bool:
             Glm5NextMTPDraftModel,
         )
 
+        from rapid_mlx.models.mlx_vlm_vendored.generate import ar
         from rapid_mlx.patches.glm5_next_runtime import (
             _has_native_glm5_next_runtime,
         )
@@ -47,13 +50,16 @@ def have_glm_cache_runtime() -> bool:
             and all(hasattr(ArraysCache, name) for name in cache_methods)
             and all(hasattr(PoolingCache, name) for name in cache_methods)
             and all(
-                hasattr(ar, name)
-                for name in (
-                    "generate_step",
-                    "SpeculativePrefill",
-                    "run_speculative_rounds",
-                    "speculative_prefill_kwargs",
+                all(
+                    hasattr(module, name)
+                    for name in (
+                        "generate_step",
+                        "SpeculativePrefill",
+                        "run_speculative_rounds",
+                        "speculative_prefill_kwargs",
+                    )
                 )
+                for module in (ar, upstream_ar)
             )
         )
     except Exception:  # noqa: BLE001 - optional runtime must fail closed
