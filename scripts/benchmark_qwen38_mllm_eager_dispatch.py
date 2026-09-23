@@ -332,6 +332,10 @@ def _media_sequence_pass(
 
     def eager_engaged(sample: dict[str, Any]) -> bool:
         layer_hits = sample.get("eager_layer_hits", [])
+        # Media prefill is not singleton and an EOS/length-terminated request
+        # need not share the measured ignore_eos text lane's exact n+1 count.
+        # Still require every decoder layer to engage equally and reconcile
+        # the aggregate, so a baseline-like media path cannot pass recovery.
         return bool(
             int(sample.get("eager_hits", 0)) > 0
             and len(layer_hits) == 64
@@ -429,12 +433,14 @@ def evaluate_gates(
             and not any(sample["eager_layer_hits"])
         )
         if arm == "baseline"
+        # Fixed text runs execute one singleton prefix-boundary prefill
+        # forward plus one decoder forward per public completion token.
         else (
             int(sample.get("eager_hits", -1))
-            == 64 * int(sample.get("completion_tokens", -1))
+            == 64 * (int(sample.get("completion_tokens", -1)) + 1)
             and len(sample.get("eager_layer_hits", [])) == 64
             and all(
-                int(hits) == int(sample.get("completion_tokens", -1))
+                int(hits) == int(sample.get("completion_tokens", -1)) + 1
                 for hits in sample["eager_layer_hits"]
             )
         )

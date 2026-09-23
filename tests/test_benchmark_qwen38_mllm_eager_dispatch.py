@@ -254,25 +254,30 @@ def test_stream_token_delta_fails_closed_when_ambiguous():
         bench._delta_token_ids(output, 2)
 
 
-def _media_sample(text="cat", token_hash="tokens", eager_hits=128):
+def _media_sample(text="cat", token_hash="tokens", completion_tokens=1, per_layer=2):
     return {
         "text": text,
         "text_sha256": "text-hash",
         "token_sha256": token_hash,
+        "completion_tokens": completion_tokens,
         "singleton_batch_delta": 1,
-        "eager_hits": eager_hits,
-        "eager_layer_hits": [eager_hits // 64] * 64,
+        "eager_hits": 64 * per_layer,
+        "eager_layer_hits": [per_layer] * 64,
     }
 
 
 def test_media_sequence_requires_exact_recovery_and_candidate_engagement():
     before = _media_sample()
-    middle = _media_sample(text="answer")
+    middle = _media_sample(text="answer", completion_tokens=64, per_layer=7)
     after = _media_sample()
     assert bench._media_sequence_pass(before, middle, after, "cat")
     after["token_sha256"] = "drift"
     assert not bench._media_sequence_pass(before, middle, after, "cat")
-    after = _media_sample(eager_hits=0)
+    after = _media_sample()
+    after["eager_hits"] = 0
+    assert not bench._media_sequence_pass(before, middle, after, "cat")
+    after = _media_sample()
+    after["eager_layer_hits"][0] -= 1
     assert not bench._media_sequence_pass(before, middle, after, "cat")
 
 
@@ -303,14 +308,14 @@ def _passing_receipt():
                         ttft=1.05,
                         active=100 + bench.MIB,
                         peak=200 + bench.MIB,
-                        hits=64 * bench.EXPECTED_TOKENS,
+                        hits=64 * (bench.EXPECTED_TOKENS + 1),
                     ),
                     _sample(
                         (100 + index / 10) * 1.04,
                         ttft=1.05,
                         active=100 + bench.MIB,
                         peak=200 + bench.MIB,
-                        hits=64 * bench.EXPECTED_TOKENS,
+                        hits=64 * (bench.EXPECTED_TOKENS + 1),
                     ),
                 ],
             }
@@ -395,7 +400,7 @@ def test_all_gates_pass_on_qualified_receipt():
         (
             "exact_candidate_hits_per_layer_and_zero_baseline",
             lambda r: r["pairs"][0]["candidate"][0]["eager_layer_hits"].__setitem__(
-                0, 255
+                0, bench.EXPECTED_TOKENS
             ),
         ),
         ("same_model_and_executor", lambda r: r["identity"].update(same_model=False)),
