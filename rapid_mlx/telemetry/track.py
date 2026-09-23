@@ -147,14 +147,14 @@ def track(
     props: Mapping[str, object],
     *,
     nth_model_served: int | None = None,
-) -> None:
-    """Queue one registry-approved v2 event without blocking or raising."""
+) -> bool:
+    """Queue one registry-approved v2 event and report sender acceptance."""
     try:
         if not _upload_allowed():
-            return
+            return False
         context = _process_context()
         if context is None:
-            return
+            return False
 
         # ``note_model_served`` uses zero as its failure sentinel. A real
         # successful note is always at least one, so zero must stay off wire.
@@ -170,18 +170,18 @@ def track(
             platform=context.platform,
         )
         if common is None:
-            return
+            return False
         item = envelope.build_batch_item(event, props, common)
         if item is None:
-            return
+            return False
 
         # Importing the sender registers an at-fork hook, so defer it until an
         # event has passed every earlier gate.
         from rapid_mlx.telemetry import posthog_sender
 
-        posthog_sender.get_sender().capture(item)
+        return posthog_sender.get_sender().capture(item)
     except Exception:
-        return
+        return False
 
 
 def _emit_app_opened(surface: str) -> None:

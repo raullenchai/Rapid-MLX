@@ -15,6 +15,7 @@ import sys
 import tarfile
 import tempfile
 import threading
+from collections.abc import Callable
 from pathlib import Path
 
 LTX25_RUNTIME_COMMIT = "57952288076766abe27dda3a774b2c24f7346977"
@@ -27,10 +28,28 @@ _DEFAULT_TIMEOUT_SECONDS = 7200
 _TERMINATE_GRACE_SECONDS = 10
 _RUNTIME_CACHE_LOCK = threading.Lock()
 _RUNTIME_CACHE: tempfile.TemporaryDirectory[str] | None = None
-_INNER_PROMPT_RUNNER = """\
+_READINESS_TOKEN = b"RMLX_LTX25_READY\n"
+_READINESS_FD_ENV = "RAPID_MLX_LTX25_READY_FD"
+_INNER_PROMPT_RUNNER = f"""\
+import os
 import signal
 import sys
 from ltx_pipelines_mlx.cli import main
+from ltx_pipelines_mlx.distilled import DistilledPipeline
+
+ready_fd = int(os.environ[{_READINESS_FD_ENV!r}])
+original_load = DistilledPipeline.load
+ready_sent = False
+
+def load_and_signal(self):
+    global ready_sent
+    original_load(self)
+    if not ready_sent:
+        os.write(ready_fd, {_READINESS_TOKEN!r})
+        os.close(ready_fd)
+        ready_sent = True
+
+DistilledPipeline.load = load_and_signal
 
 signal.signal(signal.SIGTERM, signal.SIG_DFL)
 sys.argv = ["ltx-2-mlx", *sys.argv[1:], "--prompt", sys.stdin.read()]
@@ -47,6 +66,7 @@ signal.signal(signal.SIGTERM, signal.SIG_IGN)
 child = subprocess.Popen(
     [sys.executable, "-c", {_INNER_PROMPT_RUNNER!r}, *sys.argv[1:]],
     stdin=subprocess.PIPE,
+    pass_fds=(int(os.environ[{_READINESS_FD_ENV!r}]),),
     text=True,
 )
 try:
@@ -424,6 +444,7 @@ class LTX25VideoEngine:
         seed: int,
         image: Path | None,
         conditioning_strength: float | None = None,
+        on_loaded: Callable[[], None] | None = None,
     ) -> None:
         timeout = _generation_timeout_seconds()
         interpreter = embedded_ltx25_interpreter()
@@ -489,6 +510,9 @@ class LTX25VideoEngine:
                 ]
             )
         process: subprocess.Popen[str] | None = None
+        ready_read: int | None = None
+        ready_write: int | None = None
+        readiness_thread: threading.Thread | None = None
         try:
             # Prompts may contain private user data. Keep them out of argv and
             # local process listings by feeding the isolated runtime over stdin.
@@ -497,17 +521,38 @@ class LTX25VideoEngine:
                     raise LTX25BackendError(
                         "LTX-2.5 generation cannot start while the server is stopping."
                     )
-                process = subprocess.Popen(
-                    command,
-                    stdin=subprocess.PIPE,
-                    stdout=subprocess.DEVNULL,
-                    stderr=subprocess.DEVNULL,
-                    text=True,
-                    start_new_session=True,
-                    env=environment,
-                )
+                ready_read, ready_write = os.pipe()
+                environment[_READINESS_FD_ENV] = str(ready_write)
+                try:
+                    process = subprocess.Popen(
+                        command,
+                        stdin=subprocess.PIPE,
+                        stdout=subprocess.DEVNULL,
+                        stderr=subprocess.DEVNULL,
+                        text=True,
+                        start_new_session=True,
+                        env=environment,
+                        pass_fds=(ready_write,),
+                    )
+                finally:
+                    os.close(ready_write)
+                    ready_write = None
                 self._process = process
+
+            assert ready_read is not None
+            readiness_fd = ready_read
+
+            def await_readiness(fd: int = readiness_fd) -> None:
+                with os.fdopen(fd, "rb") as stream:
+                    token = stream.readline(len(_READINESS_TOKEN) + 1)
+                if token == _READINESS_TOKEN and on_loaded is not None:
+                    on_loaded()
+
+            readiness_thread = threading.Thread(target=await_readiness, daemon=True)
+            readiness_thread.start()
+            ready_read = None
             process.communicate(input=prompt, timeout=timeout)
+            readiness_thread.join()
             if process.returncode:
                 raise LTX25BackendError(
                     f"LTX-2.5 runtime exited with code {process.returncode}; "
@@ -537,6 +582,10 @@ class LTX25VideoEngine:
                 "LTX-2.5 generation failed while running its isolated runtime."
             ) from exc
         finally:
+            if ready_read is not None:
+                os.close(ready_read)
+            if readiness_thread is not None:
+                readiness_thread.join(timeout=1)
             with self._process_lock:
                 if self._process is process:
                     self._process = None

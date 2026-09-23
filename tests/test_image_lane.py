@@ -599,6 +599,12 @@ def test_image_adapter_residency_without_mode_preserves_family_default(monkeypat
 def test_image_adapter_delegates_atomic_performance_methods(monkeypatch):
     engine = ImageEngine("Runpod/FLUX.2-klein-4B-mflux-4bit")
     expected = {"denoise_seconds": 8.0, "denoise_steps": 4}
+    loaded_modes = []
+    monkeypatch.setattr(
+        engine._engine,
+        "_ensure_loaded",
+        lambda *, for_edit=None: loaded_modes.append(for_edit),
+    )
     monkeypatch.setattr(engine._engine, "performance_snapshot", lambda: expected)
     monkeypatch.setattr(
         engine._engine,
@@ -608,6 +614,7 @@ def test_image_adapter_delegates_atomic_performance_methods(monkeypatch):
 
     assert engine.performance_snapshot() == expected
     assert engine.generate_with_performance(prompt="a fox") == (b"png", expected)
+    assert loaded_modes == [False]
 
 
 # --------------------------------------------------------------------------- #

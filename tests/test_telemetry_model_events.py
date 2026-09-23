@@ -59,6 +59,11 @@ def isolated_model_events(monkeypatch, tmp_path):
     monkeypatch.setattr(posthog_sender.build_gate, "official_build", lambda: STAMP)
     monkeypatch.setattr(consent_runtime, "upload_allowed", lambda: True)
     monkeypatch.setattr(
+        model_events,
+        "_submit_model_served",
+        lambda callback: (callback(), True)[1],
+    )
+    monkeypatch.setattr(
         track_module.store, "days_since_first_run_bucket", lambda: "7-29"
     )
     track_module._reset_for_tests()
@@ -84,6 +89,15 @@ def isolated_model_events(monkeypatch, tmp_path):
 )
 def test_size_bucket_is_closed_and_half_open(size, expected):
     assert model_events.size_bucket(size) == expected
+
+
+def test_model_served_submission_failure_is_contained(monkeypatch):
+    monkeypatch.setattr(
+        model_events,
+        "_submit_model_served",
+        lambda _callback: (_ for _ in ()).throw(RuntimeError("submit failed")),
+    )
+    assert model_events.emit_model_served(None, "sdxl-base", False) is False
 
 
 def test_pull_error_classes_are_type_based():

@@ -39,6 +39,7 @@ import asyncio
 import gc
 import logging
 import os
+import threading
 from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING, cast
@@ -220,7 +221,14 @@ _prefix_cache_load_task = None  # asyncio.Task | None
 _model_name: str | None = None
 _model_alias: str | None = None  # Short alias used to start the model (if any)
 _telemetry_auto_selected: bool = False
-_telemetry_model_served_emitted: bool = False
+_telemetry_model_served_state = "idle"
+_telemetry_audio_model_served_state = "idle"
+_telemetry_embedding_model_served_state = "idle"
+_telemetry_model_served_locks = {
+    "_telemetry_model_served_state": threading.Lock(),
+    "_telemetry_audio_model_served_state": threading.Lock(),
+    "_telemetry_embedding_model_served_state": threading.Lock(),
+}
 # Task #292 (Bo R13/R14): operator opt-in for ``/v1/audio/*`` routes on a
 # text-only server. Set to True by ``--enable-audio`` (text mode) or by
 # :func:`rapid_mlx.cli._serve_audio_mode` (audio mode). The audio-mode
@@ -686,21 +694,57 @@ def _mirror_primary_lifecycle_state(engine: object, state: str) -> None:
         _residency_manager.set_primary_lifecycle_state(engine, state)
 
 
-def _emit_primary_model_served_once(engine: object) -> None:
-    global _telemetry_model_served_emitted
-    if _telemetry_model_served_emitted:
-        return
-    try:
-        from rapid_mlx.telemetry.model_events import emit_model_served
+def _finish_model_served(state_name: str, accepted: bool) -> None:
+    with _telemetry_model_served_locks[state_name]:
+        if globals()[state_name] == "pending":
+            globals()[state_name] = "emitted" if accepted else "idle"
 
-        emit_model_served(
-            engine,
-            _model_alias or _model_path,
-            _telemetry_auto_selected,
-        )
-    except Exception:
-        pass
-    _telemetry_model_served_emitted = True
+
+def _enqueue_model_served_once(
+    state_name: str,
+    engine: object | None,
+    model_name: object,
+    auto_selected: bool,
+) -> None:
+    with _telemetry_model_served_locks[state_name]:
+        if globals()[state_name] != "idle":
+            return
+        try:
+            from rapid_mlx.telemetry.model_events import emit_model_served
+
+            queued = emit_model_served(
+                engine,
+                model_name,
+                auto_selected,
+                on_complete=lambda accepted: _finish_model_served(state_name, accepted),
+            )
+        except Exception:
+            return
+        if queued:
+            globals()[state_name] = "pending"
+
+
+def _emit_primary_model_served_once(engine: object) -> None:
+    _enqueue_model_served_once(
+        "_telemetry_model_served_state",
+        engine,
+        _model_alias or _model_path,
+        _telemetry_auto_selected,
+    )
+
+
+def _emit_audio_model_served_once(engine: object, model_name: str) -> None:
+    del engine
+    _enqueue_model_served_once(
+        "_telemetry_audio_model_served_state", None, model_name, False
+    )
+
+
+def _emit_embedding_model_served_once(engine: object, model_name: str) -> None:
+    del engine
+    _enqueue_model_served_once(
+        "_telemetry_embedding_model_served_state", None, model_name, False
+    )
 
 
 async def _finish_primary_demand_load_and_emit(engine: object) -> None:
@@ -733,9 +777,6 @@ def _flush_v2_telemetry() -> None:
 async def lifespan(app: FastAPI):
     """FastAPI lifespan for startup/shutdown events."""
     global _engine, _mcp_manager, _primary_model_lifecycle
-    global _telemetry_model_served_emitted
-
-    _telemetry_model_served_emitted = False
 
     from .routes.agents import start_agent_service_lifecycle
 
@@ -825,6 +866,9 @@ async def lifespan(app: FastAPI):
                 auto_selected=_telemetry_auto_selected,
             )
             raise
+
+    if _engine is not None and getattr(_engine, "is_text_diffusion", False):
+        _emit_primary_model_served_once(_engine)
 
     # Warmup: generate one token to trigger Metal shader compilation.
     # Runs here (not in CLI) so all engine types are fully started first.
@@ -1726,6 +1770,7 @@ def load_embedding_model(
         overflow_policy=_embedding_overflow_policy,
     )
     _embedding_engine.load()
+    _emit_embedding_model_served_once(_embedding_engine, model_name)
 
     # Sync into config for route modules
     cfg = get_config()
@@ -2991,12 +3036,16 @@ def configure_primary_model_lifecycle(
     global _primary_lazy_load
     global _primary_idle_unload_seconds
     global _primary_model_lifecycle
-    global _telemetry_model_served_emitted
+    global _telemetry_audio_model_served_state
+    global _telemetry_embedding_model_served_state
+    global _telemetry_model_served_state
 
     _primary_lazy_load = bool(lazy_load)
     _primary_idle_unload_seconds = max(0.0, float(idle_unload_seconds))
     _primary_model_lifecycle = None
-    _telemetry_model_served_emitted = False
+    _telemetry_model_served_state = "idle"
+    _telemetry_audio_model_served_state = "idle"
+    _telemetry_embedding_model_served_state = "idle"
     get_config().primary_model_lifecycle = None
 
 

@@ -101,6 +101,12 @@ class ImageEngine:
         # loader when an older client omits the newly optional mode field.
         for_edit = None if mode is None else mode == "editing"
         self._engine._ensure_loaded(for_edit=for_edit)  # noqa: SLF001
+        self._emit_model_served()
+
+    def _emit_model_served(self) -> None:
+        from ..server import _emit_primary_model_served_once
+
+        _emit_primary_model_served_once(self)
 
     def get_stats(self) -> dict:
         """Route-facing engine surface (mirrors ``BaseEngine.get_stats``).
@@ -157,6 +163,10 @@ class ImageEngine:
         self, **kwargs
     ) -> tuple[bytes, dict[str, float | int | None]]:  # noqa: ANN003
         """Generate one image and atomically return its denoise timing."""
+        self._engine._ensure_loaded(  # noqa: SLF001
+            for_edit=bool(kwargs.get("image_paths"))
+        )
+        self._emit_model_served()
         return self._engine.generate_with_performance(**kwargs)
 
     def generate(
@@ -172,6 +182,8 @@ class ImageEngine:
         image_paths: list[str] | None = None,
     ) -> bytes:
         """Generate one image; returns PNG bytes. Raises ``ImageRuntimeError``."""
+        self._engine._ensure_loaded(for_edit=bool(image_paths))  # noqa: SLF001
+        self._emit_model_served()
         return self._engine.generate(
             prompt=prompt,
             width=width,

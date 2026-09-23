@@ -3,12 +3,6 @@
 # Tighten after fixes: python scripts/check_mypy_error_budget.py --update
 # Environment: Python 3.11 + config/mypy-requirements.txt
 
-videox_fun_mlx/models/cogvideox_transformer3d.py 2
-videox_fun_mlx/models/cogvideox_vae.py 3
-videox_fun_mlx/models/t5_encoder.py 2
-videox_fun_mlx/models/tokenizer.py 1
-videox_fun_mlx/pipeline/pipeline_cogvideox_fun_inpaint.py 7
-videox_fun_mlx/utils.py 3
 rapid_mlx/_integration_tests/test_anthropic_sdk.py 1
 rapid_mlx/_integration_tests/test_hermes.py 1
 rapid_mlx/_mlx_compat.py 2
@@ -66,6 +60,18 @@ rapid_mlx/models/gemma4_vendored/language.py 6
 rapid_mlx/models/gpt_oss_puzzle.py 3
 rapid_mlx/models/hy_v3.py 1
 rapid_mlx/models/mllm.py 22
+rapid_mlx/models/mlx_vlm_vendored/apc.py 37
+rapid_mlx/models/mlx_vlm_vendored/fp8.py 1
+rapid_mlx/models/mlx_vlm_vendored/generate/ar.py 48
+rapid_mlx/models/mlx_vlm_vendored/generate/types.py 1
+rapid_mlx/models/mlx_vlm_vendored/inputs.py 13
+rapid_mlx/models/mlx_vlm_vendored/models/base.py 5
+rapid_mlx/models/mlx_vlm_vendored/sample_utils.py 1
+rapid_mlx/models/mlx_vlm_vendored/speculative/cache_state.py 3
+rapid_mlx/models/mlx_vlm_vendored/speculative/common.py 3
+rapid_mlx/models/mlx_vlm_vendored/speculative/dflash.py 4
+rapid_mlx/models/mlx_vlm_vendored/speculative/mtp.py 3
+rapid_mlx/models/mlx_vlm_vendored/speculative/utils.py 1
 rapid_mlx/models/muse_glimmer.py 7
 rapid_mlx/models/nemotron_labs_diffusion.py 9
 rapid_mlx/moe_fusion.py 1
@@ -98,7 +104,7 @@ rapid_mlx/runtime/diffusion_lane.py 3
 rapid_mlx/runtime/disk_kv_checkpoint.py 1
 rapid_mlx/runtime/radix_index.py 2
 rapid_mlx/runtime/ubc_evict.py 1
-rapid_mlx/runtime/video_lane.py 4
+rapid_mlx/runtime/video_lane.py 2
 rapid_mlx/scheduler.py 35
 rapid_mlx/server.py 21
 rapid_mlx/service/helpers.py 4
@@ -144,15 +150,9 @@ rapid_mlx/utils/decode.py 2
 rapid_mlx/utils/tokenizer.py 18
 rapid_mlx/video/engine.py 2
 rapid_mlx/video/wan.py 1
-rapid_mlx/models/mlx_vlm_vendored/apc.py 37
-rapid_mlx/models/mlx_vlm_vendored/inputs.py 13
-rapid_mlx/models/mlx_vlm_vendored/fp8.py 1
-rapid_mlx/models/mlx_vlm_vendored/models/base.py 5
-rapid_mlx/models/mlx_vlm_vendored/speculative/cache_state.py 3
-rapid_mlx/models/mlx_vlm_vendored/speculative/common.py 3
-rapid_mlx/models/mlx_vlm_vendored/speculative/dflash.py 4
-rapid_mlx/models/mlx_vlm_vendored/speculative/mtp.py 3
-rapid_mlx/models/mlx_vlm_vendored/speculative/utils.py 1
-rapid_mlx/models/mlx_vlm_vendored/generate/ar.py 48
-rapid_mlx/models/mlx_vlm_vendored/generate/types.py 1
-rapid_mlx/models/mlx_vlm_vendored/sample_utils.py 1
+videox_fun_mlx/models/cogvideox_transformer3d.py 2
+videox_fun_mlx/models/cogvideox_vae.py 3
+videox_fun_mlx/models/t5_encoder.py 2
+videox_fun_mlx/models/tokenizer.py 1
+videox_fun_mlx/pipeline/pipeline_cogvideox_fun_inpaint.py 7
+videox_fun_mlx/utils.py 3

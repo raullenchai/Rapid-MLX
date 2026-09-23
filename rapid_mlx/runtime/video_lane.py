@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import importlib.util
+import inspect
 import os
 import shutil
 import stat
@@ -304,6 +305,11 @@ class VideoEngine:
         # second Metal graph concurrently with that still-draining worker.
         self._generation_lock = _PROCESS_GENERATION_LOCK
 
+    def _emit_model_served(self) -> None:
+        from ..server import _emit_primary_model_served_once
+
+        _emit_primary_model_served_once(self)
+
     def generate(
         self,
         *,
@@ -345,6 +351,7 @@ class VideoEngine:
                         seed=seed,
                         image=image,
                         conditioning_strength=conditioning_strength,
+                        on_loaded=self._emit_model_served,
                     )
             except LTX25BackendError as exc:
                 raise VideoRuntimeError(str(exc)) from exc
@@ -372,6 +379,7 @@ class VideoEngine:
                         image=image,
                         negative_prompt=negative_prompt,
                         guidance_scale=guidance_scale,
+                        on_loaded=self._emit_model_served,
                     )
             except WanBackendError as exc:
                 raise VideoRuntimeError(str(exc)) from exc
@@ -400,6 +408,7 @@ class VideoEngine:
                     seed=seed,
                     negative_prompt=negative_prompt or "",
                     guidance_scale=(6.0 if guidance_scale is None else guidance_scale),
+                    on_loaded=self._emit_model_served,
                 )
             return
         if _resolve_ffmpeg() is None:
@@ -418,7 +427,7 @@ class VideoEngine:
         # The 22B pipeline is not re-entrant and a second concurrent graph can
         # exhaust unified memory. Serialize jobs per served model.
         with self._generation_lock:
-            generation_kwargs = {
+            generation_kwargs: dict[str, object] = {
                 "model_repo": self.model_name,
                 "text_encoder_repo": None,
                 "prompt": prompt,
@@ -441,7 +450,18 @@ class VideoEngine:
                 generation_kwargs["cfg_scale"] = guidance_scale
             if conditioning_strength is not None:
                 generation_kwargs["image_strength"] = conditioning_strength
+            supports_load_callback = (
+                "on_loaded" in inspect.signature(generate_video_with_audio).parameters
+            )
+            if supports_load_callback:
+                generation_kwargs["on_loaded"] = self._emit_model_served
             generate_video_with_audio(**generation_kwargs)
+            if not supports_load_callback:
+                # The pinned mlx-video-with-audio 0.1.36 export is a
+                # ``(*args, **kwargs)`` wrapper without an on_loaded hook, so
+                # its honest compatibility signal is post-generation. Future
+                # runtimes with an explicit hook signal before inference.
+                self._emit_model_served()
         if not output_path.is_file() or output_path.stat().st_size == 0:
             raise VideoRuntimeError(
                 "LTX-2.3 generation completed without an MP4 output."

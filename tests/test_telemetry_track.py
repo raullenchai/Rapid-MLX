@@ -245,7 +245,7 @@ def test_registry_is_the_only_event_gate(monkeypatch):
 def test_zero_nth_model_served_is_omitted(monkeypatch):
     sender = inject_sender(monkeypatch)
     result = track_module.track("app_opened", {}, nth_model_served=0)
-    assert result is None
+    assert result is True
     [item] = sender.items
     properties = item["properties"]
     assert isinstance(properties, dict)

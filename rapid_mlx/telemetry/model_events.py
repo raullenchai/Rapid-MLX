@@ -272,19 +272,57 @@ def _serve_props(
     }
 
 
-@_never_raise
-def emit_model_served(
-    engine: object, alias_or_path: object, auto_selected: bool
+def _record_model_served(
+    engine: object,
+    alias_or_path: object,
+    auto_selected: bool,
+    on_complete: Callable[[bool], None] | None,
 ) -> None:
-    """Emit a successful load and make the sole served-model store note."""
-    from rapid_mlx.telemetry import store, track
+    """Perform the complete served-model capture on the telemetry daemon."""
+    accepted = False
+    try:
+        from rapid_mlx.telemetry import store, track
 
-    if not track._upload_allowed():
-        return
+        if track._upload_allowed():
+            props = _serve_props(engine, alias_or_path, auto_selected)
+            nth = store.note_model_served(str(props["model"]))
+            accepted = track.track("model_served", props, nth_model_served=nth or None)
+    except Exception:
+        pass
+    finally:
+        if on_complete is not None:
+            try:
+                on_complete(accepted)
+            except Exception:
+                pass
 
-    props = _serve_props(engine, alias_or_path, auto_selected)
-    nth = store.note_model_served(str(props["model"]))
-    track.track("model_served", props, nth_model_served=nth or None)
+
+def _submit_model_served(callback: Callable[[], None]) -> bool:
+    from rapid_mlx.telemetry.inference import _submit
+
+    return bool(_submit(callback))
+
+
+def emit_model_served(
+    engine: object,
+    alias_or_path: object,
+    auto_selected: bool,
+    *,
+    on_complete: Callable[[bool], None] | None = None,
+) -> bool:
+    """Enqueue a complete served-model capture without blocking the caller."""
+    try:
+        return _submit_model_served(
+            functools.partial(
+                _record_model_served,
+                engine,
+                alias_or_path,
+                auto_selected,
+                on_complete,
+            )
+        )
+    except Exception:
+        return False
 
 
 @_never_raise
