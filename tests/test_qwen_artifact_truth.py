@@ -143,6 +143,11 @@ def _binding(snapshot: Path, metadata: dict, *, subfolder: str | None = None):
     return binding
 
 
+def _replace_with_symlink(path: Path, target: Path) -> None:
+    path.unlink()
+    path.symlink_to(os.path.relpath(target, path.parent))
+
+
 @pytest.mark.parametrize("name", sorted(EXPECTED))
 def test_exact_cached_qwen_config_index_and_snapshot_facts(tmp_path: Path, name: str):
     snapshot, hub, metadata = _materialize_snapshot(tmp_path, name)
@@ -469,6 +474,88 @@ def test_target_index_fails_closed_on_missing_or_escaping_shard(
     truth = probe_qwen_artifact(snapshot, binding=_binding(snapshot, metadata))
     assert truth.target_weights.layout is expected_layout
     assert truth.target_weights.index_sha256 == _canonical_digest(index)
+
+
+@pytest.mark.parametrize(
+    ("name", "expected_layout"),
+    [
+        ("qwen36_35b_4bit", TargetWeightLayout.INDEXED_SAFETENSORS),
+        ("qwen35_4b_4bit", TargetWeightLayout.SINGLE_SAFETENSORS),
+    ],
+)
+def test_verified_repo_blob_weight_symlinks_remain_valid(
+    tmp_path: Path, name: str, expected_layout: TargetWeightLayout
+):
+    snapshot, hub, metadata = _materialize_snapshot(tmp_path, name)
+    if expected_layout is TargetWeightLayout.SINGLE_SAFETENSORS:
+        (snapshot / "model.safetensors.index.json").unlink()
+    repo_cache = hub / ("models--" + metadata["source_repo"].replace("/", "--"))
+    for index, shard in enumerate(metadata["target_shards"], start=1):
+        blob = repo_cache / "blobs" / f"{index:064x}"
+        blob.touch()
+        _replace_with_symlink(snapshot / shard, blob)
+
+    truth = probe_qwen_artifact(snapshot, binding=_binding(snapshot, metadata))
+    assert truth.target_weights.layout is expected_layout
+    assert truth.target_weights.shards == tuple(metadata["target_shards"])
+
+
+@pytest.mark.parametrize(
+    "escape_kind",
+    [
+        "dangling",
+        "external",
+        "sibling_revision",
+        "nested_blob",
+        "symlinked_blob_dir",
+    ],
+)
+def test_indexed_weight_symlink_escape_cannot_mint_runtime_target(
+    tmp_path: Path, escape_kind: str
+):
+    snapshot, hub, metadata = _materialize_snapshot(tmp_path, "qwen36_35b_4bit")
+    repo_cache = hub / ("models--" + metadata["source_repo"].replace("/", "--"))
+    shard = snapshot / metadata["target_shards"][0]
+    if escape_kind == "dangling":
+        target = tmp_path / "missing.safetensors"
+    elif escape_kind == "external":
+        target = tmp_path / "external.safetensors"
+        target.touch()
+    elif escape_kind == "sibling_revision":
+        target = repo_cache / "snapshots" / ("f" * 40) / "model.safetensors"
+        target.parent.mkdir()
+        target.touch()
+    elif escape_kind == "nested_blob":
+        target = repo_cache / "blobs" / "nested" / ("a" * 64)
+        target.parent.mkdir()
+        target.touch()
+    else:
+        external_blobs = tmp_path / "external-blobs"
+        external_blobs.mkdir()
+        target = external_blobs / ("a" * 64)
+        target.touch()
+        (repo_cache / "blobs").rmdir()
+        (repo_cache / "blobs").symlink_to(external_blobs, target_is_directory=True)
+        target = repo_cache / "blobs" / target.name
+    _replace_with_symlink(shard, target)
+
+    truth = probe_qwen_artifact(snapshot, binding=_binding(snapshot, metadata))
+    assert truth.target_weights.layout is TargetWeightLayout.INVALID_WEIGHTS
+    with pytest.raises(ArtifactProbeError, match="target weights are incomplete"):
+        to_verified_runtime_target(truth)
+
+
+def test_single_weight_external_symlink_cannot_mint_runtime_target(tmp_path: Path):
+    snapshot, _hub, metadata = _materialize_snapshot(tmp_path, "qwen35_4b_4bit")
+    (snapshot / "model.safetensors.index.json").unlink()
+    external = tmp_path / "external-single.safetensors"
+    external.touch()
+    _replace_with_symlink(snapshot / "model.safetensors", external)
+
+    truth = probe_qwen_artifact(snapshot, binding=_binding(snapshot, metadata))
+    assert truth.target_weights.layout is TargetWeightLayout.INVALID_WEIGHTS
+    with pytest.raises(ArtifactProbeError, match="target weights are incomplete"):
+        to_verified_runtime_target(truth)
 
 
 def test_production_injector_uses_shared_locator_with_identical_precedence(

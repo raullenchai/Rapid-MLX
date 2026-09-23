@@ -44,6 +44,7 @@ class TargetWeightLayout(str, Enum):
     NONE = "none"
     INVALID_INDEX = "invalid_index"
     INCOMPLETE_INDEX = "incomplete_index"
+    INVALID_WEIGHTS = "invalid_weights"
 
 
 class ArtifactIdentityStatus(str, Enum):
@@ -517,7 +518,61 @@ def _quantization(config: dict[str, Any]) -> QwenQuantization:
     )
 
 
-def _target_weights(snapshot_dir: Path) -> TargetWeights:
+_HEX_BLOB_ID = re.compile(r"^[0-9a-f]{40}(?:[0-9a-f]{24})?$")
+
+
+def _trusted_weight_file(
+    path: Path,
+    *,
+    snapshot_dir: Path,
+    binding: VerifiedHubSnapshotBinding | None,
+) -> bool:
+    """Validate one weight path without opening its contents.
+
+    Regular files must resolve beneath the exact probed artifact directory.
+    Hugging Face cache symlinks are valid only when a matching verified binding
+    proves their final target is a direct blob in the same resolved repo cache.
+    """
+
+    try:
+        resolved = path.resolve(strict=True)
+        artifact_root = snapshot_dir.resolve(strict=True)
+        resolved_parent = path.parent.resolve(strict=True)
+    except OSError:
+        return False
+    if not resolved.is_file():
+        return False
+    try:
+        resolved_parent.relative_to(artifact_root)
+    except ValueError:
+        return False
+
+    if path.is_symlink():
+        if binding is None:
+            return False
+        blobs_path = binding._repo_cache_dir / "blobs"
+        if blobs_path.is_symlink():
+            return False
+        try:
+            blobs_dir = blobs_path.resolve(strict=True)
+        except OSError:
+            return False
+        return (
+            blobs_dir.parent == binding._repo_cache_dir
+            and resolved.parent == blobs_dir
+            and _HEX_BLOB_ID.fullmatch(resolved.name) is not None
+        )
+
+    try:
+        resolved.relative_to(artifact_root)
+    except ValueError:
+        return False
+    return True
+
+
+def _target_weights(
+    snapshot_dir: Path, binding: VerifiedHubSnapshotBinding | None
+) -> TargetWeights:
     index_path = snapshot_dir / "model.safetensors.index.json"
     if index_path.is_file():
         try:
@@ -559,12 +614,29 @@ def _target_weights(snapshot_dir: Path) -> TargetWeights:
                     index_sha256,
                 )
             shard_paths.append(snapshot_dir.joinpath(*pure.parts))
-        missing = sum(not path.is_file() for path in shard_paths)
+        missing = sum(
+            not path.exists() and not path.is_symlink() for path in shard_paths
+        )
         if missing:
             return TargetWeights(
                 TargetWeightLayout.INCOMPLETE_INDEX,
                 len(shards),
                 missing,
+                shards,
+                index_sha256,
+            )
+        if any(
+            not _trusted_weight_file(
+                path,
+                snapshot_dir=snapshot_dir,
+                binding=binding,
+            )
+            for path in shard_paths
+        ):
+            return TargetWeights(
+                TargetWeightLayout.INVALID_WEIGHTS,
+                len(shards),
+                0,
                 shards,
                 index_sha256,
             )
@@ -576,14 +648,18 @@ def _target_weights(snapshot_dir: Path) -> TargetWeights:
             index_sha256,
         )
 
-    if (snapshot_dir / "model.safetensors").is_file():
-        return TargetWeights(
-            TargetWeightLayout.SINGLE_SAFETENSORS,
-            1,
-            0,
-            ("model.safetensors",),
-            None,
+    single = snapshot_dir / "model.safetensors"
+    if single.exists() or single.is_symlink():
+        layout = (
+            TargetWeightLayout.SINGLE_SAFETENSORS
+            if _trusted_weight_file(
+                single,
+                snapshot_dir=snapshot_dir,
+                binding=binding,
+            )
+            else TargetWeightLayout.INVALID_WEIGHTS
         )
+        return TargetWeights(layout, 1, 0, ("model.safetensors",), None)
 
     orphan_shards = [
         path
@@ -602,7 +678,6 @@ def _target_weights(snapshot_dir: Path) -> TargetWeights:
     return TargetWeights(TargetWeightLayout.NONE, 0, 0, (), None)
 
 
-_HEX_BLOB_ID = re.compile(r"^[0-9a-f]{40}(?:[0-9a-f]{24})?$")
 _SHA256_RECEIPT = re.compile(r"^([0-9a-f]{64})[ \t]+\*?[^\r\n]+$")
 
 
@@ -715,7 +790,7 @@ def probe_qwen_artifact(
 
     geometry = _geometry(text_config)
     quantization = _quantization(config)
-    target_weights = _target_weights(snapshot)
+    target_weights = _target_weights(snapshot, verified_binding)
     mtp_locator = _mtp_locator(snapshot, verified_binding)
     config_sha256 = _canonical_json_sha256(config)
     verification_id = None
