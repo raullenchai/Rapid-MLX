@@ -1846,7 +1846,13 @@ class BatchedEngine(BaseEngine):
             requested_spec_method = getattr(
                 self._scheduler_config, "spec_decode", "none"
             )
-            if requested_spec_method not in (None, "none", "mtp"):
+            if requested_spec_method not in (None, "none", "mtp") or getattr(
+                self._scheduler_config, "enable_suffix_decoding", False
+            ):
+                # TextMode intentionally has no suffix/DFlash/DSpark variant.
+                # Legacy suffix can be selected independently while
+                # spec_decode remains "none"; omitting the plan is safer than
+                # falsely labeling that live decoder native autoregressive.
                 return
             mtp_attached = False
             if requested_spec_method == "mtp":

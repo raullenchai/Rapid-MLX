@@ -58,6 +58,7 @@ def _engine(
     is_mllm: bool,
     companion: bool,
     requested_spec_method: str | None = "mtp",
+    enable_suffix_decoding: bool = False,
     mtp_dispatch_result: str | None = "attached",
     mtp_model_type: str | None = "qwen3_5_moe",
     supports_spec_decode: bool = True,
@@ -86,6 +87,7 @@ def _engine(
     engine._serving_lane_reason = "text_lane_forced"
     engine._scheduler_config = SimpleNamespace(
         spec_decode=requested_spec_method,
+        enable_suffix_decoding=enable_suffix_decoding,
         mtp_model_type=mtp_model_type,
     )
     engine._engine = (
@@ -310,10 +312,67 @@ def test_non_mtp_decoder_omits_unrepresentable_plan(
         requested_spec_method=method,
         mtp_dispatch_result=None,
     )
+    before = (
+        engine._scheduler_config.spec_decode,
+        engine._scheduler_config.enable_suffix_decoding,
+        engine._engine,
+    )
 
     engine._finalize_qwen_runtime_observability()
 
     assert engine._qwen_runtime_plan is None
+    assert (
+        engine._scheduler_config.spec_decode,
+        engine._scheduler_config.enable_suffix_decoding,
+        engine._engine,
+    ) == before
+
+
+@pytest.mark.parametrize(
+    ("requested_spec_method", "enable_suffix_decoding"),
+    [("suffix", True), ("none", True)],
+)
+def test_suffix_omits_plan_and_status(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    requested_spec_method: str,
+    enable_suffix_decoding: bool,
+) -> None:
+    engine = _engine(
+        _checkpoint(tmp_path),
+        intent=SpeculativeIntent.EXPLICIT_ENABLED,
+        is_mllm=False,
+        companion=False,
+        requested_spec_method=requested_spec_method,
+        enable_suffix_decoding=enable_suffix_decoding,
+        mtp_dispatch_result=None,
+    )
+    before = (
+        engine._scheduler_config.spec_decode,
+        engine._scheduler_config.enable_suffix_decoding,
+        engine._engine,
+    )
+
+    engine._finalize_qwen_runtime_observability()
+
+    assert engine._qwen_runtime_plan is None
+    assert (
+        engine._scheduler_config.spec_decode,
+        engine._scheduler_config.enable_suffix_decoding,
+        engine._engine,
+    ) == before
+    stats = engine.get_stats()
+    assert "qwen_runtime_plan" not in stats
+    assert "qwen_runtime_activation" not in stats
+
+    monkeypatch.setattr(
+        health,
+        "get_config",
+        lambda: SimpleNamespace(engine=engine, model_name="public-model"),
+    )
+    payload = asyncio.run(health.status())
+    assert "qwen_runtime_plan" not in payload
+    assert "qwen_runtime_activation" not in payload
 
 
 def test_exact_config_not_qwen_like_name_controls_publication(tmp_path: Path) -> None:
