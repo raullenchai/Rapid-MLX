@@ -66,15 +66,13 @@ class ServerConfig:
     # operator-visible request-loss class the R15 dogfood pass caught.
     draining: bool = False
 
-    # Bind address and port stashed by the CLI before uvicorn.run() so the
-    # lifespan hook can print the "Ready:" banner with the real URL only
-    # AFTER warmup completes (and the port is actually bound). Without this
-    # the banner prints before uvicorn binds the port, and a user who curls
-    # immediately gets a connection-refused.
+    # Bind address and port stashed before Uvicorn starts so the shared
+    # startup seam can print the "Ready:" banner only after warmup completes
+    # and the listener is actually created.
     #
     # In the ``--listen-fd`` socket-activation branch, the supervisor owns
     # the bound address; the CLI populates ``bind_listen_fd`` instead, and
-    # the lifespan banner prints the fd form. Mutually exclusive with the
+    # the post-bind startup seam prints the fd form. Mutually exclusive with the
     # host/port pair — see ``cli._run_uvicorn``.
     bind_host: str | None = None
     bind_port: int | None = None

@@ -85,13 +85,19 @@ def run_server(
     )
     print()
     host_display = "localhost" if host == "0.0.0.0" else host
-    print(f"  Ready: http://{host_display}:{port}/v1  (DSpark K4 serial mode)")
-    print(f"  Docs:  http://{host_display}:{port}/docs")
-    print()
-    uvicorn.run(
+
+    def _print_ready() -> None:
+        print(f"  Ready: http://{host_display}:{port}/v1  (DSpark K4 serial mode)")
+        print(f"  Docs:  http://{host_display}:{port}/docs")
+        print()
+
+    from rapid_mlx._uvicorn import run_uvicorn
+
+    run_uvicorn(
         app,
         host=host,
         port=port,
         log_level=uvicorn_log_level,
         timeout_keep_alive=30,
+        on_server_accepting=_print_ready,
     )

@@ -2237,7 +2237,6 @@ def run_dflash_server(
             "drafter HF path (e.g. 'z-lab/Qwen3.5-27B-DFlash')."
         )
 
-    import uvicorn
     from mlx_vlm import load
 
     # CRITICAL: load model + drafter on the dedicated DFlash executor
@@ -2286,14 +2285,19 @@ def run_dflash_server(
 
     print()
     host_display = "localhost" if host == "0.0.0.0" else host
-    print(f"  Ready: http://{host_display}:{port}/v1  (DFlash mode)")
-    print(f"  Docs:  http://{host_display}:{port}/docs")
-    print()
 
-    uvicorn.run(
+    def _print_ready() -> None:
+        print(f"  Ready: http://{host_display}:{port}/v1  (DFlash mode)")
+        print(f"  Docs:  http://{host_display}:{port}/docs")
+        print()
+
+    from rapid_mlx._uvicorn import run_uvicorn
+
+    run_uvicorn(
         app,
         host=host,
         port=port,
         log_level=uvicorn_log_level,
         timeout_keep_alive=30,
+        on_server_accepting=_print_ready,
     )
