@@ -148,6 +148,31 @@ def test_count_bucket_scale_is_exact(registry):
     assert registry["enums"]["count_bucket"]["values"] == COUNT_BUCKET_SCALE
 
 
+def test_server_start_state_contract_is_exact(registry):
+    assert registry["enums"]["server_start_state"]["values"] == [
+        "attempted",
+        "ready",
+        "failed",
+    ]
+    assert registry["enums"]["load_policy"]["values"] == ["eager", "lazy", "none"]
+    assert registry["enums"]["failure_stage"]["values"] == [
+        "resolve",
+        "download",
+        "preflight",
+        "prepare",
+        "engine_start",
+        "bind",
+    ]
+    props = _specs(registry["events"]["server_start_state"]["props"])
+    assert set(props) == {"state", "model_type", "load_policy", "failure_stage"}
+    assert props["state"] == {
+        "kind": "enum",
+        "enum": "server_start_state",
+        "required": True,
+    }
+    assert props["failure_stage"]["required"] is False
+
+
 def test_model_id_pattern_accepts_only_the_four_declared_shapes(registry):
     spec = registry["model_id"]
     pattern = re.compile(spec["pattern"])

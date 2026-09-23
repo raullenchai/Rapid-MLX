@@ -35,6 +35,7 @@ struct TelemetryRegistryTests {
         #expect(registry.registryVersion == 1)
         for name in [
             "app_opened", "active_day", "model_pulled", "model_pull_failed",
+            "server_start_state",
             "model_served", "model_serve_failed", "capability_rejected",
             "inference_bucket_reached", "agent_configured",
             "agent_configure_failed", "telemetry_opted_out",
@@ -65,6 +66,24 @@ struct TelemetryRegistryTests {
         let out = try #require(registry.validate("model_served", validServe))
         #expect(out.count == 4)
         #expect(out["quant"] == .string("4bit"))
+    }
+
+    @Test("server start state accepts its closed contract and rejects an unknown state")
+    func validatesServerStartState() throws {
+        let out = try #require(registry.validate(
+            "server_start_state",
+            [
+                "state": .string("failed"),
+                "model_type": .string("llm"),
+                "load_policy": .string("eager"),
+                "failure_stage": .string("bind")
+            ]
+        ))
+        #expect(out["failure_stage"] == .string("bind"))
+        #expect(registry.validate(
+            "server_start_state",
+            ["state": .string("exploded")]
+        ) == nil)
     }
 
     @Test("an unknown event name is dropped")

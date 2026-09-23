@@ -17,6 +17,7 @@ Usage:
 
 import argparse
 import atexit
+import functools
 import os
 import shlex
 import sys
@@ -404,6 +405,9 @@ def _port_preflight_or_die(host: str, port: int, *, model: str) -> None:
             try:
                 _sock.bind((probe_host, port))
             except OSError:
+                from rapid_mlx.telemetry.server_start import failed
+
+                failed("bind")
                 # Surface the host we actually collided on so the user
                 # can distinguish "LAN port busy" from "loopback port
                 # already claimed by another rapid-mlx / nc / proxy".
@@ -2234,8 +2238,10 @@ def _ensure_model_downloaded(
                 file=sys.stderr,
             )
             from rapid_mlx.telemetry.model_events import emit_model_pull_failed
+            from rapid_mlx.telemetry.server_start import failed
 
             emit_model_pull_failed(TimeoutError(), model_ref=model_name, source="hf")
+            failed("resolve")
             sys.exit(1)
         except Exception:
             # Any other metadata failure stays best-effort: an outage, a gated
@@ -2295,6 +2301,9 @@ def _ensure_model_downloaded(
         emit_model_pull_failed(e, model_ref=model_name, source="hf")
 
         if isinstance(e, RepositoryNotFoundError) or "404" in str(e):
+            from rapid_mlx.telemetry.server_start import failed
+
+            failed("download")
             raise RuntimeError(f"Model {model_name!r} not found on HuggingFace") from e
         print(f"\n  Pre-download skipped ({type(e).__name__}); server will retry.")
 
@@ -5720,6 +5729,9 @@ def serve_command(args):
             disk_stream_cache_gb=getattr(args, "disk_stream_cache_gb", 1.0),
         )
     except KVCacheQuantizationUnsupportedError as e:
+        from rapid_mlx.telemetry.server_start import failed
+
+        failed("prepare")
         # The scheduler/MLLM-lane backstop (#78) rejects an explicit
         # quantized-KV request that the CLI-time resolver could not see (a
         # freshly-downloaded model whose config wasn't readable yet surfaces
@@ -5729,6 +5741,9 @@ def serve_command(args):
         print(f"\n  Error: {e}\n")
         sys.exit(2)
     except Exception as e:
+        from rapid_mlx.telemetry.server_start import failed
+
+        failed("prepare")
         from rapid_mlx.telemetry.model_events import emit_model_serve_failed
 
         emit_model_serve_failed(
@@ -14323,6 +14338,26 @@ def _start_v2_lifecycle(command: str | None) -> None:
         return
 
 
+def _capture_start_failures(func: Callable):
+    """Lazy exception guard so importing the CLI needs no telemetry deps."""
+
+    @functools.wraps(func)
+    def wrapped(*args, **kwargs):
+        try:
+            return func(*args, **kwargs)
+        except BaseException:
+            try:
+                from rapid_mlx.telemetry.server_start import fail_current
+
+                fail_current()
+            except BaseException:
+                pass
+            raise
+
+    return wrapped
+
+
+@_capture_start_failures
 def main():
     parser = build_parser()
     _version = _resolve_cli_version()
@@ -14456,6 +14491,15 @@ def main():
 
         consent_runtime.startup(long_lived=getattr(args, "command", None) == "serve")
         _start_v2_lifecycle(getattr(args, "command", None))
+        if getattr(args, "command", None) == "serve":
+            from rapid_mlx.telemetry.server_start import attempted, load_policy
+
+            selected_model = getattr(args, "model", None)
+            policy = load_policy(
+                selected_model,
+                lazy_load=bool(getattr(args, "lazy_load", False)),
+            )
+            attempted(selected_model, load_policy=policy)
 
     # First-run auto-select: ``chat`` / ``run`` invoked with no model arg.
     # Resolve the starter alias HERE — before the alias→path resolution below —
@@ -14715,6 +14759,9 @@ def main():
     # --- END B2 --------------------------------------------------------
 
     if args.command == "serve":
+        from rapid_mlx.telemetry.server_start import set_failure_stage
+
+        set_failure_stage("preflight")
         serve_command(args)
     elif args.command == "bench":
         bench_command(args)

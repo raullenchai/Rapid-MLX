@@ -46,9 +46,11 @@ def _isolate_v2_telemetry_process_state(monkeypatch):
     """Keep lifecycle singletons and real atexit hooks out of every test."""
     try:
         from rapid_mlx.telemetry import (
+            build_gate,
             consent_runtime,
             model_events,
             posthog_sender,
+            server_start,
             track,
         )
     except ImportError:
@@ -56,14 +58,17 @@ def _isolate_v2_telemetry_process_state(monkeypatch):
         return
 
     posthog_sender._reset_for_tests()
+    build_gate._reset_for_tests()
     track._reset_for_tests()
     model_events._reset_for_tests()
+    server_start._reset_for_tests()
     consent_runtime._reset_runtime_state_for_tests()
     monkeypatch.setattr(posthog_sender, "install_atexit", lambda: None)
     yield
     posthog_sender._reset_for_tests()
     track._reset_for_tests()
     model_events._reset_for_tests()
+    server_start._reset_for_tests()
     consent_runtime._reset_runtime_state_for_tests()
 
 

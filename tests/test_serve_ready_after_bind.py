@@ -23,6 +23,7 @@ from rapid_mlx._uvicorn import (
     _port_is_in_use,
     run_uvicorn,
 )
+from rapid_mlx.telemetry import server_start
 
 
 async def _asgi_app(scope, receive, send):
@@ -639,3 +640,109 @@ def test_dspark_runner_defers_its_existing_banner_to_callback(monkeypatch, capsy
         "  Ready: http://localhost:8104/v1  (DSpark K4 serial mode)\n"
         "  Docs:  http://localhost:8104/docs\n\n"
     )
+
+
+@pytest.mark.asyncio
+async def test_listener_creation_emits_ready_after_attempted(monkeypatch):
+    events: list[dict[str, object]] = []
+    monkeypatch.setattr("rapid_mlx.telemetry.track._upload_allowed", lambda: True)
+    monkeypatch.setattr(
+        "rapid_mlx.telemetry.track.track",
+        lambda event, props: events.append({"event": event, **props}),
+    )
+    server_start._reset_for_tests()
+    server_start.attempted("qwen3.5-4b-4bit", load_policy="lazy")
+
+    instance: AcceptingConnectionsServer
+
+    def stop_after_bind() -> None:
+        instance.should_exit = True
+
+    instance = AcceptingConnectionsServer(
+        uvicorn.Config(_asgi_app, host="127.0.0.1", port=0, log_level="error"),
+        on_server_accepting=stop_after_bind,
+    )
+    await instance.serve()
+
+    assert [event["state"] for event in events] == ["attempted", "ready"]
+    assert all(event["load_policy"] == "lazy" for event in events)
+    server_start._reset_for_tests()
+
+
+@pytest.mark.asyncio
+async def test_listener_without_banner_callback_still_emits_ready(monkeypatch):
+    events: list[dict[str, object]] = []
+    monkeypatch.setattr("rapid_mlx.telemetry.track._upload_allowed", lambda: True)
+    monkeypatch.setattr(
+        "rapid_mlx.telemetry.track.track",
+        lambda event, props: events.append({"event": event, **props}),
+    )
+
+    async def create_listener(instance, sockets=None):
+        instance.started = True
+        instance.servers = [SimpleNamespace(sockets=[object()])]
+
+    monkeypatch.setattr(uvicorn.Server, "startup", create_listener)
+    server_start._reset_for_tests()
+    server_start.attempted("qwen3.5-4b-4bit", load_policy="lazy")
+    instance = AcceptingConnectionsServer(
+        uvicorn.Config(_asgi_app, host="127.0.0.1", port=0, log_level="error")
+    )
+
+    await instance.startup()
+
+    assert [event["state"] for event in events] == ["attempted", "ready"]
+    server_start._reset_for_tests()
+
+
+def test_runner_failure_emits_bind_and_preserves_exit(monkeypatch):
+    events: list[dict[str, object]] = []
+    monkeypatch.setattr("rapid_mlx.telemetry.track._upload_allowed", lambda: True)
+    monkeypatch.setattr(
+        "rapid_mlx.telemetry.track.track",
+        lambda event, props: events.append({"event": event, **props}),
+    )
+    server_start._reset_for_tests()
+    server_start.attempted("qwen3.5-4b-4bit", load_policy="eager")
+
+    def fail_runner(*_args, **_kwargs):
+        raise SystemExit(7)
+
+    with pytest.raises(SystemExit) as caught:
+        run_uvicorn(_asgi_app, uvicorn_runner=fail_runner)
+
+    assert caught.value.code == 7
+    assert [event["state"] for event in events] == ["attempted", "failed"]
+    assert events[-1]["failure_stage"] == "bind"
+    server_start._reset_for_tests()
+
+
+def test_port_collision_emits_only_failed_bind(monkeypatch):
+    events: list[dict[str, object]] = []
+    legacy_failures: list[BaseException] = []
+    monkeypatch.setattr("rapid_mlx.telemetry.track._upload_allowed", lambda: True)
+    monkeypatch.setattr(
+        "rapid_mlx.telemetry.track.track",
+        lambda event, props: events.append({"event": event, **props}),
+    )
+    monkeypatch.setattr(
+        "rapid_mlx.telemetry.model_events.emit_model_serve_failed",
+        lambda exc, **_kwargs: legacy_failures.append(exc),
+    )
+    server_start._reset_for_tests()
+    server_start.attempted("qwen3.5-4b-4bit", load_policy="eager")
+    with socket.socket() as occupied:
+        occupied.bind(("127.0.0.1", 0))
+        occupied.listen()
+        with pytest.raises(SystemExit) as caught:
+            cli._port_preflight_or_die(
+                "127.0.0.1",
+                occupied.getsockname()[1],
+                model="qwen3.5-4b-4bit",
+            )
+
+    assert caught.value.code == 1
+    assert [event["state"] for event in events] == ["attempted", "failed"]
+    assert events[-1]["failure_stage"] == "bind"
+    assert legacy_failures == []
+    server_start._reset_for_tests()
