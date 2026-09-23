@@ -115,6 +115,12 @@ _BUCKET_RANK = {name: index for index, name in enumerate(BUCKETS)}
 #: ``days_since_first_run_bucket`` values, ascending.
 DAY_BUCKETS: tuple[str, ...] = ("0", "1", "2-6", "7-29", "30+")
 
+#: Earliest plausible install evidence: the first public Rapid-MLX release,
+#: v0.2.0, was released on 2026-01-06. Older filesystem timestamps or consent
+#: records cannot describe a Rapid-MLX install and must not permanently seed
+#: its write-once cohort date.
+FIRST_RUN_EVIDENCE_FLOOR = date(2026, 1, 6)
+
 _INSTALL_EVIDENCE_FILES: tuple[str, ...] = (
     "telemetry-client-id",
     "session_seen",
@@ -716,10 +722,13 @@ def _seed_first_run_date(now: datetime | None) -> str:
         except Exception:
             pass
 
-    if not evidence:
-        return today
     current = datetime.strptime(today, "%Y-%m-%d").date()
-    return min(min(evidence), current).isoformat()
+    valid_evidence = [
+        candidate
+        for candidate in evidence
+        if FIRST_RUN_EVIDENCE_FLOOR <= candidate <= current
+    ]
+    return min(valid_evidence, default=current).isoformat()
 
 
 def first_run_date(now: datetime | None = None) -> str | None:
