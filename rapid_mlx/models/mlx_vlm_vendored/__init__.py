@@ -273,4 +273,76 @@ vendored copy differs by exactly the deviations listed):
   except the documented-hunk bodies listed in that module). A diff against
   the pinned tag must show only the import-block redirects and the
   documented hunks above.
+
+- ``speculative/`` — verbatim from ``mlx_vlm/speculative`` @ v0.7.1,
+  coordinator core only (step-3b slice):
+  ``cache_state.py``/``common.py``/``ddtree.py``/``dflash.py``/``mtp.py``/
+  ``utils.py`` with three redirects: ``cache_state``'s
+  ``..models.cache`` → vendored root (plus dual-namespace recognition for
+  cache containers, rotating caches, and speculative transactions returned by
+  still-upstream model implementations); ``mtp``'s cache handling likewise
+  recognizes both namespaces and keeps buffered replacements
+  namespace-faithful; ``mtp``'s
+  ``..models.quantized_verifier`` → pinned upstream (2k-line verifier,
+  ``decode_quantized_argmax`` is a pure array function);
+  ``utils``'s ``.eagle3`` → pinned upstream (eagle3 backend not vendored —
+  Rapid serves the dflash and mtp kinds; note the eagle3 round
+  coordinators are cache-coupled, not pure-array — they duck-type on the
+  passed prompt cache, whose vendored API is upstream-identical plus the
+  2a merge bugfix; no Rapid lane dispatches eagle3 through this package,
+  and a future one must vendor the coordinator with its cache contract);
+  1 documented bugfix hunk: ``run_speculative_server_rounds`` threads the
+  server's per-request row ID into singleton dflash positioned sampling. Upstream digests: cache_state
+  ``39d35ef0aae0c9298f2fcd3ff6b91b106c6b6c1c3ab6becae216a8fafb2c5300``,
+  common ``e3d3c0294a6d6fc915a32e96460370bfe57baef19539c5a290d4254525717cf1``
+  (1 documented bugfix hunk:
+  ``_speculative_walk_batch_uniform_acceptance`` clamps over rows with a
+  positive budget — pinned upstream mins over every row, letting a
+  retained finished row collapse the batch to zero acceptance),
+  ddtree ``5e3651fe81aad1adee8ab6de7e15bd97d59845cf05724ae26d86af4eb982a342``
+  (1 documented bugfix hunk: ``build_ddtree`` validates with ``ValueError``
+  instead of ``assert``, which ``python -O`` strips),
+  dflash ``39244ec611b38caacd706474722b2997e50954fe48219e26baf9017ade881ad0``
+  (2 documented bugfix hunks: continuous-batch compaction shrinks
+  ``active_idx`` only when every cache is filterable — pinned upstream
+  filters selectively but always shrinks, misaligning mixed cache lists;
+  and ``_dflash_rounds`` threads a ``row_id`` into positioned sampling —
+  pinned upstream hard-codes row 0, mirroring mtp's existing threading),
+  mtp ``4ed467918bd24e26c60730d6d3529c6a9e633448b2fc6028829965bb1f4daad1``
+  (2 documented bugfix hunks: ``_mtp_rounds_batch`` budgets the block size
+  from unfinished rows only — pinned upstream lets a retained finished row
+  force ``bs <= 1`` and terminate the whole batched loop when compaction is
+  skipped; and the hook-less ``_mtp_verify_without_logits`` fallback runs
+  each forward inside a cache transaction, aborting before its sink retry so
+  one verifier block is never appended twice),
+  utils ``93d2ed29ac7b7c378536bf09d22eb570d5abb1f2d338dc550e59a84468b6a9ff``.
+  ``__init__.py`` is a reduced shim (``VENDOR-DEVIATION(subset-exports)``):
+  the upstream init also re-exports ``load_drafter``; the drafter registry
+  and concrete drafters land in a later step-3 slice.
+
+- ``models/`` — verbatim model foundations (step-3b slice): ``base.py``
+  (upstream 657 lines; vendored 668 lines after documented deviations;
+  upstream digest
+  ``4f915923c591faf4b25603b5b5cab4511296a37c7d141553506e6b0760a03a41``;
+  redirects: ``..turboquant`` → pinned upstream (kv_quant precedent),
+  ``.cache`` → vendored root; 1 documented security hunk in
+  ``install_auto_processor_patch`` requires explicit
+  ``trust_remote_code=True`` instead of silently enabling remote code after
+  config discovery) and ``linear.py`` (upstream 74 lines; vendored 81 lines
+  after documented deviations; upstream digest
+  ``148a56193feaf170097ff1c5edccca8165c1b5df878f1605778c4d3642a4d2fa``; 1
+  function-level redirect: ``native_batch_linear``'s lazy
+  ``.quantized_verifier`` → pinned upstream (verifier not vendored,
+  mirrors the ``mtp`` redirect)). ``__init__.py`` is a marker shim
+  (upstream's is empty).
+
+- ``fp8.py`` (upstream digest
+  ``36ded0f7d5b031fbaaf9a522a6df71e477cc260102092c7f7599862367d70ee7``) —
+  verbatim, no deviations (mlx + stdlib only) — and ``quant_utils.py``
+  (upstream digest
+  ``e323189054be767e0945c29167ad9de7a5992b24c51c0be98c65477260d454af``) —
+  verbatim with 2 function-level redirects in ``dequantize_model``:
+  ``.models.mla``/``.models.switch_layers`` → pinned upstream (model
+  modules not vendored; mlx-nn isinstance dispatch only). Foundations for
+  the drafter/model slices.
 """

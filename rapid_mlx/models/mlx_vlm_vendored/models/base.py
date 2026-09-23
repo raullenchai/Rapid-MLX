@@ -1,0 +1,668 @@
+import inspect
+import math
+from abc import abstractmethod
+from dataclasses import dataclass
+from typing import Any, Dict, List, Optional
+
+import mlx.core as mx
+import mlx.nn as nn
+import numpy as np
+from mlx.utils import tree_map
+from PIL import Image
+
+# VENDOR-DEVIATION(redirect): the 7k-line turboquant module stays on
+# the pinned upstream dependency (kv_quant.py precedent).
+from mlx_vlm.turboquant import (  # noqa: F401  re-exported names
+    BatchTurboQuantKVCache,
+    TurboQuantKVCache,
+)
+from mlx_vlm.turboquant import _state_length as _turboquant_state_length
+# VENDOR-DEVIATION(redirect): vendored cache lives at the package root.
+from ..cache import create_causal_mask
+
+
+def load_chat_template(tokenizer, model_path):
+    """Apply a chat template from the model directory to *tokenizer*."""
+    import json
+    from pathlib import Path
+
+    model_dir = Path(model_path)
+    chat_template_json = model_dir / "chat_template.json"
+    chat_template_jinja = model_dir / "chat_template.jinja"
+
+    if chat_template_json.exists():
+        template_data = json.loads(chat_template_json.read_text())
+        tokenizer.chat_template = template_data["chat_template"]
+    elif chat_template_jinja.exists():
+        tokenizer.chat_template = chat_template_jinja.read_text()
+
+    return tokenizer
+
+
+def to_mlx(data: dict) -> dict:
+    """Convert all array-like values in a processor output dict to mx.array."""
+    result = {}
+    for key, value in data.items():
+        if value is None or isinstance(value, mx.array):
+            result[key] = value
+        elif isinstance(value, np.ndarray):
+            result[key] = mx.array(value)
+        elif isinstance(value, list):
+            try:
+                result[key] = mx.array(np.array(value))
+            except (ValueError, TypeError):
+                result[key] = value
+        else:
+            result[key] = value
+    return result
+
+
+@dataclass
+class LanguageModelOutput:
+    logits: mx.array
+    hidden_states: Optional[List[mx.array]] = None
+    cross_attention_states: Optional[List[mx.array]] = None
+    encoder_outputs: Optional[List[mx.array]] = None
+    gdn_states: Optional[Any] = None
+    shared_kv_states: Optional[Dict[str, tuple]] = None
+
+
+@dataclass
+class SequenceClassifierOutput:
+    logits: mx.array
+
+
+@dataclass
+class InputEmbeddingsFeatures:
+    inputs_embeds: mx.array
+    attention_mask_4d: Optional[mx.array] = None
+    visual_pos_masks: Optional[mx.array] = None
+    deepstack_visual_embeds: Optional[mx.array] = None
+    per_layer_inputs: Optional[mx.array] = None
+    cross_attention_states: Optional[mx.array] = None
+    cross_attention_mask: Optional[mx.array] = None
+    full_text_row_masked_out_mask: Optional[mx.array] = None
+    decoder_inputs_embeds: Optional[mx.array] = None
+    attention_mask: Optional[mx.array] = None  # For encoder-decoder models
+    position_ids: Optional[mx.array] = None
+    pos_hw: Optional[mx.array] = None
+    rope_deltas: Optional[mx.array] = None
+
+    def to_dict(self):
+        return {
+            "inputs_embeds": self.inputs_embeds,
+            "attention_mask_4d": self.attention_mask_4d,
+            "visual_pos_masks": self.visual_pos_masks,
+            "deepstack_visual_embeds": self.deepstack_visual_embeds,
+            "per_layer_inputs": self.per_layer_inputs,
+            "cross_attention_states": self.cross_attention_states,
+            "cross_attention_mask": self.cross_attention_mask,
+            "full_text_row_masked_out_mask": self.full_text_row_masked_out_mask,
+            "decoder_inputs_embeds": self.decoder_inputs_embeds,
+            "attention_mask": self.attention_mask,
+            "position_ids": self.position_ids,
+            "pos_hw": self.pos_hw,
+            "rope_deltas": self.rope_deltas,
+        }
+
+
+@dataclass
+class BaseModelConfig:
+    @classmethod
+    def from_dict(cls, params):
+        if not params:
+            return cls()
+        return cls(
+            **{
+                k: v
+                for k, v in params.items()
+                if k in inspect.signature(cls).parameters
+            }
+        )
+
+    def to_dict(self):
+        return {k: v for k, v in self.__dict__.items() if v is not None}
+
+
+class BaseImageProcessor:
+    """
+    Base image processor class. Subclasses should implement preprocess().
+    Transformers imports are deferred to __init__ for faster module loading.
+    """
+
+    def __init__(
+        self,
+        image_mean=(0.5, 0.5, 0.5),
+        image_std=(0.5, 0.5, 0.5),
+        size=(384, 384),
+        crop_size: Dict[str, int] = None,
+        resample=None,
+        rescale_factor=1 / 255,
+        data_format=None,
+    ):
+        from transformers.image_processing_utils import get_size_dict
+        from transformers.image_utils import ChannelDimension, PILImageResampling
+
+        if resample is None:
+            resample = PILImageResampling.BICUBIC
+        if data_format is None:
+            data_format = ChannelDimension.FIRST
+
+        crop_size = (
+            crop_size if crop_size is not None else {"height": 384, "width": 384}
+        )
+        crop_size = get_size_dict(
+            crop_size, default_to_square=True, param_name="crop_size"
+        )
+
+        self.image_mean = image_mean
+        self.image_std = image_std
+        self.size = size
+        self.resample = resample
+        self.rescale_factor = rescale_factor
+        self.data_format = data_format
+        self.crop_size = crop_size
+
+    def rescale(
+        self,
+        image,
+        scale: float,
+        input_data_format: str = "channels_first",
+    ):
+        """Rescale an image by a scale factor."""
+        return image * scale
+
+    def normalize(
+        self,
+        image,
+        mean,
+        std,
+        input_data_format: str = "channels_first",
+    ):
+        """Normalize an image with mean and std."""
+        import numpy as np
+
+        mean = np.array(mean, dtype=image.dtype)
+        std = np.array(std, dtype=image.dtype)
+
+        if input_data_format == "channels_first":
+            # Image shape: [C, H, W]
+            mean = mean[:, None, None]
+            std = std[:, None, None]
+        else:
+            # Image shape: [H, W, C]
+            pass  # mean and std are already in correct shape
+
+        return (image - mean) / std
+
+    @abstractmethod
+    def preprocess(self, images):
+        pass
+
+
+def kv_sequence_length(keys) -> int:
+    """Sequence length of ``keys`` as returned by ``cache.update_and_fetch``.
+
+    Unquantized caches return a plain ``[B, H, S, D]`` array. Uniform
+    quantized caches (``QuantizedKVCache``/``BatchQuantizedKVCache``) return
+    a ``(packed, scales, biases)`` tuple and TurboQuant caches return
+    codec-state named tuples.
+    """
+    if isinstance(keys, mx.array) or hasattr(keys, "shape"):
+        return keys.shape[-2]
+    # Plain tuple/list only: TurboQuant states are NamedTuples with a
+    # different layout and get measured by their own helper.
+    if type(keys) in (tuple, list):
+        return keys[0].shape[-2]
+    return _turboquant_state_length(keys)
+
+
+def slice_kv_sequence(state, end: int):
+    """Return the ``[:end]`` sequence prefix of a KV state.
+
+    Uniform quantized caches return a tuple of packed values, scales and
+    biases instead of a single array. Slice every component so callers such
+    as speculative target verification can narrow the prefix without first
+    dequantizing it. Other state wrappers implement the same four-axis slice
+    directly.
+    """
+    if type(state) in (tuple, list):
+        return tree_map(lambda x: x[:, :, :end, :], state)
+    return state[:, :, :end, :]
+
+
+def dequantize_kv_state(cache, keys, values):
+    """Return plain ``[B, H, S, D]`` arrays for a state ``update_and_fetch`` returned.
+
+    Unquantized caches already hand back arrays and are passed through. Uniform
+    quantized caches return ``(packed, scales, biases)`` tuples and TurboQuant
+    caches return codec-state named tuples, neither of which can be indexed,
+    expanded or matmul'd like an array. Attention paths that cannot go through
+    :func:`scaled_dot_product_attention` -- logit softcapping, block-sparse
+    masking -- need real arrays, so they materialize the state here first.
+    """
+    if isinstance(keys, mx.array) or hasattr(keys, "shape"):
+        return keys, values
+    # Plain tuple/list only: TurboQuant states are NamedTuples and dequantize
+    # through their own cache method.
+    if type(keys) in (tuple, list):
+        return (
+            mx.dequantize(
+                *(mx.contiguous(x) for x in keys),
+                group_size=cache.group_size,
+                bits=cache.bits,
+            ),
+            mx.dequantize(
+                *(mx.contiguous(x) for x in values),
+                group_size=cache.group_size,
+                bits=cache.bits,
+            ),
+        )
+    return cache.dequantize(keys, values)
+
+
+def create_attention_mask(
+    h, cache=None, window_size: Optional[int] = None, return_array: bool = False
+):
+    N = h.shape[1]
+    if (
+        cache is not None
+        and not isinstance(cache, mx.array)
+        and hasattr(cache, "make_mask")
+    ):
+        return cache.make_mask(N, return_array=return_array, window_size=window_size)
+    if N == 1:
+        return None
+    if return_array or (window_size and N > window_size):
+        return create_causal_mask(N, window_size=window_size)
+    return "causal"
+
+
+def create_ssm_mask(h, cache=None):
+    if (
+        cache is not None
+        and not isinstance(cache, mx.array)
+        and hasattr(cache, "make_mask")
+    ):
+        return cache.make_mask(h.shape[1])
+    return None
+
+
+def align_attention_mask_to_scores(mask, scores: mx.array):
+    """Broadcast an attention mask onto *scores* without mis-aligning batch vs heads.
+
+    Quantized GQA expands scores to 5D ``(B, n_kv_heads, n_repeats, L, K)`` while
+    batch left-pad masks are typically 4D ``(B, 1, L, K)``. Right-aligning those
+    shapes aliases ``B`` with ``n_kv_heads`` and crashes for multi-row batches
+    (see #1567). Insert singleton dims *before* the last two axes until ranks
+    match so the layout is ``(B, 1, …, 1, L, K)``.
+    """
+    if mask is None or isinstance(mask, str):
+        return mask
+
+    # Grow rank by inserting size-1 axes immediately before (L, K).
+    while mask.ndim < scores.ndim:
+        insert_at = max(mask.ndim - 2, 0)
+        mask = mx.expand_dims(mask, axis=insert_at)
+    return mask
+
+
+def quantized_scaled_dot_product_attention(
+    queries: mx.array,
+    q_keys: tuple[mx.array, mx.array, mx.array],
+    q_values: tuple[mx.array, mx.array, mx.array],
+    scale: float,
+    mask: Optional[mx.array],
+    group_size: int = 64,
+    bits: int = 8,
+) -> mx.array:
+    B, n_q_heads, L, D = queries.shape
+    n_kv_heads = q_keys[0].shape[-3]
+    n_repeats = n_q_heads // n_kv_heads
+
+    queries *= scale
+
+    if n_repeats > 1:
+        queries = mx.reshape(queries, (B, n_kv_heads, n_repeats, L, D))
+        q_keys = tree_map(lambda x: mx.expand_dims(x, axis=-3), q_keys)
+        q_values = tree_map(lambda x: mx.expand_dims(x, axis=-3), q_values)
+
+    scores = mx.quantized_matmul(
+        queries, *q_keys, transpose=True, group_size=group_size, bits=bits
+    )
+    if mask is not None:
+        if isinstance(mask, str):
+            qL, kL = scores.shape[-2:]
+            q_indices = mx.arange(kL - qL, kL)
+            k_indices = mx.arange(kL)
+            mask = q_indices[:, None] >= k_indices[None]
+        mask = align_attention_mask_to_scores(mask, scores)
+        if mask.dtype == mx.bool_:
+            scores = mx.where(mask, scores, mx.finfo(scores.dtype).min)
+        else:
+            scores += mask
+    scores = mx.softmax(scores, axis=-1, precise=True)
+    out = mx.quantized_matmul(
+        scores, *q_values, transpose=False, group_size=group_size, bits=bits
+    )
+
+    if n_repeats > 1:
+        out = mx.reshape(out, (B, n_q_heads, L, D))
+
+    return out
+
+
+def _turboquant_attention_applies(cache) -> bool:
+    """Whether the fused TurboQuant kernels can serve this cache.
+
+    They read the quantized state directly, so they need one contiguous
+    sequence starting at index 0. That always holds for the single-sequence
+    cache; the batch cache qualifies only while it carries a single row with
+    no left padding (padded rows would be attended to as real tokens).
+    """
+    if not isinstance(cache, BatchTurboQuantKVCache):
+        return True
+    if not cache.is_single_row():
+        return False
+    return cache.fused_attention_eligible
+
+
+def scaled_dot_product_attention(
+    queries,
+    keys,
+    values,
+    cache,
+    scale: float,
+    mask: Optional[mx.array],
+    sinks: Optional[mx.array] = None,
+) -> mx.array:
+    if isinstance(cache, (TurboQuantKVCache, BatchTurboQuantKVCache)):
+        # The fused kernels have no sink term, and the batch cache only shares
+        # them when it holds a single unpadded row. Anything else dequantizes,
+        # which is also the only path that can apply sinks.
+        if sinks is None and _turboquant_attention_applies(cache):
+            if queries.shape[-2] == 1:
+                return cache.decode_attention(
+                    queries,
+                    keys_state=keys,
+                    values_state=values,
+                    scale=scale,
+                    mask=mask,
+                )
+            result = cache.prefill_attention(
+                queries,
+                keys_state=keys,
+                values_state=values,
+                scale=scale,
+                mask=mask,
+            )
+            if result is not None:
+                return result
+        dequantized_keys, dequantized_values = cache.dequantize(keys, values)
+        return mx.fast.scaled_dot_product_attention(
+            queries,
+            dequantized_keys.astype(queries.dtype),
+            dequantized_values.astype(queries.dtype),
+            scale=scale,
+            mask=mask,
+            sinks=sinks,
+        )
+
+    if hasattr(cache, "bits"):
+        if sinks is not None:
+            raise ValueError("Quantized SDPA does not support attention sinks.")
+        return quantized_scaled_dot_product_attention(
+            queries,
+            keys,
+            values,
+            scale=scale,
+            mask=mask,
+            group_size=cache.group_size,
+            bits=cache.bits,
+        )
+
+    return mx.fast.scaled_dot_product_attention(
+        queries,
+        keys,
+        values,
+        scale=scale,
+        mask=mask,
+        sinks=sinks,
+    )
+
+
+def expand2square(pil_img, background_color):
+    width, height = pil_img.size
+    if width == height:
+        return pil_img
+    elif width > height:
+        result = Image.new(pil_img.mode, (width, width), background_color)
+        result.paste(pil_img, (0, (width - height) // 2))
+        return result
+    else:
+        result = Image.new(pil_img.mode, (height, height), background_color)
+        result.paste(pil_img, ((height - width) // 2, 0))
+        return result
+
+
+def check_array_shape(arr):
+    shape = arr.shape
+
+    # Check if the shape has 4 dimensions
+    if len(shape) == 4:
+        out_channels, kH, KW, _ = shape
+        # Check if out_channels is the largest, and kH and KW are the same
+        if (out_channels >= kH) and (out_channels >= KW) and (kH == KW):
+            return True
+        else:
+            return False
+    # Check if the shape has 3 dimensions
+    elif len(shape) == 3:
+        _, kW, out_channels = shape
+        # Check if out_channels is the largest
+        if kW >= out_channels:
+            return True
+        else:
+            return False
+    else:
+        return False
+
+
+def check_activation_stats(name, tensor):
+    """Helper function to check for anomalies and log stats."""
+
+    print(f"--- Activation Stats: {name} ---")
+    # Check for NaNs/Infs
+    has_nan = mx.isnan(tensor).any()
+    has_inf = mx.isinf(tensor).any()
+    if has_nan:
+        print(f"WARNING: Found NaN in {name}")
+    if has_inf:
+        print(f"WARNING: Found Inf in {name}")
+
+    # Calculate and print stats (ensure computation happens)
+    min_val = mx.min(tensor).item()
+    max_val = mx.max(tensor).item()
+    mean_val = mx.mean(tensor).item()
+    std_val = mx.std(tensor).item()
+    print(f"  Shape: {tensor.shape}")
+    print(f"  Min: {min_val:.4f}, Max: {max_val:.4f}")
+    print(f"  Mean: {mean_val:.4f}, Std: {std_val:.4f}")
+    print("-" * (len(name) + 24))
+
+
+def pixel_shuffle(input_tensor, shuffle_ratio):
+    # input_tensor: [batch_size, num_patches, channels]
+    batch_size, num_patches, channels = input_tensor.shape
+    patch_size = int(math.sqrt(num_patches))
+
+    input_tensor = input_tensor.reshape(batch_size, patch_size, patch_size, -1)
+    batch_size, height, width, channels = input_tensor.shape
+
+    reshaped_tensor = input_tensor.reshape(
+        batch_size, height, int(width * shuffle_ratio), int(channels / shuffle_ratio)
+    )
+    reshaped_tensor = reshaped_tensor.transpose(0, 2, 1, 3)
+
+    reshaped_tensor = reshaped_tensor.reshape(
+        batch_size,
+        int(height * shuffle_ratio),
+        int(width * shuffle_ratio),
+        int(channels / (shuffle_ratio**2)),
+    )
+    reshaped_tensor = reshaped_tensor.transpose(0, 2, 1, 3)
+
+    output_tensor = reshaped_tensor.reshape(batch_size, -1, reshaped_tensor.shape[-1])
+    return output_tensor
+
+
+def interpolate(pos_embed, size, mode="cubic", align_corners=False):
+    """
+    MLX implementation of PyTorch's F.interpolate with bicubic mode
+
+    Args:
+        pos_embed: MLX array with shape [B, C, H_src, W_src] or [C, H_src, W_src]
+        size: Tuple (H_dst, W_dst) - target size
+        align_corners: Boolean - whether to align corners
+
+    Returns:
+        Interpolated array with shape [B, C, H_dst, W_dst] or [C, H_dst, W_dst]
+    """
+    # Handle different input shapes
+    input_dim = pos_embed.ndim
+    original_shape = pos_embed.shape
+
+    if input_dim == 3:
+        # [C, H, W] -> [1, C, H, W]
+        pos_embed = pos_embed.reshape(1, *original_shape)
+
+    # Get source dimensions
+    h_src, w_src = pos_embed.shape[-2:]
+    h_dst, w_dst = size
+
+    # Calculate scale factors
+    scale_h = h_dst / h_src
+    scale_w = w_dst / w_src
+
+    # Create upsampler
+    upsampler = nn.Upsample(
+        scale_factor=(scale_h, scale_w), mode=mode, align_corners=align_corners
+    )
+
+    # Apply upsampling
+    result = upsampler(pos_embed)
+
+    # Return in the original dimension format
+    if input_dim == 3:
+        return result.reshape(original_shape[0], *size)
+    return result
+
+
+@mx.compile
+def chunked_attention(
+    queries: mx.array,
+    keys: mx.array,
+    values: mx.array,
+    scale: float,
+    chunk_size: int,
+) -> mx.array:
+
+    L = queries.shape[2]
+
+    outputs = []
+    for i in range(0, L, chunk_size):
+        end_idx = min(i + chunk_size, L)
+        q_chunk = queries[:, :, i:end_idx, :]  # (B, n_heads, chunk, head_dim)
+
+        chunk_output = mx.fast.scaled_dot_product_attention(
+            q_chunk, keys, values, scale=scale
+        )
+
+        outputs.append(chunk_output)
+
+    return mx.concatenate(outputs, axis=2)  # (B, n_heads, L, head_dim)
+
+
+@mx.compile
+def ensure_fused_sdpa(q, k, v, scale, mask=None):
+    fused_dims = (64, 80, 128)  # supported by MLX's fused SDPA kernel
+    d = q.shape[-1]
+    target = next((t for t in fused_dims if d <= t), d)
+    if target != d:
+        pad = [(0, 0)] * (q.ndim - 1) + [(0, target - d)]
+        q, k, v = mx.pad(q, pad), mx.pad(k, pad), mx.pad(v, pad)
+    return mx.fast.scaled_dot_product_attention(q, k, v, scale=scale, mask=mask)[
+        ..., :d
+    ]
+
+
+def install_auto_processor_patch(target_model_types, processor_cls):
+    """
+    Install a composable patch on transformers.AutoProcessor.from_pretrained
+
+    Args:
+        target_model_types (Union[str, List[str]]): Model types to intercept.
+        processor_cls (type): Processor class exposing `from_pretrained`.
+
+    Returns:
+        The previous `AutoProcessor.from_pretrained` for reference.
+    """
+    from transformers import AutoProcessor as _HF_AutoProcessor
+
+    if isinstance(target_model_types, str):
+        target_model_types = [target_model_types]
+    target_model_types = {t.lower() for t in target_model_types}
+
+    previous_from_pretrained = _HF_AutoProcessor.from_pretrained
+
+    @classmethod
+    def _patched_auto_processor_from_pretrained(
+        cls, pretrained_model_name_or_path, **kwargs
+    ):
+        import json as _json
+        from pathlib import Path
+
+        try:
+            model_path = Path(pretrained_model_name_or_path)
+            is_local = model_path.exists() and model_path.is_dir()
+
+            cfg = {}
+            if is_local:
+                config_path = model_path / "config.json"
+                if config_path.exists():
+                    with open(config_path, "r", encoding="utf-8") as f:
+                        cfg = _json.load(f)
+            else:
+                try:
+                    from huggingface_hub import hf_hub_download
+
+                    cfg_path = hf_hub_download(
+                        pretrained_model_name_or_path, "config.json"
+                    )
+                    with open(cfg_path, "r", encoding="utf-8") as f:
+                        cfg = _json.load(f)
+                except Exception:
+                    cfg = {}
+
+            model_type = str(cfg.get("model_type", "")).lower()
+            # VENDOR-DEVIATION(security): discovering a matching remote model
+            # type is not consent to execute repository code. Only intercept
+            # after the caller explicitly opts in.
+            if (
+                model_type in target_model_types
+                and kwargs.get("trust_remote_code") is True
+            ):
+                return processor_cls.from_pretrained(
+                    pretrained_model_name_or_path, **kwargs
+                )
+        except Exception:
+            # On any failure, fall back to previous behavior
+            pass
+
+        # Chain to the prior from_pretrained
+        return previous_from_pretrained.__func__(
+            cls, pretrained_model_name_or_path, **kwargs
+        )
+
+    _HF_AutoProcessor.from_pretrained = _patched_auto_processor_from_pretrained
+    return previous_from_pretrained

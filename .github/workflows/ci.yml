@@ -618,6 +618,7 @@ jobs:
             tests/test_mlx_vlm_vendored_apc_adapters.py \
             tests/test_mlx_vlm_vendored_apc_support.py \
             tests/test_mlx_vlm_vendored_generate.py \
+            tests/test_mlx_vlm_vendored_speculative.py \
             tests/test_bench_qwen36_mllm_singleton.py \
             tests/test_mllm_corrupt_image.py \
             tests/test_mllm_penalty_passthrough.py \

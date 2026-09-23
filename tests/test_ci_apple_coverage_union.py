@@ -244,6 +244,7 @@ def test_vendored_mllm_namespace_coverage_runs_on_apple_silicon() -> None:
 
     assert "tests/test_mllm_cache_namespace_compat.py" in apple_run
     assert "tests/test_mlx_vlm_vendored_generate.py" in apple_run
+    assert "tests/test_mlx_vlm_vendored_speculative.py" in apple_run
 
 
 def test_coverage_data_is_commit_bound_and_fail_closed() -> None:
@@ -295,6 +296,16 @@ def test_vendored_mllm_coverage_omit_is_file_scoped() -> None:
         f"{vendored_prefix}generate/common.py",
         f"{vendored_prefix}generate/types.py",
         f"{vendored_prefix}sample_utils.py",
+        f"{vendored_prefix}fp8.py",
+        f"{vendored_prefix}models/base.py",
+        f"{vendored_prefix}models/linear.py",
+        f"{vendored_prefix}quant_utils.py",
+        f"{vendored_prefix}speculative/cache_state.py",
+        f"{vendored_prefix}speculative/common.py",
+        f"{vendored_prefix}speculative/ddtree.py",
+        f"{vendored_prefix}speculative/dflash.py",
+        f"{vendored_prefix}speculative/mtp.py",
+        f"{vendored_prefix}speculative/utils.py",
     ]
     for guarded_path in (
         "rapid_mlx/models/mlx_vlm_vendored/future_module.py",

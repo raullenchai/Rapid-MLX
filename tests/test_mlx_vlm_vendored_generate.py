@@ -68,6 +68,10 @@ pytest.importorskip("mlx_vlm")
 #   blocks before raising (the mixed-assembly caller owns release; the
 #   upstream double-release underflows shared refcounts), repro-tested
 #   below.
+# - ``run_speculative_server_rounds``: imported into ar's namespace from
+#   vendored ``speculative/utils.py``, whose server-rounds call site
+#   threads the server's per-request row ID into singleton dflash
+#   positioned sampling (step-3b inventory; upstream hard-codes row 0).
 _DOCUMENTED_HUNK_BODIES = {
     "BatchGenerator",
     "GenerationBatch",
@@ -83,6 +87,7 @@ _DOCUMENTED_HUNK_BODIES = {
     "batch_generate",
     "_generate_batch",
     "_merge_prefill_prompt_kwargs",
+    "run_speculative_server_rounds",
 }
 
 

@@ -36,6 +36,19 @@ omit =
     rapid_mlx/models/mlx_vlm_vendored/generate/common.py
     rapid_mlx/models/mlx_vlm_vendored/generate/types.py
     rapid_mlx/models/mlx_vlm_vendored/sample_utils.py
+    # Pinned upstream speculative coordinator/model foundations. Exact source
+    # parity with hunk-level deviation specs plus focused behavior tests own
+    # these copies; package shims and Rapid integration seams stay measured.
+    rapid_mlx/models/mlx_vlm_vendored/fp8.py
+    rapid_mlx/models/mlx_vlm_vendored/models/base.py
+    rapid_mlx/models/mlx_vlm_vendored/models/linear.py
+    rapid_mlx/models/mlx_vlm_vendored/quant_utils.py
+    rapid_mlx/models/mlx_vlm_vendored/speculative/cache_state.py
+    rapid_mlx/models/mlx_vlm_vendored/speculative/common.py
+    rapid_mlx/models/mlx_vlm_vendored/speculative/ddtree.py
+    rapid_mlx/models/mlx_vlm_vendored/speculative/dflash.py
+    rapid_mlx/models/mlx_vlm_vendored/speculative/mtp.py
+    rapid_mlx/models/mlx_vlm_vendored/speculative/utils.py
     # Test-file mirrors under the package: ``rapid_mlx/_integration_tests``
     # is a symlink farm pointing at ``tests/integrations/``. They are test
     # code — CI executes them via tests/integrations/, not through the
