@@ -690,7 +690,7 @@ def test_boot_seam_success_preserves_contract_and_probe_evidence(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_engine_stop_restores_patch_before_executor_shutdown():
+async def test_engine_stop_restores_patch_and_reload_clears_stale_status(monkeypatch):
     events = []
 
     class Patch:
@@ -737,3 +737,20 @@ async def test_engine_stop_restores_patch_before_executor_shutdown():
 
     assert events == ["scheduler-stop", "close", "executor-shutdown"]
     assert engine._qwen38_mllm_fused_gdn_canary is None
+    monkeypatch.delenv(canary.ENV_VAR, raising=False)
+    engine._qwen38_mllm_fused_gdn_status.update(
+        {
+            "requested": True,
+            "qualified": True,
+            "fallback_reason": None,
+            "probe_steps_committed": 32,
+            "runtime_versions_actual": {"mlx": "stale"},
+        }
+    )
+    _install_qwen38_mllm_fused_gdn_canary(engine, object())
+    status = engine._qwen38_mllm_fused_gdn_status
+    assert status["requested"] is status["qualified"] is status["active"] is False
+    assert status["fallback_reason"] == "operator_disabled"
+    assert status["probe_steps_committed"] == 0
+    assert "runtime_versions_actual" not in status
+    assert status["receipt_sha256"] == canary.EXPERIMENT_RECEIPT_SHA256

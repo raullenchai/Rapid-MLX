@@ -1103,7 +1103,14 @@ def _install_qwen38_mllm_fused_gdn_canary(engine: Any, language_model: Any) -> N
         operator_enabled,
     )
 
-    engine._qwen38_mllm_fused_gdn_status.update(contract_status())
+    engine._qwen38_mllm_fused_gdn_status = {
+        **contract_status(),
+        "requested": False,
+        "qualified": False,
+        "active": False,
+        "fallback_reason": "operator_disabled",
+        "probe_steps_committed": 0,
+    }
     if not operator_enabled():
         return
 
