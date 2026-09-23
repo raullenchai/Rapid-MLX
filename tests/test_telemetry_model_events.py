@@ -91,6 +91,15 @@ def test_size_bucket_is_closed_and_half_open(size, expected):
     assert model_events.size_bucket(size) == expected
 
 
+def test_model_served_submission_failure_is_contained(monkeypatch):
+    monkeypatch.setattr(
+        model_events,
+        "_submit_model_served",
+        lambda _callback: (_ for _ in ()).throw(RuntimeError("submit failed")),
+    )
+    assert model_events.emit_model_served(None, "sdxl-base", False) is False
+
+
 def test_pull_error_classes_are_type_based():
     from huggingface_hub.errors import HfHubHTTPError
     from huggingface_hub.utils import (

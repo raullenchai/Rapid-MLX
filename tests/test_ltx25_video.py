@@ -1009,6 +1009,47 @@ def test_ltx25_unexpected_communication_error_terminates_process(
     assert engine._process is None
 
 
+def test_ltx25_spawn_failure_closes_readiness_pipe(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(ltx25, "embedded_ltx25_interpreter", lambda: "/python")
+    opened: list[int] = []
+    closed: list[int] = []
+    original_pipe = ltx25.os.pipe
+    original_close = ltx25.os.close
+
+    def tracked_pipe() -> tuple[int, int]:
+        descriptors = original_pipe()
+        opened.extend(descriptors)
+        return descriptors
+
+    def tracked_close(descriptor: int) -> None:
+        closed.append(descriptor)
+        original_close(descriptor)
+
+    monkeypatch.setattr(ltx25.os, "pipe", tracked_pipe)
+    monkeypatch.setattr(ltx25.os, "close", tracked_close)
+    monkeypatch.setattr(
+        ltx25.subprocess,
+        "Popen",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(OSError("spawn failed")),
+    )
+
+    with pytest.raises(ltx25.LTX25BackendError, match="isolated runtime"):
+        ltx25.LTX25VideoEngine("ltx-2.5-mlx-q8").generate(
+            prompt="x",
+            output_path=tmp_path / "output.mp4",
+            width=64,
+            height=64,
+            num_frames=5,
+            fps=24,
+            seed=1,
+            image=None,
+        )
+
+    assert set(opened).issubset(closed)
+
+
 def test_ltx25_invalid_timeout_does_not_spawn(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

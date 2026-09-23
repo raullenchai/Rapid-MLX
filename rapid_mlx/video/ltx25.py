@@ -582,8 +582,6 @@ class LTX25VideoEngine:
                 "LTX-2.5 generation failed while running its isolated runtime."
             ) from exc
         finally:
-            if ready_write is not None:
-                os.close(ready_write)
             if ready_read is not None:
                 os.close(ready_read)
             if readiness_thread is not None:
