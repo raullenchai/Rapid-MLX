@@ -1093,6 +1093,73 @@ def _qwen36_native_text_no_go_status(
     }
 
 
+def _install_qwen38_mllm_fused_gdn_canary(engine: Any, language_model: Any) -> None:
+    """Run the optional Qwen3.8 canary boot transaction, always fail closed."""
+
+    from ..qwen38_mllm_fused_gdn import (
+        actual_runtime_versions,
+        contract_status,
+        install_qwen38_mllm_fused_gdn_canary,
+        operator_enabled,
+    )
+
+    engine._qwen38_mllm_fused_gdn_status.update(contract_status())
+    if not operator_enabled():
+        return
+
+    engine._qwen38_mllm_fused_gdn_status["requested"] = True
+    try:
+        engine._qwen38_mllm_fused_gdn_status["runtime_versions_actual"] = (
+            actual_runtime_versions()
+        )
+    except Exception:  # noqa: BLE001 - optional status must not break boot
+        engine._qwen38_mllm_fused_gdn_status["runtime_versions_actual"] = None
+
+    fallback_reason = "artifact_not_exact"
+    try:
+        from ..runtime.qwen_artifact import (
+            probe_resolved_qwen_artifact,
+            to_verified_runtime_target,
+        )
+
+        truth = probe_resolved_qwen_artifact(
+            engine._qwen_artifact_snapshot_source,
+            repo_id=engine._qwen_artifact_repo_id,
+        )
+        verified_target = (
+            to_verified_runtime_target(truth) if truth is not None else None
+        )
+        if verified_target is not None:
+            (
+                engine._qwen38_mllm_fused_gdn_canary,
+                fallback_reason,
+            ) = engine._model_load_executor.submit(
+                install_qwen38_mllm_fused_gdn_canary,
+                language_model,
+                truth,
+                verified_target,
+            ).result()
+    except Exception:  # noqa: BLE001 - optional canary must not break boot
+        logger.warning(
+            "Qwen3.8 MLLM fused GDN canary failed closed; using stock",
+            exc_info=True,
+        )
+        fallback_reason = "qualification_exception"
+        engine._qwen38_mllm_fused_gdn_canary = None
+
+    patch = engine._qwen38_mllm_fused_gdn_canary
+    engine._qwen38_mllm_fused_gdn_status.update(
+        {
+            "qualified": bool(patch is not None and patch.qualified),
+            "active": bool(patch is not None and patch.installed),
+            "fallback_reason": fallback_reason,
+            "probe_steps_committed": (
+                patch.probe_steps_committed if patch is not None else 0
+            ),
+        }
+    )
+
+
 class BatchedEngine(BaseEngine):
     """
     Batched engine for continuous batching.
@@ -1252,6 +1319,16 @@ class BatchedEngine(BaseEngine):
         self._qwen_mtp_dispatch_result: str | None = None
         self._qwen36_native_text_candidate = False
         self._qwen36_native_text_qualification = None
+        # Exact-artifact, operator-only MLLM decode canary. The handle owns a
+        # reversible class patch and is always closed before the model worker
+        # goes away. It is deliberately separate from Qwen3.6's 32-head path.
+        self._qwen38_mllm_fused_gdn_canary = None
+        self._qwen38_mllm_fused_gdn_status = {
+            "requested": False,
+            "qualified": False,
+            "active": False,
+            "fallback_reason": "operator_disabled",
+        }
         self._tool_logits_processor_factory = None
 
         self._model = None
@@ -2272,6 +2349,12 @@ class BatchedEngine(BaseEngine):
         )
         await self._mllm_scheduler.start()
 
+        # Internal default-off canary for one immutable Qwen3.8 artifact.
+        # Artifact probing is offline B0 metadata work; qualification and the
+        # reversible patch run on the existing model-owning worker. No second
+        # model, weight copy, or executor is constructed.
+        _install_qwen38_mllm_fused_gdn_canary(self, language_model)
+
         config = getattr(self._mllm_instance, "config", None)
         config_model_type = (
             config.get("model_type")
@@ -2785,8 +2868,17 @@ class BatchedEngine(BaseEngine):
             self._engine = None
 
         if self._mllm_scheduler:
-            await self._mllm_scheduler.stop()
-            self._mllm_scheduler = None
+            try:
+                await self._mllm_scheduler.stop()
+            finally:
+                canary = getattr(self, "_qwen38_mllm_fused_gdn_canary", None)
+                if canary is not None and self._model_load_executor is not None:
+                    self._model_load_executor.submit(canary.close).result()
+                self._qwen38_mllm_fused_gdn_canary = None
+                status = getattr(self, "_qwen38_mllm_fused_gdn_status", None)
+                if isinstance(status, dict):
+                    status["active"] = False
+                self._mllm_scheduler = None
 
         if self._is_mllm and self._model_load_executor is not None:
             self._model_load_executor.shutdown(wait=False)
@@ -4640,6 +4732,9 @@ class BatchedEngine(BaseEngine):
         qwen36_qualification = getattr(self, "_qwen36_native_text_qualification", None)
         if qwen36_qualification is not None:
             stats["qwen36_native_text_qualification"] = dict(qwen36_qualification)
+        qwen38_gdn_status = getattr(self, "_qwen38_mllm_fused_gdn_status", None)
+        if qwen38_gdn_status is not None:
+            stats["qwen38_mllm_fused_gdn_canary"] = dict(qwen38_gdn_status)
         prompt_host_cache = getattr(self, "_prompt_host_cache", None)
         if prompt_host_cache is not None:
             stats["prompt_host_cache"] = prompt_host_cache.stats()
