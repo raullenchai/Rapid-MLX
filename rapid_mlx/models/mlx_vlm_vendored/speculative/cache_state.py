@@ -14,6 +14,9 @@ from mlx_vlm.models.cache import (
 )
 from mlx_vlm.models.cache import CacheList as UpstreamCacheList
 from mlx_vlm.models.cache import RotatingKVCache as UpstreamRotatingKVCache
+from mlx_vlm.speculative.cache_state import (
+    SpeculativeCacheTransaction as UpstreamSpeculativeCacheTransaction,
+)
 
 
 class _RotatingCacheTransaction:
@@ -225,7 +228,12 @@ def rollback_speculative_cache(
         accepted_values = [int(value) for value in accepted]
 
     retained = [value + 1 for value in accepted_values]
-    if isinstance(transaction, SpeculativeCacheTransaction):
+    # VENDOR-DEVIATION(dual-namespace): still-upstream target hooks can start
+    # and return their coordinator's transaction around model-owned caches.
+    if isinstance(
+        transaction,
+        (SpeculativeCacheTransaction, UpstreamSpeculativeCacheTransaction),
+    ):
         transaction.commit(retained)
     else:
         # Compatibility for model adapters that still return legacy state.
@@ -235,7 +243,12 @@ def rollback_speculative_cache(
 
 def abort_speculative_round(state):
     """Release and restore an unfinished transaction returned by a target."""
-    if isinstance(state, SpeculativeCacheTransaction):
+    # VENDOR-DEVIATION(dual-namespace): finalize transactions returned by
+    # either vendored fallback verification or a still-upstream target hook.
+    if isinstance(
+        state,
+        (SpeculativeCacheTransaction, UpstreamSpeculativeCacheTransaction),
+    ):
         state.abort()
 
 
@@ -247,7 +260,13 @@ def commit_speculative_round(model, caches, state, accepted, block_size):
         values = accepted.reshape(-1).tolist()
     else:
         values = list(accepted)
-    if isinstance(state, SpeculativeCacheTransaction):
+    # VENDOR-DEVIATION(dual-namespace): Qwen4/Qwen3.5-style upstream hooks
+    # return their own transaction class. Commit it directly instead of
+    # falling through to an optional legacy model rollback method.
+    if isinstance(
+        state,
+        (SpeculativeCacheTransaction, UpstreamSpeculativeCacheTransaction),
+    ):
         state.commit([value + 1 for value in values])
     elif any(value < block_size - 1 for value in values):
         model.rollback_speculative_cache(caches, state, accepted, block_size)

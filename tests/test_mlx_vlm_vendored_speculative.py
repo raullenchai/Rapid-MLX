@@ -95,6 +95,40 @@ _HUNK_SPECS = {
             "            if isinstance(cache, (RotatingKVCache, BatchRotatingKVCache)):\n",
         ),
     ),
+    "rollback_speculative_cache": (
+        (
+            "    # VENDOR-DEVIATION(dual-namespace): still-upstream target hooks can start\n"
+            "    # and return their coordinator's transaction around model-owned caches.\n"
+            "    if isinstance(\n"
+            "        transaction,\n"
+            "        (SpeculativeCacheTransaction, UpstreamSpeculativeCacheTransaction),\n"
+            "    ):\n",
+            "    if isinstance(transaction, SpeculativeCacheTransaction):\n",
+        ),
+    ),
+    "abort_speculative_round": (
+        (
+            "    # VENDOR-DEVIATION(dual-namespace): finalize transactions returned by\n"
+            "    # either vendored fallback verification or a still-upstream target hook.\n"
+            "    if isinstance(\n"
+            "        state,\n"
+            "        (SpeculativeCacheTransaction, UpstreamSpeculativeCacheTransaction),\n"
+            "    ):\n",
+            "    if isinstance(state, SpeculativeCacheTransaction):\n",
+        ),
+    ),
+    "commit_speculative_round": (
+        (
+            "    # VENDOR-DEVIATION(dual-namespace): Qwen4/Qwen3.5-style upstream hooks\n"
+            "    # return their own transaction class. Commit it directly instead of\n"
+            "    # falling through to an optional legacy model rollback method.\n"
+            "    if isinstance(\n"
+            "        state,\n"
+            "        (SpeculativeCacheTransaction, UpstreamSpeculativeCacheTransaction),\n"
+            "    ):\n",
+            "    if isinstance(state, SpeculativeCacheTransaction):\n",
+        ),
+    ),
     "_mtp_shared_kv_from_prompt_cache": (
         (
             "            # VENDOR-DEVIATION(dual-namespace): preserve temporal ordering for\n"
@@ -602,6 +636,7 @@ def test_vendored_foundations_bodies_match_upstream():
 
 def test_speculative_core_binds_vendored_foundations():
     from mlx_vlm.models import cache as upstream_cache
+    from mlx_vlm.speculative import cache_state as upstream_cache_state
 
     assert vs_mtp.cache is vendored_cache
     assert vs_mtp.upstream_cache is upstream_cache
@@ -611,6 +646,9 @@ def test_speculative_core_binds_vendored_foundations():
         upstream_cache.BatchRotatingKVCache
     )
     assert vs_cache_state.UpstreamRotatingKVCache is upstream_cache.RotatingKVCache
+    assert vs_cache_state.UpstreamSpeculativeCacheTransaction is (
+        upstream_cache_state.SpeculativeCacheTransaction
+    )
     assert vs_common.LanguageModelOutput is vendored_base.LanguageModelOutput
     assert vs_utils._dflash_rounds.__module__.endswith("vendored.speculative.dflash")
     assert vs_utils.get_speculative_rounds_batch("mtp").__module__.endswith(
@@ -660,6 +698,34 @@ def test_speculative_core_preserves_upstream_model_cache_namespace():
     batch_transaction = vs_cache_state._RotatingCacheTransaction(batch)
     batch_transaction.validate([1, 2])
     batch_transaction.abort()
+
+
+def test_speculative_core_finalizes_upstream_model_transactions():
+    """Model hooks still imported from mlx-vlm return their namespace's
+    transaction object; vendored ownership must commit or abort it directly."""
+    from mlx_vlm.speculative import cache_state as upstream_cache_state
+
+    class NoLegacyRollback:
+        def rollback_speculative_cache(self, *_args):
+            raise AssertionError("upstream transaction used legacy rollback")
+
+    model = NoLegacyRollback()
+
+    partial = upstream_cache_state.SpeculativeCacheTransaction([], {}, [], length=3)
+    vs_cache_state.commit_speculative_round(
+        model, [], partial, accepted=0, block_size=3
+    )
+    assert partial.active is False
+
+    complete = upstream_cache_state.SpeculativeCacheTransaction([], {}, [], length=3)
+    vs_cache_state.commit_speculative_round(
+        model, [], complete, accepted=2, block_size=3
+    )
+    assert complete.active is False
+
+    aborted = upstream_cache_state.SpeculativeCacheTransaction([], {}, [], length=3)
+    vs_cache_state.abort_speculative_round(aborted)
+    assert aborted.active is False
 
 
 def test_vendored_auto_processor_patch_requires_explicit_remote_code_opt_in(

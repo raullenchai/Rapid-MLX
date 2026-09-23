@@ -279,9 +279,10 @@ vendored copy differs by exactly the deviations listed):
   ``cache_state.py``/``common.py``/``ddtree.py``/``dflash.py``/``mtp.py``/
   ``utils.py`` with three redirects: ``cache_state``'s
   ``..models.cache`` → vendored root (plus dual-namespace recognition for
-  cache containers and rotating caches returned by still-upstream model
-  implementations); ``mtp``'s cache handling likewise recognizes both
-  namespaces and keeps buffered replacements namespace-faithful; ``mtp``'s
+  cache containers, rotating caches, and speculative transactions returned by
+  still-upstream model implementations); ``mtp``'s cache handling likewise
+  recognizes both namespaces and keeps buffered replacements
+  namespace-faithful; ``mtp``'s
   ``..models.quantized_verifier`` → pinned upstream (2k-line verifier,
   ``decode_quantized_argmax`` is a pure array function);
   ``utils``'s ``.eagle3`` → pinned upstream (eagle3 backend not vendored —
