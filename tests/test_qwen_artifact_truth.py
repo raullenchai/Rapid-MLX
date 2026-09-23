@@ -11,6 +11,7 @@ from types import ModuleType
 import pytest
 
 import rapid_mlx.qwen_artifact_layout as qwen_layout
+import rapid_mlx.qwen_runtime_plan as qwen_plan
 import rapid_mlx.runtime.qwen_artifact as qwen_artifact
 from rapid_mlx.qwen_artifact_layout import (
     MTPWeightPathState,
@@ -556,6 +557,21 @@ def test_conversion_seam_owns_exact_target_only_mapping(
     assert (
         json.loads(converted.identity.weight_layout)["index_sha256"]
         == metadata["index_sha256"]
+    )
+
+
+def test_conversion_seam_composes_with_integrated_private_runtime_mint(
+    tmp_path: Path,
+):
+    snapshot, _hub, metadata = _materialize_snapshot(tmp_path, "qwen36_35b_4bit")
+    truth = probe_qwen_artifact(snapshot, binding=_binding(snapshot, metadata))
+    converted = to_verified_runtime_target(truth)
+    assert isinstance(converted, qwen_plan.VerifiedQwenTarget)
+    assert converted.identity.target_repo == metadata["source_repo"]
+    assert converted.identity.layer_layout == truth.geometry.layer_types
+    assert converted.verification_id == truth.verification_id
+    assert converted.verification_authority == (
+        "rapid_mlx.qwen_artifact:hub-snapshot-v1"
     )
 
 

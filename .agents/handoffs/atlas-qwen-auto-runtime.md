@@ -5,7 +5,8 @@
 - **Base:** `origin/main` at `ec98a7ba2`
 - **Host:** Studio; product qualification also requires M4 Pro 48 GB and M1
   Max 64 GB
-- **Status:** design complete; no product behavior changed
+- **Status:** B0 foundation integrated; production boot/status composition is
+  not wired; no product behavior or defaults changed
 
 ## Goal
 
@@ -49,33 +50,63 @@ the current path.
   `qwen3_5_text`.
 - Qwen3.8 27B is not the `qwen4_exp` Flash-Next path.
 - The cached Qwen3.8 target/declared-sidecar snapshot at `aa985c2…` has three
-  root target shards plus an accepted nested `mtp/model.safetensors` sidecar.
-  A root-only scan is a false negative; the offline probe must cover declared
-  nested layouts without reading weights.
+  root target shards plus a nested `mtp/model.safetensors` sidecar with a
+  matching blob/SHA receipt. A root-only scan is a false negative. The truth
+  layer reports locator shape without claiming runtime qualification.
+- Qwen3.5 4B's pinned snapshot has a real one-shard safetensors index. The
+  current MTP locator also returns its root target `model.safetensors` as a
+  fallback, so truth classifies that shape as `root_model_ambiguous` and never
+  treats it as head eligibility.
+
+## Integrated B0 foundation
+
+- CLI normalization now retains whether speculative selection came from an
+  explicit config, legacy flag, alias-owned default, or no selection. Existing
+  normalized values and precedence remain unchanged.
+- `rapid_mlx.qwen_runtime_plan` provides immutable target/mode identities,
+  closed selection and fallback reasons, fail-closed exact qualification,
+  mutation-boundary recovery, and fresh verified-target reload proof.
+- `rapid_mlx.runtime.qwen_artifact` provides an offline canonical Hub snapshot
+  binding, redacted artifact truth/receipts, and the private capability seam
+  that alone can mint the planner's verified target identity.
+- The production Qwen MTP injector and artifact truth share one dependency-free
+  locator/classifier. Exact pinned config/index fixtures cover Qwen3.5 4B,
+  Qwen3.6 35B, and Qwen3.8 27B without model loads or tensor reads.
+- The foundation is intentionally dormant: no serve/benchmark boot path imports
+  the planner, constructs `ResolvedQwenArtifact`, stores a resolved plan on the
+  engine, emits plan/fallback boot logs, or publishes it through
+  `engine.get_stats()` and `/v1/status`.
 
 ## Next concrete action
 
-Implement design slice B0 from
-`docs/engineering/design/2026-09-23-qwen-auto-runtime.md`:
+Add the behavior-preserving B0 composition seam to the existing serve boot:
 
-1. add the pure `QwenRuntimePlan` and closed reasons;
-2. preserve implicit versus explicit speculative selection provenance;
-3. expose plan and fallback in local status/boot logs;
-4. add exact offline qualification fixtures;
-5. reproduce current Qwen3.6 and Qwen3.8 default boot from immutable cached
-   artifacts.
+1. after immutable snapshot resolution, bind and probe the exact local target,
+   convert it to `VerifiedQwenTarget`, and construct `ResolvedQwenArtifact`;
+2. translate current lane selection plus retained CLI provenance into the
+   legacy plan, call `resolve_qwen_runtime_plan`, and retain the resolved plan
+   on the engine without changing the selected lane;
+3. emit the plan/reason/fallback in boot logs and expose the stored redacted
+   payload through `engine.get_stats()` and `/v1/status`;
+4. add offline boot-composition tests proving current Qwen3.6 and Qwen3.8
+   defaults, explicit flags, and unqualified/raw paths are byte-for-byte
+   behavior-equivalent.
 
 Do not change alias defaults in B0. Do not begin MTP dual-lane integration
-until the boot truth probes establish the real provider contract.
+until this boot composition proves the real provider contract.
 
-## Verification plan
+## Integration verification
 
-- focused resolver and routing unit tests;
-- Qwen3.6/Qwen3.8 immutable offline boot probes;
-- ruff, mypy budget, `git diff --check`;
-- Codex review before implementation PR;
-- later product gates on M4 Pro 48 GB and M1 Max 64 GB as specified in the
-  design.
+- `219 passed`: runtime-plan, artifact-truth/private-capability, CLI provenance,
+  speculative-config, shared locator, and injector/install focused suites.
+- The artifact conversion test exercises the integrated core private mint,
+  rather than only a stand-in contract.
+- Ruff format/check and `git diff --check` pass for the integrated Python diff.
+
+The missing B0 verification is deliberately the same as the missing code:
+offline Qwen3.6/Qwen3.8 boot-composition tests through the real serve resolver,
+boot log, stored engine plan, and status payload. Later B2/B3 product gates
+still require M4 Pro 48 GB and M1 Max 64 GB as specified in the design.
 
 ## Risk to carry forward
 
