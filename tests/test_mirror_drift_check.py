@@ -444,27 +444,7 @@ def test_catalog_shapes(monkeypatch):
         drift._catalog_entries()
 
 
-def test_catalog_snapshot_validation_and_match(tmp_path):
-    path = tmp_path / "snapshot.json"
-    path.write_text("[]")
-    assert drift._snapshot_aliases(path) == {}
-    entry = {
-        "hf_path": "org/repo",
-        "status": "mirrored",
-        "total_bytes": 10,
-        "file_count": 2,
-        "latest_uploaded": "old",
-    }
-    path.write_text(json.dumps({"aliases": {"alias": entry, "bad": "value"}}))
-    snapshot = drift._snapshot_aliases(path)
-    assert snapshot == {"alias": entry}
-    assert drift._snapshot_matches("ALIAS", entry, snapshot)
-    assert not drift._snapshot_matches("missing", entry, snapshot)
-    assert not drift._snapshot_matches("alias", None, snapshot)
-    assert not drift._snapshot_matches("alias", {**entry, "file_count": 3}, snapshot)
-
-
-def test_unchanged_snapshot_skips_repo_probes(monkeypatch, tmp_path):
+def test_unchanged_mirror_tuple_does_not_hide_changed_hf_body(monkeypatch, tmp_path):
     main = tmp_path / "main.json"
     audio = tmp_path / "audio.json"
     main.write_text(json.dumps({"same": {"hf_path": "org/same"}}))
@@ -478,23 +458,77 @@ def test_unchanged_snapshot_skips_repo_probes(monkeypatch, tmp_path):
         "latest_uploaded": "2020-01-01T00:00:00Z",
     }
     monkeypatch.setattr(drift, "_catalog_entries", lambda: [entry])
-    monkeypatch.setattr(drift, "_snapshot_aliases", lambda: {"same": dict(entry)})
+    # Simulate the deleted fast path's matching catalog tuple. The current HF
+    # revision and config body have changed even though the mirror has not.
+    monkeypatch.setattr(
+        drift,
+        "_snapshot_aliases",
+        lambda: {"same": dict(entry)},
+        raising=False,
+    )
+    fresh = b'{"model_type":"fresh"}'
+    stale = b'{"model_type":"stale"}'
+    assert len(fresh) == len(stale)
+    fresh_oid = hashlib.sha1(
+        f"blob {len(fresh)}\0".encode() + fresh, usedforsecurity=False
+    ).hexdigest()
     monkeypatch.setattr(
         drift,
         "_hf_repo",
         lambda _repo: drift.HfRepo(
-            "revision", [drift.HfFile("config.json", 2, None, "x" * 40)]
+            "hf-revision-after-change",
+            [drift.HfFile("config.json", len(fresh), None, fresh_oid)],
         ),
     )
     monkeypatch.setattr(drift, "_maybe_r2_client", lambda: None)
+    mirror_calls = []
+
+    def stale_probe(repo, item):
+        mirror_calls.append((repo, item.path))
+        return drift.MirrorProbe(
+            200, len(stale), '"not-a-sha256"', drift._git_blob_oid(stale)
+        )
+
+    monkeypatch.setattr(drift, "_public_probe", stale_probe)
+    report = drift.audit(main, audio)[0]
+    assert mirror_calls == [("org/same", "config.json")]
+    assert report.checked_files == 1
+    assert any(
+        finding.kind == "content_mismatch" and finding.path == "config.json"
+        for finding in report.findings
+    )
+
+
+def test_lfs_missing_r2_checksum_metadata_is_content_mismatch(monkeypatch, tmp_path):
+    sha = "a" * 64
+    item = drift.HfFile("model.safetensors", 1024, sha)
+    main = tmp_path / "main.json"
+    audio = tmp_path / "audio.json"
+    main.write_text(json.dumps({"stale": {"hf_path": "org/stale"}}))
+    audio.write_text("{}")
+    monkeypatch.setattr(
+        drift, "_hf_repo", lambda _repo: drift.HfRepo("new-revision", [item])
+    )
+    monkeypatch.setattr(
+        drift,
+        "_catalog_entries",
+        lambda: [{"alias": "stale", "hf_path": "org/stale", "status": "mirrored"}],
+    )
+    monkeypatch.setattr(drift, "_maybe_r2_client", object)
     monkeypatch.setattr(
         drift,
         "_public_probe",
-        lambda *_args: (_ for _ in ()).throw(AssertionError("must skip probes")),
+        lambda *_args: drift.MirrorProbe(200, 1024, '"multipart-etag-2"', None),
     )
+    monkeypatch.setattr(drift, "_r2_metadata", lambda *_args: {})
     report = drift.audit(main, audio)[0]
-    assert report.checked_files == 0
-    assert report.state == "ok"
+    assert report.sha_check == "checked"
+    assert any(
+        finding.kind == "content_mismatch"
+        and finding.path == "model.safetensors"
+        and "no checksum metadata" in (finding.detail or "")
+        for finding in report.findings
+    )
 
 
 def test_cache_buster_reaches_redirect_destination_and_cached_404_is_avoided(

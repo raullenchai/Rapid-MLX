@@ -15,3 +15,4 @@ def test_daily_audit_keeps_bounded_parallelism_and_safety_contract() -> None:
     assert "permissions:\n  contents: read" in workflow
     assert "cancel-in-progress: false" in workflow
     assert "secrets." not in workflow
+    assert "python -m pip install 'huggingface-hub>=1.1.0'" in workflow
