@@ -772,6 +772,22 @@ import sys
 
 from rapid_mlx import cli
 
+if os.environ.get("RAPID_MLX_TEST_PREFLIGHT_EXIT") == "1":
+    from types import SimpleNamespace
+    from rapid_mlx.runtime import video_lane
+
+    class _PinnedVersion(tuple):
+        major = 3
+        minor = 11
+
+    video_lane.sys = SimpleNamespace(
+        version_info=_PinnedVersion((3, 11)), stderr=sys.stderr
+    )
+    video_lane._default_video_runtime_requirements = lambda _model: [
+        "the `rapid-mlx[video]` Python extra"
+    ]
+    video_lane._resolve_ffmpeg = lambda: "/usr/bin/ffmpeg"
+
 def _capture_later_event_and_stop(*_args, **_kwargs):
     from rapid_mlx.telemetry import posthog_sender, track
 
@@ -808,22 +824,6 @@ def _capture_later_event_and_stop(*_args, **_kwargs):
         asyncio.run(start_once())
         posthog_sender.get_sender().flush(5.0)
         raise SystemExit(0)
-    if os.environ.get("RAPID_MLX_TEST_PREFLIGHT_EXIT") == "1":
-        from types import SimpleNamespace
-        from rapid_mlx.runtime import video_lane
-
-        class _PinnedVersion(tuple):
-            major = 3
-            minor = 11
-
-        video_lane.sys = SimpleNamespace(
-            version_info=_PinnedVersion((3, 11)), stderr=sys.stderr
-        )
-        video_lane._default_video_runtime_requirements = lambda _model: [
-            "the `rapid-mlx[video]` Python extra"
-        ]
-        video_lane._resolve_ffmpeg = lambda: "/usr/bin/ffmpeg"
-        return
     if os.environ.get("RAPID_MLX_TEST_SIGKILL") == "1":
         posthog_sender.get_sender().flush(2.0)
         os.kill(os.getpid(), signal.SIGKILL)
