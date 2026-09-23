@@ -12,6 +12,7 @@ Behavioral guarantee: the vendored AR core binds the vendored primitives
 vendored package except for the documented pinned redirects.
 """
 
+import ast
 import inspect
 import types
 
@@ -74,28 +75,30 @@ _DOCUMENTED_HUNK_BODIES = {
 
 
 def _body_divergences(vendored_module, upstream_module):
+    def defined_bodies(module):
+        # Read the installed source rather than live module attributes. Runtime
+        # compatibility hooks intentionally replace a few upstream symbols;
+        # parity is against the pinned file, not that process-global mutation.
+        source = inspect.getsource(module)
+        tree = ast.parse(source)
+        lines = source.splitlines(keepends=True)
+        return {
+            node.name: "".join(lines[node.lineno - 1 : node.end_lineno])
+            for node in tree.body
+            if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef))
+        }
+
     diverged = []
-    for name, obj in vars(vendored_module).items():
+    vendored_bodies = defined_bodies(vendored_module)
+    upstream_bodies = defined_bodies(upstream_module)
+    for name, vendored_src in vendored_bodies.items():
         if name.startswith("__") or name in _DOCUMENTED_HUNK_BODIES:
             continue
-        upstream_obj = getattr(upstream_module, name, None)
-        if upstream_obj is None:
-            if inspect.isfunction(obj) or inspect.isclass(obj):
-                # A vendored-only function/class means the copy is not a
-                # faithful verbatim region — flag it.
-                diverged.append(f"{name}: no upstream symbol")
-            continue
-        if (inspect.isfunction(obj) or inspect.isclass(obj)) and type(obj) is not type(
-            upstream_obj
-        ):
-            diverged.append(f"{name}: kind mismatch")
-            continue
-        if not (inspect.isfunction(obj) or inspect.isclass(obj)):
-            continue
-        try:
-            vendored_src = inspect.getsource(obj)
-            upstream_src = inspect.getsource(upstream_obj)
-        except (OSError, TypeError):
+        upstream_src = upstream_bodies.get(name)
+        if upstream_src is None:
+            # A vendored-only function/class means the copy is not a faithful
+            # verbatim region — flag it.
+            diverged.append(f"{name}: no upstream symbol")
             continue
         if vendored_src != upstream_src:
             diverged.append(name)
