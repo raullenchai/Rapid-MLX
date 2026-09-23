@@ -177,7 +177,10 @@ class QwenTargetIdentity:
         _require_canonical_pairs("cache_geometry", self.cache_geometry)
 
 
-@dataclass(frozen=True, slots=True)
+_VERIFIED_TARGET_MINT_TOKEN = object()
+
+
+@dataclass(frozen=True, slots=True, init=False)
 class VerifiedQwenTarget:
     """Opaque truth-layer binding proving an identity was actually resolved.
 
@@ -188,11 +191,41 @@ class VerifiedQwenTarget:
 
     identity: QwenTargetIdentity
     verification_id: str
+    verification_authority: str
 
-    def __post_init__(self) -> None:
-        if not isinstance(self.identity, QwenTargetIdentity):
+    def __init__(
+        self,
+        *,
+        identity: QwenTargetIdentity,
+        verification_id: str,
+        verification_authority: str,
+        _mint_token: object,
+    ) -> None:
+        if _mint_token is not _VERIFIED_TARGET_MINT_TOKEN:
+            raise TypeError("VerifiedQwenTarget must be minted by the truth resolver")
+        if not isinstance(identity, QwenTargetIdentity):
             raise ValueError("identity must be a QwenTargetIdentity")
-        _require_non_empty("verification_id", self.verification_id)
+        _require_non_empty("verification_id", verification_id)
+        _require_non_empty("verification_authority", verification_authority)
+        object.__setattr__(self, "identity", identity)
+        object.__setattr__(self, "verification_id", verification_id)
+        object.__setattr__(self, "verification_authority", verification_authority)
+
+
+def _mint_verified_qwen_target(
+    *,
+    identity: QwenTargetIdentity,
+    verification_id: str,
+    verification_authority: str,
+) -> VerifiedQwenTarget:
+    """Private composition seam used only by the artifact-truth resolver."""
+
+    return VerifiedQwenTarget(
+        identity=identity,
+        verification_id=verification_id,
+        verification_authority=verification_authority,
+        _mint_token=_VERIFIED_TARGET_MINT_TOKEN,
+    )
 
 
 @dataclass(frozen=True, slots=True)
@@ -365,11 +398,12 @@ class QwenRuntimePlan:
     selection_source: SelectionSource
     qualification_id: str | None
     receipt_id: str | None
+    verified_target: VerifiedQwenTarget | None
     reason: PlanReason
     media_enabled: bool
     fallback_chain: tuple[QwenFallbackTarget, ...] = ()
     recovery_action: RecoveryAction = RecoveryAction.NONE
-    post_reload_target: QwenFallbackTarget | None = None
+    pending_fallback_target: QwenFallbackTarget | None = None
 
     def __post_init__(self) -> None:
         if not isinstance(self.target_lane, TargetLane):
@@ -388,6 +422,10 @@ class QwenRuntimePlan:
             raise ValueError("the text target lane requires a text mode")
         if self.qualification_id is not None:
             _require_non_empty("qualification_id", self.qualification_id)
+            if not isinstance(self.verified_target, VerifiedQwenTarget):
+                raise ValueError("qualified plans require a verified_target")
+        elif self.verified_target is not None:
+            raise ValueError("legacy plans must not carry a verified_target")
         if self.text_mode is TextMode.NONE:
             if self.receipt_id is not None:
                 raise ValueError("vision-only NONE must not carry a text receipt")
@@ -409,17 +447,20 @@ class QwenRuntimePlan:
             raise ValueError("fallback_chain must not repeat the selected text mode")
         if not isinstance(self.recovery_action, RecoveryAction):
             raise ValueError("recovery_action must be a RecoveryAction")
-        if self.recovery_action is RecoveryAction.RELOAD_REQUIRED:
-            if self.reason is not PlanReason.INSTALL_FAILED_RELOAD_REQUIRED:
-                raise ValueError("reload_required needs the reload failure reason")
-            if not isinstance(self.post_reload_target, QwenFallbackTarget):
-                raise ValueError("reload_required needs an explicit post-reload target")
-            if self.post_reload_target.mode is self.text_mode:
-                raise ValueError("post-reload target must advance the failed mode")
-        elif self.post_reload_target is not None:
-            raise ValueError(
-                "post_reload_target is valid only while reload is required"
-            )
+        if self.recovery_action is RecoveryAction.NONE:
+            if self.pending_fallback_target is not None:
+                raise ValueError("pending fallback requires a recovery action")
+        else:
+            if not isinstance(self.pending_fallback_target, QwenFallbackTarget):
+                raise ValueError("recovery requires an explicit pending fallback")
+            if self.pending_fallback_target.mode is self.text_mode:
+                raise ValueError("pending fallback must advance the failed mode")
+            if self.pending_fallback_target.mode in fallback_modes:
+                raise ValueError("pending fallback must be removed from fallback_chain")
+        if self.recovery_action is RecoveryAction.RELOAD_REQUIRED and (
+            self.reason is not PlanReason.INSTALL_FAILED_RELOAD_REQUIRED
+        ):
+            raise ValueError("reload_required needs the reload failure reason")
         if self.recovery_action is RecoveryAction.STARTUP_FALLBACK and (
             self.reason is not PlanReason.INSTALL_FAILED_STARTUP_FALLBACK
         ):
@@ -439,13 +480,23 @@ class QwenRuntimePlan:
             "selection_source": self.selection_source.value,
             "qualification_id": self.qualification_id,
             "receipt_id": self.receipt_id,
+            "target_verification_id": (
+                self.verified_target.verification_id
+                if self.verified_target is not None
+                else None
+            ),
+            "target_verification_authority": (
+                self.verified_target.verification_authority
+                if self.verified_target is not None
+                else None
+            ),
             "reason": self.reason.value,
             "media_enabled": self.media_enabled,
             "fallback_chain": [item.to_status_dict() for item in self.fallback_chain],
             "recovery_action": self.recovery_action.value,
-            "post_reload_target": (
-                self.post_reload_target.to_status_dict()
-                if self.post_reload_target is not None
+            "pending_fallback_target": (
+                self.pending_fallback_target.to_status_dict()
+                if self.pending_fallback_target is not None
                 else None
             ),
         }
@@ -461,9 +512,10 @@ def _legacy_fallback(
         selection_source=SelectionSource.FALLBACK,
         qualification_id=None,
         receipt_id=None,
+        verified_target=None,
         reason=reason,
         recovery_action=RecoveryAction.NONE,
-        post_reload_target=None,
+        pending_fallback_target=None,
     )
 
 
@@ -615,6 +667,7 @@ def resolve_qwen_runtime_plan(
                 selection_source=SelectionSource.FALLBACK,
                 qualification_id=row.qualification_id,
                 receipt_id=None,
+                verified_target=artifact.verified_target,
                 reason=intended_failure or PlanReason.MODE_NOT_QUALIFIED,
                 media_enabled=True,
             )
@@ -645,6 +698,7 @@ def resolve_qwen_runtime_plan(
             selection_source=source,
             qualification_id=row.qualification_id,
             receipt_id=qualification.receipt_id,
+            verified_target=artifact.verified_target,
             reason=reason,
             media_enabled=True,
             fallback_chain=_qualified_fallbacks(row, artifact, candidates[index + 1 :]),
@@ -670,57 +724,102 @@ def resolve_qwen_install_failure(
         raise ValueError("install failure transition requires a fallback target")
 
     next_target, *remaining = plan.fallback_chain
-    if target_was_mutated:
-        return replace(
-            plan,
-            selection_source=SelectionSource.FALLBACK,
-            reason=PlanReason.INSTALL_FAILED_RELOAD_REQUIRED,
-            fallback_chain=tuple(remaining),
-            recovery_action=RecoveryAction.RELOAD_REQUIRED,
-            post_reload_target=next_target,
-        )
+    action = (
+        RecoveryAction.RELOAD_REQUIRED
+        if target_was_mutated
+        else RecoveryAction.STARTUP_FALLBACK
+    )
+    reason = (
+        PlanReason.INSTALL_FAILED_RELOAD_REQUIRED
+        if target_was_mutated
+        else PlanReason.INSTALL_FAILED_STARTUP_FALLBACK
+    )
     return replace(
         plan,
-        text_mode=next_target.mode,
-        receipt_id=next_target.receipt_id,
         selection_source=SelectionSource.FALLBACK,
-        reason=PlanReason.INSTALL_FAILED_STARTUP_FALLBACK,
+        reason=reason,
         fallback_chain=tuple(remaining),
-        recovery_action=RecoveryAction.STARTUP_FALLBACK,
+        recovery_action=action,
+        pending_fallback_target=next_target,
     )
 
 
-def complete_qwen_recovery(
-    plan: QwenRuntimePlan, *, clean_target_reloaded: bool = False
+def complete_qwen_reload(
+    plan: QwenRuntimePlan, *, reloaded_target: VerifiedQwenTarget
 ) -> QwenRuntimePlan:
-    """Acknowledge a pending action, requiring explicit clean-reload evidence."""
+    """Verify a fresh clean target reload, then permit fallback startup."""
 
     if not isinstance(plan, QwenRuntimePlan):
         raise ValueError("plan must be a QwenRuntimePlan")
-    if type(clean_target_reloaded) is not bool:
-        raise ValueError("clean_target_reloaded must be a bool")
-    if plan.recovery_action is RecoveryAction.NONE:
-        raise ValueError("no recovery action is pending")
-    if plan.recovery_action is RecoveryAction.RELOAD_REQUIRED:
-        if not clean_target_reloaded:
-            raise ValueError("reload recovery requires a verified clean target reload")
-        target = plan.post_reload_target
-        if target is None:  # defended by QwenRuntimePlan, kept for type narrowing
-            raise ValueError("reload recovery has no target")
-        return replace(
-            plan,
-            text_mode=target.mode,
-            receipt_id=target.receipt_id,
-            reason=PlanReason.INSTALL_FALLBACK_ACTIVE,
-            recovery_action=RecoveryAction.NONE,
-            post_reload_target=None,
-        )
-    if clean_target_reloaded:
-        raise ValueError("clean_target_reloaded is valid only for reload recovery")
+    if plan.recovery_action is not RecoveryAction.RELOAD_REQUIRED:
+        raise ValueError("no clean target reload is pending")
+    if not isinstance(reloaded_target, VerifiedQwenTarget):
+        raise ValueError("reloaded_target must be a freshly verified target")
+    expected = plan.verified_target
+    if expected is None:  # defended by QwenRuntimePlan, kept for type narrowing
+        raise ValueError("reload recovery has no expected verified target")
+    if reloaded_target is expected:
+        raise ValueError("reloaded_target must be a fresh verification binding")
+    if reloaded_target != expected:
+        raise ValueError("reloaded target identity or verification binding mismatched")
     return replace(
         plan,
+        reason=PlanReason.INSTALL_FAILED_STARTUP_FALLBACK,
+        recovery_action=RecoveryAction.STARTUP_FALLBACK,
+        verified_target=reloaded_target,
+    )
+
+
+def complete_qwen_fallback_start(plan: QwenRuntimePlan) -> QwenRuntimePlan:
+    """Publish a fallback only after its startup completed successfully."""
+
+    if not isinstance(plan, QwenRuntimePlan):
+        raise ValueError("plan must be a QwenRuntimePlan")
+    if plan.recovery_action is not RecoveryAction.STARTUP_FALLBACK:
+        raise ValueError("no fallback startup is pending")
+    target = plan.pending_fallback_target
+    if target is None:  # defended by QwenRuntimePlan, kept for type narrowing
+        raise ValueError("fallback startup has no target")
+    return replace(
+        plan,
+        text_mode=target.mode,
+        receipt_id=target.receipt_id,
         reason=PlanReason.INSTALL_FALLBACK_ACTIVE,
         recovery_action=RecoveryAction.NONE,
+        pending_fallback_target=None,
+    )
+
+
+def resolve_qwen_fallback_start_failure(
+    plan: QwenRuntimePlan, *, target_was_mutated: bool
+) -> QwenRuntimePlan:
+    """Advance after a pending fallback failed before becoming active."""
+
+    if not isinstance(plan, QwenRuntimePlan):
+        raise ValueError("plan must be a QwenRuntimePlan")
+    if type(target_was_mutated) is not bool:
+        raise ValueError("target_was_mutated must be a bool")
+    if plan.recovery_action is not RecoveryAction.STARTUP_FALLBACK:
+        raise ValueError("no fallback startup is pending")
+    if not plan.fallback_chain:
+        raise ValueError("failed terminal fallback has no next target")
+    next_target, *remaining = plan.fallback_chain
+    action = (
+        RecoveryAction.RELOAD_REQUIRED
+        if target_was_mutated
+        else RecoveryAction.STARTUP_FALLBACK
+    )
+    reason = (
+        PlanReason.INSTALL_FAILED_RELOAD_REQUIRED
+        if target_was_mutated
+        else PlanReason.INSTALL_FAILED_STARTUP_FALLBACK
+    )
+    return replace(
+        plan,
+        reason=reason,
+        fallback_chain=tuple(remaining),
+        recovery_action=action,
+        pending_fallback_target=next_target,
     )
 
 
@@ -739,8 +838,9 @@ __all__ = [
     "SpeculativeIntent",
     "TargetLane",
     "TextMode",
-    "VerifiedQwenTarget",
-    "complete_qwen_recovery",
+    "complete_qwen_fallback_start",
+    "complete_qwen_reload",
+    "resolve_qwen_fallback_start_failure",
     "resolve_qwen_install_failure",
     "resolve_qwen_runtime_plan",
 ]

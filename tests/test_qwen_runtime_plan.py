@@ -8,6 +8,7 @@ from dataclasses import FrozenInstanceError, replace
 
 import pytest
 
+import rapid_mlx.qwen_runtime_plan as qwen_plan
 from rapid_mlx.qwen_runtime_plan import (
     PlanReason,
     QwenDrafterIdentity,
@@ -23,8 +24,9 @@ from rapid_mlx.qwen_runtime_plan import (
     SpeculativeIntent,
     TargetLane,
     TextMode,
-    VerifiedQwenTarget,
-    complete_qwen_recovery,
+    complete_qwen_fallback_start,
+    complete_qwen_reload,
+    resolve_qwen_fallback_start_failure,
     resolve_qwen_install_failure,
     resolve_qwen_runtime_plan,
 )
@@ -53,10 +55,14 @@ def _target() -> QwenTargetIdentity:
 
 def _verified_target(
     target: QwenTargetIdentity | None = None,
-) -> VerifiedQwenTarget:
-    return VerifiedQwenTarget(
+    *,
+    verification_id: str = "binding/qwen-exact/1",
+    authority: str = "rapid-mlx-artifact-truth-v1",
+) -> qwen_plan.VerifiedQwenTarget:
+    return qwen_plan._mint_verified_qwen_target(
         identity=target or _target(),
-        verification_id="binding/qwen-exact/1",
+        verification_id=verification_id,
+        verification_authority=authority,
     )
 
 
@@ -112,7 +118,7 @@ def _artifact(
     *,
     public_alias: str | None = "qwen-exact-4bit",
     target: QwenTargetIdentity | None = None,
-    verified_target: VerifiedQwenTarget | None = None,
+    verified_target: qwen_plan.VerifiedQwenTarget | None = None,
     evidence: tuple[QwenModeEvidence, ...] | None = None,
     runtime_versions: tuple[tuple[str, str], ...] = RUNTIME_VERSIONS,
     hardware_class: str = "m4-pro-48gb",
@@ -144,6 +150,7 @@ def _legacy_plan() -> QwenRuntimePlan:
         selection_source=SelectionSource.ALIAS_DEFAULT,
         qualification_id=None,
         receipt_id=None,
+        verified_target=None,
         reason=PlanReason.LEGACY_ALIAS_DEFAULT,
         media_enabled=False,
     )
@@ -186,6 +193,7 @@ def test_legacy_default_reason_is_available_without_auto_metadata() -> None:
         selection_source=SelectionSource.FALLBACK,
         qualification_id=None,
         receipt_id=None,
+        verified_target=None,
         reason=PlanReason.LEGACY_DEFAULT,
         media_enabled=True,
     )
@@ -338,7 +346,17 @@ def test_syntax_only_target_cannot_enter_resolved_artifact() -> None:
 
 def test_verified_binding_receipt_must_be_non_empty() -> None:
     with pytest.raises(ValueError, match="verification_id must be non-empty"):
-        replace(_verified_target(), verification_id="")
+        _verified_target(verification_id="")
+
+
+def test_verified_target_cannot_be_constructed_outside_private_mint_seam() -> None:
+    with pytest.raises(TypeError, match="_mint_token"):
+        qwen_plan.VerifiedQwenTarget(
+            identity=_target(),
+            verification_id="forged",
+            verification_authority="forged",
+        )
+    assert "VerifiedQwenTarget" not in qwen_plan.__all__
 
 
 def test_alias_cannot_borrow_another_alias_exact_target() -> None:
@@ -399,7 +417,7 @@ def test_mutated_install_failure_requires_reload_to_explicit_next_target() -> No
     assert failed.text_mode is TextMode.MTP
     assert failed.receipt_id == "receipt/mtp-v1"
     assert failed.recovery_action is RecoveryAction.RELOAD_REQUIRED
-    assert failed.post_reload_target == QwenFallbackTarget(
+    assert failed.pending_fallback_target == QwenFallbackTarget(
         TextMode.NATIVE_AR, "receipt/native-v1"
     )
     assert failed.fallback_chain == (QwenFallbackTarget(TextMode.NONE, None),)
@@ -412,35 +430,108 @@ def test_repeated_install_failure_is_rejected_while_reload_is_pending() -> None:
         resolve_qwen_install_failure(pending, target_was_mutated=False)
 
 
-def test_clean_reload_activates_target_before_another_transition() -> None:
+def test_clean_reload_only_allows_fallback_start_without_publishing_it() -> None:
     pending = resolve_qwen_install_failure(_resolve(), target_was_mutated=True)
 
-    active = complete_qwen_recovery(pending, clean_target_reloaded=True)
+    ready = complete_qwen_reload(pending, reloaded_target=_verified_target())
+
+    assert ready.text_mode is TextMode.MTP
+    assert ready.receipt_id == "receipt/mtp-v1"
+    assert ready.recovery_action is RecoveryAction.STARTUP_FALLBACK
+    assert ready.pending_fallback_target == QwenFallbackTarget(
+        TextMode.NATIVE_AR, "receipt/native-v1"
+    )
+    assert ready.reason is PlanReason.INSTALL_FAILED_STARTUP_FALLBACK
+
+    active = complete_qwen_fallback_start(ready)
 
     assert active.text_mode is TextMode.NATIVE_AR
     assert active.receipt_id == "receipt/native-v1"
     assert active.recovery_action is RecoveryAction.NONE
-    assert active.post_reload_target is None
+    assert active.pending_fallback_target is None
     assert active.reason is PlanReason.INSTALL_FALLBACK_ACTIVE
-    next_pending = resolve_qwen_install_failure(active, target_was_mutated=False)
-    assert next_pending.text_mode is TextMode.NONE
 
 
-def test_reload_recovery_cannot_be_cleared_without_clean_reload_evidence() -> None:
+def test_reload_recovery_rejects_absent_stale_or_mismatched_binding() -> None:
     pending = resolve_qwen_install_failure(_resolve(), target_was_mutated=True)
 
-    with pytest.raises(ValueError, match="verified clean target reload"):
-        complete_qwen_recovery(pending)
+    with pytest.raises(TypeError, match="reloaded_target"):
+        complete_qwen_reload(pending)  # type: ignore[call-arg]
+    with pytest.raises(ValueError, match="fresh verification binding"):
+        complete_qwen_reload(
+            pending,
+            reloaded_target=pending.verified_target,  # type: ignore[arg-type]
+        )
+    with pytest.raises(ValueError, match="mismatched"):
+        complete_qwen_reload(
+            pending,
+            reloaded_target=_verified_target(
+                replace(_target(), target_revision="3" * 40)
+            ),
+        )
+    with pytest.raises(ValueError, match="mismatched"):
+        complete_qwen_reload(
+            pending,
+            reloaded_target=_verified_target(verification_id="another-binding"),
+        )
+    with pytest.raises(ValueError, match="mismatched"):
+        complete_qwen_reload(
+            pending,
+            reloaded_target=_verified_target(authority="another-authority"),
+        )
 
 
 def test_unmutated_install_failure_requires_starting_next_fallback() -> None:
     pending = resolve_qwen_install_failure(_resolve(), target_was_mutated=False)
 
-    assert pending.text_mode is TextMode.NATIVE_AR
-    assert pending.receipt_id == "receipt/native-v1"
+    assert pending.text_mode is TextMode.MTP
+    assert pending.receipt_id == "receipt/mtp-v1"
     assert pending.recovery_action is RecoveryAction.STARTUP_FALLBACK
+    assert pending.pending_fallback_target == QwenFallbackTarget(
+        TextMode.NATIVE_AR, "receipt/native-v1"
+    )
     with pytest.raises(ValueError, match="recovery action is pending"):
         resolve_qwen_install_failure(pending, target_was_mutated=False)
+
+
+def test_unmutated_fallback_failure_advances_through_terminal_none() -> None:
+    native_pending = resolve_qwen_install_failure(_resolve(), target_was_mutated=False)
+
+    none_pending = resolve_qwen_fallback_start_failure(
+        native_pending, target_was_mutated=False
+    )
+
+    assert none_pending.text_mode is TextMode.MTP
+    assert none_pending.receipt_id == "receipt/mtp-v1"
+    assert none_pending.pending_fallback_target == QwenFallbackTarget(
+        TextMode.NONE, None
+    )
+    assert none_pending.fallback_chain == ()
+    active = complete_qwen_fallback_start(none_pending)
+    assert active.text_mode is TextMode.NONE
+    assert active.receipt_id is None
+    assert active.recovery_action is RecoveryAction.NONE
+
+
+def test_post_reload_fallback_failure_requires_another_reload_to_none() -> None:
+    initial = resolve_qwen_install_failure(_resolve(), target_was_mutated=True)
+    native_ready = complete_qwen_reload(initial, reloaded_target=_verified_target())
+
+    none_reload = resolve_qwen_fallback_start_failure(
+        native_ready, target_was_mutated=True
+    )
+
+    assert none_reload.text_mode is TextMode.MTP
+    assert none_reload.recovery_action is RecoveryAction.RELOAD_REQUIRED
+    assert none_reload.pending_fallback_target == QwenFallbackTarget(
+        TextMode.NONE, None
+    )
+    none_ready = complete_qwen_reload(none_reload, reloaded_target=_verified_target())
+    assert none_ready.text_mode is TextMode.MTP
+    assert none_ready.recovery_action is RecoveryAction.STARTUP_FALLBACK
+    active = complete_qwen_fallback_start(none_ready)
+    assert active.text_mode is TextMode.NONE
+    assert active.receipt_id is None
 
 
 def test_status_payload_is_json_safe_and_contains_selected_receipt() -> None:
