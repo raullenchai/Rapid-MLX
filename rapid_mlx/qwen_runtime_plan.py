@@ -57,6 +57,7 @@ class PlanReason(str, Enum):
     QUALIFICATION_NOT_FOUND = "qualification_not_found"
     QUALIFICATION_ALIAS_MISMATCH = "qualification_alias_mismatch"
     QUALIFICATION_TARGET_IDENTITY_MISMATCH = "qualification_target_identity_mismatch"
+    QUALIFICATION_TARGET_RECEIPT_MISMATCH = "qualification_target_receipt_mismatch"
     QUALIFICATION_RUNTIME_MISMATCH = "qualification_runtime_mismatch"
     QUALIFICATION_HARDWARE_MISMATCH = "qualification_hardware_mismatch"
     QUALIFICATION_AMBIGUOUS = "qualification_ambiguous"
@@ -86,6 +87,21 @@ def _require_immutable_revision(label: str, value: object) -> None:
     ):
         return
     raise ValueError(f"{label} must be an immutable commit or content digest")
+
+
+def _require_immutable_verification_id(label: str, value: object) -> None:
+    """Require the content-addressed receipt emitted by artifact truth.
+
+    Qualification rows are durable static policy. A mutable label or merely
+    non-empty opaque value cannot bind all config/index facts omitted from the
+    projected target identity, so rows accept only a SHA-256 receipt.
+    """
+
+    if isinstance(value, str) and re.fullmatch(
+        r"(?:[a-z][a-z0-9._-]*-)?sha256:[0-9a-f]{64}", value
+    ):
+        return
+    raise ValueError(f"{label} must be an immutable SHA-256 receipt")
 
 
 def _require_relative_path(label: str, value: object) -> None:
@@ -317,6 +333,8 @@ class QwenQualificationRow:
     qualification_id: str
     public_alias: str
     target_identity: QwenTargetIdentity
+    expected_target_verification_id: str
+    expected_target_verification_authority: str
     mode_qualifications: tuple[QwenModeQualification, ...]
     preferred_text_mode: TextMode
     fallback_chain: tuple[TextMode, ...]
@@ -328,6 +346,14 @@ class QwenQualificationRow:
         _require_non_empty("public_alias", self.public_alias)
         if not isinstance(self.target_identity, QwenTargetIdentity):
             raise ValueError("target_identity must be a QwenTargetIdentity")
+        _require_immutable_verification_id(
+            "expected_target_verification_id",
+            self.expected_target_verification_id,
+        )
+        _require_non_empty(
+            "expected_target_verification_authority",
+            self.expected_target_verification_authority,
+        )
         if (
             not isinstance(self.mode_qualifications, tuple)
             or not self.mode_qualifications
@@ -546,9 +572,19 @@ def _resolve_row(
         if not identity_rows:
             return None, PlanReason.QUALIFICATION_NOT_FOUND
 
-    if len(identity_rows) != 1:
+    receipt_rows = tuple(
+        row
+        for row in identity_rows
+        if row.expected_target_verification_id
+        == artifact.verified_target.verification_id
+        and row.expected_target_verification_authority
+        == artifact.verified_target.verification_authority
+    )
+    if not receipt_rows:
+        return None, PlanReason.QUALIFICATION_TARGET_RECEIPT_MISMATCH
+    if len(receipt_rows) != 1:
         return None, PlanReason.QUALIFICATION_AMBIGUOUS
-    row = identity_rows[0]
+    row = receipt_rows[0]
     if row.runtime_versions != artifact.runtime_versions:
         return None, PlanReason.QUALIFICATION_RUNTIME_MISMATCH
     if artifact.hardware_class not in row.hardware_classes:

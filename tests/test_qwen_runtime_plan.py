@@ -33,6 +33,8 @@ from rapid_mlx.qwen_runtime_plan import (
 
 TARGET_REVISION = "1" * 40
 DRAFTER_REVISION = "2" * 40
+TARGET_VERIFICATION_ID = "hf-snapshot-sha256:" + "a" * 64
+TARGET_VERIFICATION_AUTHORITY = "rapid_mlx.qwen_artifact:hub-snapshot-v1"
 RUNTIME_VERSIONS = (
     ("mlx", "0.32.1"),
     ("rapid-mlx", "0.15.0"),
@@ -56,8 +58,8 @@ def _target() -> QwenTargetIdentity:
 def _verified_target(
     target: QwenTargetIdentity | None = None,
     *,
-    verification_id: str = "binding/qwen-exact/1",
-    authority: str = "rapid-mlx-artifact-truth-v1",
+    verification_id: str = TARGET_VERIFICATION_ID,
+    authority: str = TARGET_VERIFICATION_AUTHORITY,
 ) -> qwen_plan.VerifiedQwenTarget:
     return qwen_plan._mint_verified_qwen_target(
         identity=target or _target(),
@@ -96,12 +98,16 @@ def _row(
     qualification_id: str = "qwen-exact-auto-v1",
     public_alias: str = "qwen-exact-4bit",
     target: QwenTargetIdentity | None = None,
+    expected_verification_id: str = TARGET_VERIFICATION_ID,
+    expected_verification_authority: str = TARGET_VERIFICATION_AUTHORITY,
     modes: tuple[QwenModeQualification, ...] | None = None,
 ) -> QwenQualificationRow:
     return QwenQualificationRow(
         qualification_id=qualification_id,
         public_alias=public_alias,
         target_identity=target or _target(),
+        expected_target_verification_id=expected_verification_id,
+        expected_target_verification_authority=expected_verification_authority,
         mode_qualifications=(
             modes
             if modes is not None
@@ -259,6 +265,8 @@ def test_native_only_row_qualifies_without_any_drafter_contract() -> None:
         qualification_id="qwen-exact-native-v1",
         public_alias="qwen-exact-4bit",
         target_identity=_target(),
+        expected_target_verification_id=TARGET_VERIFICATION_ID,
+        expected_target_verification_authority=TARGET_VERIFICATION_AUTHORITY,
         mode_qualifications=(_native_qualification(),),
         preferred_text_mode=TextMode.NATIVE_AR,
         fallback_chain=(TextMode.NONE,),
@@ -373,6 +381,63 @@ def test_same_alias_with_different_target_identity_fails_closed() -> None:
     target = replace(_target(), target_revision="3" * 40)
     result = _resolve(artifact=_artifact(target=target))
     assert result.reason is PlanReason.QUALIFICATION_TARGET_IDENTITY_MISMATCH
+
+
+def test_same_identity_different_verification_receipt_fails_closed() -> None:
+    artifact = _artifact(
+        verified_target=_verified_target(
+            verification_id="hf-snapshot-sha256:" + "b" * 64
+        )
+    )
+
+    result = _resolve(artifact=artifact)
+
+    assert result.reason is PlanReason.QUALIFICATION_TARGET_RECEIPT_MISMATCH
+
+
+def test_exact_receipt_disambiguates_rows_with_same_projected_identity() -> None:
+    rows = (
+        _row(qualification_id="receipt-a"),
+        _row(
+            qualification_id="receipt-b",
+            expected_verification_id="hf-snapshot-sha256:" + "b" * 64,
+        ),
+    )
+
+    result = _resolve(rows=rows)
+
+    assert result.qualification_id == "receipt-a"
+    assert result.selection_source is SelectionSource.QUALIFIED_AUTO
+
+
+def test_same_verification_id_from_different_authority_fails_closed() -> None:
+    artifact = _artifact(
+        verified_target=_verified_target(authority="another-artifact-authority-v1")
+    )
+
+    result = _resolve(artifact=artifact)
+
+    assert result.reason is PlanReason.QUALIFICATION_TARGET_RECEIPT_MISMATCH
+
+
+@pytest.mark.parametrize(
+    "verification_id",
+    ["", "main", "hf-snapshot-sha256:not-a-digest", "a" * 40],
+)
+def test_qualification_row_requires_immutable_target_verification_receipt(
+    verification_id: str,
+) -> None:
+    with pytest.raises(
+        ValueError, match="expected_target_verification_id must be an immutable"
+    ):
+        _row(expected_verification_id=verification_id)
+
+
+def test_qualification_row_requires_verification_authority() -> None:
+    with pytest.raises(
+        ValueError, match="expected_target_verification_authority must be non-empty"
+    ):
+        _row(expected_verification_authority="")
 
 
 def test_multiple_exact_raw_rows_are_ambiguous() -> None:
