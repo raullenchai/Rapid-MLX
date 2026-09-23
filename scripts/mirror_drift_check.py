@@ -194,13 +194,13 @@ class AuditProgress:
             profile = dict(_profile_counts)
             retry_causes = dict(_mirror_retry_causes)
             retry_after_values = set(_mirror_retry_after_values)
-        cause_summary = ",".join(
-            f"{cause}:{count}"
-            for cause, count in sorted(retry_causes.items())
-        ) or "none"
-        retry_after_summary = ",".join(
-            sorted(retry_after_values, key=float)
-        ) or "none"
+        cause_summary = (
+            ",".join(
+                f"{cause}:{count}" for cause, count in sorted(retry_causes.items())
+            )
+            or "none"
+        )
+        retry_after_summary = ",".join(sorted(retry_after_values, key=float)) or "none"
         return (
             "METRICS"
             f" repos={self.repos_done}/{self.repos_total}"
@@ -297,9 +297,7 @@ def _extend_mirror_cooldown(delay: float, clock: Callable[[], float]) -> None:
         _mirror_cooldown_until = max(_mirror_cooldown_until, clock() + delay)
 
 
-def _record_mirror_retry(
-    cause: str, delay: float, retry_after: str | None
-) -> None:
+def _record_mirror_retry(cause: str, delay: float, retry_after: str | None) -> None:
     with _COUNT_LOCK:
         _profile_counts["mirror_retry_seconds"] += delay
         _mirror_retry_causes[cause] = _mirror_retry_causes.get(cause, 0) + 1

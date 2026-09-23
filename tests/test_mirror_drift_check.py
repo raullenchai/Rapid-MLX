@@ -717,9 +717,7 @@ def test_request_exhaustion(monkeypatch):
     ("error", "cause"),
     [
         (
-            urllib.error.HTTPError(
-                "https://example", 429, "limited", Message(), None
-            ),
+            urllib.error.HTTPError("https://example", 429, "limited", Message(), None),
             "429",
         ),
         (
@@ -762,7 +760,9 @@ def test_429_shared_cooldown_gates_new_mirror_request(monkeypatch):
     monkeypatch.setattr(
         drift,
         "_OPENER",
-        types.SimpleNamespace(open=lambda *_a, **_k: events.append("open") or Response(200)),
+        types.SimpleNamespace(
+            open=lambda *_a, **_k: events.append("open") or Response(200)
+        ),
     )
     drift._reset_retry_state()
     drift._mirror_cooldown_until = 12.0
@@ -787,9 +787,7 @@ def test_429_shared_cooldown_gates_new_mirror_request(monkeypatch):
 def test_retry_after_values_are_in_metrics(monkeypatch):
     headers = Message()
     headers["Retry-After"] = "17"
-    limited = urllib.error.HTTPError(
-        "https://example", 429, "limited", headers, None
-    )
+    limited = urllib.error.HTTPError("https://example", 429, "limited", headers, None)
     attempts = iter([limited, Response(200)])
 
     def open_request(*_args, **_kwargs):
@@ -941,7 +939,7 @@ def test_sigterm_exits_promptly_with_one_partial_report(tmp_path):
         import sys
         import threading
 
-        path = {str(ROOT / 'scripts' / 'mirror_drift_check.py')!r}
+        path = {str(ROOT / "scripts" / "mirror_drift_check.py")!r}
         spec = importlib.util.spec_from_file_location("sigterm_drift", path)
         module = importlib.util.module_from_spec(spec)
         sys.modules[spec.name] = module
@@ -1068,9 +1066,7 @@ def test_exhausted_transient_emits_partial_report(monkeypatch, capsys):
         monkeypatch.setattr(
             drift,
             "_OPENER",
-            types.SimpleNamespace(
-                open=lambda *_a, **_k: (_ for _ in ()).throw(error)
-            ),
+            types.SimpleNamespace(open=lambda *_a, **_k: (_ for _ in ()).throw(error)),
         )
         drift._REQUEST_CONTEXT.kind = "mirror"
         try:
