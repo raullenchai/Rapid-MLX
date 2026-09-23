@@ -387,12 +387,23 @@ def test_standalone_entrypoint_uses_shared_post_bind_seam():
     assert "on_server_accepting=print_ready_banner" in source
 
 
-@pytest.mark.requires_mlx
 def test_standalone_entrypoint_stashes_endpoint_and_runs_real_seam(
     monkeypatch, capsys, unused_tcp_port
 ):
     from rapid_mlx.config import get_config
 
+    scheduler = ModuleType("rapid_mlx.scheduler")
+
+    class SchedulerConfig:
+        def __init__(self, **kwargs):
+            self.__dict__.update(kwargs)
+
+    scheduler.SchedulerConfig = SchedulerConfig
+    monkeypatch.setitem(sys.modules, "rapid_mlx.scheduler", scheduler)
+    turboquant = ModuleType("rapid_mlx.turboquant")
+    turboquant.resolve_turboquant_mode_default = lambda *_args, **_kwargs: None
+    turboquant.turboquant_scheduler_kwargs = lambda *_args, **_kwargs: {}
+    monkeypatch.setitem(sys.modules, "rapid_mlx.turboquant", turboquant)
     observations: list[int] = []
     cfg = get_config()
     monkeypatch.setattr(cfg, "bind_host", cfg.bind_host)
@@ -565,10 +576,26 @@ def test_native_mtp_runner_defers_its_existing_banner_to_callback(monkeypatch, c
     )
 
 
-@pytest.mark.requires_mlx
 def test_dspark_runner_defers_its_existing_banner_to_callback(monkeypatch, capsys):
-    from rapid_mlx.models.deepseek_v41_native import server as dspark_server
+    from rapid_mlx.models import deepseek_v41_native
     from rapid_mlx.speculative.dflash import server as dflash_server
+
+    serving_name = "rapid_mlx.models.deepseek_v41_native.serving"
+    fake_serving = ModuleType(serving_name)
+    for name in (
+        "generate",
+        "generation_kwargs",
+        "load_product_runtime",
+        "render_prompt",
+        "stream_generate",
+        "validate_request",
+    ):
+        setattr(fake_serving, name, lambda *_args, **_kwargs: None)
+    monkeypatch.setitem(sys.modules, serving_name, fake_serving)
+    server_name = "rapid_mlx.models.deepseek_v41_native.server"
+    monkeypatch.delitem(sys.modules, server_name, raising=False)
+    monkeypatch.delattr(deepseek_v41_native, "server", raising=False)
+    dspark_server = importlib.import_module(server_name)
 
     monkeypatch.setattr(dspark_server, "require_product_memory", lambda: None)
     monkeypatch.setattr(
