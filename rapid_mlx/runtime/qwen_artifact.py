@@ -282,6 +282,7 @@ class TargetWeights:
     missing_shard_count: int
     shards: tuple[str, ...]
     index_sha256: str | None
+    file_identities: tuple[tuple[str, str], ...] = ()
 
     def to_status_dict(self) -> dict[str, Any]:
         return {
@@ -290,6 +291,7 @@ class TargetWeights:
             "missing_shard_count": self.missing_shard_count,
             "shards": list(self.shards),
             "index_sha256": self.index_sha256,
+            "file_identities": dict(self.file_identities),
         }
 
 
@@ -521,17 +523,18 @@ def _quantization(config: dict[str, Any]) -> QwenQuantization:
 _HEX_BLOB_ID = re.compile(r"^[0-9a-f]{40}(?:[0-9a-f]{24})?$")
 
 
-def _trusted_weight_file(
+def _weight_file_identity(
     path: Path,
     *,
     snapshot_dir: Path,
     binding: VerifiedHubSnapshotBinding | None,
-) -> bool:
-    """Validate one weight path without opening its contents.
+) -> str | None:
+    """Return a trusted content identity without opening tensor contents.
 
-    Regular files must resolve beneath the exact probed artifact directory.
-    Hugging Face cache symlinks are valid only when a matching verified binding
-    proves their final target is a direct blob in the same resolved repo cache.
+    Qualification accepts canonical Hugging Face cache symlinks only when a
+    matching verified binding proves their final target is a direct blob in
+    the same resolved repo cache. Regular weight files fail closed: hashing
+    multi-gigabyte tensors would violate this probe's content-free contract.
     """
 
     try:
@@ -539,35 +542,30 @@ def _trusted_weight_file(
         artifact_root = snapshot_dir.resolve(strict=True)
         resolved_parent = path.parent.resolve(strict=True)
     except OSError:
-        return False
+        return None
     if not resolved.is_file():
-        return False
+        return None
     try:
         resolved_parent.relative_to(artifact_root)
     except ValueError:
-        return False
+        return None
 
-    if path.is_symlink():
-        if binding is None:
-            return False
-        blobs_path = binding._repo_cache_dir / "blobs"
-        if blobs_path.is_symlink():
-            return False
-        try:
-            blobs_dir = blobs_path.resolve(strict=True)
-        except OSError:
-            return False
-        return (
-            blobs_dir.parent == binding._repo_cache_dir
-            and resolved.parent == blobs_dir
-            and _HEX_BLOB_ID.fullmatch(resolved.name) is not None
-        )
-
+    if not path.is_symlink() or binding is None:
+        return None
+    blobs_path = binding._repo_cache_dir / "blobs"
+    if blobs_path.is_symlink():
+        return None
     try:
-        resolved.relative_to(artifact_root)
-    except ValueError:
-        return False
-    return True
+        blobs_dir = blobs_path.resolve(strict=True)
+    except OSError:
+        return None
+    if (
+        blobs_dir.parent != binding._repo_cache_dir
+        or resolved.parent != blobs_dir
+        or _HEX_BLOB_ID.fullmatch(resolved.name) is None
+    ):
+        return None
+    return f"hf_blob:{resolved.name}"
 
 
 def _target_weights(
@@ -625,14 +623,18 @@ def _target_weights(
                 shards,
                 index_sha256,
             )
-        if any(
-            not _trusted_weight_file(
-                path,
-                snapshot_dir=snapshot_dir,
-                binding=binding,
+        file_identities = tuple(
+            (
+                shard,
+                _weight_file_identity(
+                    path,
+                    snapshot_dir=snapshot_dir,
+                    binding=binding,
+                ),
             )
-            for path in shard_paths
-        ):
+            for shard, path in zip(shards, shard_paths, strict=True)
+        )
+        if any(identity is None for _shard, identity in file_identities):
             return TargetWeights(
                 TargetWeightLayout.INVALID_WEIGHTS,
                 len(shards),
@@ -640,26 +642,41 @@ def _target_weights(
                 shards,
                 index_sha256,
             )
+        trusted_identities = tuple(
+            (shard, identity)
+            for shard, identity in file_identities
+            if identity is not None
+        )
         return TargetWeights(
             TargetWeightLayout.INDEXED_SAFETENSORS,
             len(shards),
             0,
             shards,
             index_sha256,
+            trusted_identities,
         )
 
     single = snapshot_dir / "model.safetensors"
     if single.exists() or single.is_symlink():
+        identity = _weight_file_identity(
+            single,
+            snapshot_dir=snapshot_dir,
+            binding=binding,
+        )
         layout = (
             TargetWeightLayout.SINGLE_SAFETENSORS
-            if _trusted_weight_file(
-                single,
-                snapshot_dir=snapshot_dir,
-                binding=binding,
-            )
+            if identity is not None
             else TargetWeightLayout.INVALID_WEIGHTS
         )
-        return TargetWeights(layout, 1, 0, ("model.safetensors",), None)
+        identities = (("model.safetensors", identity),) if identity else ()
+        return TargetWeights(
+            layout,
+            1,
+            0,
+            ("model.safetensors",),
+            None,
+            identities,
+        )
 
     orphan_shards = [
         path
@@ -803,6 +820,7 @@ def probe_qwen_artifact(
                 "config_sha256": config_sha256,
                 "index_sha256": target_weights.index_sha256,
                 "shards": target_weights.shards,
+                "file_identities": target_weights.file_identities,
             }
         )
 
@@ -997,6 +1015,10 @@ def to_verified_runtime_target(truth: QwenArtifactTruth):
         raise ArtifactProbeError("artifact target weights are incomplete")
     if not truth.target_weights.shards:
         raise ArtifactProbeError("artifact target weight receipt has no shards")
+    if tuple(name for name, _identity in truth.target_weights.file_identities) != (
+        truth.target_weights.shards
+    ):
+        raise ArtifactProbeError("artifact target weight identities are incomplete")
     if (
         truth.target_weights.layout is TargetWeightLayout.INDEXED_SAFETENSORS
         and truth.target_weights.index_sha256 is None

@@ -10,5 +10,11 @@
     "model-00003-of-00004.safetensors",
     "model-00004-of-00004.safetensors"
   ],
+  "target_blob_ids": {
+    "model-00001-of-00004.safetensors": "09f3e6ecb0b7af6e6a38bc8169a134c821b0924c2679b2bb8f4426ad38d032b8",
+    "model-00002-of-00004.safetensors": "31dcdb1c49eebdb1505bd14e3cb33f9cf900bd2546b638f2464694ae763a033f",
+    "model-00003-of-00004.safetensors": "3e66de06a1f03dade16a612a368cfce4a4c9caa4efd7d28185454384082cec03",
+    "model-00004-of-00004.safetensors": "a5d0cf03519c26f8b506df6b0ba60526e5c08c8cea22d0c21ce92950e58a5422"
+  },
   "mtp_candidate": null
 }

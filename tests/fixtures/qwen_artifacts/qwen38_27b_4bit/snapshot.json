@@ -9,6 +9,11 @@
     "model-00002-of-00003.safetensors",
     "model-00003-of-00003.safetensors"
   ],
+  "target_blob_ids": {
+    "model-00001-of-00003.safetensors": "6cc1508e96fb5d0865dfd5753a79f4ec60651bf3e2a82844a7e8ae9c60528c0d",
+    "model-00002-of-00003.safetensors": "83f2a20ca8058f486a3634a27faf99587f4cd3c156a83dee34fb99e6ac178670",
+    "model-00003-of-00003.safetensors": "31b8c91ef899f79efaaa69e3d2c096f6e2ebeb2ff20e29222abbd9ebc79e560a"
+  },
   "mtp_candidate": {
     "path": "mtp/model.safetensors",
     "storage": "symlink",

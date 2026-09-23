@@ -114,7 +114,9 @@ def _materialize_snapshot(
     for shard in metadata["target_shards"]:
         target = snapshot / shard
         target.parent.mkdir(parents=True, exist_ok=True)
-        target.touch()
+        blob = repo_cache / "blobs" / metadata["target_blob_ids"][shard]
+        blob.touch()
+        target.symlink_to(os.path.relpath(blob, target.parent))
 
     candidate = metadata["mtp_candidate"]
     if include_mtp and candidate is not None:
@@ -186,6 +188,10 @@ def test_exact_cached_qwen_config_index_and_snapshot_facts(tmp_path: Path, name:
     assert truth.target_weights.layout is expected["target_layout"]
     assert truth.target_weights.shards == tuple(metadata["target_shards"])
     assert truth.target_weights.index_sha256 == metadata.get("index_sha256")
+    assert dict(truth.target_weights.file_identities) == {
+        shard: f"hf_blob:{blob_id}"
+        for shard, blob_id in metadata["target_blob_ids"].items()
+    }
     assert truth.mtp_locator.state is expected["mtp_state"]
     status = truth.to_status_dict()
     assert status["identity_is_immutable"] is True
@@ -213,6 +219,9 @@ def test_qwen35_pinned_manifest_requires_real_single_shard_index_receipt(
     assert truth.target_weights.layout is TargetWeightLayout.INDEXED_SAFETENSORS
     assert truth.target_weights.shards == ("model.safetensors",)
     assert truth.target_weights.index_sha256 == metadata["index_sha256"]
+    assert dict(truth.target_weights.file_identities) == {
+        "model.safetensors": f"hf_blob:{metadata['target_blob_ids']['model.safetensors']}"
+    }
     assert truth.mtp_locator.state is MTPWeightPathState.ROOT_MODEL_AMBIGUOUS
 
 
@@ -500,6 +509,50 @@ def test_verified_repo_blob_weight_symlinks_remain_valid(
     assert truth.target_weights.shards == tuple(metadata["target_shards"])
 
 
+def test_repointing_same_indexed_shard_name_to_another_repo_blob_changes_receipt(
+    tmp_path: Path,
+):
+    snapshot, hub, metadata = _materialize_snapshot(tmp_path, "qwen36_35b_4bit")
+    binding = _binding(snapshot, metadata)
+    before = probe_qwen_artifact(snapshot, binding=binding)
+    shard_name = metadata["target_shards"][0]
+    shard = snapshot / shard_name
+    repo_cache = hub / ("models--" + metadata["source_repo"].replace("/", "--"))
+    replacement_blob = repo_cache / "blobs" / ("b" * 64)
+    replacement_blob.touch()
+    _replace_with_symlink(shard, replacement_blob)
+
+    after = probe_qwen_artifact(snapshot, binding=binding)
+    assert before.target_weights.layout is TargetWeightLayout.INDEXED_SAFETENSORS
+    assert after.target_weights.layout is TargetWeightLayout.INDEXED_SAFETENSORS
+    assert before.target_weights.shards == after.target_weights.shards
+    assert before.target_weights.index_sha256 == after.target_weights.index_sha256
+    assert (
+        dict(before.target_weights.file_identities)[shard_name]
+        != (dict(after.target_weights.file_identities)[shard_name])
+    )
+    assert before.verification_id != after.verification_id
+
+
+def test_regular_weight_bytes_cannot_mint_even_when_name_and_index_match(
+    tmp_path: Path,
+):
+    snapshot, _hub, metadata = _materialize_snapshot(tmp_path, "qwen36_35b_4bit")
+    binding = _binding(snapshot, metadata)
+    shard = snapshot / metadata["target_shards"][0]
+    shard.unlink()
+    shard.write_bytes(b"first regular weight bytes")
+    first = probe_qwen_artifact(snapshot, binding=binding)
+    shard.write_bytes(b"changed regular weight bytes")
+    changed = probe_qwen_artifact(snapshot, binding=binding)
+
+    for truth in (first, changed):
+        assert truth.target_weights.layout is TargetWeightLayout.INVALID_WEIGHTS
+        assert truth.target_weights.file_identities == ()
+        with pytest.raises(ArtifactProbeError, match="target weights are incomplete"):
+            to_verified_runtime_target(truth)
+
+
 @pytest.mark.parametrize(
     "escape_kind",
     [
@@ -534,8 +587,11 @@ def test_indexed_weight_symlink_escape_cannot_mint_runtime_target(
         external_blobs.mkdir()
         target = external_blobs / ("a" * 64)
         target.touch()
-        (repo_cache / "blobs").rmdir()
-        (repo_cache / "blobs").symlink_to(external_blobs, target_is_directory=True)
+        blobs_dir = repo_cache / "blobs"
+        for blob in blobs_dir.iterdir():
+            blob.rename(external_blobs / blob.name)
+        blobs_dir.rmdir()
+        blobs_dir.symlink_to(external_blobs, target_is_directory=True)
         target = repo_cache / "blobs" / target.name
     _replace_with_symlink(shard, target)
 
@@ -607,6 +663,10 @@ def test_receipt_extractor_reproduces_fixture_truth(
     assert receipt["schema_version"] == 1
     assert receipt["target_weights"]["index_sha256"] == metadata["index_sha256"]
     assert receipt["target_weights"]["shards"] == metadata["target_shards"]
+    assert receipt["target_weights"]["file_identities"] == {
+        shard: f"hf_blob:{blob_id}"
+        for shard, blob_id in metadata["target_blob_ids"].items()
+    }
     assert receipt["mtp_locator"]["hf_blob_id"] == metadata["mtp_candidate"]["blob_id"]
     assert len(receipt["geometry"]["layer_types"]) == 64
     assert str(tmp_path) not in json.dumps(receipt)

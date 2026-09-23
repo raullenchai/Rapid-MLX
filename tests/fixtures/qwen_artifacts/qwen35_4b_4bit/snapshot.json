@@ -7,5 +7,8 @@
   "target_shards": [
     "model.safetensors"
   ],
+  "target_blob_ids": {
+    "model.safetensors": "5fb9acd0246866381cf8c5c354c6db1019f6498eec4ccb4f5edcc71ffeacb2db"
+  },
   "mtp_candidate": null
 }
