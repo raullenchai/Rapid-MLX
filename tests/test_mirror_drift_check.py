@@ -664,8 +664,37 @@ def test_request_retries_and_http_errors(monkeypatch):
         "_OPENER",
         types.SimpleNamespace(open=lambda *_a, **_k: (_ for _ in ()).throw(error)),
     )
-    with pytest.raises(RuntimeError, match="HTTP 404"):
-        drift._get_json("https://example")
+    drift._reset_retry_state()
+    drift._REQUEST_CONTEXT.kind = "mirror"
+    try:
+        with pytest.raises(RuntimeError, match="HTTP 404"):
+            drift._get_json("https://example")
+    finally:
+        drift._REQUEST_CONTEXT.kind = None
+
+
+def test_admission_abort_wait_and_immediate_deadline_paths():
+    gate = drift._MirrorAdmission()
+    gate.reset(2, deadline=10.0)
+    with pytest.raises(RuntimeError, match="deadline reached"):
+        gate.acquire(lambda: 10.0, lambda _seconds: None)
+    assert gate.abort_event.is_set()
+
+    class AbortDuringWait:
+        aborted = False
+
+        def is_set(self):
+            return self.aborted
+
+        def wait(self, delay):
+            assert delay == 30.0
+            self.aborted = True
+            return True
+
+    gate.reset(2, deadline=None)
+    gate.abort_event = AbortDuringWait()
+    with pytest.raises(drift._AuditAbortError, match="exhausted probe"):
+        gate.wait_delay(30.0, lambda: 0.0, drift._REAL_SLEEP)
 
 
 def test_request_exhaustion(monkeypatch):

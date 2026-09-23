@@ -1005,8 +1005,6 @@ def audit(
     mirror_futures: dict[Future[Any], tuple[str, str]] = {}
 
     def submit_next() -> bool:
-        if _MIRROR_ADMISSION.abort_event.is_set():
-            return False
         try:
             key, item = next(probe_items)
         except StopIteration:
