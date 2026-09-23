@@ -243,6 +243,7 @@ def test_vendored_mllm_namespace_coverage_runs_on_apple_silicon() -> None:
     apple_run = workflow["jobs"]["test-apple-silicon"]["steps"][-2]["run"]
 
     assert "tests/test_mllm_cache_namespace_compat.py" in apple_run
+    assert "tests/test_mlx_vlm_vendored_generate.py" in apple_run
 
 
 def test_coverage_data_is_commit_bound_and_fail_closed() -> None:
@@ -290,6 +291,10 @@ def test_vendored_mllm_coverage_omit_is_file_scoped() -> None:
         f"{vendored_prefix}cache.py",
         f"{vendored_prefix}apc.py",
         f"{vendored_prefix}inputs.py",
+        f"{vendored_prefix}generate/ar.py",
+        f"{vendored_prefix}generate/common.py",
+        f"{vendored_prefix}generate/types.py",
+        f"{vendored_prefix}sample_utils.py",
     ]
     for guarded_path in (
         "rapid_mlx/models/mlx_vlm_vendored/future_module.py",

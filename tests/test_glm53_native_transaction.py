@@ -725,6 +725,10 @@ def test_generation_hook_replaces_only_speculative_seams(monkeypatch) -> None:
     assert vendored_ar.speculative_prefill_kwargs is (
         transaction.speculative_prefill_kwargs
     )
+    # Re-installation is idempotent in both namespaces.
+    transaction.install_generation_hooks()
+    assert ar.generate_step.__wrapped__ is original_generate_step
+    assert vendored_ar.generate_step.__wrapped__ is original_generate_step
 
     class Criteria:
         enable_thinking = True
