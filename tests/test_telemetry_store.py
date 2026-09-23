@@ -19,6 +19,7 @@ from __future__ import annotations
 
 import json
 import os
+import socket
 import sqlite3
 import subprocess
 import sys
@@ -393,13 +394,400 @@ def test_note_model_served_respects_the_cap(fake_home, monkeypatch):
     assert store.note_model_served("c") == 2
 
 
-def test_first_run_date_is_written_once(fake_home):
+def test_first_run_date_before_floor_is_clamped_and_written_once(fake_home):
     from rapid_mlx.telemetry import store
 
-    day_one = datetime(2026, 1, 1, tzinfo=timezone.utc)
-    assert store.first_run_date(day_one) == "2026-01-01"
+    before_release = datetime(2025, 12, 31, 12, 0, tzinfo=timezone.utc)
+    assert store.first_run_date(before_release) == "2026-01-06"
+    evidence = fake_home / ".rapid-mlx" / "telemetry-client-id"
+    evidence.write_text("existing install")
+    newer = datetime(2026, 2, 1, tzinfo=timezone.utc).timestamp()
+    os.utime(evidence, (newer, newer))
     later = datetime(2026, 3, 9, tzinfo=timezone.utc)
-    assert store.first_run_date(later) == "2026-01-01"
+    assert store.first_run_date(later) == "2026-01-06"
+
+
+def test_first_run_date_seeds_bucket_from_old_evidence(fake_home):
+    from rapid_mlx.telemetry import store
+
+    now = datetime(2026, 9, 20, 12, 0, tzinfo=timezone.utc)
+    evidence = fake_home / ".rapid-mlx" / "telemetry-client-id"
+    evidence.parent.mkdir()
+    evidence.write_text("existing install")
+    old = (now - timedelta(days=40)).timestamp()
+    os.utime(evidence, (old, old))
+
+    assert store.days_since_first_run_bucket(now) == "30+"
+    assert store.first_run_date(now) == "2026-08-11"
+
+
+def test_first_run_date_uses_oldest_of_all_install_evidence(fake_home):
+    from rapid_mlx.telemetry import store
+
+    now = datetime(2026, 9, 20, 12, 0, tzinfo=timezone.utc)
+    state_dir = fake_home / ".rapid-mlx"
+    state_dir.mkdir()
+    ages = {
+        "telemetry-client-id": 4,
+        "session_seen": 5,
+        "activation_seen_server": 6,
+        "activation_seen_desktop_first_chat_reply": 7,
+        "bench-install-id": 8,
+    }
+    for name, days in ages.items():
+        path = state_dir / name
+        path.write_text(name)
+        modified = (now - timedelta(days=days)).timestamp()
+        os.utime(path, (modified, modified))
+    (state_dir / "telemetry-consent.yaml").write_text(
+        "consent: true\nprompted_at: '2026-08-18T12:00:00Z'\n"
+    )
+
+    assert store.first_run_date(now) == "2026-08-18"
+
+
+def test_first_run_date_clamps_future_evidence_to_today(fake_home):
+    from rapid_mlx.telemetry import store
+
+    now = datetime(2026, 9, 20, 12, 0, tzinfo=timezone.utc)
+    evidence = fake_home / ".rapid-mlx" / "session_seen"
+    evidence.parent.mkdir()
+    evidence.write_text("seen")
+    future = (now + timedelta(days=40)).timestamp()
+    os.utime(evidence, (future, future))
+
+    assert store.first_run_date(now) == "2026-09-20"
+
+
+def test_first_run_date_ignores_evidence_before_public_release(fake_home):
+    from rapid_mlx.telemetry import store
+
+    now = datetime(2026, 9, 20, 12, 0, tzinfo=timezone.utc)
+    evidence = fake_home / ".rapid-mlx" / "session_seen"
+    evidence.parent.mkdir()
+    evidence.write_text("impossibly old install")
+    ancient = datetime(1970, 1, 1, tzinfo=timezone.utc).timestamp()
+    os.utime(evidence, (ancient, ancient))
+
+    assert store.first_run_date(now) == "2026-09-20"
+
+
+def test_first_run_date_ignores_prompt_before_public_release(fake_home):
+    from rapid_mlx.telemetry import store
+
+    now = datetime(2026, 9, 20, 12, 0, tzinfo=timezone.utc)
+    consent = fake_home / ".rapid-mlx" / "telemetry-consent.yaml"
+    consent.parent.mkdir()
+    consent.write_text("prompted_at: '1970-01-01T00:00:00Z'\n")
+
+    assert store.first_run_date(now) == "2026-09-20"
+
+
+def test_first_run_date_keeps_valid_evidence_alongside_ancient_item(fake_home):
+    from rapid_mlx.telemetry import store
+
+    now = datetime(2026, 9, 20, 12, 0, tzinfo=timezone.utc)
+    state_dir = fake_home / ".rapid-mlx"
+    state_dir.mkdir()
+    ancient = state_dir / "session_seen"
+    ancient.write_text("impossibly old install")
+    ancient_time = datetime(1970, 1, 1, tzinfo=timezone.utc).timestamp()
+    os.utime(ancient, (ancient_time, ancient_time))
+    valid = state_dir / "bench-install-id"
+    valid.write_text("existing install")
+    valid_time = (now - timedelta(days=12)).timestamp()
+    os.utime(valid, (valid_time, valid_time))
+
+    assert store.first_run_date(now) == "2026-09-08"
+
+
+def test_first_run_date_permission_error_keeps_valid_fixed_evidence(
+    fake_home, monkeypatch
+):
+    from rapid_mlx.telemetry import store
+
+    now = datetime(2026, 9, 20, 12, 0, tzinfo=timezone.utc)
+    state_dir = fake_home / ".rapid-mlx"
+    state_dir.mkdir()
+    inaccessible = state_dir / "activation_seen_server"
+    inaccessible.write_text("unreadable evidence")
+    valid = state_dir / "session_seen"
+    valid.write_text("existing install")
+    valid_time = (now - timedelta(days=9)).timestamp()
+    os.utime(valid, (valid_time, valid_time))
+    original_stat = Path.stat
+    original_lstat = Path.lstat
+
+    def unreadable_stat(path, *args, **kwargs):
+        if path == inaccessible:
+            raise PermissionError("unreadable evidence")
+        return original_stat(path, *args, **kwargs)
+
+    def unreadable_lstat(path, *args, **kwargs):
+        if path == inaccessible:
+            raise PermissionError("unreadable evidence")
+        return original_lstat(path, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "stat", unreadable_stat)
+    monkeypatch.setattr(Path, "lstat", unreadable_lstat)
+
+    assert store.first_run_date(now) == "2026-09-11"
+
+
+def test_first_run_date_does_not_follow_consent_symlink_to_fifo(fake_home):
+    state_dir = fake_home / ".rapid-mlx"
+    state_dir.mkdir()
+    fifo = fake_home / "consent-fifo"
+    os.mkfifo(fifo)
+    (state_dir / "telemetry-consent.yaml").symlink_to(fifo)
+    script = """
+from datetime import datetime, timezone
+from rapid_mlx.telemetry import store
+print(store.first_run_date(datetime(2026, 9, 20, tzinfo=timezone.utc)))
+"""
+
+    started = time.monotonic()
+    result = subprocess.run(
+        [sys.executable, "-c", script],
+        capture_output=True,
+        env=_child_env(fake_home),
+        text=True,
+        timeout=1.0,
+    )
+
+    assert time.monotonic() - started < 1.0
+    assert result.returncode == 0, result.stderr
+    assert result.stdout.strip() == "2026-09-20"
+
+
+@pytest.mark.parametrize(
+    "evidence_name", ["telemetry-client-id", "activation_seen_server"]
+)
+def test_first_run_date_ignores_symlink_to_old_external_file(fake_home, evidence_name):
+    from rapid_mlx.telemetry import store
+
+    now = datetime(2026, 9, 20, 12, 0, tzinfo=timezone.utc)
+    state_dir = fake_home / ".rapid-mlx"
+    state_dir.mkdir()
+    external = fake_home / "external-client-id"
+    external.write_text("not install evidence")
+    old = (now - timedelta(days=100)).timestamp()
+    os.utime(external, (old, old))
+    (state_dir / evidence_name).symlink_to(external)
+
+    assert store.first_run_date(now) == "2026-09-20"
+
+
+@pytest.mark.parametrize(
+    "evidence_name", ["telemetry-client-id", "activation_seen_server"]
+)
+@pytest.mark.parametrize("file_kind", ["directory", "socket", "fifo"])
+def test_first_run_date_ignores_non_regular_evidence(
+    fake_home, monkeypatch, evidence_name, file_kind
+):
+    from rapid_mlx.telemetry import store
+
+    now = datetime(2026, 9, 20, 12, 0, tzinfo=timezone.utc)
+    state_dir = fake_home / ".rapid-mlx"
+    state_dir.mkdir()
+    marker = state_dir / evidence_name
+    marker_socket = None
+    if file_kind == "directory":
+        marker.mkdir()
+    elif file_kind == "socket":
+        marker_socket = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+        # macOS limits AF_UNIX names to 104 bytes; binding relative to the
+        # state directory still creates the marker at the exact target path.
+        monkeypatch.chdir(state_dir)
+        marker_socket.bind(evidence_name)
+    else:
+        os.mkfifo(marker)
+    old = (now - timedelta(days=15)).timestamp()
+    os.utime(marker, (old, old))
+
+    try:
+        assert store.first_run_date(now) == "2026-09-20"
+    finally:
+        if marker_socket is not None:
+            marker_socket.close()
+
+
+@pytest.mark.parametrize(
+    "evidence_name", ["telemetry-client-id", "activation_seen_server"]
+)
+def test_first_run_date_accepts_hard_link_to_regular_evidence(fake_home, evidence_name):
+    from rapid_mlx.telemetry import store
+
+    now = datetime(2026, 9, 20, 12, 0, tzinfo=timezone.utc)
+    state_dir = fake_home / ".rapid-mlx"
+    state_dir.mkdir()
+    original = fake_home / "regular-evidence"
+    original.write_text("existing install")
+    old = (now - timedelta(days=15)).timestamp()
+    os.utime(original, (old, old))
+    os.link(original, state_dir / evidence_name)
+
+    assert store.first_run_date(now) == "2026-09-05"
+
+
+def test_first_run_date_bounds_oversized_consent_read(fake_home, monkeypatch):
+    from rapid_mlx.telemetry import store
+
+    now = datetime(2026, 9, 20, 12, 0, tzinfo=timezone.utc)
+    consent = fake_home / ".rapid-mlx" / "telemetry-consent.yaml"
+    consent.parent.mkdir()
+    consent.write_text(
+        "consent: true\nprompted_at: '2026-08-18T12:00:00Z'\n# " + "x" * 8_192
+    )
+    read_sizes = []
+    real_read = os.read
+
+    def recording_read(descriptor, size):
+        read_sizes.append(size)
+        return real_read(descriptor, size)
+
+    monkeypatch.setattr(os, "read", recording_read)
+
+    assert consent.stat().st_size > 4_096
+    assert store.first_run_date(now) == "2026-08-18"
+    assert read_sizes == [store._MAX_CONSENT_BYTES]
+
+
+def test_first_run_date_does_not_block_on_consent_fifo(fake_home):
+    state_dir = fake_home / ".rapid-mlx"
+    state_dir.mkdir()
+    os.mkfifo(state_dir / "telemetry-consent.yaml")
+    script = """
+from datetime import datetime, timezone
+from rapid_mlx.telemetry import store
+print(store.first_run_date(datetime(2026, 9, 20, tzinfo=timezone.utc)))
+"""
+
+    started = time.monotonic()
+    result = subprocess.run(
+        [sys.executable, "-c", script],
+        capture_output=True,
+        env=_child_env(fake_home),
+        text=True,
+        timeout=1.0,
+    )
+
+    assert time.monotonic() - started < 1.0
+    assert result.returncode == 0, result.stderr
+    assert result.stdout.strip() == "2026-09-20"
+
+
+def test_bounded_consent_reader_ignores_open_error(fake_home, monkeypatch):
+    from rapid_mlx.telemetry import store
+
+    consent = fake_home / "consent.yaml"
+    consent.write_text("consent: true\n")
+    real_open = os.open
+
+    def unavailable_open(path, *args, **kwargs):
+        if Path(path) == consent:
+            raise PermissionError("consent is unreadable")
+        return real_open(path, *args, **kwargs)
+
+    monkeypatch.setattr(os, "open", unavailable_open)
+
+    assert store._bounded_regular_file_text(consent) is None
+
+
+def test_bounded_consent_reader_skips_directory(fake_home):
+    from rapid_mlx.telemetry import store
+
+    consent = fake_home / "consent-directory"
+    consent.mkdir()
+
+    assert store._bounded_regular_file_text(consent) is None
+
+
+def test_bounded_consent_reader_ignores_close_error(fake_home, monkeypatch):
+    from rapid_mlx.telemetry import store
+
+    consent = fake_home / "consent.yaml"
+    consent.write_text("consent: true\n")
+    real_close = os.close
+
+    def close_then_fail(descriptor):
+        real_close(descriptor)
+        raise OSError("close failed")
+
+    monkeypatch.setattr(os, "close", close_then_fail)
+    assert store._bounded_regular_file_text(consent) == "consent: true\n"
+
+
+def test_malformed_prompted_at_does_not_discard_other_evidence(fake_home):
+    from rapid_mlx.telemetry import store
+
+    now = datetime(2026, 9, 20, 12, 0, tzinfo=timezone.utc)
+    state_dir = fake_home / ".rapid-mlx"
+    state_dir.mkdir()
+    evidence = state_dir / "session_seen"
+    evidence.write_text("seen")
+    old = (now - timedelta(days=9)).timestamp()
+    os.utime(evidence, (old, old))
+    (state_dir / "telemetry-consent.yaml").write_text(
+        "consent: true\nprompted_at: definitely-not-a-timestamp\n"
+    )
+
+    assert store.first_run_date(now) == "2026-09-11"
+
+
+def test_activation_scan_error_does_not_discard_fixed_evidence(fake_home, monkeypatch):
+    from rapid_mlx.telemetry import store
+
+    now = datetime(2026, 9, 20, 12, 0, tzinfo=timezone.utc)
+    evidence = fake_home / ".rapid-mlx" / "session_seen"
+    evidence.parent.mkdir()
+    evidence.write_text("seen")
+    old = (now - timedelta(days=3)).timestamp()
+    os.utime(evidence, (old, old))
+
+    def unavailable_glob(path, pattern):
+        raise PermissionError(f"cannot scan {path / pattern}")
+
+    monkeypatch.setattr(Path, "glob", unavailable_glob)
+
+    assert store.first_run_date(now) == "2026-09-17"
+
+
+@requires_non_root
+def test_seed_first_run_date_does_not_write_read_only_state_dir(fake_home):
+    from rapid_mlx.telemetry import store
+
+    now = datetime(2026, 9, 20, 12, 0, tzinfo=timezone.utc)
+    state_dir = fake_home / ".rapid-mlx"
+    state_dir.mkdir()
+    marker = state_dir / "session_seen"
+    marker.write_text("seen")
+    old = (now - timedelta(days=2)).timestamp()
+    os.utime(marker, (old, old))
+    before = tuple(state_dir.iterdir())
+    os.chmod(state_dir, 0o500)
+    try:
+        assert store._seed_first_run_date(now) == "2026-09-18"
+        assert tuple(state_dir.iterdir()) == before
+    finally:
+        os.chmod(state_dir, 0o700)
+
+
+def test_first_run_date_and_bucket_use_same_utc_day(fake_home):
+    from rapid_mlx.telemetry import store
+
+    local_evening = datetime(2026, 9, 20, 18, 30, tzinfo=timezone(timedelta(hours=-7)))
+
+    assert store.first_run_date(local_evening) == "2026-09-21"
+    assert store.days_since_first_run_bucket(local_evening) == "0"
+
+
+def test_first_run_date_without_evidence_starts_today(fake_home):
+    from rapid_mlx.telemetry import store
+
+    now = datetime(2026, 9, 20, 12, 0, tzinfo=timezone.utc)
+
+    assert store.first_run_date(now) == "2026-09-20"
 
 
 @pytest.mark.parametrize(
@@ -418,8 +806,8 @@ def test_first_run_date_is_written_once(fake_home):
 def test_days_since_first_run_bucket_boundaries(fake_home, days, expected):
     from rapid_mlx.telemetry import store
 
-    first = datetime(2026, 1, 1, 12, 0, tzinfo=timezone.utc)
-    assert store.first_run_date(first) == "2026-01-01"
+    first = datetime(2026, 2, 1, 12, 0, tzinfo=timezone.utc)
+    assert store.first_run_date(first) == "2026-02-01"
     assert store.days_since_first_run_bucket(first + timedelta(days=days)) == expected
 
 
@@ -434,7 +822,7 @@ def test_days_since_first_run_bucket_tolerates_a_backwards_clock(fake_home):
 def test_cohort_values_are_in_the_declared_enum(fake_home):
     from rapid_mlx.telemetry import store
 
-    first = datetime(2026, 1, 1, tzinfo=timezone.utc)
+    first = datetime(2026, 2, 1, tzinfo=timezone.utc)
     store.first_run_date(first)
     for days in (0, 1, 3, 10, 90):
         assert (

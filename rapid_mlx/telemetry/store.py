@@ -51,6 +51,7 @@ from __future__ import annotations
 
 import os
 import sqlite3
+import stat
 import threading
 from collections.abc import Callable, Iterator
 from contextlib import closing, contextmanager
@@ -58,6 +59,8 @@ from dataclasses import dataclass
 from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 from typing import TypeVar
+
+import yaml
 
 from rapid_mlx.telemetry.state import _default_telemetry_dir
 
@@ -111,6 +114,20 @@ _BUCKET_RANK = {name: index for index, name in enumerate(BUCKETS)}
 
 #: ``days_since_first_run_bucket`` values, ascending.
 DAY_BUCKETS: tuple[str, ...] = ("0", "1", "2-6", "7-29", "30+")
+
+#: Earliest plausible install evidence: the first public Rapid-MLX release,
+#: v0.2.0, was released on 2026-01-06. Older filesystem timestamps or consent
+#: records cannot describe a Rapid-MLX install and must not permanently seed
+#: its write-once cohort date.
+FIRST_RUN_EVIDENCE_FLOOR = date(2026, 1, 6)
+
+_INSTALL_EVIDENCE_FILES: tuple[str, ...] = (
+    "telemetry-client-id",
+    "session_seen",
+    "bench-install-id",
+)
+
+_MAX_CONSENT_BYTES = 4_096
 
 _SCHEMA = (
     "CREATE TABLE IF NOT EXISTS schema_meta ("
@@ -640,26 +657,103 @@ def note_model_served(model_id: str) -> int:
     return _run(work, 0)
 
 
+def _regular_file_date(path: Path) -> date | None:
+    """Return a regular file's UTC mtime date without following symlinks."""
+    try:
+        info = path.lstat()
+        if not stat.S_ISREG(info.st_mode):
+            return None
+        return datetime.fromtimestamp(info.st_mtime, timezone.utc).date()
+    except Exception:
+        return None
+
+
+def _bounded_regular_file_text(path: Path) -> str | None:
+    """Read a small regular file without following symlinks or blocking."""
+    descriptor: int | None = None
+    try:
+        descriptor = os.open(
+            path,
+            os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK,
+        )
+        if not stat.S_ISREG(os.fstat(descriptor).st_mode):
+            return None
+        return os.read(descriptor, _MAX_CONSENT_BYTES).decode("utf-8")
+    except Exception:
+        return None
+    finally:
+        if descriptor is not None:
+            try:
+                os.close(descriptor)
+            except OSError:
+                pass
+
+
+def _seed_first_run_date(now: datetime | None) -> str:
+    """Infer an upgrade's first-run date from existing local state.
+
+    Evidence is read-only and independently best-effort: an unusable item is
+    ignored without discarding dates recovered from the other items.
+    """
+    today = _as_day(now)
+    state_dir = _default_telemetry_dir()
+    evidence: list[date] = []
+    for name in _INSTALL_EVIDENCE_FILES:
+        if found := _regular_file_date(state_dir / name):
+            evidence.append(found)
+
+    try:
+        for marker in state_dir.glob("activation_seen_*"):
+            if found := _regular_file_date(marker):
+                evidence.append(found)
+    except Exception:
+        pass
+
+    consent_text = _bounded_regular_file_text(state_dir / "telemetry-consent.yaml")
+    if consent_text is not None:
+        try:
+            consent = yaml.safe_load(consent_text)
+            if isinstance(consent, dict) and "prompted_at" in consent:
+                evidence.append(
+                    datetime.strptime(
+                        str(consent["prompted_at"]), "%Y-%m-%dT%H:%M:%SZ"
+                    ).date()
+                )
+        except Exception:
+            pass
+
+    current = max(datetime.strptime(today, "%Y-%m-%d").date(), FIRST_RUN_EVIDENCE_FLOOR)
+    valid_evidence = [
+        candidate
+        for candidate in evidence
+        if FIRST_RUN_EVIDENCE_FLOOR <= candidate <= current
+    ]
+    return min(valid_evidence, default=current).isoformat()
+
+
 def first_run_date(now: datetime | None = None) -> str | None:
     """Return the install's first-run date (``YYYY-MM-DD``), setting it once.
 
     Written by whichever process gets there first and never rewritten, so
-    the cohort stamp is stable for the life of the install. ``None`` on
-    any storage failure.
+    the cohort stamp is stable for the life of the install. An upgrade is
+    seeded from the oldest pre-existing install evidence; a fresh 0.15.0
+    install has no evidence and correctly starts at day 0. ``None`` on any
+    storage failure.
     """
 
     def work(conn: sqlite3.Connection) -> str | None:
-        today = _as_day(now)
         with _transaction(conn):
-            conn.execute(
-                "INSERT OR IGNORE INTO install_facts (key, value)"
-                " VALUES ('first_run_date', ?)",
-                (today,),
-            )
             row = conn.execute(
                 "SELECT value FROM install_facts WHERE key = 'first_run_date'"
             ).fetchone()
-        return str(row[0]) if row else None
+            if row is not None:
+                return str(row[0])
+            seeded = _seed_first_run_date(now)
+            conn.execute(
+                "INSERT INTO install_facts (key, value) VALUES ('first_run_date', ?)",
+                (seeded,),
+            )
+        return seeded
 
     return _run(work, None)
 

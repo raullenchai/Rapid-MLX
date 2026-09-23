@@ -922,6 +922,22 @@ def test_cohort_stamp_retries_after_transient_store_failure(monkeypatch):
     assert sender.items[1]["properties"]["days_since_first_run_bucket"] == "7-29"
 
 
+@pytest.mark.parametrize("bucket", ["0", "1", "2-6", "7-29", "30+", "not-a-bucket"])
+def test_only_declared_cohort_bucket_values_reach_wire(monkeypatch, bucket):
+    sender = inject_sender(monkeypatch)
+    monkeypatch.setattr(
+        track_module.store, "days_since_first_run_bucket", lambda: bucket
+    )
+
+    track_module.track("app_opened", {})
+
+    if bucket in track_module.store.DAY_BUCKETS:
+        [item] = sender.items
+        assert item["properties"]["days_since_first_run_bucket"] == bucket
+    else:
+        assert sender.items == []
+
+
 def test_utc_day_uses_utc_clock_near_local_midnight(monkeypatch):
     class FakeDatetime:
         @classmethod
