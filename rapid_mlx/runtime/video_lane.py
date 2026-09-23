@@ -291,6 +291,11 @@ class VideoEngine:
         # second Metal graph concurrently with that still-draining worker.
         self._generation_lock = _PROCESS_GENERATION_LOCK
 
+    def _emit_model_served(self) -> None:
+        from ..server import _emit_primary_model_served_once
+
+        _emit_primary_model_served_once(self)
+
     def generate(
         self,
         *,
@@ -335,6 +340,7 @@ class VideoEngine:
                     )
             except LTX25BackendError as exc:
                 raise VideoRuntimeError(str(exc)) from exc
+            self._emit_model_served()
             self._crop_generated_output(
                 output_path=output_path,
                 width=width,
@@ -362,6 +368,7 @@ class VideoEngine:
                     )
             except WanBackendError as exc:
                 raise VideoRuntimeError(str(exc)) from exc
+            self._emit_model_served()
             self._crop_generated_output(
                 output_path=output_path,
                 width=width,
@@ -388,6 +395,7 @@ class VideoEngine:
                     negative_prompt=negative_prompt or "",
                     guidance_scale=(6.0 if guidance_scale is None else guidance_scale),
                 )
+            self._emit_model_served()
             return
         if _resolve_ffmpeg() is None:
             raise VideoRuntimeError(
@@ -429,6 +437,7 @@ class VideoEngine:
             if conditioning_strength is not None:
                 generation_kwargs["image_strength"] = conditioning_strength
             generate_video_with_audio(**generation_kwargs)
+        self._emit_model_served()
         if not output_path.is_file() or output_path.stat().st_size == 0:
             raise VideoRuntimeError(
                 "LTX-2.3 generation completed without an MP4 output."

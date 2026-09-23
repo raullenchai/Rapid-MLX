@@ -1486,6 +1486,9 @@ async def _run_stt_request(
                 from ..runtime.audio_worker import run_audio_mlx
 
                 await run_audio_mlx("stt", model_name, "load", stt_engine.load)
+                from ..server import _emit_audio_model_served_once
+
+                _emit_audio_model_served_once(stt_engine, model_name)
                 _stt_engine = stt_engine
 
             # Forward ``timestamp_granularities`` only when requested.
@@ -2940,6 +2943,9 @@ def _generate_speech_blocking(
             _tts_engine = None
         tts_candidate = TTSEngine(model_name)
         run_audio_mlx_sync("tts", model_name, "load", tts_candidate.load)
+        from ..server import _emit_audio_model_served_once
+
+        _emit_audio_model_served_once(tts_candidate, model_name)
         _tts_engine = tts_candidate
 
     kwargs = dict(gen_kwargs)

@@ -1169,6 +1169,7 @@ async def test_lifespan_primary_lifecycle_modes(
     monkeypatch.setattr(server, "_model_registry", registry)
     monkeypatch.setattr(server, "_residency_manager", manager)
     monkeypatch.setattr(server, "_primary_model_lifecycle", None)
+    monkeypatch.setattr(server, "_telemetry_model_served_emitted", False)
     monkeypatch.setattr(server, "_primary_lazy_load", lazy_load)
     monkeypatch.setattr(server, "_primary_idle_unload_seconds", idle_seconds)
     monkeypatch.setattr(server, "_warmup_primary_engine", AsyncMock())
@@ -1206,6 +1207,8 @@ async def test_real_lifespan_emits_model_served_after_completed_load_once(
     from rapid_mlx.telemetry import model_events
 
     engine = FakeEngine()
+    if not lazy_load:
+        engine.is_text_diffusion = True
     manager = SimpleNamespace(
         start=AsyncMock(),
         shutdown=AsyncMock(),
@@ -1222,6 +1225,7 @@ async def test_real_lifespan_emits_model_served_after_completed_load_once(
     )
     monkeypatch.setattr(server, "_residency_manager", manager)
     monkeypatch.setattr(server, "_primary_model_lifecycle", None)
+    monkeypatch.setattr(server, "_telemetry_model_served_emitted", False)
     monkeypatch.setattr(server, "_primary_lazy_load", lazy_load)
     monkeypatch.setattr(server, "_primary_idle_unload_seconds", 1.0)
     monkeypatch.setattr(server, "_model_alias", "tmax-9b")
@@ -1240,6 +1244,7 @@ async def test_real_lifespan_emits_model_served_after_completed_load_once(
     def record_served(loaded_engine, alias, auto_selected):
         assert loaded_engine._loaded is True
         calls.append((alias, auto_selected))
+        return True
 
     monkeypatch.setattr(model_events, "emit_model_served", record_served)
 
@@ -1269,7 +1274,7 @@ def test_model_served_hook_failure_never_changes_server_load(monkeypatch):
 
     server._emit_primary_model_served_once(object())
 
-    assert server._telemetry_model_served_emitted is True
+    assert server._telemetry_model_served_emitted is False
 
 
 @pytest.mark.asyncio

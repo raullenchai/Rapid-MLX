@@ -308,6 +308,7 @@ class DiffusionEngine(BaseEngine):
     # Class-level default is False so callers without a profile
     # (programmatic, no alias entry) stay on the conservative side.
     supports_tool_calls: bool = False
+    is_text_diffusion = True
 
     def __init__(
         self,
