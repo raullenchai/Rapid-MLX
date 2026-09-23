@@ -35,6 +35,7 @@ TARGET_REVISION = "1" * 40
 DRAFTER_REVISION = "2" * 40
 TARGET_VERIFICATION_ID = "hf-snapshot-sha256:" + "a" * 64
 TARGET_VERIFICATION_AUTHORITY = "rapid_mlx.qwen_artifact:hub-snapshot-v1"
+DRAFTER_VERIFICATION_ID = "hf_blob:" + "c" * 64
 RUNTIME_VERSIONS = (
     ("mlx", "0.32.1"),
     ("rapid-mlx", "0.15.0"),
@@ -68,11 +69,16 @@ def _verified_target(
     )
 
 
-def _drafter(*, path: str = "mtp/model.safetensors") -> QwenDrafterIdentity:
+def _drafter(
+    *,
+    path: str = "mtp/model.safetensors",
+    artifact_verification_id: str = DRAFTER_VERIFICATION_ID,
+) -> QwenDrafterIdentity:
     return QwenDrafterIdentity(
         repo="example/Qwen-Exact-MTP-4bit",
         revision=DRAFTER_REVISION,
         artifact_path=path,
+        artifact_verification_id=artifact_verification_id,
     )
 
 
@@ -329,6 +335,35 @@ def test_mtp_drafter_path_mismatch_falls_back_to_independent_native() -> None:
 
     assert result.text_mode is TextMode.NATIVE_AR
     assert result.reason is PlanReason.MODE_DRAFTER_IDENTITY_MISMATCH
+
+
+def test_mtp_drafter_content_mismatch_falls_back_to_independent_native() -> None:
+    evidence = (
+        QwenModeEvidence(TextMode.NATIVE_AR, ("native-cache-api-v1",)),
+        QwenModeEvidence(
+            TextMode.MTP,
+            ("mtp-injector-v1", "mtp-install-v1"),
+            _drafter(artifact_verification_id="hf_blob:" + "d" * 64),
+        ),
+    )
+
+    result = _resolve(artifact=_artifact(evidence=evidence))
+
+    assert result.text_mode is TextMode.NATIVE_AR
+    assert result.reason is PlanReason.MODE_DRAFTER_IDENTITY_MISMATCH
+
+
+@pytest.mark.parametrize(
+    "artifact_verification_id",
+    ["", "main", "sha256:" + "c" * 64, "hf_blob:not-a-digest", "hf_blob:" + "c" * 39],
+)
+def test_drafter_requires_immutable_artifact_verification_id(
+    artifact_verification_id: str,
+) -> None:
+    with pytest.raises(
+        ValueError, match="artifact_verification_id must be an immutable"
+    ):
+        _drafter(artifact_verification_id=artifact_verification_id)
 
 
 def test_failed_native_fallback_is_not_published_in_mtp_chain() -> None:

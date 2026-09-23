@@ -104,6 +104,16 @@ def _require_immutable_verification_id(label: str, value: object) -> None:
     raise ValueError(f"{label} must be an immutable SHA-256 receipt")
 
 
+def _require_immutable_artifact_verification_id(label: str, value: object) -> None:
+    """Require a resolver-proven immutable Hugging Face blob identity."""
+
+    if isinstance(value, str) and re.fullmatch(
+        r"hf_blob:(?:[0-9a-f]{40}|[0-9a-f]{64})", value
+    ):
+        return
+    raise ValueError(f"{label} must be an immutable Hugging Face blob identity")
+
+
 def _require_relative_path(label: str, value: object) -> None:
     if not isinstance(value, str):
         raise ValueError(f"{label} must be a canonical relative POSIX path")
@@ -251,11 +261,15 @@ class QwenDrafterIdentity:
     repo: str
     revision: str
     artifact_path: str
+    artifact_verification_id: str
 
     def __post_init__(self) -> None:
         _require_non_empty("repo", self.repo)
         _require_immutable_revision("revision", self.revision)
         _require_relative_path("artifact_path", self.artifact_path)
+        _require_immutable_artifact_verification_id(
+            "artifact_verification_id", self.artifact_verification_id
+        )
 
 
 @dataclass(frozen=True, slots=True)
