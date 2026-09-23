@@ -170,7 +170,12 @@ def test_server_start_state_contract_is_exact(registry):
         "enum": "server_start_state",
         "required": True,
     }
-    assert props["failure_stage"]["required"] is False
+    assert props["failure_stage"] == {
+        "kind": "enum",
+        "enum": "failure_stage",
+        "required": False,
+        "only_when": {"state": ["failed"]},
+    }
 
 
 def test_model_id_pattern_accepts_only_the_four_declared_shapes(registry):

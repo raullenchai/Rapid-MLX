@@ -1,11 +1,16 @@
 # SPDX-License-Identifier: Apache-2.0
 from __future__ import annotations
 
+import builtins
+import sys
 from types import SimpleNamespace
 
 import pytest
+from fastapi import HTTPException
 
 from rapid_mlx import cli, server
+from rapid_mlx.runtime.primary_lifecycle import PrimaryModelLifecycle
+from rapid_mlx.service import helpers
 from rapid_mlx.telemetry import registry, server_start
 
 
@@ -83,10 +88,65 @@ def test_invalid_values_are_omitted_or_ignored(monkeypatch):
     ]
 
 
-def test_load_policy_matches_lazy_lanes():
+@pytest.mark.parametrize(
+    ("model", "expected"),
+    [
+        ("qwen3.5-4b-4bit", "eager"),
+        ("flux-schnell", "lazy"),
+        ("ltx-2.3-mlx-q4", "lazy"),
+        ("kokoro", "lazy"),
+    ],
+)
+def test_load_policy_matches_adapter_lanes(model, expected):
+    assert server_start.load_policy(model) == expected
+
+
+def test_explicit_lazy_load_overrides_adapter_policy():
     assert server_start.load_policy("qwen3.5-4b-4bit") == "eager"
-    assert server_start.load_policy("flux-schnell") == "lazy"
     assert server_start.load_policy("qwen3.5-4b-4bit", lazy_load=True) == "lazy"
+
+
+@pytest.mark.asyncio
+async def test_post_ready_lazy_503_does_no_server_start_telemetry_work(monkeypatch):
+    events = _capture(monkeypatch)
+
+    class FailingLazyEngine:
+        _loaded = False
+
+        async def start(self):
+            raise RuntimeError("lazy load failed")
+
+        async def stop(self):
+            self._loaded = False
+
+    engine = FailingLazyEngine()
+    lifecycle = PrimaryModelLifecycle(engine, lazy_load=True)
+    monkeypatch.setattr(
+        helpers,
+        "get_config",
+        lambda: SimpleNamespace(primary_model_lifecycle=lifecycle),
+    )
+    server_start.attempted("qwen3.5-4b-4bit", load_policy="lazy")
+    server_start.ready()
+
+    imports: list[str] = []
+    real_import = builtins.__import__
+
+    def reject_server_start_import(name, *args, **kwargs):
+        if name == "rapid_mlx.telemetry.server_start":
+            imports.append(name)
+            raise AssertionError("request path imported server_start telemetry")
+        return real_import(name, *args, **kwargs)
+
+    monkeypatch.delitem(sys.modules, "rapid_mlx.telemetry.server_start")
+    monkeypatch.setattr(builtins, "__import__", reject_server_start_import)
+
+    with pytest.raises(HTTPException) as caught:
+        await helpers.ensure_engine_ready(engine)
+
+    assert caught.value.status_code == 503
+    assert imports == []
+    assert [props["state"] for _, props in events] == ["attempted", "ready"]
 
 
 def test_emitter_base_exception_cannot_change_host_result(monkeypatch):

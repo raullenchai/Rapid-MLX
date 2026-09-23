@@ -115,7 +115,11 @@ def run_native_mtp_server(
         )
         return model, processor, runtime
 
-    model, processor, runtime = _dflash_executor.submit(_load_all).result()
+    from rapid_mlx.telemetry.server_start import failure_stage
+
+    # Both immutable target weights and the MTP runtime materialize here.
+    with failure_stage("prepare"):
+        model, processor, runtime = _dflash_executor.submit(_load_all).result()
 
     def _generation_kwargs(*, max_tokens: int, temperature: float, top_p: float):
         kwargs = {

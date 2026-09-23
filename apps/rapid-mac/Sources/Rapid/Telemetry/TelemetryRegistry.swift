@@ -11,8 +11,9 @@ import Foundation
 /// a second hand-maintained copy is exactly the drift this block prevents.
 ///
 /// Strict semantics, identical to `rapid_mlx/telemetry/registry.py` and to
-/// Orca's `src/main/telemetry/validator.ts`. Every failure drops the WHOLE
-/// event rather than stripping the offending key:
+/// Orca's `src/main/telemetry/validator.ts`. Every validation failure drops
+/// the WHOLE event. A registry-declared `only_when` condition is the sole
+/// filtering rule: a valid property is omitted when its condition is false.
 ///
 /// - unknown event name                       -> `nil`
 /// - unknown property key                     -> `nil` (event dropped)
@@ -45,6 +46,7 @@ struct TelemetryRegistry: Sendable {
         let max: Int?
         let pattern: String?
         let maxLength: Int?
+        let onlyWhen: [String: [String]]?
     }
 
     struct ModelIDSpec: Sendable {
@@ -167,6 +169,13 @@ struct TelemetryRegistry: Sendable {
         for (name, value) in raw where name.hasPrefix("_") == false {
             guard let body = value as? [String: Any], let kind = body["kind"] as? String
             else { return nil }
+            let onlyWhen: [String: [String]]?
+            if let rawOnlyWhen = body["only_when"] {
+                guard let decoded = rawOnlyWhen as? [String: [String]] else { return nil }
+                onlyWhen = decoded
+            } else {
+                onlyWhen = nil
+            }
             out[name] = PropertySpec(
                 kind: kind,
                 required: body["required"] as? Bool ?? false,
@@ -174,7 +183,8 @@ struct TelemetryRegistry: Sendable {
                 min: body["min"] as? Int,
                 max: body["max"] as? Int,
                 pattern: body["pattern"] as? String,
-                maxLength: body["max_length"] as? Int
+                maxLength: body["max_length"] as? Int,
+                onlyWhen: onlyWhen
             )
         }
         return out
@@ -216,6 +226,13 @@ struct TelemetryRegistry: Sendable {
                     return nil
                 }
                 continue
+            }
+            if let onlyWhen = spec.onlyWhen {
+                let conditionMet = onlyWhen.allSatisfy { controller, allowed in
+                    guard case .string(let actual)? = props[controller] else { return false }
+                    return allowed.contains(actual)
+                }
+                if conditionMet == false { continue }
             }
             guard check(value, against: spec) else {
                 TelemetryRegistryLog.once(label, "\(label): property \(name) rejected")

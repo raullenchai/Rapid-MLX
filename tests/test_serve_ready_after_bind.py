@@ -642,6 +642,106 @@ def test_dspark_runner_defers_its_existing_banner_to_callback(monkeypatch, capsy
     )
 
 
+def test_dflash_loader_failure_is_prepare_stage(monkeypatch):
+    from rapid_mlx.speculative.dflash import server as dflash_server
+
+    mlx_vlm = ModuleType("mlx_vlm")
+    mlx_vlm.load = lambda *_args, **_kwargs: (_ for _ in ()).throw(
+        RuntimeError("target load failed")
+    )
+    monkeypatch.setitem(sys.modules, "mlx_vlm", mlx_vlm)
+    monkeypatch.setattr(dflash_server, "have_runtime", lambda: True)
+    monkeypatch.setattr(dflash_server, "_dflash_executor", _ImmediateExecutor())
+    stages: list[str] = []
+    monkeypatch.setattr(server_start, "failed", stages.append)
+
+    with pytest.raises(RuntimeError, match="target load failed"):
+        dflash_server.run_dflash_server(
+            main_model_repo="target",
+            drafter_repo="drafter",
+            host="127.0.0.1",
+            port=0,
+            served_model_name="model",
+            default_max_tokens=32,
+            cors_origins=[],
+            uvicorn_log_level="warning",
+        )
+
+    assert stages == ["prepare"]
+
+
+def test_native_mtp_loader_failure_is_prepare_stage(monkeypatch):
+    from rapid_mlx.speculative.dflash import server as dflash_server
+    from rapid_mlx.speculative.native_mtp import server as native_server
+    from rapid_mlx.speculative.native_mtp.eligibility import QWEN36_35B_4BIT
+
+    mlx_vlm = ModuleType("mlx_vlm")
+    mlx_vlm.load = lambda *_args, **_kwargs: (_ for _ in ()).throw(
+        RuntimeError("target load failed")
+    )
+    monkeypatch.setitem(sys.modules, "mlx_vlm", mlx_vlm)
+    monkeypatch.setattr(dflash_server, "_dflash_executor", _ImmediateExecutor())
+    stages: list[str] = []
+    monkeypatch.setattr(server_start, "failed", stages.append)
+
+    with pytest.raises(RuntimeError, match="target load failed"):
+        native_server.run_native_mtp_server(
+            pair=QWEN36_35B_4BIT,
+            host="127.0.0.1",
+            port=0,
+            served_model_name="model",
+            default_max_tokens=32,
+            cors_origins=[],
+            uvicorn_log_level="warning",
+        )
+
+    assert stages == ["prepare"]
+
+
+def test_dspark_loader_failure_is_prepare_stage(monkeypatch):
+    from rapid_mlx.models import deepseek_v41_native
+    from rapid_mlx.speculative.dflash import server as dflash_server
+
+    serving_name = "rapid_mlx.models.deepseek_v41_native.serving"
+    fake_serving = ModuleType(serving_name)
+    for name in (
+        "generate",
+        "generation_kwargs",
+        "render_prompt",
+        "stream_generate",
+        "validate_request",
+    ):
+        setattr(fake_serving, name, lambda *_args, **_kwargs: None)
+    fake_serving.load_product_runtime = lambda *_args, **_kwargs: (_ for _ in ()).throw(
+        RuntimeError("product load failed")
+    )
+    monkeypatch.setitem(sys.modules, serving_name, fake_serving)
+    server_name = "rapid_mlx.models.deepseek_v41_native.server"
+    monkeypatch.delitem(sys.modules, server_name, raising=False)
+    monkeypatch.delattr(deepseek_v41_native, "server", raising=False)
+    dspark_server = importlib.import_module(server_name)
+    monkeypatch.setattr(dspark_server, "require_product_memory", lambda: None)
+    monkeypatch.setattr(
+        dspark_server, "download_target_snapshot", lambda: Path("/target")
+    )
+    monkeypatch.setattr(dspark_server, "download_mtp_snapshot", lambda: Path("/mtp"))
+    monkeypatch.setattr(dflash_server, "_dflash_executor", _ImmediateExecutor())
+    stages: list[str] = []
+    monkeypatch.setattr(server_start, "failed", stages.append)
+
+    with pytest.raises(RuntimeError, match="product load failed"):
+        dspark_server.run_server(
+            host="127.0.0.1",
+            port=0,
+            served_model_name="model",
+            default_max_tokens=32,
+            cors_origins=[],
+            uvicorn_log_level="warning",
+        )
+
+    assert stages == ["prepare"]
+
+
 @pytest.mark.asyncio
 async def test_listener_creation_emits_ready_after_attempted(monkeypatch):
     events: list[dict[str, object]] = []
@@ -666,6 +766,73 @@ async def test_listener_creation_emits_ready_after_attempted(monkeypatch):
 
     assert [event["state"] for event in events] == ["attempted", "ready"]
     assert all(event["load_policy"] == "lazy" for event in events)
+    server_start._reset_for_tests()
+
+
+@pytest.mark.asyncio
+async def test_lifespan_failure_emits_engine_start_without_ready(monkeypatch):
+    events: list[dict[str, object]] = []
+    monkeypatch.setattr("rapid_mlx.telemetry.track._upload_allowed", lambda: True)
+    monkeypatch.setattr(
+        "rapid_mlx.telemetry.track.track",
+        lambda event, props: events.append({"event": event, **props}),
+    )
+
+    async def failing_lifespan(scope, receive, send):
+        assert scope["type"] == "lifespan"
+        message = await receive()
+        assert message["type"] == "lifespan.startup"
+        raise RuntimeError("warmup failed")
+
+    server_start._reset_for_tests()
+    server_start.attempted("qwen3.5-4b-4bit", load_policy="eager")
+    instance = AcceptingConnectionsServer(
+        uvicorn.Config(
+            failing_lifespan,
+            host="127.0.0.1",
+            port=0,
+            log_level="error",
+            lifespan="on",
+        )
+    )
+
+    with pytest.raises(SystemExit) as caught:
+        await instance.serve()
+
+    assert caught.value.code == STARTUP_FAILURE
+    assert [(event["state"], event.get("failure_stage")) for event in events] == [
+        ("attempted", None),
+        ("failed", "engine_start"),
+    ]
+    server_start._reset_for_tests()
+
+
+@pytest.mark.asyncio
+async def test_lifespan_failure_return_emits_engine_start_without_ready(monkeypatch):
+    events: list[dict[str, object]] = []
+    monkeypatch.setattr("rapid_mlx.telemetry.track._upload_allowed", lambda: True)
+    monkeypatch.setattr(
+        "rapid_mlx.telemetry.track.track",
+        lambda event, props: events.append({"event": event, **props}),
+    )
+
+    async def lifespan_failed_without_raise(instance, sockets=None):
+        instance.lifespan = SimpleNamespace(should_exit=True)
+        instance.should_exit = True
+
+    monkeypatch.setattr(uvicorn.Server, "startup", lifespan_failed_without_raise)
+    server_start._reset_for_tests()
+    server_start.attempted("qwen3.5-4b-4bit", load_policy="eager")
+    instance = AcceptingConnectionsServer(
+        uvicorn.Config(_asgi_app, host="127.0.0.1", port=0, log_level="error")
+    )
+
+    await instance.startup()
+
+    assert [(event["state"], event.get("failure_stage")) for event in events] == [
+        ("attempted", None),
+        ("failed", "engine_start"),
+    ]
     server_start._reset_for_tests()
 
 

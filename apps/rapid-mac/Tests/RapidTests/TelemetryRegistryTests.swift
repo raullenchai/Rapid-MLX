@@ -84,6 +84,16 @@ struct TelemetryRegistryTests {
             "server_start_state",
             ["state": .string("exploded")]
         ) == nil)
+        for state in ["attempted", "ready"] {
+            let filtered = try #require(registry.validate(
+                "server_start_state",
+                [
+                    "state": .string(state),
+                    "failure_stage": .string("bind")
+                ]
+            ))
+            #expect(filtered == ["state": .string(state)])
+        }
     }
 
     @Test("an unknown event name is dropped")

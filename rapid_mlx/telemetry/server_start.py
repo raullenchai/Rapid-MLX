@@ -94,7 +94,7 @@ def load_policy(model_ref: object, *, lazy_load: bool = False) -> str:
     try:
         from rapid_mlx.telemetry.model_events import model_type
 
-        if model_type(model_ref) in {"audio", "image-gen"}:
+        if model_type(model_ref) in {"audio", "image-gen", "video-gen"}:
             return "lazy"
     except BaseException:
         pass

@@ -10,10 +10,10 @@ check keeps the two from diverging.
 shape allowed on the wire?". Block 4 wires it to a transport.
 
 Strict semantics, copied from Orca's ``src/main/telemetry/validator.ts``
-(``.strict()`` on every per-event schema + ``safeParse``). Every failure
-drops the WHOLE event; we never strip the offending key and send the
-rest, because a caller that got one key wrong has told us nothing about
-whether the rest is trustworthy:
+(``.strict()`` on every per-event schema + ``safeParse``). Every validation
+failure drops the WHOLE event. The sole filtering rule is a registry-declared
+``only_when`` condition: a valid property is omitted when its condition is
+false.
 
 - unknown event name                        -> ``None``
 - unknown property key                      -> ``None`` (event dropped)
@@ -173,6 +173,21 @@ def _validate_props(
                 return None
             continue
         value = props[name]
+        only_when = spec.get("only_when")
+        if only_when is not None:
+            if not isinstance(only_when, dict) or not all(
+                isinstance(controller, str)
+                and isinstance(allowed, list)
+                and all(isinstance(item, str) for item in allowed)
+                for controller, allowed in only_when.items()
+            ):
+                _log_once(log_key, f"{label}: property {name!r} has bad only_when")
+                return None
+            if any(
+                props.get(controller) not in allowed
+                for controller, allowed in only_when.items()
+            ):
+                continue
         if not _check_value(spec, value, reg):
             _log_once(log_key, f"{label}: property {name!r} rejected")
             return None

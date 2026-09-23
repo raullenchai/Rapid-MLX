@@ -45,9 +45,12 @@ def run_server(
 
     from rapid_mlx.speculative.dflash.server import _build_app, _dflash_executor
 
+    from rapid_mlx.telemetry.server_start import failure_stage
+
     require_product_memory()
-    target_path = download_target_snapshot()
-    mtp_path = download_mtp_snapshot()
+    with failure_stage("download"):
+        target_path = download_target_snapshot()
+        mtp_path = download_mtp_snapshot()
 
     def _load_all():
         return load_product_runtime(
@@ -58,7 +61,9 @@ def run_server(
             mtp_identity=MTP_REPO,
         )
 
-    model, tokenizer, runtime = _dflash_executor.submit(_load_all).result()
+    # Product runtime construction materializes both downloaded checkpoints.
+    with failure_stage("prepare"):
+        model, tokenizer, runtime = _dflash_executor.submit(_load_all).result()
     app = _build_app(
         model=model,
         processor=tokenizer,

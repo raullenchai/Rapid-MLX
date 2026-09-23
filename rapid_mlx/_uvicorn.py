@@ -47,6 +47,16 @@ class AcceptingConnectionsServer(uvicorn.Server):
             await super().startup(sockets=sockets)
         except SystemExit as exc:
             if (
+                getattr(self, "lifespan", None) is not None
+                and self.lifespan.should_exit
+            ):
+                # Uvicorn converts any ASGI lifespan startup exception into its
+                # startup-failure exit. This is still the pre-bind engine boundary,
+                # including warmup after engine.start().
+                from rapid_mlx.telemetry.server_start import failed
+
+                failed("engine_start")
+            elif (
                 self.config.fd is None
                 and not self.config.uds
                 and _port_is_in_use(self.config.host, self.config.port)
@@ -61,6 +71,14 @@ class AcceptingConnectionsServer(uvicorn.Server):
                 )
                 exc.rapid_mlx_bind_reported = True  # type: ignore[attr-defined]
             raise
+
+        if getattr(self, "lifespan", None) is not None and self.lifespan.should_exit:
+            # Older Uvicorn releases return instead of raising after a lifespan
+            # startup failure. Preserve the same deterministic classification.
+            from rapid_mlx.telemetry.server_start import failed
+
+            failed("engine_start")
+            return
 
         listeners = getattr(self, "servers", ())
         listener_created = bool(listeners) and all(

@@ -294,9 +294,6 @@ class PrimaryModelLifecycle:
                     await self._resume_admission()
                 await _run_hook(self._on_loaded)
             except BaseException as exc:
-                from rapid_mlx.telemetry.server_start import failed
-
-                failed("engine_start")
                 self._load_failures_total += 1
                 self._set_state("error")
                 self._last_error = type(exc).__name__

@@ -808,8 +808,21 @@ def _capture_later_event_and_stop(*_args, **_kwargs):
         posthog_sender.get_sender().flush(5.0)
         raise SystemExit(0)
     if os.environ.get("RAPID_MLX_TEST_PREFLIGHT_EXIT") == "1":
-        print("preflight sentinel", file=sys.stderr)
-        raise SystemExit(2)
+        from types import SimpleNamespace
+        from rapid_mlx.runtime import video_lane
+
+        class _PinnedVersion(tuple):
+            major = 3
+            minor = 11
+
+        video_lane.sys = SimpleNamespace(
+            version_info=_PinnedVersion((3, 11)), stderr=sys.stderr
+        )
+        video_lane._default_video_runtime_requirements = lambda _model: [
+            "the `rapid-mlx[video]` Python extra"
+        ]
+        video_lane._resolve_ffmpeg = lambda: "/usr/bin/ffmpeg"
+        return
     if os.environ.get("RAPID_MLX_TEST_SIGKILL") == "1":
         posthog_sender.get_sender().flush(2.0)
         os.kill(os.getpid(), signal.SIGKILL)
@@ -817,9 +830,10 @@ def _capture_later_event_and_stop(*_args, **_kwargs):
     posthog_sender.get_sender().flush(5.0)
     raise SystemExit(0)
 
-cli._port_preflight_or_die = _capture_later_event_and_stop
-cli._validate_primary_lifecycle_args = _capture_later_event_and_stop
-cli.models_command = _capture_later_event_and_stop
+if os.environ.get("RAPID_MLX_TEST_PREFLIGHT_EXIT") != "1":
+    cli._port_preflight_or_die = _capture_later_event_and_stop
+    cli._validate_primary_lifecycle_args = _capture_later_event_and_stop
+    cli.models_command = _capture_later_event_and_stop
 """.lstrip(),
         encoding="utf-8",
     )
@@ -982,23 +996,49 @@ def test_entrypoint_role_surface_matrix(
 
 
 @pytest.mark.parametrize(
-    ("mode_env", "returncode", "expected_states", "expected_stderr"),
+    (
+        "mode_env",
+        "model_arg",
+        "returncode",
+        "expected_states",
+        "expected_stdout",
+        "expected_stderr",
+    ),
     [
         (
             "RAPID_MLX_TEST_PREFLIGHT_EXIT",
+            "ltx-2.3-mlx-q4",
             2,
             ["attempted", "failed"],
-            "preflight sentinel\n",
+            "  Alias: ltx-2.3-mlx-q4 → notapalindrome/ltx23-mlx-av-q4\n",
+            "rapid-mlx: anonymous usage reporting is ON (PostHog Cloud, US; "
+            "no IP/location, no prompts or outputs). Turn off: rapid-mlx telemetry off "
+            "| RAPID_MLX_TELEMETRY=0 | DO_NOT_TRACK=1. Details: "
+            "https://rapidmlx.com/docs/telemetry\n\n"
+            "  Error: video generation requires "
+            "the `rapid-mlx[video]` Python extra.\n\n",
         ),
-        ("RAPID_MLX_TEST_SIGKILL", -signal.SIGKILL, ["attempted"], ""),
+        (
+            "RAPID_MLX_TEST_SIGKILL",
+            None,
+            -signal.SIGKILL,
+            ["attempted"],
+            "",
+            "rapid-mlx: anonymous usage reporting is ON (PostHog Cloud, US; "
+            "no IP/location, no prompts or outputs). Turn off: rapid-mlx telemetry off "
+            "| RAPID_MLX_TELEMETRY=0 | DO_NOT_TRACK=1. Details: "
+            "https://rapidmlx.com/docs/telemetry\n",
+        ),
     ],
 )
 def test_server_start_exit_delivery_and_crash_gap(
     tmp_path,
     official_entrypoint_layout,
     mode_env,
+    model_arg,
     returncode,
     expected_states,
+    expected_stdout,
     expected_stderr,
 ):
     root, hooks_dir, site_dir, console = official_entrypoint_layout
@@ -1036,8 +1076,9 @@ def test_server_start_exit_delivery_and_crash_gap(
     for name in (*state.CI_ENV_VARS, state.ENV_VAR, state.DO_NOT_TRACK_ENV):
         env.pop(name, None)
     try:
+        selected_model = model_arg or str(fake_model)
         proc = subprocess.run(
-            [str(console), "serve", str(fake_model), "--port", "0"],
+            [str(console), "serve", selected_model, "--port", "0"],
             cwd=home,
             env=env,
             capture_output=True,
@@ -1051,7 +1092,10 @@ def test_server_start_exit_delivery_and_crash_gap(
         sink.server_close()
 
     assert proc.returncode == returncode
-    assert proc.stderr.endswith(expected_stderr)
+    # Golden output captured from origin/fix/serve-ready-after-bind. The real
+    # video-extra guard must remain byte-identical while telemetry drains.
+    assert proc.stdout == expected_stdout
+    assert proc.stderr == expected_stderr
     items = [
         item
         for body in sink.bodies  # type: ignore[attr-defined]

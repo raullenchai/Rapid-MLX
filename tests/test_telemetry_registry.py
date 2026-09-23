@@ -117,6 +117,34 @@ def test_optional_property_may_be_absent():
     }
 
 
+@pytest.mark.parametrize("state", ["attempted", "ready"])
+def test_conditional_property_is_dropped_when_condition_is_false(state):
+    assert reg.validate(
+        "server_start_state",
+        {"state": state, "failure_stage": "bind"},
+    ) == {"state": state}
+
+
+def test_malformed_conditional_property_fails_closed():
+    loaded = reg.load_registry()
+    assert (
+        reg._validate_props(
+            {"stage": "bind"},
+            {
+                "stage": {
+                    "kind": "enum",
+                    "enum": "failure_stage",
+                    "only_when": ["not-a-mapping"],
+                }
+            },
+            loaded,
+            "test",
+            "test",
+        )
+        is None
+    )
+
+
 def test_out_of_enum_value_is_dropped():
     assert reg.validate("model_served", _served(model_type="telepathy")) is None
 

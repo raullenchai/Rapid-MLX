@@ -2894,9 +2894,6 @@ async def ensure_engine_ready(engine: BaseEngine) -> BaseEngine:
             raise
         except BaseException as exc:
             lifecycle.release_request()
-            from rapid_mlx.telemetry.server_start import failed
-
-            failed("engine_start")
             logger.exception("Configured primary model failed to load on demand")
             # Classify the load failure so a memory shortfall reflects as the
             # OOM card (same situation as a generation-time OOM) and every
