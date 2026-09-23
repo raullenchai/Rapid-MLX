@@ -136,6 +136,20 @@
         "text-diffusion", "audio", "other"
       ]
     },
+    "server_start_state": {
+      "_about": "The accepted serve invocation and its single startup outcome.",
+      "values": ["attempted", "ready", "failed"]
+    },
+    "load_policy": {
+      "_about": "Whether model weights are loaded before bind, on demand, or not at all.",
+      "values": ["eager", "lazy", "none"]
+    },
+    "failure_stage": {
+      "_about": "The closed startup boundary at which a serve invocation failed.",
+      "values": [
+        "resolve", "download", "preflight", "prepare", "engine_start", "bind"
+      ]
+    },
     "quant": {
       "_about": [
         "There is no canonical quantization enum in the engine, so this is the",
@@ -365,6 +379,20 @@
     "app_opened": {
       "_about": "Launches. Common props carry everything that matters.",
       "props": {}
+    },
+    "server_start_state": {
+      "_about": "Whether an accepted server invocation reached a listening socket.",
+      "props": {
+        "state": {"kind": "enum", "enum": "server_start_state", "required": true},
+        "model_type": {"kind": "enum", "enum": "model_type", "required": false},
+        "load_policy": {"kind": "enum", "enum": "load_policy", "required": false},
+        "failure_stage": {
+          "kind": "enum",
+          "enum": "failure_stage",
+          "required": false,
+          "only_when": {"state": ["failed"]}
+        }
+      }
     },
     "active_day": {
       "_about": [

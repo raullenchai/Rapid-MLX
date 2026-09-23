@@ -47,6 +47,16 @@ class AcceptingConnectionsServer(uvicorn.Server):
             await super().startup(sockets=sockets)
         except SystemExit as exc:
             if (
+                getattr(self, "lifespan", None) is not None
+                and self.lifespan.should_exit
+            ):
+                # Uvicorn converts any ASGI lifespan startup exception into its
+                # startup-failure exit. This is still the pre-bind engine boundary,
+                # including warmup after engine.start().
+                from rapid_mlx.telemetry.server_start import failed
+
+                failed("engine_start")
+            elif (
                 self.config.fd is None
                 and not self.config.uds
                 and _port_is_in_use(self.config.host, self.config.port)
@@ -62,26 +72,33 @@ class AcceptingConnectionsServer(uvicorn.Server):
                 exc.rapid_mlx_bind_reported = True  # type: ignore[attr-defined]
             raise
 
+        if getattr(self, "lifespan", None) is not None and self.lifespan.should_exit:
+            # Older Uvicorn releases return instead of raising after a lifespan
+            # startup failure. Preserve the same deterministic classification.
+            from rapid_mlx.telemetry.server_start import failed
+
+            failed("engine_start")
+            return
+
         listeners = getattr(self, "servers", ())
         listener_created = bool(listeners) and all(
             getattr(server, "sockets", None) for server in listeners
         )
-        if (
-            self.started
-            and listener_created
-            and not self._accepting_callback_ran
-            and self._on_server_accepting is not None
-        ):
+        if self.started and listener_created and not self._accepting_callback_ran:
             self._accepting_callback_ran = True
-            try:
-                self._on_server_accepting()
-            except Exception:
-                # The listener is already live. A best-effort observer such as
-                # banner output or telemetry must never tear the server down.
+            from rapid_mlx.telemetry.server_start import ready
+
+            ready()
+            if self._on_server_accepting is not None:
                 try:
-                    logger.exception("Post-bind server callback failed")
+                    self._on_server_accepting()
                 except Exception:
-                    pass
+                    # The listener is already live. A best-effort observer such as
+                    # banner output or telemetry must never tear the server down.
+                    try:
+                        logger.exception("Post-bind server callback failed")
+                    except Exception:
+                        pass
 
 
 def run_uvicorn(
@@ -108,6 +125,12 @@ def run_uvicorn(
     # and version-specific startup-exit behavior verbatim.
     uvicorn_main.Server = server_factory
     try:
-        (uvicorn_runner or uvicorn.run)(app, **config_kwargs)
+        try:
+            (uvicorn_runner or uvicorn.run)(app, **config_kwargs)
+        except BaseException:
+            from rapid_mlx.telemetry.server_start import failed
+
+            failed("bind")
+            raise
     finally:
         uvicorn_main.Server = original_server
