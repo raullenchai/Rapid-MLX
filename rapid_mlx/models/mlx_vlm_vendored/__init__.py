@@ -229,6 +229,8 @@ vendored copy differs by exactly the deviations listed):
     each repro-tested in ``tests/test_mlx_vlm_vendored_generate.py``:
     ``_generate_batch`` closes the wired-limit generator in a ``finally``
     and skips ``token=None`` terminal responses;
+    ``_merge_prefill_prompt_kwargs`` rejects a per-row tensor kwarg missing
+    from any row instead of concatenating a smaller, row-shifted tensor;
     ``BatchGenerator._build_mixed_prompt_batch``/``_assemble_mixed_prompt_batch``
     release acquired APC picks on every failed warm assembly and strip the
     block references from the metas handed to the constructor so the

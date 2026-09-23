@@ -863,6 +863,14 @@ def _merge_prefill_prompt_kwargs(
             elif k not in merged_kwargs:
                 merged_kwargs[k] = v
     for k, vs in per_row_keys.items():
+        # VENDOR-DEVIATION(upstream-bugfix): concatenating only the rows that
+        # carry a tensor kwarg silently shifts that kwarg onto different
+        # requests.  A mixed batch cannot synthesize a generally valid value
+        # for a missing row, so fail before the model sees misaligned inputs.
+        if len(vs) != batch_size:
+            raise ValueError(
+                f"batched prompt kwarg {k!r} must be present for every row"
+            )
         merged_kwargs[k] = _concat_prompt_kwarg_rows(k, vs)
 
     return inputs_embeds, merged_kwargs

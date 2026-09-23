@@ -41,6 +41,8 @@ pytest.importorskip("mlx_vlm")
 #   ``inputs.process_image``.
 # - ``_generate_batch``: the capture-release + None-token bugfix hunks
 #   (finally-close; skip token=None terminal responses), repro-tested below.
+# - ``_merge_prefill_prompt_kwargs``: reject tensor kwargs that are absent
+#   from any row instead of concatenating a row-shifted batch.
 # - ``BatchGenerator``: the class body carries the APC matched_blocks
 #   release-on-failed-merge bugfix hunks, repro-tested below.
 # - ``GenerationBatch``: the decode sampling hunk passes the per-row int
@@ -63,6 +65,7 @@ _DOCUMENTED_HUNK_BODIES = {
     "generate_step",
     "batch_generate",
     "_generate_batch",
+    "_merge_prefill_prompt_kwargs",
 }
 
 
@@ -210,6 +213,24 @@ def test_generate_batch_closes_generator_on_exception(monkeypatch):
     with pytest.raises(RuntimeError, match="generation boom"):
         vendored_ar._generate_batch(_FakeModel(), _FakeProcessor(), ["p"])
     assert closed == [True]
+
+
+def test_merge_prefill_prompt_kwargs_rejects_sparse_tensor_keys():
+    """upstream-bugfix: a tensor kwarg present on only part of a mixed batch
+    must not be concatenated into a smaller, row-shifted tensor."""
+    rows = [
+        {
+            "inputs_embeds": mx.zeros((1, 3, 4)),
+            "attention_mask": mx.ones((1, 3), dtype=mx.int32),
+        },
+        {"inputs_embeds": mx.zeros((1, 2, 4))},
+    ]
+
+    with pytest.raises(
+        ValueError,
+        match="batched prompt kwarg 'attention_mask' must be present for every row",
+    ):
+        vendored_ar._merge_prefill_prompt_kwargs(rows, [[1, 2, 3], [4, 5]])
 
 
 def test_thinking_budget_criteria_default_start_token_does_not_crash():
