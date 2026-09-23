@@ -2,7 +2,7 @@
 """Single source of truth (SSOT) for "Ready:" / "Connect:" server output.
 
 The "server is up, now point your tools at it" experience is fragmented:
-the serve lifespan prints a ``Ready:`` line, ``agents --setup`` writes a
+the shared post-bind startup seam prints a ``Ready:`` line, ``agents --setup`` writes a
 tool-specific config, and the desktop app separately assembles its own
 endpoint URLs. Any change to one is invisible to the others, so a user who
 copies the banner URL into a config gets subtly different paths than the
@@ -14,7 +14,7 @@ same ``ServerEndpoints`` value, so they can never drift:
 
 * ``ServerEndpoints`` — an immutable description of the ready base URL, the
   OpenAI and Anthropic endpoint paths, and the served model name.
-* ``render_banner`` — the human-facing block (used by the serve lifespan
+* ``render_banner`` — the human-facing block (used by the serve startup seam
   and by ``rapid-mlx connect``).
 * ``to_dict`` — the stable machine-readable JSON shape (used by
   ``rapid-mlx connect --json`` for the desktop and other tooling).
@@ -153,12 +153,12 @@ def render_banner(
 ) -> str:
     """Render the human "Ready:" / "OpenAI:" / "Connect:" block.
 
-    Used by the serve lifespan (once warmup completes) and by
+    Used by the serve startup seam (once warmup and listener creation complete) and by
     ``rapid-mlx connect``. Rendered centrally so the served banner and the
     standalone ``connect`` output can never disagree about an endpoint.
 
-    ``running`` is the serve default: the lifespan only calls this once the
-    server is actually up. ``rapid-mlx connect`` passes ``running=False`` when
+    ``running`` is the serve default: the post-bind startup seam only calls this
+    once the server is actually up. ``rapid-mlx connect`` passes ``running=False`` when
     a liveness probe found nothing on the target, so the banner does not claim
     "Ready:" for an address that refuses connections (#1999) — it says there is
     no server and how to start one, and drops the Connect cheat-sheet that

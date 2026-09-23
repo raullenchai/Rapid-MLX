@@ -9,6 +9,8 @@ from typing import Any
 
 from fastapi import HTTPException
 
+from rapid_mlx._uvicorn import run_uvicorn
+
 from .eligibility import NativeMTPPair
 from .runtime import QUALIFIED_MLX_VLM_VERSION, load_runtime
 
@@ -159,14 +161,19 @@ def run_native_mtp_server(
     )
 
     host_display = "localhost" if host == "0.0.0.0" else host
-    print(f"  Ready: http://{host_display}:{port}/v1  (Native MTP mode)")
-    print(f"  Model: {served_model_name}")
-    uvicorn.run(
+
+    def _print_ready() -> None:
+        print(f"  Ready: http://{host_display}:{port}/v1  (Native MTP mode)")
+        print(f"  Model: {served_model_name}")
+
+    run_uvicorn(
         app,
         host=host,
         port=port,
         log_level=uvicorn_log_level,
         timeout_keep_alive=30,
+        on_server_accepting=_print_ready,
+        uvicorn_runner=uvicorn.run,
     )
 
 

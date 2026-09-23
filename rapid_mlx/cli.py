@@ -451,7 +451,7 @@ def _print_port_collision_and_exit(
 
 
 def _run_uvicorn(app, args, log_level: str) -> None:
-    """Dispatch into ``uvicorn.run`` with the kwargs that match the
+    """Dispatch through Rapid-MLX's Uvicorn startup seam with the kwargs that match the
     current ``--listen-fd`` / ``--host``/``--port`` mode.
 
     Extracted so the call-site contract is unit-testable WITHOUT booting
@@ -487,7 +487,8 @@ def _run_uvicorn(app, args, log_level: str) -> None:
     """
     import errno
 
-    import uvicorn
+    from rapid_mlx._uvicorn import run_uvicorn
+    from rapid_mlx.server import print_ready_banner
 
     listen_fd = getattr(args, "listen_fd", None)
     try:
@@ -498,19 +499,21 @@ def _run_uvicorn(app, args, log_level: str) -> None:
             # bound + validated the auth secret BEFORE execve'ing, and the
             # FastAPI ``app`` (with route auth dependencies) is fully
             # constructed at module load before this call.
-            uvicorn.run(
+            run_uvicorn(
                 app,
                 fd=listen_fd,
                 log_level=log_level,
                 timeout_keep_alive=30,
+                on_server_accepting=print_ready_banner,
             )
         else:
-            uvicorn.run(
+            run_uvicorn(
                 app,
                 host=args.host,
                 port=args.port,
                 log_level=log_level,
                 timeout_keep_alive=30,
+                on_server_accepting=print_ready_banner,
             )
     except OSError as exc:
         # Direct EADDRINUSE — older uvicorn, ``--listen-fd`` mode bind
@@ -523,26 +526,14 @@ def _run_uvicorn(app, args, log_level: str) -> None:
             )
         raise
     except SystemExit as exc:
-        # uvicorn>=0.34 catches the bind ``OSError`` in ``Server.startup``,
-        # ``logger.error(exc)``s it (raw ``[Errno 48]`` line — not the
-        # friendly hint a supervisor operator needs), and ``sys.exit(1)``s
-        # before our ``except OSError`` can fire. The exit code is
-        # already non-zero so the supervisor-failure-detection contract
-        # holds, but we re-emit the Sven-style message on top so the
-        # operator's grep for "already in use" still hits. Only override
-        # the message when a probe confirms the port really IS in use —
-        # other ``SystemExit(1)`` paths (TLS, lifespan, etc.) must keep
-        # uvicorn's own diagnostic so we don't paper over them.
-        #
-        # Outer guard: codex round-2 BLOCKING — if the probe itself
-        # raises (TypeError from a non-string host, gaierror, etc.) the
-        # caller's ``SystemExit`` MUST still propagate. Wrap the
-        # discriminator call so any probe-side exception is silently
-        # absorbed and the original ``raise`` below re-delivers
-        # uvicorn's exit. ``_port_is_busy`` ALSO defends internally,
-        # but a future refactor that drops that guard (or a monkeypatch
-        # in a test harness) must not corrupt the failure signal.
-        if exc.code in (1, "1") and listen_fd is None:
+        # Preserve Uvicorn's version-specific startup exit code. The shared
+        # server subclass normally prints the bind hint; this fallback covers
+        # older/mocked runners that raise before that subclass is reached.
+        if (
+            exc.code not in (None, 0, "0")
+            and listen_fd is None
+            and not getattr(exc, "rapid_mlx_bind_reported", False)
+        ):
             try:
                 busy = _port_is_busy(args.host, args.port)
             except BaseException:
@@ -1023,7 +1014,7 @@ def _serve_audio_mode(args, entry) -> None:
     if getattr(args, "embedding_model", None):
         _load_embedding_model_or_exit(args, server.load_embedding_model)
 
-    # Stamp the bind source-of-truth so the lifespan "Ready:" banner
+    # Stamp the bind source-of-truth so the post-bind "Ready:" banner
     # prints the right URL. Mirrors the text-path block.
     host_display = "localhost" if args.host == "0.0.0.0" else args.host
     listen_fd = getattr(args, "listen_fd", None)
@@ -5777,8 +5768,8 @@ def serve_command(args):
 
     # Start server
     # Note: Metal shader warmup runs in the FastAPI lifespan hook (server.py).
-    # The "Ready:" banner is printed FROM that hook once warmup completes and
-    # the port is actually bound — printing it here would lie to users who
+    # The "Ready:" banner is printed by the Uvicorn startup seam after warmup
+    # and bind both complete — printing it here would lie to users who
     # curl immediately and get connection-refused while shaders compile.
     print()
     host_display = "localhost" if args.host == "0.0.0.0" else args.host
@@ -5791,7 +5782,7 @@ def serve_command(args):
     print_staleness_warning_if_any(allow_non_tty=True)
     print()
 
-    # Stash the source of truth for the lifespan "Ready:" banner —
+    # Stash the source of truth for the post-bind "Ready:" banner —
     # which shape depends on the bind mode:
     #
     #   * Default (host+port): stamp ``bind_host``/``bind_port`` so the
