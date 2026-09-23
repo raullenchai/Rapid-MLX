@@ -774,6 +774,7 @@ def _capture_later_event_and_stop(*_args, **_kwargs):
     raise SystemExit(0)
 
 cli._port_preflight_or_die = _capture_later_event_and_stop
+cli._validate_primary_lifecycle_args = _capture_later_event_and_stop
 cli.models_command = _capture_later_event_and_stop
 """.lstrip(),
         encoding="utf-8",
@@ -868,13 +869,17 @@ def test_entrypoint_role_surface_matrix(
         thread.join(timeout=2.0)
         sink.server_close()
 
-    assert proc.returncode == 0, proc.stderr
+    assert proc.returncode == 0
+    assert "Traceback" not in proc.stderr
     items = [
         item
         for body in sink.bodies  # type: ignore[attr-defined]
         for item in json.loads(body)["batch"]
     ]
     assert [item["event"] for item in items] == expected_events
+    assert sum(item["event"] == "app_opened" for item in items) == (
+        expected_events.count("app_opened")
+    )
     assert {item["properties"]["surface"] for item in items} == {expected_surface}
 
 
