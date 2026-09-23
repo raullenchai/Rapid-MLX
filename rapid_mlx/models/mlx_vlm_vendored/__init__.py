@@ -229,6 +229,9 @@ vendored copy differs by exactly the deviations listed):
     each repro-tested in ``tests/test_mlx_vlm_vendored_generate.py``:
     ``_generate_batch`` closes the wired-limit generator in a ``finally``
     and skips ``token=None`` terminal responses;
+    ``generate_step`` binds the vendored ``maybe_quantize_kv_cache`` directly
+    so fallback vendored cache objects are not silently skipped by upstream
+    exact-type checks;
     ``_merge_prefill_prompt_kwargs`` and the APC mixed-assembly path reject a
     per-row tensor kwarg missing from any row instead of concatenating a
     smaller, row-shifted tensor;

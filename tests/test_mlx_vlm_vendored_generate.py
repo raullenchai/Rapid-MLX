@@ -13,6 +13,7 @@ vendored package except for the documented pinned redirects.
 """
 
 import ast
+import importlib
 import inspect
 import types
 
@@ -43,7 +44,8 @@ pytest.importorskip("mlx_vlm")
 #   redirect (see the kv_quant.py inventory entry).
 # - ``generate_step`` / ``batch_generate``: ar.py's redirects to the
 #   pinned speculative drafters helper and to the vendored
-#   ``inputs.process_image``.
+#   ``inputs.process_image``; generate_step also keeps cache quantization in
+#   the vendored type namespace.
 # - ``_generate_batch``: the capture-release + None-token bugfix hunks
 #   (finally-close; skip token=None terminal responses), repro-tested below.
 # - ``_merge_prefill_prompt_kwargs``: reject tensor kwargs that are absent
@@ -169,6 +171,59 @@ def test_generate_step_signature_matches_upstream():
         inspect.signature(vendored_ar.generate_step).parameters.keys()
         == inspect.signature(upstream_ar.generate_step).parameters.keys()
     )
+
+
+def test_generate_step_keeps_quantizer_in_vendored_cache_namespace(monkeypatch):
+    """The loaded upstream package must not steal quantization from caches
+    constructed by the vendored generation core."""
+    upstream_generate = importlib.import_module("mlx_vlm.generate")
+
+    calls = []
+
+    def vendored_quantizer(prompt_cache, **kwargs):
+        calls.append((prompt_cache, kwargs))
+
+    def upstream_quantizer(*args, **kwargs):
+        raise AssertionError("upstream quantizer cannot recognize vendored caches")
+
+    class _EmbeddingOutput:
+        inputs_embeds = mx.zeros((1, 1, 4))
+
+        def to_dict(self):
+            return {"inputs_embeds": self.inputs_embeds}
+
+    class _LanguageModel:
+        def __call__(self, *args, **kwargs):
+            return types.SimpleNamespace(
+                logits=mx.zeros((1, 1, 8)),
+                cross_attention_states=None,
+                encoder_outputs=None,
+            )
+
+    class _Model:
+        language_model = _LanguageModel()
+
+        def get_input_embeddings(self, *args, **kwargs):
+            return _EmbeddingOutput()
+
+    monkeypatch.setattr(vendored_ar, "maybe_quantize_kv_cache", vendored_quantizer)
+    monkeypatch.setattr(
+        upstream_generate, "maybe_quantize_kv_cache", upstream_quantizer
+    )
+
+    list(
+        vendored_ar.generate_step(
+            mx.array([[1]], dtype=mx.int32),
+            _Model(),
+            None,
+            None,
+            max_tokens=0,
+            prompt_cache=[],
+        )
+    )
+
+    assert len(calls) == 1
+    assert calls[0][0] == []
 
 
 def test_generate_batch_closes_generator_on_exception(monkeypatch):

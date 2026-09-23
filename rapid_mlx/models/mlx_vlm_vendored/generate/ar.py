@@ -297,8 +297,13 @@ def generate_step(
           one token and a vector of log probabilities.
     """
 
+    # VENDOR-DEVIATION(dual-namespace): this function creates fallback caches
+    # from the vendored cache module.  Resolving the quantizer through the
+    # already-loaded upstream ``mlx_vlm.generate`` package silently skips
+    # those cache objects because its isinstance checks use upstream classes.
+    # Keep quantization in the same namespace as cache construction.
     quantize_cache_fn = functools.partial(
-        _generate_module_override("maybe_quantize_kv_cache", maybe_quantize_kv_cache),
+        maybe_quantize_kv_cache,
         quantized_kv_start=quantized_kv_start,
         kv_group_size=kv_group_size,
         kv_bits=kv_bits,
