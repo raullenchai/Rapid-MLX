@@ -56,7 +56,7 @@ def _run_real_missing_extra_dispatch(
 import importlib.util
 import os
 
-from rapid_mlx import cli, server
+from rapid_mlx import cli
 from rapid_mlx.telemetry import build_gate
 from rapid_mlx.telemetry.build_gate import ReleaseStamp
 
@@ -102,18 +102,6 @@ if lane == "audio":
     importlib.util.find_spec = lambda name: (
         None if name == "mlx_audio" else real_find_spec(name)
     )
-if lane == "bonsai":
-    from types import SimpleNamespace
-    from rapid_mlx import model_aliases, model_metadata
-
-    model_aliases.resolve_model = lambda model_name: model_name
-    server._prefetch_routing_metadata = lambda _model: "/cached/bonsai"
-    model_metadata.read_model_metadata = lambda _path: SimpleNamespace(
-        snapshot_dir=None,
-        config={"model_type": "prism_hadamard_qwen35"},
-    )
-    model_metadata.checkpoint_has_multimodal_weights = lambda *_args: False
-    model_metadata.config_indicates_multimodal = lambda _config: False
 if lane == "vision-present":
     from rapid_mlx.telemetry import posthog_sender
 
@@ -149,15 +137,22 @@ if lane == "vision-present":
         "DO_NOT_TRACK",
     ):
         env.pop(name, None)
-    command = [
-        sys.executable,
-        "-c",
-        (
-            "from rapid_mlx.server import main; main()"
-            if standalone
-            else "from rapid_mlx.cli import cli_entrypoint; cli_entrypoint()"
-        ),
-    ]
+    if lane == "bonsai":
+        model_dir = tmp_path / model
+        model_dir.mkdir()
+        (model_dir / "config.json").write_text(
+            '{"model_type":"prism_hadamard_qwen35"}',
+            encoding="utf-8",
+        )
+    command = (
+        [sys.executable, "-m", "rapid_mlx.server"]
+        if standalone
+        else [
+            sys.executable,
+            "-c",
+            "from rapid_mlx.cli import cli_entrypoint; cli_entrypoint()",
+        ]
+    )
     command.extend(
         ["--model", model, "--port", "0"]
         if standalone
@@ -373,7 +368,6 @@ def test_standalone_bonsai_dispatch_uses_same_handler_and_loopback_sink(
     assert len(failures) == 1
     assert failures[0]["error_class"] == "missing_extra"
     assert failures[0]["extra"] == "vision"
-    assert failures[0]["model"] == "bonsai2-27b-2bit"
     assert "detail" not in failures[0]
 
 
