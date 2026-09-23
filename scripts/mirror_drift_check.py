@@ -597,6 +597,7 @@ def audit(
     for spec in selected:
         entry = by_alias.get(spec.alias.lower())
         report = _new_report(spec, entry, r2_client is not None)
+        files: list[HfFile]
         if spec.hf_path in repo_errors:
             report.findings.append(
                 Finding("hf_unavailable", "error", detail=repo_errors[spec.hf_path])
