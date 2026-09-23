@@ -499,7 +499,7 @@ def require_mlx_vlm_or_exit(model_name: str, *, text_diffusion: bool = False) ->
         )
         marker_reason = "runtime_extra_missing"
     print(
-        f"RAPID_MLX_STARTUP_FAILURE: {marker_reason} extra=vision",
+        f"RAPID-MLX-STARTUP-FAILURE: {marker_reason} extra=vision",
         file=sys.stderr,
     )
     sys.exit(2)

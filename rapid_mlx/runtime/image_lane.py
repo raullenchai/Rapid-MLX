@@ -65,7 +65,7 @@ def require_image_runtime_or_exit(model_name: str | None = None) -> None:
             else "runtime_extra_missing"
         )
         print(
-            f"RAPID_MLX_STARTUP_FAILURE: {reason} extra=image",
+            f"RAPID-MLX-STARTUP-FAILURE: {reason} extra=image",
             file=sys.stderr,
         )
         raise SystemExit(2)

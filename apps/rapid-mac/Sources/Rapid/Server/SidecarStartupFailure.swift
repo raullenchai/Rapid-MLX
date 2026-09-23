@@ -3,7 +3,9 @@ import Foundation
 /// Closed, user-safe contract emitted by deterministic engine preflights.
 /// Raw sidecar text is never carried beyond the parser.
 struct SidecarStartupFailure: Equatable, Sendable {
-    static let markerPrefix = "RAPID_MLX_STARTUP_FAILURE:"
+    // Hyphens keep this protocol tag outside the RAPID_MLX_* env-var namespace.
+    // The longest canonical marker remains 66 bytes, well below the 512-byte cap.
+    static let markerPrefix = "RAPID-MLX-STARTUP-FAILURE:"
 
     enum Reason: String, Equatable, Sendable {
         case runtimeExtraMissing = "runtime_extra_missing"

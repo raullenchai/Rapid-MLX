@@ -6,7 +6,7 @@ import Testing
 @Suite("Actionable sidecar startup failures")
 struct SidecarStartupFailureTests {
     private let videoMarker =
-        "RAPID_MLX_STARTUP_FAILURE: runtime_extra_missing extra=video\n"
+        "RAPID-MLX-STARTUP-FAILURE: runtime_extra_missing extra=video\n"
 
     @Test("stderr marker becomes a specific message and Startup Log action")
     func markerMapsToPresentation() {
@@ -50,14 +50,14 @@ struct SidecarStartupFailureTests {
     func malformedMarkerIsGeneric() {
         let capture = SidecarStartupFailureCapture()
         capture.ingest(
-            Data("RAPID_MLX_STARTUP_FAILURE: runtime_extra_missing extra=video".utf8),
+            Data("RAPID-MLX-STARTUP-FAILURE: runtime_extra_missing extra=video".utf8),
             source: .sidecarStderr
         )
         #expect(capture.failure == nil)
 
         let malformed = SidecarStartupFailureCapture()
         malformed.ingest(
-            Data("\nRAPID_MLX_STARTUP_FAILURE: unknown extra=video\n".utf8),
+            Data("\nRAPID-MLX-STARTUP-FAILURE: unknown extra=video\n".utf8),
             source: .sidecarStderr
         )
 
@@ -144,7 +144,7 @@ struct SidecarStartupFailureTests {
     func multipleMarkersProduceOneMessage() {
         let capture = SidecarStartupFailureCapture()
         let stderr = videoMarker
-            + "RAPID_MLX_STARTUP_FAILURE: runtime_broken extra=vision\n"
+            + "RAPID-MLX-STARTUP-FAILURE: runtime_broken extra=vision\n"
         capture.ingest(Data(stderr.utf8), source: .sidecarStderr)
 
         #expect(capture.failure == SidecarStartupFailure(

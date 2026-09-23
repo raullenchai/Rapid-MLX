@@ -161,7 +161,7 @@ def require_video_runtime_or_exit(model_name: str | None = None) -> None:
             file=sys.stderr,
         )
         print(
-            "RAPID_MLX_STARTUP_FAILURE: python_version_unsupported extra=video",
+            "RAPID-MLX-STARTUP-FAILURE: python_version_unsupported extra=video",
             file=sys.stderr,
         )
         raise SystemExit(2)
@@ -244,7 +244,7 @@ def require_video_runtime_or_exit(model_name: str | None = None) -> None:
             else "runtime_dependency_missing"
         )
         print(
-            f"RAPID_MLX_STARTUP_FAILURE: {reason} extra=video",
+            f"RAPID-MLX-STARTUP-FAILURE: {reason} extra=video",
             file=sys.stderr,
         )
         raise SystemExit(2)
