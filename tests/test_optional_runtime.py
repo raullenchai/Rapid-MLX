@@ -377,6 +377,65 @@ def test_standalone_bonsai_dispatch_uses_same_handler_and_loopback_sink(
     assert "detail" not in failures[0]
 
 
+def test_standalone_failure_guard_routes_optional_runtime_with_context(
+    monkeypatch,
+) -> None:
+    failure = OptionalRuntimeMissing(
+        extra="vision",
+        install_hint="pip install 'rapid-mlx[vision]'",
+        detail="missing vision",
+        status="absent",
+    )
+    engine = object()
+    calls = []
+    monkeypatch.setattr(server, "_engine", engine)
+    monkeypatch.setattr(server, "_standalone_start_model", "bonsai2-27b-2bit")
+
+    def handle(exc, **kwargs):
+        calls.append((exc, kwargs))
+        raise SystemExit(2)
+
+    monkeypatch.setattr(server, "handle_optional_runtime_missing", handle)
+
+    @server._capture_start_failures
+    def fail():
+        raise failure
+
+    with pytest.raises(SystemExit, match="2"):
+        fail()
+
+    assert calls == [
+        (
+            failure,
+            {
+                "engine": engine,
+                "alias_or_path": "bonsai2-27b-2bit",
+                "auto_selected": False,
+            },
+        )
+    ]
+
+
+def test_standalone_main_records_model_before_startup(monkeypatch) -> None:
+    from rapid_mlx.telemetry import consent_runtime
+
+    class StopStartup(BaseException):
+        pass
+
+    parsed = SimpleNamespace(model="bonsai2-27b-2bit", lazy_load=False)
+    monkeypatch.setattr("argparse.ArgumentParser.parse_args", lambda _self: parsed)
+    monkeypatch.setattr(
+        consent_runtime,
+        "startup",
+        lambda **_kwargs: (_ for _ in ()).throw(StopStartup()),
+    )
+
+    with pytest.raises(StopStartup):
+        server.main()
+
+    assert server._standalone_start_model == "bonsai2-27b-2bit"
+
+
 def test_real_dispatch_with_present_vision_extra_emits_no_failure(tmp_path) -> None:
     proc, items = _run_real_missing_extra_dispatch(
         tmp_path,
