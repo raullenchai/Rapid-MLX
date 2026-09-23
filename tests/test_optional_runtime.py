@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+import importlib
 import json
 import os
 import shlex
@@ -843,7 +844,8 @@ async def test_lifespan_optional_failure_reuses_cli_handler(monkeypatch) -> None
         calls.append((exc, kwargs))
         raise SystemExit(2)
 
-    monkeypatch.setattr(cli, "_handle_optional_runtime_missing", handle)
+    live_cli = importlib.import_module("rapid_mlx.cli")
+    monkeypatch.setattr(live_cli, "_handle_optional_runtime_missing", handle)
     lifespan = server.lifespan(server.app)
 
     with pytest.raises(SystemExit, match="2"):
