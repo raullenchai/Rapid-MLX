@@ -191,72 +191,82 @@ def test_declined_primary_emission_does_not_latch_and_retries(monkeypatch):
 
 def test_slow_model_served_store_never_blocks_request_event_loop(monkeypatch):
     store_started = threading.Event()
-    release_store = threading.Event()
+    callbacks = []
     monkeypatch.setattr(track_module, "_upload_allowed", lambda: True)
 
     def slow_note(_model: str) -> int:
         store_started.set()
-        release_store.wait(timeout=2)
         return 1
 
     monkeypatch.setattr(store, "note_model_served", slow_note)
     monkeypatch.setattr(track_module, "track", lambda *_args, **_kwargs: True)
-    caller = threading.Thread(
-        target=model_events.emit_model_served,
-        args=(None, "sdxl-base", False),
-        daemon=True,
+    monkeypatch.setattr(
+        model_events,
+        "_submit_model_served",
+        lambda callback: callbacks.append(callback) or True,
     )
-    caller.start()
-    try:
-        assert store_started.wait(timeout=2)
-        caller.join(timeout=2)
-        assert not caller.is_alive()
-        assert not release_store.is_set()
-    finally:
-        release_store.set()
-        caller.join(timeout=2)
+
+    assert model_events.emit_model_served(None, "sdxl-base", False) is True
+    assert len(callbacks) == 1
+    assert not store_started.is_set()
+
+    callbacks[0]()
+    assert store_started.is_set()
 
 
 def test_concurrent_lane_submission_does_not_share_a_blocking_lock(monkeypatch):
-    primary_entered = threading.Event()
-    release_primary = threading.Event()
+    order = []
 
-    def submit(engine, _model, _auto, **_kwargs):
-        if engine is not None:
-            primary_entered.set()
-            release_primary.wait(timeout=1)
-        return True
+    class InstrumentedLock:
+        def __init__(self, name):
+            self.name = name
+            self.held = False
 
-    monkeypatch.setattr(model_events, "emit_model_served", submit)
+        def __enter__(self):
+            assert not self.held
+            self.held = True
+            order.append(f"enter:{self.name}")
+
+        def __exit__(self, *_args):
+            order.append(f"exit:{self.name}")
+            self.held = False
+
+    primary_lock = InstrumentedLock("primary")
+    audio_lock = InstrumentedLock("audio")
+    monkeypatch.setattr(
+        server,
+        "_telemetry_model_served_locks",
+        {
+            "_telemetry_model_served_state": primary_lock,
+            "_telemetry_audio_model_served_state": audio_lock,
+            "_telemetry_embedding_model_served_state": InstrumentedLock("embedding"),
+        },
+    )
     monkeypatch.setattr(server, "_telemetry_model_served_state", "idle", raising=False)
     monkeypatch.setattr(
         server, "_telemetry_audio_model_served_state", "idle", raising=False
     )
-    monkeypatch.setattr(server, "_telemetry_model_served_emitted", False, raising=False)
-    monkeypatch.setattr(
-        server, "_telemetry_audio_model_served_emitted", False, raising=False
-    )
-    primary = threading.Thread(
-        target=server._emit_primary_model_served_once, args=(object(),), daemon=True
-    )
-    primary.start()
-    assert primary_entered.wait(timeout=2)
-    auxiliary_returned = threading.Event()
 
-    def emit_auxiliary() -> None:
-        server._emit_audio_model_served_once(object(), "kokoro")
-        auxiliary_returned.set()
+    def submit(engine, _model, _auto, **_kwargs):
+        lane = "primary" if engine is not None else "audio"
+        order.append(f"submit:{lane}")
+        if engine is not None:
+            assert primary_lock.held
+            assert not audio_lock.held
+            server._emit_audio_model_served_once(object(), "kokoro")
+        return True
 
-    auxiliary = threading.Thread(target=emit_auxiliary, daemon=True)
-    auxiliary.start()
-    try:
-        assert auxiliary_returned.wait(timeout=2)
-        assert primary.is_alive()
-        assert not release_primary.is_set()
-    finally:
-        release_primary.set()
-        primary.join(timeout=2)
-        auxiliary.join(timeout=2)
+    monkeypatch.setattr(model_events, "emit_model_served", submit)
+    server._emit_primary_model_served_once(object())
+
+    assert order == [
+        "enter:primary",
+        "submit:primary",
+        "enter:audio",
+        "submit:audio",
+        "exit:audio",
+        "exit:primary",
+    ]
 
 
 @pytest.mark.parametrize(
@@ -353,107 +363,125 @@ def test_cog_backend_signals_after_load_before_generation(monkeypatch, tmp_path)
     assert order == ["load", "model_served", "inference"]
 
 
+@pytest.mark.requires_mlx
 @pytest.mark.parametrize("dual_model", [False, True])
-def test_wan_materialization_callback_follows_pinned_runtime_order(dual_model):
-    from rapid_mlx.video.wan_diffusers import _notify_after_materialization
+def test_wan_pinned_runtime_emits_after_all_loads_before_first_embed(
+    monkeypatch, tmp_path, dual_model
+):
+    wan_generator = pytest.importorskip("mlx_video.generate_wan")
+    import mlx.core as mx
 
-    try:
-        from mlx_video.generate_wan import generate_video
-    except ImportError:
-        pytest.skip("pinned video extra is not installed")
+    from rapid_mlx.video.wan import WanVideoEngine
 
-    source = inspect.getsource(generate_video)
-    assert source.index("load_t5_encoder(") < source.index("load_wan_model(")
-    assert source.index("load_wan_model(") < source.index(".embed_text(")
-    assert source.index(".embed_text(") < source.index("load_vae_decoder(")
+    class FirstPostLoadUseError(Exception):
+        pass
 
     order = []
-    namespace = dict(generate_video.__globals__)
-    namespace["load_wan_model"] = lambda _path, config: order.append("transformer")
-    generate = FunctionType(generate_video.__code__, namespace, generate_video.__name__)
-    wrapped = _notify_after_materialization(
-        generate, lambda: order.append("model_served")
+    model_root = tmp_path / "wan"
+    model_root.mkdir()
+    (model_root / "config.json").write_text(
+        json.dumps(
+            {
+                "model_type": "t2v",
+                "model_version": "2.2" if dual_model else "2.1",
+                "dual_model": dual_model,
+                "sample_guide_scale": 1.0,
+                "sample_steps": 1,
+                "sample_shift": 1.0,
+                "max_area": 64 * 64,
+            }
+        )
     )
-    loader = wrapped.__globals__["load_wan_model"]
-    config = SimpleNamespace(dual_model=dual_model)
-    for index in range(2 if dual_model else 1):
-        loader(f"transformer-{index}", config)
-        expected = ["transformer"] * (index + 1)
-        if index == int(dual_model):
-            expected.append("model_served")
-        assert order == expected
-    assert _notify_after_materialization(lambda: "plain", lambda: None)() == "plain"
+
+    class Model:
+        def __init__(self, name):
+            self.name = name
+
+        def embed_text(self, _context):
+            order.append(f"embed:{self.name}")
+            raise FirstPostLoadUseError
+
+    def load_model(path, *_args, **_kwargs):
+        name = {
+            "model.safetensors": "single",
+            "low_noise_model.safetensors": "low",
+            "high_noise_model.safetensors": "high",
+        }[Path(path).name]
+        order.append(f"load:{name}")
+        return Model(name)
+
+    namespace = wan_generator.generate_video.__globals__
+    monkeypatch.setitem(namespace, "load_t5_encoder", lambda *_args: object())
+    monkeypatch.setitem(namespace, "encode_text", lambda *_args: mx.array([0.0]))
+    monkeypatch.setitem(namespace, "load_wan_model", load_model)
+    monkeypatch.setitem(
+        sys.modules,
+        "transformers",
+        SimpleNamespace(
+            AutoTokenizer=SimpleNamespace(from_pretrained=lambda *_args: object())
+        ),
+    )
+    monkeypatch.setattr(
+        server,
+        "_emit_primary_model_served_once",
+        lambda _engine: order.append("model_served"),
+    )
+
+    backend = WanVideoEngine(str(model_root))
+    backend.steps = 1
+    engine = _video_engine(_VideoBackend())
+    engine.model_name = str(model_root)
+    engine._wan_engine = backend
+
+    with pytest.raises(FirstPostLoadUseError):
+        _generate_video(engine, tmp_path / "output.mp4")
+
+    expected_loads = ["load:low", "load:high"] if dual_model else ["load:single"]
+    assert order == [
+        *expected_loads,
+        "model_served",
+        f"embed:{'low' if dual_model else 'single'}",
+    ]
+    assert order.count("model_served") == 1
 
 
-def test_wan_runtime_installs_load_callback_for_both_layouts(monkeypatch, tmp_path):
+def test_wan_converted_runtime_executes_materialization_wrapper(monkeypatch, tmp_path):
     from rapid_mlx.video import wan_diffusers
 
-    callbacks = []
-    generated = []
+    order = []
 
-    def plain_generate(**_kwargs):
-        generated.append("plain")
+    def generate_template(**_kwargs):
+        globals()["load_wan_model"]("model", SimpleNamespace(dual_model=False))
+        globals()["order"].append("embed")
 
-    monkeypatch.setattr(
-        wan_diffusers,
-        "_notify_after_materialization",
-        lambda generate, callback: lambda **kwargs: (callback(), generate(**kwargs))[1],
-    )
-    monkeypatch.setattr(wan_diffusers, "is_diffusers_wan21_layout", lambda _root: False)
-    monkeypatch.setattr(
-        wan_diffusers, "_identifies_as_diffusers_wan21", lambda _root: False
-    )
-    generator = SimpleNamespace(generate_video=plain_generate)
-    wan_diffusers.generate_with_runtime(
-        tmp_path, generator, {}, on_loaded=lambda: callbacks.append("plain")
-    )
+    namespace = {
+        **generate_template.__globals__,
+        "order": order,
+        "load_wan_model": lambda *_args: order.append("load"),
+    }
+    generate = FunctionType(generate_template.__code__, namespace)
 
     @contextmanager
     def runtime(_root, _generator):
-        yield tmp_path, plain_generate
+        yield tmp_path, generate
 
     monkeypatch.setattr(wan_diffusers, "is_diffusers_wan21_layout", lambda _root: True)
     monkeypatch.setattr(wan_diffusers, "diffusers_runtime", runtime)
     wan_diffusers.generate_with_runtime(
-        tmp_path, generator, {}, on_loaded=lambda: callbacks.append("diffusers")
+        tmp_path,
+        SimpleNamespace(),
+        {},
+        on_loaded=lambda: order.append("model_served"),
     )
-    assert callbacks == ["plain", "diffusers"]
-    assert generated == ["plain", "plain"]
+
+    plain = lambda: order.append("plain")
+    assert wan_diffusers._notify_after_materialization(plain, order.clear) is plain
+    plain()
+    assert order == ["load", "model_served", "embed", "plain"]
 
 
-def test_ltx25_child_failure_before_readiness_emits_nothing(monkeypatch, tmp_path):
-    from rapid_mlx.video import ltx25
-
-    emitted = []
-
-    class Process:
-        returncode = 1
-
-        def __init__(self, command, **_kwargs):
-            self.command = command
-
-        def communicate(self, *, input, timeout):
-            del input, timeout
-
-    monkeypatch.setattr(ltx25, "embedded_ltx25_interpreter", lambda: "/python")
-    monkeypatch.setattr(ltx25.subprocess, "Popen", Process)
-    monkeypatch.setattr(ltx25.LTX25VideoEngine, "_terminate_process", lambda *_: None)
-    with pytest.raises(ltx25.LTX25BackendError, match="exited with code 1"):
-        ltx25.LTX25VideoEngine("ltx-2.5-mlx-q8").generate(
-            prompt="x",
-            output_path=tmp_path / "output.mp4",
-            width=64,
-            height=64,
-            num_frames=5,
-            fps=24,
-            seed=1,
-            image=None,
-            on_loaded=lambda: emitted.append("model_served"),
-        )
-    assert emitted == []
-
-
-def test_ltx25_readiness_then_generation_failure_emits_once(monkeypatch, tmp_path):
+@pytest.mark.parametrize("ready", [False, True])
+def test_ltx25_child_failure_emits_only_after_readiness(monkeypatch, tmp_path, ready):
     from rapid_mlx.video import ltx25
 
     emitted = []
@@ -462,51 +490,31 @@ def test_ltx25_readiness_then_generation_failure_emits_once(monkeypatch, tmp_pat
         returncode = 1
 
         def __init__(self, _command, **kwargs):
-            self.ready_fd = os.dup(kwargs["pass_fds"][0])
+            pass_fds = kwargs.get("pass_fds", ())
+            self.ready_fd = os.dup(pass_fds[0]) if pass_fds else None
 
         def communicate(self, *, input, timeout):
             del input, timeout
-            os.write(self.ready_fd, ltx25._READINESS_TOKEN)
-            os.close(self.ready_fd)
+            if self.ready_fd is not None:
+                if ready:
+                    os.write(self.ready_fd, b"RMLX_LTX25_READY\n")
+                os.close(self.ready_fd)
 
     monkeypatch.setattr(ltx25, "embedded_ltx25_interpreter", lambda: "/python")
     monkeypatch.setattr(ltx25.subprocess, "Popen", Process)
     monkeypatch.setattr(ltx25.LTX25VideoEngine, "_terminate_process", lambda *_: None)
-    with pytest.raises(ltx25.LTX25BackendError, match="exited with code 1"):
-        ltx25.LTX25VideoEngine("ltx-2.5-mlx-q8").generate(
-            prompt="x",
-            output_path=tmp_path / "output.mp4",
-            width=64,
-            height=64,
-            num_frames=5,
-            fps=24,
-            seed=1,
-            image=None,
-            on_loaded=lambda: emitted.append("model_served"),
-        )
-    assert emitted == ["model_served"]
-
-
-def test_ltx25_generation_failure_after_load_still_emits(monkeypatch, tmp_path):
-    from rapid_mlx.video.ltx25 import LTX25BackendError
-
-    class Backend:
-        def generate(self, **kwargs):
-            kwargs["on_loaded"]()
-            raise LTX25BackendError("generation failed")
-
     engine = _video_engine(_VideoBackend())
+    engine.video_family = "ltx-2.5"
     engine._wan_engine = None
-    engine._ltx25_engine = Backend()
-    emitted = []
+    engine._ltx25_engine = ltx25.LTX25VideoEngine("ltx-2.5-mlx-q8")
     monkeypatch.setattr(
         server,
         "_emit_primary_model_served_once",
         lambda loaded: emitted.append(loaded),
     )
-    with pytest.raises(Exception, match="generation failed"):
-        _generate_video(engine, tmp_path / "failed.mp4")
-    assert emitted == [engine]
+    with pytest.raises(Exception, match="exited with code 1"):
+        _generate_video(engine, tmp_path / "output.mp4")
+    assert emitted == ([engine] if ready else [])
 
 
 class _ImageBackend:
