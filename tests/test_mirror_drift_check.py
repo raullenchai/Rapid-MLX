@@ -12,6 +12,7 @@ import signal
 import subprocess
 import sys
 import textwrap
+import threading
 import types
 import urllib.error
 import urllib.parse
@@ -710,7 +711,129 @@ def test_request_exhaustion(monkeypatch):
 
     with pytest.raises(urllib.error.HTTPError):
         drift._request("https://example", clock=lambda: now[0], sleeper=advance)
-    assert sleeps == [30.0, 30.0, 30.0, 30.0]
+    assert sleeps == [60.0, 60.0, 60.0, 60.0]
+
+
+def test_429_honors_full_retry_after_and_aimd_canary(monkeypatch):
+    headers = Message()
+    headers["Retry-After"] = "45"
+    limited = urllib.error.HTTPError("https://example", 429, "slow down", headers, None)
+    attempts = iter([limited, Response(200)])
+    opened_at = []
+    now = [0.0]
+
+    def open_request(*_args, **_kwargs):
+        opened_at.append(now[0])
+        value = next(attempts)
+        if isinstance(value, BaseException):
+            raise value
+        return value
+
+    monkeypatch.setattr(drift, "_OPENER", types.SimpleNamespace(open=open_request))
+    drift._reset_retry_state(workers=8)
+    drift._REQUEST_CONTEXT.kind = "mirror"
+    try:
+        assert (
+            drift._request(
+                "https://example",
+                clock=lambda: now[0],
+                sleeper=lambda seconds: now.__setitem__(0, now[0] + seconds),
+            ).status
+            == 200
+        )
+    finally:
+        drift._REQUEST_CONTEXT.kind = None
+    assert opened_at == [0.0, 45.0]
+    assert drift._MIRROR_ADMISSION.limit == 4
+
+    # A fresh cooldown admits exactly one canary, even when several workers wait.
+    drift._MIRROR_ADMISSION.rate_limited(45.0, lambda: now[0])
+    now[0] += 45.0
+    first_open = threading.Event()
+    release = threading.Event()
+    concurrent_opens = []
+
+    def held_open(*_args, **_kwargs):
+        concurrent_opens.append(threading.get_ident())
+        first_open.set()
+        assert release.wait(timeout=1)
+        return Response(200)
+
+    monkeypatch.setattr(drift, "_OPENER", types.SimpleNamespace(open=held_open))
+
+    def request_once():
+        drift._REQUEST_CONTEXT.kind = "mirror"
+        try:
+            drift._request(
+                "https://example",
+                clock=lambda: now[0],
+                sleeper=lambda _seconds: pytest.fail("cooldown already elapsed"),
+            )
+        finally:
+            drift._REQUEST_CONTEXT.kind = None
+
+    threads = [threading.Thread(target=request_once) for _ in range(3)]
+    for thread in threads:
+        thread.start()
+    assert first_open.wait(timeout=1)
+    assert len(concurrent_opens) == 1
+    release.set()
+    for thread in threads:
+        thread.join(timeout=1)
+        assert not thread.is_alive()
+
+    # The second 429 halved 4 -> 2; one full successful window grows it to 3.
+    assert drift._MIRROR_ADMISSION.limit == 3
+
+
+def test_retry_after_past_deadline_emits_one_partial_report(
+    monkeypatch, tmp_path, capsys
+):
+    main = tmp_path / "main.json"
+    audio = tmp_path / "audio.json"
+    main.write_text(json.dumps({"partial": {"hf_path": "org/partial"}}))
+    audio.write_text("{}")
+    item = drift.HfFile("config.json", 2, None, "a" * 40)
+    monkeypatch.setattr(
+        drift,
+        "_catalog_entries",
+        lambda: [{"alias": "partial", "hf_path": "org/partial", "status": "mirrored"}],
+    )
+    monkeypatch.setattr(drift, "_maybe_r2_client", lambda: None)
+    monkeypatch.setattr(
+        drift, "_hf_repo", lambda _repo: drift.HfRepo("revision", [item])
+    )
+    monkeypatch.setattr(drift.time, "monotonic", lambda: 100.0)
+    headers = Message()
+    headers["Retry-After"] = "45"
+    limited = urllib.error.HTTPError("https://example", 429, "slow down", headers, None)
+    opens = []
+
+    def fail(*_args, **_kwargs):
+        opens.append(1)
+        raise limited
+
+    monkeypatch.setattr(drift, "_OPENER", types.SimpleNamespace(open=fail))
+    assert (
+        drift.main(
+            [
+                "--aliases-path",
+                str(main),
+                "--audio-aliases-path",
+                str(audio),
+                "--workers",
+                "1",
+                "--deadline-seconds",
+                "10",
+            ]
+        )
+        == 2
+    )
+    error = capsys.readouterr().err
+    assert opens == [1]
+    assert error.count("PARTIAL REPORT") == 1
+    assert "partial" in error
+    assert "Retry-After 45" in error
 
 
 @pytest.mark.parametrize(
@@ -765,8 +888,8 @@ def test_429_shared_cooldown_gates_new_mirror_request(monkeypatch):
         ),
     )
     drift._reset_retry_state()
-    drift._mirror_cooldown_until = 12.0
     now = [10.0]
+    drift._MIRROR_ADMISSION.rate_limited(2.0, lambda: now[0])
 
     def pass_cooldown(seconds):
         events.append(("cooldown", seconds))
@@ -1085,6 +1208,55 @@ def test_exhausted_transient_emits_partial_report(monkeypatch, capsys):
     assert "partial-alias" in error
     assert "missing_file config.json" in error
     assert "audit failed: late" in error
+
+
+def test_real_audit_exhaustion_aborts_bounded_probe_window(
+    monkeypatch, tmp_path, capsys
+):
+    main = tmp_path / "main.json"
+    audio = tmp_path / "audio.json"
+    main.write_text(json.dumps({"partial": {"hf_path": "org/partial"}}))
+    audio.write_text("{}")
+    files = [
+        drift.HfFile(f"file-{index}.json", 2, None, f"{index:040x}")
+        for index in range(10)
+    ]
+    monkeypatch.setattr(
+        drift,
+        "_catalog_entries",
+        lambda: [{"alias": "partial", "hf_path": "org/partial", "status": "mirrored"}],
+    )
+    monkeypatch.setattr(drift, "_maybe_r2_client", lambda: None)
+    monkeypatch.setattr(
+        drift, "_hf_repo", lambda _repo: drift.HfRepo("revision", files)
+    )
+    started = []
+
+    def exhaust_first(_repo, item, _client):
+        started.append(item.path)
+        if item.path == "file-0.json":
+            raise TimeoutError("injected exhausted transient")
+        assert drift._MIRROR_ADMISSION.abort_event.wait(timeout=1)
+        raise AssertionError("an aborted probe continued")
+
+    monkeypatch.setattr(drift, "_probe_with_metadata", exhaust_first)
+    assert (
+        drift.main(
+            [
+                "--aliases-path",
+                str(main),
+                "--audio-aliases-path",
+                str(audio),
+                "--workers",
+                "2",
+            ]
+        )
+        == 2
+    )
+    error = capsys.readouterr().err
+    assert error.count("PARTIAL REPORT") == 1
+    assert "injected exhausted transient" in error
+    assert set(started) <= {f"file-{index}.json" for index in range(4)}
 
 
 def test_script_entrypoint_handles_missing_alias_file(monkeypatch, tmp_path):

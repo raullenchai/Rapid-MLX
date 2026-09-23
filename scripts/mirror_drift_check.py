@@ -38,7 +38,13 @@ import urllib.parse
 import urllib.request
 import uuid
 from collections.abc import Callable
-from concurrent.futures import ThreadPoolExecutor, as_completed
+from concurrent.futures import (
+    FIRST_COMPLETED,
+    Future,
+    ThreadPoolExecutor,
+    as_completed,
+    wait,
+)
 from dataclasses import asdict, dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
@@ -54,18 +60,19 @@ ALIASES_PATH = ROOT / "rapid_mlx" / "aliases.json"
 AUDIO_ALIASES_PATH = ROOT / "rapid_mlx" / "audio" / "aliases.json"
 MAX_WORKERS = 32
 HF_MAX_WORKERS = 8
+DEFAULT_DEADLINE_SECONDS = 1500.0
+MAX_RETRY_AFTER_SECONDS = 300.0
 PROGRESS_INTERVAL_SECONDS = 30.0
 PROGRESS_REPO_INTERVAL = 10
 PROGRESS_PROBE_INTERVAL = 100
 SMALL_NON_LFS_MAX_BYTES = 1024 * 1024
 HF_MIN_INTERVAL_SECONDS = 1.0
 _USER_AGENT = "rapid-mlx mirror-drift-auditor"
+_REAL_SLEEP = time.sleep
 _SEVERITY = {"info": 10, "warning": 20, "error": 30, "never": 10_000}
 _HF_GATE_LOCK = threading.Lock()
 _hf_next_request = 0.0
 _COUNT_LOCK = threading.Lock()
-_MIRROR_COOLDOWN_LOCK = threading.Lock()
-_mirror_cooldown_until = 0.0
 _mirror_retry_causes: dict[str, int] = {}
 _mirror_retry_after_values: set[str] = set()
 _request_counts = {"hf": 0, "mirror": 0}
@@ -271,30 +278,131 @@ class _FinalUrlRedirectHandler(urllib.request.HTTPRedirectHandler):
 _OPENER = urllib.request.build_opener(_FinalUrlRedirectHandler())
 
 
-def _reset_retry_state() -> None:
-    global _mirror_cooldown_until
-    with _MIRROR_COOLDOWN_LOCK:
-        _mirror_cooldown_until = 0.0
+class _AuditAbortError(RuntimeError):
+    """Stop work that was already admitted when another probe exhausted."""
+
+
+class _MirrorAdmission:
+    """Shared AIMD admission gate with a single post-cooldown canary."""
+
+    def __init__(self) -> None:
+        self._condition = threading.Condition()
+        self.abort_event = threading.Event()
+        self.ceiling = MAX_WORKERS
+        self.limit = MAX_WORKERS
+        self.active = 0
+        self.cooldown_until = 0.0
+        self.canary_pending = False
+        self.canary_active = False
+        self.successes = 0
+        self.deadline: float | None = None
+
+    def reset(self, workers: int, deadline: float | None) -> None:
+        with self._condition:
+            self.abort_event.clear()
+            self.ceiling = max(1, min(workers, MAX_WORKERS))
+            self.limit = self.ceiling
+            self.active = 0
+            self.cooldown_until = 0.0
+            self.canary_pending = False
+            self.canary_active = False
+            self.successes = 0
+            self.deadline = deadline
+            self._condition.notify_all()
+
+    def abort(self) -> None:
+        self.abort_event.set()
+        with self._condition:
+            self._condition.notify_all()
+
+    def _check_abort(self) -> None:
+        if self.abort_event.is_set():
+            raise _AuditAbortError("mirror audit aborted after an exhausted probe")
+
+    def _check_deadline(self, end: float) -> None:
+        if self.deadline is not None and end > self.deadline:
+            self.abort()
+            raise RuntimeError("required mirror wait exceeds audit deadline")
+
+    def wait_delay(
+        self,
+        delay: float,
+        clock: Callable[[], float],
+        sleeper: Callable[[float], None],
+    ) -> None:
+        self._check_abort()
+        self._check_deadline(clock() + delay)
+        if sleeper is _REAL_SLEEP:
+            if self.abort_event.wait(delay):
+                self._check_abort()
+        else:
+            sleeper(delay)
+            self._check_abort()
+
+    def acquire(
+        self,
+        clock: Callable[[], float],
+        sleeper: Callable[[float], None],
+    ) -> bool:
+        """Return whether this admission is the post-cooldown canary."""
+        while True:
+            self._check_abort()
+            delay = 0.0
+            with self._condition:
+                self._check_abort()
+                now = clock()
+                if self.deadline is not None and now >= self.deadline:
+                    self.abort()
+                    raise RuntimeError("mirror audit deadline reached")
+                delay = max(0.0, self.cooldown_until - now)
+                if not delay:
+                    if self.canary_pending:
+                        if not self.canary_active and self.active == 0:
+                            self.canary_active = True
+                            self.active += 1
+                            return True
+                    elif self.active < self.limit:
+                        self.active += 1
+                        return False
+                    self._condition.wait(timeout=0.1)
+                    continue
+            self.wait_delay(delay, clock, sleeper)
+
+    def rate_limited(self, delay: float, clock: Callable[[], float]) -> None:
+        end = clock() + delay
+        self._check_deadline(end)
+        with self._condition:
+            self.limit = max(1, self.limit // 2)
+            self.cooldown_until = max(self.cooldown_until, end)
+            self.canary_pending = True
+            self.successes = 0
+            self._condition.notify_all()
+
+    def finished(self, *, canary: bool, success: bool) -> None:
+        with self._condition:
+            self.active -= 1
+            if canary:
+                self.canary_active = False
+                if success:
+                    self.canary_pending = False
+            elif success and not self.canary_pending and self.limit < self.ceiling:
+                self.successes += 1
+                if self.successes >= self.limit:
+                    self.limit += 1
+                    self.successes = 0
+            self._condition.notify_all()
+
+
+_MIRROR_ADMISSION = _MirrorAdmission()
+
+
+def _reset_retry_state(
+    *, workers: int = MAX_WORKERS, deadline: float | None = None
+) -> None:
+    _MIRROR_ADMISSION.reset(workers, deadline)
     with _COUNT_LOCK:
         _mirror_retry_causes.clear()
         _mirror_retry_after_values.clear()
-
-
-def _wait_for_mirror_cooldown(
-    clock: Callable[[], float], sleeper: Callable[[float], None]
-) -> None:
-    while True:
-        with _MIRROR_COOLDOWN_LOCK:
-            delay = max(0.0, _mirror_cooldown_until - clock())
-        if not delay:
-            return
-        sleeper(delay)
-
-
-def _extend_mirror_cooldown(delay: float, clock: Callable[[], float]) -> None:
-    global _mirror_cooldown_until
-    with _MIRROR_COOLDOWN_LOCK:
-        _mirror_cooldown_until = max(_mirror_cooldown_until, clock() + delay)
 
 
 def _record_mirror_retry(cause: str, delay: float, retry_after: str | None) -> None:
@@ -319,8 +427,7 @@ def _request(
     is_mirror = getattr(_REQUEST_CONTEXT, "kind", None) == "mirror"
     last: BaseException | None = None
     for attempt in range(5):
-        if is_mirror:
-            _wait_for_mirror_cooldown(clock, sleeper)
+        canary = _MIRROR_ADMISSION.acquire(clock, sleeper) if is_mirror else False
         delay = float(2**attempt)
         cause: str
         retry_after: str | None = None
@@ -330,15 +437,17 @@ def _request(
             headers={"Cache-Control": "no-cache", "User-Agent": _USER_AGENT},
         )
         try:
-            return _OPENER.open(request, timeout=timeout)
+            response = _OPENER.open(request, timeout=timeout)
         except urllib.error.HTTPError as error:
             if error.code < 500 and error.code != 429:
+                if is_mirror:
+                    _MIRROR_ADMISSION.finished(canary=canary, success=True)
                 return error
             last = error
             cause = str(error.code)
             retry_after = error.headers.get("Retry-After")
             if retry_after and retry_after.isdigit():
-                delay = max(delay, min(float(retry_after), 30.0))
+                delay = max(delay, min(float(retry_after), MAX_RETRY_AFTER_SECONDS))
             else:
                 retry_after = None
         except TimeoutError as error:
@@ -350,13 +459,33 @@ def _request(
         except OSError as error:
             last = error
             cause = "os_error"
+        else:
+            if is_mirror:
+                _MIRROR_ADMISSION.finished(canary=canary, success=True)
+            return response
+
         if attempt < 4:
             if is_mirror:
                 _record_mirror_retry(cause, delay, retry_after)
                 if cause == "429":
-                    _extend_mirror_cooldown(delay, clock)
+                    try:
+                        _MIRROR_ADMISSION.rate_limited(delay, clock)
+                    except RuntimeError as error:
+                        value = retry_after or f"{delay:g}"
+                        raise RuntimeError(
+                            f"mirror Retry-After {value}s exceeds audit deadline"
+                        ) from error
+                    finally:
+                        _MIRROR_ADMISSION.finished(canary=canary, success=False)
                     continue
-            sleeper(delay)
+                _MIRROR_ADMISSION.finished(canary=canary, success=False)
+                _MIRROR_ADMISSION.wait_delay(delay, clock, sleeper)
+            else:
+                sleeper(delay)
+        elif is_mirror:
+            _MIRROR_ADMISSION.finished(canary=canary, success=False)
+    if is_mirror:
+        _MIRROR_ADMISSION.abort()
     assert last is not None
     raise last
 
@@ -691,6 +820,7 @@ def _etag_sha256(etag: str | None) -> str | None:
 def _probe_with_metadata(
     repo_id: str, item: HfFile, r2_client: Any | None
 ) -> tuple[MirrorProbe, dict[str, str] | None]:
+    _MIRROR_ADMISSION._check_abort()
     probe = _public_probe(repo_id, item)
     metadata = (
         _r2_metadata(r2_client, repo_id, item.path)
@@ -782,6 +912,7 @@ def audit(
     aliases: set[str] | None = None,
     only_used: bool = False,
     workers: int = MAX_WORKERS,
+    deadline_seconds: float = DEFAULT_DEADLINE_SECONDS,
     progress: AuditProgress | None = None,
 ) -> list[AliasReport]:
     """Audit aliases; ``only_used`` omits bucket-only catalog inventory rows."""
@@ -792,11 +923,13 @@ def audit(
         if unknown:
             raise ValueError(f"unknown alias(es): {', '.join(sorted(unknown))}")
 
+    pool_size = max(1, min(workers, MAX_WORKERS))
+    deadline = time.monotonic() + max(0.0, deadline_seconds)
     with _COUNT_LOCK:
         _request_counts.update(hf=0, mirror=0)
         for metric_name, value in _profile_counts.items():
             _profile_counts[metric_name] = 0.0 if isinstance(value, float) else 0
-    _reset_retry_state()
+    _reset_retry_state(workers=pool_size, deadline=deadline)
 
     catalog_started = time.monotonic()
     entries = _catalog_entries()
@@ -806,7 +939,6 @@ def audit(
         str(entry["alias"]).lower(): entry for entry in entries if entry.get("alias")
     }
     r2_client = _maybe_r2_client()
-    pool_size = max(1, min(workers, MAX_WORKERS))
 
     # One paced model_info call per unique repository, fanned out to every alias.
     repos: dict[str, HfRepo] = {}
@@ -864,32 +996,63 @@ def audit(
         progress.emit("mirror-start")
 
     # Mirror I/O is globally deduplicated and isolated in its own bounded pool.
+    # Keeping at most two worker-windows submitted makes an exhausted transient
+    # promptly cancellable instead of leaving thousands of queued futures.
     missing_required_by_report: dict[int, int] = {}
     mirror_started = time.monotonic()
-    with ThreadPoolExecutor(max_workers=pool_size) as mirror_pool:
-        mirror_futures = {
-            mirror_pool.submit(_probe_with_metadata, repo_id, item, r2_client): key
-            for key, item in probes.items()
-            for repo_id in [key[0]]
-        }
-        for mirror_future in as_completed(mirror_futures):
-            probe_key = mirror_futures[mirror_future]
-            probe, metadata = mirror_future.result()
-            for report, item, in_progress in probe_targets[probe_key]:
-                missing_required_by_report[id(report)] = missing_required_by_report.get(
-                    id(report), 0
-                ) + _apply_probe_result(
-                    report,
-                    item,
-                    probe,
-                    metadata,
-                    has_r2=r2_client is not None,
-                    sync_in_progress=in_progress,
-                )
-            if progress is not None:
-                progress.probes_done += 1
-                if progress.probes_done % PROGRESS_PROBE_INTERVAL == 0:
-                    progress.emit("probe-batch")
+    mirror_pool = ThreadPoolExecutor(max_workers=pool_size)
+    probe_items = iter(probes.items())
+    mirror_futures: dict[Future[Any], tuple[str, str]] = {}
+
+    def submit_next() -> bool:
+        if _MIRROR_ADMISSION.abort_event.is_set():
+            return False
+        try:
+            key, item = next(probe_items)
+        except StopIteration:
+            return False
+        mirror_futures[
+            mirror_pool.submit(_probe_with_metadata, key[0], item, r2_client)
+        ] = key
+        return True
+
+    for _ in range(min(len(probes), pool_size * 2)):
+        submit_next()
+    try:
+        while mirror_futures:
+            completed, _pending = wait(mirror_futures, return_when=FIRST_COMPLETED)
+            completed_count = 0
+            for mirror_future in completed:
+                probe_key = mirror_futures.pop(mirror_future)
+                probe, metadata = mirror_future.result()
+                completed_count += 1
+                for report, item, in_progress in probe_targets[probe_key]:
+                    missing_required_by_report[id(report)] = (
+                        missing_required_by_report.get(id(report), 0)
+                        + _apply_probe_result(
+                            report,
+                            item,
+                            probe,
+                            metadata,
+                            has_r2=r2_client is not None,
+                            sync_in_progress=in_progress,
+                        )
+                    )
+                if progress is not None:
+                    progress.probes_done += 1
+                    if progress.probes_done % PROGRESS_PROBE_INTERVAL == 0:
+                        progress.emit("probe-batch")
+            for _ in range(completed_count):
+                submit_next()
+    except BaseException:
+        _MIRROR_ADMISSION.abort()
+        for mirror_future in mirror_futures:
+            mirror_future.cancel()
+        raise
+    finally:
+        mirror_pool.shutdown(
+            wait=True, cancel_futures=_MIRROR_ADMISSION.abort_event.is_set()
+        )
     if progress is not None:
         progress.mirror_seconds = time.monotonic() - mirror_started
 
@@ -1021,6 +1184,12 @@ def _parser() -> argparse.ArgumentParser:
         "--workers", type=int, default=MAX_WORKERS, help="concurrency, capped at 32"
     )
     parser.add_argument(
+        "--deadline-seconds",
+        type=float,
+        default=DEFAULT_DEADLINE_SECONDS,
+        help="fail before a required wait exceeds this job budget (default: 1500)",
+    )
+    parser.add_argument(
         "--aliases-path", type=Path, default=ALIASES_PATH, help=argparse.SUPPRESS
     )
     parser.add_argument(
@@ -1058,6 +1227,7 @@ def main(argv: list[str] | None = None) -> int:
             aliases=set(args.alias) or None,
             only_used=args.only_used,
             workers=args.workers,
+            deadline_seconds=args.deadline_seconds,
             progress=progress,
         )
     except (OSError, ValueError, RuntimeError, urllib.error.URLError) as error:
