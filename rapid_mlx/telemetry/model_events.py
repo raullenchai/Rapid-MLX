@@ -14,6 +14,7 @@ from typing import ParamSpec
 _serve_failure_lock = threading.Lock()
 _serve_failure_claimed = False
 _P = ParamSpec("_P")
+_EXCEPTION_CHAIN_LIMIT = 32
 
 
 def _never_raise(func: Callable[_P, None]) -> Callable[_P, None]:
@@ -52,6 +53,14 @@ def size_bucket(size_bytes: int | None) -> str:
     return "64gb_plus"
 
 
+def _exception_text(exc: BaseException) -> str:
+    """Return exception text without allowing a hostile ``__str__`` to escape."""
+    try:
+        return str(exc)
+    except BaseException:
+        return ""
+
+
 def pull_error_class(exc: BaseException) -> str:
     """Classify a pull exception without putting its message on the wire.
 
@@ -67,12 +76,13 @@ def pull_error_class(exc: BaseException) -> str:
     )
     from requests import exceptions as requests_exceptions
 
-    pending: list[BaseException] = [exc]
+    current: BaseException | None = exc
     seen: set[int] = set()
-    while pending:
-        current = pending.pop()
+    for _ in range(_EXCEPTION_CHAIN_LIMIT):
+        if current is None:
+            break
         if id(current) in seen:
-            continue
+            break
         seen.add(id(current))
         if isinstance(current, GatedRepoError):
             return "gated"
@@ -95,51 +105,64 @@ def pull_error_class(exc: BaseException) -> str:
             ),
         ):
             return "network"
-        if current.__context__ is not None:
-            pending.append(current.__context__)
-        if current.__cause__ is not None:
-            pending.append(current.__cause__)
+        current = current.__cause__
     return "other"
 
 
 def serve_error_class(exc: BaseException) -> str:
     """Reduce loader failures to the registry's closed serve categories."""
-    from rapid_mlx.request import (
-        ENGINE_ABORT_CODE_INSUFFICIENT_MEMORY,
-        classify_engine_abort,
-    )
+    try:
+        from huggingface_hub.errors import HfHubHTTPError
+        from huggingface_hub.utils import RepositoryNotFoundError
 
-    if classify_engine_abort(exc) == ENGINE_ABORT_CODE_INSUFFICIENT_MEMORY:
-        return "insufficient_memory"
-    from huggingface_hub.errors import HfHubHTTPError
-    from huggingface_hub.utils import RepositoryNotFoundError
+        from rapid_mlx.request import (
+            ENGINE_ABORT_CODE_INSUFFICIENT_MEMORY,
+            classify_engine_abort,
+        )
 
-    if isinstance(exc, (HfHubHTTPError, RepositoryNotFoundError)):
-        return "download_failed"
-    # A missing local/Hub shard is an availability failure, not evidence that
-    # bytes on disk are corrupt. ModuleNotFoundError is handled separately
-    # below because mlx-lm uses it for an unknown architecture module.
-    if isinstance(exc, FileNotFoundError) and not isinstance(exc, ModuleNotFoundError):
-        return "download_failed"
-    if isinstance(exc, ModuleNotFoundError):
-        missing = exc.name or ""
-        if missing.startswith("mlx_lm.models."):
-            return "unsupported_architecture"
-        text = str(exc)
-        if re.fullmatch(r"No module named ['\"]mlx_lm\.models\.[^'\"]+['\"]", text):
-            return "unsupported_architecture"
-    elif isinstance(exc, ValueError):
-        # mlx-lm/utils.py::_get_classes translates the module import failure to
-        # exactly ``ValueError: Model type <X> not supported.``.
-        if re.fullmatch(r"Model type .+ not supported\.?", str(exc)):
-            return "unsupported_architecture"
-    name = type(exc).__name__.lower()
-    text = str(exc).lower()
-    if "safetensor" in name or any(
-        marker in text
-        for marker in ("safetensor", "corrupt", "checksum", "size mismatch")
-    ):
-        return "corrupt_weights"
+        current: BaseException | None = exc
+        seen: set[int] = set()
+        for _ in range(_EXCEPTION_CHAIN_LIMIT):
+            if current is None:
+                break
+            if id(current) in seen:
+                break
+            seen.add(id(current))
+            # The outermost explicit signal wins; only ``raise ... from`` links are followed.
+            text = _exception_text(current)
+            if classify_engine_abort(current) == ENGINE_ABORT_CODE_INSUFFICIENT_MEMORY:
+                return "insufficient_memory"
+            if isinstance(current, (HfHubHTTPError, RepositoryNotFoundError)):
+                return "download_failed"
+            # A missing local/Hub shard is an availability failure, not evidence that
+            # bytes on disk are corrupt. ModuleNotFoundError is handled separately
+            # below because mlx-lm uses it for an unknown architecture module.
+            if isinstance(current, FileNotFoundError) and not isinstance(
+                current, ModuleNotFoundError
+            ):
+                return "download_failed"
+            if isinstance(current, ModuleNotFoundError):
+                missing = current.name or ""
+                if missing.startswith("mlx_lm.models."):
+                    return "unsupported_architecture"
+                if re.fullmatch(
+                    r"No module named ['\"]mlx_lm\.models\.[^'\"]+['\"]", text
+                ):
+                    return "unsupported_architecture"
+            elif isinstance(current, ValueError):
+                # mlx-lm/utils.py::_get_classes translates the module import failure
+                # to exactly ``ValueError: Model type <X> not supported.``.
+                if re.fullmatch(r"Model type .+ not supported\.?", text):
+                    return "unsupported_architecture"
+            name = type(current).__name__.lower()
+            if "safetensor" in name or any(
+                marker in text.lower()
+                for marker in ("safetensor", "corrupt", "checksum", "size mismatch")
+            ):
+                return "corrupt_weights"
+            current = current.__cause__
+    except BaseException:
+        return "other"
     return "other"
 
 

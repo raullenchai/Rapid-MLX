@@ -127,11 +127,27 @@ def test_pull_error_classes_are_type_based():
     assert model_events.pull_error_class(wrapped) == "network"
     contextual = RuntimeError("outer private detail")
     contextual.__context__ = requests.ReadTimeout("inner private detail")
-    assert model_events.pull_error_class(contextual) == "network"
+    assert model_events.pull_error_class(contextual) == "other"
     cyclic = RuntimeError("cycle")
     cyclic.__cause__ = cyclic
     assert model_events.pull_error_class(cyclic) == "other"
     assert model_events.pull_error_class(ValueError("x")) == "other"
+
+
+def test_pull_error_class_chain_regression():
+    from huggingface_hub.utils import GatedRepoError, RepositoryNotFoundError
+
+    response = httpx.Response(
+        404, request=httpx.Request("GET", "https://huggingface.co/org/model")
+    )
+    outer = RuntimeError("loader wrapper")
+    outer.__context__ = RepositoryNotFoundError("context", response=response)
+    middle = RuntimeError("explicit wrapper")
+    outer.__cause__ = middle
+    middle.__cause__ = GatedRepoError("cause", response=response)
+
+    # Only the explicit cause chain participates; the stale context is ignored.
+    assert model_events.pull_error_class(outer) == "gated"
 
 
 def test_pull_error_event_never_sends_exception_text(monkeypatch):
@@ -209,15 +225,127 @@ def test_model_type_fails_closed_on_bad_profile(monkeypatch):
     assert model_events.model_type("catalog-entry") == "other"
 
 
+def _serve_exception(error_class):
+    if error_class == "insufficient_memory":
+        return MemoryError()
+    if error_class == "download_failed":
+        return FileNotFoundError("model-00001-of-00002.safetensors")
+    if error_class == "unsupported_architecture":
+        return ValueError("Model type future_arch not supported.")
+    if error_class == "corrupt_weights":
+        return RuntimeError("size mismatch for shard")
+    return RuntimeError("unclassified")
+
+
+def _chain_serve_exception(inner, shape):
+    if shape == "bare":
+        return inner
+    if shape == "cause":
+        outer = RuntimeError("loader wrapper")
+        outer.__cause__ = inner
+        return outer
+    outer = RuntimeError("loader wrapper")
+    middle = RuntimeError("second loader wrapper")
+    outer.__cause__ = middle
+    middle.__cause__ = inner
+    return outer
+
+
+@pytest.mark.parametrize(
+    "error_class",
+    [
+        "insufficient_memory",
+        "download_failed",
+        "unsupported_architecture",
+        "corrupt_weights",
+        "other",
+    ],
+)
+@pytest.mark.parametrize("shape", ["bare", "cause", "two_levels_deep"])
+def test_serve_error_classes_across_exception_chain(error_class, shape):
+    exc = _chain_serve_exception(_serve_exception(error_class), shape)
+
+    assert model_events.serve_error_class(exc) == error_class
+
+
+def test_serve_error_class_ignores_implicit_context():
+    try:
+        raise FileNotFoundError("optional tokenizer probe")
+    except FileNotFoundError:
+        try:
+            raise ValueError("malformed tokenizer config")
+        except ValueError as terminal:
+            exc = terminal
+
+    assert exc.__suppress_context__ is False
+    assert model_events.serve_error_class(exc) == "other"
+
+
+@pytest.mark.parametrize(
+    "error_class",
+    [
+        "insufficient_memory",
+        "download_failed",
+        "unsupported_architecture",
+        "corrupt_weights",
+        "other",
+    ],
+)
+def test_serve_error_class_terminates_on_cycles(error_class):
+    outer = RuntimeError("loader wrapper")
+    inner = _serve_exception(error_class)
+    outer.__cause__ = inner
+    inner.__cause__ = outer
+
+    assert model_events.serve_error_class(outer) == error_class
+
+
+@pytest.mark.parametrize(
+    ("outer_class", "inner_class"),
+    [
+        ("insufficient_memory", "corrupt_weights"),
+        ("download_failed", "insufficient_memory"),
+        ("unsupported_architecture", "download_failed"),
+        ("corrupt_weights", "unsupported_architecture"),
+    ],
+)
+def test_serve_error_class_outermost_match_wins(outer_class, inner_class):
+    outer = _serve_exception(outer_class)
+    middle = RuntimeError("second loader wrapper")
+    outer.__cause__ = middle
+    middle.__cause__ = _serve_exception(inner_class)
+
+    assert model_events.serve_error_class(outer) == outer_class
+
+
+@pytest.mark.parametrize("exc", [KeyboardInterrupt(), SystemExit(), GeneratorExit()])
+def test_serve_error_class_base_exceptions_are_other(exc):
+    assert model_events.serve_error_class(exc) == "other"
+
+
+def test_serve_error_class_handles_hostile_exception_text():
+    class HostileError(Exception):
+        def __str__(self):
+            raise KeyboardInterrupt
+
+    assert model_events.serve_error_class(HostileError()) == "other"
+
+
+def test_serve_error_class_stops_at_chain_bound():
+    outer = RuntimeError("loader wrapper 0")
+    current = outer
+    for index in range(40):
+        cause = RuntimeError(f"loader wrapper {index + 1}")
+        current.__cause__ = cause
+        current = cause
+    current.__cause__ = MemoryError()
+
+    assert model_events.serve_error_class(outer) == "other"
+
+
 @pytest.mark.parametrize(
     ("exc", "expected"),
     [
-        (MemoryError(), "insufficient_memory"),
-        (RuntimeError("corrupt safetensor header"), "corrupt_weights"),
-        (
-            ValueError("Model type future_arch not supported."),
-            "unsupported_architecture",
-        ),
         (
             ModuleNotFoundError(
                 "No module named 'mlx_lm.models.future_arch'",
@@ -229,11 +357,11 @@ def test_model_type_fails_closed_on_bad_profile(monkeypatch):
             ModuleNotFoundError("No module named 'mlx_lm.models.future_arch'"),
             "unsupported_architecture",
         ),
-        (FileNotFoundError("model-00001-of-00002.safetensors"), "download_failed"),
-        (RuntimeError("unclassified"), "other"),
+        (ModuleNotFoundError("No module named 'optional_accelerator'"), "other"),
+        (RuntimeError("corrupt safetensor header"), "corrupt_weights"),
     ],
 )
-def test_serve_error_classes(exc, expected):
+def test_serve_error_class_preserves_existing_variants(exc, expected):
     assert model_events.serve_error_class(exc) == expected
 
 
