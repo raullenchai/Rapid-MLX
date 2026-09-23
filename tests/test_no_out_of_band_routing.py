@@ -126,6 +126,10 @@ ALLOWED_RAPID_MLX_ENV_VARS: frozenset[str] = frozenset(
         # Loopback-only test override for the telemetry endpoint. A non-loopback
         # value is ignored, so it cannot route telemetry to a third party.
         "RAPID_MLX_POSTHOG_URL",
+        # Process-internal readiness handoff: carries an inherited fd number for
+        # the one-shot readiness token. It is set only by the parent for its own
+        # child and is not user-facing.
+        "RAPID_MLX_LTX25_READY_FD",
         "RAPID_MLX_DISABLE_VERSION_CHECK",  # opt-out of version check
         "RAPID_MLX_PROFILE_VERBOSE",  # debug verbosity for profile logs
         # Local-only archive location for reproducible benchmark records. It
