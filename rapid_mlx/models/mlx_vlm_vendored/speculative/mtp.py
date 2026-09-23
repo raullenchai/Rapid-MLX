@@ -118,16 +118,16 @@ def _mtp_verify_without_logits(
                 cache=prompt_cache,
                 skip_final_norm=True,
             )
+            shared_kv_states = _mtp_shared_kv_from_prompt_cache(lm, prompt_cache)
+            if shared_kv_states:
+                return _MTPVerifyResult(
+                    hidden=hidden,
+                    shared_kv_states=shared_kv_states,
+                    rollback_state=transaction,
+                )
         except BaseException:
             transaction.abort()
             raise
-        shared_kv_states = _mtp_shared_kv_from_prompt_cache(lm, prompt_cache)
-        if shared_kv_states:
-            return _MTPVerifyResult(
-                hidden=hidden,
-                shared_kv_states=shared_kv_states,
-                rollback_state=transaction,
-            )
         # The sink retry must not append the same verifier block a second time.
         transaction.abort()
 

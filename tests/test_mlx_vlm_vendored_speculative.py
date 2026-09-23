@@ -94,16 +94,16 @@ _HUNK_SPECS = {
             "                cache=prompt_cache,\n"
             "                skip_final_norm=True,\n"
             "            )\n"
+            "            shared_kv_states = _mtp_shared_kv_from_prompt_cache(lm, prompt_cache)\n"
+            "            if shared_kv_states:\n"
+            "                return _MTPVerifyResult(\n"
+            "                    hidden=hidden,\n"
+            "                    shared_kv_states=shared_kv_states,\n"
+            "                    rollback_state=transaction,\n"
+            "                )\n"
             "        except BaseException:\n"
             "            transaction.abort()\n"
             "            raise\n"
-            "        shared_kv_states = _mtp_shared_kv_from_prompt_cache(lm, prompt_cache)\n"
-            "        if shared_kv_states:\n"
-            "            return _MTPVerifyResult(\n"
-            "                hidden=hidden,\n"
-            "                shared_kv_states=shared_kv_states,\n"
-            "                rollback_state=transaction,\n"
-            "            )\n"
             "        # The sink retry must not append the same verifier block a second time.\n"
             "        transaction.abort()\n"
             "\n"
@@ -675,7 +675,7 @@ def test_uniform_acceptance_clamps_over_positive_budgets():
     assert out_tokens == [[], []]
 
 
-def test_hookless_mtp_verify_aborts_before_sink_retry():
+def test_hookless_mtp_verify_aborts_before_sink_retry(monkeypatch):
     """The hook-less verifier retries with a shared-KV sink only after
     rolling back its first forward, and returns the second transaction to the
     speculative-round owner."""
@@ -729,4 +729,17 @@ def test_hookless_mtp_verify_aborts_before_sink_retry():
     assert prompt_cache[0].offset == width
     assert result.rollback_state.active is True
     result.abort()
+    assert prompt_cache[0].offset == 0
+
+    def fail_shared_kv(*_args):
+        raise RuntimeError("bad shared KV")
+
+    monkeypatch.setattr(vs_mtp, "_mtp_shared_kv_from_prompt_cache", fail_shared_kv)
+    with pytest.raises(RuntimeError, match="bad shared KV"):
+        vs_mtp._mtp_verify_without_logits(
+            lm,
+            mx.zeros((1, width), dtype=mx.int32),
+            prompt_cache,
+        )
+    assert model.calls == 3
     assert prompt_cache[0].offset == 0
