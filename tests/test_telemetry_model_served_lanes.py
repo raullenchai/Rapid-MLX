@@ -3,14 +3,13 @@
 
 from __future__ import annotations
 
-import asyncio
 import http.client
 import importlib
+import inspect
 import json
-import queue
+import os
 import sys
 import threading
-import time
 from concurrent.futures import Future
 from contextlib import contextmanager
 from http.server import BaseHTTPRequestHandler, HTTPServer
@@ -190,26 +189,9 @@ def test_declined_primary_emission_does_not_latch_and_retries(monkeypatch):
     assert queued == ["model_served"]
 
 
-@pytest.mark.asyncio
-async def test_slow_model_served_store_never_blocks_request_event_loop(monkeypatch):
-    work: queue.Queue = queue.Queue(maxsize=2)
+def test_slow_model_served_store_never_blocks_request_event_loop(monkeypatch):
     store_started = threading.Event()
     release_store = threading.Event()
-
-    def worker() -> None:
-        callback = work.get()
-        try:
-            callback()
-        finally:
-            work.task_done()
-
-    thread = threading.Thread(target=worker, daemon=True)
-    thread.start()
-    monkeypatch.setattr(
-        model_events,
-        "_submit_model_served",
-        lambda callback: (work.put_nowait(callback), True)[1],
-    )
     monkeypatch.setattr(track_module, "_upload_allowed", lambda: True)
 
     def slow_note(_model: str) -> int:
@@ -219,20 +201,20 @@ async def test_slow_model_served_store_never_blocks_request_event_loop(monkeypat
 
     monkeypatch.setattr(store, "note_model_served", slow_note)
     monkeypatch.setattr(track_module, "track", lambda *_args, **_kwargs: True)
-    monkeypatch.setattr(server, "_model_alias", "sdxl-base")
-    monkeypatch.setattr(server, "_telemetry_model_served_state", "idle")
-
-    started = time.perf_counter()
-    server._emit_primary_model_served_once(object())
-    await asyncio.sleep(0)
-    elapsed = time.perf_counter() - started
+    caller = threading.Thread(
+        target=model_events.emit_model_served,
+        args=(None, "sdxl-base", False),
+        daemon=True,
+    )
+    caller.start()
     try:
-        assert store_started.wait(timeout=0.2)
-        assert elapsed < 0.2
-        assert server._telemetry_model_served_state == "pending"
+        assert store_started.wait(timeout=2)
+        caller.join(timeout=2)
+        assert not caller.is_alive()
+        assert not release_store.is_set()
     finally:
         release_store.set()
-        thread.join(timeout=1)
+        caller.join(timeout=2)
 
 
 def test_concurrent_lane_submission_does_not_share_a_blocking_lock(monkeypatch):
@@ -246,19 +228,35 @@ def test_concurrent_lane_submission_does_not_share_a_blocking_lock(monkeypatch):
         return True
 
     monkeypatch.setattr(model_events, "emit_model_served", submit)
-    monkeypatch.setattr(server, "_telemetry_model_served_state", "idle")
-    monkeypatch.setattr(server, "_telemetry_audio_model_served_state", "idle")
+    monkeypatch.setattr(server, "_telemetry_model_served_state", "idle", raising=False)
+    monkeypatch.setattr(
+        server, "_telemetry_audio_model_served_state", "idle", raising=False
+    )
+    monkeypatch.setattr(server, "_telemetry_model_served_emitted", False, raising=False)
+    monkeypatch.setattr(
+        server, "_telemetry_audio_model_served_emitted", False, raising=False
+    )
     primary = threading.Thread(
         target=server._emit_primary_model_served_once, args=(object(),), daemon=True
     )
     primary.start()
-    assert primary_entered.wait(timeout=0.2)
-    started = time.perf_counter()
-    server._emit_audio_model_served_once(object(), "kokoro")
-    elapsed = time.perf_counter() - started
-    release_primary.set()
-    primary.join(timeout=1)
-    assert elapsed < 0.2
+    assert primary_entered.wait(timeout=2)
+    auxiliary_returned = threading.Event()
+
+    def emit_auxiliary() -> None:
+        server._emit_audio_model_served_once(object(), "kokoro")
+        auxiliary_returned.set()
+
+    auxiliary = threading.Thread(target=emit_auxiliary, daemon=True)
+    auxiliary.start()
+    try:
+        assert auxiliary_returned.wait(timeout=2)
+        assert primary.is_alive()
+        assert not release_primary.is_set()
+    finally:
+        release_primary.set()
+        primary.join(timeout=2)
+        auxiliary.join(timeout=2)
 
 
 @pytest.mark.parametrize(
@@ -300,7 +298,13 @@ def test_auxiliary_lanes_use_resolved_model_reference(
         return True
 
     monkeypatch.setattr(model_events, "emit_model_served", capture)
-    monkeypatch.setattr(server, state_name, "idle")
+    monkeypatch.setattr(server, state_name, "idle", raising=False)
+    monkeypatch.setattr(
+        server, "_telemetry_audio_model_served_emitted", False, raising=False
+    )
+    monkeypatch.setattr(
+        server, "_telemetry_embedding_model_served_emitted", False, raising=False
+    )
     helper(object(), model_name)
     assert captured == [(None, model_name, False)]
     assert model_events._serve_props(*captured[0])["model"] == expected
@@ -349,38 +353,35 @@ def test_cog_backend_signals_after_load_before_generation(monkeypatch, tmp_path)
     assert order == ["load", "model_served", "inference"]
 
 
-def test_wan_materialization_callback_waits_for_all_loaders():
+@pytest.mark.parametrize("dual_model", [False, True])
+def test_wan_materialization_callback_follows_pinned_runtime_order(dual_model):
     from rapid_mlx.video.wan_diffusers import _notify_after_materialization
 
+    try:
+        from mlx_video.generate_wan import generate_video
+    except ImportError:
+        pytest.skip("pinned video extra is not installed")
+
+    source = inspect.getsource(generate_video)
+    assert source.index("load_t5_encoder(") < source.index("load_wan_model(")
+    assert source.index("load_wan_model(") < source.index(".embed_text(")
+    assert source.index(".embed_text(") < source.index("load_vae_decoder(")
+
     order = []
-    namespace = {
-        name: (lambda name=name: order.append(name) or name)
-        for name in (
-            "load_wan_model",
-            "load_t5_encoder",
-            "load_vae_decoder",
-        )
-    }
-
-    def template():
-        globals()["load_wan_model"]()
-        globals()["load_t5_encoder"]()
-        globals()["load_vae_decoder"]()
-        return "generated"
-
-    generate = FunctionType(
-        template.__code__, namespace, template.__name__, template.__defaults__
-    )
+    namespace = dict(generate_video.__globals__)
+    namespace["load_wan_model"] = lambda _path, config: order.append("transformer")
+    generate = FunctionType(generate_video.__code__, namespace, generate_video.__name__)
     wrapped = _notify_after_materialization(
         generate, lambda: order.append("model_served")
     )
-    assert wrapped() == "generated"
-    assert order == [
-        "load_wan_model",
-        "load_t5_encoder",
-        "load_vae_decoder",
-        "model_served",
-    ]
+    loader = wrapped.__globals__["load_wan_model"]
+    config = SimpleNamespace(dual_model=dual_model)
+    for index in range(2 if dual_model else 1):
+        loader(f"transformer-{index}", config)
+        expected = ["transformer"] * (index + 1)
+        if index == int(dual_model):
+            expected.append("model_served")
+        assert order == expected
     assert _notify_after_materialization(lambda: "plain", lambda: None)() == "plain"
 
 
@@ -420,36 +421,70 @@ def test_wan_runtime_installs_load_callback_for_both_layouts(monkeypatch, tmp_pa
     assert generated == ["plain", "plain"]
 
 
-def test_ltx25_backend_signals_before_subprocess_generation(monkeypatch, tmp_path):
+def test_ltx25_child_failure_before_readiness_emits_nothing(monkeypatch, tmp_path):
     from rapid_mlx.video import ltx25
 
-    order = []
+    emitted = []
 
     class Process:
-        returncode = 0
+        returncode = 1
 
         def __init__(self, command, **_kwargs):
             self.command = command
 
         def communicate(self, *, input, timeout):
             del input, timeout
-            order.append("inference")
-            Path(self.command[self.command.index("--output") + 1]).write_bytes(b"mp4")
 
     monkeypatch.setattr(ltx25, "embedded_ltx25_interpreter", lambda: "/python")
     monkeypatch.setattr(ltx25.subprocess, "Popen", Process)
-    ltx25.LTX25VideoEngine("ltx-2.5-mlx-q8").generate(
-        prompt="x",
-        output_path=tmp_path / "output.mp4",
-        width=64,
-        height=64,
-        num_frames=5,
-        fps=24,
-        seed=1,
-        image=None,
-        on_loaded=lambda: order.append("model_served"),
-    )
-    assert order == ["model_served", "inference"]
+    monkeypatch.setattr(ltx25.LTX25VideoEngine, "_terminate_process", lambda *_: None)
+    with pytest.raises(ltx25.LTX25BackendError, match="exited with code 1"):
+        ltx25.LTX25VideoEngine("ltx-2.5-mlx-q8").generate(
+            prompt="x",
+            output_path=tmp_path / "output.mp4",
+            width=64,
+            height=64,
+            num_frames=5,
+            fps=24,
+            seed=1,
+            image=None,
+            on_loaded=lambda: emitted.append("model_served"),
+        )
+    assert emitted == []
+
+
+def test_ltx25_readiness_then_generation_failure_emits_once(monkeypatch, tmp_path):
+    from rapid_mlx.video import ltx25
+
+    emitted = []
+
+    class Process:
+        returncode = 1
+
+        def __init__(self, _command, **kwargs):
+            self.ready_fd = os.dup(kwargs["pass_fds"][0])
+
+        def communicate(self, *, input, timeout):
+            del input, timeout
+            os.write(self.ready_fd, ltx25._READINESS_TOKEN)
+            os.close(self.ready_fd)
+
+    monkeypatch.setattr(ltx25, "embedded_ltx25_interpreter", lambda: "/python")
+    monkeypatch.setattr(ltx25.subprocess, "Popen", Process)
+    monkeypatch.setattr(ltx25.LTX25VideoEngine, "_terminate_process", lambda *_: None)
+    with pytest.raises(ltx25.LTX25BackendError, match="exited with code 1"):
+        ltx25.LTX25VideoEngine("ltx-2.5-mlx-q8").generate(
+            prompt="x",
+            output_path=tmp_path / "output.mp4",
+            width=64,
+            height=64,
+            num_frames=5,
+            fps=24,
+            seed=1,
+            image=None,
+            on_loaded=lambda: emitted.append("model_served"),
+        )
+    assert emitted == ["model_served"]
 
 
 def test_ltx25_generation_failure_after_load_still_emits(monkeypatch, tmp_path):
@@ -762,7 +797,41 @@ def test_cog_video_emits_after_load_before_pipeline(monkeypatch, tmp_path):
     assert order == ["model_served", "inference"]
 
 
-def test_ltx23_video_emits_after_load_before_pipeline(monkeypatch, tmp_path):
+def test_ltx23_pinned_wrapper_emits_after_generation(monkeypatch, tmp_path):
+    order: list[str] = []
+
+    def generate_video_with_audio(*args, **kwargs):
+        del args
+        order.append("inference")
+        Path(kwargs["output_path"]).write_bytes(b"mp4")
+
+    engine = _video_engine(_VideoBackend())
+    engine.video_family = "ltx-2.3"
+    engine._wan_engine = None
+    monkeypatch.setattr(
+        "rapid_mlx.runtime.video_lane._resolve_ffmpeg", lambda: "/usr/bin/true"
+    )
+    monkeypatch.setitem(
+        sys.modules,
+        "mlx_video",
+        SimpleNamespace(generate_video_with_audio=generate_video_with_audio),
+    )
+    monkeypatch.setattr(
+        server,
+        "_emit_primary_model_served_once",
+        lambda _engine: order.append("model_served"),
+    )
+    _generate_video(engine, tmp_path / "ltx.mp4")
+    assert inspect.signature(generate_video_with_audio) == inspect.Signature(
+        parameters=[
+            inspect.Parameter("args", inspect.Parameter.VAR_POSITIONAL),
+            inspect.Parameter("kwargs", inspect.Parameter.VAR_KEYWORD),
+        ]
+    )
+    assert order == ["inference", "model_served"]
+
+
+def test_ltx23_future_explicit_hook_emits_before_generation(monkeypatch, tmp_path):
     order: list[str] = []
 
     def generate_video_with_audio(*, on_loaded, **kwargs):
@@ -786,5 +855,5 @@ def test_ltx23_video_emits_after_load_before_pipeline(monkeypatch, tmp_path):
         "_emit_primary_model_served_once",
         lambda _engine: order.append("model_served"),
     )
-    _generate_video(engine, tmp_path / "ltx.mp4")
+    _generate_video(engine, tmp_path / "future-ltx.mp4")
     assert order == ["model_served", "inference"]

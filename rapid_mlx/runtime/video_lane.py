@@ -444,9 +444,10 @@ class VideoEngine:
                 generation_kwargs["on_loaded"] = self._emit_model_served
             generate_video_with_audio(**generation_kwargs)
             if not supports_load_callback:
-                # Compatibility for older mlx-video builds without a
-                # materialisation callback. New runtimes signal before their
-                # first pipeline invocation.
+                # The pinned mlx-video-with-audio 0.1.36 export is a
+                # ``(*args, **kwargs)`` wrapper without an on_loaded hook, so
+                # its honest compatibility signal is post-generation. Future
+                # runtimes with an explicit hook signal before inference.
                 self._emit_model_served()
         if not output_path.is_file() or output_path.stat().st_size == 0:
             raise VideoRuntimeError(

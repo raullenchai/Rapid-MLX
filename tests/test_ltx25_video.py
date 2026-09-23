@@ -740,8 +740,10 @@ def test_ltx25_engine_invokes_pinned_runtime_contract(
 
     command, run_kwargs = calls[0]
     child_environment = run_kwargs.pop("env")
+    readiness_fds = run_kwargs.pop("pass_fds")
     assert "PYTHONHOME" not in child_environment
     assert "PYTHONPATH" not in child_environment
+    assert child_environment[ltx25._READINESS_FD_ENV] == str(readiness_fds[0])
     assert command[:2] == [str(runtime_cache / ".venv/bin/python"), "-c"]
     assert command[2] == ltx25._STDIN_PROMPT_RUNNER
     assert command[3:5] == ["generate", "--model"]

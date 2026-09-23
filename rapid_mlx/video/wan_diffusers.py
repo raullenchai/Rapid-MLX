@@ -610,33 +610,37 @@ def diffusers_runtime(root: Path, generator) -> Iterator[tuple[Path, Callable]]:
 
 
 def _notify_after_materialization(generate: Callable, on_loaded: Callable[[], None]):
-    """Clone a Wan generator and signal after all model loaders succeed."""
+    """Signal after the last Wan transformer load, before embedding/denoising.
+
+    ``mlx-video-with-audio==0.1.36`` loads T5 first, then calls
+    ``load_wan_model`` once (or twice for a dual-model config) before its first
+    ``embed_text`` call. Its VAE decoder is loaded only after denoising, so it
+    must not participate in the readiness boundary.
+    """
     namespace = dict(generate.__globals__)
-    loader_names = (
-        "load_wan_model",
-        "load_t5_encoder",
-        "load_vae_decoder",
-    )
-    remaining = {name for name in loader_names if callable(namespace.get(name))}
-    if not remaining:
+    original = namespace.get("load_wan_model")
+    if not callable(original):
         return generate
     lock = threading.Lock()
+    transformer_loads = 0
+    notified = False
 
-    for name in tuple(remaining):
-        original = namespace[name]
+    def notifying_loader(*args, **kwargs):
+        nonlocal notified, transformer_loads
+        result = original(*args, **kwargs)
+        config = args[1] if len(args) > 1 else kwargs.get("config")
+        expected = 2 if getattr(config, "dual_model", False) else 1
+        should_notify = False
+        with lock:
+            transformer_loads += 1
+            if not notified and transformer_loads >= expected:
+                notified = True
+                should_notify = True
+        if should_notify:
+            on_loaded()
+        return result
 
-        def notifying_loader(*args, _name=name, _original=original, **kwargs):
-            result = _original(*args, **kwargs)
-            should_notify = False
-            with lock:
-                remaining.discard(_name)
-                if not remaining:
-                    should_notify = True
-            if should_notify:
-                on_loaded()
-            return result
-
-        namespace[name] = notifying_loader
+    namespace["load_wan_model"] = notifying_loader
 
     scoped = FunctionType(
         generate.__code__,
