@@ -743,3 +743,33 @@ def test_hookless_mtp_verify_aborts_before_sink_retry(monkeypatch):
         )
     assert model.calls == 3
     assert prompt_cache[0].offset == 0
+
+
+def test_server_singleton_dflash_threads_nonzero_row_identity(monkeypatch):
+    """The server coordinator owns stable request row IDs. The separate
+    ``run_speculative_rounds`` helper serves standalone generation, whose sole
+    request intentionally owns row zero."""
+    mx = pytest.importorskip("mlx.core")
+    captured = {}
+
+    def fake_rounds(*_args, **kwargs):
+        captured["row_id"] = kwargs.get("row_id")
+        yield 9, None
+
+    monkeypatch.setattr(vs_utils, "_dflash_rounds", fake_rounds)
+    output = list(
+        vs_utils.run_speculative_server_rounds(
+            SimpleNamespace(),
+            SimpleNamespace(requires_greedy_sampling=False),
+            [],
+            mx.zeros((1, 1, 1)),
+            draft_kind="dflash",
+            first_bonus=mx.array([7]),
+            max_tokens=2,
+            sampler=lambda logits: logits,
+            row_ids=[41],
+        )
+    )
+
+    assert output == [([9], None)]
+    assert captured["row_id"] == 41
