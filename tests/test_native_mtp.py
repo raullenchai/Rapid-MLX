@@ -261,9 +261,7 @@ def test_glm_runtime_structural_probe_and_fail_closed(monkeypatch) -> None:
     generate.ar = ar
     # The runtime probe now binds the vendored text-AR core (step 3a), so
     # the same fakes must shadow the vendored package names.
-    vendored_generate = ModuleType(
-        "rapid_mlx.models.mlx_vlm_vendored.generate"
-    )
+    vendored_generate = ModuleType("rapid_mlx.models.mlx_vlm_vendored.generate")
     vendored_generate.__path__ = []
     vendored_generate.ar = ar
     models = ModuleType("mlx_vlm.models")

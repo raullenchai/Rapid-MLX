@@ -10,8 +10,10 @@ import mlx.nn as nn
 from mlx.utils import tree_reduce
 
 from ..kv_quant import from_legacy as kv_quant_from_legacy
+
 # VENDOR-DEVIATION(redirect): vendored cache lives at the package root.
 from .. import cache
+
 # VENDOR-DEVIATION(redirect): the 7k-line turboquant module stays on the
 # pinned upstream dependency (kv_quant.py precedent).
 from mlx_vlm.turboquant import (  # noqa: F401  re-exported names
