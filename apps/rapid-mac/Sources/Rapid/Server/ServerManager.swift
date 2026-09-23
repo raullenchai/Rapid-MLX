@@ -1607,7 +1607,8 @@ final class ServerManager {
         expectedStop: Bool,
         status: Int32,
         reason: Process.TerminationReason,
-        startupFailure: SidecarStartupFailure? = nil
+        startupFailure: SidecarStartupFailure? = nil,
+        readyObserved: Bool = false
     ) {
         let stubChild = ProcessGroupChild.testStub()
         self.child = stubChild
@@ -1616,7 +1617,8 @@ final class ServerManager {
             process: stubChild,
             status: status,
             reason: reason,
-            startupFailure: startupFailure
+            startupFailure: startupFailure,
+            readyObserved: readyObserved
         )
     }
 
@@ -3043,7 +3045,7 @@ final class ServerManager {
                 let reason = proc.terminationReason
                 let stderrTail = stderrDrainer.drain().data
                 startupFailureCapture.ingest(stderrTail, source: .sidecarStderr)
-                let capturedFailure = startupFailureCapture.failure
+                let startupSnapshot = startupFailureCapture.snapshotAtTermination()
                 let tailLines = String(data: stderrTail, encoding: .utf8)?
                     .split(whereSeparator: { $0 == "\r" || $0 == "\n" })
                     .map(String.init)
@@ -3059,7 +3061,8 @@ final class ServerManager {
                         process: proc,
                         status: status,
                         reason: reason,
-                        startupFailure: capturedFailure
+                        startupFailure: startupSnapshot.failure,
+                        readyObserved: startupSnapshot.readyObserved
                     )
                 }
             }
@@ -3163,7 +3166,7 @@ final class ServerManager {
             if tick > lastProgressAt {
                 lastProgressAt = tick
             }
-            if await probeHealth() {
+            if await probeHealth(startupFailureCapture: startupFailureCapture) {
                 // PR #26 codex meta-review finding 4 (P2): re-check
                 // child identity AFTER the await. ``start()`` is
                 // main-actor reentrant across the ``probeHealth``
@@ -3183,7 +3186,6 @@ final class ServerManager {
                     && !performanceFlags.contains("--no-mllm")
                     && !performanceFlags.contains("--text-only")
                 state = .ready(alias: trimmedAlias)
-                startupFailureCapture.sealAtReadiness()
                 // Issue #270: mark the spawn cycle as "demonstrably
                 // healthy" so a subsequent ``handleChildExit`` knows
                 // an auto-respawn is worth attempting.
@@ -3752,7 +3754,8 @@ final class ServerManager {
         process: ProcessGroupChild,
         status: Int32,
         reason: Process.TerminationReason,
-        startupFailure capturedStartupFailure: SidecarStartupFailure? = nil
+        startupFailure capturedStartupFailure: SidecarStartupFailure? = nil,
+        readyObserved: Bool = false
     ) {
         let alias: String
         switch state {
@@ -3811,7 +3814,7 @@ final class ServerManager {
         // ``shutdownSync()`` / ``dismissTerminalState()``) so passing
         // ``reachedReadyThisCycle = false`` here just clears
         // ``readyAt`` without touching ``autoRespawnAttempts``.
-        let reachedReadyThisCycle = spawnCycleReachedReady
+        let reachedReadyThisCycle = spawnCycleReachedReady || readyObserved
         applyChildExitBudgetReset(reachedReadyThisCycle: !wasExpected && reachedReadyThisCycle)
         // #20: the child is gone (clean exit or crash). The next
         // launch must not pick up a record pointing at this PID,
@@ -4185,18 +4188,33 @@ final class ServerManager {
     /// client and v0.2 has no binary-size constraint to justify
     /// reinventing it. A 1.5 s per-request timeout keeps the poll
     /// loop responsive.
-    private func probeHealth() async -> Bool {
+    private func probeHealth(
+        startupFailureCapture: SidecarStartupFailureCapture? = nil
+    ) async -> Bool {
         guard let url = URL(string: "http://\(host):\(activePort)/healthz") else { return false }
         var request = URLRequest(url: url)
         request.httpMethod = "GET"
         request.applyRapidClientHeader()
         request.timeoutInterval = 1.5
-        do {
-            let (_, response) = try await healthSession.data(for: request)
-            guard let http = response as? HTTPURLResponse else { return false }
-            return (200..<300).contains(http.statusCode)
-        } catch {
-            return false
+        return await withCheckedContinuation { continuation in
+            healthSession.dataTask(with: request) { _, response, error in
+                let statusCode = error == nil
+                    ? (response as? HTTPURLResponse)?.statusCode
+                    : nil
+                let succeeded: Bool
+                if let startupFailureCapture {
+                    // This executes in URLSession's completion before the
+                    // awaiting MainActor continuation or a child-exit task can
+                    // run. The gate records readiness and seals stderr under
+                    // one lock shared with the termination snapshot.
+                    succeeded = startupFailureCapture.recordHealthResponse(
+                        statusCode: statusCode
+                    )
+                } else {
+                    succeeded = statusCode.map { (200..<300).contains($0) } ?? false
+                }
+                continuation.resume(returning: succeeded)
+            }.resume()
         }
     }
 

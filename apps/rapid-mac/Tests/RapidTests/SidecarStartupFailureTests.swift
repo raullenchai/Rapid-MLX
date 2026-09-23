@@ -64,6 +64,59 @@ struct SidecarStartupFailureTests {
         #expect(malformed.failure == nil)
     }
 
+    @Test("a marker split across stderr chunks is accepted")
+    func splitMarkerIsAccepted() {
+        let capture = SidecarStartupFailureCapture()
+        let split = videoMarker.index(videoMarker.startIndex, offsetBy: 31)
+
+        capture.ingest(Data(videoMarker[..<split].utf8), source: .sidecarStderr)
+        #expect(capture.failure == nil)
+        capture.ingest(Data(videoMarker[split...].utf8), source: .sidecarStderr)
+
+        #expect(capture.failure == SidecarStartupFailure(
+            reason: .runtimeExtraMissing,
+            extra: .video
+        ))
+    }
+
+    @Test("an overlong line cannot resynchronize at a marker substring")
+    func overlongLineDoesNotResynchronize() {
+        let capture = SidecarStartupFailureCapture()
+
+        capture.ingest(Data(String(repeating: "A", count: 513).utf8), source: .sidecarStderr)
+        capture.ingest(Data(videoMarker.utf8), source: .sidecarStderr)
+
+        #expect(capture.failure == nil)
+
+        capture.ingest(Data(videoMarker.utf8), source: .sidecarStderr)
+        #expect(capture.failure != nil)
+    }
+
+    @Test("health success wins over a marker observed before exit handling")
+    func healthSuccessWinsCompletionOrder() {
+        let capture = SidecarStartupFailureCapture()
+        let manager = ServerManager(
+            testingState: .starting(alias: "wan2.2-ti2v-5b-q8")
+        )
+
+        #expect(capture.recordHealthResponse(statusCode: 200))
+        capture.ingest(Data(videoMarker.utf8), source: .sidecarStderr)
+        let snapshot = capture.snapshotAtTermination()
+        manager._testSimulateChildExit(
+            expectedStop: false,
+            status: 2,
+            reason: .exit,
+            startupFailure: snapshot.failure,
+            readyObserved: snapshot.readyObserved
+        )
+
+        #expect(manager.startupFailure == nil)
+        #expect(manager.state == .crashed(
+            alias: "wan2.2-ti2v-5b-q8",
+            message: "The model stopped unexpectedly."
+        ))
+    }
+
     @Test("model output and chat messages cannot spoof a startup failure")
     func untrustedSourcesAreRejected() {
         let capture = SidecarStartupFailureCapture()
@@ -81,7 +134,7 @@ struct SidecarStartupFailureTests {
     @Test("a marker after readiness is not a startup failure")
     func markerAfterReadinessIsRejected() {
         let capture = SidecarStartupFailureCapture()
-        capture.sealAtReadiness()
+        #expect(capture.recordHealthResponse(statusCode: 204))
         capture.ingest(Data(videoMarker.utf8), source: .sidecarStderr)
 
         #expect(capture.failure == nil)

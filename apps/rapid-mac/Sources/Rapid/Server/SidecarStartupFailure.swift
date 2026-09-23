@@ -63,9 +63,9 @@ struct SidecarStartupFailure: Equatable, Sendable {
     }
 }
 
-/// Per-child collector. Production feeds only the owned sidecar's stderr and
-/// seals it at readiness, making model output and chat text ineligible even if
-/// they contain a byte-for-byte marker.
+/// Per-child lifecycle gate. Production feeds only the owned sidecar's stderr,
+/// then records health success under the same lock used to snapshot termination.
+/// Model output, chat text, and anything observed after readiness are ineligible.
 final class SidecarStartupFailureCapture: @unchecked Sendable {
     enum Source: Equatable, Sendable {
         case sidecarStderr
@@ -77,43 +77,83 @@ final class SidecarStartupFailureCapture: @unchecked Sendable {
     private let lock = NSLock()
     private var pending = Data()
     private var storedFailure: SidecarStartupFailure?
-    private var accepting = true
+    private var discardingCurrentLine = false
+    private var readyObserved = false
+
+    struct TerminationSnapshot: Equatable, Sendable {
+        let failure: SidecarStartupFailure?
+        let readyObserved: Bool
+    }
 
     func ingest(_ data: Data, source: Source) {
         guard source == .sidecarStderr, !data.isEmpty else { return }
         lock.lock()
         defer { lock.unlock() }
-        guard accepting else { return }
-        pending.append(data)
-        while let newline = pending.firstIndex(of: 0x0A) {
-            var lineData = pending[..<newline]
-            pending.removeSubrange(...newline)
-            if lineData.last == 0x0D {
-                lineData = lineData.dropLast()
+        guard !readyObserved else { return }
+
+        for byte in data {
+            if discardingCurrentLine {
+                if byte == 0x0A {
+                    discardingCurrentLine = false
+                }
+                continue
             }
-            guard storedFailure == nil,
-                  let line = String(data: lineData, encoding: .utf8),
-                  let parsed = SidecarStartupFailure.parse(line: line)
-            else { continue }
-            storedFailure = parsed
-        }
-        // The marker contract is a short single line. Bound an unterminated
-        // fragment so arbitrary stderr cannot turn this collector into a log.
-        if pending.count > 512 {
-            pending.removeAll(keepingCapacity: true)
+
+            if byte == 0x0A {
+                parsePendingLine()
+                pending.removeAll(keepingCapacity: true)
+                continue
+            }
+
+            pending.append(byte)
+            if pending.count > 512 {
+                pending.removeAll(keepingCapacity: true)
+                discardingCurrentLine = true
+            }
         }
     }
 
-    func sealAtReadiness() {
+    /// Called directly from the URLSession completion before its async
+    /// continuation is resumed. A 2xx transition seals capture atomically with
+    /// recording readiness, so termination cannot snapshot an intermediate
+    /// "marker accepted, not ready" state.
+    @discardableResult
+    func recordHealthResponse(statusCode: Int?) -> Bool {
+        let succeeded = statusCode.map { (200..<300).contains($0) } ?? false
+        guard succeeded else { return false }
+
         lock.lock()
-        accepting = false
+        readyObserved = true
         pending.removeAll(keepingCapacity: false)
+        storedFailure = nil
         lock.unlock()
+        return true
+    }
+
+    func snapshotAtTermination() -> TerminationSnapshot {
+        lock.lock()
+        defer { lock.unlock() }
+        return TerminationSnapshot(
+            failure: readyObserved ? nil : storedFailure,
+            readyObserved: readyObserved
+        )
     }
 
     var failure: SidecarStartupFailure? {
         lock.lock()
         defer { lock.unlock() }
-        return storedFailure
+        return readyObserved ? nil : storedFailure
+    }
+
+    private func parsePendingLine() {
+        var lineData = pending[...]
+        if lineData.last == 0x0D {
+            lineData = lineData.dropLast()
+        }
+        guard storedFailure == nil,
+              let line = String(data: lineData, encoding: .utf8),
+              let parsed = SidecarStartupFailure.parse(line: line)
+        else { return }
+        storedFailure = parsed
     }
 }

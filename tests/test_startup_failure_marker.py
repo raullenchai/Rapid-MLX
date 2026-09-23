@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+import shlex
 import subprocess
 import sys
 import textwrap
@@ -11,6 +12,15 @@ from collections import namedtuple
 import pytest
 
 MARKER_PREFIX = "RAPID_MLX_STARTUP_FAILURE:"
+VISION_PYTHON = shlex.quote(sys.executable)
+VISION_INSTALL_HINT = (
+    "Install the validated vision stack into this runtime with:\n"
+    f"    {VISION_PYTHON} -m pip install --upgrade --force-reinstall "
+    "'rapid-mlx[vision]'\n"
+    "or repair mlx-vlm directly (pinned to Rapid-MLX's validated set):\n"
+    f"    {VISION_PYTHON} -m pip install --upgrade --force-reinstall "
+    "'mlx-vlm==0.7.1'"
+)
 
 
 def _run_guard(source: str) -> subprocess.CompletedProcess[str]:
@@ -46,7 +56,7 @@ def test_video_extra_guard_emits_one_stderr_marker_without_changing_cli_error() 
 
 
 @pytest.mark.parametrize(
-    ("source", "marker"),
+    ("source", "human", "marker"),
     [
         (
             """
@@ -56,6 +66,8 @@ def test_video_extra_guard_emits_one_stderr_marker_without_changing_cli_error() 
             with patch("importlib.util.find_spec", return_value=None):
                 require_image_runtime_or_exit("flux2-klein-4b")
             """,
+            "\n  Error: image generation requires the `rapid-mlx[image]` "
+            "Python extra (`pip install 'rapid-mlx[image]'`).\n\n",
             f"{MARKER_PREFIX} runtime_extra_missing extra=image",
         ),
         (
@@ -66,6 +78,9 @@ def test_video_extra_guard_emits_one_stderr_marker_without_changing_cli_error() 
             with patch("importlib.util.find_spec", return_value=None):
                 require_audio_or_exit("kokoro")
             """,
+            "error: model 'kokoro' is an audio alias and requires the optional "
+            "`mlx-audio` dependency (shipped with the [audio] extra).\n"
+            "Install with: pip install 'rapid-mlx[audio]'\n",
             f"{MARKER_PREFIX} runtime_extra_missing extra=audio",
         ),
         (
@@ -82,21 +97,30 @@ def test_video_extra_guard_emits_one_stderr_marker_without_changing_cli_error() 
             ):
                 require_mlx_vlm_or_exit("ui-tars-1.5-7b-4bit")
             """,
+            "error: model 'ui-tars-1.5-7b-4bit' is a vision/multimodal alias "
+            "and requires the optional `mlx-vlm` dependency (shipped with the "
+            "[vision] extra).\n"
+            + VISION_INSTALL_HINT
+            + "\nOr, if this checkpoint has a text-capable backbone and you "
+            "only need text output, `--no-mllm` boots the text-only lane "
+            "straight from the base wheel (no mlx-vlm, drops image/vision "
+            "input).\n",
             f"{MARKER_PREFIX} runtime_extra_missing extra=vision",
         ),
     ],
 )
-def test_sibling_extra_guards_emit_closed_marker_once(source: str, marker: str) -> None:
+def test_sibling_extra_guards_emit_closed_marker_once(
+    source: str, human: str, marker: str
+) -> None:
     result = _run_guard(source)
 
     assert result.returncode == 2
     assert result.stdout == ""
-    assert result.stderr.count(MARKER_PREFIX) == 1
-    assert result.stderr.splitlines()[-1] == marker
+    assert result.stderr == human + marker + "\n"
 
 
 @pytest.mark.parametrize(
-    ("source", "marker"),
+    ("source", "human", "marker"),
     [
         (
             """
@@ -108,6 +132,9 @@ def test_sibling_extra_guards_emit_closed_marker_once(source: str, marker: str) 
             with patch.object(lane.sys, "version_info", Version(3, 10)):
                 lane.require_video_runtime_or_exit("wan2.2-ti2v-5b-q8")
             """,
+            "\n  Error: video generation requires Python 3.11 or newer "
+            "(current: 3.10). Rapid-MLX core still supports Python 3.10, but "
+            "the upstream mlx-video runtime does not.\n\n",
             f"{MARKER_PREFIX} python_version_unsupported extra=video",
         ),
         (
@@ -119,6 +146,7 @@ def test_sibling_extra_guards_emit_closed_marker_once(source: str, marker: str) 
                  patch.object(lane, "_resolve_ffmpeg", return_value=None):
                 lane.require_video_runtime_or_exit("wan2.2-ti2v-5b-q8")
             """,
+            "\n  Error: video generation requires ffmpeg (`brew install ffmpeg`).\n\n",
             f"{MARKER_PREFIX} runtime_dependency_missing extra=video",
         ),
         (
@@ -135,6 +163,10 @@ def test_sibling_extra_guards_emit_closed_marker_once(source: str, marker: str) 
             ):
                 require_mlx_vlm_or_exit("ui-tars-1.5-7b-4bit")
             """,
+            "error: model 'ui-tars-1.5-7b-4bit' requires the Rapid-MLX vision "
+            "lane, but mlx-vlm '0.0' is incompatible; this release validates "
+            "exactly 0.7.1. This is a vision-runtime compatibility error, not "
+            "a Metal out-of-memory error.\n" + VISION_INSTALL_HINT + "\n",
             f"{MARKER_PREFIX} runtime_incompatible extra=vision",
         ),
         (
@@ -151,19 +183,48 @@ def test_sibling_extra_guards_emit_closed_marker_once(source: str, marker: str) 
             ):
                 require_mlx_vlm_or_exit("ui-tars-1.5-7b-4bit")
             """,
+            "error: model 'ui-tars-1.5-7b-4bit' is a vision/multimodal alias, "
+            "but the vision runtime cannot load.\n"
+            "`mlx-vlm` is installed but its dependency 'PIL' is not, so the "
+            "vision runtime cannot load. "
+            + VISION_INSTALL_HINT
+            + "\nAlternatively, repair just the missing dependency in this "
+            "runtime:\n"
+            f"    {VISION_PYTHON} -m pip install pillow\n",
             f"{MARKER_PREFIX} runtime_broken extra=vision",
         ),
     ],
 )
 def test_other_preflight_failures_use_only_closed_reason_tokens(
-    source: str, marker: str
+    source: str, human: str, marker: str
 ) -> None:
     result = _run_guard(source)
 
     assert result.returncode == 2
     assert result.stdout == ""
-    assert result.stderr.count(MARKER_PREFIX) == 1
-    assert result.stderr.splitlines()[-1] == marker
+    assert result.stderr == human + marker + "\n"
+
+
+def test_healthy_vision_status_has_no_failure_output() -> None:
+    result = _run_guard(
+        """
+        from unittest.mock import patch
+        from rapid_mlx.models.mllm import (
+            VisionRuntimeStatus,
+            require_mlx_vlm_or_exit,
+        )
+
+        with patch(
+            "rapid_mlx.models.mllm.vision_runtime_status",
+            return_value=(VisionRuntimeStatus.OK, None),
+        ):
+            require_mlx_vlm_or_exit("ui-tars-1.5-7b-4bit")
+        """
+    )
+
+    assert result.returncode == 0
+    assert result.stdout == ""
+    assert result.stderr == ""
 
 
 def test_video_guard_marker_branches_are_covered_in_process(
