@@ -2761,6 +2761,13 @@ class BatchGenerator:
                 elif k not in merged_kwargs:
                     merged_kwargs[k] = v
         for k, vs in per_row_keys.items():
+            # VENDOR-DEVIATION(upstream-bugfix): keep the warm/cold APC path
+            # aligned with the cold-only batching contract.  Concatenating a
+            # tensor key from only some rows shifts it onto other requests.
+            if len(vs) != batch_size:
+                raise ValueError(
+                    f"batched prompt kwarg {k!r} must be present for every row"
+                )
             merged_kwargs[k] = _concat_prompt_kwarg_rows(k, vs)
 
         apc_mode = getattr(self, "apc_mode", "block")

@@ -233,6 +233,45 @@ def test_merge_prefill_prompt_kwargs_rejects_sparse_tensor_keys():
         vendored_ar._merge_prefill_prompt_kwargs(rows, [[1, 2, 3], [4, 5]])
 
 
+def test_assemble_mixed_prompt_batch_rejects_sparse_tensor_keys():
+    """The APC warm/cold assembly path enforces the same row-alignment
+    contract as the cold-only helper."""
+    fake_self = types.SimpleNamespace(
+        _APC_PRIVATE_KEYS=vendored_ar.APC_PRIVATE_PROMPT_KEYS
+    )
+    sequences = [
+        (
+            "u1",
+            [1, 2, 3],
+            8,
+            {
+                "inputs_embeds": mx.zeros((1, 3, 4)),
+                "attention_mask": mx.ones((1, 3), dtype=mx.int32),
+            },
+            None,
+            None,
+        ),
+        (
+            "u2",
+            [4, 5],
+            8,
+            {"inputs_embeds": mx.zeros((1, 2, 4))},
+            None,
+            None,
+        ),
+    ]
+
+    with pytest.raises(
+        ValueError,
+        match="batched prompt kwarg 'attention_mask' must be present for every row",
+    ):
+        vendored_ar.BatchGenerator._assemble_mixed_prompt_batch(
+            fake_self,
+            sequences,
+            [None, {"prefix_len": 0}],
+        )
+
+
 def test_thinking_budget_criteria_default_start_token_does_not_crash():
     """upstream-bugfix: the documented thinking_start_token=None default
     must construct (pinned upstream crashes in tokenizer.encode(None))."""
