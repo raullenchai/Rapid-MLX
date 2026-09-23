@@ -1047,4 +1047,8 @@ def require_audio_or_exit(model_name: str) -> None:
         f"extra).\n" + AUDIO_EXTRA_INSTALL_HINT,
         file=sys.stderr,
     )
+    print(
+        "RAPID_MLX_STARTUP_FAILURE: runtime_extra_missing extra=audio",
+        file=sys.stderr,
+    )
     sys.exit(2)

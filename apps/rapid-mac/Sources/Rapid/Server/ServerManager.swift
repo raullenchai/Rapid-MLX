@@ -634,6 +634,10 @@ final class ServerManager {
     /// Bounded to `logBufferCapacity` entries.
     private(set) var logLines: [String] = []
 
+    /// Structured failure accepted from this child's stderr during startup.
+    /// The UI uses only its closed message/action mapping, never raw stderr.
+    private(set) var startupFailure: SidecarStartupFailure?
+
     /// Most recent in-process residency load rejections, keyed by the alias
     /// that failed. Per-alias rather than a single global slot so two
     /// concurrent loads of DIFFERENT models cannot clobber each other across
@@ -1602,12 +1606,18 @@ final class ServerManager {
     internal func _testSimulateChildExit(
         expectedStop: Bool,
         status: Int32,
-        reason: Process.TerminationReason
+        reason: Process.TerminationReason,
+        startupFailure: SidecarStartupFailure? = nil
     ) {
         let stubChild = ProcessGroupChild.testStub()
         self.child = stubChild
         self.expectedStop = expectedStop
-        handleChildExit(process: stubChild, status: status, reason: reason)
+        handleChildExit(
+            process: stubChild,
+            status: status,
+            reason: reason,
+            startupFailure: startupFailure
+        )
     }
 
     // MARK: - Persisted "last served" alias (v0.5.3 auto-restart)
@@ -2707,6 +2717,7 @@ final class ServerManager {
         // Clear the log tail from any previous run so the user only
         // sees output relevant to the current process.
         logLines.removeAll(keepingCapacity: true)
+        startupFailure = nil
         downloadProgress.reset()
         // Stop any leftover byte monitor from a previous .starting
         // cycle before kicking a new one — defensive in case the
@@ -2942,10 +2953,15 @@ final class ServerManager {
         // non-blocking; each is constructed here while the handle is live.
         let stdoutDrainer = PipeDrainer(stdoutPipe.fileHandleForReading)
         let stderrDrainer = PipeDrainer(stderrPipe.fileHandleForReading)
-        let makeChunkHandler: (PipeDrainer) -> @Sendable (FileHandle) -> Void = { drainer in
+        let startupFailureCapture = SidecarStartupFailureCapture()
+        let makeChunkHandler: (
+            PipeDrainer,
+            SidecarStartupFailureCapture.Source
+        ) -> @Sendable (FileHandle) -> Void = { drainer, source in
             { [weak self] _ in
                 let data = drainer.drain().data
                 guard !data.isEmpty else { return }
+                startupFailureCapture.ingest(data, source: source)
                 guard let text = String(data: data, encoding: .utf8) else { return }
                 // rapid-mlx's HuggingFace tqdm output uses '\r' to refresh
                 // in place when stderr is not a TTY. Treat both as
@@ -2960,8 +2976,14 @@ final class ServerManager {
                 }
             }
         }
-        stdoutPipe.fileHandleForReading.readabilityHandler = makeChunkHandler(stdoutDrainer)
-        stderrPipe.fileHandleForReading.readabilityHandler = makeChunkHandler(stderrDrainer)
+        stdoutPipe.fileHandleForReading.readabilityHandler = makeChunkHandler(
+            stdoutDrainer,
+            .sidecarStdout
+        )
+        stderrPipe.fileHandleForReading.readabilityHandler = makeChunkHandler(
+            stderrDrainer,
+            .sidecarStderr
+        )
 
         // Termination handler fires on a background queue — must hop
         // back to MainActor before touching state.
@@ -3019,13 +3041,26 @@ final class ServerManager {
             ) { [weak self] proc in
                 let status = proc.terminationStatus
                 let reason = proc.terminationReason
+                let stderrTail = stderrDrainer.drain().data
+                startupFailureCapture.ingest(stderrTail, source: .sidecarStderr)
+                let capturedFailure = startupFailureCapture.failure
+                let tailLines = String(data: stderrTail, encoding: .utf8)?
+                    .split(whereSeparator: { $0 == "\r" || $0 == "\n" })
+                    .map(String.init)
+                    .filter { !$0.isEmpty } ?? []
                 Task { @MainActor [weak self] in
                     guard let self else { return }
                     guard self.child === proc else {
                         // Stale termination from a replaced child — drop.
                         return
                     }
-                    self.handleChildExit(process: proc, status: status, reason: reason)
+                    self.appendLogLines(tailLines)
+                    self.handleChildExit(
+                        process: proc,
+                        status: status,
+                        reason: reason,
+                        startupFailure: capturedFailure
+                    )
                 }
             }
         } catch {
@@ -3148,6 +3183,7 @@ final class ServerManager {
                     && !performanceFlags.contains("--no-mllm")
                     && !performanceFlags.contains("--text-only")
                 state = .ready(alias: trimmedAlias)
+                startupFailureCapture.sealAtReadiness()
                 // Issue #270: mark the spawn cycle as "demonstrably
                 // healthy" so a subsequent ``handleChildExit`` knows
                 // an auto-respawn is worth attempting.
@@ -3715,7 +3751,8 @@ final class ServerManager {
     private func handleChildExit(
         process: ProcessGroupChild,
         status: Int32,
-        reason: Process.TerminationReason
+        reason: Process.TerminationReason,
+        startupFailure capturedStartupFailure: SidecarStartupFailure? = nil
     ) {
         let alias: String
         switch state {
@@ -3804,20 +3841,25 @@ final class ServerManager {
             ProcessGroupChild.reapProcessGroupInBackground(processGroupID: process.processGroupID)
         }
         let message: String
-        switch reason {
-        case .exit:
-            message = status == 0
-                ? "The model stopped on its own (no restart was requested)."
-                : "The model stopped unexpectedly."
-        case .uncaughtSignal:
-            // SIGKILL (9) on a model process is almost always the macOS
-            // memory pressure killer — surface an OOM-aware, actionable
-            // message instead of a raw signal number.
-            message = status == 9
-                ? "The model ran out of memory and was stopped. Try a smaller model, or close other apps to free up memory."
-                : "The model stopped unexpectedly."
-        @unknown default:
-            message = "The model stopped unexpectedly."
+        if !reachedReadyThisCycle, let capturedStartupFailure {
+            startupFailure = capturedStartupFailure
+            message = capturedStartupFailure.message
+        } else {
+            switch reason {
+            case .exit:
+                message = status == 0
+                    ? "The model stopped on its own (no restart was requested)."
+                    : "The model stopped unexpectedly."
+            case .uncaughtSignal:
+                // SIGKILL (9) on a model process is almost always the macOS
+                // memory pressure killer — surface an OOM-aware, actionable
+                // message instead of a raw signal number.
+                message = status == 9
+                    ? "The model ran out of memory and was stopped. Try a smaller model, or close other apps to free up memory."
+                    : "The model stopped unexpectedly."
+            @unknown default:
+                message = "The model stopped unexpectedly."
+            }
         }
         state = .crashed(alias: alias, message: message)
         // Issue #270: silent idle-state crash. The user closed every
