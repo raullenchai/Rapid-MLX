@@ -43,7 +43,6 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING, cast
 
-import uvicorn
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
@@ -975,34 +974,10 @@ async def lifespan(app: FastAPI):
         global _prefix_cache_load_task
         _prefix_cache_load_task = asyncio.create_task(_deferred_load_prefix_cache())
 
-    # Render the real "Ready:" / "Connect:" banner now — only here is the
-    # port truly accepting connections AND the engine warmed up. The CLI's
-    # earlier "Starting server …" line is replaced by this. Output is produced
-    # by the connect SSOT (:mod:`rapid_mlx.connect`) so the served banner and
-    # ``rapid-mlx connect`` can never disagree about an endpoint. If neither
-    # the host/port nor inherited-fd source of truth was stashed (e.g.
-    # embedded usage where uvicorn is owned elsewhere), fall back silently.
-    from rapid_mlx.connect import endpoints_from_bind, render_banner
-
-    # The banner's "Model:" line is the copyable API identity the user
-    # pastes into an SDK request. Prefer the explicit ``--served-model-name``
-    # when one was supplied; otherwise keep the catalog alias. Tracking the
-    # option explicitly (not inferring from ``model_name``/``model_path``
-    # differences) keeps the banner correct even when a served name happens
-    # to equal the resolved path (issue #2353).
-    _banner_model = (
-        _cfg.model_name
-        if _served_model_name_set
-        else (_cfg.model_alias or _cfg.model_name)
-    )
-    _ep = endpoints_from_bind(
-        _cfg.bind_host,
-        _cfg.bind_port,
-        model=_banner_model,
-        listen_fd=_cfg.bind_listen_fd,
-    )
-    if _ep.listen_fd is not None or (_cfg.bind_host and _cfg.bind_port):
-        print(render_banner(_ep), end="")
+    # The user-facing banner is intentionally not printed here. Uvicorn runs
+    # lifespan startup before it creates its listener, so announcing readiness
+    # at this point lies when the subsequent bind fails. The shared Uvicorn
+    # startup seam calls ``print_ready_banner`` after listener creation.
 
     yield
 
@@ -1062,6 +1037,27 @@ async def lifespan(app: FastAPI):
         raise
 
     _flush_v2_telemetry()
+
+
+def print_ready_banner() -> None:
+    """Print the connection banner after the Uvicorn listener exists."""
+
+    _cfg = get_config()
+    from rapid_mlx.connect import endpoints_from_bind, render_banner
+
+    _banner_model = (
+        _cfg.model_name
+        if _served_model_name_set
+        else (_cfg.model_alias or _cfg.model_name)
+    )
+    _ep = endpoints_from_bind(
+        _cfg.bind_host,
+        _cfg.bind_port,
+        model=_banner_model,
+        listen_fd=_cfg.bind_listen_fd,
+    )
+    if _ep.listen_fd is not None or (_cfg.bind_host and _cfg.bind_port):
+        print(render_banner(_ep), end="")
 
 
 app = FastAPI(
@@ -4171,8 +4167,22 @@ Examples:
         no_openai_harmony_streaming=getattr(args, "no_openai_harmony_streaming", False),
     )
 
-    # Start server
-    uvicorn.run(app, host=args.host, port=args.port, log_level=uvicorn_log_level)
+    # Stash the endpoint for the post-bind banner, matching the primary CLI.
+    _cfg = get_config()
+    _cfg.bind_host = "localhost" if args.host == "0.0.0.0" else args.host
+    _cfg.bind_port = args.port
+    _cfg.bind_listen_fd = None
+
+    # Start through the shared seam so the banner cannot precede the bind.
+    from ._uvicorn import run_uvicorn
+
+    run_uvicorn(
+        app,
+        host=args.host,
+        port=args.port,
+        log_level=uvicorn_log_level,
+        on_server_accepting=print_ready_banner,
+    )
 
     # Issue #3495: same contract as the CLI serve entrypoints — after a
     # graceful shutdown, skip interpreter finalization (the native-thread

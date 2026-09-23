@@ -14,7 +14,7 @@ same ``ServerEndpoints`` value, so they can never drift:
 
 * ``ServerEndpoints`` — an immutable description of the ready base URL, the
   OpenAI and Anthropic endpoint paths, and the served model name.
-* ``render_banner`` — the human-facing block (used by the serve lifespan
+* ``render_banner`` — the human-facing block (used by the serve startup seam
   and by ``rapid-mlx connect``).
 * ``to_dict`` — the stable machine-readable JSON shape (used by
   ``rapid-mlx connect --json`` for the desktop and other tooling).
@@ -153,7 +153,7 @@ def render_banner(
 ) -> str:
     """Render the human "Ready:" / "OpenAI:" / "Connect:" block.
 
-    Used by the serve lifespan (once warmup completes) and by
+    Used by the serve startup seam (once warmup and listener creation complete) and by
     ``rapid-mlx connect``. Rendered centrally so the served banner and the
     standalone ``connect`` output can never disagree about an endpoint.
 
