@@ -68,6 +68,26 @@ def test_registry_loads_via_importlib_resources():
     assert parsed["events"]
 
 
+def test_registry_load_ignores_underscore_prefixed_event_metadata(
+    monkeypatch, tmp_path
+):
+    parsed = json.loads(reg.registry_path().read_text(encoding="utf-8"))
+    parsed["events"]["_comment"] = "registry metadata, not an event"
+    registry_file = tmp_path / "events.json"
+    registry_file.write_text(json.dumps(parsed), encoding="utf-8")
+
+    monkeypatch.setattr(reg, "registry_path", lambda: registry_file)
+    reg.load_registry.cache_clear()
+    try:
+        loaded = reg.load_registry()
+        assert loaded["events"]["_comment"] == "registry metadata, not an event"
+        assert loaded["events"]["server_start_state"]["props"]["failure_stage"][
+            "only_when"
+        ] == {"state": ["failed"]}
+    finally:
+        reg.load_registry.cache_clear()
+
+
 def test_release_one_event_set_is_present():
     assert reg.event_names() == frozenset(
         {
