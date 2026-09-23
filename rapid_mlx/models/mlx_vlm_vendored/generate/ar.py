@@ -21,6 +21,10 @@ from ..kv_quant import from_legacy as kv_quant_from_legacy
 # VENDOR-DEVIATION(redirect): vendored cache lives at the package root.
 from .. import cache
 
+# VENDOR-DEVIATION(dual-namespace): model implementations remain pinned
+# upstream during step 3a and their make_cache() methods return these classes.
+from mlx_vlm.models import cache as upstream_cache
+
 # VENDOR-DEVIATION(redirect): prompt_utils templating stays on the pinned
 # upstream dependency (design doc step-2 boundary).
 from mlx_vlm.prompt_utils import apply_chat_template
@@ -883,7 +887,9 @@ def _merge_prefill_prompt_kwargs(
 
 def _is_batch_cache_entry(entry) -> bool:
     """Return whether a cache entry already owns a batch dimension."""
-    if isinstance(entry, cache.CacheList):
+    # VENDOR-DEVIATION(dual-namespace): model-owned cache trees still use the
+    # pinned upstream cache classes during step 3a.
+    if isinstance(entry, (cache.CacheList, upstream_cache.CacheList)):
         return all(_is_batch_cache_entry(child) for child in entry.caches)
     return callable(getattr(entry, "filter", None)) and callable(
         getattr(entry, "extend", None)
@@ -958,14 +964,36 @@ def _make_cache(
         use_turbo and quantized_kv_start > 0 and prefill_length < quantized_kv_start
     )
 
-    def _make_quant_cache(lp):
+    # VENDOR-DEVIATION(dual-namespace): model.make_cache() still returns
+    # upstream classes, while fallback construction returns vendored classes.
+    # Preserve the producer namespace for every batch cache/container we build.
+    def _cache_module(c):
+        upstream_types = (
+            upstream_cache.KVCache,
+            upstream_cache.ChunkedKVCache,
+            upstream_cache.SimpleKVCache,
+            upstream_cache.ArraysCache,
+            upstream_cache.PoolingCache,
+            upstream_cache.RotatingKVCache,
+            upstream_cache.CacheList,
+        )
+        if isinstance(c, upstream_types):
+            return upstream_cache
+        if isinstance(c, (tuple, list)):
+            for child in c:
+                namespace = _cache_module(child)
+                if namespace is upstream_cache:
+                    return namespace
+        return cache
+
+    def _make_quant_cache(lp, cache_module=cache):
         if use_turbo:
             if defer_turbo:
-                return cache.BatchKVCache(lp)
+                return cache_module.BatchKVCache(lp)
             return BatchTurboQuantKVCache(
                 lp, bits=kv_bits, key_bits=kv_key_bits, value_bits=kv_value_bits
             )
-        return cache.BatchQuantizedKVCache(
+        return cache_module.BatchQuantizedKVCache(
             lp, group_size=kv_group_size, bits=int(kv_bits)
         )
 
@@ -980,31 +1008,34 @@ def _make_cache(
                     "disable KV quantization for continuous batching"
                 )
             return c.to_batch(left_padding)
-        if isinstance(c, cache.KVCache):
+        cache_module = _cache_module(c)
+        if isinstance(c, (cache.KVCache, upstream_cache.KVCache)):
             if kv_bits is not None and quantize:
-                return _make_quant_cache(left_padding)
-            return cache.BatchKVCache(left_padding)
-        elif isinstance(c, cache.ChunkedKVCache):
+                return _make_quant_cache(left_padding, cache_module)
+            return cache_module.BatchKVCache(left_padding)
+        elif isinstance(c, (cache.ChunkedKVCache, upstream_cache.ChunkedKVCache)):
             if kv_bits is not None and quantize:
-                return _make_quant_cache(left_padding)
-            return cache.BatchKVCache(left_padding)
-        elif isinstance(c, cache.SimpleKVCache):
+                return _make_quant_cache(left_padding, cache_module)
+            return cache_module.BatchKVCache(left_padding)
+        elif isinstance(c, (cache.SimpleKVCache, upstream_cache.SimpleKVCache)):
             if kv_bits is not None and quantize:
-                return _make_quant_cache(left_padding)
-            return cache.BatchKVCache(left_padding)
-        elif isinstance(c, cache.ArraysCache):
+                return _make_quant_cache(left_padding, cache_module)
+            return cache_module.BatchKVCache(left_padding)
+        elif isinstance(c, (cache.ArraysCache, upstream_cache.ArraysCache)):
             c.left_padding = mx.array(left_padding)
             return c
-        elif isinstance(c, cache.PoolingCache):
-            return cache.BatchPoolingCache(c.ratio, left_padding)
-        elif isinstance(c, cache.RotatingKVCache):
+        elif isinstance(c, (cache.PoolingCache, upstream_cache.PoolingCache)):
+            return cache_module.BatchPoolingCache(c.ratio, left_padding)
+        elif isinstance(c, (cache.RotatingKVCache, upstream_cache.RotatingKVCache)):
             if c.keep > 0:
                 raise ValueError("RotatingKVCache with keep tokens is not supported.")
-            return cache.BatchRotatingKVCache(c.max_size, left_padding)
-        elif isinstance(c, cache.CacheList):
-            return cache.CacheList(*(to_batch_cache(sub_c) for sub_c in c.caches))
+            return cache_module.BatchRotatingKVCache(c.max_size, left_padding)
+        elif isinstance(c, (cache.CacheList, upstream_cache.CacheList)):
+            return cache_module.CacheList(
+                *(to_batch_cache(sub_c) for sub_c in c.caches)
+            )
         elif isinstance(c, tuple):
-            return cache.CacheList(*(to_batch_cache(sub_c) for sub_c in c))
+            return cache_module.CacheList(*(to_batch_cache(sub_c) for sub_c in c))
         else:
             raise ValueError(f"{type(c)} does not yet support batching")
 

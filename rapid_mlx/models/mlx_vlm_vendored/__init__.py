@@ -224,14 +224,15 @@ vendored copy differs by exactly the deviations listed):
     ``validate_drafter_compatibility``) → pinned upstream until the
     speculative slice lands; ``..turboquant`` → pinned upstream
     (``kv_quant.py`` precedent); ``..utils`` helpers → vendored
-    ``inputs.py`` (incl. the lazy ``process_image``).
+    ``inputs.py`` (incl. the lazy ``process_image``). A pinned upstream cache
+    alias supports the documented dual-namespace conversion hunks below.
     It also carries in-source ``VENDOR-DEVIATION(upstream-bugfix)`` hunks,
     each repro-tested in ``tests/test_mlx_vlm_vendored_generate.py``:
     ``_generate_batch`` closes the wired-limit generator in a ``finally``
     and skips ``token=None`` terminal responses;
-    ``generate_step`` binds the vendored ``maybe_quantize_kv_cache`` directly
-    so fallback vendored cache objects are not silently skipped by upstream
-    exact-type checks;
+    ``generate_step`` binds the vendored ``maybe_quantize_kv_cache`` directly,
+    and its quantization plus continuous-batch conversion paths recognize both
+    fallback vendored caches and caches returned by pinned upstream models;
     ``_merge_prefill_prompt_kwargs`` and the APC mixed-assembly path reject a
     per-row tensor kwarg missing from any row instead of concatenating a
     smaller, row-shifted tensor;
@@ -250,7 +251,8 @@ vendored copy differs by exactly the deviations listed):
   - ``common.py`` (upstream sha256
     ``c69e7e38a09990404d299b0a8d4be55c8220e60652e67a2456e8177633813ba0``)
     except two redirects: ``..models import cache`` → vendored root,
-    ``..turboquant`` → pinned upstream.
+    ``..turboquant`` → pinned upstream, plus a pinned upstream cache alias
+    used only by the documented dual-namespace quantization hunk.
   - ``types.py`` (upstream sha256
     ``dff487807bedaa3549c39dea02986ada31a45e9e4c27ab447a207e3fff009f6c``)
     — verbatim, no deviations.

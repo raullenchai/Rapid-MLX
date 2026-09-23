@@ -14,6 +14,10 @@ from ..kv_quant import from_legacy as kv_quant_from_legacy
 # VENDOR-DEVIATION(redirect): vendored cache lives at the package root.
 from .. import cache
 
+# VENDOR-DEVIATION(dual-namespace): model implementations remain pinned
+# upstream during step 3a and their make_cache() methods return these classes.
+from mlx_vlm.models import cache as upstream_cache
+
 # VENDOR-DEVIATION(redirect): the 7k-line turboquant module stays on the
 # pinned upstream dependency (kv_quant.py precedent).
 from mlx_vlm.turboquant import (  # noqa: F401  re-exported names
@@ -121,6 +125,13 @@ def maybe_quantize_kv_cache(
     kv_key_scheme: Optional[str] = None,
     kv_value_scheme: Optional[str] = None,
 ):
+    # VENDOR-DEVIATION(dual-namespace): this vendored generation core can
+    # receive either fallback vendored caches or caches constructed by pinned
+    # upstream model implementations. Keep exact-type dispatch valid for both.
+    rotating_cache_types = (cache.RotatingKVCache, upstream_cache.RotatingKVCache)
+    kv_cache_types = (cache.KVCache, upstream_cache.KVCache)
+    cache_list_types = (cache.CacheList, upstream_cache.CacheList)
+
     if kv_bits is None:
         return
 
@@ -136,18 +147,18 @@ def maybe_quantize_kv_cache(
     if policy is not None and not policy.is_homogeneous:
 
         def hybridize(entry):
-            if isinstance(entry, (HybridQuantKVCache, cache.RotatingKVCache)):
+            if isinstance(entry, (HybridQuantKVCache, *rotating_cache_types)):
                 return entry
             if getattr(entry, "preserve_auxiliary_kv_state", False):
                 return entry
-            if isinstance(entry, cache.KVCache):
+            if isinstance(entry, kv_cache_types):
                 if entry.offset >= quantized_kv_start or entry.offset == 0:
                     built = HybridQuantKVCache(policy)
                     if entry.offset:
                         built.update_and_fetch(*entry.state)
                     return built
                 return entry
-            if isinstance(entry, cache.CacheList):
+            if isinstance(entry, cache_list_types):
                 entry.caches = [hybridize(sub) for sub in entry.caches]
                 return entry
             if isinstance(entry, list):
@@ -170,11 +181,11 @@ def maybe_quantize_kv_cache(
         def quantize_entry(entry):
             if isinstance(entry, TurboQuantKVCache):
                 return entry
-            if isinstance(entry, cache.RotatingKVCache):
+            if isinstance(entry, rotating_cache_types):
                 return entry
             if getattr(entry, "preserve_auxiliary_kv_state", False):
                 return entry
-            if isinstance(entry, cache.KVCache):
+            if isinstance(entry, kv_cache_types):
                 if entry.offset == 0:
                     # Empty: replace so update_and_fetch quantizes on the fly
                     return TurboQuantKVCache(
@@ -190,7 +201,7 @@ def maybe_quantize_kv_cache(
                     key_bits=kv_key_bits,
                     value_bits=kv_value_bits,
                 )
-            if isinstance(entry, cache.CacheList):
+            if isinstance(entry, cache_list_types):
                 entry.caches = [quantize_entry(sub_entry) for sub_entry in entry.caches]
                 return entry
             if isinstance(entry, list):

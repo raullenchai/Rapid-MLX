@@ -45,7 +45,11 @@ pytest.importorskip("mlx_vlm")
 # - ``generate_step`` / ``batch_generate``: ar.py's redirects to the
 #   pinned speculative drafters helper and to the vendored
 #   ``inputs.process_image``; generate_step also keeps cache quantization in
-#   the vendored type namespace.
+#   the dual vendored/upstream cache namespace.
+# - ``maybe_quantize_kv_cache``: accept fallback vendored caches and caches
+#   returned by still-upstream model implementations.
+# - ``_is_batch_cache_entry`` / ``_make_cache``: accept and preserve both
+#   cache namespaces during continuous-batch conversion.
 # - ``_generate_batch``: the capture-release + None-token bugfix hunks
 #   (finally-close; skip token=None terminal responses), repro-tested below.
 # - ``_merge_prefill_prompt_kwargs``: reject tensor kwargs that are absent
@@ -67,6 +71,9 @@ _DOCUMENTED_HUNK_BODIES = {
     "GenerationBatch",
     "SpeculativeGenerationBatch",
     "PromptProcessingBatch",
+    "maybe_quantize_kv_cache",
+    "_is_batch_cache_entry",
+    "_make_cache",
     "prepare_inputs",
     "kv_quant_from_legacy",
     "generate_step",
@@ -224,6 +231,71 @@ def test_generate_step_keeps_quantizer_in_vendored_cache_namespace(monkeypatch):
 
     assert len(calls) == 1
     assert calls[0][0] == []
+
+
+@pytest.mark.parametrize(
+    "cache_module",
+    [vendored_pkg.cache, importlib.import_module("mlx_vlm.models.cache")],
+)
+def test_vendored_quantizer_accepts_both_cache_namespaces(monkeypatch, cache_module):
+    """Model-owned upstream and fallback vendored caches must both quantize."""
+
+    class _FakeTurboQuantKVCache:
+        def __init__(self, **kwargs):
+            self.kwargs = kwargs
+
+    monkeypatch.setattr(vendored_common, "kv_quant_from_legacy", lambda *a: None)
+    monkeypatch.setattr(vendored_common, "turboquant_enabled", lambda *a: True)
+    monkeypatch.setattr(vendored_common, "TurboQuantKVCache", _FakeTurboQuantKVCache)
+
+    nested = cache_module.CacheList(cache_module.KVCache())
+    prompt_cache = [nested]
+    vendored_common.maybe_quantize_kv_cache(
+        prompt_cache,
+        quantized_kv_start=5000,
+        kv_group_size=64,
+        kv_bits=4,
+        kv_quant_scheme="turboquant",
+    )
+
+    assert isinstance(prompt_cache[0], cache_module.CacheList)
+    assert isinstance(prompt_cache[0].caches[0], _FakeTurboQuantKVCache)
+
+
+@pytest.mark.parametrize(
+    "cache_module",
+    [vendored_pkg.cache, importlib.import_module("mlx_vlm.models.cache")],
+)
+def test_batch_cache_conversion_preserves_cache_namespace(cache_module):
+    """Continuous batching accepts caches from either producer namespace."""
+
+    arrays = cache_module.ArraysCache(size=2)
+    model_cache = [
+        cache_module.KVCache(),
+        cache_module.CacheList(cache_module.KVCache()),
+        cache_module.PoolingCache(2),
+        cache_module.RotatingKVCache(16),
+        arrays,
+    ]
+    model = types.SimpleNamespace(make_cache=lambda: model_cache)
+
+    converted = vendored_ar._make_cache(model, [0, 1])
+
+    assert isinstance(converted[0], cache_module.BatchKVCache)
+    assert isinstance(converted[1], cache_module.CacheList)
+    assert isinstance(converted[1].caches[0], cache_module.BatchKVCache)
+    assert vendored_ar._is_batch_cache_entry(converted[1])
+    assert isinstance(converted[2], cache_module.BatchPoolingCache)
+    assert isinstance(converted[3], cache_module.BatchRotatingKVCache)
+    assert converted[4] is arrays
+    assert converted[4].left_padding.tolist() == [0, 1]
+
+    quantized = vendored_ar._make_cache(
+        types.SimpleNamespace(make_cache=lambda: [cache_module.KVCache()]),
+        [0, 1],
+        kv_bits=4,
+    )
+    assert isinstance(quantized[0], cache_module.BatchQuantizedKVCache)
 
 
 def test_generate_batch_closes_generator_on_exception(monkeypatch):
