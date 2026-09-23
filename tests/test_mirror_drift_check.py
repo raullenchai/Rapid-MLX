@@ -444,6 +444,59 @@ def test_catalog_shapes(monkeypatch):
         drift._catalog_entries()
 
 
+def test_catalog_snapshot_validation_and_match(tmp_path):
+    path = tmp_path / "snapshot.json"
+    path.write_text("[]")
+    assert drift._snapshot_aliases(path) == {}
+    entry = {
+        "hf_path": "org/repo",
+        "status": "mirrored",
+        "total_bytes": 10,
+        "file_count": 2,
+        "latest_uploaded": "old",
+    }
+    path.write_text(json.dumps({"aliases": {"alias": entry, "bad": "value"}}))
+    snapshot = drift._snapshot_aliases(path)
+    assert snapshot == {"alias": entry}
+    assert drift._snapshot_matches("ALIAS", entry, snapshot)
+    assert not drift._snapshot_matches("missing", entry, snapshot)
+    assert not drift._snapshot_matches("alias", None, snapshot)
+    assert not drift._snapshot_matches("alias", {**entry, "file_count": 3}, snapshot)
+
+
+def test_unchanged_snapshot_skips_repo_probes(monkeypatch, tmp_path):
+    main = tmp_path / "main.json"
+    audio = tmp_path / "audio.json"
+    main.write_text(json.dumps({"same": {"hf_path": "org/same"}}))
+    audio.write_text("{}")
+    entry = {
+        "alias": "same",
+        "hf_path": "org/same",
+        "status": "mirrored",
+        "total_bytes": 2,
+        "file_count": 1,
+        "latest_uploaded": "2020-01-01T00:00:00Z",
+    }
+    monkeypatch.setattr(drift, "_catalog_entries", lambda: [entry])
+    monkeypatch.setattr(drift, "_snapshot_aliases", lambda: {"same": dict(entry)})
+    monkeypatch.setattr(
+        drift,
+        "_hf_repo",
+        lambda _repo: drift.HfRepo(
+            "revision", [drift.HfFile("config.json", 2, None, "x" * 40)]
+        ),
+    )
+    monkeypatch.setattr(drift, "_maybe_r2_client", lambda: None)
+    monkeypatch.setattr(
+        drift,
+        "_public_probe",
+        lambda *_args: (_ for _ in ()).throw(AssertionError("must skip probes")),
+    )
+    report = drift.audit(main, audio)[0]
+    assert report.checked_files == 0
+    assert report.state == "ok"
+
+
 def test_cache_buster_reaches_redirect_destination_and_cached_404_is_avoided(
     monkeypatch,
 ):

@@ -50,6 +50,7 @@ R2_BUCKET = "rapid-mlx-models"
 ROOT = Path(__file__).resolve().parents[1]
 ALIASES_PATH = ROOT / "rapid_mlx" / "aliases.json"
 AUDIO_ALIASES_PATH = ROOT / "rapid_mlx" / "audio" / "aliases.json"
+SNAPSHOT_PATH = ROOT / "scripts" / "mirror_drift_snapshot.json"
 MAX_WORKERS = 8
 SMALL_NON_LFS_MAX_BYTES = 1024 * 1024
 HF_MIN_INTERVAL_SECONDS = 1.0
@@ -419,6 +420,24 @@ def _catalog_entries() -> list[dict[str, Any]]:
     return [entry for entry in models if isinstance(entry, dict)]
 
 
+def _snapshot_aliases(path: Path = SNAPSHOT_PATH) -> dict[str, dict[str, Any]]:
+    payload = json.loads(path.read_text())
+    aliases = payload.get("aliases") if isinstance(payload, dict) else None
+    if not isinstance(aliases, dict):
+        return {}
+    return {key: value for key, value in aliases.items() if isinstance(value, dict)}
+
+
+def _snapshot_matches(
+    alias: str, entry: dict[str, Any] | None, snapshot: dict[str, dict[str, Any]]
+) -> bool:
+    saved = snapshot.get(alias.lower())
+    if entry is None or saved is None:
+        return False
+    fields = ("hf_path", "status", "total_bytes", "file_count", "latest_uploaded")
+    return all(saved.get(field) == entry.get(field) for field in fields)
+
+
 def _new_report(
     spec: AliasSpec, entry: dict[str, Any] | None, has_r2: bool
 ) -> AliasReport:
@@ -539,8 +558,21 @@ def audit(
     by_alias = {
         str(entry["alias"]).lower(): entry for entry in entries if entry.get("alias")
     }
+    snapshot = _snapshot_aliases()
     r2_client = _maybe_r2_client()
     pool_size = max(1, min(workers, MAX_WORKERS))
+    specs_by_repo: dict[str, list[AliasSpec]] = {}
+    for spec in selected:
+        specs_by_repo.setdefault(spec.hf_path, []).append(spec)
+    skip_repo_probes = {
+        repo_id
+        for repo_id, repo_specs in specs_by_repo.items()
+        if all(
+            _snapshot_matches(spec.alias, by_alias.get(spec.alias.lower()), snapshot)
+            and not _sync_in_progress(by_alias.get(spec.alias.lower()))
+            for spec in repo_specs
+        )
+    }
 
     # One paced model_info call per unique repository, fanned out to every alias.
     repos: dict[str, HfRepo] = {}
@@ -569,6 +601,8 @@ def audit(
             report.findings.append(
                 Finding("hf_unavailable", "error", detail=repo_errors[spec.hf_path])
             )
+            files = []
+        elif spec.hf_path in skip_repo_probes:
             files = []
         else:
             files = _selected_files(repos[spec.hf_path].files, spec.subfolder)
