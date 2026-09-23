@@ -650,6 +650,7 @@ jobs:
             tests/test_g9v3_model.py \
             tests/test_k2_horizon_model.py \
             tests/test_bailing_hybrid_model.py \
+            tests/test_cohere2_moe_reference_parity.py \
             tests/test_mtp_spec_decode.py \
             tests/test_mtp_gemma4_assistant_inject.py \
             tests/test_mtp_draft_overlap.py \

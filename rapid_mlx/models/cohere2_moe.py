@@ -51,6 +51,8 @@ class ModelArgs(BaseModelArgs):
     num_shared_experts: int = 0
     norm_topk_prob: bool = False
     first_k_dense_replace: int = 1
+    # 1 means the dense-prefix layers also get RoPE (reference ``force_rope``).
+    prefix_dense_sliding_window_pattern: int = 1
     expert_selection_fn: str = "sigmoid"
     layer_types: list[str] | None = None
     # Accepted checkpoint keys that do not alter this architecture.
@@ -129,9 +131,13 @@ class Attention(nn.Module):
         self.o_proj = nn.Linear(
             self.n_heads * self.head_dim, args.hidden_size, bias=args.attention_bias
         )
+        force_rope = (
+            layer_idx < args.first_k_dense_replace
+            and args.prefix_dense_sliding_window_pattern == 1
+        )
         self.rope = (
             nn.RoPE(self.head_dim, traditional=True, base=args.rope_theta)
-            if self.is_sliding
+            if self.is_sliding or force_rope
             else None
         )
 
