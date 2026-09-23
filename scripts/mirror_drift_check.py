@@ -29,6 +29,7 @@ import argparse
 import hashlib
 import json
 import os
+import signal
 import sys
 import threading
 import time
@@ -50,7 +51,11 @@ R2_BUCKET = "rapid-mlx-models"
 ROOT = Path(__file__).resolve().parents[1]
 ALIASES_PATH = ROOT / "rapid_mlx" / "aliases.json"
 AUDIO_ALIASES_PATH = ROOT / "rapid_mlx" / "audio" / "aliases.json"
-MAX_WORKERS = 8
+MAX_WORKERS = 32
+HF_MAX_WORKERS = 8
+PROGRESS_INTERVAL_SECONDS = 30.0
+PROGRESS_REPO_INTERVAL = 10
+PROGRESS_PROBE_INTERVAL = 100
 SMALL_NON_LFS_MAX_BYTES = 1024 * 1024
 HF_MIN_INTERVAL_SECONDS = 1.0
 _USER_AGENT = "rapid-mlx mirror-drift-auditor"
@@ -59,6 +64,17 @@ _HF_GATE_LOCK = threading.Lock()
 _hf_next_request = 0.0
 _COUNT_LOCK = threading.Lock()
 _request_counts = {"hf": 0, "mirror": 0}
+_profile_counts: dict[str, float | int] = {
+    "hf_throttle_seconds": 0.0,
+    "hf_retry_seconds": 0.0,
+    "mirror_retry_seconds": 0.0,
+    "mirror_head_calls": 0,
+    "mirror_head_seconds": 0.0,
+    "mirror_get_calls": 0,
+    "mirror_get_seconds": 0.0,
+    "mirror_redirects": 0,
+}
+_REQUEST_CONTEXT = threading.local()
 
 
 @dataclass(frozen=True)
@@ -116,6 +132,81 @@ class AliasReport:
         return "ok" if not self.findings else "findings"
 
 
+@dataclass
+class AuditProgress:
+    started: float = field(default_factory=time.monotonic)
+    repos_total: int = 0
+    repos_done: int = 0
+    probes_total: int = 0
+    probes_done: int = 0
+    catalog_seconds: float = 0.0
+    hf_seconds: float = 0.0
+    mirror_seconds: float = 0.0
+    reports: list[AliasReport] = field(default_factory=list)
+    _stop: threading.Event = field(default_factory=threading.Event)
+    _thread: threading.Thread | None = None
+
+    def elapsed(self) -> float:
+        return time.monotonic() - self.started
+
+    def emit(self, reason: str) -> None:
+        with _COUNT_LOCK:
+            hf_calls = _request_counts["hf"]
+            mirror_calls = _request_counts["mirror"]
+        elapsed = self.elapsed()
+        rate = self.probes_done / elapsed if elapsed else 0.0
+        print(
+            "PROGRESS"
+            f" reason={reason} repos={self.repos_done}/{self.repos_total}"
+            f" probes={self.probes_done}/{self.probes_total}"
+            f" rate={rate:.2f}/s hf_calls={hf_calls}"
+            f" mirror_calls={mirror_calls} elapsed={elapsed:.1f}s",
+            file=sys.stderr,
+            flush=True,
+        )
+
+    def start_periodic(self) -> None:
+        def run() -> None:
+            while not self._stop.wait(PROGRESS_INTERVAL_SECONDS):
+                self.emit("timer")
+
+        self._thread = threading.Thread(target=run, name="audit-progress", daemon=True)
+        self._thread.start()
+
+    def stop_periodic(self) -> None:
+        self._stop.set()
+        if self._thread is not None:
+            self._thread.join(timeout=1.0)
+
+    def metrics_line(self) -> str:
+        elapsed = self.elapsed()
+        rate = self.probes_done / elapsed if elapsed else 0.0
+        mirror_rate = (
+            self.probes_done / self.mirror_seconds if self.mirror_seconds else 0.0
+        )
+        with _COUNT_LOCK:
+            counts = dict(_request_counts)
+            profile = dict(_profile_counts)
+        return (
+            "METRICS"
+            f" repos={self.repos_done}/{self.repos_total}"
+            f" probes={self.probes_done}/{self.probes_total}"
+            f" probes_per_second={rate:.2f} hf_calls={counts['hf']}"
+            f" mirror_calls={counts['mirror']} elapsed={elapsed:.1f}s"
+            f" catalog={self.catalog_seconds:.1f}s hf={self.hf_seconds:.1f}s"
+            f" mirror={self.mirror_seconds:.1f}s"
+            f" mirror_probes_per_second={mirror_rate:.2f}"
+            f" hf_throttle={profile['hf_throttle_seconds']:.1f}s"
+            f" hf_retry={profile['hf_retry_seconds']:.1f}s"
+            f" head={profile['mirror_head_calls']}"
+            f" head_time={profile['mirror_head_seconds']:.1f}s"
+            f" get={profile['mirror_get_calls']}"
+            f" get_time={profile['mirror_get_seconds']:.1f}s"
+            f" redirects={profile['mirror_redirects']}"
+            f" mirror_retry={profile['mirror_retry_seconds']:.1f}s"
+        )
+
+
 def _cache_busted(url: str) -> str:
     parts = urllib.parse.urlsplit(url)
     query = urllib.parse.parse_qsl(parts.query, keep_blank_values=True)
@@ -141,6 +232,9 @@ class _FinalUrlRedirectHandler(urllib.request.HTTPRedirectHandler):
         headers: Any,
         newurl: str,
     ) -> urllib.request.Request | None:
+        if getattr(_REQUEST_CONTEXT, "kind", None) == "mirror":
+            with _COUNT_LOCK:
+                _profile_counts["mirror_redirects"] += 1
         # Incident 2026-09-23: the first CDN redirect dropped its query. Add a
         # fresh cache-buster to *each destination*, including the final URL.
         redirected = super().redirect_request(
@@ -183,6 +277,9 @@ def _request(url: str, *, method: str = "GET", timeout: float = 30.0) -> Any:
         except (urllib.error.URLError, TimeoutError, OSError) as error:
             last = error
         if attempt < 4:
+            if getattr(_REQUEST_CONTEXT, "kind", None) == "mirror":
+                with _COUNT_LOCK:
+                    _profile_counts["mirror_retry_seconds"] += delay
             time.sleep(delay)
     assert last is not None
     raise last
@@ -260,6 +357,8 @@ def _hf_repo(repo_id: str) -> HfRepo:
         except (OSError, TimeoutError) as error:
             last = error
         if attempt < 4:
+            with _COUNT_LOCK:
+                _profile_counts["hf_retry_seconds"] += delay
             time.sleep(delay)
     else:
         assert last is not None
@@ -305,6 +404,8 @@ def _throttle_hf() -> None:
         now = time.monotonic()
         delay = max(0.0, _hf_next_request - now)
         if delay:
+            with _COUNT_LOCK:
+                _profile_counts["hf_throttle_seconds"] += delay
             time.sleep(delay)
         _hf_next_request = max(now, _hf_next_request) + HF_MIN_INTERVAL_SECONDS
 
@@ -354,28 +455,35 @@ def _public_probe(repo_id: str, item: HfFile) -> MirrorProbe:
         and item.size is not None
         and item.size <= SMALL_NON_LFS_MAX_BYTES
     )
+    method = "get" if fetch_body else "head"
+    started = time.monotonic()
     with _COUNT_LOCK:
         _request_counts["mirror"] += 1
-    response = _request(
-        _mirror_url(repo_id, item.path), method="GET" if fetch_body else "HEAD"
-    )
-    with response:
-        status = int(getattr(response, "status", response.getcode()))
-        raw_size = response.headers.get("Content-Length")
-        size = int(raw_size) if raw_size and raw_size.isdigit() else None
-        body = (
-            response.read(SMALL_NON_LFS_MAX_BYTES + 1)
-            if fetch_body and 200 <= status < 300
-            else None
-        )
-        if body is not None and size is None:
-            size = len(body)
-        return MirrorProbe(
-            status=status,
-            size=size,
-            etag=response.headers.get("ETag"),
-            blob_oid=_git_blob_oid(body) if body is not None else None,
-        )
+        _profile_counts[f"mirror_{method}_calls"] += 1
+    _REQUEST_CONTEXT.kind = "mirror"
+    try:
+        response = _request(_mirror_url(repo_id, item.path), method=method.upper())
+        with response:
+            status = int(getattr(response, "status", response.getcode()))
+            raw_size = response.headers.get("Content-Length")
+            size = int(raw_size) if raw_size and raw_size.isdigit() else None
+            body = (
+                response.read(SMALL_NON_LFS_MAX_BYTES + 1)
+                if fetch_body and 200 <= status < 300
+                else None
+            )
+            if body is not None and size is None:
+                size = len(body)
+            return MirrorProbe(
+                status=status,
+                size=size,
+                etag=response.headers.get("ETag"),
+                blob_oid=_git_blob_oid(body) if body is not None else None,
+            )
+    finally:
+        _REQUEST_CONTEXT.kind = None
+        with _COUNT_LOCK:
+            _profile_counts[f"mirror_{method}_seconds"] += time.monotonic() - started
 
 
 def _public_head(repo_id: str, item: HfFile) -> tuple[int, int | None]:
@@ -516,6 +624,70 @@ def _probe_with_metadata(
     return probe, metadata
 
 
+def _apply_probe_result(
+    report: AliasReport,
+    item: HfFile,
+    probe: MirrorProbe,
+    metadata: dict[str, str] | None,
+    *,
+    has_r2: bool,
+    sync_in_progress: bool,
+) -> bool:
+    """Apply one completed probe and return whether a required file is missing."""
+    if probe.status < 200 or probe.status >= 300:
+        report.findings.append(
+            _file_finding(
+                "missing_file",
+                item,
+                f"HTTP {probe.status}",
+                sync_in_progress=sync_in_progress,
+            )
+        )
+        return not _optional_asset(item.path)
+    if item.size is not None and probe.size != item.size:
+        report.findings.append(
+            _file_finding(
+                "size_mismatch",
+                item,
+                f"mirror={probe.size} hf={item.size} etag={probe.etag or 'missing'}",
+                sync_in_progress=sync_in_progress,
+            )
+        )
+    if item.sha256 is None and item.oid and probe.blob_oid != item.oid:
+        report.findings.append(
+            _file_finding(
+                "content_mismatch",
+                item,
+                f"mirror_blob={probe.blob_oid or 'missing'} hf_blob={item.oid}",
+                sync_in_progress=sync_in_progress,
+            )
+        )
+    if item.sha256 is not None:
+        public_sha = _etag_sha256(probe.etag)
+        metadata_sha = metadata.get("hf-sha256") if metadata is not None else None
+        if has_r2 and metadata_sha is None:
+            report.findings.append(
+                _file_finding(
+                    "content_mismatch",
+                    item,
+                    f"no checksum metadata; hf_sha256={item.sha256}",
+                    sync_in_progress=sync_in_progress,
+                )
+            )
+        else:
+            actual_sha = metadata_sha if has_r2 else public_sha
+            if actual_sha is not None and actual_sha != item.sha256:
+                report.findings.append(
+                    _file_finding(
+                        "content_mismatch",
+                        item,
+                        f"mirror_sha256={actual_sha} hf_sha256={item.sha256}",
+                        sync_in_progress=sync_in_progress,
+                    )
+                )
+    return False
+
+
 def audit(
     main_aliases_path: Path = ALIASES_PATH,
     audio_aliases_path: Path = AUDIO_ALIASES_PATH,
@@ -523,6 +695,7 @@ def audit(
     aliases: set[str] | None = None,
     only_used: bool = False,
     workers: int = MAX_WORKERS,
+    progress: AuditProgress | None = None,
 ) -> list[AliasReport]:
     """Audit aliases; ``only_used`` omits bucket-only catalog inventory rows."""
     specs = _load_aliases(main_aliases_path, audio_aliases_path)
@@ -534,8 +707,13 @@ def audit(
 
     with _COUNT_LOCK:
         _request_counts.update(hf=0, mirror=0)
+        for metric_name, value in _profile_counts.items():
+            _profile_counts[metric_name] = 0.0 if isinstance(value, float) else 0
 
+    catalog_started = time.monotonic()
     entries = _catalog_entries()
+    if progress is not None:
+        progress.catalog_seconds = time.monotonic() - catalog_started
     by_alias = {
         str(entry["alias"]).lower(): entry for entry in entries if entry.get("alias")
     }
@@ -545,10 +723,14 @@ def audit(
     # One paced model_info call per unique repository, fanned out to every alias.
     repos: dict[str, HfRepo] = {}
     repo_errors: dict[str, str] = {}
-    with ThreadPoolExecutor(max_workers=pool_size) as hf_pool:
+    unique_repos = {spec.hf_path for spec in selected}
+    if progress is not None:
+        progress.repos_total = len(unique_repos)
+        progress.emit("catalog-listed")
+    hf_started = time.monotonic()
+    with ThreadPoolExecutor(max_workers=min(pool_size, HF_MAX_WORKERS)) as hf_pool:
         hf_futures = {
-            hf_pool.submit(_hf_repo, repo_id): repo_id
-            for repo_id in {spec.hf_path for spec in selected}
+            hf_pool.submit(_hf_repo, repo_id): repo_id for repo_id in unique_repos
         }
         for hf_future in as_completed(hf_futures):
             repo_id = hf_futures[hf_future]
@@ -556,12 +738,19 @@ def audit(
                 repos[repo_id] = hf_future.result()
             except Exception as error:
                 repo_errors[repo_id] = str(error).splitlines()[0]
+            if progress is not None:
+                progress.repos_done += 1
+                if progress.repos_done % PROGRESS_REPO_INTERVAL == 0:
+                    progress.emit("repo-batch")
+    if progress is not None:
+        progress.hf_seconds = time.monotonic() - hf_started
 
     reports = []
     report_context: list[
         tuple[AliasReport, AliasSpec, dict[str, Any] | None, list[HfFile], bool]
     ] = []
     probes: dict[tuple[str, str], HfFile] = {}
+    probe_targets: dict[tuple[str, str], list[tuple[AliasReport, HfFile, bool]]] = {}
     for spec in selected:
         entry = by_alias.get(spec.alias.lower())
         report = _new_report(spec, entry, r2_client is not None)
@@ -578,10 +767,17 @@ def audit(
         report_context.append((report, spec, entry, files, in_progress))
         reports.append(report)
         for item in files:
-            probes.setdefault((spec.hf_path, item.path), item)
+            probe_key = (spec.hf_path, item.path)
+            probes.setdefault(probe_key, item)
+            probe_targets.setdefault(probe_key, []).append((report, item, in_progress))
+    if progress is not None:
+        progress.reports = reports
+        progress.probes_total = len(probes)
+        progress.emit("mirror-start")
 
     # Mirror I/O is globally deduplicated and isolated in its own bounded pool.
-    probe_results: dict[tuple[str, str], tuple[MirrorProbe, dict[str, str] | None]] = {}
+    missing_required_by_report: dict[int, int] = {}
+    mirror_started = time.monotonic()
     with ThreadPoolExecutor(max_workers=pool_size) as mirror_pool:
         mirror_futures = {
             mirror_pool.submit(_probe_with_metadata, repo_id, item, r2_client): key
@@ -589,68 +785,29 @@ def audit(
             for repo_id in [key[0]]
         }
         for mirror_future in as_completed(mirror_futures):
-            probe_results[mirror_futures[mirror_future]] = mirror_future.result()
+            probe_key = mirror_futures[mirror_future]
+            probe, metadata = mirror_future.result()
+            for report, item, in_progress in probe_targets[probe_key]:
+                missing_required_by_report[id(report)] = missing_required_by_report.get(
+                    id(report), 0
+                ) + _apply_probe_result(
+                    report,
+                    item,
+                    probe,
+                    metadata,
+                    has_r2=r2_client is not None,
+                    sync_in_progress=in_progress,
+                )
+            if progress is not None:
+                progress.probes_done += 1
+                if progress.probes_done % PROGRESS_PROBE_INTERVAL == 0:
+                    progress.emit("probe-batch")
+    if progress is not None:
+        progress.mirror_seconds = time.monotonic() - mirror_started
 
     for report, spec, entry, files, in_progress in report_context:
         required = _required_files(files, None)
-        missing_required = 0
-        for item in files:
-            probe, metadata = probe_results[(spec.hf_path, item.path)]
-            if probe.status < 200 or probe.status >= 300:
-                if not _optional_asset(item.path):
-                    missing_required += 1
-                report.findings.append(
-                    _file_finding(
-                        "missing_file",
-                        item,
-                        f"HTTP {probe.status}",
-                        sync_in_progress=in_progress,
-                    )
-                )
-                continue
-            if item.size is not None and probe.size != item.size:
-                report.findings.append(
-                    _file_finding(
-                        "size_mismatch",
-                        item,
-                        f"mirror={probe.size} hf={item.size} etag={probe.etag or 'missing'}",
-                        sync_in_progress=in_progress,
-                    )
-                )
-            if item.sha256 is None and item.oid and probe.blob_oid != item.oid:
-                report.findings.append(
-                    _file_finding(
-                        "content_mismatch",
-                        item,
-                        f"mirror_blob={probe.blob_oid or 'missing'} hf_blob={item.oid}",
-                        sync_in_progress=in_progress,
-                    )
-                )
-            if item.sha256 is not None:
-                public_sha = _etag_sha256(probe.etag)
-                metadata_sha = (
-                    metadata.get("hf-sha256") if metadata is not None else None
-                )
-                if r2_client is not None and metadata_sha is None:
-                    report.findings.append(
-                        _file_finding(
-                            "content_mismatch",
-                            item,
-                            f"no checksum metadata; hf_sha256={item.sha256}",
-                            sync_in_progress=in_progress,
-                        )
-                    )
-                else:
-                    actual_sha = metadata_sha if r2_client is not None else public_sha
-                    if actual_sha is not None and actual_sha != item.sha256:
-                        report.findings.append(
-                            _file_finding(
-                                "content_mismatch",
-                                item,
-                                f"mirror_sha256={actual_sha} hf_sha256={item.sha256}",
-                                sync_in_progress=in_progress,
-                            )
-                        )
+        missing_required = missing_required_by_report.get(id(report), 0)
         if (
             entry
             and entry.get("status") == "mirrored"
@@ -769,7 +926,7 @@ def _parser() -> argparse.ArgumentParser:
         help="lowest severity that makes the command fail (default: error)",
     )
     parser.add_argument(
-        "--workers", type=int, default=MAX_WORKERS, help="concurrency, capped at 8"
+        "--workers", type=int, default=MAX_WORKERS, help="concurrency, capped at 32"
     )
     parser.add_argument(
         "--aliases-path", type=Path, default=ALIASES_PATH, help=argparse.SUPPRESS
@@ -785,6 +942,16 @@ def _parser() -> argparse.ArgumentParser:
 
 def main(argv: list[str] | None = None) -> int:
     args = _parser().parse_args(argv)
+    progress = AuditProgress()
+
+    def handle_sigterm(_signum: int, _frame: Any) -> None:
+        progress.emit("sigterm")
+        print("PARTIAL REPORT (terminated before completion)", file=sys.stderr)
+        print(_render_text(progress.reports), file=sys.stderr, flush=True)
+        raise SystemExit(124)
+
+    previous_sigterm = signal.signal(signal.SIGTERM, handle_sigterm)
+    progress.start_periodic()
     try:
         reports = audit(
             args.aliases_path,
@@ -792,10 +959,15 @@ def main(argv: list[str] | None = None) -> int:
             aliases=set(args.alias) or None,
             only_used=args.only_used,
             workers=args.workers,
+            progress=progress,
         )
     except (OSError, ValueError, RuntimeError, urllib.error.URLError) as error:
         print(f"mirror drift audit failed: {error}", file=sys.stderr)
         return 2
+    finally:
+        progress.stop_periodic()
+        signal.signal(signal.SIGTERM, previous_sigterm)
+    progress.emit("complete")
     failed = _fails(reports, args.fail_on)
     if args.json:
         print(
@@ -810,10 +982,12 @@ def main(argv: list[str] | None = None) -> int:
                 },
                 indent=2,
                 sort_keys=True,
-            )
+            ),
+            flush=True,
         )
     else:
-        print(_render_text(reports))
+        print(_render_text(reports), flush=True)
+    print(progress.metrics_line(), file=sys.stderr, flush=True)
     return 1 if failed else 0
 
 

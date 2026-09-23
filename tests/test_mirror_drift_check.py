@@ -7,6 +7,7 @@ import importlib.util
 import io
 import json
 import runpy
+import signal
 import sys
 import types
 import urllib.error
@@ -302,7 +303,9 @@ def test_audit_filters_workers_catalog_only_and_unknown(monkeypatch, tmp_path):
         drift.audit(main, audio, aliases={"missing"})
 
 
-def test_audit_deduplicates_repo_listings_and_mirror_probes(monkeypatch, tmp_path):
+def test_audit_deduplicates_repo_listings_and_mirror_probes(
+    monkeypatch, tmp_path, capsys
+):
     main = tmp_path / "main.json"
     audio = tmp_path / "audio.json"
     main.write_text(
@@ -337,10 +340,15 @@ def test_audit_deduplicates_repo_listings_and_mirror_probes(monkeypatch, tmp_pat
             for alias in ("first", "second")
         ],
     )
-    reports = drift.audit(main, audio)
+    monkeypatch.setattr(drift, "PROGRESS_REPO_INTERVAL", 1)
+    monkeypatch.setattr(drift, "PROGRESS_PROBE_INTERVAL", 1)
+    progress = drift.AuditProgress()
+    reports = drift.audit(main, audio, progress=progress)
     assert len(reports) == 2
     assert hf_calls == ["org/shared"]
     assert mirror_calls == [("org/shared", "config.json")]
+    assert (progress.repos_done, progress.probes_done) == (1, 1)
+    assert "reason=probe-batch" in capsys.readouterr().err
 
 
 def test_optional_assets_and_in_flight_sync_severity(monkeypatch, tmp_path):
@@ -637,8 +645,13 @@ def test_request_exhaustion(monkeypatch):
 
     monkeypatch.setattr(drift, "_OPENER", types.SimpleNamespace(open=fail))
     monkeypatch.setattr(drift.time, "sleep", lambda _seconds: None)
-    with pytest.raises(TimeoutError, match="late"):
-        drift._request("https://example")
+    drift._REQUEST_CONTEXT.kind = "mirror"
+    try:
+        with pytest.raises(TimeoutError, match="late"):
+            drift._request("https://example")
+    finally:
+        drift._REQUEST_CONTEXT.kind = None
+    assert drift._profile_counts["mirror_retry_seconds"] > 0
 
     transient = urllib.error.HTTPError("https://example", 503, "late", Message(), None)
     monkeypatch.setattr(
@@ -768,6 +781,44 @@ def test_main_json_text_exit_codes_and_failures(monkeypatch, capsys):
     )
     assert drift.main([]) == 2
     assert "audit failed: bad" in capsys.readouterr().err
+
+
+def test_periodic_progress_and_sigterm_partial_report(monkeypatch, capsys):
+    monkeypatch.setattr(drift, "PROGRESS_INTERVAL_SECONDS", 0.001)
+    progress = drift.AuditProgress()
+    progress.start_periodic()
+    assert not progress._stop.wait(0.01)
+    progress.stop_periodic()
+    assert "reason=timer" in capsys.readouterr().err
+
+    partial = drift.AliasReport(
+        "partial-alias",
+        "main",
+        "org/partial",
+        True,
+        "org/partial",
+        "mirrored",
+        checked_files=1,
+        findings=[drift.Finding("missing_file", "error", "config.json")],
+    )
+
+    def interrupt(*_args, progress, **_kwargs):
+        progress.reports = [partial]
+        progress.repos_total = 1
+        progress.repos_done = 1
+        progress.probes_total = 2
+        progress.probes_done = 1
+        signal.raise_signal(signal.SIGTERM)
+
+    monkeypatch.setattr(drift, "audit", interrupt)
+    with pytest.raises(SystemExit) as raised:
+        drift.main([])
+    assert raised.value.code == 124
+    error = capsys.readouterr().err
+    assert "reason=sigterm" in error
+    assert "PARTIAL REPORT" in error
+    assert "partial-alias" in error
+    assert "missing_file config.json" in error
 
 
 def test_script_entrypoint_handles_missing_alias_file(monkeypatch, tmp_path):

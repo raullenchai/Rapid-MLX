@@ -11,7 +11,7 @@ def test_daily_audit_keeps_bounded_parallelism_and_safety_contract() -> None:
         / "mirror-drift-check.yml"
     ).read_text()
     assert "timeout-minutes: 30" in workflow
-    assert "--only-used --workers 8" in workflow
+    assert "--only-used --workers 32" in workflow
     assert "permissions:\n  contents: read" in workflow
     assert "cancel-in-progress: false" in workflow
     assert "secrets." not in workflow
