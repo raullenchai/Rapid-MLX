@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import importlib
+import logging
 import socket
 import sys
 from collections.abc import Callable
@@ -12,6 +13,7 @@ from typing import Any
 import uvicorn
 
 ServerAcceptingCallback = Callable[[], None]
+logger = logging.getLogger(__name__)
 
 
 def _port_is_in_use(host: str, port: int) -> bool:
@@ -71,7 +73,15 @@ class AcceptingConnectionsServer(uvicorn.Server):
             and self._on_server_accepting is not None
         ):
             self._accepting_callback_ran = True
-            self._on_server_accepting()
+            try:
+                self._on_server_accepting()
+            except Exception:
+                # The listener is already live. A best-effort observer such as
+                # banner output or telemetry must never tear the server down.
+                try:
+                    logger.exception("Post-bind server callback failed")
+                except Exception:
+                    pass
 
 
 def run_uvicorn(

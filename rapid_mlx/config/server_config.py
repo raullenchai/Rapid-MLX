@@ -72,7 +72,7 @@ class ServerConfig:
     #
     # In the ``--listen-fd`` socket-activation branch, the supervisor owns
     # the bound address; the CLI populates ``bind_listen_fd`` instead, and
-    # the lifespan banner prints the fd form. Mutually exclusive with the
+    # the post-bind startup seam prints the fd form. Mutually exclusive with the
     # host/port pair — see ``cli._run_uvicorn``.
     bind_host: str | None = None
     bind_port: int | None = None
