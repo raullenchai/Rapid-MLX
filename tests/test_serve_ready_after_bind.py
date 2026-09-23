@@ -134,8 +134,8 @@ async def test_inherited_listener_runs_callback_only_after_socket_accepts():
 async def test_uds_listener_runs_callback_only_after_socket_accepts():
     observations: list[int] = []
     instance: AcceptingConnectionsServer
-    with tempfile.TemporaryDirectory(prefix="u1f2-uds-", dir="/private/tmp") as root:
-        uds_path = Path(root) / "server.sock"
+    with tempfile.TemporaryDirectory(prefix="u1-", dir="/tmp") as root:
+        uds_path = Path(root) / "s"
 
         def on_accepting() -> None:
             with socket.socket(socket.AF_UNIX) as client:
@@ -387,6 +387,7 @@ def test_standalone_entrypoint_uses_shared_post_bind_seam():
     assert "on_server_accepting=print_ready_banner" in source
 
 
+@pytest.mark.requires_mlx
 def test_standalone_entrypoint_stashes_endpoint_and_runs_real_seam(
     monkeypatch, capsys, unused_tcp_port
 ):
@@ -564,6 +565,7 @@ def test_native_mtp_runner_defers_its_existing_banner_to_callback(monkeypatch, c
     )
 
 
+@pytest.mark.requires_mlx
 def test_dspark_runner_defers_its_existing_banner_to_callback(monkeypatch, capsys):
     from rapid_mlx.models.deepseek_v41_native import server as dspark_server
     from rapid_mlx.speculative.dflash import server as dflash_server
