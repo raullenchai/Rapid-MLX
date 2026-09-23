@@ -37,6 +37,7 @@ import urllib.error
 import urllib.parse
 import urllib.request
 import uuid
+from collections.abc import Callable
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import asdict, dataclass, field
 from datetime import datetime, timezone
@@ -63,6 +64,10 @@ _SEVERITY = {"info": 10, "warning": 20, "error": 30, "never": 10_000}
 _HF_GATE_LOCK = threading.Lock()
 _hf_next_request = 0.0
 _COUNT_LOCK = threading.Lock()
+_MIRROR_COOLDOWN_LOCK = threading.Lock()
+_mirror_cooldown_until = 0.0
+_mirror_retry_causes: dict[str, int] = {}
+_mirror_retry_after_values: set[str] = set()
 _request_counts = {"hf": 0, "mirror": 0}
 _profile_counts: dict[str, float | int] = {
     "hf_throttle_seconds": 0.0,
@@ -187,6 +192,15 @@ class AuditProgress:
         with _COUNT_LOCK:
             counts = dict(_request_counts)
             profile = dict(_profile_counts)
+            retry_causes = dict(_mirror_retry_causes)
+            retry_after_values = set(_mirror_retry_after_values)
+        cause_summary = ",".join(
+            f"{cause}:{count}"
+            for cause, count in sorted(retry_causes.items())
+        ) or "none"
+        retry_after_summary = ",".join(
+            sorted(retry_after_values, key=float)
+        ) or "none"
         return (
             "METRICS"
             f" repos={self.repos_done}/{self.repos_total}"
@@ -204,6 +218,8 @@ class AuditProgress:
             f" get_time={profile['mirror_get_seconds']:.1f}s"
             f" redirects={profile['mirror_redirects']}"
             f" mirror_retry={profile['mirror_retry_seconds']:.1f}s"
+            f" mirror_retry_causes={cause_summary}"
+            f" mirror_retry_after={retry_after_summary}"
         )
 
 
@@ -255,11 +271,59 @@ class _FinalUrlRedirectHandler(urllib.request.HTTPRedirectHandler):
 _OPENER = urllib.request.build_opener(_FinalUrlRedirectHandler())
 
 
-def _request(url: str, *, method: str = "GET", timeout: float = 30.0) -> Any:
+def _reset_retry_state() -> None:
+    global _mirror_cooldown_until
+    with _MIRROR_COOLDOWN_LOCK:
+        _mirror_cooldown_until = 0.0
+    with _COUNT_LOCK:
+        _mirror_retry_causes.clear()
+        _mirror_retry_after_values.clear()
+
+
+def _wait_for_mirror_cooldown(
+    clock: Callable[[], float], sleeper: Callable[[float], None]
+) -> None:
+    with _MIRROR_COOLDOWN_LOCK:
+        delay = max(0.0, _mirror_cooldown_until - clock())
+    if delay:
+        sleeper(delay)
+
+
+def _extend_mirror_cooldown(delay: float, clock: Callable[[], float]) -> None:
+    global _mirror_cooldown_until
+    with _MIRROR_COOLDOWN_LOCK:
+        _mirror_cooldown_until = max(_mirror_cooldown_until, clock() + delay)
+
+
+def _record_mirror_retry(
+    cause: str, delay: float, retry_after: str | None
+) -> None:
+    with _COUNT_LOCK:
+        _profile_counts["mirror_retry_seconds"] += delay
+        _mirror_retry_causes[cause] = _mirror_retry_causes.get(cause, 0) + 1
+        if retry_after is not None:
+            _mirror_retry_after_values.add(retry_after)
+
+
+def _request(
+    url: str,
+    *,
+    method: str = "GET",
+    timeout: float = 30.0,
+    clock: Callable[[], float] | None = None,
+    sleeper: Callable[[float], None] | None = None,
+) -> Any:
     """Make a polite cache-busted request, retrying transient failures."""
+    clock = clock or time.monotonic
+    sleeper = sleeper or time.sleep
+    is_mirror = getattr(_REQUEST_CONTEXT, "kind", None) == "mirror"
     last: BaseException | None = None
     for attempt in range(5):
+        if is_mirror:
+            _wait_for_mirror_cooldown(clock, sleeper)
         delay = float(2**attempt)
+        cause: str
+        retry_after: str | None = None
         request = urllib.request.Request(
             _cache_busted(url),
             method=method,
@@ -271,16 +335,28 @@ def _request(url: str, *, method: str = "GET", timeout: float = 30.0) -> Any:
             if error.code < 500 and error.code != 429:
                 return error
             last = error
+            cause = str(error.code)
             retry_after = error.headers.get("Retry-After")
             if retry_after and retry_after.isdigit():
                 delay = max(delay, min(float(retry_after), 30.0))
-        except (urllib.error.URLError, TimeoutError, OSError) as error:
+            else:
+                retry_after = None
+        except TimeoutError as error:
             last = error
+            cause = "timeout"
+        except urllib.error.URLError as error:
+            last = error
+            cause = "url_error"
+        except OSError as error:
+            last = error
+            cause = "os_error"
         if attempt < 4:
-            if getattr(_REQUEST_CONTEXT, "kind", None) == "mirror":
-                with _COUNT_LOCK:
-                    _profile_counts["mirror_retry_seconds"] += delay
-            time.sleep(delay)
+            if is_mirror:
+                _record_mirror_retry(cause, delay, retry_after)
+                if cause == "429":
+                    _extend_mirror_cooldown(delay, clock)
+                    continue
+            sleeper(delay)
     assert last is not None
     raise last
 
@@ -720,6 +796,7 @@ def audit(
         _request_counts.update(hf=0, mirror=0)
         for metric_name, value in _profile_counts.items():
             _profile_counts[metric_name] = 0.0 if isinstance(value, float) else 0
+    _reset_retry_state()
 
     catalog_started = time.monotonic()
     entries = _catalog_entries()
@@ -887,7 +964,7 @@ def _render_text(reports: list[AliasReport]) -> str:
             )
         )
     widths = [
-        max(len(headings[index]), *(len(row[index]) for row in rows))
+        max([len(headings[index]), *(len(row[index]) for row in rows)])
         for index in range(len(headings))
     ]
     lines = [
@@ -909,6 +986,10 @@ def _render_text(reports: list[AliasReport]) -> str:
         f"REQUESTS hf={_request_counts['hf']} mirror={_request_counts['mirror']}"
     )
     return "\n".join(lines)
+
+
+def _render_partial(progress: AuditProgress, reason: str) -> str:
+    return f"PARTIAL REPORT ({reason})\n{_render_text(list(progress.reports))}\n"
 
 
 def _report_dict(report: AliasReport) -> dict[str, Any]:
@@ -954,12 +1035,19 @@ def _parser() -> argparse.ArgumentParser:
 def main(argv: list[str] | None = None) -> int:
     args = _parser().parse_args(argv)
     progress = AuditProgress()
+    terminating = False
 
     def handle_sigterm(_signum: int, _frame: Any) -> None:
-        progress.emit("sigterm")
-        print("PARTIAL REPORT (terminated before completion)", file=sys.stderr)
-        print(_render_text(progress.reports), file=sys.stderr, flush=True)
-        raise SystemExit(124)
+        nonlocal terminating
+        if terminating:
+            return
+        terminating = True
+        signal.signal(signal.SIGTERM, signal.SIG_IGN)
+        payload = _render_partial(progress, "terminated before completion").encode(
+            errors="replace"
+        )
+        os.write(2, payload)
+        os._exit(124)
 
     previous_sigterm = signal.signal(signal.SIGTERM, handle_sigterm)
     progress.start_periodic()
@@ -973,6 +1061,11 @@ def main(argv: list[str] | None = None) -> int:
             progress=progress,
         )
     except (OSError, ValueError, RuntimeError, urllib.error.URLError) as error:
+        print(
+            _render_partial(progress, "failed before completion"),
+            file=sys.stderr,
+            end="",
+        )
         print(f"mirror drift audit failed: {error}", file=sys.stderr)
         return 2
     finally:

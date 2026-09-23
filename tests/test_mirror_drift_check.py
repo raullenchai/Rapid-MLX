@@ -7,8 +7,11 @@ import importlib.util
 import io
 import json
 import runpy
+import selectors
 import signal
+import subprocess
 import sys
+import textwrap
 import types
 import urllib.error
 import urllib.parse
@@ -699,10 +702,110 @@ def test_request_exhaustion(monkeypatch):
         "_OPENER",
         types.SimpleNamespace(open=lambda *_a, **_k: (_ for _ in ()).throw(limited)),
     )
-    monkeypatch.setattr(drift.time, "sleep", sleeps.append)
+    now = [0.0]
+
+    def advance(seconds):
+        sleeps.append(seconds)
+        now[0] += seconds
+
     with pytest.raises(urllib.error.HTTPError):
-        drift._request("https://example")
+        drift._request("https://example", clock=lambda: now[0], sleeper=advance)
     assert sleeps == [30.0, 30.0, 30.0, 30.0]
+
+
+@pytest.mark.parametrize(
+    ("error", "cause"),
+    [
+        (
+            urllib.error.HTTPError(
+                "https://example", 429, "limited", Message(), None
+            ),
+            "429",
+        ),
+        (
+            urllib.error.HTTPError(
+                "https://example", 503, "unavailable", Message(), None
+            ),
+            "503",
+        ),
+        (TimeoutError("late"), "timeout"),
+        (urllib.error.URLError("offline"), "url_error"),
+        (OSError("reset"), "os_error"),
+    ],
+)
+def test_mirror_retry_counters_by_cause(monkeypatch, error, cause):
+    attempts = iter([error, Response(200)])
+
+    def open_request(*_args, **_kwargs):
+        value = next(attempts)
+        if isinstance(value, BaseException):
+            raise value
+        return value
+
+    monkeypatch.setattr(drift, "_OPENER", types.SimpleNamespace(open=open_request))
+    drift._reset_retry_state()
+    drift._REQUEST_CONTEXT.kind = "mirror"
+    try:
+        drift._request(
+            "https://example",
+            clock=lambda: 0.0,
+            sleeper=lambda _seconds: None,
+        )
+    finally:
+        drift._REQUEST_CONTEXT.kind = None
+    assert drift._mirror_retry_causes == {cause: 1}
+
+
+def test_429_shared_cooldown_gates_new_mirror_request(monkeypatch):
+    events = []
+    monkeypatch.setattr(
+        drift,
+        "_OPENER",
+        types.SimpleNamespace(open=lambda *_a, **_k: events.append("open") or Response(200)),
+    )
+    drift._reset_retry_state()
+    drift._mirror_cooldown_until = 12.0
+    drift._REQUEST_CONTEXT.kind = "mirror"
+    try:
+        drift._request(
+            "https://example",
+            clock=lambda: 10.0,
+            sleeper=lambda seconds: events.append(("cooldown", seconds)),
+        )
+    finally:
+        drift._REQUEST_CONTEXT.kind = None
+    assert events == [("cooldown", 2.0), "open"]
+
+
+def test_retry_after_values_are_in_metrics(monkeypatch):
+    headers = Message()
+    headers["Retry-After"] = "17"
+    limited = urllib.error.HTTPError(
+        "https://example", 429, "limited", headers, None
+    )
+    attempts = iter([limited, Response(200)])
+
+    def open_request(*_args, **_kwargs):
+        value = next(attempts)
+        if isinstance(value, BaseException):
+            raise value
+        return value
+
+    now = [0.0]
+    monkeypatch.setattr(drift, "_OPENER", types.SimpleNamespace(open=open_request))
+    drift._reset_retry_state()
+    drift._REQUEST_CONTEXT.kind = "mirror"
+    try:
+        drift._request(
+            "https://example",
+            clock=lambda: now[0],
+            sleeper=lambda seconds: now.__setitem__(0, now[0] + seconds),
+        )
+    finally:
+        drift._REQUEST_CONTEXT.kind = None
+    metrics = drift.AuditProgress().metrics_line()
+    assert "mirror_retry_causes=429:1" in metrics
+    assert "mirror_retry_after=17" in metrics
 
 
 def test_r2_client_and_metadata(monkeypatch):
@@ -810,13 +913,98 @@ def test_main_json_text_exit_codes_and_failures(monkeypatch, capsys):
     assert "audit failed: bad" in capsys.readouterr().err
 
 
-def test_periodic_progress_and_sigterm_partial_report(monkeypatch, capsys):
+def test_periodic_progress(monkeypatch, capsys):
     monkeypatch.setattr(drift, "PROGRESS_INTERVAL_SECONDS", 0.001)
     progress = drift.AuditProgress()
     progress.start_periodic()
     assert not progress._stop.wait(0.01)
     progress.stop_periodic()
     assert "reason=timer" in capsys.readouterr().err
+
+
+def test_sigterm_exits_promptly_with_one_partial_report(tmp_path):
+    main = tmp_path / "main.json"
+    audio = tmp_path / "audio.json"
+    main.write_text(json.dumps({"partial-alias": {"hf_path": "org/partial"}}))
+    audio.write_text("{}")
+    child = textwrap.dedent(
+        f"""
+        import importlib.util
+        import os
+        import sys
+        import threading
+
+        path = {str(ROOT / 'scripts' / 'mirror_drift_check.py')!r}
+        spec = importlib.util.spec_from_file_location("sigterm_drift", path)
+        module = importlib.util.module_from_spec(spec)
+        sys.modules[spec.name] = module
+        spec.loader.exec_module(module)
+        module._catalog_entries = lambda: [{{
+            "alias": "partial-alias",
+            "hf_path": "org/partial",
+            "status": "mirrored",
+        }}]
+        module._maybe_r2_client = lambda: None
+        module._hf_repo = lambda _repo: module.HfRepo(
+            "rev", [module.HfFile("config.json", 2, None, "a" * 40)]
+        )
+        blocked = threading.Event()
+        def block_probe(*_args):
+            os.write(2, b"PROBE_READY\\n")
+            blocked.wait()
+        module._probe_with_metadata = block_probe
+        raise SystemExit(module.main([
+            "--aliases-path", {str(main)!r},
+            "--audio-aliases-path", {str(audio)!r},
+        ]))
+        """
+    )
+    proc = subprocess.Popen(
+        [sys.executable, "-c", child],
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+    )
+    assert proc.stderr is not None
+    selector = selectors.DefaultSelector()
+    selector.register(proc.stderr, selectors.EVENT_READ)
+    before = []
+    while not any("PROBE_READY" in line for line in before):
+        assert selector.select(timeout=5), "subprocess did not start its probe"
+        line = proc.stderr.readline()
+        assert line, f"subprocess exited before readiness: {''.join(before)}"
+        before.append(line)
+    proc.send_signal(signal.SIGTERM)
+    try:
+        returncode = proc.wait(timeout=2)
+    except subprocess.TimeoutExpired:
+        proc.kill()
+        proc.wait(timeout=2)
+        pytest.fail("SIGTERM waited for the blocked executor")
+    remainder = proc.stderr.read()
+    error = "".join(before) + remainder
+    assert returncode == 124
+    assert error.count("PARTIAL REPORT") == 1
+    assert "partial-alias" in error
+
+
+def test_main_restores_previous_sigterm_handler(monkeypatch):
+    def previous_handler(_signum, _frame):
+        return None
+
+    original = signal.signal(signal.SIGTERM, previous_handler)
+    clean = drift.AliasReport(
+        "clean", "main", "org/clean", True, "org/clean", "mirrored"
+    )
+    monkeypatch.setattr(drift, "audit", lambda *_args, **_kwargs: [clean])
+    try:
+        assert drift.main(["--fail-on", "never"]) == 0
+        assert signal.getsignal(signal.SIGTERM) is previous_handler
+    finally:
+        signal.signal(signal.SIGTERM, original)
+
+
+def test_exhausted_transient_emits_partial_report(monkeypatch, capsys):
 
     partial = drift.AliasReport(
         "partial-alias",
@@ -829,23 +1017,33 @@ def test_periodic_progress_and_sigterm_partial_report(monkeypatch, capsys):
         findings=[drift.Finding("missing_file", "error", "config.json")],
     )
 
-    def interrupt(*_args, progress, **_kwargs):
+    def exhaust(*_args, progress, **_kwargs):
         progress.reports = [partial]
-        progress.repos_total = 1
-        progress.repos_done = 1
-        progress.probes_total = 2
-        progress.probes_done = 1
-        signal.raise_signal(signal.SIGTERM)
+        error = TimeoutError("late")
+        monkeypatch.setattr(
+            drift,
+            "_OPENER",
+            types.SimpleNamespace(
+                open=lambda *_a, **_k: (_ for _ in ()).throw(error)
+            ),
+        )
+        drift._REQUEST_CONTEXT.kind = "mirror"
+        try:
+            drift._request(
+                "https://example",
+                clock=lambda: 0.0,
+                sleeper=lambda _seconds: None,
+            )
+        finally:
+            drift._REQUEST_CONTEXT.kind = None
 
-    monkeypatch.setattr(drift, "audit", interrupt)
-    with pytest.raises(SystemExit) as raised:
-        drift.main([])
-    assert raised.value.code == 124
+    monkeypatch.setattr(drift, "audit", exhaust)
+    assert drift.main([]) == 2
     error = capsys.readouterr().err
-    assert "reason=sigterm" in error
-    assert "PARTIAL REPORT" in error
+    assert error.count("PARTIAL REPORT") == 1
     assert "partial-alias" in error
     assert "missing_file config.json" in error
+    assert "audit failed: late" in error
 
 
 def test_script_entrypoint_handles_missing_alias_file(monkeypatch, tmp_path):
