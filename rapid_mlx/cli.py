@@ -2534,6 +2534,29 @@ _SPECULATIVE_CONFIG_SOURCE_LEGACY = "legacy_flags"
 _SPECULATIVE_CONFIG_SOURCE_ALIAS_DEFAULT = "alias_default"
 
 
+def _qwen_speculative_intent(args):
+    """Map normalized CLI provenance to the planner's closed intent enum."""
+
+    from .qwen_runtime_plan import SpeculativeIntent
+
+    if getattr(args, "no_spec_decode", False):
+        return SpeculativeIntent.EXPLICIT_DISABLED
+
+    source = getattr(
+        args, "_speculative_config_source", _SPECULATIVE_CONFIG_SOURCE_NONE
+    )
+    intents = {
+        _SPECULATIVE_CONFIG_SOURCE_NONE: SpeculativeIntent.NONE,
+        _SPECULATIVE_CONFIG_SOURCE_ALIAS_DEFAULT: SpeculativeIntent.ALIAS_DEFAULT,
+        _SPECULATIVE_CONFIG_SOURCE_EXPLICIT: SpeculativeIntent.EXPLICIT_ENABLED,
+        _SPECULATIVE_CONFIG_SOURCE_LEGACY: SpeculativeIntent.EXPLICIT_ENABLED,
+    }
+    try:
+        return intents[source]
+    except KeyError as exc:
+        raise ValueError(f"unknown speculative config source: {source!r}") from exc
+
+
 def _normalize_speculative_config_or_exit(args):
     """Parse ``--speculative-config`` and map methods to runtime fields.
 
@@ -5739,6 +5762,7 @@ def serve_command(args):
             ),
             enable_disk_stream=getattr(args, "disk_stream", False),
             disk_stream_cache_gb=getattr(args, "disk_stream_cache_gb", 1.0),
+            speculative_intent=_qwen_speculative_intent(args),
         )
     except KVCacheQuantizationUnsupportedError as e:
         # The scheduler/MLLM-lane backstop (#78) rejects an explicit

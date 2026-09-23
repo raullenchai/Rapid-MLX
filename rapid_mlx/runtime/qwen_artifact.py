@@ -754,6 +754,48 @@ def probe_qwen_artifact(
     )
 
 
+def probe_resolved_qwen_artifact(
+    snapshot_dir: str | Path,
+    *,
+    repo_id: str,
+) -> QwenArtifactTruth | None:
+    """Probe an already-selected canonical Hub snapshot, otherwise omit it.
+
+    Revision and subfolder come only from the concrete local snapshot path;
+    this helper never reads a mutable Hub ref or performs a network lookup.
+    The normal binding validator remains authoritative for repo/path identity.
+    """
+
+    try:
+        artifact_dir = Path(snapshot_dir).expanduser().absolute()
+    except (OSError, TypeError, ValueError):
+        return None
+
+    snapshot_parent = next(
+        (parent for parent in artifact_dir.parents if parent.name == "snapshots"),
+        None,
+    )
+    if snapshot_parent is None:
+        return None
+    try:
+        relative = artifact_dir.relative_to(snapshot_parent)
+    except ValueError:
+        return None
+    if not relative.parts:
+        return None
+    revision = relative.parts[0]
+    subfolder = "/".join(relative.parts[1:]) or None
+    binding = verify_hub_snapshot_binding(
+        artifact_dir,
+        repo_id=repo_id,
+        revision=revision,
+        subfolder=subfolder,
+    )
+    if binding is None:
+        return None
+    return probe_qwen_artifact(artifact_dir, binding=binding)
+
+
 def _runtime_cache_geometry(truth: QwenArtifactTruth) -> tuple[tuple[str, str], ...]:
     geometry = truth.geometry
     required = {
@@ -881,6 +923,7 @@ __all__ = [
     "TargetWeightLayout",
     "TargetWeights",
     "probe_qwen_artifact",
+    "probe_resolved_qwen_artifact",
     "to_verified_runtime_target",
     "VerifiedHubSnapshotBinding",
     "verify_hub_snapshot_binding",

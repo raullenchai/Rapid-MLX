@@ -1,12 +1,12 @@
 # Atlas handoff — Qwen Auto Runtime
 
 - **Owner:** Atlas
-- **Branch:** `atlas/qwen-auto-runtime-plan`
-- **Base:** `origin/main` at `ec98a7ba2`
+- **Branch:** `atlas/qwen-auto-runtime-b0-boot-status`
+- **Base:** B0 integration at `331731004`
 - **Host:** Studio; product qualification also requires M4 Pro 48 GB and M1
   Max 64 GB
-- **Status:** B0 foundation integrated; production boot/status composition is
-  not wired; no product behavior or defaults changed
+- **Status:** B0 foundation and behavior-neutral boot/status composition are
+  complete; no product behavior or defaults changed
 
 ## Goal
 
@@ -72,41 +72,56 @@ the current path.
 - The production Qwen MTP injector and artifact truth share one dependency-free
   locator/classifier. Exact pinned config/index fixtures cover Qwen3.5 4B,
   Qwen3.6 35B, and Qwen3.8 27B without model loads or tensor reads.
-- The foundation is intentionally dormant: no serve/benchmark boot path imports
-  the planner, constructs `ResolvedQwenArtifact`, stores a resolved plan on the
-  engine, emits plan/fallback boot logs, or publishes it through
-  `engine.get_stats()` and `/v1/status`.
+- The production seam remains behavior-neutral: it constructs only the exact
+  legacy plan after final lane/companion startup, passes `auto_enabled=False`,
+  registers no qualification rows, and never constructs
+  `ResolvedQwenArtifact`.
+
+## B0 boot/status composition
+
+- CLI provenance maps into closed `SpeculativeIntent` values without changing
+  normalization. `load_model` captures only the original explicit lane before
+  alias and automatic routing mutate the effective flags.
+- `BatchedEngine.start()` records the final text/vision lane and optional
+  Qwen3.6 shared-weight companion. Qwen classification uses exact loaded/local
+  config model-type pairs, never names.
+- Text MTP status comes from the completed boot dispatch receipt plus the same
+  config-vetted profile gate used by the lazy scheduler. It does not eagerly
+  create a request generator or read the scheduler field that remains unset
+  until first inference.
+- The immutable plan describes the selected decoder. A separate closed
+  `qwen_runtime_activation` reports the current lazy generator as
+  `pending_first_request`, `active`, `fallback_native_ar`, or
+  `not_applicable`; closing/recreating the generator can return it to pending.
+- One immutable legacy plan is logged and stored per successful boot. Stop and
+  reload clear and recompute the plan, optional artifact truth, snapshot source,
+  and MTP dispatch receipt. Teardown clears them before fallible scheduler
+  cleanup, so a failed stop cannot expose stale facts.
+- `engine.get_stats()` and `/v1/status` expose only the JSON-safe plan and an
+  optional redacted artifact truth. Truth is published only when the exact
+  already-selected source revalidates as a canonical immutable Hub snapshot;
+  arbitrary local paths and mutable repo ids omit it.
 
 ## Next concrete action
 
-Add the behavior-preserving B0 composition seam to the existing serve boot:
-
-1. after immutable snapshot resolution, bind and probe the exact local target,
-   convert it to `VerifiedQwenTarget`, and construct `ResolvedQwenArtifact`;
-2. translate current lane selection plus retained CLI provenance into the
-   legacy plan, call `resolve_qwen_runtime_plan`, and retain the resolved plan
-   on the engine without changing the selected lane;
-3. emit the plan/reason/fallback in boot logs and expose the stored redacted
-   payload through `engine.get_stats()` and `/v1/status`;
-4. add offline boot-composition tests proving current Qwen3.6 and Qwen3.8
-   defaults, explicit flags, and unqualified/raw paths are byte-for-byte
-   behavior-equivalent.
-
-Do not change alias defaults in B0. Do not begin MTP dual-lane integration
-until this boot composition proves the real provider contract.
+Integrate this B0 commit, then use emitted legacy plans/truth to validate the
+provider contract before enabling any qualification row or automatic lane
+selection. Do not change alias defaults or begin MTP dual-lane integration
+until that evidence is reviewed.
 
 ## Integration verification
 
-- `219 passed`: runtime-plan, artifact-truth/private-capability, CLI provenance,
-  speculative-config, shared locator, and injector/install focused suites.
+- `229 passed`: runtime-plan, artifact-truth/private-capability, CLI provenance,
+  boot-plan/status, speculative-config, shared locator, and injector/install
+  focused suites.
+- `147 passed`: complete status routes, server load order, and Qwen3.6 native
+  companion suites; `52 passed`: complete no-MLLM routing suite.
 - The artifact conversion test exercises the integrated core private mint,
   rather than only a stand-in contract.
 - Ruff format/check and `git diff --check` pass for the integrated Python diff.
 
-The missing B0 verification is deliberately the same as the missing code:
-offline Qwen3.6/Qwen3.8 boot-composition tests through the real serve resolver,
-boot log, stored engine plan, and status payload. Later B2/B3 product gates
-still require M4 Pro 48 GB and M1 Max 64 GB as specified in the design.
+Later B2/B3 product gates still require M4 Pro 48 GB and M1 Max 64 GB as
+specified in the design.
 
 ## Risk to carry forward
 

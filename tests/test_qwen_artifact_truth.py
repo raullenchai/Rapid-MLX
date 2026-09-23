@@ -26,6 +26,7 @@ from rapid_mlx.runtime.qwen_artifact import (
     TargetWeightLayout,
     VerifiedHubSnapshotBinding,
     probe_qwen_artifact,
+    probe_resolved_qwen_artifact,
     to_verified_runtime_target,
     verify_hub_snapshot_binding,
 )
@@ -522,6 +523,33 @@ def test_receipt_extractor_reproduces_fixture_truth(
     assert receipt["mtp_locator"]["hf_blob_id"] == metadata["mtp_candidate"]["blob_id"]
     assert len(receipt["geometry"]["layer_types"]) == 64
     assert str(tmp_path) not in json.dumps(receipt)
+
+
+def test_resolved_snapshot_probe_derives_only_pinned_local_identity(tmp_path: Path):
+    snapshot, _hub, metadata = _materialize_snapshot(tmp_path, "qwen38_27b_4bit")
+
+    truth = probe_resolved_qwen_artifact(
+        snapshot,
+        repo_id=metadata["source_repo"],
+    )
+
+    assert truth is not None
+    assert truth.source_repo == metadata["source_repo"]
+    assert truth.revision == metadata["revision"]
+    assert str(tmp_path) not in json.dumps(truth.to_status_dict())
+
+
+def test_resolved_snapshot_probe_omits_local_and_wrong_repo_paths(tmp_path: Path):
+    snapshot, _hub, metadata = _materialize_snapshot(tmp_path, "qwen38_27b_4bit")
+    local_copy = tmp_path / "local-copy"
+    local_copy.mkdir()
+    (local_copy / "config.json").write_text("{}", encoding="utf-8")
+
+    assert (
+        probe_resolved_qwen_artifact(local_copy, repo_id=metadata["source_repo"])
+        is None
+    )
+    assert probe_resolved_qwen_artifact(snapshot, repo_id="other/repo") is None
 
 
 def test_conversion_seam_owns_exact_target_only_mapping(

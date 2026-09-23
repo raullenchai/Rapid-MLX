@@ -2166,6 +2166,7 @@ def load_model(
     no_openai_harmony_streaming: bool = False,
     enable_disk_stream: bool = False,
     disk_stream_cache_gb: float = 1.0,
+    speculative_intent=None,
 ):
     """
     Load a model (auto-detects MLLM vs LLM).
@@ -2214,7 +2215,14 @@ def load_model(
             ``rapid_mlx.disk_stream_patch`` in ``_start_llm`` before the
             model reaches ``AsyncEngineCore``. Default False keeps every
             existing caller's behavior unchanged.
+        speculative_intent: Closed, pre-normalization speculative provenance
+            used only for behavior-neutral Qwen runtime-plan observability.
     """
+    from .qwen_runtime_plan import TargetLane
+
+    operator_target_lane = (
+        TargetLane.VISION if force_mllm else TargetLane.TEXT if force_text else None
+    )
     if force_mllm and force_text:
         raise ValueError(
             "force_mllm and force_text are mutually exclusive — "
@@ -2669,6 +2677,9 @@ def load_model(
             no_openai_harmony_streaming=no_openai_harmony_streaming,
             enable_disk_stream=enable_disk_stream,
             disk_stream_cache_gb=disk_stream_cache_gb,
+            speculative_intent=speculative_intent,
+            artifact_repo_id=model_name,
+            operator_target_lane=operator_target_lane,
         )
         logger.info(
             (

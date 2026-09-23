@@ -7,6 +7,7 @@ from types import SimpleNamespace
 import pytest
 
 from rapid_mlx import cli
+from rapid_mlx.qwen_runtime_plan import SpeculativeIntent
 
 
 def _args(model: str, **overrides) -> SimpleNamespace:
@@ -114,3 +115,32 @@ def test_unknown_alias_records_none_and_preserves_plain_decode() -> None:
     assert args._speculative_config_source == "none"
     assert args._speculative_config is None
     assert args.spec_decode == "none"
+
+
+@pytest.mark.parametrize(
+    ("source", "no_spec_decode", "expected"),
+    [
+        ("none", False, SpeculativeIntent.NONE),
+        ("none", True, SpeculativeIntent.EXPLICIT_DISABLED),
+        ("alias_default", False, SpeculativeIntent.ALIAS_DEFAULT),
+        ("explicit_config", False, SpeculativeIntent.EXPLICIT_ENABLED),
+        ("legacy_flags", False, SpeculativeIntent.EXPLICIT_ENABLED),
+    ],
+)
+def test_qwen_planner_intent_maps_normalized_provenance(
+    source: str,
+    no_spec_decode: bool,
+    expected: SpeculativeIntent,
+) -> None:
+    args = _args("qwen3.6-35b-4bit", no_spec_decode=no_spec_decode)
+    args._speculative_config_source = source
+
+    assert cli._qwen_speculative_intent(args) is expected
+
+
+def test_qwen_planner_intent_rejects_unknown_internal_source() -> None:
+    args = _args("qwen3.6-35b-4bit")
+    args._speculative_config_source = "future_unmapped_source"
+
+    with pytest.raises(ValueError, match="unknown speculative config source"):
+        cli._qwen_speculative_intent(args)

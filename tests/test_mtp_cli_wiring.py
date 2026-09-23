@@ -1200,10 +1200,10 @@ def test_start_llm_calls_apply_mtp_dispatch():
     here; codex round-L correctly flagged that as a source-string
     assertion that would happily pass for a comment or a dead
     reference (e.g. a docstring-only mention of the helper name).
-    Fix: monkey-patch ``_apply_mtp_dispatch`` to a recorder that
-    also raises a sentinel to bail out of the rest of ``_start_llm``,
-    then actually invoke ``_start_llm`` and assert the recorder
-    fired with the expected arguments.
+    Fix: monkey-patch ``_apply_mtp_dispatch`` to a recorder returning
+    the attached receipt, bail out at the next boot step, then actually
+    invoke ``_start_llm`` and assert the recorder fired with the expected
+    arguments and its receipt was retained.
 
     The MLX-heavy path (Metal warmup, AsyncEngineCore start, etc.)
     lives past the dispatch call so the sentinel-raise pattern
@@ -1249,8 +1249,8 @@ def test_start_llm_calls_apply_mtp_dispatch():
         monkeypatch.setattr(_tokenizer_mod, "load_model_with_fallback", _fake_load)
 
         # 3. Monkey-patch _apply_mtp_dispatch on the batched module.
-        #    Record args, then raise a sentinel to short-circuit the
-        #    rest of _start_llm (Metal limits, AsyncEngineCore, etc.).
+        #    Return the real attached receipt, then raise a sentinel at the
+        #    next boot step so the test also proves _start_llm retains it.
         dispatch_calls: list[dict] = []
 
         class _ScopedTestSentinelError(RuntimeError):
@@ -1271,14 +1271,21 @@ def test_start_llm_calls_apply_mtp_dispatch():
                     "checkpoint_source": checkpoint_source,
                 }
             )
-            raise _ScopedTestSentinelError("apply_mtp_dispatch invoked")
+            return _batched._DISPATCH_ATTACHED
 
         monkeypatch.setattr(
             _batched, "_apply_mtp_dispatch", _recording_apply_mtp_dispatch
         )
+        monkeypatch.setattr(
+            engine,
+            "_install_resolved_metal_budget",
+            lambda: (_ for _ in ()).throw(
+                _ScopedTestSentinelError("dispatch receipt retained")
+            ),
+        )
 
-        # 4. Drive _start_llm. The sentinel unwinds after the dispatch
-        #    fires, avoiding the Metal / AsyncEngineCore setup.
+        # 4. Drive _start_llm. The sentinel unwinds on the next boot step,
+        #    after the dispatch receipt assignment but before EngineCore.
         try:
             asyncio.run(engine._start_llm())
         except _ScopedTestSentinelError:
@@ -1302,6 +1309,7 @@ def test_start_llm_calls_apply_mtp_dispatch():
     assert call["model_name"] == engine._model_name
     assert call["scheduler_config"] is engine._scheduler_config
     assert call["checkpoint_source"] == "/fake/immutable-snapshot"
+    assert engine._qwen_mtp_dispatch_result == _batched._DISPATCH_ATTACHED
     assert call["executor"] is engine._model_load_executor, (
         "codex round-L NIT: dispatch was called with the wrong "
         "executor — must be the same mlx-step worker that loaded "
