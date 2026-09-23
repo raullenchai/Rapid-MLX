@@ -108,25 +108,40 @@ def _mtp_verify_without_logits(
 
     layers = getattr(getattr(lm, "model", None), "layers", [])
     if len(prompt_cache) == len(layers):
-        hidden = lm.model(
+        # VENDOR-DEVIATION(bugfix): the hook-less fallback must participate in
+        # the same cache transaction as every other speculative verifier.
+        hidden, transaction = verify_forward(
+            lm.model,
             verify_input,
-            cache=prompt_cache,
+            prompt_cache,
             skip_final_norm=True,
         )
         shared_kv_states = _mtp_shared_kv_from_prompt_cache(lm, prompt_cache)
         if shared_kv_states:
-            return _MTPVerifyResult(hidden=hidden, shared_kv_states=shared_kv_states)
+            return _MTPVerifyResult(
+                hidden=hidden,
+                shared_kv_states=shared_kv_states,
+                rollback_state=transaction,
+            )
+        # The sink retry must not append the same verifier block a second time.
+        transaction.abort()
 
     shared_kv_sink: dict = {}
-    hidden = lm.model(
+    hidden, transaction = verify_forward(
+        lm.model,
         verify_input,
-        cache=prompt_cache,
+        prompt_cache,
         shared_kv_sink=shared_kv_sink,
         skip_final_norm=True,
     )
     if not shared_kv_sink:
+        transaction.abort()
         return None
-    return _MTPVerifyResult(hidden=hidden, shared_kv_states=shared_kv_sink)
+    return _MTPVerifyResult(
+        hidden=hidden,
+        shared_kv_states=shared_kv_sink,
+        rollback_state=transaction,
+    )
 
 
 def _mtp_verify_with_model_method(

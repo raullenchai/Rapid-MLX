@@ -26,6 +26,7 @@ pure-array functions, so the cross-namespace calls are identity-safe.
 """
 
 import inspect
+from types import SimpleNamespace
 
 import pytest
 
@@ -62,6 +63,67 @@ _HUNK_SPECS = {
             '            f"shape {tuple(drafter_logits.shape)}"\n'
             "        )\n",
             "    assert drafter_logits.ndim == 3 and drafter_logits.shape[0] == 1\n",
+        ),
+    ),
+    "_mtp_verify_without_logits": (
+        (
+            '    layers = getattr(getattr(lm, "model", None), "layers", [])\n'
+            "    if len(prompt_cache) == len(layers):\n"
+            "        # VENDOR-DEVIATION(bugfix): the hook-less fallback must participate in\n"
+            "        # the same cache transaction as every other speculative verifier.\n"
+            "        hidden, transaction = verify_forward(\n"
+            "            lm.model,\n"
+            "            verify_input,\n"
+            "            prompt_cache,\n"
+            "            skip_final_norm=True,\n"
+            "        )\n"
+            "        shared_kv_states = _mtp_shared_kv_from_prompt_cache(lm, prompt_cache)\n"
+            "        if shared_kv_states:\n"
+            "            return _MTPVerifyResult(\n"
+            "                hidden=hidden,\n"
+            "                shared_kv_states=shared_kv_states,\n"
+            "                rollback_state=transaction,\n"
+            "            )\n"
+            "        # The sink retry must not append the same verifier block a second time.\n"
+            "        transaction.abort()\n"
+            "\n"
+            "    shared_kv_sink: dict = {}\n"
+            "    hidden, transaction = verify_forward(\n"
+            "        lm.model,\n"
+            "        verify_input,\n"
+            "        prompt_cache,\n"
+            "        shared_kv_sink=shared_kv_sink,\n"
+            "        skip_final_norm=True,\n"
+            "    )\n"
+            "    if not shared_kv_sink:\n"
+            "        transaction.abort()\n"
+            "        return None\n"
+            "    return _MTPVerifyResult(\n"
+            "        hidden=hidden,\n"
+            "        shared_kv_states=shared_kv_sink,\n"
+            "        rollback_state=transaction,\n"
+            "    )\n",
+            '    layers = getattr(getattr(lm, "model", None), "layers", [])\n'
+            "    if len(prompt_cache) == len(layers):\n"
+            "        hidden = lm.model(\n"
+            "            verify_input,\n"
+            "            cache=prompt_cache,\n"
+            "            skip_final_norm=True,\n"
+            "        )\n"
+            "        shared_kv_states = _mtp_shared_kv_from_prompt_cache(lm, prompt_cache)\n"
+            "        if shared_kv_states:\n"
+            "            return _MTPVerifyResult(hidden=hidden, shared_kv_states=shared_kv_states)\n"
+            "\n"
+            "    shared_kv_sink: dict = {}\n"
+            "    hidden = lm.model(\n"
+            "        verify_input,\n"
+            "        cache=prompt_cache,\n"
+            "        shared_kv_sink=shared_kv_sink,\n"
+            "        skip_final_norm=True,\n"
+            "    )\n"
+            "    if not shared_kv_sink:\n"
+            "        return None\n"
+            "    return _MTPVerifyResult(hidden=hidden, shared_kv_states=shared_kv_sink)\n",
         ),
     ),
     "_speculative_walk_batch_uniform_acceptance": (
@@ -553,3 +615,59 @@ def test_uniform_acceptance_clamps_over_positive_budgets():
     )
     assert out_accepted == [0, 0]
     assert out_tokens == [[], []]
+
+
+def test_hookless_mtp_verify_aborts_before_sink_retry():
+    """The hook-less verifier retries with a shared-KV sink only after
+    rolling back its first forward, and returns the second transaction to the
+    speculative-round owner."""
+    mx = pytest.importorskip("mlx.core")
+
+    class _Cache:
+        def __init__(self):
+            self.offset = 0
+
+        def update_and_fetch(self, keys, values):
+            self.offset += keys.shape[2]
+            return keys, values
+
+        def trim(self, count):
+            self.offset -= count
+
+    class _Model:
+        layers = [SimpleNamespace(layer_type="attention")]
+
+        def __init__(self):
+            self.calls = 0
+
+        def __call__(
+            self,
+            inputs,
+            *,
+            cache,
+            shared_kv_sink=None,
+            skip_final_norm=False,
+        ):
+            self.calls += 1
+            width = inputs.shape[1]
+            kv = mx.zeros((1, 1, width, 2))
+            cache[0].update_and_fetch(kv, kv)
+            if shared_kv_sink is not None:
+                shared_kv_sink["attention"] = (kv, kv)
+            return mx.zeros((1, width, 4))
+
+    model = _Model()
+    lm = SimpleNamespace(model=model)
+    prompt_cache = [_Cache()]
+    result = vs_mtp._mtp_verify_without_logits(
+        lm,
+        mx.array([[1, 2]], dtype=mx.int32),
+        prompt_cache,
+    )
+
+    assert result is not None
+    assert model.calls == 2
+    assert prompt_cache[0].offset == 2
+    assert result.rollback_state.active is True
+    result.abort()
+    assert prompt_cache[0].offset == 0

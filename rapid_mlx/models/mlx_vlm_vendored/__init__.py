@@ -305,10 +305,12 @@ vendored copy differs by exactly the deviations listed):
   and ``_dflash_rounds`` threads a ``row_id`` into positioned sampling —
   pinned upstream hard-codes row 0, mirroring mtp's existing threading),
   mtp ``4ed467918bd24e26c60730d6d3529c6a9e633448b2fc6028829965bb1f4daad1``
-  (1 documented bugfix hunk: ``_mtp_rounds_batch`` budgets the block size
+  (2 documented bugfix hunks: ``_mtp_rounds_batch`` budgets the block size
   from unfinished rows only — pinned upstream lets a retained finished row
-  force ``bs <= 1`` and terminate the whole batched loop when compaction
-  is skipped),
+  force ``bs <= 1`` and terminate the whole batched loop when compaction is
+  skipped; and the hook-less ``_mtp_verify_without_logits`` fallback runs
+  each forward inside a cache transaction, aborting before its sink retry so
+  one verifier block is never appended twice),
   utils ``93d2ed29ac7b7c378536bf09d22eb570d5abb1f2d338dc550e59a84468b6a9ff``.
   ``__init__.py`` is a reduced shim (``VENDOR-DEVIATION(subset-exports)``):
   the upstream init also re-exports ``load_drafter``; the drafter registry
