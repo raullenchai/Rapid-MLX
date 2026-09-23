@@ -13,7 +13,7 @@ import Foundation
 /// Strict semantics, identical to `rapid_mlx/telemetry/registry.py` and to
 /// Orca's `src/main/telemetry/validator.ts`. Every validation failure drops
 /// the WHOLE event. A registry-declared `only_when` condition is the sole
-/// filtering rule: a valid property is omitted when its condition is false.
+/// conditional rule: when its condition is false, the whole event is rejected.
 ///
 /// - unknown event name                       -> `nil`
 /// - unknown property key                     -> `nil` (event dropped)

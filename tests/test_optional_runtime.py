@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import json
 import os
+import shlex
 import subprocess
 import sys
 import threading
@@ -41,7 +42,7 @@ def _run_real_missing_extra_dispatch(
     model: str,
     status: str = "absent",
     standalone: bool = False,
-) -> tuple[subprocess.CompletedProcess[str], list[dict[str, object]]]:
+) -> tuple[subprocess.CompletedProcess[str], list[SimpleNamespace]]:
     home = tmp_path / "home"
     telemetry_dir = home / ".rapid-mlx"
     telemetry_dir.mkdir(parents=True)
@@ -147,11 +148,7 @@ if lane == "vision-present":
     command = (
         [sys.executable, "-m", "rapid_mlx.server"]
         if standalone
-        else [
-            sys.executable,
-            "-c",
-            "from rapid_mlx.cli import cli_entrypoint; cli_entrypoint()",
-        ]
+        else [str(Path(sys.executable).with_name("rapid-mlx"))]
     )
     command.extend(
         ["--model", model, "--port", "0"]
@@ -172,12 +169,86 @@ if lane == "vision-present":
         sink.shutdown()
         thread.join(timeout=2.0)
         sink.server_close()
-    items = [
-        item
+    events = [
+        SimpleNamespace(
+            event=item["event"],
+            props=SimpleNamespace(**item["properties"]),
+        )
         for body in sink.bodies  # type: ignore[attr-defined]
         for item in json.loads(body)["batch"]
     ]
-    return proc, items
+    return proc, events
+
+
+def _expected_install_hint_line(extra: str) -> str:
+    if extra == "vision":
+        return (
+            f"    {shlex.quote(sys.executable)} -m pip install "
+            "--upgrade --force-reinstall 'rapid-mlx[vision]'"
+        )
+    if extra == "audio":
+        return "Install with: pip install 'rapid-mlx[audio]'"
+    if extra == "image":
+        return (
+            "  Error: image generation requires the `rapid-mlx[image]` Python "
+            "extra (`pip install 'rapid-mlx[image]'`)."
+        )
+    return f"pip install 'rapid-mlx[{extra}]'"
+
+
+def _assert_actionable_failure_contract(
+    stderr: str, *, extra: str, marker_reason: str
+) -> tuple[str, str]:
+    expected_marker = f"RAPID-MLX-STARTUP-FAILURE: {marker_reason} extra={extra}"
+    markers = [
+        line
+        for line in stderr.splitlines()
+        if line.startswith("RAPID-MLX-STARTUP-FAILURE:")
+    ]
+    assert markers == [expected_marker]
+
+    expected_hint = _expected_install_hint_line(extra)
+    assert stderr.splitlines().count(expected_hint) == 1
+    return expected_marker, expected_hint
+
+
+def _normalized_failure_text(stderr: str) -> str:
+    lines = stderr.splitlines()
+    marker_index = next(
+        index
+        for index, line in enumerate(lines)
+        if line.startswith("RAPID-MLX-STARTUP-FAILURE:")
+    )
+    log_prefixes = ("rapid-mlx: anonymous usage reporting", "INFO:", "WARNING:")
+    last_log_index = max(
+        (
+            index
+            for index, line in enumerate(lines[:marker_index])
+            if line.startswith(log_prefixes)
+        ),
+        default=-1,
+    )
+    return "\n".join(lines[last_log_index + 1 : marker_index]).strip()
+
+
+def _contracted_failure_events(
+    events: list[SimpleNamespace],
+) -> list[tuple[object, ...]]:
+    return [
+        (
+            event.event,
+            getattr(event.props, "state", None),
+            getattr(event.props, "failure_stage", None),
+            getattr(event.props, "error_class", None),
+            getattr(event.props, "extra", None),
+        )
+        for event in events
+        if event.event in {"server_start_state", "model_serve_failed"}
+        and (
+            event.event == "model_serve_failed"
+            or getattr(event.props, "state", None) == "failed"
+        )
+    ]
 
 
 @pytest.fixture(autouse=True)
@@ -310,7 +381,7 @@ def test_missing_lane_is_one_actionable_telemetered_failure(
 def test_real_dispatch_posts_one_actionable_failure_to_loopback(
     tmp_path, lane: str, model: str, status: str, marker_reason: str
 ) -> None:
-    proc, items = _run_real_missing_extra_dispatch(
+    proc, events = _run_real_missing_extra_dispatch(
         tmp_path,
         lane=lane,
         model=model,
@@ -319,56 +390,85 @@ def test_real_dispatch_posts_one_actionable_failure_to_loopback(
 
     assert proc.returncode == 2
     assert "Traceback" not in proc.stderr
-    assert f"rapid-mlx[{lane}]" in proc.stderr
-    assert f"RAPID-MLX-STARTUP-FAILURE: {marker_reason} extra={lane}" in proc.stderr
-    terminal = [
-        item["properties"]
-        for item in items
-        if item["event"] == "server_start_state"
-        and item["properties"]["state"] == "failed"
+    _assert_actionable_failure_contract(
+        proc.stderr,
+        extra=lane,
+        marker_reason=marker_reason,
+    )
+    assert (
+        len(
+            [
+                event
+                for event in events
+                if event.event == "server_start_state"
+                and event.props.state == "failed"
+                and event.props.failure_stage == "preflight"
+            ]
+        )
+        == 1
+    )
+    matching_failures = [
+        event
+        for event in events
+        if event.event == "model_serve_failed"
+        and event.props.error_class == "missing_extra"
+        and event.props.extra == lane
     ]
-    failures = [
-        item["properties"] for item in items if item["event"] == "model_serve_failed"
-    ]
-    assert len(terminal) == 1
-    assert terminal[0]["failure_stage"] == "preflight"
-    assert len(failures) == 1
-    assert failures[0]["error_class"] == "missing_extra"
-    assert failures[0]["extra"] == lane
-    assert "detail" not in failures[0]
+    assert len(matching_failures) == 1
+    assert not hasattr(matching_failures[0].props, "detail")
 
 
 def test_standalone_bonsai_dispatch_uses_same_handler_and_loopback_sink(
     tmp_path,
 ) -> None:
-    proc, items = _run_real_missing_extra_dispatch(
-        tmp_path,
+    standalone_proc, standalone_events = _run_real_missing_extra_dispatch(
+        tmp_path / "standalone",
         lane="bonsai",
         model="bonsai2-27b-2bit",
         standalone=True,
     )
-
-    assert proc.returncode == 2
-    assert "Traceback" not in proc.stderr
-    assert "rapid-mlx[vision]" in proc.stderr
-    assert (
-        "RAPID-MLX-STARTUP-FAILURE: runtime_extra_missing extra=vision" in proc.stderr
+    cli_proc, cli_events = _run_real_missing_extra_dispatch(
+        tmp_path / "cli",
+        lane="bonsai",
+        model="bonsai2-27b-2bit",
     )
-    terminal = [
-        item["properties"]
-        for item in items
-        if item["event"] == "server_start_state"
-        and item["properties"]["state"] == "failed"
+
+    for proc in (standalone_proc, cli_proc):
+        assert proc.returncode == 2
+        assert "Traceback" not in proc.stderr
+        _assert_actionable_failure_contract(
+            proc.stderr,
+            extra="vision",
+            marker_reason="runtime_extra_missing",
+        )
+
+    expected_events = [
+        ("server_start_state", "failed", "preflight", None, None),
+        ("model_serve_failed", None, None, "missing_extra", "vision"),
     ]
-    failures = [
-        item["properties"] for item in items if item["event"] == "model_serve_failed"
-    ]
-    assert len(terminal) == 1
-    assert terminal[0]["failure_stage"] == "preflight"
-    assert len(failures) == 1
-    assert failures[0]["error_class"] == "missing_extra"
-    assert failures[0]["extra"] == "vision"
-    assert "detail" not in failures[0]
+    standalone_contract = _contracted_failure_events(standalone_events)
+    cli_contract = _contracted_failure_events(cli_events)
+    assert standalone_contract == expected_events
+    assert cli_contract == standalone_contract
+    assert _normalized_failure_text(cli_proc.stderr) == _normalized_failure_text(
+        standalone_proc.stderr
+    )
+
+
+def test_actionable_failure_contract_rejects_corrupt_marker() -> None:
+    expected_hint = _expected_install_hint_line("vision")
+    stderr = (
+        f"missing vision runtime\n{expected_hint}\n"
+        "RAPID-MLX-STARTUP-FAILURE: "
+        "runtime_extra_missing extra=vision-corrupt\n"
+    )
+
+    with pytest.raises(AssertionError):
+        _assert_actionable_failure_contract(
+            stderr,
+            extra="vision",
+            marker_reason="runtime_extra_missing",
+        )
 
 
 def test_standalone_failure_guard_routes_optional_runtime_with_context(
@@ -431,7 +531,7 @@ def test_standalone_main_records_model_before_startup(monkeypatch) -> None:
 
 
 def test_real_dispatch_with_present_vision_extra_emits_no_failure(tmp_path) -> None:
-    proc, items = _run_real_missing_extra_dispatch(
+    proc, events = _run_real_missing_extra_dispatch(
         tmp_path,
         lane="vision-present",
         model="ui-tars-1.5-7b-4bit",
@@ -439,9 +539,24 @@ def test_real_dispatch_with_present_vision_extra_emits_no_failure(tmp_path) -> N
     )
 
     assert proc.returncode == 0
-    assert "RAPID-MLX-STARTUP-FAILURE" not in proc.stderr
+    markers = [
+        line
+        for line in proc.stderr.splitlines()
+        if line.startswith("RAPID-MLX-STARTUP-FAILURE:")
+    ]
+    assert markers == []
     assert "rapid-mlx[vision]" not in proc.stderr
-    assert not any(item["event"] == "model_serve_failed" for item in items)
+    assert (
+        len(
+            [
+                event
+                for event in events
+                if event.event == "server_start_state" and event.props.state == "failed"
+            ]
+        )
+        == 0
+    )
+    assert len([event for event in events if event.event == "model_serve_failed"]) == 0
 
 
 def test_bonsai_engine_preflight_is_missing_vision_failure(monkeypatch, capsys) -> None:
