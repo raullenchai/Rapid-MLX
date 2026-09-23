@@ -189,6 +189,40 @@ def test_load_policy_falls_back_to_eager_when_classification_fails(monkeypatch):
     assert server_start.load_policy("qwen3.5-4b-4bit") == "eager"
 
 
+def test_cli_main_emits_attempted_before_serve_preflight(monkeypatch, tmp_path):
+    from rapid_mlx.telemetry import consent_runtime
+
+    model = tmp_path / "local-model"
+    model.mkdir()
+    calls: list[tuple[str, object]] = []
+    monkeypatch.setattr(consent_runtime, "startup", lambda **_kwargs: None)
+    monkeypatch.setattr(cli, "_start_v2_lifecycle", lambda command: None)
+    monkeypatch.setattr(
+        server_start,
+        "load_policy",
+        lambda selected, *, lazy_load: calls.append(("policy", selected)) or "eager",
+    )
+    monkeypatch.setattr(
+        server_start,
+        "attempted",
+        lambda selected, *, load_policy: calls.append(("attempted", load_policy)),
+    )
+    monkeypatch.setattr(
+        cli,
+        "serve_command",
+        lambda args: calls.append(("serve", args.model)),
+    )
+    monkeypatch.setattr(sys, "argv", ["rapid-mlx", "serve", str(model)])
+
+    cli.main()
+
+    assert calls == [
+        ("policy", str(model)),
+        ("attempted", "eager"),
+        ("serve", str(model)),
+    ]
+
+
 def test_failure_context_preserves_original_exception(monkeypatch):
     events = _capture(monkeypatch)
     server_start.attempted("qwen3.5-4b-4bit", load_policy="eager")

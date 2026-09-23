@@ -1849,9 +1849,7 @@ class _StatusSpinner:
         self._enabled = bool(_isatty and _isatty()) and "NO_COLOR" not in os.environ
         self._done = False
         self._start = 0.0
-        self._thread = None
-        import threading
-
+        self._thread: threading.Thread | None = None
         self._stop_event = threading.Event()
         self._lock = threading.Lock()
         # Serializes the worker's frame writes against ``stop``'s clear so the
@@ -1885,7 +1883,6 @@ class _StatusSpinner:
 
     def __enter__(self) -> "_StatusSpinner":
         if self._enabled:
-            import threading
             import time
 
             self._start = time.monotonic()
@@ -1920,9 +1917,8 @@ class _StatusSpinner:
             finally:
                 self._draw_lock.release()
 
-    def __exit__(self, *exc: object) -> bool:
+    def __exit__(self, *exc: object) -> None:
         self.stop()
-        return False
 
 
 def _try_mirror_prefetch(
@@ -2266,14 +2262,15 @@ def _ensure_model_downloaded(
             )
 
         download_revision = pinned_image_revision or resolved_sha
-        download_kwargs = {"revision": download_revision} if download_revision else {}
         before = _model_pull_blob_identifier(model_name)
         if allow_patterns:
             snapshot_dir = snapshot_download(
-                model_name, allow_patterns=allow_patterns, **download_kwargs
+                model_name,
+                allow_patterns=allow_patterns,
+                revision=download_revision,
             )
         else:
-            snapshot_dir = snapshot_download(model_name, **download_kwargs)
+            snapshot_dir = snapshot_download(model_name, revision=download_revision)
         after = _model_pull_blob_identifier(model_name)
         if download_revision:
             pin_main_ref(model_name, download_revision)
@@ -4270,6 +4267,8 @@ def serve_command(args):
     # generic prefetch resolves repository HEAD and downloads every file,
     # including unreviewed scripts and samples, before that guarded path runs.
     if _owns_v41_product_download:
+        from rapid_mlx.telemetry.server_start import failure_stage
+
         from .models.deepseek_v41_native.artifacts import (
             MTP_ALLOW_PATTERNS,
             MTP_REPO,
@@ -4279,19 +4278,20 @@ def serve_command(args):
             download_target_snapshot,
         )
 
-        _check_disk_space(
-            args.model,
-            force=getattr(args, "force_disk_check", False),
-            revision_override=TARGET_REVISION,
-        )
-        download_target_snapshot()
-        _check_disk_space(
-            MTP_REPO,
-            force=getattr(args, "force_disk_check", False),
-            revision_override=MTP_REVISION,
-            allow_patterns=list(MTP_ALLOW_PATTERNS),
-        )
-        download_mtp_snapshot()
+        with failure_stage("download"):
+            _check_disk_space(
+                args.model,
+                force=getattr(args, "force_disk_check", False),
+                revision_override=TARGET_REVISION,
+            )
+            download_target_snapshot()
+            _check_disk_space(
+                MTP_REPO,
+                force=getattr(args, "force_disk_check", False),
+                revision_override=MTP_REVISION,
+                allow_patterns=list(MTP_ALLOW_PATTERNS),
+            )
+            download_mtp_snapshot()
     elif _owns_pinned_image_download:
         # Preserve the normal first-run disk guard even though the generic
         # downloader is intentionally bypassed. A complete pinned snapshot is

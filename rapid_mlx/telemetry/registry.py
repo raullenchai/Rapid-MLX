@@ -74,7 +74,58 @@ def load_registry() -> dict[str, Any]:
     """
 
     parsed: dict[str, Any] = json.loads(registry_path().read_text(encoding="utf-8"))
+    _validate_only_when_declarations(parsed)
     return parsed
+
+
+def _validate_only_when_declarations(reg: dict[str, Any]) -> None:
+    """Reject malformed conditional metadata before any event is validated."""
+
+    for event_name, event in reg["events"].items():
+        if event_name.startswith("_"):
+            continue
+        props = {
+            name: spec
+            for name, spec in event["props"].items()
+            if not name.startswith("_")
+        }
+        for prop_name, spec in props.items():
+            if "only_when" not in spec:
+                continue
+            only_when = spec["only_when"]
+            if not isinstance(only_when, dict) or not only_when:
+                raise ValueError(f"{event_name}.{prop_name}: invalid only_when shape")
+            for controller, allowed in only_when.items():
+                if (
+                    not isinstance(controller, str)
+                    or not controller
+                    or not isinstance(allowed, list)
+                    or not allowed
+                    or not all(isinstance(value, str) and value for value in allowed)
+                ):
+                    raise ValueError(
+                        f"{event_name}.{prop_name}: invalid only_when shape"
+                    )
+                controller_spec = props.get(controller)
+                if controller_spec is None:
+                    raise ValueError(
+                        f"{event_name}.{prop_name}: only_when controller "
+                        f"{controller!r} is not declared"
+                    )
+                enum_name = controller_spec.get("enum")
+                enum_values = reg["enums"].get(enum_name, {}).get("values")
+                if controller_spec.get("kind") != "enum" or not isinstance(
+                    enum_values, list
+                ):
+                    raise ValueError(
+                        f"{event_name}.{prop_name}: only_when controller "
+                        f"{controller!r} is not an enum"
+                    )
+                if any(value not in enum_values for value in allowed):
+                    raise ValueError(
+                        f"{event_name}.{prop_name}: only_when value is outside "
+                        f"controller {controller!r} enum"
+                    )
 
 
 def registry_version() -> int:
@@ -175,11 +226,17 @@ def _validate_props(
         value = props[name]
         only_when = spec.get("only_when")
         if only_when is not None:
-            if not isinstance(only_when, dict) or not all(
-                isinstance(controller, str)
-                and isinstance(allowed, list)
-                and all(isinstance(item, str) for item in allowed)
-                for controller, allowed in only_when.items()
+            if (
+                not isinstance(only_when, dict)
+                or not only_when
+                or not all(
+                    isinstance(controller, str)
+                    and bool(controller)
+                    and isinstance(allowed, list)
+                    and bool(allowed)
+                    and all(isinstance(item, str) and bool(item) for item in allowed)
+                    for controller, allowed in only_when.items()
+                )
             ):
                 _log_once(log_key, f"{label}: property {name!r} has bad only_when")
                 return None

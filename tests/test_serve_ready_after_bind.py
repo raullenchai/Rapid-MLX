@@ -742,6 +742,51 @@ def test_dspark_loader_failure_is_prepare_stage(monkeypatch):
     assert stages == ["prepare"]
 
 
+def test_dspark_first_artifact_download_failure_is_download_stage(monkeypatch):
+    from rapid_mlx import _version_check
+    from rapid_mlx.models.deepseek_v41_native import artifacts
+
+    args = cli.build_parser().parse_args(["serve", "deepseek-v41-flash-reap-2bit"])
+    args._original_alias = args.model
+    args.model = artifacts.TARGET_REPO
+    monkeypatch.setattr(_version_check, "prompt_upgrade_if_available", lambda: False)
+    monkeypatch.setattr(cli, "_check_alias_min_memory", lambda _name: None)
+    monkeypatch.setattr(cli, "_check_memory_capacity", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(cli, "_check_disk_space", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(
+        artifacts,
+        "download_target_snapshot",
+        lambda: (_ for _ in ()).throw(RuntimeError("cold target download failed")),
+    )
+    monkeypatch.setattr(
+        artifacts,
+        "download_mtp_snapshot",
+        lambda: (_ for _ in ()).throw(AssertionError("continued after target failure")),
+    )
+    events: list[tuple[str, str | None]] = []
+    monkeypatch.setattr("rapid_mlx.telemetry.track._upload_allowed", lambda: True)
+    monkeypatch.setattr(
+        "rapid_mlx.telemetry.posthog_sender.install_atexit", lambda: None
+    )
+    monkeypatch.setattr(
+        server_start,
+        "_track",
+        lambda state, *, failure_stage=None: events.append((state, failure_stage)),
+    )
+    server_start._reset_for_tests()
+    server_start.attempted(args.model, load_policy="eager")
+    try:
+        with (
+            pytest.raises(RuntimeError, match="cold target download failed"),
+            server_start.failure_stage("preflight"),
+        ):
+            cli.serve_command(args)
+    finally:
+        server_start._reset_for_tests()
+
+    assert events == [("attempted", None), ("failed", "download")]
+
+
 @pytest.mark.asyncio
 async def test_listener_creation_emits_ready_after_attempted(monkeypatch):
     events: list[dict[str, object]] = []

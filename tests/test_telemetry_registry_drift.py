@@ -20,6 +20,7 @@ from __future__ import annotations
 import json
 import os
 import re
+from copy import deepcopy
 from pathlib import Path
 
 import pytest
@@ -66,6 +67,28 @@ def _specs(mapping: dict) -> dict:
     """Drop the ``_``-prefixed documentation keys the JSON carries."""
 
     return {k: v for k, v in mapping.items() if not k.startswith("_")}
+
+
+def _load_mutated_registry(
+    monkeypatch, tmp_path, registry, only_when, *, controller_kind=None
+):
+    mutated = deepcopy(registry)
+    mutated["events"]["_test_documentation"] = {}
+    if controller_kind is not None:
+        mutated["events"]["server_start_state"]["props"]["state"]["kind"] = (
+            controller_kind
+        )
+    mutated["events"]["server_start_state"]["props"]["failure_stage"]["only_when"] = (
+        only_when
+    )
+    path = tmp_path / "events.json"
+    path.write_text(json.dumps(mutated), encoding="utf-8")
+    reg.load_registry.cache_clear()
+    monkeypatch.setattr(reg, "registry_path", lambda: path)
+    try:
+        return reg.load_registry()
+    finally:
+        reg.load_registry.cache_clear()
 
 
 # ------------------------------------------------- (a) self-consistency
@@ -176,6 +199,41 @@ def test_server_start_state_contract_is_exact(registry):
         "required": False,
         "only_when": {"state": ["failed"]},
     }
+
+
+@pytest.mark.parametrize(
+    "only_when",
+    [
+        {},
+        {"undeclared_controller": ["failed"]},
+        {"state": ["not-a-server-start-state"]},
+    ],
+    ids=["empty-shape-while-property-absent", "unknown-controller", "unknown-value"],
+)
+def test_registry_load_rejects_invalid_only_when(
+    monkeypatch, tmp_path, registry, only_when
+):
+    """Conditional metadata is registry schema, not caller-dependent data."""
+
+    reg._validate_only_when_declarations({"events": {"_documentation": {}}})
+    with pytest.raises(ValueError, match="only_when"):
+        _load_mutated_registry(monkeypatch, tmp_path, registry, only_when)
+    if only_when == {}:
+        with pytest.raises(ValueError, match="only_when"):
+            _load_mutated_registry(
+                monkeypatch,
+                tmp_path,
+                registry,
+                {"state": []},
+            )
+        with pytest.raises(ValueError, match="only_when"):
+            _load_mutated_registry(
+                monkeypatch,
+                tmp_path,
+                registry,
+                {"state": ["failed"]},
+                controller_kind="bool",
+            )
 
 
 def test_model_id_pattern_accepts_only_the_four_declared_shapes(registry):

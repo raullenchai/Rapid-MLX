@@ -148,6 +148,7 @@ struct TelemetryRegistry: Sendable {
                 let rawProps = body["props"] as? [String: Any]
             else { return nil }
             guard let props = decodeSpecs(rawProps) else { return nil }
+            guard validateOnlyWhen(props, enums: enums) else { return nil }
             events[name] = props
         }
 
@@ -188,6 +189,30 @@ struct TelemetryRegistry: Sendable {
             )
         }
         return out
+    }
+
+    /// Conditional metadata is registry schema, so validate it at decode time
+    /// even when callers omit the conditional property from an event.
+    private static func validateOnlyWhen(
+        _ specs: [String: PropertySpec],
+        enums: [String: [String]]
+    ) -> Bool {
+        for spec in specs.values {
+            guard let onlyWhen = spec.onlyWhen else { continue }
+            guard onlyWhen.isEmpty == false else { return false }
+            for (controller, allowed) in onlyWhen {
+                guard controller.isEmpty == false,
+                      allowed.isEmpty == false,
+                      allowed.allSatisfy({ $0.isEmpty == false }),
+                      let controllerSpec = specs[controller],
+                      controllerSpec.kind == "enum",
+                      let enumName = controllerSpec.enumName,
+                      let controllerValues = enums[enumName],
+                      allowed.allSatisfy(controllerValues.contains)
+                else { return false }
+            }
+        }
+        return true
     }
 
     // MARK: - Validation

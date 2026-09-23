@@ -28,7 +28,7 @@ rapid_mlx/bench/pflash_replication.py 1
 rapid_mlx/bench/tier_runner.py 2
 rapid_mlx/benchmark.py 8
 rapid_mlx/chat_mcp.py 2
-rapid_mlx/cli.py 26
+rapid_mlx/cli.py 23
 rapid_mlx/community_bench/submission.py 1
 rapid_mlx/disk_stream_patch.py 2
 rapid_mlx/doctor/env_health.py 1
