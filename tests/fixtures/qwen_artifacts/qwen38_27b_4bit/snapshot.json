@@ -3,6 +3,7 @@
   "revision": "aa985c29ff5b334cbfdcbbc787d47e66e9d9e456",
   "config_sha256": "48e2fc64017e1d7472373ce012ba1db172319e5fc1e4f81ccc97fea523b00d1b",
   "target_layout": "indexed_safetensors",
+  "index_sha256": "47d389bc0826b9f8d0ad495d0c4bf89d7e9398a50b77ae35771dde96e9db9229",
   "target_shards": [
     "model-00001-of-00003.safetensors",
     "model-00002-of-00003.safetensors",
@@ -10,6 +11,10 @@
   ],
   "mtp_candidate": {
     "path": "mtp/model.safetensors",
-    "storage": "symlink"
+    "storage": "symlink",
+    "blob_id": "76663c101e7e8ea9c0ae17bcb95183cd7f733ce424c912b8b264a7b1c48e4cc6",
+    "declared_sha256": "76663c101e7e8ea9c0ae17bcb95183cd7f733ce424c912b8b264a7b1c48e4cc6",
+    "declared_name": "model-mtp.safetensors",
+    "file_size_bytes": 238934137
   }
 }

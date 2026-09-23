@@ -7,56 +7,72 @@
 
 ## Completed scope
 
-- Added an offline `probe_qwen_artifact` helper. It reads only an
-  already-resolved `config.json`, a safetensors index, and file metadata. It
-  never imports/loads a model, reads tensor bytes, contacts the network, or
-  returns an absolute path.
-- Added complete config fixtures copied from the pinned Qwen3.5-4B,
-  Qwen3.6-35B, and Qwen3.8-27B cached revisions plus content-free snapshot
-  shape manifests.
-- Added closed artifact facts for model types, exact geometry, MTP head count,
-  quantization overrides, target shard completeness, and today's MTP locator.
-- Added an explicit resolver trust boundary. A 40-hex revision supplied by a
-  caller is `declared_immutable_unverified`; only a resolver that bound this
-  exact directory to source and revision may set `provenance_verified=True`.
+- `probe_qwen_artifact` remains offline and content-free. It reads canonical
+  JSON config/index metadata, optional sidecar `.sha256` receipts, and file
+  metadata; it never downloads, imports/loads a model, or opens tensor bytes.
+- `verify_hub_snapshot_binding` is the sole provenance mint. It validates the
+  configured Hugging Face cache root, canonical repo id, exact full 40-hex
+  snapshot revision, exact resolved directory, and optional canonical
+  subfolder. Its binding constructor is private and arbitrary temp paths,
+  mutable/spoofed revisions, URLs, userinfo, and path-like sources fail closed.
+- Status is redacted: only a validated canonical Hub repo/revision/subfolder
+  can be emitted. Local paths and unvalidated source strings are never echoed.
+- Target receipts preserve the canonical index digest, extracted shard set,
+  missing-shard state, full ordered layer layout, and—where available—the
+  nested MTP symlink/blob id, declared SHA-256, and file size.
+- `scripts/extract_qwen_artifact_receipt.py` reproduces the receipt against an
+  existing canonical Hub snapshot without network or tensor reads.
+- The dependency-free `rapid_mlx.qwen_artifact_layout` owns current locator
+  precedence and closed path classification. Both the production injector and
+  artifact truth use it, preventing duplicated locator behavior.
+- `to_verified_runtime_target` owns the fail-closed mapping to the core
+  target-only identity, including full ordered `layer_types`, quantization,
+  target-weight receipt, and cache geometry. It mints the opaque verified
+  wrapper only through core's private `_mint_verified_qwen_target` seam with
+  authority `rapid_mlx.qwen_artifact:hub-snapshot-v1`; no caller reconstructs
+  target identity ad hoc.
 
 ## Verified facts
 
-- Qwen3.8-27B revision `aa985c29…` is `qwen3_5` / `qwen3_5_text`, 64 layers;
-  it is not `qwen4_exp`.
-- That snapshot's target is a three-shard indexed checkpoint and its
-  `mtp/model.safetensors` is an HF-cache symlink accepted by the current
-  `_find_mtp_weights_file` contract without reading its contents.
-- The same root target-shard layout with the nested MTP file removed is not
-  accepted as an MTP sidecar.
-- Qwen3.6-35B has four target shards, 40 layers, 256 experts, and 80
-  per-module quantization overrides in its exact config.
-- Qwen3.5-4B's pinned snapshot has an index whose weight map names the single
-  root `model.safetensors`; it is therefore `indexed_safetensors` with one
-  shard, not an index-free single-file layout.
+- Qwen3.8-27B revision `aa985c29…` is `qwen3_5` / `qwen3_5_text`, not
+  `qwen4_exp`. Its target is a three-shard indexed checkpoint and its nested
+  `mtp/model.safetensors` is an HF-cache symlink with a matching blob/SHA
+  receipt. Removing that nested file leaves no MTP locator candidate.
+- Qwen3.6-35B is a four-shard indexed checkpoint with 40 ordered layers, 256
+  experts, and 80 per-module quantization overrides in the exact config.
+- Qwen3.5-4B's pinned snapshot has a real index whose weight map names the one
+  root `model.safetensors`; its canonical index digest is retained in the
+  fixture receipt. It is therefore a one-shard `indexed_safetensors` target.
+  The current production locator also returns that target trunk as its final
+  fallback.
 
-## Product bugs / risks found
+## Product bug / risk
 
 - `_find_mtp_weights_file` accepts a root `model.safetensors` by filename
-  alone. On the Qwen3.5-4B target snapshot this is the target trunk, not proof
-  of an MTP head. The probe reports this as `root_model_ambiguous`; a runtime
-  qualification row must not treat it as an accepted head without stronger
-  artifact provenance/content-shape validation.
-- Existing HF sidecar resolution can download a mutable repo id without an
-  immutable revision. B0 truth deliberately reports repo-only and unverified
-  40-hex declarations as non-immutable.
+  alone. For Qwen3.5-4B this is the target trunk, not an MTP head. Truth reports
+  `root_model_ambiguous`, attaches no head-like receipt, and exposes no
+  `accepted`/`eligible` field. Runtime qualification must categorically reject
+  this state until stronger sidecar evidence exists.
 
 ## Status integration decision
 
-`/v1/status` already has a clean future seam: it builds its payload from
-`engine.get_stats()`. No engine/runtime-plan object owns verified artifact
-provenance yet, so this slice does not add a misleading placeholder or derive
-identity from `cfg.model_name`. Integrate `truth.to_status_dict()` only after
-the B0 RuntimePlan/resolver stores the trusted truth on the engine.
+`/v1/status` already has a future seam through `engine.get_stats()`, but the
+current engine does not yet own the resolved RuntimePlan and verified artifact
+binding. This slice does not fabricate a placeholder from `cfg.model_name`.
+Publish the stored truth only when the integration resolver owns it.
+
+## Verification
+
+- `337 passed`: artifact truth plus MTP self-contained locator, injector,
+  batched-family capability, CLI wiring, and spec-decode suites.
+- Ruff passes on all changed Python files; `git diff --check` passes.
+- The conversion seam was exercised directly against corrected core commit
+  `e381ee37491e958967d514c7643758348777d957`; private minting succeeds and the
+  public `VerifiedQwenTarget` constructor rejects.
 
 ## Next concrete action
 
-Cherry-pick this slice into the B0 integration branch, then have the resolver
-construct the probe with source, immutable revision, and its explicit verified
-binding. Publish that stored object through the existing status stats seam;
-do not re-probe from a mutable repo name in the route.
+Cherry-pick the follow-up after the initial truth commit and corrected core,
+then wire the resolver to retain the resulting `VerifiedQwenTarget`. Re-mint a
+fresh matching wrapper after reload; do not persist a boolean proof or derive
+identity from a mutable repo-only locator.

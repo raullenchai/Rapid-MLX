@@ -53,6 +53,9 @@ from pathlib import Path
 from types import MappingProxyType
 from typing import Any
 
+from rapid_mlx.qwen_artifact_layout import (
+    find_mtp_weights_file as _find_mtp_weights_file,
+)
 from rapid_mlx.spec_decode.mtp.prompt_lookup import (
     MAX_COPY_DRAFT_TOKENS,
     PromptLookupPolicy,
@@ -389,29 +392,6 @@ def _resolve_sidecar_file(mtp_sidecar: str | Path) -> Path | None:
             exc,
         )
         return None
-
-
-def _find_mtp_weights_file(sidecar_dir: Path) -> Path | None:
-    """Pick the safetensors file inside ``sidecar_dir`` that holds the MTP head.
-
-    The mlx-community ``Qwen3.5-9B-MTP-4bit`` repo ships
-    ``model.safetensors`` (single shard, 131 MB, 31 keys, no ``mtp.``
-    prefix). Other vendors may ship ``model-mtp.safetensors`` (the
-    Qwen3-Next convention used by ``add_mtp_weights.py``). Try both.
-    """
-    candidates = (
-        # MTPLX packages the target trunk and its native head together.
-        # ``mlx_lm`` ignores this non-model shard while loading the trunk;
-        # the MTP injector consumes it explicitly.
-        sidecar_dir / "mtp.safetensors",
-        sidecar_dir / "model-mtp.safetensors",
-        sidecar_dir / "mtp" / "model.safetensors",
-        sidecar_dir / "model.safetensors",
-    )
-    for c in candidates:
-        if c.exists():
-            return c
-    return None
 
 
 def _load_mtplx_runtime_contract(weights_file: Path) -> dict[str, Any]:

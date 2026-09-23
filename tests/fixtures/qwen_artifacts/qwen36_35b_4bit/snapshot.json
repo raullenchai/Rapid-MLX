@@ -3,6 +3,7 @@
   "revision": "38740b847e4cb78f352aba30aa41c76e08e6eb46",
   "config_sha256": "970690379c5e41f79dad9d1e5a5bb0a47e8356705af87dd1b939faee520a8d0f",
   "target_layout": "indexed_safetensors",
+  "index_sha256": "5466a2a96e252ce9878fbcf30a9a5f45cf97dbc16fea6dcdb74b25183c2d6abb",
   "target_shards": [
     "model-00001-of-00004.safetensors",
     "model-00002-of-00004.safetensors",

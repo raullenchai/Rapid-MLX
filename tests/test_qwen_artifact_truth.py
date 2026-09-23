@@ -2,19 +2,33 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
+import sys
+from dataclasses import replace
 from pathlib import Path
+from types import ModuleType
 
 import pytest
 
+import rapid_mlx.qwen_artifact_layout as qwen_layout
 import rapid_mlx.runtime.qwen_artifact as qwen_artifact
+from rapid_mlx.qwen_artifact_layout import (
+    MTPWeightPathState,
+    MTPWeightStorage,
+    find_mtp_weights_file,
+    inspect_mtp_weights_layout,
+)
 from rapid_mlx.runtime.qwen_artifact import (
     ArtifactIdentityStatus,
-    CandidateStorage,
-    MTPFileShape,
+    ArtifactProbeError,
     TargetWeightLayout,
+    VerifiedHubSnapshotBinding,
     probe_qwen_artifact,
+    to_verified_runtime_target,
+    verify_hub_snapshot_binding,
 )
 from rapid_mlx.spec_decode.mtp.qwen3_5_inject import _find_mtp_weights_file
+from scripts.extract_qwen_artifact_receipt import main as extract_receipt
 
 FIXTURES = Path(__file__).parent / "fixtures" / "qwen_artifacts"
 
@@ -25,11 +39,9 @@ EXPECTED = {
         "hidden": 2560,
         "layers": 32,
         "layer_counts": {"full_attention": 8, "linear_attention": 24},
-        "target_layout": TargetWeightLayout.INDEXED_SAFETENSORS,
-        "target_shards": 1,
         "quant_overrides": 0,
-        "mtp_shape": MTPFileShape.ROOT_MODEL_AMBIGUOUS,
-        "mtp_storage": CandidateStorage.REGULAR_FILE,
+        "target_layout": TargetWeightLayout.INDEXED_SAFETENSORS,
+        "mtp_state": MTPWeightPathState.ROOT_MODEL_AMBIGUOUS,
     },
     "qwen36_35b_4bit": {
         "outer": "qwen3_5_moe",
@@ -37,11 +49,9 @@ EXPECTED = {
         "hidden": 2048,
         "layers": 40,
         "layer_counts": {"full_attention": 10, "linear_attention": 30},
-        "target_layout": TargetWeightLayout.INDEXED_SAFETENSORS,
-        "target_shards": 4,
         "quant_overrides": 80,
-        "mtp_shape": MTPFileShape.NONE,
-        "mtp_storage": CandidateStorage.NONE,
+        "target_layout": TargetWeightLayout.INDEXED_SAFETENSORS,
+        "mtp_state": MTPWeightPathState.NOT_FOUND,
     },
     "qwen38_27b_4bit": {
         "outer": "qwen3_5",
@@ -49,13 +59,20 @@ EXPECTED = {
         "hidden": 5120,
         "layers": 64,
         "layer_counts": {"full_attention": 16, "linear_attention": 48},
-        "target_layout": TargetWeightLayout.INDEXED_SAFETENSORS,
-        "target_shards": 3,
         "quant_overrides": 0,
-        "mtp_shape": MTPFileShape.NESTED_MODEL,
-        "mtp_storage": CandidateStorage.SYMLINK,
+        "target_layout": TargetWeightLayout.INDEXED_SAFETENSORS,
+        "mtp_state": MTPWeightPathState.NESTED_MODEL,
     },
 }
+
+
+@pytest.fixture(autouse=True)
+def _configured_test_hub_root(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    hub = tmp_path / "hub"
+    hub.mkdir(exist_ok=True)
+    monkeypatch.setattr(
+        qwen_artifact, "_configured_hub_cache_root", lambda: hub.resolve()
+    )
 
 
 def _fixture(name: str) -> tuple[Path, dict]:
@@ -63,108 +80,138 @@ def _fixture(name: str) -> tuple[Path, dict]:
     return root, json.loads((root / "snapshot.json").read_text(encoding="utf-8"))
 
 
-def _materialize_snapshot(
-    tmp_path: Path, name: str, *, include_mtp: bool = True
-) -> tuple[Path, dict]:
-    fixture, metadata = _fixture(name)
-    snapshot = tmp_path / name
-    snapshot.mkdir()
-    config_bytes = (fixture / "config.json").read_bytes()
-    (snapshot / "config.json").write_bytes(config_bytes)
+def _canonical_digest(value: object) -> str:
+    encoded = json.dumps(
+        value, sort_keys=True, separators=(",", ":"), ensure_ascii=False
+    ).encode("utf-8")
+    return hashlib.sha256(encoded).hexdigest()
 
-    shards = metadata["target_shards"]
-    weight_map = {}
-    for index, shard in enumerate(shards):
-        (snapshot / shard).touch()
-        weight_map[f"fixture.tensor.{index}"] = shard
+
+def _materialize_snapshot(
+    tmp_path: Path,
+    name: str,
+    *,
+    include_mtp: bool = True,
+    subfolder: str | None = None,
+) -> tuple[Path, Path, dict]:
+    fixture, metadata = _fixture(name)
+    hub = tmp_path / "hub"
+    repo_cache = hub / ("models--" + metadata["source_repo"].replace("/", "--"))
+    snapshot = repo_cache / "snapshots" / metadata["revision"]
+    if subfolder is not None:
+        snapshot = snapshot / subfolder
+    snapshot.mkdir(parents=True)
+    (repo_cache / "blobs").mkdir()
+    (snapshot / "config.json").write_bytes((fixture / "config.json").read_bytes())
     if metadata["target_layout"] == "indexed_safetensors":
-        (snapshot / "model.safetensors.index.json").write_text(
-            json.dumps({"weight_map": weight_map}), encoding="utf-8"
+        (snapshot / "model.safetensors.index.json").write_bytes(
+            (fixture / "model.safetensors.index.json").read_bytes()
         )
+
+    for shard in metadata["target_shards"]:
+        target = snapshot / shard
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.touch()
 
     candidate = metadata["mtp_candidate"]
     if include_mtp and candidate is not None:
         candidate_path = snapshot / candidate["path"]
         candidate_path.parent.mkdir(parents=True)
-        if candidate["storage"] == "symlink":
-            blob = tmp_path / f"{name}-mtp-blob"
-            blob.touch()
-            candidate_path.symlink_to(blob)
-        else:  # pragma: no cover - fixtures currently exercise the HF symlink shape
-            candidate_path.touch()
-    return snapshot, metadata
+        blob = repo_cache / "blobs" / candidate["blob_id"]
+        blob.touch()
+        os.truncate(blob, candidate["file_size_bytes"])
+        relative_blob = os.path.relpath(blob, candidate_path.parent)
+        candidate_path.symlink_to(relative_blob)
+        candidate_path.with_name(candidate_path.name + ".sha256").write_text(
+            f"{candidate['declared_sha256']}  {candidate['declared_name']}\n",
+            encoding="utf-8",
+        )
+    return snapshot, hub, metadata
+
+
+def _binding(snapshot: Path, metadata: dict, *, subfolder: str | None = None):
+    binding = verify_hub_snapshot_binding(
+        snapshot,
+        repo_id=metadata["source_repo"],
+        revision=metadata["revision"],
+        subfolder=subfolder,
+    )
+    assert binding is not None
+    return binding
 
 
 @pytest.mark.parametrize("name", sorted(EXPECTED))
-def test_exact_cached_qwen_config_and_snapshot_facts(tmp_path: Path, name: str):
-    snapshot, metadata = _materialize_snapshot(tmp_path, name)
+def test_exact_cached_qwen_config_index_and_snapshot_facts(tmp_path: Path, name: str):
+    snapshot, hub, metadata = _materialize_snapshot(tmp_path, name)
     expected = EXPECTED[name]
+    fixture = FIXTURES / name
+    config = json.loads((fixture / "config.json").read_text(encoding="utf-8"))
+    assert _canonical_digest(config) == metadata["config_sha256"]
+    if metadata["target_layout"] == "indexed_safetensors":
+        index = json.loads(
+            (fixture / "model.safetensors.index.json").read_text(encoding="utf-8")
+        )
+        assert _canonical_digest(index) == metadata["index_sha256"]
+        assert tuple(sorted(set(index["weight_map"].values()))) == tuple(
+            metadata["target_shards"]
+        )
+    else:
+        assert metadata["target_layout"] == "single_safetensors"
+        assert "index_sha256" not in metadata
+        assert not (fixture / "model.safetensors.index.json").exists()
 
-    # The fixtures preserve the complete parsed config.json objects from the
-    # pinned cached revisions. A casual fixture simplification must not
-    # silently redefine the canonical artifact truth preserved here.
-    fixture_config = json.loads(
-        (FIXTURES / name / "config.json").read_text(encoding="utf-8")
-    )
-    canonical_config = json.dumps(
-        fixture_config, sort_keys=True, separators=(",", ":"), ensure_ascii=False
-    ).encode("utf-8")
-    assert hashlib.sha256(canonical_config).hexdigest() == metadata["config_sha256"]
+    truth = probe_qwen_artifact(snapshot, binding=_binding(snapshot, metadata))
 
-    truth = probe_qwen_artifact(
-        snapshot,
-        source_repo=metadata["source_repo"],
-        revision=metadata["revision"],
-        provenance_verified=True,
-    )
-
-    assert truth.identity_status is ArtifactIdentityStatus.RESOLVER_VERIFIED_IMMUTABLE
+    assert truth.identity_status is ArtifactIdentityStatus.VERIFIED_HUB_SNAPSHOT
+    assert truth.source_repo == metadata["source_repo"]
+    assert truth.revision == metadata["revision"]
+    assert truth.verification_id.startswith("hf-snapshot-sha256:")
     assert truth.config_sha256 == metadata["config_sha256"]
     assert truth.outer_model_type == expected["outer"]
     assert truth.text_model_type == expected["text"]
     assert truth.mtp_num_hidden_layers == 1
     assert truth.geometry.hidden_size == expected["hidden"]
     assert truth.geometry.num_hidden_layers == expected["layers"]
+    assert len(truth.geometry.layer_types) == expected["layers"]
     assert dict(truth.geometry.layer_type_counts) == expected["layer_counts"]
-    assert truth.geometry.layer_types_sha256 is not None
-    assert truth.quantization.bits == 4
-    assert truth.quantization.group_size == 64
-    assert truth.quantization.mode == "affine"
     assert truth.quantization.override_count == expected["quant_overrides"]
     assert truth.target_weights.layout is expected["target_layout"]
-    assert truth.target_weights.shard_count == expected["target_shards"]
-    assert truth.mtp_locator.shape is expected["mtp_shape"]
-    assert truth.mtp_locator.storage is expected["mtp_storage"]
-
+    assert truth.target_weights.shards == tuple(metadata["target_shards"])
+    assert truth.target_weights.index_sha256 == metadata.get("index_sha256")
+    assert truth.mtp_locator.state is expected["mtp_state"]
     status = truth.to_status_dict()
     assert status["identity_is_immutable"] is True
     assert str(tmp_path) not in json.dumps(status)
 
 
 def test_qwen38_is_qwen35_text_not_qwen4_exp(tmp_path: Path):
-    snapshot, metadata = _materialize_snapshot(tmp_path, "qwen38_27b_4bit")
-
-    truth = probe_qwen_artifact(
-        snapshot,
-        source_repo=metadata["source_repo"],
-        revision=metadata["revision"],
-        provenance_verified=True,
-    )
-
+    snapshot, hub, metadata = _materialize_snapshot(tmp_path, "qwen38_27b_4bit")
+    truth = probe_qwen_artifact(snapshot, binding=_binding(snapshot, metadata))
     assert (truth.outer_model_type, truth.text_model_type) == (
         "qwen3_5",
         "qwen3_5_text",
     )
-    assert "qwen4_exp" not in {
-        truth.outer_model_type,
-        truth.text_model_type,
-    }
+    assert "qwen4_exp" not in {truth.outer_model_type, truth.text_model_type}
 
 
-def test_qwen38_nested_sidecar_symlink_is_accepted_without_reading_weights(
+def test_qwen35_pinned_manifest_requires_real_single_shard_index_receipt(
+    tmp_path: Path,
+):
+    snapshot, _hub, metadata = _materialize_snapshot(tmp_path, "qwen35_4b_4bit")
+    assert metadata["index_sha256"] == (
+        "ec2c1084ed0e9f71599ff497f5f07489bddaf8774f6346ee2117e5ce71ff3ca8"
+    )
+    truth = probe_qwen_artifact(snapshot, binding=_binding(snapshot, metadata))
+    assert truth.target_weights.layout is TargetWeightLayout.INDEXED_SAFETENSORS
+    assert truth.target_weights.shards == ("model.safetensors",)
+    assert truth.target_weights.index_sha256 == metadata["index_sha256"]
+    assert truth.mtp_locator.state is MTPWeightPathState.ROOT_MODEL_AMBIGUOUS
+
+
+def test_qwen38_nested_sidecar_has_symlink_blob_receipt_without_weight_read(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ):
-    snapshot, metadata = _materialize_snapshot(tmp_path, "qwen38_27b_4bit")
+    snapshot, hub, metadata = _materialize_snapshot(tmp_path, "qwen38_27b_4bit")
     original_read_bytes = Path.read_bytes
 
     def _reject_weight_reads(path: Path) -> bytes:
@@ -173,98 +220,150 @@ def test_qwen38_nested_sidecar_symlink_is_accepted_without_reading_weights(
         return original_read_bytes(path)
 
     monkeypatch.setattr(Path, "read_bytes", _reject_weight_reads)
-    truth = probe_qwen_artifact(
-        snapshot,
-        source_repo=metadata["source_repo"],
-        revision=metadata["revision"],
-        provenance_verified=True,
-    )
-
-    assert _find_mtp_weights_file(snapshot) == snapshot / "mtp/model.safetensors"
-    assert truth.mtp_locator.accepted is True
+    truth = probe_qwen_artifact(snapshot, binding=_binding(snapshot, metadata))
+    candidate = metadata["mtp_candidate"]
+    assert truth.mtp_locator.state is MTPWeightPathState.NESTED_MODEL
+    assert truth.mtp_locator.storage is MTPWeightStorage.SYMLINK
     assert truth.mtp_locator.relative_path == "mtp/model.safetensors"
-    assert truth.mtp_locator.storage is CandidateStorage.SYMLINK
+    assert truth.mtp_locator.hf_blob_id == candidate["blob_id"]
+    assert truth.mtp_locator.declared_sha256 == candidate["declared_sha256"]
+    assert truth.mtp_locator.declared_sha256_matches_blob is True
+    assert truth.mtp_locator.file_size_bytes == candidate["file_size_bytes"]
 
 
-def test_root_sharded_target_layout_alone_is_not_an_mtp_sidecar(tmp_path: Path):
-    snapshot, metadata = _materialize_snapshot(
+def test_root_model_is_categorically_ambiguous_not_head_receipt(tmp_path: Path):
+    snapshot, hub, metadata = _materialize_snapshot(tmp_path, "qwen35_4b_4bit")
+    truth = probe_qwen_artifact(snapshot, binding=_binding(snapshot, metadata))
+    assert _find_mtp_weights_file(snapshot) == snapshot / "model.safetensors"
+    assert truth.mtp_locator.state is MTPWeightPathState.ROOT_MODEL_AMBIGUOUS
+    assert truth.mtp_locator.hf_blob_id is None
+    assert truth.mtp_locator.declared_sha256 is None
+    assert "accepted" not in truth.mtp_locator.to_status_dict()
+    assert "eligible" not in truth.mtp_locator.to_status_dict()
+
+
+def test_root_sharded_target_layout_alone_is_not_a_locator_candidate(tmp_path: Path):
+    snapshot, hub, metadata = _materialize_snapshot(
         tmp_path, "qwen38_27b_4bit", include_mtp=False
     )
-
-    assert _find_mtp_weights_file(snapshot) is None
-    truth = probe_qwen_artifact(
-        snapshot,
-        source_repo=metadata["source_repo"],
-        revision=metadata["revision"],
-        provenance_verified=True,
-    )
-    assert truth.target_weights.layout is TargetWeightLayout.INDEXED_SAFETENSORS
-    assert truth.target_weights.shard_count == 3
-    assert truth.mtp_locator.accepted is False
-    assert truth.mtp_locator.shape is MTPFileShape.NONE
+    truth = probe_qwen_artifact(snapshot, binding=_binding(snapshot, metadata))
+    assert find_mtp_weights_file(snapshot) is None
+    assert truth.mtp_locator.state is MTPWeightPathState.NOT_FOUND
 
 
 @pytest.mark.parametrize(
-    ("source_repo", "revision", "verified", "expected"),
+    "repo_id",
     [
-        (None, None, False, ArtifactIdentityStatus.MISSING_SOURCE),
-        (None, "a" * 40, True, ArtifactIdentityStatus.MISSING_SOURCE),
-        ("org/model", None, True, ArtifactIdentityStatus.MISSING_REVISION),
-        ("org/model", "main", True, ArtifactIdentityStatus.MUTABLE_REVISION),
-        ("org/model", "a" * 39, True, ArtifactIdentityStatus.MUTABLE_REVISION),
-        (
-            "org/model",
-            "a" * 40,
-            False,
-            ArtifactIdentityStatus.DECLARED_IMMUTABLE_UNVERIFIED,
-        ),
-        (
-            "org/model",
-            "a" * 40,
-            True,
-            ArtifactIdentityStatus.RESOLVER_VERIFIED_IMMUTABLE,
-        ),
+        "https://huggingface.co/org/model",
+        "user@example.com/model",
+        "/local/model",
+        "file://local/model",
+        "org/model?token=secret",
+        "org/model#fragment",
+        "org/repo/extra",
+        "org--alias/model",
+        "org..alias/model",
     ],
 )
-def test_artifact_identity_fails_closed_without_verified_revision(
-    tmp_path: Path,
-    source_repo: str | None,
-    revision: str | None,
-    verified: bool,
-    expected: ArtifactIdentityStatus,
-):
-    snapshot, _metadata = _materialize_snapshot(tmp_path, "qwen36_35b_4bit")
+def test_noncanonical_sources_cannot_be_bound_or_echoed(tmp_path: Path, repo_id: str):
+    snapshot, hub, metadata = _materialize_snapshot(tmp_path, "qwen36_35b_4bit")
+    assert (
+        verify_hub_snapshot_binding(
+            snapshot,
+            repo_id=repo_id,
+            revision=metadata["revision"],
+        )
+        is None
+    )
+    status = probe_qwen_artifact(snapshot).to_status_dict()
+    assert status["source_repo"] is None
+    assert status["revision"] is None
+    assert repo_id not in json.dumps(status)
 
-    truth = probe_qwen_artifact(
-        snapshot,
-        source_repo=source_repo,
-        revision=revision,
-        provenance_verified=verified,
+
+def test_arbitrary_tmp_dir_and_spoofed_revision_stay_unverified(tmp_path: Path):
+    snapshot, hub, metadata = _materialize_snapshot(tmp_path, "qwen36_35b_4bit")
+    arbitrary = tmp_path / "arbitrary"
+    arbitrary.mkdir()
+    assert (
+        verify_hub_snapshot_binding(
+            arbitrary,
+            repo_id=metadata["source_repo"],
+            revision=metadata["revision"],
+        )
+        is None
+    )
+    assert (
+        verify_hub_snapshot_binding(
+            snapshot,
+            repo_id=metadata["source_repo"],
+            revision="0" * 40,
+        )
+        is None
+    )
+    assert (
+        probe_qwen_artifact(snapshot).identity_status
+        is ArtifactIdentityStatus.UNVERIFIED_SNAPSHOT
     )
 
-    assert truth.identity_status is expected
-    assert truth.to_status_dict()["identity_is_immutable"] is (
-        expected is ArtifactIdentityStatus.RESOLVER_VERIFIED_IMMUTABLE
+
+def test_canonical_hub_subfolder_is_bound_and_reported(tmp_path: Path):
+    subfolder = "weights/mlx"
+    snapshot, _hub, metadata = _materialize_snapshot(
+        tmp_path, "qwen36_35b_4bit", subfolder=subfolder
+    )
+    binding = _binding(snapshot, metadata, subfolder=subfolder)
+    truth = probe_qwen_artifact(snapshot, binding=binding)
+    assert truth.identity_status is ArtifactIdentityStatus.VERIFIED_HUB_SNAPSHOT
+    assert truth.target_subfolder == subfolder
+    assert truth.to_status_dict()["target_subfolder"] == subfolder
+
+
+@pytest.mark.parametrize(
+    "subfolder",
+    ["../escape", "/absolute", "weights//mlx", "weights/./mlx", "weights\\mlx"],
+)
+def test_noncanonical_hub_subfolder_fails_closed(tmp_path: Path, subfolder: str):
+    snapshot, _hub, metadata = _materialize_snapshot(tmp_path, "qwen36_35b_4bit")
+    assert (
+        verify_hub_snapshot_binding(
+            snapshot,
+            repo_id=metadata["source_repo"],
+            revision=metadata["revision"],
+            subfolder=subfolder,
+        )
+        is None
     )
 
 
-def test_spoofed_revision_string_is_not_verified_by_syntax(tmp_path: Path):
-    snapshot, metadata = _materialize_snapshot(tmp_path, "qwen38_27b_4bit")
+def test_verified_binding_constructor_is_not_a_public_trust_bit(tmp_path: Path):
+    with pytest.raises(TypeError, match="verify_hub_snapshot_binding"):
+        VerifiedHubSnapshotBinding(  # type: ignore[call-arg]
+            repo_id="org/model",
+            revision="a" * 40,
+            subfolder=None,
+            artifact_dir=tmp_path,
+            repo_cache_dir=tmp_path,
+        )
 
-    truth = probe_qwen_artifact(
-        snapshot,
-        source_repo=metadata["source_repo"],
-        revision="0" * 40,
-    )
 
-    assert truth.identity_status is ArtifactIdentityStatus.DECLARED_IMMUTABLE_UNVERIFIED
-    assert truth.to_status_dict()["identity_is_immutable"] is False
+def test_binding_for_one_snapshot_cannot_label_another(tmp_path: Path):
+    snapshot, hub, metadata = _materialize_snapshot(tmp_path, "qwen36_35b_4bit")
+    binding = _binding(snapshot, metadata)
+    other = tmp_path / "other"
+    other.mkdir()
+    (other / "config.json").write_text('{"model_type":"qwen3_5"}')
+    truth = probe_qwen_artifact(other, binding=binding)
+    assert truth.identity_status is ArtifactIdentityStatus.BINDING_MISMATCH
+    assert truth.source_repo is None
+    assert truth.revision is None
+    assert truth.verification_id is None
 
 
 @pytest.mark.parametrize(
     ("shard_name", "expected_layout"),
     [
-        ("model-00002-of-00002.safetensors", TargetWeightLayout.INCOMPLETE_INDEX),
+        ("model-99999-of-99999.safetensors", TargetWeightLayout.INCOMPLETE_INDEX),
         ("../outside.safetensors", TargetWeightLayout.INVALID_INDEX),
         ("/tmp/outside.safetensors", TargetWeightLayout.INVALID_INDEX),
     ],
@@ -272,59 +371,112 @@ def test_spoofed_revision_string_is_not_verified_by_syntax(tmp_path: Path):
 def test_target_index_fails_closed_on_missing_or_escaping_shard(
     tmp_path: Path, shard_name: str, expected_layout: TargetWeightLayout
 ):
-    snapshot, metadata = _materialize_snapshot(tmp_path, "qwen36_35b_4bit")
+    snapshot, hub, metadata = _materialize_snapshot(tmp_path, "qwen36_35b_4bit")
     index_path = snapshot / "model.safetensors.index.json"
     index = json.loads(index_path.read_text(encoding="utf-8"))
     index["weight_map"]["fixture.missing"] = shard_name
     index_path.write_text(json.dumps(index), encoding="utf-8")
-
-    truth = probe_qwen_artifact(
-        snapshot,
-        source_repo=metadata["source_repo"],
-        revision=metadata["revision"],
-        provenance_verified=True,
-    )
-
+    truth = probe_qwen_artifact(snapshot, binding=_binding(snapshot, metadata))
     assert truth.target_weights.layout is expected_layout
-    if expected_layout is TargetWeightLayout.INCOMPLETE_INDEX:
-        assert truth.target_weights.missing_shard_count == 1
+    assert truth.target_weights.index_sha256 == _canonical_digest(index)
 
 
-def test_future_unknown_mtp_locator_path_fails_closed(
+def test_production_injector_uses_shared_locator_with_identical_precedence(
+    tmp_path: Path,
+):
+    nested = tmp_path / "mtp" / "model.safetensors"
+    nested.parent.mkdir()
+    nested.touch()
+    explicit = tmp_path / "model-mtp.safetensors"
+    explicit.touch()
+    assert _find_mtp_weights_file(tmp_path) == explicit
+    assert find_mtp_weights_file(tmp_path) == explicit
+    layout = inspect_mtp_weights_layout(tmp_path)
+    assert layout.state is MTPWeightPathState.ROOT_MODEL_MTP
+    assert layout.candidate == explicit
+
+
+def test_future_unknown_locator_path_fails_closed(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ):
-    snapshot, metadata = _materialize_snapshot(tmp_path, "qwen36_35b_4bit")
-    unknown = snapshot / "future" / "head.safetensors"
+    unknown = tmp_path / "future" / "head.safetensors"
     unknown.parent.mkdir()
     unknown.touch()
-    monkeypatch.setattr(qwen_artifact, "_find_mtp_weights_file", lambda _path: unknown)
+    monkeypatch.setattr(qwen_layout, "find_mtp_weights_file", lambda _path: unknown)
+    layout = inspect_mtp_weights_layout(tmp_path)
+    assert layout.state is MTPWeightPathState.UNSUPPORTED
+    assert layout.relative_path is None
+    assert layout.candidate is None
 
-    truth = probe_qwen_artifact(
-        snapshot,
-        source_repo=metadata["source_repo"],
-        revision=metadata["revision"],
-        provenance_verified=True,
+
+def test_receipt_extractor_reproduces_fixture_truth(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+):
+    snapshot, hub, metadata = _materialize_snapshot(tmp_path, "qwen38_27b_4bit")
+    assert (
+        extract_receipt(
+            [
+                "--snapshot-dir",
+                str(snapshot),
+                "--repo-id",
+                metadata["source_repo"],
+                "--revision",
+                metadata["revision"],
+            ]
+        )
+        == 0
     )
+    receipt = json.loads(capsys.readouterr().out)
+    assert receipt["schema_version"] == 1
+    assert receipt["target_weights"]["index_sha256"] == metadata["index_sha256"]
+    assert receipt["target_weights"]["shards"] == metadata["target_shards"]
+    assert receipt["mtp_locator"]["hf_blob_id"] == metadata["mtp_candidate"]["blob_id"]
+    assert len(receipt["geometry"]["layer_types"]) == 64
+    assert str(tmp_path) not in json.dumps(receipt)
 
-    assert truth.mtp_locator.accepted is False
-    assert truth.mtp_locator.shape is MTPFileShape.UNSUPPORTED
-    assert truth.mtp_locator.relative_path is None
 
-
-def test_mtp_locator_candidate_outside_snapshot_fails_closed(
+def test_conversion_seam_owns_exact_target_only_mapping(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ):
-    snapshot, metadata = _materialize_snapshot(tmp_path, "qwen36_35b_4bit")
-    outside = tmp_path / "outside.safetensors"
-    outside.touch()
-    monkeypatch.setattr(qwen_artifact, "_find_mtp_weights_file", lambda _path: outside)
+    snapshot, hub, metadata = _materialize_snapshot(tmp_path, "qwen36_35b_4bit")
+    truth = probe_qwen_artifact(snapshot, binding=_binding(snapshot, metadata))
+    fake = ModuleType("rapid_mlx.qwen_runtime_plan")
 
-    truth = probe_qwen_artifact(
-        snapshot,
-        source_repo=metadata["source_repo"],
-        revision=metadata["revision"],
-        provenance_verified=True,
+    class _Target:
+        def __init__(self, **kwargs):
+            self.__dict__.update(kwargs)
+
+    class _Verified:
+        def __init__(self, **kwargs):
+            self.__dict__.update(kwargs)
+
+    def _mint_verified(**kwargs):
+        return _Verified(**kwargs)
+
+    fake.QwenTargetIdentity = _Target
+    fake._mint_verified_qwen_target = _mint_verified
+    monkeypatch.setitem(sys.modules, "rapid_mlx.qwen_runtime_plan", fake)
+    converted = to_verified_runtime_target(truth)
+    assert converted.verification_id == truth.verification_id
+    assert converted.verification_authority == "rapid_mlx.qwen_artifact:hub-snapshot-v1"
+    assert converted.identity.target_repo == metadata["source_repo"]
+    assert converted.identity.layer_layout == truth.geometry.layer_types
+    assert converted.identity.cache_geometry == tuple(
+        sorted(converted.identity.cache_geometry)
+    )
+    assert "drafter" not in converted.identity.__dict__
+    assert (
+        json.loads(converted.identity.weight_layout)["index_sha256"]
+        == metadata["index_sha256"]
     )
 
-    assert truth.mtp_locator.accepted is False
-    assert truth.mtp_locator.shape is MTPFileShape.UNSUPPORTED
+
+def test_conversion_seam_rejects_unverified_and_incomplete_layers(tmp_path: Path):
+    snapshot, hub, metadata = _materialize_snapshot(tmp_path, "qwen36_35b_4bit")
+    unverified = probe_qwen_artifact(snapshot)
+    verified = probe_qwen_artifact(snapshot, binding=_binding(snapshot, metadata))
+    with pytest.raises(ArtifactProbeError, match="verified Hub identity"):
+        to_verified_runtime_target(unverified)
+    incomplete = replace(verified, geometry=replace(verified.geometry, layer_types=()))
+    with pytest.raises(ArtifactProbeError, match="ordered layer layout"):
+        to_verified_runtime_target(incomplete)
