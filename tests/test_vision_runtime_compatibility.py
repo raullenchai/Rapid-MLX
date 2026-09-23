@@ -10,6 +10,7 @@ from types import ModuleType
 import pytest
 
 from rapid_mlx.models import mllm
+from rapid_mlx.runtime.optional_runtime import OptionalRuntimeMissing
 
 
 def test_vision_runtime_reports_incompatible_mlx_vlm_version(monkeypatch):
@@ -23,7 +24,7 @@ def test_vision_runtime_reports_incompatible_mlx_vlm_version(monkeypatch):
 
 
 def test_cli_incompatible_runtime_is_actionable_and_not_reported_as_oom(
-    monkeypatch, capsys
+    monkeypatch,
 ):
     monkeypatch.setattr(
         mllm,
@@ -33,15 +34,14 @@ def test_cli_incompatible_runtime_is_actionable_and_not_reported_as_oom(
     monkeypatch.setattr(mllm, "_managed_desktop_runtime", lambda: False)
     monkeypatch.setattr(mllm.sys, "executable", "/active/runtime/bin/python")
 
-    with pytest.raises(SystemExit) as exc_info:
+    with pytest.raises(OptionalRuntimeMissing) as exc_info:
         mllm.require_mlx_vlm_or_exit("publisher/vision-model")
 
-    assert exc_info.value.code == 2
-    stderr = capsys.readouterr().err
-    assert "installed 0.7.0" in stderr
-    assert "not a Metal out-of-memory error" in stderr
-    assert "/active/runtime/bin/python -m pip" in stderr
-    assert f"mlx-vlm=={mllm.VALIDATED_MLX_VLM_VERSION}" in stderr
+    message = exc_info.value.format_user_message()
+    assert "installed 0.7.0" in message
+    assert "not a Metal out-of-memory error" in message
+    assert "/active/runtime/bin/python -m pip" in message
+    assert f"mlx-vlm=={mllm.VALIDATED_MLX_VLM_VERSION}" in message
 
 
 def test_engine_guard_reports_missing_runtime_with_model_context(monkeypatch):
@@ -51,10 +51,10 @@ def test_engine_guard_reports_missing_runtime_with_model_context(monkeypatch):
         lambda: (mllm.VisionRuntimeStatus.ABSENT, "mlx_vlm"),
     )
 
-    with pytest.raises(ImportError) as exc_info:
+    with pytest.raises(OptionalRuntimeMissing) as exc_info:
         mllm._require_mlx_vlm("publisher/vision-model")
 
-    message = str(exc_info.value)
+    message = exc_info.value.format_user_message()
     assert "publisher/vision-model" in message
     assert "optional `mlx-vlm` dependency" in message
 
@@ -191,8 +191,10 @@ def test_require_mlx_vlm_rejects_incompatible_runtime(monkeypatch):
     )
     monkeypatch.setattr(mllm, "_vision_install_hint", lambda: "repair runtime")
 
-    with pytest.raises(ImportError, match="installed mlx-vlm '0.7.0'"):
+    with pytest.raises(OptionalRuntimeMissing) as exc_info:
         mllm._require_mlx_vlm("publisher/vision-model")
+
+    assert "installed mlx-vlm '0.7.0'" in exc_info.value.format_user_message()
 
 
 def test_standalone_repair_commands_shell_quote_python_path(monkeypatch):

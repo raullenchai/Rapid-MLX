@@ -44,6 +44,23 @@ _consent_mutation_event_count = 0
 _consent_mutation_event_lock = threading.Lock()
 
 
+def _run_optional_runtime_guard(
+    guard: Callable[..., None],
+    *args,
+    alias_or_path: str,
+    **kwargs,
+) -> None:
+    """Route serve-time optional-runtime failures through the sole handler."""
+    try:
+        guard(*args, **kwargs)
+    except OptionalRuntimeMissing as exc:
+        _handle_optional_runtime_missing(
+            exc,
+            alias_or_path=alias_or_path,
+            auto_selected=False,
+        )
+
+
 def _claim_consent_mutation_event() -> bool:
     """Claim a bounded slot before capture; failed captures still consume it."""
     global _consent_mutation_event_count
@@ -4037,7 +4054,11 @@ def serve_command(args):
         # Used by the generic model-prefetch guard later in this function;
         # Wan owns its own revision-pinned download path.
         _is_wan_video = is_wan_model(args.model)
-        require_video_runtime_or_exit(args.model)
+        _run_optional_runtime_guard(
+            require_video_runtime_or_exit,
+            args.model,
+            alias_or_path=getattr(args, "_original_alias", None) or args.model,
+        )
 
     # F-H08-INCOMPLETE: the ``[embeddings]`` extra-required guard MUST
     # fire first thing in ``serve_command`` — before
@@ -4093,8 +4114,10 @@ def serve_command(args):
     if _serve_will_run_on_mllm_lane(args):
         from .models.mllm import require_mlx_vlm_or_exit
 
-        require_mlx_vlm_or_exit(
+        _run_optional_runtime_guard(
+            require_mlx_vlm_or_exit,
             args.model,
+            alias_or_path=getattr(args, "_original_alias", None) or args.model,
             text_diffusion=_alias_modality(args.model) == "text-diffusion",
         )
 
@@ -4118,7 +4141,11 @@ def serve_command(args):
     from .audio.probe import is_audio_model_alias, require_audio_or_exit
 
     if is_audio_model_alias(getattr(args, "model", None)):
-        require_audio_or_exit(args.model)
+        _run_optional_runtime_guard(
+            require_audio_or_exit,
+            args.model,
+            alias_or_path=getattr(args, "_original_alias", None) or args.model,
+        )
 
     _validate_v41_product_spec_flags(args, owns_runtime=_owns_v41_product_download)
     if _owns_v41_product_download and args.mcp_config:

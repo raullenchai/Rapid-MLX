@@ -54,12 +54,47 @@ def _run_real_missing_extra_dispatch(
     hooks.mkdir()
     (hooks / "sitecustomize.py").write_text(
         """
+import importlib.machinery
 import importlib.util
 import os
+import sys
+import types
 
 from rapid_mlx import cli
 from rapid_mlx.telemetry import build_gate
 from rapid_mlx.telemetry.build_gate import ReleaseStamp
+
+mlx = types.ModuleType("mlx")
+mlx.__path__ = []
+mlx.__spec__ = importlib.machinery.ModuleSpec("mlx", loader=None, is_package=True)
+mlx_core = types.ModuleType("mlx.core")
+mlx_core.__spec__ = importlib.machinery.ModuleSpec("mlx.core", loader=None)
+mlx_nn = types.ModuleType("mlx.nn")
+mlx_nn.__spec__ = importlib.machinery.ModuleSpec("mlx.nn", loader=None)
+mlx.core = mlx_core
+mlx.nn = mlx_nn
+sys.modules.update({"mlx": mlx, "mlx.core": mlx_core, "mlx.nn": mlx_nn})
+
+fake_scheduler = types.ModuleType("rapid_mlx.scheduler")
+
+class SchedulerConfig:
+    def __init__(self, **kwargs):
+        self.enable_prefix_cache = True
+        self.hybrid_cache_entries = 0
+        self.non_trimmable_exact_prefix_reuse = False
+        self.enable_mtp = False
+        self.spec_decode = "none"
+        self.__dict__.update(kwargs)
+
+fake_scheduler.SchedulerConfig = SchedulerConfig
+sys.modules["rapid_mlx.scheduler"] = fake_scheduler
+
+fake_turboquant = types.ModuleType("rapid_mlx.turboquant")
+fake_turboquant.resolve_turboquant_mode_default = (
+    lambda args, **_kwargs: getattr(args, "kv_cache_turboquant", None)
+)
+fake_turboquant.turboquant_scheduler_kwargs = lambda _args: {}
+sys.modules["rapid_mlx.turboquant"] = fake_turboquant
 
 build_gate.official_build = lambda: ReleaseStamp(
     channel="rc", posthog_key="phc_" + "a" * 32
@@ -72,6 +107,23 @@ cli._ensure_model_downloaded = lambda *_args, **_kwargs: None
 
 lane = os.environ["RAPID_MLX_TEST_EXTRA_LANE"]
 status = os.environ.get("RAPID_MLX_TEST_EXTRA_STATUS", "absent")
+real_find_spec = importlib.util.find_spec
+hidden_modules = {
+    "audio": {"mlx_audio"},
+    "image": {"mflux"},
+    "video": {"mlx_video"},
+    "vision": {"mlx_vlm"},
+    "bonsai": {"mlx_vlm"},
+}
+
+def find_spec(name, *args, **kwargs):
+    hidden = hidden_modules.get(lane, set())
+    if any(name == module or name.startswith(module + ".") for module in hidden):
+        return None
+    return real_find_spec(name, *args, **kwargs)
+
+importlib.util.find_spec = find_spec
+
 if lane in {"vision", "vision-present", "bonsai"}:
     from rapid_mlx.models import mllm
 
@@ -99,10 +151,7 @@ if lane == "image":
     )
     _download_gate.mflux_missing_weights = lambda _model: []
 if lane == "audio":
-    real_find_spec = importlib.util.find_spec
-    importlib.util.find_spec = lambda name: (
-        None if name == "mlx_audio" else real_find_spec(name)
-    )
+    importlib.util.find_spec = find_spec
 if lane == "vision-present":
     from rapid_mlx.telemetry import posthog_sender
 
@@ -666,7 +715,8 @@ def test_present_extras_emit_no_failure(monkeypatch) -> None:
     monkeypatch.setattr("importlib.util.find_spec", lambda _name: object())
 
     mllm.require_mlx_vlm_or_exit("ui-tars-1.5-7b-4bit")
-    monkeypatch.setattr(video_lane.sys, "version_info", sys.version_info)
+    version = namedtuple("Version", "major minor")
+    monkeypatch.setattr(video_lane.sys, "version_info", version(3, 11))
     monkeypatch.setattr(video_lane, "_is_ltx25_name", lambda _name: False)
     monkeypatch.setattr(video_lane, "_is_cogvideox_name", lambda _name: False)
     monkeypatch.setattr(video_lane, "_default_video_runtime_requirements", lambda _: [])
@@ -699,7 +749,9 @@ def test_engine_vision_preflight_preserves_runtime_status(
     assert caught.value.status == expected
 
 
-def test_model_load_optional_failure_passes_through(monkeypatch, tmp_path) -> None:
+def test_model_load_optional_failure_passes_through(
+    monkeypatch, tmp_path, scheduler_config_stub
+) -> None:
     from rapid_mlx import server as server_module
 
     model_dir = tmp_path / "model"
