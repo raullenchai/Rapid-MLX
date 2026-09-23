@@ -28,7 +28,10 @@ from rapid_mlx._completion import alias_completer
 from rapid_mlx.client_header import RAPID_CLIENT_CLI_CHAT
 from rapid_mlx.http_auth import rapid_mlx_client_headers
 from rapid_mlx.model_profile import ModelProfile
-from rapid_mlx.runtime.optional_runtime import OptionalRuntimeMissing
+from rapid_mlx.runtime.optional_runtime import (
+    OptionalRuntimeMissing,
+    handle_optional_runtime_missing as _handle_optional_runtime_missing,
+)
 
 # Project-default mirror for ``RAPID_MLX_MODEL_MIRROR`` (consumed by
 # ``_try_mirror_prefetch``). Public Cloudflare Worker → R2 bucket, with
@@ -3935,33 +3938,6 @@ def _validate_v41_product_spec_flags(args, *, owns_runtime: bool) -> None:
             file=sys.stderr,
         )
         raise SystemExit(2)
-
-
-def _handle_optional_runtime_missing(
-    exc: OptionalRuntimeMissing,
-    *,
-    alias_or_path=None,
-    engine=None,
-    auto_selected: bool = False,
-) -> None:
-    """Render and record the sole terminal result for a missing serve extra."""
-    print(exc.format_user_message(), file=sys.stderr)
-    print(
-        f"RAPID-MLX-STARTUP-FAILURE: {exc.marker_reason} extra={exc.extra}",
-        file=sys.stderr,
-    )
-    from rapid_mlx.telemetry.server_start import failed
-
-    failed("preflight")
-    from rapid_mlx.telemetry.model_events import emit_model_serve_failed
-
-    emit_model_serve_failed(
-        exc,
-        engine=engine,
-        alias_or_path=alias_or_path,
-        auto_selected=auto_selected,
-    )
-    raise SystemExit(2)
 
 
 def serve_command(args):

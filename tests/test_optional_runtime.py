@@ -3,8 +3,14 @@
 
 from __future__ import annotations
 
+import json
+import os
+import subprocess
 import sys
+import threading
 from collections import namedtuple
+from http.server import BaseHTTPRequestHandler, HTTPServer
+from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
 
@@ -13,6 +19,161 @@ import pytest
 from rapid_mlx import cli, server
 from rapid_mlx.runtime.optional_runtime import OptionalRuntimeMissing
 from rapid_mlx.telemetry import model_events, registry, server_start
+
+
+class _CaptureHandler(BaseHTTPRequestHandler):
+    def do_POST(self) -> None:
+        length = int(self.headers["Content-Length"])
+        self.server.bodies.append(self.rfile.read(length))  # type: ignore[attr-defined]
+        self.send_response(200)
+        self.send_header("Content-Length", "2")
+        self.end_headers()
+        self.wfile.write(b"{}")
+
+    def log_message(self, format: str, *args: object) -> None:
+        pass
+
+
+def _run_real_missing_extra_dispatch(
+    tmp_path: Path,
+    *,
+    lane: str,
+    model: str,
+    status: str = "absent",
+    standalone: bool = False,
+) -> tuple[subprocess.CompletedProcess[str], list[dict[str, object]]]:
+    home = tmp_path / "home"
+    telemetry_dir = home / ".rapid-mlx"
+    telemetry_dir.mkdir(parents=True)
+    (telemetry_dir / "telemetry-consent.yaml").write_text(
+        "consent: true\nprompted_version: 0.15.1\nnotice_revision_seen: 1\n",
+        encoding="utf-8",
+    )
+    hooks = tmp_path / "hooks"
+    hooks.mkdir()
+    (hooks / "sitecustomize.py").write_text(
+        """
+import importlib.util
+import os
+
+from rapid_mlx import cli, server
+from rapid_mlx.telemetry import build_gate
+from rapid_mlx.telemetry.build_gate import ReleaseStamp
+
+build_gate.official_build = lambda: ReleaseStamp(
+    channel="rc", posthog_key="phc_" + "a" * 32
+)
+cli._port_preflight_or_die = lambda *_args, **_kwargs: None
+cli._check_alias_min_memory = lambda *_args, **_kwargs: None
+cli._check_disk_space = lambda *_args, **_kwargs: None
+cli._check_memory_capacity = lambda *_args, **_kwargs: None
+cli._ensure_model_downloaded = lambda *_args, **_kwargs: None
+
+lane = os.environ["RAPID_MLX_TEST_EXTRA_LANE"]
+status = os.environ.get("RAPID_MLX_TEST_EXTRA_STATUS", "absent")
+if lane in {"vision", "bonsai"}:
+    from rapid_mlx.models import mllm
+
+    runtime_status = {
+        "absent": mllm.VisionRuntimeStatus.ABSENT,
+        "broken": mllm.VisionRuntimeStatus.BROKEN,
+        "incompatible": mllm.VisionRuntimeStatus.INCOMPATIBLE,
+    }[status]
+    mllm.vision_runtime_status = lambda: (runtime_status, "test detail")
+if lane == "video":
+    from rapid_mlx.runtime import video_lane
+
+    video_lane._default_video_runtime_requirements = lambda _model: [
+        "the `rapid-mlx[video]` Python extra"
+    ]
+    video_lane._resolve_ffmpeg = lambda: "/usr/bin/ffmpeg"
+if lane == "image":
+    from rapid_mlx.runtime import image_lane
+    from rapid_mlx import _download_gate
+
+    image_lane.image_runtime_issue = lambda _model: (
+        "image generation requires the `rapid-mlx[image]` Python extra "
+        "(`pip install 'rapid-mlx[image]'`)."
+    )
+    _download_gate.mflux_missing_weights = lambda _model: []
+if lane == "audio":
+    real_find_spec = importlib.util.find_spec
+    importlib.util.find_spec = lambda name: (
+        None if name == "mlx_audio" else real_find_spec(name)
+    )
+if lane == "bonsai":
+    from types import SimpleNamespace
+    from rapid_mlx import model_aliases, model_metadata
+
+    model_aliases.resolve_model = lambda model_name: model_name
+    server._prefetch_routing_metadata = lambda _model: "/cached/bonsai"
+    model_metadata.read_model_metadata = lambda _path: SimpleNamespace(
+        snapshot_dir=None,
+        config={"model_type": "prism_hadamard_qwen35"},
+    )
+    model_metadata.checkpoint_has_multimodal_weights = lambda *_args: False
+    model_metadata.config_indicates_multimodal = lambda _config: False
+""".lstrip(),
+        encoding="utf-8",
+    )
+
+    sink = HTTPServer(("127.0.0.1", 0), _CaptureHandler)
+    sink.bodies = []  # type: ignore[attr-defined]
+    thread = threading.Thread(target=sink.serve_forever, daemon=True)
+    thread.start()
+    env = dict(
+        os.environ,
+        HOME=str(home),
+        USER="rc",
+        PYTHONPATH=os.pathsep.join((str(hooks), str(Path.cwd()))),
+        RAPID_MLX_POSTHOG_URL=f"http://127.0.0.1:{sink.server_port}/batch/",
+        RAPID_MLX_DISABLE_VERSION_CHECK="1",
+        RAPID_MLX_TEST_EXTRA_LANE=lane,
+        RAPID_MLX_TEST_EXTRA_STATUS=status,
+        HF_HUB_OFFLINE="1",
+        TRANSFORMERS_OFFLINE="1",
+    )
+    for name in (
+        "CI",
+        "GITHUB_ACTIONS",
+        "RAPID_MLX_TELEMETRY",
+        "DO_NOT_TRACK",
+    ):
+        env.pop(name, None)
+    command = [
+        sys.executable,
+        "-c",
+        (
+            "from rapid_mlx.server import main; main()"
+            if standalone
+            else "from rapid_mlx.cli import cli_entrypoint; cli_entrypoint()"
+        ),
+    ]
+    command.extend(
+        ["--model", model, "--port", "0"]
+        if standalone
+        else ["serve", model, "--port", "0"]
+    )
+    try:
+        proc = subprocess.run(
+            command,
+            cwd=tmp_path,
+            env=env,
+            capture_output=True,
+            text=True,
+            timeout=30,
+            check=False,
+        )
+    finally:
+        sink.shutdown()
+        thread.join(timeout=2.0)
+        sink.server_close()
+    items = [
+        item
+        for body in sink.bodies  # type: ignore[attr-defined]
+        for item in json.loads(body)["batch"]
+    ]
+    return proc, items
 
 
 @pytest.fixture(autouse=True)
@@ -124,6 +285,94 @@ def test_missing_lane_is_one_actionable_telemetered_failure(
     assert failures[0]["extra"] == lane
     assert "detail" not in failures[0]
     assert registry.validate("model_serve_failed", failures[0]) == failures[0]
+
+
+@pytest.mark.parametrize(
+    ("lane", "model", "status", "marker_reason"),
+    [
+        ("vision", "ui-tars-1.5-7b-4bit", "absent", "runtime_extra_missing"),
+        ("vision", "ui-tars-1.5-7b-4bit", "broken", "runtime_broken"),
+        (
+            "vision",
+            "ui-tars-1.5-7b-4bit",
+            "incompatible",
+            "runtime_incompatible",
+        ),
+        ("video", "wan2.2-ti2v-5b-q8", "absent", "runtime_extra_missing"),
+        ("image", "flux-schnell", "absent", "runtime_extra_missing"),
+        ("audio", "kokoro", "absent", "runtime_extra_missing"),
+    ],
+)
+def test_real_dispatch_posts_one_actionable_failure_to_loopback(
+    tmp_path, lane: str, model: str, status: str, marker_reason: str
+) -> None:
+    proc, items = _run_real_missing_extra_dispatch(
+        tmp_path,
+        lane=lane,
+        model=model,
+        status=status,
+    )
+
+    assert proc.returncode == 2
+    assert "Traceback" not in proc.stderr
+    assert f"rapid-mlx[{lane}]" in proc.stderr
+    assert (
+        f"RAPID-MLX-STARTUP-FAILURE: {marker_reason} extra={lane}" in proc.stderr
+    )
+    terminal = [
+        item["properties"]
+        for item in items
+        if item["event"] == "server_start_state"
+        and item["properties"]["state"] == "failed"
+    ]
+    failures = [
+        item["properties"]
+        for item in items
+        if item["event"] == "model_serve_failed"
+    ]
+    assert len(terminal) == 1
+    assert terminal[0]["failure_stage"] == "preflight"
+    assert len(failures) == 1
+    assert failures[0]["error_class"] == "missing_extra"
+    assert failures[0]["extra"] == lane
+    assert "detail" not in failures[0]
+
+
+def test_standalone_bonsai_dispatch_uses_same_handler_and_loopback_sink(
+    tmp_path,
+) -> None:
+    proc, items = _run_real_missing_extra_dispatch(
+        tmp_path,
+        lane="bonsai",
+        model="bonsai2-27b-2bit",
+        standalone=True,
+    )
+
+    assert proc.returncode == 2
+    assert "Traceback" not in proc.stderr
+    assert "rapid-mlx[vision]" in proc.stderr
+    assert (
+        "RAPID-MLX-STARTUP-FAILURE: runtime_extra_missing extra=vision"
+        in proc.stderr
+    )
+    terminal = [
+        item["properties"]
+        for item in items
+        if item["event"] == "server_start_state"
+        and item["properties"]["state"] == "failed"
+    ]
+    failures = [
+        item["properties"]
+        for item in items
+        if item["event"] == "model_serve_failed"
+    ]
+    assert len(terminal) == 1
+    assert terminal[0]["failure_stage"] == "preflight"
+    assert len(failures) == 1
+    assert failures[0]["error_class"] == "missing_extra"
+    assert failures[0]["extra"] == "vision"
+    assert failures[0]["model"] == "bonsai2-27b-2bit"
+    assert "detail" not in failures[0]
 
 
 def test_bonsai_engine_preflight_is_missing_vision_failure(monkeypatch, capsys) -> None:

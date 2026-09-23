@@ -124,14 +124,13 @@ struct TelemetryRegistryTests {
             ["state": .string("exploded")]
         ) == nil)
         for state in ["attempted", "ready"] {
-            let filtered = try #require(registry.validate(
+            #expect(registry.validate(
                 "server_start_state",
                 [
                     "state": .string(state),
                     "failure_stage": .string("bind")
                 ]
-            ))
-            #expect(filtered == ["state": .string(state)])
+            ) == nil)
         }
     }
 
@@ -213,8 +212,7 @@ struct TelemetryRegistryTests {
             "error_class": .string("other"),
             "extra": .string("vision"),
         ])
-        #expect(rejectedExtra?["error_class"] == .string("other"))
-        #expect(rejectedExtra?["extra"] == nil)
+        #expect(rejectedExtra == nil)
         #expect(registry.validate("model_serve_failed", ["model": .string("<custom>")]) == nil)
     }
 

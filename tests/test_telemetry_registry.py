@@ -145,7 +145,7 @@ def test_missing_extra_property_is_closed_and_conditional():
     assert reg.validate(
         "model_serve_failed",
         {"error_class": "other", "extra": "vision"},
-    ) == {"error_class": "other"}
+    ) is None
     assert (
         reg.validate(
             "model_serve_failed",
@@ -156,11 +156,11 @@ def test_missing_extra_property_is_closed_and_conditional():
 
 
 @pytest.mark.parametrize("state", ["attempted", "ready"])
-def test_conditional_property_is_dropped_when_condition_is_false(state):
+def test_conditional_property_rejects_event_when_condition_is_false(state):
     assert reg.validate(
         "server_start_state",
         {"state": state, "failure_stage": "bind"},
-    ) == {"state": state}
+    ) is None
 
 
 def test_malformed_conditional_property_fails_closed():

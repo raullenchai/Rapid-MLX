@@ -244,7 +244,11 @@ def _validate_props(
                 props.get(controller) not in allowed
                 for controller, allowed in only_when.items()
             ):
-                continue
+                _log_once(
+                    log_key,
+                    f"{label}: property {name!r} supplied outside only_when",
+                )
+                return None
         if not _check_value(spec, value, reg):
             _log_once(log_key, f"{label}: property {name!r} rejected")
             return None

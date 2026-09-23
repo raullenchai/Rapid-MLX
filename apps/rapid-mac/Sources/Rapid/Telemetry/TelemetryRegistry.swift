@@ -257,7 +257,10 @@ struct TelemetryRegistry: Sendable {
                     guard case .string(let actual)? = props[controller] else { return false }
                     return allowed.contains(actual)
                 }
-                if conditionMet == false { continue }
+                if conditionMet == false {
+                    TelemetryRegistryLog.once(label, "\(label): property \(name) supplied outside only_when")
+                    return nil
+                }
             }
             guard check(value, against: spec) else {
                 TelemetryRegistryLog.once(label, "\(label): property \(name) rejected")

@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+import sys
 from typing import Literal
 
 OptionalExtra = Literal["vision", "video", "audio", "image"]
@@ -44,3 +45,30 @@ class OptionalRuntimeMissing(RuntimeError):  # noqa: N818 - public API name is f
         if self.install_hint and self.install_hint not in message:
             message = f"{message}\n{self.install_hint}"
         return message
+
+
+def handle_optional_runtime_missing(
+    exc: OptionalRuntimeMissing,
+    *,
+    alias_or_path=None,
+    engine=None,
+    auto_selected: bool = False,
+) -> None:
+    """Render and record the sole terminal result for an unavailable extra."""
+    print(exc.format_user_message(), file=sys.stderr)
+    print(
+        f"RAPID-MLX-STARTUP-FAILURE: {exc.marker_reason} extra={exc.extra}",
+        file=sys.stderr,
+    )
+    from rapid_mlx.telemetry.server_start import failed
+
+    failed("preflight")
+    from rapid_mlx.telemetry.model_events import emit_model_serve_failed
+
+    emit_model_serve_failed(
+        exc,
+        engine=engine,
+        alias_or_path=alias_or_path,
+        auto_selected=auto_selected,
+    )
+    raise SystemExit(2)
