@@ -15,6 +15,7 @@ struct AudioView: View {
     @Environment(SettingsRouter.self) private var settingsRouter
     @Environment(DownloadManager.self) private var downloads
     @Environment(DictationController.self) private var dictation
+    @AppStorage(ContentView.showLogsKey) private var showLogs = false
 
     @State private var playback = AudioPlaybackController()
     @State private var showVoicePicker = false
@@ -117,6 +118,7 @@ struct AudioView: View {
             failure: server.residentLoadFailure(for: selectedAlias).map {
                 .init(message: $0.message, alias: $0.alias)
             },
+            startupFailure: server.startupFailure,
             downloadInFlight: downloads.isDownloading(selectedAlias)
         )
     }
@@ -552,6 +554,8 @@ struct AudioView: View {
                 await server.stop()
                 await loadAudioModel(alias)
             }
+        case .openStartupLog:
+            showLogs = true
         case .openModelManagement:
             openModelManagement()
         }

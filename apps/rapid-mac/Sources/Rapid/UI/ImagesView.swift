@@ -38,6 +38,7 @@ struct ImagesView: View {
     @Environment(\.openWindow) private var openWindow
     @Environment(SettingsRouter.self) private var settingsRouter
     @Environment(DownloadManager.self) private var downloads
+    @AppStorage(ContentView.showLogsKey) private var showLogs = false
 
     private let contentMaxWidth: CGFloat = RapidTheme.Layout.contentMaxWidth
 
@@ -285,6 +286,7 @@ struct ImagesView: View {
             failure: server.residentLoadFailure(for: viewModel.selectedAlias).map {
                 ModelReadiness.Failure(message: $0.message, alias: $0.alias)
             },
+            startupFailure: server.startupFailure,
             downloadInFlight: downloads.isDownloading(viewModel.selectedAlias)
         )
     }
@@ -334,6 +336,8 @@ struct ImagesView: View {
                 await server.stop()
                 await loadImageModel(target, hfPath: hf)
             }
+        case .openStartupLog:
+            showLogs = true
         case .openModelManagement:
             settingsRouter.route(.openModelManagement) {
                 openWindow(id: "settings")

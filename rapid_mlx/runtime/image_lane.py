@@ -59,6 +59,15 @@ def require_image_runtime_or_exit(model_name: str | None = None) -> None:
 
     if issue := image_runtime_issue(model_name):
         print(f"\n  Error: {issue.rstrip()}\n", file=sys.stderr)
+        reason = (
+            "python_version_unsupported"
+            if "requires Python 3.11 or newer" in issue
+            else "runtime_extra_missing"
+        )
+        print(
+            f"RAPID-MLX-STARTUP-FAILURE: {reason} extra=image",
+            file=sys.stderr,
+        )
         raise SystemExit(2)
 
 
