@@ -35,7 +35,9 @@ plan:
    - **3b**: speculative coordinator core (`cache_state`/`common`/`ddtree`/
      `dflash`/`mtp`/`utils`) + `models/{base,linear}` + `fp8.py` +
      `quant_utils.py`; the quantized verifier and the eagle3 backend stay
-     pinned (pure-array helpers, identity-safe).
+     pinned. The quantized argmax helper is pure-array and identity-safe;
+     eagle3 remains cache-coupled and may be dispatched only while its cache
+     contract stays compatible with the vendored cache.
    - **3c**: drafter registry (`load_drafter`) + concrete drafters
      (glm5_next_mtp, qwen3_5_mtp, qwen3_dflash) + their model-class closure.
    - **3d**: `generate/dispatch.py` + modality modules; dflash server's

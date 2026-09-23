@@ -317,13 +317,15 @@ vendored copy differs by exactly the deviations listed):
   and concrete drafters land in a later step-3 slice.
 
 - ``models/`` — verbatim model foundations (step-3b slice): ``base.py``
-  (657 lines; upstream digest
+  (upstream 657 lines; vendored 668 lines after documented deviations;
+  upstream digest
   ``4f915923c591faf4b25603b5b5cab4511296a37c7d141553506e6b0760a03a41``;
   redirects: ``..turboquant`` → pinned upstream (kv_quant precedent),
   ``.cache`` → vendored root; 1 documented security hunk in
   ``install_auto_processor_patch`` requires explicit
   ``trust_remote_code=True`` instead of silently enabling remote code after
-  config discovery) and ``linear.py`` (74 lines; upstream digest
+  config discovery) and ``linear.py`` (upstream 74 lines; vendored 81 lines
+  after documented deviations; upstream digest
   ``148a56193feaf170097ff1c5edccca8165c1b5df878f1605778c4d3642a4d2fa``; 1
   function-level redirect: ``native_batch_linear``'s lazy
   ``.quantized_verifier`` → pinned upstream (verifier not vendored,
