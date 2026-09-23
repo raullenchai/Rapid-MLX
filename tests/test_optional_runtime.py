@@ -42,7 +42,7 @@ def _run_real_missing_extra_dispatch(
     model: str,
     status: str = "absent",
     standalone: bool = False,
-) -> tuple[subprocess.CompletedProcess[str], list[SimpleNamespace]]:
+) -> tuple[subprocess.CompletedProcess[str], list[SimpleNamespace], str]:
     home = tmp_path / "home"
     telemetry_dir = home / ".rapid-mlx"
     telemetry_dir.mkdir(parents=True)
@@ -150,6 +150,22 @@ if lane == "vision-present":
         if standalone
         else [str(Path(sys.executable).with_name("rapid-mlx"))]
     )
+    interpreter_command = [command[0]]
+    if not standalone:
+        shebang = Path(command[0]).read_text(encoding="utf-8").splitlines()[0]
+        assert shebang.startswith("#!")
+        interpreter_command = shlex.split(shebang[2:])
+    interpreter_probe = subprocess.run(
+        [*interpreter_command, "-c", "import sys; print(sys.executable)"],
+        cwd=tmp_path,
+        env=env,
+        capture_output=True,
+        text=True,
+        timeout=30,
+        check=True,
+    )
+    child_executable = interpreter_probe.stdout.strip()
+    assert child_executable
     command.extend(
         ["--model", model, "--port", "0"]
         if standalone
@@ -177,13 +193,13 @@ if lane == "vision-present":
         for body in sink.bodies  # type: ignore[attr-defined]
         for item in json.loads(body)["batch"]
     ]
-    return proc, events
+    return proc, events, child_executable
 
 
-def _expected_install_hint_line(extra: str) -> str:
+def _expected_install_hint_line(extra: str, *, child_executable: str) -> str:
     if extra == "vision":
         return (
-            f"    {shlex.quote(sys.executable)} -m pip install "
+            f"    {shlex.quote(child_executable)} -m pip install "
             "--upgrade --force-reinstall 'rapid-mlx[vision]'"
         )
     if extra == "audio":
@@ -197,7 +213,7 @@ def _expected_install_hint_line(extra: str) -> str:
 
 
 def _assert_actionable_failure_contract(
-    stderr: str, *, extra: str, marker_reason: str
+    stderr: str, *, extra: str, marker_reason: str, child_executable: str
 ) -> tuple[str, str]:
     expected_marker = f"RAPID-MLX-STARTUP-FAILURE: {marker_reason} extra={extra}"
     markers = [
@@ -207,12 +223,14 @@ def _assert_actionable_failure_contract(
     ]
     assert markers == [expected_marker]
 
-    expected_hint = _expected_install_hint_line(extra)
+    expected_hint = _expected_install_hint_line(
+        extra, child_executable=child_executable
+    )
     assert stderr.splitlines().count(expected_hint) == 1
     return expected_marker, expected_hint
 
 
-def _normalized_failure_text(stderr: str) -> str:
+def _normalized_failure_text(stderr: str, *, child_executable: str) -> str:
     lines = stderr.splitlines()
     marker_index = next(
         index
@@ -228,7 +246,8 @@ def _normalized_failure_text(stderr: str) -> str:
         ),
         default=-1,
     )
-    return "\n".join(lines[last_log_index + 1 : marker_index]).strip()
+    failure_text = "\n".join(lines[last_log_index + 1 : marker_index]).strip()
+    return failure_text.replace(shlex.quote(child_executable), "<python>")
 
 
 def _contracted_failure_events(
@@ -381,7 +400,7 @@ def test_missing_lane_is_one_actionable_telemetered_failure(
 def test_real_dispatch_posts_one_actionable_failure_to_loopback(
     tmp_path, lane: str, model: str, status: str, marker_reason: str
 ) -> None:
-    proc, events = _run_real_missing_extra_dispatch(
+    proc, events, child_executable = _run_real_missing_extra_dispatch(
         tmp_path,
         lane=lane,
         model=model,
@@ -394,6 +413,7 @@ def test_real_dispatch_posts_one_actionable_failure_to_loopback(
         proc.stderr,
         extra=lane,
         marker_reason=marker_reason,
+        child_executable=child_executable,
     )
     assert (
         len(
@@ -421,25 +441,33 @@ def test_real_dispatch_posts_one_actionable_failure_to_loopback(
 def test_standalone_bonsai_dispatch_uses_same_handler_and_loopback_sink(
     tmp_path,
 ) -> None:
-    standalone_proc, standalone_events = _run_real_missing_extra_dispatch(
+    (
+        standalone_proc,
+        standalone_events,
+        standalone_executable,
+    ) = _run_real_missing_extra_dispatch(
         tmp_path / "standalone",
         lane="bonsai",
         model="bonsai2-27b-2bit",
         standalone=True,
     )
-    cli_proc, cli_events = _run_real_missing_extra_dispatch(
+    cli_proc, cli_events, cli_executable = _run_real_missing_extra_dispatch(
         tmp_path / "cli",
         lane="bonsai",
         model="bonsai2-27b-2bit",
     )
 
-    for proc in (standalone_proc, cli_proc):
+    for proc, child_executable in (
+        (standalone_proc, standalone_executable),
+        (cli_proc, cli_executable),
+    ):
         assert proc.returncode == 2
         assert "Traceback" not in proc.stderr
         _assert_actionable_failure_contract(
             proc.stderr,
             extra="vision",
             marker_reason="runtime_extra_missing",
+            child_executable=child_executable,
         )
 
     expected_events = [
@@ -450,13 +478,18 @@ def test_standalone_bonsai_dispatch_uses_same_handler_and_loopback_sink(
     cli_contract = _contracted_failure_events(cli_events)
     assert standalone_contract == expected_events
     assert cli_contract == standalone_contract
-    assert _normalized_failure_text(cli_proc.stderr) == _normalized_failure_text(
-        standalone_proc.stderr
+    assert _normalized_failure_text(
+        cli_proc.stderr, child_executable=cli_executable
+    ) == _normalized_failure_text(
+        standalone_proc.stderr,
+        child_executable=standalone_executable,
     )
 
 
 def test_actionable_failure_contract_rejects_corrupt_marker() -> None:
-    expected_hint = _expected_install_hint_line("vision")
+    expected_hint = _expected_install_hint_line(
+        "vision", child_executable=sys.executable
+    )
     stderr = (
         f"missing vision runtime\n{expected_hint}\n"
         "RAPID-MLX-STARTUP-FAILURE: "
@@ -468,6 +501,7 @@ def test_actionable_failure_contract_rejects_corrupt_marker() -> None:
             stderr,
             extra="vision",
             marker_reason="runtime_extra_missing",
+            child_executable=sys.executable,
         )
 
 
@@ -531,7 +565,7 @@ def test_standalone_main_records_model_before_startup(monkeypatch) -> None:
 
 
 def test_real_dispatch_with_present_vision_extra_emits_no_failure(tmp_path) -> None:
-    proc, events = _run_real_missing_extra_dispatch(
+    proc, events, _child_executable = _run_real_missing_extra_dispatch(
         tmp_path,
         lane="vision-present",
         model="ui-tars-1.5-7b-4bit",
