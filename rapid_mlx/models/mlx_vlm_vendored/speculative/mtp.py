@@ -16,6 +16,7 @@ from .cache_state import (
     abort_speculative_round,
     commit_speculative_round,
     iter_leaf_caches,
+    start_speculative_cache,
 )
 from .common import (
     _batch_cache_left_padding,
@@ -110,12 +111,16 @@ def _mtp_verify_without_logits(
     if len(prompt_cache) == len(layers):
         # VENDOR-DEVIATION(bugfix): the hook-less fallback must participate in
         # the same cache transaction as every other speculative verifier.
-        hidden, transaction = verify_forward(
-            lm.model,
-            verify_input,
-            prompt_cache,
-            skip_final_norm=True,
-        )
+        transaction = start_speculative_cache(prompt_cache, verify_input.shape[1])
+        try:
+            hidden = lm.model(
+                verify_input,
+                cache=prompt_cache,
+                skip_final_norm=True,
+            )
+        except BaseException:
+            transaction.abort()
+            raise
         shared_kv_states = _mtp_shared_kv_from_prompt_cache(lm, prompt_cache)
         if shared_kv_states:
             return _MTPVerifyResult(
@@ -127,13 +132,17 @@ def _mtp_verify_without_logits(
         transaction.abort()
 
     shared_kv_sink: dict = {}
-    hidden, transaction = verify_forward(
-        lm.model,
-        verify_input,
-        prompt_cache,
-        shared_kv_sink=shared_kv_sink,
-        skip_final_norm=True,
-    )
+    transaction = start_speculative_cache(prompt_cache, verify_input.shape[1])
+    try:
+        hidden = lm.model(
+            verify_input,
+            cache=prompt_cache,
+            shared_kv_sink=shared_kv_sink,
+            skip_final_norm=True,
+        )
+    except BaseException:
+        transaction.abort()
+        raise
     if not shared_kv_sink:
         transaction.abort()
         return None

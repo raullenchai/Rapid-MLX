@@ -645,8 +645,13 @@ def install_auto_processor_patch(target_model_types, processor_cls):
                     cfg = {}
 
             model_type = str(cfg.get("model_type", "")).lower()
-            if model_type in target_model_types:
-                kwargs.setdefault("trust_remote_code", True)
+            # VENDOR-DEVIATION(security): discovering a matching remote model
+            # type is not consent to execute repository code. Only intercept
+            # after the caller explicitly opts in.
+            if (
+                model_type in target_model_types
+                and kwargs.get("trust_remote_code") is True
+            ):
                 return processor_cls.from_pretrained(
                     pretrained_model_name_or_path, **kwargs
                 )

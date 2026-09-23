@@ -12,6 +12,9 @@ mla/switch_layers resolution — both pinned upstream until step 3c) and
 one set of documented bugfix hunks (``build_ddtree``'s ``ValueError``
 validation; ``_dflash_rounds_batch``/``_mtp_rounds_batch``'s unfinished-row
 budget). The walker compares function/class name sets in both directions.
+The vendored processor installer also differs in one security hunk: a matching
+remote ``model_type`` is intercepted only after explicit
+``trust_remote_code=True`` consent.
 Two exemption mechanisms exist and must not be confused: ``documented``
 filters strict-compare divergences for REAL permitted behavioral hunks;
 ``normalized`` entries compare on behavior only (comments, blanks, and
@@ -65,18 +68,35 @@ _HUNK_SPECS = {
             "    assert drafter_logits.ndim == 3 and drafter_logits.shape[0] == 1\n",
         ),
     ),
+    "install_auto_processor_patch": (
+        (
+            "            # VENDOR-DEVIATION(security): discovering a matching remote model\n"
+            "            # type is not consent to execute repository code. Only intercept\n"
+            "            # after the caller explicitly opts in.\n"
+            "            if (\n"
+            "                model_type in target_model_types\n"
+            '                and kwargs.get("trust_remote_code") is True\n'
+            "            ):\n",
+            "            if model_type in target_model_types:\n"
+            '                kwargs.setdefault("trust_remote_code", True)\n',
+        ),
+    ),
     "_mtp_verify_without_logits": (
         (
             '    layers = getattr(getattr(lm, "model", None), "layers", [])\n'
             "    if len(prompt_cache) == len(layers):\n"
             "        # VENDOR-DEVIATION(bugfix): the hook-less fallback must participate in\n"
             "        # the same cache transaction as every other speculative verifier.\n"
-            "        hidden, transaction = verify_forward(\n"
-            "            lm.model,\n"
-            "            verify_input,\n"
-            "            prompt_cache,\n"
-            "            skip_final_norm=True,\n"
-            "        )\n"
+            "        transaction = start_speculative_cache(prompt_cache, verify_input.shape[1])\n"
+            "        try:\n"
+            "            hidden = lm.model(\n"
+            "                verify_input,\n"
+            "                cache=prompt_cache,\n"
+            "                skip_final_norm=True,\n"
+            "            )\n"
+            "        except BaseException:\n"
+            "            transaction.abort()\n"
+            "            raise\n"
             "        shared_kv_states = _mtp_shared_kv_from_prompt_cache(lm, prompt_cache)\n"
             "        if shared_kv_states:\n"
             "            return _MTPVerifyResult(\n"
@@ -88,13 +108,17 @@ _HUNK_SPECS = {
             "        transaction.abort()\n"
             "\n"
             "    shared_kv_sink: dict = {}\n"
-            "    hidden, transaction = verify_forward(\n"
-            "        lm.model,\n"
-            "        verify_input,\n"
-            "        prompt_cache,\n"
-            "        shared_kv_sink=shared_kv_sink,\n"
-            "        skip_final_norm=True,\n"
-            "    )\n"
+            "    transaction = start_speculative_cache(prompt_cache, verify_input.shape[1])\n"
+            "    try:\n"
+            "        hidden = lm.model(\n"
+            "            verify_input,\n"
+            "            cache=prompt_cache,\n"
+            "            shared_kv_sink=shared_kv_sink,\n"
+            "            skip_final_norm=True,\n"
+            "        )\n"
+            "    except BaseException:\n"
+            "        transaction.abort()\n"
+            "        raise\n"
             "    if not shared_kv_sink:\n"
             "        transaction.abort()\n"
             "        return None\n"
@@ -470,7 +494,12 @@ def test_vendored_foundations_bodies_match_upstream():
             {"dequantize_model"},
         ),
     ):
-        divergences = _body_divergences(vendored, upstream, normalized=normalized)
+        divergences = _body_divergences(
+            vendored,
+            upstream,
+            hunk_specs=_HUNK_SPECS,
+            normalized=normalized,
+        )
         divergences = [d for d in divergences if d not in documented]
         assert divergences == []
 
@@ -484,6 +513,35 @@ def test_speculative_core_binds_vendored_foundations():
     assert vs_utils.get_speculative_rounds_batch("mtp").__module__.endswith(
         "vendored.speculative.mtp"
     )
+
+
+def test_vendored_auto_processor_patch_requires_explicit_remote_code_opt_in(
+    monkeypatch, tmp_path
+):
+    from transformers import AutoProcessor
+
+    (tmp_path / "config.json").write_text('{"model_type":"glm5_next"}')
+    calls = []
+
+    def previous(cls, path, **kwargs):
+        calls.append(("previous", path, kwargs))
+        return "previous"
+
+    class Processor:
+        @classmethod
+        def from_pretrained(cls, path, **kwargs):
+            calls.append(("custom", path, kwargs))
+            return "custom"
+
+    monkeypatch.setattr(AutoProcessor, "from_pretrained", classmethod(previous))
+    vendored_base.install_auto_processor_patch("glm5_next", Processor)
+
+    assert AutoProcessor.from_pretrained(tmp_path) == "previous"
+    assert (
+        AutoProcessor.from_pretrained(tmp_path, trust_remote_code=False) == "previous"
+    )
+    assert AutoProcessor.from_pretrained(tmp_path, trust_remote_code=True) == "custom"
+    assert [kind for kind, _, _ in calls] == ["previous", "previous", "custom"]
 
 
 def test_pinned_redirects_resolve_upstream():
@@ -659,15 +717,16 @@ def test_hookless_mtp_verify_aborts_before_sink_retry():
     model = _Model()
     lm = SimpleNamespace(model=model)
     prompt_cache = [_Cache()]
+    width = vs_common.DECODE_BLOCK_SIZE + 1
     result = vs_mtp._mtp_verify_without_logits(
         lm,
-        mx.array([[1, 2]], dtype=mx.int32),
+        mx.zeros((1, width), dtype=mx.int32),
         prompt_cache,
     )
 
     assert result is not None
     assert model.calls == 2
-    assert prompt_cache[0].offset == 2
+    assert prompt_cache[0].offset == width
     assert result.rollback_state.active is True
     result.abort()
     assert prompt_cache[0].offset == 0
