@@ -99,6 +99,13 @@ def _mtp_qualification() -> QwenModeQualification:
     )
 
 
+def test_dot_only_relative_identity_paths_are_rejected() -> None:
+    with pytest.raises(ValueError, match="canonical relative POSIX path"):
+        replace(_target(), target_subfolder=".")
+    with pytest.raises(ValueError, match="canonical relative POSIX path"):
+        _drafter(path=".")
+
+
 def _row(
     *,
     qualification_id: str = "qwen-exact-auto-v1",

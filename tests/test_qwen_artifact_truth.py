@@ -458,7 +458,7 @@ def test_canonical_hub_subfolder_is_bound_and_reported(tmp_path: Path):
 
 @pytest.mark.parametrize(
     "subfolder",
-    ["../escape", "/absolute", "weights//mlx", "weights/./mlx", "weights\\mlx"],
+    [".", "../escape", "/absolute", "weights//mlx", "weights/./mlx", "weights\\mlx"],
 )
 def test_noncanonical_hub_subfolder_fails_closed(tmp_path: Path, subfolder: str):
     snapshot, _hub, metadata = _materialize_snapshot(tmp_path, "qwen36_35b_4bit")

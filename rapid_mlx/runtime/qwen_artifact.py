@@ -125,6 +125,7 @@ def _canonical_subfolder(subfolder: object) -> str | None:
     if (
         "\\" in subfolder
         or path.is_absolute()
+        or not path.parts
         or path.as_posix() != subfolder
         or any(part in {"", ".", ".."} for part in path.parts)
     ):

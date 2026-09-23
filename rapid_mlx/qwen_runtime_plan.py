@@ -122,6 +122,7 @@ def _require_relative_path(label: str, value: object) -> None:
         not value
         or "\\" in value
         or path.is_absolute()
+        or not path.parts
         or path.as_posix() != value
         or any(part in ("", ".", "..") for part in path.parts)
     ):
