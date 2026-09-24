@@ -67,7 +67,7 @@ def create_app(
         if (
             not separator
             or scheme.lower() != "bearer"
-            or not hmac.compare_digest(token, api_key)
+            or not hmac.compare_digest(token.encode(), api_key.encode())
         ):
             raise HTTPException(
                 status_code=401,

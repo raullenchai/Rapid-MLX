@@ -5,8 +5,10 @@ from __future__ import annotations
 
 import argparse
 import json
+import math
 import os
 import shutil
+import sys
 import tempfile
 import uuid
 from collections.abc import Mapping
@@ -105,13 +107,20 @@ def convert(input_path: str | Path, output_dir: str | Path) -> Path:
     if not isinstance(checkpoint["cfg"], Mapping):
         raise ValueError("CLM checkpoint cfg must be a mapping")
     config = dict(checkpoint["cfg"])
-    expected_shapes = _expected_head_shapes(config)
     config["projection_dim"] = int(
         checkpoint.get("projection_dim", config.get("projection_dim", 512))
     )
     config["hidden_size"] = int(config.get("hidden_size", 4096))
+    expected_shapes = _expected_head_shapes(config)
     logit_scale = checkpoint["logit_scale"]
-    config["logit_scale"] = float(torch.as_tensor(logit_scale).float().item())
+    logit_scale_value = float(torch.as_tensor(logit_scale).float().item())
+    if not math.isfinite(logit_scale_value) or not (
+        math.log(sys.float_info.min)
+        <= logit_scale_value
+        <= math.log(sys.float_info.max)
+    ):
+        raise ValueError("CLM logit_scale is outside the finite exponential range")
+    config["logit_scale"] = logit_scale_value
     config.setdefault("model_name", "clm-latest")
     tensors = {}
     for prefix in ("state_head", "action_head"):

@@ -72,6 +72,14 @@ def test_system_one_contract_and_auth():
     )
     assert lowercase_scheme.status_code == 200
 
+    unicode_key_client = TestClient(create_app(FakeBackend(), api_key="密钥"))
+    assert (
+        unicode_key_client.get(
+            "/v1/models", headers={"Authorization": "Bearer wrong"}
+        ).status_code
+        == 401
+    )
+
 
 def test_system_one_rejects_ambiguous_or_unbounded_questions():
     client = TestClient(create_app(FakeBackend()))

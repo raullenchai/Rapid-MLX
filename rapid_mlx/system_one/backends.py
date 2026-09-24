@@ -253,7 +253,10 @@ class CLMBackend:
         self._encoder = inner
         self.encoder_name = encoder
         self.default_model = model_name or self.config.get("model_name", "clm-latest")
-        self._scale = min(100.0, math.exp(float(self.config["logit_scale"])))
+        logit_scale = float(self.config["logit_scale"])
+        if not math.isfinite(logit_scale):
+            raise ValueError("CLM logit_scale must be finite")
+        self._scale = math.exp(min(logit_scale, math.log(100.0)))
         self._max_tokens = max_tokens
         self._max_work_tokens = max_work_tokens
         self._cache_entries = max(0, cache_entries)

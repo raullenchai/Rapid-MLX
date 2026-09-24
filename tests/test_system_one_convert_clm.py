@@ -181,3 +181,44 @@ def test_convert_rejects_tensor_shape_mismatch(monkeypatch, tmp_path):
     _fake_torch(monkeypatch, checkpoint)
     with pytest.raises(ValueError, match="has shape .* expected"):
         convert(tmp_path / "head.pt", tmp_path / "converted")
+
+
+def test_convert_applies_top_level_projection_dimension_before_validation(
+    monkeypatch, tmp_path
+):
+    head = {
+        "inp.weight": _FakeTensor([[1.0]]),
+        "inp.bias": _FakeTensor([0.0]),
+        "out.weight": _FakeTensor([[1.0], [2.0]]),
+        "out.bias": _FakeTensor([0.0, 0.0]),
+    }
+    checkpoint = {
+        "state_head": head,
+        "action_head": head,
+        "logit_scale": 1,
+        "projection_dim": 2,
+        "cfg": {"hidden_size": 1, "width": 1, "depth": 2, "projection_dim": 1},
+    }
+    _fake_torch(monkeypatch, checkpoint)
+    destination = convert(tmp_path / "head.pt", tmp_path / "converted")
+    config = json.loads((destination / "config.json").read_text())
+    assert config["projection_dim"] == 2
+
+
+@pytest.mark.parametrize("logit_scale", [float("nan"), float("inf"), 1000.0])
+def test_convert_rejects_unsafe_logit_scale(monkeypatch, tmp_path, logit_scale):
+    head = {
+        "inp.weight": _FakeTensor([[1.0]]),
+        "inp.bias": _FakeTensor([0.0]),
+        "out.weight": _FakeTensor([[1.0]]),
+        "out.bias": _FakeTensor([0.0]),
+    }
+    checkpoint = {
+        "state_head": head,
+        "action_head": head,
+        "logit_scale": logit_scale,
+        "cfg": {"hidden_size": 1, "width": 1, "depth": 2, "projection_dim": 1},
+    }
+    _fake_torch(monkeypatch, checkpoint)
+    with pytest.raises(ValueError, match="finite exponential range"):
+        convert(tmp_path / "head.pt", tmp_path / "converted")
