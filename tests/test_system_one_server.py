@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import math
 import threading
 
 import httpx
@@ -44,7 +45,7 @@ class FakeBackend:
 
 def test_system_one_contract_and_auth():
     client = TestClient(create_app(FakeBackend(), api_key="secret"))
-    assert client.get("/health").status_code == 200
+    assert client.get("/health").json() == {"ok": True}
     unauthorized = client.post(
         "/v1/systemone",
         json={
@@ -184,7 +185,7 @@ def test_clm_backend_runs_native_hidden_state_and_reuses_action_cache(
         "projection_dim": 2,
         "hidden_size": 4,
         "activation": "gelu",
-        "logit_scale": 1.0,
+        "logit_scale": math.log(1000.0),
         "model_name": "clm-test",
     }
     (tmp_path / "config.json").write_text(json.dumps(config), encoding="utf-8")
@@ -229,6 +230,14 @@ def test_clm_backend_runs_native_hidden_state_and_reuses_action_cache(
     backend = CLMBackend(
         "dummy-qwen3", str(tmp_path), model_name="public-clm", cache_entries=16
     )
+    assert backend._scale == pytest.approx(100.0)
+    backend._tokenizer = SimpleNamespace(
+        encode=lambda text, add_special_tokens=True: list(range(10)), eos_token_id=0
+    )
+    backend._max_tokens = 3
+    assert backend._token_ids("short") == [7, 8, 9]
+    backend._tokenizer = Tokenizer()
+    backend._max_tokens = 2048
     question = Question(
         type="choice",
         instructions="Pick",

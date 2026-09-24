@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import argparse
+import fcntl
 import json
 import math
 import os
@@ -11,7 +12,8 @@ import shutil
 import sys
 import tempfile
 import uuid
-from collections.abc import Mapping
+from collections.abc import Iterator, Mapping
+from contextlib import contextmanager
 from pathlib import Path
 
 
@@ -46,8 +48,27 @@ def _expected_head_shapes(config: Mapping) -> dict[str, tuple[int, ...]]:
     return shapes
 
 
+@contextmanager
+def _artifact_lock(destination: Path, *, exclusive: bool) -> Iterator[None]:
+    """Coordinate artifact publication with readers in other processes."""
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    lock_path = destination.parent / f".{destination.name}.lock"
+    with lock_path.open("a+b") as lock_file:
+        operation = fcntl.LOCK_EX if exclusive else fcntl.LOCK_SH
+        fcntl.flock(lock_file.fileno(), operation)
+        try:
+            yield
+        finally:
+            fcntl.flock(lock_file.fileno(), fcntl.LOCK_UN)
+
+
 def _publish_artifact(staging: Path, destination: Path) -> None:
-    """Publish a validated two-file artifact as one directory generation."""
+    """Publish one generation while blocking new artifact readers."""
+    with _artifact_lock(destination, exclusive=True):
+        _publish_artifact_unlocked(staging, destination)
+
+
+def _publish_artifact_unlocked(staging: Path, destination: Path) -> None:
     required = {"config.json", "model.safetensors"}
     if {item.name for item in staging.iterdir()} != required:
         raise ValueError("staged CLM artifact is incomplete")

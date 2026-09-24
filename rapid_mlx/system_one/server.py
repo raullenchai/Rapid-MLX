@@ -95,7 +95,7 @@ def create_app(
 
     @app.get("/health")
     def health() -> dict:
-        return {"ok": True, "models": [item["name"] for item in backend.models()]}
+        return {"ok": True}
 
     @app.get("/v1/models", dependencies=[Depends(verify)])
     def models() -> dict:

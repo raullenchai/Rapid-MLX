@@ -4,13 +4,15 @@ from __future__ import annotations
 import json
 import os
 import sys
+import threading
+import time
 from types import SimpleNamespace
 
 import mlx.core as mx
 import numpy as np
 import pytest
 
-from rapid_mlx.system_one.convert_clm import _publish_artifact, convert
+from rapid_mlx.system_one.convert_clm import _artifact_lock, _publish_artifact, convert
 
 
 def _artifact(path, marker: str):
@@ -85,6 +87,30 @@ def test_publish_artifact_preserves_backup_when_restore_fails(monkeypatch, tmp_p
     assert len(backups) == 1
     assert (backups[0] / "config.json").read_text() == "old"
     assert (backups[0] / "model.safetensors").read_text() == "old"
+
+
+def test_artifact_lock_serializes_readers_and_publishers(tmp_path):
+    destination = tmp_path / "head"
+    staging = tmp_path / ".staging"
+    _artifact(destination, "old")
+    _artifact(staging, "new")
+    started = threading.Event()
+    finished = threading.Event()
+
+    def publish():
+        started.set()
+        _publish_artifact(staging, destination)
+        finished.set()
+
+    with _artifact_lock(destination, exclusive=False):
+        thread = threading.Thread(target=publish)
+        thread.start()
+        assert started.wait(timeout=1)
+        time.sleep(0.05)
+        assert not finished.is_set()
+    thread.join(timeout=1)
+    assert finished.is_set()
+    assert (destination / "config.json").read_text() == "new"
 
 
 class _FakeTensor:

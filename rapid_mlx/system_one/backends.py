@@ -200,6 +200,7 @@ class CLMBackend:
     ):
         import mlx.core as mx
 
+        from rapid_mlx.system_one.convert_clm import _artifact_lock
         from rapid_mlx.utils.tokenizer import load_model_with_fallback
 
         head_path = Path(head).expanduser()
@@ -208,25 +209,28 @@ class CLMBackend:
                 "CLM .pt checkpoints must be converted before serving: "
                 f"rapid-mlx-convert-clm-head {head_path} OUTPUT_DIR"
             )
-        config_path = (
-            head_path / "config.json"
-            if head_path.is_dir()
-            else head_path.with_name("config.json")
-        )
-        weights_path = (
-            head_path / "model.safetensors" if head_path.is_dir() else head_path
-        )
-        if weights_path.is_file() and weights_path.suffix.lower() != ".safetensors":
-            raise ValueError("CLM head weights must be a .safetensors file")
-        if not config_path.is_file() or not weights_path.is_file():
-            raise ValueError("CLM head must contain config.json and model.safetensors")
-        self.config = json.loads(config_path.read_text(encoding="utf-8"))
-        self._state_head = _ProjectionHead(self.config)
-        self._action_head = _ProjectionHead(self.config)
-        weights = mx.load(str(weights_path))
-        self._state_head.load_weights(weights, "state_head")
-        self._action_head.load_weights(weights, "action_head")
-        mx.eval(weights)
+        file_form = head_path.suffix.lower() == ".safetensors"
+        artifact_root = head_path.parent if file_form else head_path
+        with _artifact_lock(artifact_root, exclusive=False):
+            config_path = (
+                head_path.with_name("config.json")
+                if file_form
+                else head_path / "config.json"
+            )
+            weights_path = head_path if file_form else head_path / "model.safetensors"
+            if head_path.is_file() and not file_form:
+                raise ValueError("CLM head weights must be a .safetensors file")
+            if not config_path.is_file() or not weights_path.is_file():
+                raise ValueError(
+                    "CLM head must contain config.json and model.safetensors"
+                )
+            self.config = json.loads(config_path.read_text(encoding="utf-8"))
+            self._state_head = _ProjectionHead(self.config)
+            self._action_head = _ProjectionHead(self.config)
+            weights = mx.load(str(weights_path))
+            self._state_head.load_weights(weights, "state_head")
+            self._action_head.load_weights(weights, "action_head")
+            mx.eval(weights)
         self._model, self._tokenizer = load_model_with_fallback(encoder)
         inner = getattr(self._model, "model", None)
         if inner is None or not callable(inner):
@@ -256,6 +260,7 @@ class CLMBackend:
         logit_scale = float(self.config["logit_scale"])
         if not math.isfinite(logit_scale):
             raise ValueError("CLM logit_scale must be finite")
+        # Match upstream HeadPair: exp(logit_scale).clamp(max=100).
         self._scale = math.exp(min(logit_scale, math.log(100.0)))
         self._max_tokens = max_tokens
         self._max_work_tokens = max_work_tokens
@@ -281,6 +286,8 @@ class CLMBackend:
                     "CLM encoder tokenizer produced no tokens and has no eos token"
                 )
             ids = [eos]
+        # vLLM's upstream `truncate_prompt_tokens` keeps the final N prompt
+        # tokens. CLM uses last-token pooling, so mirror that left truncation.
         return ids[-self._max_tokens :]
 
     def _project(self, kind: str, texts: list[str], token_rows: list[list[int]]):

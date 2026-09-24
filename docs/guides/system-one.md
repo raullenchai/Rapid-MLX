@@ -97,10 +97,13 @@ nesting-depth protection.
 - One service process hosts one decision backend.
 - Laya uses checkpoint calibration and accepts `temperature=1` only.
 - CLM input is capped at 2,048 tokens by default, matching the upstream
-  reference server. `--max-tokens` can lower or raise the cap, but parity above
-  2,048 tokens has not been qualified. Each rendered encoder input is also
-  capped at 16 UTF-8 bytes per configured token (at least 1 KiB), before
-  tokenization.
+  vLLM `truncate_prompt_tokens` behavior: longer inputs are left-truncated so
+  the final 2,048 tokens reach last-token pooling. `--max-tokens` can lower or
+  raise the cap, but parity above 2,048 tokens has not been qualified. Each
+  rendered encoder input is also capped at 16 UTF-8 bytes per configured token
+  (at least 1 KiB), before tokenization.
+- Projection temperature scaling matches upstream `HeadPair`: the exponential
+  of `logit_scale` is capped at 100.
 - A request may contain at most 64 questions and 255 options per question.
   Across all questions it may contain at most 255 candidates and 32,768 CLM
   encoder tokens. `--max-work-tokens` changes the token budget.
