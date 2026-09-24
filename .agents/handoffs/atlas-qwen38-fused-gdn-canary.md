@@ -51,7 +51,7 @@
 
 ## Verification
 
-- `373 passed, 2 deselected`: focused canary, B0 artifact truth and
+- `374 passed, 2 deselected`: focused canary, B0 artifact truth and
   planner, Qwen boot status, existing Qwen3.6 native-cache path, batching, and
   Qwen4 experiment artifact parity suites.
 - Ruff check and format, Python compilation, and `git diff --check` pass.
