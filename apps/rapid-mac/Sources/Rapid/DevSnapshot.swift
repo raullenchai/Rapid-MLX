@@ -43,6 +43,11 @@ enum DevSnapshot {
         // throwaway instance is right here: the snapshot never approves
         // anything, it only needs the object to exist.
         let browseApproval = BrowseApprovalStore()
+        // ``ContentView`` also owns the built-in local-file/code approval
+        // sheet. Keep the snapshot environment in lockstep with RapidApp's
+        // dependency chain; otherwise adding that production dependency makes
+        // every visual capture trap before the first frame is rendered.
+        let localToolApproval = LocalToolApprovalStore()
         // ``ContentView`` also reads ``ImageGenViewModel`` from the
         // environment (the Images tab). Same rule as ``browseApproval``: a
         // throwaway instance so the view can be evaluated without trapping.
@@ -322,6 +327,7 @@ enum DevSnapshot {
                     .environment(dockPromptStore)
                     .environment(snapshotShareCompute)
                     .environment(browseApproval)
+                    .environment(localToolApproval)
                     .environment(imageGen)
                     .environment(audio)
                     .environment(video)
@@ -414,9 +420,11 @@ enum DevSnapshot {
         func launchView(
             width: CGFloat,
             height: CGFloat,
-            readiness: ModelReadiness? = .needsStart(alias: "bonsai-1.7b-2bit")
+            readiness: ModelReadiness? = .needsStart(alias: "bonsai-1.7b-2bit"),
+            previewServer: ServerManager? = nil
         ) -> AnyView {
-            AnyView(
+            let renderedServer = previewServer ?? server
+            return AnyView(
                 HStack(spacing: 0) {
                     SidebarView(
                         selection: .constant(.launch),
@@ -433,7 +441,7 @@ enum DevSnapshot {
                         .frame(width: 1)
 
                     LaunchPreviewHost(
-                        server: server,
+                        server: renderedServer,
                         downloads: downloads,
                         readiness: readiness
                     )
@@ -453,6 +461,45 @@ enum DevSnapshot {
                 .environment(dockPromptStore)
                 .frame(width: width, height: height)
             )
+        }
+
+        // Focused Agent-page proof. The full matrix below renders hundreds of
+        // scenes; connection-onboarding work needs a cheap, repeatable way to
+        // inspect this one journey at both the review and minimum window sizes.
+        if ProcessInfo.processInfo.environment["RAPID_DEV_AGENT_ONLY"] == "1" {
+            let reviewSize = CGSize(width: 900, height: 640)
+            let floorSize = CGSize(width: 720, height: 560)
+            let readyServer = ServerManager(
+                testingState: .ready(alias: "bonsai-1.7b-2bit"),
+                binaryPath: URL(fileURLWithPath: "/Applications/Rapid-MLX.app/Contents/Resources/rapid-mlx"),
+                activePort: PortSweep.defaultPort,
+                activeBearer: "rapid-sk-snapshot-not-a-secret"
+            )
+            renderHosted(
+                launchView(width: 900, height: 640), size: reviewSize,
+                appearance: .aqua, to: "\(dir)/agent-stopped-light.png"
+            )
+            renderHosted(
+                launchView(width: 900, height: 640), size: reviewSize,
+                appearance: .darkAqua, to: "\(dir)/agent-stopped-dark.png"
+            )
+            renderHosted(
+                launchView(width: 720, height: 560), size: floorSize,
+                appearance: .aqua, to: "\(dir)/agent-stopped-floor.png"
+            )
+            renderHosted(
+                launchView(
+                    width: 900,
+                    height: 640,
+                    readiness: .ready(alias: "bonsai-1.7b-2bit"),
+                    previewServer: readyServer
+                ),
+                size: reviewSize,
+                appearance: .aqua,
+                to: "\(dir)/agent-ready-light.png"
+            )
+            NSApp.terminate(nil)
+            return
         }
 
         // Scenario 1: the app as launched (idle / first-run, depending on

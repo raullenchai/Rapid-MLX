@@ -563,7 +563,7 @@ struct CoreWorkspaceVisualFoundationTests {
             ("New Chat", "square.and.pencil"),
             ("Images", "photo"),
             ("Audio", "waveform"),
-            ("Launch", "paperplane"),
+            ("Agent", "network"),
         ]
         var searchStart = source.startIndex
         for row in rows {

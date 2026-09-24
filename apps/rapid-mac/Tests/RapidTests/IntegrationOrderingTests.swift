@@ -1,3 +1,4 @@
+import Foundation
 import Testing
 @testable import Rapid
 
@@ -58,5 +59,41 @@ struct IntegrationOrderingTests {
         #expect(ordered.first == "claude-code")
         #expect(!ordered.contains("codex"))
         #expect(ordered.count == withoutCodex.count)
+    }
+}
+
+@Suite("Agent connection information architecture")
+struct AgentConnectionInformationArchitectureTests {
+    private func source(_ name: String) throws -> String {
+        try String(
+            contentsOf: URL(fileURLWithPath: #filePath)
+                .deletingLastPathComponent()
+                .deletingLastPathComponent()
+                .deletingLastPathComponent()
+                .appendingPathComponent("Sources/Rapid/UI/\(name)"),
+            encoding: .utf8
+        )
+    }
+
+    @Test("Connection details lead integrations and server settings stay secondary")
+    func connectionContractLeadsThePage() throws {
+        let full = try source("ConnectToolsView.swift")
+        let marker = try #require(full.range(of: "var cardContent: some View"))
+        let page = full[marker.lowerBound...]
+        let endpoint = try #require(page.range(of: "endpointSection"))
+        let integrations = try #require(page.range(of: "toolsSection(Array(tools.prefix(3))"))
+        let settings = try #require(page.range(of: "\"Server settings\""))
+
+        #expect(endpoint.lowerBound < integrations.lowerBound)
+        #expect(integrations.lowerBound < settings.lowerBound)
+        #expect(!page.contains("Advanced connection details"))
+    }
+
+    @Test("Everyday navigation calls this surface Agent")
+    func agentNameIsUserFacing() throws {
+        let sidebar = try source("SidebarView.swift")
+        let palette = try source("CommandPaletteView.swift")
+        #expect(sidebar.contains("title: \"Agent\""))
+        #expect(palette.contains("case .launch: return \"Open Agent\""))
     }
 }
