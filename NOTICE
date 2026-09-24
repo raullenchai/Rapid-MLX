@@ -133,6 +133,13 @@ repository. Each keeps its upstream license text alongside the code.
   MIT License — Copyright © 2025 Prince Canuma.
   See rapid_mlx/models/mlx_vlm_vendored/LICENSE.
 
+* rapid_mlx/system_one/
+  CLM typed-question rendering, answer decoding, and projection-head semantics
+  are adapted from Contrastive-LM/CLM at commit
+  7956937c58ed5839c06ddc4dc6b6b61c3a3e4094.
+  https://github.com/Contrastive-LM/CLM
+  Licensed under the Apache License, Version 2.0.
+
 
 Runtime dependencies
 ====================
@@ -145,6 +152,7 @@ here, and each is used under its own license:
     mlx-lm       https://github.com/ml-explore/mlx-lm         MIT
     mlx-vlm      https://github.com/Blaizzy/mlx-vlm           MIT
     mlx-audio    https://github.com/Blaizzy/mlx-audio         MIT
+    laya-mlx     https://github.com/mizorewww/laya-mlx        Apache-2.0
 
 The macOS desktop application enumerates the components it ships in
 apps/rapid-mac/THIRD_PARTY.md, and reproduces their license texts inside the

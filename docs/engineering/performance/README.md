@@ -6,6 +6,8 @@ summary statistics, and limitations.
 
 ## Reports
 
+- [System One CLM-8B server dogfood](2026-09-24-system-one-clm-dogfood.md)
+- [System One Laya server dogfood](2026-09-24-system-one-laya-dogfood.md)
 - [Gemma 4 26B-A4B assistant-sidecar MTP qualification](2026-09-20-gemma4-assistant-mtp.md)
 - [Qwen3.6-35B-A3B compiled decode replay qualification](2026-09-13-qwen36-compiled-decode.md)
 - [Qwen3.6-35B-A3B native text-cache qualification](2026-09-13-qwen36-mllm-native-text-cache.md)
