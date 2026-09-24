@@ -135,6 +135,9 @@ vendored copy differs by exactly the deviations listed):
      the ``build_prefix_cache_plan`` fallback ``make_prompt_cache`` remains on
      upstream mlx-vlm until producers flip (step 3); turboquant capability
      registration resolves the pinned upstream module (not vendored).
+  4. The dynamic ``memory_profile`` hook result is explicitly annotated with
+     its documented ``Optional[CacheMemory]`` contract for the repository's
+     mypy ratchet; this is a typing-only deviation with no runtime change.
   The lane's ``clone_cache_entry`` / ``Capability`` / ``resolve_capability``
   imports now resolve here; the four test modules that stub
   ``clone_cache_entry`` were re-pointed at this module in the same commit.
@@ -149,6 +152,9 @@ vendored copy differs by exactly the deviations listed):
     (2b-3 folded four cache-typed sites — the
     ``_dense_checkpoint*`` pair and both exact-snapshot ladders — into the
     dual-namespace helpers below.)
+  - Typing-only local annotations preserve the explicit optional cache result
+    across disk and memory restore paths and type the MLX evaluation target
+    list; these do not change runtime behavior.
   - dual-namespace recognition helpers (``_cache_ns_*``, 2b-3) so the
     engine's exact-type tables, snapshot/restore constructors, and
     ``_resolve_checkpoint_class`` accept both cache namespaces; exact

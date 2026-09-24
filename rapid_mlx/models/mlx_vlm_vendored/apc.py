@@ -3543,6 +3543,9 @@ class APCManager:
                 )
                 can_try_disk = False
 
+        # VENDOR-DEVIATION(typing): this local spans both the disk and memory
+        # restore paths, so retain the helper's explicit Optional return type.
+        prompt_cache: Optional[List[Any]] = None
         if can_try_disk and disk is not None:
             disk_match = disk.find_exact_prefix(
                 token_tuple,
@@ -3588,7 +3591,7 @@ class APCManager:
                                 self.memory_plan.reserve_bytes()
                             )
                         else:
-                            eval_targets = []
+                            eval_targets: List[mx.array] = []
                             for entry in prompt_cache:
                                 reserve_checkpoint_capacity(
                                     entry,

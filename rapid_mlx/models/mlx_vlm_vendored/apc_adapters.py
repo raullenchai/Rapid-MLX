@@ -188,7 +188,11 @@ class CheckpointAdapter:
 
     def memory(self, cache: Any, token_count: int) -> CacheMemory:
         describe = getattr(cache, "memory_profile", None)
-        profile = describe(token_count) if callable(describe) else None
+        # VENDOR-DEVIATION(typing): the dynamic hook is intentionally untyped;
+        # annotate its documented contract without changing runtime behavior.
+        profile: Optional[CacheMemory] = (
+            describe(token_count) if callable(describe) else None
+        )
         if profile is not None:
             return profile
         size = cache_nbytes(cache)
