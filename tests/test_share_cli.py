@@ -44,7 +44,7 @@ def _make_args(**overrides):
     defaults = dict(
         model="qwen3.5-4b-4bit",
         port=18765,  # explicit so the env-var fallback path isn't exercised
-        thinking=False,  # default: forward --no-thinking to serve
+        thinking=None,  # default (not supplied): forward --no-thinking to serve
         cors_origins=None,  # None → CLI default allowlist
         rate_limit=120,  # CLI default (rpm), forwarded to spawned serve
         chat_frontend=None,  # use built-in default

@@ -1324,9 +1324,9 @@ def _run_share(
     thinking_passthrough = [
         t for t in passthrough if t.split("=", 1)[0] in ("--thinking", "--no-thinking")
     ]
-    if (
-        catalog_id in CATALOG_REASONING_REQUIRED
-        and "--no-thinking" in thinking_passthrough
+    if catalog_id in CATALOG_REASONING_REQUIRED and (
+        "--no-thinking" in thinking_passthrough
+        or getattr(args, "thinking", None) is False
     ):
         raise QuickSilverError(
             f"{catalog_id} serves with reasoning always on in the QuickSilver "

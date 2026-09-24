@@ -292,6 +292,13 @@ def test_batched_leaf_extraction_keeps_written_projected_rows(cache_ns):
     unwritten = _extract_batched_leaf(batched, 1)
     assert type(unwritten.caches[3]) is cache_ns.KVCache
     assert unwritten.caches[3].offset == 0
+    # No projected state leaks into the row: a zero-length (or absent) slice
+    # that re-merges to a batch with no projected content at all.
+    keys = unwritten.caches[3].keys
+    assert keys is None or keys.shape[2] == 0
+    remerged = cache_ns.CacheList.merge([unwritten, unwritten])
+    assert remerged.caches[3].keys is None
+    assert remerged.caches[0].keys.shape[2] == 2
 
 
 def test_batched_leaf_extraction_only_guards_batch_kv_cache(cache_ns):

@@ -58,7 +58,7 @@ def _make_args(**overrides) -> argparse.Namespace:
         model="qwen3.6-35b",
         _original_alias=None,
         port=18765,
-        thinking=False,
+        thinking=None,
         cors_origins=None,
         rate_limit=None,
         chat_frontend=None,
@@ -2999,6 +2999,16 @@ def test_glm_flash_explicit_no_thinking_passthrough_is_rejected(capsys):
     with pytest.raises(SystemExit) as raised:
         _run_share_capture_extra(model="glm-5.3-flash", _passthrough=["--no-thinking"])
     assert raised.value.code == 2
+    assert "reasoning always on" in capsys.readouterr().err
+
+
+def test_glm_flash_explicit_top_level_no_thinking_is_rejected(capsys):
+    """``share glm-5.3-flash --quicksilver --no-thinking`` (the parsed option,
+    not a passthrough token) must be rejected the same way, not silently
+    ignored while the child runs with reasoning on."""
+    with pytest.raises(SystemExit) as exc:
+        _run_share_capture_extra(model="glm-5.3-flash", thinking=False)
+    assert exc.value.code == 2
     assert "reasoning always on" in capsys.readouterr().err
 
 
