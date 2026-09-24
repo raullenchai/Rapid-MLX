@@ -40,6 +40,9 @@ from rapid_mlx.runtime.optional_runtime import (
 # (set to an empty string to disable the mirror and force HF Hub).
 MIRROR_DEFAULT = "https://models.rapidmlx.com"
 
+DEFAULT_SERVE_PORT = 8000
+DEFAULT_SERVE_PORT_CANDIDATES = 10
+
 _CONSENT_MUTATION_EVENT_LIMIT = 5
 _consent_mutation_event_count = 0
 _consent_mutation_event_lock = threading.Lock()
@@ -438,25 +441,48 @@ def _port_preflight_or_die(host: str, port: int, *, model: str) -> None:
         _exit_for_port_collision(port, collision_host, model=model)
 
 
-def _resolve_serve_port(host: str, port: int | None, *, model: str) -> int:
-    """Resolve an omitted serve port to the first free port in 8000-8009.
+def _listen_fd_port(listen_fd: int) -> int:
+    """Read the bound TCP port without taking ownership of ``listen_fd``."""
+
+    import socket
+
+    with socket.socket(fileno=os.dup(listen_fd)) as inherited:
+        sockname = inherited.getsockname()
+    if not isinstance(sockname, tuple) or len(sockname) < 2:
+        raise OSError(f"--listen-fd {listen_fd} is not bound to a TCP socket")
+    return int(sockname[1])
+
+
+def _resolve_serve_port(
+    host: str,
+    port: int | None,
+    *,
+    model: str,
+    listen_fd: int | None = None,
+    scan_base: int = DEFAULT_SERVE_PORT,
+    scan_count: int = DEFAULT_SERVE_PORT_CANDIDATES,
+) -> int:
+    """Resolve the effective port once, before any serve-lane dispatch.
 
     An explicit port retains the established hard-fail behavior. The scan is
     deliberately preflight-only; the Uvicorn bind guard remains authoritative
     if another process claims the resolved port before the real bind.
     """
 
+    if listen_fd is not None:
+        return _listen_fd_port(listen_fd)
+
     if port is not None:
         _port_preflight_or_die(host, port, model=model)
         return port
 
     first_collision_host: str | None = None
-    for candidate in range(8000, 8010):
+    for candidate in range(scan_base, scan_base + scan_count):
         collision_host = _port_collision_host(host, candidate)
         if collision_host is None:
-            if candidate != 8000:
+            if candidate != scan_base:
                 print(
-                    f"Port 8000 is in use; using {candidate} instead "
+                    f"Port {scan_base} is in use; using {candidate} instead "
                     "(pass --port to choose).",
                     file=sys.stderr,
                 )
@@ -465,7 +491,16 @@ def _resolve_serve_port(host: str, port: int | None, *, model: str) -> int:
             first_collision_host = collision_host
 
     assert first_collision_host is not None
-    _exit_for_port_collision(8000, first_collision_host, model=model)
+    _exit_for_port_collision(scan_base, first_collision_host, model=model)
+
+
+def _resolved_serve_port(args) -> int:
+    """Return the shared-entrypoint port invariant used by serve lanes."""
+
+    port = getattr(args, "port", None)
+    if not isinstance(port, int):
+        raise AssertionError("serve lane received an unresolved port")
+    return port
 
 
 def _print_port_collision_and_exit(
@@ -557,10 +592,11 @@ def _run_uvicorn(app, args, log_level: str) -> None:
                 on_server_accepting=print_ready_banner,
             )
         else:
+            port = _resolved_serve_port(args)
             run_uvicorn(
                 app,
                 host=args.host,
-                port=args.port,
+                port=port,
                 log_level=log_level,
                 timeout_keep_alive=30,
                 on_server_accepting=print_ready_banner,
@@ -572,7 +608,9 @@ def _run_uvicorn(app, args, log_level: str) -> None:
         # propagate so the failure is debuggable.
         if exc.errno == errno.EADDRINUSE:
             _print_port_collision_and_exit(
-                args.host, args.port, in_listen_fd_mode=listen_fd is not None
+                args.host,
+                _resolved_serve_port(args),
+                in_listen_fd_mode=listen_fd is not None,
             )
         raise
     except SystemExit as exc:
@@ -585,12 +623,12 @@ def _run_uvicorn(app, args, log_level: str) -> None:
             and not getattr(exc, "rapid_mlx_bind_reported", False)
         ):
             try:
-                busy = _port_is_busy(args.host, args.port)
+                busy = _port_is_busy(args.host, _resolved_serve_port(args))
             except BaseException:
                 busy = False
             if busy:
                 _print_port_collision_and_exit(
-                    args.host, args.port, in_listen_fd_mode=False
+                    args.host, _resolved_serve_port(args), in_listen_fd_mode=False
                 )
         raise
 
@@ -3121,7 +3159,7 @@ def _serve_native_mtp_if_requested(
     run_native_mtp_server(
         pair=pair,
         host=args.host,
-        port=args.port,
+        port=_resolved_serve_port(args),
         served_model_name=args.served_model_name or alias_name,
         default_max_tokens=effective_max_tokens,
         cors_origins=cors_origins,
@@ -4214,6 +4252,16 @@ def serve_command(args):
             )
             sys.exit(1)
 
+    # Resolve exactly once before any serving lane can consume ``args.port``.
+    # Socket activation uses the inherited socket's real bound port; all other
+    # omitted-port launches scan the bounded default range.
+    args.port = _resolve_serve_port(
+        getattr(args, "host", "127.0.0.1"),
+        getattr(args, "port", None),
+        model=args.model,
+        listen_fd=getattr(args, "listen_fd", None),
+    )
+
     # R10-C1: AUDIO-SERVE-MODE FORK. The boot guard above only checks
     # that the ``[audio]`` extra is installed — it doesn't route the
     # alias anywhere. Pre-R10 every short alias (``kokoro``, ``whisper``,
@@ -4255,12 +4303,6 @@ def serve_command(args):
             and _cache_runnability(audio_entry.hf_id) is False
         ):
             _refuse_offline_uncached(audio_entry.hf_id)
-        if getattr(args, "listen_fd", None) is None:
-            args.port = _resolve_serve_port(
-                getattr(args, "host", "127.0.0.1"),
-                getattr(args, "port", None),
-                model=args.model,
-            )
         _serve_audio_mode(args, audio_entry)
         return
 
@@ -4272,17 +4314,6 @@ def serve_command(args):
 
     if prompt_upgrade_if_available():
         sys.exit(0)
-
-    # Preserve whether the operator chose a port through the cheap boot guards
-    # and interactive upgrade prompt above. Resolve it before any download,
-    # model load, or specialized runtime can consume ``args.port``.
-    # Socket-activated launches ignore host/port and need no resolution.
-    if getattr(args, "listen_fd", None) is None:
-        args.port = _resolve_serve_port(
-            getattr(args, "host", "127.0.0.1"),
-            getattr(args, "port", None),
-            model=args.model,
-        )
 
     # Finding ⑥ (0.10.16 dogfood): a "weightless stub" cache — config.json
     # present but ``model*.safetensors`` absent (a warm cache commonly holds
@@ -5051,7 +5082,7 @@ def serve_command(args):
         server._sync_config()
         run_v41_server(
             host=args.host,
-            port=args.port,
+            port=_resolved_serve_port(args),
             served_model_name=(
                 args.served_model_name
                 or getattr(args, "_original_alias", None)
@@ -5119,7 +5150,7 @@ def serve_command(args):
             drafter_repo=_drafter_repo,
             drafter_revision=_drafter_revision,
             host=args.host,
-            port=args.port,
+            port=_resolved_serve_port(args),
             served_model_name=args.served_model_name or _alias_name,
             default_max_tokens=effective_max_tokens,
             cors_origins=cors_origins,
@@ -5698,7 +5729,7 @@ def serve_command(args):
             tree_budget=getattr(args, "_ddtree_tree_budget", None)
             or _profile.ddtree_tree_budget,
             host=args.host,
-            port=args.port,
+            port=_resolved_serve_port(args),
             served_model_name=args.served_model_name or _alias_name,
             default_max_tokens=args.max_tokens,
             cors_origins=cors_origins,

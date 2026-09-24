@@ -3885,6 +3885,7 @@ Examples:
     from .cli import _resolve_serve_port
 
     args.port = _resolve_serve_port(args.host, args.port, model=args.model)
+    assert isinstance(args.port, int)
 
     # F-H08-INCOMPLETE: the ``[embeddings]`` extra-required guard MUST
     # fire BEFORE logging configuration and the security/banner side

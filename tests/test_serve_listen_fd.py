@@ -21,7 +21,8 @@ These tests pin the public CLI contract:
 from __future__ import annotations
 
 import sys
-from types import ModuleType
+import socket
+from types import ModuleType, SimpleNamespace
 from unittest.mock import patch
 
 import pytest
@@ -241,6 +242,71 @@ def test_run_uvicorn_passes_host_port_when_listen_fd_unset(monkeypatch):
     assert captured_kwargs.get("timeout_keep_alive") == 30
 
 
+def test_native_mtp_listen_fd_never_forwards_none_port(monkeypatch):
+    """Keep the round-1 scratch repro: omitted port resolves from the FD."""
+
+    from rapid_mlx.speculative.native_mtp import server as native_server
+
+    calls: list[dict[str, object]] = []
+    monkeypatch.setattr(cli, "_check_disk_space", lambda *_a, **_kw: None)
+    monkeypatch.setattr(cli, "_check_memory_capacity", lambda *_a, **_kw: None)
+    monkeypatch.setattr(
+        native_server, "run_native_mtp_server", lambda **kwargs: calls.append(kwargs)
+    )
+
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as listener:
+        listener.bind(("127.0.0.1", 0))
+        listener.listen(1)
+        bound_port = listener.getsockname()[1]
+        args = SimpleNamespace(
+            mtp_backend="native",
+            _native_mtp_pair=SimpleNamespace(
+                target_repo="target",
+                drafter_repo="drafter",
+                drafter_model_type="other",
+            ),
+            model="model",
+            listen_fd=listener.fileno(),
+            port=None,
+            host="127.0.0.1",
+            served_model_name=None,
+            prefill_step_size=2048,
+            _prefill_step_size_explicit=False,
+            no_thinking=False,
+            rate_limit=0,
+            max_concurrent_requests=1,
+            enable_auto_tool_choice=False,
+            tool_call_parser=None,
+            reasoning_parser=None,
+        )
+        args.port = cli._resolve_serve_port(
+            args.host,
+            args.port,
+            model=args.model,
+            listen_fd=args.listen_fd,
+        )
+        server_module = SimpleNamespace(
+            _sync_config=lambda: None,
+            _api_key=None,
+            _max_request_bytes=1,
+            _body_receive_timeout_seconds=1.0,
+            _default_timeout=60.0,
+            get_resolved_cors_policy=lambda: None,
+        )
+
+        assert cli._serve_native_mtp_if_requested(
+            args,
+            server_module=server_module,
+            effective_max_tokens=32,
+            cors_origins=[],
+            uvicorn_log_level="error",
+        )
+
+    assert len(calls) == 1
+    assert calls[0]["port"] == bound_port
+    assert calls[0]["port"] is not None
+
+
 @pytest.mark.requires_mlx
 def test_serve_command_hard_exits_immediately_after_uvicorn_returns(
     stub_heavy_serve_deps,
@@ -301,6 +367,7 @@ def stub_heavy_serve_deps(monkeypatch):
     monkeypatch.setattr(cli, "_ensure_model_downloaded", lambda model: None)
     monkeypatch.setattr(cli, "_check_memory_capacity", lambda *a, **kw: None)
     monkeypatch.setattr(cli, "_check_disk_space", lambda *a, **kw: None)
+    monkeypatch.setattr(cli, "_listen_fd_port", lambda _fd: 8000)
     monkeypatch.setattr(server_mod, "configure_logging", lambda level: "info")
     monkeypatch.setattr(server_mod, "load_model", lambda *a, **kw: None)
     # ``serve_command`` calls ``server.configure_cors`` which does an
