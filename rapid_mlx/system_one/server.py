@@ -24,6 +24,12 @@ def create_app(
 ) -> FastAPI:
     if max_concurrent_requests < 1:
         raise ValueError("max_concurrent_requests must be positive")
+    try:
+        api_key_bytes = api_key.encode("ascii") if api_key is not None else None
+    except UnicodeEncodeError as exc:
+        raise ValueError(
+            "System One API keys must contain ASCII characters only"
+        ) from exc
     app = FastAPI(
         title="Rapid-MLX System One API",
         description="TypeSafe-compatible typed decisions on Apple Silicon",
@@ -69,13 +75,17 @@ def create_app(
         return await asyncio.shield(worker)
 
     def verify(authorization: str | None = Header(default=None)) -> None:
-        if api_key is None:
+        if api_key_bytes is None:
             return
         scheme, separator, token = (authorization or "").partition(" ")
+        try:
+            token_bytes = token.encode("ascii")
+        except UnicodeEncodeError:
+            token_bytes = b""
         if (
             not separator
             or scheme.lower() != "bearer"
-            or not hmac.compare_digest(token.encode(), api_key.encode())
+            or not hmac.compare_digest(token_bytes, api_key_bytes)
         ):
             raise HTTPException(
                 status_code=401,

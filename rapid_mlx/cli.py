@@ -12286,7 +12286,7 @@ Examples:
         "--max-concurrent-requests",
         type=positive_int,
         default=8,
-        help="Maximum System One requests admitted to inference at once",
+        help="Maximum outstanding System One backend requests",
     )
 
     # Serve command. ``allow_abbrev=False`` blocks unique-prefix matches
