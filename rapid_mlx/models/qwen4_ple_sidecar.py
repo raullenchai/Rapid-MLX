@@ -104,7 +104,7 @@ def load_manifest(sidecar_path) -> dict:
     path = Path(sidecar_path)
     if fnmatch.fnmatch(path.name, "model*.safetensors"):
         raise ValueError("PLE sidecar must not match the model weight-file glob")
-    manifest = json.loads(Path(str(path) + ".manifest.json").read_text())
+    manifest: dict = json.loads(Path(str(path) + ".manifest.json").read_text())
     if manifest.get("format") != "qwen4-ple-rows" or manifest.get("version") != 1:
         raise ValueError("unsupported PLE sidecar manifest format/version")
     if {k: manifest.get(k) for k in ("bits", "group_size", "mode")} != dict(
