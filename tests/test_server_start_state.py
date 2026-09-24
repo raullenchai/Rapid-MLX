@@ -262,9 +262,7 @@ def _hub_response(status_code: int) -> requests.Response:
 def test_render_hub_error_not_found_has_repo_discovery_next_steps():
     from huggingface_hub.errors import RepositoryNotFoundError
 
-    failure = RepositoryNotFoundError(
-        "private raw detail", response=_hub_response(404)
-    )
+    failure = RepositoryNotFoundError("private raw detail", response=_hub_response(404))
     outer = RuntimeError("outer private detail")
     outer.__cause__ = failure
 
@@ -297,14 +295,19 @@ def test_render_hub_error_gated_has_access_and_auth_next_steps(status_code):
 
 
 @pytest.mark.parametrize(
-    "failure",
-    [
-        pytest.param(requests.ConnectionError("private host"), id="requests"),
-        pytest.param(socket.gaierror("private dns"), id="dns"),
-        pytest.param(TimeoutError("private timeout"), id="timeout"),
-    ],
+    "kind",
+    ["local-entry", "offline-mode", "requests", "dns", "timeout"],
 )
-def test_render_hub_error_offline_has_network_cache_next_steps(failure):
+def test_render_hub_error_offline_has_network_cache_next_steps(kind):
+    from huggingface_hub.errors import LocalEntryNotFoundError, OfflineModeIsEnabled
+
+    failure = {
+        "local-entry": LocalEntryNotFoundError("private cache"),
+        "offline-mode": OfflineModeIsEnabled("private mode"),
+        "requests": requests.ConnectionError("private host"),
+        "dns": socket.gaierror("private dns"),
+        "timeout": TimeoutError("private timeout"),
+    }[kind]
     rendered = cli.render_hub_error(failure, "owner/model")
 
     assert rendered is not None
@@ -323,6 +326,14 @@ def test_render_hub_error_ignores_context_and_unknown_errors():
     cyclic = RuntimeError("cycle")
     cyclic.__cause__ = cyclic
     assert cli.render_hub_error(cyclic, "owner/model") is None
+
+    class ExplodingCauseError(RuntimeError):
+        def __getattribute__(self, name):
+            if name == "__cause__":
+                raise KeyboardInterrupt
+            return super().__getattribute__(name)
+
+    assert cli.render_hub_error(ExplodingCauseError(), "owner/model") is None
 
 
 def test_resolve_timeout_emits_resolve_before_preserving_exit(monkeypatch):
@@ -357,7 +368,10 @@ def test_definitive_download_not_found_fails_resolve_with_next_steps(
     _stub_download_entry(monkeypatch)
     monkeypatch.setattr(
         "rapid_mlx._download_gate.call_with_deadline",
-        lambda _func, _timeout, *_a, **_kw: SimpleNamespace(sha="abc", siblings=[]),
+        lambda _func, _timeout, *_a, **_kw: SimpleNamespace(
+            sha="abc",
+            siblings=[SimpleNamespace(size=1024, rfilename="weights.safetensors")],
+        ),
     )
     monkeypatch.setattr(
         "huggingface_hub.snapshot_download",
@@ -388,9 +402,7 @@ def test_gated_download_fails_fast_instead_of_printing_retry(monkeypatch, capsys
     _stub_download_entry(monkeypatch)
     monkeypatch.setattr(
         "rapid_mlx._download_gate.call_with_deadline",
-        lambda _func, _timeout, *_a, **_kw: SimpleNamespace(
-            sha="abc", siblings=[]
-        ),
+        lambda _func, _timeout, *_a, **_kw: SimpleNamespace(sha="abc", siblings=[]),
     )
     monkeypatch.setattr(
         "huggingface_hub.snapshot_download",
@@ -409,13 +421,59 @@ def test_gated_download_fails_fast_instead_of_printing_retry(monkeypatch, capsys
     assert "server will retry" not in captured.out + captured.err
 
 
+def test_gated_metadata_fails_fast_before_download(monkeypatch, capsys):
+    from huggingface_hub.errors import GatedRepoError
+
+    _stub_download_entry(monkeypatch)
+    monkeypatch.setattr(
+        "rapid_mlx._download_gate.call_with_deadline",
+        lambda *_a, **_kw: (_ for _ in ()).throw(
+            GatedRepoError("private", response=_hub_response(403))
+        ),
+    )
+    downloaded = []
+    monkeypatch.setattr(
+        "huggingface_hub.snapshot_download",
+        lambda *_a, **_kw: downloaded.append(True),
+    )
+
+    with pytest.raises(SystemExit) as caught:
+        cli._ensure_model_downloaded("owner/model")
+
+    captured = capsys.readouterr()
+    assert caught.value.code == 1
+    assert downloaded == []
+    assert "https://huggingface.co/owner/model" in captured.err
+    assert "server will retry" not in captured.out + captured.err
+
+
+def test_offline_metadata_warns_and_continues_to_download(monkeypatch, capsys):
+    _stub_download_entry(monkeypatch)
+    monkeypatch.setattr(
+        "rapid_mlx._download_gate.call_with_deadline",
+        lambda *_a, **_kw: (_ for _ in ()).throw(
+            requests.ConnectionError("private endpoint")
+        ),
+    )
+    downloaded = []
+    monkeypatch.setattr(
+        "huggingface_hub.snapshot_download",
+        lambda *_a, **_kw: downloaded.append(True) or "/tmp/fake",
+    )
+
+    assert cli._ensure_model_downloaded("owner/model") is None
+
+    captured = capsys.readouterr()
+    assert downloaded == [True]
+    assert "HF_HUB_OFFLINE" in captured.err
+    assert "private endpoint" not in captured.out + captured.err
+
+
 def test_offline_download_keeps_retry_path_with_next_steps(monkeypatch, capsys):
     _stub_download_entry(monkeypatch)
     monkeypatch.setattr(
         "rapid_mlx._download_gate.call_with_deadline",
-        lambda _func, _timeout, *_a, **_kw: SimpleNamespace(
-            sha="abc", siblings=[]
-        ),
+        lambda _func, _timeout, *_a, **_kw: SimpleNamespace(sha="abc", siblings=[]),
     )
     monkeypatch.setattr(
         "huggingface_hub.snapshot_download",
@@ -436,9 +494,7 @@ def test_unknown_download_error_keeps_legacy_message(monkeypatch, capsys):
     _stub_download_entry(monkeypatch)
     monkeypatch.setattr(
         "rapid_mlx._download_gate.call_with_deadline",
-        lambda _func, _timeout, *_a, **_kw: SimpleNamespace(
-            sha="abc", siblings=[]
-        ),
+        lambda _func, _timeout, *_a, **_kw: SimpleNamespace(sha="abc", siblings=[]),
     )
     monkeypatch.setattr(
         "huggingface_hub.snapshot_download",

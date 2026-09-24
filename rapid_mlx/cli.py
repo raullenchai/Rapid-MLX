@@ -2089,10 +2089,7 @@ def render_hub_error(exc: BaseException, model_id: str) -> str | None:
 
         gated = isinstance(current, GatedRepoError)
         if isinstance(current, HfHubHTTPError):
-            try:
-                gated = gated or current.response.status_code in (401, 403)
-            except BaseException:
-                pass
+            gated = gated or current.response.status_code in (401, 403)
         if gated:
             return (
                 f"  Error: access to '{model_id}' is gated on Hugging Face.\n"
@@ -2136,9 +2133,7 @@ def render_hub_error(exc: BaseException, model_id: str) -> str | None:
     return None
 
 
-def _fail_hub_resolution(
-    exc: BaseException, model_id: str, rendered: str
-) -> None:
+def _fail_hub_resolution(exc: BaseException, model_id: str, rendered: str) -> None:
     """Record and terminate a Hub resolution failure that cannot be retried."""
     from rapid_mlx.telemetry.model_events import (
         emit_model_pull_failed,
@@ -2339,11 +2334,7 @@ def _ensure_model_downloaded(
             # back into the same hang. ``SystemExit`` is re-raised there, which
             # is the same escape hatch ``_check_disk_space`` already uses.
             rendered = render_hub_error(exc, model_name)
-            if rendered is None:
-                rendered = (
-                    f"  Error: could not reach Hugging Face to resolve "
-                    f"'{model_name}'."
-                )
+            assert rendered is not None
             _fail_hub_resolution(exc, model_name, rendered)
         except Exception as exc:
             # Any other metadata failure stays best-effort: an outage, a gated
@@ -2412,7 +2403,10 @@ def _ensure_model_downloaded(
 
         emit_model_pull_failed(e, model_ref=model_name, source="hf")
         if rendered is not None:
-            print(f"\n{rendered}\n  The server will retry during startup.", file=sys.stderr)
+            print(
+                f"\n{rendered}\n  The server will retry during startup.",
+                file=sys.stderr,
+            )
         else:
             print(f"\n  Pre-download skipped ({type(e).__name__}); server will retry.")
 

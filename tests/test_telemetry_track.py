@@ -20,7 +20,6 @@ from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
-import requests
 
 import rapid_mlx
 import rapid_mlx.cli as cli
@@ -1195,12 +1194,8 @@ def test_gated_serve_posts_one_resolve_and_serve_failure_to_loopback(
         and item["properties"]["state"] == "failed"
         and item["properties"]["failure_stage"] == "resolve"
     ]
-    serve_failures = [
-        item for item in items if item["event"] == "model_serve_failed"
-    ]
-    pull_failures = [
-        item for item in items if item["event"] == "model_pull_failed"
-    ]
+    serve_failures = [item for item in items if item["event"] == "model_serve_failed"]
+    pull_failures = [item for item in items if item["event"] == "model_pull_failed"]
     assert len(resolve_failures) == 1
     assert len(serve_failures) == 1
     assert serve_failures[0]["properties"]["error_class"] == "download_failed"
