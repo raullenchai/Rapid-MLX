@@ -866,6 +866,7 @@ def test_companion_model_info_is_shared_by_list_and_detail(
     assert listed["id"] == served_model_name
     assert listed["modality"] == "image"
     assert listed["serving_lane"] == "vision"
+    assert listed["serving_lane_reason"] == "qualified_companion_dspark"
     assert listed["capabilities"] == ["text", "vision"]
     speculative = listed["speculative_decoding"]
     assert speculative["target_model"] == LFM25_VL_3B.target_repo
