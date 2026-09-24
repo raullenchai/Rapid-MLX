@@ -110,7 +110,8 @@ cli._ensure_model_downloaded = lambda *_args, **_kwargs: None
 
 lane = os.environ["RAPID_MLX_TEST_EXTRA_LANE"]
 status = os.environ.get("RAPID_MLX_TEST_EXTRA_STATUS", "absent")
-if status == "install":
+install_requested = status == "install"
+if install_requested:
     import rapid_mlx.runtime.optional_runtime as optional_runtime
     from rapid_mlx.telemetry import posthog_sender
 
@@ -139,6 +140,8 @@ hidden_modules = {
 }
 
 def find_spec(name, *args, **kwargs):
+    if install_requested and name == "pip":
+        return object()
     hidden = hidden_modules.get(lane, set())
     if any(name == module or name.startswith(module + ".") for module in hidden):
         return None
@@ -226,13 +229,15 @@ if lane == "vision-present":
             '{"model_type":"prism_hadamard_qwen35"}',
             encoding="utf-8",
         )
-    command = (
-        [sys.executable, "-m", "rapid_mlx.server"]
-        if standalone
-        else [str(Path(sys.executable).with_name("rapid-mlx"))]
-    )
+    if standalone:
+        command = [sys.executable, "-m", "rapid_mlx.server"]
+    elif install_missing:
+        # Exercise the restart-sensitive ``-m rapid_mlx.cli`` invocation.
+        command = [sys.executable, "-m", "rapid_mlx.cli"]
+    else:
+        command = [str(Path(sys.executable).with_name("rapid-mlx"))]
     interpreter_command = [command[0]]
-    if not standalone:
+    if not standalone and not install_missing:
         shebang = Path(command[0]).read_text(encoding="utf-8").splitlines()[0]
         assert shebang.startswith("#!")
         interpreter_command = shlex.split(shebang[2:])
@@ -679,7 +684,7 @@ def test_real_dispatch_with_present_vision_extra_emits_no_failure(tmp_path) -> N
         status="present",
     )
 
-    assert proc.returncode == 0
+    assert proc.returncode == 0, proc.stderr
     markers = [
         line
         for line in proc.stderr.splitlines()
@@ -928,7 +933,7 @@ def test_yes_install_preserves_failure_terminals_at_loopback_sink(tmp_path) -> N
         install_missing=True,
     )
 
-    assert proc.returncode == 0
+    assert proc.returncode == 0, proc.stderr
     assert "Install rapid-mlx[vision] now?" not in proc.stderr
     assert events, proc.stderr
     assert _contracted_failure_events(events) == [
