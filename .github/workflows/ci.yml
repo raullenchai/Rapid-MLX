@@ -600,6 +600,13 @@ jobs:
           python -m coverage run --source=rapid_mlx \
             scripts/test_qwen4_norm_convention_cpu.py
 
+      - name: Run Qwen4 PLE sidecar contracts on CPU
+        env:
+          COVERAGE_FILE: coverage-apple.data
+        run: |
+          python -m coverage run --append --source=rapid_mlx \
+            scripts/test_qwen4_ple_sidecar.py
+
       - name: Run MLX-dependent tests
         # SimpleEngine was removed in PR #156 — test_simple_engine.py,
         # test_llm.py, test_deltanet_snapshot.py went with it.
