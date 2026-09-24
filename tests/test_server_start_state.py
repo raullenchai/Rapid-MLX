@@ -295,9 +295,7 @@ def test_repository_not_found_auth_failure_is_gated_everywhere(
 ):
     from huggingface_hub.errors import RepositoryNotFoundError
 
-    failure = RepositoryNotFoundError(
-        "raw secret", response=_hub_response(status_code)
-    )
+    failure = RepositoryNotFoundError("raw secret", response=_hub_response(status_code))
 
     rendered = cli.render_hub_error(failure, "owner/private-model")
 
@@ -419,9 +417,7 @@ def test_offline_uncached_refusal_uses_shared_terminal_failure(monkeypatch, caps
     resolve_failures = []
     monkeypatch.setattr(cli, "_cache_runnability", lambda _model: False)
     monkeypatch.setattr(cli, "_offline_hub_mode_active", lambda: True)
-    monkeypatch.setattr(
-        cli, "_offline_complete_cached_snapshot", lambda _model: None
-    )
+    monkeypatch.setattr(cli, "_offline_complete_cached_snapshot", lambda _model: None)
     monkeypatch.setattr(
         model_events,
         "emit_model_pull_failed",
