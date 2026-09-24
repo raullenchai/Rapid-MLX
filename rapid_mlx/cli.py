@@ -3958,6 +3958,74 @@ def _validate_v41_product_spec_flags(args, *, owns_runtime: bool) -> None:
         raise SystemExit(2)
 
 
+def _resolve_system_one_backend(model: str, requested: str) -> str:
+    if requested != "auto":
+        return requested
+    model_key = model.lower()
+    if model_key in {"clm", "clm-8b", "clm-latest"} or model_key.startswith(
+        "contrastive-lm/"
+    ):
+        return "clm"
+    return "laya"
+
+
+def system_one_command(args) -> None:
+    """Start the dedicated typed-decision API without a generative model."""
+    import os
+
+    from rapid_mlx._uvicorn import run_uvicorn
+    from rapid_mlx.system_one.backends import CLMBackend, DecisionBackend, LayaBackend
+    from rapid_mlx.system_one.server import create_app
+
+    backend_name = _resolve_system_one_backend(args.model, args.backend)
+    if backend_name == "clm":
+        if not args.head:
+            raise SystemExit(
+                "error: CLM requires --head DIR containing converted "
+                "config.json and model.safetensors"
+            )
+    elif args.head:
+        raise SystemExit("error: --head is only valid with --backend clm")
+    # Fail before model download or initialization when the listener cannot
+    # start. Cheap argument validation above still wins for invalid commands.
+    _port_preflight_or_die(args.host, args.port, model=args.model)
+    backend: DecisionBackend
+    if backend_name == "clm":
+        backend = CLMBackend(
+            args.encoder,
+            args.head,
+            model_name=args.model,
+            device=args.device,
+            cache_entries=args.cache_entries,
+            max_tokens=args.max_tokens,
+            max_work_tokens=args.max_work_tokens,
+        )
+    else:
+        backend = LayaBackend(
+            args.model,
+            device=args.device,
+            dtype=args.dtype,
+            batch_size=args.batch_size,
+        )
+    api_key = args.api_key or os.environ.get("RAPID_MLX_API_KEY")
+    app = create_app(
+        backend,
+        api_key=api_key,
+        max_concurrent_requests=args.max_concurrent_requests,
+    )
+    print(
+        f"System One ready: http://{args.host}:{args.port}/v1/systemone "
+        f"({backend_name}, {backend.default_model})"
+    )
+    run_uvicorn(
+        app,
+        host=args.host,
+        port=args.port,
+        log_level=args.log_level.lower(),
+        timeout_keep_alive=30,
+    )
+
+
 def serve_command(args):
     """Start the OpenAI-compatible server."""
     import logging
@@ -12165,6 +12233,73 @@ Examples:
     )
     subparsers = parser.add_subparsers(dest="command", help="Commands")
 
+    system_one_parser = subparsers.add_parser(
+        "system-one",
+        help="Serve a typed decision model",
+        description=(
+            "Start a TypeSafe-compatible decision server with POST "
+            "/v1/systemone and POST /v1/rank. This service is independent "
+            "from the OpenAI-compatible generative server."
+        ),
+        allow_abbrev=False,
+    )
+    system_one_parser.add_argument(
+        "model",
+        nargs="?",
+        default="convaiinnovations/laya",
+        help="Laya model id/path, or the public name for a CLM head",
+    )
+    system_one_parser.add_argument(
+        "--backend", choices=("auto", "laya", "clm"), default="auto"
+    )
+    system_one_parser.add_argument("--host", default="127.0.0.1")
+    system_one_parser.add_argument("--port", type=_port_arg, default=8700)
+    system_one_parser.add_argument("--api-key", default=None)
+    system_one_parser.add_argument(
+        "--log-level",
+        type=_log_level_choice,
+        choices=["DEBUG", "INFO", "WARNING", "ERROR"],
+        default="INFO",
+    )
+    system_one_parser.add_argument(
+        "--device",
+        choices=("gpu", "cpu"),
+        default="gpu",
+        help="MLX device for the selected System One backend",
+    )
+    system_one_parser.add_argument(
+        "--dtype",
+        choices=("float16", "float32", "bfloat16"),
+        default="float16",
+        help="Laya weight dtype",
+    )
+    system_one_parser.add_argument("--batch-size", type=positive_int, default=16)
+    system_one_parser.add_argument(
+        "--encoder",
+        default="Qwen/Qwen3-8B",
+        help="CLM backbone; use the BF16 Qwen3-8B reference for calibrated output",
+    )
+    system_one_parser.add_argument(
+        "--head",
+        help="Converted CLM head directory (config.json + model.safetensors)",
+    )
+    system_one_parser.add_argument(
+        "--cache-entries", type=non_negative_int, default=20_000
+    )
+    system_one_parser.add_argument("--max-tokens", type=positive_int, default=2048)
+    system_one_parser.add_argument(
+        "--max-work-tokens",
+        type=positive_int,
+        default=32_768,
+        help="Maximum aggregate CLM encoder tokens accepted in one request",
+    )
+    system_one_parser.add_argument(
+        "--max-concurrent-requests",
+        type=positive_int,
+        default=8,
+        help="Maximum outstanding System One backend requests",
+    )
+
     # Serve command. ``allow_abbrev=False`` blocks unique-prefix matches
     # like ``--no-thin`` resolving silently to ``--no-thinking``: with the
     # hidden ``--no-think`` cross-alias added in D4, both flags share the
@@ -14625,10 +14760,13 @@ def main():
     # model string verbatim into the plist and runs its own (dry-run safe,
     # unit-testable) validation — it must not hard-fail here on an unknown
     # alias nor swallow the user's spelling under a resolved HF path.
+    # ``system-one`` also owns its model namespace: names such as
+    # ``clm-latest`` identify a converted decision head, not a generative
+    # Hugging Face model or Rapid-MLX alias.
     if (
         hasattr(args, "model")
         and args.model
-        and getattr(args, "command", None) not in ("doctor", "service")
+        and getattr(args, "command", None) not in ("doctor", "service", "system-one")
     ):
         from rapid_mlx.model_aliases import RetiredModelAliasError, resolve_model
         from rapid_mlx.user_aliases import UserAliasError
@@ -14818,6 +14956,9 @@ def main():
                 confirm_or_abort(args.model, _size)
     # --- END B2 --------------------------------------------------------
 
+    if args.command == "system-one":
+        system_one_command(args)
+        return
     if args.command == "serve":
         from rapid_mlx.telemetry.server_start import set_failure_stage
 
