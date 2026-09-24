@@ -811,6 +811,8 @@ def _pool_max_concurrency(passthrough: list[str]) -> int:
             following = passthrough[i + 1] if i + 1 < len(passthrough) else ""
             # ``--max-num-seqs --foo`` is a missing value to argparse, not "--foo".
             raw = "" if following.startswith("-") else following
+        if not raw.strip().isdigit():
+            break  # any malformed occurrence fails serve's parser: stop here
     if raw is None:
         return _POOL_DEFAULT_MAX_CONCURRENCY
     try:

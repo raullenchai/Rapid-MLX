@@ -3032,7 +3032,8 @@ def test_pool_max_concurrency_mirrors_serve_slots(passthrough, expected):
         ["--max-num-seqs", "999"],
         ["--max-num-seqs", "lots"],
         ["--max-num-seqs"],
-        ["--max-num-seqs", "--foo", "--max-num-seqs", "4"][:2],
+        ["--max-num-seqs", "--foo", "--max-num-seqs", "4"],
+        ["--max-num-seqs", "lots", "--max-num-seqs", "4"],
         ["--max-num-seqs", "4", "--max-num-seqs", "--foo"],
     ],
 )
