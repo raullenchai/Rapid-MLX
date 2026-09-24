@@ -172,6 +172,64 @@ def test_unmirrored_loader_rejects_bad_date(tmp_path):
         drift.load_unmirrored(path, main, audio)
 
 
+@pytest.mark.parametrize(
+    ("payload", "message"),
+    [
+        ([], "exactly the keys"),
+        ({"schema_version": 2, "entries": []}, "schema_version must be 1"),
+        ({"schema_version": 1, "entries": {}}, "entries must be a JSON array"),
+        (
+            {
+                "schema_version": 1,
+                "entries": [
+                    {
+                        "hf_path": "org/good",
+                        "reason": "unused",
+                        "since": "2026-09-24",
+                        "extra": True,
+                    }
+                ],
+            },
+            "exactly the keys hf_path",
+        ),
+        (
+            {
+                "schema_version": 1,
+                "entries": [
+                    {"hf_path": "org/good", "reason": " ", "since": "2026-09-24"}
+                ],
+            },
+            "non-empty string",
+        ),
+        (
+            {
+                "schema_version": 1,
+                "entries": [
+                    {"hf_path": "org/good", "reason": "unused", "since": "20260924"}
+                ],
+            },
+            "ISO date",
+        ),
+    ],
+)
+def test_unmirrored_loader_rejects_invalid_shapes(tmp_path, payload, message):
+    main, audio = _write_aliases(tmp_path)
+    path = tmp_path / "mirror_unmirrored.json"
+    path.write_text(json.dumps(payload))
+    with pytest.raises(ValueError, match=message):
+        drift.load_unmirrored(path, main, audio)
+
+
+def test_unmirrored_loader_rejects_non_object_alias_catalog(tmp_path):
+    main = tmp_path / "aliases.json"
+    audio = tmp_path / "audio.json"
+    registry = _write_unmirrored(tmp_path, [])
+    main.write_text("[]")
+    audio.write_text("{}")
+    with pytest.raises(ValueError, match="must contain a JSON object"):
+        drift.load_unmirrored(registry, main, audio)
+
+
 def test_invalid_alias_file_and_hf_payload(monkeypatch, tmp_path):
     bad = tmp_path / "bad.json"
     bad.write_text("[]")
@@ -542,6 +600,9 @@ def test_intentionally_unmirrored_skips_mirror_but_checks_hf(monkeypatch, tmp_pa
         "unmirrored_intentional": 2,
     }
     assert drift._fails(list(reports.values()), "error")
+    rendered = drift._render_text(list(reports.values()))
+    assert "unmirrored (intentional)" in rendered
+    assert "reason=unused" in rendered
 
 
 def test_probe_size_fallback_timestamps_and_etags(monkeypatch):
@@ -1550,6 +1611,11 @@ def test_mirror_uploader_refuses_unmirrored_without_force(monkeypatch, capsys):
     hf_calls = []
     monkeypatch.setattr(mirror, "_hf_files", lambda repo: hf_calls.append(repo) or [])
     monkeypatch.setattr(mirror, "_r2_client", lambda *_args: object())
+    assert (
+        mirror._build_parser()
+        .parse_args(["org/repo", "--force-unmirrored"])
+        .force_unmirrored
+    )
 
     assert mirror.mirror_repo("org/repo") == 2
     assert hf_calls == []
