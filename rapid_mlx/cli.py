@@ -4006,13 +4006,6 @@ def serve_command(args):
         print(f"error: cannot configure video output directory: {exc}", file=sys.stderr)
         raise SystemExit(2) from exc
 
-    # Preserve whether the operator chose a port until serve dispatch. An
-    # omitted port scans the bounded default window once, before any model
-    # load or specialized runtime can consume ``args.port``. Socket-activated
-    # launches ignore host/port entirely and therefore need no resolution.
-    if getattr(args, "listen_fd", None) is None:
-        args.port = _resolve_serve_port(args.host, args.port, model=args.model)
-
     # Parent-PID watchdog (rapid-desktop issue #449): if the supervisor
     # passed its own PID via ``--watchdog-ppid`` or
     # ``$RAPID_MLX_WATCHDOG_PPID``, spawn a daemon thread that polls
@@ -4262,6 +4255,12 @@ def serve_command(args):
             and _cache_runnability(audio_entry.hf_id) is False
         ):
             _refuse_offline_uncached(audio_entry.hf_id)
+        if getattr(args, "listen_fd", None) is None:
+            args.port = _resolve_serve_port(
+                getattr(args, "host", "127.0.0.1"),
+                getattr(args, "port", None),
+                model=args.model,
+            )
         _serve_audio_mode(args, audio_entry)
         return
 
@@ -4273,6 +4272,17 @@ def serve_command(args):
 
     if prompt_upgrade_if_available():
         sys.exit(0)
+
+    # Preserve whether the operator chose a port through the cheap boot guards
+    # and interactive upgrade prompt above. Resolve it before any download,
+    # model load, or specialized runtime can consume ``args.port``.
+    # Socket-activated launches ignore host/port and need no resolution.
+    if getattr(args, "listen_fd", None) is None:
+        args.port = _resolve_serve_port(
+            getattr(args, "host", "127.0.0.1"),
+            getattr(args, "port", None),
+            model=args.model,
+        )
 
     # Finding ⑥ (0.10.16 dogfood): a "weightless stub" cache — config.json
     # present but ``model*.safetensors`` absent (a warm cache commonly holds

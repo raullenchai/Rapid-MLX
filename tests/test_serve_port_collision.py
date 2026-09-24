@@ -164,6 +164,15 @@ def test_explicit_free_port_has_no_substitution_notice(capsys):
     assert captured.out == ""
 
 
+def test_implicit_free_default_uses_8000_without_notice(capsys):
+    """The normal omitted-port path keeps 8000 when it is available."""
+
+    assert cli._resolve_serve_port("127.0.0.1", None, model="model") == 8000
+    captured = capsys.readouterr()
+    assert captured.err == ""
+    assert captured.out == ""
+
+
 def test_run_uvicorn_exits_nonzero_on_eaddrinuse(monkeypatch, capsys):
     """Real bind path: ``_run_uvicorn`` MUST translate an
     ``OSError(EADDRINUSE)`` from ``uvicorn.run`` into ``SystemExit(1)``
