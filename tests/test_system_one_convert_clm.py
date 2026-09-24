@@ -111,6 +111,14 @@ def test_artifact_lock_serializes_readers_and_publishers(tmp_path):
     thread.join(timeout=1)
     assert finished.is_set()
     assert (destination / "config.json").read_text() == "new"
+    assert not (tmp_path / ".head.lock").exists()
+
+
+def test_artifact_read_lock_does_not_write_to_model_parent(tmp_path):
+    destination = tmp_path / "read-only-model" / "head"
+    destination.parent.mkdir()
+    with _artifact_lock(destination, exclusive=False):
+        assert not list(destination.parent.iterdir())
 
 
 class _FakeTensor:

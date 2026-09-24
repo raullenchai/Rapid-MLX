@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import argparse
 import fcntl
+import hashlib
 import json
 import math
 import os
@@ -51,8 +52,12 @@ def _expected_head_shapes(config: Mapping) -> dict[str, tuple[int, ...]]:
 @contextmanager
 def _artifact_lock(destination: Path, *, exclusive: bool) -> Iterator[None]:
     """Coordinate artifact publication with readers in other processes."""
-    destination.parent.mkdir(parents=True, exist_ok=True)
-    lock_path = destination.parent / f".{destination.name}.lock"
+    identity = hashlib.sha256(str(destination.resolve()).encode()).hexdigest()
+    lock_dir = (
+        Path(tempfile.gettempdir()) / f"rapid-mlx-{os.getuid()}" / "clm-artifact-locks"
+    )
+    lock_dir.mkdir(mode=0o700, parents=True, exist_ok=True)
+    lock_path = lock_dir / f"{identity}.lock"
     with lock_path.open("a+b") as lock_file:
         operation = fcntl.LOCK_EX if exclusive else fcntl.LOCK_SH
         fcntl.flock(lock_file.fileno(), operation)
