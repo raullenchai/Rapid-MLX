@@ -30,6 +30,7 @@ from rapid_mlx.model_load_errors import (
     load_tokenizer_checked,
     load_weights_checked,
     quantize_checked,
+    validate_model_config_file,
 )
 from rapid_mlx.telemetry import (
     consent_runtime,
@@ -460,6 +461,22 @@ def test_invalid_config_boundary_is_classified(tmp_path, monkeypatch):
     assert model_events.serve_error_class(raised.value) == "invalid_config"
 
 
+def test_config_boundary_handles_non_model_paths_and_invalid_shapes(tmp_path):
+    assert validate_model_config_file(tmp_path / "remote-repo-id") is None
+    empty_dir = tmp_path / "empty"
+    empty_dir.mkdir()
+    assert validate_model_config_file(empty_dir) is None
+
+    config_path = empty_dir / "config.json"
+    config_path.write_text("[]", encoding="utf-8")
+    with pytest.raises(InvalidModelConfig, match="top-level value"):
+        validate_model_config_file(empty_dir)
+
+    config_path.write_text(json.dumps({"model_type": ""}), encoding="utf-8")
+    with pytest.raises(InvalidModelConfig, match="non-empty string"):
+        validate_model_config_file(empty_dir)
+
+
 def test_tokenizer_load_boundary_is_classified(tmp_path):
     tokenizer_dir = tmp_path / "missing-tokenizer"
     tokenizer_dir.mkdir()
@@ -596,6 +613,165 @@ def test_generic_eager_loader_separates_tokenizer_boundary(tmp_path, monkeypatch
     assert load_mlx_lm_checked(str(model_dir), {"legacy": False}) == (
         model,
         tokenizer,
+    )
+
+
+def _prepare_generic_tokenizer_dispatch(monkeypatch):
+    from rapid_mlx.utils import tokenizer
+
+    mlx_lm = ModuleType("mlx_lm")
+    mlx_lm.load = lambda *_args, **_kwargs: None
+    monkeypatch.setitem(sys.modules, "mlx_lm", mlx_lm)
+    gemma = ModuleType("rapid_mlx.models.gemma4_text")
+    gemma.gemma4_load_plan = lambda _name: (None, False)
+    monkeypatch.setitem(sys.modules, "rapid_mlx.models.gemma4_text", gemma)
+    monkeypatch.setattr(tokenizer, "_register_vendored_archs", lambda: None)
+    monkeypatch.setattr(tokenizer, "_needs_tokenizer_fallback", lambda _name: False)
+    monkeypatch.setattr(tokenizer, "_is_vendored_arch_model", lambda _name: False)
+    monkeypatch.setattr(
+        tokenizer, "_neutralize_unbundled_template_types", lambda _name, cfg: cfg
+    )
+    return tokenizer
+
+
+def test_generic_tokenizer_dispatch_uses_typed_eager_loader(monkeypatch):
+    tokenizer = _prepare_generic_tokenizer_dispatch(monkeypatch)
+    model = object()
+    loaded_tokenizer = SimpleNamespace(chat_template="template")
+    monkeypatch.setattr(
+        tokenizer,
+        "load_mlx_lm_checked",
+        lambda *_args, **_kwargs: (model, loaded_tokenizer),
+    )
+    monkeypatch.setattr(tokenizer, "_try_inject_mtp_post_load", lambda *_args: None)
+    monkeypatch.setattr(
+        tokenizer, "augment_eos_token_ids_from_generation_config", lambda *_args: None
+    )
+    monkeypatch.setattr(tokenizer, "repair_byte_level_decoder", lambda *_args: None)
+
+    assert tokenizer._load_model_with_fallback_impl("org/model", {}) == (
+        model,
+        loaded_tokenizer,
+    )
+
+
+@pytest.mark.parametrize(
+    ("failure", "fallback_name"),
+    [
+        (
+            TokenizerLoadFailed("tokenizer failed"),
+            "tokenizer",
+        ),
+        (
+            IncompatibleWeights("weights failed"),
+            "weights",
+        ),
+    ],
+)
+def test_generic_tokenizer_dispatch_preserves_existing_fallbacks(
+    monkeypatch, failure, fallback_name
+):
+    tokenizer = _prepare_generic_tokenizer_dispatch(monkeypatch)
+    cause = ValueError(
+        "Tokenizer class is unavailable"
+        if fallback_name == "tokenizer"
+        else "Missing parameters in model"
+    )
+    failure.__cause__ = cause
+
+    def fail_load(*_args, **_kwargs):
+        raise failure
+
+    monkeypatch.setattr(tokenizer, "load_mlx_lm_checked", fail_load)
+    monkeypatch.setattr(
+        tokenizer,
+        "_load_with_tokenizer_fallback",
+        lambda *_args, **_kwargs: ("fallback-model", "fallback-tokenizer"),
+    )
+    monkeypatch.setattr(
+        tokenizer,
+        "_load_strict_false",
+        lambda *_args, **_kwargs: ("loose-model", "loose-tokenizer"),
+    )
+
+    expected = (
+        ("fallback-model", "fallback-tokenizer")
+        if fallback_name == "tokenizer"
+        else ("loose-model", "loose-tokenizer")
+    )
+    assert tokenizer._load_model_with_fallback_impl("org/model", {}) == expected
+
+
+def test_strict_false_loader_uses_typed_boundaries(tmp_path, monkeypatch):
+    from rapid_mlx.utils import tokenizer
+
+    (tmp_path / "config.json").write_text(
+        json.dumps({"model_type": "synthetic"}), encoding="utf-8"
+    )
+    model = object()
+    loaded_tokenizer = object()
+    utils = ModuleType("mlx_lm.utils")
+    utils.load_model = lambda _path, **_kwargs: (model, {"eos_token_id": 7})
+    utils.load_tokenizer = lambda *_args, **_kwargs: loaded_tokenizer
+    mlx_lm = ModuleType("mlx_lm")
+    mlx_lm.utils = utils
+    monkeypatch.setitem(sys.modules, "mlx_lm", mlx_lm)
+    monkeypatch.setitem(sys.modules, "mlx_lm.utils", utils)
+    monkeypatch.setattr(tokenizer, "_try_inject_mtp", lambda *_args: None)
+    monkeypatch.setattr(tokenizer, "_apply_chat_template_sidecar", lambda *_args: None)
+    monkeypatch.setattr(
+        tokenizer, "augment_eos_token_ids_from_generation_config", lambda *_args: None
+    )
+    monkeypatch.setattr(tokenizer, "repair_byte_level_decoder", lambda *_args: None)
+
+    assert tokenizer._load_strict_false(str(tmp_path), {}) == (
+        model,
+        loaded_tokenizer,
+    )
+
+
+def test_raw_tokenizer_fallback_uses_typed_boundaries(tmp_path, monkeypatch):
+    from rapid_mlx.utils import tokenizer
+
+    (tmp_path / "config.json").write_text(
+        json.dumps({"model_type": "synthetic"}), encoding="utf-8"
+    )
+    (tmp_path / "tokenizer.json").write_text("{}", encoding="utf-8")
+    model = object()
+    loaded_tokenizer = SimpleNamespace(chat_template=None)
+    utils = ModuleType("mlx_lm.utils")
+    utils.load_model = lambda _path, **_kwargs: (model, {})
+    mlx_lm = ModuleType("mlx_lm")
+    mlx_lm.utils = utils
+    monkeypatch.setitem(sys.modules, "mlx_lm", mlx_lm)
+    monkeypatch.setitem(sys.modules, "mlx_lm.utils", utils)
+    fp8 = ModuleType("rapid_mlx.fp8_repack")
+    fp8.is_fp8_block_checkpoint = lambda _path: False
+    fp8.load_fp8_model_online = lambda _path: None
+    monkeypatch.setitem(sys.modules, "rapid_mlx.fp8_repack", fp8)
+    tokenizers = ModuleType("tokenizers")
+    tokenizers.Tokenizer = SimpleNamespace(from_file=lambda _path: object())
+    monkeypatch.setitem(sys.modules, "tokenizers", tokenizers)
+    transformers = ModuleType("transformers")
+    transformers.PreTrainedTokenizerFast = lambda **_kwargs: loaded_tokenizer
+    monkeypatch.setitem(sys.modules, "transformers", transformers)
+    monkeypatch.setattr(tokenizer, "_register_vendored_archs", lambda: None)
+    monkeypatch.setattr(
+        tokenizer,
+        "_deepseek_v4_quantization_override",
+        lambda *_args, **_kwargs: None,
+    )
+    monkeypatch.setattr(tokenizer, "_uses_rapid_owned_runtime", lambda _path: False)
+    monkeypatch.setattr(tokenizer, "_apply_chat_template_sidecar", lambda *_args: False)
+    monkeypatch.setattr(tokenizer, "_needs_tokenizer_fallback", lambda _name: False)
+    monkeypatch.setattr(tokenizer, "repair_byte_level_decoder", lambda *_args: None)
+    monkeypatch.setattr(
+        tokenizer, "augment_eos_token_ids_from_generation_config", lambda *_args: None
+    )
+
+    assert tokenizer._load_with_tokenizer_fallback(str(tmp_path)) == (
+        model,
+        loaded_tokenizer,
     )
 
 

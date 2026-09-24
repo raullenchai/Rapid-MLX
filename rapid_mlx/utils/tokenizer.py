@@ -1438,8 +1438,7 @@ def load_model_with_fallback(
                 model_name,
                 tokenizer_config or {},
             )
-            tokenizer = load_tokenizer_checked(
-                load_tokenizer,
+            tokenizer = load_tokenizer(
                 Path(model_name),
                 tokenizer_config,
                 eos_token_ids=config.get("eos_token_id"),

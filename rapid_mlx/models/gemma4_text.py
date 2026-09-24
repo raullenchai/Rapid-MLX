@@ -52,13 +52,6 @@ from pathlib import Path
 import mlx.core as mx
 import mlx.nn as nn
 
-from rapid_mlx.model_load_errors import (
-    load_tokenizer_checked,
-    load_weights_checked,
-    quantize_checked,
-    validate_model_config_file,
-)
-
 logger = logging.getLogger(__name__)
 
 
@@ -772,9 +765,7 @@ def _load_gemma4_text_impl(
 
         p = Path(snapshot_download(str(model_path)))
 
-    config = validate_model_config_file(p)
-    if config is None:
-        raise FileNotFoundError(f"No config.json found in {p}")
+    config = json.loads((p / "config.json").read_text())
     text_config = config.get("text_config", config)
 
     # The outer arch the checkpoint actually declares (``gemma4`` /
@@ -880,7 +871,7 @@ def _load_gemma4_text_impl(
                         return override_cfg
                 return {"bits": default_bits, "group_size": default_gs}
 
-            quantize_checked(nn.quantize, model, class_predicate=_class_predicate)
+            nn.quantize(model, class_predicate=_class_predicate)
         else:
             logger.info(
                 "[gemma4] Applying %d-bit quantization (group_size=%d)",
@@ -895,15 +886,14 @@ def _load_gemma4_text_impl(
                     return False
                 return True
 
-            quantize_checked(
-                nn.quantize,
+            nn.quantize(
                 model,
                 class_predicate=_class_predicate,
                 group_size=default_gs,
                 bits=default_bits,
             )
 
-    load_weights_checked(model, sanitized, strict=False)
+    model.load_weights(list(sanitized.items()), strict=False)
 
     # Verify weights loaded
     test_param = model.language_model.model.embed_tokens
@@ -915,9 +905,7 @@ def _load_gemma4_text_impl(
     # Load tokenizer
     tokenizer_config = tokenizer_config or {}
     eos_token_ids = config.get("eos_token_id", text_config.get("eos_token_id"))
-    tokenizer = load_tokenizer_checked(
-        load_tokenizer, p, tokenizer_config, eos_token_ids=eos_token_ids
-    )
+    tokenizer = load_tokenizer(p, tokenizer_config, eos_token_ids=eos_token_ids)
 
     logger.info(
         "[gemma4] Loaded %s text-only model via LLM path (%d layers)",
