@@ -1513,24 +1513,20 @@ def _reads_name(node, name: str, nodes) -> bool:
     )
 
 
-def _coercion_target_is_live(
-    assign, tail, later_reads: list[tuple[str, int, int]], nodes
-) -> bool:
+def _coercion_target_is_live(assign, continuation, nodes) -> bool:
     """Whether a coercion's target can still reach rendered output.
 
-    ``tail`` is the rest of the statement list the assignment sits in: a
-    read there settles it live (a ``set`` that copies the value only carries
-    liveness to its own target), an unconditional rebinding first settles it
-    dead. Past the tail the only remaining evidence is a read on a later
-    line of the template source (``later_reads``: name → last load line,
-    outside macro bodies); a read that precedes the assignment cannot see
-    its value.
+    ``continuation`` is everything that renders after the assignment, in
+    order: the rest of its own statement list followed by the tails of the
+    enclosing lists. A read there settles it live (a ``set`` that copies the
+    value only carries liveness to its own target), an unconditional
+    rebinding first settles it dead, and running out of statements means
+    nothing ever rendered it. Structural, so a minified single-line
+    template is analysed exactly like its multi-line twin.
     """
     live = {assign.target.name}
-    for stmt in tail:
+    for stmt in continuation:
         if isinstance(stmt, nodes.Assign) and isinstance(stmt.target, nodes.Name):
-            # A plain copy only propagates liveness to the new name; it is
-            # not output. Rebinding without reading a live name kills it.
             if any(_reads_name(stmt.node, name, nodes) for name in live):
                 live.add(stmt.target.name)
             else:
@@ -1540,16 +1536,7 @@ def _coercion_target_is_live(
             continue
         if any(_reads_name(stmt, name, nodes) for name in live):
             return True
-    # Reads elsewhere (an enclosing list's tail) are only known by line; a
-    # read on the assignment's own line may precede it, so it does not
-    # count, and loads already scanned above (a copy's right-hand side) are
-    # not evidence of output either.
-    scanned = {id(inner) for stmt in tail for inner in stmt.find_all(nodes.Name)}
-    scanned.update(id(stmt) for stmt in tail if isinstance(stmt, nodes.Name))
-    return any(
-        name in live and lineno > assign.lineno and node_id not in scanned
-        for name, lineno, node_id in later_reads
-    )
+    return False
 
 
 def _walk_for_validation(
@@ -1557,7 +1544,7 @@ def _walk_for_validation(
     derived: set[str],
     forgotten: set[str],
     nodes,
-    later_reads: list[tuple[str, int, int]] | None = None,
+    continuation: list | None = None,
 ) -> tuple[str, ...] | None:
     """Forward walk of one statement list along the render path.
 
@@ -1571,18 +1558,19 @@ def _walk_for_validation(
     ``reasoning_effort`` already failed or passed some other check is a
     path-constrained one and would misstate the accepted set.
 
-    ``later_reads`` lists every load outside a macro body as ``(name, line,
-    id(node))``; a coercion whose target cannot reach rendered output
-    (``_coercion_target_is_live``) is dead and publishes nothing.
+    ``continuation`` is what renders after this statement list ends (the
+    enclosing lists' tails, innermost first); a coercion whose target cannot
+    reach rendered output (``_coercion_target_is_live``) is dead and
+    publishes nothing.
     """
     derived = set(derived)
-    later_reads = later_reads or []
+    continuation = continuation or []
     stmts = list(stmts)
     for index, stmt in enumerate(stmts):
         if isinstance(stmt, nodes.Assign):
             if isinstance(stmt.target, nodes.Name):
                 if _coercion_target_is_live(
-                    stmt, stmts[index + 1 :], later_reads, nodes
+                    stmt, [*stmts[index + 1 :], *continuation], nodes
                 ):
                     levels = _coercion_levels(stmt, derived, forgotten, nodes)
                     if levels:
@@ -1637,7 +1625,11 @@ def _walk_for_validation(
                     branch.test, nodes
                 ):
                     levels = _walk_for_validation(
-                        branch.body, derived, forgotten, nodes, later_reads
+                        branch.body,
+                        derived,
+                        forgotten,
+                        nodes,
+                        [*stmts[index + 1 :], *continuation],
                     )
                     searched_block_ids.add(id(branch.body))
                     if levels:
@@ -1648,7 +1640,11 @@ def _walk_for_validation(
                 )
             if prior_branches_only_disable_thinking:
                 levels = _walk_for_validation(
-                    stmt.else_, derived, forgotten, nodes, later_reads
+                    stmt.else_,
+                    derived,
+                    forgotten,
+                    nodes,
+                    [*stmts[index + 1 :], *continuation],
                 )
                 searched_block_ids.add(id(stmt.else_))
                 if levels:
@@ -1702,17 +1698,7 @@ def _native_reasoning_effort_levels_for_source(template: str) -> tuple[str, ...]
     # turn an apparent rejection block into an ordinary successful render.
     if _binds_name(tree, "raise_exception", nodes):
         return None
-    in_macro: set[int] = set()
-    for macro in tree.find_all(nodes.Macro):
-        in_macro.update(id(inner) for inner in macro.find_all(nodes.Name))
-    later_reads = [
-        (name.name, name.lineno, id(name))
-        for name in tree.find_all(nodes.Name)
-        if name.ctx == "load" and id(name) not in in_macro
-    ]
-    return _walk_for_validation(
-        tree.body, {"reasoning_effort"}, set(), nodes, later_reads
-    )
+    return _walk_for_validation(tree.body, {"reasoning_effort"}, set(), nodes)
 
 
 def _truthiness_tested_name(test, nodes) -> str | None:

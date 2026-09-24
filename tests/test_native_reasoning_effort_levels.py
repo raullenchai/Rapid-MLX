@@ -357,6 +357,22 @@ class TestCoercionDetection:
         )
         assert detect_native_reasoning_effort_levels(clause) is None
 
+    def test_minified_coercion_inside_thinking_guard_rendered_after_it(self):
+        """Codex r4: liveness is structural (enclosing lists' tails), so a
+        single-line minified template is analysed like its multi-line twin."""
+        clause = (
+            "{% if enable_thinking is undefined or enable_thinking is true %}"
+            "{% set eff = reasoning_effort if reasoning_effort is defined and "
+            "reasoning_effort in ['low', 'high'] else 'max' %}{% endif %}{{ eff }}"
+        )
+        assert detect_native_reasoning_effort_levels(clause) == ("low", "high", "max")
+        assert (
+            detect_native_reasoning_effort_levels(
+                clause.replace("{% endif %}{{ eff }}", "{% endif %}hello")
+            )
+            is None
+        )
+
     def test_coercion_read_only_by_its_own_assignment_is_dead(self):
         clause = (
             "{%- set eff = reasoning_effort if reasoning_effort in ['low', 'high'] "
