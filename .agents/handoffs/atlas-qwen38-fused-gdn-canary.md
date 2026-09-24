@@ -2,8 +2,8 @@
 
 - **Owner / receiving role:** Atlas
 - **Branch:** `atlas/qwen38-fused-gdn-canary`
-- **Clean base:** `8aaa8da22d26e2d4a01b5bf37b2ce125889ecc25`
-- **Production commits:** `6a6669396` and `015d436b7`
+- **Clean base:** `0e68c4ea7e266159e5c325b3b4e09e8daef3aaee`
+- **Production code commits:** `5278e76ff` and `3b6acab1d`
 - **Status:** implementation complete and default off; no alias or public default
   changed
 
@@ -53,15 +53,24 @@ Unset `RAPID_MLX_QWEN38_MLLM_FUSED_GDN` (or set it to `0`) and restart. The
 engine uses stock mlx-vlm and reports `operator_disabled`; no persisted model
 mutation is required to roll back.
 
+Apple M2 Pro 32 GiB is a measured **NO-GO**: the frozen experiment harness's
+only model-loading attempt failed the mandatory real-weight parity setup before
+any performance stratum and increased swap use by 8.46 GiB. It was not rerun.
+The production canary received static/read-only checks only; no production
+engine was started. The sanitized evidence is recorded in
+`docs/benchmarks/results/2026-09-23-qwen38-mllm-fused-gdn-32gb-no-go.json`.
+
 M4 Pro 48 GB and M1 Max 64 GB have not been measured. B3 cross-lane memory
 admission, cache-persistence parity, and default-on qualification are also not
-implemented. Therefore this canary must remain internal and default off.
+implemented. Therefore default-on remains blocked and this canary must remain
+internal and default off.
 
 ## Next concrete action and risks
 
-Atlas should integrate and dogfood the explicit canary first, then collect the
-same text-plus-media qualification receipts on 48 GB and 64 GB hosts. Do not
-change alias defaults until B3 admission and cache-persistence gates pass.
+Atlas should collect the same setup, text, and media qualification receipts on
+48 GB and 64 GB hosts. Do not rerun 32 GB without an explicit diagnostic plan,
+and do not change alias defaults until B3 admission and cache-persistence gates
+pass.
 
 The main carried risk is runtime drift: any mlx, mlx-lm, mlx-vlm, kernel,
 loaded-layout, or cache-ABI change deliberately disables the optimization and

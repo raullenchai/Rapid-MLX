@@ -60,11 +60,12 @@ its benchmark in the pinned environment, entirely offline, with the same
 canonical snapshot and image:
 
 ```bash
-SCRATCH=/private/tmp/qwen38-fused-gdn-repro
+: "${SCRATCH:?set SCRATCH to a writable output directory}"
+: "${QWEN38_SNAPSHOT:?set QWEN38_SNAPSHOT to the canonical snapshot directory}"
 mkdir -p "$SCRATCH"
 HF_HUB_OFFLINE=1 TRANSFORMERS_OFFLINE=1 \
-python scripts/benchmark_qwen38_mllm_fused_gdn.py \
-  --model /path/to/models--rapid-mlx--Qwen3.8-27B-4bit-MTP-MLX/snapshots/aa985c29ff5b334cbfdcbbc787d47e66e9d9e456 \
+python -m scripts.benchmark_qwen38_mllm_fused_gdn \
+  --model "$QWEN38_SNAPSHOT" \
   --image-path apps/rapid-mac/Sources/Rapid/Resources/cheetah.png \
   --image-prompt 'What animal is shown? Reply with one short sentence.' \
   --image-expect cheetah \
