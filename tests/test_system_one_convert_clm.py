@@ -248,3 +248,27 @@ def test_convert_rejects_unsafe_logit_scale(monkeypatch, tmp_path, logit_scale):
     _fake_torch(monkeypatch, checkpoint)
     with pytest.raises(ValueError, match="finite exponential range"):
         convert(tmp_path / "head.pt", tmp_path / "converted")
+
+
+def test_convert_rejects_non_json_config(monkeypatch, tmp_path):
+    head = {
+        "inp.weight": _FakeTensor([[1.0]]),
+        "inp.bias": _FakeTensor([0.0]),
+        "out.weight": _FakeTensor([[1.0]]),
+        "out.bias": _FakeTensor([0.0]),
+    }
+    checkpoint = {
+        "state_head": head,
+        "action_head": head,
+        "logit_scale": 1,
+        "cfg": {
+            "hidden_size": 1,
+            "width": 1,
+            "depth": 2,
+            "projection_dim": 1,
+            "unsupported": object(),
+        },
+    }
+    _fake_torch(monkeypatch, checkpoint)
+    with pytest.raises(ValueError, match="JSON-compatible"):
+        convert(tmp_path / "head.pt", tmp_path / "converted")

@@ -67,7 +67,11 @@ def create_app(
 
         def release_permit(_worker: asyncio.Task) -> None:
             nonlocal in_flight
-            in_flight -= 1
+            try:
+                if not _worker.cancelled():
+                    _worker.exception()
+            finally:
+                in_flight -= 1
 
         # A client disconnect cancels the request coroutine, but cannot stop a
         # Python worker thread. Keep its permit until the worker really exits.

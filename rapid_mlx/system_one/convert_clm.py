@@ -143,6 +143,10 @@ def convert(input_path: str | Path, output_dir: str | Path) -> Path:
         raise ValueError("CLM logit_scale is outside the finite exponential range")
     config["logit_scale"] = logit_scale_value
     config.setdefault("model_name", "clm-latest")
+    try:
+        config_json = json.dumps(config, indent=2, sort_keys=True) + "\n"
+    except TypeError as exc:
+        raise ValueError("CLM cfg must contain only JSON-compatible values") from exc
     tensors = {}
     for prefix in ("state_head", "action_head"):
         state = checkpoint[prefix]
@@ -175,9 +179,7 @@ def convert(input_path: str | Path, output_dir: str | Path) -> Path:
     )
     try:
         mx.save_safetensors(str(staging / "model.safetensors"), tensors)
-        (staging / "config.json").write_text(
-            json.dumps(config, indent=2, sort_keys=True) + "\n", encoding="utf-8"
-        )
+        (staging / "config.json").write_text(config_json, encoding="utf-8")
         # Materialize both files before publishing the directory generation.
         mx.eval(mx.load(str(staging / "model.safetensors")))
         json.loads((staging / "config.json").read_text(encoding="utf-8"))

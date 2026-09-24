@@ -244,7 +244,16 @@ class CLMBackend:
                 f"CLM-v0.1 heads require a Qwen3 encoder, got {model_type!r}"
             )
         quantization = getattr(getattr(self._model, "args", None), "quantization", None)
-        if quantization:
+        try:
+            import mlx.nn as nn
+
+            quantized_layers = any(
+                isinstance(module, (nn.QuantizedLinear, nn.QuantizedEmbedding))
+                for _, module in inner.named_modules()
+            )
+        except AttributeError:
+            quantized_layers = False
+        if quantization or quantized_layers:
             raise ValueError(
                 "CLM-v0.1 probability parity requires the BF16 Qwen3-8B "
                 "encoder; quantized encoders are not yet qualified"
@@ -266,7 +275,7 @@ class CLMBackend:
         self._max_work_tokens = max_work_tokens
         self._max_text_bytes = max(1024, max_tokens * 16)
         self._cache_entries = max(0, cache_entries)
-        self._cache: OrderedDict[tuple[str, str], Any] = OrderedDict()
+        self._cache: OrderedDict[tuple[str, tuple[int, ...]], Any] = OrderedDict()
         self._lock = threading.Lock()
 
     def _token_ids(self, text: str) -> list[int]:
@@ -297,7 +306,7 @@ class CLMBackend:
         output = []
         input_tokens = 0
         for text, token_ids in zip(texts, token_rows, strict=True):
-            key = (kind, text)
+            key = (kind, tuple(token_ids))
             cached = self._cache.get(key)
             if cached is None:
                 input_tokens += len(token_ids)

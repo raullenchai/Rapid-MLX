@@ -255,6 +255,9 @@ def test_clm_backend_runs_native_hidden_state_and_reuses_action_cache(
     assert second["usage"]["requested_tokens"] == 3
     assert len(calls) == 3
 
+    backend._project("action", ["good"], [[9]])
+    assert len(calls) == 4
+
     backend._max_work_tokens = 2
     try:
         backend.answer("ctx", {"q": question}, "public-clm", 1.0)
@@ -269,6 +272,25 @@ def test_clm_backend_runs_native_hidden_state_and_reuses_action_cache(
     with pytest.raises(ValueError, match="state exceeds 4 UTF-8 bytes"):
         backend.answer("oversized", {"q": question}, "public-clm", 1.0)
     assert len(calls) == calls_before
+
+    import mlx.nn as nn
+
+    quantized = nn.QuantizedLinear.from_linear(nn.Linear(32, 4), 32, 4)
+
+    class QuantizedInner(Inner):
+        def named_modules(self):
+            return [("quantized", quantized)]
+
+    quantized_model = SimpleNamespace(
+        model=QuantizedInner(), args=SimpleNamespace(hidden_size=4, model_type="qwen3")
+    )
+    monkeypatch.setattr(
+        tokenizer_module,
+        "load_model_with_fallback",
+        lambda _: (quantized_model, Tokenizer()),
+    )
+    with pytest.raises(ValueError, match="quantized encoders"):
+        CLMBackend("quantized-qwen3", str(tmp_path))
 
 
 def test_clm_backend_rejects_non_safetensors_weight_file(tmp_path):
