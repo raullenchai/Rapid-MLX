@@ -154,8 +154,7 @@ def test_model_serve_failed_accepts_named_engine_start_errors(error_class):
 
 def test_model_serve_failed_rejects_unknown_error_class():
     assert (
-        reg.validate("model_serve_failed", {"error_class": "future_load_error"})
-        is None
+        reg.validate("model_serve_failed", {"error_class": "future_load_error"}) is None
     )
 
 

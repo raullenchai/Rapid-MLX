@@ -15,19 +15,19 @@ from typing import Any, TypeVar
 _T = TypeVar("_T")
 
 
-class InvalidModelConfig(ValueError):
+class InvalidModelConfig(ValueError):  # noqa: N818 - domain name is user-facing
     """The checkpoint's ``config.json`` cannot drive a model load."""
 
 
-class TokenizerLoadFailed(RuntimeError):
+class TokenizerLoadFailed(RuntimeError):  # noqa: N818 - domain name is user-facing
     """The checkpoint tokenizer assets or configuration cannot be loaded."""
 
 
-class IncompatibleWeights(RuntimeError):
+class IncompatibleWeights(RuntimeError):  # noqa: N818 - domain name is user-facing
     """Checkpoint parameter names or shapes do not match the model."""
 
 
-class QuantizationMismatch(RuntimeError):
+class QuantizationMismatch(RuntimeError):  # noqa: N818 - domain name is user-facing
     """Checkpoint quantization metadata and tensors are incompatible."""
 
 
@@ -90,7 +90,9 @@ def quantize_checked(quantize: Callable[..., _T], *args: Any, **kwargs: Any) -> 
     try:
         return quantize(*args, **kwargs)
     except (KeyError, RuntimeError, TypeError, ValueError) as exc:
-        raise QuantizationMismatch(f"Model quantization is incompatible: {exc}") from exc
+        raise QuantizationMismatch(
+            f"Model quantization is incompatible: {exc}"
+        ) from exc
 
 
 def _traceback_contains(exc: BaseException, function_names: set[str]) -> bool:

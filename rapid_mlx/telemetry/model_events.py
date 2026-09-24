@@ -151,15 +151,15 @@ def serve_error_class(exc: BaseException) -> str:
         from huggingface_hub.errors import HfHubHTTPError
         from huggingface_hub.utils import RepositoryNotFoundError
 
-        from rapid_mlx.request import (
-            ENGINE_ABORT_CODE_INSUFFICIENT_MEMORY,
-            classify_engine_abort,
-        )
         from rapid_mlx.model_load_errors import (
             IncompatibleWeights,
             InvalidModelConfig,
             QuantizationMismatch,
             TokenizerLoadFailed,
+        )
+        from rapid_mlx.request import (
+            ENGINE_ABORT_CODE_INSUFFICIENT_MEMORY,
+            classify_engine_abort,
         )
 
         current: BaseException | None = exc
@@ -172,6 +172,8 @@ def serve_error_class(exc: BaseException) -> str:
             seen.add(id(current))
             # The outermost explicit signal wins; only ``raise ... from`` links are followed.
             text = _exception_text(current)
+            if classify_engine_abort(current) == ENGINE_ABORT_CODE_INSUFFICIENT_MEMORY:
+                return "insufficient_memory"
             if isinstance(current, InvalidModelConfig):
                 return "invalid_config"
             if isinstance(current, TokenizerLoadFailed):
@@ -180,8 +182,6 @@ def serve_error_class(exc: BaseException) -> str:
                 return "incompatible_weights"
             if isinstance(current, QuantizationMismatch):
                 return "quantization_mismatch"
-            if classify_engine_abort(current) == ENGINE_ABORT_CODE_INSUFFICIENT_MEMORY:
-                return "insufficient_memory"
             if isinstance(current, (HfHubHTTPError, RepositoryNotFoundError)):
                 return "download_failed"
             # A missing local/Hub shard is an availability failure, not evidence that

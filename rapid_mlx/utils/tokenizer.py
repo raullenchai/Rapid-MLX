@@ -13,8 +13,10 @@ import os
 from pathlib import Path
 
 from ..model_load_errors import (
-    load_model_checked,
+    IncompatibleWeights,
+    TokenizerLoadFailed,
     load_mlx_lm_checked,
+    load_model_checked,
     load_tokenizer_checked,
     validate_model_config_file,
 )
@@ -1863,15 +1865,17 @@ def _load_model_with_fallback_impl(
         augment_eos_token_ids_from_generation_config(tokenizer, model_name)
         repair_byte_level_decoder(tokenizer)
         return model, tokenizer
-    except ValueError as e:
+    except (IncompatibleWeights, TokenizerLoadFailed, ValueError) as e:
+        original = e.__cause__ if e.__cause__ is not None else e
+        original_text = str(original)
         # Fallback for models with non-standard tokenizers, OR newer model_types
         # transformers' AutoConfig hasn't learned about yet (e.g. deepseek_v4
         # before transformers PR #45643 lands). The vendored arch can still load
         # the weights — we just need to bypass AutoTokenizer.
         if (
-            "TokenizersBackend" in str(e)
-            or "Tokenizer class" in str(e)
-            or "does not recognize this architecture" in str(e)
+            "TokenizersBackend" in original_text
+            or "Tokenizer class" in original_text
+            or "does not recognize this architecture" in original_text
         ):
             logger.warning(f"Standard tokenizer loading failed, using fallback: {e}")
             return _load_with_tokenizer_fallback(
@@ -1879,8 +1883,8 @@ def _load_model_with_fallback_impl(
             )
         # Fallback for models with extra/missing weights (e.g., vision tower, MTP layers).
         # Retry with strict=False to discard extra weights.
-        elif "parameters not in model" in str(e) or (
-            "Missing" in str(e) and "parameters" in str(e)
+        elif "parameters not in model" in original_text or (
+            "Missing" in original_text and "parameters" in original_text
         ):
             logger.warning(
                 f"Model has extra/missing parameters (likely VLM / MTP weights), "
@@ -2026,9 +2030,7 @@ def _load_with_tokenizer_fallback(
         model = load_fp8_model_online(model_path)
     else:
         # Load model
-        model, _ = load_model_checked(
-            load_model, model_path, model_config=model_config
-        )
+        model, _ = load_model_checked(load_model, model_path, model_config=model_config)
 
     # Try to load tokenizer from tokenizer.json directly
     tokenizer_json = model_path / "tokenizer.json"

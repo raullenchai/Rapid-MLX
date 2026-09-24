@@ -6,13 +6,14 @@ from __future__ import annotations
 import errno
 import http.client
 import json
+import sys
 import threading
 import urllib.error
 import uuid
 from datetime import datetime, timezone
 from http.server import BaseHTTPRequestHandler, HTTPServer
 from pathlib import Path
-from types import SimpleNamespace
+from types import ModuleType, SimpleNamespace
 
 import httpx
 import pytest
@@ -24,6 +25,8 @@ from rapid_mlx.model_load_errors import (
     InvalidModelConfig,
     QuantizationMismatch,
     TokenizerLoadFailed,
+    load_mlx_lm_checked,
+    load_model_checked,
     load_tokenizer_checked,
     load_weights_checked,
     quantize_checked,
@@ -431,9 +434,7 @@ def test_serve_error_class_preserves_existing_variants(exc, expected):
             "unsupported_architecture",
         ),
         (
-            RuntimeError(
-                "scoped_pymalloc(): could not allocate 4096 bytes of memory!"
-            ),
+            RuntimeError("scoped_pymalloc(): could not allocate 4096 bytes of memory!"),
             "insufficient_memory",
         ),
     ],
@@ -473,7 +474,13 @@ def test_tokenizer_load_boundary_is_classified(tmp_path):
     assert model_events.serve_error_class(raised.value) == "tokenizer_load_failed"
 
 
-def test_weight_load_boundary_is_classified():
+def test_weight_load_boundary_is_classified(tmp_path):
+    model_dir = tmp_path / "wrong-shape"
+    model_dir.mkdir()
+    (model_dir / "config.json").write_text(
+        json.dumps({"model_type": "synthetic"}), encoding="utf-8"
+    )
+
     class ShapeCheckingModel:
         def load_weights(self, weights, *, strict):
             assert strict is True
@@ -482,11 +489,25 @@ def test_weight_load_boundary_is_classified():
                 raise ValueError(f"expected shape (32, 16), got {shape}")
 
     bad_weights = {"model.embed_tokens.weight": {"shape": (31, 16)}}
+    model = ShapeCheckingModel()
+
+    def loader(_model_path):
+        model.load_weights(list(bad_weights.items()), strict=True)
+        return model, {}
+
     with pytest.raises(IncompatibleWeights) as raised:
-        load_weights_checked(ShapeCheckingModel(), bad_weights, strict=True)
+        load_model_checked(loader, model_dir)
 
     assert isinstance(raised.value.__cause__, ValueError)
     assert model_events.serve_error_class(raised.value) == "incompatible_weights"
+
+    with pytest.raises(IncompatibleWeights):
+        load_weights_checked(model, bad_weights, strict=True)
+    load_weights_checked(
+        model,
+        {"model.embed_tokens.weight": {"shape": (32, 16)}},
+        strict=True,
+    )
 
 
 def test_quantization_boundary_is_classified():
@@ -506,6 +527,76 @@ def test_quantization_boundary_is_classified():
 
     assert isinstance(raised.value.__cause__, ValueError)
     assert model_events.serve_error_class(raised.value) == "quantization_mismatch"
+    assert (
+        quantize_checked(
+            lambda config: config["bits"],
+            {"bits": 4, "group_size": 64, "dtype": "uint32"},
+        )
+        == 4
+    )
+
+
+def test_generic_model_loader_types_quantization_traceback(tmp_path):
+    model_dir = tmp_path / "bad-quantization"
+    model_dir.mkdir()
+    (model_dir / "config.json").write_text(
+        json.dumps({"model_type": "synthetic"}), encoding="utf-8"
+    )
+
+    def loader(_model_path):
+        def _quantize():
+            raise ValueError("group_size does not divide the weight shape")
+
+        _quantize()
+
+    with pytest.raises(QuantizationMismatch) as raised:
+        load_model_checked(loader, model_dir)
+
+    assert model_events.serve_error_class(raised.value) == "quantization_mismatch"
+
+
+def test_generic_model_loader_preserves_unclassified_value_error(tmp_path):
+    model_dir = tmp_path / "unsupported-model"
+    model_dir.mkdir()
+    (model_dir / "config.json").write_text(
+        json.dumps({"model_type": "future_arch"}), encoding="utf-8"
+    )
+
+    def loader(_model_path):
+        raise ValueError("Model type future_arch not supported.")
+
+    with pytest.raises(ValueError, match="not supported") as raised:
+        load_model_checked(loader, model_dir)
+
+    assert model_events.serve_error_class(raised.value) == "unsupported_architecture"
+
+
+def test_generic_eager_loader_separates_tokenizer_boundary(tmp_path, monkeypatch):
+    model_dir = tmp_path / "generic-loader"
+    model_dir.mkdir()
+    (model_dir / "config.json").write_text(
+        json.dumps({"model_type": "synthetic"}), encoding="utf-8"
+    )
+    model = object()
+    tokenizer = object()
+    utils = ModuleType("mlx_lm.utils")
+    utils._download = lambda _name: model_dir
+    utils.load_model = lambda _path, **_kwargs: (model, {"eos_token_id": [1, 2]})
+
+    def load_tokenizer(_path, _config, *, eos_token_ids):
+        assert eos_token_ids == [1, 2]
+        return tokenizer
+
+    utils.load_tokenizer = load_tokenizer
+    mlx_lm = ModuleType("mlx_lm")
+    mlx_lm.utils = utils
+    monkeypatch.setitem(sys.modules, "mlx_lm", mlx_lm)
+    monkeypatch.setitem(sys.modules, "mlx_lm.utils", utils)
+
+    assert load_mlx_lm_checked(str(model_dir), {"legacy": False}) == (
+        model,
+        tokenizer,
+    )
 
 
 def test_serve_download_error_class():
