@@ -45,11 +45,12 @@ def apply_qwen4_norm_convention(model, weights, norm_type, convention, *, prefix
             gamma = value.astype(mx.float32)
             residual = gamma - 1.0
             restored = 1.0 + residual
-            if not bool(
-                mx.all(restored.view(mx.uint32) == gamma.view(mx.uint32)).item()
-            ):
+            # Subtracting and re-adding one can move an ordinary FP32 gain by
+            # a few ULPs.  Admit that unavoidable rounding, but reject gains
+            # small enough to be erased by cancellation in the residual ABI.
+            if not bool(mx.allclose(restored, gamma, rtol=5e-7, atol=0.0).item()):
                 raise ValueError(
-                    "Qwen4 RMSNorm gain cannot be represented exactly "
+                    "Qwen4 RMSNorm gain cannot be represented faithfully "
                     f"as an FP32 residual: {key}"
                 )
             replacements[key] = residual

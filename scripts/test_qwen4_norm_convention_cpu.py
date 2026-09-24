@@ -193,8 +193,18 @@ class ConventionTests(unittest.TestCase):
                 with self.assertRaises(ValueError):
                     model.sanitize(weights)
 
-    def test_unrepresentable_tiny_or_negative_zero_gain_refused(self):
-        for gain in (1e-12, -1e-12, -0.0):
+    def test_ordinary_fp32_direct_gain_admits_bounded_rounding(self):
+        model = tiny_model()
+        weights = checkpoint(model, direct=True)
+        key = "language_model.model.layers.1.self_attn.indexer.q_layernorm.weight"
+        gamma = mx.full(weights[key].shape, 0.1, dtype=mx.float32)
+        weights[key] = gamma
+        sanitized = model.sanitize(weights)
+        restored = 1.0 + sanitized[key]
+        self.assertTrue(mx.allclose(restored, gamma, rtol=5e-7, atol=0.0).item())
+
+    def test_unrepresentable_tiny_gain_refused(self):
+        for gain in (1e-12, -1e-12):
             with self.subTest(gain=gain):
                 model = tiny_model()
                 weights = checkpoint(model, direct=True)
@@ -203,7 +213,7 @@ class ConventionTests(unittest.TestCase):
                 )
                 weights[key] = mx.full(weights[key].shape, gain)
                 with self.assertRaisesRegex(
-                    ValueError, "cannot be represented exactly"
+                    ValueError, "cannot be represented faithfully"
                 ):
                     model.sanitize(weights)
 
