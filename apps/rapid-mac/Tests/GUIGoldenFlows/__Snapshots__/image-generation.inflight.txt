@@ -7,7 +7,7 @@ AXApplication title="Rapid-MLX"
           AXButton id="Sidebar.NewChat" desc="New Chat" enabled=true
           AXButton id="Sidebar.Images" desc="Images" enabled=true
           AXButton id="Sidebar.Audio" desc="Audio" enabled=true
-          AXButton id="Sidebar.Launch" desc="Launch" enabled=true
+          AXButton id="Sidebar.Launch" desc="Agent" enabled=true
           AXStaticText id="Sidebar.Residency" value=text enabled=true
           AXProgressIndicator value=number enabled=true
           AXButton id="Sidebar.Residency.Unload" desc="Unload model and free <size>" help="Stop the active response before unloading models" enabled=false

@@ -1,7 +1,7 @@
 import SwiftUI
 
-/// Which surface the detail pane shows. Ollama-style: a chat surface and
-/// a "Launch" page of connect-your-tools cards. Conversation history
+/// Which surface the detail pane shows: a chat surface and
+/// an "Agent" page of connect-your-tools cards. Conversation history
 /// ("Older" list) is a later milestone.
 enum SidebarSection: Hashable {
     case chat
@@ -14,8 +14,8 @@ enum SidebarSection: Hashable {
     case shareCompute
 }
 
-/// The left sidebar — Ollama/ChatGPT layout: a "New Chat" action at the
-/// top, a "Launch" page entry, then (later) the conversation history. It
+/// The left sidebar: a "New Chat" action at the
+/// top, an "Agent" page entry, then (later) the conversation history. It
 /// is the primary column of ``ContentView``'s ``NavigationSplitView``, so
 /// macOS gives us the collapse toggle in the toolbar for free.
 struct SidebarView: View {
@@ -207,8 +207,8 @@ struct SidebarView: View {
             )
             .accessibilityIdentifier("Sidebar.Audio")
             row(
-                title: "Launch",
-                systemImage: "paperplane",
+                title: "Agent",
+                systemImage: "network",
                 isSelected: selection == .launch,
                 action: { selection = .launch }
             )

@@ -549,8 +549,14 @@ SNAPSHOT_LESS_AUDIT_FLOWS = ["no-dead-controls", "catalog-integrity"]
 
 def test_launch_baseline_waits_for_the_authoritative_integration_registry():
     flow = _harness_flow_body("flow_launch_integrations")
-    settle = flow.index('[[ "$count" == 14 ]] && break')
-    require_settled = flow.index('|| die "Cold Launch did not settle')
+    # The compatibility fallback contains exactly the three primary rows. The
+    # "More integrations" disclosure appears only after the authoritative
+    # registry adds the remaining targets, so it is now the compact page's
+    # settle witness before the collapsed baseline is captured.
+    settle = flow.index('[[ "$count" == 1 ]] && break')
+    require_settled = flow.index(
+        '|| die "Cold Agent page did not settle on its integration registry"'
+    )
     capture = flow.index("baseline launch-integrations.complete")
 
     assert settle < require_settled < capture
