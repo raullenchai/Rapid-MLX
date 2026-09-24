@@ -679,6 +679,8 @@ def _build_app(
     validate_request_fn: Any | None = None,
     backend_name: str = "DFlash",
     speculative_info: SpeculativeDecodingInfo | None = None,
+    model_info: ModelInfo | None = None,
+    strict_openai_streaming: bool = False,
 ) -> FastAPI:
     """Create the FastAPI application for DFlash mode.
 
@@ -752,6 +754,32 @@ def _build_app(
             raise
 
     app = FastAPI(title=f"Rapid-MLX ({backend_name})")
+    if model_info is not None:
+        if model_info.id != served_model_name:
+            raise ValueError("model_info.id must match served_model_name")
+        if (
+            speculative_info is not None
+            and model_info.speculative_decoding != speculative_info
+        ):
+            raise ValueError(
+                "model_info.speculative_decoding must match speculative_info"
+            )
+        published_speculative_info = model_info.speculative_decoding
+    else:
+        published_speculative_info = speculative_info
+
+    def _companion_status_fields() -> dict[str, Any]:
+        """Return fields present only on companion speculative runtimes."""
+
+        result: dict[str, Any] = {}
+        target_model = getattr(published_speculative_info, "target_model", None)
+        draft_block_size = getattr(published_speculative_info, "draft_block_size", None)
+        if isinstance(target_model, str):
+            result["target_model"] = target_model
+        if isinstance(draft_block_size, int):
+            result["draft_block_size"] = draft_block_size
+        return result
+
     # DFlash has one GPU worker and serializes generation with
     # ``_dflash_lock``. Bound its waiting room as well so a burst cannot
     # accumulate an unbounded number of requests and their parsed bodies.
@@ -834,6 +862,7 @@ def _build_app(
         block_size = getattr(runtime, "num_speculative_tokens", None)
         if isinstance(block_size, int):
             result["num_speculative_tokens"] = block_size
+        result.update(_companion_status_fields())
         return result
 
     @app.get(
@@ -841,13 +870,15 @@ def _build_app(
         dependencies=[Depends(_verify_api_key_with_bearer_challenge)],
     )
     async def list_models() -> ModelsResponse:
+        if model_info is not None:
+            return ModelsResponse(data=[model_info])
         return ModelsResponse(
             data=[
                 ModelInfo(
                     id=served_model_name,
                     created=int(time.time()),
                     owned_by="rapid-mlx",
-                    speculative_decoding=speculative_info,
+                    speculative_decoding=published_speculative_info,
                 )
             ]
         )
@@ -859,14 +890,18 @@ def _build_app(
     async def runtime_status() -> dict[str, Any]:
         """Expose serial-runtime readiness without implying AR fallback."""
 
-        return {
+        result = {
             "status": "ready",
             "model": served_model_name,
             "engine": backend_name.lower().replace(" ", "-"),
             "speculative_decoding": (
-                speculative_info.model_dump() if speculative_info is not None else None
+                published_speculative_info.model_dump()
+                if published_speculative_info is not None
+                else None
             ),
         }
+        result.update(_companion_status_fields())
+        return result
 
     @app.get(
         "/v1/models/{model_id:path}",
@@ -885,11 +920,13 @@ def _build_app(
         """
         if model_id != served_model_name:
             raise HTTPException(status_code=404, detail="Model not found")
+        if model_info is not None:
+            return model_info
         from ...routes.models import _build_model_info
 
         info = _build_model_info(model_id)
-        if speculative_info is not None:
-            info.speculative_decoding = speculative_info
+        if published_speculative_info is not None:
+            info.speculative_decoding = published_speculative_info
         return info
 
     # codex round-3 #3: auth + rate-limit for this route are enforced in
@@ -1234,6 +1271,7 @@ def _build_app(
                         enable_thinking=effective_thinking,
                         stream_generate_fn=stream_generate_fn,
                         backend_name=backend_name,
+                        strict_openai_streaming=strict_openai_streaming,
                     ),
                     reservation,
                 ),
@@ -1420,6 +1458,7 @@ async def _stream_completion(
     enable_thinking: bool = False,
     stream_generate_fn: Any | None = None,
     backend_name: str = "DFlash",
+    strict_openai_streaming: bool = False,
 ) -> AsyncIterator[bytes]:
     """Stream OpenAI-format chunks. Generation happens under the serial
     lock; chunks are forwarded as ``data: ...\\n\\n`` SSE events.
@@ -1545,6 +1584,7 @@ async def _stream_completion(
         # budget. None means "no token observed yet".
         last_token_id: int | None = None
         error_message: str | None = None
+        generation_error: BaseException | None = None
         postprocess_spilled = False
 
         async def _emit(item: bytes, *, terminal: bool = False) -> None:
@@ -1738,6 +1778,7 @@ async def _stream_completion(
                     exc_info=gen_or_err,
                 )
                 error_message = f"{type(gen_or_err).__name__}: {gen_or_err}"
+                generation_error = gen_or_err
                 # OpenAI ChatCompletion only accepts {stop, length,
                 # tool_calls, content_filter, function_call}. The error
                 # block on the final SSE chunk carries the abort details
@@ -1782,6 +1823,7 @@ async def _stream_completion(
                         exc_info=chunk,
                     )
                     error_message = f"{type(chunk).__name__}: {chunk}"
+                    generation_error = chunk
                     # See above for OpenAI spec literal-set rationale.
                     finish_reason = "length"
                     break
@@ -1890,29 +1932,75 @@ async def _stream_completion(
             for event in terminal_events:
                 await _emit_postprocessed_event(event, terminal=True)
 
-        # Final chunk — finish_reason + usage. If we broke out of the loop
-        # because the underlying generator raised, attach an OpenAI-style
-        # error block so the client gets a readable failure instead of
-        # silent truncation.
-        final = {
-            "id": completion_id,
-            "object": "chat.completion.chunk",
-            "created": created,
-            "model": served_model_name,
-            "choices": [{"index": 0, "delta": {}, "finish_reason": finish_reason}],
-            "usage": {
-                "prompt_tokens": prompt_tokens,
-                "completion_tokens": total_completion_tokens,
-                "total_tokens": prompt_tokens + total_completion_tokens,
-            },
+        usage = {
+            "prompt_tokens": prompt_tokens,
+            "completion_tokens": total_completion_tokens,
+            "total_tokens": prompt_tokens + total_completion_tokens,
         }
-        if error_message is not None:
-            final["error"] = {
-                "type": "dflash_runtime_error",
-                "message": error_message,
+
+        # Companion runtimes use a strict OpenAI stream contract: an upstream
+        # generation failure is an independent canonical error envelope, never
+        # a successful-looking finish chunk annotated with a backend-specific
+        # error.  Keep the legacy DFlash terminal shape as the default.
+        if strict_openai_streaming and error_message is not None:
+            if generation_error is not None:
+                from ...request import inference_aborted_error_payload
+
+                error = inference_aborted_error_payload(generation_error)
+            else:
+                error = {
+                    "message": error_message,
+                    "type": "server_error",
+                    "code": (
+                        "request_timeout"
+                        if "timed out" in error_message
+                        else "stream_aborted"
+                    ),
+                    "param": None,
+                }
+            error_frame = {"error": error}
+            terminal_frames = [
+                f"data: {json.dumps(error_frame)}\n\n".encode(),
+                b"data: [DONE]\n\n",
+            ]
+        else:
+            # Final chunk — finish_reason + usage. If legacy DFlash broke out
+            # because the underlying generator raised, preserve its existing
+            # backend-specific error block exactly.
+            final = {
+                "id": completion_id,
+                "object": "chat.completion.chunk",
+                "created": created,
+                "model": served_model_name,
+                "choices": [{"index": 0, "delta": {}, "finish_reason": finish_reason}],
             }
-        final_frame = f"data: {json.dumps(final)}\n\n".encode()
-        done_frame = b"data: [DONE]\n\n"
+            if strict_openai_streaming:
+                include_usage = bool(
+                    request.stream_options and request.stream_options.include_usage
+                )
+                terminal_frames = [f"data: {json.dumps(final)}\n\n".encode()]
+                if include_usage:
+                    usage_only = {
+                        "id": completion_id,
+                        "object": "chat.completion.chunk",
+                        "created": created,
+                        "model": served_model_name,
+                        "choices": [],
+                        "usage": usage,
+                    }
+                    terminal_frames.append(
+                        f"data: {json.dumps(usage_only)}\n\n".encode()
+                    )
+            else:
+                final["usage"] = usage
+                if error_message is not None:
+                    final["error"] = {
+                        "type": "dflash_runtime_error",
+                        "message": error_message,
+                    }
+                terminal_frames = [f"data: {json.dumps(final)}\n\n".encode()]
+            terminal_frames.append(b"data: [DONE]\n\n")
+
         # codex round-4 #3: terminal frames must reach a connected client even
         # if the queue is still full from a backpressure abort. Try the queue
         # first (normal fast path); on backpressure, hand the remaining
@@ -1928,7 +2016,7 @@ async def _stream_completion(
         # between; otherwise a later ``[DONE]`` could be enqueued and delivered
         # ahead of the still-pending final frame. ``spilled`` latches that.
         spilled = postprocess_spilled
-        for frame in (final_frame, done_frame):
+        for frame in terminal_frames:
             if spilled:
                 pending_terminal.append(frame)
                 continue

@@ -2518,10 +2518,12 @@ class CompanionSpeculativeDecodingInfo(SpeculativeDecodingInfo):
     for scheduler-owned and embedded speculative decoders.
     """
 
+    target_model: str
     drafter_model: str
     target_revision: str
     drafter_revision: str
     num_speculative_tokens: int
+    draft_block_size: int
 
 
 class ModelInfo(BaseModel):

@@ -71,7 +71,14 @@ def _write_configs(tmp_path):
     return target, draft
 
 
-def _companion_client(*, validate_request_fn):
+def _companion_client(
+    *,
+    validate_request_fn,
+    served_model_name="lfm-vl",
+    stream_generate_fn=None,
+    model_info=None,
+    strict_openai_streaming=False,
+):
     from fastapi.testclient import TestClient
 
     from rapid_mlx.spec_decode.dspark.runtime import CompanionDSparkRuntime
@@ -101,13 +108,16 @@ def _companion_client(*, validate_request_fn):
         model=SimpleNamespace(),
         processor=SimpleNamespace(),
         runtime=runtime,
-        served_model_name="lfm-vl",
+        served_model_name=served_model_name,
         default_max_tokens=16,
         cors_origins=[],
         render_prompt_fn=render,
         generate_fn=generate,
+        stream_generate_fn=stream_generate_fn,
         validate_request_fn=validate_request_fn,
         backend_name="LFM DSpark",
+        model_info=model_info,
+        strict_openai_streaming=strict_openai_streaming,
     )
     return TestClient(app), render_calls, generation_calls
 
@@ -410,10 +420,12 @@ def test_dflash_shell_preserves_media_and_surfaces_runtime_status() -> None:
             configured=True,
             method="dspark",
             runtime_state="active",
+            target_model=LFM25_VL_3B.target_repo,
             drafter_model=LFM25_VL_3B.drafter_repo,
             target_revision=LFM25_VL_3B.target_revision,
             drafter_revision=LFM25_VL_3B.drafter_revision,
             num_speculative_tokens=7,
+            draft_block_size=8,
         ),
     )
     client = TestClient(app)
@@ -422,12 +434,18 @@ def test_dflash_shell_preserves_media_and_surfaces_runtime_status() -> None:
     assert health.status_code == 200
     assert health.json()["algorithm"] == "dspark"
     assert health.json()["num_speculative_tokens"] == 7
+    assert health.json()["target_model"] == LFM25_VL_3B.target_repo
+    assert health.json()["draft_block_size"] == 8
     info = client.get("/v1/models").json()["data"][0]["speculative_decoding"]
     assert info["runtime_state"] == "active"
+    assert info["target_model"] == LFM25_VL_3B.target_repo
     assert info["drafter_model"] == LFM25_VL_3B.drafter_repo
+    assert info["draft_block_size"] == 8
     status = client.get("/v1/status")
     assert status.status_code == 200
     assert status.json()["speculative_decoding"]["num_speculative_tokens"] == 7
+    assert status.json()["target_model"] == LFM25_VL_3B.target_repo
+    assert status.json()["draft_block_size"] == 8
 
     rejected = client.post(
         "/v1/chat/completions",
@@ -540,6 +558,36 @@ def test_companion_rejects_stop_before_render_or_generation() -> None:
     assert generation_calls == []
 
 
+@pytest.mark.parametrize(
+    "field, value",
+    [("video_fps", 2.0), ("video_max_frames", 8)],
+)
+def test_companion_rejects_video_controls_before_render_or_generation(
+    field,
+    value,
+) -> None:
+    from rapid_mlx.spec_decode.dspark.server import _validate_greedy_request
+
+    client, render_calls, generation_calls = _companion_client(
+        validate_request_fn=_validate_greedy_request
+    )
+
+    response = client.post(
+        "/v1/chat/completions",
+        json={
+            "model": "lfm-vl",
+            "messages": [{"role": "user", "content": "hello"}],
+            "temperature": 0,
+            field: value,
+        },
+    )
+
+    assert response.status_code == 400
+    assert "video parameters" in response.json()["error"]["message"]
+    assert render_calls == []
+    assert generation_calls == []
+
+
 def test_companion_rejects_unknown_model_before_render_or_generation() -> None:
     from rapid_mlx.spec_decode.dspark.server import _validate_companion_request
 
@@ -568,6 +616,186 @@ def test_companion_rejects_unknown_model_before_render_or_generation() -> None:
     }
     assert render_calls == []
     assert generation_calls == []
+
+
+@pytest.mark.parametrize(
+    "served_model_name",
+    [LFM25_VL_3B.target_repo, "custom-lfm-vision"],
+    ids=["exact-target", "custom-served-name"],
+)
+def test_companion_model_info_is_shared_by_list_and_detail(
+    served_model_name,
+) -> None:
+    from rapid_mlx.spec_decode.dspark.server import (
+        _build_companion_model_info,
+        _validate_companion_request,
+    )
+
+    model_info = _build_companion_model_info(
+        pair=LFM25_VL_3B,
+        served_model_name=served_model_name,
+    )
+    client, _, _ = _companion_client(
+        served_model_name=served_model_name,
+        validate_request_fn=lambda request: _validate_companion_request(
+            request,
+            served_model_name=served_model_name,
+        ),
+        model_info=model_info,
+    )
+
+    listed = client.get("/v1/models").json()["data"][0]
+    detailed = client.get(f"/v1/models/{served_model_name}").json()
+    assert listed == detailed
+    assert listed["id"] == served_model_name
+    assert listed["modality"] == "image"
+    assert listed["serving_lane"] == "vision"
+    assert listed["capabilities"] == ["text", "vision"]
+    speculative = listed["speculative_decoding"]
+    assert speculative["target_model"] == LFM25_VL_3B.target_repo
+    assert speculative["drafter_model"] == LFM25_VL_3B.drafter_repo
+    assert speculative["num_speculative_tokens"] == 7
+    assert speculative["draft_block_size"] == 8
+
+    health = client.get("/healthz").json()
+    status = client.get("/v1/status").json()
+    assert (
+        health["target_model"]
+        == status["target_model"]
+        == (speculative["target_model"])
+    )
+    assert (
+        health["draft_block_size"]
+        == status["draft_block_size"]
+        == (speculative["draft_block_size"])
+    )
+    assert status["speculative_decoding"] == speculative
+
+
+def _stream_payloads(response) -> tuple[list[dict], list[str]]:
+    data = [
+        line.removeprefix("data: ")
+        for line in response.text.splitlines()
+        if line.startswith("data: ")
+    ]
+    return [json.loads(item) for item in data if item != "[DONE]"], data
+
+
+@pytest.mark.parametrize("include_usage", [None, False, True])
+def test_companion_stream_usage_follows_openai_include_usage(include_usage) -> None:
+    from rapid_mlx.spec_decode.dspark.server import _validate_greedy_request
+
+    def stream_generate(*_args, **_kwargs):
+        yield SimpleNamespace(
+            text="ok",
+            token=7,
+            prompt_tokens=3,
+            generation_tokens=1,
+        )
+
+    client, _, _ = _companion_client(
+        validate_request_fn=_validate_greedy_request,
+        stream_generate_fn=stream_generate,
+        strict_openai_streaming=True,
+    )
+    payload = {
+        "model": "lfm-vl",
+        "messages": [{"role": "user", "content": "hello"}],
+        "temperature": 0,
+        "stream": True,
+    }
+    if include_usage is not None:
+        payload["stream_options"] = {"include_usage": include_usage}
+
+    response = client.post("/v1/chat/completions", json=payload)
+    assert response.status_code == 200
+    payloads, data = _stream_payloads(response)
+    assert data[-1] == "[DONE]"
+    usage_payloads = [item for item in payloads if "usage" in item]
+    if include_usage is True:
+        assert len(usage_payloads) == 1
+        usage_index = payloads.index(usage_payloads[0])
+        finish_index = next(
+            index
+            for index, item in enumerate(payloads)
+            if item.get("choices")
+            and item["choices"][0].get("finish_reason") is not None
+        )
+        assert usage_index == finish_index + 1
+        assert usage_payloads[0]["choices"] == []
+        assert usage_payloads[0]["usage"] == {
+            "prompt_tokens": 3,
+            "completion_tokens": 1,
+            "total_tokens": 4,
+        }
+    else:
+        assert usage_payloads == []
+
+
+@pytest.mark.parametrize("failure_stage", ["construction", "mid-stream"])
+def test_companion_stream_generation_errors_use_canonical_envelope(
+    failure_stage,
+) -> None:
+    from rapid_mlx.spec_decode.dspark.server import _validate_greedy_request
+
+    secret = "/private/model/path/should-not-leak"
+
+    if failure_stage == "construction":
+
+        def stream_generate(*_args, **_kwargs):
+            raise RuntimeError(f"construction failed at {secret}")
+
+    else:
+
+        def stream_generate(*_args, **_kwargs):
+            yield SimpleNamespace(
+                text="partial",
+                token=7,
+                prompt_tokens=3,
+                generation_tokens=1,
+            )
+            raise RuntimeError(f"mid-stream failed at {secret}")
+
+    client, _, _ = _companion_client(
+        validate_request_fn=_validate_greedy_request,
+        stream_generate_fn=stream_generate,
+        strict_openai_streaming=True,
+    )
+    response = client.post(
+        "/v1/chat/completions",
+        json={
+            "model": "lfm-vl",
+            "messages": [{"role": "user", "content": "hello"}],
+            "temperature": 0,
+            "stream": True,
+            "stream_options": {"include_usage": True},
+        },
+    )
+
+    assert response.status_code == 200
+    payloads, data = _stream_payloads(response)
+    assert data[-1] == "[DONE]"
+    error_payloads = [item for item in payloads if "error" in item]
+    assert len(error_payloads) == 1
+    assert error_payloads[0] == {
+        "error": {
+            "message": (
+                "Inference was interrupted by a transient engine error. "
+                "Please try again."
+            ),
+            "type": "server_error",
+            "code": "engine_aborted",
+            "param": None,
+        }
+    }
+    assert all("usage" not in item for item in payloads)
+    assert not any(
+        choice.get("finish_reason") == "length"
+        for item in payloads
+        for choice in item.get("choices", [])
+    )
+    assert "dflash_runtime_error" not in response.text
+    assert secret not in response.text
 
 
 def test_runtime_generation_failure_is_http_500_without_ar_fallback() -> None:

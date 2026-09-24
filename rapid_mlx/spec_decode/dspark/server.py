@@ -12,6 +12,7 @@ from fastapi import HTTPException
 from rapid_mlx.api.models import (
     ChatCompletionRequest,
     CompanionSpeculativeDecodingInfo,
+    ModelInfo,
 )
 
 from .artifacts import CompanionDSparkArtifacts, download_companion_artifacts
@@ -78,6 +79,8 @@ def _validate_greedy_request(request: ChatCompletionRequest) -> None:
         unsupported.append("seed")
     if request.stop:
         unsupported.append("stop")
+    if request.video_fps is not None or request.video_max_frames is not None:
+        unsupported.append("video parameters")
     if (
         request.tools
         or request.functions
@@ -129,6 +132,34 @@ def _validate_companion_request(
             },
         )
     _validate_greedy_request(request)
+
+
+def _build_companion_model_info(
+    *,
+    pair: CompanionDSparkPair,
+    served_model_name: str,
+) -> ModelInfo:
+    """Build the one model-card truth shared by every companion endpoint."""
+
+    speculative_info = CompanionSpeculativeDecodingInfo(
+        configured=True,
+        method="dspark",
+        runtime_state="active",
+        target_model=pair.target_repo,
+        drafter_model=pair.drafter_repo,
+        target_revision=pair.target_revision,
+        drafter_revision=pair.drafter_revision,
+        num_speculative_tokens=pair.num_speculative_tokens,
+        draft_block_size=pair.draft_block_size,
+    )
+    return ModelInfo(
+        id=served_model_name,
+        modality="image",
+        serving_lane="vision",
+        serving_lane_reason="qualified_companion_dspark",
+        capabilities=["text", "vision"],
+        speculative_decoding=speculative_info,
+    )
 
 
 def _prepare_multimodal_prompt(
@@ -259,14 +290,9 @@ def run_companion_dspark_server(
             "draft_block_size": runtime.draft_block_size,
         }
 
-    speculative_info = CompanionSpeculativeDecodingInfo(
-        configured=True,
-        method="dspark",
-        runtime_state="active",
-        drafter_model=pair.drafter_repo,
-        target_revision=pair.target_revision,
-        drafter_revision=pair.drafter_revision,
-        num_speculative_tokens=pair.num_speculative_tokens,
+    model_info = _build_companion_model_info(
+        pair=pair,
+        served_model_name=served_model_name,
     )
     app = _build_app(
         model=model,
@@ -292,7 +318,8 @@ def run_companion_dspark_server(
             served_model_name=served_model_name,
         ),
         backend_name="LFM DSpark",
-        speculative_info=speculative_info,
+        model_info=model_info,
+        strict_openai_streaming=True,
     )
 
     host_display = "localhost" if host == "0.0.0.0" else host
@@ -312,6 +339,7 @@ def run_companion_dspark_server(
 
 
 __all__ = [
+    "_build_companion_model_info",
     "_validate_companion_request",
     "_prepare_multimodal_prompt",
     "_validate_greedy_request",
