@@ -477,8 +477,9 @@ def test_windows_liveness_never_calls_os_kill(monkeypatch):
     assert so.is_same_process is identity.is_same_process
 
 
-def test_windows_without_psutil_identifies_current_process(monkeypatch):
+def test_windows_without_psutil_identifies_current_process(monkeypatch, tmp_path):
     from rapid_mlx import _process_identity as identity
+    from rapid_mlx.telemetry import server_start
 
     monkeypatch.setattr(identity, "psutil", None)
     monkeypatch.setattr(identity.sys, "platform", "win32")
@@ -486,6 +487,11 @@ def test_windows_without_psutil_identifies_current_process(monkeypatch):
 
     assert current == identity.ProcessIdentity(
         os.getpid(), identity._CURRENT_PROCESS_CREATE_TIME, 0.0
+    )
+    marker = tmp_path / "state" / f"serve-inflight-{os.getpid()}.json"
+    server_start._atomic_write_marker(marker)
+    assert json.loads(marker.read_text(encoding="utf-8"))["create_time"] == (
+        identity._CURRENT_PROCESS_CREATE_TIME
     )
 
 
@@ -700,7 +706,9 @@ def test_crash_pointer_is_acknowledged_across_clean_launches(tmp_path, capsys):
     assert capsys.readouterr().err == ""
 
 
-def test_second_server_does_not_acknowledge_live_server_crash_file(tmp_path):
+def test_second_server_does_not_acknowledge_live_server_crash_file(tmp_path, capsys):
+    from rapid_mlx import _signal_observability as so
+
     home = tmp_path / "home"
     first_program = """
 import os
@@ -725,23 +733,9 @@ input()
     )
     try:
         crash = Path(_read_ready_with_timeout(first).strip())
-        second = subprocess.run(
-            [
-                sys.executable,
-                "-c",
-                "from rapid_mlx import _signal_observability as so; "
-                "so.install_signal_observability(observed_signals=()); "
-                "so._cleanup_crash_file()",
-            ],
-            cwd=Path(__file__).resolve().parents[1],
-            env=env,
-            capture_output=True,
-            text=True,
-            timeout=10,
-            check=True,
-        )
+        so._report_previous_crash(crash.parent)
 
-        assert "Previous run crashed" not in second.stderr
+        assert "Previous run crashed" not in capsys.readouterr().err
         assert crash.exists()
         assert not crash.with_name(f"{crash.stem}.reported{crash.suffix}").exists()
     finally:
@@ -1039,6 +1033,25 @@ def test_symlinked_crash_log_directory_is_refused(monkeypatch, tmp_path, caplog)
         so._reset_for_tests()
 
 
+def test_crash_log_directory_inode_swap_and_io_failure_are_refused(
+    monkeypatch, tmp_path
+):
+    from rapid_mlx import _signal_observability as so
+
+    log_dir = tmp_path / "logs"
+    log_dir.mkdir()
+    with monkeypatch.context() as patch:
+        patch.setattr(so.os, "fstat", lambda _fd: SimpleNamespace(st_dev=-1, st_ino=-1))
+        assert so._prepare_crash_logs_dir(log_dir) is False
+    with monkeypatch.context() as patch:
+        patch.setattr(
+            so.os,
+            "lstat",
+            lambda _path: (_ for _ in ()).throw(PermissionError("denied")),
+        )
+        assert so._prepare_crash_logs_dir(log_dir) is False
+
+
 def test_missing_tee_warns_once_and_uses_file_only(monkeypatch, tmp_path, caplog):
     from rapid_mlx import _signal_observability as so
 
@@ -1310,6 +1323,7 @@ def test_crash_cleanup_and_failed_install_cleanup_errors_are_inert(
     )
     so._cleanup_crash_file()
     so._faulthandler_was_enabled = prior_enabled
+    monkeypatch.setattr(so.os, "close", real_close)
 
     monkeypatch.setenv("HOME", str(tmp_path / "home"))
     real_unlink = Path.unlink
@@ -1319,6 +1333,12 @@ def test_crash_cleanup_and_failed_install_cleanup_errors_are_inert(
         raise OSError("unlink reported failure")
 
     monkeypatch.setattr(Path, "unlink", unlink_then_raise)
+
+    def fail_enable(_target_fd):
+        monkeypatch.setattr(so.os, "close", close_then_raise)
+        raise RuntimeError("enable failed")
+
+    monkeypatch.setattr(so, "_enable_faulthandler", fail_enable)
     so._install_crash_file()
 
 
