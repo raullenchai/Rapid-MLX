@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import json
+import socket
 import sys
 import types
 from types import SimpleNamespace
@@ -78,6 +79,7 @@ def _companion_client(
     stream_generate_fn=None,
     model_info=None,
     strict_openai_streaming=False,
+    render_prompt_fn=None,
 ):
     from fastapi.testclient import TestClient
 
@@ -105,13 +107,13 @@ def _companion_client(
         return SimpleNamespace(text="unexpected", prompt_tokens=1, generation_tokens=1)
 
     app = _build_app(
-        model=SimpleNamespace(),
+        model=SimpleNamespace(config={}),
         processor=SimpleNamespace(),
         runtime=runtime,
         served_model_name=served_model_name,
         default_max_tokens=16,
         cors_origins=[],
-        render_prompt_fn=render,
+        render_prompt_fn=render_prompt_fn or render,
         generate_fn=generate,
         stream_generate_fn=stream_generate_fn,
         validate_request_fn=validate_request_fn,
@@ -531,6 +533,157 @@ def test_companion_rejects_unsupported_media_before_render_or_generation(
     }
     assert render_calls == []
     assert generation_calls == []
+
+
+@pytest.mark.parametrize(
+    "content_part",
+    [
+        {"type": "banana", "banana": "split"},
+        {"type": "input_image"},
+        {"type": "input_image", "image_url": ""},
+    ],
+    ids=["unknown-type", "missing-image-url", "empty-image-url"],
+)
+def test_companion_rejects_malformed_image_blocks_before_render_or_generation(
+    content_part,
+) -> None:
+    from rapid_mlx.spec_decode.dspark.server import _validate_greedy_request
+
+    client, render_calls, generation_calls = _companion_client(
+        validate_request_fn=_validate_greedy_request
+    )
+
+    response = client.post(
+        "/v1/chat/completions",
+        json={
+            "model": "lfm-vl",
+            "messages": [{"role": "user", "content": [content_part]}],
+            "temperature": 0,
+        },
+    )
+
+    assert response.status_code == 400
+    error = response.json()["error"]
+    assert error["type"] == "invalid_request_error"
+    assert error["code"] == "invalid_request"
+    assert error["param"] == "messages.content"
+    assert render_calls == []
+    assert generation_calls == []
+
+
+def test_companion_maps_remote_image_resolution_failure_to_invalid_image(
+    monkeypatch,
+) -> None:
+    from rapid_mlx.models import mllm
+    from rapid_mlx.spec_decode.dspark.server import (
+        _prepare_multimodal_prompt,
+        _validate_greedy_request,
+    )
+
+    prompt_utils = types.ModuleType("mlx_vlm.prompt_utils")
+
+    def unexpected_template(*_args, **_kwargs):
+        raise AssertionError("image failure must precede template rendering")
+
+    prompt_utils.apply_chat_template = unexpected_template
+    fake_vlm = types.ModuleType("mlx_vlm")
+    fake_vlm.prompt_utils = prompt_utils
+    monkeypatch.setitem(sys.modules, "mlx_vlm", fake_vlm)
+    monkeypatch.setitem(sys.modules, "mlx_vlm.prompt_utils", prompt_utils)
+
+    def fail_dns(*_args, **_kwargs):
+        raise socket.gaierror("test DNS failure")
+
+    monkeypatch.setattr(mllm.socket, "getaddrinfo", fail_dns)
+    client, _, generation_calls = _companion_client(
+        validate_request_fn=_validate_greedy_request,
+        render_prompt_fn=_prepare_multimodal_prompt,
+    )
+
+    response = client.post(
+        "/v1/chat/completions",
+        json={
+            "model": "lfm-vl",
+            "messages": [
+                {
+                    "role": "user",
+                    "content": [
+                        {
+                            "type": "image_url",
+                            "image_url": {
+                                "url": "https://does-not-resolve.invalid/image.png"
+                            },
+                        }
+                    ],
+                }
+            ],
+            "temperature": 0,
+        },
+    )
+
+    assert response.status_code == 400
+    assert response.json()["error"] == {
+        "message": "Invalid image input.",
+        "type": "invalid_request_error",
+        "code": "invalid_image",
+        "param": "messages.content",
+    }
+    assert generation_calls == []
+
+
+@pytest.mark.parametrize("failure_stage", ["image-internal", "template"])
+def test_multimodal_renderer_does_not_reclassify_internal_errors(
+    monkeypatch,
+    failure_stage,
+) -> None:
+    from rapid_mlx.models import mllm
+    from rapid_mlx.spec_decode.dspark.server import _prepare_multimodal_prompt
+
+    prompt_utils = types.ModuleType("mlx_vlm.prompt_utils")
+
+    def apply_chat_template(*_args, **_kwargs):
+        if failure_stage == "template":
+            raise ValueError("internal template failure")
+        return "unexpected"
+
+    prompt_utils.apply_chat_template = apply_chat_template
+    fake_vlm = types.ModuleType("mlx_vlm")
+    fake_vlm.prompt_utils = prompt_utils
+    monkeypatch.setitem(sys.modules, "mlx_vlm", fake_vlm)
+    monkeypatch.setitem(sys.modules, "mlx_vlm.prompt_utils", prompt_utils)
+
+    if failure_stage == "image-internal":
+
+        def process_image(_ref):
+            raise RuntimeError("internal image failure")
+
+    else:
+
+        def process_image(_ref):
+            return "/tmp/image.png"
+
+    monkeypatch.setattr(mllm, "process_image_input", process_image)
+    request = _request(
+        messages=[
+            {
+                "role": "user",
+                "content": [
+                    {
+                        "type": "image_url",
+                        "image_url": {"url": "https://example.test/image.png"},
+                    }
+                ],
+            }
+        ]
+    )
+
+    expected = RuntimeError if failure_stage == "image-internal" else ValueError
+    with pytest.raises(expected, match="internal .* failure"):
+        _prepare_multimodal_prompt(
+            SimpleNamespace(),
+            SimpleNamespace(config={}),
+            request,
+        )
 
 
 def test_companion_rejects_stop_before_render_or_generation() -> None:

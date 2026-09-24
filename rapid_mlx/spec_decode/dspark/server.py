@@ -25,40 +25,38 @@ logger = logging.getLogger(__name__)
 def _validate_greedy_request(request: ChatCompletionRequest) -> None:
     """Reject every request shape outside the qualified greedy contract."""
 
-    # Keep unsupported media on the request-policy side of the render-worker
-    # boundary.  The renderer repeats this check as defense in depth, but an
-    # exception raised there is a backend failure and is therefore surfaced as
-    # HTTP 500 by the serial shell.  Audio/video are client request errors and
-    # must never reach that worker (or generation).
-    from rapid_mlx.api.utils import AUDIO_CONTENT_TYPES, VIDEO_CONTENT_TYPES
+    # Keep every malformed/unsupported content block on the request-policy
+    # side of the render-worker boundary.  This shared validator is scoped to
+    # request shape and serving-lane capability, so its ValueError contract is
+    # safe to translate here; unrelated renderer exceptions remain 5xx.
+    from rapid_mlx.api.utils import validate_content_blocks_for_capabilities
 
-    for message in request.messages:
-        if not isinstance(message.content, list):
-            continue
-        for raw_part in message.content:
-            part = (
-                raw_part.model_dump(exclude_none=True)
-                if hasattr(raw_part, "model_dump")
-                else raw_part
-            )
-            content_type = part.get("type") if isinstance(part, dict) else None
-            if content_type not in AUDIO_CONTENT_TYPES | VIDEO_CONTENT_TYPES:
-                continue
-            media_kind = "audio" if content_type in AUDIO_CONTENT_TYPES else "video"
-            raise HTTPException(
-                status_code=400,
-                detail={
-                    "error": {
-                        "message": (
-                            f"Model '{request.model}' does not support "
-                            f"{media_kind} inputs."
-                        ),
-                        "type": "invalid_request_error",
-                        "code": "unsupported_content_type",
-                        "param": "messages.content",
-                    }
-                },
-            )
+    try:
+        validate_content_blocks_for_capabilities(
+            request.messages,
+            model_name=request.model,
+            allow_image=True,
+            allow_video=False,
+            allow_audio=False,
+        )
+    except ValueError as exc:
+        message = str(exc)
+        code = (
+            "unsupported_content_type"
+            if " does not support " in message
+            else "invalid_request"
+        )
+        raise HTTPException(
+            status_code=400,
+            detail={
+                "error": {
+                    "message": message,
+                    "type": "invalid_request_error",
+                    "code": code,
+                    "param": "messages.content",
+                }
+            },
+        ) from exc
 
     unsupported: list[str] = []
     if request.temperature not in (None, 0, 0.0):
@@ -175,7 +173,7 @@ def _prepare_multimodal_prompt(
 
     from rapid_mlx.api.tool_calling import convert_tools_for_template
     from rapid_mlx.api.utils import validate_content_blocks_for_capabilities
-    from rapid_mlx.models.mllm import process_image_input
+    from rapid_mlx.models.mllm import FileSizeExceededError, process_image_input
     from rapid_mlx.speculative.dflash.server import PreparedPrompt
 
     validate_content_blocks_for_capabilities(
@@ -187,6 +185,27 @@ def _prepare_multimodal_prompt(
     )
     messages: list[dict[str, Any]] = []
     images: list[str] = []
+
+    def _process_image(image_ref: Any) -> str:
+        try:
+            return process_image_input(image_ref)
+        # RemoteMediaFetchError intentionally is not repeated here: it derives
+        # from ValueError.  FileSizeExceededError is its independent sibling.
+        # Keep this catch immediately around media processing so a ValueError
+        # from apply_chat_template (or any other renderer bug) remains a 500.
+        except (ValueError, FileSizeExceededError) as exc:
+            raise HTTPException(
+                status_code=400,
+                detail={
+                    "error": {
+                        "message": "Invalid image input.",
+                        "type": "invalid_request_error",
+                        "code": "invalid_image",
+                        "param": "messages.content",
+                    }
+                },
+            ) from exc
+
     for raw_message in request.messages:
         message = raw_message.model_dump(exclude_none=True)
         content = raw_message.content
@@ -205,17 +224,17 @@ def _prepare_multimodal_prompt(
                     image_ref = part.get("image_url")
                     if isinstance(image_ref, dict):
                         image_ref = image_ref.get("url")
-                    images.append(process_image_input(image_ref))
+                    images.append(_process_image(image_ref))
                     native_parts.append({"type": "image"})
                 elif kind == "image":
                     image_ref = part.get("image", part.get("url"))
-                    images.append(process_image_input(image_ref))
+                    images.append(_process_image(image_ref))
                     native_parts.append({"type": "image"})
                 elif kind == "input_image":
                     image_ref = part.get("image_url")
                     if isinstance(image_ref, dict):
                         image_ref = image_ref.get("url")
-                    images.append(process_image_input(image_ref))
+                    images.append(_process_image(image_ref))
                     native_parts.append({"type": "image"})
             message["content"] = native_parts
         messages.append(message)
