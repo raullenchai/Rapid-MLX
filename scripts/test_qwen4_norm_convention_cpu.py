@@ -308,26 +308,6 @@ class ConventionTests(unittest.TestCase):
                     )
                 self.assertFalse(hasattr(model.language_model, "mtp"))
 
-    def test_mtp_with_conflicting_source_convention_refused(self):
-        from rapid_mlx.spec_decode.mtp import qwen4_exp_inject as inject
-
-        with mock.patch.object(nn, "quantize"):
-            model = tiny_model()
-            model.sanitize(checkpoint(model, direct=True))
-            mtp = inject._build_mtp(model.language_model)
-            weights = checkpoint(mtp, direct=False)
-            with tempfile.TemporaryDirectory() as directory:
-                path = Path(directory) / "mtp.safetensors"
-                mx.save_safetensors(
-                    str(path), {f"mtp.{key}": value for key, value in weights.items()}
-                )
-                with self.assertLogs(inject.logger, level="ERROR") as logs:
-                    self.assertFalse(
-                        inject.inject_qwen4_exp_mtp_support(model, mtp_sidecar=path)
-                    )
-            self.assertIn("base/MTP RMSNorm convention mismatch", logs.output[0])
-            self.assertFalse(hasattr(model.language_model, "mtp"))
-
 
 if __name__ == "__main__":
     unittest.main()

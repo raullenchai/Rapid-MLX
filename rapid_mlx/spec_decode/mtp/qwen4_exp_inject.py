@@ -199,21 +199,16 @@ def inject_qwen4_exp_mtp_support(
                 return False
             from rapid_mlx.models.qwen4_exp import ZeroCenteredRMSNorm
             from rapid_mlx.models.qwen4_norm_convention import (
-                normalize_qwen4_checkpoint,
+                apply_qwen4_norm_convention,
             )
 
             receipt = getattr(inner, "norm_convention_receipt", None) or {}
-            mtp_receipt = normalize_qwen4_checkpoint(mtp, weights, ZeroCenteredRMSNorm)
-            if mtp_receipt is None or mtp_receipt["source_convention"] != receipt.get(
-                "source_convention"
-            ):
-                logger.error(
-                    "[mtp.qwen4] base/MTP RMSNorm convention mismatch: "
-                    "base=%s sidecar=%s",
-                    receipt.get("source_convention"),
-                    mtp_receipt and mtp_receipt["source_convention"],
-                )
-                return False
+            apply_qwen4_norm_convention(
+                mtp,
+                weights,
+                ZeroCenteredRMSNorm,
+                receipt.get("source_convention"),
+            )
             mtp.load_weights(list(weights.items()), strict=True)
         else:
             mx.eval(mtp.parameters())

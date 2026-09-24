@@ -2110,7 +2110,7 @@ def test_qwen4_mtp_inject_loads_complete_local_tensor_contract(tmp_path, monkeyp
     assert (policy.min_ngram, policy.max_ngram, policy.max_tokens) == (16, 64, 8)
 
 
-def test_qwen4_mtp_inject_rejects_opposite_norm_convention(tmp_path, monkeypatch):
+def test_qwen4_mtp_inject_uses_admitted_backbone_norm_convention(tmp_path, monkeypatch):
     from mlx.utils import tree_flatten
 
     from rapid_mlx.spec_decode.mtp import qwen4_exp_inject as inject
@@ -2129,13 +2129,18 @@ def test_qwen4_mtp_inject_rejects_opposite_norm_convention(tmp_path, monkeypatch
 
     monkeypatch.setattr(nn, "quantize", lambda *_args, **_kwargs: None)
     mtp = inject._build_mtp(model.language_model)
-    checkpoint = tmp_path / "opposite-norm.safetensors"
+    mtp_weights = dict(tree_flatten(mtp.parameters()))
+    for path, module in mtp.named_modules():
+        if type(module) is ZeroCenteredRMSNorm:
+            # A one-layer MTP cannot classify a valid learned outlier by vote.
+            mtp_weights[f"{path}.weight"] = mx.full_like(module.weight, 0.7)
+    checkpoint = tmp_path / "direct-gamma-norm.safetensors"
     mx.save_safetensors(
         str(checkpoint),
-        {f"mtp.{key}": value for key, value in tree_flatten(mtp.parameters())},
+        {f"mtp.{key}": value for key, value in mtp_weights.items()},
     )
-    assert inject.inject_qwen4_exp_mtp_support(model, mtp_sidecar=checkpoint) is False
-    assert not hasattr(model.language_model, "mtp")
+    assert inject.inject_qwen4_exp_mtp_support(model, mtp_sidecar=checkpoint) is True
+    assert inject.validate_qwen4_exp_mtp_support(model) is True
 
 
 def test_qwen4_mtp_inject_fails_closed_on_guards_tensor_mismatch_and_exception(
