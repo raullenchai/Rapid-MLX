@@ -2093,6 +2093,7 @@ def test_qwen4_mtp_inject_loads_complete_local_tensor_contract(tmp_path, monkeyp
     args = _ple_args()
     args.mtp_num_hidden_layers = 1
     model = Model(ModelArgs(model_type="qwen4_exp", text_config=asdict(args)))
+    model.sanitize(dict(tree_flatten(model.parameters())))
     monkeypatch.setattr(nn, "quantize", lambda *_args, **_kwargs: None)
     expected_mtp = inject._build_mtp(model.language_model)
     checkpoint = tmp_path / "mtp.safetensors"
@@ -2109,12 +2110,54 @@ def test_qwen4_mtp_inject_loads_complete_local_tensor_contract(tmp_path, monkeyp
     assert (policy.min_ngram, policy.max_ngram, policy.max_tokens) == (16, 64, 8)
 
 
+def test_qwen4_mtp_inject_uses_admitted_backbone_norm_convention(tmp_path, monkeypatch):
+    from mlx.utils import tree_flatten
+
+    from rapid_mlx.spec_decode.mtp import qwen4_exp_inject as inject
+
+    args = _ple_args()
+    args.mtp_num_hidden_layers = 1
+    model = Model(ModelArgs(model_type="qwen4_exp", text_config=asdict(args)))
+    base_weights = dict(tree_flatten(model.parameters()))
+    for path, module in model.named_modules():
+        if type(module) is ZeroCenteredRMSNorm:
+            base_weights[f"{path}.weight"] = mx.ones_like(module.weight)
+    model.sanitize(base_weights)
+    assert model.language_model.norm_convention_receipt["source_convention"] == (
+        "direct_gamma"
+    )
+
+    monkeypatch.setattr(nn, "quantize", lambda *_args, **_kwargs: None)
+    mtp = inject._build_mtp(model.language_model)
+    mtp_weights = dict(tree_flatten(mtp.parameters()))
+    for path, module in mtp.named_modules():
+        if type(module) is ZeroCenteredRMSNorm:
+            # A one-layer MTP cannot classify a valid learned outlier by vote.
+            mtp_weights[f"{path}.weight"] = mx.full_like(module.weight, 0.7)
+    checkpoint = tmp_path / "direct-gamma-norm.safetensors"
+    mx.save_safetensors(
+        str(checkpoint),
+        {f"mtp.{key}": value for key, value in mtp_weights.items()},
+    )
+    assert inject.inject_qwen4_exp_mtp_support(model, mtp_sidecar=checkpoint) is True
+    assert inject.validate_qwen4_exp_mtp_support(model) is True
+    for _path, module in model.language_model.mtp.named_modules():
+        if type(module) is ZeroCenteredRMSNorm:
+            assert mx.allclose(
+                module.weight, mx.array(-0.3), rtol=0.0, atol=2e-7
+            ).item()
+            assert mx.allclose(
+                1 + module.weight, mx.array(0.7), rtol=0.0, atol=2e-7
+            ).item()
+
+
 def test_qwen4_mtp_inject_fails_closed_on_guards_tensor_mismatch_and_exception(
     tmp_path,
     monkeypatch,
     caplog,
 ):
     import mlx.nn as nn
+    from mlx.utils import tree_flatten
 
     from rapid_mlx.spec_decode.mtp import qwen4_exp_inject as inject
 
@@ -2134,6 +2177,7 @@ def test_qwen4_mtp_inject_fails_closed_on_guards_tensor_mismatch_and_exception(
     model = Model(ModelArgs(model_type="qwen4_exp", text_config=asdict(args)))
     assert inject.inject_qwen4_exp_mtp_support(model) is False
 
+    model.sanitize(dict(tree_flatten(model.parameters())))
     monkeypatch.setattr(nn, "quantize", lambda *_args, **_kwargs: None)
     bad_checkpoint = tmp_path / "bad.safetensors"
     mx.save_safetensors(str(bad_checkpoint), {"mtp.unexpected": mx.ones((2,))})
