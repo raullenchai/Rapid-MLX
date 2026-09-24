@@ -41,6 +41,8 @@ class ModelArgs(BaseModelArgs):
     vocab_size: int = 262144
     rope_theta: float = 50000.0
     layer_norm_eps: float = 1e-5
+    # As in the reference, setting rms_norm_eps selects RMSNorm for every norm.
+    rms_norm_eps: float | None = None
     logit_scale: float = 1.0
     attention_bias: bool = False
     sliding_window: int = 4096
@@ -51,6 +53,8 @@ class ModelArgs(BaseModelArgs):
     num_shared_experts: int = 0
     norm_topk_prob: bool = False
     first_k_dense_replace: int = 1
+    # 1 means the dense-prefix layers also get RoPE (reference ``force_rope``).
+    prefix_dense_sliding_window_pattern: int = 1
     expert_selection_fn: str = "sigmoid"
     layer_types: list[str] | None = None
     # Accepted checkpoint keys that do not alter this architecture.
@@ -65,6 +69,12 @@ class ModelArgs(BaseModelArgs):
             ]
         if len(self.layer_types) != self.num_hidden_layers:
             raise ValueError("layer_types must match num_hidden_layers")
+
+
+def _norm(args: ModelArgs) -> nn.Module:
+    if args.rms_norm_eps is not None:
+        return nn.RMSNorm(args.hidden_size, eps=args.rms_norm_eps)
+    return nn.LayerNorm(args.hidden_size, eps=args.layer_norm_eps, bias=False)
 
 
 class MLP(nn.Module):
@@ -129,9 +139,13 @@ class Attention(nn.Module):
         self.o_proj = nn.Linear(
             self.n_heads * self.head_dim, args.hidden_size, bias=args.attention_bias
         )
+        force_rope = (
+            layer_idx < args.first_k_dense_replace
+            and args.prefix_dense_sliding_window_pattern == 1
+        )
         self.rope = (
             nn.RoPE(self.head_dim, traditional=True, base=args.rope_theta)
-            if self.is_sliding
+            if self.is_sliding or force_rope
             else None
         )
 
@@ -169,9 +183,7 @@ class DecoderLayer(nn.Module):
             if layer_idx < args.first_k_dense_replace or args.num_experts == 0
             else Cohere2MoeSparseBlock(args)
         )
-        self.input_layernorm = nn.LayerNorm(
-            args.hidden_size, eps=args.layer_norm_eps, bias=False
-        )
+        self.input_layernorm = _norm(args)
         self.attention_type = args.layer_types[layer_idx]
 
     def __call__(
@@ -194,7 +206,7 @@ class Cohere2MoeModel(nn.Module):
         self.layers = [
             DecoderLayer(args, index) for index in range(args.num_hidden_layers)
         ]
-        self.norm = nn.LayerNorm(args.hidden_size, eps=args.layer_norm_eps, bias=False)
+        self.norm = _norm(args)
         self.full_attention_index = args.layer_types.index("full_attention")
         self.sliding_attention_index = (
             args.layer_types.index("sliding_attention")
