@@ -67,9 +67,9 @@ def _exception_text(exc: BaseException) -> str:
 def pull_error_class(exc: BaseException) -> str:
     """Classify a pull exception without putting its message on the wire.
 
-    An ``HfHubHTTPError``, including one for a 5xx response, is ``other``
-    because the server answered. ``network`` is reserved for failures to obtain
-    a response.
+    An ``HfHubHTTPError`` for a 401/403 response is ``gated``; other HTTP
+    responses, including 5xx, are ``other`` because the server answered.
+    ``network`` is reserved for failures to obtain a response.
     """
     import httpx
     from huggingface_hub.errors import HfHubHTTPError, OfflineModeIsEnabled
