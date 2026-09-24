@@ -22,8 +22,10 @@ PR: #3728
   The serving process reads safetensors only; a separate converter loads the
   official `.pt` checkpoint with `weights_only=True`.
 - Unit tests exercise wire validation, auth, ranking, CLM projection loading,
-  state/action caching, CLI parsing, and optional dependency packaging without
-  downloading model weights.
+  state/action caching, artifact validation and rollback, CLI parsing, and
+  optional dependency packaging without downloading model weights. The focused
+  suite has 67 passing tests, its no-MLX simulation passes 23 with 16
+  MLX-specific skips, and changed production lines have 100% local coverage.
 
 ## Unresolved questions and risks
 

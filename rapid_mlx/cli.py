@@ -14925,7 +14925,8 @@ def main():
 
     if args.command == "system-one":
         system_one_command(args)
-    elif args.command == "serve":
+        return
+    if args.command == "serve":
         from rapid_mlx.telemetry.server_start import set_failure_stage
 
         set_failure_stage("preflight")

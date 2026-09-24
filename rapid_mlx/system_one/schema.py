@@ -4,7 +4,6 @@
 from __future__ import annotations
 
 import json
-import math
 from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
@@ -42,14 +41,7 @@ class SystemOneRequest(BaseModel):
     state: Any
     questions: dict[str, Question] = Field(min_length=1, max_length=64)
     model: str | None = None
-    temperature: float = Field(default=1.0, ge=1e-6, le=100.0)
-
-    @field_validator("temperature")
-    @classmethod
-    def finite_temperature(cls, value: float) -> float:
-        if not math.isfinite(value):
-            raise ValueError("temperature must be finite")
-        return value
+    temperature: float = Field(default=1.0, ge=1e-6, le=100.0, allow_inf_nan=False)
 
     @model_validator(mode="after")
     def bounded_candidates(self) -> SystemOneRequest:
@@ -74,7 +66,7 @@ class RankRequest(BaseModel):
     question: str | None = None
     answers: list[str] = Field(min_length=1, max_length=255)
     model: str | None = None
-    temperature: float = Field(default=1.0, ge=1e-6, le=100.0)
+    temperature: float = Field(default=1.0, ge=1e-6, le=100.0, allow_inf_nan=False)
 
     @field_validator("answers")
     @classmethod
@@ -82,13 +74,6 @@ class RankRequest(BaseModel):
         if any(not value for value in values):
             raise ValueError("answers must be non-empty strings")
         return values
-
-    @field_validator("temperature")
-    @classmethod
-    def finite_temperature(cls, value: float) -> float:
-        if not math.isfinite(value):
-            raise ValueError("temperature must be finite")
-        return value
 
 
 def to_text(value: Any, indent: int = 0) -> str:

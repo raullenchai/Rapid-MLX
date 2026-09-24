@@ -1,4 +1,5 @@
 # SPDX-License-Identifier: Apache-2.0
+import sys
 from pathlib import Path
 
 import pytest
@@ -40,6 +41,19 @@ def test_system_one_cli_accepts_clm_runtime_inputs():
 def test_system_one_cli_rejects_non_positive_laya_batch_size():
     with pytest.raises(SystemExit):
         build_parser().parse_args(["system-one", "--batch-size", "0"])
+
+
+def test_system_one_cli_rejects_backend_specific_argument_mismatches():
+    with pytest.raises(SystemExit, match="CLM requires --head"):
+        system_one_command(
+            build_parser().parse_args(["system-one", "clm", "--backend", "clm"])
+        )
+    with pytest.raises(SystemExit, match="only valid with --backend clm"):
+        system_one_command(
+            build_parser().parse_args(
+                ["system-one", "--backend", "laya", "--head", "x"]
+            )
+        )
 
 
 def test_system_one_auto_backend_does_not_substring_match_clm():
@@ -116,3 +130,27 @@ def test_system_one_passes_public_clm_model_name(monkeypatch):
     )
     system_one_command(args)
     assert captured["model_name"] == "public-clm"
+
+
+def test_main_dispatches_system_one(monkeypatch):
+    import rapid_mlx.cli as cli_module
+
+    captured = []
+    monkeypatch.setattr(sys, "argv", ["rapid-mlx", "system-one"])
+    monkeypatch.setattr(
+        cli_module, "system_one_command", lambda args: captured.append(args.command)
+    )
+    cli_module.main()
+    assert captured == ["system-one"]
+
+
+def test_main_still_dispatches_serve_after_system_one_branch(monkeypatch):
+    import rapid_mlx.cli as cli_module
+
+    captured = []
+    monkeypatch.setattr(sys, "argv", ["rapid-mlx", "serve", "qwen3.5-4b-4bit"])
+    monkeypatch.setattr(
+        cli_module, "serve_command", lambda args: captured.append(args.command)
+    )
+    cli_module.main()
+    assert captured == ["serve"]
