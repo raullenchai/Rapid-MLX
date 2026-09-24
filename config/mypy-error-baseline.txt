@@ -60,7 +60,7 @@ rapid_mlx/models/gemma4_vendored/language.py 6
 rapid_mlx/models/gpt_oss_puzzle.py 3
 rapid_mlx/models/hy_v3.py 1
 rapid_mlx/models/mllm.py 22
-rapid_mlx/models/mlx_vlm_vendored/apc.py 37
+rapid_mlx/models/mlx_vlm_vendored/apc.py 36
 rapid_mlx/models/mlx_vlm_vendored/fp8.py 1
 rapid_mlx/models/mlx_vlm_vendored/generate/ar.py 48
 rapid_mlx/models/mlx_vlm_vendored/generate/types.py 1

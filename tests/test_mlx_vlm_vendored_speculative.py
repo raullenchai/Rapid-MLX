@@ -3,7 +3,7 @@
 Mechanical guarantee: every function/class body in the vendored
 ``speculative/`` coordinator modules, ``models/base.py``,
 ``models/linear.py``, ``fp8.py``, and ``quant_utils.py`` is
-byte-identical to the pinned upstream ``mlx-vlm==0.7.1`` source. The
+byte-identical to the pinned upstream ``mlx-vlm==0.7.2`` source. The
 only permitted differences are the documented module-level import
 redirects (see the package inventory), which never enter a function's
 ``getsource``, plus two inventoried function-level lazy-import redirects

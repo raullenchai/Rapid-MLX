@@ -800,7 +800,7 @@ def test_runtime_compatibility_policy_matches_project():
         "mlx": ">=0.32.1,<0.33",
         "mlx-lm": ">=0.31.3,<0.32",
         "transformers": ">=5.0.0,!=5.13.0,<5.16",
-        "mlx-vlm": "==0.7.1",
+        "mlx-vlm": "==0.7.2",
     }
     policy = {
         requirement.name.lower(): str(requirement.specifier)
@@ -2770,7 +2770,7 @@ def test_remote_pillow_probe_rejects_a_module_that_cannot_import(
         eh,
         "_safe_version",
         lambda distribution, runtime=None: (
-            "0.7.1" if distribution == "mlx-vlm" else None
+            "0.7.2" if distribution == "mlx-vlm" else None
         ),
     )
 
@@ -2798,7 +2798,7 @@ def test_remote_pillow_probe_accepts_a_successful_image_exercise(
         eh,
         "_safe_version",
         lambda distribution, runtime=None: (
-            "0.7.1" if distribution == "mlx-vlm" else None
+            "0.7.2" if distribution == "mlx-vlm" else None
         ),
     )
     monkeypatch.setattr(
@@ -2874,7 +2874,7 @@ def test_incompatible_mlx_vlm_names_bounded_extension_repair(tmp_path):
         if c.label.startswith("mlx-vlm (vision") and "incompatible" in c.label
     )
     assert row.status is eh.CheckStatus.FAIL
-    assert "requires ==0.7.1" in row.label
+    assert "requires ==0.7.2" in row.label
     assert "rapid-mlx[vision]" in row.label
     assert "transformers>=5.0.0,!=5.13.0,<5.16" in row.label
     assert str(runtime.resolve()) in row.label
@@ -2882,7 +2882,7 @@ def test_incompatible_mlx_vlm_names_bounded_extension_repair(tmp_path):
 
 def test_compatible_mlx_vlm_is_accepted():
     def fake_ver(dist: str, runtime=None) -> str | None:
-        return "0.7.1" if dist == "mlx-vlm" else None
+        return "0.7.2" if dist == "mlx-vlm" else None
 
     with (
         mock.patch.object(eh, "_safe_version", side_effect=fake_ver),
@@ -3096,7 +3096,7 @@ def test_deep_doctor_timeout_recommends_direct_import_not_same_retry(
     assert eh._add_inconclusive_import(
         section,
         label="mlx-vlm",
-        version="0.7.1",
+        version="0.7.2",
         runtime=runtime,
         module="mlx_vlm",
         sidecar_root=None,
@@ -5166,7 +5166,7 @@ def test_installed_vision_import_timeout_is_explicit_and_non_failing(
     probe = {"packages": {}}
 
     def safe_version(dist, runtime=None):
-        return "0.7.1" if dist == "mlx-vlm" else None
+        return "0.7.2" if dist == "mlx-vlm" else None
 
     def visibility(dist, runtime=None):
         module = eh._DISTRIBUTION_MODULES[dist]
@@ -5207,7 +5207,7 @@ def test_installed_vision_pillow_timeout_is_inconclusive(tmp_path, monkeypatch):
     monkeypatch.setattr(
         eh,
         "_safe_version",
-        lambda dist, runtime=None: "0.7.1" if dist == "mlx-vlm" else None,
+        lambda dist, runtime=None: "0.7.2" if dist == "mlx-vlm" else None,
     )
     monkeypatch.setattr(eh, "_pil_importable", lambda runtime=None: False)
 
@@ -5231,7 +5231,7 @@ def test_confirmed_vision_import_failure_is_explicit(tmp_path, monkeypatch):
     monkeypatch.setattr(
         eh,
         "_safe_version",
-        lambda dist, runtime=None: "0.7.1" if dist == "mlx-vlm" else None,
+        lambda dist, runtime=None: "0.7.2" if dist == "mlx-vlm" else None,
     )
     monkeypatch.setattr(eh, "_pil_importable", lambda runtime=None: True)
     monkeypatch.setattr(eh, "_module_visibility", visibility)
@@ -5261,7 +5261,7 @@ def test_dflash_reports_supported_vlm_with_unverified_import(tmp_path, monkeypat
     }
 
     def safe_version(dist, runtime=None):
-        return "0.7.1" if dist == "mlx-vlm" else None
+        return "0.7.2" if dist == "mlx-vlm" else None
 
     monkeypatch.setattr(eh.sys, "executable", str(doctor_exe))
     monkeypatch.setattr(eh, "_runtime_python_path", lambda: runtime)

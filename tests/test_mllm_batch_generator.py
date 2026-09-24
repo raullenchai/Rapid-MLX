@@ -2712,34 +2712,23 @@ def test_exact_prefix_snap_refuses_when_rewind_or_clone_fails(monkeypatch):
     assert gen._snap_exact_text_prefix(cache, full_ids, 17, min_position=0) is None
 
 
-def test_exact_prefix_snap_fails_closed_when_lazy_upstream_apc_is_absent(monkeypatch):
-    """The vendored adapter can import before its transitional upstream APC
-    helper does.  A missing helper remains a clean cache miss, matching the
-    pre-vendoring optional-dependency behavior."""
-    import rapid_mlx.models.mlx_vlm_vendored.apc_adapters as adapters
+def test_exact_prefix_snap_uses_cache_owned_clone_without_upstream_apc(monkeypatch):
+    """mlx-vlm 0.7.2 cache-owned snapshots remove the lazy APC helper."""
+    import builtins
 
     gen = _make_real_apc_generator(monkeypatch)
     cache = gen._prefix_cache
     _store_entry_with_checkpoints(gen, list(range(100)), [40, 80])
     full_ids = list(range(90)) + [999] * 10
-    monkeypatch.setattr(
-        adapters,
-        "_apc_array_helpers",
-        lambda: (_ for _ in ()).throw(
-            ModuleNotFoundError("mlx_vlm.apc", name="mlx_vlm.apc")
-        ),
-    )
-    assert gen._snap_exact_text_prefix(cache, full_ids, 17, min_position=0) is None
+    real_import = builtins.__import__
 
-    monkeypatch.setattr(
-        adapters,
-        "_apc_array_helpers",
-        lambda: (_ for _ in ()).throw(
-            ModuleNotFoundError("cache plugin dependency", name="cache_plugin")
-        ),
-    )
-    with pytest.raises(ModuleNotFoundError, match="cache plugin dependency"):
-        gen._snap_exact_text_prefix(cache, full_ids, 17, min_position=0)
+    def guarded_import(name, *args, **kwargs):
+        if name == "mlx_vlm.apc":
+            raise ModuleNotFoundError(name=name)
+        return real_import(name, *args, **kwargs)
+
+    monkeypatch.setattr(builtins, "__import__", guarded_import)
+    assert gen._snap_exact_text_prefix(cache, full_ids, 17, min_position=0) is not None
 
 
 def test_exact_prefix_snap_promotes_only_a_snapshot_that_served(monkeypatch):

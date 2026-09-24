@@ -6375,7 +6375,7 @@ def _run_submit_flow(
                 )
                 # Match the validated runtime used by the vision extra and
                 # packaged app so every recovery path installs the same lane.
-                print("    pip install --no-deps 'mlx-vlm==0.7.1'")
+                print("    pip install --no-deps 'mlx-vlm==0.7.2'")
                 print()
             else:
                 print(f"  Error loading model: {e}")

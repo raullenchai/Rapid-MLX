@@ -154,7 +154,7 @@ def _all_missing_are_multimodal(missing_names: list[str]) -> bool:
 # The bare-mlx-vlm line is pinned to the same validated runtime as the
 # ``rapid-mlx[vision]`` extra. Keeping both recovery paths aligned avoids
 # resolver-dependent behavior between direct installs and the packaged app.
-VALIDATED_MLX_VLM_VERSION = "0.7.1"
+VALIDATED_MLX_VLM_VERSION = "0.7.2"
 
 
 def _managed_desktop_runtime_kind() -> str | None:
