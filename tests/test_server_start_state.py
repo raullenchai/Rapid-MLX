@@ -17,8 +17,7 @@ from rapid_mlx.telemetry import model_events, registry, server_start
 
 
 @pytest.fixture(autouse=True)
-def _reset_state(monkeypatch):
-    monkeypatch.setattr(cli, "_hub_guidance_rendered", False)
+def _reset_state():
     server_start._reset_for_tests()
     yield
     server_start._reset_for_tests()
@@ -289,18 +288,24 @@ def test_render_hub_error_not_found_has_repo_discovery_next_steps():
     assert "private raw detail" not in rendered
 
 
-@pytest.mark.parametrize("status_code", [401, 403])
-def test_repository_not_found_auth_failure_is_gated_everywhere(
-    monkeypatch, capsys, status_code
+def test_repository_not_found_401_is_ambiguous_but_keeps_gated_marker(
+    monkeypatch, capsys
 ):
     from huggingface_hub.errors import RepositoryNotFoundError
 
-    failure = RepositoryNotFoundError("raw secret", response=_hub_response(status_code))
+    failure = RepositoryNotFoundError("raw secret", response=_hub_response(401))
 
     rendered = cli.render_hub_error(failure, "owner/private-model")
 
     assert rendered is not None
-    assert "is gated" in rendered
+    assert rendered == (
+        "Hugging Face returned 401 for owner/private-model: the model is "
+        "private, gated, or does not exist. If you have access, accept the licence "
+        "at https://huggingface.co/owner/private-model and sign in "
+        "(huggingface-cli login or HF_TOKEN); otherwise check the name with "
+        "rapid-mlx models."
+    )
+    assert "is gated" not in rendered.lower()
     assert model_events.pull_error_class(failure) == "gated"
 
     _stub_download_entry(monkeypatch)

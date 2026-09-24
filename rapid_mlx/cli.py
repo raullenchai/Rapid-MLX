@@ -2105,6 +2105,17 @@ def render_hub_error(exc: BaseException, model_id: str) -> str | None:
         seen.add(id(current))
 
         if (
+            isinstance(current, RepositoryNotFoundError)
+            and getattr(current.response, "status_code", None) == 401
+        ):
+            return (
+                f"Hugging Face returned 401 for {model_id}: the model is "
+                "private, gated, or does not exist. If you have access, accept the "
+                f"licence at https://huggingface.co/{model_id} and sign in "
+                "(huggingface-cli login or HF_TOKEN); otherwise check the name "
+                "with rapid-mlx models."
+            )
+        if (
             isinstance(current, HfHubHTTPError)
             and getattr(current.response, "status_code", None) in (401, 403)
         ) or isinstance(current, GatedRepoError):

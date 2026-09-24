@@ -73,7 +73,7 @@ struct SidecarStartupFailureTests {
         assertHubFailure(
             markerReason: "model_gated",
             expectedReason: .modelGated,
-            expectedMessage: "This model is gated on Hugging Face. Accept its licence at huggingface.co/<repo> and sign in with a token, then try again."
+            expectedMessage: "This model is private, gated, or does not exist on Hugging Face. If you have access, accept the licence on Hugging Face and sign in (huggingface-cli login or HF_TOKEN); otherwise check the name with rapid-mlx models."
         )
     }
 
