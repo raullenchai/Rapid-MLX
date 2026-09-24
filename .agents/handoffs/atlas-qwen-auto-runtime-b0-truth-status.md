@@ -9,7 +9,9 @@
 
 - `probe_qwen_artifact` remains offline and metadata-only. It reads canonical
   JSON config/index metadata, optional sidecar `.sha256` receipts, and file
-  metadata; it never downloads, imports/loads a model, or opens tensor bytes.
+  metadata; it never downloads, imports/loads a model, or opens a selected
+  target/MTP candidate or large tensor object. A canonical receipt-object read
+  is capped at 4 KiB before receipt-grammar validation.
 - Config/index cache-object names are verified from those already-read bytes
   (Git blob SHA-1 for 40 hex; raw SHA-256 for 64 hex) before a runtime
   capability can be minted.
@@ -49,10 +51,10 @@
 
 The metadata-only probe trusts the Hugging Face downloader/cache CAS invariant.
 It detects cache-object repoints, renames, truncation, and size drift at its
-point-in-time revalidation seam without reading tensor bytes. It cannot detect
-pre-existing corruption, a restored object, or equal-size corruption under the
-same cache-object name. Those remain explicit non-guarantees, not verified
-content claims.
+point-in-time revalidation seam without opening selected target/MTP candidates.
+It cannot detect pre-existing corruption, a restored object, or equal-size
+corruption under the same cache-object name. Those remain explicit
+non-guarantees, not verified content claims.
 
 ## Verified facts
 
@@ -87,10 +89,10 @@ Publish the stored truth only when the integration resolver owns it.
 
 ## Verification
 
-- `562 passed`: artifact provenance plus runtime plan/boot status, CLI
+- `566 passed`: artifact provenance plus runtime plan/boot status, CLI
   provenance, MTP self-contained locator, injector/install, batched-family
   capability, CLI wiring, and speculative-config suites.
-- `310 passed` in the focused coverage run; exact changed-production line
+- `314 passed` in the focused coverage run; exact changed-production line
   coverage is 100%.
 - Ruff and targeted pinned mypy 2.3.1 pass on all changed Python production
   files; `git diff --check` passes.

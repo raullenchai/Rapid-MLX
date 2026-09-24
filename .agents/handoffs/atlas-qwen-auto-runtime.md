@@ -115,13 +115,15 @@ the current path.
   observed size into receipts and qualification identities. Repointing,
   renaming, truncation, and size drift are rejected by fresh revalidation.
 - Status and qualification state expose `tensor_byte_integrity: unchecked`.
-  B0 never opens tensor content and trusts the Hugging Face downloader/cache
-  CAS invariant. It cannot detect pre-existing, restored, or equal-size tensor
-  corruption under the same cache-object name.
+  B0 never opens selected target/MTP candidates or large tensor objects and
+  trusts the Hugging Face downloader/cache CAS invariant. It cannot detect
+  pre-existing, restored, or equal-size tensor corruption under the same
+  cache-object name.
 - Optional `.sha256` declarations are read only from bounded regular files or
   canonical same-repository Hub cache objects. Arbitrary receipt symlinks,
   candidate-tensor inode aliases, and files over 4 KiB are rejected before
-  content reads.
+  content reads. A canonical receipt object may contribute at most 4 KiB before
+  its receipt grammar is validated.
 - Serialized status calls the stable digest a `provenance_receipt_id` and its
   issuer a `provenance_authority`. The private `VerifiedQwenTarget` /
   `verification_id` composition names remain temporarily for stacked B1 branch
@@ -139,16 +141,16 @@ until that evidence is reviewed.
 
 ## Integration verification
 
-- `562 passed`: runtime-plan, artifact-provenance/private-capability,
+- `566 passed`: runtime-plan, artifact-provenance/private-capability,
   boot-plan/status, CLI provenance, speculative-config, shared locator,
   injector/install, batched-family, and MTP CLI focused suites.
-- `310 passed` under focused coverage; exact changed-production line coverage is
+- `314 passed` under focused coverage; exact changed-production line coverage is
   100% for `qwen_runtime_plan.py`, `runtime/qwen_artifact.py`, and the receipt
   extractor.
 - The artifact conversion tests exercise the integrated core private mint,
   target/MTP cache-object repoints, renames, truncation/size drift, metadata
-  object-name mismatches, the tensor-open guard, and the explicit same-size
-  non-guarantee.
+  object-name mismatches, the tensor-open guard, nonblocking receipt FIFO/error
+  handling, and the explicit same-size non-guarantee.
 - Ruff format/check, targeted pinned mypy 2.3.1, and `git diff --check` pass.
 
 Later B2/B3 product gates still require M4 Pro 48 GB and M1 Max 64 GB as

@@ -643,6 +643,29 @@ def test_receipt_hard_link_to_small_candidate_is_rejected_before_open(
     assert qwen_artifact._declared_sidecar_sha256(candidate) is None
 
 
+def test_receipt_fifo_swap_is_opened_nonblocking_and_rejected_as_non_regular(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    candidate = tmp_path / "mtp.safetensors"
+    candidate.write_bytes(b"tensor")
+    receipt = candidate.with_name(candidate.name + ".sha256")
+    receipt.write_text("a" * 64 + "  mtp.safetensors\n", encoding="utf-8")
+    original_open = os.open
+    observed_flags: list[int] = []
+
+    def swap_receipt_for_fifo(path, flags, *args, **kwargs):
+        observed_flags.append(flags)
+        assert flags & os.O_NONBLOCK
+        receipt.unlink()
+        os.mkfifo(receipt)
+        return original_open(path, flags, *args, **kwargs)
+
+    monkeypatch.setattr(os, "open", swap_receipt_for_fifo)
+
+    assert qwen_artifact._declared_sidecar_sha256(candidate) is None
+    assert len(observed_flags) == 1
+
+
 def test_canonical_receipt_disappearing_before_open_is_non_authoritative(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -683,7 +706,16 @@ def test_canonical_receipt_disappearing_before_open_is_non_authoritative(
 
 
 @pytest.mark.parametrize(
-    "failure", ["candidate_stat", "opened_stat_drift", "short_read", "invalid_utf8"]
+    "failure",
+    [
+        "candidate_stat",
+        "opened_stat_drift",
+        "fstat_error",
+        "short_read",
+        "read_error",
+        "close_error",
+        "invalid_utf8",
+    ],
 )
 def test_receipt_defensive_read_failures_are_non_authoritative(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, failure: str
@@ -706,8 +738,28 @@ def test_receipt_defensive_read_failures_are_non_authoritative(
         replacement = tmp_path / "replacement-receipt"
         replacement.write_text("different", encoding="utf-8")
         monkeypatch.setattr(os, "fstat", lambda _descriptor: os.stat(replacement))
+    elif failure == "fstat_error":
+
+        def reject_fstat(_descriptor):
+            raise OSError("synthetic fstat failure")
+
+        monkeypatch.setattr(os, "fstat", reject_fstat)
     elif failure == "short_read":
         monkeypatch.setattr(os, "read", lambda _descriptor, _limit: b"")
+    elif failure == "read_error":
+
+        def reject_read(_descriptor, _limit):
+            raise OSError("synthetic read failure")
+
+        monkeypatch.setattr(os, "read", reject_read)
+    elif failure == "close_error":
+        original_close = os.close
+
+        def reject_close(descriptor):
+            original_close(descriptor)
+            raise OSError("synthetic close failure")
+
+        monkeypatch.setattr(os, "close", reject_close)
     else:
         receipt.write_bytes(b"\xff")
 

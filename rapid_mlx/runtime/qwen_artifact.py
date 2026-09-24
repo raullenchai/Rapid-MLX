@@ -3,8 +3,10 @@
 
 The probe in this module reads ``config.json``, the safetensors index, optional
 sidecar ``.sha256`` receipts, and filesystem metadata from an already-resolved
-local snapshot. It never imports or loads a model, opens weight tensor content,
-contacts the Hub, or reports an absolute cache path.
+local snapshot. It never imports or loads a model, contacts the Hub, or reports
+an absolute cache path. The probe never opens a selected target/MTP candidate
+or a large tensor object; it may read at most 4 KiB from a canonical
+same-repository receipt object before validating its receipt grammar.
 
 Config and index cache-object names are verified from the bytes already read:
 40-hex names use Git blob SHA-1 and 64-hex names use raw SHA-256. Tensor and MTP
@@ -953,9 +955,9 @@ def _declared_sidecar_sha256(
             )
         )
 
-    # Receipts are small metadata. A symlink is accepted only when it is a
-    # canonical same-repository cache object; arbitrary aliases are rejected
-    # before any open. Hard links to the tensor are rejected by inode.
+    # A receipt symlink is accepted only when it is a canonical same-repository
+    # cache object. At most 4 KiB are read before receipt grammar is validated;
+    # the selected candidate itself is never opened.
     if (
         read_path is None
         or read_stat is None
@@ -973,28 +975,37 @@ def _declared_sidecar_sha256(
     ) == (candidate_stat.st_dev, candidate_stat.st_ino):
         return None
 
-    flags = os.O_RDONLY | os.O_CLOEXEC | os.O_NOFOLLOW
+    flags = os.O_RDONLY | os.O_CLOEXEC | os.O_NOFOLLOW | os.O_NONBLOCK
     try:
         descriptor = os.open(read_path, flags)
     except OSError:
         return None
+    close_succeeded = True
     try:
-        opened_stat = os.fstat(descriptor)
-        if (
-            not stat.S_ISREG(opened_stat.st_mode)
-            or opened_stat.st_size > _MAX_SHA256_RECEIPT_BYTES
-            or _stat_fingerprint(opened_stat) != _stat_fingerprint(read_stat)
-            or (
-                (opened_stat.st_dev, opened_stat.st_ino)
-                == (candidate_stat.st_dev, candidate_stat.st_ino)
-            )
-        ):
-            return None
-        encoded = os.read(descriptor, _MAX_SHA256_RECEIPT_BYTES + 1)
-        if len(encoded) != opened_stat.st_size:
+        try:
+            opened_stat = os.fstat(descriptor)
+            if (
+                not stat.S_ISREG(opened_stat.st_mode)
+                or opened_stat.st_size > _MAX_SHA256_RECEIPT_BYTES
+                or _stat_fingerprint(opened_stat) != _stat_fingerprint(read_stat)
+                or (
+                    (opened_stat.st_dev, opened_stat.st_ino)
+                    == (candidate_stat.st_dev, candidate_stat.st_ino)
+                )
+            ):
+                return None
+            encoded = os.read(descriptor, _MAX_SHA256_RECEIPT_BYTES + 1)
+            if len(encoded) != opened_stat.st_size:
+                return None
+        except OSError:
             return None
     finally:
-        os.close(descriptor)
+        try:
+            os.close(descriptor)
+        except OSError:
+            close_succeeded = False
+    if not close_succeeded:
+        return None
     try:
         line = encoded.decode("utf-8").strip()
     except UnicodeError:

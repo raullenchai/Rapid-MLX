@@ -4,8 +4,9 @@
 
 This script is intentionally offline: it validates the canonical Hub-cache
 binding, reads config/index metadata and filesystem receipts, and writes JSON
-to stdout. It never downloads a model or opens safetensors content, so tensor
-byte integrity is reported as unchecked.
+to stdout. It never downloads a model or opens selected target/MTP candidates;
+an optional canonical receipt-object read is capped at 4 KiB. Tensor byte
+integrity is reported as unchecked.
 """
 
 from __future__ import annotations

@@ -122,7 +122,9 @@ Optional `.sha256` declarations are bounded metadata reads. A regular receipt
 must fit within 4 KiB; a receipt symlink must additionally resolve through the
 same repository's canonical Hub cache-object layout. Receipts that alias the
 candidate tensor inode, arbitrary symlinks, and oversized files are rejected
-before any content read.
+before any content read. The probe may read at most 4 KiB from a canonical
+receipt object before validating its receipt grammar; it does not attempt to
+classify a different small same-repository object by file type.
 
 This contract trusts the Hugging Face downloader/cache CAS invariant. It does
 not detect pre-existing corruption, content restored after observation, or an
