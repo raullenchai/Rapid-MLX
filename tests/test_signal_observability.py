@@ -477,6 +477,18 @@ def test_windows_liveness_never_calls_os_kill(monkeypatch):
     assert so.is_same_process is identity.is_same_process
 
 
+def test_windows_without_psutil_identifies_current_process(monkeypatch):
+    from rapid_mlx import _process_identity as identity
+
+    monkeypatch.setattr(identity, "psutil", None)
+    monkeypatch.setattr(identity.sys, "platform", "win32")
+    current = identity.process_identity(os.getpid())
+
+    assert current == identity.ProcessIdentity(
+        os.getpid(), identity._CURRENT_PROCESS_CREATE_TIME, 0.0
+    )
+
+
 def test_process_identity_import_without_psutil(monkeypatch):
     from rapid_mlx import _process_identity as identity
 
@@ -688,6 +700,57 @@ def test_crash_pointer_is_acknowledged_across_clean_launches(tmp_path, capsys):
     assert capsys.readouterr().err == ""
 
 
+def test_second_server_does_not_acknowledge_live_server_crash_file(tmp_path):
+    home = tmp_path / "home"
+    first_program = """
+import os
+from rapid_mlx.telemetry import server_start
+server_start._atomic_write_marker(server_start._marker_path())
+log_dir = server_start._marker_path().parent.parent / "logs"
+log_dir.mkdir()
+crash = log_dir / f"crash-20260924T000000000000Z-{os.getpid()}.txt"
+crash.write_text("active diagnostic\\n", encoding="utf-8")
+print(crash, flush=True)
+input()
+"""
+    env = dict(os.environ, HOME=str(home))
+    first = subprocess.Popen(
+        [sys.executable, "-c", first_program],
+        cwd=Path(__file__).resolve().parents[1],
+        env=env,
+        stdin=subprocess.PIPE,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+    )
+    try:
+        crash = Path(_read_ready_with_timeout(first).strip())
+        second = subprocess.run(
+            [
+                sys.executable,
+                "-c",
+                "from rapid_mlx import _signal_observability as so; "
+                "so.install_signal_observability(observed_signals=()); "
+                "so._cleanup_crash_file()",
+            ],
+            cwd=Path(__file__).resolve().parents[1],
+            env=env,
+            capture_output=True,
+            text=True,
+            timeout=10,
+            check=True,
+        )
+
+        assert "Previous run crashed" not in second.stderr
+        assert crash.exists()
+        assert not crash.with_name(f"{crash.stem}.reported{crash.suffix}").exists()
+    finally:
+        assert first.stdin is not None
+        first.stdin.write("stop\n")
+        first.stdin.flush()
+        first.communicate(timeout=10)
+
+
 def test_reported_suffix_collision_is_acknowledged_once(tmp_path, capsys):
     from rapid_mlx import _signal_observability as so
 
@@ -742,13 +805,7 @@ def test_closed_crash_fd_rearm_recovers_file_only_in_process(monkeypatch, tmp_pa
     path = tmp_path / "crash.txt"
     fd = os.open(path, os.O_WRONLY | os.O_CREAT, 0o600)
     os.close(fd)
-    previous = (
-        so._crash_fd,
-        so._crash_fd_identity,
-        so._crash_path,
-        so._crash_pipe,
-        so._crash_tee,
-    )
+    previous = (so._crash_fd, so._crash_path, so._crash_pipe, so._crash_tee)
     calls = []
     so._crash_fd = fd
     so._crash_fd_identity = (-1, -1)
@@ -763,13 +820,7 @@ def test_closed_crash_fd_rearm_recovers_file_only_in_process(monkeypatch, tmp_pa
     finally:
         if so._crash_fd is not None:
             os.close(so._crash_fd)
-        (
-            so._crash_fd,
-            so._crash_fd_identity,
-            so._crash_path,
-            so._crash_pipe,
-            so._crash_tee,
-        ) = previous
+        so._crash_fd, so._crash_path, so._crash_pipe, so._crash_tee = previous
 
 
 def test_closed_fd_reused_before_rearm_reopens_installed_crash_file(tmp_path):
@@ -835,7 +886,13 @@ def test_closed_crash_fd_without_path_stops_tee_and_returns_false(tmp_path):
 def test_closed_crash_fd_rearm_failure_closes_replacement(monkeypatch, tmp_path):
     from rapid_mlx import _signal_observability as so
 
-    previous = (so._crash_fd, so._crash_path, so._crash_pipe, so._crash_tee)
+    previous = (
+        so._crash_fd,
+        so._crash_fd_identity,
+        so._crash_path,
+        so._crash_pipe,
+        so._crash_tee,
+    )
     so._crash_fd = 123
     so._crash_path = tmp_path / "crash.txt"
     so._crash_pipe = None
@@ -843,7 +900,11 @@ def test_closed_crash_fd_rearm_failure_closes_replacement(monkeypatch, tmp_path)
     monkeypatch.setattr(
         so.os,
         "fstat",
-        lambda fd: (_ for _ in ()).throw(OSError("closed")) if fd == 123 else None,
+        lambda fd: (
+            (_ for _ in ()).throw(OSError("closed"))
+            if fd == 123
+            else SimpleNamespace(st_dev=1, st_ino=2)
+        ),
     )
     monkeypatch.setattr(so.os, "open", lambda *_args: 456)
     monkeypatch.setattr(
@@ -857,7 +918,24 @@ def test_closed_crash_fd_rearm_failure_closes_replacement(monkeypatch, tmp_path)
     try:
         assert so.ensure_crash_sink() is False
     finally:
-        so._crash_fd, so._crash_path, so._crash_pipe, so._crash_tee = previous
+        (
+            so._crash_fd,
+            so._crash_fd_identity,
+            so._crash_path,
+            so._crash_pipe,
+            so._crash_tee,
+        ) = previous
+
+
+def test_ensure_crash_sink_without_installed_sink_returns_false():
+    from rapid_mlx import _signal_observability as so
+
+    previous = so._crash_fd
+    so._crash_fd = None
+    try:
+        assert so.ensure_crash_sink() is False
+    finally:
+        so._crash_fd = previous
 
 
 def test_crash_marker_reader_rejects_oversized_and_growing_files(monkeypatch, tmp_path):
@@ -910,14 +988,43 @@ def test_crash_file_creation_failure_warns_and_does_not_block(
 
     so._reset_for_tests()
     monkeypatch.setenv("HOME", str(tmp_path))
+    real_open = so.os.open
+
+    def deny_crash_file(path, flags, *args, **kwargs):
+        if flags & os.O_CREAT:
+            raise PermissionError("denied")
+        return real_open(path, flags, *args, **kwargs)
+
     monkeypatch.setattr(
         so.os,
         "open",
-        lambda *_args, **_kwargs: (_ for _ in ()).throw(PermissionError("denied")),
+        deny_crash_file,
     )
 
     assert so.install_signal_observability(observed_signals=()) is False
     assert "could not create durable rapid-mlx crash file" in caplog.text
+
+
+def test_symlinked_crash_log_directory_is_refused(monkeypatch, tmp_path, caplog):
+    from rapid_mlx import _signal_observability as so
+
+    so._reset_for_tests()
+    home = tmp_path / "home"
+    rapid_dir = home / ".rapid-mlx"
+    victim = tmp_path / "victim"
+    rapid_dir.mkdir(parents=True)
+    victim.mkdir(mode=0o755)
+    (rapid_dir / "logs").symlink_to(victim, target_is_directory=True)
+    monkeypatch.setenv("HOME", str(home))
+    try:
+        so.install_signal_observability(observed_signals=())
+
+        assert so._crash_fd is None
+        assert list(victim.iterdir()) == []
+        assert victim.stat().st_mode & 0o777 == 0o755
+        assert "crash log directory is unavailable" in caplog.text
+    finally:
+        so._reset_for_tests()
 
 
 def test_missing_tee_warns_once_and_uses_file_only(monkeypatch, tmp_path, caplog):

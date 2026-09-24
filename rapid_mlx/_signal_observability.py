@@ -220,9 +220,41 @@ def _crash_file_is_live(path: Path, log_dir: Path) -> bool:
     return marker is not None and marker.get("pid") == pid and is_same_process(marker)
 
 
+def _prepare_crash_logs_dir(path: Path) -> bool:
+    """Create/open the private crash directory without following a symlink."""
+    try:
+        try:
+            log_stat = os.lstat(path)
+        except FileNotFoundError:
+            path.mkdir(mode=0o700, parents=True, exist_ok=True)
+            log_stat = os.lstat(path)
+        if stat.S_ISLNK(log_stat.st_mode) or not stat.S_ISDIR(log_stat.st_mode):
+            logger.warning("rapid-mlx crash log directory is unavailable: %s", path)
+            return False
+        flags = os.O_RDONLY | getattr(os, "O_DIRECTORY", 0)
+        flags |= getattr(os, "O_NOFOLLOW", 0)
+        fd = os.open(path, flags)
+        try:
+            opened_stat = os.fstat(fd)
+            if (opened_stat.st_dev, opened_stat.st_ino) != (
+                log_stat.st_dev,
+                log_stat.st_ino,
+            ):
+                return False
+            os.fchmod(fd, 0o700)
+        finally:
+            os.close(fd)
+    except OSError as exc:
+        logger.warning("rapid-mlx crash log directory is unavailable: %s", exc)
+        return False
+    return True
+
+
 def _report_previous_crash(log_dir: Path) -> None:
     for path in _crash_files(log_dir):
         if _is_acknowledged(path.name):
+            continue
+        if _crash_file_is_live(path, log_dir):
             continue
         try:
             if path.stat().st_size <= 0:
@@ -356,8 +388,8 @@ def _install_crash_file() -> None:
     process: subprocess.Popen[bytes] | None = None
     try:
         log_dir = _crash_logs_dir()
-        log_dir.mkdir(mode=0o700, parents=True, exist_ok=True)
-        os.chmod(log_dir, 0o700)
+        if not _prepare_crash_logs_dir(log_dir):
+            return
         _report_previous_crash(log_dir)
         timestamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S%fZ")
         path = log_dir / f"crash-{timestamp}-{os.getpid()}.txt"

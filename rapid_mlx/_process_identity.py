@@ -7,6 +7,7 @@ import logging
 import math
 import os
 import sys
+import time
 from collections.abc import Mapping
 from dataclasses import dataclass
 from typing import Any, TypeGuard
@@ -23,6 +24,7 @@ _MAX_PID = 2**31 - 1
 _MAX_TIME = float(2**40)
 
 logger = logging.getLogger(__name__)
+_CURRENT_PROCESS_CREATE_TIME = time.time()
 
 
 @dataclass(frozen=True)
@@ -76,7 +78,11 @@ def marker_identity(marker: object) -> ProcessIdentity | None:
 
 
 def process_identity(pid: int) -> ProcessIdentity | None:
-    """Return the identity of an existing process, or ``None`` when dead."""
+    """Return the identity of an existing process, or ``None`` when dead.
+
+    Without psutil, Windows can identify only this process. Other valid PIDs
+    remain unknown and liveness checks conservatively treat them as alive.
+    """
     if not _valid_pid(pid):
         return None
     if psutil is not None:
@@ -93,8 +99,11 @@ def process_identity(pid: int) -> ProcessIdentity | None:
             return ProcessIdentity(pid, 0.0, 0.0)
 
     # CPython implements os.kill(pid, 0) with TerminateProcess on Windows.
-    # Never probe that way there; absence of psutil must fail closed as alive.
+    # Never probe that way there. Preserve enough identity for this process to
+    # write a marker; checks for every other PID fail closed as alive below.
     if sys.platform == "win32":
+        if pid == os.getpid():
+            return ProcessIdentity(pid, _CURRENT_PROCESS_CREATE_TIME, 0.0)
         return None
     try:
         os.kill(pid, 0)
