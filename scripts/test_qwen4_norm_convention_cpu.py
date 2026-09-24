@@ -24,6 +24,7 @@ from rapid_mlx.models.qwen4_exp import (
     ZeroCenteredRMSNorm,
 )
 from rapid_mlx.models.qwen4_norm_convention import (
+    apply_qwen4_norm_convention,
     normalize_qwen4_checkpoint,
 )
 
@@ -77,6 +78,28 @@ def checkpoint(model, *, direct):
 
 
 class ConventionTests(unittest.TestCase):
+    def test_apply_contract_rejects_bad_inputs_and_defers_missing_keys(self):
+        model = tiny_model()
+        weights = checkpoint(model, direct=True)
+        with self.assertRaisesRegex(ValueError, "admitted backbone convention"):
+            apply_qwen4_norm_convention(model, weights, ZeroCenteredRMSNorm, "unknown")
+
+        key = "language_model.model.layers.1.self_attn.indexer.q_layernorm.weight"
+        without_one_norm = dict(weights)
+        del without_one_norm[key]
+        converted = apply_qwen4_norm_convention(
+            model, without_one_norm, ZeroCenteredRMSNorm, "direct_gamma"
+        )
+        self.assertGreater(converted, 0)
+        self.assertNotIn(key, without_one_norm)
+
+        invalid = dict(weights)
+        invalid[key] = mx.zeros((1,), dtype=mx.float32)
+        with self.assertRaisesRegex(ValueError, "invalid Qwen4 RMSNorm tensor"):
+            apply_qwen4_norm_convention(
+                model, invalid, ZeroCenteredRMSNorm, "direct_gamma"
+            )
+
     def test_installed_strict_loader_preserves_converted_fp32_residuals(self):
         from mlx_lm.utils import load_model
 

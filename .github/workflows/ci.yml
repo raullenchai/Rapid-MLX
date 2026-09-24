@@ -593,9 +593,6 @@ jobs:
       - name: Enforce parser relative-budget gate
         run: python scripts/microbench_parsers.py
 
-      - name: Run Qwen4 norm-convention contracts on CPU
-        run: python scripts/test_qwen4_norm_convention_cpu.py
-
       - name: Run MLX-dependent tests
         # SimpleEngine was removed in PR #156 — test_simple_engine.py,
         # test_llm.py, test_deltanet_snapshot.py went with it.
@@ -708,6 +705,13 @@ jobs:
             -k "not Integration" \
             --cov=rapid_mlx \
             --cov-report=term-missing
+
+      - name: Run Qwen4 norm-convention contracts on CPU
+        env:
+          COVERAGE_FILE: coverage-apple.data
+        run: |
+          python -m coverage run --append --source=rapid_mlx \
+            scripts/test_qwen4_norm_convention_cpu.py
 
       - name: Upload Apple Silicon coverage data
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7.0.1
