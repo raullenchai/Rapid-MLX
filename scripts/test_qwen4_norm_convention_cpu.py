@@ -273,16 +273,6 @@ class ConventionTests(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, "ambiguous or mixed"):
                 normalize_qwen4_checkpoint(model, weights, ZeroCenteredRMSNorm)
 
-    def test_non_anchor_with_opposite_convention_is_rejected(self):
-        model = tiny_model()
-        weights = checkpoint(model, direct=True)
-        key = "language_model.model.layers.1.self_attn.indexer.q_layernorm.weight"
-        weights[key] = mx.zeros_like(weights[key])
-        before = weights.copy()
-        with self.assertRaisesRegex(ValueError, "mixed Qwen4 RMSNorm target"):
-            model.sanitize(weights)
-        self.assertTrue(all(weights[key] is value for key, value in before.items()))
-
     def test_mtp_inherits_backbone_convention_not_its_ambiguous_means(self):
         from rapid_mlx.spec_decode.mtp import qwen4_exp_inject as inject
 

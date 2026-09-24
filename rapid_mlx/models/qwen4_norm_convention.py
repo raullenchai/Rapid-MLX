@@ -1,5 +1,10 @@
 # SPDX-License-Identifier: Apache-2.0
-"""Admit uniformly encoded Qwen4 RMSNorm storage before loading parameters."""
+"""Admit Qwen4 RMSNorm storage using unanimous producer-level anchors.
+
+Non-anchor learned gains can cross the midpoint in either convention, so they
+are validated for tensor safety but do not provide independent convention
+evidence.
+"""
 
 from __future__ import annotations
 
@@ -105,13 +110,6 @@ def normalize_qwen4_checkpoint(model, weights, norm_type):
             "ambiguous or mixed Qwen4 RMSNorm checkpoint convention: "
             f"{n} anchors, median={median:.6g}, direct-gamma vote={ones_vote:.3f}"
         )
-    direct = convention == "direct_gamma"
-    for key, mean in target_means.items():
-        if (mean > 0.5) != direct:
-            raise ValueError(
-                "mixed Qwen4 RMSNorm target convention: "
-                f"{key} has mean={mean:.6g}, expected {convention}"
-            )
     previous = getattr(model, "norm_convention_receipt", None)
     if previous and previous["source_convention"] != convention:
         raise ValueError(
@@ -128,5 +126,5 @@ def normalize_qwen4_checkpoint(model, weights, norm_type):
         "anchor_median": median,
         "direct_gamma_vote": ones_vote,
         "recentered_tensors": converted,
-        "detection": "complete_uniform_norm_mean_band_v2",
+        "detection": "complete_unanimous_attention_hc_anchor_band_v2",
     }
