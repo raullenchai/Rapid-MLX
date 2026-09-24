@@ -4,7 +4,7 @@ Receiving role: Vector
 
 Owner: Atlas
 
-Host: Studio for implementation; idle Mac required for real-model qualification
+Host: Studio
 
 Branch: `atlas/system-one-server`
 
@@ -23,25 +23,35 @@ PR: #3728
   official `.pt` checkpoint with `weights_only=True`.
 - Unit tests exercise wire validation, auth, ranking, CLM projection loading,
   state/action caching, artifact validation and rollback, CLI parsing, and
-  optional dependency packaging without downloading model weights. The focused
-  suite has 67 passing tests, its no-MLX simulation passes 23 with 16
-  MLX-specific skips, and changed production lines have 100% local coverage.
+  optional dependency packaging without downloading model weights. The current
+  focused suite has 53 passing tests; the last no-MLX simulation passed 23 with
+  16 MLX-specific skips, and changed production lines had 100% local coverage.
 - Real cached Laya weights passed CPU server dogfood. Typed answers matched a
   direct `laya-mlx` call, restart-to-ready was about one second with warm file
   pages, and warm latency was about 52–56 ms for one question and 170 ms for
   three. The reproducible screen is recorded under `docs/engineering/performance/`.
+- The official CLM-v0.1 head and BF16 Qwen3-8B encoder passed native CPU server
+  dogfood. Converted MLX head projections matched the upstream PyTorch head to
+  at most 1.49e-7 absolute error for identical hidden states. Cold cache misses
+  took 1.0–5.5 seconds in the sampled requests; exact cache hits were below one
+  millisecond. The run found and fixed top-level `clm-latest` CLI rejection and
+  ignored CLM `--device cpu` selection.
 
 ## Unresolved questions and risks
 
-- CLM needs a BF16 parity run against the official vLLM server using the same
-  states/actions. Quantized Qwen3 encoders are rejected until measured.
+- CLM still needs an end-to-end BF16 comparison against the official vLLM
+  pooling server using the same states/actions. Quantized Qwen3 encoders are
+  rejected until measured.
+- The released zero-shot CLM head was confidently wrong on some simple routing
+  and software-remediation cases. Release notes should call CLM support
+  experimental and avoid broad quality or calibration claims.
 - The initial CLM encoder evaluates cache misses one text at a time for exact
   padding-free last-token semantics. Vector should measure grouped prefill and
   only batch it if output parity holds.
 
 ## Next concrete action
 
-On an idle Apple Silicon host, convert the official 75 MB CLM head, run a fixed
-System One corpus through official CLM and Rapid-MLX BF16, and record maximum
-probability/ranking drift plus cold/warm latency under
-`docs/engineering/performance/`.
+On an NVIDIA host, run the fixed corpus through the official vLLM pooling
+server and this native MLX BF16 path, then record end-to-end probability and
+ranking drift. Separately profile grouped prefill on Apple Silicon before
+changing the serial padding-free cache-miss path.

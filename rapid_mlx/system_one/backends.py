@@ -198,11 +198,21 @@ class CLMBackend:
         head: str,
         *,
         model_name: str | None = None,
+        device: str = "gpu",
         cache_entries: int = 20_000,
         max_tokens: int = 2048,
         max_work_tokens: int = 32_768,
     ):
+        import mlx.core as mx
+
         from rapid_mlx.system_one.convert_clm import _artifact_lock
+
+        if device not in {"gpu", "cpu"}:
+            raise ValueError("CLM device must be 'gpu' or 'cpu'")
+        # System One runs as a dedicated process, so select the MLX device
+        # before loading either the head or the Qwen3 encoder.
+        mx.set_default_device(mx.gpu if device == "gpu" else mx.cpu)
+        self.device = device
 
         head_path = Path(head).expanduser()
         if head_path.suffix == ".pt":
@@ -226,8 +236,6 @@ class CLMBackend:
                     "CLM head must contain config.json and model.safetensors"
                 )
             self.config = json.loads(config_path.read_text(encoding="utf-8"))
-            import mlx.core as mx
-
             self._state_head = _ProjectionHead(self.config)
             self._action_head = _ProjectionHead(self.config)
             weights = mx.load(str(weights_path))

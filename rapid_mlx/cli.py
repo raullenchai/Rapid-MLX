@@ -3994,6 +3994,7 @@ def system_one_command(args) -> None:
             args.encoder,
             args.head,
             model_name=args.model,
+            device=args.device,
             cache_entries=args.cache_entries,
             max_tokens=args.max_tokens,
             max_work_tokens=args.max_work_tokens,
@@ -12255,7 +12256,10 @@ Examples:
         default="INFO",
     )
     system_one_parser.add_argument(
-        "--device", choices=("gpu", "cpu"), default="gpu", help="Laya device"
+        "--device",
+        choices=("gpu", "cpu"),
+        default="gpu",
+        help="MLX device for the selected System One backend",
     )
     system_one_parser.add_argument(
         "--dtype",
@@ -14730,10 +14734,13 @@ def main():
     # model string verbatim into the plist and runs its own (dry-run safe,
     # unit-testable) validation — it must not hard-fail here on an unknown
     # alias nor swallow the user's spelling under a resolved HF path.
+    # ``system-one`` also owns its model namespace: names such as
+    # ``clm-latest`` identify a converted decision head, not a generative
+    # Hugging Face model or Rapid-MLX alias.
     if (
         hasattr(args, "model")
         and args.model
-        and getattr(args, "command", None) not in ("doctor", "service")
+        and getattr(args, "command", None) not in ("doctor", "service", "system-one")
     ):
         from rapid_mlx.model_aliases import RetiredModelAliasError, resolve_model
         from rapid_mlx.user_aliases import UserAliasError

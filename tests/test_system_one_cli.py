@@ -126,22 +126,44 @@ def test_system_one_passes_public_clm_model_name(monkeypatch):
     monkeypatch.setattr(backend_module, "CLMBackend", Backend)
     monkeypatch.setattr(uvicorn_module, "run_uvicorn", lambda *args, **kwargs: None)
     args = build_parser().parse_args(
-        ["system-one", "public-clm", "--backend", "clm", "--head", "/tmp/head"]
+        [
+            "system-one",
+            "public-clm",
+            "--backend",
+            "clm",
+            "--head",
+            "/tmp/head",
+            "--device",
+            "cpu",
+        ]
     )
     system_one_command(args)
     assert captured["model_name"] == "public-clm"
+    assert captured["device"] == "cpu"
 
 
 def test_main_dispatches_system_one(monkeypatch):
     import rapid_mlx.cli as cli_module
 
     captured = []
-    monkeypatch.setattr(sys, "argv", ["rapid-mlx", "system-one"])
     monkeypatch.setattr(
-        cli_module, "system_one_command", lambda args: captured.append(args.command)
+        sys,
+        "argv",
+        [
+            "rapid-mlx",
+            "system-one",
+            "clm-latest",
+            "--backend",
+            "clm",
+            "--head",
+            "/tmp/head",
+        ],
+    )
+    monkeypatch.setattr(
+        cli_module, "system_one_command", lambda args: captured.append(args.model)
     )
     cli_module.main()
-    assert captured == ["system-one"]
+    assert captured == ["clm-latest"]
 
 
 def test_main_still_dispatches_serve_after_system_one_branch(monkeypatch):

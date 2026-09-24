@@ -105,6 +105,5 @@ curl --fail-with-body http://127.0.0.1:18700/v1/systemone \
   in the affected bucket.
 - CPU latency is suitable for interactive routing and policy decisions, but
   requests are serialized. Tail latency grows linearly at concurrency eight.
-- CLM was not loaded during this run. Its BF16 Qwen3-8B encoder was absent from
-  the shared cache, and loading it would have contended with the active GPU
-  workload. CLM parity and latency remain an explicit follow-up.
+- CLM was qualified separately on CPU after this run; see
+  [System One CLM-8B server dogfood](2026-09-24-system-one-clm-dogfood.md).

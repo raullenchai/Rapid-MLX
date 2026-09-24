@@ -421,9 +421,16 @@ def test_clm_backend_runs_native_hidden_state_and_reuses_action_cache(
         "load_model_with_fallback",
         lambda _: (model, Tokenizer()),
     )
+    selected_devices = []
+    monkeypatch.setattr(mx, "set_default_device", selected_devices.append)
     backend = CLMBackend(
-        "dummy-qwen3", str(tmp_path), model_name="public-clm", cache_entries=16
+        "dummy-qwen3",
+        str(tmp_path),
+        model_name="public-clm",
+        device="cpu",
+        cache_entries=16,
     )
+    assert selected_devices == [mx.cpu]
     assert backend._scale == pytest.approx(100.0)
     backend._tokenizer = SimpleNamespace(
         encode=lambda text, add_special_tokens=True: list(range(10)), eos_token_id=0
@@ -489,6 +496,9 @@ def test_clm_backend_runs_native_hidden_state_and_reuses_action_cache(
 
 def test_clm_backend_rejects_non_safetensors_weight_file(tmp_path):
     from rapid_mlx.system_one.backends import CLMBackend
+
+    with pytest.raises(ValueError, match="device"):
+        CLMBackend("unused", str(tmp_path), device="ane")
 
     (tmp_path / "config.json").write_text("{}", encoding="utf-8")
     weights = tmp_path / "model.npz"

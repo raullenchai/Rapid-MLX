@@ -43,6 +43,9 @@ rapid-mlx system-one clm-latest \
   --port 8700
 ```
 
+Use `--device cpu` when GPU memory is reserved for another process. Device
+selection happens before the head and encoder load; `gpu` remains the default.
+
 The converter uses `torch.load(..., weights_only=True)` and writes
 `model.safetensors` plus `config.json`. The server reads only those converted
 files. Use the BF16 reference encoder for calibrated output. Quantized Qwen3
