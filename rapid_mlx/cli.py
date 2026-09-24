@@ -2125,9 +2125,16 @@ def render_hub_error(exc: BaseException, model_id: str) -> str | None:
                 "with rapid-mlx models."
             )
         if (
-            isinstance(current, HfHubHTTPError)
-            and getattr(current.response, "status_code", None) in (401, 403)
-        ) or isinstance(current, GatedRepoError):
+            (
+                isinstance(current, HfHubHTTPError)
+                and getattr(current.response, "status_code", None) in (401, 403)
+            )
+            or isinstance(current, GatedRepoError)
+            or (
+                isinstance(current, urllib.error.HTTPError)
+                and current.code in (401, 403)
+            )
+        ):
             return (
                 f"  Error: access to '{rendered_model_id}' is gated on Hugging Face.\n"
                 f"  Accept the licence or request access at "
@@ -2135,7 +2142,9 @@ def render_hub_error(exc: BaseException, model_id: str) -> str | None:
                 "  Then run `huggingface-cli login` or set `HF_TOKEN`, "
                 "and try again."
             )
-        if isinstance(current, RepositoryNotFoundError):
+        if isinstance(current, RepositoryNotFoundError) or (
+            isinstance(current, urllib.error.HTTPError) and current.code == 404
+        ):
             return (
                 f"  Error: model repository '{rendered_model_id}' was not found on "
                 "Hugging Face.\n"
@@ -2144,6 +2153,8 @@ def render_hub_error(exc: BaseException, model_id: str) -> str | None:
                 "  Example: `rapid-mlx serve "
                 "mlx-community/Qwen3.5-9B-4bit`."
             )
+        if isinstance(current, urllib.error.HTTPError):
+            return None
         if isinstance(
             current,
             (
@@ -2151,7 +2162,7 @@ def render_hub_error(exc: BaseException, model_id: str) -> str | None:
                 OfflineModeIsEnabled,
                 requests_exceptions.ConnectionError,
                 requests_exceptions.Timeout,
-                httpx.ConnectError,
+                httpx.NetworkError,
                 httpx.TimeoutException,
                 socket.gaierror,
                 TimeoutError,

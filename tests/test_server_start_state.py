@@ -7,6 +7,7 @@ import sys
 import urllib.error
 from types import SimpleNamespace
 
+import httpx
 import pytest
 import requests
 from fastapi import HTTPException
@@ -344,8 +345,35 @@ def test_render_hub_error_gated_has_access_and_auth_next_steps(status_code):
 
 
 @pytest.mark.parametrize(
+    ("status_code", "expected"),
+    [(401, "gated"), (404, "not found"), (500, None)],
+)
+def test_render_hub_error_classifies_urllib_http_errors(status_code, expected):
+    failure = urllib.error.HTTPError(
+        "https://huggingface.co/owner/model", status_code, "private", {}, None
+    )
+
+    rendered = cli.render_hub_error(failure, "owner/model")
+
+    if expected is None:
+        assert rendered is None
+    else:
+        assert rendered is not None
+        assert expected in rendered.lower()
+        assert "could not reach" not in rendered.lower()
+
+
+@pytest.mark.parametrize(
     "kind",
-    ["local-entry", "offline-mode", "requests", "dns", "timeout", "urllib"],
+    [
+        "local-entry",
+        "offline-mode",
+        "requests",
+        "httpx-read",
+        "dns",
+        "timeout",
+        "urllib",
+    ],
 )
 def test_render_hub_error_offline_has_network_cache_next_steps(kind):
     from huggingface_hub.errors import LocalEntryNotFoundError, OfflineModeIsEnabled
@@ -354,6 +382,7 @@ def test_render_hub_error_offline_has_network_cache_next_steps(kind):
         "local-entry": LocalEntryNotFoundError("private cache"),
         "offline-mode": OfflineModeIsEnabled("private mode"),
         "requests": requests.ConnectionError("private host"),
+        "httpx-read": httpx.ReadError("private read"),
         "dns": socket.gaierror("private dns"),
         "timeout": TimeoutError("private timeout"),
         "urllib": urllib.error.URLError("private url"),

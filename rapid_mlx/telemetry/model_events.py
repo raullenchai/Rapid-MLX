@@ -94,6 +94,12 @@ def pull_error_class(exc: BaseException) -> str:
             current.response, "status_code", None
         ) in (401, 403):
             return "gated"
+        if isinstance(current, urllib.error.HTTPError):
+            if current.code in (401, 403):
+                return "gated"
+            if current.code == 404:
+                return "not_found"
+            return "other"
         if isinstance(current, RepositoryNotFoundError):
             return "not_found"
         if isinstance(current, OSError) and current.errno == errno.ENOSPC:
@@ -106,9 +112,8 @@ def pull_error_class(exc: BaseException) -> str:
                 requests_exceptions.ConnectionError,
                 requests_exceptions.ConnectTimeout,
                 requests_exceptions.ReadTimeout,
-                httpx.ConnectError,
-                httpx.ConnectTimeout,
-                httpx.ReadTimeout,
+                httpx.NetworkError,
+                httpx.TimeoutException,
                 socket.gaierror,
                 urllib.error.URLError,
                 TimeoutError,
