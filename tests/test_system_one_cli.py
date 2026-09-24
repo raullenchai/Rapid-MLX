@@ -59,7 +59,6 @@ def test_system_one_extra_is_optional_and_included_in_all():
 
 def test_system_one_checks_port_before_backend_initialization(monkeypatch):
     import rapid_mlx._uvicorn as uvicorn_module
-    import rapid_mlx.cli as cli_module
     import rapid_mlx.system_one.backends as backend_module
 
     events = []
@@ -73,8 +72,12 @@ def test_system_one_checks_port_before_backend_initialization(monkeypatch):
         def models(self):
             return []
 
-    monkeypatch.setattr(
-        cli_module,
+    # Patch the exact globals mapping used by the imported command. Some of
+    # the full-suite CLI tests reload ``rapid_mlx.cli`` during collection,
+    # so patching the current sys.modules entry can target a newer module
+    # object than this function references.
+    monkeypatch.setitem(
+        system_one_command.__globals__,
         "_port_preflight_or_die",
         lambda *args, **kwargs: events.append("port"),
     )
@@ -88,7 +91,6 @@ def test_system_one_checks_port_before_backend_initialization(monkeypatch):
 
 def test_system_one_passes_public_clm_model_name(monkeypatch):
     import rapid_mlx._uvicorn as uvicorn_module
-    import rapid_mlx.cli as cli_module
     import rapid_mlx.system_one.backends as backend_module
 
     captured = {}
@@ -102,8 +104,10 @@ def test_system_one_passes_public_clm_model_name(monkeypatch):
         def models(self):
             return []
 
-    monkeypatch.setattr(
-        cli_module, "_port_preflight_or_die", lambda *args, **kwargs: None
+    monkeypatch.setitem(
+        system_one_command.__globals__,
+        "_port_preflight_or_die",
+        lambda *args, **kwargs: None,
     )
     monkeypatch.setattr(backend_module, "CLMBackend", Backend)
     monkeypatch.setattr(uvicorn_module, "run_uvicorn", lambda *args, **kwargs: None)
