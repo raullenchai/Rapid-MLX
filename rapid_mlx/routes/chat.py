@@ -124,6 +124,7 @@ from ..service.helpers import (
     ensure_engine_ready,
     get_engine,
     get_model_max_context,
+    maybe_apply_default_reasoning_effort,
     maybe_apply_reasoning_effort,
     maybe_auto_disable_thinking_for_casual_chat,
     maybe_auto_disable_thinking_for_tools,
@@ -4644,6 +4645,18 @@ async def _create_chat_completion_impl(
     # ``reasoning_effort="none"`` request registers its enable_thinking
     # preference first (the tool auto-disable then no-ops on it) and a
     # graded value lands its ``reasoning_max_tokens`` cap from one source.
+    # #3714: ``serve --default-reasoning-effort`` fills the knob first when
+    # the client sent no reasoning signal at all, so a template whose own
+    # default is the most expensive level (GLM-5.3 → "Max") does not burn
+    # ``max_tokens`` in thinking on "say hello".
+    if maybe_apply_default_reasoning_effort(
+        request, default_effort=cfg.default_reasoning_effort
+    ):
+        logger.info(
+            "#3714 reasoning_effort defaulted to %s on /v1/chat/completions "
+            "(serve --default-reasoning-effort; client sent no reasoning knob)",
+            request.reasoning_effort,
+        )
     if maybe_apply_reasoning_effort(
         request, chat_template=served_chat_template(engine)
     ):

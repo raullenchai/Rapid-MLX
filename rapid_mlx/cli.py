@@ -4775,6 +4775,9 @@ def serve_command(args):
 
     # Configure --no-thinking: suppress chain-of-thought in chat template
     server._no_thinking = args.no_thinking
+    # #3714 --default-reasoning-effort: server-wide effort for requests
+    # that carry no reasoning knob (see maybe_apply_default_reasoning_effort)
+    server._default_reasoning_effort = getattr(args, "default_reasoning_effort", None)
 
     # Configure system prompt pinning
     server._pin_system_prompt = args.pin_system_prompt
@@ -13103,6 +13106,7 @@ Examples:
         "Only active when --tool-call-parser is also set. Currently supports minimax.",
     )
     # Reasoning parser options - choices loaded dynamically from registry
+    from .api.models import _VALID_REASONING_EFFORTS
     from .reasoning import list_parsers
 
     reasoning_choices = list_parsers()
@@ -13115,6 +13119,25 @@ Examples:
             "Enable reasoning content extraction with specified parser. "
             "Extracts <think>...</think> tags into reasoning_content field. "
             f"Options: {', '.join(reasoning_choices)}."
+        ),
+    )
+    serve_parser.add_argument(
+        "--default-reasoning-effort",
+        type=str,
+        default=None,
+        choices=list(_VALID_REASONING_EFFORTS),
+        metavar="EFFORT",
+        help=(
+            "OpenAI reasoning_effort applied to requests that send no "
+            "reasoning knob (reasoning_effort / reasoning_max_tokens / "
+            "enable_thinking / chat_template_kwargs.reasoning_effort). "
+            "Translated exactly like a client value: a template that "
+            "publishes its own effort levels (GLM-5.3, Qwen3.8) gets the "
+            "nearest native level in the prompt, any other template gets "
+            "the matching thinking-token cap. Use it for models whose "
+            "template default is the most expensive level (GLM-5.3 renders "
+            "'Reasoning Effort: Max' unless told otherwise). Options: "
+            "none, minimal, low, medium, high, xhigh."
         ),
     )
     serve_parser.add_argument(

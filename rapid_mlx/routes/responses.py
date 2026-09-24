@@ -115,6 +115,7 @@ from ..service.helpers import (
     ensure_engine_ready,
     get_engine,
     get_model_max_context,
+    maybe_apply_default_reasoning_effort,
     maybe_apply_reasoning_effort,
     maybe_auto_disable_thinking_for_casual_chat,
     maybe_auto_disable_thinking_for_tools,
@@ -1270,6 +1271,19 @@ async def create_response(request: Request):
         # its enable_thinking preference first (the tool auto-disable then
         # no-ops on it) and a graded value lands its reasoning_max_tokens
         # cap from one source. Explicit client knobs always win.
+        # #3714: ``serve --default-reasoning-effort`` fills the knob first
+        # when the client sent no reasoning signal (the Responses-native
+        # ``reasoning.effort`` counts via ``extra_signals``).
+        if maybe_apply_default_reasoning_effort(
+            openai_request,
+            default_effort=get_config().default_reasoning_effort,
+            extra_signals=responses_request,
+        ):
+            logger.info(
+                "#3714 reasoning_effort defaulted to %s on /v1/responses "
+                "(serve --default-reasoning-effort; client sent no reasoning knob)",
+                openai_request.reasoning_effort,
+            )
         if maybe_apply_reasoning_effort(
             openai_request, chat_template=served_chat_template(engine)
         ):

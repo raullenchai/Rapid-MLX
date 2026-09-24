@@ -368,6 +368,9 @@ _body_receive_timeout_seconds: float = 15.0
 # Reasoning parser (for models like Qwen3, DeepSeek-R1, MiniMax)
 _reasoning_parser = None  # ReasoningParser instance when enabled
 _reasoning_parser_name: str | None = None  # Parser name (e.g., "minimax")
+# ``serve --default-reasoning-effort``: fills ``reasoning_effort`` on requests
+# that carry no reasoning knob (#3714). ``None`` keeps the template default.
+_default_reasoning_effort: str | None = None
 
 # Tool calling configuration
 _enable_auto_tool_choice: bool = False
@@ -3221,6 +3224,7 @@ def _sync_config() -> None:
     cfg.enable_tool_logits_bias = _enable_tool_logits_bias
     cfg.reasoning_parser = _reasoning_parser
     cfg.reasoning_parser_name = _reasoning_parser_name
+    cfg.default_reasoning_effort = _default_reasoning_effort
     cfg.mcp_manager = _mcp_manager
     cfg.embedding_engine = _embedding_engine
     cfg.embedding_model_locked = _embedding_model_locked

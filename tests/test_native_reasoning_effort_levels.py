@@ -53,6 +53,7 @@ from rapid_mlx.config import reset_config
 from rapid_mlx.engine.base import GenerationOutput
 from rapid_mlx.middleware.exception_handlers import install_exception_handlers
 from rapid_mlx.service.helpers import (
+    maybe_apply_default_reasoning_effort,
     maybe_apply_reasoning_effort,
     served_chat_template,
 )
@@ -99,6 +100,15 @@ QWEN38_TEMPLATE = """\
 HY3_TEMPLATE_CLAUSE = (
     "{%- if not reasoning_effort is defined or reasoning_effort not in "
     "['high', 'low', 'no_think'] %}{%- set reasoning_effort = 'no_think' %}{%- endif %}"
+)
+
+# GLM-5.3 shape (#3714): a *coercion* rather than a validation block — the
+# accepted set is the ``in`` list of a conditional expression whose fallback
+# is the default level.
+GLM53_TEMPLATE_CLAUSE = (
+    "{%- set effective_reasoning_effort = reasoning_effort if reasoning_effort "
+    "is defined and reasoning_effort in ['low', 'high'] else 'max' -%}"
+    "{{- '<|system|>Reasoning Effort: ' + effective_reasoning_effort | capitalize }}"
 )
 
 # GPT-OSS / Harmony shape: interpolates the value, never validates it.
@@ -193,6 +203,58 @@ class TestDetectNativeLevels:
             "{{ raise_exception('x') }}{% endif %}"
         )
         assert detect_native_reasoning_effort_levels(clause) == ("low", "high")
+
+
+class TestCoercionDetection:
+    """#3714 GLM-5.3 does not validate ``reasoning_effort``; it coerces it:
+    ``{% set y = x if x in [...] else 'max' %}``. The ``in`` list is the
+    accepted vocabulary (the fallback constant is what the template renders
+    for anything else, so every listed level is one the template honours)."""
+
+    def test_glm53_coercion_publishes_the_in_list(self):
+        assert detect_native_reasoning_effort_levels(GLM53_TEMPLATE_CLAUSE) == (
+            "low",
+            "high",
+        )
+
+    def test_glm53_render_honours_mapped_level(self):
+        jinja2 = pytest.importorskip("jinja2")
+        tpl = jinja2.Environment().from_string(GLM53_TEMPLATE_CLAUSE)
+        assert tpl.render(reasoning_effort="low").endswith("Reasoning Effort: Low")
+        assert tpl.render().endswith("Reasoning Effort: Max")
+
+    def test_presence_guard_is_optional(self):
+        clause = (
+            "{%- set eff = reasoning_effort if reasoning_effort in ['low', 'high'] "
+            "else 'max' -%}"
+        )
+        assert detect_native_reasoning_effort_levels(clause) == ("low", "high")
+
+    def test_non_constant_fallback_is_not_a_coercion(self):
+        clause = (
+            "{%- set eff = reasoning_effort if reasoning_effort in ['low', 'high'] "
+            "else other -%}"
+        )
+        assert detect_native_reasoning_effort_levels(clause) is None
+
+    def test_unrelated_conjunct_is_a_branch_not_a_vocabulary(self):
+        clause = (
+            "{%- set eff = reasoning_effort if tools and reasoning_effort in "
+            "['low', 'high'] else 'max' -%}"
+        )
+        assert detect_native_reasoning_effort_levels(clause) is None
+
+    def test_positive_branch_without_fallback_is_not_a_coercion(self):
+        clause = "{%- set eff = reasoning_effort if reasoning_effort in ['low'] -%}"
+        assert detect_native_reasoning_effort_levels(clause) is None
+
+    def test_rebound_variable_is_not_the_client_value(self):
+        clause = (
+            "{%- set reasoning_effort = 'max' -%}"
+            "{%- set eff = reasoning_effort if reasoning_effort in ['low', 'high'] "
+            "else 'max' -%}"
+        )
+        assert detect_native_reasoning_effort_levels(clause) is None
 
 
 class TestDetectionRequiresAValidationBlock:
@@ -1154,7 +1216,9 @@ def _responses_cap_probe():
         yield seen
 
 
-def _client(engine: _RouteEngine, *, surface: str) -> TestClient:
+def _client(
+    engine: _RouteEngine, *, surface: str, default_reasoning_effort: str | None = None
+) -> TestClient:
     if surface == "chat":
         from rapid_mlx.routes.chat import router
     else:
@@ -1166,6 +1230,7 @@ def _client(engine: _RouteEngine, *, surface: str) -> TestClient:
     cfg.model_registry = None
     cfg.no_thinking = False
     cfg.reasoning_parser_name = "qwen3"
+    cfg.default_reasoning_effort = default_reasoning_effort
 
     app = FastAPI()
     install_exception_handlers(app)
@@ -1359,6 +1424,165 @@ class TestResponsesRouteNativeLevel:
             engine.kwargs.get("chat_template_kwargs") or {}
         )
         assert _responses_cap_probe == [2048]
+
+
+class TestServerDefaultReasoningEffort:
+    """#3714 ``serve --default-reasoning-effort``: fills ``reasoning_effort``
+    on requests that carry no reasoning knob, then travels the same
+    translation as a client value. GLM-5.3's template defaults to ``Max``;
+    the pool node serves it with ``low`` so "say hello" is not a
+    ``max_tokens``-long think."""
+
+    # --- helper contract ---------------------------------------------------
+
+    def test_unset_default_is_a_noop(self):
+        req = _request()
+        assert maybe_apply_default_reasoning_effort(req, default_effort=None) is False
+        assert req.reasoning_effort is None
+
+    def test_fills_reasoning_effort_when_client_sent_nothing(self):
+        req = _request()
+        assert maybe_apply_default_reasoning_effort(req, default_effort="low") is True
+        assert req.reasoning_effort == "low"
+
+    @pytest.mark.parametrize(
+        "overrides",
+        [
+            {"reasoning_effort": "high"},
+            {"reasoning_max_tokens": 1024},
+            {"reasoning": {"effort": "high"}},
+            {"enable_thinking": False},
+            {"enable_thinking": True},
+            {"chat_template_kwargs": {"enable_thinking": False}},
+            {"chat_template_kwargs": {"enable_thinking": "false"}},
+            {"chat_template_kwargs": {"reasoning_effort": "high"}},
+        ],
+        ids=[
+            "reasoning_effort",
+            "reasoning_max_tokens",
+            "responses-reasoning.effort",
+            "enable_thinking=false",
+            "enable_thinking=true",
+            "ctk.enable_thinking=false",
+            "ctk.enable_thinking=str-false",
+            "ctk.reasoning_effort",
+        ],
+    )
+    def test_any_client_reasoning_knob_wins(self, overrides):
+        req = _request(**overrides)
+        before = req.reasoning_effort
+        assert maybe_apply_default_reasoning_effort(req, default_effort="low") is False
+        assert req.reasoning_effort == before
+
+    def test_extra_signals_source_counts_as_client_intent(self):
+        """The Responses adapter keeps ``reasoning`` on the original request;
+        the route passes it as a secondary source, same as the casual gate."""
+        req = _request()
+        native = SimpleNamespace(reasoning={"effort": "medium"})
+        assert (
+            maybe_apply_default_reasoning_effort(
+                req, default_effort="low", extra_signals=native
+            )
+            is False
+        )
+        assert req.reasoning_effort is None
+
+    def test_responses_summary_only_reasoning_dict_is_not_intent(self):
+        req = _request()
+        native = SimpleNamespace(reasoning={"summary": "auto"})
+        assert (
+            maybe_apply_default_reasoning_effort(
+                req, default_effort="low", extra_signals=native
+            )
+            is True
+        )
+        assert req.reasoning_effort == "low"
+
+    def test_default_then_translates_like_a_client_value(self):
+        """Back to back with ``maybe_apply_reasoning_effort`` the default
+        lands as the GLM template's native ``low`` (no cap layered on)."""
+        req = _request()
+        maybe_apply_default_reasoning_effort(req, default_effort="low")
+        assert (
+            maybe_apply_reasoning_effort(req, chat_template=GLM53_TEMPLATE_CLAUSE)
+            is True
+        )
+        assert req.chat_template_kwargs == {"reasoning_effort": "low"}
+        assert req.reasoning_max_tokens is None
+
+    def test_default_none_switches_thinking_off(self):
+        req = _request()
+        maybe_apply_default_reasoning_effort(req, default_effort="none")
+        assert maybe_apply_reasoning_effort(req, chat_template=QWEN38_TEMPLATE) is True
+        assert req.chat_template_kwargs == {"enable_thinking": False}
+
+    # --- /v1/chat/completions ----------------------------------------------
+
+    def test_chat_route_renders_glm_low_for_a_bare_request(
+        self, _rate_limiter_state, _chat_cap_probe
+    ):
+        engine = _RouteEngine(GLM53_TEMPLATE_CLAUSE)
+        resp = _client(engine, surface="chat", default_reasoning_effort="low").post(
+            "/v1/chat/completions", json=_chat_body()
+        )
+        assert resp.status_code == 200, resp.text
+        assert engine.kwargs.get("chat_template_kwargs") == {"reasoning_effort": "low"}
+        assert _chat_cap_probe == [None]
+
+    def test_chat_route_client_effort_beats_server_default(
+        self, _rate_limiter_state, _chat_cap_probe
+    ):
+        engine = _RouteEngine(GLM53_TEMPLATE_CLAUSE)
+        resp = _client(engine, surface="chat", default_reasoning_effort="low").post(
+            "/v1/chat/completions", json=_chat_body(reasoning_effort="high")
+        )
+        assert resp.status_code == 200, resp.text
+        assert engine.kwargs.get("chat_template_kwargs") == {"reasoning_effort": "high"}
+
+    def test_chat_route_without_default_keeps_template_default(
+        self, _rate_limiter_state, _chat_cap_probe
+    ):
+        engine = _RouteEngine(GLM53_TEMPLATE_CLAUSE)
+        resp = _client(engine, surface="chat").post(
+            "/v1/chat/completions", json=_chat_body()
+        )
+        assert resp.status_code == 200, resp.text
+        assert "reasoning_effort" not in (
+            engine.kwargs.get("chat_template_kwargs") or {}
+        )
+
+    def test_chat_route_default_on_cap_template_sets_the_tier(
+        self, _rate_limiter_state, _chat_cap_probe
+    ):
+        engine = _RouteEngine(ENABLE_THINKING_ONLY_TEMPLATE)
+        resp = _client(engine, surface="chat", default_reasoning_effort="low").post(
+            "/v1/chat/completions", json=_chat_body()
+        )
+        assert resp.status_code == 200, resp.text
+        assert _chat_cap_probe == [OPENAI_REASONING_EFFORT_TO_MAX_TOKENS["low"]]
+
+    # --- /v1/responses ------------------------------------------------------
+
+    def test_responses_route_renders_glm_low_for_a_bare_request(
+        self, _rate_limiter_state, _responses_cap_probe
+    ):
+        engine = _RouteEngine(GLM53_TEMPLATE_CLAUSE)
+        resp = _client(
+            engine, surface="responses", default_reasoning_effort="low"
+        ).post("/v1/responses", json=_responses_body())
+        assert resp.status_code == 200, resp.text
+        assert engine.kwargs.get("chat_template_kwargs") == {"reasoning_effort": "low"}
+        assert _responses_cap_probe == [None]
+
+    def test_responses_route_nested_effort_beats_server_default(
+        self, _rate_limiter_state, _responses_cap_probe
+    ):
+        engine = _RouteEngine(GLM53_TEMPLATE_CLAUSE)
+        resp = _client(
+            engine, surface="responses", default_reasoning_effort="low"
+        ).post("/v1/responses", json=_responses_body(reasoning={"effort": "high"}))
+        assert resp.status_code == 200, resp.text
+        assert engine.kwargs.get("chat_template_kwargs") == {"reasoning_effort": "high"}
 
 
 class TestStreamingRoutesNativeLevel:

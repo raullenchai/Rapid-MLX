@@ -1304,6 +1304,74 @@ def _guaranteed_membership(test, nodes):
     return compare, tested
 
 
+def _conjuncts(expr, nodes) -> list:
+    if isinstance(expr, nodes.And):
+        return _conjuncts(expr.left, nodes) + _conjuncts(expr.right, nodes)
+    return [expr]
+
+
+def _is_presence_guard(expr, tested: str, nodes) -> bool:
+    """``x is defined`` / ``x is not none`` / bare ``x`` on the tested
+    variable: a conjunct that is true for every value worth validating, so
+    it never keeps a *valid* value out of the coercion's accepting arm."""
+    if isinstance(expr, nodes.Name):
+        return bool(expr.name == tested)
+    if isinstance(expr, nodes.Not):
+        inner = expr.node
+        return bool(
+            isinstance(inner, nodes.Test)
+            and inner.name in ("undefined", "none")
+            and isinstance(inner.node, nodes.Name)
+            and inner.node.name == tested
+        )
+    return bool(
+        isinstance(expr, nodes.Test)
+        and expr.name == "defined"
+        and isinstance(expr.node, nodes.Name)
+        and expr.node.name == tested
+    )
+
+
+def _coercion_levels(
+    assign, derived: set[str], forgotten: set[str], nodes
+) -> tuple[str, ...] | None:
+    """Levels a ``{% set y = x if x in [...] else <default> %}`` coercion
+    accepts (GLM-5.3: ``reasoning_effort if reasoning_effort is defined and
+    reasoning_effort in ['low', 'high'] else 'max'``).
+
+    The template never rejects, it silently substitutes its own default for
+    anything outside the list — so the list is exactly the vocabulary a
+    caller can select. Accepted when the conditional's taken arm carries the
+    tested variable, its test is one ``<x> in <literal list>`` conjoined only
+    with presence guards on ``x``, and the fallback arm is a literal.
+    """
+    expr = assign.node
+    if not isinstance(expr, nodes.CondExpr) or expr.expr2 is None:
+        return None
+    tested = _value_preserving_source(expr.expr1, nodes)
+    if tested is None or tested not in derived or tested in forgotten:
+        return None
+    if not isinstance(expr.expr2, nodes.Const):
+        return None
+    parts = _conjuncts(expr.test, nodes)
+    compares = [
+        part
+        for part in parts
+        if isinstance(part, nodes.Compare)
+        and len(part.ops) == 1
+        and part.ops[0].op == "in"
+        and _value_preserving_source(part.expr, nodes) == tested
+    ]
+    if len(compares) != 1:
+        return None
+    for part in parts:
+        if part is compares[0]:
+            continue
+        if not _is_presence_guard(part, tested, nodes):
+            return None
+    return _literal_levels(compares[0].ops[0].expr, nodes)
+
+
 def _literal_levels(expr, nodes) -> tuple[str, ...] | None:
     if not isinstance(expr, (nodes.Tuple, nodes.List)):
         return None
@@ -1433,6 +1501,9 @@ def _walk_for_validation(
     for stmt in stmts:
         if isinstance(stmt, nodes.Assign):
             if isinstance(stmt.target, nodes.Name):
+                levels = _coercion_levels(stmt, derived, forgotten, nodes)
+                if levels:
+                    return levels
                 source = _value_preserving_source(stmt.node, nodes)
                 if source is not None and source in derived and source not in forgotten:
                     derived.add(stmt.target.name)

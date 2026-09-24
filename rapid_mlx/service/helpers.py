@@ -2176,6 +2176,47 @@ def served_chat_template(engine):
     return getattr(tokenizer, "chat_template", None)
 
 
+def maybe_apply_default_reasoning_effort(
+    request, *, default_effort: str | None, extra_signals=None
+) -> bool:
+    """Fill ``request.reasoning_effort`` from the server-wide
+    ``serve --default-reasoning-effort`` when the client left every
+    reasoning knob untouched (#3714).
+
+    The default is the operator's answer to a template whose *own* default
+    is the most expensive level (GLM-5.3 renders ``Reasoning Effort: Max``
+    for a request that says nothing, so "say hello" burns ``max_tokens`` in
+    thinking and returns truncated content). It is applied exactly as if
+    the client had sent ``reasoning_effort=<default>`` — the same
+    translation, template mapping and precedence as
+    :func:`maybe_apply_reasoning_effort` — and only when the request
+    carries no reasoning signal of its own:
+
+      * no ``reasoning_effort`` / ``reasoning_max_tokens`` / Responses-native
+        ``reasoning.effort`` (``_client_signalled_reasoning_intent``, on the
+        request and every ``extra_signals`` source);
+      * no explicit thinking preference (``enable_thinking`` top-level or in
+        ``chat_template_kwargs``) — an explicit off/on is a stronger
+        statement about the same dimension than a graded default;
+      * no ``chat_template_kwargs.reasoning_effort`` passthrough (#2474).
+
+    Returns ``True`` iff the default was written onto the request. MUST run
+    immediately before :func:`maybe_apply_reasoning_effort` so the filled
+    value is translated in the same pass.
+    """
+    if not default_effort:
+        return False
+    if _client_signalled_reasoning_intent(request, extra_signals):
+        return False
+    if _extract_thinking_from_request(request) is not None:
+        return False
+    ctk = getattr(request, "chat_template_kwargs", None)
+    if isinstance(ctk, dict) and "reasoning_effort" in ctk:
+        return False
+    request.reasoning_effort = default_effort
+    return True
+
+
 def maybe_apply_reasoning_effort(request, *, chat_template=None) -> bool:
     """Translate the OpenAI ``reasoning_effort`` knob into rapid-mlx's
     native reasoning controls at the route layer (issue #448, #3043).
