@@ -26,11 +26,13 @@ PR: #3728
   optional dependency packaging without downloading model weights. The focused
   suite has 67 passing tests, its no-MLX simulation passes 23 with 16
   MLX-specific skips, and changed production lines have 100% local coverage.
+- Real cached Laya weights passed CPU server dogfood. Typed answers matched a
+  direct `laya-mlx` call, restart-to-ready was about one second with warm file
+  pages, and warm latency was about 52–56 ms for one question and 170 ms for
+  three. The reproducible screen is recorded under `docs/engineering/performance/`.
 
 ## Unresolved questions and risks
 
-- Real Laya output has not yet been compared byte-for-byte with `laya-mlx`
-  direct calls through an HTTP request because Studio GPU capacity is occupied.
 - CLM needs a BF16 parity run against the official vLLM server using the same
   states/actions. Quantized Qwen3 encoders are rejected until measured.
 - The initial CLM encoder evaluates cache misses one text at a time for exact
@@ -41,6 +43,5 @@ PR: #3728
 
 On an idle Apple Silicon host, convert the official 75 MB CLM head, run a fixed
 System One corpus through official CLM and Rapid-MLX BF16, and record maximum
-probability/ranking drift plus cold/warm latency. Then benchmark Laya through
-the HTTP service and attach the reproducible commands/results under
+probability/ranking drift plus cold/warm latency under
 `docs/engineering/performance/`.

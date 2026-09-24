@@ -111,3 +111,7 @@ nesting-depth protection.
   for MLX safety. `--max-concurrent-requests` changes the admission limit;
   excess requests receive `503` with `Retry-After`.
 - Request temperature must be between `1e-6` and `100` to keep CLM logits finite.
+- The current English Laya checkpoint triggers an upstream `laya-mlx` clamp for
+  the `choice:11+` calibration bucket. Treat confidence from questions with
+  eleven or more choices as uncalibrated; the selected choice and probability
+  distribution remain available.
