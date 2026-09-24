@@ -712,22 +712,28 @@ def _enqueue_model_served_once(
     model_name: object,
     auto_selected: bool,
 ) -> None:
+    # Reserve this lane before handing work to the telemetry executor.  The
+    # executor is normally asynchronous, but it is deliberately abstracted and
+    # may run (or reject) a callback immediately.  Publishing the reservation
+    # after submission lets an early completion observe ``idle`` and then leaves
+    # this lane stuck at ``pending`` forever.
     with _telemetry_model_served_locks[state_name]:
         if globals()[state_name] != "idle":
             return
-        try:
-            from rapid_mlx.telemetry.model_events import emit_model_served
+        globals()[state_name] = "pending"
+    try:
+        from rapid_mlx.telemetry.model_events import emit_model_served
 
-            queued = emit_model_served(
-                engine,
-                model_name,
-                auto_selected,
-                on_complete=lambda accepted: _finish_model_served(state_name, accepted),
-            )
-        except Exception:
-            return
-        if queued:
-            globals()[state_name] = "pending"
+        queued = emit_model_served(
+            engine,
+            model_name,
+            auto_selected,
+            on_complete=lambda accepted: _finish_model_served(state_name, accepted),
+        )
+    except Exception:
+        queued = False
+    if not queued:
+        _finish_model_served(state_name, False)
 
 
 def _emit_primary_model_served_once(engine: object) -> None:

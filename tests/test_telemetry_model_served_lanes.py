@@ -251,7 +251,7 @@ def test_concurrent_lane_submission_does_not_share_a_blocking_lock(monkeypatch):
         lane = "primary" if engine is not None else "audio"
         order.append(f"submit:{lane}")
         if engine is not None:
-            assert primary_lock.held
+            assert not primary_lock.held
             assert not audio_lock.held
             server._emit_audio_model_served_once(object(), "kokoro")
         return True
@@ -261,12 +261,37 @@ def test_concurrent_lane_submission_does_not_share_a_blocking_lock(monkeypatch):
 
     assert order == [
         "enter:primary",
+        "exit:primary",
         "submit:primary",
         "enter:audio",
-        "submit:audio",
         "exit:audio",
-        "exit:primary",
+        "submit:audio",
     ]
+
+
+@pytest.mark.parametrize("accepted", [False, True])
+def test_inline_model_served_completion_cannot_strand_pending(monkeypatch, accepted):
+    """A fast executor may complete before ``emit_model_served`` returns."""
+
+    def complete_inline(_engine, _model, _auto, *, on_complete):
+        on_complete(accepted)
+        return True
+
+    monkeypatch.setattr(model_events, "emit_model_served", complete_inline)
+    monkeypatch.setattr(server, "_telemetry_model_served_state", "idle")
+
+    server._emit_primary_model_served_once(object())
+
+    assert server._telemetry_model_served_state == ("emitted" if accepted else "idle")
+
+
+def test_rejected_model_served_submission_releases_reservation(monkeypatch):
+    monkeypatch.setattr(model_events, "emit_model_served", lambda *_a, **_kw: False)
+    monkeypatch.setattr(server, "_telemetry_model_served_state", "idle")
+
+    server._emit_primary_model_served_once(object())
+
+    assert server._telemetry_model_served_state == "idle"
 
 
 @pytest.mark.parametrize(
