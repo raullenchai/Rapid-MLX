@@ -805,7 +805,13 @@ def test_closed_crash_fd_rearm_recovers_file_only_in_process(monkeypatch, tmp_pa
     path = tmp_path / "crash.txt"
     fd = os.open(path, os.O_WRONLY | os.O_CREAT, 0o600)
     os.close(fd)
-    previous = (so._crash_fd, so._crash_path, so._crash_pipe, so._crash_tee)
+    previous = (
+        so._crash_fd,
+        so._crash_fd_identity,
+        so._crash_path,
+        so._crash_pipe,
+        so._crash_tee,
+    )
     calls = []
     so._crash_fd = fd
     so._crash_fd_identity = (-1, -1)
@@ -820,7 +826,13 @@ def test_closed_crash_fd_rearm_recovers_file_only_in_process(monkeypatch, tmp_pa
     finally:
         if so._crash_fd is not None:
             os.close(so._crash_fd)
-        so._crash_fd, so._crash_path, so._crash_pipe, so._crash_tee = previous
+        (
+            so._crash_fd,
+            so._crash_fd_identity,
+            so._crash_path,
+            so._crash_pipe,
+            so._crash_tee,
+        ) = previous
 
 
 def test_closed_fd_reused_before_rearm_reopens_installed_crash_file(tmp_path):
