@@ -34,10 +34,21 @@ logger = logging.getLogger(__name__)
 
 
 def _marker_path() -> Path:
-    """Resolve the serve marker beneath the existing Rapid-MLX state root."""
+    """Resolve this process's serve marker beneath the existing state root."""
     from rapid_mlx.telemetry.state import _default_telemetry_dir
 
-    return _default_telemetry_dir() / "state" / "serve-inflight.json"
+    return _default_telemetry_dir() / "state" / f"serve-inflight-{os.getpid()}.json"
+
+
+def _marker_pid(path: Path) -> int | None:
+    prefix = "serve-inflight-"
+    if not path.name.startswith(prefix) or path.suffix != ".json":
+        return None
+    try:
+        pid = int(path.stem.removeprefix(prefix))
+    except ValueError:
+        return None
+    return pid if pid > 0 else None
 
 
 def _pid_is_alive(pid: object) -> bool:
@@ -52,14 +63,6 @@ def _pid_is_alive(pid: object) -> bool:
     except OSError as exc:
         return exc.errno != errno.ESRCH
     return True
-
-
-def _read_marker(path: Path) -> dict[str, object] | None:
-    try:
-        value = json.loads(path.read_text(encoding="utf-8"))
-    except (OSError, UnicodeError, json.JSONDecodeError):
-        return None
-    return value if isinstance(value, dict) else None
 
 
 def _atomic_write_marker(path: Path) -> None:
@@ -101,13 +104,20 @@ def _atomic_write_marker(path: Path) -> None:
 def _begin_inflight_marker() -> tuple[bool, bool]:
     """Return ``(previous_unterminated, owns_marker)`` for this serve."""
     path = _marker_path()
-    marker = _read_marker(path)
-    if marker is not None and _pid_is_alive(marker.get("pid")):
-        return False, False
-    pid = marker.get("pid") if marker is not None else None
-    previous_unterminated = (
-        isinstance(pid, int) and not isinstance(pid, bool) and pid > 0
-    )
+    previous_unterminated = False
+    try:
+        markers = list(path.parent.glob("serve-inflight-*.json"))
+    except OSError:
+        markers = []
+    for marker_path in markers:
+        pid = _marker_pid(marker_path)
+        if pid is None or _pid_is_alive(pid):
+            continue
+        previous_unterminated = True
+        try:
+            marker_path.unlink(missing_ok=True)
+        except OSError as exc:
+            logger.debug("could not remove stale serve marker %s: %r", marker_path, exc)
     try:
         _atomic_write_marker(path)
     except Exception as exc:
@@ -121,17 +131,14 @@ def _remove_inflight_marker() -> None:
     if not _owns_inflight_marker:
         return
     try:
-        path = _marker_path()
-        marker = _read_marker(path)
-        if marker is not None and marker.get("pid") == os.getpid():
-            path.unlink(missing_ok=True)
+        _marker_path().unlink(missing_ok=True)
     except Exception as exc:
         logger.debug("could not remove serve-inflight marker: %r", exc)
     finally:
         _owns_inflight_marker = False
 
 
-def _track(state: str, *, failure_stage: str | None = None) -> None:
+def _track(state: str, *, failure_stage: str | None = None) -> bool:
     """Build only registry-approved properties and never affect the host."""
     try:
         from rapid_mlx.telemetry.track import track
@@ -145,9 +152,9 @@ def _track(state: str, *, failure_stage: str | None = None) -> None:
             props["failure_stage"] = failure_stage
         if state == "attempted" and _previous_run_unterminated:
             props["previous_run_unterminated"] = True
-        track("server_start_state", props)
+        return track("server_start_state", props)
     except BaseException:
-        return
+        return False
 
 
 def attempted(model_ref: object = None, *, load_policy: object = None) -> None:
@@ -170,26 +177,30 @@ def attempted(model_ref: object = None, *, load_policy: object = None) -> None:
         _previous_run_unterminated = previous
         _owns_inflight_marker = owns
         _load_policy = resolved_policy
-        _attempted = True
-    try:
-        from rapid_mlx.telemetry import posthog_sender
-        from rapid_mlx.telemetry.model_events import model_type
-        from rapid_mlx.telemetry.track import _upload_allowed
+        try:
+            from rapid_mlx.telemetry import posthog_sender
+            from rapid_mlx.telemetry.model_events import model_type
+            from rapid_mlx.telemetry.track import _upload_allowed
 
-        if not _upload_allowed():
+            if not _upload_allowed():
+                _attempted = True
+                return
+            posthog_sender.install_atexit()
+            _model_type = model_type(model_ref)
+        except BaseException:
             return
-        posthog_sender.install_atexit()
-        _model_type = model_type(model_ref)
-    except BaseException:
-        return
-    _track("attempted")
+        if _track("attempted") is not False:
+            _attempted = True
 
 
 def ready() -> None:
     """Emit the sole successful terminal state after listener creation."""
     global _terminal
     with _lock:
-        if not _attempted or _terminal:
+        if _terminal:
+            return
+        if not _attempted:
+            _remove_inflight_marker()
             return
         _terminal = True
         _remove_inflight_marker()
@@ -202,7 +213,10 @@ def failed(failure_stage: object) -> None:
     if not isinstance(failure_stage, str) or failure_stage not in _FAILURE_STAGES:
         return
     with _lock:
-        if not _attempted or _terminal:
+        if _terminal:
+            return
+        if not _attempted:
+            _remove_inflight_marker()
             return
         _terminal = True
         _remove_inflight_marker()

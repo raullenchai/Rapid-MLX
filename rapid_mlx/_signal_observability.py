@@ -51,6 +51,7 @@ import faulthandler
 import logging
 import os
 import signal
+import subprocess
 import sys
 import threading
 from collections.abc import Callable
@@ -105,7 +106,11 @@ _install_lock = threading.Lock()
 _prior_handlers: dict[int, signal.Handlers | Callable[..., object] | int | None] = {}
 _crash_fd: int | None = None
 _crash_path: Path | None = None
+_crash_pipe = None
+_crash_tee: subprocess.Popen[bytes] | None = None
 _crash_cleanup_registered = False
+_faulthandler_was_enabled = False
+_tee_fallback_warned = False
 
 
 def _crash_logs_dir() -> Path:
@@ -131,6 +136,26 @@ def _crash_files(log_dir: Path) -> list[Path]:
     return [path for _, _, path in candidates]
 
 
+def _pid_is_alive(pid: int) -> bool:
+    try:
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        return False
+    except PermissionError:
+        return True
+    except OSError:
+        return True
+    return True
+
+
+def _crash_file_pid(path: Path) -> int | None:
+    try:
+        pid = int(path.stem.rsplit("-", 1)[1])
+    except (IndexError, ValueError):
+        return None
+    return pid if pid > 0 else None
+
+
 def _report_previous_crash(log_dir: Path) -> None:
     for path in _crash_files(log_dir):
         try:
@@ -148,45 +173,99 @@ def _report_previous_crash(log_dir: Path) -> None:
 
 
 def _rotate_crash_files(log_dir: Path) -> None:
-    for path in _crash_files(log_dir)[5:]:
+    retained_inactive = 0
+    for path in _crash_files(log_dir):
+        pid = _crash_file_pid(path)
+        if pid is not None and _pid_is_alive(pid):
+            continue
+        retained_inactive += 1
+        if retained_inactive <= 5:
+            continue
         try:
             path.unlink()
         except OSError as exc:
             logger.debug("could not rotate old crash file %s: %r", path, exc)
 
 
+def _enable_faulthandler(target_fd) -> None:
+    """The sole process-wide faulthandler registration point."""
+    faulthandler.enable(file=target_fd, all_threads=True)
+
+
+def _warn_tee_fallback(exc: BaseException) -> None:
+    global _tee_fallback_warned
+    if _tee_fallback_warned:
+        return
+    _tee_fallback_warned = True
+    logger.warning(
+        "could not mirror fatal tracebacks to stderr; using crash file only: %s",
+        exc,
+    )
+
+
+def _stop_crash_tee(process: subprocess.Popen[bytes] | None, pipe) -> None:
+    if pipe is not None:
+        try:
+            pipe.close()
+        except OSError:
+            pass
+    if process is None:
+        return
+    try:
+        process.wait(timeout=2.0)
+    except (OSError, subprocess.TimeoutExpired):
+        try:
+            process.terminate()
+            process.wait(timeout=1.0)
+        except (OSError, subprocess.TimeoutExpired):
+            pass
+
+
 def _cleanup_crash_file() -> None:
     """Remove an empty clean-run file and release faulthandler's descriptor."""
-    global _crash_fd, _crash_path
+    global _crash_fd, _crash_path, _crash_pipe, _crash_tee
     fd, path = _crash_fd, _crash_path
+    pipe, process = _crash_pipe, _crash_tee
     if fd is None or path is None:
         return
     _crash_fd = None
     _crash_path = None
+    _crash_pipe = None
+    _crash_tee = None
     try:
         faulthandler.disable()
-        if sys.stderr is not None and not sys.stderr.closed:
-            faulthandler.enable(file=sys.stderr, all_threads=True)
     except (OSError, RuntimeError, ValueError):
         pass
+    if pipe is not None:
+        _stop_crash_tee(process, pipe)
+    else:
+        try:
+            os.close(fd)
+        except OSError:
+            pass
     try:
-        if os.fstat(fd).st_size == 0:
+        if path.stat().st_size == 0:
             path.unlink(missing_ok=True)
     except OSError:
         pass
-    try:
-        os.close(fd)
-    except OSError:
-        pass
+    if _faulthandler_was_enabled and sys.stderr is not None and not sys.stderr.closed:
+        try:
+            _enable_faulthandler(sys.stderr)
+        except (OSError, RuntimeError, ValueError):
+            pass
 
 
 def _install_crash_file() -> None:
-    """Point fatal-signal tracebacks at a private, rotating durable file."""
-    global _crash_cleanup_registered, _crash_fd, _crash_path
+    """Mirror fatal tracebacks to stderr and a private rotating file."""
+    global _crash_cleanup_registered, _crash_fd, _crash_path, _crash_pipe
+    global _crash_tee, _faulthandler_was_enabled
     if _crash_fd is not None:
+        _enable_faulthandler(_crash_fd)
         return
     path: Path | None = None
     fd: int | None = None
+    pipe = None
+    process: subprocess.Popen[bytes] | None = None
     try:
         log_dir = _crash_logs_dir()
         log_dir.mkdir(mode=0o700, parents=True, exist_ok=True)
@@ -194,18 +273,51 @@ def _install_crash_file() -> None:
         _report_previous_crash(log_dir)
         timestamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S%fZ")
         path = log_dir / f"crash-{timestamp}-{os.getpid()}.txt"
-        fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+        fd = os.open(
+            path,
+            os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_APPEND,
+            0o600,
+        )
         os.chmod(path, 0o600)
-        faulthandler.enable(file=fd, all_threads=True)
-        _crash_fd = fd
+        if os.name == "nt":
+            _warn_tee_fallback(OSError("tee helper is unavailable on Windows"))
+        else:
+            try:
+                stderr_fd = sys.stderr.fileno()
+                process = subprocess.Popen(
+                    ["tee", "-a", os.fspath(path)],
+                    stdin=subprocess.PIPE,
+                    stdout=stderr_fd,
+                    close_fds=True,
+                    start_new_session=True,
+                )
+                if process.stdin is None:
+                    raise OSError("tee helper has no stdin pipe")
+                pipe = process.stdin
+            except (OSError, ValueError) as exc:
+                _warn_tee_fallback(exc)
+                _stop_crash_tee(process, pipe)
+                process = None
+                pipe = None
+        target_fd = pipe.fileno() if pipe is not None else fd
+        _faulthandler_was_enabled = faulthandler.is_enabled()
+        _enable_faulthandler(target_fd)
+        _crash_fd = target_fd
         _crash_path = path
+        _crash_pipe = pipe
+        _crash_tee = process
+        if pipe is not None:
+            os.close(fd)
         fd = None
+        pipe = None
+        process = None
         _rotate_crash_files(log_dir)
         if not _crash_cleanup_registered:
             atexit.register(_cleanup_crash_file)
             _crash_cleanup_registered = True
     except (OSError, RuntimeError, ValueError) as exc:
         logger.warning("could not create durable rapid-mlx crash file: %s", exc)
+        _stop_crash_tee(process, pipe)
         if fd is not None:
             try:
                 os.close(fd)

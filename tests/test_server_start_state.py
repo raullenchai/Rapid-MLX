@@ -35,7 +35,7 @@ def _capture(monkeypatch):
     monkeypatch.setattr("rapid_mlx.telemetry.track._upload_allowed", lambda: True)
     monkeypatch.setattr(
         "rapid_mlx.telemetry.track.track",
-        lambda event, props: events.append((event, dict(props))),
+        lambda event, props: events.append((event, dict(props))) or True,
     )
     return events
 
@@ -57,7 +57,7 @@ def test_stale_marker_reports_previous_run_unterminated_once_to_loopback(tmp_pat
     home = tmp_path / "home"
     state_dir = home / ".rapid-mlx" / "state"
     state_dir.mkdir(parents=True)
-    (state_dir / "serve-inflight.json").write_text(
+    (state_dir / "serve-inflight-99999999.json").write_text(
         json.dumps(
             {
                 "pid": 99_999_999,
@@ -167,7 +167,7 @@ def test_marker_written_at_attempted_and_removed_at_terminal_with_telemetry_disa
 
     server_start.attempted("qwen3.5-4b-4bit", load_policy="eager")
 
-    marker = tmp_path / ".rapid-mlx" / "state" / "serve-inflight.json"
+    marker = tmp_path / ".rapid-mlx" / "state" / f"serve-inflight-{os.getpid()}.json"
     assert marker.is_file()
     assert marker.stat().st_mode & 0o777 == 0o600
     assert marker.parent.stat().st_mode & 0o777 == 0o700
@@ -182,10 +182,11 @@ def test_marker_written_at_attempted_and_removed_at_terminal_with_telemetry_disa
 
 def test_live_marker_is_not_reported_overwritten_or_removed(monkeypatch, tmp_path):
     monkeypatch.setenv("HOME", str(tmp_path))
-    marker = tmp_path / ".rapid-mlx" / "state" / "serve-inflight.json"
+    live_pid = os.getppid()
+    marker = tmp_path / ".rapid-mlx" / "state" / f"serve-inflight-{live_pid}.json"
     marker.parent.mkdir(parents=True)
     original = {
-        "pid": os.getpid(),
+        "pid": live_pid,
         "utc_start": "2026-09-24T00:00:00Z",
         "app_version": "0.15.1",
     }
@@ -193,15 +194,19 @@ def test_live_marker_is_not_reported_overwritten_or_removed(monkeypatch, tmp_pat
     events = _capture(monkeypatch)
 
     server_start.attempted("qwen3.5-4b-4bit", load_policy="eager")
+    own_marker = marker.parent / f"serve-inflight-{os.getpid()}.json"
+
+    assert own_marker.is_file()
     server_start.ready()
 
     assert all("previous_run_unterminated" not in props for _, props in events)
     assert json.loads(marker.read_text(encoding="utf-8")) == original
+    assert not own_marker.exists()
 
 
 def test_stale_marker_adds_attempted_property_in_process(monkeypatch, tmp_path):
     monkeypatch.setenv("HOME", str(tmp_path))
-    marker = tmp_path / ".rapid-mlx" / "state" / "serve-inflight.json"
+    marker = tmp_path / ".rapid-mlx" / "state" / "serve-inflight-99999999.json"
     marker.parent.mkdir(parents=True)
     marker.write_text(
         json.dumps({"pid": 99_999_999, "utc_start": "old", "app_version": "0.15.1"}),
@@ -233,7 +238,7 @@ def test_pid_probe_handles_permission_and_os_errors(monkeypatch, error, expected
 
 
 def test_atomic_marker_rejects_zero_progress_write(monkeypatch, tmp_path):
-    marker = tmp_path / "state" / "serve-inflight.json"
+    marker = tmp_path / "state" / "serve-inflight-123.json"
     monkeypatch.setattr(os, "write", lambda *_args: 0)
 
     with pytest.raises(OSError, match="made no progress"):
@@ -375,14 +380,24 @@ def test_disabled_telemetry_never_initializes_sender(monkeypatch):
     server_start.ready()
 
 
-def test_attempt_setup_failure_is_inert(monkeypatch):
-    monkeypatch.setattr("rapid_mlx.telemetry.track._upload_allowed", lambda: True)
+def test_attempt_setup_failure_cannot_emit_terminal_without_attempted(
+    monkeypatch, tmp_path
+):
+    events = _capture(monkeypatch)
+    monkeypatch.setenv("HOME", str(tmp_path))
     monkeypatch.setattr(
         "rapid_mlx.telemetry.posthog_sender.install_atexit",
         lambda: (_ for _ in ()).throw(RuntimeError("sender unavailable")),
     )
 
     server_start.attempted("qwen3.5-4b-4bit", load_policy="eager")
+    marker = tmp_path / ".rapid-mlx" / "state" / f"serve-inflight-{os.getpid()}.json"
+    assert marker.is_file()
+
+    server_start.ready()
+
+    assert events == []
+    assert not marker.exists()
 
 
 def test_marker_setup_failure_does_not_block_attempted_event(monkeypatch):

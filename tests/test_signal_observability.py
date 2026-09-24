@@ -20,6 +20,7 @@ the install is the smoke-test surface.
 from __future__ import annotations
 
 import os
+import re
 import select
 import signal
 import subprocess
@@ -350,7 +351,9 @@ def test_crash_file_is_private_rotated_and_previous_crash_reported_once(
         files = sorted(log_dir.glob("crash-*.txt"))
         current = max(files, key=lambda path: path.stat().st_mtime_ns)
 
-        assert len(files) == 5
+        inactive = [path for path in files if so._crash_file_pid(path) == 100]
+        assert len(files) == 6
+        assert len(inactive) == 5
         assert current.stat().st_mode & 0o777 == 0o600
         assert log_dir.stat().st_mode & 0o777 == 0o700
         lines = capsys.readouterr().err.splitlines()
@@ -360,6 +363,25 @@ def test_crash_file_is_private_rotated_and_previous_crash_reported_once(
         ]
     finally:
         so._reset_for_tests()
+
+
+def test_rotation_never_unlinks_live_process_crash_files(monkeypatch, tmp_path):
+    from rapid_mlx import _signal_observability as so
+
+    paths = []
+    for pid in range(200, 207):
+        path = tmp_path / f"crash-20260924T000000000{pid}Z-{pid}.txt"
+        path.write_text("traceback\n", encoding="utf-8")
+        os.utime(path, (pid, pid))
+        paths.append(path)
+    live_pid = 200
+    monkeypatch.setattr(so, "_pid_is_alive", lambda pid: pid == live_pid)
+
+    so._rotate_crash_files(tmp_path)
+
+    assert paths[0].exists()
+    assert len(list(tmp_path.glob("crash-*.txt"))) == 6
+    assert not paths[1].exists()
 
 
 def test_empty_crash_file_is_removed_at_clean_shutdown(monkeypatch, tmp_path):
@@ -392,6 +414,41 @@ def test_crash_file_creation_failure_warns_and_does_not_block(
 
     assert so.install_signal_observability(observed_signals=()) is False
     assert "could not create durable rapid-mlx crash file" in caplog.text
+
+
+def test_missing_tee_warns_once_and_uses_file_only(monkeypatch, tmp_path, caplog):
+    from rapid_mlx import _signal_observability as so
+
+    so._reset_for_tests()
+    prior_warned = so._tee_fallback_warned
+    monkeypatch.setenv("HOME", str(tmp_path))
+    monkeypatch.setattr(
+        so.subprocess,
+        "Popen",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(FileNotFoundError("tee")),
+    )
+    so._tee_fallback_warned = False
+    try:
+        so.install_signal_observability(observed_signals=())
+        path = so._crash_path
+        assert path is not None
+        assert so._crash_fd is not None
+        os.write(so._crash_fd, b"fatal traceback\n")
+        so._cleanup_crash_file()
+
+        assert path.stat().st_size > 0
+
+        so.install_signal_observability(observed_signals=())
+        so._cleanup_crash_file()
+        warnings = [
+            record
+            for record in caplog.records
+            if "using crash file only" in record.getMessage()
+        ]
+        assert len(warnings) == 1
+    finally:
+        so._reset_for_tests()
+        so._tee_fallback_warned = prior_warned
 
 
 def test_crash_file_scan_and_io_failures_are_inert(monkeypatch, tmp_path):
@@ -502,6 +559,59 @@ def test_abort_subprocess_leaves_nonempty_durable_crash_file(tmp_path):
     assert len(files) == 1
     assert files[0].stat().st_size > 0
     assert "Fatal Python error" in files[0].read_text(encoding="utf-8")
+    assert "Fatal Python error" in proc.stderr
+
+
+def test_crash_file_survives_later_faulthandler_registration(tmp_path):
+    home = tmp_path / "home"
+    alternate = tmp_path / "alternate.txt"
+    env = dict(os.environ, HOME=str(home))
+    program = textwrap.dedent(
+        f"""
+        import faulthandler
+        import os
+        from rapid_mlx._signal_observability import install_signal_observability
+
+        install_signal_observability(observed_signals=())
+        with open({os.fspath(alternate)!r}, "w", encoding="utf-8") as alternate:
+            faulthandler.enable(file=alternate, all_threads=True)
+            install_signal_observability(observed_signals=())
+            os.abort()
+        """
+    )
+    proc = subprocess.run(
+        [sys.executable, "-c", program],
+        env=env,
+        capture_output=True,
+        text=True,
+        timeout=10,
+        check=False,
+    )
+
+    files = list((home / ".rapid-mlx" / "logs").glob("crash-*.txt"))
+    assert proc.returncode != 0
+    assert len(files) == 1
+    assert files[0].stat().st_size > 0
+    assert "Fatal Python error" in files[0].read_text(encoding="utf-8")
+    assert "Fatal Python error" in proc.stderr
+
+
+def test_package_has_one_faulthandler_enable_call_site():
+    package = Path(__file__).resolve().parents[1] / "rapid_mlx"
+    call = re.compile(r"^\s*faulthandler\.enable\(")
+    matches = [
+        (path.relative_to(package), line.strip())
+        for path in package.rglob("*.py")
+        for line in path.read_text(encoding="utf-8").splitlines()
+        if call.match(line)
+    ]
+
+    assert matches == [
+        (
+            Path("_signal_observability.py"),
+            "faulthandler.enable(file=target_fd, all_threads=True)",
+        )
+    ]
 
 
 def test_subprocess_sigterm_emits_warning_and_stack_dump():
