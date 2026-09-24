@@ -26,6 +26,7 @@ import subprocess
 import sys
 import textwrap
 import threading
+from pathlib import Path
 
 
 def _read_ready_with_timeout(proc: subprocess.Popen, *, timeout: float = 10.0) -> str:
@@ -374,6 +375,105 @@ def test_empty_crash_file_is_removed_at_clean_shutdown(monkeypatch, tmp_path):
     so._cleanup_crash_file()
 
     assert not files[0].exists()
+
+
+def test_crash_file_creation_failure_warns_and_does_not_block(
+    monkeypatch, tmp_path, caplog
+):
+    from rapid_mlx import _signal_observability as so
+
+    so._reset_for_tests()
+    monkeypatch.setenv("HOME", str(tmp_path))
+    monkeypatch.setattr(
+        so.os,
+        "open",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(PermissionError("denied")),
+    )
+
+    assert so.install_signal_observability(observed_signals=()) is False
+    assert "could not create durable rapid-mlx crash file" in caplog.text
+
+
+def test_crash_file_scan_and_io_failures_are_inert(monkeypatch, tmp_path):
+    from rapid_mlx import _signal_observability as so
+
+    class BadEntry:
+        def stat(self):
+            raise OSError("stat failed")
+
+    class BadDirectory:
+        def glob(self, _pattern):
+            raise OSError("glob failed")
+
+    class OneBadEntry:
+        def glob(self, _pattern):
+            return [BadEntry()]
+
+    assert so._crash_files(BadDirectory()) == []
+    assert so._crash_files(OneBadEntry()) == []
+
+    crash = tmp_path / "crash-old.txt"
+    crash.write_text("fatal\n", encoding="utf-8")
+    monkeypatch.setattr(so, "_crash_files", lambda _directory: [crash] * 6)
+
+    class BrokenStderr:
+        closed = False
+
+        def write(self, _text):
+            raise ValueError("closed")
+
+        def flush(self):
+            raise AssertionError("write should fail first")
+
+    monkeypatch.setattr(so.sys, "stderr", BrokenStderr())
+    so._report_previous_crash(tmp_path)
+
+    monkeypatch.setattr(
+        Path,
+        "unlink",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(OSError("busy")),
+    )
+    so._rotate_crash_files(tmp_path)
+
+
+def test_crash_cleanup_and_failed_install_cleanup_errors_are_inert(
+    monkeypatch, tmp_path
+):
+    from rapid_mlx import _signal_observability as so
+
+    so._reset_for_tests()
+    path = tmp_path / "open-crash.txt"
+    fd = os.open(path, os.O_WRONLY | os.O_CREAT, 0o600)
+    so._crash_fd = fd
+    so._crash_path = path
+    real_close = os.close
+    monkeypatch.setattr(
+        so.os,
+        "fstat",
+        lambda _fd: (_ for _ in ()).throw(OSError("fstat failed")),
+    )
+
+    def close_then_raise(open_fd):
+        real_close(open_fd)
+        raise OSError("close reported failure")
+
+    monkeypatch.setattr(so.os, "close", close_then_raise)
+    so._cleanup_crash_file()
+
+    monkeypatch.setenv("HOME", str(tmp_path / "home"))
+    monkeypatch.setattr(
+        so.faulthandler,
+        "enable",
+        lambda **_kwargs: (_ for _ in ()).throw(RuntimeError("enable failed")),
+    )
+    real_unlink = Path.unlink
+
+    def unlink_then_raise(target, *args, **kwargs):
+        real_unlink(target, *args, **kwargs)
+        raise OSError("unlink reported failure")
+
+    monkeypatch.setattr(Path, "unlink", unlink_then_raise)
+    so._install_crash_file()
 
 
 def test_abort_subprocess_leaves_nonempty_durable_crash_file(tmp_path):

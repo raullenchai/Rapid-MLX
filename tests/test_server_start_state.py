@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import builtins
+import errno
 import json
 import os
 import subprocess
@@ -198,6 +199,66 @@ def test_live_marker_is_not_reported_overwritten_or_removed(monkeypatch, tmp_pat
     assert json.loads(marker.read_text(encoding="utf-8")) == original
 
 
+def test_stale_marker_adds_attempted_property_in_process(monkeypatch, tmp_path):
+    monkeypatch.setenv("HOME", str(tmp_path))
+    marker = tmp_path / ".rapid-mlx" / "state" / "serve-inflight.json"
+    marker.parent.mkdir(parents=True)
+    marker.write_text(
+        json.dumps({"pid": 99_999_999, "utc_start": "old", "app_version": "0.15.1"}),
+        encoding="utf-8",
+    )
+    events = _capture(monkeypatch)
+
+    server_start.attempted("qwen3.5-4b-4bit", load_policy="eager")
+
+    assert events[0][1]["previous_run_unterminated"] is True
+
+
+@pytest.mark.parametrize("pid", [True, "1", 0, -1])
+def test_invalid_marker_pids_are_not_alive(pid):
+    assert server_start._pid_is_alive(pid) is False
+
+
+@pytest.mark.parametrize(
+    ("error", "expected"),
+    [
+        (PermissionError(), True),
+        (OSError(errno.EIO, "probe failed"), True),
+        (OSError(errno.ESRCH, "gone"), False),
+    ],
+)
+def test_pid_probe_handles_permission_and_os_errors(monkeypatch, error, expected):
+    monkeypatch.setattr(os, "kill", lambda *_args: (_ for _ in ()).throw(error))
+    assert server_start._pid_is_alive(123) is expected
+
+
+def test_atomic_marker_rejects_zero_progress_write(monkeypatch, tmp_path):
+    marker = tmp_path / "state" / "serve-inflight.json"
+    monkeypatch.setattr(os, "write", lambda *_args: 0)
+
+    with pytest.raises(OSError, match="made no progress"):
+        server_start._atomic_write_marker(marker)
+
+
+def test_marker_write_and_remove_failures_are_inert(monkeypatch, tmp_path):
+    monkeypatch.setenv("HOME", str(tmp_path))
+    monkeypatch.setattr(
+        server_start,
+        "_atomic_write_marker",
+        lambda _path: (_ for _ in ()).throw(OSError("write failed")),
+    )
+    assert server_start._begin_inflight_marker() == (False, False)
+
+    server_start._owns_inflight_marker = True
+    monkeypatch.setattr(
+        server_start,
+        "_marker_path",
+        lambda: (_ for _ in ()).throw(OSError("remove failed")),
+    )
+    server_start._remove_inflight_marker()
+    assert server_start._owns_inflight_marker is False
+
+
 @pytest.mark.parametrize(
     "stage",
     ["resolve", "download", "preflight", "prepare", "engine_start", "bind"],
@@ -322,6 +383,19 @@ def test_attempt_setup_failure_is_inert(monkeypatch):
     )
 
     server_start.attempted("qwen3.5-4b-4bit", load_policy="eager")
+
+
+def test_marker_setup_failure_does_not_block_attempted_event(monkeypatch):
+    events = _capture(monkeypatch)
+    monkeypatch.setattr(
+        server_start,
+        "_begin_inflight_marker",
+        lambda: (_ for _ in ()).throw(OSError("read-only home")),
+    )
+
+    server_start.attempted("qwen3.5-4b-4bit", load_policy="eager")
+
+    assert [props["state"] for _, props in events] == ["attempted"]
 
 
 def test_load_policy_falls_back_to_eager_when_classification_fails(monkeypatch):

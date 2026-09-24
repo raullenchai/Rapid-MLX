@@ -120,8 +120,8 @@ def _remove_inflight_marker() -> None:
     global _owns_inflight_marker
     if not _owns_inflight_marker:
         return
-    path = _marker_path()
     try:
+        path = _marker_path()
         marker = _read_marker(path)
         if marker is not None and marker.get("pid") == os.getpid():
             path.unlink(missing_ok=True)
@@ -162,7 +162,11 @@ def attempted(model_ref: object = None, *, load_policy: object = None) -> None:
     with _lock:
         if _attempted:
             return
-        previous, owns = _begin_inflight_marker()
+        try:
+            previous, owns = _begin_inflight_marker()
+        except Exception as exc:
+            logger.debug("could not initialize serve-inflight marker: %r", exc)
+            previous, owns = False, False
         _previous_run_unterminated = previous
         _owns_inflight_marker = owns
         _load_policy = resolved_policy
