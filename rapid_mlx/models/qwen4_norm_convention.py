@@ -108,13 +108,12 @@ def normalize_qwen4_checkpoint(model, weights, norm_type):
     n = len(ordered)
     median = (ordered[(n - 1) // 2] + ordered[n // 2]) / 2
     ones_vote = sum(value > 0.5 for value in means) / n
-    if ones_vote == 1.0 and 0.75 <= median <= 1.5:
+    # Trained zero-centered anchors can cross 0.5 (the immutable public
+    # Flash-Next artifact has one such layer out of 48). Require a 95% producer
+    # consensus plus the robust median band, rather than unanimity of means.
+    if ones_vote >= 0.95 and 0.75 <= median <= 1.5:
         convention = "direct_gamma"
-    elif (
-        ones_vote == 0.0
-        and all(value < 0.5 for value in means)
-        and -0.5 <= median <= 0.25
-    ):
+    elif ones_vote <= 0.05 and -0.5 <= median <= 0.25:
         convention = "zero_centered"
     else:
         raise ValueError(
@@ -137,5 +136,5 @@ def normalize_qwen4_checkpoint(model, weights, norm_type):
         "anchor_median": median,
         "direct_gamma_vote": ones_vote,
         "recentered_tensors": converted,
-        "detection": "complete_unanimous_attention_hc_anchor_band_v2",
+        "detection": "complete_95pct_attention_hc_anchor_band_v3",
     }
