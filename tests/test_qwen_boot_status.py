@@ -513,11 +513,22 @@ def test_get_stats_and_status_forward_only_redacted_qwen_fields(
         companion=False,
     )
     engine._finalize_qwen_runtime_observability()
+    engine._qwen36_native_text_qualification = {
+        "qualified": False,
+        "reason": "performance_not_qualified",
+        "receipt_sha256": (
+            "fb6af37e0a8f7aeaef0131e3a0c5f6f4d24761af253c533e69fe74b9fed3d227"
+        ),
+        "runtime": "mlx-vlm==0.7.1",
+    }
     stats = engine.get_stats()
     assert stats["qwen_auto_enabled"] is False
     assert stats["qwen_runtime_plan"]["reason"] == "legacy_default"
     assert stats["qwen_runtime_activation"] == "pending_first_request"
     assert "qwen_artifact_truth" not in stats
+    assert stats["qwen36_native_text_qualification"]["reason"] == (
+        "performance_not_qualified"
+    )
 
     monkeypatch.setattr(
         health,
@@ -528,6 +539,10 @@ def test_get_stats_and_status_forward_only_redacted_qwen_fields(
     assert payload["qwen_auto_enabled"] is False
     assert payload["qwen_runtime_plan"] == stats["qwen_runtime_plan"]
     assert payload["qwen_runtime_activation"] == "pending_first_request"
+    assert (
+        payload["qwen36_native_text_qualification"]
+        == stats["qwen36_native_text_qualification"]
+    )
     assert "model_name" not in payload["qwen_runtime_plan"]
     assert str(tmp_path) not in json.dumps(payload)
 

@@ -458,6 +458,7 @@ async def status():
         "qwen_runtime_plan",
         "qwen_runtime_activation",
         "qwen_artifact_truth",
+        "qwen36_native_text_qualification",
     ):
         if key in stats:
             status_payload[key] = stats[key]

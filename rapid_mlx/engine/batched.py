@@ -49,6 +49,11 @@ ADMISSION_ORPHAN_GRACE_SECONDS = 2.0
 
 logger = logging.getLogger(__name__)
 
+_QWEN36_NATIVE_TEXT_NO_GO_REASON = "performance_not_qualified"
+_QWEN36_NATIVE_TEXT_NO_GO_RECEIPT_SHA256 = (
+    "fb6af37e0a8f7aeaef0131e3a0c5f6f4d24761af253c533e69fe74b9fed3d227"
+)
+
 
 class _QwenRuntimeActivation(str, Enum):
     """Closed live activation state for the immutable selected plan."""
@@ -1030,21 +1035,35 @@ def _supports_qwen36_native_text_cache(language_model: Any) -> bool:
         return False
 
 
-def _should_start_qwen36_native_text_cache(
+def _qwen36_native_text_no_go_status(
     language_model: Any,
     *,
     config_model_type: str | None,
     arrays_cache_compat: bool,
     spec_decode: str,
     no_hybrid: bool = False,
-) -> bool:
-    return bool(
+) -> dict[str, str | bool] | None:
+    """Explain why a formerly eligible 0.7.1 companion stays disabled."""
+
+    # The exact Qwen3.6 receipt on the pinned mlx-vlm 0.7.1 runtime was slower
+    # in all six paired measurements (0.729x median). Preserve the old geometry
+    # match only to make the closed decision observable; there is no activation
+    # path from this verdict.
+    candidate_matches = bool(
         arrays_cache_compat
         and not no_hybrid
         and config_model_type == "qwen3_5_moe"
         and spec_decode == "none"
         and _supports_qwen36_native_text_cache(language_model)
     )
+    if not candidate_matches:
+        return None
+    return {
+        "qualified": False,
+        "reason": _QWEN36_NATIVE_TEXT_NO_GO_REASON,
+        "receipt_sha256": _QWEN36_NATIVE_TEXT_NO_GO_RECEIPT_SHA256,
+        "runtime": "mlx-vlm==0.7.1",
+    }
 
 
 class BatchedEngine(BaseEngine):
@@ -1204,6 +1223,7 @@ class BatchedEngine(BaseEngine):
         self._qwen_runtime_plan: QwenRuntimePlan | None = None
         self._qwen_artifact_truth: QwenArtifactTruth | None = None
         self._qwen_mtp_dispatch_result: str | None = None
+        self._qwen36_native_text_qualification = None
         self._tool_logits_processor_factory = None
 
         self._model = None
@@ -1769,6 +1789,7 @@ class BatchedEngine(BaseEngine):
         self._qwen_artifact_truth = None
         self._qwen_artifact_snapshot_source = None
         self._qwen_mtp_dispatch_result = None
+        self._qwen36_native_text_qualification = None
 
     def _qwen_runtime_activation(self) -> _QwenRuntimeActivation:
         """Report selected-MTP activation without mutating its boot plan."""
@@ -2220,14 +2241,20 @@ class BatchedEngine(BaseEngine):
             else getattr(config, "model_type", None)
         )
         spec_decode = getattr(self._scheduler_config, "spec_decode", "none")
-        if _should_start_qwen36_native_text_cache(
+        self._qwen36_native_text_qualification = _qwen36_native_text_no_go_status(
             language_model,
             config_model_type=config_model_type,
             arrays_cache_compat=arrays_cache_compat,
             spec_decode=spec_decode,
             no_hybrid=getattr(self, "_no_hybrid", False),
-        ):
-            await self._start_qwen36_native_text_engine(language_model)
+        )
+        if self._qwen36_native_text_qualification is not None:
+            logger.info(
+                "Qwen3.6 native-cache text companion disabled: reason=%s "
+                "receipt_sha256=%s",
+                _QWEN36_NATIVE_TEXT_NO_GO_REASON,
+                _QWEN36_NATIVE_TEXT_NO_GO_RECEIPT_SHA256,
+            )
 
         logger.info(
             f"MLLM Scheduler started with continuous batching: "
@@ -4579,6 +4606,9 @@ class BatchedEngine(BaseEngine):
         qwen_truth = getattr(self, "_qwen_artifact_truth", None)
         if qwen_truth is not None:
             stats["qwen_artifact_truth"] = qwen_truth.to_status_dict()
+        qwen36_qualification = getattr(self, "_qwen36_native_text_qualification", None)
+        if qwen36_qualification is not None:
+            stats["qwen36_native_text_qualification"] = dict(qwen36_qualification)
         prompt_host_cache = getattr(self, "_prompt_host_cache", None)
         if prompt_host_cache is not None:
             stats["prompt_host_cache"] = prompt_host_cache.stats()

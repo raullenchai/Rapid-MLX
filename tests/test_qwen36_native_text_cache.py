@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import concurrent.futures
+import logging
 from types import SimpleNamespace
 
 import pytest
@@ -17,8 +18,8 @@ from mlx_lm.models.cache import ArraysCache, BatchKVCache, KVCache
 from rapid_mlx.engine.batched import (
     BatchedEngine,
     Qwen36NativeCacheTextWrapper,
+    _qwen36_native_text_no_go_status,
     _qwen36_text_arrays_cache_type,
-    _should_start_qwen36_native_text_cache,
     _supports_qwen36_native_text_cache,
 )
 from scripts.benchmark_qwen36_native_text_cache import _behavioral_pass
@@ -257,7 +258,7 @@ def test_eligibility_fails_closed_on_malformed_layer_container():
     assert _supports_qwen36_native_text_cache(_MalformedModel()) is False
 
 
-def test_start_gate_rejects_spec_decode_and_no_hybrid_override():
+def test_pinned_runtime_verdict_closes_former_qwen36_candidate():
     args = SimpleNamespace(
         model_type="qwen3_5_moe_text",
         hidden_size=2048,
@@ -280,16 +281,19 @@ def test_start_gate_rejects_spec_decode_and_no_hybrid_override():
         "spec_decode": "none",
     }
 
-    assert _should_start_qwen36_native_text_cache(model, **kwargs) is True
+    assert _qwen36_native_text_no_go_status(model, **kwargs) == {
+        "qualified": False,
+        "reason": "performance_not_qualified",
+        "receipt_sha256": (
+            "fb6af37e0a8f7aeaef0131e3a0c5f6f4d24761af253c533e69fe74b9fed3d227"
+        ),
+        "runtime": "mlx-vlm==0.7.1",
+    }
     assert (
-        _should_start_qwen36_native_text_cache(
-            model, **{**kwargs, "spec_decode": "mtp"}
-        )
-        is False
+        _qwen36_native_text_no_go_status(model, **{**kwargs, "spec_decode": "mtp"})
+        is None
     )
-    assert (
-        _should_start_qwen36_native_text_cache(model, **kwargs, no_hybrid=True) is False
-    )
+    assert _qwen36_native_text_no_go_status(model, **kwargs, no_hybrid=True) is None
 
 
 def test_request_routing_keeps_media_on_mllm_and_text_on_native_engine():
@@ -431,8 +435,9 @@ async def test_native_text_engine_failure_keeps_mllm_authoritative(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_mllm_start_activates_native_text_lane_only_after_qualification(
+async def test_explicit_mllm_exact_qwen36_keeps_native_companion_disabled(
     monkeypatch,
+    caplog,
 ):
     from rapid_mlx import mllm_scheduler as mllm_scheduler_module
     from rapid_mlx.engine import batched as batched_module
@@ -472,6 +477,9 @@ async def test_mllm_start_activates_native_text_lane_only_after_qualification(
         async def start(self):
             return None
 
+        def get_stats(self):
+            return {}
+
     monkeypatch.setattr(mllm_module, "MLXMultimodalLM", _FakeMultimodalLM)
     monkeypatch.setattr(mllm_scheduler_module, "MLLMScheduler", _FakeMLLMScheduler)
     monkeypatch.setattr(
@@ -483,6 +491,7 @@ async def test_mllm_start_activates_native_text_lane_only_after_qualification(
 
     engine = BatchedEngine("fake/qwen36", force_mllm=True)
     activated = []
+    caplog.set_level(logging.INFO)
 
     async def _activate(model):
         activated.append(model)
@@ -495,8 +504,27 @@ async def test_mllm_start_activates_native_text_lane_only_after_qualification(
         engine._model_load_executor.shutdown(wait=True)
         engine._model_load_executor = None
 
-    assert activated == [language_model]
+    assert activated == []
     assert isinstance(engine._mllm_scheduler, _FakeMLLMScheduler)
+    assert engine._engine is None
+    assert engine._mllm_native_text_engine is False
+    assert engine._qwen36_native_text_qualification == {
+        "qualified": False,
+        "reason": "performance_not_qualified",
+        "receipt_sha256": (
+            "fb6af37e0a8f7aeaef0131e3a0c5f6f4d24761af253c533e69fe74b9fed3d227"
+        ),
+        "runtime": "mlx-vlm==0.7.1",
+    }
+    assert (
+        engine.get_stats()["qwen36_native_text_qualification"]
+        == engine._qwen36_native_text_qualification
+    )
+    assert any(
+        "Qwen3.6 native-cache text companion disabled" in record.message
+        and "performance_not_qualified" in record.message
+        for record in caplog.records
+    )
 
 
 @pytest.mark.asyncio
