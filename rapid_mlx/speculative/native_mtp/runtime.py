@@ -10,7 +10,7 @@ from importlib.util import find_spec
 from typing import Any
 
 logger = logging.getLogger(__name__)
-QUALIFIED_MLX_VLM_VERSION = "0.7.1"
+QUALIFIED_MLX_VLM_VERSION = "0.7.2"
 GLM_CACHE_RUNTIME_LABEL = "cache-owned GLM runtime"
 
 

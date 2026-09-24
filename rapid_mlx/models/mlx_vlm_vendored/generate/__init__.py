@@ -1,4 +1,4 @@
-"""Vendored generation core (upstream ``mlx_vlm.generate`` @ 0.7.1).
+"""Vendored generation core (upstream ``mlx_vlm.generate`` @ 0.7.2).
 
 VENDOR-DEVIATION(subset-exports): the upstream ``generate/__init__.py``
 eagerly imports every modality module (dispatch, image, audio, video,

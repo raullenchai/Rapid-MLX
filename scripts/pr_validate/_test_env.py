@@ -187,7 +187,7 @@ TRUSTED_TEST_PINS: tuple[str, ...] = (
     "pytest-asyncio>=0.21.0,<1",
     "aiohttp>=3.9.0,<4",
     "pillow>=10.0.0,<13",
-    "mlx-vlm==0.7.1; platform_system == 'Darwin'",
+    "mlx-vlm==0.7.2; platform_system == 'Darwin'",
     "mlx-audio>=0.5.3,<0.6; platform_system == 'Darwin'",
 )
 

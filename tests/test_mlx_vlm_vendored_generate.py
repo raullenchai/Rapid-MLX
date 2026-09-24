@@ -3,7 +3,7 @@
 Mechanical guarantee: every function/class body in the vendored
 ``generate/ar.py``, ``generate/common.py``, ``generate/types.py``, and
 ``sample_utils.py`` is byte-identical to the pinned upstream
-``mlx-vlm==0.7.1`` source. The only permitted differences are the
+``mlx-vlm==0.7.2`` source. The only permitted differences are the
 documented import redirects (see the package inventory), which live at
 module level and therefore never enter a function's ``getsource``.
 

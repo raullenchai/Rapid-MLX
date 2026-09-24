@@ -3,7 +3,7 @@
 inputs.py``, step 2c).
 
 Provenance is enforced mechanically: every function of the vendored region
-must be byte-identical to the pinned upstream 0.7.1 source (the parity
+must be byte-identical to the pinned upstream 0.7.2 source (the parity
 probe pattern from the 2b-1 ``kv_quant`` test). Behavior parity is checked
 on the text-only path with a deterministic fake tokenizer, and the lane
 wiring (``mllm_batch_generator`` / ``multimodal_processor`` resolve the
@@ -29,7 +29,7 @@ import mlx.core as mx
 from rapid_mlx.models.mlx_vlm_vendored import inputs as vendored_inputs
 
 _UPSTREAM_REGION_SHA256 = (
-    "0c3681fa511baa4c345e6caba42760c7f1632ae2f69706982e39eb2f411b1294"
+    "78bccd66a6fc5187ffd6925bff63a2e6b7a7ac14417f966eaee686111cef3e9f"
 )
 _VENDOR_DEVIATION_COUNT = 9
 
@@ -71,7 +71,7 @@ def test_vendored_region_matches_reviewed_sources():
     mlx_vlm_utils = pytest.importorskip("mlx_vlm.utils")
     upstream_path = Path(inspect.getsourcefile(mlx_vlm_utils))
     upstream_lines = upstream_path.read_text().splitlines(keepends=True)
-    upstream_region = "".join(upstream_lines[1713:2807])
+    upstream_region = "".join(upstream_lines[1714:2813])
     assert hashlib.sha256(upstream_region.encode()).hexdigest() == (
         _UPSTREAM_REGION_SHA256
     )
@@ -79,7 +79,7 @@ def test_vendored_region_matches_reviewed_sources():
     vendored_path = Path(inspect.getsourcefile(vendored_inputs))
     vendored_source = vendored_path.read_text()
     assert hashlib.sha256(vendored_source.encode()).hexdigest() == (
-        "fab357702289e1b8380b4f42173f94970462495fd753633d7e2cf512a62468d5"
+        "21717b73c9506833d40d0e89ac76705166062630fe1ce1d3d69c46d5a17c627f"
     )
     deviation_comments = [
         token.string

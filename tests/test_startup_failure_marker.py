@@ -19,7 +19,7 @@ VISION_INSTALL_HINT = (
     "'rapid-mlx[vision]'\n"
     "or repair mlx-vlm directly (pinned to Rapid-MLX's validated set):\n"
     f"    {VISION_PYTHON} -m pip install --upgrade --force-reinstall "
-    "'mlx-vlm==0.7.1'"
+    "'mlx-vlm==0.7.2'"
 )
 
 
@@ -184,7 +184,7 @@ def test_sibling_extra_guards_emit_closed_marker_once(
             """,
             "error: model 'ui-tars-1.5-7b-4bit' requires the Rapid-MLX vision "
             "lane, but mlx-vlm '0.0' is incompatible; this release validates "
-            "exactly 0.7.1. This is a vision-runtime compatibility error, not "
+            "exactly 0.7.2. This is a vision-runtime compatibility error, not "
             "a Metal out-of-memory error.\n" + VISION_INSTALL_HINT + "\n",
             f"{MARKER_PREFIX} runtime_incompatible extra=vision",
         ),

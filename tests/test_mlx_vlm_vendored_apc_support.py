@@ -27,12 +27,12 @@ from rapid_mlx.models.mlx_vlm_vendored import kv_quant as vendored_kv_quant
 from rapid_mlx.models.mlx_vlm_vendored import vision_cache as vendored_vision_cache
 
 _APC_UPSTREAM_SHA256 = (
-    "5b2b940852f11f34f7b4daf627bc31fc701f8abffc72d40189bc3e5ac57f878c"
+    "67f96ba52d44f31749a5bf6b3355a58948f81e525d23465c78821c3e84d9825b"
 )
 _APC_VENDORED_SHA256 = (
-    "74c227cb9def17a60410a40f0cbffe113b42c55a05d2ef3b046019074fa603a8"
+    "5ece01a2f3edcb8b03cb4ea242dbc33843a469f13eef16eed1e3a79507351f3f"
 )
-_APC_DEVIATION_COUNT = 22
+_APC_DEVIATION_COUNT = 23
 
 
 class _FakeLM:
@@ -70,7 +70,7 @@ def test_engine_resolves_the_vendored_family():
 def test_engine_matches_reviewed_vendored_source():
     """Fail closed if either provenance anchor or reviewed copy drifts.
 
-    The step-2b-3 engine intentionally differs from mlx-vlm 0.7.1: it has
+    The step-2b-3 engine intentionally differs from mlx-vlm 0.7.2: it has
     dual-namespace support plus three repro-tested upstream bug fixes.  Pin
     both sources and the deviation-sentinel inventory so future edits cannot
     silently hide inside the large coverage-exempt file.
@@ -513,7 +513,8 @@ class _CoordinatorManager:
         self.block_size = 2
         self.exact_cache_min_tokens = 2
         self.lock = threading.Lock()
-        self.stats = types.SimpleNamespace(memory_skips=0)
+        self.stats = types.SimpleNamespace(memory_skips=0, restored_tokens=0)
+        self.memory_plan = apc_coordinator.PrefillMemoryPlan()
 
     def prepare_prefill(self, count):
         self.prepared.append(count)
@@ -539,7 +540,7 @@ def test_coordinator_block_and_checkpoint_paths(monkeypatch):
     assert block.enabled and block.strategy == "block" and not block.is_checkpoint
     assert block.legacy_mode == "block"
     block.prepare_prefill(9)
-    assert manager.prepared == [9]
+    assert manager.prepared == [0]
 
     monkeypatch.setattr(
         upstream_apc,
@@ -578,10 +579,10 @@ def test_coordinator_block_and_checkpoint_paths(monkeypatch):
         lambda blocks, **_kw: ["warm", *blocks],
     )
     assert block.materialize_single(
-        {"warm_cache": ["ready"]}, min_capacity_tokens=1
+        {"warm_cache": ["ready"], "prefix_len": 2}, min_capacity_tokens=1
     ) == ["ready"]
     assert block.materialize_single(
-        {"matched_blocks": ["cold"]}, min_capacity_tokens=1
+        {"matched_blocks": ["cold"], "prefix_len": 2}, min_capacity_tokens=1
     ) == ["warm", "cold"]
     monkeypatch.setattr(upstream_apc, "commit_prefix_blocks", lambda *_a, **_kw: None)
     assert block.commit(["cache"], [1, 2], blocks_in_use=["lease"])
