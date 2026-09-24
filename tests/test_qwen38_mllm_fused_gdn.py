@@ -687,6 +687,7 @@ def _boot_engine():
     "hardware",
     [
         (None, None),
+        ("Apple M4 Pro", 24),
         ("Apple M2 Pro", 32),
         ("Apple M4 Pro", 48),
         ("Apple M1 Max", 64),

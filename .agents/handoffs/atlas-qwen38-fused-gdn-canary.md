@@ -15,7 +15,7 @@
   `rapid-mlx/Qwen3.8-27B-4bit-MTP-MLX` revision `aa985c29…`.
 - A pure automatic-enrollment resolver reports `operator_enabled`,
   `automatic_qualified`, or `hardware_not_qualified`. Its production receipt
-  table is empty. Unknown hardware, 32 GiB, and unqualified 48/64 GiB hosts
+  table is empty. Unknown hardware, 24/32 GiB, and unqualified 48/64 GiB hosts
   stop before artifact/runtime/real-weight qualification. The environment
   opt-in remains diagnostic/canary behavior, not automatic qualification.
 - Admission requires B0's privately minted artifact truth and opaque verified
