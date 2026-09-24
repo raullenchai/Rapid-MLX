@@ -5,9 +5,9 @@ from __future__ import annotations
 
 import importlib.util
 import os
-import select
 import subprocess
 import sys
+import threading
 from pathlib import Path
 from typing import Literal
 
@@ -83,11 +83,25 @@ def _prompt_to_install(extra: OptionalExtra) -> bool:
         file=sys.stderr,
         flush=True,
     )
-    readable, _, _ = select.select([sys.stdin], [], [], _INSTALL_PROMPT_TIMEOUT_SECONDS)
-    if not readable:
+    response: list[str] = []
+    stdin = sys.stdin
+
+    def read_response() -> None:
+        response.append(stdin.readline())
+
+    reader = threading.Thread(target=read_response, daemon=True)
+    reader.start()
+    reader.join(timeout=_INSTALL_PROMPT_TIMEOUT_SECONDS)
+    if reader.is_alive():
         print(file=sys.stderr)
         return False
-    return sys.stdin.readline().strip().lower() in {"y", "yes"}
+    return bool(response) and response[0].strip().lower() in {"y", "yes"}
+
+
+def _is_tty(stream: object | None) -> bool:
+    """Treat detached streams and stream stand-ins as non-interactive."""
+    isatty = getattr(stream, "isatty", None)
+    return bool(isatty and isatty())
 
 
 def _install_optional_extra(exc: OptionalRuntimeMissing) -> None:
@@ -152,8 +166,8 @@ def handle_optional_runtime_missing(
         and (
             assume_yes
             or (
-                sys.stdin.isatty()
-                and sys.stderr.isatty()
+                _is_tty(sys.stdin)
+                and _is_tty(sys.stderr)
                 and _prompt_to_install(exc.extra)
             )
         )

@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+import argparse
 import importlib
 import json
 import os
@@ -630,6 +631,7 @@ def test_standalone_failure_guard_routes_optional_runtime_with_context(
     calls = []
     monkeypatch.setattr(server, "_engine", engine)
     monkeypatch.setattr(server, "_standalone_start_model", "bonsai2-27b-2bit")
+    monkeypatch.setattr(server, "_standalone_assume_yes", True)
 
     def handle(exc, **kwargs):
         calls.append((exc, kwargs))
@@ -651,6 +653,7 @@ def test_standalone_failure_guard_routes_optional_runtime_with_context(
                 "engine": engine,
                 "alias_or_path": "bonsai2-27b-2bit",
                 "auto_selected": False,
+                "assume_yes": True,
             },
         )
     ]
@@ -662,8 +665,13 @@ def test_standalone_main_records_model_before_startup(monkeypatch) -> None:
     class StopStartup(BaseException):
         pass
 
-    parsed = SimpleNamespace(model="bonsai2-27b-2bit", lazy_load=False)
-    monkeypatch.setattr("argparse.ArgumentParser.parse_args", lambda _self: parsed)
+    original_parse_args = argparse.ArgumentParser.parse_args
+    monkeypatch.setattr(
+        "argparse.ArgumentParser.parse_args",
+        lambda parser: original_parse_args(
+            parser, ["--model", "bonsai2-27b-2bit", "--yes"]
+        ),
+    )
     monkeypatch.setattr(
         consent_runtime,
         "startup",
@@ -674,6 +682,7 @@ def test_standalone_main_records_model_before_startup(monkeypatch) -> None:
         server.main()
 
     assert server._standalone_start_model == "bonsai2-27b-2bit"
+    assert server._standalone_assume_yes is True
 
 
 def test_real_dispatch_with_present_vision_extra_emits_no_failure(tmp_path) -> None:
