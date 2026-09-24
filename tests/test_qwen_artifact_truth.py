@@ -1051,6 +1051,35 @@ def test_runtime_conversion_rejects_stale_artifact_then_accepts_fresh_probe(
         )
 
 
+@pytest.mark.parametrize(
+    "converter",
+    [to_verified_runtime_target, to_runtime_drafter_identity],
+    ids=["target", "drafter"],
+)
+@pytest.mark.parametrize("fresh_failure", ["rebind", "probe"])
+def test_runtime_conversion_fails_closed_when_fresh_revalidation_is_unavailable(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    converter,
+    fresh_failure: str,
+) -> None:
+    snapshot, _hub, metadata = _materialize_snapshot(tmp_path, "qwen38_27b_4bit")
+    truth = probe_qwen_artifact(snapshot, binding=_binding(snapshot, metadata))
+
+    if fresh_failure == "rebind":
+        monkeypatch.setattr(
+            qwen_artifact, "verify_hub_snapshot_binding", lambda *_args, **_kwargs: None
+        )
+    else:
+
+        def reject_fresh_probe(*_args, **_kwargs):
+            raise ArtifactProbeError("synthetic fresh probe failure")
+
+        monkeypatch.setattr(qwen_artifact, "probe_qwen_artifact", reject_fresh_probe)
+
+    assert converter(truth) is None
+
+
 def test_fresh_conversion_reads_only_resolved_metadata_and_never_network_or_tensors(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -1269,6 +1298,29 @@ def test_unreadable_index_receipt_and_config_fail_closed(
         probe_qwen_artifact(tmp_path / "missing-config")
 
 
+def test_inaccessible_optional_index_cannot_downgrade_to_single_file(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    snapshot = tmp_path / "snapshot"
+    snapshot.mkdir()
+    index = snapshot / "model.safetensors.index.json"
+    (snapshot / "model.safetensors").touch()
+    original_lstat = os.lstat
+
+    def reject_index(path: os.PathLike[str] | str, *args, **kwargs):
+        if Path(path) == index:
+            raise PermissionError("synthetic inaccessible index")
+        return original_lstat(path, *args, **kwargs)
+
+    monkeypatch.setattr(os, "lstat", reject_index)
+
+    assert qwen_artifact._lexically_present(index) is True
+    assert (
+        qwen_artifact._target_weights(snapshot, None).layout
+        is TargetWeightLayout.INVALID_INDEX
+    )
+
+
 def test_orphan_shards_are_reported_without_an_index(tmp_path: Path) -> None:
     snapshot = tmp_path / "snapshot"
     snapshot.mkdir()
@@ -1324,6 +1376,104 @@ def test_weight_and_sidecar_metadata_errors_drop_content_identity(
         )
         is None
     )
+
+
+def test_inaccessible_snapshot_leaf_has_no_canonical_blob_provenance(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    snapshot, _hub, metadata = _materialize_snapshot(tmp_path, "qwen36_35b_4bit")
+    binding = _binding(snapshot, metadata)
+    shard = snapshot / metadata["target_shards"][0]
+    original_lstat = os.lstat
+
+    def reject_shard(path: os.PathLike[str] | str, *args, **kwargs):
+        if Path(path) == shard:
+            raise PermissionError("synthetic inaccessible snapshot leaf")
+        return original_lstat(path, *args, **kwargs)
+
+    monkeypatch.setattr(os, "lstat", reject_shard)
+
+    assert (
+        qwen_artifact._weight_file_identity(
+            shard, snapshot_dir=snapshot, binding=binding
+        )
+        is None
+    )
+
+
+@pytest.mark.parametrize("final_resolution", ["error", "drift"])
+def test_final_blob_resolution_failure_or_drift_has_no_provenance(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    final_resolution: str,
+) -> None:
+    snapshot, _hub, metadata = _materialize_snapshot(tmp_path, "qwen36_35b_4bit")
+    binding = _binding(snapshot, metadata)
+    shard = snapshot / metadata["target_shards"][0]
+    blob = shard.resolve(strict=True)
+    original_resolve = Path.resolve
+
+    def resolve_with_final_failure(path: Path, *args, **kwargs):
+        if path == blob:
+            if final_resolution == "error":
+                raise OSError("synthetic final blob resolution failure")
+            return blob.with_name("e" * 64)
+        return original_resolve(path, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "resolve", resolve_with_final_failure)
+
+    assert (
+        qwen_artifact._weight_file_identity(
+            shard, snapshot_dir=snapshot, binding=binding
+        )
+        is None
+    )
+
+
+def test_unresolvable_sidecar_receipt_keeps_only_lexical_observation(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    snapshot, _hub, metadata = _materialize_snapshot(tmp_path, "qwen38_27b_4bit")
+    candidate = snapshot / metadata["mtp_candidate"]["path"]
+    receipt = candidate.with_name(candidate.name + ".sha256")
+    observations: list[qwen_artifact._PathObservation] = []
+    original_resolve = Path.resolve
+
+    def reject_receipt(path: Path, *args, **kwargs):
+        if path == receipt:
+            raise OSError("synthetic receipt resolution failure")
+        return original_resolve(path, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "resolve", reject_receipt)
+
+    assert (
+        qwen_artifact._declared_sidecar_sha256(candidate, observations)
+        == metadata["mtp_candidate"]["declared_sha256"]
+    )
+    assert len(observations) == 1
+    assert observations[0].leaf == receipt
+    assert observations[0].resolved_target is None
+
+
+def test_symlink_fingerprint_records_readlink_failure(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    target = tmp_path / "target"
+    target.touch()
+    leaf = tmp_path / "leaf"
+    leaf.symlink_to(target)
+    original_readlink = os.readlink
+
+    def reject_leaf(path: os.PathLike[str] | str, *args, **kwargs):
+        if Path(path) == leaf:
+            raise OSError("synthetic readlink failure")
+        return original_readlink(path, *args, **kwargs)
+
+    monkeypatch.setattr(os, "readlink", reject_leaf)
+
+    fingerprint = qwen_artifact._metadata_fingerprint(leaf)
+    assert fingerprint[0] == "present"
+    assert fingerprint[-1] == ("unavailable", "OSError", None)
 
 
 def test_sidecar_blob_validation_and_stat_failures_are_non_authoritative(
