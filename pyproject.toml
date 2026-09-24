@@ -207,6 +207,12 @@ mtp = [
 embeddings = [
     "mlx-embeddings>=0.1.0",
 ]
+# Typed decision models served through the TypeSafe-compatible System One API.
+# laya-mlx is Python 3.11+; keep the extra installable on Rapid-MLX's Python
+# 3.10 floor so the native CLM backend and protocol remain available there.
+system-one = [
+    "laya-mlx>=0.2,<0.3; python_version >= '3.11'",
+]
 # HF → Cloudflare R2 mirror tooling (scripts/mirror_to_r2.py).
 # Off the hot path — only maintainers who seed models.rapidmlx.com need
 # this. Users NEVER install [mirror]; the client-side download path
@@ -234,6 +240,8 @@ all = [
     "pytz>=2024.1",
     # embeddings
     "mlx-embeddings>=0.1.0",
+    # system-one (Laya; native CLM support is built in)
+    "laya-mlx>=0.2,<0.3; python_version >= '3.11'",
     # dflash (text-only path covered by mlx-vlm above; listed for clarity)
     # audio
     "mlx-audio>=0.5.3,<0.6",
@@ -537,6 +545,7 @@ rapid-mlx = "rapid_mlx.cli:cli_entrypoint"
 rmlx = "rapid_mlx.cli:cli_entrypoint"
 rapid-mlx-chat = "rapid_mlx.gradio_app:main"
 rapid-mlx-bench = "rapid_mlx.benchmark:main"
+rapid-mlx-convert-clm-head = "rapid_mlx.system_one.convert_clm:main"
 # Deprecated pre-rename aliases — kept so existing users' scripts/muscle
 # memory keep working. Prefer the rapid-mlx* commands above.
 vllm-mlx = "rapid_mlx.cli:main"

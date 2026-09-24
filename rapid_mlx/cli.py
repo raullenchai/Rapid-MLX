@@ -3957,6 +3957,54 @@ def _validate_v41_product_spec_flags(args, *, owns_runtime: bool) -> None:
         raise SystemExit(2)
 
 
+def system_one_command(args) -> None:
+    """Start the dedicated typed-decision API without a generative model."""
+    import os
+
+    from rapid_mlx._uvicorn import run_uvicorn
+    from rapid_mlx.system_one.backends import CLMBackend, LayaBackend
+    from rapid_mlx.system_one.server import create_app
+
+    backend_name = args.backend
+    if backend_name == "auto":
+        backend_name = "clm" if "clm" in args.model.lower() else "laya"
+    if backend_name == "clm":
+        if not args.head:
+            raise SystemExit(
+                "error: CLM requires --head DIR containing converted "
+                "config.json and model.safetensors"
+            )
+        backend = CLMBackend(
+            args.encoder,
+            args.head,
+            cache_entries=args.cache_entries,
+            max_tokens=args.max_tokens,
+        )
+    else:
+        if args.head:
+            raise SystemExit("error: --head is only valid with --backend clm")
+        backend = LayaBackend(
+            args.model,
+            device=args.device,
+            dtype=args.dtype,
+            batch_size=args.batch_size,
+        )
+    _port_preflight_or_die(args.host, args.port, model=args.model)
+    api_key = args.api_key or os.environ.get("RAPID_MLX_API_KEY")
+    app = create_app(backend, api_key=api_key)
+    print(
+        f"System One ready: http://{args.host}:{args.port}/v1/systemone "
+        f"({backend_name}, {backend.default_model})"
+    )
+    run_uvicorn(
+        app,
+        host=args.host,
+        port=args.port,
+        log_level=args.log_level.lower(),
+        timeout_keep_alive=30,
+    )
+
+
 def serve_command(args):
     """Start the OpenAI-compatible server."""
     import logging
@@ -12159,6 +12207,60 @@ Examples:
     )
     subparsers = parser.add_subparsers(dest="command", help="Commands")
 
+    system_one_parser = subparsers.add_parser(
+        "system-one",
+        help="Serve a typed decision model",
+        description=(
+            "Start a TypeSafe-compatible decision server with POST "
+            "/v1/systemone and POST /v1/rank. This service is independent "
+            "from the OpenAI-compatible generative server."
+        ),
+        allow_abbrev=False,
+    )
+    system_one_parser.add_argument(
+        "model",
+        nargs="?",
+        default="convaiinnovations/laya",
+        help="Laya model id/path, or the public name for a CLM head",
+    )
+    system_one_parser.add_argument(
+        "--backend", choices=("auto", "laya", "clm"), default="auto"
+    )
+    system_one_parser.add_argument("--host", default="127.0.0.1")
+    system_one_parser.add_argument("--port", type=_port_arg, default=8700)
+    system_one_parser.add_argument("--api-key", default=None)
+    system_one_parser.add_argument(
+        "--log-level",
+        type=_log_level_choice,
+        choices=["DEBUG", "INFO", "WARNING", "ERROR"],
+        default="INFO",
+    )
+    system_one_parser.add_argument(
+        "--device", choices=("gpu", "cpu"), default="gpu", help="Laya device"
+    )
+    system_one_parser.add_argument(
+        "--dtype",
+        choices=("float16", "float32", "bfloat16"),
+        default="float16",
+        help="Laya weight dtype",
+    )
+    system_one_parser.add_argument("--batch-size", type=int, default=16)
+    system_one_parser.add_argument(
+        "--encoder",
+        default="Qwen/Qwen3-8B",
+        help="CLM backbone; use the BF16 Qwen3-8B reference for calibrated output",
+    )
+    system_one_parser.add_argument(
+        "--head",
+        help="Converted CLM head directory (config.json + model.safetensors)",
+    )
+    system_one_parser.add_argument(
+        "--cache-entries", type=non_negative_int, default=20_000
+    )
+    system_one_parser.add_argument(
+        "--max-tokens", type=positive_int, default=2048
+    )
+
     # Serve command. ``allow_abbrev=False`` blocks unique-prefix matches
     # like ``--no-thin`` resolving silently to ``--no-thinking``: with the
     # hidden ``--no-think`` cross-alias added in D4, both flags share the
@@ -14792,7 +14894,9 @@ def main():
                 confirm_or_abort(args.model, _size)
     # --- END B2 --------------------------------------------------------
 
-    if args.command == "serve":
+    if args.command == "system-one":
+        system_one_command(args)
+    elif args.command == "serve":
         from rapid_mlx.telemetry.server_start import set_failure_stage
 
         set_failure_stage("preflight")

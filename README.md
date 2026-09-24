@@ -335,6 +335,24 @@ Also: word-level timestamps on transcription, and local text-to-music at
 
 ---
 
+## Typed decisions with System One
+
+Serve fast `noul`, `choice`, and `score` decisions through a
+TypeSafe-compatible `/v1/systemone` API. Laya-MLX is the compact default;
+CLM-8B uses a native MLX Qwen3-8B encoder and cached state/action projections.
+
+```bash
+pip install 'rapid-mlx[system-one]'
+rapid-mlx system-one convaiinnovations/laya
+```
+
+CLM uses a converted copy of its upstream projection head and does not require
+PyTorch or vLLM while serving.
+
+→ [Laya and CLM setup, API examples, and compatibility limits](docs/guides/system-one.md)
+
+---
+
 ## Why Rapid-MLX
 
 | | |
@@ -573,7 +591,7 @@ If `pip install rapid-mlx` says "no matching distribution", your Python is too o
 
 For image-input / VLM models (Qwen-VL, true multimodal), install the vision extra: `pip install 'rapid-mlx[vision]'` — see [Optional extras](https://rapidmlx.com/docs/extras.html).
 
-For the complete feature set — vision, chat, embeddings, and audio — install the `[all]` extra: `pip install 'rapid-mlx[all]'`. Audio alone is `pip install 'rapid-mlx[audio]'`; see [Optional extras](https://rapidmlx.com/docs/extras.html).
+For the complete feature set — vision, chat, embeddings, audio, and System One — install the `[all]` extra: `pip install 'rapid-mlx[all]'`. Audio alone is `pip install 'rapid-mlx[audio]'`; see [Optional extras](https://rapidmlx.com/docs/extras.html).
 
 </details>
 
@@ -586,7 +604,7 @@ rapid-mlx --help                    # top-level command list
 rapid-mlx <subcommand> --help       # per-subcommand flags
 ```
 
-Covers chat, serve, share, agents (setup / test), bench, recipe, models, ls, pull, rm, alias, ps, info, connect, doctor, upgrade, telemetry, and launch.
+Covers chat, serve, system-one, share, agents (setup / test), bench, recipe, models, ls, pull, rm, alias, ps, info, connect, doctor, upgrade, telemetry, and launch.
 
 → [Full CLI reference with every flag](https://rapidmlx.com/docs/cli.html)
 

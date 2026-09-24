@@ -1,0 +1,363 @@
+# SPDX-License-Identifier: Apache-2.0
+"""Decision model backends for the System One service."""
+
+from __future__ import annotations
+
+import json
+import math
+import threading
+from collections import OrderedDict
+from pathlib import Path
+from typing import Any, Protocol
+
+from .schema import Question, answer_from_probabilities, clm_pairs
+
+
+class DecisionBackend(Protocol):
+    default_model: str
+
+    def answer(
+        self, state: Any, questions: dict[str, Question], model: str, temperature: float
+    ) -> dict: ...
+    def rank(
+        self,
+        context: Any,
+        question: str | None,
+        answers: list[str],
+        model: str,
+        temperature: float,
+    ) -> list[dict]: ...
+    def models(self) -> list[dict]: ...
+
+
+class LayaBackend:
+    def __init__(
+        self,
+        model: str,
+        *,
+        device: str = "gpu",
+        dtype: str = "float16",
+        batch_size: int = 16,
+    ):
+        try:
+            from laya_mlx import load
+        except ImportError as exc:
+            raise RuntimeError(
+                "Laya requires Python 3.11+ and the System One extra. "
+                "Install with: pip install 'rapid-mlx[system-one]'"
+            ) from exc
+        self._agent = load(model, device=device, dtype=dtype, batch_size=batch_size)
+        self.default_model = model
+        self._lock = threading.Lock()
+
+    @staticmethod
+    def _wire_questions(questions: dict[str, Question]) -> dict[str, dict]:
+        return {
+            key: value.model_dump(exclude_none=True) for key, value in questions.items()
+        }
+
+    def answer(
+        self, state: Any, questions: dict[str, Question], model: str, temperature: float
+    ) -> dict:
+        if model not in (self.default_model, "laya-rl-agent"):
+            raise KeyError(
+                f"unknown model {model!r}; available: {[self.default_model]}"
+            )
+        if temperature != 1.0:
+            raise ValueError(
+                "the Laya backend uses checkpoint calibration and requires temperature=1"
+            )
+        with self._lock:
+            result = self._agent.system_one(state, self._wire_questions(questions))
+        result["model"] = self.default_model
+        result.setdefault("usage", {})["billing_units"] = len(questions)
+        return result
+
+    def rank(
+        self,
+        context: Any,
+        question: str | None,
+        answers: list[str],
+        model: str,
+        temperature: float,
+    ) -> list[dict]:
+        request = Question(
+            type="choice",
+            instructions=question or "Choose the best answer.",
+            criteria={str(i): answer for i, answer in enumerate(answers)},
+        )
+        result = self.answer(context, {"rank": request}, model, temperature)["answers"][
+            "rank"
+        ]
+        ordered = sorted(result["probabilities"].items(), key=lambda item: -item[1])
+        return [
+            {"rank": rank + 1, "candidate": answers[int(index)], "prob": probability}
+            for rank, (index, probability) in enumerate(ordered)
+        ]
+
+    def models(self) -> list[dict]:
+        return [
+            {
+                "name": self.default_model,
+                "backend": "laya-mlx",
+                "description": "Laya typed decision model on native MLX",
+            }
+        ]
+
+
+class _ProjectionHead:
+    def __init__(self, config: dict[str, Any]):
+        import mlx.nn as nn
+
+        activation = config.get("activation", "gelu")
+        if activation not in {"gelu", "relu", "silu"}:
+            raise ValueError(f"unsupported CLM head activation {activation!r}")
+        hidden = int(config.get("hidden_size", 4096))
+        width = int(config["width"])
+        depth = int(config["depth"])
+        projection_dim = int(config.get("projection_dim", 512))
+
+        class Head(nn.Module):
+            def __init__(self):
+                super().__init__()
+                self.inp = nn.Linear(hidden, width)
+                self.hidden = [
+                    nn.Linear(width, width) for _ in range(max(0, depth - 2))
+                ]
+                self.norms = (
+                    [nn.LayerNorm(width) for _ in self.hidden]
+                    if config.get("layernorm", False)
+                    else []
+                )
+                self.out = nn.Linear(width, projection_dim)
+
+            def __call__(self, value):
+                import mlx.core as mx
+
+                activation = {
+                    "gelu": nn.gelu,
+                    "relu": nn.relu,
+                    "silu": nn.silu,
+                }[config.get("activation", "gelu")]
+                value = activation(self.inp(value))
+                for index, layer in enumerate(self.hidden):
+                    projected = layer(value)
+                    if self.norms:
+                        projected = self.norms[index](projected)
+                    projected = activation(projected)
+                    value = (
+                        value + projected
+                        if config.get("residual", False)
+                        else projected
+                    )
+                value = self.out(value).astype(mx.float32)
+                return value / mx.maximum(
+                    mx.linalg.norm(value, axis=-1, keepdims=True), 1e-12
+                )
+
+        self.module = Head()
+
+    def __call__(self, value):
+        return self.module(value)
+
+    def load_weights(self, weights: dict[str, Any], prefix: str) -> None:
+        pairs = []
+        for name, value in weights.items():
+            if name.startswith(prefix + "."):
+                local = name[len(prefix) + 1 :]
+                if (
+                    local.startswith("hidden.")
+                    or local.startswith("norms.")
+                    or local.startswith("inp.")
+                    or local.startswith("out.")
+                ):
+                    pairs.append((local, value))
+        expected = 4 + 2 * len(self.module.hidden) + (2 * len(self.module.norms))
+        if len(pairs) != expected:
+            raise ValueError(
+                f"CLM {prefix} has {len(pairs)} tensors; expected {expected}"
+            )
+        self.module.load_weights(pairs, strict=True)
+        self.module.eval()
+
+
+class CLMBackend:
+    """Native MLX CLM-8B encoder and projection heads.
+
+    The official checkpoint is a PyTorch pickle. Convert it once with
+    ``rapid-mlx-convert-clm-head``; serving never imports PyTorch.
+    """
+
+    def __init__(
+        self,
+        encoder: str,
+        head: str,
+        *,
+        cache_entries: int = 20_000,
+        max_tokens: int = 2048,
+    ):
+        import mlx.core as mx
+
+        from rapid_mlx.utils.tokenizer import load_model_with_fallback
+
+        head_path = Path(head).expanduser()
+        if head_path.suffix == ".pt":
+            raise ValueError(
+                "CLM .pt checkpoints must be converted before serving: "
+                f"rapid-mlx-convert-clm-head {head_path} OUTPUT_DIR"
+            )
+        config_path = (
+            head_path / "config.json"
+            if head_path.is_dir()
+            else head_path.with_name("config.json")
+        )
+        weights_path = (
+            head_path / "model.safetensors" if head_path.is_dir() else head_path
+        )
+        if not config_path.is_file() or not weights_path.is_file():
+            raise ValueError("CLM head must contain config.json and model.safetensors")
+        self.config = json.loads(config_path.read_text(encoding="utf-8"))
+        self._state_head = _ProjectionHead(self.config)
+        self._action_head = _ProjectionHead(self.config)
+        weights = mx.load(str(weights_path))
+        self._state_head.load_weights(weights, "state_head")
+        self._action_head.load_weights(weights, "action_head")
+        mx.eval(weights)
+        self._model, self._tokenizer = load_model_with_fallback(encoder)
+        inner = getattr(self._model, "model", None)
+        if inner is None or not callable(inner):
+            raise ValueError(
+                "CLM encoder must expose its pre-lm-head transformer as model.model"
+            )
+        hidden_size = int(getattr(getattr(self._model, "args", None), "hidden_size", 0))
+        model_type = getattr(getattr(self._model, "args", None), "model_type", None)
+        if model_type != "qwen3":
+            raise ValueError(
+                f"CLM-v0.1 heads require a Qwen3 encoder, got {model_type!r}"
+            )
+        quantization = getattr(getattr(self._model, "args", None), "quantization", None)
+        if quantization:
+            raise ValueError(
+                "CLM-v0.1 probability parity requires the BF16 Qwen3-8B "
+                "encoder; quantized encoders are not yet qualified"
+            )
+        expected = int(self.config.get("hidden_size", 4096))
+        if hidden_size != expected:
+            raise ValueError(
+                f"CLM head expects hidden size {expected}, encoder exposes {hidden_size}"
+            )
+        self._encoder = inner
+        self.encoder_name = encoder
+        self.default_model = self.config.get("model_name", "clm-latest")
+        self._scale = min(100.0, math.exp(float(self.config["logit_scale"])))
+        self._max_tokens = max_tokens
+        self._cache_entries = max(0, cache_entries)
+        self._cache: OrderedDict[tuple[str, str], Any] = OrderedDict()
+        self._lock = threading.Lock()
+
+    def _token_ids(self, text: str) -> list[int]:
+        tokenizer = getattr(self._tokenizer, "_tokenizer", self._tokenizer)
+        ids = tokenizer.encode(text, add_special_tokens=True)
+        if not ids:
+            eos = getattr(tokenizer, "eos_token_id", None)
+            if eos is None:
+                raise ValueError(
+                    "CLM encoder tokenizer produced no tokens and has no eos token"
+                )
+            ids = [eos]
+        return ids[-self._max_tokens :]
+
+    def _project(self, kind: str, texts: list[str]):
+        import mlx.core as mx
+
+        head = self._state_head if kind == "state" else self._action_head
+        output = []
+        input_tokens = 0
+        for text in texts:
+            key = (kind, text)
+            cached = self._cache.get(key)
+            if cached is None:
+                token_ids = self._token_ids(text)
+                input_tokens += len(token_ids)
+                ids = mx.array([token_ids])
+                hidden = self._encoder(ids)[:, -1, :]
+                cached = head(hidden)[0]
+                mx.eval(cached)
+                if self._cache_entries:
+                    self._cache[key] = cached
+                    self._cache.move_to_end(key)
+                    while len(self._cache) > self._cache_entries:
+                        self._cache.popitem(last=False)
+            else:
+                self._cache.move_to_end(key)
+            output.append(cached)
+        return mx.stack(output), input_tokens
+
+    def answer(
+        self, state: Any, questions: dict[str, Question], model: str, temperature: float
+    ) -> dict:
+        import mlx.core as mx
+
+        if model != self.default_model:
+            raise KeyError(
+                f"unknown model {model!r}; available: {[self.default_model]}"
+            )
+        pairs = clm_pairs(state, questions)
+        states = [item[0] for item in pairs.values()]
+        candidates = [candidate for item in pairs.values() for candidate in item[2]]
+        with self._lock:
+            state_vectors, state_tokens = self._project("state", states)
+            action_vectors, action_tokens = self._project("action", candidates)
+            answers_out = {}
+            offset = 0
+            for row, (question_id, (_, keys, option_texts)) in enumerate(pairs.items()):
+                count = len(option_texts)
+                logits = (self._scale / temperature) * (
+                    action_vectors[offset : offset + count] @ state_vectors[row]
+                )
+                probabilities = mx.softmax(logits).tolist()
+                answers_out[question_id] = answer_from_probabilities(
+                    questions[question_id], keys, probabilities
+                )
+                offset += count
+        return {
+            "model": model,
+            "answers": answers_out,
+            "usage": {
+                "billing_units": len(questions),
+                "input_tokens": state_tokens + action_tokens,
+                "output_tokens": 0,
+            },
+        }
+
+    def rank(
+        self,
+        context: Any,
+        question: str | None,
+        answers: list[str],
+        model: str,
+        temperature: float,
+    ) -> list[dict]:
+        q = Question(
+            type="choice",
+            instructions=question or "",
+            criteria={str(i): answer for i, answer in enumerate(answers)},
+        )
+        result = self.answer(context, {"rank": q}, model, temperature)["answers"][
+            "rank"
+        ]
+        ordered = sorted(result["probabilities"].items(), key=lambda item: -item[1])
+        return [
+            {"rank": rank + 1, "candidate": answers[int(index)], "prob": probability}
+            for rank, (index, probability) in enumerate(ordered)
+        ]
+
+    def models(self) -> list[dict]:
+        return [
+            {
+                "name": self.default_model,
+                "backend": "clm-mlx",
+                "encoder": self.encoder_name,
+                "description": "CLM contrastive state/action model on native MLX",
+            }
+        ]
