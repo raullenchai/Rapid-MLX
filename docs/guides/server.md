@@ -46,9 +46,9 @@ flag visible in `rapid-mlx serve --help`, grouped by category — lives in the
 
 | Option | Description | Default |
 |--------|-------------|---------|
-| `--port` | Server port | 8000 |
+| `--port` | Server port; when omitted, uses the first free port from 8000 through 8009; an explicit port never falls back | First free in 8000–8009 |
 | `--host` | Server host (loopback-only by default; pass `0.0.0.0` to expose on LAN) | 127.0.0.1 |
-| `--listen-fd` | Adopt a pre-bound listening socket (3-1023) from a supervisor instead of binding; `--host`/`--port` are then ignored (see the socket-activation section below) | None |
+| `--listen-fd` | Adopt a pre-bound listening socket (3-1023) from a supervisor instead of binding; `--host`/`--port` are then ignored. Native MTP, DSpark K4, DFlash, and DDTree reject this option with rc 2 (see the socket-activation section below) | None |
 | `--log-level` | Log level for Python logging and uvicorn (`DEBUG`, `INFO`, `WARNING`, `ERROR`) | INFO |
 | `--served-model-name` | Model name reported by the API; when unset the `model` argument is used | None |
 | `--api-key` | API key for authentication (falls back to `RAPID_MLX_API_KEY`) | None |
@@ -914,7 +914,9 @@ fd at any point is one with auth in place.
 
 `rapid-mlx serve <alias> --listen-fd N` adopts the inherited fd
 instead of binding fresh. `--host` and `--port` are ignored when
-`--listen-fd` is set.
+`--listen-fd` is set. Native MTP, DSpark K4, DFlash, and DDTree do not
+support inherited listeners and reject `--listen-fd` with rc 2 before
+model loading.
 
 Example (parent-process style, mirroring `LISTEN_FDS=1` conventions):
 
