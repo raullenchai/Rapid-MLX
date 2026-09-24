@@ -88,6 +88,14 @@ ALIAS_TO_CATALOG: dict[str, str] = {
 # customer was promised, so the flag is withheld and an explicit
 # ``--no-thinking`` passthrough is rejected instead of silently obeyed.
 CATALOG_REASONING_REQUIRED: frozenset[str] = frozenset({"glm-5.3-flash"})
+# Server-wide ``--default-reasoning-effort`` injected per catalog listing
+# (#3714). GLM-5.3's template renders ``Reasoning Effort: Max`` for a request
+# that says nothing, so a trivial prompt burns ``max_tokens`` in thinking and
+# returns truncated content — the cloud origin answers such prompts in a few
+# tokens. ``low`` matches that shape; a client that sends its own
+# ``reasoning_effort`` (or any other reasoning knob) still wins per request,
+# and an explicit passthrough after ``--`` replaces the injected value.
+CATALOG_DEFAULT_REASONING_EFFORT: dict[str, str] = {"glm-5.3-flash": "low"}
 
 # §3.1 error taxonomy: terminal codes surface + exit non-zero; the rest
 # (429 / 5xx / network) retry with capped exponential backoff.
@@ -793,6 +801,22 @@ _POOL_DEFAULT_MAX_CONCURRENCY = 2
 _POOL_MAX_CONCURRENCY_CEILING = 64
 
 
+def _passthrough_option_value(passthrough: list[str], option: str) -> str | None:
+    """Value of the last ``<option> V`` / ``<option>=V`` in a serve
+    passthrough (argparse store semantics: last occurrence wins), or ``None``
+    when the option is absent. Exact flag match, like ``_pool_max_concurrency``."""
+    value: str | None = None
+    for i, token in enumerate(passthrough):
+        flag, sep, attached = token.partition("=")
+        if flag != option:
+            continue
+        if sep:
+            value = attached
+        elif i + 1 < len(passthrough):
+            value = passthrough[i + 1]
+    return value
+
+
 def _pool_max_concurrency(passthrough: list[str]) -> int:
     """Slots to advertise at registration: the ``--max-num-seqs`` the child
     serve will actually run with (§5.3 default 2, or the user's ``--``
@@ -1333,6 +1357,17 @@ def _run_share(
             f"`--no-thinking` would make this node answer differently from "
             f"the contract customers were promised. Drop the flag."
         )
+    if (
+        catalog_id in CATALOG_REASONING_REQUIRED
+        and _passthrough_option_value(passthrough, "--default-reasoning-effort")
+        == "none"
+    ):
+        raise QuickSilverError(
+            f"{catalog_id} serves with reasoning always on in the QuickSilver "
+            f"pool; `--default-reasoning-effort none` would switch thinking "
+            f"off for every request that does not ask for it. Use low/medium/"
+            f"high or drop the flag."
+        )
 
     api_base = _validate_api_base(
         args.quicksilver_api if args.quicksilver_api is not None else DEFAULT_PAY_API
@@ -1476,6 +1511,11 @@ def _run_share(
         not args.thinking and not thinking_passthrough
     ):
         extra.append("--no-thinking")
+    default_effort = CATALOG_DEFAULT_REASONING_EFFORT.get(catalog_id)
+    if default_effort is not None and not any(
+        t.split("=", 1)[0] == "--default-reasoning-effort" for t in passthrough
+    ):
+        extra += ["--default-reasoning-effort", default_effort]
     # Pool requests (and the relay's readiness probe) address the node by its
     # CATALOG id, but the serve alias differs (§5.4, e.g. nemotron-3.5-lightning
     # vs nemotron-3.5-lightning-30b-4bit). Expose the loaded model UNDER the

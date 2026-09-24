@@ -656,6 +656,7 @@ def _build_app(
     cors_policy: Any | None = None,
     tool_call_parser: str | None = None,
     reasoning_parser_name: str | None = None,
+    default_reasoning_effort: str | None = None,
     render_prompt_fn: Any | None = None,
     stream_generate_fn: Any | None = None,
     generate_fn: Any | None = None,
@@ -692,6 +693,7 @@ def _build_app(
     cfg.enable_auto_tool_choice = bool(tool_call_parser)
     cfg.tool_call_parser = tool_call_parser
     cfg.reasoning_parser_name = reasoning_parser_name
+    cfg.default_reasoning_effort = default_reasoning_effort
 
     from ...middleware.auth import (
         configure_rate_limiter,
@@ -965,7 +967,26 @@ def _build_app(
             # request.enable_thinking > None) to the shared extractor — same
             # source of truth as the OpenAI/anthropic helper, but without the
             # ``cfg.no_thinking`` consult that doesn't apply to dflash.
-            from ...service.helpers import _extract_thinking_from_request
+            from ...service.helpers import (
+                _extract_thinking_from_request,
+                maybe_apply_default_reasoning_effort,
+                maybe_apply_reasoning_effort,
+            )
+
+            # #3714: the serial lane used to drop ``reasoning_effort`` (and
+            # the client's ``chat_template_kwargs``) on the floor, so a
+            # template whose own default is the most expensive level
+            # (GLM-5.3 → "Max") could not be steered at all here. Same
+            # helper pair, same order and precedence as the unified route:
+            # the server default fills the knob only for a request with no
+            # reasoning signal, then the value is translated into the
+            # template's native level or a thinking-token cap.
+            maybe_apply_default_reasoning_effort(
+                request, default_effort=cfg.default_reasoning_effort
+            )
+            maybe_apply_reasoning_effort(
+                request, chat_template=getattr(processor, "chat_template", None)
+            )
 
             effective_thinking = _resolve_serial_thinking(
                 no_thinking=no_thinking,
@@ -1193,6 +1214,13 @@ def _build_app(
     return app
 
 
+#: Template variables the serial renderer resolves itself; a client
+#: ``chat_template_kwargs`` entry with one of these names is ignored.
+_SERVER_RESOLVED_TEMPLATE_KEYS: frozenset[str] = frozenset(
+    {"messages", "enable_thinking", "tools", "num_images", "num_audios"}
+)
+
+
 def _render_prompt(
     processor: Any,
     model: Any,
@@ -1260,6 +1288,14 @@ def _render_prompt(
         from ...api.tool_calling import convert_tools_for_template
 
         template_kwargs["tools"] = convert_tools_for_template(request.tools)
+    # Client ``chat_template_kwargs`` (#2474 passthrough, and the native
+    # ``reasoning_effort`` level #3043/#3714 merge in) reach the template
+    # here too; the server-resolved keys above are never overridable.
+    client_kwargs = getattr(request, "chat_template_kwargs", None)
+    if isinstance(client_kwargs, dict):
+        for key, value in client_kwargs.items():
+            if key not in _SERVER_RESOLVED_TEMPLATE_KEYS:
+                template_kwargs[key] = value
 
     return apply_chat_template(
         processor,
@@ -2174,6 +2210,7 @@ def run_dflash_server(
     cors_policy: Any | None = None,
     tool_call_parser: str | None = "hermes",
     reasoning_parser_name: str | None = "qwen3",
+    default_reasoning_effort: str | None = None,
     experimental_opt_in: bool = False,
     expected_algorithm: str | None = None,
 ) -> None:
@@ -2285,6 +2322,7 @@ def run_dflash_server(
         cors_policy=cors_policy,
         tool_call_parser=tool_call_parser,
         reasoning_parser_name=reasoning_parser_name,
+        default_reasoning_effort=default_reasoning_effort,
     )
 
     print()

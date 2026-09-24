@@ -612,6 +612,11 @@ jobs:
         # test_llm.py, test_deltanet_snapshot.py went with it.
         # test_memory_cache exercises mlx-importing code paths so it
         # lives here, not in the Linux test-matrix job.
+        # NOTE: ``-k`` is case-insensitive and matches the module name, so
+        # ``not Integration`` silently deselects EVERY test in
+        # test_dflash_integration.py. The ``or serial_lane`` clause re-admits
+        # its mlx_vlm-gated serial-lane tests (#3714) — the only coverage of
+        # the DFlash ``_render_prompt`` chat_template_kwargs path on Apple.
         env:
           COVERAGE_FILE: coverage-apple.data
         run: |
@@ -714,9 +719,10 @@ jobs:
             tests/test_diffusion_engine.py \
             tests/test_legacy_prefix_cache_flag_warnings.py \
             tests/test_module_import_smoke.py \
+            tests/test_dflash_integration.py \
             -v --tb=short \
             -m "not slow" \
-            -k "not Integration" \
+            -k "not Integration or serial_lane" \
             --cov=rapid_mlx \
             --cov-append \
             --cov-report=term-missing

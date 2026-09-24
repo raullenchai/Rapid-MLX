@@ -121,6 +121,9 @@ class ServerConfig:
     # --- Reasoning ---
     reasoning_parser: Any = None
     reasoning_parser_name: str | None = None
+    # ``serve --default-reasoning-effort``: OpenAI ``reasoning_effort`` value
+    # applied to requests that carry no reasoning knob of their own (#3714).
+    default_reasoning_effort: str | None = None
 
     # --- MCP ---
     mcp_manager: Any = None

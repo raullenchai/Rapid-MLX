@@ -115,6 +115,7 @@ from ..service.helpers import (
     ensure_engine_ready,
     get_engine,
     get_model_max_context,
+    maybe_apply_default_reasoning_effort,
     maybe_apply_reasoning_effort,
     maybe_auto_disable_thinking_for_casual_chat,
     maybe_auto_disable_thinking_for_tools,
@@ -1020,6 +1021,24 @@ async def create_response(request: Request):
                     cfg_for_adapter.tool_call_parser == "deepseek_v4_0731"
                 ),
             )
+            # #3714: ``serve --default-reasoning-effort`` fills the knob
+            # before anything else reads the request, so it behaves exactly
+            # like a client value on this surface too (the strict-schema and
+            # tool gates below see it as reasoning intent, as they would a
+            # client's). The Responses-native ``reasoning.effort`` counts via
+            # ``extra_signals`` — the adapter collapses it onto
+            # ``openai_request`` but the original is the authoritative shape.
+            if maybe_apply_default_reasoning_effort(
+                openai_request,
+                default_effort=cfg_for_adapter.default_reasoning_effort,
+                extra_signals=responses_request,
+            ):
+                logger.info(
+                    "#3714 reasoning_effort defaulted to %s on /v1/responses "
+                    "(serve --default-reasoning-effort; client sent no "
+                    "reasoning knob)",
+                    openai_request.reasoning_effort,
+                )
             # Capture the client's preference before server defaults and the
             # automatic tool/schema heuristics may mutate the adapted request.
             _explicit_thinking = _extract_thinking_from_request(openai_request)

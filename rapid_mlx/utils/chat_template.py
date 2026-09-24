@@ -1161,6 +1161,11 @@ REASONING_EFFORT_LADDER: tuple[str, ...] = (
     "xhigh",
 )
 
+#: Template-native level names that rank as a ladder tier without sharing
+#: its spelling. GLM-5.3's coercion fallback is ``max`` — the most thinking
+#: the model offers, i.e. the ``xhigh`` tier.
+_NATIVE_LEVEL_TIERS: dict[str, str] = {"max": "xhigh"}
+
 # A template declares its native effort vocabulary only when it *validates*
 # ``reasoning_effort`` against a literal set. Proven on the Jinja AST by a
 # forward, scope-aware walk (codex #3048 r1–r4), never by pattern matching:
@@ -1304,6 +1309,83 @@ def _guaranteed_membership(test, nodes):
     return compare, tested
 
 
+def _conjuncts(expr, nodes) -> list:
+    if isinstance(expr, nodes.And):
+        return _conjuncts(expr.left, nodes) + _conjuncts(expr.right, nodes)
+    return [expr]
+
+
+def _is_presence_guard(expr, tested: str, nodes) -> bool:
+    """``x is defined`` / ``x is not none`` / bare ``x`` on the tested
+    variable: a conjunct that is true for every value worth validating, so
+    it never keeps a *valid* value out of the coercion's accepting arm."""
+    if isinstance(expr, nodes.Name):
+        return bool(expr.name == tested)
+    if isinstance(expr, nodes.Not):
+        inner = expr.node
+        return bool(
+            isinstance(inner, nodes.Test)
+            and inner.name in ("undefined", "none")
+            and isinstance(inner.node, nodes.Name)
+            and inner.node.name == tested
+        )
+    return bool(
+        isinstance(expr, nodes.Test)
+        and expr.name == "defined"
+        and isinstance(expr.node, nodes.Name)
+        and expr.node.name == tested
+    )
+
+
+def _coercion_levels(
+    assign, derived: set[str], forgotten: set[str], nodes
+) -> tuple[str, ...] | None:
+    """Levels a ``{% set y = x if x in [...] else <default> %}`` coercion
+    accepts (GLM-5.3: ``reasoning_effort if reasoning_effort is defined and
+    reasoning_effort in ['low', 'high'] else 'max'`` → ``('low', 'high',
+    'max')``).
+
+    The template never rejects, it silently substitutes its own default for
+    anything outside the list — so the list is exactly the vocabulary a
+    caller can select. Accepted when the conditional's taken arm carries the
+    tested variable, its test is one ``<x> in <literal list>`` conjoined only
+    with presence guards on ``x``, and the fallback arm is a literal.
+    """
+    expr = assign.node
+    if not isinstance(expr, nodes.CondExpr) or expr.expr2 is None:
+        return None
+    tested = _value_preserving_source(expr.expr1, nodes)
+    if tested is None or tested not in derived or tested in forgotten:
+        return None
+    if not isinstance(expr.expr2, nodes.Const):
+        return None
+    parts = _conjuncts(expr.test, nodes)
+    compares = [
+        part
+        for part in parts
+        if isinstance(part, nodes.Compare)
+        and len(part.ops) == 1
+        and part.ops[0].op == "in"
+        and _value_preserving_source(part.expr, nodes) == tested
+    ]
+    if len(compares) != 1:
+        return None
+    for part in parts:
+        if part is compares[0]:
+            continue
+        if not _is_presence_guard(part, tested, nodes):
+            return None
+    levels = _literal_levels(compares[0].ops[0].expr, nodes)
+    if not levels:
+        return None
+    # The fallback is what the template renders for every other value, so
+    # it is a selectable level too (GLM-5.3: ``max``, the strongest one).
+    fallback = expr.expr2.value
+    if isinstance(fallback, str) and fallback and fallback not in levels:
+        levels = (*levels, fallback)
+    return levels
+
+
 def _literal_levels(expr, nodes) -> tuple[str, ...] | None:
     if not isinstance(expr, (nodes.Tuple, nodes.List)):
         return None
@@ -1414,8 +1496,55 @@ def _forget_assignments_in(stmts, forgotten: set[str], nodes) -> None:
                 forgotten.update(n.name for n in assign.target.find_all(nodes.Name))
 
 
+def _reads_name(node, name: str, nodes) -> bool:
+    """True if ``node`` loads ``name`` outside any macro body (a macro
+    only runs if called, which this analysis does not prove)."""
+    if isinstance(node, nodes.Macro):
+        return False
+    skipped: set[int] = set()
+    for macro in node.find_all(nodes.Macro):
+        skipped.update(id(inner) for inner in macro.find_all(nodes.Name))
+    # ``find_all`` yields descendants only; a bare ``{% set c = eff %}`` has
+    # the load as the node itself.
+    candidates = [node] if isinstance(node, nodes.Name) else []
+    return any(
+        inner.name == name and inner.ctx == "load" and id(inner) not in skipped
+        for inner in (*candidates, *node.find_all(nodes.Name))
+    )
+
+
+def _coercion_target_is_live(assign, continuation, nodes) -> bool:
+    """Whether a coercion's target can still reach rendered output.
+
+    ``continuation`` is everything that renders after the assignment, in
+    order: the rest of its own statement list followed by the tails of the
+    enclosing lists. A read there settles it live (a ``set`` that copies the
+    value only carries liveness to its own target), an unconditional
+    rebinding first settles it dead, and running out of statements means
+    nothing ever rendered it. Structural, so a minified single-line
+    template is analysed exactly like its multi-line twin.
+    """
+    live = {assign.target.name}
+    for stmt in continuation:
+        if isinstance(stmt, nodes.Assign) and isinstance(stmt.target, nodes.Name):
+            if any(_reads_name(stmt.node, name, nodes) for name in live):
+                live.add(stmt.target.name)
+            else:
+                live.discard(stmt.target.name)
+            if not live:
+                return False
+            continue
+        if any(_reads_name(stmt, name, nodes) for name in live):
+            return True
+    return False
+
+
 def _walk_for_validation(
-    stmts, derived: set[str], forgotten: set[str], nodes
+    stmts,
+    derived: set[str],
+    forgotten: set[str],
+    nodes,
+    continuation: list | None = None,
 ) -> tuple[str, ...] | None:
     """Forward walk of one statement list along the render path.
 
@@ -1428,11 +1557,24 @@ def _walk_for_validation(
     derived name are not searched: a validation reached only when
     ``reasoning_effort`` already failed or passed some other check is a
     path-constrained one and would misstate the accepted set.
+
+    ``continuation`` is what renders after this statement list ends (the
+    enclosing lists' tails, innermost first); a coercion whose target cannot
+    reach rendered output (``_coercion_target_is_live``) is dead and
+    publishes nothing.
     """
     derived = set(derived)
-    for stmt in stmts:
+    continuation = continuation or []
+    stmts = list(stmts)
+    for index, stmt in enumerate(stmts):
         if isinstance(stmt, nodes.Assign):
             if isinstance(stmt.target, nodes.Name):
+                if _coercion_target_is_live(
+                    stmt, [*stmts[index + 1 :], *continuation], nodes
+                ):
+                    levels = _coercion_levels(stmt, derived, forgotten, nodes)
+                    if levels:
+                        return levels
                 source = _value_preserving_source(stmt.node, nodes)
                 if source is not None and source in derived and source not in forgotten:
                     derived.add(stmt.target.name)
@@ -1483,7 +1625,11 @@ def _walk_for_validation(
                     branch.test, nodes
                 ):
                     levels = _walk_for_validation(
-                        branch.body, derived, forgotten, nodes
+                        branch.body,
+                        derived,
+                        forgotten,
+                        nodes,
+                        [*stmts[index + 1 :], *continuation],
                     )
                     searched_block_ids.add(id(branch.body))
                     if levels:
@@ -1493,7 +1639,13 @@ def _walk_for_validation(
                     and _is_thinking_disabled_guard(branch.test, nodes)
                 )
             if prior_branches_only_disable_thinking:
-                levels = _walk_for_validation(stmt.else_, derived, forgotten, nodes)
+                levels = _walk_for_validation(
+                    stmt.else_,
+                    derived,
+                    forgotten,
+                    nodes,
+                    [*stmts[index + 1 :], *continuation],
+                )
                 searched_block_ids.add(id(stmt.else_))
                 if levels:
                     return levels
@@ -1962,9 +2114,9 @@ def map_reasoning_effort_to_native(
     if effort not in REASONING_EFFORT_LADDER:
         return None
     ranked = [
-        (REASONING_EFFORT_LADDER.index(level), level)
+        (REASONING_EFFORT_LADDER.index(_NATIVE_LEVEL_TIERS.get(level, level)), level)
         for level in levels
-        if level in REASONING_EFFORT_LADDER
+        if _NATIVE_LEVEL_TIERS.get(level, level) in REASONING_EFFORT_LADDER
     ]
     if not ranked:
         return None
