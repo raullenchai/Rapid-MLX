@@ -8,7 +8,7 @@ Host: Studio for implementation; idle Mac required for real-model qualification
 
 Branch: `atlas/system-one-server`
 
-PR: pending
+PR: #3728
 
 ## Verified facts
 
