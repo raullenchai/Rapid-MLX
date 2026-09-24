@@ -41,10 +41,12 @@ from __future__ import annotations
 import errno
 import socket
 import types
+from contextlib import ExitStack
 
 import pytest
 
 from rapid_mlx import cli
+from rapid_mlx.connect import endpoints_from_bind, render_banner
 
 
 def _claim_loopback_port() -> tuple[socket.socket, int]:
@@ -71,6 +73,95 @@ def _serve_ns(port: int) -> types.SimpleNamespace:
     bypassed; we only need the host/port/listen_fd fields the
     dispatcher reads."""
     return types.SimpleNamespace(host="127.0.0.1", port=port, listen_fd=None)
+
+
+def _claim_exact_loopback_port(stack: ExitStack, port: int) -> None:
+    """Hold one exact loopback port for the duration of ``stack``."""
+
+    sock = stack.enter_context(socket.socket(socket.AF_INET, socket.SOCK_STREAM))
+    sock.bind(("127.0.0.1", port))
+    sock.listen(1)
+
+
+def test_implicit_busy_default_selects_8001_and_stamps_user_urls(capsys):
+    """An omitted ``--port`` falls forward before any server URL is rendered."""
+
+    with ExitStack() as stack:
+        _claim_exact_loopback_port(stack, 8000)
+        resolved = cli._resolve_serve_port("127.0.0.1", None, model="qwen3.5-4b-4bit")
+
+    assert resolved == 8001
+    captured = capsys.readouterr()
+    assert captured.err.splitlines() == [
+        "Port 8000 is in use; using 8001 instead (pass --port to choose)."
+    ]
+
+    args = types.SimpleNamespace(
+        host="127.0.0.1", port=resolved, listen_fd=None, lazy_load=False
+    )
+    assert "http://127.0.0.1:8001" in cli._serve_startup_message(args)
+    ready = render_banner(
+        endpoints_from_bind(args.host, args.port, model="qwen3.5-4b-4bit")
+    )
+    assert "Ready: http://127.0.0.1:8001" in ready
+
+
+def test_explicit_busy_port_keeps_existing_hard_failure(capsys):
+    """An explicit collision remains rc 1 with the established message."""
+
+    with ExitStack() as stack:
+        _claim_exact_loopback_port(stack, 8000)
+        with pytest.raises(SystemExit) as excinfo:
+            cli._resolve_serve_port("127.0.0.1", 8000, model="qwen3.5-4b-4bit")
+
+    assert excinfo.value.code == 1
+    captured = capsys.readouterr()
+    assert captured.err == ""
+    assert captured.out == (
+        "\n  Error: Port 8000 is already in use on 127.0.0.1.\n"
+        "  Try a different port: rapid-mlx serve qwen3.5-4b-4bit --port 8001\n"
+    )
+
+
+def test_implicit_port_fails_when_all_ten_candidates_are_busy(capsys):
+    """The implicit scan is bounded to 8000-8009 and retains rc 1."""
+
+    with ExitStack() as stack:
+        for port in range(8000, 8010):
+            _claim_exact_loopback_port(stack, port)
+        with pytest.raises(SystemExit) as excinfo:
+            cli._resolve_serve_port("127.0.0.1", None, model="qwen3.5-4b-4bit")
+
+    assert excinfo.value.code == 1
+    captured = capsys.readouterr()
+    assert captured.err == ""
+    assert "Error: Port 8000 is already in use on 127.0.0.1." in captured.out
+
+
+def test_implicit_wildcard_scan_detects_loopback_shadow(capsys):
+    """Wildcard fallback also treats a loopback-only listener as busy."""
+
+    with ExitStack() as stack:
+        _claim_exact_loopback_port(stack, 8000)
+        resolved = cli._resolve_serve_port("0.0.0.0", None, model="qwen3.5-4b-4bit")
+
+    assert resolved == 8001
+    assert capsys.readouterr().err.splitlines() == [
+        "Port 8000 is in use; using 8001 instead (pass --port to choose)."
+    ]
+
+
+def test_explicit_free_port_has_no_substitution_notice(capsys):
+    """A user-selected free port passes through without fallback output."""
+
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as probe:
+        probe.bind(("127.0.0.1", 0))
+        port = probe.getsockname()[1]
+
+    assert cli._resolve_serve_port("127.0.0.1", port, model="qwen3.5-4b-4bit") == port
+    captured = capsys.readouterr()
+    assert captured.err == ""
+    assert captured.out == ""
 
 
 def test_run_uvicorn_exits_nonzero_on_eaddrinuse(monkeypatch, capsys):

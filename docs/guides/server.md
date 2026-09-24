@@ -46,7 +46,7 @@ flag visible in `rapid-mlx serve --help`, grouped by category — lives in the
 
 | Option | Description | Default |
 |--------|-------------|---------|
-| `--port` | Server port | 8000 |
+| `--port` | Server port; when omitted, uses the first free port from 8000 through 8009 | First free in 8000–8009 |
 | `--host` | Server host (loopback-only by default; pass `0.0.0.0` to expose on LAN) | 127.0.0.1 |
 | `--listen-fd` | Adopt a pre-bound listening socket (3-1023) from a supervisor instead of binding; `--host`/`--port` are then ignored (see the socket-activation section below) | None |
 | `--log-level` | Log level for Python logging and uvicorn (`DEBUG`, `INFO`, `WARNING`, `ERROR`) | INFO |

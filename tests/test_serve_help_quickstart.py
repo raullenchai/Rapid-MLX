@@ -141,23 +141,38 @@ def test_serve_help_explains_the_ready_url(serve_help):
 
 
 def test_serve_help_documented_defaults_match_the_parser(serve_help):
-    """#2354 (codex r2 nit): the quick-start hard-codes ``(default 8000)`` and
-    ``(default 127.0.0.1...`` for the two flags a first user touches. Those
-    strings must stay in lock-step with the parser's actual defaults, or the
-    help silently lies when a default changes. Assert the documented numbers
-    equal the serve subparser's resolved defaults, and that the intro
-    presents them."""
+    """The help distinguishes an omitted port from an explicit port."""
     parser = cli.build_parser()
     serve = next(
         a.choices["serve"]
         for a in parser._actions
         if a.dest == "command" and "serve" in a.choices
     )
-    port = str(serve.get_default("port"))
     host = str(serve.get_default("host"))
     intro = _intro(serve_help)
-    assert f"(default {port})" in intro
+    assert serve.get_default("port") is None
+    assert "(default: first free in 8000-8009)" in intro
     assert f"(default {host}," in intro
+
+
+def test_serve_parser_preserves_omitted_port_for_resolution():
+    parser = cli.build_parser()
+    implicit = parser.parse_args(["serve", "qwen3.5-4b-4bit"])
+    explicit = parser.parse_args(["serve", "qwen3.5-4b-4bit", "--port", "8123"])
+
+    assert implicit.port is None
+    assert explicit.port == 8123
+
+
+def test_standalone_server_parser_also_preserves_port_explicitness():
+    """The legacy module entrypoint must share the omitted-port contract."""
+
+    from pathlib import Path
+
+    source = (Path(cli.__file__).parent / "server.py").read_text(encoding="utf-8")
+    start = source.index('"--port"', source.index("def main():"))
+    port_block = source[start : start + 220]
+    assert "default=None" in port_block
 
 
 def test_serve_parser_still_parses_a_normal_invocation():

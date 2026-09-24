@@ -23,6 +23,7 @@ import shlex
 import sys
 import threading
 from collections.abc import Callable
+from typing import NoReturn
 
 from rapid_mlx._completion import alias_completer
 from rapid_mlx.client_header import RAPID_CLIENT_CLI_CHAT
@@ -356,6 +357,41 @@ def _is_ipv6_host(host: str) -> bool:
     return ":" in host
 
 
+def _port_collision_host(host: str, port: int) -> str | None:
+    """Return the first bind address that collides, or ``None`` if free.
+
+    Wildcard hosts use the same loopback-shadow check as the serve preflight.
+    The sockets are probes only: each is closed before this function returns.
+    """
+    import socket
+
+    if host in _wildcard_host_aliases():
+        hosts_to_probe: tuple[str, ...] = (host, "127.0.0.1")
+    else:
+        hosts_to_probe = (host,)
+
+    for probe_host in hosts_to_probe:
+        family = socket.AF_INET6 if _is_ipv6_host(probe_host) else socket.AF_INET
+        with socket.socket(family, socket.SOCK_STREAM) as probe:
+            probe.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+            try:
+                probe.bind((probe_host, port))
+            except OSError:
+                return probe_host or "0.0.0.0"
+    return None
+
+
+def _exit_for_port_collision(port: int, collision_host: str, *, model: str) -> NoReturn:
+    """Emit the established preflight failure and terminate with rc 1."""
+
+    from rapid_mlx.telemetry.server_start import failed
+
+    failed("bind")
+    print(f"\n  Error: Port {port} is already in use on {collision_host}.")
+    print(f"  Try a different port: rapid-mlx serve {model} --port {port + 1}")
+    sys.exit(1)
+
+
 def _port_preflight_or_die(host: str, port: int, *, model: str) -> None:
     """Probe ``(host, port)`` AND — when ``host`` is a wildcard alias —
     additionally probe ``("127.0.0.1", port)``. Print a friendly error
@@ -384,8 +420,6 @@ def _port_preflight_or_die(host: str, port: int, *, model: str) -> None:
     MED #6 on PR #855 — pre-fix ``--host ::1`` raised ``OSError`` from
     the ``AF_INET`` socket and was misreported as "port already in use").
     """
-    import socket
-
     # Validate the port range up front. ``socket.bind()`` raises
     # ``OverflowError`` (NOT an ``OSError`` subclass) for a port outside
     # 0-65535, so the ``except OSError`` collision handler below would let
@@ -399,48 +433,39 @@ def _port_preflight_or_die(host: str, port: int, *, model: str) -> None:
         print(f"  Try a valid port: rapid-mlx serve {model} --port 8000")
         sys.exit(1)
 
-    wildcards = _wildcard_host_aliases()
-    if host in wildcards:
-        # Probe the requested wildcard FIRST (so a LAN-side port
-        # collision still surfaces the user-supplied host name in the
-        # error), then probe 127.0.0.1 to catch the loopback shadow.
-        hosts_to_probe: tuple[str, ...] = (host, "127.0.0.1")
-    else:
-        hosts_to_probe = (host,)
+    collision_host = _port_collision_host(host, port)
+    if collision_host is not None:
+        _exit_for_port_collision(port, collision_host, model=model)
 
-    for probe_host in hosts_to_probe:
-        # Pick the address family that matches the host string. IPv6
-        # literals (``::``, ``::1``, etc.) need ``AF_INET6`` or the bind
-        # raises before we can detect a real collision (codex r1 MED #6
-        # on PR #855). Everything else — IPv4 literals, wildcards
-        # (``0.0.0.0``, ``""``), the loopback-shadow probe ``127.0.0.1``
-        # — stays on ``AF_INET``.
-        family = socket.AF_INET6 if _is_ipv6_host(probe_host) else socket.AF_INET
-        # ``with`` guarantees the preflight socket is closed on every
-        # exit path — including OSError during ``bind``. The previous
-        # form called ``_sock.close()`` only on the success branch,
-        # which leaked the fd whenever the bind raised (e.g. when
-        # running under a test harness that catches ``SystemExit``).
-        with socket.socket(family, socket.SOCK_STREAM) as _sock:
-            _sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-            try:
-                _sock.bind((probe_host, port))
-            except OSError:
-                from rapid_mlx.telemetry.server_start import failed
 
-                failed("bind")
-                # Surface the host we actually collided on so the user
-                # can distinguish "LAN port busy" from "loopback port
-                # already claimed by another rapid-mlx / nc / proxy".
-                # Use the empty-string-friendly display name so
-                # ``--host ""`` shows up as ``0.0.0.0`` rather than a
-                # confusing bare quote.
-                display_host = probe_host or "0.0.0.0"
-                print(f"\n  Error: Port {port} is already in use on {display_host}.")
+def _resolve_serve_port(host: str, port: int | None, *, model: str) -> int:
+    """Resolve an omitted serve port to the first free port in 8000-8009.
+
+    An explicit port retains the established hard-fail behavior. The scan is
+    deliberately preflight-only; the Uvicorn bind guard remains authoritative
+    if another process claims the resolved port before the real bind.
+    """
+
+    if port is not None:
+        _port_preflight_or_die(host, port, model=model)
+        return port
+
+    first_collision_host: str | None = None
+    for candidate in range(8000, 8010):
+        collision_host = _port_collision_host(host, candidate)
+        if collision_host is None:
+            if candidate != 8000:
                 print(
-                    f"  Try a different port: rapid-mlx serve {model} --port {port + 1}"
+                    f"Port 8000 is in use; using {candidate} instead "
+                    "(pass --port to choose).",
+                    file=sys.stderr,
                 )
-                sys.exit(1)
+            return candidate
+        if first_collision_host is None:
+            first_collision_host = collision_host
+
+    assert first_collision_host is not None
+    _exit_for_port_collision(8000, first_collision_host, model=model)
 
 
 def _print_port_collision_and_exit(
@@ -1043,13 +1068,6 @@ def _serve_audio_mode(args, entry) -> None:
     # prints the right URL. Mirrors the text-path block.
     host_display = "localhost" if args.host == "0.0.0.0" else args.host
     listen_fd = getattr(args, "listen_fd", None)
-
-    # Port preflight — same friendly "port already in use" probe the
-    # text path runs. Skip in --listen-fd mode (the supervisor owns
-    # the socket; binding here would race). Mirrors the rationale on
-    # the text-path call site.
-    if listen_fd is None:
-        _port_preflight_or_die(args.host, args.port, model=args.model)
 
     if listen_fd is not None:
         print(
@@ -3988,6 +4006,13 @@ def serve_command(args):
         print(f"error: cannot configure video output directory: {exc}", file=sys.stderr)
         raise SystemExit(2) from exc
 
+    # Preserve whether the operator chose a port until serve dispatch. An
+    # omitted port scans the bounded default window once, before any model
+    # load or specialized runtime can consume ``args.port``. Socket-activated
+    # launches ignore host/port entirely and therefore need no resolution.
+    if getattr(args, "listen_fd", None) is None:
+        args.port = _resolve_serve_port(args.host, args.port, model=args.model)
+
     # Parent-PID watchdog (rapid-desktop issue #449): if the supervisor
     # passed its own PID via ``--watchdog-ppid`` or
     # ``$RAPID_MLX_WATCHDOG_PPID``, spawn a daemon thread that polls
@@ -5627,25 +5652,6 @@ def serve_command(args):
             )
     elif enable_prefix_cache:
         print(f"Prefix cache: max_entries={args.prefix_cache_size}")
-
-    # Check port availability before loading model (avoid wasting RAM on conflict).
-    # Set SO_REUSEADDR to match uvicorn's bind behavior — without it, this
-    # preflight fails on a port still in TCP TIME_WAIT (e.g. just after a
-    # previous rapid-mlx process exited), even though uvicorn would happily
-    # bind it. Caused spurious "port in use" errors for back-to-back server
-    # starts in the validation pipeline.
-    #
-    # Skip in --listen-fd mode: the supervisor has already bound the socket
-    # and handed us the fd. There is no host/port for us to check, and any
-    # bind we attempt here would race or collide with the inherited socket.
-    if getattr(args, "listen_fd", None) is None:
-        # Shared helper so the legacy ``python -m rapid_mlx.server``
-        # entrypoint (rapid_mlx/server.py) can call the same probe
-        # without duplicating the wildcard-alias / loopback-shadow
-        # logic. See ``_port_preflight_or_die`` for why we probe both
-        # the requested host AND 127.0.0.1 when the requested host is
-        # a wildcard alias.
-        _port_preflight_or_die(args.host, args.port, model=args.model)
 
     # Alias-level unified-memory floor (codex #1069 round 3 [NIT #3]).
     # Fires BEFORE _check_disk_space so the user sees the actionable
@@ -12173,7 +12179,7 @@ Examples:
             "\n"
             "  rapid-mlx serve qwen3.5-4b-4bit\n"
             "    <model>    pick yours: a short alias (rapid-mlx models) or HF repo\n"
-            "    --port     bind port (default 8000)\n"
+            "    --port     bind port (default: first free in 8000-8009)\n"
             "    --host     bind host (default 127.0.0.1, loopback-only)\n"
             "    --api-key  require a bearer token on every request\n"
             "\n"
@@ -12272,7 +12278,12 @@ Examples:
             "alias to keep that bypass closed."
         ),
     )
-    serve_parser.add_argument("--port", type=int, default=8000, help="Port to bind")
+    serve_parser.add_argument(
+        "--port",
+        type=int,
+        default=None,
+        help="Port to bind (default: first free port in 8000-8009)",
+    )
     _add_video_job_args(serve_parser)
     # Socket activation — let an external supervisor (launchd, systemd,
     # parent process) bind the listening socket and execve into

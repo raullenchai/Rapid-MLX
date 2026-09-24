@@ -3556,8 +3556,8 @@ Examples:
     parser.add_argument(
         "--port",
         type=int,
-        default=8000,
-        help="Port to bind to",
+        default=None,
+        help="Port to bind to (default: first free port in 8000-8009)",
     )
     from .cli import _add_video_job_args as _add_video_job_args_to_server_parser
 
@@ -3882,9 +3882,9 @@ Examples:
     # AND ``127.0.0.1`` when ``args.host`` is a wildcard alias
     # (``0.0.0.0`` or ``""``) so a co-resident loopback-only listener
     # is caught before we sink time into model load.
-    from .cli import _port_preflight_or_die
+    from .cli import _resolve_serve_port
 
-    _port_preflight_or_die(args.host, args.port, model=args.model)
+    args.port = _resolve_serve_port(args.host, args.port, model=args.model)
 
     # F-H08-INCOMPLETE: the ``[embeddings]`` extra-required guard MUST
     # fire BEFORE logging configuration and the security/banner side
