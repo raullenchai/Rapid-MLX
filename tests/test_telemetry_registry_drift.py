@@ -171,6 +171,21 @@ def test_count_bucket_scale_is_exact(registry):
     assert registry["enums"]["count_bucket"]["values"] == COUNT_BUCKET_SCALE
 
 
+def test_serve_error_class_scale_is_exact(registry):
+    assert registry["enums"]["serve_error_class"]["values"] == [
+        "unsupported_architecture",
+        "insufficient_memory",
+        "corrupt_weights",
+        "download_failed",
+        "missing_extra",
+        "invalid_config",
+        "tokenizer_load_failed",
+        "incompatible_weights",
+        "quantization_mismatch",
+        "other",
+    ]
+
+
 def test_server_start_state_contract_is_exact(registry):
     assert registry["enums"]["server_start_state"]["values"] == [
         "attempted",

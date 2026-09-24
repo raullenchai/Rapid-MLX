@@ -19,6 +19,15 @@ import pytest
 import requests
 
 import rapid_mlx
+from rapid_mlx.model_load_errors import (
+    IncompatibleWeights,
+    InvalidModelConfig,
+    QuantizationMismatch,
+    TokenizerLoadFailed,
+    load_tokenizer_checked,
+    load_weights_checked,
+    quantize_checked,
+)
 from rapid_mlx.telemetry import (
     consent_runtime,
     envelope,
@@ -256,6 +265,14 @@ def test_model_type_fails_closed_on_bad_profile(monkeypatch):
 
 
 def _serve_exception(error_class):
+    typed = {
+        "invalid_config": InvalidModelConfig,
+        "tokenizer_load_failed": TokenizerLoadFailed,
+        "incompatible_weights": IncompatibleWeights,
+        "quantization_mismatch": QuantizationMismatch,
+    }
+    if error_class in typed:
+        return typed[error_class]("typed loader failure")
     if error_class == "insufficient_memory":
         return MemoryError()
     if error_class == "download_failed":
@@ -288,6 +305,10 @@ def _chain_serve_exception(inner, shape):
         "download_failed",
         "unsupported_architecture",
         "corrupt_weights",
+        "invalid_config",
+        "tokenizer_load_failed",
+        "incompatible_weights",
+        "quantization_mismatch",
         "other",
     ],
 )
@@ -318,6 +339,10 @@ def test_serve_error_class_ignores_implicit_context():
         "download_failed",
         "unsupported_architecture",
         "corrupt_weights",
+        "invalid_config",
+        "tokenizer_load_failed",
+        "incompatible_weights",
+        "quantization_mismatch",
         "other",
     ],
 )
@@ -393,6 +418,94 @@ def test_serve_error_class_stops_at_chain_bound():
 )
 def test_serve_error_class_preserves_existing_variants(exc, expected):
     assert model_events.serve_error_class(exc) == expected
+
+
+@pytest.mark.parametrize(
+    ("exc", "expected"),
+    [
+        (
+            ValueError(
+                "The checkpoint you are trying to load has model type `future_arch` "
+                "but Transformers does not recognize this architecture."
+            ),
+            "unsupported_architecture",
+        ),
+        (
+            RuntimeError(
+                "scoped_pymalloc(): could not allocate 4096 bytes of memory!"
+            ),
+            "insufficient_memory",
+        ),
+    ],
+)
+def test_serve_error_class_recognizes_engine_start_wording(exc, expected):
+    assert model_events.serve_error_class(exc) == expected
+
+
+def test_invalid_config_boundary_is_classified(tmp_path, monkeypatch):
+    from rapid_mlx.utils import tokenizer
+
+    model_dir = tmp_path / "bad-config"
+    model_dir.mkdir()
+    (model_dir / "config.json").write_text('{"model_type":', encoding="utf-8")
+    monkeypatch.setattr(tokenizer, "_resolve_subfolder_checkpoint", lambda value: value)
+    monkeypatch.setattr(tokenizer, "_local_snapshot_if_cached", lambda value: value)
+    monkeypatch.setattr(tokenizer, "_resolve_model_path", lambda _value: None)
+
+    with pytest.raises(InvalidModelConfig) as raised:
+        tokenizer.load_model_with_fallback(str(model_dir))
+
+    assert isinstance(raised.value.__cause__, json.JSONDecodeError)
+    assert model_events.serve_error_class(raised.value) == "invalid_config"
+
+
+def test_tokenizer_load_boundary_is_classified(tmp_path):
+    tokenizer_dir = tmp_path / "missing-tokenizer"
+    tokenizer_dir.mkdir()
+
+    def load_missing_tokenizer(path):
+        return json.loads((path / "tokenizer.json").read_text(encoding="utf-8"))
+
+    with pytest.raises(TokenizerLoadFailed) as raised:
+        load_tokenizer_checked(load_missing_tokenizer, tokenizer_dir)
+
+    assert isinstance(raised.value.__cause__, FileNotFoundError)
+    assert model_events.serve_error_class(raised.value) == "tokenizer_load_failed"
+
+
+def test_weight_load_boundary_is_classified():
+    class ShapeCheckingModel:
+        def load_weights(self, weights, *, strict):
+            assert strict is True
+            shape = dict(weights)["model.embed_tokens.weight"]["shape"]
+            if shape != (32, 16):
+                raise ValueError(f"expected shape (32, 16), got {shape}")
+
+    bad_weights = {"model.embed_tokens.weight": {"shape": (31, 16)}}
+    with pytest.raises(IncompatibleWeights) as raised:
+        load_weights_checked(ShapeCheckingModel(), bad_weights, strict=True)
+
+    assert isinstance(raised.value.__cause__, ValueError)
+    assert model_events.serve_error_class(raised.value) == "incompatible_weights"
+
+
+def test_quantization_boundary_is_classified():
+    def apply_quantization(config):
+        if (config["bits"], config["group_size"], config["dtype"]) != (
+            4,
+            64,
+            "uint32",
+        ):
+            raise ValueError("quantized weight metadata does not match the model")
+
+    with pytest.raises(QuantizationMismatch) as raised:
+        quantize_checked(
+            apply_quantization,
+            {"bits": 8, "group_size": 128, "dtype": "bfloat16"},
+        )
+
+    assert isinstance(raised.value.__cause__, ValueError)
+    assert model_events.serve_error_class(raised.value) == "quantization_mismatch"
 
 
 def test_serve_download_error_class():

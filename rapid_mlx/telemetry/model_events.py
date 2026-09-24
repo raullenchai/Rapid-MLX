@@ -155,6 +155,12 @@ def serve_error_class(exc: BaseException) -> str:
             ENGINE_ABORT_CODE_INSUFFICIENT_MEMORY,
             classify_engine_abort,
         )
+        from rapid_mlx.model_load_errors import (
+            IncompatibleWeights,
+            InvalidModelConfig,
+            QuantizationMismatch,
+            TokenizerLoadFailed,
+        )
 
         current: BaseException | None = exc
         seen: set[int] = set()
@@ -166,6 +172,14 @@ def serve_error_class(exc: BaseException) -> str:
             seen.add(id(current))
             # The outermost explicit signal wins; only ``raise ... from`` links are followed.
             text = _exception_text(current)
+            if isinstance(current, InvalidModelConfig):
+                return "invalid_config"
+            if isinstance(current, TokenizerLoadFailed):
+                return "tokenizer_load_failed"
+            if isinstance(current, IncompatibleWeights):
+                return "incompatible_weights"
+            if isinstance(current, QuantizationMismatch):
+                return "quantization_mismatch"
             if classify_engine_abort(current) == ENGINE_ABORT_CODE_INSUFFICIENT_MEMORY:
                 return "insufficient_memory"
             if isinstance(current, (HfHubHTTPError, RepositoryNotFoundError)):
@@ -189,6 +203,8 @@ def serve_error_class(exc: BaseException) -> str:
                 # mlx-lm/utils.py::_get_classes translates the module import failure
                 # to exactly ``ValueError: Model type <X> not supported.``.
                 if re.fullmatch(r"Model type .+ not supported\.?", text):
+                    return "unsupported_architecture"
+                if "does not recognize this architecture" in text:
                     return "unsupported_architecture"
             name = type(current).__name__.lower()
             if "safetensor" in name or any(

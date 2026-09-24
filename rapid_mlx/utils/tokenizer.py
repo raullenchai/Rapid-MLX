@@ -12,6 +12,12 @@ import logging
 import os
 from pathlib import Path
 
+from ..model_load_errors import (
+    load_model_checked,
+    load_mlx_lm_checked,
+    load_tokenizer_checked,
+    validate_model_config_file,
+)
 from .chat_templates import DEFAULT_CHATML_TEMPLATE, NEMOTRON_CHAT_TEMPLATE
 from .model_file_guard import validate_local_model_file
 
@@ -1371,6 +1377,8 @@ def load_model_with_fallback(
         if resolved_snapshot is not None:
             model_name = str(resolved_snapshot)
 
+    validate_model_config_file(model_name)
+
     # ``mlx_lm.load`` may import config.json::model_file. Validate ordinary
     # local checkpoints before any loader runs. Rapid-owned architectures
     # deliberately ignore repo-owned model code: their lower-level load path
@@ -1428,7 +1436,8 @@ def load_model_with_fallback(
                 model_name,
                 tokenizer_config or {},
             )
-            tokenizer = load_tokenizer(
+            tokenizer = load_tokenizer_checked(
+                load_tokenizer,
                 Path(model_name),
                 tokenizer_config,
                 eos_token_ids=config.get("eos_token_id"),
@@ -1834,7 +1843,9 @@ def _load_model_with_fallback_impl(
             return load_gemma4_text(model_name, tokenizer_config)
 
     try:
-        model, tokenizer = load(model_name, tokenizer_config=tokenizer_config)
+        model, tokenizer = load_mlx_lm_checked(
+            model_name, tokenizer_config=tokenizer_config
+        )
         # mlx_lm.load() succeeds but sanitize() may have silently
         # stripped mtp.* weights.  Check if the config declares MTP
         # layers and the model came back without a .mtp attribute;
@@ -1892,8 +1903,9 @@ def _load_strict_false(model_name: str, tokenizer_config: dict = None):
 
         model_path = Path(snapshot_download(model_name))
 
-    model, config = load_model(model_path, strict=False)
-    tokenizer = load_tokenizer(
+    model, config = load_model_checked(load_model, model_path, strict=False)
+    tokenizer = load_tokenizer_checked(
+        load_tokenizer,
         model_path,
         tokenizer_config or {},
         eos_token_ids=config.get("eos_token_id", None),
@@ -2014,7 +2026,9 @@ def _load_with_tokenizer_fallback(
         model = load_fp8_model_online(model_path)
     else:
         # Load model
-        model, _ = load_model(model_path, model_config=model_config)
+        model, _ = load_model_checked(
+            load_model, model_path, model_config=model_config
+        )
 
     # Try to load tokenizer from tokenizer.json directly
     tokenizer_json = model_path / "tokenizer.json"
@@ -2023,7 +2037,9 @@ def _load_with_tokenizer_fallback(
         from transformers import PreTrainedTokenizerFast
 
         logger.info("Loading tokenizer from tokenizer.json")
-        base_tokenizer = Tokenizer.from_file(str(tokenizer_json))
+        base_tokenizer = load_tokenizer_checked(
+            Tokenizer.from_file, str(tokenizer_json)
+        )
 
         # Read tokenizer_config.json for special tokens and chat template
         tokenizer_config_path = model_path / "tokenizer_config.json"
@@ -2042,7 +2058,8 @@ def _load_with_tokenizer_fallback(
                 pad_token = _special_token_text(config.get("pad_token"), pad_token)
                 chat_template = config.get("chat_template")
 
-        tokenizer = PreTrainedTokenizerFast(
+        tokenizer = load_tokenizer_checked(
+            PreTrainedTokenizerFast,
             tokenizer_object=base_tokenizer,
             bos_token=bos_token,
             eos_token=eos_token,
