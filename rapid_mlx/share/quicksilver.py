@@ -811,14 +811,13 @@ def _pool_max_concurrency(passthrough: list[str]) -> int:
             following = passthrough[i + 1] if i + 1 < len(passthrough) else ""
             # ``--max-num-seqs --foo`` is a missing value to argparse, not "--foo".
             raw = "" if following.startswith("-") else following
-        if not raw.strip().isdigit():
+        try:
+            result = int(raw)  # same spellings argparse's ``type=int`` accepts
+        except ValueError:
+            result = 0
             break  # any malformed occurrence fails serve's parser: stop here
     if raw is None:
         return _POOL_DEFAULT_MAX_CONCURRENCY
-    try:
-        result = int(raw)
-    except ValueError:
-        result = 0
     if not 1 <= result <= _POOL_MAX_CONCURRENCY_CEILING:
         raise QuickSilverError(
             f"--max-num-seqs must be an integer between 1 and "
@@ -1325,7 +1324,7 @@ def _run_share(
         t for t in passthrough if t.split("=", 1)[0] in ("--thinking", "--no-thinking")
     ]
     if catalog_id in CATALOG_REASONING_REQUIRED and (
-        "--no-thinking" in thinking_passthrough
+        any(t.split("=", 1)[0] == "--no-thinking" for t in thinking_passthrough)
         or getattr(args, "thinking", None) is False
     ):
         raise QuickSilverError(

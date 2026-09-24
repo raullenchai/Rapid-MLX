@@ -3002,6 +3002,17 @@ def test_glm_flash_explicit_no_thinking_passthrough_is_rejected(capsys):
     assert "reasoning always on" in capsys.readouterr().err
 
 
+def test_glm_flash_attached_value_no_thinking_is_rejected_before_registration(capsys):
+    """``--no-thinking=false`` is still the flag to serve's parser (which
+    rejects the attached value); pool mode must refuse it before registering."""
+    with pytest.raises(SystemExit) as exc:
+        _run_share_capture_extra(
+            model="glm-5.3-flash", _passthrough=["--no-thinking=false"]
+        )
+    assert exc.value.code == 2
+    assert "reasoning always on" in capsys.readouterr().err
+
+
 def test_glm_flash_explicit_top_level_no_thinking_is_rejected(capsys):
     """``share glm-5.3-flash --quicksilver --no-thinking`` (the parsed option,
     not a passthrough token) must be rejected the same way, not silently
@@ -3029,6 +3040,9 @@ def test_other_catalogs_still_get_no_thinking():
         # argparse store semantics: the last occurrence is what serve runs with
         (["--max-num-seqs", "8", "--max-num-seqs", "1"], 1),
         (["--max-num-seqs=1", "--max-num-seqs", "8"], 8),
+        # every spelling argparse's ``type=int`` accepts is accepted here too
+        (["--max-num-seqs=+4"], 4),
+        (["--max-num-seqs", " 3 "], 3),
     ],
 )
 def test_pool_max_concurrency_mirrors_serve_slots(passthrough, expected):
