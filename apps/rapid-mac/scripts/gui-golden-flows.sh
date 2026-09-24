@@ -4912,6 +4912,34 @@ flow_launch_integrations() {
     [[ "$count" == 1 ]] \
         || die "Cold Agent page did not settle on its integration registry"
 
+    # The Agent-page baseline owns the connection surface, not the independent
+    # first-launch telemetry notice.  A prior journey may already have
+    # acknowledged that notice when matrix flows share the runner's defaults,
+    # while an isolated run may still show it.  Normalize both legitimate
+    # entry states before taking the structural snapshot so queue order cannot
+    # make this flow alternate between two baselines.
+    if jq -e '.data.ui_elements[]?
+              | select(.identifier == "TelemetryNotice.Banner")' \
+            "$OUT/launch.json" >/dev/null; then
+        press "$OUT/launch.json" TelemetryNotice.Acknowledge \
+            "$OUT/launch-notice-acknowledged.json" \
+            || die "Agent flow could not dismiss the unrelated telemetry notice"
+        for ((i=0; i<40; i++)); do
+            see_main "$OUT/launch.json"
+            if ! jq -e '.data.ui_elements[]?
+                        | select(.identifier == "TelemetryNotice.Banner")' \
+                    "$OUT/launch.json" >/dev/null; then
+                break
+            fi
+            sleep 0.25
+        done
+        if jq -e '.data.ui_elements[]?
+                  | select(.identifier == "TelemetryNotice.Banner")' \
+                "$OUT/launch.json" >/dev/null; then
+            die "Agent flow telemetry notice did not dismiss before its baseline"
+        fi
+    fi
+
     # Cold Launch is a beginner path, not a wall of live (copyable) commands.
     # The stopped state now stays a useful setup destination (#2297): the
     # endpoint shape and integration rows are shown as documentation, the
