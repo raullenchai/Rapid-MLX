@@ -327,6 +327,36 @@ class TestCoercionDetection:
         )
         assert detect_native_reasoning_effort_levels(clause) == ("low", "high", "max")
 
+    def test_same_line_read_before_the_coercion_is_dead(self):
+        """Codex r3: Jinja nodes carry only a line number; a load on the
+        assignment's own line may precede it and is not evidence."""
+        clause = (
+            "{{ eff }}{%- set eff = reasoning_effort if reasoning_effort in "
+            "['low', 'high'] else 'max' -%}"
+        )
+        assert detect_native_reasoning_effort_levels(clause) is None
+
+    def test_copy_into_a_dead_variable_is_dead(self):
+        clause = (
+            "{%- set eff = reasoning_effort if reasoning_effort in ['low', 'high'] "
+            "else 'max' -%}\n{%- set dead_copy = eff -%}hello"
+        )
+        assert detect_native_reasoning_effort_levels(clause) is None
+
+    def test_copy_that_is_rendered_keeps_it_live(self):
+        clause = (
+            "{%- set eff = reasoning_effort if reasoning_effort in ['low', 'high'] "
+            "else 'max' -%}{%- set c = eff -%}{{ c }}"
+        )
+        assert detect_native_reasoning_effort_levels(clause) == ("low", "high", "max")
+
+    def test_copy_rebound_before_render_is_dead(self):
+        clause = (
+            "{%- set eff = reasoning_effort if reasoning_effort in ['low', 'high'] "
+            "else 'max' -%}{%- set c = eff -%}{%- set c = 1 -%}{{ c }}"
+        )
+        assert detect_native_reasoning_effort_levels(clause) is None
+
     def test_coercion_read_only_by_its_own_assignment_is_dead(self):
         clause = (
             "{%- set eff = reasoning_effort if reasoning_effort in ['low', 'high'] "

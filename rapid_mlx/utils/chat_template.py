@@ -1504,29 +1504,52 @@ def _reads_name(node, name: str, nodes) -> bool:
     skipped: set[int] = set()
     for macro in node.find_all(nodes.Macro):
         skipped.update(id(inner) for inner in macro.find_all(nodes.Name))
+    # ``find_all`` yields descendants only; a bare ``{% set c = eff %}`` has
+    # the load as the node itself.
+    candidates = [node] if isinstance(node, nodes.Name) else []
     return any(
         inner.name == name and inner.ctx == "load" and id(inner) not in skipped
-        for inner in node.find_all(nodes.Name)
+        for inner in (*candidates, *node.find_all(nodes.Name))
     )
 
 
-def _coercion_target_is_live(assign, tail, later_reads: dict[str, int], nodes) -> bool:
+def _coercion_target_is_live(
+    assign, tail, later_reads: list[tuple[str, int, int]], nodes
+) -> bool:
     """Whether a coercion's target can still reach rendered output.
 
     ``tail`` is the rest of the statement list the assignment sits in: a
-    read there settles it live, an unconditional rebinding first settles it
-    dead. Past the tail the only remaining evidence is a read later in the
-    template source (``later_reads``: name → last load line, outside macro
-    bodies); a read that precedes the assignment cannot see its value.
+    read there settles it live (a ``set`` that copies the value only carries
+    liveness to its own target), an unconditional rebinding first settles it
+    dead. Past the tail the only remaining evidence is a read on a later
+    line of the template source (``later_reads``: name → last load line,
+    outside macro bodies); a read that precedes the assignment cannot see
+    its value.
     """
-    target = assign.target.name
+    live = {assign.target.name}
     for stmt in tail:
         if isinstance(stmt, nodes.Assign) and isinstance(stmt.target, nodes.Name):
-            if stmt.target.name == target:
-                return _reads_name(stmt.node, target, nodes)
-        if _reads_name(stmt, target, nodes):
+            # A plain copy only propagates liveness to the new name; it is
+            # not output. Rebinding without reading a live name kills it.
+            if any(_reads_name(stmt.node, name, nodes) for name in live):
+                live.add(stmt.target.name)
+            else:
+                live.discard(stmt.target.name)
+            if not live:
+                return False
+            continue
+        if any(_reads_name(stmt, name, nodes) for name in live):
             return True
-    return later_reads.get(target, -1) >= assign.lineno
+    # Reads elsewhere (an enclosing list's tail) are only known by line; a
+    # read on the assignment's own line may precede it, so it does not
+    # count, and loads already scanned above (a copy's right-hand side) are
+    # not evidence of output either.
+    scanned = {id(inner) for stmt in tail for inner in stmt.find_all(nodes.Name)}
+    scanned.update(id(stmt) for stmt in tail if isinstance(stmt, nodes.Name))
+    return any(
+        name in live and lineno > assign.lineno and node_id not in scanned
+        for name, lineno, node_id in later_reads
+    )
 
 
 def _walk_for_validation(
@@ -1534,7 +1557,7 @@ def _walk_for_validation(
     derived: set[str],
     forgotten: set[str],
     nodes,
-    later_reads: dict[str, int] | None = None,
+    later_reads: list[tuple[str, int, int]] | None = None,
 ) -> tuple[str, ...] | None:
     """Forward walk of one statement list along the render path.
 
@@ -1548,12 +1571,12 @@ def _walk_for_validation(
     ``reasoning_effort`` already failed or passed some other check is a
     path-constrained one and would misstate the accepted set.
 
-    ``later_reads`` maps each name to the last line it is loaded on outside
-    a macro body; a coercion whose target cannot reach rendered output
+    ``later_reads`` lists every load outside a macro body as ``(name, line,
+    id(node))``; a coercion whose target cannot reach rendered output
     (``_coercion_target_is_live``) is dead and publishes nothing.
     """
     derived = set(derived)
-    later_reads = later_reads or {}
+    later_reads = later_reads or []
     stmts = list(stmts)
     for index, stmt in enumerate(stmts):
         if isinstance(stmt, nodes.Assign):
@@ -1682,10 +1705,11 @@ def _native_reasoning_effort_levels_for_source(template: str) -> tuple[str, ...]
     in_macro: set[int] = set()
     for macro in tree.find_all(nodes.Macro):
         in_macro.update(id(inner) for inner in macro.find_all(nodes.Name))
-    later_reads: dict[str, int] = {}
-    for name in tree.find_all(nodes.Name):
-        if name.ctx == "load" and id(name) not in in_macro:
-            later_reads[name.name] = max(later_reads.get(name.name, -1), name.lineno)
+    later_reads = [
+        (name.name, name.lineno, id(name))
+        for name in tree.find_all(nodes.Name)
+        if name.ctx == "load" and id(name) not in in_macro
+    ]
     return _walk_for_validation(
         tree.body, {"reasoning_effort"}, set(), nodes, later_reads
     )

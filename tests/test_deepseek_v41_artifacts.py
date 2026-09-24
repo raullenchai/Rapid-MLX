@@ -1072,9 +1072,13 @@ def test_product_server_reuses_guarded_serial_boundary(monkeypatch):
         default_max_tokens=4096,
         cors_origins=[],
         uvicorn_log_level="warning",
+        default_reasoning_effort="low",
     )
 
     assert calls["app"]["backend_name"] == "DeepSeek V4.1 DSpark K4"
+    # #3714: the serve-wide default must reach the shared serial app, which
+    # writes it onto the config singleton (a missing kwarg would reset it).
+    assert calls["app"]["default_reasoning_effort"] == "low"
     assert calls["app"]["tool_call_parser"] is None
     assert calls["app"]["generation_kwargs_fn"] is generation_kwargs
     assert calls["app"]["validate_request_fn"] is validate_request
@@ -1254,7 +1258,7 @@ def test_serve_command_runs_complete_product_owned_dispatch(monkeypatch, capsys)
     from rapid_mlx import server as server_module
     from rapid_mlx.models.deepseek_v41_native import server as product_server
 
-    args = _product_serve_args()
+    args = _product_serve_args("--default-reasoning-effort", "low")
     calls = {"memory": [], "disk": [], "downloads": [], "run": []}
     monkeypatch.setattr(_version_check, "prompt_upgrade_if_available", lambda: False)
     monkeypatch.setattr(
@@ -1292,6 +1296,7 @@ def test_serve_command_runs_complete_product_owned_dispatch(monkeypatch, capsys)
     assert calls["disk"][1][1]["revision_override"] == artifacts.MTP_REVISION
     assert calls["run"][0]["default_max_tokens"] == 4096
     assert calls["run"][0]["served_model_name"] == "deepseek-v41-flash-reap-2bit"
+    assert calls["run"][0]["default_reasoning_effort"] == "low"
     assert "dspark-k4: experimental single-user" in capsys.readouterr().out
 
 
