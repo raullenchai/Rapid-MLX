@@ -202,10 +202,7 @@ class CLMBackend:
         max_tokens: int = 2048,
         max_work_tokens: int = 32_768,
     ):
-        import mlx.core as mx
-
         from rapid_mlx.system_one.convert_clm import _artifact_lock
-        from rapid_mlx.utils.tokenizer import load_model_with_fallback
 
         head_path = Path(head).expanduser()
         if head_path.suffix == ".pt":
@@ -215,6 +212,8 @@ class CLMBackend:
             )
         file_form = head_path.suffix.lower() == ".safetensors"
         artifact_root = head_path.parent if file_form else head_path
+        if head_path.is_file() and not file_form:
+            raise ValueError("CLM head weights must be a .safetensors file")
         with _artifact_lock(artifact_root, exclusive=False):
             config_path = (
                 head_path.with_name("config.json")
@@ -222,19 +221,21 @@ class CLMBackend:
                 else head_path / "config.json"
             )
             weights_path = head_path if file_form else head_path / "model.safetensors"
-            if head_path.is_file() and not file_form:
-                raise ValueError("CLM head weights must be a .safetensors file")
             if not config_path.is_file() or not weights_path.is_file():
                 raise ValueError(
                     "CLM head must contain config.json and model.safetensors"
                 )
             self.config = json.loads(config_path.read_text(encoding="utf-8"))
+            import mlx.core as mx
+
             self._state_head = _ProjectionHead(self.config)
             self._action_head = _ProjectionHead(self.config)
             weights = mx.load(str(weights_path))
             self._state_head.load_weights(weights, "state_head")
             self._action_head.load_weights(weights, "action_head")
             mx.eval(weights)
+        from rapid_mlx.utils.tokenizer import load_model_with_fallback
+
         self._model, self._tokenizer = load_model_with_fallback(encoder)
         inner = getattr(self._model, "model", None)
         if inner is None or not callable(inner):

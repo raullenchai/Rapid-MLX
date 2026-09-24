@@ -169,6 +169,7 @@ def test_clm_rendering_matches_reference_layout():
     )
 
 
+@pytest.mark.requires_mlx
 def test_clm_backend_runs_native_hidden_state_and_reuses_action_cache(
     monkeypatch, tmp_path
 ):
@@ -303,6 +304,7 @@ def test_clm_backend_rejects_non_safetensors_weight_file(tmp_path):
         CLMBackend("unused", str(weights))
 
 
+@pytest.mark.requires_mlx
 def test_clm_projection_rejects_depth_below_two():
     from rapid_mlx.system_one.backends import _ProjectionHead
 
