@@ -141,9 +141,11 @@ if lane == "video":
     from rapid_mlx.runtime import video_lane
 
     Version = namedtuple("Version", "major minor")
-    video_lane.sys.version_info = Version(
-        int(os.environ["RAPID_MLX_TEST_VIDEO_PYTHON_MAJOR"]),
-        int(os.environ["RAPID_MLX_TEST_VIDEO_PYTHON_MINOR"]),
+    video_lane.sys = types.SimpleNamespace(
+        version_info=Version(
+            int(os.environ["RAPID_MLX_TEST_VIDEO_PYTHON_MAJOR"]),
+            int(os.environ["RAPID_MLX_TEST_VIDEO_PYTHON_MINOR"]),
+        )
     )
     video_lane._default_video_runtime_requirements = lambda _model: [
         "the `rapid-mlx[video]` Python extra"
