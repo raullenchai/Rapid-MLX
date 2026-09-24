@@ -7,7 +7,7 @@ AXApplication title="Rapid-MLX"
           AXButton id="Sidebar.NewChat" desc="New Chat" enabled=true
           AXButton id="Sidebar.Images" desc="Images" enabled=true
           AXButton id="Sidebar.Audio" desc="Audio" enabled=true
-          AXButton id="Sidebar.Launch" desc="Launch" enabled=true
+          AXButton id="Sidebar.Launch" desc="Agent" enabled=true
           AXScrollArea
             AXButton id="Sidebar.Folder.Toggle.Golden-Work" desc="Golden Work (1)" enabled=true
             AXButton id="Sidebar.Conversation.Pin.<uuid>" desc="Pin conversation" help="Pin conversation" enabled=true

@@ -4891,26 +4891,26 @@ flow_launch_integrations() {
     dismiss_first_run
     see_main "$OUT/main.json"
     press "$OUT/main.json" Sidebar.Launch "$OUT/launch.json"
-    wait_tree_text "Connect your agents" "$OUT/launch.json" 40
+    wait_tree_text "Connect an agent" "$OUT/launch.json" 40
 
     # ``ConnectToolsView`` renders the three-entry compatibility fallback
     # first, then replaces it with the sidecar's authoritative integration
     # registry. The heading appears before that asynchronous load completes,
     # so capturing immediately makes the baseline race between two valid UI
-    # states. Settle on the fake sidecar's complete 14-entry registry before
-    # asserting or recording the stopped-state structure.
+    # states. The page now leads with the connection contract and three common
+    # integrations, with the rest behind one disclosure in both stopped and
+    # ready states. Wait for that disclosure before asserting structure.
     local i count=0
     for ((i=0; i<80; i++)); do
         see_main "$OUT/launch.json"
         count="$(jq '[.data.ui_elements[]?
-                      | (.identifier // "")
-                      | select(startswith("Launch.Integration.Copy."))]
-                     | unique | length' "$OUT/launch.json")"
-        [[ "$count" == 14 ]] && break
+                      | select(.identifier == "ConnectTools.MoreIntegrations")]
+                     | length' "$OUT/launch.json")"
+        [[ "$count" == 1 ]] && break
         sleep 0.1
     done
-    [[ "$count" == 14 ]] \
-        || die "Cold Launch did not settle on the 14-entry integration registry (got $count)"
+    [[ "$count" == 1 ]] \
+        || die "Cold Agent page did not settle on its integration registry"
 
     # Cold Launch is a beginner path, not a wall of live (copyable) commands.
     # The stopped state now stays a useful setup destination (#2297): the
@@ -4932,6 +4932,37 @@ flow_launch_integrations() {
     # indistinguishable). Assert the popup itself is present.
     jq -e '.data.ui_elements[]? | select(.identifier == "ModelPickerBar.ModelMenu")' "$OUT/launch.json" >/dev/null \
         || die "Cold Launch offered no inline model picker"
+
+    # Expand once while stopped to prove every registry target remains
+    # discoverable but none can copy a placeholder command.
+    press "$OUT/launch.json" ConnectTools.MoreIntegrations "$OUT/launch-cold-more-press.json" \
+        || die "Cold Agent page's More integrations disclosure is not pressable"
+    for ((i=0; i<80; i++)); do
+        see_main "$OUT/launch.json"
+        count="$(jq '[.data.ui_elements[]?
+                      | (.identifier // "")
+                      | select(startswith("Launch.Integration.Copy."))]
+                     | unique | length' "$OUT/launch.json")"
+        [[ "$count" == 14 ]] && break
+        sleep 0.1
+    done
+    [[ "$count" == 14 ]] \
+        || die "Cold Agent page omitted registry integrations (got $count of 14)"
+    enabled_count="$(jq '[.data.ui_elements[]? | select(((.identifier // "") | startswith("Launch.Integration.Copy.")) and .enabled == true)] | length' "$OUT/launch.json")"
+    [[ "$enabled_count" == 0 ]] \
+        || die "Cold Agent page enabled $enabled_count placeholder commands after expansion"
+    press "$OUT/launch.json" ConnectTools.MoreIntegrations "$OUT/launch-cold-more-collapse.json" \
+        || die "Cold Agent page's More integrations disclosure did not collapse"
+    for ((i=0; i<80; i++)); do
+        see_main "$OUT/launch.json"
+        count="$(jq '[.data.ui_elements[]?
+                      | (.identifier // "")
+                      | select(startswith("Launch.Integration.Copy."))]
+                     | unique | length' "$OUT/launch.json")"
+        [[ "$count" == 3 ]] && break
+        sleep 0.1
+    done
+    [[ "$count" == 3 ]] || die "Cold Agent page did not return to 3 primary integrations"
     baseline launch-integrations.complete "$OUT/launch.json"
 
     press "$OUT/launch.json" Sidebar.NewChat "$OUT/launch-chat.json" \
@@ -4950,6 +4981,18 @@ flow_launch_integrations() {
                                   and .enabled == true)] | length' "$OUT/launch-ready.json")"
     [[ "$ready_copies" == 3 ]] \
         || die "Ready Launch should lead with 3 common integrations, got $ready_copies"
+
+    # Compact cards keep shell syntax out of the first scan, while still
+    # letting a user inspect the exact command before copying it.
+    press "$OUT/launch-ready.json" Launch.Integration.Command.claude-code \
+        "$OUT/launch-command-open.json" \
+        || die "Agent page could not expand a launch command"
+    wait_identifier Launch.Integration.Snippet.claude-code \
+        "$OUT/launch-command-expanded.json" 40
+    press "$OUT/launch-command-expanded.json" Launch.Integration.Command.claude-code \
+        "$OUT/launch-command-close.json" \
+        || die "Agent page could not collapse a launch command"
+
     press "$OUT/launch-ready.json" ConnectTools.MoreIntegrations \
         "$OUT/launch-more-press.json" \
         || die "More integrations disclosure is not pressable"

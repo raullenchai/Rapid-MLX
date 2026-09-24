@@ -7,7 +7,7 @@ AXApplication title="Rapid-MLX"
           AXButton id="Sidebar.NewChat" desc="New Chat" enabled=true
           AXButton id="Sidebar.Images" desc="Images" enabled=true
           AXButton id="Sidebar.Audio" desc="Audio" enabled=true
-          AXButton id="Sidebar.Launch" desc="Launch" enabled=true
+          AXButton id="Sidebar.Launch" desc="Agent" enabled=true
         AXSplitter value=number enabled=false
         AXGroup subrole=AXHostingView
           AXGroup id="Audio.Mode" desc="Audio mode" enabled=true
