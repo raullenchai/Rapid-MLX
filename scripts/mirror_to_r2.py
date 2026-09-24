@@ -69,6 +69,13 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
+if __package__:
+    from . import mirror_unmirrored
+else:
+    import mirror_unmirrored
+
+load_unmirrored = mirror_unmirrored.load_unmirrored
+
 # Public defaults — persisted so a fresh operator can invoke the tool
 # without hunting for the endpoint URL / bucket name.
 DEFAULT_ENDPOINT_URL = (
@@ -77,6 +84,10 @@ DEFAULT_ENDPOINT_URL = (
 DEFAULT_BUCKET = "rapid-mlx-models"
 DEFAULT_PROFILE = "r2"
 DEFAULT_PUBLIC_BASE = "https://models.rapidmlx.com"
+ROOT = Path(__file__).resolve().parents[1]
+ALIASES_PATH = ROOT / "rapid_mlx" / "aliases.json"
+AUDIO_ALIASES_PATH = ROOT / "rapid_mlx" / "audio" / "aliases.json"
+UNMIRRORED_PATH = ROOT / "scripts" / "mirror_unmirrored.json"
 
 # Cloudflare 403s vanilla ``Python-urllib/*``; use a plausible UA that
 # also identifies the tool for R2 log grep.
@@ -542,6 +553,8 @@ def mirror_repo(
     verify_only: bool = False,
     tmp_dir: Path | None = None,
     subfolder: str | None = None,
+    force_unmirrored: bool = False,
+    unmirrored_path: Path = UNMIRRORED_PATH,
 ) -> int:
     """Mirror one HF repo to R2. Return process exit code (0 = ok).
 
@@ -550,6 +563,19 @@ def mirror_repo(
     correct for the one-quantisation-per-repo layout every other upstream
     we mirror uses.
     """
+    unmirrored = load_unmirrored(unmirrored_path, ALIASES_PATH, AUDIO_ALIASES_PATH).get(
+        repo_id
+    )
+    if unmirrored is not None and not force_unmirrored:
+        print(
+            f"SKIP intentionally unmirrored: {repo_id} "
+            f"(since {unmirrored.since}; {unmirrored.reason}); "
+            "pass --force-unmirrored to override",
+            file=sys.stderr,
+            flush=True,
+        )
+        return 2
+
     started = time.monotonic()
     print(f"== mirror {repo_id} → r2://{bucket}/{repo_id}/ ==", flush=True)
     print(f"   endpoint: {endpoint_url}", flush=True)
@@ -558,6 +584,12 @@ def mirror_repo(
         print("   MODE:     dry-run (no uploads)", flush=True)
     if verify_only:
         print("   MODE:     verify-only (no uploads)", flush=True)
+    if unmirrored is not None:
+        print(
+            "   MODE:     forced intentional-unmirror override "
+            f"(since {unmirrored.since}; {unmirrored.reason})",
+            flush=True,
+        )
 
     files = _hf_files(repo_id)
     # ``is not None``, not truthiness: ``--subfolder ""`` (an unset shell
@@ -797,6 +829,11 @@ def _build_parser() -> argparse.ArgumentParser:
         help="Skip upload; only run the verification pass.",
     )
     p.add_argument(
+        "--force-unmirrored",
+        action="store_true",
+        help="Mirror a repo listed as intentionally unmirrored.",
+    )
+    p.add_argument(
         "--subfolder",
         default=None,
         help=(
@@ -825,6 +862,7 @@ def main(argv: list[str] | None = None) -> int:
         public_base=args.public_base,
         dry_run=args.dry_run,
         verify_only=args.verify_only,
+        force_unmirrored=args.force_unmirrored,
         tmp_dir=tmp,
     )
 
