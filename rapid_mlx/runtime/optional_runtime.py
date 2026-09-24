@@ -10,6 +10,16 @@ OptionalExtra = Literal["vision", "video", "audio", "image"]
 OptionalRuntimeStatus = Literal["absent", "broken", "incompatible"]
 
 
+def format_startup_failure_marker(
+    reason: str, *, extra: OptionalExtra | None = None
+) -> str:
+    """Format the closed desktop startup-failure wire marker."""
+    marker = f"RAPID-MLX-STARTUP-FAILURE: {reason}"
+    if extra is not None:
+        marker += f" extra={extra}"
+    return marker
+
+
 class OptionalRuntimeMissing(RuntimeError):  # noqa: N818 - public API name is fixed
     """An actionable, privacy-safe optional-runtime startup failure."""
 
@@ -57,7 +67,7 @@ def handle_optional_runtime_missing(
     """Render and record the sole terminal result for an unavailable extra."""
     print(exc.format_user_message(), file=sys.stderr)
     print(
-        f"RAPID-MLX-STARTUP-FAILURE: {exc.marker_reason} extra={exc.extra}",
+        format_startup_failure_marker(exc.marker_reason, extra=exc.extra),
         file=sys.stderr,
     )
     from rapid_mlx.telemetry.server_start import failed

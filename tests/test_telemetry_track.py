@@ -835,6 +835,30 @@ if os.environ.get("RAPID_MLX_TEST_PREFLIGHT_EXIT") != "1":
     cli._port_preflight_or_die = _capture_later_event_and_stop
     cli._validate_primary_lifecycle_args = _capture_later_event_and_stop
     cli.models_command = _capture_later_event_and_stop
+
+if sys.argv[1:3] == ["serve", "owner/gated-model"]:
+    import huggingface_hub
+    import requests
+    from huggingface_hub.errors import HfHubHTTPError
+    from types import SimpleNamespace
+
+    response = requests.Response()
+    response.status_code = 403
+    response.url = "https://huggingface.co/owner/gated-model"
+    response.request = requests.Request("GET", response.url).prepare()
+    cli._validate_primary_lifecycle_args = lambda _args: None
+    cli._cache_runnability = lambda _model: False
+    cli._offline_hub_mode_active = lambda: False
+    cli._check_disk_space = lambda *_args, **_kwargs: None
+    cli._try_mirror_prefetch = lambda *_args, **_kwargs: False
+    huggingface_hub.model_info = lambda *_args, **_kwargs: SimpleNamespace(
+        sha="abc123", siblings=[]
+    )
+    huggingface_hub.snapshot_download = lambda *_args, **_kwargs: (
+        (_ for _ in ()).throw(
+            HfHubHTTPError("token=wire-secret", response=response)
+        )
+    )
 """.lstrip(),
         encoding="utf-8",
     )
@@ -1099,6 +1123,84 @@ def test_server_start_exit_delivery_and_crash_gap(
     assert [item["properties"]["state"] for item in items] == expected_states
     if expected_states[-1] == "failed":
         assert items[-1]["properties"]["failure_stage"] == "preflight"
+
+
+def test_gated_serve_posts_one_resolve_and_serve_failure_to_loopback(
+    tmp_path, official_entrypoint_layout
+):
+    root, hooks_dir, site_dir, console = official_entrypoint_layout
+    home = tmp_path / "home"
+    telemetry_dir = home / ".rapid-mlx"
+    telemetry_dir.mkdir(parents=True)
+    (telemetry_dir / "telemetry-consent.yaml").write_text(
+        "consent: true\nprompted_version: 0.15.1\nnotice_revision_seen: 1\n",
+        encoding="utf-8",
+    )
+    sink = HTTPServer(("127.0.0.1", 0), _CaptureHandler)
+    sink.bodies = []  # type: ignore[attr-defined]
+    thread = threading.Thread(target=sink.serve_forever, daemon=True)
+    thread.start()
+    env = dict(
+        os.environ,
+        HOME=str(home),
+        USER="rc",
+        PATH=f"{root / 'bin'}{os.pathsep}{os.environ.get('PATH', '')}",
+        PYTHONPATH=os.pathsep.join(
+            (
+                str(hooks_dir),
+                str(site_dir),
+                *(path for path in sys.path if path.endswith("site-packages")),
+            )
+        ),
+        RAPID_MLX_POSTHOG_URL=f"http://127.0.0.1:{sink.server_port}/batch/",
+        RAPID_MLX_DISABLE_VERSION_CHECK="1",
+    )
+    for name in (
+        *state.CI_ENV_VARS,
+        state.ENV_VAR,
+        state.DO_NOT_TRACK_ENV,
+        "HF_HUB_OFFLINE",
+        "TRANSFORMERS_OFFLINE",
+    ):
+        env.pop(name, None)
+    try:
+        proc = subprocess.run(
+            [str(console), "serve", "owner/gated-model", "--port", "0"],
+            cwd=home,
+            env=env,
+            capture_output=True,
+            text=True,
+            timeout=30,
+            check=False,
+        )
+    finally:
+        sink.shutdown()
+        thread.join(timeout=2.0)
+        sink.server_close()
+
+    assert proc.returncode == 1
+    assert "huggingface-cli login" in proc.stderr
+    payload = b"\n".join(sink.bodies).decode()  # type: ignore[attr-defined]
+    assert "wire-secret" not in payload
+    items = [
+        item
+        for body in sink.bodies  # type: ignore[attr-defined]
+        for item in json.loads(body)["batch"]
+    ]
+    resolve_failures = [
+        item
+        for item in items
+        if item["event"] == "server_start_state"
+        and item["properties"]["state"] == "failed"
+        and item["properties"]["failure_stage"] == "resolve"
+    ]
+    serve_failures = [item for item in items if item["event"] == "model_serve_failed"]
+    pull_failures = [item for item in items if item["event"] == "model_pull_failed"]
+    assert len(resolve_failures) == 1
+    assert len(serve_failures) == 1
+    assert serve_failures[0]["properties"]["error_class"] == "download_failed"
+    assert len(pull_failures) == 1
+    assert pull_failures[0]["properties"]["error_class"] == "gated"
 
 
 @pytest.mark.parametrize(

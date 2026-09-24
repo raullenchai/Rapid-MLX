@@ -9,6 +9,8 @@ import sys
 
 import pytest
 
+_HUB_GUIDANCE_CLI_MODULES: set[object] = set()
+
 
 def _assert_no_uninjected_posthog_posts(calls: list[str]) -> None:
     """Check that the session transport guard observed no production calls."""
@@ -19,6 +21,23 @@ def _assert_no_uninjected_posthog_posts(calls: list[str]) -> None:
 def _posthog_transport_guard_assertion():
     """Expose the session guard assertion for its self-check."""
     return _assert_no_uninjected_posthog_posts
+
+
+@pytest.fixture(autouse=True)
+def _reset_hub_guidance_latch():
+    """Keep process-wide Hub guidance state isolated between every test."""
+    try:
+        from rapid_mlx import cli
+    except ImportError:
+        cli = None
+
+    if cli is not None:
+        _HUB_GUIDANCE_CLI_MODULES.add(cli)
+    for loaded_cli in _HUB_GUIDANCE_CLI_MODULES:
+        loaded_cli._hub_guidance_rendered = False
+    yield
+    for loaded_cli in _HUB_GUIDANCE_CLI_MODULES:
+        loaded_cli._hub_guidance_rendered = False
 
 
 @pytest.fixture(scope="session", autouse=True)
