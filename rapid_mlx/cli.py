@@ -3983,6 +3983,12 @@ def system_one_command(args) -> None:
                 "error: CLM requires --head DIR containing converted "
                 "config.json and model.safetensors"
             )
+    elif args.head:
+        raise SystemExit("error: --head is only valid with --backend clm")
+    # Fail before model download or initialization when the listener cannot
+    # start. Cheap argument validation above still wins for invalid commands.
+    _port_preflight_or_die(args.host, args.port, model=args.model)
+    if backend_name == "clm":
         backend = CLMBackend(
             args.encoder,
             args.head,
@@ -3991,15 +3997,12 @@ def system_one_command(args) -> None:
             max_work_tokens=args.max_work_tokens,
         )
     else:
-        if args.head:
-            raise SystemExit("error: --head is only valid with --backend clm")
         backend = LayaBackend(
             args.model,
             device=args.device,
             dtype=args.dtype,
             batch_size=args.batch_size,
         )
-    _port_preflight_or_die(args.host, args.port, model=args.model)
     api_key = args.api_key or os.environ.get("RAPID_MLX_API_KEY")
     app = create_app(
         backend,

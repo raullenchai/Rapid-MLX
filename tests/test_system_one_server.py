@@ -230,6 +230,16 @@ def test_clm_backend_runs_native_hidden_state_and_reuses_action_cache(
         raise AssertionError("CLM accepted a request over its work-token budget")
 
 
+def test_clm_backend_rejects_non_safetensors_weight_file(tmp_path):
+    from rapid_mlx.system_one.backends import CLMBackend
+
+    (tmp_path / "config.json").write_text("{}", encoding="utf-8")
+    weights = tmp_path / "model.npz"
+    weights.write_bytes(b"not used")
+    with pytest.raises(ValueError, match="must be a .safetensors file"):
+        CLMBackend("unused", str(weights))
+
+
 async def test_system_one_rejects_slow_request_body():
     from rapid_mlx.config import get_config
 

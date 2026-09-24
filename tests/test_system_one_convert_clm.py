@@ -1,11 +1,16 @@
 # SPDX-License-Identifier: Apache-2.0
 from __future__ import annotations
 
+import json
 import os
+import sys
+from types import SimpleNamespace
 
+import mlx.core as mx
+import numpy as np
 import pytest
 
-from rapid_mlx.system_one.convert_clm import _publish_artifact
+from rapid_mlx.system_one.convert_clm import _publish_artifact, convert
 
 
 def _artifact(path, marker: str):
@@ -80,3 +85,65 @@ def test_publish_artifact_preserves_backup_when_restore_fails(monkeypatch, tmp_p
     assert len(backups) == 1
     assert (backups[0] / "config.json").read_text() == "old"
     assert (backups[0] / "model.safetensors").read_text() == "old"
+
+
+class _FakeTensor:
+    def __init__(self, value):
+        self.value = np.asarray(value, dtype=np.float32)
+
+    def detach(self):
+        return self
+
+    def float(self):
+        return self
+
+    def cpu(self):
+        return self
+
+    def numpy(self):
+        return self.value
+
+    def item(self):
+        return self.value.item()
+
+
+def _fake_torch(monkeypatch, checkpoint):
+    module = SimpleNamespace(
+        Tensor=_FakeTensor,
+        load=lambda *args, **kwargs: checkpoint,
+        as_tensor=lambda value: _FakeTensor(value),
+    )
+    monkeypatch.setitem(sys.modules, "torch", module)
+
+
+def test_convert_writes_validated_safetensors_generation(monkeypatch, tmp_path):
+    checkpoint = {
+        "state_head": {"inp.weight": _FakeTensor([[1.0]])},
+        "action_head": {"inp.weight": _FakeTensor([[2.0]])},
+        "logit_scale": 1.5,
+        "cfg": {"hidden_size": 1, "projection_dim": 1},
+    }
+    _fake_torch(monkeypatch, checkpoint)
+    destination = convert(tmp_path / "head.pt", tmp_path / "converted")
+    config = json.loads((destination / "config.json").read_text())
+    assert config["logit_scale"] == 1.5
+    weights = mx.load(str(destination / "model.safetensors"))
+    assert set(weights) == {"state_head.inp.weight", "action_head.inp.weight"}
+
+
+@pytest.mark.parametrize(
+    ("checkpoint", "message"),
+    [
+        ([], "root must be a mapping"),
+        (
+            {"state_head": [], "action_head": {}, "logit_scale": 1, "cfg": {}},
+            "state_head must be a mapping",
+        ),
+    ],
+)
+def test_convert_rejects_non_mapping_checkpoint_parts(
+    monkeypatch, tmp_path, checkpoint, message
+):
+    _fake_torch(monkeypatch, checkpoint)
+    with pytest.raises(ValueError, match=message):
+        convert(tmp_path / "head.pt", tmp_path / "converted")

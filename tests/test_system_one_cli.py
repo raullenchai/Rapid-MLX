@@ -3,7 +3,7 @@ from pathlib import Path
 
 import tomllib
 
-from rapid_mlx.cli import _resolve_system_one_backend, build_parser
+from rapid_mlx.cli import _resolve_system_one_backend, build_parser, system_one_command
 
 
 def test_system_one_cli_defaults_to_laya_service():
@@ -45,3 +45,32 @@ def test_system_one_extra_is_optional_and_included_in_all():
     extras = project["optional-dependencies"]
     assert any(item.startswith("laya-mlx") for item in extras["system-one"])
     assert any(item.startswith("laya-mlx") for item in extras["all"])
+
+
+def test_system_one_checks_port_before_backend_initialization(monkeypatch):
+    import rapid_mlx._uvicorn as uvicorn_module
+    import rapid_mlx.cli as cli_module
+    import rapid_mlx.system_one.backends as backend_module
+
+    events = []
+
+    class Backend:
+        default_model = "laya"
+
+        def __init__(self, *args, **kwargs):
+            events.append("backend")
+
+        def models(self):
+            return []
+
+    monkeypatch.setattr(
+        cli_module,
+        "_port_preflight_or_die",
+        lambda *args, **kwargs: events.append("port"),
+    )
+    monkeypatch.setattr(backend_module, "LayaBackend", Backend)
+    monkeypatch.setattr(
+        uvicorn_module, "run_uvicorn", lambda *args, **kwargs: events.append("serve")
+    )
+    system_one_command(build_parser().parse_args(["system-one"]))
+    assert events == ["port", "backend", "serve"]

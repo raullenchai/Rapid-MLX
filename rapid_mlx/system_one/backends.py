@@ -215,6 +215,8 @@ class CLMBackend:
         weights_path = (
             head_path / "model.safetensors" if head_path.is_dir() else head_path
         )
+        if weights_path.is_file() and weights_path.suffix.lower() != ".safetensors":
+            raise ValueError("CLM head weights must be a .safetensors file")
         if not config_path.is_file() or not weights_path.is_file():
             raise ValueError("CLM head must contain config.json and model.safetensors")
         self.config = json.loads(config_path.read_text(encoding="utf-8"))

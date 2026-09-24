@@ -9,6 +9,7 @@ import os
 import shutil
 import tempfile
 import uuid
+from collections.abc import Mapping
 from pathlib import Path
 
 
@@ -64,10 +65,14 @@ def convert(input_path: str | Path, output_dir: str | Path) -> Path:
     # weights_only prevents the checkpoint pickle from constructing arbitrary
     # Python objects. Official CLM heads contain tensors and primitive config.
     checkpoint = torch.load(source, map_location="cpu", weights_only=True)
+    if not isinstance(checkpoint, Mapping):
+        raise ValueError("CLM checkpoint root must be a mapping")
     required = {"state_head", "action_head", "logit_scale", "cfg"}
     missing = required - checkpoint.keys()
     if missing:
         raise ValueError(f"CLM checkpoint is missing: {sorted(missing)}")
+    if not isinstance(checkpoint["cfg"], Mapping):
+        raise ValueError("CLM checkpoint cfg must be a mapping")
     config = dict(checkpoint["cfg"])
     config["projection_dim"] = int(
         checkpoint.get("projection_dim", config.get("projection_dim", 512))
@@ -79,6 +84,8 @@ def convert(input_path: str | Path, output_dir: str | Path) -> Path:
     tensors = {}
     for prefix in ("state_head", "action_head"):
         state = checkpoint[prefix]
+        if not isinstance(state, Mapping):
+            raise ValueError(f"CLM checkpoint {prefix} must be a mapping")
         for name, tensor in state.items():
             if not isinstance(tensor, torch.Tensor):
                 raise ValueError(f"{prefix}.{name} is not a tensor")
