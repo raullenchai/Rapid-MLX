@@ -119,6 +119,35 @@ _faulthandler_was_enabled = False
 _tee_fallback_warned = False
 _MAX_MARKER_BYTES = 4096
 _ACKNOWLEDGED_CRASH_FILE = re.compile(r"\.reported(?:-\d+)?\.txt\Z")
+_CRASH_TEE_SCRIPT = """\
+import os
+import signal
+import sys
+
+signal.signal(signal.SIGPIPE, signal.SIG_IGN)
+crash_fd = int(sys.argv[1])
+while chunk := os.read(0, 65536):
+    pending = chunk
+    while pending:
+        pending = pending[os.write(crash_fd, pending):]
+    os.fsync(crash_fd)
+    try:
+        pending = chunk
+        while pending:
+            pending = pending[os.write(2, pending):]
+    except OSError:
+        pass
+"""
+
+
+def _move_fd_above_stdio(fd: int) -> int:
+    if fd > 2:
+        return fd
+    import fcntl
+
+    replacement_fd = fcntl.fcntl(fd, fcntl.F_DUPFD_CLOEXEC, 3)
+    os.close(fd)
+    return replacement_fd
 
 
 def _crash_logs_dir() -> Path:
@@ -339,18 +368,19 @@ def _install_crash_file() -> None:
         )
         os.chmod(path, 0o600)
         if os.name == "nt":
-            _warn_tee_fallback(OSError("tee helper is unavailable on Windows"))
+            _warn_tee_fallback(OSError("crash mirror helper is unavailable on Windows"))
         else:
             try:
-                if sys.stderr is None:
-                    raise OSError("stderr is unavailable")
-                stderr_fd = sys.stderr.fileno()
+                fd = _move_fd_above_stdio(fd)
                 process = subprocess.Popen(
-                    ["tee", "-a", os.fspath(path)],
+                    [sys.executable, "-c", _CRASH_TEE_SCRIPT, str(fd)],
                     stdin=subprocess.PIPE,
-                    stdout=stderr_fd,
+                    stdout=subprocess.DEVNULL,
+                    stderr=None,
                     close_fds=True,
+                    pass_fds=(fd,),
                     start_new_session=True,
+                    shell=False,
                 )
                 if process.stdin is None:
                     raise OSError("tee helper has no stdin pipe")

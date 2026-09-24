@@ -29,10 +29,20 @@ import subprocess
 import sys
 import textwrap
 import threading
+import time
 from pathlib import Path
 from types import ModuleType, SimpleNamespace
 
 import pytest
+
+
+def _wait_for_nonempty_file(path: Path, *, timeout: float = 5.0) -> None:
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        if path.stat().st_size > 0:
+            return
+        time.sleep(0.01)
+    raise AssertionError(f"{path} stayed empty for {timeout:.1f}s")
 
 
 def _read_ready_with_timeout(proc: subprocess.Popen, *, timeout: float = 10.0) -> str:
@@ -1045,7 +1055,7 @@ def test_ensure_crash_sink_rearms_and_warns_on_failure(monkeypatch, caplog, tmp_
 
 
 @pytest.mark.parametrize("stderr", [None, object()])
-def test_unavailable_stderr_is_warn_only_file_mode(monkeypatch, tmp_path, stderr):
+def test_unavailable_stderr_object_still_uses_helper(monkeypatch, tmp_path, stderr):
     from rapid_mlx import _signal_observability as so
 
     so._reset_for_tests()
@@ -1054,10 +1064,22 @@ def test_unavailable_stderr_is_warn_only_file_mode(monkeypatch, tmp_path, stderr
     try:
         so.install_signal_observability(observed_signals=())
         assert so._crash_path is not None
-        assert so._crash_pipe is None
-        assert so._crash_tee is None
+        assert so._crash_pipe is not None
+        assert so._crash_tee is not None
     finally:
         so._reset_for_tests()
+
+
+def test_crash_file_fd_is_moved_above_standard_fds(monkeypatch):
+    from rapid_mlx import _signal_observability as so
+
+    fcntl = pytest.importorskip("fcntl")
+    calls = []
+    monkeypatch.setattr(fcntl, "fcntl", lambda *args: calls.append(args) or 9)
+    monkeypatch.setattr(so.os, "close", lambda fd: calls.append(("close", fd)))
+
+    assert so._move_fd_above_stdio(2) == 9
+    assert calls == [(2, fcntl.F_DUPFD_CLOEXEC, 3), ("close", 2)]
 
 
 def test_crash_fd_is_cloexec_and_tee_is_reaped(monkeypatch, tmp_path):
@@ -1210,16 +1232,46 @@ def test_abort_subprocess_leaves_nonempty_durable_crash_file(tmp_path):
     assert "Fatal Python error" in proc.stderr
 
 
+def test_helper_writes_crash_file_when_fd2_is_closed_at_spawn(tmp_path):
+    home = tmp_path / "home"
+    env = dict(os.environ, HOME=str(home))
+    program = textwrap.dedent(
+        """
+        import os
+        from rapid_mlx import _signal_observability as so
+
+        os.close(2)
+        so.install_signal_observability(observed_signals=())
+        os.write(so._crash_fd, b"fatal traceback with closed fd 2\\n")
+        so._cleanup_crash_file()
+        """
+    )
+    proc = subprocess.run(
+        [sys.executable, "-c", program],
+        env=env,
+        capture_output=True,
+        text=True,
+        timeout=10,
+        check=False,
+    )
+
+    files = list((home / ".rapid-mlx" / "logs").glob("crash-*.txt"))
+    assert proc.returncode == 0
+    assert len(files) == 1
+    assert files[0].read_text(encoding="utf-8") == "fatal traceback with closed fd 2\n"
+
+
 def test_closed_parent_stderr_pipe_still_writes_crash_file(tmp_path):
     home = tmp_path / "home"
-    read_fd, write_fd = os.pipe()
     program = textwrap.dedent(
-        f"""
+        """
         import os
-        os.dup2({write_fd}, 2)
-        os.close({write_fd})
+        import sys
         from rapid_mlx._signal_observability import install_signal_observability
+
         install_signal_observability(observed_signals=())
+        print("READY", flush=True)
+        sys.stdin.buffer.read(1)
         os.abort()
         """
     )
@@ -1227,16 +1279,24 @@ def test_closed_parent_stderr_pipe_still_writes_crash_file(tmp_path):
     child = subprocess.Popen(
         [sys.executable, "-c", program],
         env=env,
-        pass_fds=(write_fd,),
+        stdin=subprocess.PIPE,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
     )
-    os.close(write_fd)
-    os.close(read_fd)
+    assert _read_ready_with_timeout(child) == "READY\n"
+    assert child.stderr is not None
+    child.stderr.close()
+    assert child.stdin is not None
+    child.stdin.write("x")
+    child.stdin.close()
     child.wait(timeout=10)
 
     files = list((home / ".rapid-mlx" / "logs").glob("crash-*.txt"))
     assert child.returncode != 0
     assert len(files) == 1
-    assert files[0].stat().st_size > 0
+    _wait_for_nonempty_file(files[0])
+    assert "Fatal Python error" in files[0].read_text(encoding="utf-8")
 
 
 def test_r1_later_faulthandler_registration_without_reinstall(tmp_path):
