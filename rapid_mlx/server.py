@@ -3557,7 +3557,10 @@ Examples:
         "--port",
         type=int,
         default=None,
-        help="Port to bind to (default: first free port in 8000-8009)",
+        help=(
+            "Port to bind to (default when omitted: first free port in "
+            "8000-8009; an explicit port never falls back)"
+        ),
     )
     from .cli import _add_video_job_args as _add_video_job_args_to_server_parser
 

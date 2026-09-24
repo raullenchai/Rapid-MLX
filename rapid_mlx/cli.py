@@ -12398,7 +12398,10 @@ Examples:
         "--port",
         type=int,
         default=None,
-        help="Port to bind (default: first free port in 8000-8009)",
+        help=(
+            "Port to bind (default when omitted: first free port in 8000-8009; "
+            "an explicit port never falls back)"
+        ),
     )
     _add_video_job_args(serve_parser)
     # Socket activation — let an external supervisor (launchd, systemd,
@@ -12428,7 +12431,8 @@ Examples:
             "Used for socket activation (launchd/systemd/parent-process "
             "supervision) — supervisor binds the loopback socket, "
             "validates auth secret, then execve's into rapid-mlx. "
-            "When set, --host/--port are ignored for binding."
+            "When set, --host/--port are ignored for binding. Native MTP, "
+            "DSpark K4, DFlash, and DDTree reject --listen-fd with rc 2."
         ),
     )
     serve_parser.add_argument(

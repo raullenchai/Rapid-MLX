@@ -11,7 +11,7 @@ category. The exhaustive flag list (every flag visible in
 | Option | Description | Default |
 |--------|-------------|---------|
 | `--host` | Server host address (loopback-only by default; pass `0.0.0.0` to expose on LAN) | `127.0.0.1` |
-| `--port` | Server port | `8000` |
+| `--port` | Server port; when omitted, selects the first free port in 8000–8009; an explicit port never falls back | First free in `8000`–`8009` |
 | `--listen-fd` | File descriptor of a pre-bound listening socket (3-1023) for socket activation; when set, `--host`/`--port` are ignored for binding | None |
 | `--log-level` | Log level for Python logging and uvicorn (`DEBUG`, `INFO`, `WARNING`, `ERROR`) | `INFO` |
 | `--served-model-name` | Model name reported by the API; when unset the `model` argument is used | None |

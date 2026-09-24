@@ -132,7 +132,7 @@ Defaults to `qwen3.5-4b-4bit`. First run downloads the weights (~3 GB) with a pr
 rapid-mlx serve qwen3.5-4b-4bit
 ```
 
-Starts an OpenAI-compatible HTTP server bound to `http://localhost:8000`. Point any client that supports a local custom endpoint (Aider, LangChain, OpenCode, PydanticAI, your own scripts) at **`http://localhost:8000/v1`**; Claude Code / Anthropic SDK uses **`http://localhost:8000`** (the Anthropic messages route lives at `/v1/messages` under the same host).
+Starts an OpenAI-compatible HTTP server on the first free port in `8000`–`8009` when `--port` is omitted. An explicit `--port` never falls back. The examples below assume port `8000` was selected. Point any client that supports a local custom endpoint (Aider, LangChain, OpenCode, PydanticAI, your own scripts) at **`http://localhost:8000/v1`**; Claude Code / Anthropic SDK uses **`http://localhost:8000`** (the Anthropic messages route lives at `/v1/messages` under the same host).
 
 ```bash
 curl http://localhost:8000/v1/chat/completions \
