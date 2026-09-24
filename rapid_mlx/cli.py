@@ -22,6 +22,7 @@ import os
 import shlex
 import sys
 import threading
+import urllib.error
 from collections.abc import Callable
 
 from rapid_mlx._completion import alias_completer
@@ -2078,6 +2079,13 @@ def _claim_hub_guidance_render() -> bool:
         return True
 
 
+def _safe_hub_model_id(model_id: str) -> str:
+    """Return a bounded, single-line model identifier for user-facing output."""
+    return "".join(char if char.isprintable() else " " for char in model_id).strip()[
+        :200
+    ]
+
+
 def render_hub_error(exc: BaseException, model_id: str) -> str | None:
     """Render an actionable Hub failure found on an explicit cause chain.
 
@@ -2097,6 +2105,7 @@ def render_hub_error(exc: BaseException, model_id: str) -> str | None:
     )
     from requests import exceptions as requests_exceptions
 
+    rendered_model_id = _safe_hub_model_id(model_id)
     current: BaseException | None = exc
     seen: set[int] = set()
     for _ in range(32):
@@ -2109,9 +2118,9 @@ def render_hub_error(exc: BaseException, model_id: str) -> str | None:
             and getattr(current.response, "status_code", None) == 401
         ):
             return (
-                f"Hugging Face returned 401 for {model_id}: the model is "
+                f"Hugging Face returned 401 for {rendered_model_id}: the model is "
                 "private, gated, or does not exist. If you have access, accept the "
-                f"licence at https://huggingface.co/{model_id} and sign in "
+                f"licence at https://huggingface.co/{rendered_model_id} and sign in "
                 "(huggingface-cli login or HF_TOKEN); otherwise check the name "
                 "with rapid-mlx models."
             )
@@ -2120,15 +2129,15 @@ def render_hub_error(exc: BaseException, model_id: str) -> str | None:
             and getattr(current.response, "status_code", None) in (401, 403)
         ) or isinstance(current, GatedRepoError):
             return (
-                f"  Error: access to '{model_id}' is gated on Hugging Face.\n"
+                f"  Error: access to '{rendered_model_id}' is gated on Hugging Face.\n"
                 f"  Accept the licence or request access at "
-                f"https://huggingface.co/{model_id}\n"
+                f"https://huggingface.co/{rendered_model_id}\n"
                 "  Then run `huggingface-cli login` or set `HF_TOKEN`, "
                 "and try again."
             )
         if isinstance(current, RepositoryNotFoundError):
             return (
-                f"  Error: model repository '{model_id}' was not found on "
+                f"  Error: model repository '{rendered_model_id}' was not found on "
                 "Hugging Face.\n"
                 "  Check available aliases with `rapid-mlx models`, or use a "
                 "full repository ID.\n"
@@ -2146,10 +2155,11 @@ def render_hub_error(exc: BaseException, model_id: str) -> str | None:
                 httpx.TimeoutException,
                 socket.gaierror,
                 TimeoutError,
+                urllib.error.URLError,
             ),
         ):
             return (
-                f"  Error: could not reach Hugging Face for '{model_id}'.\n"
+                f"  Error: could not reach Hugging Face for '{rendered_model_id}'.\n"
                 "  Check your network connection and unset `HF_HUB_OFFLINE` "
                 "if offline mode is not intended.\n"
                 "  You can also serve an already-cached model."

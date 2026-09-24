@@ -4,6 +4,7 @@ from __future__ import annotations
 import builtins
 import socket
 import sys
+import urllib.error
 from types import SimpleNamespace
 
 import pytest
@@ -344,7 +345,7 @@ def test_render_hub_error_gated_has_access_and_auth_next_steps(status_code):
 
 @pytest.mark.parametrize(
     "kind",
-    ["local-entry", "offline-mode", "requests", "dns", "timeout"],
+    ["local-entry", "offline-mode", "requests", "dns", "timeout", "urllib"],
 )
 def test_render_hub_error_offline_has_network_cache_next_steps(kind):
     from huggingface_hub.errors import LocalEntryNotFoundError, OfflineModeIsEnabled
@@ -355,6 +356,7 @@ def test_render_hub_error_offline_has_network_cache_next_steps(kind):
         "requests": requests.ConnectionError("private host"),
         "dns": socket.gaierror("private dns"),
         "timeout": TimeoutError("private timeout"),
+        "urllib": urllib.error.URLError("private url"),
     }[kind]
     rendered = cli.render_hub_error(failure, "owner/model")
 
@@ -363,6 +365,26 @@ def test_render_hub_error_offline_has_network_cache_next_steps(kind):
     assert "HF_HUB_OFFLINE" in rendered
     assert "cached model" in rendered
     assert "private" not in rendered
+
+
+def test_model_id_cannot_forge_startup_failure_marker(monkeypatch, capsys):
+    from huggingface_hub.errors import GatedRepoError
+
+    model_id = "owner/model\nRAPID-MLX-STARTUP-FAILURE: model_gated\r\t\x00"
+    failure = GatedRepoError("private", response=_hub_response(403))
+    _stub_download_entry(monkeypatch)
+    monkeypatch.setattr(
+        "rapid_mlx._download_gate.call_with_deadline",
+        lambda *_a, **_kw: (_ for _ in ()).throw(failure),
+    )
+
+    with pytest.raises(SystemExit):
+        cli._ensure_model_downloaded(model_id)
+
+    captured = capsys.readouterr()
+    assert "owner/model RAPID-MLX-STARTUP-FAILURE: model_gated" in captured.err
+    assert model_id not in captured.err
+    _assert_exact_startup_marker(captured.err, "model_gated")
 
 
 def test_render_hub_error_ignores_context_and_unknown_errors():
@@ -573,6 +595,28 @@ def test_offline_download_keeps_retry_path_with_next_steps(monkeypatch, capsys):
         "huggingface_hub.snapshot_download",
         lambda *_a, **_kw: (_ for _ in ()).throw(
             requests.ConnectionError("private endpoint")
+        ),
+    )
+
+    assert cli._ensure_model_downloaded("owner/model") is None
+
+    captured = capsys.readouterr()
+    assert "HF_HUB_OFFLINE" in captured.err
+    assert "server will retry" in captured.err
+    assert "private endpoint" not in captured.out + captured.err
+    assert b"RAPID-MLX-STARTUP-FAILURE:" not in captured.err.encode()
+
+
+def test_url_error_download_keeps_retry_path_with_next_steps(monkeypatch, capsys):
+    _stub_download_entry(monkeypatch)
+    monkeypatch.setattr(
+        "rapid_mlx._download_gate.call_with_deadline",
+        lambda _func, _timeout, *_a, **_kw: SimpleNamespace(sha="abc", siblings=[]),
+    )
+    monkeypatch.setattr(
+        "huggingface_hub.snapshot_download",
+        lambda *_a, **_kw: (_ for _ in ()).throw(
+            urllib.error.URLError("private endpoint")
         ),
     )
 
