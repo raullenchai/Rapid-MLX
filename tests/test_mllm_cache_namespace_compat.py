@@ -190,3 +190,118 @@ def test_quantized_lane_supports_both_namespaces():
     else:
         assert vlm_cache.KVCache in plain
         assert vlm_cache.RotatingKVCache in rotating
+
+
+def _glm_layer(cache_ns, *, tokens: int, projected: bool):
+    """Per-request GLM-5.3 Flash attention-layer cache: latent KV, indexer KV,
+    indexer pooling state, and the projected KV that only long prefills write."""
+    latent = cache_ns.KVCache()
+    latent.update_and_fetch(*_kv_state(tokens))
+    index = cache_ns.KVCache()
+    index.update_and_fetch(*_kv_state(tokens))
+    pool = cache_ns.PoolingCache(2)
+    pool.update_and_fetch(mx.full((1, tokens, 4), 1.0))
+    proj = cache_ns.KVCache()
+    if projected:
+        proj.update_and_fetch(*_kv_state(tokens))
+    return cache_ns.CacheList(latent, index, pool, proj)
+
+
+def test_batched_leaf_extraction_tolerates_never_written_kv_slot(cache_ns):
+    """GLM-5.3 Flash keeps a ``projected_cache`` slot per attention layer
+    that only the long-prompt prefill path writes. Merged from all-empty
+    per-request caches it is a ``BatchKVCache`` with ``keys is None``, whose
+    upstream ``extract`` slices unguarded — the batch must still extract at
+    sequence end (exact prefix-cache store) with an empty row for that slot,
+    while every other slot (including the pooling state) keeps its own type
+    and contents.
+    """
+    if not hasattr(cache_ns, "PoolingCache"):
+        pytest.skip("namespace has no GLM-5.3 cache vocabulary")
+    from rapid_mlx.mllm_batch_generator import _extract_batched_leaf
+
+    batched = cache_ns.CacheList.merge(
+        [
+            _glm_layer(cache_ns, tokens=3, projected=False),
+            _glm_layer(cache_ns, tokens=2, projected=False),
+        ]
+    )
+    assert batched.caches[3].keys is None  # the shape this guards against
+
+    for idx, tokens in ((0, 3), (1, 2)):
+        row = _extract_batched_leaf(batched, idx)
+        assert type(row) is cache_ns.CacheList
+        assert [type(c) for c in row.caches] == [
+            cache_ns.KVCache,
+            cache_ns.KVCache,
+            cache_ns.PoolingCache,
+            cache_ns.KVCache,
+        ]
+        assert row.caches[0].keys.shape == (1, 1, tokens, 4)
+        assert row.caches[1].keys.shape == (1, 1, tokens, 4)
+        # Pooling state survives untouched (a fresh PoolingCache has offset 0).
+        assert row.caches[2].offset == tokens
+        assert row.caches[3].keys is None and row.caches[3].offset == 0
+    # The empty row round-trips through merge like any singleton extract.
+    remerged = cache_ns.CacheList.merge([row, row])
+    assert remerged.caches[3].keys is None
+
+
+def test_batched_leaf_extraction_guards_every_namespace(cache_ns):
+    """Pooling-independent shape of the same guard, so the mlx-lm namespace
+    (no ``PoolingCache``) is covered too: an empty merged ``BatchKVCache``
+    inside a ``CacheList`` extracts as that namespace's empty ``KVCache``."""
+    from rapid_mlx.mllm_batch_generator import _extract_batched_leaf
+
+    written = cache_ns.KVCache()
+    written.update_and_fetch(*_kv_state(2))
+    batched = cache_ns.CacheList.merge(
+        [
+            cache_ns.CacheList(written, cache_ns.KVCache()),
+            cache_ns.CacheList(written, cache_ns.KVCache()),
+        ]
+    )
+    assert type(batched.caches[1]) is cache_ns.BatchKVCache
+    assert batched.caches[1].keys is None
+    row = _extract_batched_leaf(batched, 1)
+    assert type(row) is cache_ns.CacheList
+    assert type(row.caches[0]) is cache_ns.KVCache
+    assert row.caches[0].keys.shape == (1, 1, 2, 4)
+    assert type(row.caches[1]) is cache_ns.KVCache
+    assert row.caches[1].keys is None and row.caches[1].offset == 0
+
+
+def test_batched_leaf_extraction_keeps_written_projected_rows(cache_ns):
+    """A batch where one row's long prefill wrote the projected slot and the
+    other did not: the written row keeps its contents, the unwritten row
+    extracts as an empty (zero-length) slot — no guard may swap either."""
+    if not hasattr(cache_ns, "PoolingCache"):
+        pytest.skip("namespace has no GLM-5.3 cache vocabulary")
+    from rapid_mlx.mllm_batch_generator import _extract_batched_leaf
+
+    batched = cache_ns.CacheList.merge(
+        [
+            _glm_layer(cache_ns, tokens=3, projected=True),
+            _glm_layer(cache_ns, tokens=2, projected=False),
+        ]
+    )
+    assert batched.caches[3].keys is not None
+    written = _extract_batched_leaf(batched, 0)
+    assert written.caches[3].keys.shape == (1, 1, 3, 4)
+    assert written.caches[3].offset == 3
+    unwritten = _extract_batched_leaf(batched, 1)
+    assert type(unwritten.caches[3]) is cache_ns.KVCache
+    assert unwritten.caches[3].offset == 0
+
+
+def test_batched_leaf_extraction_only_guards_batch_kv_cache(cache_ns):
+    """Other batched leaves that also carry ``left_padding`` without ``keys``
+    (arrays / pooling) must keep going through their own ``extract``."""
+    from rapid_mlx.mllm_batch_generator import _extract_batched_leaf
+
+    recurrent = cache_ns.ArraysCache(2)
+    recurrent.cache = [mx.full((2, 2), 1.0), mx.full((2, 3), 2.0)]
+    batched = cache_ns.ArraysCache.merge([recurrent.extract(0), recurrent.extract(1)])
+    row = _extract_batched_leaf(batched, 1)
+    assert type(row) is cache_ns.ArraysCache
+    assert [state.shape for state in row.cache] == [(1, 2), (1, 3)]
