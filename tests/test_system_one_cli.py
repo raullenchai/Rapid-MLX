@@ -2,7 +2,11 @@
 from pathlib import Path
 
 import pytest
-import tomllib
+
+try:
+    import tomllib
+except ModuleNotFoundError:  # Python 3.10
+    import tomli as tomllib
 
 from rapid_mlx.cli import _resolve_system_one_backend, build_parser, system_one_command
 
