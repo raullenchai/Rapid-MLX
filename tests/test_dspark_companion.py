@@ -71,6 +71,47 @@ def _write_configs(tmp_path):
     return target, draft
 
 
+def _companion_client(*, validate_request_fn):
+    from fastapi.testclient import TestClient
+
+    from rapid_mlx.spec_decode.dspark.runtime import CompanionDSparkRuntime
+    from rapid_mlx.speculative.dflash.server import _build_app
+
+    drafter = SimpleNamespace(accept_lens=[])
+    runtime = CompanionDSparkRuntime(
+        drafter=drafter,
+        drafter_repo=LFM25_VL_3B.drafter_repo,
+        target_revision=LFM25_VL_3B.target_revision,
+        drafter_revision=LFM25_VL_3B.drafter_revision,
+        num_speculative_tokens=7,
+        draft_block_size=8,
+    )
+    render_calls = []
+    generation_calls = []
+
+    def render(*args, **kwargs):
+        render_calls.append((args, kwargs))
+        return "rendered"
+
+    def generate(*args, **kwargs):
+        generation_calls.append((args, kwargs))
+        return SimpleNamespace(text="unexpected", prompt_tokens=1, generation_tokens=1)
+
+    app = _build_app(
+        model=SimpleNamespace(),
+        processor=SimpleNamespace(),
+        runtime=runtime,
+        served_model_name="lfm-vl",
+        default_max_tokens=16,
+        cors_origins=[],
+        render_prompt_fn=render,
+        generate_fn=generate,
+        validate_request_fn=validate_request_fn,
+        backend_name="LFM DSpark",
+    )
+    return TestClient(app), render_calls, generation_calls
+
+
 def test_exact_pair_is_the_only_qualified_companion() -> None:
     assert LFM25_VL_3B.target_revision == ("35a118d938ce6d123ac2d371649f24a8efb69058")
     assert LFM25_VL_3B.drafter_revision == ("af77e9306a26e8625fde74d2a3051ab6d21bd955")
@@ -413,6 +454,120 @@ def test_dflash_shell_preserves_media_and_surfaces_runtime_status() -> None:
     assert generation_calls[0][1]["image"] == ["/tmp/image.png"]
     assert generation_calls[0][1]["draft_model"] is drafter
     assert generation_calls[0][1]["draft_block_size"] == 8
+
+
+@pytest.mark.parametrize(
+    "content_part, media_kind",
+    [
+        (
+            {
+                "type": "input_audio",
+                "input_audio": {"data": "AAAA", "format": "wav"},
+            },
+            "audio",
+        ),
+        (
+            {
+                "type": "video_url",
+                "video_url": {"url": "https://example.test/clip.mp4"},
+            },
+            "video",
+        ),
+    ],
+    ids=["input-audio", "video-url"],
+)
+def test_companion_rejects_unsupported_media_before_render_or_generation(
+    content_part,
+    media_kind,
+) -> None:
+    from rapid_mlx.spec_decode.dspark.server import _validate_greedy_request
+
+    client, render_calls, generation_calls = _companion_client(
+        validate_request_fn=_validate_greedy_request
+    )
+
+    response = client.post(
+        "/v1/chat/completions",
+        json={
+            "model": "lfm-vl",
+            "messages": [
+                {
+                    "role": "user",
+                    "content": [
+                        {"type": "text", "text": "inspect this"},
+                        content_part,
+                    ],
+                }
+            ],
+            "temperature": 0,
+        },
+    )
+
+    assert response.status_code == 400
+    error = response.json()["error"]
+    assert error == {
+        "message": f"Model 'lfm-vl' does not support {media_kind} inputs.",
+        "type": "invalid_request_error",
+        "code": "unsupported_content_type",
+        "param": "messages.content",
+    }
+    assert render_calls == []
+    assert generation_calls == []
+
+
+def test_companion_rejects_stop_before_render_or_generation() -> None:
+    from rapid_mlx.spec_decode.dspark.server import _validate_greedy_request
+
+    client, render_calls, generation_calls = _companion_client(
+        validate_request_fn=_validate_greedy_request
+    )
+
+    response = client.post(
+        "/v1/chat/completions",
+        json={
+            "model": "lfm-vl",
+            "messages": [{"role": "user", "content": "hello"}],
+            "temperature": 0,
+            "stop": "END",
+        },
+    )
+
+    assert response.status_code == 400
+    error = response.json()["error"]
+    assert error["type"] == "invalid_request_error"
+    assert "stop" in error["message"]
+    assert render_calls == []
+    assert generation_calls == []
+
+
+def test_companion_rejects_unknown_model_before_render_or_generation() -> None:
+    from rapid_mlx.spec_decode.dspark.server import _validate_companion_request
+
+    client, render_calls, generation_calls = _companion_client(
+        validate_request_fn=lambda request: _validate_companion_request(
+            request,
+            served_model_name="lfm-vl",
+        ),
+    )
+
+    response = client.post(
+        "/v1/chat/completions",
+        json={
+            "model": "wrong/model",
+            "messages": [{"role": "user", "content": "hello"}],
+            "temperature": 0,
+        },
+    )
+
+    assert response.status_code == 404
+    assert response.json()["error"] == {
+        "message": "The model `wrong/model` does not exist.",
+        "type": "not_found_error",
+        "code": "model_not_found",
+        "param": "model",
+    }
+    assert render_calls == []
+    assert generation_calls == []
 
 
 def test_runtime_generation_failure_is_http_500_without_ar_fallback() -> None:

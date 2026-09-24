@@ -24,6 +24,41 @@ logger = logging.getLogger(__name__)
 def _validate_greedy_request(request: ChatCompletionRequest) -> None:
     """Reject every request shape outside the qualified greedy contract."""
 
+    # Keep unsupported media on the request-policy side of the render-worker
+    # boundary.  The renderer repeats this check as defense in depth, but an
+    # exception raised there is a backend failure and is therefore surfaced as
+    # HTTP 500 by the serial shell.  Audio/video are client request errors and
+    # must never reach that worker (or generation).
+    from rapid_mlx.api.utils import AUDIO_CONTENT_TYPES, VIDEO_CONTENT_TYPES
+
+    for message in request.messages:
+        if not isinstance(message.content, list):
+            continue
+        for raw_part in message.content:
+            part = (
+                raw_part.model_dump(exclude_none=True)
+                if hasattr(raw_part, "model_dump")
+                else raw_part
+            )
+            content_type = part.get("type") if isinstance(part, dict) else None
+            if content_type not in AUDIO_CONTENT_TYPES | VIDEO_CONTENT_TYPES:
+                continue
+            media_kind = "audio" if content_type in AUDIO_CONTENT_TYPES else "video"
+            raise HTTPException(
+                status_code=400,
+                detail={
+                    "error": {
+                        "message": (
+                            f"Model '{request.model}' does not support "
+                            f"{media_kind} inputs."
+                        ),
+                        "type": "invalid_request_error",
+                        "code": "unsupported_content_type",
+                        "param": "messages.content",
+                    }
+                },
+            )
+
     unsupported: list[str] = []
     if request.temperature not in (None, 0, 0.0):
         unsupported.append("temperature")
@@ -41,6 +76,8 @@ def _validate_greedy_request(request: ChatCompletionRequest) -> None:
         unsupported.append("frequency_penalty")
     if request.seed is not None:
         unsupported.append("seed")
+    if request.stop:
+        unsupported.append("stop")
     if (
         request.tools
         or request.functions
@@ -70,6 +107,28 @@ def _validate_greedy_request(request: ChatCompletionRequest) -> None:
                 f"decoding only; unsupported request field(s): {names}."
             ),
         )
+
+
+def _validate_companion_request(
+    request: ChatCompletionRequest,
+    *,
+    served_model_name: str,
+) -> None:
+    """Apply the qualified request policy and bind it to the loaded target."""
+
+    if request.model != served_model_name:
+        raise HTTPException(
+            status_code=404,
+            detail={
+                "error": {
+                    "message": f"The model `{request.model}` does not exist.",
+                    "type": "not_found_error",
+                    "code": "model_not_found",
+                    "param": "model",
+                }
+            },
+        )
+    _validate_greedy_request(request)
 
 
 def _prepare_multimodal_prompt(
@@ -228,7 +287,10 @@ def run_companion_dspark_server(
         reasoning_parser_name=reasoning_parser_name,
         render_prompt_fn=_prepare_multimodal_prompt,
         generation_kwargs_fn=_generation_kwargs,
-        validate_request_fn=_validate_greedy_request,
+        validate_request_fn=lambda request: _validate_companion_request(
+            request,
+            served_model_name=served_model_name,
+        ),
         backend_name="LFM DSpark",
         speculative_info=speculative_info,
     )
@@ -250,6 +312,7 @@ def run_companion_dspark_server(
 
 
 __all__ = [
+    "_validate_companion_request",
     "_prepare_multimodal_prompt",
     "_validate_greedy_request",
     "run_companion_dspark_server",
