@@ -1944,6 +1944,7 @@ def _bare_glm_request(**extra) -> dict:
     return body
 
 
+@_skip_without_mlx_vlm
 def test_serial_lane_applies_server_default_reasoning_effort(monkeypatch) -> None:
     """#3714: the native-MTP / DFlash application is the lane GLM-5.3 serves
     on by default (``mtp_default_enabled``); ``--default-reasoning-effort
@@ -1962,6 +1963,7 @@ def test_serial_lane_applies_server_default_reasoning_effort(monkeypatch) -> Non
     assert "thinking_budget" not in captured["generation_kwargs"]
 
 
+@_skip_without_mlx_vlm
 def test_serial_lane_client_reasoning_effort_beats_server_default(monkeypatch):
     captured = _capture_enable_thinking(
         monkeypatch,
@@ -1973,6 +1975,7 @@ def test_serial_lane_client_reasoning_effort_beats_server_default(monkeypatch):
     assert captured.get("reasoning_effort") == "high"
 
 
+@_skip_without_mlx_vlm
 def test_serial_lane_forwards_client_chat_template_kwargs(monkeypatch) -> None:
     """Client ``chat_template_kwargs`` reach the serial renderer (#2474
     parity with the unified route); server-resolved keys are not
@@ -1999,6 +2002,7 @@ def test_serial_lane_forwards_client_chat_template_kwargs(monkeypatch) -> None:
     assert captured.get("num_images") == 0
 
 
+@_skip_without_mlx_vlm
 def test_serial_lane_without_default_leaves_template_default(monkeypatch) -> None:
     captured = _capture_enable_thinking(
         monkeypatch,
@@ -2009,6 +2013,7 @@ def test_serial_lane_without_default_leaves_template_default(monkeypatch) -> Non
     assert "reasoning_effort" not in captured
 
 
+@_skip_without_mlx_vlm
 def test_serial_lane_default_effort_on_cap_template_sets_the_budget(monkeypatch):
     """A template without a native vocabulary gets the token-cap tier, which
     the serial lane already treats as bounded-thinking opt-in."""
