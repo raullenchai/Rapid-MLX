@@ -428,6 +428,43 @@ def _sample(mode: str, tps: float, token_hash: str = "same") -> dict[str, Any]:
         "fused_hits": bench.EXPECTED_GDN_LAYERS * per_layer,
         "fused_layer_hits": [per_layer] * bench.EXPECTED_GDN_LAYERS,
         "memory": {"active_bytes": 10, "peak_bytes": 20},
+        "system_memory": {
+            "physical_footprint": {
+                "available": True,
+                "current_bytes": 30,
+                "peak_bytes": 40,
+                "error": None,
+            },
+            "swap": {"available": True, "used_bytes": 100, "error": None},
+        },
+    }
+
+
+def _idle_status(*, paused=False):
+    return {
+        "paused": paused,
+        "admitted_requests": 0,
+        "running_requests": 0,
+        "queued_requests": 0,
+    }
+
+
+def _checkpoint():
+    return {
+        "mlx": {
+            "available": True,
+            "active_bytes": 10,
+            "peak_bytes": 20,
+            "cache_bytes": 5,
+            "error": None,
+        },
+        "physical_footprint": {
+            "available": True,
+            "current_bytes": 30,
+            "peak_bytes": 40,
+            "error": None,
+        },
+        "swap": {"available": True, "used_bytes": 100, "error": None},
     }
 
 
@@ -438,8 +475,8 @@ def _passing_receipt() -> dict[str, Any]:
             {
                 "baseline": [_sample("baseline", 100), _sample("baseline", 100)],
                 "candidate": [
-                    _sample("candidate", 104),
-                    _sample("candidate", 104),
+                    _sample("candidate", 105),
+                    _sample("candidate", 105),
                 ],
             }
         )
@@ -461,6 +498,66 @@ def _passing_receipt() -> dict[str, Any]:
             "candidate_image": {"singleton_batch_delta": 1},
             "candidate_text": {"singleton_batch_delta": 1},
             "stock_after": {"singleton_batch_delta": 1},
+        },
+        "abort_recovery": {
+            "cycles": [
+                {
+                    "cutoff_tokens": (index % 16) + 1,
+                    "observed_tokens": (index % 16) + 1,
+                    "closed": True,
+                    "idle_status": _idle_status(),
+                    "recovery": {
+                        **_sample("candidate", 10),
+                        "completion_tokens": 8,
+                        "fused_hits": bench.EXPECTED_GDN_LAYERS * 9,
+                        "fused_layer_hits": [9] * bench.EXPECTED_GDN_LAYERS,
+                    },
+                }
+                for index in range(bench.EXPECTED_ABORT_CYCLES)
+            ],
+            "final_status": _idle_status(),
+        },
+        "cache_recovery": {
+            "allocator_clear_attempted": True,
+            "post_clear": _checkpoint(),
+            "recovery": {
+                **_sample("candidate", 10),
+                "completion_tokens": 16,
+                "fused_hits": bench.EXPECTED_GDN_LAYERS * 17,
+                "fused_layer_hits": [17] * bench.EXPECTED_GDN_LAYERS,
+            },
+            "final_status": _idle_status(),
+        },
+        "lifecycle": {
+            "pause": _idle_status(paused=True),
+            "resume": _idle_status(paused=False),
+            "resume_stock_recovery": _sample("baseline", 10),
+            "reload": {
+                "pause": _idle_status(paused=True),
+                "stopped": True,
+                "started": True,
+                "resume": _idle_status(paused=False),
+                "model_replaced": True,
+                "executor_replaced": True,
+                "parity": {"pass": True},
+                "stock_recovery": _sample("baseline", 10),
+                "candidate_recovery": {
+                    **_sample("candidate", 10),
+                    "completion_tokens": 16,
+                    "fused_hits": bench.EXPECTED_GDN_LAYERS * 17,
+                    "fused_layer_hits": [17] * bench.EXPECTED_GDN_LAYERS,
+                },
+            },
+            "final_stop": {
+                "pause": _idle_status(paused=True),
+                "completed": True,
+                "loaded": False,
+            },
+        },
+        "hardware": {"verified": True},
+        "memory_checkpoints": {
+            name: _checkpoint()
+            for name in ("pre", "probe", "peak", "post_clear", "post_stop")
         },
         "errors": [],
     }
@@ -517,13 +614,25 @@ def test_all_decision_gates_pass_on_complete_exact_receipt():
                 for pair in receipt["pairs"]
                 for sample in pair["candidate"]
             ],
-            "median_wall_speedup_gte_1_03",
+            "median_wall_speedup_gte_1_05",
         ),
         (
             lambda receipt: receipt["pairs"][0]["candidate"][0].__setitem__(
                 "elapsed_s", 5.0
             ),
-            "paired_wall_ratio_cv_lte_0_05",
+            "paired_wall_ratio_cv_lte_0_01",
+        ),
+        (
+            lambda receipt: receipt["abort_recovery"]["final_status"].__setitem__(
+                "running_requests", 1
+            ),
+            "fifty_randomized_abort_recovery_cycles",
+        ),
+        (
+            lambda receipt: receipt["memory_checkpoints"]["post_stop"][
+                "physical_footprint"
+            ].__setitem__("available", False),
+            "all_five_physical_footprint_checkpoints_available",
         ),
     ],
 )
@@ -554,12 +663,15 @@ def _media_sample(mode: str, *, completion_tokens=41):
 
 def _passing_media():
     return {
+        "image": {"width": 1920, "height": 1080},
         "expected": "cheetah",
         "candidate_text_expected": "100",
         "stock_before": _media_sample("baseline"),
         "candidate_image": _media_sample("candidate"),
         "candidate_text": {
-            **_media_sample("candidate", completion_tokens=64),
+            **_media_sample(
+                "candidate", completion_tokens=bench.EXPECTED_LONG_TEXT_TOKENS
+            ),
             "text": "The original price is 100.",
         },
         "stock_after": _media_sample("baseline"),
@@ -617,3 +729,76 @@ def test_validate_args_rejects_blank_image_expect(tmp_path: Path):
     )
     with pytest.raises(SystemExit):
         bench._validate_args(bench.build_parser(), args)
+
+
+def test_mlx_probe_records_unavailable_instead_of_fabricating_zero():
+    probe = bench._mlx_memory_snapshot(SimpleNamespace())
+    assert probe["available"] is False
+    assert "unavailable" in probe["error"]
+    assert "active_bytes" not in probe
+
+
+def test_footprint_probe_parses_current_and_peak(monkeypatch):
+    monkeypatch.setattr(bench.platform, "system", lambda: "Darwin")
+    monkeypatch.setattr(bench.shutil, "which", lambda _name: "/usr/bin/footprint")
+
+    def runner(*_args, **_kwargs):
+        return SimpleNamespace(
+            stdout="Footprint: 1.5 GB\nphys_footprint_peak: 2048 MB\n"
+        )
+
+    probe = bench._process_footprint_snapshot(runner=runner)
+    assert probe == {
+        "available": True,
+        "current_bytes": int(1.5 * bench.GIB),
+        "peak_bytes": 2048 * bench.MIB,
+        "error": None,
+    }
+
+
+def test_monotonic_swap_growth_is_rejected_but_plateau_is_not():
+    assert bench._no_monotonic_growth([1, 2, 2, 3]) is False
+    assert bench._no_monotonic_growth([1, 1, 1, 1]) is True
+    assert bench._no_monotonic_growth([1, 2, 1, 2]) is True
+
+
+def test_raw_receipt_writer_never_replaces_existing_file(tmp_path: Path):
+    output = tmp_path / "receipt.json"
+    bench._write_new_receipt(output, {"pass": False})
+    original = output.read_bytes()
+    with pytest.raises(FileExistsError):
+        bench._write_new_receipt(output, {"pass": True})
+    assert output.read_bytes() == original
+
+
+@pytest.mark.asyncio
+async def test_fifty_abort_cycles_close_streams_and_recover_with_fakes(monkeypatch):
+    class FakePatch:
+        def set_candidate(self, _enabled):
+            return None
+
+    class FakeEngine:
+        def stream_chat(self, **kwargs):
+            async def stream():
+                for index in range(kwargs["max_tokens"]):
+                    yield SimpleNamespace(tokens=[index], completion_tokens=index + 1)
+
+            return stream()
+
+        def lifecycle_status(self):
+            return _idle_status()
+
+    async def fake_sample(*_args, **_kwargs):
+        return {
+            **_sample("candidate", 10),
+            "completion_tokens": 8,
+            "fused_hits": bench.EXPECTED_GDN_LAYERS * 9,
+            "fused_layer_hits": [9] * bench.EXPECTED_GDN_LAYERS,
+        }
+
+    monkeypatch.setattr(bench, "_run_sample", fake_sample)
+    result = await bench.run_abort_recovery(FakeEngine(), FakePatch(), timeout=0.1)
+    assert result["pass"] is True
+    assert len(result["cycles"]) == 50
+    assert all(cycle["closed"] for cycle in result["cycles"])
+    assert bench._request_counts_zero(result["final_status"])
