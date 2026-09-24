@@ -231,6 +231,12 @@ ALLOWED_RAPID_MLX_ENV_VARS: frozenset[str] = frozenset(
         # changes only the normalization implementation after model selection;
         # prefill and other model families retain their existing path.
         "RAPID_MLX_QWEN4_FAST_RMSNORM",
+        # Opt-in file-backed storage and bounded row-cache size for the PLE
+        # table of an already-selected Qwen4 checkpoint. The sidecar is bound
+        # to that checkpoint's exact index, geometry, and sampled contents; it
+        # cannot select a model, parser, tier, or serving lane.
+        "RAPID_MLX_QWEN4_PLE_NVME",
+        "RAPID_MLX_QWEN4_PLE_CACHE_BYTES",
         # Opt-in re-quantization of the lm_head when serving fp8-block
         # checkpoints through the load-time mxfp8 repack
         # (rapid_mlx/fp8_repack.py). A precision/speed knob on an
