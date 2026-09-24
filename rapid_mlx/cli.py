@@ -4341,16 +4341,6 @@ def serve_command(args):
             )
             sys.exit(1)
 
-    # Resolve exactly once before any serving lane can consume ``args.port``.
-    # Socket activation uses the inherited socket's real bound port; all other
-    # omitted-port launches scan the bounded default range.
-    args.port = _resolve_serve_port(
-        getattr(args, "host", "127.0.0.1"),
-        getattr(args, "port", None),
-        model=args.model,
-        listen_fd=getattr(args, "listen_fd", None),
-    )
-
     # R10-C1: AUDIO-SERVE-MODE FORK. The boot guard above only checks
     # that the ``[audio]`` extra is installed — it doesn't route the
     # alias anywhere. Pre-R10 every short alias (``kokoro``, ``whisper``,
@@ -4392,6 +4382,20 @@ def serve_command(args):
             and _cache_runnability(audio_entry.hf_id) is False
         ):
             _refuse_offline_uncached(audio_entry.hf_id)
+    # Resolve exactly once after the cheap pre-dispatch validations above and
+    # before any serving lane can consume ``args.port`` or load/download a
+    # model. Socket activation uses the inherited socket's real bound port;
+    # all other omitted-port launches scan the bounded default range. In
+    # particular, an offline uncached audio alias must report its cache error
+    # before an unrelated occupied port.
+    args.port = _resolve_serve_port(
+        getattr(args, "host", "127.0.0.1"),
+        getattr(args, "port", None),
+        model=args.model,
+        listen_fd=getattr(args, "listen_fd", None),
+    )
+
+    if audio_entry is not None:
         _serve_audio_mode(args, audio_entry)
         return
 

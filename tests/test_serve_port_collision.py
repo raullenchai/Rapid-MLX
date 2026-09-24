@@ -307,6 +307,32 @@ def _fake_inherited_socket(*, sockname, accept_error=None):
     return FakeInheritedSocket
 
 
+def test_listen_fd_acceptconn_integer_guards_run_on_every_platform(monkeypatch):
+    """Exercise the accept-state read and error guard without OS feature gaps."""
+    monkeypatch.setattr(socket, "SO_ACCEPTCONN", 0x40000000, raising=False)
+
+    read_fd, write_fd = os.pipe()
+    try:
+        monkeypatch.setattr(
+            socket,
+            "socket",
+            _fake_inherited_socket(sockname=("127.0.0.1", 1234)),
+        )
+        assert cli._listen_fd_port(read_fd) == 1234
+
+        error = OSError(errno.EINVAL, "unexpected socket option failure")
+        monkeypatch.setattr(
+            socket,
+            "socket",
+            _fake_inherited_socket(sockname=("127.0.0.1", 1234), accept_error=error),
+        )
+        with pytest.raises(OSError, match="unexpected socket option failure"):
+            cli._listen_fd_port(read_fd)
+    finally:
+        os.close(read_fd)
+        os.close(write_fd)
+
+
 def test_listen_fd_preserves_unexpected_acceptconn_error(monkeypatch):
     read_fd, write_fd = os.pipe()
     try:
