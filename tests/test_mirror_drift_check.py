@@ -1544,6 +1544,25 @@ def test_mirror_uploader_public_404_is_advisory(monkeypatch, capsys):
     assert "1 public advisories" in output
 
 
+def test_mirror_uploader_refuses_unmirrored_without_force(monkeypatch, capsys):
+    entry = types.SimpleNamespace(reason="unused: no pulls", since="2026-09-24")
+    monkeypatch.setattr(mirror, "load_unmirrored", lambda *_args: {"org/repo": entry})
+    hf_calls = []
+    monkeypatch.setattr(mirror, "_hf_files", lambda repo: hf_calls.append(repo) or [])
+    monkeypatch.setattr(mirror, "_r2_client", lambda *_args: object())
+
+    assert mirror.mirror_repo("org/repo") == 2
+    assert hf_calls == []
+    refusal = capsys.readouterr().err
+    assert refusal.count("SKIP intentionally unmirrored") == 1
+    assert "unused: no pulls" in refusal
+    assert "2026-09-24" in refusal
+    assert "--force-unmirrored" in refusal
+
+    assert mirror.mirror_repo("org/repo", force_unmirrored=True) == 0
+    assert hf_calls == ["org/repo"]
+
+
 def test_mirror_uploader_zero_byte_head_and_verify_failure(monkeypatch, capsys):
     item = mirror.FileMeta("empty", 0, "org/repo/empty", None)
     monkeypatch.setattr(mirror, "_hf_files", lambda _repo: [item])

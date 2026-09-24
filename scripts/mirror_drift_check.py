@@ -787,7 +787,9 @@ def _new_report(
         sha_check=(
             "not_applicable"
             if unmirrored is not None
-            else "checked" if has_r2 else "skipped_no_credentials"
+            else "checked"
+            if has_r2
+            else "skipped_no_credentials"
         ),
         intentionally_unmirrored=unmirrored is not None,
         unmirrored_reason=unmirrored.reason if unmirrored else None,
@@ -967,9 +969,7 @@ def audit(
     """Audit aliases; ``only_used`` omits bucket-only catalog inventory rows."""
     specs = _load_aliases(main_aliases_path, audio_aliases_path)
     if unmirrored_path is None:
-        unmirrored = load_unmirrored(
-            UNMIRRORED_PATH, ALIASES_PATH, AUDIO_ALIASES_PATH
-        )
+        unmirrored = load_unmirrored(UNMIRRORED_PATH, ALIASES_PATH, AUDIO_ALIASES_PATH)
     else:
         unmirrored = load_unmirrored(
             unmirrored_path, main_aliases_path, audio_aliases_path

@@ -69,7 +69,9 @@ def load_unmirrored(
         try:
             parsed_since = date.fromisoformat(since)
         except ValueError as error:
-            raise ValueError(f"{label}.since must be an ISO date (YYYY-MM-DD)") from error
+            raise ValueError(
+                f"{label}.since must be an ISO date (YYYY-MM-DD)"
+            ) from error
         if parsed_since.isoformat() != since:
             raise ValueError(f"{label}.since must be an ISO date (YYYY-MM-DD)")
         if hf_path not in known_hf_paths:

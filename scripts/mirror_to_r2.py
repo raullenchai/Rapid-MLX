@@ -561,9 +561,9 @@ def mirror_repo(
     correct for the one-quantisation-per-repo layout every other upstream
     we mirror uses.
     """
-    unmirrored = load_unmirrored(
-        unmirrored_path, ALIASES_PATH, AUDIO_ALIASES_PATH
-    ).get(repo_id)
+    unmirrored = load_unmirrored(unmirrored_path, ALIASES_PATH, AUDIO_ALIASES_PATH).get(
+        repo_id
+    )
     if unmirrored is not None and not force_unmirrored:
         print(
             f"SKIP intentionally unmirrored: {repo_id} "
