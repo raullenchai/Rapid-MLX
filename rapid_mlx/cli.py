@@ -12262,7 +12262,7 @@ Examples:
         default="float16",
         help="Laya weight dtype",
     )
-    system_one_parser.add_argument("--batch-size", type=int, default=16)
+    system_one_parser.add_argument("--batch-size", type=positive_int, default=16)
     system_one_parser.add_argument(
         "--encoder",
         default="Qwen/Qwen3-8B",

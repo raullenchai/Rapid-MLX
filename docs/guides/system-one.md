@@ -98,7 +98,9 @@ nesting-depth protection.
 - Laya uses checkpoint calibration and accepts `temperature=1` only.
 - CLM input is capped at 2,048 tokens by default, matching the upstream
   reference server. `--max-tokens` can lower or raise the cap, but parity above
-  2,048 tokens has not been qualified.
+  2,048 tokens has not been qualified. Each rendered encoder input is also
+  capped at 16 UTF-8 bytes per configured token (at least 1 KiB), before
+  tokenization.
 - A request may contain at most 64 questions and 255 options per question.
   Across all questions it may contain at most 255 candidates and 32,768 CLM
   encoder tokens. `--max-work-tokens` changes the token budget.

@@ -255,6 +255,13 @@ def test_clm_backend_runs_native_hidden_state_and_reuses_action_cache(
     else:
         raise AssertionError("CLM accepted a request over its work-token budget")
 
+    backend._max_work_tokens = 32_768
+    backend._max_text_bytes = 4
+    calls_before = len(calls)
+    with pytest.raises(ValueError, match="state exceeds 4 UTF-8 bytes"):
+        backend.answer("oversized", {"q": question}, "public-clm", 1.0)
+    assert len(calls) == calls_before
+
 
 def test_clm_backend_rejects_non_safetensors_weight_file(tmp_path):
     from rapid_mlx.system_one.backends import CLMBackend

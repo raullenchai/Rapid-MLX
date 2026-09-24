@@ -10,7 +10,7 @@ from collections import OrderedDict
 from pathlib import Path
 from typing import Any, Protocol
 
-from .schema import Question, answer_from_probabilities, clm_pairs
+from .schema import Question, answer_from_probabilities, clm_pairs, to_text
 
 
 class DecisionBackend(Protocol):
@@ -259,11 +259,19 @@ class CLMBackend:
         self._scale = math.exp(min(logit_scale, math.log(100.0)))
         self._max_tokens = max_tokens
         self._max_work_tokens = max_work_tokens
+        self._max_text_bytes = max(1024, max_tokens * 16)
         self._cache_entries = max(0, cache_entries)
         self._cache: OrderedDict[tuple[str, str], Any] = OrderedDict()
         self._lock = threading.Lock()
 
     def _token_ids(self, text: str) -> list[int]:
+        if (
+            len(text) > self._max_text_bytes
+            or len(text.encode("utf-8")) > self._max_text_bytes
+        ):
+            raise ValueError(
+                f"CLM input text exceeds {self._max_text_bytes} UTF-8 bytes before tokenization"
+            )
         tokenizer = getattr(self._tokenizer, "_tokenizer", self._tokenizer)
         ids = tokenizer.encode(text, add_special_tokens=True)
         if not ids:
@@ -275,17 +283,16 @@ class CLMBackend:
             ids = [eos]
         return ids[-self._max_tokens :]
 
-    def _project(self, kind: str, texts: list[str]):
+    def _project(self, kind: str, texts: list[str], token_rows: list[list[int]]):
         import mlx.core as mx
 
         head = self._state_head if kind == "state" else self._action_head
         output = []
         input_tokens = 0
-        for text in texts:
+        for text, token_ids in zip(texts, token_rows, strict=True):
             key = (kind, text)
             cached = self._cache.get(key)
             if cached is None:
-                token_ids = self._token_ids(text)
                 input_tokens += len(token_ids)
                 ids = mx.array([token_ids])
                 hidden = self._encoder(ids)[:, -1, :]
@@ -310,20 +317,33 @@ class CLMBackend:
             raise KeyError(
                 f"unknown model {model!r}; available: {[self.default_model]}"
             )
-        pairs = clm_pairs(state, questions)
+        # Bound shared state before clm_pairs duplicates it for each question.
+        state_text = to_text(state).strip()
+        if (
+            len(state_text) > self._max_text_bytes
+            or len(state_text.encode("utf-8")) > self._max_text_bytes
+        ):
+            raise ValueError(
+                f"CLM state exceeds {self._max_text_bytes} UTF-8 bytes before tokenization"
+            )
+        pairs = clm_pairs(state_text, questions)
         states = [item[0] for item in pairs.values()]
         candidates = [candidate for item in pairs.values() for candidate in item[2]]
-        requested_tokens = sum(
-            len(self._token_ids(text)) for text in states + candidates
-        )
+        state_token_rows = [self._token_ids(text) for text in states]
+        action_token_rows = [self._token_ids(text) for text in candidates]
+        requested_tokens = sum(len(row) for row in state_token_rows + action_token_rows)
         if requested_tokens > self._max_work_tokens:
             raise ValueError(
                 "request needs "
                 f"{requested_tokens} encoder tokens; limit is {self._max_work_tokens}"
             )
         with self._lock:
-            state_vectors, state_tokens = self._project("state", states)
-            action_vectors, action_tokens = self._project("action", candidates)
+            state_vectors, state_tokens = self._project(
+                "state", states, state_token_rows
+            )
+            action_vectors, action_tokens = self._project(
+                "action", candidates, action_token_rows
+            )
             answers_out = {}
             offset = 0
             for row, (question_id, (_, keys, option_texts)) in enumerate(pairs.items()):

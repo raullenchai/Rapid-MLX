@@ -40,24 +40,32 @@ def create_app(
 
     install_request_body_depth_middleware(app)
     install_request_body_limit_middleware(app)
-    admission = asyncio.Semaphore(max_concurrent_requests)
+    in_flight = 0
 
     async def run_backend(call: Callable[..., Any], *args: Any) -> Any:
-        if admission.locked():
+        nonlocal in_flight
+        # No await occurs between the check and increment, so reservation is
+        # atomic with respect to every other task on this event loop.
+        if in_flight >= max_concurrent_requests:
             raise HTTPException(
                 status_code=503,
                 detail="System One request capacity is full",
                 headers={"Retry-After": "1"},
             )
-        await admission.acquire()
+        in_flight += 1
         try:
             worker = asyncio.create_task(asyncio.to_thread(call, *args))
         except BaseException:
-            admission.release()
+            in_flight -= 1
             raise
+
+        def release_permit(_worker: asyncio.Task) -> None:
+            nonlocal in_flight
+            in_flight -= 1
+
         # A client disconnect cancels the request coroutine, but cannot stop a
         # Python worker thread. Keep its permit until the worker really exits.
-        worker.add_done_callback(lambda _worker: admission.release())
+        worker.add_done_callback(release_permit)
         return await asyncio.shield(worker)
 
     def verify(authorization: str | None = Header(default=None)) -> None:

@@ -1,6 +1,7 @@
 # SPDX-License-Identifier: Apache-2.0
 from pathlib import Path
 
+import pytest
 import tomllib
 
 from rapid_mlx.cli import _resolve_system_one_backend, build_parser, system_one_command
@@ -30,6 +31,11 @@ def test_system_one_cli_accepts_clm_runtime_inputs():
     )
     assert args.head == "/tmp/head"
     assert args.encoder == "Qwen/Qwen3-8B"
+
+
+def test_system_one_cli_rejects_non_positive_laya_batch_size():
+    with pytest.raises(SystemExit):
+        build_parser().parse_args(["system-one", "--batch-size", "0"])
 
 
 def test_system_one_auto_backend_does_not_substring_match_clm():
