@@ -217,7 +217,7 @@ class ConventionTests(unittest.TestCase):
                     model.sanitize(weights)
 
     def test_fp32_direct_gain_admits_bounded_absolute_rounding(self):
-        for gain in (0.1, 0.001, 1e-12, -1e-12):
+        for gain in (0.1, 0.001):
             with self.subTest(gain=gain):
                 model = tiny_model()
                 weights = checkpoint(model, direct=True)
@@ -236,6 +236,26 @@ class ConventionTests(unittest.TestCase):
                 self.assertLessEqual(
                     float(mx.max(mx.abs(restored - gain)).item()), 4 * 2**-23
                 )
+
+    def test_direct_gain_lost_to_total_cancellation_is_rejected(self):
+        for gain in (1e-12, -1e-12):
+            with self.subTest(gain=gain):
+                model = tiny_model()
+                weights = checkpoint(model, direct=True)
+                key = (
+                    "language_model.model.layers.1.self_attn.indexer.q_layernorm.weight"
+                )
+                weights[key] = mx.full(weights[key].shape, gain)
+                with self.assertRaisesRegex(
+                    ValueError, "cannot be represented faithfully"
+                ):
+                    apply_qwen4_norm_convention(
+                        model.language_model,
+                        weights,
+                        ZeroCenteredRMSNorm,
+                        "direct_gamma",
+                        prefix="language_model.",
+                    )
 
     def test_single_anchor_outlier_is_rejected(self):
         class Anchors(nn.Module):

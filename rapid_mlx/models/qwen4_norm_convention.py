@@ -62,7 +62,9 @@ def apply_qwen4_norm_convention(model, weights, norm_type, convention, *, prefix
             # Subtracting and re-adding one can move a gain by a few FP32 ULPs.
             # The absolute term is required near zero, where relative error is
             # not a meaningful representability test for the residual ABI.
-            if not bool(
+            # Still reject total cancellation of a nonzero trained gain.
+            lost_nonzero = mx.any((gamma != 0) & (restored == 0))
+            if bool(lost_nonzero.item()) or not bool(
                 mx.allclose(
                     restored,
                     gamma,
