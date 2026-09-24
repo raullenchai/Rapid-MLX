@@ -3,7 +3,6 @@
 
 from __future__ import annotations
 
-import errno
 import json
 import logging
 import os
@@ -11,10 +10,14 @@ import tempfile
 import threading
 from collections.abc import Iterator
 from contextlib import contextmanager
-from datetime import datetime, timezone
 from pathlib import Path
 
 import rapid_mlx
+from rapid_mlx._process_identity import (
+    is_same_process,
+    marker_identity,
+    process_identity,
+)
 
 _LOAD_POLICIES = frozenset({"eager", "lazy", "none"})
 _FAILURE_STAGES = frozenset(
@@ -23,6 +26,7 @@ _FAILURE_STAGES = frozenset(
 
 _lock = threading.Lock()
 _attempted = False
+_attempted_emitted = False
 _terminal = False
 _model_type: str | None = None
 _load_policy: str | None = None
@@ -51,27 +55,27 @@ def _marker_pid(path: Path) -> int | None:
     return pid if pid > 0 else None
 
 
-def _pid_is_alive(pid: object) -> bool:
-    if isinstance(pid, bool) or not isinstance(pid, int) or pid <= 0:
-        return False
+def _read_marker(path: Path) -> dict[str, object] | None:
     try:
-        os.kill(pid, 0)
-    except ProcessLookupError:
-        return False
-    except PermissionError:
-        return True
-    except OSError as exc:
-        return exc.errno != errno.ESRCH
-    return True
+        value = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, UnicodeError, json.JSONDecodeError):
+        return None
+    if marker_identity(value) is None:
+        return None
+    return value
 
 
 def _atomic_write_marker(path: Path) -> None:
+    identity = process_identity(os.getpid())
+    if identity is None:
+        raise OSError("could not determine current process identity")
     path.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
     os.chmod(path.parent, 0o700)
     payload = json.dumps(
         {
-            "pid": os.getpid(),
-            "utc_start": datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
+            "pid": identity.pid,
+            "create_time": identity.create_time,
+            "boot_time": identity.boot_time,
             "app_version": rapid_mlx.__version__,
         },
         separators=(",", ":"),
@@ -111,7 +115,16 @@ def _begin_inflight_marker() -> tuple[bool, bool]:
         markers = []
     for marker_path in markers:
         pid = _marker_pid(marker_path)
-        if pid is None or _pid_is_alive(pid):
+        marker = _read_marker(marker_path)
+        if marker is None or pid is None or marker.get("pid") != pid:
+            try:
+                marker_path.unlink(missing_ok=True)
+            except OSError as exc:
+                logger.debug(
+                    "could not remove invalid serve marker %s: %r", marker_path, exc
+                )
+            continue
+        if is_same_process(marker):
             continue
         previous_unterminated = True
         try:
@@ -159,7 +172,8 @@ def _track(state: str, *, failure_stage: str | None = None) -> bool:
 
 def attempted(model_ref: object = None, *, load_policy: object = None) -> None:
     """Emit the accepted invocation exactly once for this process."""
-    global _attempted, _model_type, _load_policy, _previous_run_unterminated
+    global _attempted, _attempted_emitted, _model_type, _load_policy
+    global _previous_run_unterminated
     global _owns_inflight_marker
     resolved_policy = (
         load_policy
@@ -191,15 +205,22 @@ def attempted(model_ref: object = None, *, load_policy: object = None) -> None:
             return
         if _track("attempted") is not False:
             _attempted = True
+            _attempted_emitted = True
 
 
 def ready() -> None:
     """Emit the sole successful terminal state after listener creation."""
     global _terminal
+    try:
+        from rapid_mlx._signal_observability import ensure_crash_sink
+
+        ensure_crash_sink()
+    except BaseException:
+        pass
     with _lock:
         if _terminal:
             return
-        if not _attempted:
+        if not _attempted_emitted:
             _remove_inflight_marker()
             return
         _terminal = True
@@ -215,7 +236,7 @@ def failed(failure_stage: object) -> None:
     with _lock:
         if _terminal:
             return
-        if not _attempted:
+        if not _attempted_emitted:
             _remove_inflight_marker()
             return
         _terminal = True
@@ -265,11 +286,13 @@ def fail_current() -> None:
 
 
 def _reset_for_tests() -> None:
-    global _attempted, _terminal, _model_type, _load_policy, _current_failure_stage
+    global _attempted, _attempted_emitted, _terminal, _model_type, _load_policy
+    global _current_failure_stage
     global _previous_run_unterminated, _owns_inflight_marker
     with _lock:
         _remove_inflight_marker()
         _attempted = False
+        _attempted_emitted = False
         _terminal = False
         _model_type = None
         _load_policy = None

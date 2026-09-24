@@ -19,6 +19,7 @@ the install is the smoke-test surface.
 
 from __future__ import annotations
 
+import json
 import os
 import re
 import select
@@ -28,6 +29,8 @@ import sys
 import textwrap
 import threading
 from pathlib import Path
+
+import pytest
 
 
 def _read_ready_with_timeout(proc: subprocess.Popen, *, timeout: float = 10.0) -> str:
@@ -367,8 +370,8 @@ def test_crash_file_is_private_rotated_and_previous_crash_reported_once(
         current = max(files, key=lambda path: path.stat().st_mtime_ns)
 
         inactive = [path for path in files if so._crash_file_pid(path) == 100]
-        assert len(files) == 6
-        assert len(inactive) == 5
+        assert len(files) == 5
+        assert len(inactive) == 4
         assert current.stat().st_mode & 0o777 == 0o600
         assert log_dir.stat().st_mode & 0o777 == 0o700
         lines = capsys.readouterr().err.splitlines()
@@ -390,7 +393,16 @@ def test_rotation_never_unlinks_live_process_crash_files(monkeypatch, tmp_path):
         os.utime(path, (pid, pid))
         paths.append(path)
     live_pid = 200
-    monkeypatch.setattr(so, "_pid_is_alive", lambda pid: pid == live_pid)
+    monkeypatch.setattr(
+        so,
+        "_marker_for_pid",
+        lambda _log_dir, pid: {"pid": pid} if pid == live_pid else None,
+    )
+    monkeypatch.setattr(
+        so,
+        "is_same_process",
+        lambda marker: marker["pid"] == live_pid,
+    )
 
     so._rotate_crash_files(tmp_path)
 
@@ -399,16 +411,56 @@ def test_rotation_never_unlinks_live_process_crash_files(monkeypatch, tmp_path):
     assert not paths[1].exists()
 
 
-def test_crash_pid_probe_treats_permission_and_unknown_errors_as_alive(monkeypatch):
+def test_rotation_treats_reused_pid_marker_as_inactive(tmp_path):
     from rapid_mlx import _signal_observability as so
+    from rapid_mlx._process_identity import process_identity
 
-    for error in (PermissionError(), OSError("probe failed")):
-        monkeypatch.setattr(
-            so.os,
-            "kill",
-            lambda *_args, error=error: (_ for _ in ()).throw(error),
-        )
-        assert so._pid_is_alive(123) is True
+    identity = process_identity(os.getpid())
+    assert identity is not None
+    log_dir = tmp_path / "logs"
+    state_dir = tmp_path / "state"
+    log_dir.mkdir()
+    state_dir.mkdir()
+    crash = log_dir / f"crash-20260924T000000000000Z-{os.getpid()}.txt"
+    crash.write_text("traceback\n", encoding="utf-8")
+    marker = state_dir / f"serve-inflight-{os.getpid()}.json"
+    marker.write_text(
+        json.dumps(
+            {
+                "pid": os.getpid(),
+                "create_time": identity.create_time,
+                "boot_time": identity.boot_time - 100.0,
+                "app_version": "0.15.1",
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    assert so._crash_file_is_live(crash, log_dir) is False
+
+
+def test_windows_liveness_never_calls_os_kill(monkeypatch):
+    from rapid_mlx import _process_identity as identity
+    from rapid_mlx import _signal_observability as so
+    from rapid_mlx.telemetry import server_start
+
+    marker = {
+        "pid": 123,
+        "create_time": 1.0,
+        "boot_time": 1.0,
+        "app_version": "0.15.1",
+    }
+    monkeypatch.setattr(identity, "psutil", None)
+    monkeypatch.setattr(identity.sys, "platform", "win32")
+    monkeypatch.setattr(
+        identity.os,
+        "kill",
+        lambda *_args: (_ for _ in ()).throw(AssertionError("os.kill called")),
+    )
+
+    assert identity.is_same_process(marker) is True
+    assert server_start.is_same_process is identity.is_same_process
+    assert so.is_same_process is identity.is_same_process
 
 
 def test_empty_crash_file_is_removed_at_clean_shutdown(monkeypatch, tmp_path):
@@ -519,7 +571,7 @@ def test_tee_without_stdin_falls_back_to_file(monkeypatch, tmp_path):
         so._reset_for_tests()
 
 
-def test_tee_shutdown_errors_are_inert():
+def test_stuck_tee_is_killed_and_reaped():
     from rapid_mlx import _signal_observability as so
 
     class BrokenPipe:
@@ -528,17 +580,72 @@ def test_tee_shutdown_errors_are_inert():
 
     class StuckProcess:
         terminated = False
+        killed = False
+        waits = 0
 
         def wait(self, *, timeout):
+            self.waits += 1
             raise subprocess.TimeoutExpired("tee", timeout)
 
         def terminate(self):
             self.terminated = True
 
+        def kill(self):
+            self.killed = True
+
     process = StuckProcess()
     so._stop_crash_tee(process, BrokenPipe())
 
     assert process.terminated is True
+    assert process.killed is True
+    assert process.waits == 3
+
+
+@pytest.mark.parametrize("stderr", [None, object()])
+def test_unavailable_stderr_is_warn_only_file_mode(monkeypatch, tmp_path, stderr):
+    from rapid_mlx import _signal_observability as so
+
+    so._reset_for_tests()
+    monkeypatch.setenv("HOME", str(tmp_path))
+    monkeypatch.setattr(so.sys, "stderr", stderr)
+    try:
+        so.install_signal_observability(observed_signals=())
+        assert so._crash_path is not None
+        assert so._crash_pipe is None
+        assert so._crash_tee is None
+    finally:
+        so._reset_for_tests()
+
+
+def test_crash_fd_is_cloexec_and_tee_is_reaped(monkeypatch, tmp_path):
+    from rapid_mlx import _signal_observability as so
+
+    so._reset_for_tests()
+    monkeypatch.setenv("HOME", str(tmp_path))
+    try:
+        so.install_signal_observability(observed_signals=())
+        fd = so._crash_fd
+        tee = so._crash_tee
+        assert fd is not None
+        assert tee is not None
+        check = subprocess.run(
+            [
+                sys.executable,
+                "-c",
+                f"import os\ntry: os.fstat({fd}); print('INHERITED')\n"
+                "except OSError: print('CLOSED')",
+            ],
+            capture_output=True,
+            text=True,
+            close_fds=False,
+            check=True,
+        )
+        so._cleanup_crash_file()
+
+        assert check.stdout.strip() == "CLOSED"
+        assert tee.poll() is not None
+    finally:
+        so._reset_for_tests()
 
 
 def test_crash_file_scan_and_io_failures_are_inert(monkeypatch, tmp_path):
@@ -660,7 +767,36 @@ def test_abort_subprocess_leaves_nonempty_durable_crash_file(tmp_path):
     assert "Fatal Python error" in proc.stderr
 
 
-def test_crash_file_survives_later_faulthandler_registration(tmp_path):
+def test_closed_parent_stderr_pipe_still_writes_crash_file(tmp_path):
+    home = tmp_path / "home"
+    read_fd, write_fd = os.pipe()
+    program = textwrap.dedent(
+        f"""
+        import os
+        os.dup2({write_fd}, 2)
+        os.close({write_fd})
+        from rapid_mlx._signal_observability import install_signal_observability
+        install_signal_observability(observed_signals=())
+        os.abort()
+        """
+    )
+    env = dict(os.environ, HOME=str(home))
+    child = subprocess.Popen(
+        [sys.executable, "-c", program],
+        env=env,
+        pass_fds=(write_fd,),
+    )
+    os.close(write_fd)
+    os.close(read_fd)
+    child.wait(timeout=10)
+
+    files = list((home / ".rapid-mlx" / "logs").glob("crash-*.txt"))
+    assert child.returncode != 0
+    assert len(files) == 1
+    assert files[0].stat().st_size > 0
+
+
+def test_r1_later_faulthandler_registration_without_reinstall(tmp_path):
     home = tmp_path / "home"
     alternate = tmp_path / "alternate.txt"
     env = dict(os.environ, HOME=str(home))
@@ -669,11 +805,12 @@ def test_crash_file_survives_later_faulthandler_registration(tmp_path):
         import faulthandler
         import os
         from rapid_mlx._signal_observability import install_signal_observability
+        from rapid_mlx.telemetry.server_start import ready
 
         install_signal_observability(observed_signals=())
         with open({os.fspath(alternate)!r}, "w", encoding="utf-8") as alternate:
             faulthandler.enable(file=alternate, all_threads=True)
-            install_signal_observability(observed_signals=())
+            ready()
             os.abort()
         """
     )

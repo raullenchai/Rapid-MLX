@@ -58,6 +58,8 @@ from collections.abc import Callable
 from datetime import datetime, timezone
 from pathlib import Path
 
+from rapid_mlx._process_identity import is_same_process
+
 logger = logging.getLogger(__name__)
 
 
@@ -136,24 +138,31 @@ def _crash_files(log_dir: Path) -> list[Path]:
     return [path for _, _, path in candidates]
 
 
-def _pid_is_alive(pid: int) -> bool:
-    try:
-        os.kill(pid, 0)
-    except ProcessLookupError:
-        return False
-    except PermissionError:
-        return True
-    except OSError:
-        return True
-    return True
-
-
 def _crash_file_pid(path: Path) -> int | None:
     try:
         pid = int(path.stem.rsplit("-", 1)[1])
     except (IndexError, ValueError):
         return None
     return pid if pid > 0 else None
+
+
+def _marker_for_pid(log_dir: Path, pid: int) -> dict[str, object] | None:
+    marker_path = log_dir.parent / "state" / f"serve-inflight-{pid}.json"
+    try:
+        import json
+
+        marker = json.loads(marker_path.read_text(encoding="utf-8"))
+    except (OSError, UnicodeError, ValueError):
+        return None
+    return marker if isinstance(marker, dict) else None
+
+
+def _crash_file_is_live(path: Path, log_dir: Path) -> bool:
+    pid = _crash_file_pid(path)
+    if pid is None:
+        return False
+    marker = _marker_for_pid(log_dir, pid)
+    return marker is not None and marker.get("pid") == pid and is_same_process(marker)
 
 
 def _report_previous_crash(log_dir: Path) -> None:
@@ -167,7 +176,7 @@ def _report_previous_crash(log_dir: Path) -> None:
                 "~/Library/Logs/DiagnosticReports).\n"
             )
             sys.stderr.flush()
-        except (OSError, ValueError):
+        except (AttributeError, OSError, ValueError):
             pass
         return
 
@@ -175,8 +184,7 @@ def _report_previous_crash(log_dir: Path) -> None:
 def _rotate_crash_files(log_dir: Path) -> None:
     retained_inactive = 0
     for path in _crash_files(log_dir):
-        pid = _crash_file_pid(path)
-        if pid is not None and _pid_is_alive(pid):
+        if _crash_file_is_live(path, log_dir):
             continue
         retained_inactive += 1
         if retained_inactive <= 5:
@@ -218,7 +226,11 @@ def _stop_crash_tee(process: subprocess.Popen[bytes] | None, pipe) -> None:
             process.terminate()
             process.wait(timeout=1.0)
         except (OSError, subprocess.TimeoutExpired):
-            pass
+            try:
+                process.kill()
+                process.wait(timeout=1.0)
+            except (OSError, subprocess.TimeoutExpired):
+                pass
 
 
 def _cleanup_crash_file() -> None:
@@ -248,7 +260,11 @@ def _cleanup_crash_file() -> None:
             path.unlink(missing_ok=True)
     except OSError:
         pass
-    if _faulthandler_was_enabled and sys.stderr is not None and not sys.stderr.closed:
+    if (
+        _faulthandler_was_enabled
+        and sys.stderr is not None
+        and not getattr(sys.stderr, "closed", False)
+    ):
         try:
             _enable_faulthandler(sys.stderr)
         except (OSError, RuntimeError, ValueError):
@@ -283,6 +299,8 @@ def _install_crash_file() -> None:
             _warn_tee_fallback(OSError("tee helper is unavailable on Windows"))
         else:
             try:
+                if sys.stderr is None:
+                    raise OSError("stderr is unavailable")
                 stderr_fd = sys.stderr.fileno()
                 process = subprocess.Popen(
                     ["tee", "-a", os.fspath(path)],
@@ -294,7 +312,7 @@ def _install_crash_file() -> None:
                 if process.stdin is None:
                     raise OSError("tee helper has no stdin pipe")
                 pipe = process.stdin
-            except (OSError, ValueError) as exc:
+            except (AttributeError, OSError, TypeError, ValueError) as exc:
                 _warn_tee_fallback(exc)
                 _stop_crash_tee(process, pipe)
                 process = None
@@ -328,6 +346,19 @@ def _install_crash_file() -> None:
                 path.unlink(missing_ok=True)
             except OSError:
                 pass
+
+
+def ensure_crash_sink() -> bool:
+    """Re-arm faulthandler on Rapid-MLX's installed crash sink."""
+    with _install_lock:
+        if _crash_fd is None:
+            return False
+        try:
+            _enable_faulthandler(_crash_fd)
+        except (OSError, RuntimeError, ValueError) as exc:
+            logger.warning("could not re-arm durable rapid-mlx crash file: %s", exc)
+            return False
+        return True
 
 
 def _signal_name(signum: int) -> str:

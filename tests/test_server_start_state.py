@@ -2,7 +2,6 @@
 from __future__ import annotations
 
 import builtins
-import errno
 import json
 import os
 import subprocess
@@ -16,11 +15,22 @@ import pytest
 from fastapi import HTTPException
 
 from rapid_mlx import cli, server
+from rapid_mlx._process_identity import process_identity
 from rapid_mlx.runtime.primary_lifecycle import PrimaryModelLifecycle
 from rapid_mlx.service import helpers
 from rapid_mlx.telemetry import registry, server_start
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
+
+
+def _marker_payload(pid: int, *, current: bool = False) -> dict[str, object]:
+    identity = process_identity(pid) if current else None
+    return {
+        "pid": pid,
+        "create_time": identity.create_time if identity is not None else 1.0,
+        "boot_time": identity.boot_time if identity is not None else 1.0,
+        "app_version": "0.15.1",
+    }
 
 
 @pytest.fixture(autouse=True)
@@ -58,13 +68,7 @@ def test_stale_marker_reports_previous_run_unterminated_once_to_loopback(tmp_pat
     state_dir = home / ".rapid-mlx" / "state"
     state_dir.mkdir(parents=True)
     (state_dir / "serve-inflight-99999999.json").write_text(
-        json.dumps(
-            {
-                "pid": 99_999_999,
-                "utc_start": "2026-09-24T00:00:00Z",
-                "app_version": "0.15.1",
-            }
-        ),
+        json.dumps(_marker_payload(99_999_999)),
         encoding="utf-8",
     )
     sink = HTTPServer(("127.0.0.1", 0), _CaptureHandler)
@@ -173,7 +177,8 @@ def test_marker_written_at_attempted_and_removed_at_terminal_with_telemetry_disa
     assert marker.parent.stat().st_mode & 0o777 == 0o700
     payload = json.loads(marker.read_text(encoding="utf-8"))
     assert payload["pid"] == os.getpid()
-    assert payload["utc_start"].endswith("Z")
+    assert isinstance(payload["create_time"], float)
+    assert isinstance(payload["boot_time"], float)
     assert isinstance(payload["app_version"], str)
 
     terminal()
@@ -185,11 +190,7 @@ def test_live_marker_is_not_reported_overwritten_or_removed(monkeypatch, tmp_pat
     live_pid = os.getppid()
     marker = tmp_path / ".rapid-mlx" / "state" / f"serve-inflight-{live_pid}.json"
     marker.parent.mkdir(parents=True)
-    original = {
-        "pid": live_pid,
-        "utc_start": "2026-09-24T00:00:00Z",
-        "app_version": "0.15.1",
-    }
+    original = _marker_payload(live_pid, current=True)
     marker.write_text(json.dumps(original), encoding="utf-8")
     events = _capture(monkeypatch)
 
@@ -209,7 +210,7 @@ def test_stale_marker_adds_attempted_property_in_process(monkeypatch, tmp_path):
     marker = tmp_path / ".rapid-mlx" / "state" / "serve-inflight-99999999.json"
     marker.parent.mkdir(parents=True)
     marker.write_text(
-        json.dumps({"pid": 99_999_999, "utc_start": "old", "app_version": "0.15.1"}),
+        json.dumps(_marker_payload(99_999_999)),
         encoding="utf-8",
     )
     events = _capture(monkeypatch)
@@ -219,30 +220,12 @@ def test_stale_marker_adds_attempted_property_in_process(monkeypatch, tmp_path):
     assert events[0][1]["previous_run_unterminated"] is True
 
 
-@pytest.mark.parametrize("pid", [True, "1", 0, -1])
-def test_invalid_marker_pids_are_not_alive(pid):
-    assert server_start._pid_is_alive(pid) is False
-
-
 @pytest.mark.parametrize(
     "name",
     ["other-123.json", "serve-inflight-nope.json", "serve-inflight-123.txt"],
 )
 def test_invalid_marker_filenames_have_no_pid(name):
     assert server_start._marker_pid(Path(name)) is None
-
-
-@pytest.mark.parametrize(
-    ("error", "expected"),
-    [
-        (PermissionError(), True),
-        (OSError(errno.EIO, "probe failed"), True),
-        (OSError(errno.ESRCH, "gone"), False),
-    ],
-)
-def test_pid_probe_handles_permission_and_os_errors(monkeypatch, error, expected):
-    monkeypatch.setattr(os, "kill", lambda *_args: (_ for _ in ()).throw(error))
-    assert server_start._pid_is_alive(123) is expected
 
 
 def test_atomic_marker_rejects_zero_progress_write(monkeypatch, tmp_path):
@@ -288,7 +271,7 @@ def test_stale_marker_unlink_failure_still_counts(monkeypatch, tmp_path):
     monkeypatch.setenv("HOME", str(tmp_path))
     marker = tmp_path / ".rapid-mlx" / "state" / "serve-inflight-99999999.json"
     marker.parent.mkdir(parents=True)
-    marker.write_text("{}", encoding="utf-8")
+    marker.write_text(json.dumps(_marker_payload(99_999_999)), encoding="utf-8")
     monkeypatch.setattr(
         Path,
         "unlink",
@@ -297,6 +280,52 @@ def test_stale_marker_unlink_failure_still_counts(monkeypatch, tmp_path):
     monkeypatch.setattr(server_start, "_atomic_write_marker", lambda _path: None)
 
     assert server_start._begin_inflight_marker() == (True, True)
+
+
+@pytest.mark.parametrize(
+    "payload",
+    [
+        "not json",
+        "{}",
+        json.dumps({"pid": 99_999_999}),
+        json.dumps(
+            {
+                "pid": 99_999_999,
+                "create_time": "old",
+                "boot_time": 1.0,
+                "app_version": "0.15.1",
+            }
+        ),
+    ],
+)
+def test_garbage_dead_pid_marker_is_deleted_without_telemetry(
+    monkeypatch, tmp_path, payload
+):
+    monkeypatch.setenv("HOME", str(tmp_path))
+    marker = tmp_path / ".rapid-mlx" / "state" / "serve-inflight-99999999.json"
+    marker.parent.mkdir(parents=True)
+    marker.write_text(payload, encoding="utf-8")
+
+    previous, owns = server_start._begin_inflight_marker()
+
+    assert previous is False
+    assert owns is True
+    assert not marker.exists()
+
+
+def test_pid_reuse_does_not_hide_pre_reboot_marker(monkeypatch, tmp_path):
+    monkeypatch.setenv("HOME", str(tmp_path))
+    marker = server_start._marker_path()
+    marker.parent.mkdir(parents=True)
+    stale = _marker_payload(os.getpid(), current=True)
+    stale["boot_time"] = float(stale["boot_time"]) - 100.0
+    marker.write_text(json.dumps(stale), encoding="utf-8")
+
+    previous, owns = server_start._begin_inflight_marker()
+
+    assert previous is True
+    assert owns is True
+    assert json.loads(marker.read_text(encoding="utf-8")) != stale
 
 
 @pytest.mark.parametrize(
@@ -413,6 +442,23 @@ def test_disabled_telemetry_never_initializes_sender(monkeypatch):
     monkeypatch.setattr("rapid_mlx.telemetry.posthog_sender.get_sender", explode)
     server_start.attempted("qwen3.5-4b-4bit", load_policy="eager")
     server_start.ready()
+
+
+def test_disabled_then_enabled_never_emits_terminal_only(monkeypatch):
+    allowed = iter([False, True])
+    events: list[tuple[str, dict[str, object]]] = []
+    monkeypatch.setattr(
+        "rapid_mlx.telemetry.track._upload_allowed", lambda: next(allowed)
+    )
+    monkeypatch.setattr(
+        "rapid_mlx.telemetry.track.track",
+        lambda name, props: events.append((name, dict(props))) or True,
+    )
+
+    server_start.attempted("qwen3.5-4b-4bit", load_policy="eager")
+    server_start.ready()
+
+    assert events == []
 
 
 def test_attempt_setup_failure_cannot_emit_terminal_without_attempted(
