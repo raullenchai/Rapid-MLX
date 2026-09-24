@@ -25,7 +25,19 @@ _INSTALL_PROMPT_TIMEOUT_SECONDS = 30.0
 class _PromptInput(Protocol):
     def fileno(self) -> int: ...
 
-    def readline(self) -> str: ...
+
+_assume_yes = False
+
+
+def set_assume_yes(flag: bool) -> None:
+    """Set whether this process should accept optional-runtime installs."""
+    global _assume_yes
+    _assume_yes = bool(flag)
+
+
+def assume_yes() -> bool:
+    """Return the process-wide optional-runtime prompt policy."""
+    return _assume_yes
 
 
 class OptionalRuntimeMissing(RuntimeError):  # noqa: N818 - public API name is fixed
@@ -80,7 +92,11 @@ def _running_in_desktop_sidecar() -> bool:
     return is_desktop_sidecar()
 
 
-def _prompt_to_install(extra: OptionalExtra) -> bool:
+def _prompt_to_install(
+    extra: OptionalExtra,
+    *,
+    timeout_seconds: float | None = None,
+) -> bool:
     """Wait at most 30 seconds for an explicit interactive opt-in."""
     size_mb = _EXTRA_INSTALL_SIZE_MB.get(extra)
     size = f" (~{size_mb} MB)" if size_mb is not None else ""
@@ -90,10 +106,13 @@ def _prompt_to_install(extra: OptionalExtra) -> bool:
         file=sys.stderr,
         flush=True,
     )
+    timeout = (
+        _INSTALL_PROMPT_TIMEOUT_SECONDS if timeout_seconds is None else timeout_seconds
+    )
     response = (
-        _read_windows_prompt_response()
+        _read_windows_prompt_response(timeout)
         if sys.platform == "win32"
-        else _read_posix_prompt_response(sys.stdin)
+        else _read_posix_prompt_response(sys.stdin, timeout)
     )
     if response is None:
         print(file=sys.stderr)
@@ -101,26 +120,57 @@ def _prompt_to_install(extra: OptionalExtra) -> bool:
     return response.strip().lower() in {"y", "yes"}
 
 
-def _read_posix_prompt_response(stdin: _PromptInput) -> str | None:
-    """Read one ready line without leaving a background reader behind."""
+def _read_posix_prompt_response(
+    stdin: _PromptInput, timeout_seconds: float | None = None
+) -> str | None:
+    """Read a newline-terminated response without exceeding the deadline."""
     try:
         stdin_fd = stdin.fileno()
-        ready, _, _ = select.select([stdin_fd], [], [], _INSTALL_PROMPT_TIMEOUT_SECONDS)
-        if not ready:
-            return None
-        response = stdin.readline()
-        return response or None
+        timeout = (
+            _INSTALL_PROMPT_TIMEOUT_SECONDS
+            if timeout_seconds is None
+            else timeout_seconds
+        )
+        deadline = time.monotonic() + timeout
+        response = bytearray()
+        while True:
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                return None
+            ready, _, _ = select.select([stdin_fd], [], [], remaining)
+            if not ready:
+                return None
+            chunk = os.read(stdin_fd, 256)
+            if not chunk:
+                return None
+            response.extend(chunk)
+            terminators = [
+                index
+                for marker in (b"\n", b"\r")
+                if (index := response.find(marker)) >= 0
+            ]
+            if terminators:
+                return bytes(response[: min(terminators)]).decode(
+                    "utf-8", errors="replace"
+                )
     except Exception:
         return None
 
 
-def _read_windows_prompt_response() -> str | None:
+def _read_windows_prompt_response(
+    timeout_seconds: float | None = None,
+) -> str | None:
     """Poll the Windows console until Enter or the prompt deadline."""
     try:
         import msvcrt
 
         console: Any = msvcrt
-        deadline = time.monotonic() + _INSTALL_PROMPT_TIMEOUT_SECONDS
+        timeout = (
+            _INSTALL_PROMPT_TIMEOUT_SECONDS
+            if timeout_seconds is None
+            else timeout_seconds
+        )
+        deadline = time.monotonic() + timeout
         response: list[str] = []
         while time.monotonic() < deadline:
             if console.kbhit():

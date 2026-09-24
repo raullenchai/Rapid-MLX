@@ -3965,6 +3965,10 @@ def serve_command(args):
     import os
     import sys
 
+    from rapid_mlx.runtime import optional_runtime
+
+    optional_runtime.set_assume_yes(getattr(args, "yes", False))
+
     _validate_primary_lifecycle_args(args)
 
     if bounds_error := _vision_pixel_bounds_error(

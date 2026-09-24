@@ -89,6 +89,11 @@ def _isolate_handler(monkeypatch, *, stdin, stderr) -> list[object]:
         "select",
         lambda readable, _writable, _errors, _timeout: (readable, [], []),
     )
+    monkeypatch.setattr(
+        optional_runtime.os,
+        "read",
+        lambda _fd, size: stdin.read(size).encode("utf-8"),
+    )
     return order
 
 
@@ -190,6 +195,22 @@ def test_tty_timeout_defaults_no_without_reading_stdin(monkeypatch) -> None:
         optional_runtime.handle_optional_runtime_missing(_failure(extra="video"))
 
     assert "Install rapid-mlx[video] now? [y/N] \n" in stderr.getvalue()
+
+
+def test_posix_partial_response_at_deadline_defaults_no(monkeypatch) -> None:
+    clock = iter([10.0, 10.0, 10.2])
+    monkeypatch.setattr(optional_runtime.time, "monotonic", lambda: next(clock))
+    monkeypatch.setattr(select, "select", lambda *_args: ([0], [], []))
+    monkeypatch.setattr(optional_runtime.os, "read", lambda _fd, _size: b"y")
+
+    assert optional_runtime._read_posix_prompt_response(_TTY(), 0.1) is None
+
+
+def test_posix_eof_defaults_no(monkeypatch) -> None:
+    monkeypatch.setattr(select, "select", lambda *_args: ([0], [], []))
+    monkeypatch.setattr(optional_runtime.os, "read", lambda _fd, _size: b"")
+
+    assert optional_runtime._read_posix_prompt_response(_TTY(), 0.1) is None
 
 
 def test_closed_stdin_exception_defaults_no(monkeypatch) -> None:
@@ -452,6 +473,59 @@ def test_real_tty_stdin_closes_cleanly_after_timeout() -> None:
     os.close(master)
 
     assert b"CLOSED" in output, output.decode(errors="replace")
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="requires POSIX pty")
+def test_raw_tty_one_byte_cannot_bypass_prompt_deadline() -> None:
+    script = textwrap.dedent(
+        """
+        import sys
+        import tty
+        from rapid_mlx.runtime import optional_runtime as o
+        tty.setraw(sys.stdin.fileno())
+        print('RAW_READY', flush=True)
+        print(
+            'RESULT=' + repr(
+                o._prompt_to_install('vision', timeout_seconds=0.10)
+            ),
+            flush=True,
+        )
+        """
+    )
+    proc, master = _pty_child(script)
+    before = _read_until(master, b"Install rapid-mlx[vision] now?")
+    os.write(master, b"y")
+    after = _read_until(master, b"RESULT=", timeout=0.7)
+    proc.wait(timeout=3)
+    os.close(master)
+
+    assert b"RAW_READY" in before
+    assert b"RESULT=False" in after, (before + after).decode(errors="replace")
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="requires POSIX pty")
+def test_canonical_partial_line_ctrl_d_defaults_no_at_deadline() -> None:
+    script = textwrap.dedent(
+        """
+        from rapid_mlx.runtime import optional_runtime as o
+        print(
+            'RESULT=' + repr(
+                o._prompt_to_install('vision', timeout_seconds=0.10)
+            ),
+            flush=True,
+        )
+        """
+    )
+    proc, master = _pty_child(script)
+    before = _read_until(master, b"Install rapid-mlx[vision] now?")
+    os.write(master, b"y")
+    time.sleep(0.02)
+    os.write(master, b"\x04")
+    after = _read_until(master, b"RESULT=", timeout=0.7)
+    proc.wait(timeout=3)
+    os.close(master)
+
+    assert b"RESULT=False" in after, (before + after).decode(errors="replace")
 
 
 def test_all_optional_runtime_handler_call_sites_forward_assume_yes() -> None:

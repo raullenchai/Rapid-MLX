@@ -66,6 +66,12 @@ from .runtime.optional_runtime import (
     OptionalRuntimeMissing,
     handle_optional_runtime_missing,
 )
+from .runtime.optional_runtime import (
+    assume_yes as optional_runtime_assume_yes,
+)
+from .runtime.optional_runtime import (
+    set_assume_yes as set_optional_runtime_assume_yes,
+)
 
 
 # Back-compat shim: ``tests/test_context_length_exceeded.py`` and
@@ -226,7 +232,6 @@ _prefix_cache_load_task = None  # asyncio.Task | None
 _model_name: str | None = None
 _model_alias: str | None = None  # Short alias used to start the model (if any)
 _standalone_start_model: str | None = None
-_standalone_assume_yes = False
 _telemetry_auto_selected: bool = False
 _telemetry_model_served_state = "idle"
 _telemetry_audio_model_served_state = "idle"
@@ -877,7 +882,7 @@ async def lifespan(app: FastAPI):
                 engine=_engine,
                 alias_or_path=_model_alias or _model_path,
                 auto_selected=_telemetry_auto_selected,
-                assume_yes=_standalone_assume_yes,
+                assume_yes=optional_runtime_assume_yes(),
             )
         except Exception as _start_exc:
             from rapid_mlx.telemetry.server_start import failed
@@ -3506,7 +3511,7 @@ def _capture_start_failures(func):
                 engine=_engine,
                 alias_or_path=_standalone_start_model,
                 auto_selected=False,
-                assume_yes=_standalone_assume_yes,
+                assume_yes=optional_runtime_assume_yes(),
             )
         except BaseException:
             try:
@@ -3523,8 +3528,8 @@ def _capture_start_failures(func):
 @_capture_start_failures
 def main():
     """Run the server."""
-    global _standalone_assume_yes, _standalone_start_model
-    _standalone_assume_yes = False
+    global _standalone_start_model
+    set_optional_runtime_assume_yes(False)
     if os.environ.get("RAPID_PYSAMPLE"):
         from ._pysample import install as _pysample_install
 
@@ -3850,7 +3855,7 @@ Examples:
 
     args = parser.parse_args()
     _standalone_start_model = args.model
-    _standalone_assume_yes = args.yes
+    set_optional_runtime_assume_yes(args.yes)
 
     # Telemetry v2 default-on wiring (T11): resolve the consent decision,
     # deliver the disclosure notice to stderr, then apply the locked,

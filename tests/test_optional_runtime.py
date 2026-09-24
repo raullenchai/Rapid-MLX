@@ -20,6 +20,7 @@ from unittest.mock import AsyncMock
 import pytest
 
 from rapid_mlx import cli, server
+from rapid_mlx.runtime import optional_runtime
 from rapid_mlx.runtime.optional_runtime import OptionalRuntimeMissing
 from rapid_mlx.telemetry import model_events, registry, server_start
 
@@ -631,7 +632,7 @@ def test_standalone_failure_guard_routes_optional_runtime_with_context(
     calls = []
     monkeypatch.setattr(server, "_engine", engine)
     monkeypatch.setattr(server, "_standalone_start_model", "bonsai2-27b-2bit")
-    monkeypatch.setattr(server, "_standalone_assume_yes", True)
+    monkeypatch.setattr(optional_runtime, "_assume_yes", True)
 
     def handle(exc, **kwargs):
         calls.append((exc, kwargs))
@@ -682,7 +683,7 @@ def test_standalone_main_records_model_before_startup(monkeypatch) -> None:
         server.main()
 
     assert server._standalone_start_model == "bonsai2-27b-2bit"
-    assert server._standalone_assume_yes is True
+    assert optional_runtime.assume_yes() is True
 
 
 def test_real_dispatch_with_present_vision_extra_emits_no_failure(tmp_path) -> None:
@@ -892,7 +893,7 @@ def test_main_routes_optional_failure_to_single_handler(
 
 
 @pytest.mark.asyncio
-async def test_lifespan_optional_failure_reuses_cli_handler(monkeypatch) -> None:
+async def test_cli_yes_reaches_lifespan_failure_wrapper(monkeypatch) -> None:
     failure = OptionalRuntimeMissing(
         extra="audio",
         install_hint="pip install 'rapid-mlx[audio]'",
@@ -903,6 +904,18 @@ async def test_lifespan_optional_failure_reuses_cli_handler(monkeypatch) -> None
     engine = SimpleNamespace(_loaded=False)
     calls = []
 
+    class StopServeError(Exception):
+        pass
+
+    monkeypatch.setattr(optional_runtime, "_assume_yes", False)
+    monkeypatch.setattr(
+        cli,
+        "_validate_primary_lifecycle_args",
+        lambda _args: (_ for _ in ()).throw(StopServeError()),
+    )
+    with pytest.raises(StopServeError):
+        cli.serve_command(SimpleNamespace(yes=True))
+
     monkeypatch.setattr(server, "_engine", engine)
     monkeypatch.setattr(server, "_primary_model_lifecycle", lifecycle)
     monkeypatch.setattr(server, "_primary_lazy_load", False)
@@ -910,7 +923,6 @@ async def test_lifespan_optional_failure_reuses_cli_handler(monkeypatch) -> None
     monkeypatch.setattr(server, "_model_alias", "kokoro")
     monkeypatch.setattr(server, "_model_path", "/unused")
     monkeypatch.setattr(server, "_telemetry_auto_selected", False)
-    monkeypatch.setattr(server, "_standalone_assume_yes", True)
 
     def handle(exc, **kwargs):
         calls.append((exc, kwargs))
