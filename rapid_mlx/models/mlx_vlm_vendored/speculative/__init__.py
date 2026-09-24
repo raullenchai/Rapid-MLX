@@ -1,4 +1,4 @@
-"""Vendored speculative-decode core (upstream ``mlx_vlm.speculative`` @ 0.7.1).
+"""Vendored speculative-decode core (upstream ``mlx_vlm.speculative`` @ 0.7.2).
 
 VENDOR-DEVIATION(subset-exports): the upstream init also re-exports
 ``load_drafter`` from ``.drafters``; the drafter registry and concrete

@@ -2,7 +2,7 @@
 
 Date: 2026-09-18
 Status: approved (user ruling: follow the original Phase B plan)
-Upstream pin: `mlx-vlm==0.7.1` (exact pin in `pyproject.toml`, shared with the
+Upstream pin: `mlx-vlm==0.7.2` (exact pin in `pyproject.toml`, shared with the
 Desktop sidecar)
 
 ## Why
@@ -46,17 +46,17 @@ plan:
      decisions), legacy retirement, and the telemetry-gated revert to
      byte-verbatim upstream.
 
-## What gets vendored (upstream 0.7.1, verbatim unless noted)
+## What gets vendored (upstream 0.7.2, verbatim unless noted)
 
 | Upstream module | Lines | Deps | Used by |
 |---|---|---|---|
-| `models/cache.py` | 3,615 | mlx + stdlib only | `mllm_batch_generator.py` (ArraysCache/KVCache eligibility + detached extraction), `engine/batched.py` |
-| `apc.py` | 4,994 | mlx, numpy, stdlib, + `apc_coordinator`/`apc_storage`/`kv_quant`/`_stream_cleanup` | `mllm_batch_generator.py` (prefix cache engine) |
-| `apc_coordinator.py` | 251 | stdlib | apc |
+| `models/cache.py` | 3,821 | mlx + stdlib only | `mllm_batch_generator.py` (ArraysCache/KVCache eligibility + detached extraction), `engine/batched.py` |
+| `apc.py` | 4,979 | mlx, numpy, stdlib, + `apc_coordinator`/`apc_storage`/`kv_quant`/`_stream_cleanup` | `mllm_batch_generator.py` (prefix cache engine) |
+| `apc_coordinator.py` | 369 | stdlib | apc |
 | `apc_storage.py` | 96 | stdlib | apc |
 | `kv_quant.py` | 186 | stdlib top-level, **lazy `.turboquant`** (7k lines, imports `.models.cache`) | apc |
 | `_stream_cleanup.py` | 10 | mlx | apc |
-| `apc_adapters.py` | 795 | mlx, stdlib, lazy `from .apc` | `mllm_batch_generator.py` (`clone_cache_entry`, `Capability`, `resolve_capability`) |
+| `apc_adapters.py` | 680 | mlx, stdlib | `mllm_batch_generator.py` (`clone_cache_entry`, `Capability`, `resolve_capability`) |
 | `vision_cache.py` | 81 | mlx, stdlib | `mllm_batch_generator.py` (`VisionFeatureCache`) |
 | `utils.py::prepare_inputs` + helpers | ~900 | mlx, numpy, PIL; lazy cv2/audio imports | `mllm_batch_generator.py` (prompt→model inputs) |
 
@@ -140,7 +140,7 @@ rapid_mlx/models/mlx_vlm_vendored/
 
 Rules (modeled on the `gemma4_vendored` precedent):
 
-- Copies are **verbatim** from the upstream 0.7.1 tag except *import
+- Copies are **verbatim** from the upstream 0.7.2 tag except *import
   redirects* and *in-source `VENDOR-DEVIATION(upstream-bugfix)` hunks* for
   defects that reproduce against the pinned upstream, each documented in the
   module body and in the package `__init__.py` inventory. No other logic
@@ -154,7 +154,7 @@ Rules (modeled on the `gemma4_vendored` precedent):
 
 ## Verification
 
-- Mechanical: `diff` vendored file vs upstream 0.7.1 → only the documented
+- Mechanical: `diff` vendored file vs upstream 0.7.2 → only the documented
   redirect hunks.
 - Behavioral: the vendored classes must be drop-ins. Lane unit tests
   (`test_mllm_batch_generator*`, `test_prefix_cache*`, engine tests) pass

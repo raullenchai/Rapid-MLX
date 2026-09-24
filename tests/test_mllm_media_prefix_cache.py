@@ -1893,33 +1893,21 @@ def probe():
         holder = SimpleNamespace(first=mx.zeros((2,)), second=[mx.zeros((3,))])
         assert _media_leaf_bytes(holder) == 5 * mx.zeros((1,)).itemsize
 
-    def test_clone_fails_closed_when_lazy_upstream_apc_redirect_is_absent(
+    def test_clone_uses_cache_owned_contract_without_upstream_apc_redirect(
         self, monkeypatch
     ):
-        """The vendored adapter imports without mlx-vlm, but this stack slice
-        still gets its array-copy helpers from ``mlx_vlm.apc``.  Absence at
-        that lazy boundary must decline the snapshot rather than aborting the
-        request."""
-        import rapid_mlx.models.mlx_vlm_vendored.apc_adapters as adapters
+        """mlx-vlm 0.7.2 cache-owned snapshots need no lazy APC helper."""
+        import builtins
 
-        monkeypatch.setattr(
-            adapters,
-            "_apc_array_helpers",
-            lambda: (_ for _ in ()).throw(
-                ModuleNotFoundError("mlx_vlm.apc", name="mlx_vlm.apc")
-            ),
-        )
-        assert _media_clone_leaves(_kv_leaves(), min_capacity_tokens=32) is None
+        real_import = builtins.__import__
 
-        monkeypatch.setattr(
-            adapters,
-            "_apc_array_helpers",
-            lambda: (_ for _ in ()).throw(
-                ModuleNotFoundError("cache plugin dependency", name="cache_plugin")
-            ),
-        )
-        with pytest.raises(ModuleNotFoundError, match="cache plugin dependency"):
-            _media_clone_leaves(_kv_leaves(), min_capacity_tokens=32)
+        def guarded_import(name, *args, **kwargs):
+            if name == "mlx_vlm.apc":
+                raise ModuleNotFoundError(name=name)
+            return real_import(name, *args, **kwargs)
+
+        monkeypatch.setattr(builtins, "__import__", guarded_import)
+        assert _media_clone_leaves(_kv_leaves(), min_capacity_tokens=32) is not None
 
     def test_tokenizer_boundary_and_semantics_fallbacks(self, monkeypatch):
         gen = _stub_generator()

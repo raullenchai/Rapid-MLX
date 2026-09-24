@@ -1285,7 +1285,7 @@ class MLLMBatchGenerator:
 
                 mode = _apc.model_apc_mode(self.language_model)
                 if mode == "exact":
-                    # mlx-vlm 0.7.1 enables APC's persistent disk tier by
+                    # mlx-vlm 0.7.2 enables APC's persistent disk tier by
                     # default.  Rapid's exact MLLM snapshots can be large and
                     # historically lived only inside the bounded in-process
                     # cache, so do not start writing a new home-directory

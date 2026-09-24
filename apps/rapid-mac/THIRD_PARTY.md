@@ -181,7 +181,7 @@ dependency closures:
 
 | Component | Pin | License | Project |
 | --- | --- | --- | --- |
-| mlx-vlm | `==0.7.1` | MIT | https://github.com/Blaizzy/mlx-vlm |
+| mlx-vlm | `==0.7.2` | MIT | https://github.com/Blaizzy/mlx-vlm |
 | Pillow | `>=10.0` | MIT-CMU | https://github.com/python-pillow/Pillow |
 | mflux | `==0.20.0` | MIT | https://github.com/mflux-community/mflux |
 | mlx-video-with-audio | `==0.1.36` | MIT | https://pypi.org/project/mlx-video-with-audio/ |

@@ -128,7 +128,7 @@ repository. Each keeps its upstream license text alongside the code.
   rapid_mlx/models/deepseek_v41_native/LICENSE-DSPARK, and NOTICE.
 
 * rapid_mlx/models/mlx_vlm_vendored/
-  Cache primitives vendored from mlx-vlm 0.7.1, with documented Rapid-MLX
+  Cache primitives vendored from mlx-vlm 0.7.2, with documented Rapid-MLX
   bug-fix deviations.
   MIT License — Copyright © 2025 Prince Canuma.
   See rapid_mlx/models/mlx_vlm_vendored/LICENSE.

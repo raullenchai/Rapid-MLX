@@ -1,5 +1,5 @@
 # SPDX-License-Identifier: Apache-2.0
-"""Vendored APC engine and cache primitives from mlx-vlm, pinned at 0.7.1.
+"""Vendored APC engine and cache primitives from mlx-vlm, pinned at 0.7.2.
 
 The native serialized MLLM lane (``MLLMBatchGenerator``) leans on mlx-vlm
 cache primitives. Vendoring this first slice brings those code paths under
@@ -9,10 +9,10 @@ everything else it provides (model loading, processors, templating, vision
 preprocessing, and the speculative-decode runtime).
 
 Design note: ``docs/engineering/design/2026-09-18-vendor-mllm-primitives.md``.
-Upstream: https://github.com/Blaizzy/mlx-vlm/tree/v0.7.1
+Upstream: https://github.com/Blaizzy/mlx-vlm/tree/v0.7.2
 
 Provenance contract: every file here is a copy of the upstream
-``mlx-vlm==0.7.1`` source except *import redirects* and *in-source
+``mlx-vlm==0.7.2`` source except *import redirects* and *in-source
 ``VENDOR-DEVIATION`` hunks*, each documented in the file's own body and in
 the inventory below. A future behavior change must re-qualify against the
 pinned tag: ``diff`` against upstream may show only the documented hunks.
@@ -20,18 +20,17 @@ pinned tag: ``diff`` against upstream may show only the documented hunks.
 Inventory (digests are of the UPSTREAM file, not the vendored bytes — the
 vendored copy differs by exactly the deviations listed):
 
-- ``cache.py`` — identical to ``mlx_vlm/models/cache.py`` @ v0.7.1
+- ``cache.py`` — identical to ``mlx_vlm/models/cache.py`` @ v0.7.2
   (upstream sha256
-  ``b736c299bc576f4bdf8d6edf3e1ac6fa3019ca888a2f3cba115d4252f84d5b29``)
+  ``cf39d3de8c2014fcb5e919ebf33b9e2bf506925aa3d6a979cd28e871c275800b``)
   **except three in-source ``VENDOR-DEVIATION(upstream-bugfix)`` hunks**,
   each reproducible against the pinned upstream:
-  1. ``BatchRotatingKVCache.merge`` called the zero-arg in-place
-     ``_temporal_order`` with an argument, raising TypeError on every
-     merge with content (latent upstream; mlx-lm 0.31.3 carries the same
-     defect). It also selected the allocation tail of an unrotated,
-     preallocated decode cache, merging unused zeros instead of its live
-     prefix. Fixed to call the zero-arg form and copy the first ``length``
-     temporal entries.
+  1. ``BatchRotatingKVCache.merge`` accepts Rapid's legacy one-row batch-cache
+     inputs as well as upstream's single-row ``RotatingKVCache`` inputs. The
+     batch type has a zero-arg, in-place ``_temporal_order`` contract, so the
+     upstream call shape raises ``TypeError`` and its tail slice can select
+     unused preallocation. The compatibility branch calls the zero-arg form
+     and copies the live prefix; upstream-typed inputs retain upstream logic.
   2. ``BatchPoolingCache.make_mask``'s scalar-offset branch added
      ``offset`` twice to the absolute query positions, admitting pooled
      tokens earlier than the causal contract allows. Fixed to match the
@@ -45,13 +44,13 @@ vendored copy differs by exactly the deviations listed):
   A diff against the pinned tag must show only these hunks (plus this
   note in the inventory).
 
-- ``apc_storage.py`` — byte-identical to ``mlx_vlm/apc_storage.py`` @ v0.7.1
+- ``apc_storage.py`` — byte-identical to ``mlx_vlm/apc_storage.py`` @ v0.7.2
   (upstream sha256
   ``e58b3a5aa5fa875764194712e38a7752006aeb31db5abe132057c667759e7010``).
 - ``_stream_cleanup.py`` — byte-identical to ``mlx_vlm/_stream_cleanup.py``
-  @ v0.7.1 (upstream sha256
+  @ v0.7.2 (upstream sha256
   ``00bf5797510f088cfe4cea7798dce0f2902af99a956888748ff0ddc11de21c5d``).
-- ``vision_cache.py`` — identical to ``mlx_vlm/vision_cache.py`` @ v0.7.1
+- ``vision_cache.py`` — identical to ``mlx_vlm/vision_cache.py`` @ v0.7.2
   (upstream sha256
   ``5db081a4ef9ee07bb1102c6a87b5fb4a0895821bb2c05d19e110ba6f700e4561``)
   **except in-source ``VENDOR-DEVIATION(upstream-bugfix)`` hunks** covering
@@ -91,7 +90,7 @@ vendored copy differs by exactly the deviations listed):
      called ``popitem()`` on it, raising KeyError. Fixed so zero (or
      negative) ``max_size`` disables storage instead of crashing.
   The lane's ``VisionFeatureCache`` import resolves here.
-- ``kv_quant.py`` — identical to ``mlx_vlm/kv_quant.py`` @ v0.7.1 (upstream
+- ``kv_quant.py`` — identical to ``mlx_vlm/kv_quant.py`` @ v0.7.2 (upstream
   sha256
   ``2936878096435dd2540e7a029b986259e5b7101c972a5be7168495a58e7fbfa3``)
   **except one import redirect**: ``from_legacy()``'s lazy
@@ -101,20 +100,17 @@ vendored copy differs by exactly the deviations listed):
   reviewable diff, so it stays a pinned-dependency redirect for the whole
   transition.
 - ``apc_coordinator.py`` — identical to ``mlx_vlm/apc_coordinator.py`` @
-  v0.7.1 (upstream sha256
-  ``8c3939a15b8bee2c4ac8f1144a1048c3463d6cf935537d63eb21403b6f63773b``)
-  **except documented redirects**: its module-level
-  ``from .apc_adapters import ...`` resolves the vendored sibling; its lazy
-  ``from .apc import ...`` engine calls and the ``fresh_cache`` fallback
+  v0.7.2 (upstream sha256
+  ``a2f1f07f0f103f67abc9e1ffc968eb3447393e3f3a5a68a7cca67d66ceb538db``)
+  **except documented redirects**: cache-memory types resolve to the vendored
+  root cache module; lazy engine calls and the ``fresh_cache`` fallback
   ``make_prompt_cache`` remain on upstream mlx-vlm until producers flip
-  (step 3). Every site carries a ``VENDOR-DEVIATION`` comment. Additionally,
-  return-value locals
-  are explicitly annotated where the redirected engine calls type-resolve to
-  ``Any`` (the repo's mypy ``no-any-return`` discipline; no behavior
-  change).
-- ``apc_adapters.py`` — identical to ``mlx_vlm/apc_adapters.py`` @ v0.7.1
+  (step 3). Every site carries a ``VENDOR-DEVIATION`` comment. Return-value
+  locals are explicitly annotated where redirected calls type-resolve to
+  ``Any`` (the repo's mypy ``no-any-return`` discipline; no behavior change).
+- ``apc_adapters.py`` — identical to ``mlx_vlm/apc_adapters.py`` @ v0.7.2
   (upstream sha256
-  ``9ce11d3c420d983281faf229cfc06ae4a8dce28469dd1536a05d26e4e980c101``)
+  ``d6acb80ea781df4122fa083bed37cfb9d87f928b23626645d652b112a6802e78``)
   **except documented ``VENDOR-DEVIATION`` hunks**, all part of one
   transition mechanism (type-namespace duality — see the design note):
   1. Module-level ``_cache_namespaces`` / ``_cache_namespace_of`` helpers:
@@ -130,33 +126,35 @@ vendored copy differs by exactly the deviations listed):
      typing once producers emit vendored caches in step 3). Bare tuples
      are namespace-agnostic: ``clone_cache_entry`` clones a tuple before
      the owning-namespace lookup (each element resolves its own), and
-     ``merge_cache_entries`` derives the container namespace from the
-     first tuple element — a stripped install cannot resolve a namespace
-     for a tuple itself, which silently dropped composite caches that
-     ``apc_exact_eligible`` declares supported. The lazy
-     ``_apc_type_tables`` / ``_clone_rules`` builders also publish their
-     globals only after both namespaces are processed — as one immutable
-     assignment for the two type tables — so a concurrent first caller
-     can never observe a partially built (or half-published) table.
-  3. Redirects: ``_apc_array_helpers``' lazy ``.apc`` import and the
-     ``build_prefix_cache_plan`` fallback ``make_prompt_cache`` remain on
-     upstream mlx-vlm until producers flip (step 3); the turboquant
-     registration resolves the
-     pinned upstream ``mlx_vlm.turboquant`` (not vendored — see above).
+     ``merge_cache_entries`` derives the container namespace from the first
+     tuple element — a stripped install cannot resolve a namespace for a tuple
+     itself, which silently dropped composite caches that
+     ``apc_exact_eligible`` declares supported. The lazy type-table builder
+     publishes one immutable pair only after both namespaces are processed.
+  3. Redirects: cache-memory types resolve to the vendored root cache module;
+     the ``build_prefix_cache_plan`` fallback ``make_prompt_cache`` remains on
+     upstream mlx-vlm until producers flip (step 3); turboquant capability
+     registration resolves the pinned upstream module (not vendored).
+  4. The dynamic ``memory_profile`` hook result is explicitly annotated with
+     its documented ``Optional[CacheMemory]`` contract for the repository's
+     mypy ratchet; this is a typing-only deviation with no runtime change.
   The lane's ``clone_cache_entry`` / ``Capability`` / ``resolve_capability``
   imports now resolve here; the four test modules that stub
   ``clone_cache_entry`` were re-pointed at this module in the same commit.
 
-- ``apc.py`` — identical to ``mlx_vlm/apc.py`` @ v0.7.1 (upstream sha256
-  ``5b2b940852f11f34f7b4daf627bc31fc701f8abffc72d40189bc3e5ac57f878c``)
+- ``apc.py`` — identical to ``mlx_vlm/apc.py`` @ v0.7.2 (upstream sha256
+  ``67f96ba52d44f31749a5bf6b3355a58948f81e525d23465c78821c3e84d9825b``)
   except documented deviations, each carrying a ``# VENDOR-DEVIATION``
   sentinel:
 
-  - 14 one-line import redirects: the top-level relative imports bind the
-    vendored siblings; the lazy ``.models*`` (11) and ``.turboquant`` (3)
-    sites resolve upstream. (2b-3 folded the four cache-typed sites — the
+  - Import redirects: top-level support and cache-memory imports bind vendored
+    siblings; lazy ``.models*`` and ``.turboquant`` sites resolve upstream.
+    (2b-3 folded four cache-typed sites — the
     ``_dense_checkpoint*`` pair and both exact-snapshot ladders — into the
     dual-namespace helpers below.)
+  - Typing-only local annotations preserve the explicit optional cache result
+    across disk and memory restore paths and type the MLX evaluation target
+    list; these do not change runtime behavior.
   - dual-namespace recognition helpers (``_cache_ns_*``, 2b-3) so the
     engine's exact-type tables, snapshot/restore constructors, and
     ``_resolve_checkpoint_class`` accept both cache namespaces; exact
@@ -170,12 +168,12 @@ vendored copy differs by exactly the deviations listed):
     writers could erase another writer's entry), and
     ``_save_layer_major_shard`` temp-file cleanup on write failure.
 
-- ``inputs.py`` — verbatim from ``mlx_vlm/utils.py`` @ v0.7.1 lines
-  1714-2807 (``load_image`` .. ``prepare_inputs`` ..
+- ``inputs.py`` — verbatim from ``mlx_vlm/utils.py`` @ v0.7.2 lines
+  1715-2813 (``load_image`` .. ``prepare_inputs`` ..
   ``group_images_by_shape`` .. ``should_add_special_tokens``, an unbroken
   region; the tail past ``prepare_inputs`` was appended in the step-3a
   slice to satisfy ``generate/ar.py``'s helper imports; region sha256
-  ``0c3681fa511baa4c345e6caba42760c7f1632ae2f69706982e39eb2f411b1294``),
+  ``78bccd66a6fc5187ffd6925bff63a2e6b7a7ac14417f966eaee686111cef3e9f``),
   except the import block: exactly the names the region references
   (ruff F821 closure), with ``mlx_vlm.models.base`` (``
   BaseImageProcessor``) still resolving upstream and the logger pinned to
@@ -206,17 +204,17 @@ vendored copy differs by exactly the deviations listed):
   A diff against the pinned tag must show only the header/import block
   and the documented hunks.
 
-- ``sample_utils.py`` — verbatim from ``mlx_vlm/sample_utils.py`` @ v0.7.1
+- ``sample_utils.py`` — verbatim from ``mlx_vlm/sample_utils.py`` @ v0.7.2
   (upstream sha256
   ``b3057b6dcaefe5b0a7c50cb96b70baad4334a2f88f70adc04fe7ec2060f7851c``),
   no deviations (mlx + stdlib imports only). Consumed by
   ``generate/ar.py``.
 
-- ``generate/`` — verbatim from ``mlx_vlm/generate`` @ v0.7.1, text AR
+- ``generate/`` — verbatim from ``mlx_vlm/generate`` @ v0.7.2, text AR
   core only (step-3a slice):
 
   - ``ar.py`` (upstream sha256
-    ``3ede5d76b292cdecc0da479a0807d081b1918bdc6dfe7e47755b725299888ac2``)
+    ``570319f0f3243b177338aaee671001cf88a04bf17227bc1fb98e1e0be3646a32``)
     except five import redirects:
     ``..models import cache`` → vendored package root;
     ``..prompt_utils`` → pinned upstream (design-doc step-2 boundary);
@@ -274,7 +272,7 @@ vendored copy differs by exactly the deviations listed):
   the pinned tag must show only the import-block redirects and the
   documented hunks above.
 
-- ``speculative/`` — verbatim from ``mlx_vlm/speculative`` @ v0.7.1,
+- ``speculative/`` — verbatim from ``mlx_vlm/speculative`` @ v0.7.2,
   coordinator core only (step-3b slice):
   ``cache_state.py``/``common.py``/``ddtree.py``/``dflash.py``/``mtp.py``/
   ``utils.py`` with three redirects: ``cache_state``'s

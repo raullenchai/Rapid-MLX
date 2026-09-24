@@ -120,7 +120,7 @@ def test_native_mtp_runtime_probe_is_exact_version(monkeypatch) -> None:
     from rapid_mlx.speculative.native_mtp import runtime
 
     monkeypatch.setattr(runtime, "find_spec", lambda _name: object())
-    monkeypatch.setattr(runtime, "version", lambda _name: "0.7.1")
+    monkeypatch.setattr(runtime, "version", lambda _name: "0.7.2")
     assert runtime.have_runtime() is True
 
     monkeypatch.setattr(runtime, "version", lambda _name: "0.7.0")

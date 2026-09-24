@@ -36,7 +36,7 @@ def _last_sequence(tokens, sequence) -> int:
 
 
 class _ThinkingBudgetLogitsProcessor:
-    """Reproduce 0.7.1's reasoning close from immutable committed context."""
+    """Reproduce 0.7.2's reasoning close from immutable committed context."""
 
     def __init__(self, criteria, prompt_length: int):
         self.budget = int(criteria.thinking_budget)
@@ -73,7 +73,7 @@ class _ThinkingBudgetLogitsProcessor:
                 return logits
             first = start + len(self.start_ids)
 
-        # mlx-vlm 0.7.1 lets the token that takes the count over budget land,
+        # mlx-vlm 0.7.2 lets the token that takes the count over budget land,
         # then replaces subsequent samples with its forced sequence (normally
         # newline, then </think>). Derive the forced cursor from committed
         # positions so verifier retries cannot advance mutable policy state.
@@ -643,7 +643,7 @@ def install_generation_hooks() -> None:
 
         @wraps(released_generate_step)
         def generate_step(*args, **kwargs):
-            """Carry policy state omitted by mlx-vlm 0.7.1's MTP call."""
+            """Carry policy state omitted by mlx-vlm 0.7.2's MTP call."""
             drafter = kwargs.get("draft_model")
             if not (
                 kwargs.get("draft_kind") == "mtp"

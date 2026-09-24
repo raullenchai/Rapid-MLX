@@ -1,5 +1,5 @@
 # SPDX-License-Identifier: Apache-2.0
-"""Vendored ``prepare_inputs`` surface from ``mlx_vlm/utils.py`` @ 0.7.1.
+"""Vendored ``prepare_inputs`` surface from ``mlx_vlm/utils.py`` @ 0.7.2.
 
 Step 2c of the mlx-vlm dependency retirement (design note:
 ``docs/engineering/design/2026-09-18-vendor-mllm-primitives.md``).
@@ -319,10 +319,14 @@ def load_audio(
     else:
         audio, sample_rate = read_audio(file, dtype="float32")
 
+    # Upstream 0.7.2 downmixes before resampling: ``read_audio`` returns
+    # (samples, channels), while ``resample_audio`` operates on the last axis.
+    audio = np.asarray(audio, dtype=np.float32)
+    if audio.ndim > 1:
+        audio = audio.mean(axis=1)
     if sample_rate != sr:
         audio = resample_audio(audio, sample_rate, sr)
-    audio = np.asarray(audio, dtype=np.float32)
-    return audio.mean(axis=1) if audio.ndim > 1 else audio
+    return np.asarray(audio, dtype=np.float32)
 
 
 @dataclass(frozen=True)
