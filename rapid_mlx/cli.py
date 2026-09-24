@@ -444,13 +444,84 @@ def _port_preflight_or_die(host: str, port: int, *, model: str) -> None:
 def _listen_fd_port(listen_fd: int) -> int:
     """Read the bound TCP port without taking ownership of ``listen_fd``."""
 
+    import errno
     import socket
 
-    with socket.socket(fileno=os.dup(listen_fd)) as inherited:
+    duplicated_fd = os.dup(listen_fd)
+    try:
+        inherited = socket.socket(fileno=duplicated_fd)
+    except BaseException:
+        os.close(duplicated_fd)
+        raise
+
+    with inherited:
+        if inherited.family not in (socket.AF_INET, socket.AF_INET6):
+            raise OSError(
+                f"--listen-fd {listen_fd} is not bound to a TCP socket "
+                "(expected IPv4 or IPv6)"
+            )
+        socket_type = inherited.getsockopt(socket.SOL_SOCKET, socket.SO_TYPE)
+        if socket_type != socket.SOCK_STREAM:
+            raise OSError(
+                f"--listen-fd {listen_fd} is not bound to a TCP socket "
+                "(SO_TYPE is not SOCK_STREAM)"
+            )
+        accepting = True
+        if hasattr(socket, "SO_ACCEPTCONN"):
+            try:
+                accepting = bool(
+                    inherited.getsockopt(socket.SOL_SOCKET, socket.SO_ACCEPTCONN)
+                )
+            except OSError as exc:
+                # macOS 26 exposes SO_ACCEPTCONN but returns ENOPROTOOPT for
+                # it. TCP_CONNECTION_INFO reports the same kernel state;
+                # TCPS_LISTEN is 1 in Darwin's tcp_fsm.h.
+                if (
+                    sys.platform != "darwin"
+                    or exc.errno != errno.ENOPROTOOPT
+                    or not hasattr(socket, "TCP_CONNECTION_INFO")
+                ):
+                    raise
+                tcp_info = inherited.getsockopt(
+                    socket.IPPROTO_TCP, socket.TCP_CONNECTION_INFO, 1
+                )
+                accepting = bool(tcp_info and tcp_info[0] == 1)
+        if not accepting:
+            raise OSError(
+                f"--listen-fd {listen_fd} is not bound to a TCP socket "
+                "(SO_ACCEPTCONN is false)"
+            )
         sockname = inherited.getsockname()
     if not isinstance(sockname, tuple) or len(sockname) < 2:
-        raise OSError(f"--listen-fd {listen_fd} is not bound to a TCP socket")
+        raise OSError(f"--listen-fd {listen_fd} is not bound to a TCP listener")
     return int(sockname[1])
+
+
+def _reject_unsupported_listen_fd_lane(
+    args, *, owns_v41_product_download: bool
+) -> None:
+    """Reject inherited listeners for lanes whose runners bind host/port."""
+
+    if getattr(args, "listen_fd", None) is None:
+        return
+
+    lane = None
+    if owns_v41_product_download:
+        lane = "DSpark K4"
+    elif getattr(args, "mtp_backend", None) == "native":
+        lane = "Native MTP"
+    elif getattr(args, "enable_dflash", False):
+        lane = "DFlash"
+    elif getattr(args, "enable_ddtree", False):
+        lane = "DDTree"
+
+    if lane is not None:
+        print(
+            f"--listen-fd is not supported with the {lane} lane; "
+            "omit --listen-fd or pass --host/--port.",
+            file=sys.stderr,
+        )
+        raise SystemExit(2)
 
 
 def _resolve_serve_port(
@@ -4141,6 +4212,9 @@ def serve_command(args):
     # rejecting an explicit MLLM/speculative conflict before optional-runtime
     # checks or model downloads can obscure the actionable error.
     _normalize_speculative_config_or_exit(args)
+    _reject_unsupported_listen_fd_lane(
+        args, owns_v41_product_download=_owns_v41_product_download
+    )
     _preflight_native_mtp_or_exit(args)
 
     # R-10 (PyPI 0.8.6 dogfood): same boot-guard shape for vision /

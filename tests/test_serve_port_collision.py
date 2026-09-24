@@ -39,6 +39,7 @@ These tests pin the contract:
 from __future__ import annotations
 
 import errno
+import os
 import socket
 import types
 from argparse import Namespace
@@ -240,6 +241,40 @@ def test_listen_fd_rejects_non_tcp_socket():
     left, right = socket.socketpair()
     with left, right, pytest.raises(OSError, match="not bound to a TCP socket"):
         cli._listen_fd_port(left.fileno())
+
+
+def test_listen_fd_rejects_bound_udp_socket():
+    with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as udp:
+        udp.bind(("127.0.0.1", 0))
+        with pytest.raises(OSError, match="not bound to a TCP socket"):
+            cli._listen_fd_port(udp.fileno())
+
+
+def test_listen_fd_rejects_tcp_socket_that_is_not_listening():
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as stream:
+        stream.bind(("127.0.0.1", 0))
+        with pytest.raises(OSError, match="SO_ACCEPTCONN is false"):
+            cli._listen_fd_port(stream.fileno())
+
+
+def test_listen_fd_plain_file_failure_does_not_leak_dup(tmp_path):
+    if not os.path.isdir("/dev/fd"):
+        pytest.skip("platform does not expose /dev/fd")
+
+    path = tmp_path / "plain-file"
+    path.write_text("not a socket", encoding="utf-8")
+    fd = os.open(path, os.O_RDONLY)
+    try:
+        before = len(os.listdir("/dev/fd"))
+        for _ in range(50):
+            with pytest.raises(OSError):
+                cli._listen_fd_port(fd)
+        after = len(os.listdir("/dev/fd"))
+        os.fstat(fd)
+    finally:
+        os.close(fd)
+
+    assert after == before
 
 
 def test_serve_lane_port_invariant_rejects_none():
