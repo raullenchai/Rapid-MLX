@@ -877,6 +877,7 @@ async def lifespan(app: FastAPI):
                 engine=_engine,
                 alias_or_path=_model_alias or _model_path,
                 auto_selected=_telemetry_auto_selected,
+                assume_yes=_standalone_assume_yes,
             )
         except Exception as _start_exc:
             from rapid_mlx.telemetry.server_start import failed

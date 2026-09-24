@@ -910,6 +910,7 @@ async def test_lifespan_optional_failure_reuses_cli_handler(monkeypatch) -> None
     monkeypatch.setattr(server, "_model_alias", "kokoro")
     monkeypatch.setattr(server, "_model_path", "/unused")
     monkeypatch.setattr(server, "_telemetry_auto_selected", False)
+    monkeypatch.setattr(server, "_standalone_assume_yes", True)
 
     def handle(exc, **kwargs):
         calls.append((exc, kwargs))
@@ -929,6 +930,7 @@ async def test_lifespan_optional_failure_reuses_cli_handler(monkeypatch) -> None
                 "engine": engine,
                 "alias_or_path": "kokoro",
                 "auto_selected": False,
+                "assume_yes": True,
             },
         )
     ]

@@ -5,9 +5,10 @@ from __future__ import annotations
 
 import importlib.util
 import os
+import select
 import subprocess
 import sys
-import threading
+import time
 from pathlib import Path
 from typing import Literal
 
@@ -83,25 +84,61 @@ def _prompt_to_install(extra: OptionalExtra) -> bool:
         file=sys.stderr,
         flush=True,
     )
-    response: list[str] = []
-    stdin = sys.stdin
-
-    def read_response() -> None:
-        response.append(stdin.readline())
-
-    reader = threading.Thread(target=read_response, daemon=True)
-    reader.start()
-    reader.join(timeout=_INSTALL_PROMPT_TIMEOUT_SECONDS)
-    if reader.is_alive():
+    response = (
+        _read_windows_prompt_response()
+        if sys.platform == "win32"
+        else _read_posix_prompt_response(sys.stdin)
+    )
+    if response is None:
         print(file=sys.stderr)
         return False
-    return bool(response) and response[0].strip().lower() in {"y", "yes"}
+    return response.strip().lower() in {"y", "yes"}
+
+
+def _read_posix_prompt_response(stdin: object) -> str | None:
+    """Read one ready line without leaving a background reader behind."""
+    try:
+        stdin_fd = stdin.fileno()
+        ready, _, _ = select.select([stdin_fd], [], [], _INSTALL_PROMPT_TIMEOUT_SECONDS)
+        if not ready:
+            return None
+        response = stdin.readline()
+        return response or None
+    except Exception:
+        return None
+
+
+def _read_windows_prompt_response() -> str | None:
+    """Poll the Windows console until Enter or the prompt deadline."""
+    try:
+        import msvcrt
+
+        deadline = time.monotonic() + _INSTALL_PROMPT_TIMEOUT_SECONDS
+        response: list[str] = []
+        while time.monotonic() < deadline:
+            if msvcrt.kbhit():
+                character = msvcrt.getwche()
+                if character in {"\r", "\n"}:
+                    return "".join(response)
+                if character == "\b":
+                    if response:
+                        response.pop()
+                else:
+                    response.append(character)
+            else:
+                time.sleep(0.05)
+        return None
+    except Exception:
+        return None
 
 
 def _is_tty(stream: object | None) -> bool:
     """Treat detached streams and stream stand-ins as non-interactive."""
-    isatty = getattr(stream, "isatty", None)
-    return bool(isatty and isatty())
+    try:
+        isatty = getattr(stream, "isatty", None)
+        return bool(isatty and isatty())
+    except Exception:
+        return False
 
 
 def _install_optional_extra(exc: OptionalRuntimeMissing) -> None:
@@ -118,8 +155,7 @@ def _install_optional_extra(exc: OptionalRuntimeMissing) -> None:
     completed = subprocess.run(install_argv, check=False)
     if completed.returncode != 0:
         print(
-            f"Install failed (rc {completed.returncode}); "
-            f"run {exc.install_hint} manually.",
+            f"Install failed (rc {completed.returncode}).\n{exc.install_hint}",
             file=sys.stderr,
         )
         return
