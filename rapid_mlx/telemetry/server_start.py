@@ -6,6 +6,7 @@ from __future__ import annotations
 import json
 import logging
 import os
+import stat
 import tempfile
 import threading
 from collections.abc import Iterator
@@ -37,6 +38,8 @@ _owns_inflight_marker = False
 
 logger = logging.getLogger(__name__)
 
+_MAX_MARKER_BYTES = 4096
+
 
 def _marker_path() -> Path:
     """Resolve this process's serve marker beneath the existing state root."""
@@ -57,8 +60,28 @@ def _marker_pid(path: Path) -> int | None:
 
 
 def _read_marker(path: Path) -> dict[str, object] | None:
+    flags = os.O_RDONLY | getattr(os, "O_CLOEXEC", 0)
+    flags |= getattr(os, "O_NOFOLLOW", 0)
     try:
-        value = json.loads(path.read_text(encoding="utf-8"))
+        fd = os.open(path, flags)
+        try:
+            file_stat = os.fstat(fd)
+            if (
+                not stat.S_ISREG(file_stat.st_mode)
+                or file_stat.st_size > _MAX_MARKER_BYTES
+            ):
+                return None
+            payload = bytearray()
+            while len(payload) <= _MAX_MARKER_BYTES:
+                chunk = os.read(fd, min(1024, _MAX_MARKER_BYTES + 1 - len(payload)))
+                if not chunk:
+                    break
+                payload.extend(chunk)
+            if len(payload) > _MAX_MARKER_BYTES:
+                return None
+        finally:
+            os.close(fd)
+        value = json.loads(payload.decode("utf-8"))
     except (OSError, UnicodeError, json.JSONDecodeError):
         return None
     if marker_identity(value) is None:
@@ -66,12 +89,77 @@ def _read_marker(path: Path) -> dict[str, object] | None:
     return cast(dict[str, object], value)
 
 
+def _prepare_state_dir(path: Path) -> bool:
+    """Create/open the private state directory without following a symlink."""
+    try:
+        try:
+            state_stat = os.lstat(path)
+        except FileNotFoundError:
+            path.mkdir(mode=0o700, parents=True, exist_ok=True)
+            state_stat = os.lstat(path)
+        if stat.S_ISLNK(state_stat.st_mode) or not stat.S_ISDIR(state_stat.st_mode):
+            logger.warning("rapid-mlx state directory is unavailable: %s", path)
+            return False
+        flags = os.O_RDONLY | getattr(os, "O_DIRECTORY", 0)
+        flags |= getattr(os, "O_NOFOLLOW", 0)
+        fd = os.open(path, flags)
+        try:
+            opened_stat = os.fstat(fd)
+            if (opened_stat.st_dev, opened_stat.st_ino) != (
+                state_stat.st_dev,
+                state_stat.st_ino,
+            ):
+                return False
+            os.fchmod(fd, 0o700)
+        finally:
+            os.close(fd)
+    except OSError as exc:
+        logger.warning("rapid-mlx state directory is unavailable: %s", exc)
+        return False
+    return True
+
+
+def _marker_snapshot(path: Path) -> tuple[int, int] | None:
+    try:
+        marker_stat = os.lstat(path)
+    except OSError:
+        return None
+    return marker_stat.st_dev, marker_stat.st_ino
+
+
+def _remove_marker_snapshot(path: Path, snapshot: tuple[int, int] | None) -> None:
+    """Atomically quarantine and remove only the marker inode we inspected."""
+    if snapshot is None or _marker_snapshot(path) != snapshot:
+        return
+    stale = path.with_name(f".{path.name}.stale-{os.getpid()}")
+    try:
+        os.lstat(stale)
+    except FileNotFoundError:
+        pass
+    except OSError:
+        return
+    else:
+        return
+    try:
+        os.rename(path, stale)
+        if _marker_snapshot(stale) != snapshot:
+            # A replacement landed between the comparison and rename. Preserve it.
+            try:
+                os.rename(stale, path)
+            except OSError:
+                pass
+            return
+        stale.unlink()
+    except OSError as exc:
+        logger.debug("could not remove serve marker %s: %r", path, exc)
+
+
 def _atomic_write_marker(path: Path) -> None:
     identity = process_identity(os.getpid())
     if identity is None:
         raise OSError("could not determine current process identity")
-    path.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
-    os.chmod(path.parent, 0o700)
+    if not _prepare_state_dir(path.parent):
+        raise OSError("state directory is unavailable")
     payload = json.dumps(
         {
             "pid": identity.pid,
@@ -110,28 +198,23 @@ def _begin_inflight_marker() -> tuple[bool, bool]:
     """Return ``(previous_unterminated, owns_marker)`` for this serve."""
     path = _marker_path()
     previous_unterminated = False
+    if not _prepare_state_dir(path.parent):
+        return False, False
     try:
         markers = list(path.parent.glob("serve-inflight-*.json"))
     except OSError:
         markers = []
     for marker_path in markers:
+        snapshot = _marker_snapshot(marker_path)
         pid = _marker_pid(marker_path)
         marker = _read_marker(marker_path)
         if marker is None or pid is None or marker.get("pid") != pid:
-            try:
-                marker_path.unlink(missing_ok=True)
-            except OSError as exc:
-                logger.debug(
-                    "could not remove invalid serve marker %s: %r", marker_path, exc
-                )
+            _remove_marker_snapshot(marker_path, snapshot)
             continue
         if is_same_process(marker):
             continue
         previous_unterminated = True
-        try:
-            marker_path.unlink(missing_ok=True)
-        except OSError as exc:
-            logger.debug("could not remove stale serve marker %s: %r", marker_path, exc)
+        _remove_marker_snapshot(marker_path, snapshot)
     try:
         _atomic_write_marker(path)
     except Exception as exc:

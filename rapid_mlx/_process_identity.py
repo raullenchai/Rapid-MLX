@@ -16,6 +16,9 @@ except ImportError:
     _psutil_module = None
 psutil: Any = _psutil_module
 
+_MARKER_KEYS = frozenset({"pid", "create_time", "boot_time", "app_version"})
+_MAX_APP_VERSION_LENGTH = 256
+
 
 @dataclass(frozen=True)
 class ProcessIdentity:
@@ -41,6 +44,8 @@ def marker_identity(marker: object) -> ProcessIdentity | None:
     """Validate the complete on-disk marker payload."""
     if not isinstance(marker, Mapping):
         return None
+    if set(marker) != _MARKER_KEYS:
+        return None
     pid = marker.get("pid")
     create_time = marker.get("create_time")
     boot_time = marker.get("boot_time")
@@ -51,6 +56,7 @@ def marker_identity(marker: object) -> ProcessIdentity | None:
         or not _valid_time(boot_time)
         or type(app_version) is not str
         or not app_version
+        or len(app_version) > _MAX_APP_VERSION_LENGTH
     ):
         return None
     return ProcessIdentity(
@@ -70,9 +76,7 @@ def process_identity(pid: int) -> ProcessIdentity | None:
         try:
             create_time = psutil.Process(pid).create_time()
             boot_time = psutil.boot_time()
-        except (psutil.NoSuchProcess, psutil.ZombieProcess):
-            return None
-        except OSError:
+        except (psutil.NoSuchProcess, ProcessLookupError):
             return None
         return ProcessIdentity(pid, float(create_time), float(boot_time))
 
@@ -107,5 +111,5 @@ def is_same_process(marker: object) -> bool:
     if current is None:
         return False
     return math.isclose(
-        current.create_time, expected.create_time, abs_tol=0.01
-    ) and math.isclose(current.boot_time, expected.boot_time, abs_tol=0.01)
+        current.create_time, expected.create_time, rel_tol=0.0, abs_tol=0.01
+    ) and math.isclose(current.boot_time, expected.boot_time, rel_tol=0.0, abs_tol=0.01)

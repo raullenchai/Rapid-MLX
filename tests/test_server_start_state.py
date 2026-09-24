@@ -15,7 +15,7 @@ import pytest
 from fastapi import HTTPException
 
 from rapid_mlx import cli, server
-from rapid_mlx._process_identity import process_identity
+from rapid_mlx._process_identity import marker_identity, process_identity
 from rapid_mlx.runtime.primary_lifecycle import PrimaryModelLifecycle
 from rapid_mlx.service import helpers
 from rapid_mlx.telemetry import registry, server_start
@@ -333,6 +333,96 @@ def test_garbage_dead_pid_marker_is_deleted_without_telemetry(
     assert previous is False
     assert owns is True
     assert not marker.exists()
+
+
+def test_marker_payload_rejects_extra_keys_and_unbounded_app_version():
+    payload = _marker_payload(123)
+    assert marker_identity({**payload, "injected": "ignored"}) is None
+    assert marker_identity({**payload, "app_version": "x" * 257}) is None
+
+
+@pytest.mark.parametrize(
+    "payload",
+    [
+        {**_marker_payload(123), "pid": True},
+        {**_marker_payload(123), "pid": 0},
+        {**_marker_payload(123), "pid": "1"},
+        {**_marker_payload(123), "create_time": True},
+        {**_marker_payload(123), "create_time": float("nan")},
+        {**_marker_payload(123), "boot_time": False},
+        {**_marker_payload(123), "boot_time": float("inf")},
+        {**_marker_payload(123), "app_version": ""},
+        {**_marker_payload(123), "app_version": 1},
+    ],
+)
+def test_marker_payload_type_matrix_is_rejected(payload):
+    assert marker_identity(payload) is None
+
+
+def test_huge_marker_payload_is_rejected(monkeypatch, tmp_path):
+    monkeypatch.setenv("HOME", str(tmp_path / "home"))
+    marker = server_start._marker_path().with_name("serve-inflight-99999999.json")
+    marker.parent.mkdir(parents=True)
+    marker.write_text(
+        json.dumps(
+            {**_marker_payload(99_999_999), "app_version": "x" * (8 * 1024 * 1024)}
+        ),
+        encoding="utf-8",
+    )
+
+    assert marker.stat().st_size > 4096
+    assert server_start._read_marker(marker) is None
+
+
+def test_state_directory_symlink_is_not_followed(monkeypatch, tmp_path):
+    home = tmp_path / "home"
+    base = home / ".rapid-mlx"
+    redirected = tmp_path / "redirected"
+    base.mkdir(parents=True)
+    redirected.mkdir(mode=0o755)
+    (base / "state").symlink_to(redirected, target_is_directory=True)
+    monkeypatch.setenv("HOME", str(home))
+
+    assert server_start._begin_inflight_marker() == (False, False)
+    assert list(redirected.iterdir()) == []
+    assert redirected.stat().st_mode & 0o777 == 0o755
+
+
+def test_state_marker_symlink_does_not_delete_target(monkeypatch, tmp_path):
+    monkeypatch.setenv("HOME", str(tmp_path / "home"))
+    target = tmp_path / "external.json"
+    target.write_text("not json", encoding="utf-8")
+    state = tmp_path / "home" / ".rapid-mlx" / "state"
+    state.mkdir(parents=True)
+    (state / "serve-inflight-99999999.json").symlink_to(target)
+
+    server_start._begin_inflight_marker()
+
+    assert target.exists()
+
+
+def test_invalid_marker_removal_preserves_concurrent_replacement(monkeypatch, tmp_path):
+    monkeypatch.setenv("HOME", str(tmp_path / "home"))
+    peer = tmp_path / "home" / ".rapid-mlx" / "state" / "serve-inflight-99999999.json"
+    peer.parent.mkdir(parents=True)
+    peer.write_text("broken", encoding="utf-8")
+    real_read = server_start._read_marker
+
+    def raced_read(path):
+        if path == peer:
+            replacement = path.with_suffix(".replacement")
+            replacement.write_text(
+                json.dumps(_marker_payload(99_999_999)), encoding="utf-8"
+            )
+            os.replace(replacement, path)
+            return None
+        return real_read(path)
+
+    monkeypatch.setattr(server_start, "_read_marker", raced_read)
+
+    server_start._begin_inflight_marker()
+
+    assert peer.exists()
 
 
 def test_pid_reuse_does_not_hide_pre_reboot_marker(monkeypatch, tmp_path):

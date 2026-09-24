@@ -462,6 +462,7 @@ def test_windows_liveness_never_calls_os_kill(monkeypatch):
 
     assert identity.process_identity(123) is None
     assert identity.is_same_process(marker) is True
+
     assert server_start.is_same_process is identity.is_same_process
     assert so.is_same_process is identity.is_same_process
 
@@ -523,7 +524,9 @@ def test_process_identity_validation_and_probe_fallbacks(monkeypatch):
 
     fake_psutil.Process = lambda _pid: SimpleNamespace(create_time=lambda: 1.0)
     fake_psutil.boot_time = lambda: (_ for _ in ()).throw(OSError("probe failed"))
-    assert identity.process_identity(123) is None
+    with pytest.raises(OSError, match="probe failed"):
+        identity.process_identity(123)
+    assert identity.is_same_process(marker) is True
 
     monkeypatch.setattr(identity, "psutil", None)
     monkeypatch.setattr(identity.sys, "platform", "darwin")
@@ -551,6 +554,112 @@ def test_process_identity_validation_and_probe_fallbacks(monkeypatch):
         lambda _pid: (_ for _ in ()).throw(access_denied()),
     )
     assert identity.is_same_process(marker) is True
+
+
+@pytest.mark.parametrize("denied", [PermissionError("denied"), "access-denied"])
+def test_identity_probe_denial_fails_closed_as_alive(monkeypatch, denied):
+    from rapid_mlx import _process_identity as identity
+
+    no_such_process = type("NoSuchProcess", (Exception,), {})
+    access_denied = type("AccessDenied", (Exception,), {})
+    error = access_denied("denied") if denied == "access-denied" else denied
+    fake_psutil = SimpleNamespace(
+        pid_exists=lambda _pid: True,
+        Process=lambda _pid: SimpleNamespace(
+            create_time=lambda: (_ for _ in ()).throw(error)
+        ),
+        boot_time=lambda: 1_600_000_000.0,
+        NoSuchProcess=no_such_process,
+        AccessDenied=access_denied,
+    )
+
+    marker = {
+        "pid": 123,
+        "create_time": 1_700_000_000.0,
+        "boot_time": 1_600_000_000.0,
+        "app_version": "0.15.1",
+    }
+    monkeypatch.setattr(identity, "psutil", fake_psutil)
+
+    assert identity.is_same_process(marker) is True
+
+
+def test_epoch_relative_tolerance_does_not_hide_pid_reuse(monkeypatch):
+    from rapid_mlx import _process_identity as identity
+
+    marker = {
+        "pid": 123,
+        "create_time": 1_700_000_000.0,
+        "boot_time": 1_600_000_000.0,
+        "app_version": "0.15.1",
+    }
+    monkeypatch.setattr(
+        identity,
+        "process_identity",
+        lambda _pid: identity.ProcessIdentity(123, 1_700_000_001.0, 1_600_000_001.0),
+    )
+
+    assert identity.is_same_process(marker) is False
+
+
+def test_crash_pointer_is_acknowledged_across_clean_launches(tmp_path):
+    home = tmp_path / "home"
+    log_dir = home / ".rapid-mlx" / "logs"
+    log_dir.mkdir(parents=True)
+    crash = log_dir / "crash-20260924T000000000000Z-99999999.txt"
+    crash.write_text("fatal traceback\n", encoding="utf-8")
+    program = (
+        "from rapid_mlx._signal_observability import "
+        "install_signal_observability, _cleanup_crash_file; "
+        "install_signal_observability(observed_signals=()); "
+        "_cleanup_crash_file()"
+    )
+    env = dict(os.environ, HOME=str(home))
+    outputs = [
+        subprocess.run(
+            [sys.executable, "-c", program],
+            cwd=Path(__file__).resolve().parents[1],
+            env=env,
+            capture_output=True,
+            text=True,
+            timeout=10,
+            check=True,
+        ).stderr
+        for _ in range(2)
+    ]
+
+    assert [value.count("Previous run crashed; details in") for value in outputs] == [
+        1,
+        0,
+    ]
+    assert not crash.exists()
+    assert crash.with_name(f"{crash.stem}.reported{crash.suffix}").exists()
+
+
+def test_closed_crash_fd_rearm_recovers_without_claiming_success(tmp_path):
+    home = tmp_path / "home"
+    program = (
+        "import os; "
+        "from rapid_mlx import _signal_observability as so; "
+        "so.install_signal_observability(observed_signals=()); "
+        "os.close(so._crash_fd); "
+        "print(so.ensure_crash_sink(), flush=True); "
+        "os.abort()"
+    )
+    proc = subprocess.run(
+        [sys.executable, "-c", program],
+        cwd=Path(__file__).resolve().parents[1],
+        env=dict(os.environ, HOME=str(home)),
+        capture_output=True,
+        text=True,
+        timeout=10,
+        check=False,
+    )
+    files = list((home / ".rapid-mlx" / "logs").glob("crash-*.txt"))
+
+    assert proc.stdout.strip() == "False"
+    assert proc.returncode != 0
+    assert files and files[0].stat().st_size > 0
 
 
 def test_empty_crash_file_is_removed_at_clean_shutdown(monkeypatch, tmp_path):
@@ -691,16 +800,17 @@ def test_stuck_tee_is_killed_and_reaped():
     assert process.waits == 3
 
 
-def test_ensure_crash_sink_rearms_and_warns_on_failure(monkeypatch, caplog):
+def test_ensure_crash_sink_rearms_and_warns_on_failure(monkeypatch, caplog, tmp_path):
     from rapid_mlx import _signal_observability as so
 
     prior_fd = so._crash_fd
     calls = []
-    so._crash_fd = 123
+    fd = os.open(tmp_path / "crash.txt", os.O_WRONLY | os.O_CREAT, 0o600)
+    so._crash_fd = fd
     try:
         monkeypatch.setattr(so, "_enable_faulthandler", calls.append)
         assert so.ensure_crash_sink() is True
-        assert calls == [123]
+        assert calls == [fd]
 
         monkeypatch.setattr(
             so,
@@ -711,6 +821,7 @@ def test_ensure_crash_sink_rearms_and_warns_on_failure(monkeypatch, caplog):
         assert "could not re-arm durable rapid-mlx crash file" in caplog.text
     finally:
         so._crash_fd = prior_fd
+        os.close(fd)
 
 
 @pytest.mark.parametrize("stderr", [None, object()])

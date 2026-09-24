@@ -48,9 +48,11 @@ from __future__ import annotations
 
 import atexit
 import faulthandler
+import json
 import logging
 import os
 import signal
+import stat
 import subprocess
 import sys
 import threading
@@ -58,7 +60,7 @@ from collections.abc import Callable
 from datetime import datetime, timezone
 from pathlib import Path
 
-from rapid_mlx._process_identity import is_same_process
+from rapid_mlx._process_identity import is_same_process, marker_identity
 
 logger = logging.getLogger(__name__)
 
@@ -113,6 +115,7 @@ _crash_tee: subprocess.Popen[bytes] | None = None
 _crash_cleanup_registered = False
 _faulthandler_was_enabled = False
 _tee_fallback_warned = False
+_MAX_MARKER_BYTES = 4096
 
 
 def _crash_logs_dir() -> Path:
@@ -140,7 +143,10 @@ def _crash_files(log_dir: Path) -> list[Path]:
 
 def _crash_file_pid(path: Path) -> int | None:
     try:
-        pid = int(path.stem.rsplit("-", 1)[1])
+        stem = path.stem
+        if stem.endswith(".reported"):
+            stem = stem.removesuffix(".reported")
+        pid = int(stem.rsplit("-", 1)[1])
     except (IndexError, ValueError):
         return None
     return pid if pid > 0 else None
@@ -148,13 +154,26 @@ def _crash_file_pid(path: Path) -> int | None:
 
 def _marker_for_pid(log_dir: Path, pid: int) -> dict[str, object] | None:
     marker_path = log_dir.parent / "state" / f"serve-inflight-{pid}.json"
+    flags = os.O_RDONLY | getattr(os, "O_CLOEXEC", 0)
+    flags |= getattr(os, "O_NOFOLLOW", 0)
     try:
-        import json
-
-        marker = json.loads(marker_path.read_text(encoding="utf-8"))
+        fd = os.open(marker_path, flags)
+        try:
+            marker_stat = os.fstat(fd)
+            if (
+                not stat.S_ISREG(marker_stat.st_mode)
+                or marker_stat.st_size > _MAX_MARKER_BYTES
+            ):
+                return None
+            payload = os.read(fd, _MAX_MARKER_BYTES + 1)
+            if len(payload) > _MAX_MARKER_BYTES:
+                return None
+        finally:
+            os.close(fd)
+        marker = json.loads(payload.decode("utf-8"))
     except (OSError, UnicodeError, ValueError):
         return None
-    return marker if isinstance(marker, dict) else None
+    return marker if isinstance(marker, dict) and marker_identity(marker) else None
 
 
 def _crash_file_is_live(path: Path, log_dir: Path) -> bool:
@@ -167,6 +186,8 @@ def _crash_file_is_live(path: Path, log_dir: Path) -> bool:
 
 def _report_previous_crash(log_dir: Path) -> None:
     for path in _crash_files(log_dir):
+        if path.name.endswith(".reported.txt"):
+            continue
         try:
             if path.stat().st_size <= 0:
                 continue
@@ -176,6 +197,7 @@ def _report_previous_crash(log_dir: Path) -> None:
                 "~/Library/Logs/DiagnosticReports).\n"
             )
             sys.stderr.flush()
+            path.rename(path.with_name(f"{path.stem}.reported{path.suffix}"))
         except (AttributeError, OSError, ValueError):
             pass
         return
@@ -350,8 +372,46 @@ def _install_crash_file() -> None:
 
 def ensure_crash_sink() -> bool:
     """Re-arm faulthandler on Rapid-MLX's installed crash sink."""
+    global _crash_fd, _crash_pipe, _crash_tee
     with _install_lock:
         if _crash_fd is None:
+            return False
+        try:
+            os.fstat(_crash_fd)
+        except OSError as exc:
+            # An external close can leave the Python pipe object holding the
+            # same integer that os.open would immediately reuse. Stop the tee
+            # before reopening so its close cannot close the replacement fd.
+            pipe, process = _crash_pipe, _crash_tee
+            _crash_fd = None
+            _crash_pipe = None
+            _crash_tee = None
+            if pipe is not None:
+                _stop_crash_tee(process, pipe)
+            if _crash_path is None:
+                logger.warning("durable rapid-mlx crash sink is closed: %s", exc)
+                return False
+            new_fd: int | None = None
+            try:
+                flags = os.O_WRONLY | os.O_APPEND | getattr(os, "O_NOFOLLOW", 0)
+                new_fd = os.open(_crash_path, flags)
+                os.fstat(new_fd)
+                _enable_faulthandler(new_fd)
+                _crash_fd = new_fd
+                new_fd = None
+            except (OSError, RuntimeError, ValueError) as reopen_exc:
+                logger.warning(
+                    "could not recover closed durable rapid-mlx crash file: %s",
+                    reopen_exc,
+                )
+            finally:
+                if new_fd is not None:
+                    try:
+                        os.close(new_fd)
+                    except OSError:
+                        pass
+            # The original sink was not intact, even when file-only recovery
+            # succeeded. A later call can verify and report the recovered fd.
             return False
         try:
             _enable_faulthandler(_crash_fd)
