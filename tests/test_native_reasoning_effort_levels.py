@@ -211,11 +211,43 @@ class TestCoercionDetection:
     accepted vocabulary (the fallback constant is what the template renders
     for anything else, so every listed level is one the template honours)."""
 
-    def test_glm53_coercion_publishes_the_in_list(self):
+    def test_glm53_coercion_publishes_the_in_list_plus_fallback(self):
+        """The fallback is what the template renders for anything else, so
+        it is selectable too — and it is GLM's strongest level."""
         assert detect_native_reasoning_effort_levels(GLM53_TEMPLATE_CLAUSE) == (
             "low",
             "high",
+            "max",
         )
+
+    @pytest.mark.parametrize(
+        ("effort", "native"),
+        [
+            ("minimal", "low"),
+            ("low", "low"),
+            ("medium", "high"),
+            ("high", "high"),
+            ("xhigh", "max"),
+        ],
+    )
+    def test_glm53_mapping_ranks_max_as_the_xhigh_tier(self, effort, native):
+        """Codex r2: ``xhigh`` used to leave the template at ``Max`` (cap
+        path); mapping it down to ``high`` would have weakened the
+        strongest client knob. ``max`` ranks as ``xhigh``."""
+        levels = detect_native_reasoning_effort_levels(GLM53_TEMPLATE_CLAUSE)
+        assert map_reasoning_effort_to_native(effort, levels) == native
+
+    def test_glm53_xhigh_renders_max_end_to_end(self):
+        jinja2 = pytest.importorskip("jinja2")
+        req = _request(reasoning_effort="xhigh")
+        assert (
+            maybe_apply_reasoning_effort(req, chat_template=GLM53_TEMPLATE_CLAUSE)
+            is True
+        )
+        assert req.chat_template_kwargs == {"reasoning_effort": "max"}
+        assert req.reasoning_max_tokens is None
+        tpl = jinja2.Environment().from_string(GLM53_TEMPLATE_CLAUSE)
+        assert tpl.render(**req.chat_template_kwargs).endswith("Reasoning Effort: Max")
 
     def test_glm53_render_honours_mapped_level(self):
         jinja2 = pytest.importorskip("jinja2")
@@ -228,7 +260,7 @@ class TestCoercionDetection:
             "{%- set eff = reasoning_effort if reasoning_effort in ['low', 'high'] "
             "else 'max' -%}{{ eff }}"
         )
-        assert detect_native_reasoning_effort_levels(clause) == ("low", "high")
+        assert detect_native_reasoning_effort_levels(clause) == ("low", "high", "max")
 
     def test_non_constant_fallback_is_not_a_coercion(self):
         clause = (
@@ -256,6 +288,44 @@ class TestCoercionDetection:
             "['low', 'high'] else 'max' -%}hello"
         )
         assert detect_native_reasoning_effort_levels(clause) is None
+
+    def test_read_only_before_the_coercion_is_dead(self):
+        """Codex r2: a load that precedes the assignment cannot see it."""
+        clause = (
+            "{{ eff }}\n{%- set eff = reasoning_effort if reasoning_effort in "
+            "['low', 'high'] else 'max' -%}"
+        )
+        assert detect_native_reasoning_effort_levels(clause) is None
+
+    def test_overwritten_before_read_is_dead(self):
+        clause = (
+            "{%- set eff = reasoning_effort if reasoning_effort in ['low', 'high'] "
+            "else 'max' -%}{%- set eff = 'z' -%}{{ eff }}"
+        )
+        assert detect_native_reasoning_effort_levels(clause) is None
+
+    def test_overwrite_that_reads_the_target_keeps_it_live(self):
+        clause = (
+            "{%- set eff = reasoning_effort if reasoning_effort in ['low', 'high'] "
+            "else 'max' -%}{%- set eff = eff ~ '!' -%}{{ eff }}"
+        )
+        assert detect_native_reasoning_effort_levels(clause) == ("low", "high", "max")
+
+    def test_read_only_inside_a_macro_is_dead(self):
+        """A macro body runs only if called; the walk does not prove calls,
+        so a macro-only read is conservatively not a live read."""
+        clause = (
+            "{%- set eff = reasoning_effort if reasoning_effort in ['low', 'high'] "
+            "else 'max' -%}{% macro m() %}{{ eff }}{% endmacro %}"
+        )
+        assert detect_native_reasoning_effort_levels(clause) is None
+
+    def test_read_inside_a_later_branch_is_live(self):
+        clause = (
+            "{%- set eff = reasoning_effort if reasoning_effort in ['low', 'high'] "
+            "else 'max' -%}{% if tools %}{{ eff }}{% endif %}"
+        )
+        assert detect_native_reasoning_effort_levels(clause) == ("low", "high", "max")
 
     def test_coercion_read_only_by_its_own_assignment_is_dead(self):
         clause = (

@@ -3121,6 +3121,7 @@ def _serve_native_mtp_if_requested(
         ),
         reasoning_parser_name=args.reasoning_parser,
         prefill_step_size=prefill_step_size,
+        default_reasoning_effort=getattr(args, "default_reasoning_effort", None),
     )
     return True
 
@@ -5104,6 +5105,7 @@ def serve_command(args):
                 args.tool_call_parser if args.enable_auto_tool_choice else None
             ),
             reasoning_parser_name=args.reasoning_parser,
+            default_reasoning_effort=getattr(args, "default_reasoning_effort", None),
             experimental_opt_in=getattr(args, "_dflash_experimental", False),
             expected_algorithm=(
                 _resolve_dflash_expected_algorithm(_profile, _drafter_repo)

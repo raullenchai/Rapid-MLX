@@ -1161,6 +1161,11 @@ REASONING_EFFORT_LADDER: tuple[str, ...] = (
     "xhigh",
 )
 
+#: Template-native level names that rank as a ladder tier without sharing
+#: its spelling. GLM-5.3's coercion fallback is ``max`` — the most thinking
+#: the model offers, i.e. the ``xhigh`` tier.
+_NATIVE_LEVEL_TIERS: dict[str, str] = {"max": "xhigh"}
+
 # A template declares its native effort vocabulary only when it *validates*
 # ``reasoning_effort`` against a literal set. Proven on the Jinja AST by a
 # forward, scope-aware walk (codex #3048 r1–r4), never by pattern matching:
@@ -1337,7 +1342,8 @@ def _coercion_levels(
 ) -> tuple[str, ...] | None:
     """Levels a ``{% set y = x if x in [...] else <default> %}`` coercion
     accepts (GLM-5.3: ``reasoning_effort if reasoning_effort is defined and
-    reasoning_effort in ['low', 'high'] else 'max'``).
+    reasoning_effort in ['low', 'high'] else 'max'`` → ``('low', 'high',
+    'max')``).
 
     The template never rejects, it silently substitutes its own default for
     anything outside the list — so the list is exactly the vocabulary a
@@ -1369,7 +1375,15 @@ def _coercion_levels(
             continue
         if not _is_presence_guard(part, tested, nodes):
             return None
-    return _literal_levels(compares[0].ops[0].expr, nodes)
+    levels = _literal_levels(compares[0].ops[0].expr, nodes)
+    if not levels:
+        return None
+    # The fallback is what the template renders for every other value, so
+    # it is a selectable level too (GLM-5.3: ``max``, the strongest one).
+    fallback = expr.expr2.value
+    if isinstance(fallback, str) and fallback and fallback not in levels:
+        levels = (*levels, fallback)
+    return levels
 
 
 def _literal_levels(expr, nodes) -> tuple[str, ...] | None:
@@ -1482,12 +1496,45 @@ def _forget_assignments_in(stmts, forgotten: set[str], nodes) -> None:
                 forgotten.update(n.name for n in assign.target.find_all(nodes.Name))
 
 
+def _reads_name(node, name: str, nodes) -> bool:
+    """True if ``node`` loads ``name`` outside any macro body (a macro
+    only runs if called, which this analysis does not prove)."""
+    if isinstance(node, nodes.Macro):
+        return False
+    skipped: set[int] = set()
+    for macro in node.find_all(nodes.Macro):
+        skipped.update(id(inner) for inner in macro.find_all(nodes.Name))
+    return any(
+        inner.name == name and inner.ctx == "load" and id(inner) not in skipped
+        for inner in node.find_all(nodes.Name)
+    )
+
+
+def _coercion_target_is_live(assign, tail, later_reads: dict[str, int], nodes) -> bool:
+    """Whether a coercion's target can still reach rendered output.
+
+    ``tail`` is the rest of the statement list the assignment sits in: a
+    read there settles it live, an unconditional rebinding first settles it
+    dead. Past the tail the only remaining evidence is a read later in the
+    template source (``later_reads``: name → last load line, outside macro
+    bodies); a read that precedes the assignment cannot see its value.
+    """
+    target = assign.target.name
+    for stmt in tail:
+        if isinstance(stmt, nodes.Assign) and isinstance(stmt.target, nodes.Name):
+            if stmt.target.name == target:
+                return _reads_name(stmt.node, target, nodes)
+        if _reads_name(stmt, target, nodes):
+            return True
+    return later_reads.get(target, -1) >= assign.lineno
+
+
 def _walk_for_validation(
     stmts,
     derived: set[str],
     forgotten: set[str],
     nodes,
-    read_names: frozenset[str] = frozenset(),
+    later_reads: dict[str, int] | None = None,
 ) -> tuple[str, ...] | None:
     """Forward walk of one statement list along the render path.
 
@@ -1501,14 +1548,19 @@ def _walk_for_validation(
     ``reasoning_effort`` already failed or passed some other check is a
     path-constrained one and would misstate the accepted set.
 
-    ``read_names`` are the names the template reads anywhere; a coercion
-    whose target is never read is dead and publishes nothing.
+    ``later_reads`` maps each name to the last line it is loaded on outside
+    a macro body; a coercion whose target cannot reach rendered output
+    (``_coercion_target_is_live``) is dead and publishes nothing.
     """
     derived = set(derived)
-    for stmt in stmts:
+    later_reads = later_reads or {}
+    stmts = list(stmts)
+    for index, stmt in enumerate(stmts):
         if isinstance(stmt, nodes.Assign):
             if isinstance(stmt.target, nodes.Name):
-                if stmt.target.name in read_names:
+                if _coercion_target_is_live(
+                    stmt, stmts[index + 1 :], later_reads, nodes
+                ):
                     levels = _coercion_levels(stmt, derived, forgotten, nodes)
                     if levels:
                         return levels
@@ -1562,7 +1614,7 @@ def _walk_for_validation(
                     branch.test, nodes
                 ):
                     levels = _walk_for_validation(
-                        branch.body, derived, forgotten, nodes, read_names
+                        branch.body, derived, forgotten, nodes, later_reads
                     )
                     searched_block_ids.add(id(branch.body))
                     if levels:
@@ -1573,7 +1625,7 @@ def _walk_for_validation(
                 )
             if prior_branches_only_disable_thinking:
                 levels = _walk_for_validation(
-                    stmt.else_, derived, forgotten, nodes, read_names
+                    stmt.else_, derived, forgotten, nodes, later_reads
                 )
                 searched_block_ids.add(id(stmt.else_))
                 if levels:
@@ -1627,11 +1679,15 @@ def _native_reasoning_effort_levels_for_source(template: str) -> tuple[str, ...]
     # turn an apparent rejection block into an ordinary successful render.
     if _binds_name(tree, "raise_exception", nodes):
         return None
-    read_names = frozenset(
-        name.name for name in tree.find_all(nodes.Name) if name.ctx == "load"
-    )
+    in_macro: set[int] = set()
+    for macro in tree.find_all(nodes.Macro):
+        in_macro.update(id(inner) for inner in macro.find_all(nodes.Name))
+    later_reads: dict[str, int] = {}
+    for name in tree.find_all(nodes.Name):
+        if name.ctx == "load" and id(name) not in in_macro:
+            later_reads[name.name] = max(later_reads.get(name.name, -1), name.lineno)
     return _walk_for_validation(
-        tree.body, {"reasoning_effort"}, set(), nodes, read_names
+        tree.body, {"reasoning_effort"}, set(), nodes, later_reads
     )
 
 
@@ -2048,9 +2104,9 @@ def map_reasoning_effort_to_native(
     if effort not in REASONING_EFFORT_LADDER:
         return None
     ranked = [
-        (REASONING_EFFORT_LADDER.index(level), level)
+        (REASONING_EFFORT_LADDER.index(_NATIVE_LEVEL_TIERS.get(level, level)), level)
         for level in levels
-        if level in REASONING_EFFORT_LADDER
+        if _NATIVE_LEVEL_TIERS.get(level, level) in REASONING_EFFORT_LADDER
     ]
     if not ranked:
         return None

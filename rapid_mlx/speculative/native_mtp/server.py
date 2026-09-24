@@ -68,6 +68,7 @@ def run_native_mtp_server(
     tool_call_parser: str | None = "qwen3_coder_xml",
     reasoning_parser_name: str | None = "qwen3",
     prefill_step_size: int = 2048,
+    default_reasoning_effort: str | None = None,
 ) -> None:
     """Load the immutable target/drafter pair and run the serial API server."""
 
@@ -159,6 +160,7 @@ def run_native_mtp_server(
         cors_policy=cors_policy,
         tool_call_parser=tool_call_parser,
         reasoning_parser_name=reasoning_parser_name,
+        default_reasoning_effort=default_reasoning_effort,
         generation_kwargs_fn=_generation_kwargs,
         validate_request_fn=_validate_greedy_request,
         backend_name="Native MTP",
