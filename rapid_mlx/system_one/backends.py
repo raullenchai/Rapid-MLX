@@ -335,7 +335,8 @@ class CLMBackend:
             "answers": answers_out,
             "usage": {
                 "billing_units": len(questions),
-                "input_tokens": state_tokens + action_tokens,
+                "input_tokens": requested_tokens,
+                "cache_miss_tokens": state_tokens + action_tokens,
                 "output_tokens": 0,
             },
         }

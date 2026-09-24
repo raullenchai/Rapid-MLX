@@ -6,6 +6,7 @@ import json
 import threading
 
 import httpx
+import pytest
 from fastapi.testclient import TestClient
 
 from rapid_mlx.system_one.schema import Question, clm_pairs
@@ -212,10 +213,12 @@ def test_clm_backend_runs_native_hidden_state_and_reuses_action_cache(
     first = backend.answer("ctx", {"q": question}, "clm-test", 1.0)
     assert first["answers"]["q"]["choice"] == "a"
     assert first["usage"]["input_tokens"] == 3
+    assert first["usage"]["cache_miss_tokens"] == 3
     assert len(calls) == 3
 
     second = backend.answer("ctx", {"q": question}, "clm-test", 1.0)
-    assert second["usage"]["input_tokens"] == 0
+    assert second["usage"]["input_tokens"] == 3
+    assert second["usage"]["cache_miss_tokens"] == 0
     assert len(calls) == 3
 
     backend._max_work_tokens = 2
@@ -309,3 +312,38 @@ async def test_system_one_bounds_executor_admission():
         assert second.headers["Retry-After"] == "1"
         release.set()
         assert (await first).status_code == 200
+
+
+async def test_cancelled_request_keeps_admission_until_worker_exits():
+    started = threading.Event()
+    release = threading.Event()
+    finished = threading.Event()
+
+    class BlockingBackend(FakeBackend):
+        def answer(self, state, questions, model, temperature):
+            started.set()
+            release.wait(timeout=2)
+            finished.set()
+            return super().answer(state, questions, model, temperature)
+
+    app = create_app(BlockingBackend(), max_concurrent_requests=1)
+    transport = httpx.ASGITransport(app=app)
+    request = {
+        "state": "ready",
+        "questions": {"go": {"type": "noul", "instructions": "Go?"}},
+    }
+    async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
+        first = asyncio.create_task(client.post("/v1/systemone", json=request))
+        assert await asyncio.to_thread(started.wait, 1)
+        first.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await first
+
+        while_running = await client.post("/v1/systemone", json=request)
+        assert while_running.status_code == 503
+
+        release.set()
+        assert await asyncio.to_thread(finished.wait, 1)
+        await asyncio.sleep(0)
+        after_exit = await client.post("/v1/systemone", json=request)
+        assert after_exit.status_code == 200

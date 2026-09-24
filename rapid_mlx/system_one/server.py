@@ -6,6 +6,8 @@ from __future__ import annotations
 import asyncio
 import hmac
 import time
+from collections.abc import Callable
+from typing import Any
 
 from fastapi import Depends, FastAPI, Header, HTTPException
 from fastapi.responses import JSONResponse
@@ -40,6 +42,24 @@ def create_app(
     install_request_body_limit_middleware(app)
     admission = asyncio.Semaphore(max_concurrent_requests)
 
+    async def run_backend(call: Callable[..., Any], *args: Any) -> Any:
+        if admission.locked():
+            raise HTTPException(
+                status_code=503,
+                detail="System One request capacity is full",
+                headers={"Retry-After": "1"},
+            )
+        await admission.acquire()
+        try:
+            worker = asyncio.create_task(asyncio.to_thread(call, *args))
+        except BaseException:
+            admission.release()
+            raise
+        # A client disconnect cancels the request coroutine, but cannot stop a
+        # Python worker thread. Keep its permit until the worker really exits.
+        worker.add_done_callback(lambda _worker: admission.release())
+        return await asyncio.shield(worker)
+
     def verify(authorization: str | None = Header(default=None)) -> None:
         if api_key is None:
             return
@@ -67,21 +87,14 @@ def create_app(
     async def system_one(request: SystemOneRequest):
         model = request.model or backend.default_model
         started = time.perf_counter()
-        if admission.locked():
-            raise HTTPException(
-                status_code=503,
-                detail="System One request capacity is full",
-                headers={"Retry-After": "1"},
-            )
         try:
-            async with admission:
-                result = await asyncio.to_thread(
-                    backend.answer,
-                    request.state,
-                    request.questions,
-                    model,
-                    request.temperature,
-                )
+            result = await run_backend(
+                backend.answer,
+                request.state,
+                request.questions,
+                model,
+                request.temperature,
+            )
         except KeyError as exc:
             raise HTTPException(status_code=404, detail=str(exc.args[0])) from exc
         except (TypeError, ValueError) as exc:
@@ -99,22 +112,15 @@ def create_app(
     async def rank(request: RankRequest):
         model = request.model or backend.default_model
         started = time.perf_counter()
-        if admission.locked():
-            raise HTTPException(
-                status_code=503,
-                detail="System One request capacity is full",
-                headers={"Retry-After": "1"},
-            )
         try:
-            async with admission:
-                ranked = await asyncio.to_thread(
-                    backend.rank,
-                    request.context,
-                    request.question,
-                    request.answers,
-                    model,
-                    request.temperature,
-                )
+            ranked = await run_backend(
+                backend.rank,
+                request.context,
+                request.question,
+                request.answers,
+                model,
+                request.temperature,
+            )
         except KeyError as exc:
             raise HTTPException(status_code=404, detail=str(exc.args[0])) from exc
         except (TypeError, ValueError) as exc:

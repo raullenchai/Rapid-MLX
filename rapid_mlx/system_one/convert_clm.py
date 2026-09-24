@@ -19,6 +19,8 @@ def _publish_artifact(staging: Path, destination: Path) -> None:
         raise ValueError("staged CLM artifact is incomplete")
     backup = destination.parent / f".{destination.name}.backup-{uuid.uuid4().hex}"
     moved_old = False
+    published = False
+    restored = False
     try:
         if destination.exists():
             if not destination.is_dir():
@@ -34,12 +36,15 @@ def _publish_artifact(staging: Path, destination: Path) -> None:
             os.replace(destination, backup)
             moved_old = True
         os.replace(staging, destination)
+        published = True
     except BaseException:
         if moved_old and backup.exists() and not destination.exists():
             os.replace(backup, destination)
+            restored = True
         raise
     finally:
-        if backup.exists():
+        # If restoration itself fails, the backup is the only remaining copy.
+        if backup.exists() and (published or restored):
             shutil.rmtree(backup)
 
 

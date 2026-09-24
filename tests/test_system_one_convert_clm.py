@@ -59,3 +59,24 @@ def test_publish_artifact_refuses_to_delete_unrelated_files(tmp_path):
         _publish_artifact(staging, destination)
     assert (destination / "notes.txt").read_text() == "keep"
     assert staging.exists()
+
+
+def test_publish_artifact_preserves_backup_when_restore_fails(monkeypatch, tmp_path):
+    destination = tmp_path / "head"
+    staging = tmp_path / ".staging"
+    _artifact(destination, "old")
+    _artifact(staging, "new")
+    real_replace = os.replace
+
+    def fail_publish_and_restore(source, target):
+        if target == destination and source != destination:
+            raise OSError("simulated replace failure")
+        return real_replace(source, target)
+
+    monkeypatch.setattr(os, "replace", fail_publish_and_restore)
+    with pytest.raises(OSError, match="simulated replace failure"):
+        _publish_artifact(staging, destination)
+    backups = list(tmp_path.glob(".head.backup-*"))
+    assert len(backups) == 1
+    assert (backups[0] / "config.json").read_text() == "old"
+    assert (backups[0] / "model.safetensors").read_text() == "old"
