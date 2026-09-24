@@ -631,6 +631,69 @@ def test_companion_maps_remote_image_resolution_failure_to_invalid_image(
     assert generation_calls == []
 
 
+def test_companion_maps_remote_image_connection_failure_to_invalid_image(
+    monkeypatch,
+) -> None:
+    import requests
+
+    from rapid_mlx.models import mllm
+    from rapid_mlx.spec_decode.dspark.server import (
+        _prepare_multimodal_prompt,
+        _validate_greedy_request,
+    )
+
+    prompt_utils = types.ModuleType("mlx_vlm.prompt_utils")
+
+    def unexpected_template(*_args, **_kwargs):
+        raise AssertionError("image failure must precede template rendering")
+
+    prompt_utils.apply_chat_template = unexpected_template
+    fake_vlm = types.ModuleType("mlx_vlm")
+    fake_vlm.prompt_utils = prompt_utils
+    monkeypatch.setitem(sys.modules, "mlx_vlm", fake_vlm)
+    monkeypatch.setitem(sys.modules, "mlx_vlm.prompt_utils", prompt_utils)
+
+    def fail_connection(*_args, **_kwargs):
+        raise requests.ConnectionError("test connection failure")
+
+    # Exercise the production process_image_input -> download_image path. HEAD
+    # retries as GET, and the second RequestException must remain a client-side
+    # invalid-image error rather than escaping the render worker as HTTP 500.
+    monkeypatch.setattr(mllm, "_guarded_request", fail_connection)
+    client, _, generation_calls = _companion_client(
+        validate_request_fn=_validate_greedy_request,
+        render_prompt_fn=_prepare_multimodal_prompt,
+    )
+
+    response = client.post(
+        "/v1/chat/completions",
+        json={
+            "model": "lfm-vl",
+            "messages": [
+                {
+                    "role": "user",
+                    "content": [
+                        {
+                            "type": "image_url",
+                            "image_url": {"url": "https://example.test/image.png"},
+                        }
+                    ],
+                }
+            ],
+            "temperature": 0,
+        },
+    )
+
+    assert response.status_code == 400
+    assert response.json()["error"] == {
+        "message": "Invalid image input.",
+        "type": "invalid_request_error",
+        "code": "invalid_image",
+        "param": "messages.content",
+    }
+    assert generation_calls == []
+
+
 @pytest.mark.parametrize("failure_stage", ["image-internal", "template"])
 def test_multimodal_renderer_does_not_reclassify_internal_errors(
     monkeypatch,

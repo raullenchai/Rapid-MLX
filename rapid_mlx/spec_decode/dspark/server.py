@@ -170,6 +170,7 @@ def _prepare_multimodal_prompt(
     """Render native multimodal messages and retain their image payloads."""
 
     from mlx_vlm.prompt_utils import apply_chat_template
+    from requests import RequestException
 
     from rapid_mlx.api.tool_calling import convert_tools_for_template
     from rapid_mlx.api.utils import validate_content_blocks_for_capabilities
@@ -193,7 +194,7 @@ def _prepare_multimodal_prompt(
         # from ValueError.  FileSizeExceededError is its independent sibling.
         # Keep this catch immediately around media processing so a ValueError
         # from apply_chat_template (or any other renderer bug) remains a 500.
-        except (ValueError, FileSizeExceededError) as exc:
+        except (ValueError, FileSizeExceededError, RequestException) as exc:
             raise HTTPException(
                 status_code=400,
                 detail={
