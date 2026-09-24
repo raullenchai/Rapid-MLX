@@ -585,9 +585,7 @@ def test_prefill_memory_plan_observes_fallbacks_cache_and_raw_kv(monkeypatch):
     values = [mx.zeros((1, 1, 2, 3), dtype=mx.float32)]
     plan.observe_kv(keys, values, live_bytes=0)
     assert plan.components[0].source_bytes == keys[0].nbytes + values[0].nbytes
-    assert plan.components[0].bytes_per_token == (
-        keys[0].nbytes + values[0].nbytes
-    ) / 2
+    assert plan.components[0].bytes_per_token == (keys[0].nbytes + values[0].nbytes) / 2
 
 
 def test_coordinator_observe_and_merge_refresh_memory_reserve(monkeypatch):
