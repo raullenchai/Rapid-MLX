@@ -10,6 +10,8 @@ from __future__ import annotations
 
 import mlx.core as mx
 
+_FP32_ABSOLUTE_ROUNDING_BUDGET = 4 * 2**-23
+
 
 def _norm_targets(model, norm_type, prefix=""):
     return {
@@ -57,10 +59,17 @@ def apply_qwen4_norm_convention(model, weights, norm_type, convention, *, prefix
             gamma = value.astype(mx.float32)
             residual = gamma - 1.0
             restored = 1.0 + residual
-            # Subtracting and re-adding one can move an ordinary FP32 gain by
-            # a few ULPs.  Admit that unavoidable rounding, but reject gains
-            # small enough to be erased by cancellation in the residual ABI.
-            if not bool(mx.allclose(restored, gamma, rtol=5e-7, atol=0.0).item()):
+            # Subtracting and re-adding one can move a gain by a few FP32 ULPs.
+            # The absolute term is required near zero, where relative error is
+            # not a meaningful representability test for the residual ABI.
+            if not bool(
+                mx.allclose(
+                    restored,
+                    gamma,
+                    rtol=5e-7,
+                    atol=_FP32_ABSOLUTE_ROUNDING_BUDGET,
+                ).item()
+            ):
                 raise ValueError(
                     "Qwen4 RMSNorm gain cannot be represented faithfully "
                     f"as an FP32 residual: {key}"

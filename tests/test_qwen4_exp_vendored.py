@@ -2141,6 +2141,14 @@ def test_qwen4_mtp_inject_uses_admitted_backbone_norm_convention(tmp_path, monke
     )
     assert inject.inject_qwen4_exp_mtp_support(model, mtp_sidecar=checkpoint) is True
     assert inject.validate_qwen4_exp_mtp_support(model) is True
+    for _path, module in model.language_model.mtp.named_modules():
+        if type(module) is ZeroCenteredRMSNorm:
+            assert mx.allclose(
+                module.weight, mx.array(-0.3), rtol=0.0, atol=2e-7
+            ).item()
+            assert mx.allclose(
+                1 + module.weight, mx.array(0.7), rtol=0.0, atol=2e-7
+            ).item()
 
 
 def test_qwen4_mtp_inject_fails_closed_on_guards_tensor_mismatch_and_exception(

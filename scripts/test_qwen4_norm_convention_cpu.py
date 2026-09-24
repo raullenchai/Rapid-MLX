@@ -216,24 +216,8 @@ class ConventionTests(unittest.TestCase):
                 with self.assertRaises(ValueError):
                     model.sanitize(weights)
 
-    def test_ordinary_fp32_direct_gain_admits_bounded_rounding(self):
-        model = tiny_model()
-        weights = checkpoint(model, direct=True)
-        key = "language_model.model.layers.1.self_attn.indexer.q_layernorm.weight"
-        gamma = mx.full(weights[key].shape, 0.1, dtype=mx.float32)
-        weights[key] = gamma
-        apply_qwen4_norm_convention(
-            model.language_model,
-            weights,
-            ZeroCenteredRMSNorm,
-            "direct_gamma",
-            prefix="language_model.",
-        )
-        restored = 1.0 + weights[key]
-        self.assertTrue(mx.allclose(restored, gamma, rtol=5e-7, atol=0.0).item())
-
-    def test_unrepresentable_tiny_gain_refused(self):
-        for gain in (1e-12, -1e-12):
+    def test_fp32_direct_gain_admits_bounded_absolute_rounding(self):
+        for gain in (0.1, 0.001, 1e-12, -1e-12):
             with self.subTest(gain=gain):
                 model = tiny_model()
                 weights = checkpoint(model, direct=True)
@@ -241,16 +225,17 @@ class ConventionTests(unittest.TestCase):
                     "language_model.model.layers.1.self_attn.indexer.q_layernorm.weight"
                 )
                 weights[key] = mx.full(weights[key].shape, gain)
-                with self.assertRaisesRegex(
-                    ValueError, "cannot be represented faithfully"
-                ):
-                    apply_qwen4_norm_convention(
-                        model.language_model,
-                        weights,
-                        ZeroCenteredRMSNorm,
-                        "direct_gamma",
-                        prefix="language_model.",
-                    )
+                apply_qwen4_norm_convention(
+                    model.language_model,
+                    weights,
+                    ZeroCenteredRMSNorm,
+                    "direct_gamma",
+                    prefix="language_model.",
+                )
+                restored = 1.0 + weights[key]
+                self.assertLessEqual(
+                    float(mx.max(mx.abs(restored - gain)).item()), 4 * 2**-23
+                )
 
     def test_single_anchor_outlier_is_rejected(self):
         class Anchors(nn.Module):
