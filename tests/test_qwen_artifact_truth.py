@@ -10,6 +10,7 @@ from types import ModuleType
 
 import pytest
 
+import rapid_mlx.engine.batched as batched_engine
 import rapid_mlx.qwen_artifact_layout as qwen_layout
 import rapid_mlx.qwen_runtime_plan as qwen_plan
 import rapid_mlx.runtime.qwen_artifact as qwen_artifact
@@ -198,6 +199,87 @@ def test_exact_cached_qwen_config_index_and_snapshot_facts(tmp_path: Path, name:
     status = truth.to_status_dict()
     assert status["identity_is_immutable"] is True
     assert str(tmp_path) not in json.dumps(status)
+
+
+def test_negative_qwen36_receipt_requires_exact_truth_and_runtime(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    snapshot, _hub, metadata = _materialize_snapshot(tmp_path, "qwen36_35b_4bit")
+    truth = probe_qwen_artifact(snapshot, binding=_binding(snapshot, metadata))
+    assert truth.verification_id == (
+        "hf-snapshot-sha256:"
+        "d0a40af8a936fe4a994e700305b4c012f021c8551acaa332b1233d930bd1dbe8"
+    )
+    monkeypatch.setattr(
+        batched_engine.importlib.metadata,
+        "version",
+        lambda package: "0.7.1" if package == "mlx-vlm" else "unexpected",
+    )
+
+    status = batched_engine._qwen36_native_text_no_go_status(truth)
+
+    assert status == {
+        "qualified": False,
+        "reason": "performance_not_qualified",
+        "receipt_sha256": (
+            "fb6af37e0a8f7aeaef0131e3a0c5f6f4d24761af253c533e69fe74b9fed3d227"
+        ),
+        "runtime": "mlx-vlm==0.7.1",
+    }
+    assert batched_engine._qwen36_native_text_no_go_status(None) is None
+
+    monkeypatch.setattr(
+        batched_engine.importlib.metadata, "version", lambda _package: "0.7.2"
+    )
+    assert batched_engine._qwen36_native_text_no_go_status(truth) is None
+
+    def _missing(_package: str) -> str:
+        raise batched_engine.importlib.metadata.PackageNotFoundError
+
+    monkeypatch.setattr(batched_engine.importlib.metadata, "version", _missing)
+    assert batched_engine._qwen36_native_text_no_go_status(truth) is None
+
+
+def test_negative_qwen36_receipt_rejects_other_revision(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(
+        batched_engine.importlib.metadata, "version", lambda _package: "0.7.1"
+    )
+
+    revision_snapshot, _hub, revision_metadata = _materialize_snapshot(
+        tmp_path, "qwen36_35b_4bit"
+    )
+    other_revision = "f" * 40
+    moved_snapshot = revision_snapshot.with_name(other_revision)
+    revision_snapshot.rename(moved_snapshot)
+    revision_metadata = {**revision_metadata, "revision": other_revision}
+    revision_truth = probe_qwen_artifact(
+        moved_snapshot,
+        binding=_binding(moved_snapshot, revision_metadata),
+    )
+    assert batched_engine._qwen36_native_text_no_go_status(revision_truth) is None
+
+
+def test_negative_qwen36_receipt_rejects_other_quantization(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(
+        batched_engine.importlib.metadata, "version", lambda _package: "0.7.1"
+    )
+    quant_snapshot, _hub, quant_metadata = _materialize_snapshot(
+        tmp_path, "qwen36_35b_4bit"
+    )
+    config_path = quant_snapshot / "config.json"
+    config = json.loads(config_path.read_text(encoding="utf-8"))
+    config["quantization"]["bits"] = 8
+    config_path.write_text(json.dumps(config), encoding="utf-8")
+    quant_truth = probe_qwen_artifact(
+        quant_snapshot,
+        binding=_binding(quant_snapshot, quant_metadata),
+    )
+    assert quant_truth.revision == quant_metadata["revision"]
+    assert batched_engine._qwen36_native_text_no_go_status(quant_truth) is None
 
 
 def test_qwen38_is_qwen35_text_not_qwen4_exp(tmp_path: Path):
