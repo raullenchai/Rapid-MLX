@@ -281,7 +281,7 @@ def test_listen_fd_plain_file_failure_does_not_leak_dup(tmp_path):
     assert after == before
 
 
-def _fake_inherited_socket(*, sockname, accept_error=None):
+def _fake_inherited_socket(*, sockname):
     class FakeInheritedSocket:
         family = socket.AF_INET
 
@@ -297,8 +297,6 @@ def _fake_inherited_socket(*, sockname, accept_error=None):
         def getsockopt(self, _level, option, *_args):
             if option == socket.SO_TYPE:
                 return socket.SOCK_STREAM
-            if accept_error is not None:
-                raise accept_error
             return 1
 
         def getsockname(self):
@@ -307,46 +305,92 @@ def _fake_inherited_socket(*, sockname, accept_error=None):
     return FakeInheritedSocket
 
 
-def test_listen_fd_acceptconn_integer_guards_run_on_every_platform(monkeypatch):
-    """Exercise the accept-state read and error guard without OS feature gaps."""
-    monkeypatch.setattr(socket, "SO_ACCEPTCONN", 0x40000000, raising=False)
+class _FakeSocketOptions:
+    def __init__(self, *results):
+        self.results = list(results)
+        self.calls = []
 
-    read_fd, write_fd = os.pipe()
-    try:
-        monkeypatch.setattr(
-            socket,
-            "socket",
-            _fake_inherited_socket(sockname=("127.0.0.1", 1234)),
-        )
-        assert cli._listen_fd_port(read_fd) == 1234
-
-        error = OSError(errno.EINVAL, "unexpected socket option failure")
-        monkeypatch.setattr(
-            socket,
-            "socket",
-            _fake_inherited_socket(sockname=("127.0.0.1", 1234), accept_error=error),
-        )
-        with pytest.raises(OSError, match="unexpected socket option failure"):
-            cli._listen_fd_port(read_fd)
-    finally:
-        os.close(read_fd)
-        os.close(write_fd)
+    def getsockopt(self, *args):
+        self.calls.append(args)
+        result = self.results.pop(0)
+        if isinstance(result, BaseException):
+            raise result
+        return result
 
 
-def test_listen_fd_preserves_unexpected_acceptconn_error(monkeypatch):
-    read_fd, write_fd = os.pipe()
-    try:
-        error = OSError(errno.EINVAL, "unexpected socket option failure")
-        monkeypatch.setattr(
-            socket,
-            "socket",
-            _fake_inherited_socket(sockname=("127.0.0.1", 1234), accept_error=error),
-        )
-        with pytest.raises(OSError, match="unexpected socket option failure"):
-            cli._listen_fd_port(read_fd)
-    finally:
-        os.close(read_fd)
-        os.close(write_fd)
+def _listener_accepting(sock, *, platform_name="linux", tcp_connection_info=42):
+    return cli._listener_accepting(
+        sock,
+        so_acceptconn=30,
+        platform_name=platform_name,
+        enoprotoopt=errno.ENOPROTOOPT,
+        tcp_connection_info=tcp_connection_info,
+        sol_socket=1,
+        ipproto_tcp=6,
+    )
+
+
+@pytest.mark.parametrize(("acceptconn", "expected"), [(1, True), (0, False)])
+def test_listener_accepting_uses_so_acceptconn(acceptconn, expected):
+    sock = _FakeSocketOptions(acceptconn)
+
+    assert _listener_accepting(sock) is expected
+    assert sock.calls == [(1, 30)]
+
+
+@pytest.mark.parametrize(
+    ("tcp_info", "expected"), [(bytes([1]), True), (bytes([0]), False)]
+)
+def test_listener_accepting_uses_darwin_tcp_connection_info(tcp_info, expected):
+    sock = _FakeSocketOptions(OSError(errno.ENOPROTOOPT, "unsupported"), tcp_info)
+
+    assert _listener_accepting(sock, platform_name="darwin") is expected
+    assert sock.calls == [(1, 30), (6, 42, 1)]
+
+
+def test_listener_accepting_reraises_enoprotoopt_off_darwin():
+    error = OSError(errno.ENOPROTOOPT, "unsupported")
+    sock = _FakeSocketOptions(error)
+
+    with pytest.raises(OSError) as excinfo:
+        _listener_accepting(sock)
+
+    assert excinfo.value is error
+
+
+def test_listener_accepting_reraises_other_errno_on_darwin():
+    error = OSError(errno.EINVAL, "unexpected socket option failure")
+    sock = _FakeSocketOptions(error)
+
+    with pytest.raises(OSError) as excinfo:
+        _listener_accepting(sock, platform_name="darwin")
+
+    assert excinfo.value is error
+
+
+def test_listener_accepting_reraises_without_tcp_connection_info():
+    error = OSError(errno.ENOPROTOOPT, "unsupported")
+    sock = _FakeSocketOptions(error)
+
+    with pytest.raises(OSError) as excinfo:
+        _listener_accepting(sock, platform_name="darwin", tcp_connection_info=None)
+
+    assert excinfo.value is error
+
+
+def test_listener_accepting_assumes_true_without_so_acceptconn():
+    sock = _FakeSocketOptions()
+
+    assert cli._listener_accepting(
+        sock,
+        so_acceptconn=None,
+        platform_name="linux",
+        enoprotoopt=errno.ENOPROTOOPT,
+        tcp_connection_info=None,
+        sol_socket=1,
+        ipproto_tcp=6,
+    )
+    assert sock.calls == []
 
 
 def test_listen_fd_rejects_invalid_inet_sockname(monkeypatch):

@@ -455,6 +455,36 @@ def _port_preflight_or_die(host: str, port: int, *, model: str) -> None:
         _exit_for_port_collision(port, collision_host, model=model)
 
 
+def _listener_accepting(
+    sock,
+    *,
+    so_acceptconn: int | None,
+    platform_name: str,
+    enoprotoopt: int,
+    tcp_connection_info: int | None,
+    sol_socket: int,
+    ipproto_tcp: int,
+) -> bool:
+    """Return whether a socket is listening, including the Darwin fallback."""
+
+    if so_acceptconn is None:
+        return True
+    try:
+        return bool(sock.getsockopt(sol_socket, so_acceptconn))
+    except OSError as exc:
+        # macOS 26 exposes SO_ACCEPTCONN but returns ENOPROTOOPT for it.
+        # TCP_CONNECTION_INFO reports the same kernel state; TCPS_LISTEN is 1
+        # in Darwin's tcp_fsm.h.
+        if (
+            platform_name != "darwin"
+            or exc.errno != enoprotoopt
+            or tcp_connection_info is None
+        ):
+            raise
+        tcp_info = sock.getsockopt(ipproto_tcp, tcp_connection_info, 1)
+        return bool(tcp_info and tcp_info[0] == 1)
+
+
 def _listen_fd_port(listen_fd: int) -> int:
     """Read the bound TCP port without taking ownership of ``listen_fd``."""
 
@@ -480,27 +510,15 @@ def _listen_fd_port(listen_fd: int) -> int:
                 f"--listen-fd {listen_fd} is not bound to a TCP socket "
                 "(SO_TYPE is not SOCK_STREAM)"
             )
-        accepting = True
-        if hasattr(socket, "SO_ACCEPTCONN"):
-            try:
-                accepting = bool(
-                    inherited.getsockopt(socket.SOL_SOCKET, socket.SO_ACCEPTCONN)
-                )
-            except OSError as exc:
-                # macOS 26 exposes SO_ACCEPTCONN but returns ENOPROTOOPT for
-                # it. TCP_CONNECTION_INFO reports the same kernel state;
-                # TCPS_LISTEN is 1 in Darwin's tcp_fsm.h.
-                tcp_connection_info = getattr(socket, "TCP_CONNECTION_INFO", None)
-                if (
-                    sys.platform != "darwin"
-                    or exc.errno != errno.ENOPROTOOPT
-                    or tcp_connection_info is None
-                ):
-                    raise
-                tcp_info = inherited.getsockopt(
-                    socket.IPPROTO_TCP, tcp_connection_info, 1
-                )
-                accepting = bool(tcp_info and tcp_info[0] == 1)
+        accepting = _listener_accepting(
+            inherited,
+            so_acceptconn=getattr(socket, "SO_ACCEPTCONN", None),
+            platform_name=sys.platform,
+            enoprotoopt=errno.ENOPROTOOPT,
+            tcp_connection_info=getattr(socket, "TCP_CONNECTION_INFO", None),
+            sol_socket=socket.SOL_SOCKET,
+            ipproto_tcp=socket.IPPROTO_TCP,
+        )
         if not accepting:
             raise OSError(
                 f"--listen-fd {listen_fd} is not bound to a TCP socket "
