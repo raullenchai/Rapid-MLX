@@ -87,7 +87,7 @@ struct ContentView: View {
     @Environment(LocalToolApprovalStore.self) private var localToolApproval
     @Environment(MCPCatalog.self) private var mcpCatalog
     @Environment(MCPToolApprovalStore.self) private var mcpApproval
-    @Environment(TelemetryNoticeCoordinator.self) private var telemetryNotice
+    @Environment(TelemetryLifecycleCoordinator.self) private var telemetryLifecycle
     @Environment(GitHubStarPromptCoordinator.self) private var githubStarPrompt
     @Environment(SparkleUpdateController.self) private var sparkleUpdater
     @Environment(CommandPaletteRequestCoordinator.self) private var commandPaletteRequest
@@ -618,9 +618,6 @@ struct ContentView: View {
             // by construction any more: the upgrade notice is sticky until the
             // user acknowledges it.
             WhatsNewBanner()
-            if telemetryNotice.isPresented {
-                TelemetryNoticeBanner()
-            }
             if let campaign,
                !UserDefaults.standard.bool(forKey: campaign.dismissalKey) {
                 CampaignBanner(
@@ -728,6 +725,12 @@ struct ContentView: View {
                     .zIndex(20)
             }
         }
+        .task {
+            // Keep the former disclosure timing: default-on policy begins only
+            // after Quickstart gives way to the ordinary product shell. There
+            // is no launch banner or acknowledgement step.
+            await telemetryLifecycle.start()
+        }
     }
 
     private var hasActiveModelWork: Bool {
@@ -753,7 +756,6 @@ struct ContentView: View {
         return .init(
             isBusy: hasActiveModelWork,
             hasBlockingSurface: quickstartVisible
-                || telemetryNotice.isPresented
                 || campaignIsVisible
                 || showConversationSearch
                 || server.pendingMemoryWarning != nil

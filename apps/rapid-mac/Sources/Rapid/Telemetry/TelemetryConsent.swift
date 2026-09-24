@@ -24,25 +24,25 @@ enum TelemetryConsent {
         let noticeRevisionSeen: Int?
         let promptedVersion: String?
 
-        var currentNoticeWasSeen: Bool {
+        var currentPolicyWasApplied: Bool {
             (noticeRevisionSeen ?? Int.min) >= disclosureRevision
         }
     }
 
-    struct NoticePresentationResult: Equatable {
+    struct DefaultPolicyResult: Equatable {
         let persisted: Bool
         let uploadAllowedThisRun: Bool
     }
 
-    private enum NoticeWrite {
+    private enum PolicyWrite {
         case none
         case markerOnly
         case migrateLegacyRefusal
     }
 
     /// Reconcile Desktop's local sender gate with the shared v2 record. A
-    /// missing/currently-unseen disclosure stays off until the banner really
-    /// appears and its marker write succeeds.
+    /// missing policy revision stays off until the launch policy writer
+    /// persists it successfully.
     static func synchronizeExistingDecision(
         version: String = TelemetryClient.currentVersion()
     ) {
@@ -66,7 +66,7 @@ enum TelemetryConsent {
 
         guard let mapping = readConsentMapping(at: url) else {
             // Unreadable is absent for decision purposes, but is never
-            // overwritten by the automatic notice writer.
+            // overwritten by automatic policy reconciliation.
             defaults.removeObject(forKey: TelemetryConfig.enabledKey)
             return
         }
@@ -74,7 +74,7 @@ enum TelemetryConsent {
         if mapping.isEmpty {
             // Honour `telemetry reset`: an old local answer must not
             // resurrect a deleted shared record. A pre-v2 local preference
-            // is likewise held off until the new disclosure is visible.
+            // is likewise held off until the current policy is applied.
             if alreadyMigrated {
                 defaults.removeObject(forKey: TelemetryConfig.enabledKey)
             } else if defaults.object(forKey: TelemetryConfig.enabledKey) != nil {
@@ -87,8 +87,8 @@ enum TelemetryConsent {
         let enabled: Bool
         if shared.engine == false || shared.desktop == false {
             enabled = false
-        } else if shared.currentNoticeWasSeen {
-            // With no explicit refusal, the current disclosure marker is the
+        } else if shared.currentPolicyWasApplied {
+            // With no explicit refusal, the current policy marker is the
             // default-on authorisation (decision-table rows 3 and 9).
             enabled = true
         } else {
@@ -101,7 +101,7 @@ enum TelemetryConsent {
         }
     }
 
-    static func needsNotice(
+    static func needsDefaultPolicyApplication(
         version: String = TelemetryClient.currentVersion(),
         environment: [String: String] = TelemetryConfig.environment,
         telemetryDirectory: URL = TelemetryIdentity.sharedTelemetryDirectory()
@@ -110,19 +110,19 @@ enum TelemetryConsent {
               !TelemetryConfig.killSwitchActive(environment: environment),
               let mapping = readConsentMapping(at: consentURL(in: telemetryDirectory))
         else { return false }
-        return noticeWrite(for: sharedConsent(from: mapping)) != .none
+        return policyWrite(for: sharedConsent(from: mapping)) != .none
     }
 
-    /// Called by the banner's `onAppear`, never when launch merely schedules
-    /// the banner. Failed persistence leaves the local sender off and causes a
-    /// later launch to try the disclosure again.
-    static func noticePresented(
+    /// Applies the current default-on policy during Desktop startup. Failed
+    /// persistence leaves the local sender off and causes a later launch to
+    /// retry; explicit refusals and kill switches remain authoritative.
+    static func applyDefaultPolicy(
         version: String = TelemetryClient.currentVersion(),
         defaults: UserDefaults = .standard,
         environment: [String: String] = TelemetryConfig.environment,
         telemetryDirectory: URL = TelemetryIdentity.sharedTelemetryDirectory()
-    ) async -> NoticePresentationResult {
-        await writer.noticePresented(
+    ) async -> DefaultPolicyResult {
+        await writer.applyDefaultPolicy(
             version: version,
             defaults: defaults,
             environment: environment,
@@ -130,32 +130,32 @@ enum TelemetryConsent {
         )
     }
 
-    fileprivate static func noticePresentedSynchronously(
+    fileprivate static func applyDefaultPolicySynchronously(
         version: String,
         defaults: UserDefaults,
         environment: [String: String],
         telemetryDirectory: URL
-    ) -> NoticePresentationResult {
+    ) -> DefaultPolicyResult {
         guard !isPreCutoffRuntime(version),
               !TelemetryConfig.killSwitchActive(environment: environment),
               let initial = readConsentMapping(at: consentURL(in: telemetryDirectory))
         else {
-            return NoticePresentationResult(persisted: false, uploadAllowedThisRun: false)
+            return DefaultPolicyResult(persisted: false, uploadAllowedThisRun: false)
         }
 
-        let action = noticeWrite(for: sharedConsent(from: initial))
+        let action = policyWrite(for: sharedConsent(from: initial))
         guard action != .none else {
-            return NoticePresentationResult(persisted: false, uploadAllowedThisRun: false)
+            return DefaultPolicyResult(persisted: false, uploadAllowedThisRun: false)
         }
 
-        var committedAction = NoticeWrite.none
+        var committedAction = PolicyWrite.none
         let persisted = writeMergedConsent(
             updates: [:],
             raiseNoticeRevisionTo: nil,
             directory: telemetryDirectory,
             replaceUnreadable: false,
             customMerge: { current in
-                let currentAction = noticeWrite(for: sharedConsent(from: current))
+                let currentAction = policyWrite(for: sharedConsent(from: current))
                 guard currentAction != .none else { return nil }
                 var merged = current
                 if currentAction == .migrateLegacyRefusal {
@@ -171,7 +171,7 @@ enum TelemetryConsent {
             }
         )
         guard persisted else {
-            return NoticePresentationResult(persisted: false, uploadAllowedThisRun: false)
+            return DefaultPolicyResult(persisted: false, uploadAllowedThisRun: false)
         }
 
         defaults.set(true, forKey: TelemetryConfig.sharedConsentMigrationKey)
@@ -179,7 +179,7 @@ enum TelemetryConsent {
             // Decision-table row 4: migration authorises the next run, never
             // the run that reversed the pre-default-on refusal.
             defaults.set(false, forKey: TelemetryConfig.enabledKey)
-            return NoticePresentationResult(persisted: true, uploadAllowedThisRun: false)
+            return DefaultPolicyResult(persisted: true, uploadAllowedThisRun: false)
         }
 
         let finalShared = readSharedConsent(at: consentURL(in: telemetryDirectory))
@@ -190,7 +190,7 @@ enum TelemetryConsent {
         if enabled {
             synchronizeClientID(defaults: defaults, telemetryDirectory: telemetryDirectory)
         }
-        return NoticePresentationResult(persisted: true, uploadAllowedThisRun: enabled)
+        return DefaultPolicyResult(persisted: true, uploadAllowedThisRun: enabled)
     }
 
     static func record(
@@ -230,7 +230,7 @@ enum TelemetryConsent {
         defaults: UserDefaults,
         telemetryDirectory: URL
     ) -> Bool {
-        // Settings is itself an explicit user choice. The disclosure marker
+        // Settings is itself an explicit user choice. The policy marker
         // gates only the automatic default-on path; Settings never writes it.
         let previousLocalDecision = defaults.object(forKey: TelemetryConfig.enabledKey)
         // An opt-out immediately silences Desktop while the shared write is
@@ -278,8 +278,8 @@ enum TelemetryConsent {
         )
     }
 
-    private static func noticeWrite(for shared: SharedConsent) -> NoticeWrite {
-        if shared.currentNoticeWasSeen { return .none }
+    private static func policyWrite(for shared: SharedConsent) -> PolicyWrite {
+        if shared.currentPolicyWasApplied { return .none }
         if shared.engine == false {
             return isLegacyVersion(shared.promptedVersion) ? .migrateLegacyRefusal : .none
         }
@@ -665,13 +665,13 @@ enum TelemetryConsent {
 /// task-local overrides used to isolate telemetry tests from process kill switches.
 /// Its file-lock retry deliberately blocks a cooperative thread for at most `lockRetrySeconds`.
 private actor ConsentWriter {
-    func noticePresented(
+    func applyDefaultPolicy(
         version: String,
         defaults: UserDefaults,
         environment: [String: String],
         telemetryDirectory: URL
-    ) async -> TelemetryConsent.NoticePresentationResult {
-        TelemetryConsent.noticePresentedSynchronously(
+    ) async -> TelemetryConsent.DefaultPolicyResult {
+        TelemetryConsent.applyDefaultPolicySynchronously(
             version: version,
             defaults: defaults,
             environment: environment,

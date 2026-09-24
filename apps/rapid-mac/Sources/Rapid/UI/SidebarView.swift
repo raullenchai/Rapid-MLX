@@ -386,8 +386,8 @@ struct SidebarView: View {
     /// SwiftUI binding — so the golden flow could neither find the field
     /// nor enable Save. A plain sheet exposes the same controls as
     /// ordinary views, where identifiers, value writes, and presses all
-    /// behave (fresh-install drives the launch notice the same way on the
-    /// same runner). The three identifiers are the flow's contract — keep
+    /// behave (fresh-install drives the same native controls on the same
+    /// runner). The three identifiers are the flow's contract — keep
     /// them stable.
     private var folderPromptSheet: some View {
         VStack(alignment: .leading, spacing: RapidTheme.Space.lg) {

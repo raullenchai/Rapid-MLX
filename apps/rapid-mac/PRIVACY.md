@@ -31,9 +31,8 @@ own key in Settings → Tools).
 ## What we collect (telemetry)
 
 Anonymous, metadata-only usage telemetry. Starting in 0.15.0, it is **on by
-default after a one-time in-app acknowledgement notice**. This includes
-installs that turned telemetry off before 0.15.0, which are told about the
-change in that notice. A refusal recorded in 0.15.0 or later is never reversed.
+default**. This includes legacy telemetry decisions recorded before 0.15.0.
+A refusal recorded in 0.15.0 or later is never reversed.
 You can turn telemetry off in Settings → Privacy, with
 `rapid-mlx telemetry off`, or with the `RAPID_MLX_TELEMETRY=0` or
 `DO_NOT_TRACK=1` kill switch. The desktop app and its embedded `rapid-mlx`
