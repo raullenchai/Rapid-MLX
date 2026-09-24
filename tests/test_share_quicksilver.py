@@ -3017,10 +3017,7 @@ def test_other_catalogs_still_get_no_thinking():
         ([], 2),
         (["--max-num-seqs", "8"], 8),
         (["--max-num-seqs=4"], 4),
-        (["--max-num-seqs", "999"], 64),
-        (["--max-num-seqs", "0"], 1),
-        (["--max-num-seqs", "lots"], 2),
-        (["--max-num-seqs"], 2),
+        (["--max-num-seqs", "64"], 64),
         # argparse store semantics: the last occurrence is what serve runs with
         (["--max-num-seqs", "8", "--max-num-seqs", "1"], 1),
         (["--max-num-seqs=1", "--max-num-seqs", "8"], 8),
@@ -3028,6 +3025,23 @@ def test_other_catalogs_still_get_no_thinking():
 )
 def test_pool_max_concurrency_mirrors_serve_slots(passthrough, expected):
     assert qs._pool_max_concurrency(passthrough) == expected
+
+
+@pytest.mark.parametrize(
+    "passthrough",
+    [
+        ["--max-num-seqs", "0"],
+        ["--max-num-seqs", "999"],
+        ["--max-num-seqs", "lots"],
+        ["--max-num-seqs"],
+    ],
+)
+def test_pool_max_concurrency_rejects_out_of_range(passthrough):
+    # Validated, never clamped: the advertised slot count must be exactly
+    # what the child serve admits, so an unservable value fails before
+    # registration instead of registering a capacity the node can't honor.
+    with pytest.raises(qs.QuickSilverError, match="between 1 and 64"):
+        qs._pool_max_concurrency(passthrough)
 
 
 def test_register_advertises_max_concurrency():

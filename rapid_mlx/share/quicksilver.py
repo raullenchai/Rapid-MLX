@@ -797,19 +797,27 @@ def _pool_max_concurrency(passthrough: list[str]) -> int:
     """Slots to advertise at registration: the ``--max-num-seqs`` the child
     serve will actually run with (§5.3 default 2, or the user's ``--``
     override), so the pool never routes more concurrent requests than the
-    local server admits. Unparseable overrides fall back to the default —
-    serve itself rejects them with a proper error."""
+    local server admits. The value is validated, not clamped — a clamp would
+    let the node advertise one capacity while the child serves another."""
     # argparse "store" semantics: the LAST occurrence wins, so scan them all.
-    result = _POOL_DEFAULT_MAX_CONCURRENCY
+    raw: str | None = None
     for i, token in enumerate(passthrough):
         key, sep, value = token.partition("=")
         if key != "--max-num-seqs":
             continue
         raw = value if sep else (passthrough[i + 1] if i + 1 < len(passthrough) else "")
-        try:
-            result = max(1, min(int(raw), _POOL_MAX_CONCURRENCY_CEILING))
-        except ValueError:
-            result = _POOL_DEFAULT_MAX_CONCURRENCY
+    if raw is None:
+        return _POOL_DEFAULT_MAX_CONCURRENCY
+    try:
+        result = int(raw)
+    except ValueError:
+        result = 0
+    if not 1 <= result <= _POOL_MAX_CONCURRENCY_CEILING:
+        raise QuickSilverError(
+            f"--max-num-seqs must be an integer between 1 and "
+            f"{_POOL_MAX_CONCURRENCY_CEILING} in pool mode (got {raw!r}) — the "
+            f"pool advertises exactly the slots the local serve admits"
+        )
     return result
 
 
