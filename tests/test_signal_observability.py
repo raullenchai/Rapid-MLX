@@ -602,7 +602,9 @@ def test_epoch_relative_tolerance_does_not_hide_pid_reuse(monkeypatch):
     assert identity.is_same_process(marker) is False
 
 
-def test_crash_pointer_is_acknowledged_across_clean_launches(tmp_path):
+def test_crash_pointer_is_acknowledged_across_clean_launches(tmp_path, capsys):
+    from rapid_mlx import _signal_observability as so
+
     home = tmp_path / "home"
     log_dir = home / ".rapid-mlx" / "logs"
     log_dir.mkdir(parents=True)
@@ -635,6 +637,9 @@ def test_crash_pointer_is_acknowledged_across_clean_launches(tmp_path):
     assert not crash.exists()
     assert crash.with_name(f"{crash.stem}.reported{crash.suffix}").exists()
 
+    so._report_previous_crash(log_dir)
+    assert capsys.readouterr().err == ""
+
 
 def test_closed_crash_fd_rearm_recovers_without_claiming_success(tmp_path):
     home = tmp_path / "home"
@@ -660,6 +665,110 @@ def test_closed_crash_fd_rearm_recovers_without_claiming_success(tmp_path):
     assert proc.stdout.strip() == "False"
     assert proc.returncode != 0
     assert files and files[0].stat().st_size > 0
+
+
+def test_closed_crash_fd_rearm_recovers_file_only_in_process(monkeypatch, tmp_path):
+    from rapid_mlx import _signal_observability as so
+
+    path = tmp_path / "crash.txt"
+    fd = os.open(path, os.O_WRONLY | os.O_CREAT, 0o600)
+    os.close(fd)
+    previous = (so._crash_fd, so._crash_path, so._crash_pipe, so._crash_tee)
+    calls = []
+    so._crash_fd = fd
+    so._crash_path = path
+    so._crash_pipe = None
+    so._crash_tee = None
+    monkeypatch.setattr(so, "_enable_faulthandler", calls.append)
+    try:
+        assert so.ensure_crash_sink() is False
+        assert so._crash_fd is not None
+        assert calls == [so._crash_fd]
+    finally:
+        if so._crash_fd is not None:
+            os.close(so._crash_fd)
+        so._crash_fd, so._crash_path, so._crash_pipe, so._crash_tee = previous
+
+
+def test_closed_crash_fd_without_path_stops_tee_and_returns_false(tmp_path):
+    from rapid_mlx import _signal_observability as so
+
+    class Pipe:
+        closed = False
+
+        def close(self):
+            self.closed = True
+
+    path = tmp_path / "closed.txt"
+    fd = os.open(path, os.O_WRONLY | os.O_CREAT, 0o600)
+    os.close(fd)
+    pipe = Pipe()
+    previous = (so._crash_fd, so._crash_path, so._crash_pipe, so._crash_tee)
+    so._crash_fd = fd
+    so._crash_path = None
+    so._crash_pipe = pipe
+    so._crash_tee = None
+    try:
+        assert so.ensure_crash_sink() is False
+        assert pipe.closed is True
+    finally:
+        so._crash_fd, so._crash_path, so._crash_pipe, so._crash_tee = previous
+
+
+def test_closed_crash_fd_rearm_failure_closes_replacement(monkeypatch, tmp_path):
+    from rapid_mlx import _signal_observability as so
+
+    previous = (so._crash_fd, so._crash_path, so._crash_pipe, so._crash_tee)
+    so._crash_fd = 123
+    so._crash_path = tmp_path / "crash.txt"
+    so._crash_pipe = None
+    so._crash_tee = None
+    monkeypatch.setattr(
+        so.os,
+        "fstat",
+        lambda fd: (_ for _ in ()).throw(OSError("closed")) if fd == 123 else None,
+    )
+    monkeypatch.setattr(so.os, "open", lambda *_args: 456)
+    monkeypatch.setattr(
+        so,
+        "_enable_faulthandler",
+        lambda _fd: (_ for _ in ()).throw(RuntimeError("rearm failed")),
+    )
+    monkeypatch.setattr(
+        so.os, "close", lambda _fd: (_ for _ in ()).throw(OSError("close failed"))
+    )
+    try:
+        assert so.ensure_crash_sink() is False
+    finally:
+        so._crash_fd, so._crash_path, so._crash_pipe, so._crash_tee = previous
+
+
+def test_crash_marker_reader_rejects_oversized_and_growing_files(monkeypatch, tmp_path):
+    from rapid_mlx import _signal_observability as so
+
+    log_dir = tmp_path / "logs"
+    state_dir = tmp_path / "state"
+    log_dir.mkdir()
+    state_dir.mkdir()
+    marker = state_dir / "serve-inflight-123.json"
+    marker.write_bytes(b"x" * 4097)
+    assert so._marker_for_pid(log_dir, 123) is None
+
+    marker.write_bytes(b"x")
+    real_fstat = os.fstat
+    real_read = os.read
+    with monkeypatch.context() as patch:
+        patch.setattr(
+            so.os,
+            "fstat",
+            lambda fd: SimpleNamespace(st_mode=real_fstat(fd).st_mode, st_size=1),
+        )
+        patch.setattr(
+            so.os,
+            "read",
+            lambda fd, size: b"x" * 4097 if size == 4097 else real_read(fd, size),
+        )
+        assert so._marker_for_pid(log_dir, 123) is None
 
 
 def test_empty_crash_file_is_removed_at_clean_shutdown(monkeypatch, tmp_path):

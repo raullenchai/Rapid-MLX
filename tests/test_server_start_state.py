@@ -360,6 +360,8 @@ def test_marker_payload_type_matrix_is_rejected(payload):
 
 
 def test_huge_marker_payload_is_rejected(monkeypatch, tmp_path):
+    from rapid_mlx import _signal_observability as so
+
     monkeypatch.setenv("HOME", str(tmp_path / "home"))
     marker = server_start._marker_path().with_name("serve-inflight-99999999.json")
     marker.parent.mkdir(parents=True)
@@ -372,6 +374,26 @@ def test_huge_marker_payload_is_rejected(monkeypatch, tmp_path):
 
     assert marker.stat().st_size > 4096
     assert server_start._read_marker(marker) is None
+    assert so._marker_for_pid(marker.parent.parent / "logs", 99_999_999) is None
+
+
+def test_marker_reader_rejects_file_that_grows_during_read(monkeypatch, tmp_path):
+    marker = tmp_path / "serve-inflight-123.json"
+    marker.write_bytes(b"x")
+    real_fstat = os.fstat
+    real_read = os.read
+    with monkeypatch.context() as patch:
+        patch.setattr(
+            server_start.os,
+            "fstat",
+            lambda fd: SimpleNamespace(st_mode=real_fstat(fd).st_mode, st_size=1),
+        )
+        patch.setattr(
+            server_start.os,
+            "read",
+            lambda fd, size: b"x" * 4097 if size == 1024 else real_read(fd, size),
+        )
+        assert server_start._read_marker(marker) is None
 
 
 def test_state_directory_symlink_is_not_followed(monkeypatch, tmp_path):
@@ -386,6 +408,9 @@ def test_state_directory_symlink_is_not_followed(monkeypatch, tmp_path):
     assert server_start._begin_inflight_marker() == (False, False)
     assert list(redirected.iterdir()) == []
     assert redirected.stat().st_mode & 0o777 == 0o755
+
+    with pytest.raises(OSError, match="state directory is unavailable"):
+        server_start._atomic_write_marker(base / "state" / "serve-inflight-1.json")
 
 
 def test_state_marker_symlink_does_not_delete_target(monkeypatch, tmp_path):
@@ -423,6 +448,74 @@ def test_invalid_marker_removal_preserves_concurrent_replacement(monkeypatch, tm
     server_start._begin_inflight_marker()
 
     assert peer.exists()
+
+
+def test_state_dir_and_marker_cleanup_defensive_races(monkeypatch, tmp_path):
+    state = tmp_path / "state"
+    state.mkdir()
+    real_fstat = os.fstat
+    with monkeypatch.context() as patch:
+        patch.setattr(
+            server_start.os,
+            "fstat",
+            lambda fd: SimpleNamespace(
+                st_dev=real_fstat(fd).st_dev,
+                st_ino=real_fstat(fd).st_ino + 1,
+            ),
+        )
+        assert server_start._prepare_state_dir(state) is False
+
+    with monkeypatch.context() as patch:
+        patch.setattr(
+            server_start.os,
+            "lstat",
+            lambda _path: (_ for _ in ()).throw(PermissionError("denied")),
+        )
+        assert server_start._prepare_state_dir(state) is False
+        assert server_start._marker_snapshot(state / "missing") is None
+
+    marker = state / "serve-inflight-123.json"
+    marker.write_text("broken", encoding="utf-8")
+    snapshot = server_start._marker_snapshot(marker)
+    assert snapshot is not None
+    stale = marker.with_name(f".{marker.name}.stale-{os.getpid()}")
+
+    with monkeypatch.context() as patch:
+        patch.setattr(
+            server_start.os,
+            "lstat",
+            lambda path: (
+                (_ for _ in ()).throw(PermissionError("denied"))
+                if path == stale
+                else os.stat(path, follow_symlinks=False)
+            ),
+        )
+        server_start._remove_marker_snapshot(marker, snapshot)
+        assert marker.exists()
+
+    stale.write_text("occupied", encoding="utf-8")
+    server_start._remove_marker_snapshot(marker, snapshot)
+    assert marker.exists()
+    stale.unlink()
+
+    real_rename = os.rename
+    calls = 0
+
+    def fail_restore(source, destination):
+        nonlocal calls
+        calls += 1
+        if calls == 2:
+            raise OSError("restore failed")
+        return real_rename(source, destination)
+
+    with monkeypatch.context() as patch:
+        patch.setattr(
+            server_start,
+            "_marker_snapshot",
+            lambda path: snapshot if path == marker else (snapshot[0], snapshot[1] + 1),
+        )
+        patch.setattr(server_start.os, "rename", fail_restore)
+        server_start._remove_marker_snapshot(marker, snapshot)
 
 
 def test_pid_reuse_does_not_hide_pre_reboot_marker(monkeypatch, tmp_path):
