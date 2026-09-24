@@ -50,6 +50,11 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
+try:
+    from mirror_unmirrored import UnmirroredEntry, load_unmirrored
+except ModuleNotFoundError:
+    from scripts.mirror_unmirrored import UnmirroredEntry, load_unmirrored
+
 CATALOG_URL = "https://models.rapidmlx.com/api/models"
 HF_API_BASE = "https://huggingface.co/api/models"
 MIRROR_BASE = "https://models.rapidmlx.com"
@@ -58,6 +63,7 @@ R2_BUCKET = "rapid-mlx-models"
 ROOT = Path(__file__).resolve().parents[1]
 ALIASES_PATH = ROOT / "rapid_mlx" / "aliases.json"
 AUDIO_ALIASES_PATH = ROOT / "rapid_mlx" / "audio" / "aliases.json"
+UNMIRRORED_PATH = ROOT / "scripts" / "mirror_unmirrored.json"
 MAX_WORKERS = 32
 HF_MAX_WORKERS = 8
 DEFAULT_DEADLINE_SECONDS = 1500.0
@@ -137,10 +143,15 @@ class AliasReport:
     catalog_status: str | None
     checked_files: int = 0
     sha_check: str = "skipped_no_credentials"
+    intentionally_unmirrored: bool = False
+    unmirrored_reason: str | None = None
+    unmirrored_since: str | None = None
     findings: list[Finding] = field(default_factory=list)
 
     @property
     def state(self) -> str:
+        if self.intentionally_unmirrored:
+            return "unmirrored (intentional)"
         return "ok" if not self.findings else "findings"
 
 
@@ -758,7 +769,10 @@ def _catalog_entries() -> list[dict[str, Any]]:
 
 
 def _new_report(
-    spec: AliasSpec, entry: dict[str, Any] | None, has_r2: bool
+    spec: AliasSpec,
+    entry: dict[str, Any] | None,
+    has_r2: bool,
+    unmirrored: UnmirroredEntry | None = None,
 ) -> AliasReport:
     catalog_hf_path = entry.get("hf_path") if entry else None
     catalog_hf_path = catalog_hf_path if isinstance(catalog_hf_path, str) else None
@@ -770,8 +784,17 @@ def _new_report(
         catalog_present=entry is not None,
         catalog_hf_path=catalog_hf_path,
         catalog_status=str(catalog_status) if catalog_status is not None else None,
-        sha_check="checked" if has_r2 else "skipped_no_credentials",
+        sha_check=(
+            "not_applicable"
+            if unmirrored is not None
+            else "checked" if has_r2 else "skipped_no_credentials"
+        ),
+        intentionally_unmirrored=unmirrored is not None,
+        unmirrored_reason=unmirrored.reason if unmirrored else None,
+        unmirrored_since=unmirrored.since if unmirrored else None,
     )
+    if unmirrored is not None:
+        return report
     if entry is None:
         report.findings.append(Finding("not_in_catalog", "error"))
     elif catalog_hf_path != spec.hf_path:
@@ -939,9 +962,18 @@ def audit(
     workers: int = MAX_WORKERS,
     deadline_seconds: float = DEFAULT_DEADLINE_SECONDS,
     progress: AuditProgress | None = None,
+    unmirrored_path: Path | None = None,
 ) -> list[AliasReport]:
     """Audit aliases; ``only_used`` omits bucket-only catalog inventory rows."""
     specs = _load_aliases(main_aliases_path, audio_aliases_path)
+    if unmirrored_path is None:
+        unmirrored = load_unmirrored(
+            UNMIRRORED_PATH, ALIASES_PATH, AUDIO_ALIASES_PATH
+        )
+    else:
+        unmirrored = load_unmirrored(
+            unmirrored_path, main_aliases_path, audio_aliases_path
+        )
     selected = [spec for spec in specs if aliases is None or spec.alias in aliases]
     if aliases is not None:
         unknown = aliases - {spec.alias for spec in selected}
@@ -998,7 +1030,8 @@ def audit(
     probe_targets: dict[tuple[str, str], list[tuple[AliasReport, HfFile, bool]]] = {}
     for spec in selected:
         entry = by_alias.get(spec.alias.lower())
-        report = _new_report(spec, entry, r2_client is not None)
+        intentional = unmirrored.get(spec.hf_path)
+        report = _new_report(spec, entry, r2_client is not None, intentional)
         files: list[HfFile]
         if spec.hf_path in repo_errors:
             report.findings.append(
@@ -1011,6 +1044,8 @@ def audit(
         in_progress = _sync_in_progress(entry)
         report_context.append((report, spec, entry, files, in_progress))
         reports.append(report)
+        if intentional is not None:
+            continue
         for item in files:
             probe_key = (spec.hf_path, item.path)
             probes.setdefault(probe_key, item)
@@ -1080,6 +1115,8 @@ def audit(
         progress.mirror_seconds = time.monotonic() - mirror_started
 
     for report, spec, entry, files, in_progress in report_context:
+        if report.intentionally_unmirrored:
+            continue
         required = _required_files(files, None)
         missing_required = missing_required_by_report.get(id(report), 0)
         if (
@@ -1126,10 +1163,14 @@ def _fails(reports: list[AliasReport], fail_on: str) -> bool:
 
 
 def _summary_counts(reports: list[AliasReport]) -> dict[str, int]:
-    counts: dict[str, int] = {"ok": 0}
+    counts: dict[str, int] = {}
     for report in reports:
-        if not report.findings:
-            counts["ok"] += 1
+        if report.intentionally_unmirrored:
+            counts["unmirrored_intentional"] = (
+                counts.get("unmirrored_intentional", 0) + 1
+            )
+        elif not report.findings:
+            counts["ok"] = counts.get("ok", 0) + 1
         for finding in report.findings:
             counts[finding.kind] = counts.get(finding.kind, 0) + 1
     return counts
@@ -1165,6 +1206,11 @@ def _render_text(reports: list[AliasReport]) -> str:
             where = f" {finding.path}" if finding.path else ""
             detail = f" ({finding.detail})" if finding.detail else ""
             lines.append(f"  {finding.severity.upper()} {finding.kind}{where}{detail}")
+        if report.intentionally_unmirrored:
+            lines.append(
+                "  INFO intentional_unmirror"
+                f" (since={report.unmirrored_since}; reason={report.unmirrored_reason})"
+            )
     counts = _summary_counts(reports)
     summary = " ".join(f"{key}={value}" for key, value in sorted(counts.items()))
     lines.append(f"SUMMARY aliases={len(reports)} {summary}")
