@@ -257,7 +257,7 @@ class ConventionTests(unittest.TestCase):
                         prefix="language_model.",
                     )
 
-    def test_single_anchor_outlier_is_rejected(self):
+    def test_single_trained_anchor_outlier_keeps_48_layer_consensus(self):
         class Anchors(nn.Module):
             def __init__(self):
                 super().__init__()
@@ -275,8 +275,11 @@ class ConventionTests(unittest.TestCase):
                 majority = 1.0390625 if direct else 0.0390625
                 outlier = 0.0390625 if direct else 1.0390625
                 weights[key] = mx.full((4,), outlier if index == 0 else majority)
-            with self.assertRaisesRegex(ValueError, "ambiguous or mixed"):
-                normalize_qwen4_checkpoint(model, weights, ZeroCenteredRMSNorm)
+            receipt = normalize_qwen4_checkpoint(model, weights, ZeroCenteredRMSNorm)
+            self.assertEqual(
+                receipt["source_convention"],
+                "direct_gamma" if direct else "zero_centered",
+            )
 
     def test_mtp_inherits_backbone_convention_not_its_ambiguous_means(self):
         from rapid_mlx.spec_decode.mtp import qwen4_exp_inject as inject
