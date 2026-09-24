@@ -16,6 +16,7 @@ import asyncio
 import contextvars
 import copy
 import functools
+import importlib.metadata
 import json
 import logging
 import threading
@@ -50,6 +51,12 @@ ADMISSION_ORPHAN_GRACE_SECONDS = 2.0
 logger = logging.getLogger(__name__)
 
 _QWEN36_NATIVE_TEXT_NO_GO_REASON = "performance_not_qualified"
+_QWEN36_NATIVE_TEXT_NO_GO_REPO = "mlx-community/Qwen3.6-35B-A3B-4bit"
+_QWEN36_NATIVE_TEXT_NO_GO_REVISION = "38740b847e4cb78f352aba30aa41c76e08e6eb46"
+_QWEN36_NATIVE_TEXT_NO_GO_VERIFICATION_ID = (
+    "hf-snapshot-sha256:"
+    "d0a40af8a936fe4a994e700305b4c012f021c8551acaa332b1233d930bd1dbe8"
+)
 _QWEN36_NATIVE_TEXT_NO_GO_RECEIPT_SHA256 = (
     "fb6af37e0a8f7aeaef0131e3a0c5f6f4d24761af253c533e69fe74b9fed3d227"
 )
@@ -1035,28 +1042,48 @@ def _supports_qwen36_native_text_cache(language_model: Any) -> bool:
         return False
 
 
-def _qwen36_native_text_no_go_status(
+def _is_qwen36_native_text_candidate(
     language_model: Any,
     *,
     config_model_type: str | None,
     arrays_cache_compat: bool,
     spec_decode: str,
     no_hybrid: bool = False,
-) -> dict[str, str | bool] | None:
-    """Explain why a formerly eligible 0.7.1 companion stays disabled."""
+) -> bool:
+    """Recognize the old geometry gate without authorizing activation."""
 
-    # The exact Qwen3.6 receipt on the pinned mlx-vlm 0.7.1 runtime was slower
-    # in all six paired measurements (0.729x median). Preserve the old geometry
-    # match only to make the closed decision observable; there is no activation
-    # path from this verdict.
-    candidate_matches = bool(
+    return bool(
         arrays_cache_compat
         and not no_hybrid
         and config_model_type == "qwen3_5_moe"
         and spec_decode == "none"
         and _supports_qwen36_native_text_cache(language_model)
     )
-    if not candidate_matches:
+
+
+def _qwen36_native_text_no_go_status(
+    truth: Any,
+) -> dict[str, str | bool] | None:
+    """Publish the negative receipt only for its exact artifact and runtime."""
+
+    from ..runtime.qwen_artifact import ArtifactIdentityStatus, QwenArtifactTruth
+
+    if not isinstance(truth, QwenArtifactTruth):
+        return None
+    if truth.identity_status is not ArtifactIdentityStatus.VERIFIED_HUB_SNAPSHOT:
+        return None
+    if (
+        truth.source_repo != _QWEN36_NATIVE_TEXT_NO_GO_REPO
+        or truth.revision != _QWEN36_NATIVE_TEXT_NO_GO_REVISION
+        or truth.target_subfolder is not None
+        or truth.verification_id != _QWEN36_NATIVE_TEXT_NO_GO_VERIFICATION_ID
+    ):
+        return None
+    try:
+        runtime_version = importlib.metadata.version("mlx-vlm")
+    except Exception:  # noqa: BLE001 - unknown runtime must fail closed
+        return None
+    if runtime_version != "0.7.1":
         return None
     return {
         "qualified": False,
@@ -1223,6 +1250,7 @@ class BatchedEngine(BaseEngine):
         self._qwen_runtime_plan: QwenRuntimePlan | None = None
         self._qwen_artifact_truth: QwenArtifactTruth | None = None
         self._qwen_mtp_dispatch_result: str | None = None
+        self._qwen36_native_text_candidate = False
         self._qwen36_native_text_qualification = None
         self._tool_logits_processor_factory = None
 
@@ -1789,6 +1817,7 @@ class BatchedEngine(BaseEngine):
         self._qwen_artifact_truth = None
         self._qwen_artifact_snapshot_source = None
         self._qwen_mtp_dispatch_result = None
+        self._qwen36_native_text_candidate = False
         self._qwen36_native_text_qualification = None
 
     def _qwen_runtime_activation(self) -> _QwenRuntimeActivation:
@@ -1947,6 +1976,11 @@ class BatchedEngine(BaseEngine):
         )
         self._qwen_runtime_plan = plan
         self._qwen_artifact_truth = truth
+        self._qwen36_native_text_qualification = (
+            _qwen36_native_text_no_go_status(truth)
+            if self._qwen36_native_text_candidate
+            else None
+        )
 
         boot_record: dict[str, Any] = {
             "auto_enabled": False,
@@ -1955,6 +1989,10 @@ class BatchedEngine(BaseEngine):
         }
         if truth is not None:
             boot_record["artifact_truth"] = truth.to_status_dict()
+        if self._qwen36_native_text_qualification is not None:
+            boot_record["qwen36_native_text_qualification"] = dict(
+                self._qwen36_native_text_qualification
+            )
         logger.info(
             "Qwen runtime boot: %s",
             json.dumps(boot_record, sort_keys=True, separators=(",", ":")),
@@ -2241,20 +2279,13 @@ class BatchedEngine(BaseEngine):
             else getattr(config, "model_type", None)
         )
         spec_decode = getattr(self._scheduler_config, "spec_decode", "none")
-        self._qwen36_native_text_qualification = _qwen36_native_text_no_go_status(
+        self._qwen36_native_text_candidate = _is_qwen36_native_text_candidate(
             language_model,
             config_model_type=config_model_type,
             arrays_cache_compat=arrays_cache_compat,
             spec_decode=spec_decode,
             no_hybrid=getattr(self, "_no_hybrid", False),
         )
-        if self._qwen36_native_text_qualification is not None:
-            logger.info(
-                "Qwen3.6 native-cache text companion disabled: reason=%s "
-                "receipt_sha256=%s",
-                _QWEN36_NATIVE_TEXT_NO_GO_REASON,
-                _QWEN36_NATIVE_TEXT_NO_GO_RECEIPT_SHA256,
-            )
 
         logger.info(
             f"MLLM Scheduler started with continuous batching: "

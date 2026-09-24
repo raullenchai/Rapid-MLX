@@ -18,7 +18,7 @@ from mlx_lm.models.cache import ArraysCache, BatchKVCache, KVCache
 from rapid_mlx.engine.batched import (
     BatchedEngine,
     Qwen36NativeCacheTextWrapper,
-    _qwen36_native_text_no_go_status,
+    _is_qwen36_native_text_candidate,
     _qwen36_text_arrays_cache_type,
     _supports_qwen36_native_text_cache,
 )
@@ -258,7 +258,7 @@ def test_eligibility_fails_closed_on_malformed_layer_container():
     assert _supports_qwen36_native_text_cache(_MalformedModel()) is False
 
 
-def test_pinned_runtime_verdict_closes_former_qwen36_candidate():
+def test_old_geometry_candidate_is_recorded_without_authorizing_start():
     args = SimpleNamespace(
         model_type="qwen3_5_moe_text",
         hidden_size=2048,
@@ -281,19 +281,12 @@ def test_pinned_runtime_verdict_closes_former_qwen36_candidate():
         "spec_decode": "none",
     }
 
-    assert _qwen36_native_text_no_go_status(model, **kwargs) == {
-        "qualified": False,
-        "reason": "performance_not_qualified",
-        "receipt_sha256": (
-            "fb6af37e0a8f7aeaef0131e3a0c5f6f4d24761af253c533e69fe74b9fed3d227"
-        ),
-        "runtime": "mlx-vlm==0.7.1",
-    }
+    assert _is_qwen36_native_text_candidate(model, **kwargs) is True
     assert (
-        _qwen36_native_text_no_go_status(model, **{**kwargs, "spec_decode": "mtp"})
-        is None
+        _is_qwen36_native_text_candidate(model, **{**kwargs, "spec_decode": "mtp"})
+        is False
     )
-    assert _qwen36_native_text_no_go_status(model, **kwargs, no_hybrid=True) is None
+    assert _is_qwen36_native_text_candidate(model, **kwargs, no_hybrid=True) is False
 
 
 def test_request_routing_keeps_media_on_mllm_and_text_on_native_engine():
@@ -465,7 +458,10 @@ async def test_explicit_mllm_exact_qwen36_keeps_native_companion_disabled(
         def __init__(self, *_args, **_kwargs):
             self.model = SimpleNamespace(language_model=language_model)
             self.processor = SimpleNamespace(tokenizer=SimpleNamespace())
-            self.config = {"model_type": "qwen3_5_moe"}
+            self.config = {
+                "model_type": "qwen3_5_moe",
+                "text_config": {"model_type": "qwen3_5_moe_text"},
+            }
 
         def load(self):
             return None
@@ -499,6 +495,7 @@ async def test_explicit_mllm_exact_qwen36_keeps_native_companion_disabled(
     monkeypatch.setattr(engine, "_start_qwen36_native_text_engine", _activate)
     try:
         await engine._start_mllm()
+        engine._finalize_qwen_runtime_observability()
     finally:
         assert engine._model_load_executor is not None
         engine._model_load_executor.shutdown(wait=True)
@@ -508,23 +505,15 @@ async def test_explicit_mllm_exact_qwen36_keeps_native_companion_disabled(
     assert isinstance(engine._mllm_scheduler, _FakeMLLMScheduler)
     assert engine._engine is None
     assert engine._mllm_native_text_engine is False
-    assert engine._qwen36_native_text_qualification == {
-        "qualified": False,
-        "reason": "performance_not_qualified",
-        "receipt_sha256": (
-            "fb6af37e0a8f7aeaef0131e3a0c5f6f4d24761af253c533e69fe74b9fed3d227"
-        ),
-        "runtime": "mlx-vlm==0.7.1",
-    }
-    assert (
-        engine.get_stats()["qwen36_native_text_qualification"]
-        == engine._qwen36_native_text_qualification
-    )
-    assert any(
-        "Qwen3.6 native-cache text companion disabled" in record.message
-        and "performance_not_qualified" in record.message
+    assert engine._qwen36_native_text_candidate is True
+    assert engine._qwen36_native_text_qualification is None
+    assert "qwen36_native_text_qualification" not in engine.get_stats()
+    boot_log = next(
+        record.message
         for record in caplog.records
+        if "Qwen runtime boot:" in record.message
     )
+    assert "performance_not_qualified" not in boot_log
 
 
 @pytest.mark.asyncio

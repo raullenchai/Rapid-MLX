@@ -76,6 +76,8 @@ def _engine(
     engine._qwen_runtime_plan = None
     engine._qwen_artifact_truth = None
     engine._qwen_mtp_dispatch_result = mtp_dispatch_result
+    engine._qwen36_native_text_candidate = False
+    engine._qwen36_native_text_qualification = None
     engine._qwen_speculative_intent = intent
     engine._qwen_operator_target_lane = operator_lane
     engine._is_mllm = is_mllm
@@ -445,10 +447,17 @@ def test_plan_stored_once_reset_on_stop_and_recomputed(tmp_path: Path, caplog) -
     assert sum("Qwen runtime boot:" in record.message for record in caplog.records) == 1
 
     engine._engine = None
+    engine._qwen36_native_text_candidate = True
+    engine._qwen36_native_text_qualification = {
+        "qualified": False,
+        "reason": "performance_not_qualified",
+    }
     asyncio.run(engine.stop())
     assert engine._qwen_runtime_plan is None
     assert engine._qwen_artifact_truth is None
     assert engine._qwen_mtp_dispatch_result is None
+    assert engine._qwen36_native_text_candidate is False
+    assert engine._qwen36_native_text_qualification is None
 
     engine._qwen_artifact_snapshot_source = str(_checkpoint(tmp_path / "reload"))
     engine._qwen_mtp_dispatch_result = "attached"
@@ -456,6 +465,8 @@ def test_plan_stored_once_reset_on_stop_and_recomputed(tmp_path: Path, caplog) -
     engine._finalize_qwen_runtime_observability()
     assert engine._qwen_runtime_plan.text_mode.value == "mtp"
     assert engine._qwen_runtime_plan is not first
+    assert engine._qwen36_native_text_candidate is False
+    assert engine._qwen36_native_text_qualification is None
 
 
 def test_stop_failure_still_clears_qwen_boot_state(tmp_path: Path) -> None:
@@ -473,6 +484,11 @@ def test_stop_failure_still_clears_qwen_boot_state(tmp_path: Path) -> None:
             raise RuntimeError("synthetic stop failure")
 
     engine._engine = _FailingEngine()
+    engine._qwen36_native_text_candidate = True
+    engine._qwen36_native_text_qualification = {
+        "qualified": False,
+        "reason": "performance_not_qualified",
+    }
 
     with pytest.raises(RuntimeError, match="synthetic stop failure"):
         asyncio.run(engine.stop())
@@ -481,6 +497,8 @@ def test_stop_failure_still_clears_qwen_boot_state(tmp_path: Path) -> None:
     assert engine._qwen_artifact_truth is None
     assert engine._qwen_artifact_snapshot_source is None
     assert engine._qwen_mtp_dispatch_result is None
+    assert engine._qwen36_native_text_candidate is False
+    assert engine._qwen36_native_text_qualification is None
 
 
 def test_selected_mtp_activation_tracks_lazy_installer_state(tmp_path: Path) -> None:

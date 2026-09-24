@@ -52,3 +52,39 @@ persisting absolute model or image paths. The raw SHA-256 is
 
 The run used the already-cached immutable snapshot with Hugging Face,
 Transformers, and datasets offline modes enabled. No model was downloaded.
+
+## Reproduction
+
+Run the committed harness at source commit
+`2910c03851d2be11ba77d10bac16f72ae70afff5` with CPython 3.12.13. Replace the
+three angle-bracket placeholders with the lexical canonical Hugging Face cache
+root, this source checkout, and a scratch receipt directory. Do not resolve the
+snapshot symlink to a separate physical storage path.
+
+```bash
+git switch --detach 2910c03851d2be11ba77d10bac16f72ae70afff5
+
+HF_HUB_OFFLINE=1 \
+TRANSFORMERS_OFFLINE=1 \
+HF_DATASETS_OFFLINE=1 \
+PYTHONPATH=. \
+RAPID_MLX_MEDIA_ROOT='<SOURCE_CHECKOUT>/apps/rapid-mac/Tests/RapidTests/__Snapshots__' \
+python3.12 scripts/large-model-run.py \
+  --working-set-gb 32 --reserve-gb 12 -- \
+  python3.12 scripts/benchmark_qwen36_native_text_cache.py \
+    --model '<HF_CACHE>/hub/models--mlx-community--Qwen3.6-35B-A3B-4bit/snapshots/38740b847e4cb78f352aba30aa41c76e08e6eb46' \
+    --repo-id 'mlx-community/Qwen3.6-35B-A3B-4bit' \
+    --pairs 6 \
+    --max-tokens 256 \
+    --quality-max-tokens 512 \
+    --mmlu-samples 0 \
+    --image-path '<SOURCE_CHECKOUT>/apps/rapid-mac/Tests/RapidTests/__Snapshots__/community-benchmark-community-desktop.png' \
+    --image-expect 'Community pulse' \
+  > '<RECEIPT_DIR>/qwen36-vlm071-raw.json'
+
+shasum -a 256 '<RECEIPT_DIR>/qwen36-vlm071-raw.json' \
+  > '<RECEIPT_DIR>/qwen36-vlm071-raw.json.sha256'
+```
+
+The nonzero harness exit is the expected NO-GO gate result. Verify the raw
+receipt against the SHA-256 recorded above before using it as evidence.
