@@ -530,6 +530,105 @@ class _CoordinatorManager:
         return True
 
 
+def test_prefill_memory_plan_observes_fallbacks_cache_and_raw_kv(monkeypatch):
+    import mlx.core as mx
+    import mlx_vlm.apc as upstream_apc
+
+    plan = apc_coordinator.PrefillMemoryPlan()
+    plan.prepare([4], chunk_size=2, prefix_lengths=[1])
+    previous = vendored_cache.CacheMemory(
+        source_bytes=8,
+        bytes_per_token=4,
+        fallback=True,
+    )
+    plan.observe([previous], live_bytes=0)
+
+    plan.observe([vendored_cache.CacheMemory()], live_bytes=0)
+    assert plan.components[0] is previous
+
+    plan.observe(
+        [
+            vendored_cache.CacheMemory(
+                source_bytes=4,
+                bytes_per_token=2,
+                fallback=True,
+            )
+        ],
+        live_bytes=0,
+    )
+    assert plan.components[0].source_bytes == 4
+    assert plan.components[0].bytes_per_token == 4
+
+    observed = {}
+
+    def _cache_nbytes(cache):
+        observed["cache"] = cache
+        return 3
+
+    monkeypatch.setattr(
+        upstream_apc,
+        "_cache_nbytes",
+        _cache_nbytes,
+    )
+    monkeypatch.setattr(
+        apc_coordinator,
+        "cache_memory_components",
+        lambda cache, token_count, **kwargs: [
+            vendored_cache.CacheMemory(source_bytes=5, bytes_per_token=2)
+        ],
+    )
+    prompt_cache = [object()]
+    plan.observe_cache(prompt_cache, token_count=2)
+    assert observed["cache"] is prompt_cache
+
+    keys = [mx.ones((1, 1, 2, 3), dtype=mx.float32)]
+    values = [mx.zeros((1, 1, 2, 3), dtype=mx.float32)]
+    plan.observe_kv(keys, values, live_bytes=0)
+    assert plan.components[0].source_bytes == keys[0].nbytes + values[0].nbytes
+    assert plan.components[0].bytes_per_token == (
+        keys[0].nbytes + values[0].nbytes
+    ) / 2
+
+
+def test_coordinator_observe_and_merge_refresh_memory_reserve(monkeypatch):
+    import mlx_vlm.apc as upstream_apc
+
+    class _MemoryPlan:
+        lengths = [5, 6]
+        chunk_size = 3
+
+        def __init__(self):
+            self.observed = None
+            self.prepared = None
+
+        def observe_cache(self, prompt_cache, token_count, *, batch_size):
+            self.observed = (prompt_cache, token_count, batch_size)
+            return 17
+
+        def prepare(self, lengths, *, chunk_size, prefix_lengths):
+            self.prepared = (list(lengths), chunk_size, list(prefix_lengths))
+            return 29
+
+    manager = _CoordinatorManager()
+    memory_plan = _MemoryPlan()
+    manager.memory_plan = memory_plan
+    coordinator = apc_coordinator.APCCoordinator(manager, _coordinator_model())
+
+    prompt_cache = [object()]
+    coordinator.observe_cache(prompt_cache, token_count=4, batch_size=2)
+    assert memory_plan.observed == (prompt_cache, 4, 2)
+    assert manager.prepared == [17]
+
+    monkeypatch.setattr(
+        upstream_apc,
+        "make_warm_batch_kv_cache_multi",
+        lambda picks, **_kwargs: (["merged"], len(picks)),
+    )
+    assert coordinator.merge_rows([None, None], [1, 2]) == (["merged"], 2)
+    assert memory_plan.prepared == ([5, 6], 3, [1, 2])
+    assert manager.prepared == [17, 29]
+
+
 def test_coordinator_block_and_checkpoint_paths(monkeypatch):
     import types
 

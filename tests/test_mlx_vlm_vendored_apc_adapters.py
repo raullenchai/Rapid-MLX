@@ -477,6 +477,65 @@ def test_tree_checkpoint_and_capacity_helpers():
     assert reservable.count == 6 and len(targets) == 1
 
 
+def test_memory_profiles_fallback_composite_and_deduplicate():
+    class _Opaque:
+        state = {"buffer": mx.ones((2,), dtype=mx.float32)}
+        meta_state = None
+
+    fallback = apc_adapters.CheckpointAdapter().memory(_Opaque(), token_count=2)
+    assert fallback.fallback
+    assert fallback.source_bytes == 8
+    assert fallback.bytes_per_token == 4
+
+    class _Profiled:
+        def memory_profile(self, token_count):
+            assert token_count == 4
+            return vendored_cache.CacheMemory(
+                source_bytes=9,
+                fixed_bytes=3,
+                bytes_per_token=5,
+            )
+
+    shared = _Profiled()
+    composite = vendored_cache.CacheList(shared)
+    profiles = apc_adapters.cache_memory_components(
+        [None, composite, shared], token_count=4, batch_size=2
+    )
+    assert profiles == [
+        vendored_cache.CacheMemory(
+            source_bytes=5,
+            fixed_bytes=2,
+            bytes_per_token=2.5,
+        )
+    ]
+
+
+def test_reserve_checkpoint_capacity_recurses_composites():
+    class _Reservable:
+        def __init__(self):
+            self.count = None
+
+        def prefix_cache_reserve(self, count):
+            self.count = count
+            return mx.array([count])
+
+    tuple_children = (_Reservable(), _Reservable())
+    list_children = (_Reservable(), _Reservable())
+    targets = []
+    apc_adapters.reserve_checkpoint_capacity(
+        tuple_children, min_capacity_tokens=7, eval_targets=targets
+    )
+    apc_adapters.reserve_checkpoint_capacity(
+        vendored_cache.CacheList(*list_children),
+        min_capacity_tokens=9,
+        eval_targets=targets,
+    )
+
+    assert [child.count for child in tuple_children] == [7, 7]
+    assert [child.count for child in list_children] == [9, 9]
+    assert len(targets) == 4
+
+
 def test_namespace_resolution_and_optional_turboquant(monkeypatch):
     monkeypatch.setattr(apc_adapters, "_cache_namespaces", lambda: [])
     assert apc_adapters._cache_namespace_of(object()).__name__ == "mlx_vlm.models.cache"
