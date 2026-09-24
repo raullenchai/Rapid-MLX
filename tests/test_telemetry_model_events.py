@@ -148,6 +148,22 @@ def test_pull_error_classes_are_type_based():
     assert model_events.pull_error_class(ValueError("x")) == "other"
 
 
+@pytest.mark.parametrize(
+    ("status_code", "expected"),
+    [(401, "gated"), (404, "not_found"), (500, "other")],
+)
+def test_pull_error_class_classifies_urllib_http_errors(status_code, expected):
+    failure = urllib.error.HTTPError(
+        "https://huggingface.co/org/model", status_code, "private", {}, None
+    )
+
+    assert model_events.pull_error_class(failure) == expected
+
+
+def test_pull_error_class_treats_httpx_read_error_as_network():
+    assert model_events.pull_error_class(httpx.ReadError("private detail")) == "network"
+
+
 def test_pull_error_class_chain_regression():
     from huggingface_hub.utils import GatedRepoError, RepositoryNotFoundError
 
