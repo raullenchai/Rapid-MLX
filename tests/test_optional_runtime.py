@@ -362,11 +362,46 @@ def _contracted_failure_events(
 
 @pytest.fixture(autouse=True)
 def _reset_one_shot_state():
+    optional_runtime._reset_assume_yes_for_tests()
     server_start._reset_for_tests()
     model_events._reset_for_tests()
-    yield
-    server_start._reset_for_tests()
-    model_events._reset_for_tests()
+    try:
+        yield
+    finally:
+        optional_runtime._reset_assume_yes_for_tests()
+        server_start._reset_for_tests()
+        model_events._reset_for_tests()
+
+
+def test_posix_prompt_ready_at_deadline_is_not_accepted(monkeypatch) -> None:
+    now = [10.0]
+
+    def ready_at_deadline(_read, _write, _errors, timeout):
+        assert timeout == pytest.approx(0.1)
+        now[0] = 10.1
+        return [7], [], []
+
+    monkeypatch.setattr(optional_runtime.time, "monotonic", lambda: now[0])
+    monkeypatch.setattr(optional_runtime.select, "select", ready_at_deadline)
+    monkeypatch.setattr(
+        optional_runtime.os,
+        "read",
+        lambda *_args: pytest.fail("deadline-expired input must not be consumed"),
+    )
+
+    response = optional_runtime._read_posix_prompt_response(
+        SimpleNamespace(fileno=lambda: 7),
+        0.1,
+    )
+
+    assert response is None
+    assert (
+        optional_runtime._read_posix_prompt_response(
+            SimpleNamespace(fileno=lambda: 7),
+            0.0,
+        )
+        is None
+    )
 
 
 def _capture(monkeypatch):

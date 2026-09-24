@@ -35,6 +35,11 @@ def set_assume_yes(flag: bool) -> None:
     _assume_yes = bool(flag)
 
 
+def _reset_assume_yes_for_tests() -> None:
+    """Restore the default optional-runtime prompt policy for test isolation."""
+    set_assume_yes(False)
+
+
 def assume_yes() -> bool:
     """Return the process-wide optional-runtime prompt policy."""
     return _assume_yes
@@ -139,6 +144,8 @@ def _read_posix_prompt_response(
                 return None
             ready, _, _ = select.select([stdin_fd], [], [], remaining)
             if not ready:
+                return None
+            if time.monotonic() >= deadline:
                 return None
             chunk = os.read(stdin_fd, 256)
             if not chunk:
