@@ -43,6 +43,7 @@ def _run_real_missing_extra_dispatch(
     model: str,
     status: str = "absent",
     standalone: bool = False,
+    video_python_version: tuple[int, int] = (3, 11),
 ) -> tuple[subprocess.CompletedProcess[str], list[SimpleNamespace], str]:
     home = tmp_path / "home"
     telemetry_dir = home / ".rapid-mlx"
@@ -136,8 +137,14 @@ if lane in {"vision", "vision-present", "bonsai"}:
     }[status]
     mllm.vision_runtime_status = lambda: (runtime_status, "test detail")
 if lane == "video":
+    from collections import namedtuple
     from rapid_mlx.runtime import video_lane
 
+    Version = namedtuple("Version", "major minor")
+    video_lane.sys.version_info = Version(
+        int(os.environ["RAPID_MLX_TEST_VIDEO_PYTHON_MAJOR"]),
+        int(os.environ["RAPID_MLX_TEST_VIDEO_PYTHON_MINOR"]),
+    )
     video_lane._default_video_runtime_requirements = lambda _model: [
         "the `rapid-mlx[video]` Python extra"
     ]
@@ -178,6 +185,8 @@ if lane == "vision-present":
         RAPID_MLX_DISABLE_VERSION_CHECK="1",
         RAPID_MLX_TEST_EXTRA_LANE=lane,
         RAPID_MLX_TEST_EXTRA_STATUS=status,
+        RAPID_MLX_TEST_VIDEO_PYTHON_MAJOR=str(video_python_version[0]),
+        RAPID_MLX_TEST_VIDEO_PYTHON_MINOR=str(video_python_version[1]),
         HF_HUB_OFFLINE="1",
         TRANSFORMERS_OFFLINE="1",
     )
@@ -486,6 +495,30 @@ def test_real_dispatch_posts_one_actionable_failure_to_loopback(
     ]
     assert len(matching_failures) == 1
     assert not hasattr(matching_failures[0].props, "detail")
+
+
+def test_real_video_dispatch_reports_unsupported_python_as_preflight_failure(
+    tmp_path,
+) -> None:
+    proc, events, child_executable = _run_real_missing_extra_dispatch(
+        tmp_path,
+        lane="video",
+        model="wan2.2-ti2v-5b-q8",
+        video_python_version=(3, 10),
+    )
+
+    assert proc.returncode == 2
+    assert "Traceback" not in proc.stderr
+    _assert_actionable_failure_contract(
+        proc.stderr,
+        extra="video",
+        marker_reason="python_version_unsupported",
+        child_executable=child_executable,
+    )
+    assert _contracted_failure_events(events) == [
+        ("server_start_state", "failed", "preflight", None, None),
+        ("model_serve_failed", None, None, "missing_extra", "video"),
+    ]
 
 
 def test_standalone_bonsai_dispatch_uses_same_handler_and_loopback_sink(
