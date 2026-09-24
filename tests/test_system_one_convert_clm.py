@@ -280,3 +280,15 @@ def test_convert_rejects_non_json_config(monkeypatch, tmp_path):
     _fake_torch(monkeypatch, checkpoint)
     with pytest.raises(ValueError, match="JSON-compatible"):
         convert(tmp_path / "head.pt", tmp_path / "converted")
+
+
+def test_convert_rejects_depth_below_two(monkeypatch, tmp_path):
+    checkpoint = {
+        "state_head": {},
+        "action_head": {},
+        "logit_scale": 1,
+        "cfg": {"hidden_size": 1, "width": 1, "depth": 1, "projection_dim": 1},
+    }
+    _fake_torch(monkeypatch, checkpoint)
+    with pytest.raises(ValueError, match="depth must be at least 2"):
+        convert(tmp_path / "head.pt", tmp_path / "converted")

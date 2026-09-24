@@ -303,6 +303,13 @@ def test_clm_backend_rejects_non_safetensors_weight_file(tmp_path):
         CLMBackend("unused", str(weights))
 
 
+def test_clm_projection_rejects_depth_below_two():
+    from rapid_mlx.system_one.backends import _ProjectionHead
+
+    with pytest.raises(ValueError, match="depth must be at least 2"):
+        _ProjectionHead({"hidden_size": 1, "width": 1, "depth": 1})
+
+
 async def test_system_one_rejects_slow_request_body():
     from rapid_mlx.config import get_config
 

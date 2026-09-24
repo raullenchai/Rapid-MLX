@@ -30,6 +30,8 @@ def _expected_head_shapes(config: Mapping) -> dict[str, tuple[int, ...]]:
     }
     if any(value < 1 for value in dimensions.values()):
         raise ValueError("CLM cfg dimensions must be positive")
+    if dimensions["depth"] < 2:
+        raise ValueError("CLM cfg depth must be at least 2")
     hidden = dimensions["hidden_size"]
     width = dimensions["width"]
     depth = dimensions["depth"]

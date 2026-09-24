@@ -116,6 +116,8 @@ class _ProjectionHead:
         width = int(config["width"])
         depth = int(config["depth"])
         projection_dim = int(config.get("projection_dim", 512))
+        if depth < 2:
+            raise ValueError("CLM head depth must be at least 2")
 
         class Head(nn.Module):
             def __init__(self):
