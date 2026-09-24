@@ -1312,6 +1312,27 @@ def _run_share(
         install_service(args, catalog_id=catalog_id, serve_alias=serve_alias)
         return
 
+    # Validate the serve passthrough BEFORE registering: a rejected invocation
+    # must not leave a remote node registration behind.
+    passthrough = list(getattr(args, "_passthrough", None) or [])
+    max_concurrency = _pool_max_concurrency(passthrough)
+    # ``share`` advertises thinking off by default. The child server defaults
+    # it on, so pool mode must forward the disabling flag just like plain share
+    # — except for listings whose pool contract has reasoning always on.
+    thinking_passthrough = [
+        t for t in passthrough if t.split("=", 1)[0] in ("--thinking", "--no-thinking")
+    ]
+    if (
+        catalog_id in CATALOG_REASONING_REQUIRED
+        and "--no-thinking" in thinking_passthrough
+    ):
+        raise QuickSilverError(
+            f"{catalog_id} serves with reasoning always on in the QuickSilver "
+            f"pool (the cloud origin rejects reasoning.enabled=false); "
+            f"`--no-thinking` would make this node answer differently from "
+            f"the contract customers were promised. Drop the flag."
+        )
+
     api_base = _validate_api_base(
         args.quicksilver_api if args.quicksilver_api is not None else DEFAULT_PAY_API
     )
@@ -1335,9 +1356,7 @@ def _run_share(
             catalog_id,
             serve_alias,
             worker,
-            max_concurrency=_pool_max_concurrency(
-                list(getattr(args, "_passthrough", None) or [])
-            ),
+            max_concurrency=max_concurrency,
         )
         # Register the share-key for redaction BEFORE rendering any
         # server-controlled field — node_id / payout_account are the
@@ -1448,24 +1467,13 @@ def _run_share(
     # but an EXPLICIT ``--rate-limit`` is the user's own call and must
     # be honored, not silently dropped.
     extra: list[str] = []
-    passthrough = list(getattr(args, "_passthrough", None) or [])
-    if not any(t.split("=", 1)[0].startswith("--max-num-seqs") for t in passthrough):
+    # Exact flag match (not a prefix): the same test _pool_max_concurrency
+    # uses, so the injected default and the advertised slots can't disagree.
+    if not any(t.split("=", 1)[0] == "--max-num-seqs" for t in passthrough):
         extra += ["--max-num-seqs", "2"]
-    # ``share`` advertises thinking off by default. The child server defaults
-    # it on, so pool mode must forward the disabling flag just like plain share
-    # — except for listings whose pool contract has reasoning always on.
-    thinking_passthrough = [
-        t for t in passthrough if t.split("=", 1)[0] in ("--thinking", "--no-thinking")
-    ]
-    if catalog_id in CATALOG_REASONING_REQUIRED:
-        if "--no-thinking" in thinking_passthrough:
-            raise QuickSilverError(
-                f"{catalog_id} serves with reasoning always on in the QuickSilver "
-                f"pool (the cloud origin rejects reasoning.enabled=false); "
-                f"`--no-thinking` would make this node answer differently from "
-                f"the contract customers were promised. Drop the flag."
-            )
-    elif not args.thinking and not thinking_passthrough:
+    if catalog_id not in CATALOG_REASONING_REQUIRED and (
+        not args.thinking and not thinking_passthrough
+    ):
         extra.append("--no-thinking")
     # Pool requests (and the relay's readiness probe) address the node by its
     # CATALOG id, but the serve alias differs (§5.4, e.g. nemotron-3.5-lightning

@@ -3101,3 +3101,23 @@ def test_run_share_registers_with_passthrough_slot_count():
 )
 def test_error_detail_reads_error_and_fastapi_detail_shapes(body, expected):
     assert expected in qs._error_detail(body)
+
+
+def test_rejected_no_thinking_never_registers():
+    # The contract check runs before registration so a refused invocation
+    # leaves no remote node behind (codex r4).
+    calls: list = []
+
+    def fake_urlopen(req, timeout=None):
+        calls.append(req)
+        return _FakeResp(_register_payload(model="glm-5.3-flash"))
+
+    with patch.object(qs, "_open", fake_urlopen), pytest.raises(SystemExit):
+        qs.run_share(
+            _make_args(
+                model="glm-5.3-flash",
+                provider_key=PROVIDER_KEY,
+                _passthrough=["--no-thinking"],
+            )
+        )
+    assert calls == []
