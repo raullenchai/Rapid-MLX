@@ -42,7 +42,7 @@ class SystemOneRequest(BaseModel):
     state: Any
     questions: dict[str, Question] = Field(min_length=1, max_length=64)
     model: str | None = None
-    temperature: float = Field(default=1.0, gt=0.0, le=100.0)
+    temperature: float = Field(default=1.0, ge=1e-6, le=100.0)
 
     @field_validator("temperature")
     @classmethod
@@ -74,7 +74,7 @@ class RankRequest(BaseModel):
     question: str | None = None
     answers: list[str] = Field(min_length=1, max_length=255)
     model: str | None = None
-    temperature: float = Field(default=1.0, gt=0.0, le=100.0)
+    temperature: float = Field(default=1.0, ge=1e-6, le=100.0)
 
     @field_validator("answers")
     @classmethod

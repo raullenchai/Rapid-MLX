@@ -126,6 +126,15 @@ def test_system_one_rejects_ambiguous_or_unbounded_questions():
         },
     )
     assert aggregate.status_code == 422
+    tiny_temperature = client.post(
+        "/v1/systemone",
+        json={
+            "state": "x",
+            "questions": {"q": {"type": "noul", "instructions": "x"}},
+            "temperature": 5e-324,
+        },
+    )
+    assert tiny_temperature.status_code == 422
 
 
 def test_rank_contract():
@@ -138,6 +147,12 @@ def test_rank_contract():
     assert [item["candidate"] for item in response.json()["ranked"]] == ["a", "b"]
     assert client.post("/v1/rank", json={"answers": []}).status_code == 422
     assert client.post("/v1/rank", json={"answers": ["ok", ""]}).status_code == 422
+    assert (
+        client.post(
+            "/v1/rank", json={"answers": ["ok"], "temperature": 5e-324}
+        ).status_code
+        == 422
+    )
 
 
 def test_clm_rendering_matches_reference_layout():

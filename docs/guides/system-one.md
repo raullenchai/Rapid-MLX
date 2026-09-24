@@ -104,3 +104,4 @@ nesting-depth protection.
   encoder tokens. `--max-work-tokens` changes the token budget.
 - At most eight requests enter inference concurrently. `--max-concurrent-requests`
   changes this admission limit; excess requests receive `503` with `Retry-After`.
+- Request temperature must be between `1e-6` and `100` to keep CLM logits finite.
