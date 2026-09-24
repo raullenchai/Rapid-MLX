@@ -1,10 +1,17 @@
 # SPDX-License-Identifier: Apache-2.0
-"""Offline, content-free artifact facts for Qwen runtime planning.
+"""Offline, metadata-only artifact facts for Qwen runtime planning.
 
 The probe in this module reads ``config.json``, the safetensors index, optional
 sidecar ``.sha256`` receipts, and filesystem metadata from an already-resolved
 local snapshot. It never imports or loads a model, opens weight tensor content,
 contacts the Hub, or reports an absolute cache path.
+
+Config and index cache-object names are verified from the bytes already read:
+40-hex names use Git blob SHA-1 and 64-hex names use raw SHA-256. Tensor and MTP
+objects deliberately use only Hugging Face cache-object provenance plus size;
+their byte integrity is explicitly ``unchecked``. This trusts the downloader's
+cache-CAS invariant and cannot detect pre-existing, restored, or equal-size
+tensor corruption under the same cache-object name.
 
 This is deliberately an artifact *truth* surface, not an eligibility gate.
 For example, the current MTP locator accepts a root ``model.safetensors``
@@ -286,14 +293,15 @@ class QwenQuantization:
 
 @dataclass(frozen=True)
 class TargetWeights:
-    """Target checkpoint file shape, derived without reading tensor content."""
+    """Target checkpoint cache-object provenance, without tensor reads."""
 
     layout: TargetWeightLayout
     shard_count: int
     missing_shard_count: int
     shards: tuple[str, ...]
     index_sha256: str | None
-    file_identities: tuple[tuple[str, str], ...] = ()
+    cache_object_identities: tuple[tuple[str, str], ...] = ()
+    file_sizes_bytes: tuple[tuple[str, int], ...] = ()
 
     def to_status_dict(self) -> dict[str, Any]:
         return {
@@ -302,7 +310,9 @@ class TargetWeights:
             "missing_shard_count": self.missing_shard_count,
             "shards": list(self.shards),
             "index_sha256": self.index_sha256,
-            "file_identities": dict(self.file_identities),
+            "cache_object_identities": dict(self.cache_object_identities),
+            "file_sizes_bytes": dict(self.file_sizes_bytes),
+            "tensor_byte_integrity": "unchecked",
         }
 
 
@@ -314,10 +324,10 @@ class MTPLocatorTruth:
     relative_path: str | None
     storage: MTPWeightStorage
     file_size_bytes: int | None
-    hf_blob_id: str | None
-    content_identity: str | None
+    hf_cache_object_id: str | None
+    cache_object_identity: str | None
     declared_sha256: str | None
-    declared_sha256_matches_blob: bool | None
+    declared_sha256_matches_cache_object_id: bool | None
 
     def to_status_dict(self) -> dict[str, Any]:
         return {
@@ -325,10 +335,13 @@ class MTPLocatorTruth:
             "relative_path": self.relative_path,
             "storage": self.storage.value,
             "file_size_bytes": self.file_size_bytes,
-            "hf_blob_id": self.hf_blob_id,
-            "content_identity": self.content_identity,
+            "hf_cache_object_id": self.hf_cache_object_id,
+            "cache_object_identity": self.cache_object_identity,
             "declared_sha256": self.declared_sha256,
-            "declared_sha256_matches_blob": self.declared_sha256_matches_blob,
+            "declared_sha256_matches_cache_object_id": (
+                self.declared_sha256_matches_cache_object_id
+            ),
+            "tensor_byte_integrity": "unchecked",
         }
 
 
@@ -403,12 +416,14 @@ class QwenArtifactTruth:
             and _binding is not None
             and _observation_seal is not None
         ):
-            raise ValueError("verified artifact fields require resolver capability")
+            raise ValueError(
+                "provenance-bound artifact fields require resolver capability"
+            )
         if not verified and any(
             value is not None
             for value in (source_repo, revision, target_subfolder, verification_id)
         ):
-            raise ValueError("unverified artifact identity fields must be redacted")
+            raise ValueError("unbound artifact provenance fields must be redacted")
         object.__setattr__(self, "source_repo", source_repo)
         object.__setattr__(self, "revision", revision)
         object.__setattr__(self, "target_subfolder", target_subfolder)
@@ -435,10 +450,11 @@ class QwenArtifactTruth:
             "revision": self.revision,
             "target_subfolder": self.target_subfolder,
             "identity_status": self.identity_status.value,
-            "identity_is_immutable": (
+            "provenance_is_commit_pinned": (
                 self._runtime_capability is _VERIFIED_RUNTIME_CAPABILITY
             ),
-            "verification_id": self.verification_id,
+            "tensor_byte_integrity": "unchecked",
+            "provenance_receipt_id": self.verification_id,
             "config_sha256": self.config_sha256,
             "outer_model_type": self.outer_model_type,
             "text_model_type": self.text_model_type,
@@ -453,7 +469,7 @@ class QwenArtifactTruth:
         """Return reproducible artifact facts, including ordered layer layout."""
 
         receipt = self.to_status_dict()
-        receipt["schema_version"] = 1
+        receipt["schema_version"] = 2
         receipt["geometry"] = {
             **receipt["geometry"],
             "layer_types": list(self.geometry.layer_types),
@@ -553,6 +569,34 @@ _HEX_BLOB_ID = re.compile(r"^[0-9a-f]{40}(?:[0-9a-f]{24})?$")
 class _CanonicalRepoBlob:
     path: Path
     blob_id: str
+    size_bytes: int
+
+
+def _metadata_object_id(content: bytes, *, name_length: int) -> str:
+    """Return the Hub cache-object name implied by metadata bytes."""
+
+    if name_length == 40:
+        header = f"blob {len(content)}\0".encode("ascii")
+        return hashlib.sha1(header + content).hexdigest()
+    if name_length == 64:
+        return hashlib.sha256(content).hexdigest()
+    raise ValueError("metadata cache-object names must be 40 or 64 hex characters")
+
+
+def _require_metadata_object_id(
+    provenance: _CanonicalRepoBlob,
+    content: bytes,
+    *,
+    label: str,
+) -> None:
+    """Reject metadata whose cache-object name does not match its bytes."""
+
+    if _metadata_object_id(content, name_length=len(provenance.blob_id)) != (
+        provenance.blob_id
+    ):
+        raise ArtifactProbeError(
+            f"verified snapshot {label} cache-object name does not match its bytes"
+        )
 
 
 @dataclass(frozen=True)
@@ -636,39 +680,66 @@ def _same_repo_blob_provenance(
         return None
     try:
         resolved = immediate.resolve(strict=True)
+        resolved_stat = os.lstat(resolved)
     except (OSError, ValueError):
         return None
-    if resolved.parent != blobs_dir or resolved.name != immediate.name:
+    observed_stat = (
+        immediate_stat.st_dev,
+        immediate_stat.st_ino,
+        immediate_stat.st_mode,
+        immediate_stat.st_size,
+        immediate_stat.st_mtime_ns,
+        immediate_stat.st_ctime_ns,
+    )
+    confirmed_stat = (
+        resolved_stat.st_dev,
+        resolved_stat.st_ino,
+        resolved_stat.st_mode,
+        resolved_stat.st_size,
+        resolved_stat.st_mtime_ns,
+        resolved_stat.st_ctime_ns,
+    )
+    if (
+        resolved.parent != blobs_dir
+        or resolved.name != immediate.name
+        or confirmed_stat != observed_stat
+    ):
         return None
-    return _CanonicalRepoBlob(path=resolved, blob_id=resolved.name)
+    return _CanonicalRepoBlob(
+        path=resolved,
+        blob_id=resolved.name,
+        size_bytes=resolved_stat.st_size,
+    )
 
 
-def _weight_file_identity(
+def _weight_cache_object_identity(
     path: Path,
     *,
     snapshot_dir: Path,
     binding: VerifiedHubSnapshotBinding | None,
 ) -> str | None:
-    """Return trusted weight identity without opening tensor contents."""
+    """Return canonical cache-object provenance without reading tensor bytes."""
 
     provenance = _same_repo_blob_provenance(
         path, snapshot_dir=snapshot_dir, binding=binding
     )
-    return f"hf_blob:{provenance.blob_id}" if provenance is not None else None
+    return f"hf_cache_object:{provenance.blob_id}" if provenance is not None else None
 
 
 def _target_weights(
     snapshot_dir: Path,
     binding: VerifiedHubSnapshotBinding | None,
     *,
-    index_source: Path | None = None,
+    index_bytes: bytes | None = None,
     observations: list[_PathObservation] | None = None,
 ) -> TargetWeights:
     index_path = snapshot_dir / "model.safetensors.index.json"
     if _lexically_present(index_path):
         try:
-            payload = json.loads(
-                (index_source or index_path).read_text(encoding="utf-8")
+            payload = (
+                json.loads(index_bytes)
+                if index_bytes is not None
+                else json.loads(index_path.read_text(encoding="utf-8"))
             )
         except (OSError, UnicodeError, json.JSONDecodeError):
             return TargetWeights(TargetWeightLayout.INVALID_INDEX, 0, 0, (), None)
@@ -714,7 +785,8 @@ def _target_weights(
                 shards,
                 index_sha256,
             )
-        identities: list[tuple[str, str | None]] = []
+        observed_cache_objects: list[tuple[str, str | None]] = []
+        observed_sizes: list[tuple[str, int | None]] = []
         for shard, path in zip(shards, shard_paths, strict=True):
             provenance = _same_repo_blob_provenance(
                 path, snapshot_dir=snapshot_dir, binding=binding
@@ -727,14 +799,18 @@ def _target_weights(
                         resolved_target=(provenance.path if provenance else None),
                     )
                 )
-            identities.append(
+            observed_cache_objects.append(
                 (
                     shard,
-                    f"hf_blob:{provenance.blob_id}" if provenance else None,
+                    (f"hf_cache_object:{provenance.blob_id}" if provenance else None),
                 )
             )
-        file_identities = tuple(identities)
-        if any(identity is None for _shard, identity in file_identities):
+            observed_sizes.append(
+                (shard, provenance.size_bytes if provenance else None)
+            )
+        if any(identity is None for _shard, identity in observed_cache_objects) or any(
+            size is None for _shard, size in observed_sizes
+        ):
             return TargetWeights(
                 TargetWeightLayout.INVALID_WEIGHTS,
                 len(shards),
@@ -742,10 +818,13 @@ def _target_weights(
                 shards,
                 index_sha256,
             )
-        trusted_identities = tuple(
+        cache_object_identities = tuple(
             (shard, identity)
-            for shard, identity in file_identities
+            for shard, identity in observed_cache_objects
             if identity is not None
+        )
+        file_sizes_bytes = tuple(
+            (shard, size) for shard, size in observed_sizes if size is not None
         )
         return TargetWeights(
             TargetWeightLayout.INDEXED_SAFETENSORS,
@@ -753,7 +832,8 @@ def _target_weights(
             0,
             shards,
             index_sha256,
-            trusted_identities,
+            cache_object_identities,
+            file_sizes_bytes,
         )
 
     single = snapshot_dir / "model.safetensors"
@@ -771,20 +851,30 @@ def _target_weights(
                     resolved_target=(provenance.path if provenance else None),
                 )
             )
-        identity = f"hf_blob:{provenance.blob_id}" if provenance else None
+        cache_object_identity = (
+            f"hf_cache_object:{provenance.blob_id}" if provenance else None
+        )
         layout = (
             TargetWeightLayout.SINGLE_SAFETENSORS
-            if identity is not None
+            if cache_object_identity is not None
             else TargetWeightLayout.INVALID_WEIGHTS
         )
-        identities = (("model.safetensors", identity),) if identity else ()
+        single_cache_objects = (
+            (("model.safetensors", cache_object_identity),)
+            if cache_object_identity
+            else ()
+        )
+        single_sizes = (
+            (("model.safetensors", provenance.size_bytes),) if provenance else ()
+        )
         return TargetWeights(
             layout,
             1,
             0,
             ("model.safetensors",),
             None,
-            identities,
+            single_cache_objects,
+            single_sizes,
         )
 
     orphan_shards = [
@@ -831,7 +921,7 @@ def _declared_sidecar_sha256(
     return match.group(1) if match is not None else None
 
 
-def _hf_blob_id(
+def _hf_cache_object_id(
     candidate: Path,
     *,
     snapshot_dir: Path,
@@ -864,19 +954,22 @@ def _mtp_locator(
             relative_path=layout.relative_path,
             storage=layout.storage,
             file_size_bytes=None,
-            hf_blob_id=None,
-            content_identity=None,
+            hf_cache_object_id=None,
+            cache_object_identity=None,
             declared_sha256=None,
-            declared_sha256_matches_blob=None,
+            declared_sha256_matches_cache_object_id=None,
         )
 
-    try:
-        size = candidate.stat().st_size
-    except OSError:
-        size = None
     provenance = _same_repo_blob_provenance(
         candidate, snapshot_dir=snapshot_dir, binding=binding
     )
+    if provenance is not None:
+        size = provenance.size_bytes
+    else:
+        try:
+            size = candidate.stat().st_size
+        except OSError:
+            size = None
     if observations is not None:
         observations.append(
             _PathObservation(
@@ -885,11 +978,13 @@ def _mtp_locator(
                 resolved_target=(provenance.path if provenance else None),
             )
         )
-    blob_id = provenance.blob_id if provenance is not None else None
+    cache_object_id = provenance.blob_id if provenance is not None else None
     declared_sha256 = _declared_sidecar_sha256(candidate, observations)
     matches = (
-        declared_sha256 == blob_id
-        if declared_sha256 is not None and blob_id is not None and len(blob_id) == 64
+        declared_sha256 == cache_object_id
+        if declared_sha256 is not None
+        and cache_object_id is not None
+        and len(cache_object_id) == 64
         else None
     )
     return MTPLocatorTruth(
@@ -897,10 +992,14 @@ def _mtp_locator(
         relative_path=layout.relative_path,
         storage=layout.storage,
         file_size_bytes=size,
-        hf_blob_id=blob_id,
-        content_identity=(f"hf_blob:{blob_id}" if blob_id is not None else None),
+        hf_cache_object_id=cache_object_id,
+        cache_object_identity=(
+            f"hf_cache_object:{cache_object_id}"
+            if cache_object_id is not None
+            else None
+        ),
         declared_sha256=declared_sha256,
-        declared_sha256_matches_blob=matches,
+        declared_sha256_matches_cache_object_id=matches,
     )
 
 
@@ -911,7 +1010,7 @@ def _metadata_fingerprint(path: Path) -> tuple[object, ...]:
         metadata = os.lstat(path)
     except OSError as exc:
         return ("unavailable", type(exc).__name__, getattr(exc, "errno", None))
-    link_target = None
+    link_target: object | None = None
     if stat.S_ISLNK(metadata.st_mode):
         try:
             link_target = os.readlink(path)
@@ -987,6 +1086,7 @@ def probe_qwen_artifact(
     observations: list[_PathObservation] = []
     config_path = snapshot / "config.json"
     config_source = config_path
+    config_blob: _CanonicalRepoBlob | None = None
     if verified_binding is not None:
         config_blob = _same_repo_blob_provenance(
             config_path, snapshot_dir=snapshot, binding=verified_binding
@@ -1007,6 +1107,12 @@ def probe_qwen_artifact(
         # For verified snapshots, open the already-resolved blob. Do not follow
         # the snapshot leaf again after provenance validation.
         config_bytes = config_source.read_bytes()
+        if config_blob is not None:
+            _require_metadata_object_id(
+                config_blob,
+                config_bytes,
+                label="config.json",
+            )
         config = json.loads(config_bytes)
     except (OSError, UnicodeError, json.JSONDecodeError) as exc:
         raise ArtifactProbeError("snapshot has no readable config.json") from exc
@@ -1017,7 +1123,7 @@ def probe_qwen_artifact(
     text_config = nested_text if isinstance(nested_text, dict) else config
 
     index_path = snapshot / "model.safetensors.index.json"
-    index_source = None
+    index_bytes = None
     if verified_binding is not None:
         if _lexically_present(index_path):
             index_blob = _same_repo_blob_provenance(
@@ -1028,7 +1134,17 @@ def probe_qwen_artifact(
                     "verified snapshot model.safetensors.index.json lacks "
                     "canonical same-repo blob provenance"
                 )
-            index_source = index_blob.path
+            try:
+                index_bytes = index_blob.path.read_bytes()
+            except OSError as exc:
+                raise ArtifactProbeError(
+                    "snapshot has no readable model.safetensors.index.json"
+                ) from exc
+            _require_metadata_object_id(
+                index_blob,
+                index_bytes,
+                label="model.safetensors.index.json",
+            )
             observations.append(
                 _PathObservation(
                     role="metadata:model.safetensors.index.json",
@@ -1050,14 +1166,14 @@ def probe_qwen_artifact(
     target_weights = _target_weights(
         snapshot,
         verified_binding,
-        index_source=index_source,
+        index_bytes=index_bytes,
         observations=observations,
     )
     mtp_locator = _mtp_locator(snapshot, verified_binding, observations=observations)
     config_sha256 = _canonical_json_sha256(config)
     verification_id = None
     if verified_binding is not None:
-        verification_id = "hf-snapshot-sha256:" + _canonical_json_sha256(
+        verification_id = "hf-snapshot-provenance-sha256:" + _canonical_json_sha256(
             {
                 "repo_id": verified_binding.repo_id,
                 "revision": verified_binding.revision,
@@ -1065,7 +1181,9 @@ def probe_qwen_artifact(
                 "config_sha256": config_sha256,
                 "index_sha256": target_weights.index_sha256,
                 "shards": target_weights.shards,
-                "file_identities": target_weights.file_identities,
+                "cache_object_identities": target_weights.cache_object_identities,
+                "file_sizes_bytes": target_weights.file_sizes_bytes,
+                "tensor_byte_integrity": "unchecked",
             }
         )
 
@@ -1254,14 +1372,14 @@ def _fresh_verified_truth(truth: QwenArtifactTruth) -> QwenArtifactTruth | None:
 
 
 def to_verified_runtime_target(truth: QwenArtifactTruth):
-    """Convert verified truth to the core target-only identity, fail closed.
+    """Convert provenance-bound facts to the core target identity, fail closed.
 
     Import is delayed so this truth slice remains independently cherry-pickable
     while the core planner lands.  The conversion lives here—not in a caller—so
-    ordered layers, quantization, weight receipts, and cache geometry have one
-    canonical mapping. Conversion rebinds and reprobes the exact private
-    artifact path, then mints only from those fresh facts. A mismatch returns
-    ``None``.
+    ordered layers, quantization, cache-object names and sizes, and cache
+    geometry have one canonical mapping. Conversion rebinds and reprobes the
+    exact private artifact path, then mints only from those fresh facts. A
+    mismatch returns ``None``. Tensor byte integrity remains unchecked.
 
     This is a point-in-time receipt, not atomic protection against a hostile
     same-user process that mutates and restores paths around the check. B1 must
@@ -1273,7 +1391,7 @@ def to_verified_runtime_target(truth: QwenArtifactTruth):
         raise ArtifactProbeError("runtime conversion requires QwenArtifactTruth")
     if truth._runtime_capability is not _VERIFIED_RUNTIME_CAPABILITY:
         raise ArtifactProbeError(
-            "runtime conversion requires resolver-verified artifact capability"
+            "runtime conversion requires resolver-bound artifact capability"
         )
     if (
         truth.identity_status is not ArtifactIdentityStatus.VERIFIED_HUB_SNAPSHOT
@@ -1286,6 +1404,15 @@ def to_verified_runtime_target(truth: QwenArtifactTruth):
     if fresh is None:
         return None
     truth = fresh
+    if (
+        truth.source_repo is None
+        or truth.revision is None
+        or truth.verification_id is None
+    ):
+        raise ArtifactProbeError("fresh artifact lost verified Hub provenance")
+    source_repo = truth.source_repo
+    revision = truth.revision
+    verification_id = truth.verification_id
     if not truth.outer_model_type or not truth.text_model_type:
         raise ArtifactProbeError("artifact has incomplete Qwen model types")
     if not truth.geometry.layer_types or truth.geometry.num_hidden_layers != len(
@@ -1309,10 +1436,17 @@ def to_verified_runtime_target(truth: QwenArtifactTruth):
         raise ArtifactProbeError("artifact target weights are incomplete")
     if not truth.target_weights.shards:
         raise ArtifactProbeError("artifact target weight receipt has no shards")
-    if tuple(name for name, _identity in truth.target_weights.file_identities) != (
+    if (
+        tuple(name for name, _identity in truth.target_weights.cache_object_identities)
+        != truth.target_weights.shards
+    ):
+        raise ArtifactProbeError(
+            "artifact target weight cache-object provenance is incomplete"
+        )
+    if tuple(name for name, _size in truth.target_weights.file_sizes_bytes) != (
         truth.target_weights.shards
     ):
-        raise ArtifactProbeError("artifact target weight identities are incomplete")
+        raise ArtifactProbeError("artifact target weight sizes are incomplete")
     if (
         truth.target_weights.layout is TargetWeightLayout.INDEXED_SAFETENSORS
         and truth.target_weights.index_sha256 is None
@@ -1341,8 +1475,8 @@ def to_verified_runtime_target(truth: QwenArtifactTruth):
     )
     try:
         identity = QwenTargetIdentity(
-            target_repo=truth.source_repo,
-            target_revision=truth.revision,
+            target_repo=source_repo,
+            target_revision=revision,
             target_subfolder=truth.target_subfolder,
             outer_model_type=truth.outer_model_type,
             language_model_type=truth.text_model_type,
@@ -1350,11 +1484,16 @@ def to_verified_runtime_target(truth: QwenArtifactTruth):
             weight_layout=weight_layout,
             layer_layout=truth.geometry.layer_types,
             cache_geometry=_runtime_cache_geometry(truth),
+            target_cache_object_identities=(
+                truth.target_weights.cache_object_identities
+            ),
+            target_file_sizes_bytes=truth.target_weights.file_sizes_bytes,
+            tensor_byte_integrity="unchecked",
         )
         return _mint_verified_qwen_target(
             identity=identity,
-            verification_id=truth.verification_id,
-            verification_authority="rapid_mlx.qwen_artifact:hub-snapshot-v1",
+            verification_id=verification_id,
+            verification_authority=("rapid_mlx.qwen_artifact:hub-cache-provenance-v2"),
         )
     except (TypeError, ValueError) as exc:
         raise ArtifactProbeError(
@@ -1363,20 +1502,21 @@ def to_verified_runtime_target(truth: QwenArtifactTruth):
 
 
 def to_runtime_drafter_identity(truth: QwenArtifactTruth):
-    """Convert a trusted sidecar receipt to the core drafter identity.
+    """Convert canonical sidecar cache provenance to the core identity.
 
     This maps identity only; it does not claim that the drafter is qualified
-    for a runtime mode. Regular files, declared checksums, and locator shapes
-    without a canonical same-repo blob receipt fail closed. As with target
-    conversion, artifact drift returns ``None`` and identity is derived only
-    from the fresh exact-artifact rebind/reprobe.
+    for a runtime mode or that its tensor bytes were verified. Regular files,
+    declared checksums, and locator shapes without canonical same-repo cache
+    provenance fail closed. As with target conversion, artifact drift returns
+    ``None`` and identity is derived only from the fresh exact-artifact
+    rebind/reprobe.
     """
 
     if not isinstance(truth, QwenArtifactTruth):
         raise ArtifactProbeError("drafter conversion requires QwenArtifactTruth")
     if truth._runtime_capability is not _VERIFIED_RUNTIME_CAPABILITY:
         raise ArtifactProbeError(
-            "drafter conversion requires resolver-verified artifact capability"
+            "drafter conversion requires resolver-bound artifact capability"
         )
     fresh = _fresh_verified_truth(truth)
     if fresh is None:
@@ -1391,26 +1531,34 @@ def to_runtime_drafter_identity(truth: QwenArtifactTruth):
     if (
         locator.state not in trusted_states
         or locator.relative_path is None
-        or locator.content_identity is None
+        or locator.cache_object_identity is None
+        or locator.file_size_bytes is None
         or truth.source_repo is None
         or truth.revision is None
     ):
         raise ArtifactProbeError(
-            "drafter conversion requires trusted sidecar content identity"
+            "drafter conversion requires canonical sidecar cache-object provenance"
         )
+    source_repo = truth.source_repo
+    revision = truth.revision
+    relative_path = locator.relative_path
+    cache_object_identity = locator.cache_object_identity
+    file_size_bytes = locator.file_size_bytes
     artifact_path = (
-        PurePosixPath(truth.target_subfolder, locator.relative_path).as_posix()
+        PurePosixPath(truth.target_subfolder, relative_path).as_posix()
         if truth.target_subfolder is not None
-        else locator.relative_path
+        else relative_path
     )
     try:
         from rapid_mlx.qwen_runtime_plan import QwenDrafterIdentity
 
         return QwenDrafterIdentity(
-            repo=truth.source_repo,
-            revision=truth.revision,
+            repo=source_repo,
+            revision=revision,
             artifact_path=artifact_path,
-            artifact_verification_id=locator.content_identity,
+            artifact_cache_object_identity=cache_object_identity,
+            artifact_size_bytes=file_size_bytes,
+            tensor_byte_integrity="unchecked",
         )
     except (ImportError, AttributeError, TypeError, ValueError) as exc:
         raise ArtifactProbeError(

@@ -33,9 +33,9 @@ from rapid_mlx.qwen_runtime_plan import (
 
 TARGET_REVISION = "1" * 40
 DRAFTER_REVISION = "2" * 40
-TARGET_VERIFICATION_ID = "hf-snapshot-sha256:" + "a" * 64
-TARGET_VERIFICATION_AUTHORITY = "rapid_mlx.qwen_artifact:hub-snapshot-v1"
-DRAFTER_VERIFICATION_ID = "hf_blob:" + "c" * 64
+TARGET_VERIFICATION_ID = "hf-snapshot-provenance-sha256:" + "a" * 64
+TARGET_VERIFICATION_AUTHORITY = "rapid_mlx.qwen_artifact:hub-cache-provenance-v2"
+DRAFTER_CACHE_OBJECT_IDENTITY = "hf_cache_object:" + "c" * 64
 RUNTIME_VERSIONS = (
     ("mlx", "0.32.1"),
     ("rapid-mlx", "0.15.0"),
@@ -53,6 +53,10 @@ def _target() -> QwenTargetIdentity:
         weight_layout="safetensors-sharded-v1",
         layer_layout=("linear", "linear", "full_attention"),
         cache_geometry=(("key_head_dim", "128"), ("value_heads", "32")),
+        target_cache_object_identities=(
+            ("model-00001-of-00001.safetensors", "hf_cache_object:" + "b" * 64),
+        ),
+        target_file_sizes_bytes=(("model-00001-of-00001.safetensors", 123),),
     )
 
 
@@ -72,13 +76,15 @@ def _verified_target(
 def _drafter(
     *,
     path: str = "mtp/model.safetensors",
-    artifact_verification_id: str = DRAFTER_VERIFICATION_ID,
+    artifact_cache_object_identity: str = DRAFTER_CACHE_OBJECT_IDENTITY,
+    artifact_size_bytes: int = 123,
 ) -> QwenDrafterIdentity:
     return QwenDrafterIdentity(
         repo="example/Qwen-Exact-MTP-4bit",
         revision=DRAFTER_REVISION,
         artifact_path=path,
-        artifact_verification_id=artifact_verification_id,
+        artifact_cache_object_identity=artifact_cache_object_identity,
+        artifact_size_bytes=artifact_size_bytes,
     )
 
 
@@ -344,13 +350,13 @@ def test_mtp_drafter_path_mismatch_falls_back_to_independent_native() -> None:
     assert result.reason is PlanReason.MODE_DRAFTER_IDENTITY_MISMATCH
 
 
-def test_mtp_drafter_content_mismatch_falls_back_to_independent_native() -> None:
+def test_mtp_drafter_cache_object_mismatch_falls_back_to_independent_native() -> None:
     evidence = (
         QwenModeEvidence(TextMode.NATIVE_AR, ("native-cache-api-v1",)),
         QwenModeEvidence(
             TextMode.MTP,
             ("mtp-injector-v1", "mtp-install-v1"),
-            _drafter(artifact_verification_id="hf_blob:" + "d" * 64),
+            _drafter(artifact_cache_object_identity="hf_cache_object:" + "d" * 64),
         ),
     )
 
@@ -361,16 +367,46 @@ def test_mtp_drafter_content_mismatch_falls_back_to_independent_native() -> None
 
 
 @pytest.mark.parametrize(
-    "artifact_verification_id",
-    ["", "main", "sha256:" + "c" * 64, "hf_blob:not-a-digest", "hf_blob:" + "c" * 39],
+    "artifact_cache_object_identity",
+    [
+        "",
+        "main",
+        "sha256:" + "c" * 64,
+        "hf_cache_object:not-a-digest",
+        "hf_cache_object:" + "c" * 39,
+    ],
 )
-def test_drafter_requires_immutable_artifact_verification_id(
-    artifact_verification_id: str,
+def test_drafter_requires_canonical_cache_object_identity(
+    artifact_cache_object_identity: str,
 ) -> None:
     with pytest.raises(
-        ValueError, match="artifact_verification_id must be an immutable"
+        ValueError, match="artifact_cache_object_identity must be a Hugging Face"
     ):
-        _drafter(artifact_verification_id=artifact_verification_id)
+        _drafter(artifact_cache_object_identity=artifact_cache_object_identity)
+
+
+@pytest.mark.parametrize("artifact_size_bytes", [-1, True, 1.5, "123"])
+def test_drafter_requires_non_negative_observed_size(
+    artifact_size_bytes: object,
+) -> None:
+    with pytest.raises(ValueError, match="artifact_size_bytes"):
+        _drafter(artifact_size_bytes=artifact_size_bytes)  # type: ignore[arg-type]
+
+
+def test_mtp_drafter_size_mismatch_falls_back_to_independent_native() -> None:
+    evidence = (
+        QwenModeEvidence(TextMode.NATIVE_AR, ("native-cache-api-v1",)),
+        QwenModeEvidence(
+            TextMode.MTP,
+            ("mtp-injector-v1", "mtp-install-v1"),
+            _drafter(artifact_size_bytes=124),
+        ),
+    )
+
+    result = _resolve(artifact=_artifact(evidence=evidence))
+
+    assert result.text_mode is TextMode.NATIVE_AR
+    assert result.reason is PlanReason.MODE_DRAFTER_IDENTITY_MISMATCH
 
 
 def test_failed_native_fallback_is_not_published_in_mtp_chain() -> None:
@@ -425,10 +461,19 @@ def test_same_alias_with_different_target_identity_fails_closed() -> None:
     assert result.reason is PlanReason.QUALIFICATION_TARGET_IDENTITY_MISMATCH
 
 
+def test_same_alias_with_target_size_drift_fails_closed() -> None:
+    target = replace(
+        _target(),
+        target_file_sizes_bytes=(("model-00001-of-00001.safetensors", 124),),
+    )
+    result = _resolve(artifact=_artifact(target=target))
+    assert result.reason is PlanReason.QUALIFICATION_TARGET_IDENTITY_MISMATCH
+
+
 def test_same_identity_different_verification_receipt_fails_closed() -> None:
     artifact = _artifact(
         verified_target=_verified_target(
-            verification_id="hf-snapshot-sha256:" + "b" * 64
+            verification_id="hf-snapshot-provenance-sha256:" + "b" * 64
         )
     )
 
@@ -442,7 +487,7 @@ def test_exact_receipt_disambiguates_rows_with_same_projected_identity() -> None
         _row(qualification_id="receipt-a"),
         _row(
             qualification_id="receipt-b",
-            expected_verification_id="hf-snapshot-sha256:" + "b" * 64,
+            expected_verification_id="hf-snapshot-provenance-sha256:" + "b" * 64,
         ),
     )
 
@@ -464,13 +509,13 @@ def test_same_verification_id_from_different_authority_fails_closed() -> None:
 
 @pytest.mark.parametrize(
     "verification_id",
-    ["", "main", "hf-snapshot-sha256:not-a-digest", "a" * 40],
+    ["", "main", "hf-snapshot-provenance-sha256:not-a-digest", "a" * 40],
 )
 def test_qualification_row_requires_immutable_target_verification_receipt(
     verification_id: str,
 ) -> None:
     with pytest.raises(
-        ValueError, match="expected_target_verification_id must be an immutable"
+        ValueError, match="must be a canonical provenance SHA-256 receipt"
     ):
         _row(expected_verification_id=verification_id)
 
@@ -645,6 +690,10 @@ def test_status_payload_is_json_safe_and_contains_selected_receipt() -> None:
     status = _resolve().to_status_dict()
 
     assert status["receipt_id"] == "receipt/mtp-v1"
+    assert status["target_provenance_receipt_id"] == TARGET_VERIFICATION_ID
+    assert status["target_provenance_authority"] == TARGET_VERIFICATION_AUTHORITY
+    assert status["target_tensor_byte_integrity"] == "unchecked"
+    assert "target_verification_id" not in status
     assert status["fallback_chain"] == [
         {"text_mode": "native_ar", "receipt_id": "receipt/native-v1"},
         {"text_mode": "none", "receipt_id": None},
@@ -694,6 +743,62 @@ def test_public_contracts_are_immutable() -> None:
     [
         (lambda: replace(_target(), target_subfolder=1), "canonical relative"),
         (lambda: replace(_target(), layer_layout=()), "non-empty layer kinds"),
+        (
+            lambda: replace(_target(), target_cache_object_identities=()),
+            "non-empty tuple of string pairs",
+        ),
+        (
+            lambda: replace(
+                _target(),
+                target_cache_object_identities=(
+                    ("model-00001-of-00001.safetensors", "hf_cache_object:bad"),
+                ),
+            ),
+            "Hugging Face cache-object identity",
+        ),
+        (
+            lambda: replace(_target(), target_file_sizes_bytes=()),
+            "non-empty tuple of path/non-negative-size pairs",
+        ),
+        (
+            lambda: replace(
+                _target(),
+                target_file_sizes_bytes=(("model-00001-of-00001.safetensors", -1),),
+            ),
+            "non-negative-size pairs",
+        ),
+        (
+            lambda: replace(
+                _target(),
+                target_file_sizes_bytes=(("different.safetensors", 123),),
+            ),
+            "must name the same files",
+        ),
+        (
+            lambda: replace(
+                _target(),
+                target_file_sizes_bytes=(("same.safetensors", 1),) * 2,
+            ),
+            "keys must be unique",
+        ),
+        (
+            lambda: replace(
+                _target(),
+                target_file_sizes_bytes=(
+                    ("z.safetensors", 1),
+                    ("a.safetensors", 2),
+                ),
+            ),
+            "sorted by key",
+        ),
+        (
+            lambda: replace(_target(), tensor_byte_integrity="verified"),
+            "must be 'unchecked'",
+        ),
+        (
+            lambda: replace(_drafter(), tensor_byte_integrity="verified"),
+            "must be 'unchecked'",
+        ),
         (
             lambda: replace(
                 _target(), cache_geometry=(("hidden", "1"), ("hidden", "2"))

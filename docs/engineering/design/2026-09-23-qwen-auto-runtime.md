@@ -86,8 +86,9 @@ the dual-lane engine. That integration must be qualified explicitly.
 
 ### Artifact identity
 
-The locally cached immutable configs show that all three priority artifacts
-are the `qwen3_5` / `qwen3_5_moe` family, not Qwen Flash-Next:
+The config metadata at the locally cached, commit-pinned revisions shows that
+all three priority artifacts are the `qwen3_5` / `qwen3_5_moe` family, not Qwen
+Flash-Next:
 
 | Alias | Revision | Outer/text model type | Layers | MTP metadata |
 | --- | --- | --- | ---: | --- |
@@ -103,6 +104,24 @@ The cached pinned snapshot contains three sharded target files **and** the
 accepted nested `mtp/model.safetensors` sidecar. Looking only at the snapshot
 root produces a false negative; the B0 probe must walk the provider's declared
 layouts and report the selected file shape without reading model weights.
+
+### B0 artifact trust model
+
+B0 verifies the bytes it already reads. For `config.json` and the safetensors
+index, a 40-hex Hugging Face cache-object name must equal the Git blob SHA-1 and
+a 64-hex name must equal the raw SHA-256. A mismatch fails before the runtime
+capability is minted.
+
+B0 deliberately does not open 15–20 GiB tensor shards. Target and MTP tensor
+facts are therefore Hugging Face cache-object provenance, not byte-content
+verification. Qualification binds every cache-object name and observed file
+size, and reports `tensor_byte_integrity: unchecked`. Repointing, renaming, or
+size drift fails closed at the point-in-time revalidation boundary.
+
+This contract trusts the Hugging Face downloader/cache CAS invariant. It does
+not detect pre-existing corruption, content restored after observation, or an
+equal-size byte mutation under the same cache-object name. Full tensor-byte
+integrity would require a separate opt-in verification pass and is outside B0.
 
 ## Runtime-plan contract
 
@@ -125,7 +144,9 @@ fallback_chain: ordered tuple
 Do not infer eligibility from a model name. A qualification row binds:
 
 - public alias and backing repository;
-- immutable target and optional drafter revisions;
+- commit-pinned target and optional drafter revisions;
+- every target/MTP cache-object name and observed size, with tensor-byte
+  integrity explicitly unchecked;
 - outer and language `model_type`;
 - quantization and weight layout;
 - exact layer/cache geometry;
@@ -135,8 +156,8 @@ Do not infer eligibility from a model name. A qualification row binds:
 - benchmark/quality receipt.
 
 An exact alias may select a row. A raw path may select it only when its
-resolved immutable identity matches the row. Unknown and mutable identity
-fails closed.
+resolved commit-pinned provenance and size receipt matches the row. Unknown and
+mutable provenance fails closed.
 
 ## Selection semantics
 
@@ -266,7 +287,7 @@ No default behavior change.
 - Preserve whether speculative config was explicit or alias-injected.
 - Expose the resolved plan in boot logs and local status.
 - Add a model-free fixture for exact qualification rows.
-- Reproduce Qwen3.6 and Qwen3.8 current default boot from cached immutable
+- Reproduce Qwen3.6 and Qwen3.8 current default boot from cached commit-pinned
   artifacts, including Qwen3.8's nested MTP-sidecar resolution.
 
 ### B1 — generalize the existing shared-weight native AR lane
@@ -274,8 +295,9 @@ No default behavior change.
 - Rename the Qwen3.6-specific wrapper only after behavior-equivalent tests.
 - Move geometry/cache eligibility to exact qualification rows.
 - Keep Qwen3.6 as the only enabled row initially.
-- Convert verified artifact truth immediately before loading, then repeat the
-  same fresh rebind/reprobe after loading and before publishing the runtime.
+- Convert provenance-bound artifact facts immediately before loading, then
+  repeat the same fresh rebind/reprobe after loading and before publishing the
+  runtime.
   The B0 receipt is point-in-time only; it does not provide atomic protection
   against a hostile same-user process that mutates and restores cache paths.
 - Add template/token parity, interleaved MRoPE, cancellation, lifecycle, and

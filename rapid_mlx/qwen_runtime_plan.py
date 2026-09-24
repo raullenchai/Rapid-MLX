@@ -2,9 +2,11 @@
 """Pure, fail-closed planning primitives for the Qwen auto runtime.
 
 This module has no model, MLX, registry, or filesystem access. Callers resolve
-the current serving decision and separately supply binding-verified immutable
-artifact facts. B0 registers no production rows and auto selection is disabled
-by default, so its default call returns the exact legacy plan object.
+the current serving decision and separately supply commit-pinned Hub-cache
+provenance. Tensor object names and sizes are bound into qualification, but B0
+does not read or verify tensor bytes. B0 registers no production rows and auto
+selection is disabled by default, so its default call returns the exact legacy
+plan object.
 """
 
 from __future__ import annotations
@@ -89,8 +91,8 @@ def _require_immutable_revision(label: str, value: object) -> None:
     raise ValueError(f"{label} must be an immutable commit or content digest")
 
 
-def _require_immutable_verification_id(label: str, value: object) -> None:
-    """Require the content-addressed receipt emitted by artifact truth.
+def _require_provenance_receipt_id(label: str, value: object) -> None:
+    """Require the path-free provenance receipt emitted by the artifact probe.
 
     Qualification rows are durable static policy. A mutable label or merely
     non-empty opaque value cannot bind all config/index facts omitted from the
@@ -101,17 +103,22 @@ def _require_immutable_verification_id(label: str, value: object) -> None:
         r"(?:[a-z][a-z0-9._-]*-)?sha256:[0-9a-f]{64}", value
     ):
         return
-    raise ValueError(f"{label} must be an immutable SHA-256 receipt")
+    raise ValueError(f"{label} must be a canonical provenance SHA-256 receipt")
 
 
-def _require_immutable_artifact_verification_id(label: str, value: object) -> None:
-    """Require a resolver-proven immutable Hugging Face blob identity."""
+def _require_cache_object_identity(label: str, value: object) -> None:
+    """Require the name of one canonical Hugging Face cache object."""
 
     if isinstance(value, str) and re.fullmatch(
-        r"hf_blob:(?:[0-9a-f]{40}|[0-9a-f]{64})", value
+        r"hf_cache_object:(?:[0-9a-f]{40}|[0-9a-f]{64})", value
     ):
         return
-    raise ValueError(f"{label} must be an immutable Hugging Face blob identity")
+    raise ValueError(f"{label} must be a Hugging Face cache-object identity")
+
+
+def _require_tensor_byte_integrity(label: str, value: object) -> None:
+    if value != "unchecked":
+        raise ValueError(f"{label} must be 'unchecked' in the metadata-only B0 probe")
 
 
 def _require_relative_path(label: str, value: object) -> None:
@@ -161,13 +168,40 @@ def _require_canonical_pairs(label: str, values: object) -> None:
         raise ValueError(f"{label} must be sorted by key")
 
 
+def _require_canonical_size_pairs(label: str, values: object) -> None:
+    if (
+        not isinstance(values, tuple)
+        or not values
+        or any(
+            not isinstance(item, tuple)
+            or len(item) != 2
+            or not isinstance(item[0], str)
+            or not item[0].strip()
+            or not isinstance(item[1], int)
+            or isinstance(item[1], bool)
+            or item[1] < 0
+            for item in values
+        )
+    ):
+        raise ValueError(
+            f"{label} must be a non-empty tuple of path/non-negative-size pairs"
+        )
+    keys = tuple(key for key, _size in values)
+    if len(set(keys)) != len(keys):
+        raise ValueError(f"{label} keys must be unique")
+    if keys != tuple(sorted(keys)):
+        raise ValueError(f"{label} must be sorted by key")
+
+
 @dataclass(frozen=True, slots=True)
 class QwenTargetIdentity:
-    """Target-only immutable artifact and ordered loaded geometry.
+    """Target-only provenance, observed sizes, and ordered loaded geometry.
 
-    This is the narrow conversion seam for the truth layer. Drafter identity is
-    intentionally absent: native AR qualifies this target without a sidecar;
-    each speculative mode owns its exact drafter facts independently.
+    This is the narrow conversion seam for the artifact probe. Cache-object
+    names and sizes identify the target under the Hugging Face cache contract;
+    they do not attest to tensor bytes. Drafter provenance is intentionally
+    absent: native AR qualifies this target without a sidecar; each speculative
+    mode owns its exact drafter facts independently.
     """
 
     target_repo: str
@@ -178,7 +212,10 @@ class QwenTargetIdentity:
     weight_layout: str
     layer_layout: tuple[str, ...]
     cache_geometry: tuple[tuple[str, str], ...]
+    target_cache_object_identities: tuple[tuple[str, str], ...]
+    target_file_sizes_bytes: tuple[tuple[str, int], ...]
     target_subfolder: str | None = None
+    tensor_byte_integrity: str = "unchecked"
 
     def __post_init__(self) -> None:
         for label in (
@@ -192,6 +229,25 @@ class QwenTargetIdentity:
         _require_immutable_revision("target_revision", self.target_revision)
         if self.target_subfolder is not None:
             _require_relative_path("target_subfolder", self.target_subfolder)
+        _require_canonical_pairs(
+            "target_cache_object_identities", self.target_cache_object_identities
+        )
+        for _path, cache_object_identity in self.target_cache_object_identities:
+            _require_cache_object_identity(
+                "target cache-object identity", cache_object_identity
+            )
+        _require_canonical_size_pairs(
+            "target_file_sizes_bytes", self.target_file_sizes_bytes
+        )
+        if tuple(path for path, _identity in self.target_cache_object_identities) != (
+            tuple(path for path, _size in self.target_file_sizes_bytes)
+        ):
+            raise ValueError(
+                "target cache-object identities and sizes must name the same files"
+            )
+        _require_tensor_byte_integrity(
+            "tensor_byte_integrity", self.tensor_byte_integrity
+        )
         if (
             not isinstance(self.layer_layout, tuple)
             or not self.layer_layout
@@ -209,11 +265,12 @@ _VERIFIED_TARGET_MINT_TOKEN = object()
 
 @dataclass(frozen=True, slots=True, init=False)
 class VerifiedQwenTarget:
-    """Opaque truth-layer binding proving an identity was actually resolved.
+    """Opaque binding proving target provenance was actually resolved.
 
     A syntactically valid 40-hex revision is insufficient. The truth layer must
-    bind repository, revision, config, and weight-layout evidence first, then
-    provide its opaque stable verification receipt here.
+    bind repository, revision, verified config/index bytes, and tensor
+    cache-object names and sizes first, then provide its opaque stable
+    provenance receipt here. This does not claim tensor-byte verification.
     """
 
     identity: QwenTargetIdentity
@@ -257,19 +314,34 @@ def _mint_verified_qwen_target(
 
 @dataclass(frozen=True, slots=True)
 class QwenDrafterIdentity:
-    """Exact immutable file identity for one speculative sidecar."""
+    """Exact cache-object provenance for one speculative sidecar.
+
+    ``artifact_cache_object_identity`` is an HF cache object name, not a digest
+    recomputed from tensor bytes. Size drift is bound independently.
+    """
 
     repo: str
     revision: str
     artifact_path: str
-    artifact_verification_id: str
+    artifact_cache_object_identity: str
+    artifact_size_bytes: int
+    tensor_byte_integrity: str = "unchecked"
 
     def __post_init__(self) -> None:
         _require_non_empty("repo", self.repo)
         _require_immutable_revision("revision", self.revision)
         _require_relative_path("artifact_path", self.artifact_path)
-        _require_immutable_artifact_verification_id(
-            "artifact_verification_id", self.artifact_verification_id
+        _require_cache_object_identity(
+            "artifact_cache_object_identity", self.artifact_cache_object_identity
+        )
+        if (
+            not isinstance(self.artifact_size_bytes, int)
+            or isinstance(self.artifact_size_bytes, bool)
+            or self.artifact_size_bytes < 0
+        ):
+            raise ValueError("artifact_size_bytes must be a non-negative integer")
+        _require_tensor_byte_integrity(
+            "tensor_byte_integrity", self.tensor_byte_integrity
         )
 
 
@@ -317,7 +389,7 @@ class QwenModeEvidence:
 
 @dataclass(frozen=True, slots=True)
 class ResolvedQwenArtifact:
-    """Binding-verified target plus mode-specific observed facts."""
+    """Provenance-bound target plus mode-specific observed facts."""
 
     verified_target: VerifiedQwenTarget
     public_alias: str | None
@@ -361,7 +433,7 @@ class QwenQualificationRow:
         _require_non_empty("public_alias", self.public_alias)
         if not isinstance(self.target_identity, QwenTargetIdentity):
             raise ValueError("target_identity must be a QwenTargetIdentity")
-        _require_immutable_verification_id(
+        _require_provenance_receipt_id(
             "expected_target_verification_id",
             self.expected_target_verification_id,
         )
@@ -521,13 +593,18 @@ class QwenRuntimePlan:
             "selection_source": self.selection_source.value,
             "qualification_id": self.qualification_id,
             "receipt_id": self.receipt_id,
-            "target_verification_id": (
+            "target_provenance_receipt_id": (
                 self.verified_target.verification_id
                 if self.verified_target is not None
                 else None
             ),
-            "target_verification_authority": (
+            "target_provenance_authority": (
                 self.verified_target.verification_authority
+                if self.verified_target is not None
+                else None
+            ),
+            "target_tensor_byte_integrity": (
+                self.verified_target.identity.tensor_byte_integrity
                 if self.verified_target is not None
                 else None
             ),

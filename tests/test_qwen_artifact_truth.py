@@ -159,6 +159,12 @@ def _replace_with_symlink(path: Path, target: Path) -> None:
     path.symlink_to(os.path.relpath(target, path.parent))
 
 
+def _replace_metadata_bytes(path: Path, content: bytes) -> None:
+    replacement = path.parents[2] / "blobs" / hashlib.sha256(content).hexdigest()
+    replacement.write_bytes(content)
+    _replace_with_symlink(path, replacement)
+
+
 @pytest.mark.parametrize("name", sorted(EXPECTED))
 def test_exact_cached_qwen_config_index_and_snapshot_facts(tmp_path: Path, name: str):
     snapshot, hub, metadata = _materialize_snapshot(tmp_path, name)
@@ -184,7 +190,7 @@ def test_exact_cached_qwen_config_index_and_snapshot_facts(tmp_path: Path, name:
     assert truth.identity_status is ArtifactIdentityStatus.VERIFIED_HUB_SNAPSHOT
     assert truth.source_repo == metadata["source_repo"]
     assert truth.revision == metadata["revision"]
-    assert truth.verification_id.startswith("hf-snapshot-sha256:")
+    assert truth.verification_id.startswith("hf-snapshot-provenance-sha256:")
     assert truth.config_sha256 == metadata["config_sha256"]
     assert truth.outer_model_type == expected["outer"]
     assert truth.text_model_type == expected["text"]
@@ -197,13 +203,19 @@ def test_exact_cached_qwen_config_index_and_snapshot_facts(tmp_path: Path, name:
     assert truth.target_weights.layout is expected["target_layout"]
     assert truth.target_weights.shards == tuple(metadata["target_shards"])
     assert truth.target_weights.index_sha256 == metadata.get("index_sha256")
-    assert dict(truth.target_weights.file_identities) == {
-        shard: f"hf_blob:{blob_id}"
+    assert dict(truth.target_weights.cache_object_identities) == {
+        shard: f"hf_cache_object:{blob_id}"
         for shard, blob_id in metadata["target_blob_ids"].items()
+    }
+    assert dict(truth.target_weights.file_sizes_bytes) == {
+        shard: 0 for shard in metadata["target_shards"]
     }
     assert truth.mtp_locator.state is expected["mtp_state"]
     status = truth.to_status_dict()
-    assert status["identity_is_immutable"] is True
+    assert status["provenance_is_commit_pinned"] is True
+    assert status["tensor_byte_integrity"] == "unchecked"
+    assert status["provenance_receipt_id"] == truth.verification_id
+    assert "verification_id" not in status
     assert str(tmp_path) not in json.dumps(status)
 
 
@@ -216,14 +228,13 @@ def test_verified_metadata_uses_canonical_direct_repo_blob_symlinks(
     blobs = repo_cache / "blobs"
     assert blobs.is_dir()
     assert not blobs.is_symlink()
-    for blob_character, name in zip(
-        ("a", "b"),
-        ("config.json", "model.safetensors.index.json"),
-        strict=True,
-    ):
+    for name in ("config.json", "model.safetensors.index.json"):
         leaf = snapshot / name
-        replacement = blobs / (blob_character * blob_length)
-        replacement.write_bytes(leaf.resolve(strict=True).read_bytes())
+        content = leaf.resolve(strict=True).read_bytes()
+        replacement = blobs / qwen_artifact._metadata_object_id(
+            content, name_length=blob_length
+        )
+        replacement.write_bytes(content)
         _replace_with_symlink(leaf, replacement)
         resolved = leaf.resolve(strict=True)
         assert leaf.is_symlink()
@@ -235,6 +246,71 @@ def test_verified_metadata_uses_canonical_direct_repo_blob_symlinks(
     truth = probe_qwen_artifact(snapshot, binding=_binding(snapshot, metadata))
     assert truth.identity_status is ArtifactIdentityStatus.VERIFIED_HUB_SNAPSHOT
     assert to_verified_runtime_target(truth) is not None
+
+
+@pytest.mark.parametrize(
+    "metadata_name", ["config.json", "model.safetensors.index.json"]
+)
+@pytest.mark.parametrize("blob_length", [40, 64])
+@pytest.mark.parametrize("corruption", ["misnamed", "mutated"])
+def test_verified_metadata_object_name_must_match_bytes_before_capability_mint(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    metadata_name: str,
+    blob_length: int,
+    corruption: str,
+) -> None:
+    snapshot, _hub, metadata = _materialize_snapshot(tmp_path, "qwen36_35b_4bit")
+    binding = _binding(snapshot, metadata)
+    leaf = snapshot / metadata_name
+    content = leaf.resolve(strict=True).read_bytes()
+    correct_name = qwen_artifact._metadata_object_id(content, name_length=blob_length)
+    blob_content = content
+    blob_name = correct_name
+    if corruption == "misnamed":
+        blob_name = ("0" if correct_name[0] != "0" else "1") + correct_name[1:]
+    else:
+        blob_content += b" "
+    replacement = snapshot.parents[1] / "blobs" / blob_name
+    replacement.write_bytes(blob_content)
+    _replace_with_symlink(leaf, replacement)
+
+    capability_mint_attempted = False
+
+    def reject_capability_mint(**_kwargs):
+        nonlocal capability_mint_attempted
+        capability_mint_attempted = True
+        raise AssertionError("metadata mismatch reached capability mint")
+
+    monkeypatch.setattr(qwen_artifact, "QwenArtifactTruth", reject_capability_mint)
+
+    with pytest.raises(ArtifactProbeError, match="name does not match its bytes"):
+        probe_qwen_artifact(snapshot, binding=binding)
+    assert capability_mint_attempted is False
+
+
+def test_metadata_object_id_rejects_unknown_name_length() -> None:
+    with pytest.raises(ValueError, match="40 or 64"):
+        qwen_artifact._metadata_object_id(b"{}", name_length=41)
+
+
+def test_verified_index_read_failure_rejects_before_capability_mint(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    snapshot, _hub, metadata = _materialize_snapshot(tmp_path, "qwen36_35b_4bit")
+    binding = _binding(snapshot, metadata)
+    index_blob = (snapshot / "model.safetensors.index.json").resolve(strict=True)
+    original_read_bytes = Path.read_bytes
+
+    def reject_index(path: Path) -> bytes:
+        if path == index_blob:
+            raise OSError("synthetic index read failure")
+        return original_read_bytes(path)
+
+    monkeypatch.setattr(Path, "read_bytes", reject_index)
+
+    with pytest.raises(ArtifactProbeError, match="no readable.*index"):
+        probe_qwen_artifact(snapshot, binding=binding)
 
 
 @pytest.mark.parametrize(
@@ -317,8 +393,10 @@ def test_qwen35_pinned_manifest_requires_real_single_shard_index_receipt(
     assert truth.target_weights.layout is TargetWeightLayout.INDEXED_SAFETENSORS
     assert truth.target_weights.shards == ("model.safetensors",)
     assert truth.target_weights.index_sha256 == metadata["index_sha256"]
-    assert dict(truth.target_weights.file_identities) == {
-        "model.safetensors": f"hf_blob:{metadata['target_blob_ids']['model.safetensors']}"
+    assert dict(truth.target_weights.cache_object_identities) == {
+        "model.safetensors": (
+            "hf_cache_object:" + metadata["target_blob_ids"]["model.safetensors"]
+        )
     }
     assert truth.mtp_locator.state is MTPWeightPathState.ROOT_MODEL_AMBIGUOUS
 
@@ -340,21 +418,28 @@ def test_qwen38_nested_sidecar_has_symlink_blob_receipt_without_weight_read(
     assert truth.mtp_locator.state is MTPWeightPathState.NESTED_MODEL
     assert truth.mtp_locator.storage is MTPWeightStorage.SYMLINK
     assert truth.mtp_locator.relative_path == "mtp/model.safetensors"
-    assert truth.mtp_locator.hf_blob_id == candidate["blob_id"]
-    assert truth.mtp_locator.content_identity == f"hf_blob:{candidate['blob_id']}"
+    assert truth.mtp_locator.hf_cache_object_id == candidate["blob_id"]
+    assert truth.mtp_locator.cache_object_identity == (
+        f"hf_cache_object:{candidate['blob_id']}"
+    )
     assert truth.mtp_locator.declared_sha256 == candidate["declared_sha256"]
-    assert truth.mtp_locator.declared_sha256_matches_blob is True
+    assert truth.mtp_locator.declared_sha256_matches_cache_object_id is True
     assert truth.mtp_locator.file_size_bytes == candidate["file_size_bytes"]
     drafter = to_runtime_drafter_identity(truth)
     assert isinstance(drafter, qwen_plan.QwenDrafterIdentity)
     assert drafter.repo == metadata["source_repo"]
     assert drafter.revision == metadata["revision"]
     assert drafter.artifact_path == "mtp/model.safetensors"
-    assert drafter.artifact_verification_id == truth.mtp_locator.content_identity
+    assert (
+        drafter.artifact_cache_object_identity
+        == truth.mtp_locator.cache_object_identity
+    )
+    assert drafter.artifact_size_bytes == candidate["file_size_bytes"]
+    assert drafter.tensor_byte_integrity == "unchecked"
 
 
 @pytest.mark.parametrize("escape_kind", ["outside", "sibling_revision"])
-def test_sidecar_symlinked_parent_escape_has_no_trusted_content_identity(
+def test_sidecar_symlinked_parent_escape_has_no_cache_object_provenance(
     tmp_path: Path, escape_kind: str
 ):
     snapshot, hub, metadata = _materialize_snapshot(tmp_path, "qwen38_27b_4bit")
@@ -375,13 +460,13 @@ def test_sidecar_symlinked_parent_escape_has_no_trusted_content_identity(
 
     truth = probe_qwen_artifact(snapshot, binding=_binding(snapshot, metadata))
     assert truth.mtp_locator.state is MTPWeightPathState.NESTED_MODEL
-    assert truth.mtp_locator.hf_blob_id is None
-    assert truth.mtp_locator.content_identity is None
-    with pytest.raises(ArtifactProbeError, match="trusted sidecar content identity"):
+    assert truth.mtp_locator.hf_cache_object_id is None
+    assert truth.mtp_locator.cache_object_identity is None
+    with pytest.raises(ArtifactProbeError, match="cache-object provenance"):
         to_runtime_drafter_identity(truth)
 
 
-def test_sidecar_symlinked_repo_blobs_dir_has_no_trusted_content_identity(
+def test_sidecar_symlinked_repo_blobs_dir_has_no_cache_object_provenance(
     tmp_path: Path,
 ):
     snapshot, hub, metadata = _materialize_snapshot(tmp_path, "qwen38_27b_4bit")
@@ -411,9 +496,12 @@ def test_repointing_sidecar_to_another_direct_repo_blob_changes_identity(
 
     assert to_runtime_drafter_identity(before) is None
     after = probe_qwen_artifact(snapshot, binding=binding)
-    assert before.mtp_locator.content_identity != after.mtp_locator.content_identity
+    assert (
+        before.mtp_locator.cache_object_identity
+        != after.mtp_locator.cache_object_identity
+    )
     drafter = to_runtime_drafter_identity(after)
-    assert drafter.artifact_verification_id == f"hf_blob:{'c' * 64}"
+    assert drafter.artifact_cache_object_identity == (f"hf_cache_object:{'c' * 64}")
 
 
 def test_regular_sidecar_and_declared_sha_cannot_mint_drafter_identity(
@@ -430,9 +518,9 @@ def test_regular_sidecar_and_declared_sha_cannot_mint_drafter_identity(
     truth = probe_qwen_artifact(snapshot, binding=_binding(snapshot, metadata))
     assert truth.mtp_locator.state is MTPWeightPathState.ROOT_MTP
     assert truth.mtp_locator.declared_sha256 == declared
-    assert truth.mtp_locator.hf_blob_id is None
-    assert truth.mtp_locator.content_identity is None
-    with pytest.raises(ArtifactProbeError, match="trusted sidecar content identity"):
+    assert truth.mtp_locator.hf_cache_object_id is None
+    assert truth.mtp_locator.cache_object_identity is None
+    with pytest.raises(ArtifactProbeError, match="cache-object provenance"):
         to_runtime_drafter_identity(truth)
 
 
@@ -443,9 +531,7 @@ def test_drafter_conversion_requires_verified_capability_and_repo_relative_path(
     snapshot, _hub, metadata = _materialize_snapshot(
         tmp_path, "qwen38_27b_4bit", subfolder=subfolder
     )
-    with pytest.raises(
-        ArtifactProbeError, match="resolver-verified artifact capability"
-    ):
+    with pytest.raises(ArtifactProbeError, match="resolver-bound artifact capability"):
         to_runtime_drafter_identity(probe_qwen_artifact(snapshot))
 
     truth = probe_qwen_artifact(
@@ -456,8 +542,8 @@ def test_drafter_conversion_requires_verified_capability_and_repo_relative_path(
     assert drafter.repo == metadata["source_repo"]
     assert drafter.revision == metadata["revision"]
     assert drafter.artifact_path == "weights/4bit/mtp/model.safetensors"
-    assert drafter.artifact_verification_id == (
-        f"hf_blob:{metadata['mtp_candidate']['blob_id']}"
+    assert drafter.artifact_cache_object_identity == (
+        f"hf_cache_object:{metadata['mtp_candidate']['blob_id']}"
     )
 
 
@@ -466,8 +552,8 @@ def test_root_model_is_categorically_ambiguous_not_head_receipt(tmp_path: Path):
     truth = probe_qwen_artifact(snapshot, binding=_binding(snapshot, metadata))
     assert _find_mtp_weights_file(snapshot) == snapshot / "model.safetensors"
     assert truth.mtp_locator.state is MTPWeightPathState.ROOT_MODEL_AMBIGUOUS
-    assert truth.mtp_locator.hf_blob_id is None
-    assert truth.mtp_locator.content_identity is None
+    assert truth.mtp_locator.hf_cache_object_id is None
+    assert truth.mtp_locator.cache_object_identity is None
     assert truth.mtp_locator.declared_sha256 is None
     assert "accepted" not in truth.mtp_locator.to_status_dict()
     assert "eligible" not in truth.mtp_locator.to_status_dict()
@@ -695,7 +781,7 @@ def test_target_index_fails_closed_on_missing_or_escaping_shard(
     index_path = snapshot / "model.safetensors.index.json"
     index = json.loads(index_path.read_text(encoding="utf-8"))
     index["weight_map"]["fixture.missing"] = shard_name
-    index_path.write_text(json.dumps(index), encoding="utf-8")
+    _replace_metadata_bytes(index_path, json.dumps(index).encode("utf-8"))
     truth = probe_qwen_artifact(snapshot, binding=_binding(snapshot, metadata))
     assert truth.target_weights.layout is expected_layout
     assert truth.target_weights.index_sha256 == _canonical_digest(index)
@@ -744,10 +830,110 @@ def test_repointing_same_indexed_shard_name_to_another_repo_blob_changes_receipt
     assert before.target_weights.shards == after.target_weights.shards
     assert before.target_weights.index_sha256 == after.target_weights.index_sha256
     assert (
-        dict(before.target_weights.file_identities)[shard_name]
-        != (dict(after.target_weights.file_identities)[shard_name])
+        dict(before.target_weights.cache_object_identities)[shard_name]
+        != (dict(after.target_weights.cache_object_identities)[shard_name])
     )
     assert before.verification_id != after.verification_id
+
+
+@pytest.mark.parametrize("artifact_kind", ["target", "mtp"])
+def test_tensor_cache_object_rename_changes_qualification_identity(
+    tmp_path: Path, artifact_kind: str
+) -> None:
+    snapshot, _hub, metadata = _materialize_snapshot(tmp_path, "qwen38_27b_4bit")
+    binding = _binding(snapshot, metadata)
+    before_truth = probe_qwen_artifact(snapshot, binding=binding)
+    before_target = to_verified_runtime_target(before_truth)
+    before_drafter = to_runtime_drafter_identity(before_truth)
+    leaf = (
+        snapshot / metadata["target_shards"][0]
+        if artifact_kind == "target"
+        else snapshot / metadata["mtp_candidate"]["path"]
+    )
+    old_blob = leaf.resolve(strict=True)
+    renamed_blob = old_blob.with_name("e" * 64)
+    old_blob.rename(renamed_blob)
+    _replace_with_symlink(leaf, renamed_blob)
+
+    after_truth = probe_qwen_artifact(snapshot, binding=binding)
+    after_target = to_verified_runtime_target(after_truth)
+    after_drafter = to_runtime_drafter_identity(after_truth)
+
+    if artifact_kind == "target":
+        assert after_target != before_target
+        assert after_drafter == before_drafter
+    else:
+        assert after_target == before_target
+        assert after_drafter != before_drafter
+
+
+@pytest.mark.parametrize("artifact_kind", ["target", "mtp"])
+def test_tensor_truncation_size_drift_rejects_stale_receipt_and_changes_identity(
+    tmp_path: Path, artifact_kind: str
+) -> None:
+    snapshot, _hub, metadata = _materialize_snapshot(tmp_path, "qwen38_27b_4bit")
+    binding = _binding(snapshot, metadata)
+    leaf = (
+        snapshot / metadata["target_shards"][0]
+        if artifact_kind == "target"
+        else snapshot / metadata["mtp_candidate"]["path"]
+    )
+    blob = leaf.resolve(strict=True)
+    if blob.stat().st_size == 0:
+        blob.write_bytes(b"fixture tensor bytes")
+
+    before_truth = probe_qwen_artifact(snapshot, binding=binding)
+    before_target = to_verified_runtime_target(before_truth)
+    before_drafter = to_runtime_drafter_identity(before_truth)
+    original_size = blob.stat().st_size
+    assert original_size > 0
+    os.truncate(blob, original_size - 1)
+
+    assert to_verified_runtime_target(before_truth) is None
+    assert to_runtime_drafter_identity(before_truth) is None
+
+    after_truth = probe_qwen_artifact(snapshot, binding=binding)
+    after_target = to_verified_runtime_target(after_truth)
+    after_drafter = to_runtime_drafter_identity(after_truth)
+    if artifact_kind == "target":
+        assert after_target != before_target
+        assert after_drafter == before_drafter
+    else:
+        assert after_target == before_target
+        assert after_drafter != before_drafter
+
+
+@pytest.mark.parametrize("artifact_kind", ["target", "mtp"])
+def test_same_size_tensor_mutation_is_explicitly_not_an_integrity_guarantee(
+    tmp_path: Path, artifact_kind: str
+) -> None:
+    snapshot, _hub, metadata = _materialize_snapshot(tmp_path, "qwen38_27b_4bit")
+    binding = _binding(snapshot, metadata)
+    leaf = (
+        snapshot / metadata["target_shards"][0]
+        if artifact_kind == "target"
+        else snapshot / metadata["mtp_candidate"]["path"]
+    )
+    blob = leaf.resolve(strict=True)
+    if artifact_kind == "target":
+        blob.write_bytes(b"before")
+
+    before_truth = probe_qwen_artifact(snapshot, binding=binding)
+    before_target = to_verified_runtime_target(before_truth)
+    before_drafter = to_runtime_drafter_identity(before_truth)
+    with blob.open("r+b") as tensor_file:
+        tensor_file.write(b"after!" if artifact_kind == "target" else b"x")
+
+    # The private point-in-time stat seal rejects the stale observation.
+    assert to_verified_runtime_target(before_truth) is None
+    assert to_runtime_drafter_identity(before_truth) is None
+
+    # A fresh stat-only probe cannot distinguish equal-size corruption under
+    # the same cache-object name. The public contract says so explicitly.
+    after_truth = probe_qwen_artifact(snapshot, binding=binding)
+    assert after_truth.to_status_dict()["tensor_byte_integrity"] == "unchecked"
+    assert to_verified_runtime_target(after_truth) == before_target
+    assert to_runtime_drafter_identity(after_truth) == before_drafter
 
 
 def test_regular_weight_bytes_cannot_mint_even_when_name_and_index_match(
@@ -764,7 +950,7 @@ def test_regular_weight_bytes_cannot_mint_even_when_name_and_index_match(
 
     for truth in (first, changed):
         assert truth.target_weights.layout is TargetWeightLayout.INVALID_WEIGHTS
-        assert truth.target_weights.file_identities == ()
+        assert truth.target_weights.cache_object_identities == ()
     assert to_verified_runtime_target(first) is None
     with pytest.raises(ArtifactProbeError, match="target weights are incomplete"):
         to_verified_runtime_target(changed)
@@ -881,19 +1067,42 @@ def test_receipt_extractor_reproduces_fixture_truth(
         == 0
     )
     receipt = json.loads(capsys.readouterr().out)
-    assert receipt["schema_version"] == 1
+    assert receipt["schema_version"] == 2
     assert receipt["target_weights"]["index_sha256"] == metadata["index_sha256"]
     assert receipt["target_weights"]["shards"] == metadata["target_shards"]
-    assert receipt["target_weights"]["file_identities"] == {
-        shard: f"hf_blob:{blob_id}"
+    assert receipt["target_weights"]["cache_object_identities"] == {
+        shard: f"hf_cache_object:{blob_id}"
         for shard, blob_id in metadata["target_blob_ids"].items()
     }
-    assert receipt["mtp_locator"]["hf_blob_id"] == metadata["mtp_candidate"]["blob_id"]
-    assert receipt["mtp_locator"]["content_identity"] == (
-        f"hf_blob:{metadata['mtp_candidate']['blob_id']}"
+    assert receipt["target_weights"]["file_sizes_bytes"] == {
+        shard: 0 for shard in metadata["target_shards"]
+    }
+    assert (
+        receipt["mtp_locator"]["hf_cache_object_id"]
+        == (metadata["mtp_candidate"]["blob_id"])
+    )
+    assert receipt["mtp_locator"]["cache_object_identity"] == (
+        f"hf_cache_object:{metadata['mtp_candidate']['blob_id']}"
     )
     assert len(receipt["geometry"]["layer_types"]) == 64
     assert str(tmp_path) not in json.dumps(receipt)
+
+
+def test_receipt_extractor_rejects_unbound_snapshot(tmp_path: Path) -> None:
+    snapshot = tmp_path / "local-snapshot"
+    snapshot.mkdir()
+
+    with pytest.raises(SystemExit, match="canonical, commit-pinned"):
+        extract_receipt(
+            [
+                "--snapshot-dir",
+                str(snapshot),
+                "--repo-id",
+                "example/model",
+                "--revision",
+                "a" * 40,
+            ]
+        )
 
 
 def test_resolved_snapshot_probe_derives_only_pinned_local_identity(tmp_path: Path):
@@ -976,9 +1185,20 @@ def test_conversion_seam_owns_exact_target_only_mapping(
     monkeypatch.setitem(sys.modules, "rapid_mlx.qwen_runtime_plan", fake)
     converted = to_verified_runtime_target(truth)
     assert converted.verification_id == truth.verification_id
-    assert converted.verification_authority == "rapid_mlx.qwen_artifact:hub-snapshot-v1"
+    assert converted.verification_authority == (
+        "rapid_mlx.qwen_artifact:hub-cache-provenance-v2"
+    )
     assert converted.identity.target_repo == metadata["source_repo"]
     assert converted.identity.layer_layout == truth.geometry.layer_types
+    assert (
+        converted.identity.target_cache_object_identities
+        == truth.target_weights.cache_object_identities
+    )
+    assert (
+        converted.identity.target_file_sizes_bytes
+        == truth.target_weights.file_sizes_bytes
+    )
+    assert converted.identity.tensor_byte_integrity == "unchecked"
     assert converted.identity.cache_geometry == tuple(
         sorted(converted.identity.cache_geometry)
     )
@@ -1000,7 +1220,7 @@ def test_conversion_seam_composes_with_integrated_private_runtime_mint(
     assert converted.identity.layer_layout == truth.geometry.layer_types
     assert converted.verification_id == truth.verification_id
     assert converted.verification_authority == (
-        "rapid_mlx.qwen_artifact:hub-snapshot-v1"
+        "rapid_mlx.qwen_artifact:hub-cache-provenance-v2"
     )
 
 
@@ -1046,8 +1266,8 @@ def test_runtime_conversion_rejects_stale_artifact_then_accepts_fresh_probe(
         fresh_drafter = to_runtime_drafter_identity(fresh_truth)
         assert isinstance(fresh_drafter, qwen_plan.QwenDrafterIdentity)
         assert (
-            fresh_drafter.artifact_verification_id
-            == fresh_truth.mtp_locator.content_identity
+            fresh_drafter.artifact_cache_object_identity
+            == fresh_truth.mtp_locator.cache_object_identity
         )
 
 
@@ -1140,14 +1360,12 @@ def test_conversion_seam_rejects_unverified_and_incomplete_layers(tmp_path: Path
     snapshot, hub, metadata = _materialize_snapshot(tmp_path, "qwen36_35b_4bit")
     unverified = probe_qwen_artifact(snapshot)
     verified = probe_qwen_artifact(snapshot, binding=_binding(snapshot, metadata))
-    with pytest.raises(
-        ArtifactProbeError, match="resolver-verified artifact capability"
-    ):
+    with pytest.raises(ArtifactProbeError, match="resolver-bound artifact capability"):
         to_verified_runtime_target(unverified)
     config_path = snapshot / "config.json"
     config = json.loads(config_path.read_text(encoding="utf-8"))
     config["text_config"]["layer_types"] = []
-    config_path.write_text(json.dumps(config), encoding="utf-8")
+    _replace_metadata_bytes(config_path, json.dumps(config).encode("utf-8"))
     incomplete = probe_qwen_artifact(snapshot, binding=_binding(snapshot, metadata))
     with pytest.raises(ArtifactProbeError, match="ordered layer layout"):
         to_verified_runtime_target(incomplete)
@@ -1331,7 +1549,7 @@ def test_orphan_shards_are_reported_without_an_index(tmp_path: Path) -> None:
     assert truth.target_weights.shards == ("model-00001-of-00002.safetensors",)
 
 
-def test_weight_and_sidecar_metadata_errors_drop_content_identity(
+def test_weight_and_sidecar_metadata_errors_drop_cache_object_provenance(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     snapshot, hub, metadata = _materialize_snapshot(tmp_path, "qwen38_27b_4bit")
@@ -1345,7 +1563,7 @@ def test_weight_and_sidecar_metadata_errors_drop_content_identity(
     directory = tmp_path / "not-a-file"
     directory.mkdir()
     assert (
-        qwen_artifact._weight_file_identity(
+        qwen_artifact._weight_cache_object_identity(
             directory, snapshot_dir=tmp_path, binding=binding
         )
         is None
@@ -1356,7 +1574,7 @@ def test_weight_and_sidecar_metadata_errors_drop_content_identity(
     external = external_dir / "weight.safetensors"
     external.symlink_to(blob)
     assert (
-        qwen_artifact._weight_file_identity(
+        qwen_artifact._weight_cache_object_identity(
             external, snapshot_dir=snapshot, binding=binding
         )
         is None
@@ -1371,7 +1589,7 @@ def test_weight_and_sidecar_metadata_errors_drop_content_identity(
 
     monkeypatch.setattr(Path, "resolve", reject_blobs)
     assert (
-        qwen_artifact._weight_file_identity(
+        qwen_artifact._weight_cache_object_identity(
             shard, snapshot_dir=snapshot, binding=binding
         )
         is None
@@ -1394,7 +1612,7 @@ def test_inaccessible_snapshot_leaf_has_no_canonical_blob_provenance(
     monkeypatch.setattr(os, "lstat", reject_shard)
 
     assert (
-        qwen_artifact._weight_file_identity(
+        qwen_artifact._weight_cache_object_identity(
             shard, snapshot_dir=snapshot, binding=binding
         )
         is None
@@ -1423,7 +1641,7 @@ def test_final_blob_resolution_failure_or_drift_has_no_provenance(
     monkeypatch.setattr(Path, "resolve", resolve_with_final_failure)
 
     assert (
-        qwen_artifact._weight_file_identity(
+        qwen_artifact._weight_cache_object_identity(
             shard, snapshot_dir=snapshot, binding=binding
         )
         is None
@@ -1486,7 +1704,9 @@ def test_sidecar_blob_validation_and_stat_failures_are_non_authoritative(
     dangling = tmp_path / "dangling.safetensors"
     dangling.symlink_to(tmp_path / "missing-blob")
     assert (
-        qwen_artifact._hf_blob_id(dangling, snapshot_dir=tmp_path, binding=binding)
+        qwen_artifact._hf_cache_object_id(
+            dangling, snapshot_dir=tmp_path, binding=binding
+        )
         is None
     )
 
@@ -1494,7 +1714,9 @@ def test_sidecar_blob_validation_and_stat_failures_are_non_authoritative(
     invalid_blob.touch()
     _replace_with_symlink(candidate, invalid_blob)
     assert (
-        qwen_artifact._hf_blob_id(candidate, snapshot_dir=snapshot, binding=binding)
+        qwen_artifact._hf_cache_object_id(
+            candidate, snapshot_dir=snapshot, binding=binding
+        )
         is None
     )
     valid_blob = (
@@ -1505,7 +1727,7 @@ def test_sidecar_blob_validation_and_stat_failures_are_non_authoritative(
     wrong_binding = _binding(snapshot, metadata)
     object.__setattr__(wrong_binding, "_artifact_dir", tmp_path.resolve())
     assert (
-        qwen_artifact._hf_blob_id(
+        qwen_artifact._hf_cache_object_id(
             candidate, snapshot_dir=snapshot, binding=wrong_binding
         )
         is None
@@ -1520,7 +1742,9 @@ def test_sidecar_blob_validation_and_stat_failures_are_non_authoritative(
 
     monkeypatch.setattr(Path, "resolve", reject_blobs)
     assert (
-        qwen_artifact._hf_blob_id(candidate, snapshot_dir=snapshot, binding=binding)
+        qwen_artifact._hf_cache_object_id(
+            candidate, snapshot_dir=snapshot, binding=binding
+        )
         is None
     )
     monkeypatch.setattr(Path, "resolve", original_resolve)
@@ -1542,7 +1766,9 @@ def test_sidecar_blob_validation_and_stat_failures_are_non_authoritative(
     monkeypatch.setattr(
         qwen_artifact, "inspect_mtp_weights_layout", lambda _path: layout
     )
-    monkeypatch.setattr(qwen_artifact, "_hf_blob_id", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(
+        qwen_artifact, "_same_repo_blob_provenance", lambda *_args, **_kwargs: None
+    )
     locator = qwen_artifact._mtp_locator(snapshot, binding)
     assert locator.file_size_bytes is None
 
@@ -1651,7 +1877,7 @@ def test_resolved_probe_rejects_invalid_path_objects(
             lambda truth: object.__setattr__(
                 truth,
                 "target_weights",
-                replace(truth.target_weights, file_identities=()),
+                replace(truth.target_weights, cache_object_identities=()),
             ),
             "identities are incomplete",
         ),
@@ -1676,6 +1902,44 @@ def test_runtime_target_conversion_rejects_corrupted_verified_truth(
             to_verified_runtime_target(truth)
     else:
         assert to_verified_runtime_target(truth) is None
+
+
+def test_runtime_target_conversion_rejects_fresh_probe_that_lost_provenance(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    snapshot, _hub, metadata = _materialize_snapshot(tmp_path, "qwen36_35b_4bit")
+    verified = probe_qwen_artifact(snapshot, binding=_binding(snapshot, metadata))
+    unbound = probe_qwen_artifact(snapshot)
+    monkeypatch.setattr(qwen_artifact, "_fresh_verified_truth", lambda _truth: unbound)
+
+    with pytest.raises(ArtifactProbeError, match="lost verified Hub provenance"):
+        to_verified_runtime_target(verified)
+
+
+@pytest.mark.parametrize(
+    ("field", "message"),
+    [
+        ("cache_object_identities", "cache-object provenance is incomplete"),
+        ("file_sizes_bytes", "weight sizes are incomplete"),
+    ],
+)
+def test_runtime_target_conversion_rejects_incomplete_fresh_tensor_provenance(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    field: str,
+    message: str,
+) -> None:
+    snapshot, _hub, metadata = _materialize_snapshot(tmp_path, "qwen36_35b_4bit")
+    truth = probe_qwen_artifact(snapshot, binding=_binding(snapshot, metadata))
+    object.__setattr__(
+        truth,
+        "target_weights",
+        replace(truth.target_weights, **{field: ()}),
+    )
+    monkeypatch.setattr(qwen_artifact, "_fresh_verified_truth", lambda _truth: truth)
+
+    with pytest.raises(ArtifactProbeError, match=message):
+        to_verified_runtime_target(truth)
 
 
 def test_runtime_conversion_rejects_wrong_types_and_unavailable_core_api(

@@ -1,10 +1,11 @@
 #!/usr/bin/env python3
 # SPDX-License-Identifier: Apache-2.0
-"""Extract a content-free Qwen artifact receipt from an existing HF snapshot.
+"""Extract a metadata-only Qwen artifact receipt from an existing HF snapshot.
 
 This script is intentionally offline: it validates the canonical Hub-cache
 binding, reads config/index metadata and filesystem receipts, and writes JSON
-to stdout. It never downloads a model or opens safetensors content.
+to stdout. It never downloads a model or opens safetensors content, so tensor
+byte integrity is reported as unchecked.
 """
 
 from __future__ import annotations
@@ -37,7 +38,7 @@ def main(argv: list[str] | None = None) -> int:
         subfolder=args.subfolder,
     )
     if binding is None:
-        raise SystemExit("snapshot is not a verified canonical HF cache binding")
+        raise SystemExit("snapshot has no canonical, commit-pinned HF cache binding")
     truth = probe_qwen_artifact(args.snapshot_dir, binding=binding)
     print(json.dumps(truth.to_receipt_dict(), indent=2, sort_keys=True))
     return 0
