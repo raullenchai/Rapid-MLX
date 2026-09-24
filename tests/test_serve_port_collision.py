@@ -277,6 +277,63 @@ def test_listen_fd_plain_file_failure_does_not_leak_dup(tmp_path):
     assert after == before
 
 
+def _fake_inherited_socket(*, sockname, accept_error=None):
+    class FakeInheritedSocket:
+        family = socket.AF_INET
+
+        def __init__(self, *, fileno):
+            self.fileno = fileno
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_exc_info):
+            os.close(self.fileno)
+
+        def getsockopt(self, _level, option, *_args):
+            if option == socket.SO_TYPE:
+                return socket.SOCK_STREAM
+            if accept_error is not None:
+                raise accept_error
+            return 1
+
+        def getsockname(self):
+            return sockname
+
+    return FakeInheritedSocket
+
+
+def test_listen_fd_preserves_unexpected_acceptconn_error(monkeypatch):
+    read_fd, write_fd = os.pipe()
+    try:
+        error = OSError(errno.EINVAL, "unexpected socket option failure")
+        monkeypatch.setattr(
+            socket,
+            "socket",
+            _fake_inherited_socket(sockname=("127.0.0.1", 1234), accept_error=error),
+        )
+        with pytest.raises(OSError, match="unexpected socket option failure"):
+            cli._listen_fd_port(read_fd)
+    finally:
+        os.close(read_fd)
+        os.close(write_fd)
+
+
+def test_listen_fd_rejects_invalid_inet_sockname(monkeypatch):
+    read_fd, write_fd = os.pipe()
+    try:
+        monkeypatch.setattr(
+            socket,
+            "socket",
+            _fake_inherited_socket(sockname="not-an-inet-address"),
+        )
+        with pytest.raises(OSError, match="not bound to a TCP listener"):
+            cli._listen_fd_port(read_fd)
+    finally:
+        os.close(read_fd)
+        os.close(write_fd)
+
+
 def test_serve_lane_port_invariant_rejects_none():
     with pytest.raises(AssertionError, match="unresolved port"):
         cli._resolved_serve_port(types.SimpleNamespace(port=None))

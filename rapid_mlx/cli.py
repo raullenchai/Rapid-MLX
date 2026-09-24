@@ -476,14 +476,15 @@ def _listen_fd_port(listen_fd: int) -> int:
                 # macOS 26 exposes SO_ACCEPTCONN but returns ENOPROTOOPT for
                 # it. TCP_CONNECTION_INFO reports the same kernel state;
                 # TCPS_LISTEN is 1 in Darwin's tcp_fsm.h.
+                tcp_connection_info = getattr(socket, "TCP_CONNECTION_INFO", None)
                 if (
                     sys.platform != "darwin"
                     or exc.errno != errno.ENOPROTOOPT
-                    or not hasattr(socket, "TCP_CONNECTION_INFO")
+                    or tcp_connection_info is None
                 ):
                     raise
                 tcp_info = inherited.getsockopt(
-                    socket.IPPROTO_TCP, socket.TCP_CONNECTION_INFO, 1
+                    socket.IPPROTO_TCP, tcp_connection_info, 1
                 )
                 accepting = bool(tcp_info and tcp_info[0] == 1)
         if not accepting:
