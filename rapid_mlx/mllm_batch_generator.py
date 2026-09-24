@@ -19,9 +19,11 @@ Architecture:
 import ast
 import contextlib
 import copy
+import importlib
 import inspect
 import logging
 import os
+import sys
 import textwrap
 import threading
 import time
@@ -666,6 +668,54 @@ def _extract_detached_singleton_leaf(leaf: Any, idx: int) -> Any:
     return detached
 
 
+def _extract_batched_leaf(leaf: Any, idx: int) -> Any:
+    """Extract row ``idx`` of a batched cache leaf for the exact prefix cache.
+
+    A ``BatchKVCache`` leaf that no forward ever wrote stays ``keys is None``
+    (``merge`` of all-empty per-request caches builds it that way), and
+    upstream ``BatchKVCache.extract`` slices ``self.keys`` unguarded — unlike
+    the singleton ``KVCache.extract``, which returns an empty cache. GLM-5.3
+    Flash owns such a leaf on every attention layer: its ``projected_cache``
+    slot is only populated by the long-prompt prefill path, so a short prompt
+    finishing a sequence would abort the whole batch at cache store time.
+    Recurse through ``CacheList`` so that slot is found wherever it sits.
+    """
+    if not hasattr(leaf, "extract"):
+        return None
+    list_types, batch_kv_types = _batched_leaf_types()
+    if type(leaf) in list_types:
+        return type(leaf)(*(_extract_batched_leaf(c, idx) for c in leaf.caches))
+    # Exact-type match only: ``BatchPoolingCache`` / ``ArraysCache`` also carry
+    # ``left_padding`` without ``keys`` and must keep their own ``extract``.
+    if type(leaf) in batch_kv_types and leaf.keys is None:
+        # Same empty-row contract ``KVCache.extract`` returns for an unwritten
+        # singleton leaf, from the leaf's own namespace.
+        return sys.modules[type(leaf).__module__].KVCache()
+    return leaf.extract(idx)
+
+
+def _batched_leaf_types() -> tuple[tuple[type, ...], tuple[type, ...]]:
+    """``(CacheList types, BatchKVCache types)`` across both cache namespaces.
+
+    Upstream mlx-vlm model classes still create caches with their own class
+    objects; the vendored module owns identical ones, and mlx-lm text
+    backbones bring a third set. All are recognized, mirroring the
+    namespace contract of the singleton leaf extractor.
+    """
+    from .models.mlx_vlm_vendored.cache import BatchKVCache, CacheList
+
+    list_types: tuple[type, ...] = (CacheList,)
+    batch_kv_types: tuple[type, ...] = (BatchKVCache,)
+    for module_name in ("mlx_vlm.models.cache", "mlx_lm.models.cache"):
+        try:
+            module = importlib.import_module(module_name)
+        except ImportError:
+            continue
+        list_types += (module.CacheList,)
+        batch_kv_types += (module.BatchKVCache,)
+    return list_types, batch_kv_types
+
+
 # A media boundary below this many processor-expanded tokens is never
 # stored: a snapshot that small costs an LRU slot to save a prefill that
 # is cheaper to redo. Mirrors the role of mlx-vlm's ``APC_EXACT_MIN_TOKENS``
@@ -981,7 +1031,7 @@ class MLLMBatch:
         """
         if self.cache_layout == "singleton_regular":
             return [_extract_detached_singleton_leaf(c, idx) for c in self.cache]
-        return [c.extract(idx) if hasattr(c, "extract") else None for c in self.cache]
+        return [_extract_batched_leaf(c, idx) for c in self.cache]
 
 
 class MLLMBatchStats:
