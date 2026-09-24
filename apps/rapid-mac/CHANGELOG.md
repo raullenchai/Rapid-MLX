@@ -17,6 +17,32 @@ can actually understand.
 
 ## [Unreleased]
 
+## [0.15.1] — 2026-09-23
+
+Rapid-MLX 0.15.1 makes first-start failures actionable in Desktop and aligns
+readiness and success reporting across every serving lane.
+
+### Added
+- **Closed startup-state telemetry.** Accepted serve invocations now record an
+  `attempted` state followed by `ready` or `failed`; failures carry only a closed
+  startup stage. Missing optional runtimes report a closed extra name rather
+  than free-form text.
+
+### Changed
+- **`Ready:` now means the server is accepting connections.** The banner is
+  printed only after the listener binds, so scripts waiting for it can connect
+  immediately.
+- **Serving success is consistent across lanes.** Image, video, audio,
+  embedding, and specialised text servers now emit the same `model_served`
+  event as the default lane.
+
+### Fixed
+- **Desktop shows the real optional-runtime startup failure.** The
+  startup-failure panel names the closed reason and affected vision, video,
+  audio, or image extra, then opens the Startup Log containing the exact
+  `pip install 'rapid-mlx[<extra>]'` hint instead of showing only a generic
+  engine-start failure.
+
 ## [0.15.0] — 2026-09-22
 
 Rapid-MLX 0.15.0 adds privacy-safe product telemetry with clear local
@@ -4028,7 +4054,8 @@ Older versions: see the
 [GitHub Releases page](https://github.com/machinefi/rapid-desktop/releases)
 for auto-generated notes against earlier tags.
 
-[Unreleased]: https://github.com/raullenchai/Rapid-MLX/compare/rapid-mac-v0.15.0...HEAD
+[Unreleased]: https://github.com/raullenchai/Rapid-MLX/compare/rapid-mac-v0.15.1...HEAD
+[0.15.1]: https://github.com/raullenchai/Rapid-MLX/compare/rapid-mac-v0.15.0...rapid-mac-v0.15.1
 [0.15.0]: https://github.com/raullenchai/Rapid-MLX/compare/rapid-mac-v0.14.3...rapid-mac-v0.15.0
 [0.14.3]: https://github.com/raullenchai/Rapid-MLX/compare/rapid-mac-v0.14.2...rapid-mac-v0.14.3
 [0.14.2]: https://github.com/raullenchai/Rapid-MLX/compare/rapid-mac-v0.14.1...rapid-mac-v0.14.2
