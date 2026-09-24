@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import builtins
+import errno
 import json
 import os
 import subprocess
@@ -536,6 +537,64 @@ def test_quarantine_restores_racing_replacement_when_path_is_free(
     assert marker.read_text(encoding="utf-8") == "replacement-B"
 
 
+def test_restore_link_unsupported_never_raises(tmp_path, monkeypatch, caplog):
+    marker = tmp_path / "serve-inflight-999.json"
+    marker.write_text("original", encoding="utf-8")
+    snapshot = server_start._marker_snapshot(marker)
+    real_rename = os.rename
+
+    def raced_rename(source, destination):
+        replacement = marker.with_suffix(".replacement")
+        replacement.write_text("replacement-B", encoding="utf-8")
+        os.replace(replacement, marker)
+        return real_rename(source, destination)
+
+    monkeypatch.setattr(server_start.os, "rename", raced_rename)
+    monkeypatch.setattr(
+        server_start.os,
+        "link",
+        lambda *_args: (_ for _ in ()).throw(OSError(errno.ENOTSUP, "unsupported")),
+    )
+
+    server_start._remove_marker_snapshot(marker, snapshot)
+
+    warnings = [
+        record
+        for record in caplog.records
+        if "could not hard-link quarantined serve marker" in record.getMessage()
+    ]
+    assert marker.exists()
+    assert marker.read_text(encoding="utf-8") == "replacement-B"
+    assert len(warnings) == 1
+
+
+def test_restore_link_unsupported_preserves_newer_marker(tmp_path, monkeypatch):
+    marker = tmp_path / "serve-inflight-999.json"
+    marker.write_text("original", encoding="utf-8")
+    snapshot = server_start._marker_snapshot(marker)
+    real_rename = os.rename
+
+    def raced_rename(source, destination):
+        replacement = marker.with_suffix(".replacement")
+        replacement.write_text("replacement-B", encoding="utf-8")
+        os.replace(replacement, marker)
+        monkeypatch.setattr(server_start.os, "rename", real_rename)
+        return real_rename(source, destination)
+
+    def failed_link(_source, _destination):
+        marker.write_text("replacement-C", encoding="utf-8")
+        raise OSError(errno.EXDEV, "unsupported")
+
+    monkeypatch.setattr(server_start.os, "rename", raced_rename)
+    monkeypatch.setattr(server_start.os, "link", failed_link)
+
+    server_start._remove_marker_snapshot(marker, snapshot)
+
+    stale = marker.with_name(f".{marker.name}.stale-{os.getpid()}")
+    assert marker.read_text(encoding="utf-8") == "replacement-C"
+    assert not stale.exists()
+
+
 def test_state_dir_and_marker_cleanup_defensive_races(monkeypatch, tmp_path):
     state = tmp_path / "state"
     state.mkdir()
@@ -596,7 +655,7 @@ def test_state_dir_and_marker_cleanup_defensive_races(monkeypatch, tmp_path):
             lambda *_args: (_ for _ in ()).throw(PermissionError("restore failed")),
         )
         server_start._remove_marker_snapshot(marker, snapshot)
-        assert stale.exists()
+        assert marker.exists()
 
 
 def test_pid_reuse_does_not_hide_pre_reboot_marker(monkeypatch, tmp_path):
@@ -848,6 +907,17 @@ def test_failure_context_preserves_original_exception(monkeypatch):
     assert caught.value.code == 2
     assert [props["state"] for _, props in events] == ["attempted", "failed"]
     assert events[-1][1]["failure_stage"] == "preflight"
+
+
+def test_fail_current_uses_selected_failure_stage(monkeypatch):
+    events = _capture(monkeypatch)
+    server_start.attempted("qwen3.5-4b-4bit", load_policy="eager")
+    server_start.set_failure_stage("bind")
+
+    server_start.fail_current()
+
+    assert [props["state"] for _, props in events] == ["attempted", "failed"]
+    assert events[-1][1]["failure_stage"] == "bind"
 
 
 def _stub_download_entry(monkeypatch):

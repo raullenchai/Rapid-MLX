@@ -678,7 +678,7 @@ def test_crash_pointer_is_acknowledged_across_clean_launches(tmp_path, capsys):
     assert capsys.readouterr().err == ""
 
 
-def test_report_ack_collision_never_overwrites_existing_diagnostic(tmp_path, capsys):
+def test_reported_suffix_collision_is_acknowledged_once(tmp_path, capsys):
     from rapid_mlx import _signal_observability as so
 
     crash = tmp_path / "crash-20260924T000000Z-99999.txt"
@@ -686,9 +686,12 @@ def test_report_ack_collision_never_overwrites_existing_diagnostic(tmp_path, cap
     crash.write_text("new-unreported-diagnostic", encoding="utf-8")
     reported.write_text("existing-reported-diagnostic", encoding="utf-8")
 
-    so._report_previous_crash(tmp_path)
+    pointer_counts = []
+    for _ in range(2):
+        so._report_previous_crash(tmp_path)
+        pointer_counts.append(capsys.readouterr().err.count("Previous run crashed"))
 
-    assert capsys.readouterr().err.count("Previous run crashed") == 1
+    assert pointer_counts == [1, 0]
     assert reported.read_text(encoding="utf-8") == "existing-reported-diagnostic"
     assert not crash.exists()
     assert (

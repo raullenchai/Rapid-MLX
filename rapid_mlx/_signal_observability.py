@@ -51,6 +51,7 @@ import faulthandler
 import json
 import logging
 import os
+import re
 import signal
 import stat
 import subprocess
@@ -117,6 +118,7 @@ _crash_cleanup_registered = False
 _faulthandler_was_enabled = False
 _tee_fallback_warned = False
 _MAX_MARKER_BYTES = 4096
+_ACKNOWLEDGED_CRASH_FILE = re.compile(r"\.reported(?:-\d+)?\.txt\Z")
 
 
 def _crash_logs_dir() -> Path:
@@ -140,6 +142,10 @@ def _crash_files(log_dir: Path) -> list[Path]:
         return []
     candidates.sort(reverse=True)
     return [path for _, _, path in candidates]
+
+
+def _is_acknowledged(name: str) -> bool:
+    return _ACKNOWLEDGED_CRASH_FILE.search(name) is not None
 
 
 def _crash_file_pid(path: Path) -> int | None:
@@ -187,7 +193,7 @@ def _crash_file_is_live(path: Path, log_dir: Path) -> bool:
 
 def _report_previous_crash(log_dir: Path) -> None:
     for path in _crash_files(log_dir):
-        if path.name.endswith(".reported.txt"):
+        if _is_acknowledged(path.name):
             continue
         try:
             if path.stat().st_size <= 0:
@@ -219,7 +225,7 @@ def _report_previous_crash(log_dir: Path) -> None:
 def _rotate_crash_files(log_dir: Path) -> None:
     retained_inactive = 0
     for path in _crash_files(log_dir):
-        if _crash_file_is_live(path, log_dir):
+        if not _is_acknowledged(path.name) and _crash_file_is_live(path, log_dir):
             continue
         retained_inactive += 1
         if retained_inactive <= 5:

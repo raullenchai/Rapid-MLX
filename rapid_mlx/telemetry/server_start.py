@@ -142,14 +142,30 @@ def _remove_marker_snapshot(path: Path, snapshot: tuple[int, int] | None) -> Non
         return
     try:
         os.rename(path, stale)
-        if _marker_snapshot(stale) != snapshot:
+        stale_snapshot = _marker_snapshot(stale)
+        if stale_snapshot != snapshot:
             # A replacement landed between the comparison and rename. Preserve it.
             try:
                 os.link(stale, path)
             except FileExistsError:
                 stale.unlink()
-            except OSError:
-                pass
+            except OSError as exc:
+                logger.warning(
+                    "could not hard-link quarantined serve marker %s; "
+                    "falling back to rename: %s",
+                    path,
+                    exc,
+                )
+                try:
+                    os.lstat(path)
+                except FileNotFoundError:
+                    os.rename(stale, path)
+                    # Confirm that the fallback left the quarantined marker at
+                    # its live pathname. A later replacement wins naturally.
+                    if _marker_snapshot(path) != stale_snapshot:
+                        return
+                else:
+                    stale.unlink()
             else:
                 stale.unlink()
             return
