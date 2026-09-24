@@ -6,6 +6,7 @@ from __future__ import annotations
 import errno
 import functools
 import re
+import socket
 import threading
 import urllib.error
 from collections.abc import Callable
@@ -66,11 +67,12 @@ def _exception_text(exc: BaseException) -> str:
 def pull_error_class(exc: BaseException) -> str:
     """Classify a pull exception without putting its message on the wire.
 
-    An ``HfHubHTTPError``, including one for a 5xx response, is ``other``
-    because the server answered. ``network`` is reserved for failures to obtain
-    a response.
+    An ``HfHubHTTPError`` for a 401/403 response is ``gated``; other HTTP
+    responses, including 5xx, are ``other`` because the server answered.
+    ``network`` is reserved for failures to obtain a response.
     """
     import httpx
+    from huggingface_hub.errors import HfHubHTTPError, OfflineModeIsEnabled
     from huggingface_hub.utils import (
         GatedRepoError,
         LocalEntryNotFoundError,
@@ -88,6 +90,16 @@ def pull_error_class(exc: BaseException) -> str:
         seen.add(id(current))
         if isinstance(current, GatedRepoError):
             return "gated"
+        if isinstance(current, HfHubHTTPError) and getattr(
+            current.response, "status_code", None
+        ) in (401, 403):
+            return "gated"
+        if isinstance(current, urllib.error.HTTPError):
+            if current.code in (401, 403):
+                return "gated"
+            if current.code == 404:
+                return "not_found"
+            return "other"
         if isinstance(current, RepositoryNotFoundError):
             return "not_found"
         if isinstance(current, OSError) and current.errno == errno.ENOSPC:
@@ -96,12 +108,13 @@ def pull_error_class(exc: BaseException) -> str:
             current,
             (
                 LocalEntryNotFoundError,
+                OfflineModeIsEnabled,
                 requests_exceptions.ConnectionError,
                 requests_exceptions.ConnectTimeout,
                 requests_exceptions.ReadTimeout,
-                httpx.ConnectError,
-                httpx.ConnectTimeout,
-                httpx.ReadTimeout,
+                httpx.NetworkError,
+                httpx.TimeoutException,
+                socket.gaierror,
                 urllib.error.URLError,
                 TimeoutError,
             ),

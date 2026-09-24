@@ -22,6 +22,7 @@ import os
 import shlex
 import sys
 import threading
+import urllib.error
 from collections.abc import Callable
 
 from rapid_mlx._completion import alias_completer
@@ -42,6 +43,8 @@ MIRROR_DEFAULT = "https://models.rapidmlx.com"
 _CONSENT_MUTATION_EVENT_LIMIT = 5
 _consent_mutation_event_count = 0
 _consent_mutation_event_lock = threading.Lock()
+_hub_guidance_rendered = False
+_hub_guidance_lock = threading.Lock()
 
 
 def _run_optional_runtime_guard(
@@ -2058,9 +2061,151 @@ def _offline_uncached_error(model_name: str) -> str:
 
 
 def _refuse_offline_uncached(model_name: str) -> None:
-    """Print the offline + uncached refusal and exit(1)."""
-    print(_offline_uncached_error(model_name), file=sys.stderr)
-    sys.exit(1)
+    """Record the offline + uncached refusal and exit(1)."""
+    from huggingface_hub.errors import OfflineModeIsEnabled
+
+    _fail_hub_resolution(
+        OfflineModeIsEnabled("offline mode is enabled"),
+        model_name,
+        _offline_uncached_error(model_name).strip(),
+    )
+
+
+def _claim_hub_guidance_render() -> bool:
+    """Claim the process-wide right to print Hub network guidance."""
+    global _hub_guidance_rendered
+    with _hub_guidance_lock:
+        if _hub_guidance_rendered:
+            return False
+        _hub_guidance_rendered = True
+        return True
+
+
+def _safe_hub_model_id(model_id: str) -> str:
+    """Return a bounded, single-line model identifier for user-facing output."""
+    return "".join(char if char.isprintable() else " " for char in model_id).strip()[
+        :200
+    ]
+
+
+def render_hub_error(exc: BaseException, model_id: str) -> str | None:
+    """Render an actionable Hub failure found on an explicit cause chain.
+
+    Matching is type-based and deliberately ignores ``__context__`` and raw
+    exception text. The latter can contain request URLs, tokens, or upstream
+    response bodies and must never become part of telemetry or CLI copy.
+    """
+    import socket
+
+    import httpx
+    from huggingface_hub.errors import (
+        GatedRepoError,
+        HfHubHTTPError,
+        LocalEntryNotFoundError,
+        OfflineModeIsEnabled,
+        RepositoryNotFoundError,
+    )
+    from requests import exceptions as requests_exceptions
+
+    rendered_model_id = _safe_hub_model_id(model_id)
+    current: BaseException | None = exc
+    seen: set[int] = set()
+    for _ in range(32):
+        if current is None or id(current) in seen:
+            break
+        seen.add(id(current))
+
+        if (
+            isinstance(current, RepositoryNotFoundError)
+            and getattr(current.response, "status_code", None) == 401
+        ):
+            return (
+                f"Hugging Face returned 401 for {rendered_model_id}: the model is "
+                "private, gated, or does not exist. If you have access, accept the "
+                f"licence at https://huggingface.co/{rendered_model_id} and sign in "
+                "(huggingface-cli login or HF_TOKEN); otherwise check the name "
+                "with rapid-mlx models."
+            )
+        if (
+            (
+                isinstance(current, HfHubHTTPError)
+                and getattr(current.response, "status_code", None) in (401, 403)
+            )
+            or isinstance(current, GatedRepoError)
+            or (
+                isinstance(current, urllib.error.HTTPError)
+                and current.code in (401, 403)
+            )
+        ):
+            return (
+                f"  Error: access to '{rendered_model_id}' is gated on Hugging Face.\n"
+                f"  Accept the licence or request access at "
+                f"https://huggingface.co/{rendered_model_id}\n"
+                "  Then run `huggingface-cli login` or set `HF_TOKEN`, "
+                "and try again."
+            )
+        if isinstance(current, RepositoryNotFoundError) or (
+            isinstance(current, urllib.error.HTTPError) and current.code == 404
+        ):
+            return (
+                f"  Error: model repository '{rendered_model_id}' was not found on "
+                "Hugging Face.\n"
+                "  Check available aliases with `rapid-mlx models`, or use a "
+                "full repository ID.\n"
+                "  Example: `rapid-mlx serve "
+                "mlx-community/Qwen3.5-9B-4bit`."
+            )
+        if isinstance(current, urllib.error.HTTPError):
+            return None
+        if isinstance(
+            current,
+            (
+                LocalEntryNotFoundError,
+                OfflineModeIsEnabled,
+                requests_exceptions.ConnectionError,
+                requests_exceptions.Timeout,
+                httpx.NetworkError,
+                httpx.TimeoutException,
+                socket.gaierror,
+                TimeoutError,
+                urllib.error.URLError,
+            ),
+        ):
+            return (
+                f"  Error: could not reach Hugging Face for '{rendered_model_id}'.\n"
+                "  Check your network connection and unset `HF_HUB_OFFLINE` "
+                "if offline mode is not intended.\n"
+                "  You can also serve an already-cached model."
+            )
+        try:
+            current = current.__cause__
+        except BaseException:
+            break
+    return None
+
+
+def _fail_hub_resolution(exc: BaseException, model_id: str, rendered: str) -> None:
+    """Record and terminate a Hub resolution failure that cannot be retried."""
+    from rapid_mlx.runtime.optional_runtime import format_startup_failure_marker
+    from rapid_mlx.telemetry.model_events import (
+        emit_model_pull_failed,
+        emit_model_serve_failed,
+        pull_error_class,
+    )
+    from rapid_mlx.telemetry.server_start import failed
+
+    print(f"\n{rendered}\n", file=sys.stderr)
+    marker_reason = {
+        "not_found": "model_not_found",
+        "gated": "model_gated",
+        "network": "hub_offline",
+    }.get(pull_error_class(exc))
+    if marker_reason is not None:
+        print(format_startup_failure_marker(marker_reason), file=sys.stderr)
+    emit_model_pull_failed(exc, model_ref=model_id, source="hf")
+    emit_model_serve_failed(exc, alias_or_path=model_id)
+    failed("resolve")
+    raise SystemExit(1)
 
 
 def _ensure_model_downloaded(
@@ -2238,7 +2383,7 @@ def _ensure_model_downloaded(
                 and (_prefix is None or s.rfilename.startswith(_prefix))
             )
             size_gb = size_bytes / (1024**3)
-        except TimeoutError:
+        except TimeoutError as exc:
             # The Hub did not answer within the deadline. Falling through to
             # ``snapshot_download`` would re-enter the unbounded lookup and
             # hang; the desktop would sit at "Starting" until its 30-minute
@@ -2248,25 +2393,21 @@ def _ensure_model_downloaded(
             # and lets the serve subprocess start, which would walk straight
             # back into the same hang. ``SystemExit`` is re-raised there, which
             # is the same escape hatch ``_check_disk_space`` already uses.
-            print(
-                f"\n  Error: could not reach HuggingFace to resolve "
-                f"{model_name} within {_HF_RESOLVE_TIMEOUT_SECONDS:.0f}s.\n"
-                "  The model is not fully downloaded yet, so it cannot be "
-                "started offline.\n"
-                "  Check your network or proxy settings and try again.\n",
-                file=sys.stderr,
-            )
-            from rapid_mlx.telemetry.model_events import emit_model_pull_failed
-            from rapid_mlx.telemetry.server_start import failed
-
-            emit_model_pull_failed(TimeoutError(), model_ref=model_name, source="hf")
-            failed("resolve")
-            sys.exit(1)
-        except Exception:
+            rendered = render_hub_error(exc, model_name)
+            assert rendered is not None
+            _fail_hub_resolution(exc, model_name, rendered)
+        except Exception as exc:
             # Any other metadata failure stays best-effort: an outage, a gated
             # repo or a missing token costs us the size quote, and the download
             # proceeds to fail (or succeed) with its own clearer error.
-            pass
+            rendered = render_hub_error(exc, model_name)
+            if rendered is not None:
+                from rapid_mlx.telemetry.model_events import pull_error_class
+
+                if pull_error_class(exc) in {"gated", "not_found"}:
+                    _fail_hub_resolution(exc, model_name, rendered)
+                if _claim_hub_guidance_render():
+                    print(f"\n{rendered}\n", file=sys.stderr)
 
         is_tty = sys.stdout.isatty() and "NO_COLOR" not in os.environ
         BOLD = "\x1b[1m" if is_tty else ""
@@ -2309,23 +2450,29 @@ def _ensure_model_downloaded(
         # _check_disk_space aborts via sys.exit(1) — let it through.
         raise
     except Exception as e:
-        # Definitive 404s are surfaced so callers (e.g. ``/model bogus``)
-        # can refuse fast instead of spawning a doomed serve subprocess
-        # that fails after ``--ready-timeout``. Other transient errors
-        # (network, auth) fall through silently — the spawned server's
-        # own loader will retry and surface a real error if needed.
-        from huggingface_hub.utils import RepositoryNotFoundError
+        # Typed permanent failures stop here; starting a loader cannot repair
+        # a missing repository or grant access to a gated one. Network and
+        # offline failures retain the best-effort loader retry.
+        from rapid_mlx.telemetry.model_events import (
+            emit_model_pull_failed,
+            pull_error_class,
+        )
 
-        from rapid_mlx.telemetry.model_events import emit_model_pull_failed
+        rendered = render_hub_error(e, model_name)
+        if rendered is not None and pull_error_class(e) in {"gated", "not_found"}:
+            _fail_hub_resolution(e, model_name, rendered)
 
         emit_model_pull_failed(e, model_ref=model_name, source="hf")
-
-        if isinstance(e, RepositoryNotFoundError) or "404" in str(e):
-            from rapid_mlx.telemetry.server_start import failed
-
-            failed("download")
-            raise RuntimeError(f"Model {model_name!r} not found on HuggingFace") from e
-        print(f"\n  Pre-download skipped ({type(e).__name__}); server will retry.")
+        if rendered is not None:
+            if _claim_hub_guidance_render():
+                print(
+                    f"\n{rendered}\n  The server will retry during startup.",
+                    file=sys.stderr,
+                )
+            else:
+                print("  The server will retry during startup.", file=sys.stderr)
+        else:
+            print(f"\n  Pre-download skipped ({type(e).__name__}); server will retry.")
 
 
 def _add_pflash_args(parser) -> None:
