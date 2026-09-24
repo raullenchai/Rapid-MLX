@@ -13,6 +13,7 @@ import shutil
 import sys
 import tempfile
 import uuid
+import warnings
 from collections.abc import Iterator, Mapping
 from contextlib import contextmanager
 from pathlib import Path
@@ -107,7 +108,14 @@ def _publish_artifact_unlocked(staging: Path, destination: Path) -> None:
     finally:
         # If restoration itself fails, the backup is the only remaining copy.
         if backup.exists() and (published or restored):
-            shutil.rmtree(backup)
+            try:
+                shutil.rmtree(backup)
+            except OSError as exc:
+                warnings.warn(
+                    f"published CLM artifact but retained backup {backup}: {exc}",
+                    RuntimeWarning,
+                    stacklevel=2,
+                )
 
 
 def convert(input_path: str | Path, output_dir: str | Path) -> Path:

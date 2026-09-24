@@ -3973,7 +3973,7 @@ def system_one_command(args) -> None:
     import os
 
     from rapid_mlx._uvicorn import run_uvicorn
-    from rapid_mlx.system_one.backends import CLMBackend, LayaBackend
+    from rapid_mlx.system_one.backends import CLMBackend, DecisionBackend, LayaBackend
     from rapid_mlx.system_one.server import create_app
 
     backend_name = _resolve_system_one_backend(args.model, args.backend)
@@ -3988,6 +3988,7 @@ def system_one_command(args) -> None:
     # Fail before model download or initialization when the listener cannot
     # start. Cheap argument validation above still wins for invalid commands.
     _port_preflight_or_die(args.host, args.port, model=args.model)
+    backend: DecisionBackend
     if backend_name == "clm":
         backend = CLMBackend(
             args.encoder,

@@ -8,7 +8,7 @@ import math
 import threading
 from collections import OrderedDict
 from pathlib import Path
-from typing import Any, Protocol
+from typing import Any, Protocol, cast
 
 from .schema import Question, answer_from_probabilities, clm_pairs, to_text
 
@@ -68,7 +68,9 @@ class LayaBackend:
                 "the Laya backend uses checkpoint calibration and requires temperature=1"
             )
         with self._lock:
-            result = self._agent.system_one(state, self._wire_questions(questions))
+            result = cast(
+                dict, self._agent.system_one(state, self._wire_questions(questions))
+            )
         result["model"] = self.default_model
         result.setdefault("usage", {})["billing_units"] = len(questions)
         return result
@@ -289,7 +291,7 @@ class CLMBackend:
                 f"CLM input text exceeds {self._max_text_bytes} UTF-8 bytes before tokenization"
             )
         tokenizer = getattr(self._tokenizer, "_tokenizer", self._tokenizer)
-        ids = tokenizer.encode(text, add_special_tokens=True)
+        ids = cast(list[int], tokenizer.encode(text, add_special_tokens=True))
         if not ids:
             eos = getattr(tokenizer, "eos_token_id", None)
             if eos is None:

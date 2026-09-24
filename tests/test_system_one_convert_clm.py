@@ -1,6 +1,7 @@
 # SPDX-License-Identifier: Apache-2.0
 from __future__ import annotations
 
+import importlib.util
 import json
 import os
 import sys
@@ -8,11 +9,14 @@ import threading
 import time
 from types import SimpleNamespace
 
-import mlx.core as mx
 import numpy as np
 import pytest
 
 from rapid_mlx.system_one.convert_clm import _artifact_lock, _publish_artifact, convert
+
+requires_mlx = pytest.mark.skipif(
+    importlib.util.find_spec("mlx") is None, reason="conversion requires MLX"
+)
 
 
 def _artifact(path, marker: str):
@@ -89,6 +93,22 @@ def test_publish_artifact_preserves_backup_when_restore_fails(monkeypatch, tmp_p
     assert (backups[0] / "model.safetensors").read_text() == "old"
 
 
+def test_publish_artifact_reports_success_when_backup_cleanup_fails(
+    monkeypatch, tmp_path
+):
+    destination = tmp_path / "head"
+    staging = tmp_path / ".staging"
+    _artifact(destination, "old")
+    _artifact(staging, "new")
+    monkeypatch.setattr(
+        "rapid_mlx.system_one.convert_clm.shutil.rmtree",
+        lambda path: (_ for _ in ()).throw(OSError("read-only backup")),
+    )
+    with pytest.warns(RuntimeWarning, match="retained backup"):
+        _publish_artifact(staging, destination)
+    assert (destination / "config.json").read_text() == "new"
+
+
 def test_artifact_lock_serializes_readers_and_publishers(tmp_path):
     destination = tmp_path / "head"
     staging = tmp_path / ".staging"
@@ -154,7 +174,10 @@ def _fake_torch(monkeypatch, checkpoint):
     monkeypatch.setitem(sys.modules, "torch", module)
 
 
+@requires_mlx
 def test_convert_writes_validated_safetensors_generation(monkeypatch, tmp_path):
+    import mlx.core as mx
+
     head = {
         "inp.weight": _FakeTensor([[1.0]]),
         "inp.bias": _FakeTensor([0.0]),
@@ -191,6 +214,7 @@ def test_convert_writes_validated_safetensors_generation(monkeypatch, tmp_path):
         ),
     ],
 )
+@requires_mlx
 def test_convert_rejects_non_mapping_checkpoint_parts(
     monkeypatch, tmp_path, checkpoint, message
 ):
@@ -199,6 +223,7 @@ def test_convert_rejects_non_mapping_checkpoint_parts(
         convert(tmp_path / "head.pt", tmp_path / "converted")
 
 
+@requires_mlx
 def test_convert_rejects_tensor_shape_mismatch(monkeypatch, tmp_path):
     head = {
         "inp.weight": _FakeTensor([[1.0, 2.0]]),
@@ -217,6 +242,7 @@ def test_convert_rejects_tensor_shape_mismatch(monkeypatch, tmp_path):
         convert(tmp_path / "head.pt", tmp_path / "converted")
 
 
+@requires_mlx
 def test_convert_applies_top_level_projection_dimension_before_validation(
     monkeypatch, tmp_path
 ):
@@ -240,6 +266,7 @@ def test_convert_applies_top_level_projection_dimension_before_validation(
 
 
 @pytest.mark.parametrize("logit_scale", [float("nan"), float("inf"), 1000.0])
+@requires_mlx
 def test_convert_rejects_unsafe_logit_scale(monkeypatch, tmp_path, logit_scale):
     head = {
         "inp.weight": _FakeTensor([[1.0]]),
@@ -258,6 +285,7 @@ def test_convert_rejects_unsafe_logit_scale(monkeypatch, tmp_path, logit_scale):
         convert(tmp_path / "head.pt", tmp_path / "converted")
 
 
+@requires_mlx
 def test_convert_rejects_non_json_config(monkeypatch, tmp_path):
     head = {
         "inp.weight": _FakeTensor([[1.0]]),
@@ -282,6 +310,7 @@ def test_convert_rejects_non_json_config(monkeypatch, tmp_path):
         convert(tmp_path / "head.pt", tmp_path / "converted")
 
 
+@requires_mlx
 def test_convert_rejects_depth_below_two(monkeypatch, tmp_path):
     checkpoint = {
         "state_head": {},
