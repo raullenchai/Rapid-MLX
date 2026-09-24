@@ -694,8 +694,7 @@ def test_cleanup_residuals_allow_equal_nonzero_imported_process_baseline():
     assert gates["checks"]["post_stop_footprint_within_cleanup_bound"] is True
     assert gates["checks"]["stop_does_not_raise_mlx_peak_beyond_allowance"] is True
     assert (
-        gates["checks"]["stop_does_not_raise_footprint_peak_beyond_allowance"]
-        is True
+        gates["checks"]["stop_does_not_raise_footprint_peak_beyond_allowance"] is True
     )
     assert gates["metrics"]["post_stop_mlx_active_residual_bytes"] == 0
     assert gates["metrics"]["post_stop_mlx_cache_residual_bytes"] == 0
@@ -1172,7 +1171,10 @@ async def test_partial_receipt_preserves_primary_and_cleanup_errors(monkeypatch)
         raise ValueError(
             "primary at /private/tmp/q38-secret/model.bin via "
             "https://alice:password@private.example/run?token=url-secret "
-            "with api_key=loose-secret"
+            "with api_key=loose-secret; "
+            "GET /callback?refresh_token=r3fr3sh&client_secret=cl13nt failed; "
+            "credential=cred session_token=session; "
+            r"UNC \\private-server\share\alice\secret.bin"
         )
 
     monkeypatch.setattr(bench, "_run_benchmark_impl", fail)
@@ -1190,10 +1192,20 @@ async def test_partial_receipt_preserves_primary_and_cleanup_errors(monkeypatch)
         "url-secret",
         "loose-secret",
         "cleanup-secret",
+        "r3fr3sh",
+        "cl13nt",
+        "credential=cred",
+        "session_token=session",
+        "private-server",
+        "secret.bin",
     ):
         assert secret not in serialized
     assert "<redacted-path>" in serialized
     assert "<redacted-url>" in serialized
     assert "token=<redacted>" in serialized
     assert "api_key=<redacted>" in serialized
+    assert "refresh_token=<redacted>" in serialized
+    assert "client_secret=<redacted>" in serialized
+    assert "credential=<redacted>" in serialized
+    assert "session_token=<redacted>" in serialized
     assert receipt["gates"]["pass"] is False

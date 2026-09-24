@@ -113,11 +113,14 @@ _URL_RE = re.compile(r"(?i)\b[a-z][a-z0-9+.-]*://[^\s<>\"']+")
 _CREDENTIALED_HOST_RE = re.compile(
     r"(?i)\b[^\s:@/]+:[^@\s/]+@[a-z0-9.-]+(?::\d+)?(?:/[^\s<>\"']*)?"
 )
+_QUERY_VALUE_RE = re.compile(r"([?&])([^?&=\s<>\"']+)=([^&#\s<>\"']*)")
 _SENSITIVE_PARAMETER_RE = re.compile(
-    r"(?i)\b(token|access_token|auth_token|api[_-]?key|secret|password|passwd|"
-    r"signature|sig)=([^&\s,;]+)"
+    r"(?i)(?<![a-z0-9_-])"
+    r"([a-z0-9_-]*(?:token|secret|password|passwd|credential|signature|"
+    r"api[_-]?key)[a-z0-9_-]*|auth(?:orization)?)\s*=\s*([^&\s,;]+)"
 )
 _AUTHORIZATION_RE = re.compile(r"(?i)\b(bearer|basic)\s+[a-z0-9._~+/=-]+")
+_UNC_PATH_RE = re.compile(r"\\\\[^\\\s<>\"']+(?:\\[^\\\s<>\"']+)+")
 _WINDOWS_ABSOLUTE_PATH_RE = re.compile(
     r"(?i)\b[a-z]:\\(?:[^\\\s<>\"']+\\)*[^\\\s<>\"',;:()\[\]{}]+"
 )
@@ -131,8 +134,10 @@ def _sanitize_text(value: str) -> str:
     """Remove paths and credentials while retaining useful failure context."""
     value = _URL_RE.sub("<redacted-url>", value)
     value = _CREDENTIALED_HOST_RE.sub("<redacted-url>", value)
+    value = _QUERY_VALUE_RE.sub(r"\1\2=<redacted>", value)
     value = _SENSITIVE_PARAMETER_RE.sub(r"\1=<redacted>", value)
     value = _AUTHORIZATION_RE.sub(r"\1 <redacted>", value)
+    value = _UNC_PATH_RE.sub("<redacted-path>", value)
     value = _WINDOWS_ABSOLUTE_PATH_RE.sub("<redacted-path>", value)
     return _POSIX_ABSOLUTE_PATH_RE.sub("<redacted-path>", value)
 
@@ -2238,9 +2243,7 @@ async def _run_benchmark_impl(
             },
             "errors": errors,
         }
-        receipt["gates"] = evaluate_gates(
-            receipt, args.max_memory_delta_mib * MIB
-        )
+        receipt["gates"] = evaluate_gates(receipt, args.max_memory_delta_mib * MIB)
         return receipt
     except Exception as exc:
         primary_error = exc
