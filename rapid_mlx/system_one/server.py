@@ -14,16 +14,23 @@ from .backends import DecisionBackend
 from .schema import RankRequest, SystemOneRequest
 
 
-def create_app(backend: DecisionBackend, api_key: str | None = None) -> FastAPI:
+def create_app(
+    backend: DecisionBackend,
+    api_key: str | None = None,
+    *,
+    max_concurrent_requests: int = 8,
+) -> FastAPI:
+    if max_concurrent_requests < 1:
+        raise ValueError("max_concurrent_requests must be positive")
     app = FastAPI(
         title="Rapid-MLX System One API",
         description="TypeSafe-compatible typed decisions on Apple Silicon",
         version="1.0.0",
     )
     app.state.backend = backend
-    # Apply the same pre-parse JSON size and nesting limits as the generative
-    # server. Typed state is intentionally flexible, so route-level schemas
-    # alone cannot bound parser work.
+    # Apply the same pre-parse JSON protections as the generative server.
+    # RequestBodyLimitMiddleware owns BOTH the size cap and the per-chunk
+    # ServerConfig.body_receive_timeout_seconds slow-body timeout.
     from rapid_mlx.middleware.body_depth import (
         install_request_body_depth_middleware,
     )
@@ -31,12 +38,17 @@ def create_app(backend: DecisionBackend, api_key: str | None = None) -> FastAPI:
 
     install_request_body_depth_middleware(app)
     install_request_body_limit_middleware(app)
+    admission = asyncio.Semaphore(max_concurrent_requests)
 
     def verify(authorization: str | None = Header(default=None)) -> None:
         if api_key is None:
             return
-        expected = f"Bearer {api_key}"
-        if authorization is None or not hmac.compare_digest(authorization, expected):
+        scheme, separator, token = (authorization or "").partition(" ")
+        if (
+            not separator
+            or scheme.lower() != "bearer"
+            or not hmac.compare_digest(token, api_key)
+        ):
             raise HTTPException(
                 status_code=401,
                 detail="invalid API key",
@@ -55,14 +67,21 @@ def create_app(backend: DecisionBackend, api_key: str | None = None) -> FastAPI:
     async def system_one(request: SystemOneRequest):
         model = request.model or backend.default_model
         started = time.perf_counter()
-        try:
-            result = await asyncio.to_thread(
-                backend.answer,
-                request.state,
-                request.questions,
-                model,
-                request.temperature,
+        if admission.locked():
+            raise HTTPException(
+                status_code=503,
+                detail="System One request capacity is full",
+                headers={"Retry-After": "1"},
             )
+        try:
+            async with admission:
+                result = await asyncio.to_thread(
+                    backend.answer,
+                    request.state,
+                    request.questions,
+                    model,
+                    request.temperature,
+                )
         except KeyError as exc:
             raise HTTPException(status_code=404, detail=str(exc.args[0])) from exc
         except (TypeError, ValueError) as exc:
@@ -80,15 +99,22 @@ def create_app(backend: DecisionBackend, api_key: str | None = None) -> FastAPI:
     async def rank(request: RankRequest):
         model = request.model or backend.default_model
         started = time.perf_counter()
-        try:
-            ranked = await asyncio.to_thread(
-                backend.rank,
-                request.context,
-                request.question,
-                request.answers,
-                model,
-                request.temperature,
+        if admission.locked():
+            raise HTTPException(
+                status_code=503,
+                detail="System One request capacity is full",
+                headers={"Retry-After": "1"},
             )
+        try:
+            async with admission:
+                ranked = await asyncio.to_thread(
+                    backend.rank,
+                    request.context,
+                    request.question,
+                    request.answers,
+                    model,
+                    request.temperature,
+                )
         except KeyError as exc:
             raise HTTPException(status_code=404, detail=str(exc.args[0])) from exc
         except (TypeError, ValueError) as exc:

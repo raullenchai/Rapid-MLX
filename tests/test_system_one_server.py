@@ -1,6 +1,11 @@
 # SPDX-License-Identifier: Apache-2.0
 from __future__ import annotations
 
+import asyncio
+import json
+import threading
+
+import httpx
 from fastapi.testclient import TestClient
 
 from rapid_mlx.system_one.schema import Question, clm_pairs
@@ -60,6 +65,11 @@ def test_system_one_contract_and_auth():
     assert response.json()["answers"]["go"] == {"type": "noul", "noul": 0.75}
     assert response.json()["usage"]["billing_units"] == 1
     assert float(response.headers["X-Rapid-MLX-Latency-Ms"]) >= 0
+
+    lowercase_scheme = client.get(
+        "/v1/models", headers={"Authorization": "bearer secret"}
+    )
+    assert lowercase_scheme.status_code == 200
 
 
 def test_system_one_rejects_ambiguous_or_unbounded_questions():
@@ -138,7 +148,6 @@ def test_clm_rendering_matches_reference_layout():
 def test_clm_backend_runs_native_hidden_state_and_reuses_action_cache(
     monkeypatch, tmp_path
 ):
-    import json
     from types import SimpleNamespace
 
     import mlx.core as mx
@@ -216,3 +225,87 @@ def test_clm_backend_runs_native_hidden_state_and_reuses_action_cache(
         assert "encoder tokens" in str(exc)
     else:
         raise AssertionError("CLM accepted a request over its work-token budget")
+
+
+async def test_system_one_rejects_slow_request_body():
+    from rapid_mlx.config import get_config
+
+    app = create_app(FakeBackend())
+    body = json.dumps(
+        {
+            "state": "ready",
+            "questions": {"go": {"type": "noul", "instructions": "Go?"}},
+        }
+    ).encode()
+    split = len(body) // 2
+    calls = 0
+
+    async def receive():
+        nonlocal calls
+        calls += 1
+        if calls == 1:
+            return {"type": "http.request", "body": body[:split], "more_body": True}
+        await asyncio.sleep(0.05)
+        return {"type": "http.request", "body": body[split:], "more_body": False}
+
+    messages = []
+
+    async def send(message):
+        messages.append(message)
+
+    config = get_config()
+    previous = config.body_receive_timeout_seconds
+    config.body_receive_timeout_seconds = 0.01
+    try:
+        await app(
+            {
+                "type": "http",
+                "asgi": {"version": "3.0"},
+                "http_version": "1.1",
+                "method": "POST",
+                "scheme": "http",
+                "path": "/v1/systemone",
+                "raw_path": b"/v1/systemone",
+                "query_string": b"",
+                "headers": [
+                    (b"content-type", b"application/json"),
+                    (b"content-length", str(len(body)).encode()),
+                ],
+                "client": ("127.0.0.1", 1),
+                "server": ("test", 80),
+            },
+            receive,
+            send,
+        )
+    finally:
+        config.body_receive_timeout_seconds = previous
+    start = next(
+        message for message in messages if message["type"] == "http.response.start"
+    )
+    assert start["status"] == 408
+
+
+async def test_system_one_bounds_executor_admission():
+    started = threading.Event()
+    release = threading.Event()
+
+    class BlockingBackend(FakeBackend):
+        def answer(self, state, questions, model, temperature):
+            started.set()
+            assert release.wait(timeout=2)
+            return super().answer(state, questions, model, temperature)
+
+    app = create_app(BlockingBackend(), max_concurrent_requests=1)
+    transport = httpx.ASGITransport(app=app)
+    request = {
+        "state": "ready",
+        "questions": {"go": {"type": "noul", "instructions": "Go?"}},
+    }
+    async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
+        first = asyncio.create_task(client.post("/v1/systemone", json=request))
+        assert await asyncio.to_thread(started.wait, 1)
+        second = await client.post("/v1/systemone", json=request)
+        assert second.status_code == 503
+        assert second.headers["Retry-After"] == "1"
+        release.set()
+        assert (await first).status_code == 200

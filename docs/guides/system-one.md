@@ -102,3 +102,5 @@ nesting-depth protection.
 - A request may contain at most 64 questions and 255 options per question.
   Across all questions it may contain at most 255 candidates and 32,768 CLM
   encoder tokens. `--max-work-tokens` changes the token budget.
+- At most eight requests enter inference concurrently. `--max-concurrent-requests`
+  changes this admission limit; excess requests receive `503` with `Retry-After`.

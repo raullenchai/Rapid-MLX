@@ -4001,7 +4001,11 @@ def system_one_command(args) -> None:
         )
     _port_preflight_or_die(args.host, args.port, model=args.model)
     api_key = args.api_key or os.environ.get("RAPID_MLX_API_KEY")
-    app = create_app(backend, api_key=api_key)
+    app = create_app(
+        backend,
+        api_key=api_key,
+        max_concurrent_requests=args.max_concurrent_requests,
+    )
     print(
         f"System One ready: http://{args.host}:{args.port}/v1/systemone "
         f"({backend_name}, {backend.default_model})"
@@ -12273,6 +12277,12 @@ Examples:
         type=positive_int,
         default=32_768,
         help="Maximum aggregate CLM encoder tokens accepted in one request",
+    )
+    system_one_parser.add_argument(
+        "--max-concurrent-requests",
+        type=positive_int,
+        default=8,
+        help="Maximum System One requests admitted to inference at once",
     )
 
     # Serve command. ``allow_abbrev=False`` blocks unique-prefix matches

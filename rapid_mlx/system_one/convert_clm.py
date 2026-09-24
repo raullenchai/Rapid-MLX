@@ -5,7 +5,42 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
+import shutil
+import tempfile
+import uuid
 from pathlib import Path
+
+
+def _publish_artifact(staging: Path, destination: Path) -> None:
+    """Publish a validated two-file artifact as one directory generation."""
+    required = {"config.json", "model.safetensors"}
+    if {item.name for item in staging.iterdir()} != required:
+        raise ValueError("staged CLM artifact is incomplete")
+    backup = destination.parent / f".{destination.name}.backup-{uuid.uuid4().hex}"
+    moved_old = False
+    try:
+        if destination.exists():
+            if not destination.is_dir():
+                raise ValueError(
+                    f"CLM output exists and is not a directory: {destination}"
+                )
+            unexpected = {item.name for item in destination.iterdir()} - required
+            if unexpected:
+                raise ValueError(
+                    "refusing to replace CLM output containing unrelated files: "
+                    f"{sorted(unexpected)}"
+                )
+            os.replace(destination, backup)
+            moved_old = True
+        os.replace(staging, destination)
+    except BaseException:
+        if moved_old and backup.exists() and not destination.exists():
+            os.replace(backup, destination)
+        raise
+    finally:
+        if backup.exists():
+            shutil.rmtree(backup)
 
 
 def convert(input_path: str | Path, output_dir: str | Path) -> Path:
@@ -20,7 +55,7 @@ def convert(input_path: str | Path, output_dir: str | Path) -> Path:
 
     source = Path(input_path).expanduser().resolve()
     destination = Path(output_dir).expanduser().resolve()
-    destination.mkdir(parents=True, exist_ok=True)
+    destination.parent.mkdir(parents=True, exist_ok=True)
     # weights_only prevents the checkpoint pickle from constructing arbitrary
     # Python objects. Official CLM heads contain tensors and primitive config.
     checkpoint = torch.load(source, map_location="cpu", weights_only=True)
@@ -45,10 +80,21 @@ def convert(input_path: str | Path, output_dir: str | Path) -> Path:
             tensors[f"{prefix}.{name}"] = mx.array(
                 np.asarray(tensor.detach().float().cpu().numpy())
             )
-    mx.save_safetensors(str(destination / "model.safetensors"), tensors)
-    (destination / "config.json").write_text(
-        json.dumps(config, indent=2, sort_keys=True) + "\n", encoding="utf-8"
+    staging = Path(
+        tempfile.mkdtemp(prefix=f".{destination.name}.staging-", dir=destination.parent)
     )
+    try:
+        mx.save_safetensors(str(staging / "model.safetensors"), tensors)
+        (staging / "config.json").write_text(
+            json.dumps(config, indent=2, sort_keys=True) + "\n", encoding="utf-8"
+        )
+        # Materialize both files before publishing the directory generation.
+        mx.eval(mx.load(str(staging / "model.safetensors")))
+        json.loads((staging / "config.json").read_text(encoding="utf-8"))
+        _publish_artifact(staging, destination)
+    finally:
+        if staging.exists():
+            shutil.rmtree(staging)
     return destination
 
 

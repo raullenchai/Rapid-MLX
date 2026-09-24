@@ -12,6 +12,7 @@ def test_system_one_cli_defaults_to_laya_service():
     assert args.backend == "auto"
     assert args.host == "127.0.0.1"
     assert args.port == 8700
+    assert args.max_concurrent_requests == 8
 
 
 def test_system_one_cli_accepts_clm_runtime_inputs():
