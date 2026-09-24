@@ -1,0 +1,70 @@
+{
+  "artifact": {
+    "repo_id": "mlx-community/Qwen3.6-35B-A3B-4bit",
+    "revision": "38740b847e4cb78f352aba30aa41c76e08e6eb46",
+    "verification_id": "hf-snapshot-sha256:d0a40af8a936fe4a994e700305b4c012f021c8551acaa332b1233d930bd1dbe8"
+  },
+  "decision": "performance_not_qualified",
+  "environment": {
+    "chip": "Apple M3 Ultra",
+    "hardware_model": "Mac15,14",
+    "macos": "26.5.2",
+    "memory_bytes": 274877906944,
+    "python": "3.12.13",
+    "runtime_versions": {
+      "mlx": "0.32.2",
+      "mlx-lm": "0.31.3",
+      "mlx-vlm": "0.7.1",
+      "rapid-mlx": "0.15.0"
+    }
+  },
+  "harness": {
+    "image_expect": "Community pulse",
+    "image_sha256": "f4940e3aec6680c025dd2d178ba49043aa3f8db90c0df9ddf04acf630c762e25",
+    "max_tokens": 256,
+    "mmlu_samples": 0,
+    "pairs": 6,
+    "quality_max_tokens": 512
+  },
+  "lifecycle": {
+    "benchmark_process_exited": true,
+    "post_process_mlx_active_bytes": 0,
+    "post_process_mlx_cache_bytes": 0
+  },
+  "media": {
+    "observed_text": "Performance on Macs like yours",
+    "pass": false,
+    "text_recovery_pass": true
+  },
+  "memory": {
+    "after_fallback_warmup_active_bytes": 20403124472,
+    "after_native_warmup_active_bytes": 20403632716,
+    "final_active_bytes": 20524481142,
+    "peak_bytes": 26207747406,
+    "startup_active_bytes": 20402600178
+  },
+  "performance": {
+    "fallback_median_tok_s": 108.5027278133237,
+    "native_median_tok_s": 79.19429404778137,
+    "output_exact_pairs": 6,
+    "pair_ratios": [
+      0.7596829956738473,
+      0.7180802480686077,
+      0.740805625816785,
+      0.7147255910203175,
+      0.738788323356888,
+      0.7190380300644743
+    ],
+    "paired_median_ratio": 0.7289131767106811,
+    "positive_pairs": 0,
+    "total_pairs": 6
+  },
+  "quality": {
+    "behavioral_cases_passed": 5,
+    "behavioral_cases_total": 5,
+    "mmlu_run": false
+  },
+  "raw_receipt_sha256": "fb6af37e0a8f7aeaef0131e3a0c5f6f4d24761af253c533e69fe74b9fed3d227",
+  "schema_version": 1,
+  "source_commit": "2910c03851d2be11ba77d10bac16f72ae70afff5"
+}
