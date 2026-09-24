@@ -537,7 +537,9 @@ def test_quarantine_restores_racing_replacement_when_path_is_free(
     assert marker.read_text(encoding="utf-8") == "replacement-B"
 
 
-def test_restore_link_unsupported_never_raises(tmp_path, monkeypatch, caplog):
+def test_restore_link_unsupported_claim_succeeds_without_warning(
+    tmp_path, monkeypatch, caplog
+):
     marker = tmp_path / "serve-inflight-999.json"
     marker.write_text("original", encoding="utf-8")
     snapshot = server_start._marker_snapshot(marker)
@@ -558,17 +560,14 @@ def test_restore_link_unsupported_never_raises(tmp_path, monkeypatch, caplog):
 
     server_start._remove_marker_snapshot(marker, snapshot)
 
-    warnings = [
-        record
-        for record in caplog.records
-        if "could not hard-link quarantined serve marker" in record.getMessage()
-    ]
+    stale = marker.with_name(f".{marker.name}.stale-{os.getpid()}")
     assert marker.exists()
     assert marker.read_text(encoding="utf-8") == "replacement-B"
-    assert len(warnings) == 1
+    assert not stale.exists()
+    assert not caplog.records
 
 
-def test_restore_link_unsupported_preserves_newer_marker(tmp_path, monkeypatch):
+def test_restore_link_unsupported_preserves_newer_marker(tmp_path, monkeypatch, caplog):
     marker = tmp_path / "serve-inflight-999.json"
     marker.write_text("original", encoding="utf-8")
     snapshot = server_start._marker_snapshot(marker)
@@ -592,7 +591,54 @@ def test_restore_link_unsupported_preserves_newer_marker(tmp_path, monkeypatch):
 
     stale = marker.with_name(f".{marker.name}.stale-{os.getpid()}")
     assert marker.read_text(encoding="utf-8") == "replacement-C"
-    assert not stale.exists()
+    assert stale.read_text(encoding="utf-8") == "replacement-B"
+    assert len(caplog.records) == 1
+    assert str(stale) in caplog.text
+    assert str(marker) in caplog.text
+
+
+def test_restore_fallback_does_not_overwrite_arrival_after_free_check(
+    tmp_path, monkeypatch, caplog
+):
+    marker = tmp_path / "serve-inflight-999.json"
+    marker.write_text("original-A", encoding="utf-8")
+    snapshot = server_start._marker_snapshot(marker)
+    real_open = os.open
+    real_rename = os.rename
+    rename_calls = 0
+
+    def raced_rename(source, destination):
+        nonlocal rename_calls
+        rename_calls += 1
+        replacement = marker.with_suffix(".replacement-B")
+        replacement.write_text("replacement-B", encoding="utf-8")
+        os.replace(replacement, marker)
+        return real_rename(source, destination)
+
+    def raced_open(path, flags, mode=0o777):
+        if Path(path) == marker and flags & os.O_EXCL:
+            replacement = marker.with_suffix(".replacement-C")
+            replacement.write_text("replacement-C", encoding="utf-8")
+            os.replace(replacement, marker)
+        return real_open(path, flags, mode)
+
+    monkeypatch.setattr(server_start.os, "rename", raced_rename)
+    monkeypatch.setattr(server_start.os, "open", raced_open)
+    monkeypatch.setattr(
+        server_start.os,
+        "link",
+        lambda *_args: (_ for _ in ()).throw(OSError(errno.ENOTSUP, "unsupported")),
+    )
+
+    server_start._remove_marker_snapshot(marker, snapshot)
+
+    stale = marker.with_name(f".{marker.name}.stale-{os.getpid()}")
+    assert rename_calls == 1
+    assert marker.read_text(encoding="utf-8") == "replacement-C"
+    assert stale.read_text(encoding="utf-8") == "replacement-B"
+    assert len(caplog.records) == 1
+    assert str(stale) in caplog.text
+    assert str(marker) in caplog.text
 
 
 def test_state_dir_and_marker_cleanup_defensive_races(monkeypatch, tmp_path):
