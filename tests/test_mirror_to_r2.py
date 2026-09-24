@@ -35,12 +35,13 @@ import pytest
 # collect into a false failure.
 pytest.importorskip("botocore")
 
-# Load the CLI module from ``scripts/`` — it isn't a package member.
+# Load the CLI module from ``scripts/`` with its package identity so its
+# package-relative imports follow the same path as normal module execution.
 _SCRIPT = Path(__file__).parent.parent / "scripts" / "mirror_to_r2.py"
-_SPEC = importlib.util.spec_from_file_location("mirror_to_r2", _SCRIPT)
+_SPEC = importlib.util.spec_from_file_location("scripts.mirror_to_r2", _SCRIPT)
 assert _SPEC and _SPEC.loader
 mirror_to_r2 = importlib.util.module_from_spec(_SPEC)
-sys.modules["mirror_to_r2"] = mirror_to_r2
+sys.modules[_SPEC.name] = mirror_to_r2
 _SPEC.loader.exec_module(mirror_to_r2)
 
 
@@ -58,6 +59,7 @@ def test_cli_parser_accepts_repo_id_and_defaults() -> None:
     assert args.public_base == mirror_to_r2.DEFAULT_PUBLIC_BASE
     assert args.dry_run is False
     assert args.verify_only is False
+    assert args.force_unmirrored is False
     assert args.tmp_dir is None
 
 
@@ -77,6 +79,7 @@ def test_cli_parser_accepts_all_flags() -> None:
             "https://elsewhere.example",
             "--dry-run",
             "--verify-only",
+            "--force-unmirrored",
             "--tmp-dir",
             "/mnt/scratch",
         ]
@@ -89,6 +92,7 @@ def test_cli_parser_accepts_all_flags() -> None:
     # Codex round-1 NIT: --verify-only was not part of the smoke matrix
     # before. One documented flag must always be assertable.
     assert args.verify_only is True
+    assert args.force_unmirrored is True
     assert args.tmp_dir == "/mnt/scratch"
 
 
@@ -97,6 +101,37 @@ def test_cli_parser_rejects_missing_repo_id() -> None:
     p = mirror_to_r2._build_parser()
     with pytest.raises(SystemExit):
         p.parse_args([])
+
+
+def test_unmirrored_repo_refuses_without_force_and_allows_override(
+    monkeypatch, capsys
+) -> None:
+    entry = type(
+        "Entry",
+        (),
+        {"reason": "unused: no pulls", "since": "2026-09-24"},
+    )()
+    monkeypatch.setattr(
+        mirror_to_r2,
+        "load_unmirrored",
+        lambda *_args: {"org/repo": entry},
+    )
+    hf_calls = []
+    monkeypatch.setattr(
+        mirror_to_r2, "_hf_files", lambda repo: hf_calls.append(repo) or []
+    )
+    monkeypatch.setattr(mirror_to_r2, "_r2_client", lambda *_args: object())
+
+    assert mirror_to_r2.mirror_repo("org/repo") == 2
+    assert hf_calls == []
+    refusal = capsys.readouterr().err
+    assert refusal.count("SKIP intentionally unmirrored") == 1
+    assert "unused: no pulls" in refusal
+    assert "2026-09-24" in refusal
+    assert "--force-unmirrored" in refusal
+
+    assert mirror_to_r2.mirror_repo("org/repo", force_unmirrored=True) == 0
+    assert hf_calls == ["org/repo"]
 
 
 def test_redirect_preserves_head_method() -> None:

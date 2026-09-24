@@ -1,0 +1,50 @@
+{
+  "schema_version": 1,
+  "entries": [
+    {
+      "hf_path": "lmstudio-community/MiniMax-M2.5-MLX-4bit",
+      "reason": "unused: 0 pulls in 90 d, <400 HF downloads/month",
+      "since": "2026-09-24"
+    },
+    {
+      "hf_path": "mlx-community/MiniMax-M2.7-4bit-mxfp4",
+      "reason": "unused: 0 pulls in 90 d, <400 HF downloads/month",
+      "since": "2026-09-24"
+    },
+    {
+      "hf_path": "mlx-community/North-Mini-Code-1.0-bf16",
+      "reason": "unused: 0 pulls in 90 d, <400 HF downloads/month",
+      "since": "2026-09-24"
+    },
+    {
+      "hf_path": "mlx-community/UI-TARS-72B-DPO-4bit",
+      "reason": "unused: 0 pulls in 90 d, <400 HF downloads/month",
+      "since": "2026-09-24"
+    },
+    {
+      "hf_path": "pipenetwork/Holo-3.1-35B-A3B-MLX-8bit",
+      "reason": "unused: 0 pulls in 90 d, <400 HF downloads/month",
+      "since": "2026-09-24"
+    },
+    {
+      "hf_path": "pipenetwork/Holo-3.1-35B-A3B-MLX-4bit",
+      "reason": "unused: 0 pulls in 90 d, <400 HF downloads/month",
+      "since": "2026-09-24"
+    },
+    {
+      "hf_path": "mlx-community/Tmax-27B-MLX-8bit",
+      "reason": "unused: 0 pulls in 90 d, <400 HF downloads/month",
+      "since": "2026-09-24"
+    },
+    {
+      "hf_path": "mlx-community/Tmax-27B-MLX-6bit",
+      "reason": "unused: 0 pulls in 90 d, <400 HF downloads/month",
+      "since": "2026-09-24"
+    },
+    {
+      "hf_path": "Jackrong/MLX-Qwopus3.5-27B-v3-8bit",
+      "reason": "unused: 0 pulls in 90 d, <400 HF downloads/month",
+      "since": "2026-09-24"
+    }
+  ]
+}

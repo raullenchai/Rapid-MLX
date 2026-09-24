@@ -29,16 +29,16 @@ import sys
 
 import pytest
 
-# ``scripts/`` is not a package, so load the module by path. It must be
-# registered in ``sys.modules`` BEFORE exec: ``@dataclass`` resolves its
+# Load the module by path with its package identity. It must be registered in
+# ``sys.modules`` BEFORE exec: ``@dataclass`` resolves its
 # annotations through ``sys.modules[cls.__module__]``, which is None for an
 # unregistered module and fails collection with a bare AttributeError.
 _SPEC = importlib.util.spec_from_file_location(
-    "mirror_to_r2",
+    "scripts.mirror_to_r2",
     pathlib.Path(__file__).resolve().parent.parent / "scripts" / "mirror_to_r2.py",
 )
 mirror = importlib.util.module_from_spec(_SPEC)
-sys.modules["mirror_to_r2"] = mirror
+sys.modules[_SPEC.name] = mirror
 _SPEC.loader.exec_module(mirror)
 
 
