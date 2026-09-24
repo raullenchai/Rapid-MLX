@@ -10,7 +10,7 @@ import subprocess
 import sys
 import time
 from pathlib import Path
-from typing import Literal
+from typing import Any, Literal, Protocol
 
 OptionalExtra = Literal["vision", "video", "audio", "image"]
 OptionalRuntimeStatus = Literal["absent", "broken", "incompatible"]
@@ -20,6 +20,12 @@ _EXTRA_INSTALL_SIZE_MB: dict[OptionalExtra, int] = {
     "audio": 600,
 }
 _INSTALL_PROMPT_TIMEOUT_SECONDS = 30.0
+
+
+class _PromptInput(Protocol):
+    def fileno(self) -> int: ...
+
+    def readline(self) -> str: ...
 
 
 class OptionalRuntimeMissing(RuntimeError):  # noqa: N818 - public API name is fixed
@@ -95,7 +101,7 @@ def _prompt_to_install(extra: OptionalExtra) -> bool:
     return response.strip().lower() in {"y", "yes"}
 
 
-def _read_posix_prompt_response(stdin: object) -> str | None:
+def _read_posix_prompt_response(stdin: _PromptInput) -> str | None:
     """Read one ready line without leaving a background reader behind."""
     try:
         stdin_fd = stdin.fileno()
@@ -113,11 +119,12 @@ def _read_windows_prompt_response() -> str | None:
     try:
         import msvcrt
 
+        console: Any = msvcrt
         deadline = time.monotonic() + _INSTALL_PROMPT_TIMEOUT_SECONDS
         response: list[str] = []
         while time.monotonic() < deadline:
-            if msvcrt.kbhit():
-                character = msvcrt.getwche()
+            if console.kbhit():
+                character = console.getwche()
                 if character in {"\r", "\n"}:
                     return "".join(response)
                 if character == "\b":

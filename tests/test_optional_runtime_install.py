@@ -210,7 +210,7 @@ def test_closed_stdin_exception_defaults_no(monkeypatch) -> None:
 
 
 def test_windows_console_yes_uses_polled_characters(monkeypatch) -> None:
-    characters = iter(["y", "\r"])
+    characters = iter(["x", "\b", "y", "\r"])
     console = SimpleNamespace(
         kbhit=lambda: True,
         getwche=lambda: next(characters),
@@ -240,9 +240,42 @@ def test_windows_console_timeout_never_reads_fake_stdin(monkeypatch) -> None:
     assert optional_runtime._prompt_to_install("vision") is False
 
 
+def test_windows_console_exception_defaults_no(monkeypatch) -> None:
+    monkeypatch.setitem(
+        sys.modules,
+        "msvcrt",
+        SimpleNamespace(
+            kbhit=lambda: (_ for _ in ()).throw(OSError("console closed")),
+            getwche=lambda: "y",
+        ),
+    )
+    monkeypatch.setattr(sys, "platform", "win32")
+
+    assert optional_runtime._prompt_to_install("vision") is False
+
+
 def test_non_tty_without_yes_keeps_existing_failure_without_prompt(monkeypatch) -> None:
     stderr = _NotTTY()
     _isolate_handler(monkeypatch, stdin=_NotTTY(), stderr=stderr)
+    monkeypatch.setattr(
+        subprocess,
+        "run",
+        lambda *_args, **_kwargs: pytest.fail("pip must not run"),
+    )
+
+    with pytest.raises(SystemExit, match="2"):
+        optional_runtime.handle_optional_runtime_missing(_failure())
+
+    assert "Install rapid-mlx[vision] now?" not in stderr.getvalue()
+
+
+def test_isatty_exception_is_non_tty(monkeypatch) -> None:
+    class BrokenTTY(_TTY):
+        def isatty(self) -> bool:
+            raise OSError("stream closed")
+
+    stderr = _TTY()
+    _isolate_handler(monkeypatch, stdin=BrokenTTY(), stderr=stderr)
     monkeypatch.setattr(
         subprocess,
         "run",
