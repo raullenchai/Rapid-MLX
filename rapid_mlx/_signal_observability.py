@@ -203,10 +203,6 @@ def _warn_tee_fallback(exc: BaseException) -> None:
     )
 
 
-def _tee_supported() -> bool:
-    return os.name != "nt"
-
-
 def _stop_crash_tee(process: subprocess.Popen[bytes] | None, pipe) -> None:
     if pipe is not None:
         try:
@@ -283,7 +279,7 @@ def _install_crash_file() -> None:
             0o600,
         )
         os.chmod(path, 0o600)
-        if not _tee_supported():
+        if os.name == "nt":
             _warn_tee_fallback(OSError("tee helper is unavailable on Windows"))
         else:
             try:

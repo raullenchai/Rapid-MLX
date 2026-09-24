@@ -297,6 +297,21 @@ def test_install_skipped_off_main_thread():
     assert result_box == [False]
 
 
+def test_reset_ignores_signal_restore_failure(monkeypatch):
+    from rapid_mlx import _signal_observability as so
+
+    so._prior_handlers[signal.SIGUSR1] = signal.SIG_DFL
+    monkeypatch.setattr(
+        so.signal,
+        "signal",
+        lambda *_args: (_ for _ in ()).throw(ValueError("restore failed")),
+    )
+
+    so._reset_for_tests()
+
+    assert so._get_installed_handlers() == {}
+
+
 def test_faulthandler_is_enabled_after_install():
     """``faulthandler.enable`` must fire so SIGSEGV from MLX produces a
     Python traceback rather than a silent core dump.
@@ -468,9 +483,12 @@ def test_unsupported_tee_platform_uses_file_only(monkeypatch, tmp_path):
 
     so._reset_for_tests()
     monkeypatch.setenv("HOME", str(tmp_path))
-    monkeypatch.setattr(so, "_tee_supported", lambda: False)
+    log_dir = tmp_path / ".rapid-mlx" / "logs"
     try:
-        so.install_signal_observability(observed_signals=())
+        with monkeypatch.context() as patch:
+            patch.setattr(so, "_crash_logs_dir", lambda: log_dir)
+            patch.setattr(so.os, "name", "nt")
+            so.install_signal_observability(observed_signals=())
         assert so._crash_fd is not None
         assert so._crash_pipe is None
         assert so._crash_tee is None
