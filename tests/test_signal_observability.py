@@ -384,6 +384,18 @@ def test_rotation_never_unlinks_live_process_crash_files(monkeypatch, tmp_path):
     assert not paths[1].exists()
 
 
+def test_crash_pid_probe_treats_permission_and_unknown_errors_as_alive(monkeypatch):
+    from rapid_mlx import _signal_observability as so
+
+    for error in (PermissionError(), OSError("probe failed")):
+        monkeypatch.setattr(
+            so.os,
+            "kill",
+            lambda *_args, error=error: (_ for _ in ()).throw(error),
+        )
+        assert so._pid_is_alive(123) is True
+
+
 def test_empty_crash_file_is_removed_at_clean_shutdown(monkeypatch, tmp_path):
     from rapid_mlx import _signal_observability as so
 
@@ -451,6 +463,66 @@ def test_missing_tee_warns_once_and_uses_file_only(monkeypatch, tmp_path, caplog
         so._tee_fallback_warned = prior_warned
 
 
+def test_unsupported_tee_platform_uses_file_only(monkeypatch, tmp_path):
+    from rapid_mlx import _signal_observability as so
+
+    so._reset_for_tests()
+    monkeypatch.setenv("HOME", str(tmp_path))
+    monkeypatch.setattr(so, "_tee_supported", lambda: False)
+    try:
+        so.install_signal_observability(observed_signals=())
+        assert so._crash_fd is not None
+        assert so._crash_pipe is None
+        assert so._crash_tee is None
+    finally:
+        so._reset_for_tests()
+
+
+def test_tee_without_stdin_falls_back_to_file(monkeypatch, tmp_path):
+    from rapid_mlx import _signal_observability as so
+
+    class NoStdinProcess:
+        stdin = None
+
+        def wait(self, *, timeout):
+            return 0
+
+    so._reset_for_tests()
+    monkeypatch.setenv("HOME", str(tmp_path))
+    monkeypatch.setattr(
+        so.subprocess, "Popen", lambda *_args, **_kwargs: NoStdinProcess()
+    )
+    try:
+        so.install_signal_observability(observed_signals=())
+        assert so._crash_fd is not None
+        assert so._crash_pipe is None
+        assert so._crash_tee is None
+    finally:
+        so._reset_for_tests()
+
+
+def test_tee_shutdown_errors_are_inert():
+    from rapid_mlx import _signal_observability as so
+
+    class BrokenPipe:
+        def close(self):
+            raise OSError("close failed")
+
+    class StuckProcess:
+        terminated = False
+
+        def wait(self, *, timeout):
+            raise subprocess.TimeoutExpired("tee", timeout)
+
+        def terminate(self):
+            self.terminated = True
+
+    process = StuckProcess()
+    so._stop_crash_tee(process, BrokenPipe())
+
+    assert process.terminated is True
+
+
 def test_crash_file_scan_and_io_failures_are_inert(monkeypatch, tmp_path):
     from rapid_mlx import _signal_observability as so
 
@@ -502,27 +574,35 @@ def test_crash_cleanup_and_failed_install_cleanup_errors_are_inert(
     path = tmp_path / "open-crash.txt"
     fd = os.open(path, os.O_WRONLY | os.O_CREAT, 0o600)
     so._crash_fd = fd
-    so._crash_path = path
+    prior_enabled = so._faulthandler_was_enabled
+
+    class BrokenPath:
+        def stat(self):
+            raise OSError("stat failed")
+
+    so._crash_path = BrokenPath()
+    so._faulthandler_was_enabled = True
     real_close = os.close
-    monkeypatch.setattr(
-        so.os,
-        "fstat",
-        lambda _fd: (_ for _ in ()).throw(OSError("fstat failed")),
-    )
 
     def close_then_raise(open_fd):
         real_close(open_fd)
         raise OSError("close reported failure")
 
     monkeypatch.setattr(so.os, "close", close_then_raise)
-    so._cleanup_crash_file()
-
-    monkeypatch.setenv("HOME", str(tmp_path / "home"))
+    monkeypatch.setattr(
+        so.faulthandler,
+        "disable",
+        lambda: (_ for _ in ()).throw(RuntimeError("disable failed")),
+    )
     monkeypatch.setattr(
         so.faulthandler,
         "enable",
         lambda **_kwargs: (_ for _ in ()).throw(RuntimeError("enable failed")),
     )
+    so._cleanup_crash_file()
+    so._faulthandler_was_enabled = prior_enabled
+
+    monkeypatch.setenv("HOME", str(tmp_path / "home"))
     real_unlink = Path.unlink
 
     def unlink_then_raise(target, *args, **kwargs):

@@ -225,6 +225,14 @@ def test_invalid_marker_pids_are_not_alive(pid):
 
 
 @pytest.mark.parametrize(
+    "name",
+    ["other-123.json", "serve-inflight-nope.json", "serve-inflight-123.txt"],
+)
+def test_invalid_marker_filenames_have_no_pid(name):
+    assert server_start._marker_pid(Path(name)) is None
+
+
+@pytest.mark.parametrize(
     ("error", "expected"),
     [
         (PermissionError(), True),
@@ -262,6 +270,33 @@ def test_marker_write_and_remove_failures_are_inert(monkeypatch, tmp_path):
     )
     server_start._remove_inflight_marker()
     assert server_start._owns_inflight_marker is False
+
+
+def test_marker_scan_failure_is_inert(monkeypatch, tmp_path):
+    monkeypatch.setenv("HOME", str(tmp_path))
+    monkeypatch.setattr(
+        Path,
+        "glob",
+        lambda *_args: (_ for _ in ()).throw(OSError("scan failed")),
+    )
+    monkeypatch.setattr(server_start, "_atomic_write_marker", lambda _path: None)
+
+    assert server_start._begin_inflight_marker() == (False, True)
+
+
+def test_stale_marker_unlink_failure_still_counts(monkeypatch, tmp_path):
+    monkeypatch.setenv("HOME", str(tmp_path))
+    marker = tmp_path / ".rapid-mlx" / "state" / "serve-inflight-99999999.json"
+    marker.parent.mkdir(parents=True)
+    marker.write_text("{}", encoding="utf-8")
+    monkeypatch.setattr(
+        Path,
+        "unlink",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(OSError("unlink failed")),
+    )
+    monkeypatch.setattr(server_start, "_atomic_write_marker", lambda _path: None)
+
+    assert server_start._begin_inflight_marker() == (True, True)
 
 
 @pytest.mark.parametrize(
