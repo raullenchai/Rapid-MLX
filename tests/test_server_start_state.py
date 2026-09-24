@@ -2,7 +2,13 @@
 from __future__ import annotations
 
 import builtins
+import json
+import os
+import subprocess
 import sys
+import threading
+from http.server import BaseHTTPRequestHandler, HTTPServer
+from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
@@ -12,6 +18,8 @@ from rapid_mlx import cli, server
 from rapid_mlx.runtime.primary_lifecycle import PrimaryModelLifecycle
 from rapid_mlx.service import helpers
 from rapid_mlx.telemetry import registry, server_start
+
+REPO_ROOT = Path(__file__).resolve().parents[1]
 
 
 @pytest.fixture(autouse=True)
@@ -29,6 +37,98 @@ def _capture(monkeypatch):
         lambda event, props: events.append((event, dict(props))),
     )
     return events
+
+
+class _CaptureHandler(BaseHTTPRequestHandler):
+    def do_POST(self) -> None:
+        length = int(self.headers["Content-Length"])
+        self.server.bodies.append(self.rfile.read(length))  # type: ignore[attr-defined]
+        self.send_response(200)
+        self.send_header("Content-Length", "2")
+        self.end_headers()
+        self.wfile.write(b"{}")
+
+    def log_message(self, format: str, *args: object) -> None:
+        pass
+
+
+def test_stale_marker_reports_previous_run_unterminated_once_to_loopback(tmp_path):
+    home = tmp_path / "home"
+    state_dir = home / ".rapid-mlx" / "state"
+    state_dir.mkdir(parents=True)
+    (state_dir / "serve-inflight.json").write_text(
+        json.dumps(
+            {
+                "pid": 99_999_999,
+                "utc_start": "2026-09-24T00:00:00Z",
+                "app_version": "0.15.1",
+            }
+        ),
+        encoding="utf-8",
+    )
+    sink = HTTPServer(("127.0.0.1", 0), _CaptureHandler)
+    sink.bodies = []  # type: ignore[attr-defined]
+    thread = threading.Thread(target=sink.serve_forever, daemon=True)
+    thread.start()
+    program = """
+import rapid_mlx
+from rapid_mlx.telemetry import build_gate, common_props, consent_runtime, posthog_sender, server_start, state
+from rapid_mlx.telemetry.build_gate import ReleaseStamp
+from rapid_mlx.telemetry.common_props import PlatformFacts
+
+rapid_mlx.__version__ = "0.15.1"
+stamp = ReleaseStamp(channel="stable", posthog_key="phc_" + "a" * 32)
+build_gate.official_build = lambda: stamp
+consent_runtime.upload_allowed = lambda: True
+common_props.read_platform_facts = lambda: PlatformFacts(
+    os="darwin", os_version="25.3", arch="arm64", chip="m1-pro",
+    memory_gb=32, python_version="3.11"
+)
+state.get_or_create_client_id = lambda: "6f1b1d3e-4a2b-4c9d-8e7f-0a1b2c3d4e5f"
+state.session_id = lambda: "0a1b2c3d-4e5f-6071-8293-a4b5c6d7e8f9"
+server_start.attempted("qwen3.5-4b-4bit", load_policy="eager")
+server_start.attempted("ignored", load_policy="lazy")
+posthog_sender.get_sender().flush(5.0)
+"""
+    env = dict(os.environ, HOME=str(home))
+    env["RAPID_MLX_POSTHOG_URL"] = f"http://127.0.0.1:{sink.server_port}/batch/"
+    for name in (
+        "CI",
+        "GITHUB_ACTIONS",
+        "GITLAB_CI",
+        "CIRCLECI",
+        "TRAVIS",
+        "BUILDKITE",
+        "JENKINS_URL",
+        "TEAMCITY_VERSION",
+        "RAPID_MLX_TELEMETRY",
+        "DO_NOT_TRACK",
+    ):
+        env.pop(name, None)
+    try:
+        proc = subprocess.run(
+            [sys.executable, "-c", program],
+            cwd=REPO_ROOT,
+            env=env,
+            capture_output=True,
+            text=True,
+            timeout=15,
+            check=False,
+        )
+    finally:
+        sink.shutdown()
+        thread.join(timeout=2.0)
+        sink.server_close()
+
+    assert proc.returncode == 0, proc.stderr
+    attempted = [
+        item
+        for body in sink.bodies  # type: ignore[attr-defined]
+        for item in json.loads(body)["batch"]
+        if item["event"] == "server_start_state"
+    ]
+    assert len(attempted) == 1
+    assert attempted[0]["properties"]["previous_run_unterminated"] is True
 
 
 def test_attempted_then_ready_exactly_once(monkeypatch):
