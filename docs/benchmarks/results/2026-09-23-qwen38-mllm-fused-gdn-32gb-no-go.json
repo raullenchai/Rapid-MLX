@@ -1,0 +1,75 @@
+{
+  "schema_version": 1,
+  "decision": "no_go",
+  "scope": "qwen38_mllm_fused_gdn_32gb_qualification",
+  "provenance": {
+    "experiment_commit": "1c1c6573ab0353aa94bfb2b04e18208d5ddf2466",
+    "production_canary_pre_rebase_commit": "e8e1ef6c4d9e6092d30b2a0c93b202b3a8243360",
+    "model_execution_source": "experiment_harness",
+    "production_canary_validation": "static_read_only",
+    "production_engine_started": false,
+    "methodology_sha256": "5eec2e6dbcd67e5b9ef2df856880eef468ea5394c7d43a3fbad62150394bb5b3",
+    "raw_receipt_sha256": "cd42c401eb7c6e0a37b24c12e1b3b71ca16a3a82b833371fda7603a87b5bef73",
+    "kernel_sha256": "73deff77202039597b77cb75cd4e91dd91dfc05575acdca53a1b2937031b2db8",
+    "mlx_vlm_language_sha256": "df8006a2e9067e64e70b91eeaadc2ce83de0fdb54869570cc88e78f46297c5d7",
+    "mlx_vlm_cache_sha256": "b736c299bc576f4bdf8d6edf3e1ac6fa3019ca888a2f3cba115d4252f84d5b29"
+  },
+  "artifact": {
+    "repo_id": "rapid-mlx/Qwen3.8-27B-4bit-MTP-MLX",
+    "revision": "aa985c29ff5b334cbfdcbbc787d47e66e9d9e456",
+    "verification_id": "hf-snapshot-sha256:360a8c76fc60c254c595442d16157eb76868033d328d5df9f41344c83bf77a66",
+    "config_sha256": "48e2fc64017e1d7472373ce012ba1db172319e5fc1e4f81ccc97fea523b00d1b",
+    "index_sha256": "47d389bc0826b9f8d0ad495d0c4bf89d7e9398a50b77ae35771dde96e9db9229",
+    "preflight_verified": true,
+    "missing_shards": 0
+  },
+  "environment": {
+    "hardware": "Apple M2 Pro",
+    "hardware_model": "Mac14,12",
+    "unified_memory_gib": 32,
+    "os": "macOS 26.5.2 (25F84)",
+    "offline": true,
+    "runtime_versions": {
+      "mlx": "0.32.2",
+      "mlx-lm": "0.31.3",
+      "mlx-vlm": "0.7.1",
+      "rapid-mlx": "0.15.0"
+    }
+  },
+  "attempt": {
+    "model_load_attempts": 1,
+    "qualification_reruns": 0,
+    "elapsed_seconds": 18.53,
+    "exit_status": 2,
+    "failure_stage": "real_weight_parity_setup",
+    "error": "RuntimeError: 32-step real-weight fused GDN parity probe failed",
+    "aggregate_pass": false,
+    "setup_pass": false,
+    "prompt_strata_run": 0,
+    "speed_result": null,
+    "media_recovery_result": null
+  },
+  "memory": {
+    "swap_used_before_mib": 1892.62,
+    "swap_used_after_mib": 10551.56,
+    "swap_delta_mib": 8658.94,
+    "swap_delta_gib": 8.46,
+    "process_max_rss_bytes": 3510812672,
+    "process_peak_footprint_bytes": 16588009712
+  },
+  "raw_receipt": {
+    "schema_version": 1,
+    "artifact_verified": false,
+    "methodology_sha256": "5eec2e6dbcd67e5b9ef2df856880eef468ea5394c7d43a3fbad62150394bb5b3",
+    "aggregate_pass": false,
+    "setup_pass": false,
+    "errors": [
+      "RuntimeError: 32-step real-weight fused GDN parity probe failed"
+    ]
+  },
+  "limitations": [
+    "The setup gate failed before any performance stratum, so this run supports no speed conclusion.",
+    "The probe reports that no candidate threadgroup passed, but does not retain the first failed comparison or exception.",
+    "This was one model-loading attempt with no qualification rerun."
+  ]
+}

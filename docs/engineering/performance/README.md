@@ -6,6 +6,7 @@ summary statistics, and limitations.
 
 ## Reports
 
+- [Qwen3.8 MLLM fused-GDN 32 GB NO-GO](2026-09-23-qwen38-mllm-fused-gdn-32gb-no-go.md)
 - [Gemma 4 26B-A4B assistant-sidecar MTP qualification](2026-09-20-gemma4-assistant-mtp.md)
 - [Qwen3.6-35B-A3B compiled decode replay qualification](2026-09-13-qwen36-compiled-decode.md)
 - [Qwen3.6-35B-A3B native text-cache qualification](2026-09-13-qwen36-mllm-native-text-cache.md)
