@@ -524,8 +524,7 @@ def test_process_identity_validation_and_probe_fallbacks(monkeypatch):
 
     fake_psutil.Process = lambda _pid: SimpleNamespace(create_time=lambda: 1.0)
     fake_psutil.boot_time = lambda: (_ for _ in ()).throw(OSError("probe failed"))
-    with pytest.raises(OSError, match="probe failed"):
-        identity.process_identity(123)
+    assert identity.process_identity(123) == identity.ProcessIdentity(123, 0.0, 0.0)
     assert identity.is_same_process(marker) is True
 
     monkeypatch.setattr(identity, "psutil", None)
@@ -582,6 +581,39 @@ def test_identity_probe_denial_fails_closed_as_alive(monkeypatch, denied):
     monkeypatch.setattr(identity, "psutil", fake_psutil)
 
     assert identity.is_same_process(marker) is True
+
+
+def test_identity_exception_and_extreme_pid_matrix(monkeypatch, caplog):
+    from rapid_mlx import _process_identity as identity
+
+    caplog.set_level("DEBUG", logger="rapid_mlx._process_identity")
+    marker = {
+        "pid": 123,
+        "create_time": 1_700_000_000.0,
+        "boot_time": 1_600_000_000.0,
+        "app_version": "0.15.1",
+    }
+    real = identity.psutil
+    for exc in (
+        PermissionError("denied"),
+        real.AccessDenied(123),
+        OSError("io"),
+        RuntimeError("backend"),
+    ):
+        fake = SimpleNamespace(
+            pid_exists=lambda _pid: True,
+            Process=lambda _pid, exc=exc: SimpleNamespace(
+                create_time=lambda: (_ for _ in ()).throw(exc)
+            ),
+            boot_time=lambda: 1_600_000_000.0,
+            NoSuchProcess=real.NoSuchProcess,
+            AccessDenied=real.AccessDenied,
+        )
+        monkeypatch.setattr(identity, "psutil", fake)
+        assert identity.is_same_process(marker) is True
+
+    assert identity.is_same_process({**marker, "pid": 10**200}) is False
+    assert "could not probe process identity" in caplog.text
 
 
 def test_epoch_relative_tolerance_does_not_hide_pid_reuse(monkeypatch):
@@ -641,7 +673,26 @@ def test_crash_pointer_is_acknowledged_across_clean_launches(tmp_path, capsys):
     assert capsys.readouterr().err == ""
 
 
-def test_closed_crash_fd_rearm_recovers_without_claiming_success(tmp_path):
+def test_report_ack_collision_never_overwrites_existing_diagnostic(tmp_path, capsys):
+    from rapid_mlx import _signal_observability as so
+
+    crash = tmp_path / "crash-20260924T000000Z-99999.txt"
+    reported = tmp_path / "crash-20260924T000000Z-99999.reported.txt"
+    crash.write_text("new-unreported-diagnostic", encoding="utf-8")
+    reported.write_text("existing-reported-diagnostic", encoding="utf-8")
+
+    so._report_previous_crash(tmp_path)
+
+    assert capsys.readouterr().err.count("Previous run crashed") == 1
+    assert reported.read_text(encoding="utf-8") == "existing-reported-diagnostic"
+    assert not crash.exists()
+    assert (
+        crash.with_name(f"{crash.stem}.reported-1.txt").read_text(encoding="utf-8")
+        == "new-unreported-diagnostic"
+    )
+
+
+def test_closed_crash_fd_rearm_recovers_and_reports_success(tmp_path):
     home = tmp_path / "home"
     program = (
         "import os; "
@@ -662,7 +713,7 @@ def test_closed_crash_fd_rearm_recovers_without_claiming_success(tmp_path):
     )
     files = list((home / ".rapid-mlx" / "logs").glob("crash-*.txt"))
 
-    assert proc.stdout.strip() == "False"
+    assert proc.stdout.strip() == "True"
     assert proc.returncode != 0
     assert files and files[0].stat().st_size > 0
 
@@ -673,21 +724,69 @@ def test_closed_crash_fd_rearm_recovers_file_only_in_process(monkeypatch, tmp_pa
     path = tmp_path / "crash.txt"
     fd = os.open(path, os.O_WRONLY | os.O_CREAT, 0o600)
     os.close(fd)
-    previous = (so._crash_fd, so._crash_path, so._crash_pipe, so._crash_tee)
+    previous = (
+        so._crash_fd,
+        so._crash_fd_identity,
+        so._crash_path,
+        so._crash_pipe,
+        so._crash_tee,
+    )
     calls = []
     so._crash_fd = fd
+    so._crash_fd_identity = (-1, -1)
     so._crash_path = path
     so._crash_pipe = None
     so._crash_tee = None
     monkeypatch.setattr(so, "_enable_faulthandler", calls.append)
     try:
-        assert so.ensure_crash_sink() is False
+        assert so.ensure_crash_sink() is True
         assert so._crash_fd is not None
         assert calls == [so._crash_fd]
     finally:
         if so._crash_fd is not None:
             os.close(so._crash_fd)
-        so._crash_fd, so._crash_path, so._crash_pipe, so._crash_tee = previous
+        (
+            so._crash_fd,
+            so._crash_fd_identity,
+            so._crash_path,
+            so._crash_pipe,
+            so._crash_tee,
+        ) = previous
+
+
+def test_closed_fd_reused_before_rearm_reopens_installed_crash_file(tmp_path):
+    home = tmp_path / "home"
+    program = """
+import json, os
+from pathlib import Path
+from rapid_mlx import _signal_observability as so
+so.install_signal_observability(observed_signals=())
+crash = so._crash_path
+old_fd = so._crash_fd
+os.close(old_fd)
+decoy_path = Path.home() / "decoy.txt"
+opened = []
+while not opened or opened[-1] < old_fd:
+    opened.append(os.open(decoy_path, os.O_WRONLY | os.O_CREAT | os.O_APPEND, 0o600))
+result = so.ensure_crash_sink()
+print(json.dumps({"old_fd": old_fd, "decoy_fd": opened[-1], "result": result, "crash": str(crash)}), flush=True)
+os.abort()
+"""
+    proc = subprocess.run(
+        [sys.executable, "-c", program],
+        cwd=Path(__file__).resolve().parents[1],
+        env=dict(os.environ, HOME=str(home)),
+        capture_output=True,
+        text=True,
+        timeout=10,
+        check=False,
+    )
+    info = json.loads(proc.stdout)
+
+    assert info["decoy_fd"] == info["old_fd"]
+    assert info["result"] is True
+    assert proc.returncode != 0
+    assert Path(info["crash"]).stat().st_size > 0
 
 
 def test_closed_crash_fd_without_path_stops_tee_and_returns_false(tmp_path):
@@ -913,9 +1012,12 @@ def test_ensure_crash_sink_rearms_and_warns_on_failure(monkeypatch, caplog, tmp_
     from rapid_mlx import _signal_observability as so
 
     prior_fd = so._crash_fd
+    prior_identity = so._crash_fd_identity
     calls = []
     fd = os.open(tmp_path / "crash.txt", os.O_WRONLY | os.O_CREAT, 0o600)
     so._crash_fd = fd
+    installed_stat = os.fstat(fd)
+    so._crash_fd_identity = (installed_stat.st_dev, installed_stat.st_ino)
     try:
         monkeypatch.setattr(so, "_enable_faulthandler", calls.append)
         assert so.ensure_crash_sink() is True
@@ -930,6 +1032,7 @@ def test_ensure_crash_sink_rearms_and_warns_on_failure(monkeypatch, caplog, tmp_
         assert "could not re-arm durable rapid-mlx crash file" in caplog.text
     finally:
         so._crash_fd = prior_fd
+        so._crash_fd_identity = prior_identity
         os.close(fd)
 
 

@@ -359,6 +359,32 @@ def test_marker_payload_type_matrix_is_rejected(payload):
     assert marker_identity(payload) is None
 
 
+@pytest.mark.parametrize(
+    ("field", "value"),
+    [
+        ("pid", 2**31),
+        ("create_time", -1.0),
+        ("create_time", 10**1000),
+        ("create_time", float(2**40 + 1)),
+        ("boot_time", -1.0),
+        ("boot_time", float(2**40 + 1)),
+    ],
+)
+def test_marker_payload_bounds_are_rejected_before_process_probe(field, value):
+    payload = {**_marker_payload(123), field: value}
+    assert marker_identity(payload) is None
+
+
+def test_marker_reader_treats_overflowing_numeric_payload_as_invalid(tmp_path):
+    marker = tmp_path / "serve-inflight-123.json"
+    marker.write_text(
+        json.dumps({**_marker_payload(123), "create_time": 10**1000}),
+        encoding="utf-8",
+    )
+
+    assert server_start._read_marker(marker) is None
+
+
 def test_huge_marker_payload_is_rejected(monkeypatch, tmp_path):
     from rapid_mlx import _signal_observability as so
 
@@ -448,6 +474,32 @@ def test_invalid_marker_removal_preserves_concurrent_replacement(monkeypatch, tm
     server_start._begin_inflight_marker()
 
     assert peer.exists()
+
+
+def test_quarantine_restore_does_not_overwrite_newer_replacement(monkeypatch, tmp_path):
+    marker = tmp_path / "serve-inflight-999.json"
+    marker.write_text("original", encoding="utf-8")
+    snapshot = server_start._marker_snapshot(marker)
+    real_rename = os.rename
+    injected = False
+
+    def raced_rename(source, destination):
+        nonlocal injected
+        if Path(source) == marker and not injected:
+            injected = True
+            replacement = marker.with_suffix(".replacement")
+            replacement.write_text("replacement-B", encoding="utf-8")
+            os.replace(replacement, marker)
+            result = real_rename(source, destination)
+            marker.write_text("replacement-C", encoding="utf-8")
+            return result
+        return real_rename(source, destination)
+
+    monkeypatch.setattr(server_start.os, "rename", raced_rename)
+    server_start._remove_marker_snapshot(marker, snapshot)
+
+    assert injected is True
+    assert marker.read_text(encoding="utf-8") == "replacement-C"
 
 
 def test_state_dir_and_marker_cleanup_defensive_races(monkeypatch, tmp_path):

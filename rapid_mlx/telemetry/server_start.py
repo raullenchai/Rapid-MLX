@@ -145,9 +145,13 @@ def _remove_marker_snapshot(path: Path, snapshot: tuple[int, int] | None) -> Non
         if _marker_snapshot(stale) != snapshot:
             # A replacement landed between the comparison and rename. Preserve it.
             try:
-                os.rename(stale, path)
+                os.link(stale, path)
+            except FileExistsError:
+                stale.unlink()
             except OSError:
                 pass
+            else:
+                stale.unlink()
             return
         stale.unlink()
     except OSError as exc:

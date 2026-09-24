@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+import logging
 import math
 import os
 import sys
@@ -18,6 +19,10 @@ psutil: Any = _psutil_module
 
 _MARKER_KEYS = frozenset({"pid", "create_time", "boot_time", "app_version"})
 _MAX_APP_VERSION_LENGTH = 256
+_MAX_PID = 2**31 - 1
+_MAX_TIME = float(2**40)
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass(frozen=True)
@@ -28,16 +33,17 @@ class ProcessIdentity:
 
 
 def _valid_pid(value: object) -> TypeGuard[int]:
-    return type(value) is int and value > 0
+    return type(value) is int and 1 <= value <= _MAX_PID
 
 
 def _valid_time(value: object) -> TypeGuard[int | float]:
-    return (
-        not isinstance(value, bool)
-        and isinstance(value, (int, float))
-        and math.isfinite(float(value))
-        and float(value) > 0
-    )
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        return False
+    try:
+        parsed = float(value)
+    except (ValueError, OverflowError, TypeError):
+        return False
+    return math.isfinite(parsed) and 0.0 <= parsed <= _MAX_TIME
 
 
 def marker_identity(marker: object) -> ProcessIdentity | None:
@@ -50,20 +56,23 @@ def marker_identity(marker: object) -> ProcessIdentity | None:
     create_time = marker.get("create_time")
     boot_time = marker.get("boot_time")
     app_version = marker.get("app_version")
-    if (
-        not _valid_pid(pid)
-        or not _valid_time(create_time)
-        or not _valid_time(boot_time)
-        or type(app_version) is not str
-        or not app_version
-        or len(app_version) > _MAX_APP_VERSION_LENGTH
-    ):
+    if not _valid_pid(pid) or type(app_version) is not str:
         return None
-    return ProcessIdentity(
-        pid=pid,
-        create_time=float(create_time),
-        boot_time=float(boot_time),
-    )
+    try:
+        if (
+            not _valid_time(create_time)
+            or not _valid_time(boot_time)
+            or not app_version
+            or len(app_version) > _MAX_APP_VERSION_LENGTH
+        ):
+            return None
+        return ProcessIdentity(
+            pid=pid,
+            create_time=float(create_time),
+            boot_time=float(boot_time),
+        )
+    except (ValueError, OverflowError, TypeError):
+        return None
 
 
 def process_identity(pid: int) -> ProcessIdentity | None:
@@ -71,13 +80,16 @@ def process_identity(pid: int) -> ProcessIdentity | None:
     if not _valid_pid(pid):
         return None
     if psutil is not None:
-        if not psutil.pid_exists(pid):
-            return None
         try:
+            if not psutil.pid_exists(pid):
+                return None
             create_time = psutil.Process(pid).create_time()
             boot_time = psutil.boot_time()
         except (psutil.NoSuchProcess, ProcessLookupError):
             return None
+        except Exception as exc:
+            logger.debug("could not probe process identity for pid %s: %r", pid, exc)
+            return ProcessIdentity(pid, 0.0, 0.0)
         return ProcessIdentity(pid, float(create_time), float(boot_time))
 
     # CPython implements os.kill(pid, 0) with TerminateProcess on Windows.
@@ -88,9 +100,8 @@ def process_identity(pid: int) -> ProcessIdentity | None:
         os.kill(pid, 0)
     except ProcessLookupError:
         return None
-    except PermissionError:
-        return ProcessIdentity(pid, 0.0, 0.0)
-    except OSError:
+    except Exception as exc:
+        logger.debug("could not probe process identity for pid %s: %r", pid, exc)
         return ProcessIdentity(pid, 0.0, 0.0)
     return ProcessIdentity(pid, 0.0, 0.0)
 
@@ -106,10 +117,15 @@ def is_same_process(marker: object) -> bool:
         return process_identity(expected.pid) is not None
     try:
         current = process_identity(expected.pid)
-    except (psutil.AccessDenied, OSError):
+    except Exception as exc:
+        logger.debug(
+            "could not compare process identity for pid %s: %r", expected.pid, exc
+        )
         return True
     if current is None:
         return False
+    if current.create_time == 0.0 and current.boot_time == 0.0:
+        return True
     return math.isclose(
         current.create_time, expected.create_time, rel_tol=0.0, abs_tol=0.01
     ) and math.isclose(current.boot_time, expected.boot_time, rel_tol=0.0, abs_tol=0.01)

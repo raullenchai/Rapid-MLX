@@ -109,6 +109,7 @@ _install_lock = threading.Lock()
 # Visible to tests via ``_get_installed_handlers``.
 _prior_handlers: dict[int, signal.Handlers | Callable[..., object] | int | None] = {}
 _crash_fd: int | None = None
+_crash_fd_identity: tuple[int, int] | None = None
 _crash_path: Path | None = None
 _crash_pipe = None
 _crash_tee: subprocess.Popen[bytes] | None = None
@@ -197,7 +198,19 @@ def _report_previous_crash(log_dir: Path) -> None:
                 "~/Library/Logs/DiagnosticReports).\n"
             )
             sys.stderr.flush()
-            path.rename(path.with_name(f"{path.stem}.reported{path.suffix}"))
+            suffix = 0
+            while True:
+                reported = path.with_name(
+                    f"{path.stem}.reported"
+                    f"{'-' + str(suffix) if suffix else ''}{path.suffix}"
+                )
+                try:
+                    os.link(path, reported)
+                except FileExistsError:
+                    suffix += 1
+                    continue
+                path.unlink()
+                break
         except (AttributeError, OSError, ValueError):
             pass
         return
@@ -257,12 +270,13 @@ def _stop_crash_tee(process: subprocess.Popen[bytes] | None, pipe) -> None:
 
 def _cleanup_crash_file() -> None:
     """Remove an empty clean-run file and release faulthandler's descriptor."""
-    global _crash_fd, _crash_path, _crash_pipe, _crash_tee
+    global _crash_fd, _crash_fd_identity, _crash_path, _crash_pipe, _crash_tee
     fd, path = _crash_fd, _crash_path
     pipe, process = _crash_pipe, _crash_tee
     if fd is None or path is None:
         return
     _crash_fd = None
+    _crash_fd_identity = None
     _crash_path = None
     _crash_pipe = None
     _crash_tee = None
@@ -295,7 +309,8 @@ def _cleanup_crash_file() -> None:
 
 def _install_crash_file() -> None:
     """Mirror fatal tracebacks to stderr and a private rotating file."""
-    global _crash_cleanup_registered, _crash_fd, _crash_path, _crash_pipe
+    global _crash_cleanup_registered, _crash_fd, _crash_fd_identity, _crash_path
+    global _crash_pipe
     global _crash_tee, _faulthandler_was_enabled
     if _crash_fd is not None:
         _enable_faulthandler(_crash_fd)
@@ -340,9 +355,11 @@ def _install_crash_file() -> None:
                 process = None
                 pipe = None
         target_fd = pipe.fileno() if pipe is not None else fd
+        target_stat = os.fstat(target_fd)
         _faulthandler_was_enabled = faulthandler.is_enabled()
         _enable_faulthandler(target_fd)
         _crash_fd = target_fd
+        _crash_fd_identity = (target_stat.st_dev, target_stat.st_ino)
         _crash_path = path
         _crash_pipe = pipe
         _crash_tee = process
@@ -372,32 +389,41 @@ def _install_crash_file() -> None:
 
 def ensure_crash_sink() -> bool:
     """Re-arm faulthandler on Rapid-MLX's installed crash sink."""
-    global _crash_fd, _crash_pipe, _crash_tee
+    global _crash_fd, _crash_fd_identity, _crash_pipe, _crash_tee
     with _install_lock:
         if _crash_fd is None:
             return False
+        failure = OSError("crash descriptor no longer identifies the installed sink")
         try:
-            os.fstat(_crash_fd)
+            current_stat = os.fstat(_crash_fd)
+            sink_intact = (current_stat.st_dev, current_stat.st_ino) == (
+                _crash_fd_identity
+            )
         except OSError as exc:
+            sink_intact = False
+            failure = exc
+        if not sink_intact:
             # An external close can leave the Python pipe object holding the
             # same integer that os.open would immediately reuse. Stop the tee
             # before reopening so its close cannot close the replacement fd.
             pipe, process = _crash_pipe, _crash_tee
             _crash_fd = None
+            _crash_fd_identity = None
             _crash_pipe = None
             _crash_tee = None
             if pipe is not None:
                 _stop_crash_tee(process, pipe)
             if _crash_path is None:
-                logger.warning("durable rapid-mlx crash sink is closed: %s", exc)
+                logger.warning("durable rapid-mlx crash sink is closed: %s", failure)
                 return False
             new_fd: int | None = None
             try:
                 flags = os.O_WRONLY | os.O_APPEND | getattr(os, "O_NOFOLLOW", 0)
                 new_fd = os.open(_crash_path, flags)
-                os.fstat(new_fd)
+                new_stat = os.fstat(new_fd)
                 _enable_faulthandler(new_fd)
                 _crash_fd = new_fd
+                _crash_fd_identity = (new_stat.st_dev, new_stat.st_ino)
                 new_fd = None
             except (OSError, RuntimeError, ValueError) as reopen_exc:
                 logger.warning(
@@ -410,9 +436,7 @@ def ensure_crash_sink() -> bool:
                         os.close(new_fd)
                     except OSError:
                         pass
-            # The original sink was not intact, even when file-only recovery
-            # succeeded. A later call can verify and report the recovered fd.
-            return False
+            return _crash_fd is not None
         try:
             _enable_faulthandler(_crash_fd)
         except (OSError, RuntimeError, ValueError) as exc:
