@@ -222,6 +222,7 @@ are the argparse defaults from `rapid_mlx/cli.py`.
 | `--log-level` | Log level for Python logging and uvicorn (`DEBUG`, `INFO`, `WARNING`, `ERROR`; case-insensitive) | INFO |
 | `--served-model-name` | Model name reported by the API; when unset the `model` argument is used | None |
 | `--watchdog-ppid` | Self-terminate when the parent process with this PID dies (defeats orphaned sidecars). Falls back to `RAPID_MLX_WATCHDOG_PPID`; 0 / unset disables. | None (disabled) |
+| `--yes` / `-y` | Assume yes for prompts such as installing a missing optional extra | off |
 
 #### Security and limits
 

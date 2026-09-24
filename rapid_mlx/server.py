@@ -66,6 +66,12 @@ from .runtime.optional_runtime import (
     OptionalRuntimeMissing,
     handle_optional_runtime_missing,
 )
+from .runtime.optional_runtime import (
+    assume_yes as optional_runtime_assume_yes,
+)
+from .runtime.optional_runtime import (
+    set_assume_yes as set_optional_runtime_assume_yes,
+)
 
 
 # Back-compat shim: ``tests/test_context_length_exceeded.py`` and
@@ -879,6 +885,7 @@ async def lifespan(app: FastAPI):
                 engine=_engine,
                 alias_or_path=_model_alias or _model_path,
                 auto_selected=_telemetry_auto_selected,
+                assume_yes=optional_runtime_assume_yes(),
             )
         except Exception as _start_exc:
             from rapid_mlx.telemetry.server_start import failed
@@ -3508,6 +3515,7 @@ def _capture_start_failures(func):
                 engine=_engine,
                 alias_or_path=_standalone_start_model,
                 auto_selected=False,
+                assume_yes=optional_runtime_assume_yes(),
             )
         except BaseException:
             try:
@@ -3525,6 +3533,7 @@ def _capture_start_failures(func):
 def main():
     """Run the server."""
     global _standalone_start_model
+    set_optional_runtime_assume_yes(False)
     if os.environ.get("RAPID_PYSAMPLE"):
         from ._pysample import install as _pysample_install
 
@@ -3546,6 +3555,12 @@ Examples:
         type=str,
         default="mlx-community/Llama-3.2-3B-Instruct-4bit",
         help="Model to load (HuggingFace model name or local path)",
+    )
+    parser.add_argument(
+        "--yes",
+        "-y",
+        action="store_true",
+        help="assume yes for prompts such as installing a missing optional extra",
     )
     parser.add_argument(
         "--host",
@@ -3844,6 +3859,7 @@ Examples:
 
     args = parser.parse_args()
     _standalone_start_model = args.model
+    set_optional_runtime_assume_yes(args.yes)
 
     # Telemetry v2 default-on wiring (T11): resolve the consent decision,
     # deliver the disclosure notice to stderr, then apply the locked,
