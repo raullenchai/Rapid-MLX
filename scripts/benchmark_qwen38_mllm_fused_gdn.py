@@ -109,11 +109,36 @@ def _valid_hardware_pair(expected_memory_gib: int, expected_chip: str) -> bool:
     return (expected_chip, expected_memory_gib) in VALID_HARDWARE_TARGETS
 
 
+_URL_RE = re.compile(r"(?i)\b[a-z][a-z0-9+.-]*://[^\s<>\"']+")
+_CREDENTIALED_HOST_RE = re.compile(
+    r"(?i)\b[^\s:@/]+:[^@\s/]+@[a-z0-9.-]+(?::\d+)?(?:/[^\s<>\"']*)?"
+)
+_SENSITIVE_PARAMETER_RE = re.compile(
+    r"(?i)\b(token|access_token|auth_token|api[_-]?key|secret|password|passwd|"
+    r"signature|sig)=([^&\s,;]+)"
+)
+_AUTHORIZATION_RE = re.compile(r"(?i)\b(bearer|basic)\s+[a-z0-9._~+/=-]+")
+_WINDOWS_ABSOLUTE_PATH_RE = re.compile(
+    r"(?i)\b[a-z]:\\(?:[^\\\s<>\"']+\\)*[^\\\s<>\"',;:()\[\]{}]+"
+)
+_POSIX_ABSOLUTE_PATH_RE = re.compile(
+    r"(?<![\w:])/(?:[^/\s<>\"'?,;:()\[\]{}]+/)*"
+    r"[^/\s<>\"'?,;:()\[\]{}]+"
+)
+
+
+def _sanitize_text(value: str) -> str:
+    """Remove paths and credentials while retaining useful failure context."""
+    value = _URL_RE.sub("<redacted-url>", value)
+    value = _CREDENTIALED_HOST_RE.sub("<redacted-url>", value)
+    value = _SENSITIVE_PARAMETER_RE.sub(r"\1=<redacted>", value)
+    value = _AUTHORIZATION_RE.sub(r"\1 <redacted>", value)
+    value = _WINDOWS_ABSOLUTE_PATH_RE.sub("<redacted-path>", value)
+    return _POSIX_ABSOLUTE_PATH_RE.sub("<redacted-path>", value)
+
+
 def _sanitized_error(exc: BaseException) -> dict[str, str]:
-    message = " ".join(str(exc).split())[:500]
-    home = str(Path.home())
-    if home:
-        message = message.replace(home, "<home>")
+    message = _sanitize_text(" ".join(str(exc).split()))[:500]
     return {"type": type(exc).__name__, "message": message}
 
 
@@ -125,8 +150,7 @@ def _sanitize_partial_value(value: Any) -> Any:
     if isinstance(value, tuple):
         return [_sanitize_partial_value(item) for item in value]
     if isinstance(value, str):
-        home = str(Path.home())
-        return value.replace(home, "<home>") if home else value
+        return _sanitize_text(value)
     return value
 
 
@@ -1049,8 +1073,10 @@ def _no_monotonic_growth(values: list[int]) -> bool:
 
 
 def evaluate_gates(
-    receipt: dict[str, Any], _legacy_memory_limit: int | None = None
+    receipt: dict[str, Any], legacy_memory_limit: int | None = None
 ) -> dict[str, Any]:
+    if legacy_memory_limit is None:
+        legacy_memory_limit = 64 * MIB
     strata = receipt.get("pairs", [])
     complete = len(strata) == EXPECTED_STRATA and all(
         len(s.get("baseline", [])) == 2 and len(s.get("candidate", [])) == 2
@@ -1377,15 +1403,27 @@ def evaluate_gates(
     post_stop_active = _probe_int(post_stop, "mlx", "active_bytes")
     post_stop_cache = _probe_int(post_stop, "mlx", "cache_bytes")
     post_stop_mlx_peak = _probe_int(post_stop, "mlx", "peak_bytes")
+    pre_mlx_active = _probe_int(checkpoints.get("pre", {}), "mlx", "active_bytes")
+    pre_mlx_cache = _probe_int(checkpoints.get("pre", {}), "mlx", "cache_bytes")
+    post_stop_active_residual = (
+        max(0, post_stop_active - pre_mlx_active)
+        if post_stop_active is not None and pre_mlx_active is not None
+        else None
+    )
+    post_stop_cache_residual = (
+        max(0, post_stop_cache - pre_mlx_cache)
+        if post_stop_cache is not None and pre_mlx_cache is not None
+        else None
+    )
     checks["post_stop_mlx_active_within_cleanup_bound"] = bool(
         mlx_cleanup_limit is not None
-        and post_stop_active is not None
-        and post_stop_active <= mlx_cleanup_limit
+        and post_stop_active_residual is not None
+        and post_stop_active_residual <= mlx_cleanup_limit
     )
     checks["post_stop_mlx_cache_within_cleanup_bound"] = bool(
         mlx_cleanup_limit is not None
-        and post_stop_cache is not None
-        and post_stop_cache <= mlx_cleanup_limit
+        and post_stop_cache_residual is not None
+        and post_stop_cache_residual <= mlx_cleanup_limit
     )
     checks["stop_does_not_raise_mlx_peak_beyond_allowance"] = bool(
         mlx_reference_max is not None
@@ -1419,10 +1457,18 @@ def evaluate_gates(
     )
     post_stop_footprint = _probe_int(post_stop, "physical_footprint", "current_bytes")
     post_stop_footprint_peak = _probe_int(post_stop, "physical_footprint", "peak_bytes")
+    pre_footprint = _probe_int(
+        checkpoints.get("pre", {}), "physical_footprint", "current_bytes"
+    )
+    post_stop_footprint_residual = (
+        max(0, post_stop_footprint - pre_footprint)
+        if post_stop_footprint is not None and pre_footprint is not None
+        else None
+    )
     checks["post_stop_footprint_within_cleanup_bound"] = bool(
         footprint_cleanup_limit is not None
-        and post_stop_footprint is not None
-        and post_stop_footprint <= footprint_cleanup_limit
+        and post_stop_footprint_residual is not None
+        and post_stop_footprint_residual <= footprint_cleanup_limit
     )
     checks["stop_does_not_raise_footprint_peak_beyond_allowance"] = bool(
         footprint_reference_max is not None
@@ -1440,19 +1486,29 @@ def evaluate_gates(
         and post_stop_swap - pre_swap <= MAX_EXTRA_SWAP
     )
 
-    # Parent schema-v1 gate names remain present as compatibility aliases.
-    checks["median_decode_speedup_gte_1_03"] = checks["median_decode_speedup_gte_1_05"]
-    checks["five_of_six_strata_positive"] = checks["all_six_decode_strata_positive"]
-    checks["median_wall_speedup_gte_1_03"] = checks["median_wall_speedup_gte_1_05"]
-    checks["five_of_six_wall_strata_positive"] = checks["all_six_wall_strata_positive"]
-    checks["paired_ratio_cv_lte_0_05"] = checks["paired_ratio_cv_lte_0_01"]
-    checks["paired_wall_ratio_cv_lte_0_05"] = checks["paired_wall_ratio_cv_lte_0_01"]
-    checks["active_delta_lte_64_mib"] = checks[
-        "active_delta_lte_max_512_mib_or_3_percent"
-    ]
-    checks["isolated_peak_delta_lte_64_mib"] = checks[
-        "isolated_peak_delta_lte_max_512_mib_or_3_percent"
-    ]
+    # Preserve the original schema-v1 semantics independently of stricter gates.
+    checks["median_decode_speedup_gte_1_03"] = len(ratios) == EXPECTED_STRATA and (
+        statistics.median(ratios) >= 1.03
+    )
+    checks["five_of_six_strata_positive"] = sum(ratio > 1 for ratio in ratios) >= 5
+    checks["median_wall_speedup_gte_1_03"] = len(wall_ratios) == EXPECTED_STRATA and (
+        statistics.median(wall_ratios) >= 1.03
+    )
+    checks["five_of_six_wall_strata_positive"] = (
+        sum(ratio > 1 for ratio in wall_ratios) >= 5
+    )
+    checks["paired_ratio_cv_lte_0_05"] = len(paired_ratios) == 12 and (
+        _cv(paired_ratios) <= 0.05
+    )
+    checks["paired_wall_ratio_cv_lte_0_05"] = len(paired_wall_ratios) == 12 and (
+        _cv(paired_wall_ratios) <= 0.05
+    )
+    checks["active_delta_lte_64_mib"] = bool(active_deltas) and (
+        max(active_deltas) <= legacy_memory_limit
+    )
+    checks["isolated_peak_delta_lte_64_mib"] = bool(peak_deltas) and (
+        max(peak_deltas) <= legacy_memory_limit
+    )
     return {
         "pass": all(checks.values()),
         "checks": checks,
@@ -1481,8 +1537,14 @@ def evaluate_gates(
             if footprint_limits
             else None,
             "max_candidate_extra_swap_bytes": max(extra_swap) if extra_swap else None,
+            "legacy_memory_limit_bytes": legacy_memory_limit,
             "mlx_cleanup_limit_bytes": mlx_cleanup_limit,
+            "post_stop_mlx_active_residual_bytes": post_stop_active_residual,
+            "post_stop_mlx_cache_residual_bytes": post_stop_cache_residual,
             "physical_footprint_cleanup_limit_bytes": footprint_cleanup_limit,
+            "post_stop_physical_footprint_residual_bytes": (
+                post_stop_footprint_residual
+            ),
             "end_to_end_extra_swap_bytes": (
                 post_stop_swap - pre_swap
                 if post_stop_swap is not None and pre_swap is not None
@@ -2141,7 +2203,7 @@ async def _run_benchmark_impl(
                 "abort_seed": 38150,
                 "long_text_tokens": EXPECTED_LONG_TEXT_TOKENS,
                 "required_image_size": list(EXPECTED_IMAGE_SIZE),
-                "deprecated_max_memory_delta_mib": args.max_memory_delta_mib,
+                "max_memory_delta_mib": args.max_memory_delta_mib,
                 "prefix_cache": False,
                 "singleton_fastpath": "auto",
                 "temperature": 0.0,
@@ -2170,12 +2232,15 @@ async def _run_benchmark_impl(
                 "paired_ratio_cv": MAX_RATIO_CV,
                 "memory_delta_min_bytes": MIN_MEMORY_ALLOWANCE,
                 "memory_delta_fraction": MEMORY_ALLOWANCE_FRACTION,
+                "legacy_memory_delta_bytes": args.max_memory_delta_mib * MIB,
                 "candidate_extra_swap_bytes": MAX_EXTRA_SWAP,
                 "candidate_swap_monotonic_growth_allowed": False,
             },
             "errors": errors,
         }
-        receipt["gates"] = evaluate_gates(receipt)
+        receipt["gates"] = evaluate_gates(
+            receipt, args.max_memory_delta_mib * MIB
+        )
         return receipt
     except Exception as exc:
         primary_error = exc
@@ -2280,10 +2345,10 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--max-memory-delta-mib",
         type=int,
-        default=None,
+        default=64,
         help=(
-            "deprecated compatibility option; accepted but cannot weaken the fixed "
-            "max(512 MiB, 3%%) qualification gate"
+            "schema-v1 active/peak delta limit (default: 64); the additional "
+            "max(512 MiB, 3%%) qualification gates remain fixed"
         ),
     )
     parser.add_argument("--lifecycle-timeout", type=float, default=120.0)
@@ -2309,7 +2374,7 @@ def _validate_args(parser: argparse.ArgumentParser, args: argparse.Namespace) ->
         parser.error("--image-path must be exactly 1920x1080")
     if args.lifecycle_timeout <= 0:
         parser.error("--lifecycle-timeout must be positive")
-    if args.max_memory_delta_mib is not None and args.max_memory_delta_mib < 0:
+    if args.max_memory_delta_mib < 0:
         parser.error("--max-memory-delta-mib must be non-negative")
     if args.output.exists():
         parser.error("--output already exists; raw receipts are immutable")

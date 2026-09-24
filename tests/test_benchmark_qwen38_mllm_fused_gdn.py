@@ -633,6 +633,77 @@ def test_parent_v1_gate_keys_remain_additively_compatible():
 
 
 @pytest.mark.parametrize(
+    ("field", "legacy_gate", "new_gate"),
+    [
+        (
+            "active_bytes",
+            "active_delta_lte_64_mib",
+            "active_delta_lte_max_512_mib_or_3_percent",
+        ),
+        (
+            "peak_bytes",
+            "isolated_peak_delta_lte_64_mib",
+            "isolated_peak_delta_lte_max_512_mib_or_3_percent",
+        ),
+    ],
+)
+def test_schema_v1_memory_limit_remains_independent(field, legacy_gate, new_gate):
+    receipt = _passing_receipt()
+    receipt["pairs"][0]["candidate"][0]["memory"][field] += 100 * bench.MIB
+
+    gates = bench.evaluate_gates(receipt, 64 * bench.MIB)
+    assert gates["checks"][new_gate] is True
+    assert gates["checks"][legacy_gate] is False
+    assert gates["pass"] is False
+
+    relaxed_legacy = bench.evaluate_gates(receipt, 128 * bench.MIB)
+    assert relaxed_legacy["checks"][legacy_gate] is True
+    assert relaxed_legacy["pass"] is True
+
+
+def test_cleanup_residuals_allow_equal_nonzero_imported_process_baseline():
+    receipt = _passing_receipt()
+    checkpoints = receipt["memory_checkpoints"]
+    baseline = 700 * bench.MIB
+    run_peak = 20 * bench.GIB
+    checkpoints["pre"]["mlx"].update(
+        active_bytes=baseline, peak_bytes=baseline, cache_bytes=baseline
+    )
+    checkpoints["pre"]["physical_footprint"].update(
+        current_bytes=baseline, peak_bytes=baseline
+    )
+    checkpoints["peak"]["mlx"].update(
+        active_bytes=run_peak, peak_bytes=run_peak, cache_bytes=bench.GIB
+    )
+    checkpoints["peak"]["aggregate_run_max"].update(
+        active_bytes=run_peak, peak_bytes=run_peak, cache_bytes=bench.GIB
+    )
+    checkpoints["peak"]["physical_footprint"].update(
+        current_bytes=run_peak, peak_bytes=run_peak
+    )
+    checkpoints["post_stop"]["mlx"].update(
+        active_bytes=baseline, peak_bytes=run_peak, cache_bytes=baseline
+    )
+    checkpoints["post_stop"]["physical_footprint"].update(
+        current_bytes=baseline, peak_bytes=run_peak
+    )
+
+    gates = bench.evaluate_gates(receipt)
+    assert gates["checks"]["post_stop_mlx_active_within_cleanup_bound"] is True
+    assert gates["checks"]["post_stop_mlx_cache_within_cleanup_bound"] is True
+    assert gates["checks"]["post_stop_footprint_within_cleanup_bound"] is True
+    assert gates["checks"]["stop_does_not_raise_mlx_peak_beyond_allowance"] is True
+    assert (
+        gates["checks"]["stop_does_not_raise_footprint_peak_beyond_allowance"]
+        is True
+    )
+    assert gates["metrics"]["post_stop_mlx_active_residual_bytes"] == 0
+    assert gates["metrics"]["post_stop_mlx_cache_residual_bytes"] == 0
+    assert gates["metrics"]["post_stop_physical_footprint_residual_bytes"] == 0
+    assert gates["pass"] is True
+
+
+@pytest.mark.parametrize(
     ("mutate", "failed_gate"),
     [
         (
@@ -1088,9 +1159,21 @@ async def test_partial_receipt_preserves_primary_and_cleanup_errors(monkeypatch)
             hardware={"verified": True},
             source={"dirty": False, "source_tree_match": True},
             memory_checkpoints={"pre": _checkpoint()},
-            cleanup_errors=[{"type": "OSError", "message": "cleanup failed"}],
+            cleanup_errors=[
+                {
+                    "type": "OSError",
+                    "message": (
+                        "cleanup failed at /private/tmp/q38-secret/cache.bin "
+                        "using token=cleanup-secret"
+                    ),
+                }
+            ],
         )
-        raise ValueError(f"primary at {Path.home()}/private-model")
+        raise ValueError(
+            "primary at /private/tmp/q38-secret/model.bin via "
+            "https://alice:password@private.example/run?token=url-secret "
+            "with api_key=loose-secret"
+        )
 
     monkeypatch.setattr(bench, "_run_benchmark_impl", fail)
     with pytest.raises(bench.QualificationRunError) as failure:
@@ -1098,8 +1181,19 @@ async def test_partial_receipt_preserves_primary_and_cleanup_errors(monkeypatch)
     receipt = failure.value.receipt
     assert receipt["stage"] == "abort_recovery"
     assert receipt["failure"]["primary"]["type"] == "ValueError"
-    assert receipt["failure"]["cleanup"] == [
-        {"type": "OSError", "message": "cleanup failed"}
-    ]
-    assert "<home>" in receipt["failure"]["primary"]["message"]
+    assert receipt["failure"]["cleanup"][0]["type"] == "OSError"
+    serialized = str(receipt)
+    for secret in (
+        "/private/tmp/q38-secret",
+        "alice:password",
+        "private.example",
+        "url-secret",
+        "loose-secret",
+        "cleanup-secret",
+    ):
+        assert secret not in serialized
+    assert "<redacted-path>" in serialized
+    assert "<redacted-url>" in serialized
+    assert "token=<redacted>" in serialized
+    assert "api_key=<redacted>" in serialized
     assert receipt["gates"]["pass"] is False
