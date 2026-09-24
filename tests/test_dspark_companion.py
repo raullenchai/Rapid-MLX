@@ -541,6 +541,13 @@ def test_serve_command_downloads_and_dispatches_companion_pair(
     monkeypatch.setattr(server, "configure_cors_from_env", lambda _origins: [])
     monkeypatch.setattr(server, "configure_trusted_hosts", lambda _hosts: None)
     monkeypatch.setattr(cli, "_apply_body_receive_timeout_env", lambda *_a, **_k: None)
+    # The companion path returns before constructing SchedulerConfig, but
+    # serve_command imports that MLX-bound module alongside the unified server.
+    # Keep this no-MLX CI contract focused on the import surface the branch
+    # actually consumes without mocking any companion behavior below.
+    scheduler_stub = types.ModuleType("rapid_mlx.scheduler")
+    scheduler_stub.SchedulerConfig = object
+    monkeypatch.setitem(sys.modules, "rapid_mlx.scheduler", scheduler_stub)
     for field in (
         "_model_alias",
         "_telemetry_auto_selected",
