@@ -236,6 +236,12 @@ def test_listen_fd_uses_bound_socket_port_and_keeps_fd_open():
         assert listener.getsockname()[1] == bound_port
 
 
+def test_listen_fd_rejects_non_tcp_socket():
+    left, right = socket.socketpair()
+    with left, right, pytest.raises(OSError, match="not bound to a TCP socket"):
+        cli._listen_fd_port(left.fileno())
+
+
 def test_serve_lane_port_invariant_rejects_none():
     with pytest.raises(AssertionError, match="unresolved port"):
         cli._resolved_serve_port(types.SimpleNamespace(port=None))

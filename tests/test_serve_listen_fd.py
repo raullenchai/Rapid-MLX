@@ -20,8 +20,8 @@ These tests pin the public CLI contract:
 
 from __future__ import annotations
 
-import sys
 import socket
+import sys
 from types import ModuleType, SimpleNamespace
 from unittest.mock import patch
 
