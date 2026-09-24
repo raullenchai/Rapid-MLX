@@ -3013,7 +3013,33 @@ def _normalize_speculative_config_or_exit(args):
         except SpeculativeConfigError as exc:
             print(f"error: {exc}", file=sys.stderr)
             sys.exit(2)
-        if config is not None and getattr(args, "mllm", False):
+        if (
+            config is not None
+            and config.method == "dspark"
+            and config.model is None
+            and getattr(args, "model", None) == "LiquidAI/LFM2.5-VL-3B"
+        ):
+            # The exact BF16 target has one catalog-recommended companion.
+            # This target-identity branch is intentionally narrow: method-only
+            # DSpark on DeepSeek/local checkpoints retains embedded legacy
+            # semantics and never gains an external model implicitly.
+            from dataclasses import replace
+
+            from .spec_decode.dspark.eligibility import LFM25_VL_3B
+
+            config = replace(
+                config,
+                model=LFM25_VL_3B.drafter_repo,
+                num_speculative_tokens=(
+                    config.num_speculative_tokens
+                    if config.num_speculative_tokens is not None
+                    else LFM25_VL_3B.num_speculative_tokens
+                ),
+            )
+        companion_dspark = bool(
+            config is not None and config.method == "dspark" and config.model
+        )
+        if config is not None and getattr(args, "mllm", False) and not companion_dspark:
             from .telemetry.inference import emit_capability_rejected
 
             emit_capability_rejected(
@@ -3052,7 +3078,12 @@ def _normalize_speculative_config_or_exit(args):
             args.dflash_drafter_path = config.model
     elif config.method == "dspark":
         args.spec_decode = "dspark"
-        args.dspark_num_speculative_tokens = config.num_speculative_tokens or 5
+        # External companion DSpark is a separate, qualified serial runtime.
+        # Seven public proposals map to mlx-vlm's width-eight block (which
+        # includes the anchor). The embedded DeepSeek path keeps K=5.
+        args.dspark_num_speculative_tokens = config.num_speculative_tokens or (
+            7 if config.model else 5
+        )
     elif config.method == "mtp":
         args.spec_decode = "mtp"
         args.mtp_backend = config.backend
@@ -3271,6 +3302,103 @@ def _serve_native_mtp_if_requested(
         reasoning_parser_name=args.reasoning_parser,
         prefill_step_size=prefill_step_size,
         default_reasoning_effort=getattr(args, "default_reasoning_effort", None),
+    )
+    return True
+
+
+def _preflight_companion_dspark_or_exit(args):
+    """Resolve the exact companion pair before downloads or lane selection."""
+
+    config = getattr(args, "_speculative_config", None)
+    if config is None or config.method != "dspark" or not config.model:
+        args._companion_dspark_pair = None
+        return None
+
+    from .spec_decode.dspark.eligibility import (
+        CompanionDSparkError,
+        resolve_companion_dspark_pair,
+    )
+    from .spec_decode.dspark.runtime import (
+        QUALIFIED_MLX_VLM_VERSION,
+        have_runtime,
+    )
+
+    try:
+        pair = resolve_companion_dspark_pair(
+            target_repo=args.model,
+            drafter_repo=config.model,
+            num_speculative_tokens=getattr(args, "dspark_num_speculative_tokens", 7),
+        )
+    except CompanionDSparkError as exc:
+        print(f"error: {exc}", file=sys.stderr)
+        raise SystemExit(2) from exc
+
+    unsupported = []
+    if getattr(args, "no_mllm", False):
+        unsupported.append("--no-mllm")
+    if getattr(args, "mcp_config", None):
+        unsupported.append("--mcp-config")
+    if getattr(args, "embedding_model", None):
+        unsupported.append("--embedding-model")
+    if getattr(args, "enable_auto_tool_choice", False):
+        unsupported.append("--enable-auto-tool-choice")
+    if unsupported:
+        joined = ", ".join(unsupported)
+        print(
+            "error: the qualified companion DSpark serial server does not "
+            f"support {joined}.",
+            file=sys.stderr,
+        )
+        raise SystemExit(2)
+    if not have_runtime():
+        print(
+            "error: LFM companion DSpark requires exactly mlx-vlm "
+            f"{QUALIFIED_MLX_VLM_VERSION}; install the qualified vision runtime.",
+            file=sys.stderr,
+        )
+        raise SystemExit(1)
+
+    args._companion_dspark_pair = pair
+    return pair
+
+
+def _serve_companion_dspark_if_requested(
+    args,
+    *,
+    server_module,
+    effective_max_tokens: int,
+    cors_origins: list[str],
+    uvicorn_log_level: str,
+) -> bool:
+    """Run the qualified companion DSpark serial server when selected."""
+
+    pair = getattr(args, "_companion_dspark_pair", None)
+    if pair is None:
+        return False
+
+    from .spec_decode.dspark.server import run_companion_dspark_server
+
+    alias_name = getattr(args, "_original_alias", None) or args.model
+    _check_memory_capacity(args.model, alias=alias_name)
+    server_module._sync_config()
+    run_companion_dspark_server(
+        pair=pair,
+        artifacts=getattr(args, "_companion_dspark_artifacts", None),
+        host=args.host,
+        port=args.port,
+        served_model_name=args.served_model_name or alias_name,
+        default_max_tokens=effective_max_tokens,
+        cors_origins=cors_origins,
+        uvicorn_log_level=uvicorn_log_level,
+        no_thinking=args.no_thinking,
+        api_key=server_module._api_key,
+        rate_limit=args.rate_limit,
+        max_request_bytes=server_module._max_request_bytes,
+        body_receive_timeout_seconds=server_module._body_receive_timeout_seconds,
+        default_timeout=server_module._default_timeout,
+        max_concurrent_requests=args.max_concurrent_requests,
+        cors_policy=server_module.get_resolved_cors_policy(),
+        reasoning_parser_name=args.reasoning_parser,
     )
     return True
 
@@ -4309,6 +4437,7 @@ def serve_command(args):
     # checks or model downloads can obscure the actionable error.
     _normalize_speculative_config_or_exit(args)
     _preflight_native_mtp_or_exit(args)
+    _companion_dspark_pair = _preflight_companion_dspark_or_exit(args)
 
     # R-10 (PyPI 0.8.6 dogfood): same boot-guard shape for vision /
     # multimodal aliases. ``mlx-vlm`` lives behind the ``[vision]``
@@ -4548,6 +4677,25 @@ def serve_command(args):
                 allow_patterns=list(MTP_ALLOW_PATTERNS),
             )
             download_mtp_snapshot()
+    elif _companion_dspark_pair is not None:
+        from rapid_mlx.telemetry.server_start import failure_stage
+
+        from .spec_decode.dspark.artifacts import download_companion_artifacts
+
+        with failure_stage("download"):
+            _check_disk_space(
+                _companion_dspark_pair.target_repo,
+                force=getattr(args, "force_disk_check", False),
+                revision_override=_companion_dspark_pair.target_revision,
+            )
+            _check_disk_space(
+                _companion_dspark_pair.drafter_repo,
+                force=getattr(args, "force_disk_check", False),
+                revision_override=_companion_dspark_pair.drafter_revision,
+            )
+            args._companion_dspark_artifacts = download_companion_artifacts(
+                _companion_dspark_pair
+            )
     elif _owns_pinned_image_download:
         # Preserve the normal first-run disk guard even though the generic
         # downloader is intentionally bypassed. A complete pinned snapshot is
@@ -4717,7 +4865,11 @@ def serve_command(args):
     # the effective lane, NOT the raw multimodal classification: a hybrid VLM
     # that auto-downgrades to the text-only lane is PFlash-capable there,
     # exactly as an explicit ``--text-only`` run would be (#352 dogfood P1-②).
-    if not args.enable_dflash and getattr(args, "mtp_backend", None) != "native":
+    if (
+        not args.enable_dflash
+        and getattr(args, "mtp_backend", None) != "native"
+        and _companion_dspark_pair is None
+    ):
         _requested_spec_decode = getattr(args, "spec_decode", "none") or "none"
         if _requested_spec_decode == "none" and getattr(
             args, "force_spec_decode", False
@@ -5230,11 +5382,18 @@ def serve_command(args):
         features.append("ddtree: experimental single-user")
     if _owns_v41_product_download:
         features.append("dspark-k4: experimental single-user")
+    if _companion_dspark_pair is not None:
+        features.append("lfm-dspark-7-proposals: single-user")
     if features:
         print(f"  Features: {', '.join(features)}")
     print(f"  Model: {args.model}")
     # Store MCP config path for FastAPI startup
-    if args.mcp_config and not args.enable_dflash and not _owns_v41_product_download:
+    if (
+        args.mcp_config
+        and not args.enable_dflash
+        and not _owns_v41_product_download
+        and _companion_dspark_pair is None
+    ):
         print(f"MCP config: {args.mcp_config}")
         os.environ["RAPID_MLX_MCP_CONFIG"] = args.mcp_config
 
@@ -5265,6 +5424,15 @@ def serve_command(args):
             reasoning_parser_name=args.reasoning_parser,
         )
         return
+
+    if _serve_companion_dspark_if_requested(
+        args,
+        server_module=server,
+        effective_max_tokens=effective_max_tokens,
+        cors_origins=cors_origins,
+        uvicorn_log_level=uvicorn_log_level,
+    ):
+        return  # pragma: no cover - exercised by real-model HTTP qualification
 
     # The qualified native-MTP path intentionally owns a serial,
     # thread-affine API boundary. It is explicit because that path does not

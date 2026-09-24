@@ -1365,11 +1365,12 @@ def mllm_backbone_is_hybrid(model_name: str) -> bool:
 
 # Single source of truth for the machine-readable ``serving_lane_reason``
 # strings the engine emits. Every emitting site — ``resolve_serving_lane_decision``
-# below, the startup seed in ``server.py``, and the post-load rewrite in
-# ``engine/batched.py`` — must emit a value that lives in this set. Keeping it
-# here (next to the decision function) instead of inlining literals at each site
-# is what lets ``ServingLaneDecision`` fail fast on a stray or renamed reason
-# and lets the Desktop copy contract test enumerate the values authoritatively.
+# below, the startup seed in ``server.py``, the post-load rewrite in
+# ``engine/batched.py``, and qualified companion servers — must emit a value
+# that lives in this set. Keeping it here (next to the decision function)
+# instead of inlining literals at each site is what lets ``ServingLaneDecision``
+# fail fast on a stray or renamed reason and lets the Desktop copy contract test
+# enumerate the values authoritatively.
 SERVING_LANE_REASONS = frozenset(
     {
         # resolve_serving_lane_decision — text lane
@@ -1384,6 +1385,8 @@ SERVING_LANE_REASONS = frozenset(
         "vision_hybrid_runtime_unsupported",
         "vision_memory_insufficient",
         "vision_supported",
+        # spec_decode/dspark/server.py — exact qualified companion pair
+        "qualified_companion_dspark",
         # engine/batched.py — post-load rewrite after a failed vision load
         "vision_weights_unavailable",
         # server.py — startup seed for modalities with no vision lane
@@ -1417,6 +1420,7 @@ VISION_SERVING_LANE_REASONS = frozenset(
         "vision_lane_forced",
         "vision_hybrid_runtime_supported",
         "vision_supported",
+        "qualified_companion_dspark",
     }
 )
 

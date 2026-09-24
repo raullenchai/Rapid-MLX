@@ -2511,6 +2511,21 @@ class SpeculativeDecodingInfo(BaseModel):
     request_fallback_features: list[Literal["tools"]] = Field(default_factory=list)
 
 
+class CompanionSpeculativeDecodingInfo(SpeculativeDecodingInfo):
+    """Immutable identity exposed only by companion-model runtimes.
+
+    Keeping these fields on a subtype preserves the exact legacy dump shape
+    for scheduler-owned and embedded speculative decoders.
+    """
+
+    target_model: str
+    drafter_model: str
+    target_revision: str
+    drafter_revision: str
+    num_speculative_tokens: int
+    draft_block_size: int
+
+
 class ModelInfo(BaseModel):
     """Information about an available model.
 
@@ -2643,7 +2658,9 @@ class ModelInfo(BaseModel):
     # resident engine is configured for speculative decoding. A non-null value
     # separates process configuration from request eligibility so clients do
     # not infer "active for this request" from a launch flag alone.
-    speculative_decoding: SpeculativeDecodingInfo | None = None
+    speculative_decoding: (
+        CompanionSpeculativeDecodingInfo | SpeculativeDecodingInfo | None
+    ) = None
 
 
 class ModelsResponse(BaseModel):

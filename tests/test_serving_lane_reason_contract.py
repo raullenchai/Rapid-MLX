@@ -138,6 +138,64 @@ def _decision_reasons() -> dict[str, tuple[bool, bool]]:
     return found
 
 
+def _static_model_info_lane_reasons() -> dict[str, bool]:
+    """Static ``ModelInfo`` reason/lane pairs emitted outside lane decisions."""
+    found: dict[str, bool] = {}
+    for path in ENGINE.rglob("*.py"):
+        tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
+        constants = _module_string_constants(tree)
+        for node in ast.walk(tree):
+            if not isinstance(node, ast.Call):
+                continue
+            constructor_name = (
+                node.func.id
+                if isinstance(node.func, ast.Name)
+                else node.func.attr
+                if isinstance(node.func, ast.Attribute)
+                else None
+            )
+            if constructor_name != "ModelInfo":
+                continue
+            lane_node = next(
+                (item.value for item in node.keywords if item.arg == "serving_lane"),
+                None,
+            )
+            reason_node = next(
+                (
+                    item.value
+                    for item in node.keywords
+                    if item.arg == "serving_lane_reason"
+                ),
+                None,
+            )
+            if lane_node is None or reason_node is None:
+                continue
+            if not (
+                isinstance(lane_node, ast.Constant)
+                and isinstance(lane_node.value, str)
+                and (
+                    isinstance(reason_node, ast.Constant)
+                    and isinstance(reason_node.value, str)
+                    or isinstance(reason_node, ast.Name)
+                    and reason_node.id in constants
+                )
+            ):
+                continue
+            context = f"ModelInfo at {path}:{node.lineno}"
+            lane = lane_node.value
+            assert lane in {"text", "vision"}, (
+                f"{context} uses unknown static serving lane {lane!r}"
+            )
+            reason = _string_value(reason_node, constants, context=context)
+            is_mllm = lane == "vision"
+            previous = found.setdefault(reason, is_mllm)
+            assert previous == is_mllm, (
+                f"{reason!r} has conflicting static ModelInfo lane classifications: "
+                f"{previous} and {is_mllm}"
+            )
+    return found
+
+
 def _assignment_targets(target: ast.expr) -> list[str]:
     if isinstance(target, ast.Name):
         return [target.id]
@@ -652,12 +710,18 @@ def test_vision_lane_reason_ssot_matches_the_tree():
     decision_vision = {
         reason for reason, (is_mllm, _) in _decision_reasons().items() if is_mllm
     }
-    assert set(VISION_SERVING_LANE_REASONS) == decision_vision, (
-        "VISION_SERVING_LANE_REASONS and decision call sites disagree:\n"
-        f"  in SSOT but no vision decision emits it: "
-        f"{sorted(set(VISION_SERVING_LANE_REASONS) - decision_vision) or 'none'}\n"
+    model_info_vision = {
+        reason
+        for reason, is_mllm in _static_model_info_lane_reasons().items()
+        if is_mllm
+    }
+    emitted_vision = decision_vision | model_info_vision
+    assert set(VISION_SERVING_LANE_REASONS) == emitted_vision, (
+        "VISION_SERVING_LANE_REASONS and static engine call sites disagree:\n"
+        f"  in SSOT but no vision call site emits it: "
+        f"{sorted(set(VISION_SERVING_LANE_REASONS) - emitted_vision) or 'none'}\n"
         f"  emitted on vision lane but absent from SSOT: "
-        f"{sorted(decision_vision - set(VISION_SERVING_LANE_REASONS)) or 'none'}"
+        f"{sorted(emitted_vision - set(VISION_SERVING_LANE_REASONS)) or 'none'}"
     )
 
 
