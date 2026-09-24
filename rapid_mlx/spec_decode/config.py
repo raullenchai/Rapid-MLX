@@ -52,7 +52,9 @@ _COMMON_KEYS = frozenset(
 _METHOD_KEYS = {
     "ddtree": frozenset({"model", "num_speculative_tokens", "tree_budget"}),
     "dflash": frozenset({"model"}),
-    "dspark": frozenset({"num_speculative_tokens"}),
+    # ``model`` selects the qualified companion-drafter server. Omitting it
+    # preserves the original DeepSeek V4 checkpoint-native DSpark path.
+    "dspark": frozenset({"model", "num_speculative_tokens"}),
     "mtp": frozenset(
         {
             "model",

@@ -41,6 +41,7 @@ import threading
 import time
 import uuid
 from collections.abc import AsyncIterator
+from dataclasses import dataclass, field
 from typing import Any
 
 from fastapi import Depends, FastAPI, HTTPException, Request
@@ -54,6 +55,7 @@ from rapid_mlx.api.models import (
     ChatCompletionResponse,
     ModelInfo,
     ModelsResponse,
+    SpeculativeDecodingInfo,
     Usage,
 )
 from rapid_mlx.config import get_config
@@ -68,6 +70,19 @@ from .eligibility import have_runtime
 from .runtime import load_runtime
 
 logger = logging.getLogger(__name__)
+
+
+@dataclass(frozen=True)
+class PreparedPrompt:
+    """Rendered prompt plus inputs forwarded to mlx-vlm generation.
+
+    The original DFlash renderer still returns a plain string. Companion
+    runtimes use this additive shape to preserve image inputs without changing
+    DFlash's established text-only behavior.
+    """
+
+    prompt: str
+    generation_kwargs: dict[str, Any] = field(default_factory=dict)
 
 
 # Global serial lock — DFlash is single-stream by design (mlx-vlm doesn't
@@ -663,6 +678,7 @@ def _build_app(
     generation_kwargs_fn: Any | None = None,
     validate_request_fn: Any | None = None,
     backend_name: str = "DFlash",
+    speculative_info: SpeculativeDecodingInfo | None = None,
 ) -> FastAPI:
     """Create the FastAPI application for DFlash mode.
 
@@ -806,7 +822,7 @@ def _build_app(
 
     @app.get("/healthz")
     async def healthz() -> dict[str, Any]:
-        return {
+        result = {
             "status": "ok",
             "engine": backend_name.lower().replace(" ", "-"),
             "algorithm": runtime.algorithm,
@@ -815,6 +831,10 @@ def _build_app(
             "target_revision": runtime.target_revision,
             "drafter_revision": runtime.drafter_revision,
         }
+        block_size = getattr(runtime, "num_speculative_tokens", None)
+        if isinstance(block_size, int):
+            result["num_speculative_tokens"] = block_size
+        return result
 
     @app.get(
         "/v1/models",
@@ -827,9 +847,26 @@ def _build_app(
                     id=served_model_name,
                     created=int(time.time()),
                     owned_by="rapid-mlx",
+                    speculative_decoding=speculative_info,
                 )
             ]
         )
+
+    @app.get(
+        "/v1/status",
+        dependencies=[Depends(_verify_api_key_with_bearer_challenge)],
+    )
+    async def runtime_status() -> dict[str, Any]:
+        """Expose serial-runtime readiness without implying AR fallback."""
+
+        return {
+            "status": "ready",
+            "model": served_model_name,
+            "engine": backend_name.lower().replace(" ", "-"),
+            "speculative_decoding": (
+                speculative_info.model_dump() if speculative_info is not None else None
+            ),
+        }
 
     @app.get(
         "/v1/models/{model_id:path}",
@@ -850,7 +887,10 @@ def _build_app(
             raise HTTPException(status_code=404, detail="Model not found")
         from ...routes.models import _build_model_info
 
-        return _build_model_info(model_id)
+        info = _build_model_info(model_id)
+        if speculative_info is not None:
+            info.speculative_decoding = speculative_info
+        return info
 
     # codex round-3 #3: auth + rate-limit for this route are enforced in
     # ``_DFlashAdmissionMiddleware`` BEFORE the admission slot is reserved and
@@ -1020,7 +1060,7 @@ def _build_app(
             # an uncancellable overrun can be abandoned and its admission slot
             # released immediately (round-5 #2) — nothing serial is left running
             # behind it, unlike a timed-out generation worker.
-            def _render() -> str:
+            def _render() -> str | PreparedPrompt:
                 renderer = render_prompt_fn or _render_prompt
                 return renderer(
                     processor, model, request, enable_thinking=effective_thinking
@@ -1053,11 +1093,11 @@ def _build_app(
             render_future = render_cf  # tracked for the cleanup handler
             render_awaitable = asyncio.wrap_future(render_cf)
             if request_deadline is None:
-                prompt = await render_awaitable
+                rendered_prompt = await render_awaitable
             else:
                 render_budget = request_deadline - loop.time()
                 try:
-                    prompt = await asyncio.wait_for(
+                    rendered_prompt = await asyncio.wait_for(
                         asyncio.shield(render_awaitable), timeout=render_budget
                     )
                 except asyncio.TimeoutError as exc:
@@ -1073,6 +1113,18 @@ def _build_app(
                             f"{_format_timeout_seconds(request_timeout_for_diagnostics)}."
                         ),
                     ) from exc
+
+            if isinstance(rendered_prompt, PreparedPrompt):
+                prompt = rendered_prompt.prompt
+                prepared_generation_kwargs = dict(rendered_prompt.generation_kwargs)
+            elif isinstance(rendered_prompt, str):
+                prompt = rendered_prompt
+                prepared_generation_kwargs = {}
+            else:
+                raise HTTPException(
+                    status_code=500,
+                    detail=f"{backend_name} prompt renderer returned an invalid result.",
+                )
 
             max_tokens = (
                 request.max_tokens
@@ -1098,6 +1150,10 @@ def _build_app(
                     temperature=temperature,
                     top_p=top_p,
                 )
+            # Media inputs are owned by the request-preparation callback. Keep
+            # them additive so existing DFlash/native-MTP callers see the exact
+            # same kwargs they did before this companion-VLM seam existed.
+            gen_kwargs.update(prepared_generation_kwargs)
 
             # Keep the generator's thinking state in lock-step with the chat
             # template and response postprocessor. mlx-vlm uses this flag to
