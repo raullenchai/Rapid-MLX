@@ -6,6 +6,7 @@ from __future__ import annotations
 import errno
 import functools
 import re
+import socket
 import threading
 import urllib.error
 from collections.abc import Callable
@@ -71,6 +72,7 @@ def pull_error_class(exc: BaseException) -> str:
     a response.
     """
     import httpx
+    from huggingface_hub.errors import HfHubHTTPError, OfflineModeIsEnabled
     from huggingface_hub.utils import (
         GatedRepoError,
         LocalEntryNotFoundError,
@@ -90,18 +92,26 @@ def pull_error_class(exc: BaseException) -> str:
             return "gated"
         if isinstance(current, RepositoryNotFoundError):
             return "not_found"
+        if isinstance(current, HfHubHTTPError):
+            try:
+                if current.response.status_code in (401, 403):
+                    return "gated"
+            except BaseException:
+                pass
         if isinstance(current, OSError) and current.errno == errno.ENOSPC:
             return "disk_full"
         if isinstance(
             current,
             (
                 LocalEntryNotFoundError,
+                OfflineModeIsEnabled,
                 requests_exceptions.ConnectionError,
                 requests_exceptions.ConnectTimeout,
                 requests_exceptions.ReadTimeout,
                 httpx.ConnectError,
                 httpx.ConnectTimeout,
                 httpx.ReadTimeout,
+                socket.gaierror,
                 urllib.error.URLError,
                 TimeoutError,
             ),

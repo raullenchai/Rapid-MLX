@@ -2,10 +2,12 @@
 from __future__ import annotations
 
 import builtins
+import socket
 import sys
 from types import SimpleNamespace
 
 import pytest
+import requests
 from fastapi import HTTPException
 
 from rapid_mlx import cli, server
@@ -249,6 +251,80 @@ def _stub_download_entry(monkeypatch):
     )
 
 
+def _hub_response(status_code: int) -> requests.Response:
+    response = requests.Response()
+    response.status_code = status_code
+    response.url = "https://huggingface.co/owner/model"
+    response.request = requests.Request("GET", response.url).prepare()
+    return response
+
+
+def test_render_hub_error_not_found_has_repo_discovery_next_steps():
+    from huggingface_hub.errors import RepositoryNotFoundError
+
+    failure = RepositoryNotFoundError(
+        "private raw detail", response=_hub_response(404)
+    )
+    outer = RuntimeError("outer private detail")
+    outer.__cause__ = failure
+
+    rendered = cli.render_hub_error(outer, "owner/model")
+
+    assert rendered is not None
+    assert "owner/model" in rendered
+    assert "rapid-mlx models" in rendered
+    assert "mlx-community/Qwen3.5-9B-4bit" in rendered
+    assert "private raw detail" not in rendered
+
+
+@pytest.mark.parametrize("status_code", [401, 403])
+def test_render_hub_error_gated_has_access_and_auth_next_steps(status_code):
+    from huggingface_hub.errors import GatedRepoError, HfHubHTTPError
+
+    failure = (
+        GatedRepoError("private raw detail", response=_hub_response(status_code))
+        if status_code == 403
+        else HfHubHTTPError("private raw detail", response=_hub_response(status_code))
+    )
+
+    rendered = cli.render_hub_error(failure, "owner/model")
+
+    assert rendered is not None
+    assert "https://huggingface.co/owner/model" in rendered
+    assert "huggingface-cli login" in rendered
+    assert "HF_TOKEN" in rendered
+    assert "private raw detail" not in rendered
+
+
+@pytest.mark.parametrize(
+    "failure",
+    [
+        pytest.param(requests.ConnectionError("private host"), id="requests"),
+        pytest.param(socket.gaierror("private dns"), id="dns"),
+        pytest.param(TimeoutError("private timeout"), id="timeout"),
+    ],
+)
+def test_render_hub_error_offline_has_network_cache_next_steps(failure):
+    rendered = cli.render_hub_error(failure, "owner/model")
+
+    assert rendered is not None
+    assert "network" in rendered.lower()
+    assert "HF_HUB_OFFLINE" in rendered
+    assert "cached model" in rendered
+    assert "private" not in rendered
+
+
+def test_render_hub_error_ignores_context_and_unknown_errors():
+    contextual = ValueError("legacy private detail")
+    contextual.__context__ = requests.ConnectionError("ignored context")
+
+    assert cli.render_hub_error(contextual, "owner/model") is None
+
+    cyclic = RuntimeError("cycle")
+    cyclic.__cause__ = cyclic
+    assert cli.render_hub_error(cyclic, "owner/model") is None
+
+
 def test_resolve_timeout_emits_resolve_before_preserving_exit(monkeypatch):
     events = _capture(monkeypatch)
     _stub_download_entry(monkeypatch)
@@ -262,13 +338,21 @@ def test_resolve_timeout_emits_resolve_before_preserving_exit(monkeypatch):
         cli._ensure_model_downloaded("owner/model")
 
     assert caught.value.code == 1
-    assert [(props["state"], props.get("failure_stage")) for _, props in events] == [
+    assert [
+        (props["state"], props.get("failure_stage"))
+        for name, props in events
+        if name == "server_start_state"
+    ] == [
         ("attempted", None),
         ("failed", "resolve"),
     ]
 
 
-def test_definitive_download_404_emits_download(monkeypatch):
+def test_definitive_download_not_found_fails_resolve_with_next_steps(
+    monkeypatch, capsys
+):
+    from huggingface_hub.errors import RepositoryNotFoundError
+
     events = _capture(monkeypatch)
     _stub_download_entry(monkeypatch)
     monkeypatch.setattr(
@@ -277,17 +361,95 @@ def test_definitive_download_404_emits_download(monkeypatch):
     )
     monkeypatch.setattr(
         "huggingface_hub.snapshot_download",
-        lambda *_a, **_kw: (_ for _ in ()).throw(RuntimeError("404 missing")),
+        lambda *_a, **_kw: (_ for _ in ()).throw(
+            RepositoryNotFoundError("private", response=_hub_response(404))
+        ),
     )
     server_start.attempted("qwen3.5-4b-4bit", load_policy="eager")
 
-    with pytest.raises(RuntimeError, match="not found on HuggingFace"):
+    with pytest.raises(SystemExit) as caught:
         cli._ensure_model_downloaded("owner/model")
 
-    assert [(props["state"], props.get("failure_stage")) for _, props in events] == [
+    assert caught.value.code == 1
+    assert "rapid-mlx models" in capsys.readouterr().err
+    assert [
+        (props["state"], props.get("failure_stage"))
+        for name, props in events
+        if name == "server_start_state"
+    ] == [
         ("attempted", None),
-        ("failed", "download"),
+        ("failed", "resolve"),
     ]
+
+
+def test_gated_download_fails_fast_instead_of_printing_retry(monkeypatch, capsys):
+    from huggingface_hub.errors import HfHubHTTPError
+
+    _stub_download_entry(monkeypatch)
+    monkeypatch.setattr(
+        "rapid_mlx._download_gate.call_with_deadline",
+        lambda _func, _timeout, *_a, **_kw: SimpleNamespace(
+            sha="abc", siblings=[]
+        ),
+    )
+    monkeypatch.setattr(
+        "huggingface_hub.snapshot_download",
+        lambda *_a, **_kw: (_ for _ in ()).throw(
+            HfHubHTTPError("private", response=_hub_response(403))
+        ),
+    )
+
+    with pytest.raises(SystemExit) as caught:
+        cli._ensure_model_downloaded("owner/model")
+
+    captured = capsys.readouterr()
+    assert caught.value.code == 1
+    assert "https://huggingface.co/owner/model" in captured.err
+    assert "huggingface-cli login" in captured.err
+    assert "server will retry" not in captured.out + captured.err
+
+
+def test_offline_download_keeps_retry_path_with_next_steps(monkeypatch, capsys):
+    _stub_download_entry(monkeypatch)
+    monkeypatch.setattr(
+        "rapid_mlx._download_gate.call_with_deadline",
+        lambda _func, _timeout, *_a, **_kw: SimpleNamespace(
+            sha="abc", siblings=[]
+        ),
+    )
+    monkeypatch.setattr(
+        "huggingface_hub.snapshot_download",
+        lambda *_a, **_kw: (_ for _ in ()).throw(
+            requests.ConnectionError("private endpoint")
+        ),
+    )
+
+    assert cli._ensure_model_downloaded("owner/model") is None
+
+    captured = capsys.readouterr()
+    assert "HF_HUB_OFFLINE" in captured.err
+    assert "server will retry" in captured.err
+    assert "private endpoint" not in captured.out + captured.err
+
+
+def test_unknown_download_error_keeps_legacy_message(monkeypatch, capsys):
+    _stub_download_entry(monkeypatch)
+    monkeypatch.setattr(
+        "rapid_mlx._download_gate.call_with_deadline",
+        lambda _func, _timeout, *_a, **_kw: SimpleNamespace(
+            sha="abc", siblings=[]
+        ),
+    )
+    monkeypatch.setattr(
+        "huggingface_hub.snapshot_download",
+        lambda *_a, **_kw: (_ for _ in ()).throw(ValueError("legacy detail")),
+    )
+
+    assert cli._ensure_model_downloaded("owner/model") is None
+
+    captured = capsys.readouterr()
+    assert captured.err == ""
+    assert "Pre-download skipped (ValueError); server will retry." in captured.out
 
 
 @pytest.mark.parametrize(
