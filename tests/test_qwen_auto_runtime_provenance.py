@@ -8,6 +8,7 @@ import pytest
 
 from rapid_mlx import cli
 from rapid_mlx.qwen_runtime_plan import SpeculativeIntent
+from rapid_mlx.spec_decode import config as spec_config
 
 
 def _args(model: str, **overrides) -> SimpleNamespace:
@@ -56,6 +57,20 @@ def test_qwen_alias_default_records_implicit_source_without_behavior_change(
     assert args._speculative_config.method == "mtp"
     assert args.spec_decode == "mtp"
     assert args.mtp_max_k == expected_k
+
+
+def test_native_mtp_ready_alias_records_implicit_native_source(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    args = _args("qwen3.6-35b-4bit")
+    monkeypatch.setattr(cli, "_alias_native_mtp_capable", lambda _model: True)
+    monkeypatch.setattr(cli, "_native_mtp_runtime_ready", lambda _model: True)
+
+    cli._normalize_speculative_config_or_exit(args)
+
+    assert args._speculative_config_source == "alias_default"
+    assert args._speculative_config.method == "mtp"
+    assert args._speculative_config.backend == "native"
 
 
 def test_explicit_speculative_config_records_operator_source() -> None:
@@ -115,6 +130,18 @@ def test_unknown_alias_records_none_and_preserves_plain_decode() -> None:
     assert args._speculative_config_source == "none"
     assert args._speculative_config is None
     assert args.spec_decode == "none"
+
+
+def test_parser_none_result_normalizes_provenance_to_none(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    args = _args("someone/unknown-qwen", speculative_config='{"method":"mtp"}')
+    monkeypatch.setattr(spec_config, "parse_speculative_config", lambda _raw: None)
+
+    cli._normalize_speculative_config_or_exit(args)
+
+    assert args._speculative_config_source == "none"
+    assert args._speculative_config is None
 
 
 @pytest.mark.parametrize(

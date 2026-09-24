@@ -3,11 +3,14 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import threading
 from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
 
+import rapid_mlx.runtime.qwen_artifact as qwen_artifact
+from rapid_mlx import server
 from rapid_mlx.engine.batched import BatchedEngine
 from rapid_mlx.qwen_runtime_plan import SpeculativeIntent, TargetLane
 from rapid_mlx.routes import health
@@ -527,3 +530,116 @@ def test_get_stats_and_status_forward_only_redacted_qwen_fields(
     assert payload["qwen_runtime_activation"] == "pending_first_request"
     assert "model_name" not in payload["qwen_runtime_plan"]
     assert str(tmp_path) not in json.dumps(payload)
+
+
+@pytest.mark.parametrize(
+    ("no_spec_decode", "spec_decode", "expected"),
+    [
+        (True, "mtp", SpeculativeIntent.EXPLICIT_DISABLED),
+        (False, "mtp", SpeculativeIntent.EXPLICIT_ENABLED),
+    ],
+)
+def test_engine_constructor_derives_legacy_speculative_intent(
+    no_spec_decode: bool, spec_decode: str, expected: SpeculativeIntent
+) -> None:
+    engine = BatchedEngine(
+        "neutral-model",
+        scheduler_config=SimpleNamespace(spec_decode=spec_decode),
+        force_text=True,
+        no_spec_decode=no_spec_decode,
+        chat_template_id="test-template",
+    )
+    assert engine._qwen_speculative_intent is expected
+
+
+@pytest.mark.parametrize(
+    "kwargs",
+    [
+        {"speculative_intent": "mtp"},
+        {"operator_target_lane": "text"},
+    ],
+)
+def test_engine_constructor_rejects_invalid_qwen_provenance(kwargs: dict) -> None:
+    with pytest.raises(ValueError):
+        BatchedEngine(
+            "neutral-model",
+            scheduler_config=SimpleNamespace(spec_decode="none"),
+            force_text=True,
+            chat_template_id="test-template",
+            **kwargs,
+        )
+
+
+def test_server_rejects_conflicting_operator_lanes_before_model_load() -> None:
+    with pytest.raises(ValueError, match="mutually exclusive"):
+        server.load_model("neutral-model", force_mllm=True, force_text=True)
+
+
+def test_observability_failure_never_changes_engine_start(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, caplog
+) -> None:
+    engine = _engine(
+        _checkpoint(tmp_path),
+        intent=SpeculativeIntent.NONE,
+        is_mllm=False,
+        companion=False,
+    )
+    engine._loaded = False
+    engine._guided_requests_lock = threading.Lock()
+    monkeypatch.setattr(engine, "_validate_lane_capabilities", lambda: None)
+
+    async def start_llm() -> None:
+        return None
+
+    monkeypatch.setattr(engine, "_start_llm", start_llm)
+
+    def fail_observability() -> None:
+        raise RuntimeError("synthetic observability failure")
+
+    monkeypatch.setattr(
+        engine, "_finalize_qwen_runtime_observability", fail_observability
+    )
+    caplog.set_level(logging.WARNING)
+    asyncio.run(engine.start())
+    assert engine._loaded is True
+    assert "serving behavior unchanged" in caplog.text
+
+
+def test_artifact_probe_failure_is_omitted_from_boot_status(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, caplog
+) -> None:
+    engine = _engine(
+        _checkpoint(tmp_path),
+        intent=SpeculativeIntent.NONE,
+        is_mllm=False,
+        companion=False,
+    )
+
+    def fail_probe(*_args, **_kwargs):
+        raise RuntimeError("synthetic probe failure")
+
+    monkeypatch.setattr(qwen_artifact, "probe_resolved_qwen_artifact", fail_probe)
+    caplog.set_level(logging.DEBUG)
+    engine._finalize_qwen_runtime_observability()
+    assert engine._qwen_runtime_plan is not None
+    assert engine._qwen_artifact_truth is None
+    assert "Verified Qwen artifact truth unavailable" in caplog.text
+
+
+def test_verified_artifact_truth_is_forwarded_to_boot_log_and_stats(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, caplog
+) -> None:
+    engine = _engine(
+        _checkpoint(tmp_path),
+        intent=SpeculativeIntent.NONE,
+        is_mllm=False,
+        companion=False,
+    )
+    truth = SimpleNamespace(to_status_dict=lambda: {"identity_status": "verified"})
+    monkeypatch.setattr(
+        qwen_artifact, "probe_resolved_qwen_artifact", lambda *_args, **_kwargs: truth
+    )
+    caplog.set_level(logging.INFO)
+    engine._finalize_qwen_runtime_observability()
+    assert '"artifact_truth":{"identity_status":"verified"}' in caplog.text
+    assert engine.get_stats()["qwen_artifact_truth"] == {"identity_status": "verified"}

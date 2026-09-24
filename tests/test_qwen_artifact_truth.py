@@ -35,6 +35,7 @@ from rapid_mlx.spec_decode.mtp.qwen3_5_inject import _find_mtp_weights_file
 from scripts.extract_qwen_artifact_receipt import main as extract_receipt
 
 FIXTURES = Path(__file__).parent / "fixtures" / "qwen_artifacts"
+CONFIGURED_HUB_CACHE_ROOT = qwen_artifact._configured_hub_cache_root
 
 EXPECTED = {
     "qwen35_4b_4bit": {
@@ -918,3 +919,445 @@ def test_conversion_seam_rejects_unverified_and_incomplete_layers(tmp_path: Path
     incomplete = probe_qwen_artifact(snapshot, binding=_binding(snapshot, metadata))
     with pytest.raises(ArtifactProbeError, match="ordered layer layout"):
         to_verified_runtime_target(incomplete)
+
+
+def test_layout_classifier_rejects_outside_and_non_file_candidates(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    outside = tmp_path.parent / "outside-mtp.safetensors"
+    outside.touch(exist_ok=True)
+    monkeypatch.setattr(qwen_layout, "find_mtp_weights_file", lambda _path: outside)
+    assert inspect_mtp_weights_layout(tmp_path).state is MTPWeightPathState.UNSUPPORTED
+
+    candidate_dir = tmp_path / "mtp.safetensors"
+    candidate_dir.mkdir()
+    monkeypatch.setattr(
+        qwen_layout, "find_mtp_weights_file", lambda _path: candidate_dir
+    )
+    layout = inspect_mtp_weights_layout(tmp_path)
+    assert layout.state is MTPWeightPathState.UNSUPPORTED
+    assert layout.storage is MTPWeightStorage.OTHER
+
+
+def test_binding_and_path_parsers_cover_fail_closed_boundaries(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    snapshot, _hub, metadata = _materialize_snapshot(tmp_path, "qwen36_35b_4bit")
+    binding = _binding(snapshot, metadata)
+    assert binding.matches(tmp_path / "missing") is False
+    assert qwen_artifact._canonical_repo_id(object()) is None
+    monkeypatch.setattr("huggingface_hub.utils.validate_repo_id", lambda _repo: None)
+    assert qwen_artifact._canonical_repo_id("a/b/c") is None
+    assert qwen_artifact._canonical_subfolder(1) is None
+
+    from huggingface_hub import constants as hub_constants
+
+    monkeypatch.setattr(hub_constants, "HF_HUB_CACHE", str(tmp_path))
+    assert CONFIGURED_HUB_CACHE_ROOT() == tmp_path.resolve()
+    original_import = __import__
+
+    def reject_hub_constants(name, *args, **kwargs):
+        if name == "huggingface_hub.constants":
+            raise ImportError("synthetic missing dependency")
+        return original_import(name, *args, **kwargs)
+
+    monkeypatch.setattr("builtins.__import__", reject_hub_constants)
+    assert CONFIGURED_HUB_CACHE_ROOT() is None
+
+
+def test_binding_returns_none_when_cache_root_is_unavailable(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    snapshot, _hub, metadata = _materialize_snapshot(tmp_path, "qwen36_35b_4bit")
+    monkeypatch.setattr(qwen_artifact, "_configured_hub_cache_root", lambda: None)
+    assert (
+        verify_hub_snapshot_binding(
+            snapshot,
+            repo_id=metadata["source_repo"],
+            revision=metadata["revision"],
+        )
+        is None
+    )
+
+
+def test_truth_constructor_rejects_inconsistent_private_capabilities(
+    tmp_path: Path,
+) -> None:
+    snapshot, _hub, metadata = _materialize_snapshot(tmp_path, "qwen36_35b_4bit")
+    truth = probe_qwen_artifact(snapshot, binding=_binding(snapshot, metadata))
+    values = {
+        item.name: getattr(truth, item.name)
+        for item in fields(QwenArtifactTruth)
+        if not item.name.startswith("_")
+    }
+    with pytest.raises(TypeError, match="invalid Qwen artifact runtime capability"):
+        QwenArtifactTruth(
+            **values,
+            _runtime_capability=object(),
+            _mint_token=qwen_artifact._TRUTH_MINT_TOKEN,
+        )
+    with pytest.raises(ValueError, match="require resolver capability"):
+        QwenArtifactTruth(
+            **{**values, "source_repo": None},
+            _runtime_capability=qwen_artifact._VERIFIED_RUNTIME_CAPABILITY,
+            _mint_token=qwen_artifact._TRUTH_MINT_TOKEN,
+        )
+    with pytest.raises(ValueError, match="must be redacted"):
+        QwenArtifactTruth(
+            **{
+                **values,
+                "identity_status": ArtifactIdentityStatus.UNVERIFIED_SNAPSHOT,
+                "verification_id": None,
+            },
+            _runtime_capability=None,
+            _mint_token=qwen_artifact._TRUTH_MINT_TOKEN,
+        )
+
+
+@pytest.mark.parametrize(
+    ("index_payload", "expected"),
+    [
+        ([], TargetWeightLayout.INVALID_INDEX),
+        ({"weight_map": {}}, TargetWeightLayout.INVALID_INDEX),
+        ({"weight_map": {"weight": 7}}, TargetWeightLayout.INVALID_INDEX),
+    ],
+)
+def test_malformed_target_indexes_fail_closed(
+    tmp_path: Path, index_payload: object, expected: TargetWeightLayout
+) -> None:
+    snapshot = tmp_path / "snapshot"
+    snapshot.mkdir()
+    (snapshot / "config.json").write_text("{}", encoding="utf-8")
+    (snapshot / "model.safetensors.index.json").write_text(
+        json.dumps(index_payload), encoding="utf-8"
+    )
+    assert probe_qwen_artifact(snapshot).target_weights.layout is expected
+
+
+def test_unreadable_index_receipt_and_config_fail_closed(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    snapshot, _hub, _metadata = _materialize_snapshot(tmp_path, "qwen36_35b_4bit")
+    index_path = snapshot / "model.safetensors.index.json"
+    receipt_path = snapshot / "mtp.safetensors.sha256"
+    candidate = snapshot / "mtp.safetensors"
+    candidate.touch()
+    receipt_path.write_text("a" * 64 + "  mtp.safetensors\n", encoding="utf-8")
+    original_read_text = Path.read_text
+
+    def reject_selected(path: Path, *args, **kwargs):
+        if path in {index_path, receipt_path}:
+            raise OSError("synthetic unreadable metadata")
+        return original_read_text(path, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "read_text", reject_selected)
+    assert (
+        qwen_artifact._target_weights(snapshot, None).layout
+        is TargetWeightLayout.INVALID_INDEX
+    )
+    assert qwen_artifact._declared_sidecar_sha256(candidate) is None
+
+    config = tmp_path / "bad-config"
+    config.mkdir()
+    (config / "config.json").write_text("[]", encoding="utf-8")
+    with pytest.raises(ArtifactProbeError, match="contain an object"):
+        probe_qwen_artifact(config)
+    with pytest.raises(ArtifactProbeError, match="readable config"):
+        probe_qwen_artifact(tmp_path / "missing-config")
+
+
+def test_orphan_shards_are_reported_without_an_index(tmp_path: Path) -> None:
+    snapshot = tmp_path / "snapshot"
+    snapshot.mkdir()
+    (snapshot / "config.json").write_text("{}", encoding="utf-8")
+    (snapshot / "model-00001-of-00002.safetensors").touch()
+    truth = probe_qwen_artifact(snapshot)
+    assert truth.target_weights.layout is TargetWeightLayout.ORPHAN_SHARDS
+    assert truth.target_weights.shards == ("model-00001-of-00002.safetensors",)
+
+
+def test_weight_and_sidecar_metadata_errors_drop_content_identity(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    snapshot, hub, metadata = _materialize_snapshot(tmp_path, "qwen38_27b_4bit")
+    binding = _binding(snapshot, metadata)
+    repo_cache = hub / ("models--" + metadata["source_repo"].replace("/", "--"))
+    shard = snapshot / metadata["target_shards"][0]
+    blob = (
+        repo_cache / "blobs" / metadata["target_blob_ids"][metadata["target_shards"][0]]
+    )
+
+    directory = tmp_path / "not-a-file"
+    directory.mkdir()
+    assert (
+        qwen_artifact._weight_file_identity(
+            directory, snapshot_dir=tmp_path, binding=binding
+        )
+        is None
+    )
+
+    external_dir = tmp_path / "external"
+    external_dir.mkdir()
+    external = external_dir / "weight.safetensors"
+    external.symlink_to(blob)
+    assert (
+        qwen_artifact._weight_file_identity(
+            external, snapshot_dir=snapshot, binding=binding
+        )
+        is None
+    )
+
+    original_resolve = Path.resolve
+
+    def reject_blobs(path: Path, *args, **kwargs):
+        if path == repo_cache / "blobs":
+            raise OSError("synthetic blobs resolution failure")
+        return original_resolve(path, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "resolve", reject_blobs)
+    assert (
+        qwen_artifact._weight_file_identity(
+            shard, snapshot_dir=snapshot, binding=binding
+        )
+        is None
+    )
+
+
+def test_sidecar_blob_validation_and_stat_failures_are_non_authoritative(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    snapshot, _hub, metadata = _materialize_snapshot(tmp_path, "qwen38_27b_4bit")
+    binding = _binding(snapshot, metadata)
+    candidate = snapshot / "mtp" / "model.safetensors"
+
+    dangling = tmp_path / "dangling.safetensors"
+    dangling.symlink_to(tmp_path / "missing-blob")
+    assert (
+        qwen_artifact._hf_blob_id(dangling, snapshot_dir=tmp_path, binding=binding)
+        is None
+    )
+
+    invalid_blob = binding._repo_cache_dir / "blobs" / "not-a-blob-id"
+    invalid_blob.touch()
+    _replace_with_symlink(candidate, invalid_blob)
+    assert (
+        qwen_artifact._hf_blob_id(candidate, snapshot_dir=snapshot, binding=binding)
+        is None
+    )
+    valid_blob = (
+        binding._repo_cache_dir / "blobs" / metadata["mtp_candidate"]["blob_id"]
+    )
+    _replace_with_symlink(candidate, valid_blob)
+
+    wrong_binding = _binding(snapshot, metadata)
+    object.__setattr__(wrong_binding, "_artifact_dir", tmp_path.resolve())
+    assert (
+        qwen_artifact._hf_blob_id(
+            candidate, snapshot_dir=snapshot, binding=wrong_binding
+        )
+        is None
+    )
+
+    original_resolve = Path.resolve
+
+    def reject_blobs(path: Path, *args, **kwargs):
+        if path == binding._repo_cache_dir / "blobs":
+            raise OSError("synthetic blobs resolution failure")
+        return original_resolve(path, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "resolve", reject_blobs)
+    assert (
+        qwen_artifact._hf_blob_id(candidate, snapshot_dir=snapshot, binding=binding)
+        is None
+    )
+    monkeypatch.setattr(Path, "resolve", original_resolve)
+
+    original_stat = Path.stat
+
+    def reject_candidate(path: Path, *args, **kwargs):
+        if path == candidate:
+            raise OSError("synthetic stat failure")
+        return original_stat(path, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "stat", reject_candidate)
+    layout = qwen_layout.MTPWeightLayout(
+        state=MTPWeightPathState.NESTED_MODEL,
+        relative_path="mtp/model.safetensors",
+        storage=MTPWeightStorage.SYMLINK,
+        candidate=candidate,
+    )
+    monkeypatch.setattr(
+        qwen_artifact, "inspect_mtp_weights_layout", lambda _path: layout
+    )
+    monkeypatch.setattr(qwen_artifact, "_hf_blob_id", lambda *_args, **_kwargs: None)
+    locator = qwen_artifact._mtp_locator(snapshot, binding)
+    assert locator.file_size_bytes is None
+
+
+def test_resolved_snapshot_derivation_rejects_malformed_cache_shapes(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    artifact = tmp_path / "plain" / "snapshot"
+    artifact.mkdir(parents=True)
+    assert (
+        qwen_artifact._derive_selected_snapshot_repo_id(artifact, repo_id=str(tmp_path))
+        is None
+    )
+    assert (
+        qwen_artifact._derive_selected_snapshot_repo_id(artifact, repo_id=str(artifact))
+        is None
+    )
+
+    cache = tmp_path / "hub"
+    cache.mkdir(exist_ok=True)
+    monkeypatch.setattr(qwen_artifact, "_configured_hub_cache_root", lambda: None)
+    shaped = cache / "models--org--model" / "snapshots" / ("a" * 40)
+    shaped.mkdir(parents=True)
+    assert (
+        qwen_artifact._derive_selected_snapshot_repo_id(shaped, repo_id=str(shaped))
+        is None
+    )
+    monkeypatch.setattr(qwen_artifact, "_configured_hub_cache_root", lambda: cache)
+
+    valid = cache / "models--org--model" / "snapshots" / ("c" * 40)
+    valid.mkdir(parents=True)
+    original_resolve = Path.resolve
+
+    def reject_cache_parent(path: Path, *args, **kwargs):
+        if path == cache:
+            raise OSError("synthetic cache resolution failure")
+        return original_resolve(path, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "resolve", reject_cache_parent)
+    assert (
+        qwen_artifact._derive_selected_snapshot_repo_id(valid, repo_id=str(valid))
+        is None
+    )
+    monkeypatch.setattr(Path, "resolve", original_resolve)
+
+    for entry in ("repo--org--model", "models--a--b--c", "models--.bad"):
+        candidate = cache / entry / "snapshots" / ("b" * 40)
+        candidate.mkdir(parents=True)
+        assert (
+            qwen_artifact._derive_selected_snapshot_repo_id(
+                candidate, repo_id=str(candidate)
+            )
+            is None
+        )
+
+
+def test_resolved_probe_rejects_invalid_path_objects(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    class RaisingPath:
+        def __init__(self, _value):
+            raise TypeError("synthetic invalid path")
+
+    monkeypatch.setattr(qwen_artifact, "Path", RaisingPath)
+    assert probe_resolved_qwen_artifact(object(), repo_id="org/model") is None
+    assert (
+        qwen_artifact._derive_selected_snapshot_repo_id(object(), repo_id=object())
+        is None
+    )
+
+
+@pytest.mark.parametrize(
+    ("mutation", "message"),
+    [
+        (
+            lambda truth: object.__setattr__(
+                truth, "identity_status", ArtifactIdentityStatus.UNVERIFIED_SNAPSHOT
+            ),
+            "verified Hub identity",
+        ),
+        (
+            lambda truth: object.__setattr__(truth, "outer_model_type", None),
+            "model types",
+        ),
+        (
+            lambda truth: object.__setattr__(
+                truth, "geometry", replace(truth.geometry, hidden_size=None)
+            ),
+            "target identity rejected",
+        ),
+        (
+            lambda truth: object.__setattr__(
+                truth, "quantization", replace(truth.quantization, bits=None)
+            ),
+            "quantization identity",
+        ),
+        (
+            lambda truth: object.__setattr__(
+                truth,
+                "target_weights",
+                replace(truth.target_weights, shards=()),
+            ),
+            "no shards",
+        ),
+        (
+            lambda truth: object.__setattr__(
+                truth,
+                "target_weights",
+                replace(truth.target_weights, file_identities=()),
+            ),
+            "identities are incomplete",
+        ),
+        (
+            lambda truth: object.__setattr__(
+                truth,
+                "target_weights",
+                replace(truth.target_weights, index_sha256=None),
+            ),
+            "no canonical index digest",
+        ),
+    ],
+)
+def test_runtime_target_conversion_rejects_corrupted_verified_truth(
+    tmp_path: Path, mutation, message: str
+) -> None:
+    snapshot, _hub, metadata = _materialize_snapshot(tmp_path, "qwen36_35b_4bit")
+    truth = probe_qwen_artifact(snapshot, binding=_binding(snapshot, metadata))
+    mutation(truth)
+    with pytest.raises(ArtifactProbeError, match=message):
+        to_verified_runtime_target(truth)
+
+
+def test_runtime_conversion_rejects_wrong_types_and_unavailable_core_api(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    with pytest.raises(ArtifactProbeError, match="requires QwenArtifactTruth"):
+        to_verified_runtime_target(object())
+    with pytest.raises(ArtifactProbeError, match="requires QwenArtifactTruth"):
+        to_runtime_drafter_identity(object())
+
+    snapshot, _hub, metadata = _materialize_snapshot(tmp_path, "qwen38_27b_4bit")
+    truth = probe_qwen_artifact(snapshot, binding=_binding(snapshot, metadata))
+    fake = ModuleType("rapid_mlx.qwen_runtime_plan")
+    monkeypatch.setitem(sys.modules, "rapid_mlx.qwen_runtime_plan", fake)
+    with pytest.raises(ArtifactProbeError, match="identity API is unavailable"):
+        to_verified_runtime_target(truth)
+
+
+def test_runtime_conversion_wraps_core_identity_rejections(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    snapshot, _hub, metadata = _materialize_snapshot(tmp_path, "qwen38_27b_4bit")
+    truth = probe_qwen_artifact(snapshot, binding=_binding(snapshot, metadata))
+    fake = ModuleType("rapid_mlx.qwen_runtime_plan")
+
+    class RejectTarget:
+        def __init__(self, **_kwargs):
+            raise ValueError("synthetic target rejection")
+
+    class RejectDrafter:
+        def __init__(self, **_kwargs):
+            raise ValueError("synthetic drafter rejection")
+
+    fake.QwenTargetIdentity = RejectTarget
+    fake._mint_verified_qwen_target = lambda **_kwargs: None
+    fake.QwenDrafterIdentity = RejectDrafter
+    monkeypatch.setitem(sys.modules, "rapid_mlx.qwen_runtime_plan", fake)
+    with pytest.raises(ArtifactProbeError, match="target identity rejected"):
+        to_verified_runtime_target(truth)
+    with pytest.raises(ArtifactProbeError, match="drafter identity rejected"):
+        to_runtime_drafter_identity(truth)

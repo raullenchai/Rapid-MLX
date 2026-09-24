@@ -592,10 +592,6 @@ def _target_weights(
                 TargetWeightLayout.INVALID_INDEX, 0, 0, (), index_sha256
             )
         shards = tuple(sorted(set(shard_values)))
-        if not shards:
-            return TargetWeights(
-                TargetWeightLayout.INVALID_INDEX, 0, 0, (), index_sha256
-            )
         shard_paths: list[Path] = []
         for shard in shards:
             pure = PurePosixPath(shard)
@@ -898,12 +894,9 @@ def probe_resolved_qwen_artifact(
     )
     if snapshot_parent is None:
         return None
-    try:
-        relative = artifact_dir.relative_to(snapshot_parent)
-    except ValueError:
-        return None
-    if not relative.parts:
-        return None
+    # ``snapshot_parent`` came from ``artifact_dir.parents``, so containment
+    # and at least one relative component are guaranteed by construction.
+    relative = artifact_dir.relative_to(snapshot_parent)
     revision = relative.parts[0]
     subfolder = "/".join(relative.parts[1:]) or None
     canonical_repo_parts = _canonical_repo_id(repo_id)
