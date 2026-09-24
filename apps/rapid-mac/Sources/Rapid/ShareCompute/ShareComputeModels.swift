@@ -5,8 +5,26 @@ struct ShareComputeModel: Identifiable, Hashable, Sendable {
     let alias: String
     let title: String
     let detail: String
+    /// Floor from the engine's ``min_memory_gb`` for aliases whose name carries
+    /// no parameter count (``ModelSizing`` would otherwise estimate ~0 GB and
+    /// offer a 169 GB model to a laptop). Combined with the estimator, never
+    /// instead of it.
+    let minMemoryGB: Double
 
     var id: String { catalogID }
+
+    init(catalogID: String, alias: String, title: String, detail: String, minMemoryGB: Double = 0) {
+        self.catalogID = catalogID
+        self.alias = alias
+        self.title = title
+        self.detail = detail
+        self.minMemoryGB = minMemoryGB
+    }
+
+    func fits(_ hardware: MacHardware, catalogEntry: ModelEntry?) -> Bool {
+        hardware.physicalRAMGB >= minMemoryGB
+            && ModelSizing.isAvailable(alias: alias, on: hardware, catalogEntry: catalogEntry)
+    }
 
     static let supported: [ShareComputeModel] = [
         .init(
@@ -26,6 +44,13 @@ struct ShareComputeModel: Identifiable, Hashable, Sendable {
             alias: "nemotron-3.5-lightning-30b-4bit",
             title: "Nemotron 3.5 Lightning 30B · 4-bit",
             detail: "Fast reasoning-focused model"
+        ),
+        .init(
+            catalogID: "glm-5.3-flash",
+            alias: "glm5.3-flash-4bit",
+            title: "GLM 5.3 Flash · 4-bit",
+            detail: "Highest pool demand · needs 192 GB+ unified memory",
+            minMemoryGB: 192
         ),
     ]
 

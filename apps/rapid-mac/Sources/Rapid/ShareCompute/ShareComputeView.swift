@@ -24,12 +24,12 @@ struct ShareComputeView: View {
 
     private var selectedIsCached: Bool { selectedEntry?.cached == true }
     private var selectedIsSupported: Bool {
-        ModelSizing.isAvailable(alias: selected.alias, on: hardware, catalogEntry: selectedEntry)
+        selected.fits(hardware, catalogEntry: selectedEntry)
     }
 
     private func isSupported(_ model: ShareComputeModel) -> Bool {
         let entry = catalog.first { $0.alias.caseInsensitiveCompare(model.alias) == .orderedSame }
-        return ModelSizing.isAvailable(alias: model.alias, on: hardware, catalogEntry: entry)
+        return model.fits(hardware, catalogEntry: entry)
     }
 
     private var memoryTierLabel: String {
