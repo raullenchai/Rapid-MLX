@@ -2075,9 +2075,16 @@ flow_fresh_install() {
     # The real engine registry always contains the starter. Without this row,
     # the fake catalog makes the app correctly fall back to its only chat row
     # and the assertion below can never prove the production first-run rule.
+    # The throwaway bundle is pinned to FRESH_INSTALL_APP_VERSION, so the
+    # moment a newer desktop release is published the live update manifest
+    # would paint UpdateCard into this persona and break the AX baseline
+    # (first hit: the 0.15.1 release, merge-queue candidate #3719). The
+    # update path has its own flows (update-state, update-busy); keep this
+    # baseline independent of what dl.rapidmlx.com serves today.
     start_persona fresh-install FAKE_INCLUDE_STARTER=1 \
         RAPID_GUI_HARDWARE_FIXTURE=1 RAPID_HARDWARE_RAM_GB=$GOLDEN_RAM_GB \
         RAPID_HARDWARE_BRAND="$GOLDEN_BRAND" \
+        RAPIDMLX_NO_UPDATE_CHECK=1 \
         "${TELEMETRY_SINK_ENV[@]}" \
         RAPID_MLX_TELEMETRY_ENDPOINT="http://127.0.0.1:$TELEMETRY_SINK_PORT/v1/events"
     wait_identifier Quickstart.GetStarted "$OUT/welcome.json"
