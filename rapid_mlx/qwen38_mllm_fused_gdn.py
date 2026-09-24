@@ -16,7 +16,11 @@ import inspect
 import json
 import logging
 import os
+import platform
+import re
+import subprocess
 from collections.abc import Callable
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
@@ -88,10 +92,144 @@ EXPERIMENT_RECEIPT_SHA256 = (
 )
 
 
+@dataclass(frozen=True)
+class AutomaticQualification:
+    """One exact hardware receipt allowed to enroll without an operator."""
+
+    chip: str
+    memory_gib: int
+    receipt_sha256: str
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.chip, str) or not self.chip.strip():
+            raise ValueError("automatic qualification chip must be non-empty")
+        if (
+            not isinstance(self.memory_gib, int)
+            or isinstance(self.memory_gib, bool)
+            or self.memory_gib < 48
+        ):
+            raise ValueError("automatic qualification requires at least 48 GiB")
+        if (
+            not isinstance(self.receipt_sha256, str)
+            or re.fullmatch(r"[0-9a-f]{64}", self.receipt_sha256) is None
+        ):
+            raise ValueError(
+                "automatic qualification requires an exact SHA-256 receipt"
+            )
+
+
+@dataclass(frozen=True)
+class EnrollmentDecision:
+    """Pure enrollment result; model/runtime qualification happens later."""
+
+    status: str
+    enabled: bool
+    operator_enabled: bool
+    automatic_qualified: bool
+    chip: str | None
+    memory_gib: int | None
+    qualification_receipt_sha256: str | None
+
+
+# Automatic enrollment is intentionally empty until a hardware-specific
+# qualification receipt is reviewed and frozen here.  In particular, the
+# 32-GiB no-go and unmeasured 48/64-GiB classes must never reach the real-weight
+# probe merely because the canary code exists.
+_AUTOMATIC_QUALIFICATIONS: tuple[AutomaticQualification, ...] = ()
+
+
 def operator_enabled() -> bool:
     """Return whether the process explicitly enabled the internal canary."""
 
     return os.environ.get(ENV_VAR, "").strip().lower() in _TRUE_VALUES
+
+
+def resolve_enrollment(
+    *,
+    operator_opt_in: bool,
+    chip: str | None,
+    memory_gib: int | None,
+    qualifications: tuple[AutomaticQualification, ...] = _AUTOMATIC_QUALIFICATIONS,
+) -> EnrollmentDecision:
+    """Resolve canary enrollment without probing hardware or touching MLX.
+
+    Operator opt-in remains a diagnostic/canary override.  Automatic
+    enrollment requires an exact chip, memory class, and frozen receipt row.
+    Unknown hardware and every class below 48 GiB fail closed before consulting
+    rows, preserving the measured 32-GiB no-go even if a bad row is proposed.
+    """
+
+    normalized_chip = chip.strip() if isinstance(chip, str) and chip.strip() else None
+    normalized_memory = (
+        memory_gib
+        if isinstance(memory_gib, int)
+        and not isinstance(memory_gib, bool)
+        and memory_gib > 0
+        else None
+    )
+    if operator_opt_in:
+        return EnrollmentDecision(
+            status="operator_enabled",
+            enabled=True,
+            operator_enabled=True,
+            automatic_qualified=False,
+            chip=normalized_chip,
+            memory_gib=normalized_memory,
+            qualification_receipt_sha256=None,
+        )
+
+    if normalized_chip is not None and normalized_memory is not None:
+        if normalized_memory >= 48:
+            matches = tuple(
+                row
+                for row in qualifications
+                if row.chip == normalized_chip and row.memory_gib == normalized_memory
+            )
+            if len(matches) == 1:
+                return EnrollmentDecision(
+                    status="automatic_qualified",
+                    enabled=True,
+                    operator_enabled=False,
+                    automatic_qualified=True,
+                    chip=normalized_chip,
+                    memory_gib=normalized_memory,
+                    qualification_receipt_sha256=matches[0].receipt_sha256,
+                )
+
+    return EnrollmentDecision(
+        status="hardware_not_qualified",
+        enabled=False,
+        operator_enabled=False,
+        automatic_qualified=False,
+        chip=normalized_chip,
+        memory_gib=normalized_memory,
+        qualification_receipt_sha256=None,
+    )
+
+
+def probe_host_hardware() -> tuple[str | None, int | None]:
+    """Best-effort Apple-Silicon identity for automatic enrollment only."""
+
+    if platform.system() != "Darwin" or platform.machine() != "arm64":
+        return None, None
+
+    def _sysctl(name: str) -> str:
+        return subprocess.run(  # noqa: S603 - fixed executable and arguments
+            ["/usr/sbin/sysctl", "-n", name],
+            capture_output=True,
+            check=True,
+            text=True,
+            timeout=2,
+        ).stdout.strip()
+
+    try:
+        chip = _sysctl("machdep.cpu.brand_string")
+        memory_gib = round(int(_sysctl("hw.memsize")) / (1 << 30))
+    except (OSError, ValueError, subprocess.SubprocessError):
+        return None, None
+    if not chip or memory_gib <= 0:
+        return None, None
+    return chip, memory_gib
 
 
 def contract_status() -> dict[str, Any]:
@@ -738,12 +876,19 @@ class Qwen38MllmFusedGdnCanary:
 
 
 def install_qwen38_mllm_fused_gdn_canary(
-    language_model: Any, artifact_truth: Any, verified_target: Any
+    language_model: Any,
+    artifact_truth: Any,
+    verified_target: Any,
+    enrollment: EnrollmentDecision | None = None,
 ) -> tuple[Qwen38MllmFusedGdnCanary | None, str | None]:
     """Install on the model-owner thread and return ``(patch, fallback)``."""
 
-    if not operator_enabled():
-        return None, "operator_disabled"
+    if enrollment is None:
+        enrollment = resolve_enrollment(
+            operator_opt_in=operator_enabled(), chip=None, memory_gib=None
+        )
+    if not enrollment.enabled:
+        return None, "hardware_not_qualified"
     if not _artifact_exact(artifact_truth, verified_target):
         return None, "artifact_not_exact"
     try:
@@ -791,10 +936,14 @@ def install_qwen38_mllm_fused_gdn_canary(
 
 
 __all__ = [
+    "AutomaticQualification",
+    "EnrollmentDecision",
     "ENV_VAR",
     "Qwen38MllmFusedGdnCanary",
     "actual_runtime_versions",
     "contract_status",
     "install_qwen38_mllm_fused_gdn_canary",
     "operator_enabled",
+    "probe_host_hardware",
+    "resolve_enrollment",
 ]

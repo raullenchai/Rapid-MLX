@@ -14,6 +14,7 @@ from rapid_mlx import qwen38_mllm_fused_gdn as canary
 from rapid_mlx.engine.batched import (
     BatchedEngine,
     _install_qwen38_mllm_fused_gdn_canary,
+    _qwen38_single_domain_evidence,
 )
 from rapid_mlx.qwen_runtime_plan import QwenTargetIdentity, _mint_verified_qwen_target
 from rapid_mlx.runtime import qwen_artifact
@@ -318,6 +319,76 @@ def test_operator_gate_is_default_off_and_explicit(monkeypatch):
     assert canary.operator_enabled() is False
 
 
+def test_automatic_enrollment_is_pure_and_has_zero_production_rows():
+    assert canary._AUTOMATIC_QUALIFICATIONS == ()
+    for chip, memory_gib in (
+        (None, None),
+        ("Apple M2 Pro", 32),
+        ("Apple M4 Pro", 48),
+        ("Apple M1 Max", 64),
+    ):
+        decision = canary.resolve_enrollment(
+            operator_opt_in=False,
+            chip=chip,
+            memory_gib=memory_gib,
+        )
+        assert decision.status == "hardware_not_qualified"
+        assert decision.enabled is False
+        assert decision.operator_enabled is False
+        assert decision.automatic_qualified is False
+        assert decision.qualification_receipt_sha256 is None
+
+
+def test_automatic_enrollment_requires_one_exact_hardware_receipt():
+    receipt = "a" * 64
+    row = canary.AutomaticQualification(
+        chip="Apple M4 Pro", memory_gib=48, receipt_sha256=receipt
+    )
+    decision = canary.resolve_enrollment(
+        operator_opt_in=False,
+        chip="Apple M4 Pro",
+        memory_gib=48,
+        qualifications=(row,),
+    )
+    assert decision.status == "automatic_qualified"
+    assert decision.enabled is decision.automatic_qualified is True
+    assert decision.operator_enabled is False
+    assert decision.qualification_receipt_sha256 == receipt
+
+    for chip, memory_gib in (("Apple M4 Max", 48), ("Apple M4 Pro", 64)):
+        assert (
+            canary.resolve_enrollment(
+                operator_opt_in=False,
+                chip=chip,
+                memory_gib=memory_gib,
+                qualifications=(row,),
+            ).status
+            == "hardware_not_qualified"
+        )
+
+
+def test_operator_enrollment_is_diagnostic_override_without_hardware():
+    decision = canary.resolve_enrollment(
+        operator_opt_in=True, chip=None, memory_gib=None
+    )
+    assert decision.status == "operator_enabled"
+    assert decision.enabled is decision.operator_enabled is True
+    assert decision.automatic_qualified is False
+
+
+@pytest.mark.parametrize(
+    ("memory_gib", "receipt"),
+    [(32, "a" * 64), (48, "not-a-digest")],
+)
+def test_automatic_qualification_rows_reject_unsafe_policy(memory_gib, receipt):
+    with pytest.raises(ValueError):
+        canary.AutomaticQualification(
+            chip="Apple M4 Pro",
+            memory_gib=memory_gib,
+            receipt_sha256=receipt,
+        )
+
+
 def test_exact_b0_truth_requires_private_mint_and_full_receipt(tmp_path, monkeypatch):
     truth, verified = _real_truth(tmp_path, monkeypatch)
     assert canary._artifact_exact(truth, verified) is True
@@ -340,7 +411,7 @@ def test_disabled_installer_does_not_touch_runtime(monkeypatch):
     assert canary.contract_status()["runtime_versions_required"]["mlx"] == "0.32.2"
     assert canary.install_qwen38_mllm_fused_gdn_canary(
         object(), _truth(), _verified_target()
-    ) == (None, "operator_disabled")
+    ) == (None, "hardware_not_qualified")
 
 
 def test_precommit_failure_falls_back_without_cache_mutation():
@@ -421,6 +492,24 @@ def test_install_compare_and_swap_rejects_foreign_class_patch():
         assert patch.installed is False
     finally:
         FakeGdn.__call__ = original
+
+
+def test_competing_canary_cannot_replace_or_close_first_owner():
+    first, _ = _patch()
+    second, _ = _patch()
+    original = FakeGdn.__call__
+    first.qualified = second.qualified = True
+    try:
+        first.install()
+        first_wrapper = FakeGdn.__call__
+        with pytest.raises(RuntimeError, match="changed before canary install"):
+            second.install()
+        second.close()
+        assert FakeGdn.__call__ is first_wrapper
+        assert first.installed is True
+    finally:
+        first.close()
+    assert FakeGdn.__call__ is original
 
 
 def test_probe_commits_exactly_32_selected_instance_steps_and_resets_hits():
@@ -566,23 +655,49 @@ class _ImmediateExecutor:
 
 
 def _boot_engine():
+    executor = _ImmediateExecutor()
+    model = object()
+    scheduler = SimpleNamespace(
+        model=model,
+        _injected_step_executor=executor,
+        _step_executor=executor,
+    )
     return SimpleNamespace(
         _qwen38_mllm_fused_gdn_status={
+            "enrollment_status": "hardware_not_qualified",
+            "operator_enabled": False,
+            "automatic_qualified": False,
             "requested": False,
             "qualified": False,
             "active": False,
-            "fallback_reason": "operator_disabled",
+            "fallback_reason": "hardware_not_qualified",
         },
         _qwen38_mllm_fused_gdn_canary=None,
         _qwen_artifact_snapshot_source="snapshot",
         _qwen_artifact_repo_id=canary._REPO,
-        _model_load_executor=_ImmediateExecutor(),
+        _model_load_executor=executor,
+        _mllm_scheduler=scheduler,
+        _engine=None,
+        _mllm_native_text_engine=False,
+        _model=model,
     )
 
 
-def test_boot_seam_default_off_does_no_probe_or_worker_qualification(monkeypatch):
+@pytest.mark.parametrize(
+    "hardware",
+    [
+        (None, None),
+        ("Apple M2 Pro", 32),
+        ("Apple M4 Pro", 48),
+        ("Apple M1 Max", 64),
+    ],
+)
+def test_boot_seam_unqualified_hardware_does_no_real_weight_probe(
+    monkeypatch, hardware
+):
     engine = _boot_engine()
     monkeypatch.setattr(canary, "operator_enabled", lambda: False)
+    monkeypatch.setattr(canary, "probe_host_hardware", lambda: hardware)
     monkeypatch.setattr(
         canary,
         "actual_runtime_versions",
@@ -593,13 +708,50 @@ def test_boot_seam_default_off_does_no_probe_or_worker_qualification(monkeypatch
         "probe_resolved_qwen_artifact",
         lambda *_args, **_kwargs: (_ for _ in ()).throw(AssertionError("artifact")),
     )
-    _install_qwen38_mllm_fused_gdn_canary(engine, object())
+    _install_qwen38_mllm_fused_gdn_canary(engine, engine._model)
     assert engine._model_load_executor.submits == 0
     assert engine._qwen38_mllm_fused_gdn_status["requested"] is False
     assert engine._qwen38_mllm_fused_gdn_status["active"] is False
-    assert engine._qwen38_mllm_fused_gdn_status["fallback_reason"] == (
-        "operator_disabled"
+    status = engine._qwen38_mllm_fused_gdn_status
+    assert status["enrollment_status"] == "hardware_not_qualified"
+    assert status["operator_enabled"] is status["automatic_qualified"] is False
+    assert status["fallback_reason"] == "hardware_not_qualified"
+
+
+def test_boot_seam_topology_invariant_fails_before_artifact_or_real_weight_probe(
+    monkeypatch,
+):
+    engine = _boot_engine()
+    engine._engine = object()
+    monkeypatch.setattr(canary, "operator_enabled", lambda: True)
+    monkeypatch.setattr(
+        canary,
+        "probe_host_hardware",
+        lambda: (_ for _ in ()).throw(AssertionError("hardware")),
     )
+    monkeypatch.setattr(
+        qwen_artifact,
+        "probe_resolved_qwen_artifact",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(AssertionError("artifact")),
+    )
+    _install_qwen38_mllm_fused_gdn_canary(engine, engine._model)
+    status = engine._qwen38_mllm_fused_gdn_status
+    assert engine._model_load_executor.submits == 0
+    assert status["fallback_reason"] == "runtime_topology_not_single_domain"
+    assert status["runtime_topology"]["single_domain"] is False
+    assert status["runtime_topology"]["companion_scheduler_count"] == 1
+
+
+def test_single_domain_evidence_binds_scheduler_model_executor_and_cache_owner():
+    engine = _boot_engine()
+    evidence = _qwen38_single_domain_evidence(engine, engine._model)
+    assert evidence["single_domain"] is True
+    assert evidence["scheduler_count"] == 1
+    assert evidence["companion_scheduler_count"] == 0
+    assert evidence["executor_domain_count"] == 1
+    assert evidence["weight_domain_count"] == 1
+    assert evidence["retained_cache_budget_domain_count"] == 1
+    assert all(evidence["invariants"].values())
 
 
 def test_boot_seam_artifact_probe_exception_keeps_stock_and_status(monkeypatch):
@@ -611,7 +763,7 @@ def test_boot_seam_artifact_probe_exception_keeps_stock_and_status(monkeypatch):
         "probe_resolved_qwen_artifact",
         lambda *_args, **_kwargs: (_ for _ in ()).throw(OSError("probe failed")),
     )
-    _install_qwen38_mllm_fused_gdn_canary(engine, object())
+    _install_qwen38_mllm_fused_gdn_canary(engine, engine._model)
     status = engine._qwen38_mllm_fused_gdn_status
     assert engine._model_load_executor.submits == 0
     assert status["requested"] is True
@@ -653,7 +805,7 @@ def test_boot_seam_installer_failure_keeps_stock(
             "install_qwen38_mllm_fused_gdn_canary",
             lambda *_args: installer_result,
         )
-    _install_qwen38_mllm_fused_gdn_canary(engine, object())
+    _install_qwen38_mllm_fused_gdn_canary(engine, engine._model)
     status = engine._qwen38_mllm_fused_gdn_status
     assert engine._qwen38_mllm_fused_gdn_canary is None
     assert status["active"] is status["qualified"] is False
@@ -680,7 +832,7 @@ def test_boot_seam_success_preserves_contract_and_probe_evidence(monkeypatch):
         "install_qwen38_mllm_fused_gdn_canary",
         lambda *_args: (patch, None),
     )
-    _install_qwen38_mllm_fused_gdn_canary(engine, object())
+    _install_qwen38_mllm_fused_gdn_canary(engine, engine._model)
     status = engine._qwen38_mllm_fused_gdn_status
     assert status["requested"] is status["qualified"] is status["active"] is True
     assert status["fallback_reason"] is None
@@ -747,10 +899,109 @@ async def test_engine_stop_restores_patch_and_reload_clears_stale_status(monkeyp
             "runtime_versions_actual": {"mlx": "stale"},
         }
     )
+    monkeypatch.setattr(canary, "probe_host_hardware", lambda: (None, None))
     _install_qwen38_mllm_fused_gdn_canary(engine, object())
     status = engine._qwen38_mllm_fused_gdn_status
     assert status["requested"] is status["qualified"] is status["active"] is False
-    assert status["fallback_reason"] == "operator_disabled"
+    assert status["enrollment_status"] == "hardware_not_qualified"
+    assert status["fallback_reason"] == "hardware_not_qualified"
     assert status["probe_steps_committed"] == 0
     assert "runtime_versions_actual" not in status
     assert status["receipt_sha256"] == canary.EXPERIMENT_RECEIPT_SHA256
+
+
+@pytest.mark.asyncio
+async def test_scheduler_stop_exception_still_rolls_back_and_shuts_executor():
+    events = []
+
+    class Patch:
+        def close(self):
+            events.append("close")
+
+    class Scheduler:
+        async def stop(self):
+            events.append("scheduler-stop")
+            raise RuntimeError("scheduler stop failed")
+
+    class Executor:
+        def submit(self, function, *args):
+            future = Future()
+            try:
+                future.set_result(function(*args))
+            except Exception as exc:  # pragma: no cover - Future parity
+                future.set_exception(exc)
+            return future
+
+        def shutdown(self, wait=False):
+            assert wait is False
+            events.append("executor-shutdown")
+
+    engine = object.__new__(BatchedEngine)
+    engine._clear_qwen_runtime_observability = lambda: None
+    engine._abort_all_guided_requests = lambda: None
+    engine._engine = None
+    engine._mllm_scheduler = Scheduler()
+    engine._qwen38_mllm_fused_gdn_canary = Patch()
+    engine._qwen38_mllm_fused_gdn_status = {"active": True}
+    engine._model_load_executor = Executor()
+    engine._is_mllm = True
+    engine._start_time = 1
+    engine._model = object()
+    engine._tokenizer = object()
+    engine._processor = object()
+    engine._mllm_instance = object()
+    engine._prompt_host_cache = None
+    engine._loaded = True
+    engine._engine_started = True
+    engine._mllm_native_text_engine = False
+
+    with pytest.raises(RuntimeError, match="scheduler stop failed"):
+        await engine.stop()
+
+    assert events == ["scheduler-stop", "close", "executor-shutdown"]
+    assert engine._qwen38_mllm_fused_gdn_canary is None
+    assert engine._qwen38_mllm_fused_gdn_status["active"] is False
+    assert engine._model_load_executor is None
+    assert engine._mllm_scheduler is None
+    assert engine._loaded is False
+
+
+@pytest.mark.asyncio
+async def test_start_failure_after_install_rolls_back_before_propagating():
+    events = []
+
+    class Patch:
+        def close(self):
+            events.append("close")
+
+    class Executor:
+        def submit(self, function, *args):
+            future = Future()
+            try:
+                future.set_result(function(*args))
+            except Exception as exc:  # pragma: no cover - Future parity
+                future.set_exception(exc)
+            return future
+
+    engine = object.__new__(BatchedEngine)
+    engine._loaded = False
+    engine._is_mllm = True
+    engine._clear_qwen_runtime_observability = lambda: None
+    engine._validate_lane_capabilities = lambda: None
+    engine._qwen38_mllm_fused_gdn_canary = None
+    engine._qwen38_mllm_fused_gdn_status = {"active": False}
+    engine._model_load_executor = Executor()
+
+    async def install_then_fail():
+        engine._qwen38_mllm_fused_gdn_canary = Patch()
+        engine._qwen38_mllm_fused_gdn_status["active"] = True
+        raise RuntimeError("later startup failure")
+
+    engine._start_mllm = install_then_fail
+
+    with pytest.raises(RuntimeError, match="later startup failure"):
+        await engine.start()
+
+    assert events == ["close"]
+    assert engine._qwen38_mllm_fused_gdn_canary is None
+    assert engine._qwen38_mllm_fused_gdn_status["active"] is False

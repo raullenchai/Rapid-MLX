@@ -3,26 +3,35 @@
 - **Owner / receiving role:** Atlas
 - **Branch:** `atlas/qwen38-fused-gdn-canary`
 - **Clean base:** `0e68c4ea7e266159e5c325b3b4e09e8daef3aaee`
-- **Production code commits:** `5278e76ff` and `3b6acab1d`
-- **Status:** implementation complete and default off; no alias or public default
-  changed
+- **Production code commits:** `5278e76ff`, `3b6acab1d`, plus the local
+  default-safety commit on this branch
+- **Status:** implementation complete with zero automatic-qualification rows;
+  no alias or public default changed
 
 ## Delivered contract
 
 - A single internal opt-in, `RAPID_MLX_QWEN38_MLLM_FUSED_GDN=1`, can enable
   fused GDN decode only for the exact immutable
   `rapid-mlx/Qwen3.8-27B-4bit-MTP-MLX` revision `aa985c29…`.
+- A pure automatic-enrollment resolver reports `operator_enabled`,
+  `automatic_qualified`, or `hardware_not_qualified`. Its production receipt
+  table is empty. Unknown hardware, 32 GiB, and unqualified 48/64 GiB hosts
+  stop before artifact/runtime/real-weight qualification. The environment
+  opt-in remains diagnostic/canary behavior, not automatic qualification.
 - Admission requires B0's privately minted artifact truth and opaque verified
   target, the exact 64-layer/48-GDN layout and loaded geometry, pinned runtime
   and source identities, plain non-speculative cache state, and a synchronized
   32-step real-weight parity probe. Any mismatch retains stock mlx-vlm.
 - The canary uses the already-loaded VLM and its model-owner executor; it does
-  not load another target or create another executor. Qwen3.6's existing
+  not load another target or create another executor. A pre/post topology
+  invariant records one MLLM scheduler, no companion, the same loaded model
+  and executor, and one retained-cache budget owner. Qwen3.6's existing
   32-head path is isolated.
 - Pre-commit Python failures may use stock. Once cache commit starts, failures
   propagate and invalidate the request cache; there is no stock replay.
-- Stop/reload restores the original class method and atomically resets status,
-  including after an active-to-disabled reload.
+- Failed startup, scheduler-stop exceptions, stop, and reload restore the
+  original class method, including an active-to-disabled reload. A competing
+  class-patch owner fails the compare-and-swap without disturbing the first.
 
 ## Frozen evidence
 
@@ -42,16 +51,18 @@
 
 ## Verification
 
-- `148 passed, 2 deselected`: focused canary, B0 artifact truth, existing
-  Qwen3.6 fused-GDN, and batching regression suites.
+- `244 passed, 1 skipped, 2 deselected`: focused canary, B0 artifact truth and
+  planner, Qwen boot status, existing Qwen3.6 native-cache path, batching, and
+  Qwen4 experiment artifact parity suites.
 - Ruff check and format, Python compilation, and `git diff --check` pass.
 - No model was run or downloaded during production implementation.
 
 ## Rollback and remaining gates
 
-Unset `RAPID_MLX_QWEN38_MLLM_FUSED_GDN` (or set it to `0`) and restart. The
-engine uses stock mlx-vlm and reports `operator_disabled`; no persisted model
-mutation is required to roll back.
+Unset `RAPID_MLX_QWEN38_MLLM_FUSED_GDN` (or set it to `0`) and restart. With no
+qualified automatic row, the engine uses stock mlx-vlm and reports
+`hardware_not_qualified`; no persisted model mutation is required to roll
+back.
 
 Apple M2 Pro 32 GiB is a measured **NO-GO**: the frozen experiment harness's
 only model-loading attempt failed the mandatory real-weight parity setup before
@@ -60,17 +71,18 @@ The production canary received static/read-only checks only; no production
 engine was started. The sanitized evidence is recorded in
 `docs/benchmarks/results/2026-09-23-qwen38-mllm-fused-gdn-32gb-no-go.json`.
 
-M4 Pro 48 GB and M1 Max 64 GB have not been measured. B3 cross-lane memory
-admission, cache-persistence parity, and default-on qualification are also not
-implemented. Therefore default-on remains blocked and this canary must remain
-internal and default off.
+M4 Pro 48 GB and M1 Max 64 GB have not been measured. The B3 audit found the
+cross-lane ledger/cache registry inapplicable to this current in-place Q38
+path: it has one model, one MLLM scheduler, one executor, one retained-cache
+budget domain, and no companion. This change records and enforces those facts
+locally rather than adding a generic framework. Automatic qualification stays
+closed until an exact hardware receipt is added.
 
 ## Next concrete action and risks
 
 Atlas should collect the same setup, text, and media qualification receipts on
 48 GB and 64 GB hosts. Do not rerun 32 GB without an explicit diagnostic plan,
-and do not change alias defaults until B3 admission and cache-persistence gates
-pass.
+and do not change alias defaults without reviewed exact receipts.
 
 The main carried risk is runtime drift: any mlx, mlx-lm, mlx-vlm, kernel,
 loaded-layout, or cache-ABI change deliberately disables the optimization and

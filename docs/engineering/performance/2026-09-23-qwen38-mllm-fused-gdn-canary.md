@@ -2,9 +2,10 @@
 
 ## Decision
 
-Ship this optimization as an internal, default-off canary only. It is not an
-alias default and does not change the Qwen3.6 MoE path. Enable it before
-process start with:
+Ship this optimization as an internal canary with no automatically qualified
+hardware rows. It is not an alias default and does not change the Qwen3.6 MoE
+path. An operator can enable diagnostic/canary behavior before process start
+with:
 
 ```bash
 RAPID_MLX_QWEN38_MLLM_FUSED_GDN=1 rapid-mlx serve \
@@ -19,8 +20,10 @@ verified-target mint are mandatory; a repo name, mutable revision, copied
 directory, different quantization, ABI drift, or failed real-weight probe
 leaves stock mlx-vlm active. Unset the variable (or set it to `0`) to roll
 back. The canary status is exposed in engine statistics as
-`qwen38_mllm_fused_gdn_canary` with `requested`, `qualified`, `active`, and a
-closed `fallback_reason`.
+`qwen38_mllm_fused_gdn_canary`. Its `enrollment_status` distinguishes
+`operator_enabled`, `automatic_qualified`, and `hardware_not_qualified`, while
+`requested`, `qualified`, `active`, and `fallback_reason` describe the later
+runtime transaction.
 
 ## Frozen evidence
 
@@ -75,16 +78,26 @@ python -m scripts.benchmark_qwen38_mllm_fused_gdn \
 ## Production safety contract
 
 The canary reuses the one loaded VLM and its existing model-owner executor. It
-does not load a sidecar or duplicate target weights. Admission requires the
-exact ordered 64-layer/48-GDN layout, weight and cache geometry, source hashes,
-mlx-vlm 0.7.1 ABI, plain non-speculative two-slot `ArraysCache`, and a
-32-step real-weight bit-exact proof of output, convolution cache, recurrent
-cache, metadata, and exact instance hits. Python errors before cache mutation
-fall back to stock. Once cache commit begins, failures propagate and the
-request cache is discarded; stock is never replayed. Measured forwards do not
-add per-layer synchronization. Stop/reload restores the exact original class
-method before the shared executor shuts down.
+does not load a sidecar or duplicate target weights. Before artifact or
+real-weight qualification, a runtime topology gate verifies one MLLM
+scheduler, no companion scheduler, the scheduler's loaded model, the same
+model-owner executor, and one retained-cache budget owner. The same evidence
+is checked after qualification and exposed in status. This is an invariant on
+the current in-place path, not a generic cross-lane registry.
+
+Admission then requires the exact ordered 64-layer/48-GDN layout, weight and
+cache geometry, source hashes, mlx-vlm 0.7.1 ABI, plain non-speculative
+two-slot `ArraysCache`, and a 32-step real-weight bit-exact proof of output,
+convolution cache, recurrent cache, metadata, and exact instance hits. Python
+errors before cache mutation fall back to stock. Once cache commit begins,
+failures propagate and the request cache is discarded; stock is never
+replayed. Measured forwards do not add per-layer synchronization. Failed
+startup, scheduler-stop exceptions, stop, and reload all restore the exact
+original class method before the shared executor shuts down.
 
 Only the M3 Ultra result is qualified. The target user hardware classes at
-48 GB and 64 GB have not been measured, so this evidence is insufficient for
-default-on behavior.
+48 GB and 64 GB have not been measured. The pure automatic-enrollment policy
+therefore contains zero rows: unknown hardware, the measured 32 GB no-go, and
+48/64 GB hardware without an exact frozen receipt all stay stock before the
+real-weight probe. The existing environment opt-in is explicitly diagnostic;
+it is not automatic qualification or permission to change an alias/default.

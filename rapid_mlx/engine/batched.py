@@ -1093,6 +1093,64 @@ def _qwen36_native_text_no_go_status(
     }
 
 
+def _qwen38_single_domain_evidence(engine: Any, language_model: Any) -> dict[str, Any]:
+    """Prove the in-place canary still has one runtime ownership domain."""
+
+    scheduler = getattr(engine, "_mllm_scheduler", None)
+    executor = getattr(engine, "_model_load_executor", None)
+    model = getattr(engine, "_model", None)
+    expected_language_model = getattr(model, "language_model", model)
+    active_step_executor = getattr(scheduler, "_step_executor", None)
+    invariants = {
+        "one_mllm_scheduler": scheduler is not None,
+        "no_companion_scheduler": (
+            getattr(engine, "_engine", None) is None
+            and not bool(getattr(engine, "_mllm_native_text_engine", False))
+        ),
+        "scheduler_uses_loaded_model": (
+            scheduler is not None and getattr(scheduler, "model", None) is model
+        ),
+        "language_model_is_loaded_backbone": language_model is expected_language_model,
+        "scheduler_uses_model_executor": (
+            scheduler is not None
+            and executor is not None
+            and getattr(scheduler, "_injected_step_executor", None) is executor
+            and (active_step_executor is None or active_step_executor is executor)
+        ),
+    }
+    return {
+        "single_domain": all(invariants.values()),
+        "scheduler_count": 1 if scheduler is not None else 0,
+        "companion_scheduler_count": (
+            1
+            if getattr(engine, "_engine", None) is not None
+            or bool(getattr(engine, "_mllm_native_text_engine", False))
+            else 0
+        ),
+        "executor_domain_count": 1 if executor is not None else 0,
+        "weight_domain_count": 1 if model is not None else 0,
+        "retained_cache_budget_domain_count": 1 if scheduler is not None else 0,
+        "invariants": invariants,
+    }
+
+
+def _close_qwen38_mllm_fused_gdn_canary(engine: Any) -> None:
+    """Restore the class patch on its owning executor, if one is active."""
+
+    canary = getattr(engine, "_qwen38_mllm_fused_gdn_canary", None)
+    if canary is None:
+        return
+    executor = getattr(engine, "_model_load_executor", None)
+    if executor is None:
+        canary.close()
+    else:
+        executor.submit(canary.close).result()
+    engine._qwen38_mllm_fused_gdn_canary = None
+    status = getattr(engine, "_qwen38_mllm_fused_gdn_status", None)
+    if isinstance(status, dict):
+        status["active"] = False
+
+
 def _install_qwen38_mllm_fused_gdn_canary(engine: Any, language_model: Any) -> None:
     """Run the optional Qwen3.8 canary boot transaction, always fail closed."""
 
@@ -1101,20 +1159,46 @@ def _install_qwen38_mllm_fused_gdn_canary(engine: Any, language_model: Any) -> N
         contract_status,
         install_qwen38_mllm_fused_gdn_canary,
         operator_enabled,
+        probe_host_hardware,
+        resolve_enrollment,
     )
 
+    explicit_operator = operator_enabled()
+    chip, memory_gib = (None, None)
+    if not explicit_operator:
+        chip, memory_gib = probe_host_hardware()
+    enrollment = resolve_enrollment(
+        operator_opt_in=explicit_operator,
+        chip=chip,
+        memory_gib=memory_gib,
+    )
     engine._qwen38_mllm_fused_gdn_status = {
         **contract_status(),
+        "enrollment_status": enrollment.status,
+        "operator_enabled": enrollment.operator_enabled,
+        "automatic_qualified": enrollment.automatic_qualified,
+        "hardware_chip": enrollment.chip,
+        "hardware_memory_gib": enrollment.memory_gib,
+        "hardware_qualification_receipt_sha256": (
+            enrollment.qualification_receipt_sha256
+        ),
         "requested": False,
         "qualified": False,
         "active": False,
-        "fallback_reason": "operator_disabled",
+        "fallback_reason": "hardware_not_qualified",
         "probe_steps_committed": 0,
     }
-    if not operator_enabled():
+    if not enrollment.enabled:
         return
 
     engine._qwen38_mllm_fused_gdn_status["requested"] = True
+    topology_before = _qwen38_single_domain_evidence(engine, language_model)
+    engine._qwen38_mllm_fused_gdn_status["runtime_topology"] = topology_before
+    if not topology_before["single_domain"]:
+        engine._qwen38_mllm_fused_gdn_status["fallback_reason"] = (
+            "runtime_topology_not_single_domain"
+        )
+        return
     try:
         engine._qwen38_mllm_fused_gdn_status["runtime_versions_actual"] = (
             actual_runtime_versions()
@@ -1145,6 +1229,7 @@ def _install_qwen38_mllm_fused_gdn_canary(engine: Any, language_model: Any) -> N
                 language_model,
                 truth,
                 verified_target,
+                enrollment,
             ).result()
     except Exception:  # noqa: BLE001 - optional canary must not break boot
         logger.warning(
@@ -1155,6 +1240,16 @@ def _install_qwen38_mllm_fused_gdn_canary(engine: Any, language_model: Any) -> N
         engine._qwen38_mllm_fused_gdn_canary = None
 
     patch = engine._qwen38_mllm_fused_gdn_canary
+    topology_after = _qwen38_single_domain_evidence(engine, language_model)
+    topology_after["unchanged_during_qualification"] = topology_after == topology_before
+    engine._qwen38_mllm_fused_gdn_status["runtime_topology"] = topology_after
+    if patch is not None and not (
+        topology_after["single_domain"]
+        and topology_after["unchanged_during_qualification"]
+    ):
+        _close_qwen38_mllm_fused_gdn_canary(engine)
+        patch = None
+        fallback_reason = "runtime_topology_changed"
     engine._qwen38_mllm_fused_gdn_status.update(
         {
             "qualified": bool(patch is not None and patch.qualified),
@@ -1331,10 +1426,13 @@ class BatchedEngine(BaseEngine):
         # goes away. It is deliberately separate from Qwen3.6's 32-head path.
         self._qwen38_mllm_fused_gdn_canary = None
         self._qwen38_mllm_fused_gdn_status = {
+            "enrollment_status": "hardware_not_qualified",
+            "operator_enabled": False,
+            "automatic_qualified": False,
             "requested": False,
             "qualified": False,
             "active": False,
-            "fallback_reason": "operator_disabled",
+            "fallback_reason": "hardware_not_qualified",
         }
         self._tool_logits_processor_factory = None
 
@@ -1871,10 +1969,17 @@ class BatchedEngine(BaseEngine):
         # while silently inactive (#2955).
         self._validate_lane_capabilities()
 
-        if self._is_mllm:
-            await self._start_mllm()
-        else:
-            await self._start_llm()
+        try:
+            if self._is_mllm:
+                await self._start_mllm()
+            else:
+                await self._start_llm()
+        except BaseException:
+            # The Q38 class patch may already be installed when a later MLLM
+            # startup step fails. Restore it before returning control to a
+            # caller that may retry this engine or start a competing engine.
+            _close_qwen38_mllm_fused_gdn_canary(self)
+            raise
 
         # Observe the runtime only after the existing lane resolution has
         # finished: MLLM may have degraded to text and Qwen3.6 may now own an
@@ -2356,12 +2461,6 @@ class BatchedEngine(BaseEngine):
         )
         await self._mllm_scheduler.start()
 
-        # Internal default-off canary for one immutable Qwen3.8 artifact.
-        # Artifact probing is offline B0 metadata work; qualification and the
-        # reversible patch run on the existing model-owning worker. No second
-        # model, weight copy, or executor is constructed.
-        _install_qwen38_mllm_fused_gdn_canary(self, language_model)
-
         config = getattr(self._mllm_instance, "config", None)
         config_model_type = (
             config.get("model_type")
@@ -2376,6 +2475,13 @@ class BatchedEngine(BaseEngine):
             spec_decode=spec_decode,
             no_hybrid=getattr(self, "_no_hybrid", False),
         )
+
+        # Internal fail-closed canary for one immutable Qwen3.8 artifact.
+        # Run after all optional companion construction so the topology gate
+        # can prove this exact path retained one scheduler, executor, weight,
+        # and cache-budget domain. Qualification and the reversible patch use
+        # the existing model-owning worker; they never construct a new domain.
+        _install_qwen38_mllm_fused_gdn_canary(self, language_model)
 
         logger.info(
             f"MLLM Scheduler started with continuous batching: "
@@ -2874,17 +2980,26 @@ class BatchedEngine(BaseEngine):
             self._engine.engine.close()
             self._engine = None
 
+        mllm_stop_error: BaseException | None = None
         if self._mllm_scheduler:
             try:
                 await self._mllm_scheduler.stop()
+            except BaseException as exc:  # noqa: BLE001 - cleanup must continue
+                mllm_stop_error = exc
             finally:
-                canary = getattr(self, "_qwen38_mllm_fused_gdn_canary", None)
-                if canary is not None and self._model_load_executor is not None:
-                    self._model_load_executor.submit(canary.close).result()
-                self._qwen38_mllm_fused_gdn_canary = None
-                status = getattr(self, "_qwen38_mllm_fused_gdn_status", None)
-                if isinstance(status, dict):
-                    status["active"] = False
+                try:
+                    _close_qwen38_mllm_fused_gdn_canary(self)
+                except BaseException as exc:  # noqa: BLE001 - preserve cleanup
+                    if mllm_stop_error is not None:
+                        logger.error(
+                            "MLLM scheduler stop also failed before Q38 rollback",
+                            exc_info=(
+                                type(mllm_stop_error),
+                                mllm_stop_error,
+                                mllm_stop_error.__traceback__,
+                            ),
+                        )
+                    mllm_stop_error = exc
                 self._mllm_scheduler = None
 
         if self._is_mllm and self._model_load_executor is not None:
@@ -2907,6 +3022,8 @@ class BatchedEngine(BaseEngine):
         self._engine_started = False
         self._mllm_native_text_engine = False
         logger.info("BatchedEngine stopped")
+        if mllm_stop_error is not None:
+            raise mllm_stop_error
 
     def _prepare_harmony_no_thinking_prompt(
         self,
