@@ -3992,6 +3992,7 @@ def system_one_command(args) -> None:
         backend = CLMBackend(
             args.encoder,
             args.head,
+            model_name=args.model,
             cache_entries=args.cache_entries,
             max_tokens=args.max_tokens,
             max_work_tokens=args.max_work_tokens,

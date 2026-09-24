@@ -193,6 +193,7 @@ class CLMBackend:
         encoder: str,
         head: str,
         *,
+        model_name: str | None = None,
         cache_entries: int = 20_000,
         max_tokens: int = 2048,
         max_work_tokens: int = 32_768,
@@ -251,7 +252,7 @@ class CLMBackend:
             )
         self._encoder = inner
         self.encoder_name = encoder
-        self.default_model = self.config.get("model_name", "clm-latest")
+        self.default_model = model_name or self.config.get("model_name", "clm-latest")
         self._scale = min(100.0, math.exp(float(self.config["logit_scale"])))
         self._max_tokens = max_tokens
         self._max_work_tokens = max_work_tokens
@@ -337,8 +338,10 @@ class CLMBackend:
             "answers": answers_out,
             "usage": {
                 "billing_units": len(questions),
-                "input_tokens": requested_tokens,
-                "cache_miss_tokens": state_tokens + action_tokens,
+                # Match upstream CLM: input_tokens measures encoder work and
+                # therefore falls on cache hits. Keep submitted work explicit.
+                "input_tokens": state_tokens + action_tokens,
+                "requested_tokens": requested_tokens,
                 "output_tokens": 0,
             },
         }

@@ -74,3 +74,31 @@ def test_system_one_checks_port_before_backend_initialization(monkeypatch):
     )
     system_one_command(build_parser().parse_args(["system-one"]))
     assert events == ["port", "backend", "serve"]
+
+
+def test_system_one_passes_public_clm_model_name(monkeypatch):
+    import rapid_mlx._uvicorn as uvicorn_module
+    import rapid_mlx.cli as cli_module
+    import rapid_mlx.system_one.backends as backend_module
+
+    captured = {}
+
+    class Backend:
+        default_model = "public-clm"
+
+        def __init__(self, encoder, head, **kwargs):
+            captured.update(encoder=encoder, head=head, **kwargs)
+
+        def models(self):
+            return []
+
+    monkeypatch.setattr(
+        cli_module, "_port_preflight_or_die", lambda *args, **kwargs: None
+    )
+    monkeypatch.setattr(backend_module, "CLMBackend", Backend)
+    monkeypatch.setattr(uvicorn_module, "run_uvicorn", lambda *args, **kwargs: None)
+    args = build_parser().parse_args(
+        ["system-one", "public-clm", "--backend", "clm", "--head", "/tmp/head"]
+    )
+    system_one_command(args)
+    assert captured["model_name"] == "public-clm"

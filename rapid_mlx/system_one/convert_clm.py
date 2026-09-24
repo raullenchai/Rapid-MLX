@@ -13,6 +13,37 @@ from collections.abc import Mapping
 from pathlib import Path
 
 
+def _expected_head_shapes(config: Mapping) -> dict[str, tuple[int, ...]]:
+    missing = {"width", "depth"} - config.keys()
+    if missing:
+        raise ValueError(f"CLM cfg is missing: {sorted(missing)}")
+    dimensions = {
+        "hidden_size": int(config.get("hidden_size", 4096)),
+        "width": int(config["width"]),
+        "depth": int(config["depth"]),
+        "projection_dim": int(config.get("projection_dim", 512)),
+    }
+    if any(value < 1 for value in dimensions.values()):
+        raise ValueError("CLM cfg dimensions must be positive")
+    hidden = dimensions["hidden_size"]
+    width = dimensions["width"]
+    depth = dimensions["depth"]
+    projection = dimensions["projection_dim"]
+    shapes = {
+        "inp.weight": (width, hidden),
+        "inp.bias": (width,),
+        "out.weight": (projection, width),
+        "out.bias": (projection,),
+    }
+    for index in range(max(0, depth - 2)):
+        shapes[f"hidden.{index}.weight"] = (width, width)
+        shapes[f"hidden.{index}.bias"] = (width,)
+        if config.get("layernorm", False):
+            shapes[f"norms.{index}.weight"] = (width,)
+            shapes[f"norms.{index}.bias"] = (width,)
+    return shapes
+
+
 def _publish_artifact(staging: Path, destination: Path) -> None:
     """Publish a validated two-file artifact as one directory generation."""
     required = {"config.json", "model.safetensors"}
@@ -74,6 +105,7 @@ def convert(input_path: str | Path, output_dir: str | Path) -> Path:
     if not isinstance(checkpoint["cfg"], Mapping):
         raise ValueError("CLM checkpoint cfg must be a mapping")
     config = dict(checkpoint["cfg"])
+    expected_shapes = _expected_head_shapes(config)
     config["projection_dim"] = int(
         checkpoint.get("projection_dim", config.get("projection_dim", 512))
     )
@@ -86,9 +118,25 @@ def convert(input_path: str | Path, output_dir: str | Path) -> Path:
         state = checkpoint[prefix]
         if not isinstance(state, Mapping):
             raise ValueError(f"CLM checkpoint {prefix} must be a mapping")
+        if any(not isinstance(name, str) for name in state):
+            raise ValueError(f"CLM checkpoint {prefix} tensor names must be strings")
+        names = set(state)
+        if names != set(expected_shapes):
+            missing_names = sorted(set(expected_shapes) - names)
+            unexpected_names = sorted(names - set(expected_shapes))
+            raise ValueError(
+                f"CLM checkpoint {prefix} tensors do not match config; "
+                f"missing={missing_names}, unexpected={unexpected_names}"
+            )
         for name, tensor in state.items():
             if not isinstance(tensor, torch.Tensor):
                 raise ValueError(f"{prefix}.{name} is not a tensor")
+            actual_shape = tuple(int(value) for value in tensor.shape)
+            if actual_shape != expected_shapes[name]:
+                raise ValueError(
+                    f"CLM checkpoint {prefix}.{name} has shape {actual_shape}; "
+                    f"expected {expected_shapes[name]}"
+                )
             tensors[f"{prefix}.{name}"] = mx.array(
                 np.asarray(tensor.detach().float().cpu().numpy())
             )

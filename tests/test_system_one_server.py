@@ -204,26 +204,29 @@ def test_clm_backend_runs_native_hidden_state_and_reuses_action_cache(
         "load_model_with_fallback",
         lambda _: (model, Tokenizer()),
     )
-    backend = CLMBackend("dummy-qwen3", str(tmp_path), cache_entries=16)
+    backend = CLMBackend(
+        "dummy-qwen3", str(tmp_path), model_name="public-clm", cache_entries=16
+    )
     question = Question(
         type="choice",
         instructions="Pick",
         criteria={"a": "good", "b": "bad"},
     )
-    first = backend.answer("ctx", {"q": question}, "clm-test", 1.0)
+    first = backend.answer("ctx", {"q": question}, "public-clm", 1.0)
+    assert first["model"] == "public-clm"
     assert first["answers"]["q"]["choice"] == "a"
     assert first["usage"]["input_tokens"] == 3
-    assert first["usage"]["cache_miss_tokens"] == 3
+    assert first["usage"]["requested_tokens"] == 3
     assert len(calls) == 3
 
-    second = backend.answer("ctx", {"q": question}, "clm-test", 1.0)
-    assert second["usage"]["input_tokens"] == 3
-    assert second["usage"]["cache_miss_tokens"] == 0
+    second = backend.answer("ctx", {"q": question}, "public-clm", 1.0)
+    assert second["usage"]["input_tokens"] == 0
+    assert second["usage"]["requested_tokens"] == 3
     assert len(calls) == 3
 
     backend._max_work_tokens = 2
     try:
-        backend.answer("ctx", {"q": question}, "clm-test", 1.0)
+        backend.answer("ctx", {"q": question}, "public-clm", 1.0)
     except ValueError as exc:
         assert "encoder tokens" in str(exc)
     else:

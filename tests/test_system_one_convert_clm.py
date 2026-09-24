@@ -106,6 +106,10 @@ class _FakeTensor:
     def item(self):
         return self.value.item()
 
+    @property
+    def shape(self):
+        return self.value.shape
+
 
 def _fake_torch(monkeypatch, checkpoint):
     module = SimpleNamespace(
@@ -117,18 +121,25 @@ def _fake_torch(monkeypatch, checkpoint):
 
 
 def test_convert_writes_validated_safetensors_generation(monkeypatch, tmp_path):
+    head = {
+        "inp.weight": _FakeTensor([[1.0]]),
+        "inp.bias": _FakeTensor([0.0]),
+        "out.weight": _FakeTensor([[1.0]]),
+        "out.bias": _FakeTensor([0.0]),
+    }
     checkpoint = {
-        "state_head": {"inp.weight": _FakeTensor([[1.0]])},
-        "action_head": {"inp.weight": _FakeTensor([[2.0]])},
+        "state_head": head,
+        "action_head": {**head, "out.weight": _FakeTensor([[2.0]])},
         "logit_scale": 1.5,
-        "cfg": {"hidden_size": 1, "projection_dim": 1},
+        "cfg": {"hidden_size": 1, "width": 1, "depth": 2, "projection_dim": 1},
     }
     _fake_torch(monkeypatch, checkpoint)
     destination = convert(tmp_path / "head.pt", tmp_path / "converted")
     config = json.loads((destination / "config.json").read_text())
     assert config["logit_scale"] == 1.5
     weights = mx.load(str(destination / "model.safetensors"))
-    assert set(weights) == {"state_head.inp.weight", "action_head.inp.weight"}
+    assert len(weights) == 8
+    assert weights["action_head.out.weight"].item() == 2.0
 
 
 @pytest.mark.parametrize(
@@ -136,7 +147,12 @@ def test_convert_writes_validated_safetensors_generation(monkeypatch, tmp_path):
     [
         ([], "root must be a mapping"),
         (
-            {"state_head": [], "action_head": {}, "logit_scale": 1, "cfg": {}},
+            {
+                "state_head": [],
+                "action_head": {},
+                "logit_scale": 1,
+                "cfg": {"width": 1, "depth": 2},
+            },
             "state_head must be a mapping",
         ),
     ],
@@ -146,4 +162,22 @@ def test_convert_rejects_non_mapping_checkpoint_parts(
 ):
     _fake_torch(monkeypatch, checkpoint)
     with pytest.raises(ValueError, match=message):
+        convert(tmp_path / "head.pt", tmp_path / "converted")
+
+
+def test_convert_rejects_tensor_shape_mismatch(monkeypatch, tmp_path):
+    head = {
+        "inp.weight": _FakeTensor([[1.0, 2.0]]),
+        "inp.bias": _FakeTensor([0.0]),
+        "out.weight": _FakeTensor([[1.0]]),
+        "out.bias": _FakeTensor([0.0]),
+    }
+    checkpoint = {
+        "state_head": head,
+        "action_head": head,
+        "logit_scale": 1,
+        "cfg": {"hidden_size": 1, "width": 1, "depth": 2, "projection_dim": 1},
+    }
+    _fake_torch(monkeypatch, checkpoint)
+    with pytest.raises(ValueError, match="has shape .* expected"):
         convert(tmp_path / "head.pt", tmp_path / "converted")
