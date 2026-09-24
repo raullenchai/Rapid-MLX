@@ -4992,6 +4992,17 @@ flow_launch_integrations() {
     press "$OUT/launch-command-expanded.json" Launch.Integration.Command.claude-code \
         "$OUT/launch-command-close.json" \
         || die "Agent page could not collapse a launch command"
+    local snippet_count=1
+    for ((i=0; i<40; i++)); do
+        see_main "$OUT/launch-command-collapsed.json"
+        snippet_count="$(jq '[.data.ui_elements[]?
+                              | select(.identifier == "Launch.Integration.Snippet.claude-code")]
+                             | length' "$OUT/launch-command-collapsed.json")"
+        [[ "$snippet_count" == 0 ]] && break
+        sleep 0.1
+    done
+    [[ "$snippet_count" == 0 ]] \
+        || die "Agent page kept a launch command visible after collapse"
 
     press "$OUT/launch-ready.json" ConnectTools.MoreIntegrations \
         "$OUT/launch-more-press.json" \
