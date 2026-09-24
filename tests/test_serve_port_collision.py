@@ -171,7 +171,11 @@ def test_implicit_port_fails_when_all_ten_candidates_are_busy(capsys, scan_base)
     assert excinfo.value.code == 1
     captured = capsys.readouterr()
     assert captured.err == ""
-    assert f"Error: Port {scan_base} is already in use on 127.0.0.1." in captured.out
+    scan_end = scan_base + cli.DEFAULT_SERVE_PORT_CANDIDATES - 1
+    assert captured.out == (
+        f"Ports {scan_base}-{scan_end} are all in use; "
+        "pass --port with a free port outside that range.\n"
+    )
 
 
 def test_implicit_wildcard_scan_detects_loopback_shadow(capsys, scan_base):

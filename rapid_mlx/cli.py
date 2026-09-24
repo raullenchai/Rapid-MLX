@@ -395,6 +395,20 @@ def _exit_for_port_collision(port: int, collision_host: str, *, model: str) -> N
     sys.exit(1)
 
 
+def _exit_for_port_scan_exhaustion(scan_base: int, scan_count: int) -> NoReturn:
+    """Report that the bounded implicit-port scan found no free port."""
+
+    from rapid_mlx.telemetry.server_start import failed
+
+    failed("bind")
+    scan_end = scan_base + scan_count - 1
+    print(
+        f"Ports {scan_base}-{scan_end} are all in use; "
+        "pass --port with a free port outside that range."
+    )
+    sys.exit(1)
+
+
 def _port_preflight_or_die(host: str, port: int, *, model: str) -> None:
     """Probe ``(host, port)`` AND — when ``host`` is a wildcard alias —
     additionally probe ``("127.0.0.1", port)``. Print a friendly error
@@ -563,7 +577,7 @@ def _resolve_serve_port(
             first_collision_host = collision_host
 
     assert first_collision_host is not None
-    _exit_for_port_collision(scan_base, first_collision_host, model=model)
+    _exit_for_port_scan_exhaustion(scan_base, scan_count)
 
 
 def _resolved_serve_port(args) -> int:

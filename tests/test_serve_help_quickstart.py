@@ -167,12 +167,37 @@ def test_serve_parser_preserves_omitted_port_for_resolution():
 def test_standalone_server_parser_also_preserves_port_explicitness():
     """The legacy module entrypoint must share the omitted-port contract."""
 
-    from pathlib import Path
+    from rapid_mlx import server
 
-    source = (Path(cli.__file__).parent / "server.py").read_text(encoding="utf-8")
-    start = source.index('"--port"', source.index("def main():"))
-    port_block = source[start : start + 220]
-    assert "default=None" in port_block
+    parser = server._build_parser()
+    implicit = parser.parse_args(["--model", "qwen3.5-4b-4bit"])
+    explicit = parser.parse_args(["--model", "qwen3.5-4b-4bit", "--port", "8123"])
+
+    assert implicit.port is None
+    assert explicit.port == 8123
+
+
+def test_standalone_main_keeps_optional_profiler_initialization(monkeypatch):
+    """Extracting the parser must not bypass standalone runtime setup."""
+
+    import sys
+    import types
+
+    from rapid_mlx import server
+
+    installed = []
+    pysample = types.ModuleType("rapid_mlx._pysample")
+    pysample.install = lambda: installed.append(True)
+    parser = types.SimpleNamespace(parse_args=lambda: (_ for _ in ()).throw(SystemExit))
+
+    monkeypatch.setitem(sys.modules, "rapid_mlx._pysample", pysample)
+    monkeypatch.setenv("RAPID_PYSAMPLE", "1")
+    monkeypatch.setattr(server, "_build_parser", lambda: parser)
+
+    with pytest.raises(SystemExit):
+        server.main()
+
+    assert installed == [True]
 
 
 def test_serve_parser_still_parses_a_normal_invocation():

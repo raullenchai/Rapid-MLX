@@ -3517,14 +3517,9 @@ def _capture_start_failures(func):
     return wrapped
 
 
-@_capture_start_failures
-def main():
-    """Run the server."""
-    global _standalone_start_model
-    if os.environ.get("RAPID_PYSAMPLE"):
-        from ._pysample import install as _pysample_install
+def _build_parser() -> argparse.ArgumentParser:
+    """Build the parser for the standalone ``python -m rapid_mlx.server`` CLI."""
 
-        _pysample_install()
     parser = argparse.ArgumentParser(
         description="Rapid-MLX OpenAI-compatible server for LLM and MLLM inference",
         formatter_class=argparse.RawDescriptionHelpFormatter,
@@ -3841,6 +3836,19 @@ Examples:
         ),
     )
 
+    return parser
+
+
+@_capture_start_failures
+def main():
+    """Run the server."""
+    global _standalone_start_model
+    if os.environ.get("RAPID_PYSAMPLE"):
+        from ._pysample import install as _pysample_install
+
+        _pysample_install()
+
+    parser = _build_parser()
     args = parser.parse_args()
     _standalone_start_model = args.model
 
