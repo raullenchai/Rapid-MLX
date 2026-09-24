@@ -998,7 +998,7 @@ def _build_app(
         # worker-thread state) so the failure/cancellation cleanup can decide
         # whether the slot may be freed now or must be held until an in-flight
         # render actually finishes (codex round-7 #2).
-        render_future: concurrent.futures.Future[str] | None = None
+        render_future: concurrent.futures.Future[str | PreparedPrompt] | None = None
         try:
             # F4 (codex round-2 #3): resolve the effective timeout with an
             # ``is None`` check, NOT ``request.timeout or default_timeout``.
