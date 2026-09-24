@@ -62,6 +62,10 @@ from .middleware.exception_handlers import (  # noqa: E402
 from .middleware.exception_handlers import (
     _http_error_response as _http_exception_handler_impl,  # noqa: F401
 )
+from .runtime.optional_runtime import (
+    OptionalRuntimeMissing,
+    handle_optional_runtime_missing,
+)
 
 
 # Back-compat shim: ``tests/test_context_length_exceeded.py`` and
@@ -221,6 +225,7 @@ _engine: BaseEngine | None = None
 _prefix_cache_load_task = None  # asyncio.Task | None
 _model_name: str | None = None
 _model_alias: str | None = None  # Short alias used to start the model (if any)
+_standalone_start_model: str | None = None
 _telemetry_auto_selected: bool = False
 _telemetry_model_served_state = "idle"
 _telemetry_audio_model_served_state = "idle"
@@ -857,6 +862,15 @@ async def lifespan(app: FastAPI):
             else:
                 await _engine.start()
             _emit_primary_model_served_once(_engine)
+        except OptionalRuntimeMissing as _start_exc:
+            from rapid_mlx.cli import _handle_optional_runtime_missing
+
+            _handle_optional_runtime_missing(
+                _start_exc,
+                engine=_engine,
+                alias_or_path=_model_alias or _model_path,
+                auto_selected=_telemetry_auto_selected,
+            )
         except Exception as _start_exc:
             from rapid_mlx.telemetry.server_start import failed
 
@@ -3478,6 +3492,13 @@ def _capture_start_failures(func):
     def wrapped(*args, **kwargs):
         try:
             return func(*args, **kwargs)
+        except OptionalRuntimeMissing as exc:
+            handle_optional_runtime_missing(
+                exc,
+                engine=_engine,
+                alias_or_path=_standalone_start_model,
+                auto_selected=False,
+            )
         except BaseException:
             try:
                 from rapid_mlx.telemetry.server_start import fail_current
@@ -3493,6 +3514,7 @@ def _capture_start_failures(func):
 @_capture_start_failures
 def main():
     """Run the server."""
+    global _standalone_start_model
     if os.environ.get("RAPID_PYSAMPLE"):
         from ._pysample import install as _pysample_install
 
@@ -3811,6 +3833,7 @@ Examples:
     )
 
     args = parser.parse_args()
+    _standalone_start_model = args.model
 
     # Telemetry v2 default-on wiring (T11): resolve the consent decision,
     # deliver the disclosure notice to stderr, then apply the locked,

@@ -207,8 +207,12 @@
       "_about": "Design sec 1.3, model_serve_failed. Verbatim from the table.",
       "values": [
         "unsupported_architecture", "insufficient_memory",
-        "corrupt_weights", "download_failed", "other"
+        "corrupt_weights", "download_failed", "missing_extra", "other"
       ]
+    },
+    "optional_extra": {
+      "_about": "Optional serving runtime required by the selected model lane.",
+      "values": ["vision", "video", "audio", "image"]
     },
     "agent": {
       "_about": [
@@ -450,7 +454,13 @@
         "model_type": {"kind": "enum", "enum": "model_type", "required": false},
         "auto_selected": {"kind": "bool", "required": false},
         "quant": {"kind": "enum", "enum": "quant", "required": false},
-        "error_class": {"kind": "enum", "enum": "serve_error_class", "required": true}
+        "error_class": {"kind": "enum", "enum": "serve_error_class", "required": true},
+        "extra": {
+          "kind": "enum",
+          "enum": "optional_extra",
+          "required": false,
+          "only_when": {"error_class": ["missing_extra"]}
+        }
       }
     },
     "capability_rejected": {

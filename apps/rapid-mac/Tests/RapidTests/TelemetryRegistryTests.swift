@@ -124,14 +124,13 @@ struct TelemetryRegistryTests {
             ["state": .string("exploded")]
         ) == nil)
         for state in ["attempted", "ready"] {
-            let filtered = try #require(registry.validate(
+            #expect(registry.validate(
                 "server_start_state",
                 [
                     "state": .string(state),
                     "failure_stage": .string("bind")
                 ]
-            ))
-            #expect(filtered == ["state": .string(state)])
+            ) == nil)
         }
     }
 
@@ -205,6 +204,15 @@ struct TelemetryRegistryTests {
     @Test("a _failed twin accepts error_class alone and rejects it missing")
     func failedTwinContract() {
         #expect(registry.validate("model_serve_failed", ["error_class": .string("insufficient_memory")]) != nil)
+        #expect(registry.validate("model_serve_failed", [
+            "error_class": .string("missing_extra"),
+            "extra": .string("vision"),
+        ]) != nil)
+        let rejectedExtra = registry.validate("model_serve_failed", [
+            "error_class": .string("other"),
+            "extra": .string("vision"),
+        ])
+        #expect(rejectedExtra == nil)
         #expect(registry.validate("model_serve_failed", ["model": .string("<custom>")]) == nil)
     }
 

@@ -22,6 +22,7 @@ from starlette.routing import Route
 from rapid_mlx.model_aliases import resolve_profile
 from rapid_mlx.routes import video
 from rapid_mlx.runtime import video_lane
+from rapid_mlx.runtime.optional_runtime import OptionalRuntimeMissing
 from rapid_mlx.runtime.video_lane import (
     VideoEngine,
     VideoRuntimeError,
@@ -64,18 +65,17 @@ def test_invalid_video_reference_image_is_rejected(tmp_path: Path) -> None:
 
 
 def test_video_runtime_preflight_fails_before_download(
-    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     monkeypatch.setattr(video_lane.sys, "version_info", (3, 11))
     monkeypatch.setattr("importlib.util.find_spec", lambda _: None)
     monkeypatch.setattr("shutil.which", lambda _: None)
     monkeypatch.setattr(video_lane, "_FFMPEG_FALLBACK_PATHS", ())
 
-    with pytest.raises(SystemExit) as exc:
+    with pytest.raises(OptionalRuntimeMissing) as exc:
         require_video_runtime_or_exit()
 
-    assert exc.value.code == 2
-    error = capsys.readouterr().err
+    error = exc.value.format_user_message()
     assert "rapid-mlx[video]" in error
     assert "brew install ffmpeg" in error
 
@@ -200,7 +200,7 @@ def test_video_remux_uses_resolved_ffmpeg_absolute_path(
 
 
 def test_video_runtime_preflight_reports_python_311_floor(
-    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     class Python310(tuple):
         major = 3
@@ -208,11 +208,10 @@ def test_video_runtime_preflight_reports_python_311_floor(
 
     monkeypatch.setattr(video_lane.sys, "version_info", Python310((3, 10, 0)))
 
-    with pytest.raises(SystemExit) as exc:
+    with pytest.raises(OptionalRuntimeMissing) as exc:
         require_video_runtime_or_exit()
 
-    assert exc.value.code == 2
-    error = capsys.readouterr().err
+    error = exc.value.format_user_message()
     assert "requires Python 3.11 or newer" in error
     assert "current: 3.10" in error
 

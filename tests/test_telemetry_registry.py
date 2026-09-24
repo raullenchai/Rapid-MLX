@@ -137,12 +137,36 @@ def test_optional_property_may_be_absent():
     }
 
 
-@pytest.mark.parametrize("state", ["attempted", "ready"])
-def test_conditional_property_is_dropped_when_condition_is_false(state):
+def test_missing_extra_property_is_closed_and_conditional():
     assert reg.validate(
-        "server_start_state",
-        {"state": state, "failure_stage": "bind"},
-    ) == {"state": state}
+        "model_serve_failed",
+        {"error_class": "missing_extra", "extra": "vision"},
+    ) == {"error_class": "missing_extra", "extra": "vision"}
+    assert (
+        reg.validate(
+            "model_serve_failed",
+            {"error_class": "other", "extra": "vision"},
+        )
+        is None
+    )
+    assert (
+        reg.validate(
+            "model_serve_failed",
+            {"error_class": "missing_extra", "extra": "embeddings"},
+        )
+        is None
+    )
+
+
+@pytest.mark.parametrize("state", ["attempted", "ready"])
+def test_conditional_property_rejects_event_when_condition_is_false(state):
+    assert (
+        reg.validate(
+            "server_start_state",
+            {"state": state, "failure_stage": "bind"},
+        )
+        is None
+    )
 
 
 def test_malformed_conditional_property_fails_closed():

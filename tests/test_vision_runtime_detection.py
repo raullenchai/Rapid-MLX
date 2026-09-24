@@ -36,6 +36,8 @@ import sys
 
 import pytest
 
+from rapid_mlx.runtime.optional_runtime import OptionalRuntimeMissing
+
 
 @pytest.fixture(autouse=True)
 def clean_runtime_probe_state(clean_doctor_runtime_state):
@@ -238,7 +240,7 @@ def test_status_broken_when_import_raises_runtimeerror(monkeypatch):
     assert detail
 
 
-def test_boot_guard_exit_2_when_import_raises_oserror(monkeypatch, capsys):
+def test_boot_guard_typed_failure_when_import_raises_oserror(monkeypatch):
     """The tri-state contract's whole point: a missing-shared-lib ``OSError``
     must be caught and turned into a clean exit-code-2 boot guard with an
     honest diagnostic — NOT propagate as an uncaught crash, and NOT misdirect
@@ -249,11 +251,10 @@ def test_boot_guard_exit_2_when_import_raises_oserror(monkeypatch, capsys):
         monkeypatch, OSError("dlopen(libmlx.dylib): image not found")
     )
 
-    with pytest.raises(SystemExit) as exc_info:
+    with pytest.raises(OptionalRuntimeMissing) as exc_info:
         require_mlx_vlm_or_exit("gemma-4-26b-a4b-it-4bit")
-    assert exc_info.value.code == 2
 
-    err = capsys.readouterr().err
+    err = exc_info.value.format_user_message()
     assert "vision runtime cannot load" in err, (
         f"broken-runtime boot hint must say the runtime can't load, got: {err!r}"
     )
@@ -275,9 +276,9 @@ def test_require_mlx_vlm_message_names_pil_when_broken(monkeypatch):
 
     _simulate_mlx_vlm_present_but_pil_missing(monkeypatch)
 
-    with pytest.raises(ImportError) as exc_info:
+    with pytest.raises(OptionalRuntimeMissing) as exc_info:
         _require_mlx_vlm()
-    msg = str(exc_info.value)
+    msg = exc_info.value.format_user_message()
     assert "PIL" in msg, f"broken-runtime message must name PIL, got: {msg!r}"
 
 
@@ -289,14 +290,14 @@ def test_broken_and_absent_messages_are_distinct(monkeypatch):
     from rapid_mlx.models.mllm import _require_mlx_vlm
 
     _simulate_mlx_vlm_present_but_pil_missing(monkeypatch)
-    with pytest.raises(ImportError) as broken_exc:
+    with pytest.raises(OptionalRuntimeMissing) as broken_exc:
         _require_mlx_vlm()
-    broken_msg = str(broken_exc.value)
+    broken_msg = broken_exc.value.format_user_message()
 
     _simulate_mlx_vlm_absent(monkeypatch)
-    with pytest.raises(ImportError) as absent_exc:
+    with pytest.raises(OptionalRuntimeMissing) as absent_exc:
         _require_mlx_vlm()
-    absent_msg = str(absent_exc.value)
+    absent_msg = absent_exc.value.format_user_message()
 
     assert broken_msg != absent_msg, (
         "broken and absent messages must differ so the user can tell "
@@ -308,7 +309,7 @@ def test_broken_and_absent_messages_are_distinct(monkeypatch):
     )
 
 
-def test_boot_guard_exit_message_names_pil_when_broken(monkeypatch, capsys):
+def test_boot_guard_message_names_pil_when_broken(monkeypatch):
     """``require_mlx_vlm_or_exit`` must preserve its exit-code-2 shape AND
     name PIL in the broken case so the operator sees the actionable hint on
     stderr before any download starts."""
@@ -316,11 +317,10 @@ def test_boot_guard_exit_message_names_pil_when_broken(monkeypatch, capsys):
 
     _simulate_mlx_vlm_present_but_pil_missing(monkeypatch)
 
-    with pytest.raises(SystemExit) as exc_info:
+    with pytest.raises(OptionalRuntimeMissing) as exc_info:
         require_mlx_vlm_or_exit("gemma-4-26b-a4b-it-4bit")
-    assert exc_info.value.code == 2
 
-    err = capsys.readouterr().err
+    err = exc_info.value.format_user_message()
     assert "PIL" in err or "Pillow" in err, (
         f"broken-runtime boot hint must name Pillow/PIL, got: {err!r}"
     )

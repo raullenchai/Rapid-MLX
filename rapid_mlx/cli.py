@@ -28,6 +28,10 @@ from rapid_mlx._completion import alias_completer
 from rapid_mlx.client_header import RAPID_CLIENT_CLI_CHAT
 from rapid_mlx.http_auth import rapid_mlx_client_headers
 from rapid_mlx.model_profile import ModelProfile
+from rapid_mlx.runtime.optional_runtime import OptionalRuntimeMissing
+from rapid_mlx.runtime.optional_runtime import (
+    handle_optional_runtime_missing as _handle_optional_runtime_missing,
+)
 
 # Project-default mirror for ``RAPID_MLX_MODEL_MIRROR`` (consumed by
 # ``_try_mirror_prefetch``). Public Cloudflare Worker → R2 bucket, with
@@ -38,6 +42,23 @@ MIRROR_DEFAULT = "https://models.rapidmlx.com"
 _CONSENT_MUTATION_EVENT_LIMIT = 5
 _consent_mutation_event_count = 0
 _consent_mutation_event_lock = threading.Lock()
+
+
+def _run_optional_runtime_guard(
+    guard: Callable[..., None],
+    *args,
+    alias_or_path: str,
+    **kwargs,
+) -> None:
+    """Route serve-time optional-runtime failures through the sole handler."""
+    try:
+        guard(*args, **kwargs)
+    except OptionalRuntimeMissing as exc:
+        _handle_optional_runtime_missing(
+            exc,
+            alias_or_path=alias_or_path,
+            auto_selected=False,
+        )
 
 
 def _claim_consent_mutation_event() -> bool:
@@ -4033,7 +4054,11 @@ def serve_command(args):
         # Used by the generic model-prefetch guard later in this function;
         # Wan owns its own revision-pinned download path.
         _is_wan_video = is_wan_model(args.model)
-        require_video_runtime_or_exit(args.model)
+        _run_optional_runtime_guard(
+            require_video_runtime_or_exit,
+            args.model,
+            alias_or_path=getattr(args, "_original_alias", None) or args.model,
+        )
 
     # F-H08-INCOMPLETE: the ``[embeddings]`` extra-required guard MUST
     # fire first thing in ``serve_command`` — before
@@ -4089,8 +4114,10 @@ def serve_command(args):
     if _serve_will_run_on_mllm_lane(args):
         from .models.mllm import require_mlx_vlm_or_exit
 
-        require_mlx_vlm_or_exit(
+        _run_optional_runtime_guard(
+            require_mlx_vlm_or_exit,
             args.model,
+            alias_or_path=getattr(args, "_original_alias", None) or args.model,
             text_diffusion=_alias_modality(args.model) == "text-diffusion",
         )
 
@@ -4114,7 +4141,11 @@ def serve_command(args):
     from .audio.probe import is_audio_model_alias, require_audio_or_exit
 
     if is_audio_model_alias(getattr(args, "model", None)):
-        require_audio_or_exit(args.model)
+        _run_optional_runtime_guard(
+            require_audio_or_exit,
+            args.model,
+            alias_or_path=getattr(args, "_original_alias", None) or args.model,
+        )
 
     _validate_v41_product_spec_flags(args, owns_runtime=_owns_v41_product_download)
     if _owns_v41_product_download and args.mcp_config:
@@ -5728,6 +5759,9 @@ def serve_command(args):
             enable_disk_stream=getattr(args, "disk_stream", False),
             disk_stream_cache_gb=getattr(args, "disk_stream_cache_gb", 1.0),
         )
+    except OptionalRuntimeMissing:
+        # All optional-runtime failures converge at the serve dispatch below.
+        raise
     except KVCacheQuantizationUnsupportedError as e:
         from rapid_mlx.telemetry.server_start import failed
 
@@ -14762,7 +14796,17 @@ def main():
         from rapid_mlx.telemetry.server_start import set_failure_stage
 
         set_failure_stage("preflight")
-        serve_command(args)
+        try:
+            serve_command(args)
+        except OptionalRuntimeMissing as exc:
+            from rapid_mlx import server
+
+            _handle_optional_runtime_missing(
+                exc,
+                engine=getattr(server, "_engine", None),
+                alias_or_path=getattr(args, "_original_alias", None) or args.model,
+                auto_selected=bool(getattr(args, "_telemetry_auto_selected", False)),
+            )
     elif args.command == "bench":
         bench_command(args)
     elif args.command == "benchmark":

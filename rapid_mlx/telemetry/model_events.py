@@ -11,6 +11,8 @@ import urllib.error
 from collections.abc import Callable
 from typing import ParamSpec
 
+from rapid_mlx.runtime.optional_runtime import OptionalRuntimeMissing
+
 _serve_failure_lock = threading.Lock()
 _serve_failure_claimed = False
 _P = ParamSpec("_P")
@@ -109,9 +111,30 @@ def pull_error_class(exc: BaseException) -> str:
     return "other"
 
 
+def find_optional_runtime_missing(
+    exc: BaseException,
+) -> OptionalRuntimeMissing | None:
+    """Find a typed optional-runtime failure on the explicit cause chain."""
+    current: BaseException | None = exc
+    seen: set[int] = set()
+    for _ in range(_EXCEPTION_CHAIN_LIMIT):
+        if current is None or id(current) in seen:
+            break
+        seen.add(id(current))
+        if isinstance(current, OptionalRuntimeMissing):
+            return current
+        try:
+            current = current.__cause__
+        except BaseException:
+            break
+    return None
+
+
 def serve_error_class(exc: BaseException) -> str:
     """Reduce loader failures to the registry's closed serve categories."""
     try:
+        if find_optional_runtime_missing(exc) is not None:
+            return "missing_extra"
         from huggingface_hub.errors import HfHubHTTPError
         from huggingface_hub.utils import RepositoryNotFoundError
 
@@ -342,7 +365,15 @@ def emit_model_serve_failed(
     from rapid_mlx.telemetry.model_id import engine_telemetry_id, telemetry_model_id
     from rapid_mlx.telemetry.track import track
 
-    props: dict[str, object] = {"error_class": serve_error_class(exc)}
+    optional_runtime_missing = find_optional_runtime_missing(exc)
+    error_class = (
+        "missing_extra"
+        if optional_runtime_missing is not None
+        else serve_error_class(exc)
+    )
+    props: dict[str, object] = {"error_class": error_class}
+    if optional_runtime_missing is not None:
+        props["extra"] = optional_runtime_missing.extra
     if engine is not None:
         props["model"] = engine_telemetry_id(engine)
     elif alias_or_path is not None:

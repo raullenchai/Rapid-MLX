@@ -22,6 +22,7 @@ from rapid_mlx.image.engine import (
     ImageRuntimeError,
 )
 from rapid_mlx.runtime.image_lane import ImageEngine
+from rapid_mlx.runtime.optional_runtime import OptionalRuntimeMissing
 
 _PNG_MAGIC = b"\x89PNG\r\n\x1a\n"
 
@@ -37,9 +38,9 @@ def test_image_runtime_probe_and_guard_report_unsupported_python(
     issue = image_lane.image_runtime_issue("flux2-klein-4b")
     assert issue is not None
     assert "Python 3.11 or newer (current: 3.10)" in issue
-    with pytest.raises(SystemExit, match="2"):
+    with pytest.raises(OptionalRuntimeMissing) as exc:
         image_lane.require_image_runtime_or_exit("flux2-klein-4b")
-    assert "Python 3.11 or newer" in capsys.readouterr().err
+    assert "Python 3.11 or newer" in exc.value.format_user_message()
 
 
 class _FakeGeneratedImage:

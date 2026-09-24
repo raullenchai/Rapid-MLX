@@ -153,19 +153,21 @@ def registered_wan_runtime_issue(model_name: str) -> str | None:
 
 def require_video_runtime_or_exit(model_name: str | None = None) -> None:
     """Fail before model download when the optional video stack is absent."""
+    from .optional_runtime import OptionalRuntimeMissing
+
     if sys.version_info < (3, 11):
-        print(
-            "\n  Error: video generation requires Python 3.11 or newer "
-            f"(current: {sys.version_info.major}.{sys.version_info.minor}). "
-            "Rapid-MLX core still supports Python 3.10, but the upstream "
-            "mlx-video runtime does not.\n",
-            file=sys.stderr,
+        raise OptionalRuntimeMissing(
+            extra="video",
+            install_hint="pip install 'rapid-mlx[video]'",
+            status="incompatible",
+            marker_reason="python_version_unsupported",
+            detail=(
+                "\n  Error: video generation requires Python 3.11 or newer "
+                f"(current: {sys.version_info.major}.{sys.version_info.minor}). "
+                "Rapid-MLX core still supports Python 3.10, but the upstream "
+                "mlx-video runtime does not.\n"
+            ),
         )
-        print(
-            "RAPID-MLX-STARTUP-FAILURE: python_version_unsupported extra=video",
-            file=sys.stderr,
-        )
-        raise SystemExit(2)
 
     missing = []
     setup_hint = None
@@ -233,22 +235,23 @@ def require_video_runtime_or_exit(model_name: str | None = None) -> None:
     if _resolve_ffmpeg() is None:
         missing.append("ffmpeg (`brew install ffmpeg`)")
     if missing:
-        print(
-            "\n  Error: video generation requires " + " and ".join(missing) + ".\n",
-            file=sys.stderr,
+        message = (
+            "\n  Error: video generation requires " + " and ".join(missing) + ".\n"
         )
         if setup_hint is not None:
-            print(setup_hint, file=sys.stderr)
+            message += "\n" + setup_hint
         reason = (
             "runtime_extra_missing"
             if any("rapid-mlx[video]" in item for item in missing)
             else "runtime_dependency_missing"
         )
-        print(
-            f"RAPID-MLX-STARTUP-FAILURE: {reason} extra=video",
-            file=sys.stderr,
+        raise OptionalRuntimeMissing(
+            extra="video",
+            install_hint="pip install 'rapid-mlx[video]'",
+            detail=message,
+            status="absent" if reason == "runtime_extra_missing" else "broken",
+            marker_reason=reason,
         )
-        raise SystemExit(2)
 
 
 class VideoEngine:

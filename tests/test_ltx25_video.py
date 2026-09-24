@@ -14,6 +14,7 @@ from fastapi import HTTPException
 
 from rapid_mlx.model_aliases import resolve_profile
 from rapid_mlx.runtime import video_lane
+from rapid_mlx.runtime.optional_runtime import OptionalRuntimeMissing
 from rapid_mlx.runtime.video_lane import VideoEngine, VideoRuntimeError
 from rapid_mlx.video import ltx25
 
@@ -193,10 +194,10 @@ def test_ltx25_runtime_preflight_fails_before_download(
     )
     monkeypatch.setattr(video_lane.shutil, "which", lambda name: "/usr/bin/uv")
 
-    with pytest.raises(SystemExit, match="2"):
+    with pytest.raises(OptionalRuntimeMissing) as exc:
         video_lane.require_video_runtime_or_exit("MrMofer/ltx-2.5-mlx-q8")
 
-    error = capsys.readouterr().err
+    error = exc.value.format_user_message()
     assert ltx25.LTX25_RUNTIME_COMMIT in error
     assert "video generation guide" in error
 
@@ -209,10 +210,10 @@ def test_ltx25_runtime_preflight_requires_uv(
     monkeypatch.setattr(video_lane, "_resolve_ffmpeg", lambda: "/usr/bin/ffmpeg")
     monkeypatch.setattr(video_lane.shutil, "which", lambda name: None)
 
-    with pytest.raises(SystemExit, match="2"):
+    with pytest.raises(OptionalRuntimeMissing) as exc:
         video_lane.require_video_runtime_or_exit("MrMofer/ltx-2.5-mlx-q8")
 
-    error = capsys.readouterr().err
+    error = exc.value.format_user_message()
     assert "uv (`brew install uv`)" in error
     # The runtime itself resolved, so the clone/checkout walkthrough is noise.
     assert "git clone" not in error
@@ -228,12 +229,12 @@ def test_ltx25_missing_runtime_prints_setup_walkthrough(
     )
     monkeypatch.setattr(video_lane.shutil, "which", lambda name: "/usr/bin/uv")
 
-    with pytest.raises(SystemExit, match="2"):
+    with pytest.raises(OptionalRuntimeMissing) as exc:
         # A path-qualified name passes _is_ltx25_name; the walkthrough must
         # not interpolate this user-controlled string into shell commands.
         video_lane.require_video_runtime_or_exit("$(uname)/ltx-2.5-mlx-q8")
 
-    error = capsys.readouterr().err
+    error = exc.value.format_user_message()
     assert "docs/guides/video-generation.md" in error
     # Conditional clone (gated on a real Git checkout, not a bare
     # directory) + unconditional fetch: the same block repairs an
@@ -274,10 +275,10 @@ def test_ltx25_provisioning_failure_surfaces_cause_not_clone_steps(
     monkeypatch.setattr(video_lane, "_resolve_ffmpeg", lambda: "/usr/bin/ffmpeg")
     monkeypatch.setattr(video_lane.shutil, "which", lambda name: "/usr/bin/uv")
 
-    with pytest.raises(SystemExit, match="2"):
+    with pytest.raises(OptionalRuntimeMissing) as exc:
         video_lane.require_video_runtime_or_exit("MrMofer/ltx-2.5-mlx-q8")
 
-    error = capsys.readouterr().err
+    error = exc.value.format_user_message()
     assert "a provisioned pinned LTX-2.5 runtime" in error
     # The underlying failure reason is the actionable part.
     assert "`uv sync --frozen` failed with exit code 2" in error

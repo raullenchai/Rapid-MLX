@@ -24,8 +24,15 @@ VISION_INSTALL_HINT = (
 
 
 def _run_guard(source: str) -> subprocess.CompletedProcess[str]:
+    guarded = (
+        "try:\n"
+        + textwrap.indent(textwrap.dedent(source), "    ")
+        + "\nexcept Exception as exc:\n"
+        + "    from rapid_mlx.cli import _handle_optional_runtime_missing\n"
+        + "    _handle_optional_runtime_missing(exc)\n"
+    )
     return subprocess.run(
-        [sys.executable, "-c", textwrap.dedent(source)],
+        [sys.executable, "-c", guarded],
         check=False,
         capture_output=True,
         text=True,
@@ -54,7 +61,9 @@ def test_video_extra_guard_emits_one_stderr_marker_without_changing_cli_error() 
     )
     assert result.returncode == 2
     assert result.stdout == ""
-    assert result.stderr == human + marker + "\n"
+    assert result.stderr.startswith(human)
+    assert "pip install 'rapid-mlx[video]'" in result.stderr
+    assert result.stderr.endswith(marker + "\n")
     assert result.stderr.count(marker) == 1
 
 
@@ -122,7 +131,8 @@ def test_sibling_extra_guards_emit_closed_marker_once(
 
     assert result.returncode == 2
     assert result.stdout == ""
-    assert result.stderr == human + marker + "\n"
+    assert result.stderr.startswith(human)
+    assert result.stderr.endswith(marker + "\n")
 
 
 @pytest.mark.parametrize(
@@ -211,7 +221,8 @@ def test_other_preflight_failures_use_only_closed_reason_tokens(
 
     assert result.returncode == 2
     assert result.stdout == ""
-    assert result.stderr == human + marker + "\n"
+    assert result.stderr.startswith(human)
+    assert result.stderr.endswith(marker + "\n")
 
 
 def test_healthy_vision_status_has_no_failure_output() -> None:
@@ -236,6 +247,16 @@ def test_healthy_vision_status_has_no_failure_output() -> None:
     assert result.stderr == ""
 
 
+def _handle_guard(call) -> None:
+    from rapid_mlx.cli import _handle_optional_runtime_missing
+    from rapid_mlx.runtime.optional_runtime import OptionalRuntimeMissing
+
+    try:
+        call()
+    except OptionalRuntimeMissing as exc:
+        _handle_optional_runtime_missing(exc)
+
+
 def test_video_guard_marker_branches_are_covered_in_process(
     monkeypatch, capsys
 ) -> None:
@@ -252,7 +273,9 @@ def test_video_guard_marker_branches_are_covered_in_process(
         lambda _name: ["rapid-mlx[video]"],
     )
     with pytest.raises(SystemExit, match="2"):
-        video_lane.require_video_runtime_or_exit("wan2.2-ti2v-5b-q8")
+        _handle_guard(
+            lambda: video_lane.require_video_runtime_or_exit("wan2.2-ti2v-5b-q8")
+        )
     assert "runtime_extra_missing extra=video" in capsys.readouterr().err
 
     monkeypatch.setattr(
@@ -260,12 +283,16 @@ def test_video_guard_marker_branches_are_covered_in_process(
     )
     monkeypatch.setattr(video_lane, "_resolve_ffmpeg", lambda: None)
     with pytest.raises(SystemExit, match="2"):
-        video_lane.require_video_runtime_or_exit("wan2.2-ti2v-5b-q8")
+        _handle_guard(
+            lambda: video_lane.require_video_runtime_or_exit("wan2.2-ti2v-5b-q8")
+        )
     assert "runtime_dependency_missing extra=video" in capsys.readouterr().err
 
     monkeypatch.setattr(video_lane.sys, "version_info", version(3, 10))
     with pytest.raises(SystemExit, match="2"):
-        video_lane.require_video_runtime_or_exit("wan2.2-ti2v-5b-q8")
+        _handle_guard(
+            lambda: video_lane.require_video_runtime_or_exit("wan2.2-ti2v-5b-q8")
+        )
     assert "python_version_unsupported extra=video" in capsys.readouterr().err
 
 
@@ -279,16 +306,20 @@ def test_image_and_audio_marker_branches_are_covered_in_process(
     monkeypatch.setattr(image_lane.sys, "version_info", version(3, 11))
     monkeypatch.setattr(image_lane.importlib.util, "find_spec", lambda _name: None)
     with pytest.raises(SystemExit, match="2"):
-        image_lane.require_image_runtime_or_exit("flux2-klein-4b")
+        _handle_guard(
+            lambda: image_lane.require_image_runtime_or_exit("flux2-klein-4b")
+        )
     assert "runtime_extra_missing extra=image" in capsys.readouterr().err
 
     monkeypatch.setattr(image_lane.sys, "version_info", version(3, 10))
     with pytest.raises(SystemExit, match="2"):
-        image_lane.require_image_runtime_or_exit("flux2-klein-4b")
+        _handle_guard(
+            lambda: image_lane.require_image_runtime_or_exit("flux2-klein-4b")
+        )
     assert "python_version_unsupported extra=image" in capsys.readouterr().err
 
     with pytest.raises(SystemExit, match="2"):
-        probe.require_audio_or_exit("kokoro")
+        _handle_guard(lambda: probe.require_audio_or_exit("kokoro"))
     assert "runtime_extra_missing extra=audio" in capsys.readouterr().err
 
 
@@ -308,7 +339,7 @@ def test_vision_marker_branches_are_covered_in_process(
     status = getattr(mllm.VisionRuntimeStatus, status_name)
     monkeypatch.setattr(mllm, "vision_runtime_status", lambda: (status, "PIL"))
     with pytest.raises(SystemExit, match="2"):
-        mllm.require_mlx_vlm_or_exit("ui-tars-1.5-7b-4bit")
+        _handle_guard(lambda: mllm.require_mlx_vlm_or_exit("ui-tars-1.5-7b-4bit"))
     assert f"{expected_reason} extra=vision" in capsys.readouterr().err
 
 
@@ -321,5 +352,9 @@ def test_text_diffusion_missing_vision_marker_is_covered(monkeypatch, capsys) ->
         lambda: (mllm.VisionRuntimeStatus.ABSENT, None),
     )
     with pytest.raises(SystemExit, match="2"):
-        mllm.require_mlx_vlm_or_exit("diffusion-gemma-26b", text_diffusion=True)
+        _handle_guard(
+            lambda: mllm.require_mlx_vlm_or_exit(
+                "diffusion-gemma-26b", text_diffusion=True
+            )
+        )
     assert "runtime_extra_missing extra=vision" in capsys.readouterr().err

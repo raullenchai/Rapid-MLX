@@ -461,48 +461,56 @@ def require_mlx_vlm_or_exit(model_name: str, *, text_diffusion: bool = False) ->
     status, detail = vision_runtime_status()
     if status is VisionRuntimeStatus.OK:
         return
+    from rapid_mlx.runtime.optional_runtime import (
+        OptionalRuntimeMissing,
+        OptionalRuntimeStatus,
+    )
+
+    runtime_status: OptionalRuntimeStatus
     if status is VisionRuntimeStatus.INCOMPATIBLE:
-        print(
+        message = (
             f"error: model {model_name!r} requires the Rapid-MLX vision lane, "
             f"but mlx-vlm {detail!r} is incompatible; this release validates "
             f"exactly {VALIDATED_MLX_VLM_VERSION}. This is a vision-runtime "
             f"compatibility error, not a Metal out-of-memory error.\n"
-            + _vision_install_hint(),
-            file=sys.stderr,
+            + _vision_install_hint()
         )
         marker_reason = "runtime_incompatible"
+        runtime_status = "incompatible"
     elif status is VisionRuntimeStatus.BROKEN:
-        print(
+        message = (
             f"error: model {model_name!r} is a vision/multimodal alias, but "
-            f"the vision runtime cannot load.\n" + _vlm_broken_install_hint(detail),
-            file=sys.stderr,
+            f"the vision runtime cannot load.\n" + _vlm_broken_install_hint(detail)
         )
         marker_reason = "runtime_broken"
+        runtime_status = "broken"
     elif text_diffusion:
-        print(
+        message = (
             f"error: model {model_name!r} is a text-diffusion alias and runs "
             f"on the mlx-vlm DiffusionGemma runtime, which requires the "
             f"optional `mlx-vlm` dependency (shipped with the [vision] "
-            f"extra).\n" + VLM_EXTRA_INSTALL_HINT,
-            file=sys.stderr,
+            f"extra).\n" + VLM_EXTRA_INSTALL_HINT
         )
         marker_reason = "runtime_extra_missing"
+        runtime_status = "absent"
     else:
-        print(
+        message = (
             f"error: model {model_name!r} is a vision/multimodal alias and "
             f"requires the optional `mlx-vlm` dependency (shipped with the "
             f"[vision] extra).\n" + VLM_EXTRA_INSTALL_HINT + "\n"
             "Or, if this checkpoint has a text-capable backbone and you only "
             "need text output, `--no-mllm` boots the text-only lane straight "
-            "from the base wheel (no mlx-vlm, drops image/vision input).",
-            file=sys.stderr,
+            "from the base wheel (no mlx-vlm, drops image/vision input)."
         )
         marker_reason = "runtime_extra_missing"
-    print(
-        f"RAPID-MLX-STARTUP-FAILURE: {marker_reason} extra=vision",
-        file=sys.stderr,
+        runtime_status = "absent"
+    raise OptionalRuntimeMissing(
+        extra="vision",
+        install_hint=_vision_install_hint(),
+        detail=message,
+        status=runtime_status,
+        marker_reason=marker_reason,
     )
-    sys.exit(2)
 
 
 def _require_mlx_vlm(model_name: str | None = None) -> None:
@@ -521,22 +529,40 @@ def _require_mlx_vlm(model_name: str | None = None) -> None:
     status, detail = vision_runtime_status()
     if status is VisionRuntimeStatus.OK:
         return
+    from rapid_mlx.runtime.optional_runtime import OptionalRuntimeMissing
+
     model_context = f" for model {model_name!r}" if model_name else ""
     if status is VisionRuntimeStatus.INCOMPATIBLE:
-        raise ImportError(
-            f"Vision/multimodal runtime{model_context} is incompatible: "
-            f"installed mlx-vlm {detail!r}, validated version "
-            f"{VALIDATED_MLX_VLM_VERSION}. This is not a Metal "
-            "out-of-memory error.\n" + _vision_install_hint()
+        raise OptionalRuntimeMissing(
+            extra="vision",
+            install_hint=_vision_install_hint(),
+            status="incompatible",
+            detail=(
+                f"Vision/multimodal runtime{model_context} is incompatible: "
+                f"installed mlx-vlm {detail!r}, validated version "
+                f"{VALIDATED_MLX_VLM_VERSION}. This is not a Metal "
+                "out-of-memory error.\n" + _vision_install_hint()
+            ),
         )
     if status is VisionRuntimeStatus.BROKEN:
-        raise ImportError(
-            f"Vision/multimodal models{model_context} cannot load the vision "
-            "runtime.\n" + _vlm_broken_install_hint(detail)
+        broken_hint = _vlm_broken_install_hint(detail)
+        raise OptionalRuntimeMissing(
+            extra="vision",
+            install_hint=broken_hint,
+            status="broken",
+            detail=(
+                f"Vision/multimodal models{model_context} cannot load the vision "
+                "runtime.\n" + broken_hint
+            ),
         )
-    raise ImportError(
-        f"Vision/multimodal models{model_context} require the optional `mlx-vlm` "
-        "dependency.\n" + VLM_EXTRA_INSTALL_HINT
+    raise OptionalRuntimeMissing(
+        extra="vision",
+        install_hint=VLM_EXTRA_INSTALL_HINT,
+        status="absent",
+        detail=(
+            f"Vision/multimodal models{model_context} require the optional `mlx-vlm` "
+            "dependency.\n" + VLM_EXTRA_INSTALL_HINT
+        ),
     )
 
 

@@ -11,6 +11,7 @@ from fastapi import HTTPException
 
 from rapid_mlx.model_aliases import resolve_profile
 from rapid_mlx.routes import video
+from rapid_mlx.runtime.optional_runtime import OptionalRuntimeMissing
 from rapid_mlx.runtime.video_lane import VideoEngine, require_video_runtime_or_exit
 
 
@@ -204,11 +205,10 @@ def test_cogvideox_runtime_guard_checks_transitive_modules(monkeypatch, capsys) 
     )
     monkeypatch.setattr(lane.shutil, "which", lambda executable: "/opt/ffmpeg")
 
-    with pytest.raises(SystemExit) as exc:
+    with pytest.raises(OptionalRuntimeMissing) as exc:
         require_video_runtime_or_exit("dgrauet/CogVideoX-Fun-mlx-q4")
 
-    assert exc.value.code == 2
-    error = capsys.readouterr().err
+    error = exc.value.format_user_message()
     assert "mlx-arsenal" in error
     assert "Pillow" in error
 

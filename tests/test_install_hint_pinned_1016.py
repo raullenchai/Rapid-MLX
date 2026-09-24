@@ -38,20 +38,17 @@ def test_boot_guard_absent_hint_names_pinned_install(monkeypatch, capsys):
     """The ABSENT-path boot guard stderr carries the pinned hint so a user
     copy-pasting from the terminal lands in a conflict-free environment."""
     from rapid_mlx.models.mllm import VisionRuntimeStatus, require_mlx_vlm_or_exit
+    from rapid_mlx.runtime.optional_runtime import OptionalRuntimeMissing
 
     monkeypatch.setattr(
         "rapid_mlx.models.mllm.vision_runtime_status",
         lambda: (VisionRuntimeStatus.ABSENT, "mlx_vlm"),
     )
 
-    try:
+    with pytest.raises(OptionalRuntimeMissing) as caught:
         require_mlx_vlm_or_exit("gemma-4-e4b-it-4bit")
-    except SystemExit as exc:
-        assert exc.code == 2
-    else:  # pragma: no cover - guard must exit
-        raise AssertionError("require_mlx_vlm_or_exit must sys.exit(2)")
 
-    err = capsys.readouterr().err
+    err = caught.value.format_user_message()
     assert "rapid-mlx[vision]" in err
     assert "mlx-vlm==0.7.1" in err
     assert "mlx-vlm>=0.6.3" not in err
