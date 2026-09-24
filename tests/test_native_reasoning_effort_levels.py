@@ -300,9 +300,10 @@ class TestCoercionDetection:
         )
         assert detect_native_reasoning_effort_levels(clause) is None
 
-    def test_read_only_inside_a_macro_is_dead(self):
-        """A macro body only runs if called, which this analysis does not
-        prove, so a load inside it does not keep the coercion alive."""
+    def test_read_only_inside_a_nested_macro_is_dead(self):
+        """Same as the top-level macro case, but the macro sits under a
+        branch: the walk must skip the macro's loads while scanning the
+        enclosing statement."""
         clause = (
             "{%- set eff = reasoning_effort if reasoning_effort in ['low', 'high'] "
             "else 'max' -%}{%- if tools -%}{%- macro show() -%}{{ eff }}"
