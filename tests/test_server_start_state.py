@@ -567,6 +567,43 @@ def test_restore_link_unsupported_claim_succeeds_without_warning(
     assert not caplog.records
 
 
+def test_claim_is_cleaned_if_replace_fails(tmp_path, monkeypatch, caplog):
+    marker = tmp_path / "serve-inflight-999.json"
+    marker.write_text("original-A", encoding="utf-8")
+    snapshot = server_start._marker_snapshot(marker)
+    stale = marker.with_name(f".{marker.name}.stale-{os.getpid()}")
+    real_rename = os.rename
+    real_replace = os.replace
+
+    def raced_rename(source, destination):
+        replacement = marker.with_suffix(".replacement-B")
+        replacement.write_text("replacement-B", encoding="utf-8")
+        os.replace(replacement, marker)
+        monkeypatch.setattr(server_start.os, "rename", real_rename)
+        return real_rename(source, destination)
+
+    def failed_replace(source, destination):
+        if Path(source) == stale and Path(destination) == marker:
+            raise OSError(errno.EIO, "injected replace failure")
+        return real_replace(source, destination)
+
+    monkeypatch.setattr(server_start.os, "rename", raced_rename)
+    monkeypatch.setattr(
+        server_start.os,
+        "link",
+        lambda *_args: (_ for _ in ()).throw(OSError(errno.ENOTSUP, "unsupported")),
+    )
+    monkeypatch.setattr(server_start.os, "replace", failed_replace)
+
+    server_start._remove_marker_snapshot(marker, snapshot)
+
+    assert not marker.exists()
+    assert stale.read_text(encoding="utf-8") == "replacement-B"
+    assert len(caplog.records) == 1
+    assert str(stale) in caplog.text
+    assert str(marker) in caplog.text
+
+
 def test_restore_link_unsupported_preserves_newer_marker(tmp_path, monkeypatch, caplog):
     marker = tmp_path / "serve-inflight-999.json"
     marker.write_text("original", encoding="utf-8")

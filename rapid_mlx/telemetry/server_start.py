@@ -163,7 +163,17 @@ def _remove_marker_snapshot(path: Path, snapshot: tuple[int, int] | None) -> Non
                     )
                     return
                 os.close(claim_fd)
-                os.replace(stale, path)
+                try:
+                    os.replace(stale, path)
+                except OSError as exc:
+                    path.unlink(missing_ok=True)
+                    logger.warning(
+                        "could not restore quarantined serve marker %s to %s: %r",
+                        stale,
+                        path,
+                        exc,
+                    )
+                    return
             else:
                 stale.unlink()
             return
