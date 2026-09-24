@@ -86,8 +86,10 @@ class AcceptingConnectionsServer(uvicorn.Server):
         )
         if self.started and listener_created and not self._accepting_callback_ran:
             self._accepting_callback_ran = True
+            from rapid_mlx._signal_observability import ensure_crash_sink
             from rapid_mlx.telemetry.server_start import ready
 
+            ensure_crash_sink()
             ready()
             if self._on_server_accepting is not None:
                 try:
