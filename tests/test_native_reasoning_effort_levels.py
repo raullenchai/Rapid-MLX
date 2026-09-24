@@ -265,14 +265,55 @@ class TestCoercionDetection:
     def test_non_constant_fallback_is_not_a_coercion(self):
         clause = (
             "{%- set eff = reasoning_effort if reasoning_effort in ['low', 'high'] "
-            "else other -%}"
+            "else other -%}{{ eff }}"
         )
         assert detect_native_reasoning_effort_levels(clause) is None
 
     def test_unrelated_conjunct_is_a_branch_not_a_vocabulary(self):
         clause = (
             "{%- set eff = reasoning_effort if tools and reasoning_effort in "
-            "['low', 'high'] else 'max' -%}"
+            "['low', 'high'] else 'max' -%}{{ eff }}"
+        )
+        assert detect_native_reasoning_effort_levels(clause) is None
+
+    @pytest.mark.parametrize(
+        "guard",
+        [
+            "reasoning_effort",
+            "not reasoning_effort is undefined",
+            "reasoning_effort is not none",
+        ],
+    )
+    def test_presence_guard_spellings_keep_the_vocabulary(self, guard):
+        """Bare-name / ``not ... is undefined`` / ``is not none`` guards
+        never keep a valid level out of the accepting arm."""
+        clause = (
+            "{%- set eff = reasoning_effort if " + guard + " and reasoning_effort in "
+            "['low', 'high'] else 'max' -%}{{ eff }}"
+        )
+        assert detect_native_reasoning_effort_levels(clause) == ("low", "high", "max")
+
+    def test_two_membership_tests_are_not_a_vocabulary(self):
+        clause = (
+            "{%- set eff = reasoning_effort if reasoning_effort in ['low'] and "
+            "reasoning_effort in ['high'] else 'max' -%}{{ eff }}"
+        )
+        assert detect_native_reasoning_effort_levels(clause) is None
+
+    def test_read_only_inside_a_macro_is_dead(self):
+        """A macro body only runs if called, which this analysis does not
+        prove, so a load inside it does not keep the coercion alive."""
+        clause = (
+            "{%- set eff = reasoning_effort if reasoning_effort in ['low', 'high'] "
+            "else 'max' -%}{%- if tools -%}{%- macro show() -%}{{ eff }}"
+            "{%- endmacro -%}{%- endif -%}"
+        )
+        assert detect_native_reasoning_effort_levels(clause) is None
+
+    def test_non_literal_level_list_is_not_a_vocabulary(self):
+        clause = (
+            "{%- set eff = reasoning_effort if reasoning_effort in allowed "
+            "else 'max' -%}{{ eff }}"
         )
         assert detect_native_reasoning_effort_levels(clause) is None
 

@@ -707,6 +707,7 @@ jobs:
             tests/test_diffusion_engine.py \
             tests/test_legacy_prefix_cache_flag_warnings.py \
             tests/test_module_import_smoke.py \
+            tests/test_dflash_integration.py \
             -v --tb=short \
             -m "not slow" \
             -k "not Integration" \

@@ -4954,8 +4954,6 @@ def serve_command(args):
             _ddtree_ignored.append("--tool-call-parser")
         if getattr(args, "reasoning_parser", None):
             _ddtree_ignored.append("--reasoning-parser")
-        if getattr(args, "default_reasoning_effort", None):
-            _ddtree_ignored.append("--default-reasoning-effort")
         if getattr(args, "embedding_model", None):
             _ddtree_ignored.append("--embedding-model")
         if getattr(args, "mcp_config", None):
