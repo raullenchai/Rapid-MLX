@@ -171,6 +171,184 @@ class SidecarContracts(unittest.TestCase):
         with self.assertRaises(FileExistsError):
             build_sidecar(self.a.root, output, chunk_rows=2)
 
+    def test_builder_cli_and_guardrails(self):
+        from rapid_mlx.models import qwen4_ple_build as builder
+
+        for value in (0, True, 1.5):
+            with self.subTest(chunk_rows=value), self.assertRaises(ValueError):
+                builder.build_sidecar(
+                    self.a.root, self.a.root / "bad.bin", chunk_rows=value
+                )
+
+        output = self.a.root / "cli.bin"
+        with mock.patch("builtins.print") as printed:
+            self.assertEqual(
+                builder.main(
+                    [
+                        "--model",
+                        str(self.a.root),
+                        "--output",
+                        str(output),
+                        "--chunk-rows",
+                        "2",
+                        "--validation-rows",
+                        "0",
+                    ]
+                ),
+                0,
+            )
+        self.assertEqual(output.read_bytes(), self.a.packed.tobytes())
+        printed.assert_called_once()
+
+        # Overwrite removes abandoned partial publications before rebuilding.
+        partial = Path(str(output) + ".partial")
+        partial_manifest = Path(str(partial) + ".manifest.json")
+        partial.write_bytes(b"stale")
+        partial_manifest.write_text("stale")
+        builder.build_sidecar(
+            self.a.root,
+            output,
+            chunk_rows=2,
+            validation_rows=0,
+            overwrite=True,
+        )
+        self.assertFalse(partial.exists())
+        self.assertFalse(partial_manifest.exists())
+
+        config_path = self.a.root / "config.json"
+        original_config = config_path.read_text()
+        try:
+            for update, message in [
+                ({"model_type": "other"}, "exactly one"),
+                (
+                    {
+                        "text_config": dict(
+                            self.a.config["text_config"], split_ngram_parts=True
+                        )
+                    },
+                    "configuration",
+                ),
+                (
+                    {
+                        "text_config": dict(
+                            self.a.config["text_config"], ple_embed_dim=16
+                        )
+                    },
+                    "multiple",
+                ),
+            ]:
+                config = json.loads(original_config)
+                if "text_config" in update:
+                    config["text_config"] = update["text_config"]
+                else:
+                    config.update(update)
+                config_path.write_text(json.dumps(config))
+                with (
+                    self.subTest(message=message),
+                    self.assertRaisesRegex(ValueError, message),
+                ):
+                    builder.build_sidecar(
+                        self.a.root,
+                        self.a.root / f"{message}.bin",
+                        validation_rows=0,
+                    )
+        finally:
+            config_path.write_text(original_config)
+
+        original_index = self.a.index.copy()
+        self.a.index = {"weight_map": {}}
+        self.a.save_index()
+        try:
+            with self.assertRaisesRegex(ValueError, "shard_0"):
+                builder.build_sidecar(
+                    self.a.root, self.a.root / "missing.bin", validation_rows=0
+                )
+        finally:
+            self.a.index = original_index
+            self.a.save_index()
+
+        with mock.patch.object(
+            builder.shutil,
+            "disk_usage",
+            return_value=SimpleNamespace(free=0),
+        ):
+            with self.assertRaisesRegex(OSError, "free space"):
+                builder.build_sidecar(
+                    self.a.root, self.a.root / "full.bin", validation_rows=0
+                )
+
+        failed = self.a.root / "failed.bin"
+        with mock.patch.object(
+            builder, "validate_artifact", side_effect=ValueError("validation failed")
+        ):
+            with self.assertRaisesRegex(ValueError, "validation failed"):
+                builder.build_sidecar(
+                    self.a.root, failed, chunk_rows=2, validation_rows=0
+                )
+        self.assertFalse(Path(str(failed) + ".partial").exists())
+        self.assertFalse(Path(str(failed) + ".partial.manifest.json").exists())
+
+    def test_manifest_config_and_dequant_guardrails(self):
+        original_manifest = dict(self.a.manifest)
+        cases = [
+            ({"format": "other"}, "format"),
+            ({"bits": 8}, "q4"),
+            ({"dims": 31}, "divisible"),
+            ({"total_rows": 7}, "row count"),
+            ({"shard_sha256": []}, "SHA256"),
+        ]
+        for update, message in cases:
+            self.a.manifest = dict(original_manifest, **update)
+            self.a.save_manifest()
+            with (
+                self.subTest(message=message),
+                self.assertRaisesRegex(ValueError, message),
+            ):
+                sidecar.load_manifest(self.a.path)
+        self.a.manifest = dict(original_manifest)
+        self.a.save_manifest()
+
+        with self.assertRaisesRegex(ValueError, "weight-file glob"):
+            sidecar.load_manifest(self.a.root / "model-test.safetensors")
+        for value in (False, -1, 1.5):
+            with self.subTest(positive=value), self.assertRaises(ValueError):
+                sidecar._positive_int(value, "value")
+        for dims, packed in [
+            (31, self.a.packed),
+            (32, self.a.packed[:, :-1]),
+        ]:
+            with self.subTest(dims=dims), self.assertRaises(ValueError):
+                sidecar.dequant_rows_numpy(packed, dims)
+        with self.assertRaisesRegex(ValueError, "512 MiB"):
+            sidecar.PLESidecarReader(
+                self.a.root, self.a.path, cache_bytes=512 * 1024**2 + 1
+            )
+
+        config_path = self.a.root / "config.json"
+        original_config = config_path.read_text()
+        try:
+            config = json.loads(original_config)
+            config["model_type"] = "other"
+            config_path.write_text(json.dumps(config))
+            with self.assertRaisesRegex(ValueError, "exactly one"):
+                sidecar.validate_artifact(self.a.root, self.a.path, random_rows=0)
+            config = json.loads(original_config)
+            config["text_config"]["ple_embed_dim"] = 31
+            config["text_config"]["ngram_size"] = 3
+            config_path.write_text(json.dumps(config))
+            with self.assertRaisesRegex(ValueError, "head/embedding"):
+                sidecar.validate_artifact(self.a.root, self.a.path, random_rows=0)
+        finally:
+            config_path.write_text(original_config)
+        self.a.manifest["tensor_prefix"] = "wrong"
+        self.a.save_manifest()
+        with self.assertRaisesRegex(ValueError, "geometry/prefix"):
+            sidecar.validate_artifact(self.a.root, self.a.path, random_rows=0)
+        self.a.manifest = dict(original_manifest)
+        self.a.save_manifest()
+        with self.assertRaisesRegex(ValueError, "exceeds4096"):
+            sidecar.validate_artifact(self.a.root, self.a.path, random_rows=4097)
+
     def test_hugging_face_snapshot_blob_symlink_is_accepted(self):
         cache = self.a.root / "models--owner--model"
         snapshot = cache / "snapshots" / ("a" * 40)
@@ -184,6 +362,15 @@ class SidecarContracts(unittest.TestCase):
         source.symlink_to(blob)
         receipt = sidecar.validate_artifact(snapshot, artifact.path, random_rows=0)
         self.assertEqual(receipt["manifest"]["total_rows"], 8)
+        from rapid_mlx.models import qwen4_ple_build as builder
+
+        first = next(iter(artifact.index["weight_map"]))
+        self.assertEqual(
+            builder._source_tensor_rows(
+                snapshot.resolve(), artifact.index["weight_map"], first
+            ),
+            4,
+        )
 
     def test_validation_and_exact_integer_affine(self):
         receipt = sidecar.validate_artifact(self.a.root, self.a.path)
@@ -294,6 +481,44 @@ class SidecarContracts(unittest.TestCase):
         self.a.save_index()
         with self.assertRaisesRegex(ValueError, "exactly"):
             sidecar.validate_artifact(self.a.root, self.a.path)
+
+    def test_dequantization_overflow_guardrails(self):
+        cases = [
+            (0xFFFFFFFF, 0x7F7F, 0, "affine"),
+            (0x11111111, 0x7B00, 0x7F7F, "BF16"),
+        ]
+        for word, scale, bias, message in cases:
+            packed = np.zeros((1, 20), dtype=np.uint8)
+            packed[:, :16] = np.full((1, 4), word, dtype=np.uint32).view(np.uint8)
+            packed[:, 16:18] = np.array([[scale]], dtype=np.uint16).view(np.uint8)
+            packed[:, 18:] = np.array([[bias]], dtype=np.uint16).view(np.uint8)
+            with (
+                self.subTest(message=message),
+                self.assertRaisesRegex(ValueError, message),
+            ):
+                sidecar.dequant_rows_numpy(packed, 32)
+
+    def test_inherited_process_fast_paths_without_coverage_fork(self):
+        lookup_reader = sidecar.PLESidecarReader(
+            self.a.root, self.a.path, random_rows=0
+        )
+        self.addCleanup(lookup_reader.close)
+        with mock.patch.object(
+            sidecar.os, "getpid", return_value=lookup_reader._pid + 1
+        ):
+            with self.assertRaisesRegex(RuntimeError, "inherited across fork"):
+                lookup_reader.lookup_bits(np.array([0]))
+
+        close_reader = sidecar.PLESidecarReader(
+            self.a.root, self.a.path, random_rows=0, cache_bytes=532
+        )
+        close_reader.lookup_bits(np.array([0]))
+        with mock.patch.object(
+            sidecar.os, "getpid", return_value=close_reader._pid + 1
+        ):
+            close_reader.close()
+        self.assertIsNone(close_reader._fd)
+        self.assertEqual(close_reader.stats["cache_rows"], 0)
 
     def test_nonfinite_parameters_refused(self):
         packed = self.a.packed.copy()
@@ -472,6 +697,128 @@ class SidecarContracts(unittest.TestCase):
             reader.close()
             del reader.cycle
 
+    def test_low_level_source_and_reader_guardrails(self):
+        from rapid_mlx.models import qwen4_ple_build as builder
+
+        source = self.a.root / "model-ple.safetensors"
+        original = source.read_bytes()
+        header_size = struct.unpack("<Q", original[:8])[0]
+        original_header = json.loads(original[8 : 8 + header_size])
+        data = original[8 + header_size :]
+        weight_map = self.a.index["weight_map"]
+        first = sorted(weight_map)[0]
+
+        outside = Path(tempfile.mkstemp()[1])
+        self.addCleanup(outside.unlink, missing_ok=True)
+        outside.write_bytes(original)
+        escaped = dict(weight_map)
+        escaped[first] = str(outside)
+        with self.assertRaisesRegex(ValueError, "escapes"):
+            sidecar._source_refs(
+                self.a.root.resolve(), self.a.manifest, escaped, self.a.source_prefix
+            )
+        with self.assertRaisesRegex(ValueError, "escapes"):
+            builder._source_tensor_rows(self.a.root.resolve(), escaped, first)
+
+        for blob, message in [
+            (b"x", "truncated"),
+            (struct.pack("<Q", 10_000), "header length"),
+        ]:
+            source.write_bytes(blob)
+            with (
+                self.subTest(message=message),
+                self.assertRaisesRegex(ValueError, message),
+            ):
+                sidecar._source_refs(
+                    self.a.root.resolve(),
+                    self.a.manifest,
+                    weight_map,
+                    self.a.source_prefix,
+                )
+            with self.assertRaisesRegex(ValueError, message):
+                builder._source_tensor_rows(self.a.root.resolve(), weight_map, first)
+
+        for update, message in [
+            ({"dtype": "F32"}, "dtype/shape"),
+            ({"data_offsets": [False, 1]}, "offsets"),
+            ({"data_offsets": [-1, 0]}, "byte range"),
+        ]:
+            header = json.loads(json.dumps(original_header))
+            header[first].update(update)
+            encoded = json.dumps(header).encode()
+            source.write_bytes(struct.pack("<Q", len(encoded)) + encoded + data)
+            with (
+                self.subTest(message=message),
+                self.assertRaisesRegex(ValueError, message),
+            ):
+                sidecar._source_refs(
+                    self.a.root.resolve(),
+                    self.a.manifest,
+                    weight_map,
+                    self.a.source_prefix,
+                )
+
+        header = json.loads(json.dumps(original_header))
+        header[first]["shape"] = [True, 4]
+        encoded = json.dumps(header).encode()
+        source.write_bytes(struct.pack("<Q", len(encoded)) + encoded + data)
+        with self.assertRaisesRegex(ValueError, "shape"):
+            builder._source_tensor_rows(self.a.root.resolve(), weight_map, first)
+        source.write_bytes(original)
+
+        self.a.path.write_bytes(self.a.path.read_bytes() + b"x")
+        with self.assertRaisesRegex(ValueError, "file size"):
+            sidecar.load_manifest(self.a.path)
+        self.a.path.write_bytes(self.a.packed.tobytes())
+
+        reader = sidecar.PLESidecarReader(self.a.root, self.a.path, random_rows=0)
+        self.addCleanup(reader.close)
+        with mock.patch.object(sidecar.os, "pread", return_value=b""):
+            with self.assertRaisesRegex(RuntimeError, "short"):
+                reader.lookup_bits(np.array([0]))
+        real_fstat = sidecar.os.fstat
+        current = real_fstat(reader._fd)
+        changed = SimpleNamespace(
+            st_dev=current.st_dev,
+            st_ino=current.st_ino,
+            st_size=current.st_size + 1,
+            st_mtime_ns=current.st_mtime_ns,
+        )
+        with mock.patch.object(sidecar.os, "fstat", side_effect=[current, changed]):
+            with self.assertRaisesRegex(RuntimeError, "during lookup"):
+                reader.lookup_bits(np.array([0]))
+        reader.__del__()
+        self.assertIsNone(reader._fd)
+
+    def test_builder_short_read_and_output_size_guardrails(self):
+        from rapid_mlx.models import qwen4_ple_build as builder
+
+        with mock.patch.object(builder.os, "pread", return_value=b""):
+            with self.assertRaisesRegex(OSError, "short PLE source read"):
+                builder.build_sidecar(
+                    self.a.root,
+                    self.a.root / "short.bin",
+                    chunk_rows=2,
+                    validation_rows=0,
+                )
+
+        original_stat = Path.stat
+
+        def wrong_partial_size(path, *args, **kwargs):
+            result = original_stat(path, *args, **kwargs)
+            if str(path).endswith(".partial"):
+                return SimpleNamespace(st_size=result.st_size + 1)
+            return result
+
+        with mock.patch.object(builder.Path, "stat", new=wrong_partial_size):
+            with self.assertRaisesRegex(OSError, "output size mismatch"):
+                builder.build_sidecar(
+                    self.a.root,
+                    self.a.root / "size.bin",
+                    chunk_rows=2,
+                    validation_rows=0,
+                )
+
 
 class CPULoadContracts(SidecarContracts):
     @classmethod
@@ -483,6 +830,107 @@ class CPULoadContracts(SidecarContracts):
         from rapid_mlx.models import qwen4_exp
 
         cls.qwen = qwen4_exp
+
+    def test_model_args_loader_and_installer_guardrails(self):
+        from rapid_mlx.models import qwen4_ple_nvme as adapter
+
+        text = self.a.config["text_config"]
+        for kwargs, message in [
+            ({"ple_nvme_sidecar": "x"}, "both sidecar"),
+            (
+                {"ple_nvme_sidecar": 1, "ple_nvme_model_path": "x"},
+                "nonempty strings",
+            ),
+            ({"ple_nvme_cache_bytes": True}, "between0"),
+        ]:
+            with (
+                self.subTest(message=message),
+                self.assertRaisesRegex(ValueError, message),
+            ):
+                self.qwen.ModelArgs(model_type="qwen4_exp", text_config=text, **kwargs)
+        flat = dict(text, model_type="qwen4_exp")
+        self.assertIsInstance(self.qwen.ModelArgs.from_dict(flat), self.qwen.ModelArgs)
+
+        with self.assertRaisesRegex(ValueError, "between0"):
+            adapter.load_file_backed_qwen4(self.a.root, self.a.path, cache_bytes=True)
+        with mock.patch.dict(os.environ, {"MLX_QWEN4_PLE_NVME": str(self.a.path)}):
+            with self.assertRaisesRegex(ValueError, "clear MLX"):
+                adapter.load_file_backed_qwen4(self.a.root, self.a.path)
+
+        reader = SimpleNamespace(
+            manifest=self.a.manifest,
+            stats={},
+            close=mock.Mock(),
+        )
+        module = adapter.FileBackedPLEEmbedding(reader)
+        adapter.close_file_backed_ple(
+            SimpleNamespace(named_modules=lambda: [("ple", module)])
+        )
+        reader.close.assert_called_once()
+        sidecar._after_fork_child()
+
+        def model_and_weights():
+            model = self.qwen.Model(self.qwen.ModelArgs.from_dict(self.a.config))
+            weights = {
+                key.replace(self.a.source_prefix, self.a.prefix).replace(
+                    ".shard_", ".shards."
+                ): self.mx.array(values).view(self.mx.bfloat16)
+                if not key.endswith(".weight")
+                else self.mx.array(values)
+                for key, values in self.a.tensors.items()
+            }
+            return model, weights
+
+        model, weights = model_and_weights()
+        model.model.layers[0].ple = None
+        with (
+            sidecar._bound_load_source(self.a.root),
+            self.assertRaisesRegex(ValueError, "exactly one"),
+        ):
+            adapter.install_file_backed_ple(model, weights, self.a.path, self.a.root)
+
+        model, weights = model_and_weights()
+        model.model.layers[0].ple.ple_embedding.ngram_embedding = object()
+        with (
+            sidecar._bound_load_source(self.a.root),
+            self.assertRaisesRegex(ValueError, "unmodified"),
+        ):
+            adapter.install_file_backed_ple(model, weights, self.a.path, self.a.root)
+
+        model, weights = model_and_weights()
+        resident = model.model.layers[0].ple.ple_embedding.ngram_embedding
+        resident.rows_per_shard += 1
+        with (
+            sidecar._bound_load_source(self.a.root),
+            self.assertRaisesRegex(ValueError, "geometry differs"),
+        ):
+            adapter.install_file_backed_ple(model, weights, self.a.path, self.a.root)
+
+        model, weights = model_and_weights()
+        resident = model.model.layers[0].ple.ple_embedding.ngram_embedding
+        resident.shards[1].weight = self.mx.zeros((3, 32))
+        with (
+            sidecar._bound_load_source(self.a.root),
+            self.assertRaisesRegex(ValueError, "dimensions are inconsistent"),
+        ):
+            adapter.install_file_backed_ple(model, weights, self.a.path, self.a.root)
+
+        model, weights = model_and_weights()
+        weights[self.a.prefix + ".alias"] = self.mx.array([0])
+        with (
+            sidecar._bound_load_source(self.a.root),
+            self.assertRaisesRegex(ValueError, "unexpected PLE tensor aliases"),
+        ):
+            adapter.install_file_backed_ple(model, weights, self.a.path, self.a.root)
+
+        model, weights = model_and_weights()
+        fake = SimpleNamespace(parameters=lambda: {"bad": 1})
+        with (
+            mock.patch.object(adapter, "FileBackedPLEEmbedding", return_value=fake),
+            sidecar._bound_load_source(self.a.root),
+            self.assertRaisesRegex(AssertionError, "owns MLX parameters"),
+        ):
+            adapter.install_file_backed_ple(model, weights, self.a.path, self.a.root)
 
     def test_full_strict_cpu_loader_removes_all_resident_ple_parameters(self):
         from mlx.utils import tree_flatten
@@ -615,7 +1063,9 @@ class CPULoadContracts(SidecarContracts):
             with self.assertRaisesRegex(ValueError, "source must be bound"):
                 self.qwen.Model(args)
 
-    def _production_lane(self, stack, *, load_error=None, tokenizer_error=None):
+    def _production_lane(
+        self, stack, *, load_error=None, tokenizer_error=None, chat_template="existing"
+    ):
         import mlx_lm.utils as mlx_utils
 
         from rapid_mlx import model_aliases
@@ -678,7 +1128,7 @@ class CPULoadContracts(SidecarContracts):
             mock.patch.object(
                 mlx_utils,
                 "load_tokenizer",
-                return_value=SimpleNamespace(chat_template="existing"),
+                return_value=SimpleNamespace(chat_template=chat_template),
                 side_effect=tokenizer_error,
             )
         )
@@ -710,6 +1160,12 @@ class CPULoadContracts(SidecarContracts):
             with self.assertRaisesRegex(ValueError, "invalid sidecar"):
                 loader.load_model_with_fallback("alias")
             fallback.assert_not_called()
+
+    def test_production_applies_sidecar_chat_template_when_missing(self):
+        with ExitStack() as stack:
+            loader, _, _, _, _ = self._production_lane(stack, chat_template=None)
+            loader.load_model_with_fallback("alias")
+            loader._apply_chat_template_sidecar.assert_called_once()
 
     def test_production_postload_failure_closes_reader(self):
         with ExitStack() as stack:
