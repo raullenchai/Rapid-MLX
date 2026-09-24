@@ -385,6 +385,15 @@ def test_marker_reader_treats_overflowing_numeric_payload_as_invalid(tmp_path):
     assert server_start._read_marker(marker) is None
 
 
+def test_marker_identity_parse_failure_is_invalid(monkeypatch):
+    from rapid_mlx import _process_identity as identity
+
+    monkeypatch.setattr(identity, "_valid_time", lambda _value: True)
+    payload = {**_marker_payload(123), "create_time": object()}
+
+    assert identity.marker_identity(payload) is None
+
+
 def test_huge_marker_payload_is_rejected(monkeypatch, tmp_path):
     from rapid_mlx import _signal_observability as so
 
@@ -502,6 +511,31 @@ def test_quarantine_restore_does_not_overwrite_newer_replacement(monkeypatch, tm
     assert marker.read_text(encoding="utf-8") == "replacement-C"
 
 
+def test_quarantine_restores_racing_replacement_when_path_is_free(
+    monkeypatch, tmp_path
+):
+    marker = tmp_path / "serve-inflight-999.json"
+    marker.write_text("original", encoding="utf-8")
+    snapshot = server_start._marker_snapshot(marker)
+    real_rename = os.rename
+    injected = False
+
+    def raced_rename(source, destination):
+        nonlocal injected
+        if Path(source) == marker and not injected:
+            injected = True
+            replacement = marker.with_suffix(".replacement")
+            replacement.write_text("replacement-B", encoding="utf-8")
+            os.replace(replacement, marker)
+        return real_rename(source, destination)
+
+    monkeypatch.setattr(server_start.os, "rename", raced_rename)
+    server_start._remove_marker_snapshot(marker, snapshot)
+
+    assert injected is True
+    assert marker.read_text(encoding="utf-8") == "replacement-B"
+
+
 def test_state_dir_and_marker_cleanup_defensive_races(monkeypatch, tmp_path):
     state = tmp_path / "state"
     state.mkdir()
@@ -550,24 +584,19 @@ def test_state_dir_and_marker_cleanup_defensive_races(monkeypatch, tmp_path):
     assert marker.exists()
     stale.unlink()
 
-    real_rename = os.rename
-    calls = 0
-
-    def fail_restore(source, destination):
-        nonlocal calls
-        calls += 1
-        if calls == 2:
-            raise OSError("restore failed")
-        return real_rename(source, destination)
-
     with monkeypatch.context() as patch:
         patch.setattr(
             server_start,
             "_marker_snapshot",
             lambda path: snapshot if path == marker else (snapshot[0], snapshot[1] + 1),
         )
-        patch.setattr(server_start.os, "rename", fail_restore)
+        patch.setattr(
+            server_start.os,
+            "link",
+            lambda *_args: (_ for _ in ()).throw(PermissionError("restore failed")),
+        )
         server_start._remove_marker_snapshot(marker, snapshot)
+        assert stale.exists()
 
 
 def test_pid_reuse_does_not_hide_pre_reboot_marker(monkeypatch, tmp_path):
