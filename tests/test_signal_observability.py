@@ -331,6 +331,79 @@ def test_faulthandler_is_enabled_after_install():
             faulthandler.disable()
 
 
+def test_crash_file_is_private_rotated_and_previous_crash_reported_once(
+    monkeypatch, tmp_path, capsys
+):
+    from rapid_mlx import _signal_observability as so
+
+    so._reset_for_tests()
+    monkeypatch.setenv("HOME", str(tmp_path))
+    log_dir = tmp_path / ".rapid-mlx" / "logs"
+    log_dir.mkdir(parents=True, mode=0o777)
+    for index in range(7):
+        path = log_dir / f"crash-20260924T00000{index}Z-100.txt"
+        path.write_text(f"old crash {index}\n", encoding="utf-8")
+        os.utime(path, (index + 1, index + 1))
+    try:
+        so.install_signal_observability(observed_signals=())
+        files = sorted(log_dir.glob("crash-*.txt"))
+        current = max(files, key=lambda path: path.stat().st_mtime_ns)
+
+        assert len(files) == 5
+        assert current.stat().st_mode & 0o777 == 0o600
+        assert log_dir.stat().st_mode & 0o777 == 0o700
+        lines = capsys.readouterr().err.splitlines()
+        assert lines == [
+            f"Previous run crashed; details in {log_dir / 'crash-20260924T000006Z-100.txt'} "
+            "(and macOS DiagnosticReports under ~/Library/Logs/DiagnosticReports)."
+        ]
+    finally:
+        so._reset_for_tests()
+
+
+def test_empty_crash_file_is_removed_at_clean_shutdown(monkeypatch, tmp_path):
+    from rapid_mlx import _signal_observability as so
+
+    so._reset_for_tests()
+    monkeypatch.setenv("HOME", str(tmp_path))
+    so.install_signal_observability(observed_signals=())
+    files = list((tmp_path / ".rapid-mlx" / "logs").glob("crash-*.txt"))
+    assert len(files) == 1
+    assert files[0].stat().st_size == 0
+
+    so._cleanup_crash_file()
+
+    assert not files[0].exists()
+
+
+def test_abort_subprocess_leaves_nonempty_durable_crash_file(tmp_path):
+    home = tmp_path / "home"
+    env = dict(os.environ, HOME=str(home))
+    program = textwrap.dedent(
+        """
+        import os
+        from rapid_mlx._signal_observability import install_signal_observability
+
+        install_signal_observability(observed_signals=())
+        os.abort()
+        """
+    )
+    proc = subprocess.run(
+        [sys.executable, "-c", program],
+        env=env,
+        capture_output=True,
+        text=True,
+        timeout=10,
+        check=False,
+    )
+
+    files = list((home / ".rapid-mlx" / "logs").glob("crash-*.txt"))
+    assert proc.returncode != 0
+    assert len(files) == 1
+    assert files[0].stat().st_size > 0
+    assert "Fatal Python error" in files[0].read_text(encoding="utf-8")
+
+
 def test_subprocess_sigterm_emits_warning_and_stack_dump():
     """End-to-end: spawn a child running the install + an idle loop,
     send SIGTERM, assert the WARNING marker + thread-stack dump appear

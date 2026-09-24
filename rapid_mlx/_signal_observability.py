@@ -46,12 +46,16 @@ non-raising.
 
 from __future__ import annotations
 
+import atexit
 import faulthandler
 import logging
+import os
 import signal
 import sys
 import threading
 from collections.abc import Callable
+from datetime import datetime, timezone
+from pathlib import Path
 
 logger = logging.getLogger(__name__)
 
@@ -99,6 +103,119 @@ _install_lock = threading.Lock()
 # Saved prior handlers so we can chain to them. Keyed by signal number.
 # Visible to tests via ``_get_installed_handlers``.
 _prior_handlers: dict[int, signal.Handlers | Callable[..., object] | int | None] = {}
+_crash_fd: int | None = None
+_crash_path: Path | None = None
+_crash_cleanup_registered = False
+
+
+def _crash_logs_dir() -> Path:
+    from rapid_mlx.telemetry.state import _default_telemetry_dir
+
+    return _default_telemetry_dir() / "logs"
+
+
+def _crash_files(log_dir: Path) -> list[Path]:
+    candidates: list[tuple[int, str, Path]] = []
+    try:
+        paths = log_dir.glob("crash-*.txt")
+        for path in paths:
+            try:
+                stat = path.stat()
+            except OSError:
+                continue
+            if path.is_file():
+                candidates.append((stat.st_mtime_ns, path.name, path))
+    except OSError:
+        return []
+    candidates.sort(reverse=True)
+    return [path for _, _, path in candidates]
+
+
+def _report_previous_crash(log_dir: Path) -> None:
+    for path in _crash_files(log_dir):
+        try:
+            if path.stat().st_size <= 0:
+                continue
+            sys.stderr.write(
+                f"Previous run crashed; details in {path} "
+                "(and macOS DiagnosticReports under "
+                "~/Library/Logs/DiagnosticReports).\n"
+            )
+            sys.stderr.flush()
+        except (OSError, ValueError):
+            pass
+        return
+
+
+def _rotate_crash_files(log_dir: Path) -> None:
+    for path in _crash_files(log_dir)[5:]:
+        try:
+            path.unlink()
+        except OSError as exc:
+            logger.debug("could not rotate old crash file %s: %r", path, exc)
+
+
+def _cleanup_crash_file() -> None:
+    """Remove an empty clean-run file and release faulthandler's descriptor."""
+    global _crash_fd, _crash_path
+    fd, path = _crash_fd, _crash_path
+    if fd is None or path is None:
+        return
+    _crash_fd = None
+    _crash_path = None
+    try:
+        faulthandler.disable()
+        if sys.stderr is not None and not sys.stderr.closed:
+            faulthandler.enable(file=sys.stderr, all_threads=True)
+    except (OSError, RuntimeError, ValueError):
+        pass
+    try:
+        if os.fstat(fd).st_size == 0:
+            path.unlink(missing_ok=True)
+    except OSError:
+        pass
+    try:
+        os.close(fd)
+    except OSError:
+        pass
+
+
+def _install_crash_file() -> None:
+    """Point fatal-signal tracebacks at a private, rotating durable file."""
+    global _crash_cleanup_registered, _crash_fd, _crash_path
+    if _crash_fd is not None:
+        return
+    path: Path | None = None
+    fd: int | None = None
+    try:
+        log_dir = _crash_logs_dir()
+        log_dir.mkdir(mode=0o700, parents=True, exist_ok=True)
+        os.chmod(log_dir, 0o700)
+        _report_previous_crash(log_dir)
+        timestamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S%fZ")
+        path = log_dir / f"crash-{timestamp}-{os.getpid()}.txt"
+        fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+        os.chmod(path, 0o600)
+        faulthandler.enable(file=fd, all_threads=True)
+        _crash_fd = fd
+        _crash_path = path
+        fd = None
+        _rotate_crash_files(log_dir)
+        if not _crash_cleanup_registered:
+            atexit.register(_cleanup_crash_file)
+            _crash_cleanup_registered = True
+    except (OSError, RuntimeError, ValueError) as exc:
+        logger.warning("could not create durable rapid-mlx crash file: %s", exc)
+        if fd is not None:
+            try:
+                os.close(fd)
+            except OSError:
+                pass
+        if path is not None:
+            try:
+                path.unlink(missing_ok=True)
+            except OSError:
+                pass
 
 
 def _signal_name(signum: int) -> str:
@@ -288,19 +405,10 @@ def install_signal_observability(
             )
             return False
 
-        # ``faulthandler.enable()`` installs SIGSEGV/SIGFPE/SIGABRT/SIGBUS/
-        # SIGILL handlers at the C level. Calling it twice is safe — the
-        # second call is a no-op once enabled. We send the dump to stderr
-        # so it lands in the same stream operators tail with the server
-        # log; redirecting stderr to the log file (the typical
-        # ``rapid-mlx serve ... 2>&1 | tee server.log`` shape) captures
-        # it for post-mortem.
-        try:
-            faulthandler.enable(file=sys.stderr, all_threads=True)
-        except (ValueError, RuntimeError) as exc:  # pragma: no cover
-            # ValueError raised if stderr was redirected to a closed fd.
-            # Not fatal — proceed with signal install.
-            logger.debug("faulthandler.enable failed: %r", exc)
+        # The fatal-signal handler writes to a real 0600 descriptor that
+        # survives Desktop's bounded in-memory stderr buffer. The explicit
+        # SIGTERM/SIGHUP chain above continues to dump to stderr as before.
+        _install_crash_file()
 
         signals_to_install = (
             observed_signals if observed_signals is not None else _OBSERVED_SIGNALS
@@ -355,6 +463,7 @@ def _reset_for_tests() -> None:
     pytest process without leaking handlers to the next test.
     """
     with _install_lock:
+        _cleanup_crash_file()
         for sig, prior in list(_prior_handlers.items()):
             try:
                 signal.signal(sig, prior if prior is not None else signal.SIG_DFL)

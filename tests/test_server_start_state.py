@@ -156,6 +156,49 @@ def test_attempted_then_ready_exactly_once(monkeypatch):
 
 
 @pytest.mark.parametrize(
+    "terminal", [server_start.ready, lambda: server_start.failed("bind")]
+)
+def test_marker_written_at_attempted_and_removed_at_terminal_with_telemetry_disabled(
+    monkeypatch, tmp_path, terminal
+):
+    monkeypatch.setenv("HOME", str(tmp_path))
+    monkeypatch.setattr("rapid_mlx.telemetry.track._upload_allowed", lambda: False)
+
+    server_start.attempted("qwen3.5-4b-4bit", load_policy="eager")
+
+    marker = tmp_path / ".rapid-mlx" / "state" / "serve-inflight.json"
+    assert marker.is_file()
+    assert marker.stat().st_mode & 0o777 == 0o600
+    assert marker.parent.stat().st_mode & 0o777 == 0o700
+    payload = json.loads(marker.read_text(encoding="utf-8"))
+    assert payload["pid"] == os.getpid()
+    assert payload["utc_start"].endswith("Z")
+    assert isinstance(payload["app_version"], str)
+
+    terminal()
+    assert not marker.exists()
+
+
+def test_live_marker_is_not_reported_overwritten_or_removed(monkeypatch, tmp_path):
+    monkeypatch.setenv("HOME", str(tmp_path))
+    marker = tmp_path / ".rapid-mlx" / "state" / "serve-inflight.json"
+    marker.parent.mkdir(parents=True)
+    original = {
+        "pid": os.getpid(),
+        "utc_start": "2026-09-24T00:00:00Z",
+        "app_version": "0.15.1",
+    }
+    marker.write_text(json.dumps(original), encoding="utf-8")
+    events = _capture(monkeypatch)
+
+    server_start.attempted("qwen3.5-4b-4bit", load_policy="eager")
+    server_start.ready()
+
+    assert all("previous_run_unterminated" not in props for _, props in events)
+    assert json.loads(marker.read_text(encoding="utf-8")) == original
+
+
+@pytest.mark.parametrize(
     "stage",
     ["resolve", "download", "preflight", "prepare", "engine_start", "bind"],
 )
