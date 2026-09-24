@@ -2995,12 +2995,10 @@ def test_glm_flash_never_gets_no_thinking_injected():
     assert extra == ["--max-num-seqs", "2", "--served-model-name", "glm-5.3-flash"]
 
 
-def test_glm_flash_explicit_no_thinking_passthrough_warns(capsys):
-    extra = _run_share_capture_extra(
-        model="glm-5.3-flash", _passthrough=["--no-thinking"]
-    )
-    # The user's passthrough is honored (their call) but flagged loudly.
-    assert extra[-1] == "--no-thinking"
+def test_glm_flash_explicit_no_thinking_passthrough_is_rejected(capsys):
+    with pytest.raises(SystemExit) as raised:
+        _run_share_capture_extra(model="glm-5.3-flash", _passthrough=["--no-thinking"])
+    assert raised.value.code == 2
     assert "reasoning always on" in capsys.readouterr().err
 
 
@@ -3034,6 +3032,8 @@ def test_pool_max_concurrency_mirrors_serve_slots(passthrough, expected):
         ["--max-num-seqs", "999"],
         ["--max-num-seqs", "lots"],
         ["--max-num-seqs"],
+        ["--max-num-seqs", "--foo", "--max-num-seqs", "4"][:2],
+        ["--max-num-seqs", "4", "--max-num-seqs", "--foo"],
     ],
 )
 def test_pool_max_concurrency_rejects_out_of_range(passthrough):

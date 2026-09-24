@@ -86,7 +86,7 @@ ALIAS_TO_CATALOG: dict[str, str] = {
 # ``--no-thinking`` (plain-share parity); for these models a node that
 # suppressed reasoning would answer differently from the cloud path the
 # customer was promised, so the flag is withheld and an explicit
-# ``--no-thinking`` passthrough is warned about instead of silently obeyed.
+# ``--no-thinking`` passthrough is rejected instead of silently obeyed.
 CATALOG_REASONING_REQUIRED: frozenset[str] = frozenset({"glm-5.3-flash"})
 
 # §3.1 error taxonomy: terminal codes surface + exit non-zero; the rest
@@ -805,7 +805,12 @@ def _pool_max_concurrency(passthrough: list[str]) -> int:
         key, sep, value = token.partition("=")
         if key != "--max-num-seqs":
             continue
-        raw = value if sep else (passthrough[i + 1] if i + 1 < len(passthrough) else "")
+        if sep:
+            raw = value
+        else:
+            following = passthrough[i + 1] if i + 1 < len(passthrough) else ""
+            # ``--max-num-seqs --foo`` is a missing value to argparse, not "--foo".
+            raw = "" if following.startswith("-") else following
     if raw is None:
         return _POOL_DEFAULT_MAX_CONCURRENCY
     try:
@@ -1454,11 +1459,11 @@ def _run_share(
     ]
     if catalog_id in CATALOG_REASONING_REQUIRED:
         if "--no-thinking" in thinking_passthrough:
-            print(
-                f"warning: {catalog_id} serves with reasoning always on in the "
-                f"QuickSilver pool; `--no-thinking` makes this node answer "
-                f"differently from the cloud path and may fail readiness.",
-                file=sys.stderr,
+            raise QuickSilverError(
+                f"{catalog_id} serves with reasoning always on in the QuickSilver "
+                f"pool (the cloud origin rejects reasoning.enabled=false); "
+                f"`--no-thinking` would make this node answer differently from "
+                f"the contract customers were promised. Drop the flag."
             )
     elif not args.thinking and not thinking_passthrough:
         extra.append("--no-thinking")
