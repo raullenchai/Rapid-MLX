@@ -158,6 +158,7 @@ into the same config path.
 | `{"method":"dflash","model":"<drafter>"}` | Enable DFlash. Curated aliases may supply the drafter automatically; unknown/unverified targets require it explicitly. |
 | `{"method":"ddtree","model":"<drafter>","num_speculative_tokens":16,"tree_budget":24}` | Enable DDTree. Unknown/unverified targets require all structural inputs explicitly. |
 | `{"method":"dspark","num_speculative_tokens":5}` | Enable checkpoint-native DSpark for a local DeepSeek V4 Flash checkpoint. The token count must match the checkpoint's complete DSpark block. Greedy single-request decoding is accelerated; unsupported request shapes safely use baseline decoding. |
+| `{"method":"dspark","model":"LiquidAI/LFM2.5-VL-3B-DSpark","num_speculative_tokens":7}` | Attach the official DSpark companion to the BF16 `LiquidAI/LFM2.5-VL-3B` target. This first qualified server path is revision-pinned, serial, and greedy-only; it supports text and image prompts. Sampling, logprobs, tools, seeds, and logits processors return HTTP 400 before generation. The public value counts seven proposals; mlx-vlm receives an internal block width of eight including its anchor. |
 | `{"method":"mtp"}` | Enable MTP speculative decoding for checkpoints accepted by the existing MTP eligibility gate. |
 | `{"method":"mtp","model":"<sidecar-head-repo>"}` | Attach a standalone MTP **sidecar head** (e.g. `mlx-community/Qwen3.6-27B-MTP-4bit`) to a full base checkpoint. The base must be MTP-eligible; the head repo goes in the `model` field — **not** in the `serve` positional. See [MTP sidecar heads are not standalone models](#mtp-sidecar-heads-are-not-standalone-models) below. Gemma 4 sidecar MTP remains disabled after its greedy-lossless A/B failed. |
 | `{"method":"mtp","num_speculative_tokens":3}` | Set the MTP max-K controller ceiling. |
@@ -173,6 +174,18 @@ experimental warning. Such combinations remain default-off and may be slower
 or produce worse application-level output. True incompatibilities—missing or
 mismatched drafter metadata, unsupported verifiers, unavailable runtimes, and
 mutually exclusive modes—still fail before generation.
+
+The LFM2.5-VL companion path requires exactly `mlx-vlm==0.7.2` and accepts
+only the target/drafter/K combination shown above. Rapid-MLX resolves both Hub
+repositories at immutable revisions and validates their structural ABI before
+loading weights. A download, load, compatibility, attach, or generation
+failure is surfaced as an error; this path never silently falls back to
+autoregressive generation. Omitting `model` keeps the existing DeepSeek V4
+checkpoint-native DSpark behavior and its K=5 default.
+For the exact LFM target, `{"method":"dspark"}` selects this catalog companion
+and proposal count automatically. Runtime identity and readiness are available
+from `/healthz`, `/v1/status`, and the `speculative_decoding` object returned by
+`/v1/models`.
 
 Generate the all-alias/all-method policy report with:
 

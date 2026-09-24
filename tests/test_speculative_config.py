@@ -65,6 +65,18 @@ def test_parse_dspark_speculative_config_accepts_native_depth() -> None:
     assert cfg.num_speculative_tokens == 5
 
 
+def test_parse_dspark_speculative_config_accepts_companion_model() -> None:
+    cfg = parse_speculative_config(
+        '{"method":"dspark","model":"LiquidAI/LFM2.5-VL-3B-DSpark",'
+        '"num_speculative_tokens":7}'
+    )
+
+    assert cfg is not None
+    assert cfg.method == "dspark"
+    assert cfg.model == "LiquidAI/LFM2.5-VL-3B-DSpark"
+    assert cfg.num_speculative_tokens == 7
+
+
 def test_parse_speculative_config_normalizes_registered_alias() -> None:
     cfg = parse_speculative_config('{"method":"ngram"}')
 
@@ -332,6 +344,34 @@ def test_speculative_config_mtp_normalizes_to_legacy_spec_decode() -> None:
     assert args._speculative_config.model == "google/gemma-4-12B-it-assistant"
     assert args._speculative_config.num_speculative_tokens == 2
     assert args._speculative_config.disable_auto_k is True
+
+
+def test_speculative_config_dspark_keeps_legacy_and_companion_defaults() -> None:
+    from rapid_mlx.cli import _normalize_speculative_config_or_exit
+
+    legacy = _spec_config_args(speculative_config='{"method":"dspark"}')
+    _normalize_speculative_config_or_exit(legacy)
+    assert legacy.spec_decode == "dspark"
+    assert legacy.dspark_num_speculative_tokens == 5
+
+    companion = _spec_config_args(
+        speculative_config=(
+            '{"method":"dspark","model":"LiquidAI/LFM2.5-VL-3B-DSpark"}'
+        ),
+        mllm=True,
+    )
+    _normalize_speculative_config_or_exit(companion)
+    assert companion.spec_decode == "dspark"
+    assert companion.dspark_num_speculative_tokens == 7
+
+    recommended = _spec_config_args(
+        model="LiquidAI/LFM2.5-VL-3B",
+        speculative_config='{"method":"dspark"}',
+        mllm=True,
+    )
+    _normalize_speculative_config_or_exit(recommended)
+    assert recommended._speculative_config.model == ("LiquidAI/LFM2.5-VL-3B-DSpark")
+    assert recommended.dspark_num_speculative_tokens == 7
 
 
 def test_speculative_config_rejects_mllm_with_capability_event(monkeypatch) -> None:

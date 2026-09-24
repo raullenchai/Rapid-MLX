@@ -444,6 +444,13 @@ rapid-mlx serve qwen3.5-9b-8bit --speculative-config '{"method":"ddtree"}' --por
 rapid-mlx serve /path/to/DeepSeek-V4-Flash-0731-MLX \
   --speculative-config '{"method":"dspark","num_speculative_tokens":5}' --port 8000
 
+# Qualified BF16 LFM2.5-VL-3B + official DSpark companion (greedy, serial,
+# text + image, immutable revisions, seven proposals / width eight; requires
+# mlx-vlm 0.7.2)
+rapid-mlx serve LiquidAI/LFM2.5-VL-3B \
+  --speculative-config '{"method":"dspark","model":"LiquidAI/LFM2.5-VL-3B-DSpark","num_speculative_tokens":7}' \
+  --port 8000
+
 # MTP fixed-K parity bench mode
 rapid-mlx serve <mtp-eligible-qwen-checkpoint> \
   --speculative-config '{"method":"mtp","num_speculative_tokens":1,"disable_auto_k":true}'
