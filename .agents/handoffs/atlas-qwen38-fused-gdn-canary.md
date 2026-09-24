@@ -2,9 +2,9 @@
 
 - **Owner / receiving role:** Atlas
 - **Branch:** `atlas/qwen38-fused-gdn-canary`
-- **Clean base:** `0e68c4ea7e266159e5c325b3b4e09e8daef3aaee`
-- **Production code commits:** `5278e76ff`, `3b6acab1d`, plus the local
-  default-safety commit on this branch
+- **Qwen3.6 prerequisite base:** `724f01c3c`
+- **Qwen3.8 delivery commits:** `8192fac0a`, `3a9efc07e`, `661cfc0bd`,
+  `046c65885`, `8657679a0`
 - **Status:** implementation complete with zero automatic-qualification rows;
   no alias or public default changed
 
@@ -51,7 +51,7 @@
 
 ## Verification
 
-- `244 passed, 1 skipped, 2 deselected`: focused canary, B0 artifact truth and
+- `373 passed, 2 deselected`: focused canary, B0 artifact truth and
   planner, Qwen boot status, existing Qwen3.6 native-cache path, batching, and
   Qwen4 experiment artifact parity suites.
 - Ruff check and format, Python compilation, and `git diff --check` pass.
