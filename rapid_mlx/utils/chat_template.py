@@ -1483,7 +1483,11 @@ def _forget_assignments_in(stmts, forgotten: set[str], nodes) -> None:
 
 
 def _walk_for_validation(
-    stmts, derived: set[str], forgotten: set[str], nodes
+    stmts,
+    derived: set[str],
+    forgotten: set[str],
+    nodes,
+    read_names: frozenset[str] = frozenset(),
 ) -> tuple[str, ...] | None:
     """Forward walk of one statement list along the render path.
 
@@ -1496,14 +1500,18 @@ def _walk_for_validation(
     derived name are not searched: a validation reached only when
     ``reasoning_effort`` already failed or passed some other check is a
     path-constrained one and would misstate the accepted set.
+
+    ``read_names`` are the names the template reads anywhere; a coercion
+    whose target is never read is dead and publishes nothing.
     """
     derived = set(derived)
     for stmt in stmts:
         if isinstance(stmt, nodes.Assign):
             if isinstance(stmt.target, nodes.Name):
-                levels = _coercion_levels(stmt, derived, forgotten, nodes)
-                if levels:
-                    return levels
+                if stmt.target.name in read_names:
+                    levels = _coercion_levels(stmt, derived, forgotten, nodes)
+                    if levels:
+                        return levels
                 source = _value_preserving_source(stmt.node, nodes)
                 if source is not None and source in derived and source not in forgotten:
                     derived.add(stmt.target.name)
@@ -1554,7 +1562,7 @@ def _walk_for_validation(
                     branch.test, nodes
                 ):
                     levels = _walk_for_validation(
-                        branch.body, derived, forgotten, nodes
+                        branch.body, derived, forgotten, nodes, read_names
                     )
                     searched_block_ids.add(id(branch.body))
                     if levels:
@@ -1564,7 +1572,9 @@ def _walk_for_validation(
                     and _is_thinking_disabled_guard(branch.test, nodes)
                 )
             if prior_branches_only_disable_thinking:
-                levels = _walk_for_validation(stmt.else_, derived, forgotten, nodes)
+                levels = _walk_for_validation(
+                    stmt.else_, derived, forgotten, nodes, read_names
+                )
                 searched_block_ids.add(id(stmt.else_))
                 if levels:
                     return levels
@@ -1617,7 +1627,12 @@ def _native_reasoning_effort_levels_for_source(template: str) -> tuple[str, ...]
     # turn an apparent rejection block into an ordinary successful render.
     if _binds_name(tree, "raise_exception", nodes):
         return None
-    return _walk_for_validation(tree.body, {"reasoning_effort"}, set(), nodes)
+    read_names = frozenset(
+        name.name for name in tree.find_all(nodes.Name) if name.ctx == "load"
+    )
+    return _walk_for_validation(
+        tree.body, {"reasoning_effort"}, set(), nodes, read_names
+    )
 
 
 def _truthiness_tested_name(test, nodes) -> str | None:

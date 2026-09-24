@@ -3024,6 +3024,36 @@ def test_glm_flash_explicit_default_effort_passthrough_replaces_injection(passth
     assert extra[-len(passthrough) :] == passthrough
 
 
+@pytest.mark.parametrize(
+    "passthrough",
+    [["--default-reasoning-effort", "none"], ["--default-reasoning-effort=none"]],
+)
+def test_glm_flash_default_effort_none_is_rejected_before_registration(
+    passthrough, capsys
+):
+    """Codex r1: ``none`` translates to ``enable_thinking=False`` for every
+    bare request — the same contract breach the ``--no-thinking`` guard
+    exists for, so it is refused the same way."""
+    with pytest.raises(SystemExit) as exc:
+        _run_share_capture_extra(model="glm-5.3-flash", _passthrough=passthrough)
+    assert exc.value.code == 2
+    assert "reasoning always on" in capsys.readouterr().err
+
+
+def test_glm_flash_default_effort_last_occurrence_wins_for_the_guard():
+    """argparse store semantics: ``none`` overridden by a later ``low`` is
+    what serve runs with, so it passes."""
+    extra = _run_share_capture_extra(
+        model="glm-5.3-flash",
+        _passthrough=[
+            "--default-reasoning-effort=none",
+            "--default-reasoning-effort",
+            "low",
+        ],
+    )
+    assert extra.count("--default-reasoning-effort") == 1
+
+
 def test_other_catalogs_get_no_default_reasoning_effort():
     extra = _run_share_capture_extra(model="qwen3.6-35b")
     assert "--default-reasoning-effort" not in extra

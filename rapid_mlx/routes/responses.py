@@ -1021,6 +1021,24 @@ async def create_response(request: Request):
                     cfg_for_adapter.tool_call_parser == "deepseek_v4_0731"
                 ),
             )
+            # #3714: ``serve --default-reasoning-effort`` fills the knob
+            # before anything else reads the request, so it behaves exactly
+            # like a client value on this surface too (the strict-schema and
+            # tool gates below see it as reasoning intent, as they would a
+            # client's). The Responses-native ``reasoning.effort`` counts via
+            # ``extra_signals`` — the adapter collapses it onto
+            # ``openai_request`` but the original is the authoritative shape.
+            if maybe_apply_default_reasoning_effort(
+                openai_request,
+                default_effort=cfg_for_adapter.default_reasoning_effort,
+                extra_signals=responses_request,
+            ):
+                logger.info(
+                    "#3714 reasoning_effort defaulted to %s on /v1/responses "
+                    "(serve --default-reasoning-effort; client sent no "
+                    "reasoning knob)",
+                    openai_request.reasoning_effort,
+                )
             # Capture the client's preference before server defaults and the
             # automatic tool/schema heuristics may mutate the adapted request.
             _explicit_thinking = _extract_thinking_from_request(openai_request)
@@ -1271,19 +1289,6 @@ async def create_response(request: Request):
         # its enable_thinking preference first (the tool auto-disable then
         # no-ops on it) and a graded value lands its reasoning_max_tokens
         # cap from one source. Explicit client knobs always win.
-        # #3714: ``serve --default-reasoning-effort`` fills the knob first
-        # when the client sent no reasoning signal (the Responses-native
-        # ``reasoning.effort`` counts via ``extra_signals``).
-        if maybe_apply_default_reasoning_effort(
-            openai_request,
-            default_effort=get_config().default_reasoning_effort,
-            extra_signals=responses_request,
-        ):
-            logger.info(
-                "#3714 reasoning_effort defaulted to %s on /v1/responses "
-                "(serve --default-reasoning-effort; client sent no reasoning knob)",
-                openai_request.reasoning_effort,
-            )
         if maybe_apply_reasoning_effort(
             openai_request, chat_template=served_chat_template(engine)
         ):

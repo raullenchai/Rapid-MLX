@@ -226,7 +226,7 @@ class TestCoercionDetection:
     def test_presence_guard_is_optional(self):
         clause = (
             "{%- set eff = reasoning_effort if reasoning_effort in ['low', 'high'] "
-            "else 'max' -%}"
+            "else 'max' -%}{{ eff }}"
         )
         assert detect_native_reasoning_effort_levels(clause) == ("low", "high")
 
@@ -246,6 +246,22 @@ class TestCoercionDetection:
 
     def test_positive_branch_without_fallback_is_not_a_coercion(self):
         clause = "{%- set eff = reasoning_effort if reasoning_effort in ['low'] -%}"
+        assert detect_native_reasoning_effort_levels(clause) is None
+
+    def test_dead_coercion_publishes_nothing(self):
+        """Codex r1: a coerced target the template never reads does not
+        influence the render, so it declares no vocabulary."""
+        clause = (
+            "{%- set unused = reasoning_effort if reasoning_effort in "
+            "['low', 'high'] else 'max' -%}hello"
+        )
+        assert detect_native_reasoning_effort_levels(clause) is None
+
+    def test_coercion_read_only_by_its_own_assignment_is_dead(self):
+        clause = (
+            "{%- set eff = reasoning_effort if reasoning_effort in ['low', 'high'] "
+            "else 'max' -%}{%- set other = 'x' -%}{{ other }}"
+        )
         assert detect_native_reasoning_effort_levels(clause) is None
 
     def test_rebound_variable_is_not_the_client_value(self):
@@ -1574,6 +1590,45 @@ class TestServerDefaultReasoningEffort:
         assert engine.kwargs.get("chat_template_kwargs") == {"reasoning_effort": "low"}
         assert _responses_cap_probe == [None]
 
+    def test_responses_strict_schema_sees_the_default_as_reasoning_intent(
+        self, _rate_limiter_state, _responses_cap_probe
+    ):
+        """Codex r1: the strict-schema gate injects ``enable_thinking=False``
+        for a request with no reasoning knob. The server default must be
+        filled BEFORE that gate so it behaves like a client value there too
+        (the gate steps aside for client intent), not be mistaken for a
+        client thinking preference afterwards."""
+
+        class _JsonEngine(_RouteEngine):
+            async def chat(self, messages=None, **kwargs):
+                out = await super().chat(messages=messages, **kwargs)
+                out.text = out.new_text = '{"answer": 1}'
+                return out
+
+        engine = _JsonEngine(GLM53_TEMPLATE_CLAUSE)
+        resp = _client(
+            engine, surface="responses", default_reasoning_effort="low"
+        ).post(
+            "/v1/responses",
+            json=_responses_body(
+                text={
+                    "format": {
+                        "type": "json_schema",
+                        "name": "answer",
+                        "strict": True,
+                        "schema": {
+                            "type": "object",
+                            "properties": {"answer": {"type": "integer"}},
+                            "required": ["answer"],
+                            "additionalProperties": False,
+                        },
+                    }
+                }
+            ),
+        )
+        assert resp.status_code == 200, resp.text
+        assert engine.kwargs.get("chat_template_kwargs") == {"reasoning_effort": "low"}
+
     def test_responses_route_nested_effort_beats_server_default(
         self, _rate_limiter_state, _responses_cap_probe
     ):
@@ -1583,6 +1638,42 @@ class TestServerDefaultReasoningEffort:
         ).post("/v1/responses", json=_responses_body(reasoning={"effort": "high"}))
         assert resp.status_code == 200, resp.text
         assert engine.kwargs.get("chat_template_kwargs") == {"reasoning_effort": "high"}
+
+
+class TestServeDefaultReasoningEffortFlag:
+    """#3714 ``serve --default-reasoning-effort`` is parsed against the
+    OpenAI closed set and reaches ``ServerConfig`` through the same global
+    ``serve_command`` writes."""
+
+    @pytest.fixture
+    def parser(self):
+        cli = pytest.importorskip("rapid_mlx.cli")
+        return cli.build_parser()
+
+    @pytest.mark.parametrize("effort", list(_VALID_REASONING_EFFORTS))
+    def test_every_openai_value_parses(self, parser, effort):
+        args = parser.parse_args(["serve", "m", "--default-reasoning-effort", effort])
+        assert args.default_reasoning_effort == effort
+
+    def test_unset_is_none(self, parser):
+        assert parser.parse_args(["serve", "m"]).default_reasoning_effort is None
+
+    def test_foreign_value_is_rejected(self, parser):
+        with pytest.raises(SystemExit):
+            parser.parse_args(["serve", "m", "--default-reasoning-effort", "max"])
+
+    def test_server_global_reaches_config(self):
+        import rapid_mlx.server as server
+
+        saved = server._default_reasoning_effort
+        try:
+            server._default_reasoning_effort = "low"
+            reset_config()
+            server._sync_config()
+            assert server.get_config().default_reasoning_effort == "low"
+        finally:
+            server._default_reasoning_effort = saved
+            reset_config()
 
 
 class TestStreamingRoutesNativeLevel:

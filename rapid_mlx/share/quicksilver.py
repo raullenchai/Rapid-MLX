@@ -801,6 +801,22 @@ _POOL_DEFAULT_MAX_CONCURRENCY = 2
 _POOL_MAX_CONCURRENCY_CEILING = 64
 
 
+def _passthrough_option_value(passthrough: list[str], option: str) -> str | None:
+    """Value of the last ``<option> V`` / ``<option>=V`` in a serve
+    passthrough (argparse store semantics: last occurrence wins), or ``None``
+    when the option is absent. Exact flag match, like ``_pool_max_concurrency``."""
+    value: str | None = None
+    for i, token in enumerate(passthrough):
+        flag, sep, attached = token.partition("=")
+        if flag != option:
+            continue
+        if sep:
+            value = attached
+        elif i + 1 < len(passthrough):
+            value = passthrough[i + 1]
+    return value
+
+
 def _pool_max_concurrency(passthrough: list[str]) -> int:
     """Slots to advertise at registration: the ``--max-num-seqs`` the child
     serve will actually run with (§5.3 default 2, or the user's ``--``
@@ -1340,6 +1356,17 @@ def _run_share(
             f"pool (the cloud origin rejects reasoning.enabled=false); "
             f"`--no-thinking` would make this node answer differently from "
             f"the contract customers were promised. Drop the flag."
+        )
+    if (
+        catalog_id in CATALOG_REASONING_REQUIRED
+        and _passthrough_option_value(passthrough, "--default-reasoning-effort")
+        == "none"
+    ):
+        raise QuickSilverError(
+            f"{catalog_id} serves with reasoning always on in the QuickSilver "
+            f"pool; `--default-reasoning-effort none` would switch thinking "
+            f"off for every request that does not ask for it. Use low/medium/"
+            f"high or drop the flag."
         )
 
     api_base = _validate_api_base(
