@@ -85,12 +85,12 @@ def process_identity(pid: int) -> ProcessIdentity | None:
                 return None
             create_time = psutil.Process(pid).create_time()
             boot_time = psutil.boot_time()
+            return ProcessIdentity(pid, float(create_time), float(boot_time))
         except (psutil.NoSuchProcess, ProcessLookupError):
             return None
         except Exception as exc:
             logger.debug("could not probe process identity for pid %s: %r", pid, exc)
             return ProcessIdentity(pid, 0.0, 0.0)
-        return ProcessIdentity(pid, float(create_time), float(boot_time))
 
     # CPython implements os.kill(pid, 0) with TerminateProcess on Windows.
     # Never probe that way there; absence of psutil must fail closed as alive.

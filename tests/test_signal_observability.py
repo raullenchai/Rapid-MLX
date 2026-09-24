@@ -612,6 +612,11 @@ def test_identity_exception_and_extreme_pid_matrix(monkeypatch, caplog):
         monkeypatch.setattr(identity, "psutil", fake)
         assert identity.is_same_process(marker) is True
 
+    fake.Process = lambda _pid: SimpleNamespace(create_time=lambda: 10**1000)
+    monkeypatch.setattr(identity, "psutil", fake)
+    assert identity.process_identity(123) == identity.ProcessIdentity(123, 0.0, 0.0)
+    assert identity.is_same_process(marker) is True
+
     assert identity.is_same_process({**marker, "pid": 10**200}) is False
     assert "could not probe process identity" in caplog.text
 
