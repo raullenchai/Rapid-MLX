@@ -17,7 +17,8 @@ from rapid_mlx.telemetry import model_events, registry, server_start
 
 
 @pytest.fixture(autouse=True)
-def _reset_state():
+def _reset_state(monkeypatch):
+    monkeypatch.setattr(cli, "_hub_guidance_rendered", False)
     server_start._reset_for_tests()
     yield
     server_start._reset_for_tests()
@@ -289,6 +290,37 @@ def test_render_hub_error_not_found_has_repo_discovery_next_steps():
 
 
 @pytest.mark.parametrize("status_code", [401, 403])
+def test_repository_not_found_auth_failure_is_gated_everywhere(
+    monkeypatch, capsys, status_code
+):
+    from huggingface_hub.errors import RepositoryNotFoundError
+
+    failure = RepositoryNotFoundError(
+        "raw secret", response=_hub_response(status_code)
+    )
+
+    rendered = cli.render_hub_error(failure, "owner/private-model")
+
+    assert rendered is not None
+    assert "is gated" in rendered
+    assert model_events.pull_error_class(failure) == "gated"
+
+    _stub_download_entry(monkeypatch)
+    monkeypatch.setattr(
+        "rapid_mlx._download_gate.call_with_deadline",
+        lambda *_a, **_kw: (_ for _ in ()).throw(failure),
+    )
+
+    with pytest.raises(SystemExit) as caught:
+        cli._ensure_model_downloaded("owner/private-model")
+
+    captured = capsys.readouterr()
+    assert caught.value.code == 1
+    _assert_exact_startup_marker(captured.err, "model_gated")
+    assert "RAPID-MLX-STARTUP-FAILURE: model_not_found" not in captured.err
+
+
+@pytest.mark.parametrize("status_code", [401, 403])
 def test_render_hub_error_gated_has_access_and_auth_next_steps(status_code):
     from huggingface_hub.errors import GatedRepoError, HfHubHTTPError
 
@@ -380,6 +412,41 @@ def test_resolve_timeout_emits_resolve_before_preserving_exit(monkeypatch, capsy
         ("attempted", None),
         ("failed", "resolve"),
     ]
+
+
+def test_offline_uncached_refusal_uses_shared_terminal_failure(monkeypatch, capsys):
+    serve_failures = []
+    resolve_failures = []
+    monkeypatch.setattr(cli, "_cache_runnability", lambda _model: False)
+    monkeypatch.setattr(cli, "_offline_hub_mode_active", lambda: True)
+    monkeypatch.setattr(
+        cli, "_offline_complete_cached_snapshot", lambda _model: None
+    )
+    monkeypatch.setattr(
+        model_events,
+        "emit_model_pull_failed",
+        lambda *_a, **_kw: None,
+    )
+    monkeypatch.setattr(
+        model_events,
+        "emit_model_serve_failed",
+        lambda exc, alias_or_path: serve_failures.append((exc, alias_or_path)),
+    )
+    monkeypatch.setattr(
+        server_start,
+        "failed",
+        lambda stage: resolve_failures.append(stage),
+    )
+
+    with pytest.raises(SystemExit) as caught:
+        cli._ensure_model_downloaded("owner/model")
+
+    captured = capsys.readouterr()
+    assert caught.value.code == 1
+    _assert_exact_startup_marker(captured.err, "hub_offline")
+    assert len(serve_failures) == 1
+    assert serve_failures[0][1] == "owner/model"
+    assert resolve_failures == ["resolve"]
 
 
 def test_definitive_download_not_found_fails_resolve_with_next_steps(
@@ -539,6 +606,29 @@ def test_metadata_and_download_network_failure_prints_guidance_once(
     captured = capsys.readouterr()
     assert captured.err.count("could not reach Hugging Face") == 1
     assert b"RAPID-MLX-STARTUP-FAILURE:" not in captured.err.encode()
+
+
+def test_network_guidance_is_once_per_process(monkeypatch, capsys):
+    _stub_download_entry(monkeypatch)
+    monkeypatch.setattr(
+        "rapid_mlx._download_gate.call_with_deadline",
+        lambda *_a, **_kw: (_ for _ in ()).throw(
+            requests.ConnectionError("metadata secret")
+        ),
+    )
+    monkeypatch.setattr(
+        "huggingface_hub.snapshot_download",
+        lambda *_a, **_kw: (_ for _ in ()).throw(
+            requests.ConnectionError("download secret")
+        ),
+    )
+
+    cli._ensure_model_downloaded("owner/first")
+    cli._ensure_model_downloaded("owner/second")
+
+    captured = capsys.readouterr()
+    assert captured.err.count("could not reach Hugging Face") == 1
+    assert "secret" not in captured.err
 
 
 def test_response_less_download_error_keeps_legacy_retry(monkeypatch, capsys):

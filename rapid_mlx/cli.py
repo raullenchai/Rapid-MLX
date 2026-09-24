@@ -42,6 +42,8 @@ MIRROR_DEFAULT = "https://models.rapidmlx.com"
 _CONSENT_MUTATION_EVENT_LIMIT = 5
 _consent_mutation_event_count = 0
 _consent_mutation_event_lock = threading.Lock()
+_hub_guidance_rendered = False
+_hub_guidance_lock = threading.Lock()
 
 
 def _run_optional_runtime_guard(
@@ -2056,9 +2058,24 @@ def _offline_uncached_error(model_name: str) -> str:
 
 
 def _refuse_offline_uncached(model_name: str) -> None:
-    """Print the offline + uncached refusal and exit(1)."""
-    print(_offline_uncached_error(model_name), file=sys.stderr)
-    sys.exit(1)
+    """Record the offline + uncached refusal and exit(1)."""
+    from huggingface_hub.errors import OfflineModeIsEnabled
+
+    _fail_hub_resolution(
+        OfflineModeIsEnabled("offline mode is enabled"),
+        model_name,
+        _offline_uncached_error(model_name).strip(),
+    )
+
+
+def _claim_hub_guidance_render() -> bool:
+    """Claim the process-wide right to print Hub network guidance."""
+    global _hub_guidance_rendered
+    with _hub_guidance_lock:
+        if _hub_guidance_rendered:
+            return False
+        _hub_guidance_rendered = True
+        return True
 
 
 def render_hub_error(exc: BaseException, model_id: str) -> str | None:
@@ -2087,13 +2104,10 @@ def render_hub_error(exc: BaseException, model_id: str) -> str | None:
             break
         seen.add(id(current))
 
-        gated = isinstance(current, GatedRepoError)
-        if isinstance(current, HfHubHTTPError):
-            gated = gated or getattr(current.response, "status_code", None) in (
-                401,
-                403,
-            )
-        if gated:
+        if (
+            isinstance(current, HfHubHTTPError)
+            and getattr(current.response, "status_code", None) in (401, 403)
+        ) or isinstance(current, GatedRepoError):
             return (
                 f"  Error: access to '{model_id}' is gated on Hugging Face.\n"
                 f"  Accept the licence or request access at "
@@ -2315,7 +2329,6 @@ def _ensure_model_downloaded(
         # publish that ref ourselves, atomically, only after the download wins.
         size_gb = 0.0
         resolved_sha: str | None = None
-        hub_guidance_rendered = False
         try:
             metadata_kwargs: dict[str, object] = {"files_metadata": True}
             if pinned_image_revision is not None:
@@ -2359,8 +2372,8 @@ def _ensure_model_downloaded(
 
                 if pull_error_class(exc) in {"gated", "not_found"}:
                     _fail_hub_resolution(exc, model_name, rendered)
-                print(f"\n{rendered}\n", file=sys.stderr)
-                hub_guidance_rendered = True
+                if _claim_hub_guidance_render():
+                    print(f"\n{rendered}\n", file=sys.stderr)
 
         is_tty = sys.stdout.isatty() and "NO_COLOR" not in os.environ
         BOLD = "\x1b[1m" if is_tty else ""
@@ -2417,7 +2430,7 @@ def _ensure_model_downloaded(
 
         emit_model_pull_failed(e, model_ref=model_name, source="hf")
         if rendered is not None:
-            if not hub_guidance_rendered:
+            if _claim_hub_guidance_render():
                 print(
                     f"\n{rendered}\n  The server will retry during startup.",
                     file=sys.stderr,
