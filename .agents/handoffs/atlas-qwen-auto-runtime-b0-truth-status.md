@@ -87,10 +87,10 @@ Publish the stored truth only when the integration resolver owns it.
 
 ## Verification
 
-- `552 passed`: artifact provenance plus runtime plan/boot status, CLI
+- `562 passed`: artifact provenance plus runtime plan/boot status, CLI
   provenance, MTP self-contained locator, injector/install, batched-family
   capability, CLI wiring, and speculative-config suites.
-- `300 passed` in the focused coverage run; exact changed-production line
+- `310 passed` in the focused coverage run; exact changed-production line
   coverage is 100%.
 - Ruff and targeted pinned mypy 2.3.1 pass on all changed Python production
   files; `git diff --check` passes.

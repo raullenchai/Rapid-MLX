@@ -154,6 +154,54 @@ def _binding(snapshot: Path, metadata: dict, *, subfolder: str | None = None):
     return binding
 
 
+def _guard_file_content_opens(
+    monkeypatch: pytest.MonkeyPatch, protected_paths: set[Path]
+) -> set[Path]:
+    """Reject opens through either a protected path or one of its aliases."""
+
+    protected_targets = {path.resolve(strict=True) for path in protected_paths}
+    protected_inodes = {
+        (metadata.st_dev, metadata.st_ino)
+        for metadata in (os.stat(path) for path in protected_paths)
+    }
+    opened: set[Path] = set()
+    original_path_open = Path.open
+    original_os_open = os.open
+
+    def is_protected(path: os.PathLike[str] | str) -> bool:
+        lexical = Path(path)
+        try:
+            resolved = lexical.resolve(strict=True)
+            metadata = os.stat(lexical)
+        except (OSError, ValueError):
+            return False
+        return (
+            resolved in protected_targets
+            or (
+                metadata.st_dev,
+                metadata.st_ino,
+            )
+            in protected_inodes
+        )
+
+    def guarded_path_open(path: Path, *args, **kwargs):
+        opened.add(path)
+        if is_protected(path):
+            raise AssertionError("artifact probe must not open protected content")
+        return original_path_open(path, *args, **kwargs)
+
+    def guarded_os_open(path, *args, **kwargs):
+        lexical = Path(path)
+        opened.add(lexical)
+        if is_protected(lexical):
+            raise AssertionError("artifact probe must not open protected content")
+        return original_os_open(path, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "open", guarded_path_open)
+    monkeypatch.setattr(os, "open", guarded_os_open)
+    return opened
+
+
 def _replace_with_symlink(path: Path, target: Path) -> None:
     path.unlink()
     path.symlink_to(os.path.relpath(target, path.parent))
@@ -522,6 +570,148 @@ def test_regular_sidecar_and_declared_sha_cannot_mint_drafter_identity(
     assert truth.mtp_locator.cache_object_identity is None
     with pytest.raises(ArtifactProbeError, match="cache-object provenance"):
         to_runtime_drafter_identity(truth)
+
+
+def test_canonical_same_repo_receipt_symlink_is_bounded_and_accepted(
+    tmp_path: Path,
+) -> None:
+    snapshot, hub, metadata = _materialize_snapshot(tmp_path, "qwen38_27b_4bit")
+    candidate = snapshot / metadata["mtp_candidate"]["path"]
+    receipt = candidate.with_name(candidate.name + ".sha256")
+    content = receipt.read_bytes()
+    repo_cache = hub / ("models--" + metadata["source_repo"].replace("/", "--"))
+    receipt_blob = repo_cache / "blobs" / hashlib.sha256(content).hexdigest()
+    receipt_blob.write_bytes(content)
+    _replace_with_symlink(receipt, receipt_blob)
+
+    truth = probe_qwen_artifact(snapshot, binding=_binding(snapshot, metadata))
+
+    assert (
+        truth.mtp_locator.declared_sha256
+        == metadata["mtp_candidate"]["declared_sha256"]
+    )
+
+
+@pytest.mark.parametrize("target_kind", ["candidate", "other_huge_blob"])
+def test_receipt_symlink_to_tensor_is_rejected_without_opening_target(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    target_kind: str,
+) -> None:
+    snapshot, hub, metadata = _materialize_snapshot(tmp_path, "qwen38_27b_4bit")
+    candidate = snapshot / metadata["mtp_candidate"]["path"]
+    receipt = candidate.with_name(candidate.name + ".sha256")
+    receipt.unlink()
+    if target_kind == "candidate":
+        protected_target = candidate.resolve(strict=True)
+    else:
+        repo_cache = hub / ("models--" + metadata["source_repo"].replace("/", "--"))
+        protected_target = repo_cache / "blobs" / ("f" * 64)
+        protected_target.touch()
+        os.truncate(protected_target, qwen_artifact._MAX_SHA256_RECEIPT_BYTES + 1)
+    receipt.symlink_to(os.path.relpath(protected_target, receipt.parent))
+    _guard_file_content_opens(monkeypatch, {protected_target})
+
+    truth = probe_qwen_artifact(snapshot, binding=_binding(snapshot, metadata))
+
+    assert truth.mtp_locator.declared_sha256 is None
+
+
+def test_oversized_regular_receipt_is_rejected_before_open(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    snapshot, _hub, metadata = _materialize_snapshot(tmp_path, "qwen38_27b_4bit")
+    candidate = snapshot / metadata["mtp_candidate"]["path"]
+    receipt = candidate.with_name(candidate.name + ".sha256")
+    receipt.write_bytes(b"x" * (qwen_artifact._MAX_SHA256_RECEIPT_BYTES + 1))
+    _guard_file_content_opens(monkeypatch, {receipt})
+
+    truth = probe_qwen_artifact(snapshot, binding=_binding(snapshot, metadata))
+
+    assert truth.mtp_locator.declared_sha256 is None
+
+
+def test_receipt_hard_link_to_small_candidate_is_rejected_before_open(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    candidate = tmp_path / "mtp.safetensors"
+    candidate.write_bytes(b"small tensor")
+    receipt = candidate.with_name(candidate.name + ".sha256")
+    os.link(candidate, receipt)
+    _guard_file_content_opens(monkeypatch, {candidate})
+
+    assert qwen_artifact._declared_sidecar_sha256(candidate) is None
+
+
+def test_canonical_receipt_disappearing_before_open_is_non_authoritative(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    snapshot, hub, metadata = _materialize_snapshot(tmp_path, "qwen38_27b_4bit")
+    binding = _binding(snapshot, metadata)
+    candidate = snapshot / metadata["mtp_candidate"]["path"]
+    receipt = candidate.with_name(candidate.name + ".sha256")
+    content = receipt.read_bytes()
+    repo_cache = hub / ("models--" + metadata["source_repo"].replace("/", "--"))
+    receipt_blob = repo_cache / "blobs" / hashlib.sha256(content).hexdigest()
+    receipt_blob.write_bytes(content)
+    _replace_with_symlink(receipt, receipt_blob)
+    provenance = qwen_artifact._same_repo_blob_provenance(
+        receipt, snapshot_dir=snapshot, binding=binding
+    )
+    assert provenance is not None
+    original_lstat = os.lstat
+
+    monkeypatch.setattr(
+        qwen_artifact,
+        "_same_repo_blob_provenance",
+        lambda *_args, **_kwargs: provenance,
+    )
+
+    def reject_resolved_receipt(path, *args, **kwargs):
+        if Path(path) == provenance.path:
+            raise OSError("synthetic receipt disappearance")
+        return original_lstat(path, *args, **kwargs)
+
+    monkeypatch.setattr(os, "lstat", reject_resolved_receipt)
+
+    assert (
+        qwen_artifact._declared_sidecar_sha256(
+            candidate, snapshot_dir=snapshot, binding=binding
+        )
+        is None
+    )
+
+
+@pytest.mark.parametrize(
+    "failure", ["candidate_stat", "opened_stat_drift", "short_read", "invalid_utf8"]
+)
+def test_receipt_defensive_read_failures_are_non_authoritative(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, failure: str
+) -> None:
+    candidate = tmp_path / "mtp.safetensors"
+    candidate.write_bytes(b"tensor")
+    receipt = candidate.with_name(candidate.name + ".sha256")
+    receipt.write_text("a" * 64 + "  mtp.safetensors\n", encoding="utf-8")
+
+    if failure == "candidate_stat":
+        original_stat = os.stat
+
+        def reject_candidate(path, *args, **kwargs):
+            if Path(path) == candidate:
+                raise OSError("synthetic candidate stat failure")
+            return original_stat(path, *args, **kwargs)
+
+        monkeypatch.setattr(os, "stat", reject_candidate)
+    elif failure == "opened_stat_drift":
+        replacement = tmp_path / "replacement-receipt"
+        replacement.write_text("different", encoding="utf-8")
+        monkeypatch.setattr(os, "fstat", lambda _descriptor: os.stat(replacement))
+    elif failure == "short_read":
+        monkeypatch.setattr(os, "read", lambda _descriptor, _limit: b"")
+    else:
+        receipt.write_bytes(b"\xff")
+
+    assert qwen_artifact._declared_sidecar_sha256(candidate) is None
 
 
 def test_drafter_conversion_requires_verified_capability_and_repo_relative_path(
@@ -1319,19 +1509,11 @@ def test_fresh_conversion_reads_only_resolved_metadata_and_never_network_or_tens
     tensor_blobs.add(
         (snapshot / metadata["mtp_candidate"]["path"]).resolve(strict=True)
     )
-    opened: set[Path] = set()
-    original_open = Path.open
-
-    def guarded_open(path: Path, *args, **kwargs):
-        opened.add(path)
-        if path in tensor_blobs:
-            raise AssertionError("runtime conversion must not open tensor content")
-        return original_open(path, *args, **kwargs)
+    opened = _guard_file_content_opens(monkeypatch, tensor_blobs)
 
     def reject_network(*_args, **_kwargs):
         raise AssertionError("runtime conversion must remain offline")
 
-    monkeypatch.setattr(Path, "open", guarded_open)
     monkeypatch.setattr(huggingface_hub, "hf_hub_download", reject_network)
     monkeypatch.setattr(huggingface_hub, "snapshot_download", reject_network)
 
@@ -1494,13 +1676,20 @@ def test_unreadable_index_receipt_and_config_fail_closed(
     candidate.touch()
     receipt_path.write_text("a" * 64 + "  mtp.safetensors\n", encoding="utf-8")
     original_read_text = Path.read_text
+    original_os_open = os.open
 
     def reject_selected(path: Path, *args, **kwargs):
-        if path in {index_path, receipt_path}:
+        if path == index_path:
             raise OSError("synthetic unreadable metadata")
         return original_read_text(path, *args, **kwargs)
 
+    def reject_receipt_open(path, *args, **kwargs):
+        if Path(path) == receipt_path:
+            raise OSError("synthetic unreadable receipt")
+        return original_os_open(path, *args, **kwargs)
+
     monkeypatch.setattr(Path, "read_text", reject_selected)
+    monkeypatch.setattr(os, "open", reject_receipt_open)
     assert (
         qwen_artifact._target_weights(snapshot, None).layout
         is TargetWeightLayout.INVALID_INDEX
@@ -1648,21 +1837,13 @@ def test_final_blob_resolution_failure_or_drift_has_no_provenance(
     )
 
 
-def test_unresolvable_sidecar_receipt_keeps_only_lexical_observation(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+def test_regular_sidecar_receipt_records_direct_bounded_read_observation(
+    tmp_path: Path,
 ) -> None:
     snapshot, _hub, metadata = _materialize_snapshot(tmp_path, "qwen38_27b_4bit")
     candidate = snapshot / metadata["mtp_candidate"]["path"]
     receipt = candidate.with_name(candidate.name + ".sha256")
     observations: list[qwen_artifact._PathObservation] = []
-    original_resolve = Path.resolve
-
-    def reject_receipt(path: Path, *args, **kwargs):
-        if path == receipt:
-            raise OSError("synthetic receipt resolution failure")
-        return original_resolve(path, *args, **kwargs)
-
-    monkeypatch.setattr(Path, "resolve", reject_receipt)
 
     assert (
         qwen_artifact._declared_sidecar_sha256(candidate, observations)
@@ -1670,7 +1851,7 @@ def test_unresolvable_sidecar_receipt_keeps_only_lexical_observation(
     )
     assert len(observations) == 1
     assert observations[0].leaf == receipt
-    assert observations[0].resolved_target is None
+    assert observations[0].resolved_target == Path(os.path.abspath(receipt))
 
 
 def test_symlink_fingerprint_records_readlink_failure(

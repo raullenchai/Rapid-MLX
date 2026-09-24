@@ -118,6 +118,10 @@ the current path.
   B0 never opens tensor content and trusts the Hugging Face downloader/cache
   CAS invariant. It cannot detect pre-existing, restored, or equal-size tensor
   corruption under the same cache-object name.
+- Optional `.sha256` declarations are read only from bounded regular files or
+  canonical same-repository Hub cache objects. Arbitrary receipt symlinks,
+  candidate-tensor inode aliases, and files over 4 KiB are rejected before
+  content reads.
 - Serialized status calls the stable digest a `provenance_receipt_id` and its
   issuer a `provenance_authority`. The private `VerifiedQwenTarget` /
   `verification_id` composition names remain temporarily for stacked B1 branch
@@ -135,10 +139,10 @@ until that evidence is reviewed.
 
 ## Integration verification
 
-- `552 passed`: runtime-plan, artifact-provenance/private-capability,
+- `562 passed`: runtime-plan, artifact-provenance/private-capability,
   boot-plan/status, CLI provenance, speculative-config, shared locator,
   injector/install, batched-family, and MTP CLI focused suites.
-- `300 passed` under focused coverage; exact changed-production line coverage is
+- `310 passed` under focused coverage; exact changed-production line coverage is
   100% for `qwen_runtime_plan.py`, `runtime/qwen_artifact.py`, and the receipt
   extractor.
 - The artifact conversion tests exercise the integrated core private mint,

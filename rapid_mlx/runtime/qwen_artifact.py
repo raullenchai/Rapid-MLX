@@ -895,27 +895,109 @@ def _target_weights(
 
 
 _SHA256_RECEIPT = re.compile(r"^([0-9a-f]{64})[ \t]+\*?[^\r\n]+$")
+_MAX_SHA256_RECEIPT_BYTES = 4096
+
+
+def _stat_fingerprint(metadata: os.stat_result) -> tuple[int, ...]:
+    """Return the fields used to reject a file swap before a bounded read."""
+
+    return (
+        metadata.st_dev,
+        metadata.st_ino,
+        metadata.st_mode,
+        metadata.st_size,
+        metadata.st_mtime_ns,
+        metadata.st_ctime_ns,
+    )
 
 
 def _declared_sidecar_sha256(
-    candidate: Path, observations: list[_PathObservation] | None = None
+    candidate: Path,
+    observations: list[_PathObservation] | None = None,
+    *,
+    snapshot_dir: Path | None = None,
+    binding: VerifiedHubSnapshotBinding | None = None,
 ) -> str | None:
     receipt = candidate.with_name(candidate.name + ".sha256")
-    if not receipt.is_file():
+    try:
+        receipt_stat = os.lstat(receipt)
+    except OSError:
         return None
+
+    read_path: Path | None = None
+    read_stat: os.stat_result | None = None
+    if stat.S_ISREG(receipt_stat.st_mode):
+        read_path = Path(os.path.abspath(receipt))
+        read_stat = receipt_stat
+    elif (
+        stat.S_ISLNK(receipt_stat.st_mode)
+        and snapshot_dir is not None
+        and binding is not None
+    ):
+        provenance = _same_repo_blob_provenance(
+            receipt, snapshot_dir=snapshot_dir, binding=binding
+        )
+        if provenance is not None:
+            try:
+                read_stat = os.lstat(provenance.path)
+            except OSError:
+                read_stat = None
+            else:
+                read_path = provenance.path
     if observations is not None:
-        try:
-            resolved = receipt.resolve(strict=True)
-        except OSError:
-            resolved = None
         observations.append(
             _PathObservation(
-                role="mtp:sha256-receipt", leaf=receipt, resolved_target=resolved
+                role="mtp:sha256-receipt",
+                leaf=receipt,
+                resolved_target=read_path,
             )
         )
+
+    # Receipts are small metadata. A symlink is accepted only when it is a
+    # canonical same-repository cache object; arbitrary aliases are rejected
+    # before any open. Hard links to the tensor are rejected by inode.
+    if (
+        read_path is None
+        or read_stat is None
+        or not stat.S_ISREG(read_stat.st_mode)
+        or read_stat.st_size > _MAX_SHA256_RECEIPT_BYTES
+    ):
+        return None
     try:
-        line = receipt.read_text(encoding="utf-8").strip()
-    except (OSError, UnicodeError):
+        candidate_stat = os.stat(candidate)
+    except OSError:
+        return None
+    if (
+        read_stat.st_dev,
+        read_stat.st_ino,
+    ) == (candidate_stat.st_dev, candidate_stat.st_ino):
+        return None
+
+    flags = os.O_RDONLY | os.O_CLOEXEC | os.O_NOFOLLOW
+    try:
+        descriptor = os.open(read_path, flags)
+    except OSError:
+        return None
+    try:
+        opened_stat = os.fstat(descriptor)
+        if (
+            not stat.S_ISREG(opened_stat.st_mode)
+            or opened_stat.st_size > _MAX_SHA256_RECEIPT_BYTES
+            or _stat_fingerprint(opened_stat) != _stat_fingerprint(read_stat)
+            or (
+                (opened_stat.st_dev, opened_stat.st_ino)
+                == (candidate_stat.st_dev, candidate_stat.st_ino)
+            )
+        ):
+            return None
+        encoded = os.read(descriptor, _MAX_SHA256_RECEIPT_BYTES + 1)
+        if len(encoded) != opened_stat.st_size:
+            return None
+    finally:
+        os.close(descriptor)
+    try:
+        line = encoded.decode("utf-8").strip()
+    except UnicodeError:
         return None
     match = _SHA256_RECEIPT.fullmatch(line)
     return match.group(1) if match is not None else None
@@ -979,7 +1061,12 @@ def _mtp_locator(
             )
         )
     cache_object_id = provenance.blob_id if provenance is not None else None
-    declared_sha256 = _declared_sidecar_sha256(candidate, observations)
+    declared_sha256 = _declared_sidecar_sha256(
+        candidate,
+        observations,
+        snapshot_dir=snapshot_dir,
+        binding=binding,
+    )
     matches = (
         declared_sha256 == cache_object_id
         if declared_sha256 is not None

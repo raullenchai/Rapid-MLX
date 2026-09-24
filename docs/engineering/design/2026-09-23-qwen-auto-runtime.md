@@ -118,6 +118,12 @@ verification. Qualification binds every cache-object name and observed file
 size, and reports `tensor_byte_integrity: unchecked`. Repointing, renaming, or
 size drift fails closed at the point-in-time revalidation boundary.
 
+Optional `.sha256` declarations are bounded metadata reads. A regular receipt
+must fit within 4 KiB; a receipt symlink must additionally resolve through the
+same repository's canonical Hub cache-object layout. Receipts that alias the
+candidate tensor inode, arbitrary symlinks, and oversized files are rejected
+before any content read.
+
 This contract trusts the Hugging Face downloader/cache CAS invariant. It does
 not detect pre-existing corruption, content restored after observation, or an
 equal-size byte mutation under the same cache-object name. Full tensor-byte
