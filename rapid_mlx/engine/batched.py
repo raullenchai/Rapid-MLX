@@ -26,7 +26,11 @@ from collections.abc import AsyncIterator, Callable
 from dataclasses import dataclass, replace
 from enum import Enum
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
+
+if TYPE_CHECKING:
+    from ..qwen_runtime_plan import QwenRuntimePlan
+    from ..runtime.qwen_artifact import QwenArtifactTruth
 
 from ..api.errors import GuidedGenerationCancelledError
 from ..api.tool_calling import convert_tools_for_template
@@ -1197,8 +1201,8 @@ class BatchedEngine(BaseEngine):
         self._qwen_operator_target_lane = operator_target_lane
         self._qwen_artifact_repo_id = artifact_repo_id or model_name
         self._qwen_artifact_snapshot_source: str | None = model_name
-        self._qwen_runtime_plan = None
-        self._qwen_artifact_truth = None
+        self._qwen_runtime_plan: QwenRuntimePlan | None = None
+        self._qwen_artifact_truth: QwenArtifactTruth | None = None
         self._qwen_mtp_dispatch_result: str | None = None
         self._tool_logits_processor_factory = None
 
@@ -1869,9 +1873,11 @@ class BatchedEngine(BaseEngine):
                 supports_spec_decode = getattr(
                     model_config, "supports_spec_decode", True
                 )
-                from ..scheduler import _config_vetted_mtp_supports_spec_decode
+                from ..spec_decode.config import (
+                    config_vetted_mtp_supports_spec_decode,
+                )
 
-                config_vetted = _config_vetted_mtp_supports_spec_decode(
+                config_vetted = config_vetted_mtp_supports_spec_decode(
                     getattr(self._scheduler_config, "mtp_model_type", None)
                 )
                 profile_allows_mtp = (

@@ -16,6 +16,25 @@ class SpeculativeConfigError(ValueError):
     """Raised when ``--speculative-config`` is malformed or unsupported."""
 
 
+def config_vetted_mtp_supports_spec_decode(model_type: str | None) -> bool:
+    """Return whether config-vetted MTP may override an alias profile.
+
+    Some older alias profiles still carry ``supports_spec_decode=False`` even
+    when checkpoint config advertises a supported MTP head. The CLI publishes
+    ``model_type`` only after its eligibility gate accepts the config, so keep
+    this override narrowly tied to the model families the runtime supports.
+    """
+
+    return model_type in {
+        "qwen3_5",
+        "qwen3_5_moe",
+        "hy_v3",
+        "qwen4_exp",
+        "gemma4",
+        "gemma4_unified",
+    }
+
+
 @dataclass(frozen=True)
 class SpeculativeConfig:
     """Parsed ``--speculative-config`` payload.
