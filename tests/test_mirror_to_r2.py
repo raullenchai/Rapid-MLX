@@ -35,12 +35,13 @@ import pytest
 # collect into a false failure.
 pytest.importorskip("botocore")
 
-# Load the CLI module from ``scripts/`` — it isn't a package member.
+# Load the CLI module from ``scripts/`` with its package identity so its
+# package-relative imports follow the same path as normal module execution.
 _SCRIPT = Path(__file__).parent.parent / "scripts" / "mirror_to_r2.py"
-_SPEC = importlib.util.spec_from_file_location("mirror_to_r2", _SCRIPT)
+_SPEC = importlib.util.spec_from_file_location("scripts.mirror_to_r2", _SCRIPT)
 assert _SPEC and _SPEC.loader
 mirror_to_r2 = importlib.util.module_from_spec(_SPEC)
-sys.modules["mirror_to_r2"] = mirror_to_r2
+sys.modules[_SPEC.name] = mirror_to_r2
 _SPEC.loader.exec_module(mirror_to_r2)
 
 

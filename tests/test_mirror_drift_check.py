@@ -37,8 +37,8 @@ def _load(name: str, path: Path) -> Any:
     return module
 
 
-drift = _load("mirror_drift_check", ROOT / "scripts" / "mirror_drift_check.py")
-mirror = _load("mirror_to_r2_integrity", ROOT / "scripts" / "mirror_to_r2.py")
+drift = _load("scripts.mirror_drift_check", ROOT / "scripts" / "mirror_drift_check.py")
+mirror = _load("scripts.mirror_to_r2_integrity", ROOT / "scripts" / "mirror_to_r2.py")
 
 
 class Response:
@@ -614,6 +614,57 @@ def test_intentionally_unmirrored_skips_mirror_but_checks_hf(
     assert "gone" in summary
     assert "findings" in summary
     assert "reason=unused" in summary
+
+
+def test_alternate_catalog_without_registry_does_not_skip_matching_repo(
+    monkeypatch, tmp_path
+):
+    main = tmp_path / "aliases.json"
+    audio = tmp_path / "audio.json"
+    repo = "lmstudio-community/MiniMax-M2.5-MLX-4bit"
+    main.write_text(json.dumps({"custom": {"hf_path": repo}}))
+    audio.write_text("{}")
+    item = drift.HfFile("config.json", 2, None)
+    probes = []
+
+    monkeypatch.setattr(drift, "_hf_repo", lambda _repo: drift.HfRepo("rev", [item]))
+    monkeypatch.setattr(
+        drift,
+        "_catalog_entries",
+        lambda: [{"alias": "custom", "hf_path": repo, "status": "mirrored"}],
+    )
+    monkeypatch.setattr(drift, "_maybe_r2_client", lambda: None)
+    monkeypatch.setattr(
+        drift,
+        "_public_probe",
+        lambda repo_id, file: (
+            probes.append((repo_id, file.path))
+            or drift.MirrorProbe(200, file.size, None, None)
+        ),
+    )
+
+    report = drift.audit(main, audio)[0]
+
+    assert probes == [(repo, "config.json")]
+    assert report.state == "ok"
+    assert not report.intentionally_unmirrored
+
+
+def test_default_catalogs_select_default_unmirrored_registry(monkeypatch):
+    loaded = []
+    monkeypatch.setattr(drift, "_load_aliases", lambda *_args: [])
+    monkeypatch.setattr(
+        drift,
+        "load_unmirrored",
+        lambda *args: loaded.append(args) or {},
+    )
+    monkeypatch.setattr(drift, "_catalog_entries", lambda: [])
+    monkeypatch.setattr(drift, "_maybe_r2_client", lambda: None)
+
+    assert drift.audit(drift.ALIASES_PATH, drift.AUDIO_ALIASES_PATH) == []
+    assert loaded == [
+        (drift.UNMIRRORED_PATH, drift.ALIASES_PATH, drift.AUDIO_ALIASES_PATH)
+    ]
 
 
 def test_probe_size_fallback_timestamps_and_etags(monkeypatch):
@@ -1385,7 +1436,7 @@ def test_sigterm_exits_promptly_with_one_partial_report(tmp_path):
         import threading
 
         path = {str(ROOT / "scripts" / "mirror_drift_check.py")!r}
-        spec = importlib.util.spec_from_file_location("sigterm_drift", path)
+        spec = importlib.util.spec_from_file_location("scripts.sigterm_drift", path)
         module = importlib.util.module_from_spec(spec)
         sys.modules[spec.name] = module
         spec.loader.exec_module(module)
@@ -1585,6 +1636,7 @@ def test_real_audit_exhaustion_aborts_bounded_probe_window(
 
 
 def test_script_entrypoint_handles_missing_alias_file(monkeypatch, tmp_path):
+    monkeypatch.syspath_prepend(str(ROOT / "scripts"))
     monkeypatch.setattr(
         sys,
         "argv",
@@ -1601,6 +1653,12 @@ def test_script_entrypoint_handles_missing_alias_file(monkeypatch, tmp_path):
             str(ROOT / "scripts" / "mirror_drift_check.py"), run_name="__main__"
         )
     assert raised.value.code == 2
+
+
+def test_mirror_uploader_direct_execution_import(monkeypatch):
+    monkeypatch.syspath_prepend(str(ROOT / "scripts"))
+    namespace = runpy.run_path(str(ROOT / "scripts" / "mirror_to_r2.py"))
+    assert namespace["load_unmirrored"].__module__ == "mirror_unmirrored"
 
 
 def test_mirror_uploader_public_404_is_advisory(monkeypatch, capsys):

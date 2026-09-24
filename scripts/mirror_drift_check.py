@@ -50,10 +50,13 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
-try:
-    from mirror_unmirrored import UnmirroredEntry, load_unmirrored
-except ModuleNotFoundError:
-    from scripts.mirror_unmirrored import UnmirroredEntry, load_unmirrored
+if __package__:
+    from . import mirror_unmirrored
+else:
+    import mirror_unmirrored
+
+UnmirroredEntry = mirror_unmirrored.UnmirroredEntry
+load_unmirrored = mirror_unmirrored.load_unmirrored
 
 CATALOG_URL = "https://models.rapidmlx.com/api/models"
 HF_API_BASE = "https://huggingface.co/api/models"
@@ -968,13 +971,24 @@ def audit(
     progress: AuditProgress | None = None,
     unmirrored_path: Path | None = None,
 ) -> list[AliasReport]:
-    """Audit aliases; ``only_used`` omits bucket-only catalog inventory rows."""
+    """Audit aliases; ``only_used`` omits bucket-only catalog inventory rows.
+
+    Alternate catalogs without an explicit registry use an empty registry: no
+    repositories in those catalogs are assumed to be intentionally unmirrored.
+    """
     specs = _load_aliases(main_aliases_path, audio_aliases_path)
-    if unmirrored_path is None:
-        unmirrored = load_unmirrored(UNMIRRORED_PATH, ALIASES_PATH, AUDIO_ALIASES_PATH)
+    selected_unmirrored_path = unmirrored_path
+    if (
+        selected_unmirrored_path is None
+        and main_aliases_path == ALIASES_PATH
+        and audio_aliases_path == AUDIO_ALIASES_PATH
+    ):
+        selected_unmirrored_path = UNMIRRORED_PATH
+    if selected_unmirrored_path is None:
+        unmirrored: dict[str, UnmirroredEntry] = {}
     else:
         unmirrored = load_unmirrored(
-            unmirrored_path, main_aliases_path, audio_aliases_path
+            selected_unmirrored_path, main_aliases_path, audio_aliases_path
         )
     selected = [spec for spec in specs if aliases is None or spec.alias in aliases]
     if aliases is not None:

@@ -69,10 +69,12 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
-try:
-    from mirror_unmirrored import load_unmirrored
-except ModuleNotFoundError:
-    from scripts.mirror_unmirrored import load_unmirrored
+if __package__:
+    from . import mirror_unmirrored
+else:
+    import mirror_unmirrored
+
+load_unmirrored = mirror_unmirrored.load_unmirrored
 
 # Public defaults — persisted so a fresh operator can invoke the tool
 # without hunting for the endpoint URL / bucket name.
