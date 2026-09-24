@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+import argparse
 import importlib
 import json
 import os
@@ -19,6 +20,7 @@ from unittest.mock import AsyncMock
 import pytest
 
 from rapid_mlx import cli, server
+from rapid_mlx.runtime import optional_runtime
 from rapid_mlx.runtime.optional_runtime import OptionalRuntimeMissing
 from rapid_mlx.telemetry import model_events, registry, server_start
 
@@ -43,6 +45,7 @@ def _run_real_missing_extra_dispatch(
     model: str,
     status: str = "absent",
     standalone: bool = False,
+    install_missing: bool = False,
     video_python_version: tuple[int, int] = (3, 11),
 ) -> tuple[subprocess.CompletedProcess[str], list[SimpleNamespace], str]:
     home = tmp_path / "home"
@@ -109,6 +112,26 @@ cli._ensure_model_downloaded = lambda *_args, **_kwargs: None
 
 lane = os.environ["RAPID_MLX_TEST_EXTRA_LANE"]
 status = os.environ.get("RAPID_MLX_TEST_EXTRA_STATUS", "absent")
+install_requested = status == "install"
+if install_requested:
+    import rapid_mlx.runtime.optional_runtime as optional_runtime
+    from rapid_mlx.telemetry import posthog_sender
+
+    real_subprocess_run = optional_runtime.subprocess.run
+
+    def install_or_run(argv, *args, **kwargs):
+        if len(argv) >= 5 and argv[1:4] == ["-m", "pip", "install"]:
+            return types.SimpleNamespace(returncode=0)
+        return real_subprocess_run(argv, *args, **kwargs)
+
+    optional_runtime.subprocess.run = install_or_run
+
+    def exec_after_flush(_executable, _argv):
+        posthog_sender.get_sender().flush(5.0)
+        os._exit(0)
+
+    optional_runtime.os.execv = exec_after_flush
+    status = "absent"
 real_find_spec = importlib.util.find_spec
 hidden_modules = {
     "audio": {"mlx_audio"},
@@ -119,6 +142,8 @@ hidden_modules = {
 }
 
 def find_spec(name, *args, **kwargs):
+    if install_requested and name == "pip":
+        return object()
     hidden = hidden_modules.get(lane, set())
     if any(name == module or name.startswith(module + ".") for module in hidden):
         return None
@@ -186,7 +211,7 @@ if lane == "vision-present":
         RAPID_MLX_POSTHOG_URL=f"http://127.0.0.1:{sink.server_port}/batch/",
         RAPID_MLX_DISABLE_VERSION_CHECK="1",
         RAPID_MLX_TEST_EXTRA_LANE=lane,
-        RAPID_MLX_TEST_EXTRA_STATUS=status,
+        RAPID_MLX_TEST_EXTRA_STATUS="install" if install_missing else status,
         RAPID_MLX_TEST_VIDEO_PYTHON_MAJOR=str(video_python_version[0]),
         RAPID_MLX_TEST_VIDEO_PYTHON_MINOR=str(video_python_version[1]),
         HF_HUB_OFFLINE="1",
@@ -206,13 +231,15 @@ if lane == "vision-present":
             '{"model_type":"prism_hadamard_qwen35"}',
             encoding="utf-8",
         )
-    command = (
-        [sys.executable, "-m", "rapid_mlx.server"]
-        if standalone
-        else [str(Path(sys.executable).with_name("rapid-mlx"))]
-    )
+    if standalone:
+        command = [sys.executable, "-m", "rapid_mlx.server"]
+    elif install_missing:
+        # Exercise the restart-sensitive ``-m rapid_mlx.cli`` invocation.
+        command = [sys.executable, "-m", "rapid_mlx.cli"]
+    else:
+        command = [str(Path(sys.executable).with_name("rapid-mlx"))]
     interpreter_command = [command[0]]
-    if not standalone:
+    if not standalone and not install_missing:
         shebang = Path(command[0]).read_text(encoding="utf-8").splitlines()[0]
         assert shebang.startswith("#!")
         interpreter_command = shlex.split(shebang[2:])
@@ -232,6 +259,8 @@ if lane == "vision-present":
         if standalone
         else ["serve", model, "--port", "0"]
     )
+    if install_missing and not standalone:
+        command.append("--yes")
     try:
         proc = subprocess.run(
             command,
@@ -333,11 +362,46 @@ def _contracted_failure_events(
 
 @pytest.fixture(autouse=True)
 def _reset_one_shot_state():
+    optional_runtime._reset_assume_yes_for_tests()
     server_start._reset_for_tests()
     model_events._reset_for_tests()
-    yield
-    server_start._reset_for_tests()
-    model_events._reset_for_tests()
+    try:
+        yield
+    finally:
+        optional_runtime._reset_assume_yes_for_tests()
+        server_start._reset_for_tests()
+        model_events._reset_for_tests()
+
+
+def test_posix_prompt_ready_at_deadline_is_not_accepted(monkeypatch) -> None:
+    now = [10.0]
+
+    def ready_at_deadline(_read, _write, _errors, timeout):
+        assert timeout == pytest.approx(0.1)
+        now[0] = 10.1
+        return [7], [], []
+
+    monkeypatch.setattr(optional_runtime.time, "monotonic", lambda: now[0])
+    monkeypatch.setattr(optional_runtime.select, "select", ready_at_deadline)
+    monkeypatch.setattr(
+        optional_runtime.os,
+        "read",
+        lambda *_args: pytest.fail("deadline-expired input must not be consumed"),
+    )
+
+    response = optional_runtime._read_posix_prompt_response(
+        SimpleNamespace(fileno=lambda: 7),
+        0.1,
+    )
+
+    assert response is None
+    assert (
+        optional_runtime._read_posix_prompt_response(
+            SimpleNamespace(fileno=lambda: 7),
+            0.0,
+        )
+        is None
+    )
 
 
 def _capture(monkeypatch):
@@ -603,6 +667,7 @@ def test_standalone_failure_guard_routes_optional_runtime_with_context(
     calls = []
     monkeypatch.setattr(server, "_engine", engine)
     monkeypatch.setattr(server, "_standalone_start_model", "bonsai2-27b-2bit")
+    monkeypatch.setattr(optional_runtime, "_assume_yes", True)
 
     def handle(exc, **kwargs):
         calls.append((exc, kwargs))
@@ -624,6 +689,7 @@ def test_standalone_failure_guard_routes_optional_runtime_with_context(
                 "engine": engine,
                 "alias_or_path": "bonsai2-27b-2bit",
                 "auto_selected": False,
+                "assume_yes": True,
             },
         )
     ]
@@ -635,8 +701,13 @@ def test_standalone_main_records_model_before_startup(monkeypatch) -> None:
     class StopStartup(BaseException):
         pass
 
-    parsed = SimpleNamespace(model="bonsai2-27b-2bit", lazy_load=False)
-    monkeypatch.setattr("argparse.ArgumentParser.parse_args", lambda _self: parsed)
+    original_parse_args = argparse.ArgumentParser.parse_args
+    monkeypatch.setattr(
+        "argparse.ArgumentParser.parse_args",
+        lambda parser: original_parse_args(
+            parser, ["--model", "bonsai2-27b-2bit", "--yes"]
+        ),
+    )
     monkeypatch.setattr(
         consent_runtime,
         "startup",
@@ -647,6 +718,7 @@ def test_standalone_main_records_model_before_startup(monkeypatch) -> None:
         server.main()
 
     assert server._standalone_start_model == "bonsai2-27b-2bit"
+    assert optional_runtime.assume_yes() is True
 
 
 def test_real_dispatch_with_present_vision_extra_emits_no_failure(tmp_path) -> None:
@@ -657,7 +729,7 @@ def test_real_dispatch_with_present_vision_extra_emits_no_failure(tmp_path) -> N
         status="present",
     )
 
-    assert proc.returncode == 0
+    assert proc.returncode == 0, proc.stderr
     markers = [
         line
         for line in proc.stderr.splitlines()
@@ -856,7 +928,7 @@ def test_main_routes_optional_failure_to_single_handler(
 
 
 @pytest.mark.asyncio
-async def test_lifespan_optional_failure_reuses_cli_handler(monkeypatch) -> None:
+async def test_cli_yes_reaches_lifespan_failure_wrapper(monkeypatch) -> None:
     failure = OptionalRuntimeMissing(
         extra="audio",
         install_hint="pip install 'rapid-mlx[audio]'",
@@ -866,6 +938,18 @@ async def test_lifespan_optional_failure_reuses_cli_handler(monkeypatch) -> None
     lifecycle = SimpleNamespace(ensure_loaded=AsyncMock(side_effect=failure))
     engine = SimpleNamespace(_loaded=False)
     calls = []
+
+    class StopServeError(Exception):
+        pass
+
+    monkeypatch.setattr(optional_runtime, "_assume_yes", False)
+    monkeypatch.setattr(
+        cli,
+        "_validate_primary_lifecycle_args",
+        lambda _args: (_ for _ in ()).throw(StopServeError()),
+    )
+    with pytest.raises(StopServeError):
+        cli.serve_command(SimpleNamespace(yes=True))
 
     monkeypatch.setattr(server, "_engine", engine)
     monkeypatch.setattr(server, "_primary_model_lifecycle", lifecycle)
@@ -893,6 +977,24 @@ async def test_lifespan_optional_failure_reuses_cli_handler(monkeypatch) -> None
                 "engine": engine,
                 "alias_or_path": "kokoro",
                 "auto_selected": False,
+                "assume_yes": True,
             },
         )
+    ]
+
+
+def test_yes_install_preserves_failure_terminals_at_loopback_sink(tmp_path) -> None:
+    proc, events, _child_executable = _run_real_missing_extra_dispatch(
+        tmp_path,
+        lane="bonsai",
+        model="bonsai2-27b-2bit",
+        install_missing=True,
+    )
+
+    assert proc.returncode == 0, proc.stderr
+    assert "Install rapid-mlx[vision] now?" not in proc.stderr
+    assert events, proc.stderr
+    assert _contracted_failure_events(events) == [
+        ("server_start_state", "failed", "preflight", None, None),
+        ("model_serve_failed", None, None, "missing_extra", "vision"),
     ]
