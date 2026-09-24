@@ -150,9 +150,11 @@ class AliasReport:
 
     @property
     def state(self) -> str:
+        if self.findings:
+            return "findings"
         if self.intentionally_unmirrored:
             return "unmirrored (intentional)"
-        return "ok" if not self.findings else "findings"
+        return "ok"
 
 
 @dataclass

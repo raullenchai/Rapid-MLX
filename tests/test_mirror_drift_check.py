@@ -543,7 +543,9 @@ def test_hf_failure_is_reported_without_aborting(monkeypatch, tmp_path):
     )
 
 
-def test_intentionally_unmirrored_skips_mirror_but_checks_hf(monkeypatch, tmp_path):
+def test_intentionally_unmirrored_skips_mirror_but_checks_hf(
+    monkeypatch, tmp_path, capsys
+):
     main = tmp_path / "aliases.json"
     audio = tmp_path / "audio.json"
     main.write_text(
@@ -591,7 +593,7 @@ def test_intentionally_unmirrored_skips_mirror_but_checks_hf(monkeypatch, tmp_pa
     assert set(seen_hf) == {"org/retired", "org/gone"}
     assert reports["retired"].state == "unmirrored (intentional)"
     assert reports["retired"].findings == []
-    assert reports["gone"].state == "unmirrored (intentional)"
+    assert reports["gone"].state == "findings"
     assert reports["gone"].findings == [
         drift.Finding("hf_unavailable", "error", detail="HTTP 401")
     ]
@@ -603,6 +605,15 @@ def test_intentionally_unmirrored_skips_mirror_but_checks_hf(monkeypatch, tmp_pa
     rendered = drift._render_text(list(reports.values()))
     assert "unmirrored (intentional)" in rendered
     assert "reason=unused" in rendered
+
+    monkeypatch.setattr(
+        drift, "audit", lambda *_args, **_kwargs: list(reports.values())
+    )
+    assert drift.main([]) == 1
+    summary = capsys.readouterr().out
+    assert "gone" in summary
+    assert "findings" in summary
+    assert "reason=unused" in summary
 
 
 def test_probe_size_fallback_timestamps_and_etags(monkeypatch):
