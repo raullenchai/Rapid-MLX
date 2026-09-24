@@ -37,8 +37,8 @@ def _load(name: str, path: Path) -> Any:
     return module
 
 
-drift = _load("mirror_drift_check", ROOT / "scripts" / "mirror_drift_check.py")
-mirror = _load("mirror_to_r2_integrity", ROOT / "scripts" / "mirror_to_r2.py")
+drift = _load("scripts.mirror_drift_check", ROOT / "scripts" / "mirror_drift_check.py")
+mirror = _load("scripts.mirror_to_r2_integrity", ROOT / "scripts" / "mirror_to_r2.py")
 
 
 class Response:
@@ -112,6 +112,122 @@ def test_both_alias_schemas_and_allow_list(tmp_path):
     ]
     assert drift._valid_repo_id("org/repo")
     assert not drift._valid_repo_id("org/repo/extra")
+
+
+def _write_unmirrored(tmp_path, entries):
+    path = tmp_path / "mirror_unmirrored.json"
+    path.write_text(json.dumps({"schema_version": 1, "entries": entries}))
+    return path
+
+
+def test_unmirrored_loader_accepts_valid_file(tmp_path):
+    main, audio = _write_aliases(tmp_path)
+    path = _write_unmirrored(
+        tmp_path,
+        [
+            {
+                "hf_path": "org/good",
+                "reason": "unused",
+                "since": "2026-09-24",
+            },
+            {
+                "hf_path": "audio/speech",
+                "reason": "served upstream",
+                "since": "2026-09-23",
+            },
+        ],
+    )
+
+    entries = drift.load_unmirrored(path, main, audio)
+
+    assert entries["org/good"].reason == "unused"
+    assert entries["audio/speech"].since == "2026-09-23"
+
+
+def test_unmirrored_loader_rejects_stale_hf_path(tmp_path):
+    main, audio = _write_aliases(tmp_path)
+    path = _write_unmirrored(
+        tmp_path,
+        [{"hf_path": "org/stale", "reason": "unused", "since": "2026-09-24"}],
+    )
+    with pytest.raises(ValueError, match="not present in the alias catalogs"):
+        drift.load_unmirrored(path, main, audio)
+
+
+def test_unmirrored_loader_rejects_duplicate(tmp_path):
+    main, audio = _write_aliases(tmp_path)
+    entry = {"hf_path": "org/good", "reason": "unused", "since": "2026-09-24"}
+    path = _write_unmirrored(tmp_path, [entry, entry])
+    with pytest.raises(ValueError, match="duplicate hf_path"):
+        drift.load_unmirrored(path, main, audio)
+
+
+def test_unmirrored_loader_rejects_bad_date(tmp_path):
+    main, audio = _write_aliases(tmp_path)
+    path = _write_unmirrored(
+        tmp_path,
+        [{"hf_path": "org/good", "reason": "unused", "since": "09/24/2026"}],
+    )
+    with pytest.raises(ValueError, match="ISO date"):
+        drift.load_unmirrored(path, main, audio)
+
+
+@pytest.mark.parametrize(
+    ("payload", "message"),
+    [
+        ([], "exactly the keys"),
+        ({"schema_version": 2, "entries": []}, "schema_version must be 1"),
+        ({"schema_version": 1, "entries": {}}, "entries must be a JSON array"),
+        (
+            {
+                "schema_version": 1,
+                "entries": [
+                    {
+                        "hf_path": "org/good",
+                        "reason": "unused",
+                        "since": "2026-09-24",
+                        "extra": True,
+                    }
+                ],
+            },
+            "exactly the keys hf_path",
+        ),
+        (
+            {
+                "schema_version": 1,
+                "entries": [
+                    {"hf_path": "org/good", "reason": " ", "since": "2026-09-24"}
+                ],
+            },
+            "non-empty string",
+        ),
+        (
+            {
+                "schema_version": 1,
+                "entries": [
+                    {"hf_path": "org/good", "reason": "unused", "since": "20260924"}
+                ],
+            },
+            "ISO date",
+        ),
+    ],
+)
+def test_unmirrored_loader_rejects_invalid_shapes(tmp_path, payload, message):
+    main, audio = _write_aliases(tmp_path)
+    path = tmp_path / "mirror_unmirrored.json"
+    path.write_text(json.dumps(payload))
+    with pytest.raises(ValueError, match=message):
+        drift.load_unmirrored(path, main, audio)
+
+
+def test_unmirrored_loader_rejects_non_object_alias_catalog(tmp_path):
+    main = tmp_path / "aliases.json"
+    audio = tmp_path / "audio.json"
+    registry = _write_unmirrored(tmp_path, [])
+    main.write_text("[]")
+    audio.write_text("{}")
+    with pytest.raises(ValueError, match="must contain a JSON object"):
+        drift.load_unmirrored(registry, main, audio)
 
 
 def test_invalid_alias_file_and_hf_payload(monkeypatch, tmp_path):
@@ -425,6 +541,130 @@ def test_hf_failure_is_reported_without_aborting(monkeypatch, tmp_path):
     assert report.findings[-1] == drift.Finding(
         "hf_unavailable", "error", detail="gone"
     )
+
+
+def test_intentionally_unmirrored_skips_mirror_but_checks_hf(
+    monkeypatch, tmp_path, capsys
+):
+    main = tmp_path / "aliases.json"
+    audio = tmp_path / "audio.json"
+    main.write_text(
+        json.dumps(
+            {
+                "retired": {"hf_path": "org/retired"},
+                "gone": {"hf_path": "org/gone"},
+            }
+        )
+    )
+    audio.write_text("{}")
+    unmirrored = _write_unmirrored(
+        tmp_path,
+        [
+            {
+                "hf_path": repo,
+                "reason": "unused",
+                "since": "2026-09-24",
+            }
+            for repo in ("org/retired", "org/gone")
+        ],
+    )
+    seen_hf = []
+
+    def hf_repo(repo):
+        seen_hf.append(repo)
+        if repo == "org/gone":
+            raise RuntimeError("HTTP 401")
+        return drift.HfRepo("revision", [drift.HfFile("config.json", 2, None)])
+
+    monkeypatch.setattr(drift, "_hf_repo", hf_repo)
+    monkeypatch.setattr(drift, "_catalog_entries", lambda: [])
+    monkeypatch.setattr(drift, "_maybe_r2_client", lambda: None)
+    monkeypatch.setattr(
+        drift,
+        "_public_probe",
+        lambda *_args: pytest.fail("intentional repos must not probe the mirror"),
+    )
+
+    reports = {
+        report.alias: report
+        for report in drift.audit(main, audio, unmirrored_path=unmirrored)
+    }
+
+    assert set(seen_hf) == {"org/retired", "org/gone"}
+    assert reports["retired"].state == "unmirrored (intentional)"
+    assert reports["retired"].findings == []
+    assert reports["gone"].state == "findings"
+    assert reports["gone"].findings == [
+        drift.Finding("hf_unavailable", "error", detail="HTTP 401")
+    ]
+    assert drift._summary_counts(list(reports.values())) == {
+        "hf_unavailable": 1,
+        "unmirrored_intentional": 2,
+    }
+    assert drift._fails(list(reports.values()), "error")
+    rendered = drift._render_text(list(reports.values()))
+    assert "unmirrored (intentional)" in rendered
+    assert "reason=unused" in rendered
+
+    monkeypatch.setattr(
+        drift, "audit", lambda *_args, **_kwargs: list(reports.values())
+    )
+    assert drift.main([]) == 1
+    summary = capsys.readouterr().out
+    assert "gone" in summary
+    assert "findings" in summary
+    assert "reason=unused" in summary
+
+
+def test_alternate_catalog_without_registry_does_not_skip_matching_repo(
+    monkeypatch, tmp_path
+):
+    main = tmp_path / "aliases.json"
+    audio = tmp_path / "audio.json"
+    repo = "lmstudio-community/MiniMax-M2.5-MLX-4bit"
+    main.write_text(json.dumps({"custom": {"hf_path": repo}}))
+    audio.write_text("{}")
+    item = drift.HfFile("config.json", 2, None)
+    probes = []
+
+    monkeypatch.setattr(drift, "_hf_repo", lambda _repo: drift.HfRepo("rev", [item]))
+    monkeypatch.setattr(
+        drift,
+        "_catalog_entries",
+        lambda: [{"alias": "custom", "hf_path": repo, "status": "mirrored"}],
+    )
+    monkeypatch.setattr(drift, "_maybe_r2_client", lambda: None)
+    monkeypatch.setattr(
+        drift,
+        "_public_probe",
+        lambda repo_id, file: (
+            probes.append((repo_id, file.path))
+            or drift.MirrorProbe(200, file.size, None, None)
+        ),
+    )
+
+    report = drift.audit(main, audio)[0]
+
+    assert probes == [(repo, "config.json")]
+    assert report.state == "ok"
+    assert not report.intentionally_unmirrored
+
+
+def test_default_catalogs_select_default_unmirrored_registry(monkeypatch):
+    loaded = []
+    monkeypatch.setattr(drift, "_load_aliases", lambda *_args: [])
+    monkeypatch.setattr(
+        drift,
+        "load_unmirrored",
+        lambda *args: loaded.append(args) or {},
+    )
+    monkeypatch.setattr(drift, "_catalog_entries", lambda: [])
+    monkeypatch.setattr(drift, "_maybe_r2_client", lambda: None)
+
+    assert drift.audit(drift.ALIASES_PATH, drift.AUDIO_ALIASES_PATH) == []
+    assert loaded == [
+        (drift.UNMIRRORED_PATH, drift.ALIASES_PATH, drift.AUDIO_ALIASES_PATH)
+    ]
 
 
 def test_probe_size_fallback_timestamps_and_etags(monkeypatch):
@@ -1196,7 +1436,7 @@ def test_sigterm_exits_promptly_with_one_partial_report(tmp_path):
         import threading
 
         path = {str(ROOT / "scripts" / "mirror_drift_check.py")!r}
-        spec = importlib.util.spec_from_file_location("sigterm_drift", path)
+        spec = importlib.util.spec_from_file_location("scripts.sigterm_drift", path)
         module = importlib.util.module_from_spec(spec)
         sys.modules[spec.name] = module
         spec.loader.exec_module(module)
@@ -1396,6 +1636,7 @@ def test_real_audit_exhaustion_aborts_bounded_probe_window(
 
 
 def test_script_entrypoint_handles_missing_alias_file(monkeypatch, tmp_path):
+    monkeypatch.syspath_prepend(str(ROOT / "scripts"))
     monkeypatch.setattr(
         sys,
         "argv",
@@ -1414,6 +1655,12 @@ def test_script_entrypoint_handles_missing_alias_file(monkeypatch, tmp_path):
     assert raised.value.code == 2
 
 
+def test_mirror_uploader_direct_execution_import(monkeypatch):
+    monkeypatch.syspath_prepend(str(ROOT / "scripts"))
+    namespace = runpy.run_path(str(ROOT / "scripts" / "mirror_to_r2.py"))
+    assert namespace["load_unmirrored"].__module__ == "mirror_unmirrored"
+
+
 def test_mirror_uploader_public_404_is_advisory(monkeypatch, capsys):
     item = mirror.FileMeta("file.bin", 7, "org/repo/file.bin", None)
     monkeypatch.setattr(mirror, "_hf_files", lambda _repo: [item])
@@ -1425,6 +1672,30 @@ def test_mirror_uploader_public_404_is_advisory(monkeypatch, capsys):
     assert "ADVISORY" in output
     assert "signed R2 HEAD is authoritative and passed" in output
     assert "1 public advisories" in output
+
+
+def test_mirror_uploader_refuses_unmirrored_without_force(monkeypatch, capsys):
+    entry = types.SimpleNamespace(reason="unused: no pulls", since="2026-09-24")
+    monkeypatch.setattr(mirror, "load_unmirrored", lambda *_args: {"org/repo": entry})
+    hf_calls = []
+    monkeypatch.setattr(mirror, "_hf_files", lambda repo: hf_calls.append(repo) or [])
+    monkeypatch.setattr(mirror, "_r2_client", lambda *_args: object())
+    assert (
+        mirror._build_parser()
+        .parse_args(["org/repo", "--force-unmirrored"])
+        .force_unmirrored
+    )
+
+    assert mirror.mirror_repo("org/repo") == 2
+    assert hf_calls == []
+    refusal = capsys.readouterr().err
+    assert refusal.count("SKIP intentionally unmirrored") == 1
+    assert "unused: no pulls" in refusal
+    assert "2026-09-24" in refusal
+    assert "--force-unmirrored" in refusal
+
+    assert mirror.mirror_repo("org/repo", force_unmirrored=True) == 0
+    assert hf_calls == ["org/repo"]
 
 
 def test_mirror_uploader_zero_byte_head_and_verify_failure(monkeypatch, capsys):
