@@ -1367,7 +1367,9 @@ def to_runtime_drafter_identity(truth: QwenArtifactTruth):
 
     This maps identity only; it does not claim that the drafter is qualified
     for a runtime mode. Regular files, declared checksums, and locator shapes
-    without a canonical same-repo blob receipt fail closed.
+    without a canonical same-repo blob receipt fail closed. As with target
+    conversion, artifact drift returns ``None`` and identity is derived only
+    from the fresh exact-artifact rebind/reprobe.
     """
 
     if not isinstance(truth, QwenArtifactTruth):
@@ -1376,6 +1378,10 @@ def to_runtime_drafter_identity(truth: QwenArtifactTruth):
         raise ArtifactProbeError(
             "drafter conversion requires resolver-verified artifact capability"
         )
+    fresh = _fresh_verified_truth(truth)
+    if fresh is None:
+        return None
+    truth = fresh
     locator = truth.mtp_locator
     trusted_states = {
         MTPWeightPathState.ROOT_MTP,

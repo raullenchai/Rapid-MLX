@@ -409,6 +409,7 @@ def test_repointing_sidecar_to_another_direct_repo_blob_changes_identity(
     replacement_blob.touch()
     _replace_with_symlink(snapshot / "mtp" / "model.safetensors", replacement_blob)
 
+    assert to_runtime_drafter_identity(before) is None
     after = probe_qwen_artifact(snapshot, binding=binding)
     assert before.mtp_locator.content_identity != after.mtp_locator.content_identity
     drafter = to_runtime_drafter_identity(after)
@@ -1035,10 +1036,19 @@ def test_runtime_conversion_rejects_stale_artifact_then_accepts_fresh_probe(
         _replace_with_symlink(leaf, target)
 
     assert to_verified_runtime_target(old_truth) is None
+    if mutation == "mtp_link":
+        assert to_runtime_drafter_identity(old_truth) is None
     fresh_truth = probe_qwen_artifact(snapshot, binding=binding)
     fresh_target = to_verified_runtime_target(fresh_truth)
     assert isinstance(fresh_target, qwen_plan.VerifiedQwenTarget)
     assert fresh_target.verification_id == fresh_truth.verification_id
+    if mutation == "mtp_link":
+        fresh_drafter = to_runtime_drafter_identity(fresh_truth)
+        assert isinstance(fresh_drafter, qwen_plan.QwenDrafterIdentity)
+        assert (
+            fresh_drafter.artifact_verification_id
+            == fresh_truth.mtp_locator.content_identity
+        )
 
 
 def test_fresh_conversion_reads_only_resolved_metadata_and_never_network_or_tensors(
@@ -1077,6 +1087,7 @@ def test_fresh_conversion_reads_only_resolved_metadata_and_never_network_or_tens
     monkeypatch.setattr(huggingface_hub, "snapshot_download", reject_network)
 
     assert to_verified_runtime_target(truth) is not None
+    assert to_runtime_drafter_identity(truth) is not None
     assert metadata_blobs <= opened
     assert metadata_leaves.isdisjoint(opened)
     assert tensor_blobs.isdisjoint(opened)
