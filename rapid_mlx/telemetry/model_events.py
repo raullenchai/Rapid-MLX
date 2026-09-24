@@ -92,10 +92,9 @@ def pull_error_class(exc: BaseException) -> str:
             return "gated"
         if isinstance(current, RepositoryNotFoundError):
             return "not_found"
-        if isinstance(current, HfHubHTTPError) and current.response.status_code in (
-            401,
-            403,
-        ):
+        if isinstance(current, HfHubHTTPError) and getattr(
+            current.response, "status_code", None
+        ) in (401, 403):
             return "gated"
         if isinstance(current, OSError) and current.errno == errno.ENOSPC:
             return "disk_full"

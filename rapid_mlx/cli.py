@@ -2089,7 +2089,10 @@ def render_hub_error(exc: BaseException, model_id: str) -> str | None:
 
         gated = isinstance(current, GatedRepoError)
         if isinstance(current, HfHubHTTPError):
-            gated = gated or current.response.status_code in (401, 403)
+            gated = gated or getattr(current.response, "status_code", None) in (
+                401,
+                403,
+            )
         if gated:
             return (
                 f"  Error: access to '{model_id}' is gated on Hugging Face.\n"
@@ -2135,13 +2138,22 @@ def render_hub_error(exc: BaseException, model_id: str) -> str | None:
 
 def _fail_hub_resolution(exc: BaseException, model_id: str, rendered: str) -> None:
     """Record and terminate a Hub resolution failure that cannot be retried."""
+    from rapid_mlx.runtime.optional_runtime import format_startup_failure_marker
     from rapid_mlx.telemetry.model_events import (
         emit_model_pull_failed,
         emit_model_serve_failed,
+        pull_error_class,
     )
     from rapid_mlx.telemetry.server_start import failed
 
     print(f"\n{rendered}\n", file=sys.stderr)
+    marker_reason = {
+        "not_found": "model_not_found",
+        "gated": "model_gated",
+        "network": "hub_offline",
+    }.get(pull_error_class(exc))
+    if marker_reason is not None:
+        print(format_startup_failure_marker(marker_reason), file=sys.stderr)
     emit_model_pull_failed(exc, model_ref=model_id, source="hf")
     emit_model_serve_failed(exc, alias_or_path=model_id)
     failed("resolve")
@@ -2303,6 +2315,7 @@ def _ensure_model_downloaded(
         # publish that ref ourselves, atomically, only after the download wins.
         size_gb = 0.0
         resolved_sha: str | None = None
+        hub_guidance_rendered = False
         try:
             metadata_kwargs: dict[str, object] = {"files_metadata": True}
             if pinned_image_revision is not None:
@@ -2347,6 +2360,7 @@ def _ensure_model_downloaded(
                 if pull_error_class(exc) in {"gated", "not_found"}:
                     _fail_hub_resolution(exc, model_name, rendered)
                 print(f"\n{rendered}\n", file=sys.stderr)
+                hub_guidance_rendered = True
 
         is_tty = sys.stdout.isatty() and "NO_COLOR" not in os.environ
         BOLD = "\x1b[1m" if is_tty else ""
@@ -2403,10 +2417,13 @@ def _ensure_model_downloaded(
 
         emit_model_pull_failed(e, model_ref=model_name, source="hf")
         if rendered is not None:
-            print(
-                f"\n{rendered}\n  The server will retry during startup.",
-                file=sys.stderr,
-            )
+            if not hub_guidance_rendered:
+                print(
+                    f"\n{rendered}\n  The server will retry during startup.",
+                    file=sys.stderr,
+                )
+            else:
+                print("  The server will retry during startup.", file=sys.stderr)
         else:
             print(f"\n  Pre-download skipped ({type(e).__name__}); server will retry.")
 

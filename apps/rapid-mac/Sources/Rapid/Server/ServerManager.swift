@@ -2,6 +2,31 @@ import Darwin
 import Foundation
 import Observation
 
+extension SidecarStartupFailure {
+    /// Actionable copy shown when the sidecar exits before becoming ready.
+    var message: String {
+        let extraName = extra?.displayName ?? "Optional"
+        switch reason {
+        case .runtimeExtraMissing:
+            return "The installed engine doesn't include \(extraName) support. Open Startup Log for installation details."
+        case .runtimeDependencyMissing:
+            return "\(extraName) support is missing a required runtime dependency. Open Startup Log for setup details."
+        case .pythonVersionUnsupported:
+            return "The installed engine's Python version can't run \(extraName) models. Open Startup Log for the required version."
+        case .runtimeIncompatible:
+            return "The installed \(extraName) runtime isn't compatible with this engine. Open Startup Log for repair details."
+        case .runtimeBroken:
+            return "The installed \(extraName) runtime couldn't load. Open Startup Log for repair details."
+        case .modelNotFound:
+            return "Model not found on Hugging Face. Check the name or pick another model."
+        case .modelGated:
+            return "This model is gated on Hugging Face. Accept its licence at huggingface.co/<repo> and sign in with a token, then try again."
+        case .hubOffline:
+            return "Could not reach Hugging Face. Check your connection or choose an already-downloaded model."
+        }
+    }
+}
+
 /// FIFO state machine for memory-risk confirmations. A request token is
 /// present for ``ensureServing`` callers that must await their own answer;
 /// direct ``start`` calls still queue a prompt but retain no result.

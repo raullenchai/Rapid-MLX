@@ -13,7 +13,7 @@ from fastapi import HTTPException
 from rapid_mlx import cli, server
 from rapid_mlx.runtime.primary_lifecycle import PrimaryModelLifecycle
 from rapid_mlx.service import helpers
-from rapid_mlx.telemetry import registry, server_start
+from rapid_mlx.telemetry import model_events, registry, server_start
 
 
 @pytest.fixture(autouse=True)
@@ -259,6 +259,19 @@ def _hub_response(status_code: int) -> requests.Response:
     return response
 
 
+def _response_less_hf_error():
+    from huggingface_hub.errors import HfHubHTTPError
+
+    failure = HfHubHTTPError("private", response=_hub_response(500))
+    failure.response = None
+    return failure
+
+
+def _assert_exact_startup_marker(stderr: str, reason: str) -> None:
+    marker = f"RAPID-MLX-STARTUP-FAILURE: {reason}\n".encode()
+    assert stderr.encode().splitlines(keepends=True).count(marker) == 1
+
+
 def test_render_hub_error_not_found_has_repo_discovery_next_steps():
     from huggingface_hub.errors import RepositoryNotFoundError
 
@@ -336,7 +349,15 @@ def test_render_hub_error_ignores_context_and_unknown_errors():
     assert cli.render_hub_error(ExplodingCauseError(), "owner/model") is None
 
 
-def test_resolve_timeout_emits_resolve_before_preserving_exit(monkeypatch):
+def test_renderer_hf_http_error_without_response_is_safe_and_unknown():
+    assert cli.render_hub_error(_response_less_hf_error(), "owner/model") is None
+
+
+def test_classifier_hf_http_error_without_response_is_safe_and_unknown():
+    assert model_events.pull_error_class(_response_less_hf_error()) == "other"
+
+
+def test_resolve_timeout_emits_resolve_before_preserving_exit(monkeypatch, capsys):
     events = _capture(monkeypatch)
     _stub_download_entry(monkeypatch)
     monkeypatch.setattr(
@@ -348,7 +369,9 @@ def test_resolve_timeout_emits_resolve_before_preserving_exit(monkeypatch):
     with pytest.raises(SystemExit) as caught:
         cli._ensure_model_downloaded("owner/model")
 
+    captured = capsys.readouterr()
     assert caught.value.code == 1
+    _assert_exact_startup_marker(captured.err, "hub_offline")
     assert [
         (props["state"], props.get("failure_stage"))
         for name, props in events
@@ -384,8 +407,10 @@ def test_definitive_download_not_found_fails_resolve_with_next_steps(
     with pytest.raises(SystemExit) as caught:
         cli._ensure_model_downloaded("owner/model")
 
+    captured = capsys.readouterr()
     assert caught.value.code == 1
-    assert "rapid-mlx models" in capsys.readouterr().err
+    assert "rapid-mlx models" in captured.err
+    _assert_exact_startup_marker(captured.err, "model_not_found")
     assert [
         (props["state"], props.get("failure_stage"))
         for name, props in events
@@ -419,6 +444,7 @@ def test_gated_download_fails_fast_instead_of_printing_retry(monkeypatch, capsys
     assert "https://huggingface.co/owner/model" in captured.err
     assert "huggingface-cli login" in captured.err
     assert "server will retry" not in captured.out + captured.err
+    _assert_exact_startup_marker(captured.err, "model_gated")
 
 
 def test_gated_metadata_fails_fast_before_download(monkeypatch, capsys):
@@ -488,6 +514,49 @@ def test_offline_download_keeps_retry_path_with_next_steps(monkeypatch, capsys):
     assert "HF_HUB_OFFLINE" in captured.err
     assert "server will retry" in captured.err
     assert "private endpoint" not in captured.out + captured.err
+    assert b"RAPID-MLX-STARTUP-FAILURE:" not in captured.err.encode()
+
+
+def test_metadata_and_download_network_failure_prints_guidance_once(
+    monkeypatch, capsys
+):
+    _stub_download_entry(monkeypatch)
+    monkeypatch.setattr(
+        "rapid_mlx._download_gate.call_with_deadline",
+        lambda *_a, **_kw: (_ for _ in ()).throw(
+            requests.ConnectionError("metadata private")
+        ),
+    )
+    monkeypatch.setattr(
+        "huggingface_hub.snapshot_download",
+        lambda *_a, **_kw: (_ for _ in ()).throw(
+            requests.ConnectionError("download private")
+        ),
+    )
+
+    assert cli._ensure_model_downloaded("owner/model") is None
+
+    captured = capsys.readouterr()
+    assert captured.err.count("could not reach Hugging Face") == 1
+    assert b"RAPID-MLX-STARTUP-FAILURE:" not in captured.err.encode()
+
+
+def test_response_less_download_error_keeps_legacy_retry(monkeypatch, capsys):
+    _stub_download_entry(monkeypatch)
+    monkeypatch.setattr(
+        "rapid_mlx._download_gate.call_with_deadline",
+        lambda _func, _timeout, *_a, **_kw: SimpleNamespace(sha="abc", siblings=[]),
+    )
+    monkeypatch.setattr(
+        "huggingface_hub.snapshot_download",
+        lambda *_a, **_kw: (_ for _ in ()).throw(_response_less_hf_error()),
+    )
+
+    assert cli._ensure_model_downloaded("owner/model") is None
+
+    captured = capsys.readouterr()
+    assert captured.err == ""
+    assert "Pre-download skipped (HfHubHTTPError); server will retry." in captured.out
 
 
 def test_unknown_download_error_keeps_legacy_message(monkeypatch, capsys):

@@ -13,6 +13,9 @@ struct SidecarStartupFailure: Equatable, Sendable {
         case pythonVersionUnsupported = "python_version_unsupported"
         case runtimeIncompatible = "runtime_incompatible"
         case runtimeBroken = "runtime_broken"
+        case modelNotFound = "model_not_found"
+        case modelGated = "model_gated"
+        case hubOffline = "hub_offline"
     }
 
     enum Extra: String, Equatable, Sendable {
@@ -31,37 +34,32 @@ struct SidecarStartupFailure: Equatable, Sendable {
     }
 
     let reason: Reason
-    let extra: Extra
-
-    var message: String {
-        switch reason {
-        case .runtimeExtraMissing:
-            return "The installed engine doesn't include \(extra.displayName) support. Open Startup Log for installation details."
-        case .runtimeDependencyMissing:
-            return "\(extra.displayName) support is missing a required runtime dependency. Open Startup Log for setup details."
-        case .pythonVersionUnsupported:
-            return "The installed engine's Python version can't run \(extra.displayName) models. Open Startup Log for the required version."
-        case .runtimeIncompatible:
-            return "The installed \(extra.displayName) runtime isn't compatible with this engine. Open Startup Log for repair details."
-        case .runtimeBroken:
-            return "The installed \(extra.displayName) runtime couldn't load. Open Startup Log for repair details."
-        }
-    }
+    let extra: Extra?
 
     var action: RecoveryAction { .openStartupLog }
 
     fileprivate static func parse(line: String) -> SidecarStartupFailure? {
         let fields = line.split(separator: " ", omittingEmptySubsequences: true)
-        guard fields.count == 3,
+        guard fields.count >= 2,
               fields[0] == Substring(markerPrefix),
-              let reason = Reason(rawValue: String(fields[1])),
-              fields[2].hasPrefix("extra="),
-              let extra = Extra(rawValue: String(fields[2].dropFirst("extra=".count)))
+              let reason = Reason(rawValue: String(fields[1]))
         else { return nil }
-        guard line == "\(markerPrefix) \(reason.rawValue) extra=\(extra.rawValue)" else {
-            return nil
+
+        switch reason {
+        case .modelNotFound, .modelGated, .hubOffline:
+            guard fields.count == 2,
+                  line == "\(markerPrefix) \(reason.rawValue)"
+            else { return nil }
+            return SidecarStartupFailure(reason: reason, extra: nil)
+        case .runtimeExtraMissing, .runtimeDependencyMissing,
+             .pythonVersionUnsupported, .runtimeIncompatible, .runtimeBroken:
+            guard fields.count == 3,
+                  fields[2].hasPrefix("extra="),
+                  let extra = Extra(rawValue: String(fields[2].dropFirst("extra=".count))),
+                  line == "\(markerPrefix) \(reason.rawValue) extra=\(extra.rawValue)"
+            else { return nil }
+            return SidecarStartupFailure(reason: reason, extra: extra)
         }
-        return SidecarStartupFailure(reason: reason, extra: extra)
     }
 }
 
