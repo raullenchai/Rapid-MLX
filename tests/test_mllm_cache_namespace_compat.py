@@ -312,3 +312,30 @@ def test_batched_leaf_extraction_only_guards_batch_kv_cache(cache_ns):
     row = _extract_batched_leaf(batched, 1)
     assert type(row) is cache_ns.ArraysCache
     assert [state.shape for state in row.cache] == [(1, 2), (1, 3)]
+
+
+def test_batched_leaf_extraction_degrades_like_upstream(monkeypatch):
+    """A leaf with no ``extract`` extracts as ``None`` (the batched layout's
+    prior behavior), and an absent optional namespace is skipped rather than
+    failing the type table — the vendored classes always remain."""
+    from rapid_mlx.mllm_batch_generator import (
+        _batched_leaf_types,
+        _extract_batched_leaf,
+    )
+    from rapid_mlx.models.mlx_vlm_vendored.cache import BatchKVCache, CacheList
+
+    assert _extract_batched_leaf(object(), 0) is None
+
+    import importlib
+
+    real_import_module = importlib.import_module
+
+    def missing_optional(name, *args, **kwargs):
+        if name in ("mlx_vlm.models.cache", "mlx_lm.models.cache"):
+            raise ImportError(name)
+        return real_import_module(name, *args, **kwargs)
+
+    monkeypatch.setattr(importlib, "import_module", missing_optional)
+    list_types, batch_kv_types = _batched_leaf_types()
+    assert list_types == (CacheList,)
+    assert batch_kv_types == (BatchKVCache,)
