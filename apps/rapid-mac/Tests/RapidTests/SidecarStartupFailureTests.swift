@@ -8,6 +8,35 @@ struct SidecarStartupFailureTests {
     private let videoMarker =
         "RAPID-MLX-STARTUP-FAILURE: runtime_extra_missing extra=video\n"
 
+    private func assertHubFailure(
+        markerReason: String,
+        expectedReason: SidecarStartupFailure.Reason,
+        expectedMessage: String
+    ) {
+        let capture = SidecarStartupFailureCapture()
+        capture.ingest(
+            Data("RAPID-MLX-STARTUP-FAILURE: \(markerReason)\n".utf8),
+            source: .sidecarStderr
+        )
+
+        let failure = capture.failure
+        #expect(failure?.reason == expectedReason)
+        #expect(failure?.extra == nil)
+        #expect(failure?.message == expectedMessage)
+
+        let manager = ServerManager(testingState: .starting(alias: "owner/model"))
+        manager._testSimulateChildExit(
+            expectedStop: false,
+            status: 1,
+            reason: .exit,
+            startupFailure: failure
+        )
+        #expect(manager.state == .crashed(
+            alias: "owner/model",
+            message: expectedMessage
+        ))
+    }
+
     @Test("stderr marker becomes a specific message and Startup Log action")
     func markerMapsToPresentation() {
         let capture = SidecarStartupFailureCapture()
@@ -28,6 +57,33 @@ struct SidecarStartupFailureTests {
         )
         #expect(readiness.action == .openStartupLog)
         #expect(readiness.detail == failure?.message)
+    }
+
+    @Test("model-not-found marker becomes actionable Hub guidance")
+    func modelNotFoundMapsToPresentation() {
+        assertHubFailure(
+            markerReason: "model_not_found",
+            expectedReason: .modelNotFound,
+            expectedMessage: "Model not found on Hugging Face. Check the name or pick another model."
+        )
+    }
+
+    @Test("gated-model marker becomes actionable Hub guidance")
+    func modelGatedMapsToPresentation() {
+        assertHubFailure(
+            markerReason: "model_gated",
+            expectedReason: .modelGated,
+            expectedMessage: "This model is private, gated, or does not exist on Hugging Face. If you have access, accept the licence on Hugging Face and sign in (huggingface-cli login or HF_TOKEN); otherwise check the name with rapid-mlx models."
+        )
+    }
+
+    @Test("offline-Hub marker becomes actionable network guidance")
+    func hubOfflineMapsToPresentation() {
+        assertHubFailure(
+            markerReason: "hub_offline",
+            expectedReason: .hubOffline,
+            expectedMessage: "Could not reach Hugging Face. Check your connection or choose an already-downloaded model."
+        )
     }
 
     @Test("marker absent keeps the existing generic exit message")
