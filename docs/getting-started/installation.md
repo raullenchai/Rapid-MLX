@@ -70,6 +70,8 @@ The base text-only install is ~460 MB. Vision/audio/etc. ship as opt-in extras.
 | `guided` | `pip install 'rapid-mlx[guided]'` | Legacy no-op kept for compatibility — llguidance ships in the core install (it replaced outlines in 0.10) |
 | `all` | `pip install 'rapid-mlx[all]'` | vision + dflash + audio + embeddings + chat (~1.1 GB); `video` / `image` / `mtp` are installed separately |
 
+When `rapid-mlx serve` finds that an optional runtime is absent, an interactive terminal offers to install the matching extra into the current interpreter and restarts the original command after a successful install. The prompt defaults to no after 30 seconds; pass `--yes` (or `-y`) to accept non-interactively. Broken or incompatible runtimes continue to print only their repair guidance.
+
 Homebrew installs the text-only package and does not provide Python extras.
 To switch a Homebrew installation to DFlash, use an isolated tool install:
 

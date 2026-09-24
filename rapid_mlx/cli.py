@@ -48,6 +48,7 @@ def _run_optional_runtime_guard(
     guard: Callable[..., None],
     *args,
     alias_or_path: str,
+    assume_yes: bool = False,
     **kwargs,
 ) -> None:
     """Route serve-time optional-runtime failures through the sole handler."""
@@ -58,6 +59,7 @@ def _run_optional_runtime_guard(
             exc,
             alias_or_path=alias_or_path,
             auto_selected=False,
+            assume_yes=assume_yes,
         )
 
 
@@ -4058,6 +4060,7 @@ def serve_command(args):
             require_video_runtime_or_exit,
             args.model,
             alias_or_path=getattr(args, "_original_alias", None) or args.model,
+            assume_yes=args.yes,
         )
 
     # F-H08-INCOMPLETE: the ``[embeddings]`` extra-required guard MUST
@@ -4118,6 +4121,7 @@ def serve_command(args):
             require_mlx_vlm_or_exit,
             args.model,
             alias_or_path=getattr(args, "_original_alias", None) or args.model,
+            assume_yes=args.yes,
             text_diffusion=_alias_modality(args.model) == "text-diffusion",
         )
 
@@ -4145,6 +4149,7 @@ def serve_command(args):
             require_audio_or_exit,
             args.model,
             alias_or_path=getattr(args, "_original_alias", None) or args.model,
+            assume_yes=args.yes,
         )
 
     _validate_v41_product_spec_flags(args, owns_runtime=_owns_v41_product_download)
@@ -12197,6 +12202,12 @@ Examples:
         "model", nargs="?", type=str, help="Model to serve"
     ).completer = alias_completer
     serve_parser.add_argument(
+        "--yes",
+        "-y",
+        action="store_true",
+        help="assume yes for prompts such as installing a missing optional extra",
+    )
+    serve_parser.add_argument(
         "--served-model-name",
         type=str,
         default=None,
@@ -14806,6 +14817,7 @@ def main():
                 engine=getattr(server, "_engine", None),
                 alias_or_path=getattr(args, "_original_alias", None) or args.model,
                 auto_selected=bool(getattr(args, "_telemetry_auto_selected", False)),
+                assume_yes=args.yes,
             )
     elif args.command == "bench":
         bench_command(args)

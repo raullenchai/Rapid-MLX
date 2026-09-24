@@ -43,6 +43,7 @@ def _run_real_missing_extra_dispatch(
     model: str,
     status: str = "absent",
     standalone: bool = False,
+    install_missing: bool = False,
     video_python_version: tuple[int, int] = (3, 11),
 ) -> tuple[subprocess.CompletedProcess[str], list[SimpleNamespace], str]:
     home = tmp_path / "home"
@@ -109,6 +110,25 @@ cli._ensure_model_downloaded = lambda *_args, **_kwargs: None
 
 lane = os.environ["RAPID_MLX_TEST_EXTRA_LANE"]
 status = os.environ.get("RAPID_MLX_TEST_EXTRA_STATUS", "absent")
+if status == "install":
+    import rapid_mlx.runtime.optional_runtime as optional_runtime
+    from rapid_mlx.telemetry import posthog_sender
+
+    real_subprocess_run = optional_runtime.subprocess.run
+
+    def install_or_run(argv, *args, **kwargs):
+        if len(argv) >= 5 and argv[1:4] == ["-m", "pip", "install"]:
+            return types.SimpleNamespace(returncode=0)
+        return real_subprocess_run(argv, *args, **kwargs)
+
+    optional_runtime.subprocess.run = install_or_run
+
+    def exec_after_flush(_executable, _argv):
+        posthog_sender.get_sender().flush(5.0)
+        os._exit(0)
+
+    optional_runtime.os.execv = exec_after_flush
+    status = "absent"
 real_find_spec = importlib.util.find_spec
 hidden_modules = {
     "audio": {"mlx_audio"},
@@ -186,7 +206,7 @@ if lane == "vision-present":
         RAPID_MLX_POSTHOG_URL=f"http://127.0.0.1:{sink.server_port}/batch/",
         RAPID_MLX_DISABLE_VERSION_CHECK="1",
         RAPID_MLX_TEST_EXTRA_LANE=lane,
-        RAPID_MLX_TEST_EXTRA_STATUS=status,
+        RAPID_MLX_TEST_EXTRA_STATUS="install" if install_missing else status,
         RAPID_MLX_TEST_VIDEO_PYTHON_MAJOR=str(video_python_version[0]),
         RAPID_MLX_TEST_VIDEO_PYTHON_MINOR=str(video_python_version[1]),
         HF_HUB_OFFLINE="1",
@@ -232,6 +252,8 @@ if lane == "vision-present":
         if standalone
         else ["serve", model, "--port", "0"]
     )
+    if install_missing and not standalone:
+        command.append("--yes")
     try:
         proc = subprocess.run(
             command,
@@ -895,4 +917,21 @@ async def test_lifespan_optional_failure_reuses_cli_handler(monkeypatch) -> None
                 "auto_selected": False,
             },
         )
+    ]
+
+
+def test_yes_install_preserves_failure_terminals_at_loopback_sink(tmp_path) -> None:
+    proc, events, _child_executable = _run_real_missing_extra_dispatch(
+        tmp_path,
+        lane="bonsai",
+        model="bonsai2-27b-2bit",
+        install_missing=True,
+    )
+
+    assert proc.returncode == 0
+    assert "Install rapid-mlx[vision] now?" not in proc.stderr
+    assert events, proc.stderr
+    assert _contracted_failure_events(events) == [
+        ("server_start_state", "failed", "preflight", None, None),
+        ("model_serve_failed", None, None, "missing_extra", "vision"),
     ]
