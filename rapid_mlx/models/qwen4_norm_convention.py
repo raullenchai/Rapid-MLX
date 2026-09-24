@@ -1,9 +1,5 @@
 # SPDX-License-Identifier: Apache-2.0
-"""Admit raw or converted Qwen4 RMSNorm storage before loading parameters.
-
-The anchor vote is checkpoint-wide. It is evidence of a storage convention,
-not proof that arbitrary mixtures of individual norm tensors are impossible.
-"""
+"""Admit uniformly encoded Qwen4 RMSNorm storage before loading parameters."""
 
 from __future__ import annotations
 
@@ -16,6 +12,17 @@ def _norm_targets(model, norm_type, prefix=""):
         for path, module in model.named_modules()
         if type(module) is norm_type
     }
+
+
+def _validated_mean(key, module, value):
+    if (
+        not isinstance(value, mx.array)
+        or not mx.issubdtype(value.dtype, mx.floating)
+        or value.shape != module.weight.shape
+        or not bool(mx.all(mx.isfinite(value)).item())
+    ):
+        raise ValueError(f"invalid Qwen4 RMSNorm tensor: {key}")
+    return float(mx.mean(value.astype(mx.float32)).item())
 
 
 def apply_qwen4_norm_convention(model, weights, norm_type, convention, *, prefix=""):
@@ -75,30 +82,36 @@ def normalize_qwen4_checkpoint(model, weights, norm_type):
     }
     if not anchors or not anchors.keys() <= weights.keys():
         raise ValueError("Qwen4 RMSNorm convention requires complete backbone anchors")
-    means = []
-    for key, module in anchors.items():
-        value = weights[key]
-        if (
-            not isinstance(value, mx.array)
-            or not mx.issubdtype(value.dtype, mx.floating)
-            or value.shape != module.weight.shape
-            or not bool(mx.all(mx.isfinite(value)).item())
-        ):
-            raise ValueError(f"invalid Qwen4 RMSNorm anchor: {key}")
-        means.append(float(mx.mean(value.astype(mx.float32)).item()))
+    target_means = {
+        key: _validated_mean(key, module, weights[key])
+        for key, module in targets.items()
+        if key in weights
+    }
+    means = [target_means[key] for key in anchors]
     ordered = sorted(means)
     n = len(ordered)
     median = (ordered[(n - 1) // 2] + ordered[n // 2]) / 2
     ones_vote = sum(value > 0.5 for value in means) / n
-    if ones_vote >= 0.9 and 0.75 <= median <= 1.5:
+    if ones_vote == 1.0 and 0.75 <= median <= 1.5:
         convention = "direct_gamma"
-    elif ones_vote <= 0.1 and -0.5 <= median <= 0.25:
+    elif (
+        ones_vote == 0.0
+        and all(value < 0.5 for value in means)
+        and -0.5 <= median <= 0.25
+    ):
         convention = "zero_centered"
     else:
         raise ValueError(
             "ambiguous or mixed Qwen4 RMSNorm checkpoint convention: "
             f"{n} anchors, median={median:.6g}, direct-gamma vote={ones_vote:.3f}"
         )
+    direct = convention == "direct_gamma"
+    for key, mean in target_means.items():
+        if (mean > 0.5) != direct:
+            raise ValueError(
+                "mixed Qwen4 RMSNorm target convention: "
+                f"{key} has mean={mean:.6g}, expected {convention}"
+            )
     previous = getattr(model, "norm_convention_receipt", None)
     if previous and previous["source_convention"] != convention:
         raise ValueError(
@@ -115,5 +128,5 @@ def normalize_qwen4_checkpoint(model, weights, norm_type):
         "anchor_median": median,
         "direct_gamma_vote": ones_vote,
         "recentered_tensors": converted,
-        "detection": "complete_attention_hc_anchor_vote_v1",
+        "detection": "complete_uniform_norm_mean_band_v2",
     }

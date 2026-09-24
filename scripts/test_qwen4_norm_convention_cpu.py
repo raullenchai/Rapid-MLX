@@ -222,8 +222,14 @@ class ConventionTests(unittest.TestCase):
         key = "language_model.model.layers.1.self_attn.indexer.q_layernorm.weight"
         gamma = mx.full(weights[key].shape, 0.1, dtype=mx.float32)
         weights[key] = gamma
-        sanitized = model.sanitize(weights)
-        restored = 1.0 + sanitized[key]
+        apply_qwen4_norm_convention(
+            model.language_model,
+            weights,
+            ZeroCenteredRMSNorm,
+            "direct_gamma",
+            prefix="language_model.",
+        )
+        restored = 1.0 + weights[key]
         self.assertTrue(mx.allclose(restored, gamma, rtol=5e-7, atol=0.0).item())
 
     def test_unrepresentable_tiny_gain_refused(self):
@@ -238,11 +244,15 @@ class ConventionTests(unittest.TestCase):
                 with self.assertRaisesRegex(
                     ValueError, "cannot be represented faithfully"
                 ):
-                    model.sanitize(weights)
+                    apply_qwen4_norm_convention(
+                        model.language_model,
+                        weights,
+                        ZeroCenteredRMSNorm,
+                        "direct_gamma",
+                        prefix="language_model.",
+                    )
 
-    def test_raw_anchor_outliers_do_not_require_every_mean_below_half(self):
-        # A valid raw counterpart may have trained anchor outliers >0.5;
-        # retain the established 90% vote + median admission contract.
+    def test_single_anchor_outlier_is_rejected(self):
         class Anchors(nn.Module):
             def __init__(self):
                 super().__init__()
@@ -257,13 +267,21 @@ class ConventionTests(unittest.TestCase):
             model = Anchors()
             weights = dict(tree_flatten(model.parameters()))
             for index, key in enumerate(weights):
-                mean = 0.765625 if index == 0 else 0.0390625
-                weights[key] = mx.full((4,), mean + int(direct))
-            receipt = normalize_qwen4_checkpoint(model, weights, ZeroCenteredRMSNorm)
-            self.assertEqual(
-                receipt["source_convention"],
-                "direct_gamma" if direct else "zero_centered",
-            )
+                majority = 1.0390625 if direct else 0.0390625
+                outlier = 0.0390625 if direct else 1.0390625
+                weights[key] = mx.full((4,), outlier if index == 0 else majority)
+            with self.assertRaisesRegex(ValueError, "ambiguous or mixed"):
+                normalize_qwen4_checkpoint(model, weights, ZeroCenteredRMSNorm)
+
+    def test_non_anchor_with_opposite_convention_is_rejected(self):
+        model = tiny_model()
+        weights = checkpoint(model, direct=True)
+        key = "language_model.model.layers.1.self_attn.indexer.q_layernorm.weight"
+        weights[key] = mx.zeros_like(weights[key])
+        before = weights.copy()
+        with self.assertRaisesRegex(ValueError, "mixed Qwen4 RMSNorm target"):
+            model.sanitize(weights)
+        self.assertTrue(all(weights[key] is value for key, value in before.items()))
 
     def test_mtp_inherits_backbone_convention_not_its_ambiguous_means(self):
         from rapid_mlx.spec_decode.mtp import qwen4_exp_inject as inject
