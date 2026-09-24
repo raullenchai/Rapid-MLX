@@ -25,6 +25,7 @@ from __future__ import annotations
 import argparse
 import importlib
 import sys
+import threading
 from types import ModuleType
 
 import pytest
@@ -268,6 +269,7 @@ def test_bench_success_emits_model_served(monkeypatch) -> None:
 
     events = []
     rows = []
+    model_served_observed = threading.Event()
 
     def note_model_served(model_id):
         rows.append(model_id)
@@ -275,6 +277,7 @@ def test_bench_success_emits_model_served(monkeypatch) -> None:
 
     def observe(event, props, **kwargs):
         events.append((event, props, kwargs))
+        model_served_observed.set()
         raise ServedObservedError
 
     monkeypatch.setattr(store, "note_model_served", note_model_served)
@@ -306,6 +309,7 @@ def test_bench_success_emits_model_served(monkeypatch) -> None:
     with pytest.raises(ServedObservedError):
         cli.bench_command(args)
 
+    assert model_served_observed.wait(timeout=5.0), "model_served was not emitted"
     assert events[0][0] == "model_served"
     assert events[0][1]["model"] == "sdxl-base"
     assert events[0][1]["model"] != "<custom>"
