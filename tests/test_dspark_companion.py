@@ -6,6 +6,7 @@ from __future__ import annotations
 import json
 import socket
 import sys
+import time
 import types
 from types import SimpleNamespace
 
@@ -80,6 +81,7 @@ def _companion_client(
     model_info=None,
     strict_openai_streaming=False,
     render_prompt_fn=None,
+    default_timeout=1800.0,
 ):
     from fastapi.testclient import TestClient
 
@@ -120,6 +122,7 @@ def _companion_client(
         backend_name="LFM DSpark",
         model_info=model_info,
         strict_openai_streaming=strict_openai_streaming,
+        default_timeout=default_timeout,
     )
     return TestClient(app), render_calls, generation_calls
 
@@ -160,6 +163,58 @@ def test_artifact_abi_validation_fails_closed(tmp_path) -> None:
     config["markov_rank"] = 128
     config_path.write_text(json.dumps(config))
     with pytest.raises(CompanionDSparkError, match="drafter ABI mismatch"):
+        validate_companion_artifacts(
+            LFM25_VL_3B, target_path=target, drafter_path=draft
+        )
+
+
+@pytest.mark.parametrize("contents", ["{", "[]"], ids=["invalid-json", "non-object"])
+def test_artifact_config_must_be_readable_object(tmp_path, contents) -> None:
+    target, draft = _write_configs(tmp_path)
+    (target / "config.json").write_text(contents)
+
+    with pytest.raises(CompanionDSparkError, match="artifact config"):
+        validate_companion_artifacts(
+            LFM25_VL_3B, target_path=target, drafter_path=draft
+        )
+
+
+def test_artifact_config_must_exist(tmp_path) -> None:
+    with pytest.raises(CompanionDSparkError, match="cannot read"):
+        validate_companion_artifacts(
+            LFM25_VL_3B,
+            target_path=tmp_path / "missing-target",
+            drafter_path=tmp_path / "missing-draft",
+        )
+
+
+@pytest.mark.parametrize(
+    ("target_update", "draft_update", "message"),
+    [
+        ({"text_config": []}, {}, "target ABI mismatch"),
+        ({"dtype": "float16"}, {}, "target ABI mismatch"),
+        ({}, {"architectures": "Lfm2DSparkDraftModel"}, "drafter ABI mismatch"),
+        ({}, {"dflash_config": []}, "drafter ABI mismatch"),
+        ({}, {"block_size": "not-an-int"}, "drafter ABI mismatch"),
+        (
+            {},
+            {"dflash_config": {"num_target_layers": 30, "target_layer_ids": [None]}},
+            "drafter ABI mismatch",
+        ),
+    ],
+)
+def test_artifact_abi_rejects_malformed_shapes(
+    tmp_path, target_update, draft_update, message
+) -> None:
+    target, draft = _write_configs(tmp_path)
+    target_config = json.loads((target / "config.json").read_text())
+    target_config.update(target_update)
+    (target / "config.json").write_text(json.dumps(target_config))
+    draft_config = json.loads((draft / "config.json").read_text())
+    draft_config.update(draft_update)
+    (draft / "config.json").write_text(json.dumps(draft_config))
+
+    with pytest.raises(CompanionDSparkError, match=message):
         validate_companion_artifacts(
             LFM25_VL_3B, target_path=target, drafter_path=draft
         )
@@ -221,6 +276,75 @@ def test_runtime_loads_and_attaches_without_fallback(monkeypatch, tmp_path) -> N
     assert handle.draft_block_size == 8
 
 
+def test_runtime_version_and_acceptance_metadata(monkeypatch) -> None:
+    from importlib.metadata import PackageNotFoundError
+
+    from rapid_mlx.spec_decode.dspark import runtime
+
+    monkeypatch.setattr(runtime, "version", lambda _name: "0.7.2")
+    assert runtime.have_runtime() is True
+    monkeypatch.setattr(runtime, "version", lambda _name: "0.7.1")
+    assert runtime.have_runtime() is False
+
+    def missing(_name):
+        raise PackageNotFoundError
+
+    monkeypatch.setattr(runtime, "version", missing)
+    assert runtime.have_runtime() is False
+
+    drafter = SimpleNamespace(accept_lens=[1, 2])
+    handle = runtime.CompanionDSparkRuntime(
+        drafter=drafter,
+        drafter_repo="draft",
+        target_revision="target-rev",
+        drafter_revision="draft-rev",
+        num_speculative_tokens=7,
+        draft_block_size=8,
+    )
+    assert handle.accept_lens_snapshot() == [1, 2]
+    handle.reset_accept_lens()
+    assert handle.accept_lens_snapshot() == []
+    drafter.accept_lens = (3, 4)
+    handle.reset_accept_lens()
+    assert handle.accept_lens_snapshot() == []
+
+
+def test_runtime_load_fails_without_exact_runtime(monkeypatch, tmp_path) -> None:
+    from rapid_mlx.spec_decode.dspark import runtime
+    from rapid_mlx.spec_decode.dspark.artifacts import CompanionDSparkArtifacts
+
+    target, draft = _write_configs(tmp_path)
+    monkeypatch.setattr(runtime, "have_runtime", lambda: False)
+    with pytest.raises(RuntimeError, match="requires exactly mlx-vlm 0.7.2"):
+        runtime.load_runtime(
+            LFM25_VL_3B,
+            CompanionDSparkArtifacts(str(target), str(draft)),
+        )
+
+
+def test_runtime_rejects_wrong_upstream_draft_kind(monkeypatch, tmp_path) -> None:
+    from rapid_mlx.spec_decode.dspark import runtime
+    from rapid_mlx.spec_decode.dspark.artifacts import CompanionDSparkArtifacts
+
+    target, draft = _write_configs(tmp_path)
+    fake_vlm = types.ModuleType("mlx_vlm")
+    fake_vlm.load = lambda _path: (SimpleNamespace(), SimpleNamespace())
+    fake_speculative = types.ModuleType("mlx_vlm.speculative")
+    fake_drafters = types.ModuleType("mlx_vlm.speculative.drafters")
+    fake_drafters.load_drafter = lambda _path, kind=None: (SimpleNamespace(), "mtp")
+    fake_drafters.validate_drafter_compatibility = lambda *_args: None
+    monkeypatch.setitem(sys.modules, "mlx_vlm", fake_vlm)
+    monkeypatch.setitem(sys.modules, "mlx_vlm.speculative", fake_speculative)
+    monkeypatch.setitem(sys.modules, "mlx_vlm.speculative.drafters", fake_drafters)
+    monkeypatch.setattr(runtime, "have_runtime", lambda: True)
+
+    with pytest.raises(RuntimeError, match="runtime mismatch"):
+        runtime.load_runtime(
+            LFM25_VL_3B,
+            CompanionDSparkArtifacts(str(target), str(draft)),
+        )
+
+
 def test_cli_preflight_requires_exact_runtime_and_pair(monkeypatch) -> None:
     from rapid_mlx import cli
     from rapid_mlx.spec_decode.dspark import runtime
@@ -245,6 +369,225 @@ def test_cli_preflight_requires_exact_runtime_and_pair(monkeypatch) -> None:
     with pytest.raises(SystemExit) as exc_info:
         cli._preflight_companion_dspark_or_exit(args)
     assert exc_info.value.code == 1
+
+
+def test_cli_preflight_noops_without_companion_config() -> None:
+    from rapid_mlx import cli
+
+    args = SimpleNamespace(_speculative_config=None)
+    assert cli._preflight_companion_dspark_or_exit(args) is None
+    assert args._companion_dspark_pair is None
+
+
+def test_cli_preflight_rejects_unqualified_pair(capsys) -> None:
+    from rapid_mlx import cli
+
+    args = SimpleNamespace(
+        model="other/target",
+        _speculative_config=SpeculativeConfig(
+            method="dspark",
+            model=LFM25_VL_3B.drafter_repo,
+            num_speculative_tokens=7,
+        ),
+        dspark_num_speculative_tokens=7,
+    )
+    with pytest.raises(SystemExit) as exc_info:
+        cli._preflight_companion_dspark_or_exit(args)
+    assert exc_info.value.code == 2
+    assert "qualified only" in capsys.readouterr().err
+
+
+def test_cli_preflight_rejects_unsupported_server_features(capsys) -> None:
+    from rapid_mlx import cli
+
+    args = SimpleNamespace(
+        model=LFM25_VL_3B.target_repo,
+        _speculative_config=SpeculativeConfig(
+            method="dspark",
+            model=LFM25_VL_3B.drafter_repo,
+            num_speculative_tokens=7,
+        ),
+        dspark_num_speculative_tokens=7,
+        no_mllm=True,
+        mcp_config="mcp.json",
+        embedding_model="embed/model",
+        enable_auto_tool_choice=True,
+    )
+    with pytest.raises(SystemExit) as exc_info:
+        cli._preflight_companion_dspark_or_exit(args)
+    assert exc_info.value.code == 2
+    error = capsys.readouterr().err
+    for option in (
+        "--no-mllm",
+        "--mcp-config",
+        "--embedding-model",
+        "--enable-auto-tool-choice",
+    ):
+        assert option in error
+
+
+def test_cli_companion_server_dispatches_exact_runtime(monkeypatch) -> None:
+    from rapid_mlx import cli
+    from rapid_mlx.spec_decode.dspark import server as companion_server
+
+    calls = {"sync": 0, "capacity": [], "run": None}
+    monkeypatch.setattr(
+        cli,
+        "_check_memory_capacity",
+        lambda model, alias=None: calls["capacity"].append((model, alias)),
+    )
+    monkeypatch.setattr(
+        companion_server,
+        "run_companion_dspark_server",
+        lambda **kwargs: calls.__setitem__("run", kwargs),
+    )
+    server_stub = SimpleNamespace(
+        _api_key="secret",
+        _max_request_bytes=123,
+        _body_receive_timeout_seconds=4.0,
+        _default_timeout=5.0,
+        _sync_config=lambda: calls.__setitem__("sync", calls["sync"] + 1),
+        get_resolved_cors_policy=lambda: "cors-policy",
+    )
+    artifacts = SimpleNamespace(target_path="target", drafter_path="draft")
+    args = SimpleNamespace(
+        _companion_dspark_pair=LFM25_VL_3B,
+        _companion_dspark_artifacts=artifacts,
+        _original_alias="lfm-alias",
+        model=LFM25_VL_3B.target_repo,
+        host="127.0.0.1",
+        port=8765,
+        served_model_name=None,
+        no_thinking=True,
+        rate_limit=7,
+        max_concurrent_requests=8,
+        reasoning_parser=None,
+    )
+
+    assert cli._serve_companion_dspark_if_requested(
+        args,
+        server_module=server_stub,
+        effective_max_tokens=32,
+        cors_origins=["http://localhost"],
+        uvicorn_log_level="warning",
+    )
+    assert calls["capacity"] == [(LFM25_VL_3B.target_repo, "lfm-alias")]
+    assert calls["sync"] == 1
+    assert calls["run"]["pair"] == LFM25_VL_3B
+    assert calls["run"]["artifacts"] is artifacts
+    assert calls["run"]["served_model_name"] == "lfm-alias"
+
+
+def test_cli_companion_server_dispatch_noops_without_pair() -> None:
+    from rapid_mlx import cli
+
+    assert not cli._serve_companion_dspark_if_requested(
+        SimpleNamespace(_companion_dspark_pair=None),
+        server_module=SimpleNamespace(),
+        effective_max_tokens=32,
+        cors_origins=[],
+        uvicorn_log_level="warning",
+    )
+
+
+def test_serve_command_downloads_and_dispatches_companion_pair(
+    monkeypatch, capsys
+) -> None:
+    from rapid_mlx import _version_check, cli, model_aliases, model_auto_config, server
+    from rapid_mlx.models.deepseek_v41_native import artifacts as v41_artifacts
+    from rapid_mlx.spec_decode.dspark import artifacts, runtime
+
+    args = cli.build_parser().parse_args(
+        [
+            "serve",
+            LFM25_VL_3B.target_repo,
+            "--speculative-config",
+            json.dumps({"method": "dspark", "model": LFM25_VL_3B.drafter_repo}),
+        ]
+    )
+    monkeypatch.setattr("rapid_mlx.routes.video.configure_video_jobs", lambda *_: None)
+    monkeypatch.setattr(
+        "rapid_mlx._parent_watchdog.install_parent_watchdog", lambda *_: None
+    )
+    monkeypatch.setattr(model_aliases, "resolve_profile", lambda _name: None)
+    monkeypatch.setattr(model_aliases, "resolve_model", lambda name: name)
+    monkeypatch.setattr(v41_artifacts, "is_product_target", lambda _name: False)
+    monkeypatch.setattr(cli, "_serve_will_run_on_mllm_lane", lambda _args: False)
+    monkeypatch.setattr(cli, "_resolve_audio_model_for_serve", lambda _name: None)
+    monkeypatch.setattr(_version_check, "prompt_upgrade_if_available", lambda: False)
+    monkeypatch.setattr(
+        "rapid_mlx._download_gate.weightless_stub_notice", lambda _name: None
+    )
+    monkeypatch.setattr(runtime, "have_runtime", lambda: True)
+    monkeypatch.setattr(model_auto_config, "detect_model_config", lambda _name: None)
+    monkeypatch.setattr(
+        model_auto_config, "warn_misbound_deepseek_v3_parser", lambda *_args: None
+    )
+    disk_checks = []
+    monkeypatch.setattr(
+        cli,
+        "_check_disk_space",
+        lambda model, **kwargs: disk_checks.append((model, kwargs)),
+    )
+    resolved_artifacts = SimpleNamespace(target_path="target", drafter_path="draft")
+    download_calls = []
+    monkeypatch.setattr(
+        artifacts,
+        "download_companion_artifacts",
+        lambda pair: download_calls.append(pair) or resolved_artifacts,
+    )
+    monkeypatch.setattr(server, "configure_logging", lambda _level: "warning")
+    monkeypatch.setattr(server, "_resolve_api_key", lambda value: value)
+    monkeypatch.setattr(server, "configure_cors_from_env", lambda _origins: [])
+    monkeypatch.setattr(server, "configure_trusted_hosts", lambda _hosts: None)
+    monkeypatch.setattr(cli, "_apply_body_receive_timeout_env", lambda *_a, **_k: None)
+    for field in (
+        "_model_alias",
+        "_telemetry_auto_selected",
+        "_enable_audio_lane",
+        "_api_key",
+        "_default_timeout",
+        "_gc_control",
+        "_no_thinking",
+        "_default_reasoning_effort",
+        "_pin_system_prompt",
+        "_relocate_mid_conversation_system",
+        "_enable_auto_tool_choice",
+        "_tool_call_parser",
+        "_enable_tool_logits_bias",
+        "_reasoning_parser",
+    ):
+        monkeypatch.setattr(server, field, getattr(server, field))
+    monkeypatch.setattr(
+        "rapid_mlx.middleware.request_logging.install_request_logging_middleware",
+        lambda _app: None,
+    )
+    dispatched = {}
+    monkeypatch.setattr(
+        cli,
+        "_serve_companion_dspark_if_requested",
+        lambda dispatched_args, **kwargs: (
+            dispatched.update(args=dispatched_args, **kwargs) or True
+        ),
+    )
+
+    cli.serve_command(args)
+
+    assert download_calls == [LFM25_VL_3B]
+    assert disk_checks == [
+        (
+            LFM25_VL_3B.target_repo,
+            {"force": False, "revision_override": LFM25_VL_3B.target_revision},
+        ),
+        (
+            LFM25_VL_3B.drafter_repo,
+            {"force": False, "revision_override": LFM25_VL_3B.drafter_revision},
+        ),
+    ]
+    assert args._companion_dspark_artifacts is resolved_artifacts
+    assert dispatched["args"] is args
+    assert dispatched["effective_max_tokens"] == 32768
+    assert "lfm-dspark-7-proposals: single-user" in capsys.readouterr().out
 
 
 @pytest.mark.parametrize(
@@ -344,6 +687,59 @@ def test_multimodal_renderer_preserves_image_content(monkeypatch) -> None:
     ]
 
 
+@pytest.mark.parametrize(
+    "image_url",
+    [
+        "https://example.test/input.png",
+        {"url": "https://example.test/input.png"},
+    ],
+    ids=["string", "object"],
+)
+def test_multimodal_renderer_supports_input_image_shapes(
+    monkeypatch, image_url
+) -> None:
+    from rapid_mlx.models import mllm
+    from rapid_mlx.spec_decode.dspark.server import _prepare_multimodal_prompt
+
+    captured = {}
+    prompt_utils = types.ModuleType("mlx_vlm.prompt_utils")
+
+    def apply_chat_template(_processor, _config, messages, **kwargs):
+        captured["messages"] = messages
+        captured["kwargs"] = kwargs
+        return "rendered"
+
+    prompt_utils.apply_chat_template = apply_chat_template
+    fake_vlm = types.ModuleType("mlx_vlm")
+    fake_vlm.prompt_utils = prompt_utils
+    monkeypatch.setitem(sys.modules, "mlx_vlm", fake_vlm)
+    monkeypatch.setitem(sys.modules, "mlx_vlm.prompt_utils", prompt_utils)
+    monkeypatch.setattr(mllm, "process_image_input", lambda ref: f"local:{ref}")
+
+    request = _request(
+        messages=[
+            {
+                "role": "user",
+                "content": [
+                    {"type": "output_text", "text": "inspect"},
+                    {"type": "input_image", "image_url": image_url},
+                ],
+            }
+        ]
+    )
+
+    prepared = _prepare_multimodal_prompt(
+        SimpleNamespace(), SimpleNamespace(config={}), request
+    )
+    assert prepared.generation_kwargs == {
+        "image": ["local:https://example.test/input.png"]
+    }
+    assert captured["messages"][0]["content"] == [
+        {"type": "text", "text": "inspect"},
+        {"type": "image"},
+    ]
+
+
 def test_server_load_failure_happens_before_listener(monkeypatch, tmp_path) -> None:
     from rapid_mlx.spec_decode.dspark import server
     from rapid_mlx.spec_decode.dspark.artifacts import CompanionDSparkArtifacts
@@ -373,6 +769,92 @@ def test_server_load_failure_happens_before_listener(monkeypatch, tmp_path) -> N
             uvicorn_log_level="warning",
         )
     assert listener_called is False
+
+
+def test_server_entry_loads_builds_and_binds_qualified_app(monkeypatch, capsys) -> None:
+    from rapid_mlx.spec_decode.dspark import server
+    from rapid_mlx.spec_decode.dspark.artifacts import CompanionDSparkArtifacts
+    from rapid_mlx.spec_decode.dspark.runtime import CompanionDSparkRuntime
+    from rapid_mlx.speculative.dflash import server as dflash_server
+
+    artifacts = CompanionDSparkArtifacts("target", "draft")
+    drafter = SimpleNamespace(accept_lens=[])
+    runtime = CompanionDSparkRuntime(
+        drafter=drafter,
+        drafter_repo=LFM25_VL_3B.drafter_repo,
+        target_revision=LFM25_VL_3B.target_revision,
+        drafter_revision=LFM25_VL_3B.drafter_revision,
+        num_speculative_tokens=7,
+        draft_block_size=8,
+    )
+    downloads = []
+    monkeypatch.setattr(
+        server,
+        "download_companion_artifacts",
+        lambda pair: downloads.append(pair) or artifacts,
+    )
+    monkeypatch.setattr(
+        server,
+        "load_runtime",
+        lambda pair, resolved: (
+            SimpleNamespace(config={}),
+            SimpleNamespace(),
+            runtime,
+        ),
+    )
+
+    class ImmediateFuture:
+        def __init__(self, fn):
+            self.fn = fn
+
+        def result(self):
+            return self.fn()
+
+    monkeypatch.setattr(
+        dflash_server,
+        "_dflash_executor",
+        SimpleNamespace(submit=lambda fn: ImmediateFuture(fn)),
+    )
+    built = {}
+    monkeypatch.setattr(
+        dflash_server,
+        "_build_app",
+        lambda **kwargs: built.update(kwargs) or "qualified-app",
+    )
+    bound = {}
+
+    def run_uvicorn(app, **kwargs):
+        bound.update(app=app, **kwargs)
+        kwargs["on_server_accepting"]()
+
+    monkeypatch.setattr("rapid_mlx._uvicorn.run_uvicorn", run_uvicorn)
+
+    server.run_companion_dspark_server(
+        pair=LFM25_VL_3B,
+        artifacts=None,
+        host="0.0.0.0",
+        port=8123,
+        served_model_name="lfm-vl",
+        default_max_tokens=24,
+        cors_origins=[],
+        uvicorn_log_level="warning",
+    )
+
+    assert downloads == [LFM25_VL_3B]
+    assert built["runtime"] is runtime
+    assert built["model_info"].serving_lane_reason == "qualified_companion_dspark"
+    assert built["strict_openai_streaming"] is True
+    generation_kwargs = built["generation_kwargs_fn"](
+        max_tokens=12, temperature=0.0, top_p=1.0
+    )
+    assert generation_kwargs["draft_model"] is drafter
+    assert generation_kwargs["draft_block_size"] == 8
+    with pytest.raises(RuntimeError, match="must remain greedy"):
+        built["generation_kwargs_fn"](max_tokens=12, temperature=0.1, top_p=1.0)
+    built["validate_request_fn"](_request(model="lfm-vl"))
+    assert bound["app"] == "qualified-app"
+    assert bound["host"] == "0.0.0.0"
+    assert "Ready: http://localhost:8123/v1" in capsys.readouterr().out
 
 
 def test_dflash_shell_preserves_media_and_surfaces_runtime_status() -> None:
@@ -889,6 +1371,109 @@ def test_companion_model_info_is_shared_by_list_and_detail(
     assert status["speculative_decoding"] == speculative
 
 
+def test_dflash_shell_rejects_inconsistent_model_info() -> None:
+    from rapid_mlx.api.models import ModelInfo
+    from rapid_mlx.spec_decode.dspark.runtime import CompanionDSparkRuntime
+    from rapid_mlx.speculative.dflash.server import _build_app
+
+    runtime = CompanionDSparkRuntime(
+        drafter=SimpleNamespace(accept_lens=[]),
+        drafter_repo="draft",
+        target_revision="target-rev",
+        drafter_revision="draft-rev",
+        num_speculative_tokens=7,
+        draft_block_size=8,
+    )
+    base = {
+        "model": SimpleNamespace(),
+        "processor": SimpleNamespace(),
+        "runtime": runtime,
+        "served_model_name": "lfm-vl",
+        "default_max_tokens": 16,
+        "cors_origins": [],
+    }
+    with pytest.raises(ValueError, match="id must match"):
+        _build_app(**base, model_info=ModelInfo(id="wrong"))
+
+    first = CompanionSpeculativeDecodingInfo(
+        configured=True,
+        method="dspark",
+        runtime_state="active",
+        target_model="target",
+        drafter_model="draft",
+        target_revision="target-rev",
+        drafter_revision="draft-rev",
+        num_speculative_tokens=7,
+        draft_block_size=8,
+    )
+    second = first.model_copy(update={"drafter_model": "other-draft"})
+    with pytest.raises(ValueError, match="must match speculative_info"):
+        _build_app(
+            **base,
+            model_info=ModelInfo(id="lfm-vl", speculative_decoding=first),
+            speculative_info=second,
+        )
+
+
+def test_dflash_shell_detail_attaches_speculative_info_without_model_card() -> None:
+    from fastapi.testclient import TestClient
+
+    from rapid_mlx.spec_decode.dspark.runtime import CompanionDSparkRuntime
+    from rapid_mlx.speculative.dflash.server import _build_app
+
+    runtime = CompanionDSparkRuntime(
+        drafter=SimpleNamespace(accept_lens=[]),
+        drafter_repo="draft",
+        target_revision="target-rev",
+        drafter_revision="draft-rev",
+        num_speculative_tokens=7,
+        draft_block_size=8,
+    )
+    info = CompanionSpeculativeDecodingInfo(
+        configured=True,
+        method="dspark",
+        runtime_state="active",
+        target_model="target",
+        drafter_model="draft",
+        target_revision="target-rev",
+        drafter_revision="draft-rev",
+        num_speculative_tokens=7,
+        draft_block_size=8,
+    )
+    app = _build_app(
+        model=SimpleNamespace(),
+        processor=SimpleNamespace(),
+        runtime=runtime,
+        served_model_name="lfm-vl",
+        default_max_tokens=16,
+        cors_origins=[],
+        speculative_info=info,
+    )
+    detailed = TestClient(app).get("/v1/models/lfm-vl")
+    assert detailed.status_code == 200
+    assert detailed.json()["speculative_decoding"] == info.model_dump()
+
+
+def test_dflash_shell_rejects_invalid_renderer_result() -> None:
+    from rapid_mlx.spec_decode.dspark.server import _validate_greedy_request
+
+    client, _, generation_calls = _companion_client(
+        validate_request_fn=_validate_greedy_request,
+        render_prompt_fn=lambda *_args, **_kwargs: object(),
+    )
+    response = client.post(
+        "/v1/chat/completions",
+        json={
+            "model": "lfm-vl",
+            "messages": [{"role": "user", "content": "hello"}],
+            "temperature": 0,
+        },
+    )
+    assert response.status_code == 500
+    assert "renderer returned an invalid result" in response.json()["error"]["message"]
+    assert generation_calls == []
+
+
 def _stream_payloads(response) -> tuple[list[dict], list[str]]:
     data = [
         line.removeprefix("data: ")
@@ -1013,6 +1598,60 @@ def test_companion_stream_generation_errors_use_canonical_envelope(
     )
     assert "dflash_runtime_error" not in response.text
     assert secret not in response.text
+
+
+def test_companion_stream_timeout_uses_canonical_error_without_usage() -> None:
+    import asyncio
+
+    from rapid_mlx.speculative.dflash import server as dflash_server
+
+    class SlowGenerator:
+        def __next__(self):
+            time.sleep(0.05)
+            raise StopIteration
+
+        def close(self):
+            pass
+
+    async def exercise() -> None:
+        stream = dflash_server._stream_completion(
+            prompt="rendered",
+            request=_request(stream=True),
+            served_model_name="lfm-vl",
+            gen_kwargs={"max_tokens": 8},
+            model=SimpleNamespace(),
+            processor=SimpleNamespace(),
+            timeout=0.01,
+            stream_generate_fn=lambda *_args, **_kwargs: SlowGenerator(),
+            backend_name="LFM DSpark",
+            strict_openai_streaming=True,
+        )
+        body = b"".join([chunk async for chunk in stream]).decode()
+        data = [
+            line.removeprefix("data: ")
+            for line in body.splitlines()
+            if line.startswith("data: ")
+        ]
+        payloads = [json.loads(item) for item in data if item != "[DONE]"]
+        assert data[-1] == "[DONE]"
+        assert [item for item in payloads if "error" in item] == [
+            {
+                "error": {
+                    "message": "LFM DSpark stream timed out after 0.010 seconds.",
+                    "type": "server_error",
+                    "code": "request_timeout",
+                    "param": None,
+                }
+            }
+        ]
+        assert all("usage" not in item for item in payloads)
+        await asyncio.sleep(0.1)
+
+    dflash_server._dflash_lock = asyncio.Lock()
+    try:
+        asyncio.run(exercise())
+    finally:
+        dflash_server._dflash_lock = asyncio.Lock()
 
 
 def test_runtime_generation_failure_is_http_500_without_ar_fallback() -> None:

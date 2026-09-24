@@ -172,7 +172,6 @@ def _prepare_multimodal_prompt(
     from mlx_vlm.prompt_utils import apply_chat_template
     from requests import RequestException
 
-    from rapid_mlx.api.tool_calling import convert_tools_for_template
     from rapid_mlx.api.utils import validate_content_blocks_for_capabilities
     from rapid_mlx.models.mllm import FileSizeExceededError, process_image_input
     from rapid_mlx.speculative.dflash.server import PreparedPrompt
@@ -221,17 +220,7 @@ def _prepare_multimodal_prompt(
                 kind = part.get("type")
                 if kind in ("text", "input_text", "output_text"):
                     native_parts.append({"type": "text", "text": part.get("text", "")})
-                elif kind == "image_url":
-                    image_ref = part.get("image_url")
-                    if isinstance(image_ref, dict):
-                        image_ref = image_ref.get("url")
-                    images.append(_process_image(image_ref))
-                    native_parts.append({"type": "image"})
-                elif kind == "image":
-                    image_ref = part.get("image", part.get("url"))
-                    images.append(_process_image(image_ref))
-                    native_parts.append({"type": "image"})
-                elif kind == "input_image":
+                elif kind in ("image_url", "input_image"):
                     image_ref = part.get("image_url")
                     if isinstance(image_ref, dict):
                         image_ref = image_ref.get("url")
@@ -245,10 +234,6 @@ def _prepare_multimodal_prompt(
         "num_audios": 0,
         "enable_thinking": bool(enable_thinking),
     }
-    # This is unreachable through the qualified request validator, but keeping
-    # the renderer complete makes direct focused tests deterministic.
-    if request.tools:
-        template_kwargs["tools"] = convert_tools_for_template(request.tools)
     prompt = apply_chat_template(processor, model.config, messages, **template_kwargs)
     generation_kwargs = {"image": images} if images else {}
     return PreparedPrompt(prompt=prompt, generation_kwargs=generation_kwargs)
