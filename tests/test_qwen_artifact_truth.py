@@ -106,12 +106,19 @@ def _materialize_snapshot(
     if subfolder is not None:
         snapshot = snapshot / subfolder
     snapshot.mkdir(parents=True)
-    (repo_cache / "blobs").mkdir()
-    (snapshot / "config.json").write_bytes((fixture / "config.json").read_bytes())
+    blobs = repo_cache / "blobs"
+    blobs.mkdir()
+
+    def _materialize_metadata(name: str) -> None:
+        content = (fixture / name).read_bytes()
+        blob = blobs / hashlib.sha256(content).hexdigest()
+        blob.write_bytes(content)
+        leaf = snapshot / name
+        leaf.symlink_to(os.path.relpath(blob, leaf.parent))
+
+    _materialize_metadata("config.json")
     if metadata["target_layout"] == "indexed_safetensors":
-        (snapshot / "model.safetensors.index.json").write_bytes(
-            (fixture / "model.safetensors.index.json").read_bytes()
-        )
+        _materialize_metadata("model.safetensors.index.json")
 
     for shard in metadata["target_shards"]:
         target = snapshot / shard
@@ -198,6 +205,95 @@ def test_exact_cached_qwen_config_index_and_snapshot_facts(tmp_path: Path, name:
     status = truth.to_status_dict()
     assert status["identity_is_immutable"] is True
     assert str(tmp_path) not in json.dumps(status)
+
+
+@pytest.mark.parametrize("blob_length", [40, 64])
+def test_verified_metadata_uses_canonical_direct_repo_blob_symlinks(
+    tmp_path: Path, blob_length: int
+):
+    snapshot, _hub, metadata = _materialize_snapshot(tmp_path, "qwen36_35b_4bit")
+    repo_cache = snapshot.parents[1]
+    blobs = repo_cache / "blobs"
+    assert blobs.is_dir()
+    assert not blobs.is_symlink()
+    for blob_character, name in zip(
+        ("a", "b"),
+        ("config.json", "model.safetensors.index.json"),
+        strict=True,
+    ):
+        leaf = snapshot / name
+        replacement = blobs / (blob_character * blob_length)
+        replacement.write_bytes(leaf.resolve(strict=True).read_bytes())
+        _replace_with_symlink(leaf, replacement)
+        resolved = leaf.resolve(strict=True)
+        assert leaf.is_symlink()
+        assert resolved.parent == blobs
+        assert len(resolved.name) == blob_length
+        assert resolved.is_file()
+        assert not resolved.is_symlink()
+
+    truth = probe_qwen_artifact(snapshot, binding=_binding(snapshot, metadata))
+    assert truth.identity_status is ArtifactIdentityStatus.VERIFIED_HUB_SNAPSHOT
+    assert to_verified_runtime_target(truth) is not None
+
+
+@pytest.mark.parametrize(
+    "metadata_name", ["config.json", "model.safetensors.index.json"]
+)
+@pytest.mark.parametrize(
+    "replacement",
+    [
+        "regular",
+        "broken",
+        "external",
+        "repo_sibling",
+        "sibling_revision",
+        "other_repo",
+        "nested_blob",
+        "symlinked_blob_dir",
+    ],
+)
+def test_verified_metadata_noncanonical_provenance_fails_closed(
+    tmp_path: Path, metadata_name: str, replacement: str
+) -> None:
+    snapshot, hub, metadata = _materialize_snapshot(tmp_path, "qwen36_35b_4bit")
+    repo_cache = snapshot.parents[1]
+    leaf = snapshot / metadata_name
+    original = leaf.resolve(strict=True).read_bytes()
+
+    if replacement == "symlinked_blob_dir":
+        blobs = repo_cache / "blobs"
+        external_blobs = tmp_path / "external-blobs"
+        external_blobs.mkdir()
+        for blob in blobs.iterdir():
+            blob.rename(external_blobs / blob.name)
+        blobs.rmdir()
+        blobs.symlink_to(external_blobs, target_is_directory=True)
+    else:
+        leaf.unlink()
+        if replacement == "regular":
+            leaf.write_bytes(original)
+        else:
+            blob_id = "e" * 64
+            if replacement == "broken":
+                target = tmp_path / "missing" / blob_id
+            elif replacement == "external":
+                target = tmp_path / "external" / blob_id
+            elif replacement == "repo_sibling":
+                target = repo_cache / "sibling" / blob_id
+            elif replacement == "sibling_revision":
+                target = repo_cache / "snapshots" / ("f" * 40) / blob_id
+            elif replacement == "other_repo":
+                target = hub / "models--other--repo" / "blobs" / blob_id
+            else:
+                target = repo_cache / "blobs" / "nested" / blob_id
+            if replacement != "broken":
+                target.parent.mkdir(parents=True, exist_ok=True)
+                target.write_bytes(original)
+            leaf.symlink_to(os.path.relpath(target, leaf.parent))
+
+    with pytest.raises(ArtifactProbeError, match="canonical same-repo blob"):
+        probe_qwen_artifact(snapshot, binding=_binding(snapshot, metadata))
 
 
 def test_qwen38_is_qwen35_text_not_qwen4_exp(tmp_path: Path):
@@ -298,12 +394,8 @@ def test_sidecar_symlinked_repo_blobs_dir_has_no_trusted_content_identity(
     blobs_dir.rmdir()
     blobs_dir.symlink_to(external_blobs, target_is_directory=True)
 
-    truth = probe_qwen_artifact(snapshot, binding=_binding(snapshot, metadata))
-    assert truth.mtp_locator.state is MTPWeightPathState.NESTED_MODEL
-    assert truth.mtp_locator.hf_blob_id is None
-    assert truth.mtp_locator.content_identity is None
-    with pytest.raises(ArtifactProbeError, match="trusted sidecar content identity"):
-        to_runtime_drafter_identity(truth)
+    with pytest.raises(ArtifactProbeError, match="canonical same-repo blob"):
+        probe_qwen_artifact(snapshot, binding=_binding(snapshot, metadata))
 
 
 def test_repointing_sidecar_to_another_direct_repo_blob_changes_identity(
@@ -534,6 +626,8 @@ def test_symlinked_repo_cache_ancestor_is_allowed(tmp_path: Path):
     repo_cache.symlink_to(resolved_repo_cache, target_is_directory=True)
     binding = _binding(snapshot, metadata)
     assert binding.matches(snapshot)
+    truth = probe_qwen_artifact(snapshot, binding=binding)
+    assert to_verified_runtime_target(truth) is not None
 
 
 def test_verified_binding_constructor_is_not_a_public_trust_bit(tmp_path: Path):
@@ -670,8 +764,9 @@ def test_regular_weight_bytes_cannot_mint_even_when_name_and_index_match(
     for truth in (first, changed):
         assert truth.target_weights.layout is TargetWeightLayout.INVALID_WEIGHTS
         assert truth.target_weights.file_identities == ()
-        with pytest.raises(ArtifactProbeError, match="target weights are incomplete"):
-            to_verified_runtime_target(truth)
+    assert to_verified_runtime_target(first) is None
+    with pytest.raises(ArtifactProbeError, match="target weights are incomplete"):
+        to_verified_runtime_target(changed)
 
 
 @pytest.mark.parametrize(
@@ -716,10 +811,14 @@ def test_indexed_weight_symlink_escape_cannot_mint_runtime_target(
         target = repo_cache / "blobs" / target.name
     _replace_with_symlink(shard, target)
 
-    truth = probe_qwen_artifact(snapshot, binding=_binding(snapshot, metadata))
-    assert truth.target_weights.layout is TargetWeightLayout.INVALID_WEIGHTS
-    with pytest.raises(ArtifactProbeError, match="target weights are incomplete"):
-        to_verified_runtime_target(truth)
+    if escape_kind == "symlinked_blob_dir":
+        with pytest.raises(ArtifactProbeError, match="canonical same-repo blob"):
+            probe_qwen_artifact(snapshot, binding=_binding(snapshot, metadata))
+    else:
+        truth = probe_qwen_artifact(snapshot, binding=_binding(snapshot, metadata))
+        assert truth.target_weights.layout is TargetWeightLayout.INVALID_WEIGHTS
+        with pytest.raises(ArtifactProbeError, match="target weights are incomplete"):
+            to_verified_runtime_target(truth)
 
 
 def test_single_weight_external_symlink_cannot_mint_runtime_target(tmp_path: Path):
@@ -902,6 +1001,99 @@ def test_conversion_seam_composes_with_integrated_private_runtime_mint(
     assert converted.verification_authority == (
         "rapid_mlx.qwen_artifact:hub-snapshot-v1"
     )
+
+
+@pytest.mark.parametrize(
+    "mutation",
+    ["config", "index", "target_shard", "mtp_link"],
+)
+def test_runtime_conversion_rejects_stale_artifact_then_accepts_fresh_probe(
+    tmp_path: Path, mutation: str
+) -> None:
+    snapshot, _hub, metadata = _materialize_snapshot(tmp_path, "qwen38_27b_4bit")
+    binding = _binding(snapshot, metadata)
+    old_truth = probe_qwen_artifact(snapshot, binding=binding)
+    repo_cache = snapshot.parents[1]
+
+    if mutation in {"config", "index"}:
+        name = "config.json" if mutation == "config" else "model.safetensors.index.json"
+        leaf = snapshot / name
+        content = leaf.resolve(strict=True).read_bytes() + b"\n "
+        replacement = repo_cache / "blobs" / hashlib.sha256(content).hexdigest()
+        replacement.write_bytes(content)
+        _replace_with_symlink(leaf, replacement)
+    elif mutation == "target_shard":
+        leaf = snapshot / metadata["target_shards"][0]
+        replacement = repo_cache / "blobs" / ("d" * 64)
+        replacement.touch()
+        _replace_with_symlink(leaf, replacement)
+    else:
+        leaf = snapshot / metadata["mtp_candidate"]["path"]
+        target = leaf.resolve(strict=True)
+        # Recreate the same canonical link: the portable receipt is unchanged,
+        # but the private leaf-metadata seal must reject the old observation.
+        _replace_with_symlink(leaf, target)
+
+    assert to_verified_runtime_target(old_truth) is None
+    fresh_truth = probe_qwen_artifact(snapshot, binding=binding)
+    fresh_target = to_verified_runtime_target(fresh_truth)
+    assert isinstance(fresh_target, qwen_plan.VerifiedQwenTarget)
+    assert fresh_target.verification_id == fresh_truth.verification_id
+
+
+def test_fresh_conversion_reads_only_resolved_metadata_and_never_network_or_tensors(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import huggingface_hub
+
+    snapshot, _hub, metadata = _materialize_snapshot(tmp_path, "qwen38_27b_4bit")
+    binding = _binding(snapshot, metadata)
+    truth = probe_qwen_artifact(snapshot, binding=binding)
+    metadata_leaves = {
+        snapshot / "config.json",
+        snapshot / "model.safetensors.index.json",
+    }
+    metadata_blobs = {path.resolve(strict=True) for path in metadata_leaves}
+    tensor_blobs = {
+        (snapshot / shard).resolve(strict=True) for shard in metadata["target_shards"]
+    }
+    tensor_blobs.add(
+        (snapshot / metadata["mtp_candidate"]["path"]).resolve(strict=True)
+    )
+    opened: set[Path] = set()
+    original_open = Path.open
+
+    def guarded_open(path: Path, *args, **kwargs):
+        opened.add(path)
+        if path in tensor_blobs:
+            raise AssertionError("runtime conversion must not open tensor content")
+        return original_open(path, *args, **kwargs)
+
+    def reject_network(*_args, **_kwargs):
+        raise AssertionError("runtime conversion must remain offline")
+
+    monkeypatch.setattr(Path, "open", guarded_open)
+    monkeypatch.setattr(huggingface_hub, "hf_hub_download", reject_network)
+    monkeypatch.setattr(huggingface_hub, "snapshot_download", reject_network)
+
+    assert to_verified_runtime_target(truth) is not None
+    assert metadata_blobs <= opened
+    assert metadata_leaves.isdisjoint(opened)
+    assert tensor_blobs.isdisjoint(opened)
+
+
+def test_private_freshness_state_is_redacted_from_status_and_repr(tmp_path: Path):
+    snapshot, _hub, metadata = _materialize_snapshot(tmp_path, "qwen38_27b_4bit")
+    truth = probe_qwen_artifact(snapshot, binding=_binding(snapshot, metadata))
+    rendered = json.dumps(truth.to_status_dict(), sort_keys=True)
+    receipt = json.dumps(truth.to_receipt_dict(), sort_keys=True)
+
+    assert str(tmp_path) not in rendered
+    assert str(tmp_path) not in receipt
+    assert str(tmp_path) not in repr(truth)
+    for private_name in ("binding", "observation_seal", "portable_receipt_sha256"):
+        assert private_name not in rendered
+        assert private_name not in receipt
 
 
 def test_conversion_seam_rejects_unverified_and_incomplete_layers(tmp_path: Path):
@@ -1318,8 +1510,11 @@ def test_runtime_target_conversion_rejects_corrupted_verified_truth(
     snapshot, _hub, metadata = _materialize_snapshot(tmp_path, "qwen36_35b_4bit")
     truth = probe_qwen_artifact(snapshot, binding=_binding(snapshot, metadata))
     mutation(truth)
-    with pytest.raises(ArtifactProbeError, match=message):
-        to_verified_runtime_target(truth)
+    if message == "verified Hub identity":
+        with pytest.raises(ArtifactProbeError, match=message):
+            to_verified_runtime_target(truth)
+    else:
+        assert to_verified_runtime_target(truth) is None
 
 
 def test_runtime_conversion_rejects_wrong_types_and_unavailable_core_api(

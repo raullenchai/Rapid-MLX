@@ -274,6 +274,10 @@ No default behavior change.
 - Rename the Qwen3.6-specific wrapper only after behavior-equivalent tests.
 - Move geometry/cache eligibility to exact qualification rows.
 - Keep Qwen3.6 as the only enabled row initially.
+- Convert verified artifact truth immediately before loading, then repeat the
+  same fresh rebind/reprobe after loading and before publishing the runtime.
+  The B0 receipt is point-in-time only; it does not provide atomic protection
+  against a hostile same-user process that mutates and restores cache paths.
 - Add template/token parity, interleaved MRoPE, cancellation, lifecycle, and
   failed-candidate cleanup tests.
 - Ship as opt-in/canary; do not change alias defaults yet.

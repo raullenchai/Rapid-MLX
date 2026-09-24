@@ -17,7 +17,9 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
 import re
+import stat
 from collections import Counter
 from dataclasses import dataclass, field
 from enum import Enum
@@ -73,6 +75,7 @@ class VerifiedHubSnapshotBinding:
     subfolder: str | None
     _artifact_dir: Path = field(repr=False)
     _repo_cache_dir: Path = field(repr=False)
+    _repo_cache_entry: Path = field(repr=False)
 
     def __init__(
         self,
@@ -82,6 +85,7 @@ class VerifiedHubSnapshotBinding:
         subfolder: str | None,
         artifact_dir: Path,
         repo_cache_dir: Path,
+        repo_cache_entry: Path | None = None,
         _token: object | None = None,
     ) -> None:
         if _token is not _BINDING_TOKEN:
@@ -91,6 +95,11 @@ class VerifiedHubSnapshotBinding:
         object.__setattr__(self, "subfolder", subfolder)
         object.__setattr__(self, "_artifact_dir", artifact_dir)
         object.__setattr__(self, "_repo_cache_dir", repo_cache_dir)
+        object.__setattr__(
+            self,
+            "_repo_cache_entry",
+            repo_cache_entry if repo_cache_entry is not None else repo_cache_dir,
+        )
 
     def matches(self, artifact_dir: Path) -> bool:
         """Return whether ``artifact_dir`` is the exact verified directory."""
@@ -209,6 +218,7 @@ def verify_hub_snapshot_binding(
         subfolder=canonical_subfolder,
         artifact_dir=resolved_actual,
         repo_cache_dir=resolved_repo_cache,
+        repo_cache_entry=repo_cache.absolute(),
         _token=_BINDING_TOKEN,
     )
 
@@ -349,6 +359,11 @@ class QwenArtifactTruth:
     target_weights: TargetWeights
     mtp_locator: MTPLocatorTruth
     _runtime_capability: object | None = field(init=False, repr=False, compare=False)
+    _binding: VerifiedHubSnapshotBinding | None = field(
+        init=False, repr=False, compare=False
+    )
+    _observation_seal: str | None = field(init=False, repr=False, compare=False)
+    _portable_receipt_sha256: str | None = field(init=False, repr=False, compare=False)
 
     def __init__(
         self,
@@ -367,6 +382,9 @@ class QwenArtifactTruth:
         target_weights: TargetWeights,
         mtp_locator: MTPLocatorTruth,
         _runtime_capability: object | None = None,
+        _binding: VerifiedHubSnapshotBinding | None = None,
+        _observation_seal: str | None = None,
+        _portable_receipt_sha256: str | None = None,
         _mint_token: object | None = None,
     ) -> None:
         if _mint_token is not _TRUTH_MINT_TOKEN:
@@ -382,6 +400,8 @@ class QwenArtifactTruth:
             and source_repo is not None
             and revision is not None
             and verification_id is not None
+            and _binding is not None
+            and _observation_seal is not None
         ):
             raise ValueError("verified artifact fields require resolver capability")
         if not verified and any(
@@ -403,6 +423,9 @@ class QwenArtifactTruth:
         object.__setattr__(self, "target_weights", target_weights)
         object.__setattr__(self, "mtp_locator", mtp_locator)
         object.__setattr__(self, "_runtime_capability", _runtime_capability)
+        object.__setattr__(self, "_binding", _binding)
+        object.__setattr__(self, "_observation_seal", _observation_seal)
+        object.__setattr__(self, "_portable_receipt_sha256", _portable_receipt_sha256)
 
     def to_status_dict(self) -> dict[str, Any]:
         """Return the neutral local-status payload for later plan integration."""
@@ -526,58 +549,127 @@ def _quantization(config: dict[str, Any]) -> QwenQuantization:
 _HEX_BLOB_ID = re.compile(r"^[0-9a-f]{40}(?:[0-9a-f]{24})?$")
 
 
-def _weight_file_identity(
+@dataclass(frozen=True)
+class _CanonicalRepoBlob:
+    path: Path
+    blob_id: str
+
+
+@dataclass(frozen=True)
+class _PathObservation:
+    role: str
+    leaf: Path
+    resolved_target: Path | None
+
+
+def _lexically_present(path: Path) -> bool:
+    """Return whether the leaf exists without hiding a dangling symlink."""
+
+    try:
+        os.lstat(path)
+    except FileNotFoundError:
+        return False
+    except OSError:
+        # An inaccessible leaf must not be mistaken for an absent optional
+        # index, because absence permits the single-file checkpoint branch.
+        return True
+    return True
+
+
+def _same_repo_blob_provenance(
     path: Path,
     *,
     snapshot_dir: Path,
     binding: VerifiedHubSnapshotBinding | None,
-) -> str | None:
-    """Return a trusted content identity without opening tensor contents.
+) -> _CanonicalRepoBlob | None:
+    """Resolve one canonical snapshot leaf to its repository-owned blob.
 
-    Qualification accepts canonical Hugging Face cache symlinks only when a
-    matching verified binding proves their final target is a direct blob in
-    the same resolved repo cache. Regular weight files fail closed: hashing
-    multi-gigabyte tensors would violate this probe's content-free contract.
+    The leaf must itself be a symlink whose immediate target is a direct,
+    regular 40/64-hex file in this binding's non-symlink ``blobs`` directory.
+    This rejects regular replacements, dangling or chained links, sibling
+    revisions, other repositories, nested blob paths, and symlinked blob
+    stores. The returned path is the already-resolved file callers may open;
+    they must not follow the snapshot leaf a second time.
     """
 
+    if binding is None:
+        return None
     try:
-        resolved = path.resolve(strict=True)
         artifact_root = snapshot_dir.resolve(strict=True)
         resolved_parent = path.parent.resolve(strict=True)
-    except OSError:
+        leaf_stat = os.lstat(path)
+    except (OSError, ValueError):
         return None
-    if not resolved.is_file():
+    if artifact_root != binding._artifact_dir or not stat.S_ISLNK(leaf_stat.st_mode):
         return None
     try:
         resolved_parent.relative_to(artifact_root)
     except ValueError:
         return None
 
-    if not path.is_symlink() or binding is None:
-        return None
     blobs_path = binding._repo_cache_dir / "blobs"
-    if blobs_path.is_symlink():
-        return None
     try:
+        blobs_stat = os.lstat(blobs_path)
+        if stat.S_ISLNK(blobs_stat.st_mode) or not stat.S_ISDIR(blobs_stat.st_mode):
+            return None
         blobs_dir = blobs_path.resolve(strict=True)
-    except OSError:
+        link_target = Path(os.readlink(path))
+        immediate = (
+            link_target if link_target.is_absolute() else path.parent / link_target
+        )
+        immediate = Path(os.path.abspath(immediate))
+        immediate_parent = immediate.parent.resolve(strict=True)
+        immediate_stat = os.lstat(immediate)
+    except (OSError, ValueError):
         return None
     if (
         blobs_dir.parent != binding._repo_cache_dir
-        or resolved.parent != blobs_dir
-        or _HEX_BLOB_ID.fullmatch(resolved.name) is None
+        or immediate.parent
+        not in {
+            binding._repo_cache_dir / "blobs",
+            binding._repo_cache_entry / "blobs",
+        }
+        or immediate_parent != blobs_dir
+        or _HEX_BLOB_ID.fullmatch(immediate.name) is None
+        or not stat.S_ISREG(immediate_stat.st_mode)
     ):
         return None
-    return f"hf_blob:{resolved.name}"
+    try:
+        resolved = immediate.resolve(strict=True)
+    except (OSError, ValueError):
+        return None
+    if resolved.parent != blobs_dir or resolved.name != immediate.name:
+        return None
+    return _CanonicalRepoBlob(path=resolved, blob_id=resolved.name)
+
+
+def _weight_file_identity(
+    path: Path,
+    *,
+    snapshot_dir: Path,
+    binding: VerifiedHubSnapshotBinding | None,
+) -> str | None:
+    """Return trusted weight identity without opening tensor contents."""
+
+    provenance = _same_repo_blob_provenance(
+        path, snapshot_dir=snapshot_dir, binding=binding
+    )
+    return f"hf_blob:{provenance.blob_id}" if provenance is not None else None
 
 
 def _target_weights(
-    snapshot_dir: Path, binding: VerifiedHubSnapshotBinding | None
+    snapshot_dir: Path,
+    binding: VerifiedHubSnapshotBinding | None,
+    *,
+    index_source: Path | None = None,
+    observations: list[_PathObservation] | None = None,
 ) -> TargetWeights:
     index_path = snapshot_dir / "model.safetensors.index.json"
-    if index_path.is_file():
+    if _lexically_present(index_path):
         try:
-            payload = json.loads(index_path.read_text(encoding="utf-8"))
+            payload = json.loads(
+                (index_source or index_path).read_text(encoding="utf-8")
+            )
         except (OSError, UnicodeError, json.JSONDecodeError):
             return TargetWeights(TargetWeightLayout.INVALID_INDEX, 0, 0, (), None)
         index_sha256 = _canonical_json_sha256(payload)
@@ -622,17 +714,26 @@ def _target_weights(
                 shards,
                 index_sha256,
             )
-        file_identities = tuple(
-            (
-                shard,
-                _weight_file_identity(
-                    path,
-                    snapshot_dir=snapshot_dir,
-                    binding=binding,
-                ),
+        identities: list[tuple[str, str | None]] = []
+        for shard, path in zip(shards, shard_paths, strict=True):
+            provenance = _same_repo_blob_provenance(
+                path, snapshot_dir=snapshot_dir, binding=binding
             )
-            for shard, path in zip(shards, shard_paths, strict=True)
-        )
+            if observations is not None:
+                observations.append(
+                    _PathObservation(
+                        role=f"target:{shard}",
+                        leaf=path,
+                        resolved_target=(provenance.path if provenance else None),
+                    )
+                )
+            identities.append(
+                (
+                    shard,
+                    f"hf_blob:{provenance.blob_id}" if provenance else None,
+                )
+            )
+        file_identities = tuple(identities)
         if any(identity is None for _shard, identity in file_identities):
             return TargetWeights(
                 TargetWeightLayout.INVALID_WEIGHTS,
@@ -657,11 +758,20 @@ def _target_weights(
 
     single = snapshot_dir / "model.safetensors"
     if single.exists() or single.is_symlink():
-        identity = _weight_file_identity(
+        provenance = _same_repo_blob_provenance(
             single,
             snapshot_dir=snapshot_dir,
             binding=binding,
         )
+        if observations is not None:
+            observations.append(
+                _PathObservation(
+                    role="target:model.safetensors",
+                    leaf=single,
+                    resolved_target=(provenance.path if provenance else None),
+                )
+            )
+        identity = f"hf_blob:{provenance.blob_id}" if provenance else None
         layout = (
             TargetWeightLayout.SINGLE_SAFETENSORS
             if identity is not None
@@ -697,10 +807,22 @@ def _target_weights(
 _SHA256_RECEIPT = re.compile(r"^([0-9a-f]{64})[ \t]+\*?[^\r\n]+$")
 
 
-def _declared_sidecar_sha256(candidate: Path) -> str | None:
+def _declared_sidecar_sha256(
+    candidate: Path, observations: list[_PathObservation] | None = None
+) -> str | None:
     receipt = candidate.with_name(candidate.name + ".sha256")
     if not receipt.is_file():
         return None
+    if observations is not None:
+        try:
+            resolved = receipt.resolve(strict=True)
+        except OSError:
+            resolved = None
+        observations.append(
+            _PathObservation(
+                role="mtp:sha256-receipt", leaf=receipt, resolved_target=resolved
+            )
+        )
     try:
         line = receipt.read_text(encoding="utf-8").strip()
     except (OSError, UnicodeError):
@@ -715,40 +837,17 @@ def _hf_blob_id(
     snapshot_dir: Path,
     binding: VerifiedHubSnapshotBinding | None,
 ) -> str | None:
-    if binding is None or not candidate.is_symlink():
-        return None
-    try:
-        resolved = candidate.resolve(strict=True)
-        artifact_root = snapshot_dir.resolve(strict=True)
-        resolved_parent = candidate.parent.resolve(strict=True)
-    except OSError:
-        return None
-    if artifact_root != binding._artifact_dir:
-        return None
-    try:
-        resolved_parent.relative_to(artifact_root)
-    except ValueError:
-        return None
-
-    blobs_path = binding._repo_cache_dir / "blobs"
-    if blobs_path.is_symlink():
-        return None
-    try:
-        blobs_dir = blobs_path.resolve(strict=True)
-    except OSError:
-        return None
-    if (
-        blobs_dir.parent != binding._repo_cache_dir
-        or resolved.parent != blobs_dir
-        or not resolved.is_file()
-        or not _HEX_BLOB_ID.fullmatch(resolved.name)
-    ):
-        return None
-    return resolved.name
+    provenance = _same_repo_blob_provenance(
+        candidate, snapshot_dir=snapshot_dir, binding=binding
+    )
+    return provenance.blob_id if provenance is not None else None
 
 
 def _mtp_locator(
-    snapshot_dir: Path, binding: VerifiedHubSnapshotBinding | None
+    snapshot_dir: Path,
+    binding: VerifiedHubSnapshotBinding | None,
+    *,
+    observations: list[_PathObservation] | None = None,
 ) -> MTPLocatorTruth:
     layout = inspect_mtp_weights_layout(snapshot_dir)
     candidate = layout.candidate
@@ -775,8 +874,19 @@ def _mtp_locator(
         size = candidate.stat().st_size
     except OSError:
         size = None
-    blob_id = _hf_blob_id(candidate, snapshot_dir=snapshot_dir, binding=binding)
-    declared_sha256 = _declared_sidecar_sha256(candidate)
+    provenance = _same_repo_blob_provenance(
+        candidate, snapshot_dir=snapshot_dir, binding=binding
+    )
+    if observations is not None:
+        observations.append(
+            _PathObservation(
+                role="mtp:weights",
+                leaf=candidate,
+                resolved_target=(provenance.path if provenance else None),
+            )
+        )
+    blob_id = provenance.blob_id if provenance is not None else None
+    declared_sha256 = _declared_sidecar_sha256(candidate, observations)
     matches = (
         declared_sha256 == blob_id
         if declared_sha256 is not None and blob_id is not None and len(blob_id) == 64
@@ -794,6 +904,62 @@ def _mtp_locator(
     )
 
 
+def _metadata_fingerprint(path: Path) -> tuple[object, ...]:
+    """Return stable, content-free metadata for one lexical path."""
+
+    try:
+        metadata = os.lstat(path)
+    except OSError as exc:
+        return ("unavailable", type(exc).__name__, getattr(exc, "errno", None))
+    link_target = None
+    if stat.S_ISLNK(metadata.st_mode):
+        try:
+            link_target = os.readlink(path)
+        except OSError as exc:
+            link_target = (
+                "unavailable",
+                type(exc).__name__,
+                getattr(exc, "errno", None),
+            )
+    return (
+        "present",
+        metadata.st_dev,
+        metadata.st_ino,
+        metadata.st_mode,
+        metadata.st_nlink,
+        metadata.st_uid,
+        metadata.st_gid,
+        metadata.st_size,
+        metadata.st_mtime_ns,
+        metadata.st_ctime_ns,
+        link_target,
+    )
+
+
+def _observation_seal(observations: list[_PathObservation]) -> str:
+    """Seal leaf and resolved-target metadata without exposing local paths."""
+
+    payload = [
+        (
+            observation.role,
+            _metadata_fingerprint(observation.leaf),
+            (
+                _metadata_fingerprint(observation.resolved_target)
+                if observation.resolved_target is not None
+                else None
+            ),
+        )
+        for observation in observations
+    ]
+    return _canonical_json_sha256(payload)
+
+
+def _portable_truth_receipt_sha256(truth: QwenArtifactTruth) -> str:
+    """Digest the public, path-free receipt used across fresh probes."""
+
+    return _canonical_json_sha256(truth.to_receipt_dict())
+
+
 def probe_qwen_artifact(
     snapshot_dir: str | Path,
     *,
@@ -808,17 +974,6 @@ def probe_qwen_artifact(
     """
 
     snapshot = Path(snapshot_dir)
-    config_path = snapshot / "config.json"
-    try:
-        config_bytes = config_path.read_bytes()
-        config = json.loads(config_bytes)
-    except (OSError, UnicodeError, json.JSONDecodeError) as exc:
-        raise ArtifactProbeError("snapshot has no readable config.json") from exc
-    if not isinstance(config, dict):
-        raise ArtifactProbeError("snapshot config.json must contain an object")
-
-    nested_text = config.get("text_config")
-    text_config = nested_text if isinstance(nested_text, dict) else config
     if binding is None:
         identity_status = ArtifactIdentityStatus.UNVERIFIED_SNAPSHOT
         verified_binding = None
@@ -829,10 +984,76 @@ def probe_qwen_artifact(
         identity_status = ArtifactIdentityStatus.BINDING_MISMATCH
         verified_binding = None
 
+    observations: list[_PathObservation] = []
+    config_path = snapshot / "config.json"
+    config_source = config_path
+    if verified_binding is not None:
+        config_blob = _same_repo_blob_provenance(
+            config_path, snapshot_dir=snapshot, binding=verified_binding
+        )
+        if config_blob is None:
+            raise ArtifactProbeError(
+                "verified snapshot config.json lacks canonical same-repo blob provenance"
+            )
+        config_source = config_blob.path
+        observations.append(
+            _PathObservation(
+                role="metadata:config.json",
+                leaf=config_path,
+                resolved_target=config_blob.path,
+            )
+        )
+    try:
+        # For verified snapshots, open the already-resolved blob. Do not follow
+        # the snapshot leaf again after provenance validation.
+        config_bytes = config_source.read_bytes()
+        config = json.loads(config_bytes)
+    except (OSError, UnicodeError, json.JSONDecodeError) as exc:
+        raise ArtifactProbeError("snapshot has no readable config.json") from exc
+    if not isinstance(config, dict):
+        raise ArtifactProbeError("snapshot config.json must contain an object")
+
+    nested_text = config.get("text_config")
+    text_config = nested_text if isinstance(nested_text, dict) else config
+
+    index_path = snapshot / "model.safetensors.index.json"
+    index_source = None
+    if verified_binding is not None:
+        if _lexically_present(index_path):
+            index_blob = _same_repo_blob_provenance(
+                index_path, snapshot_dir=snapshot, binding=verified_binding
+            )
+            if index_blob is None:
+                raise ArtifactProbeError(
+                    "verified snapshot model.safetensors.index.json lacks "
+                    "canonical same-repo blob provenance"
+                )
+            index_source = index_blob.path
+            observations.append(
+                _PathObservation(
+                    role="metadata:model.safetensors.index.json",
+                    leaf=index_path,
+                    resolved_target=index_blob.path,
+                )
+            )
+        else:
+            observations.append(
+                _PathObservation(
+                    role="metadata:model.safetensors.index.json",
+                    leaf=index_path,
+                    resolved_target=None,
+                )
+            )
+
     geometry = _geometry(text_config)
     quantization = _quantization(config)
-    target_weights = _target_weights(snapshot, verified_binding)
-    mtp_locator = _mtp_locator(snapshot, verified_binding)
+    target_weights = _target_weights(
+        snapshot,
+        verified_binding,
+        index_source=index_source,
+        observations=observations,
+    )
+    mtp_locator = _mtp_locator(snapshot, verified_binding, observations=observations)
     config_sha256 = _canonical_json_sha256(config)
     verification_id = None
     if verified_binding is not None:
@@ -848,7 +1069,8 @@ def probe_qwen_artifact(
             }
         )
 
-    return QwenArtifactTruth(
+    seal = _observation_seal(observations) if verified_binding is not None else None
+    truth = QwenArtifactTruth(
         source_repo=(verified_binding.repo_id if verified_binding else None),
         revision=(verified_binding.revision if verified_binding else None),
         target_subfolder=(verified_binding.subfolder if verified_binding else None),
@@ -867,8 +1089,17 @@ def probe_qwen_artifact(
         _runtime_capability=(
             _VERIFIED_RUNTIME_CAPABILITY if verified_binding is not None else None
         ),
+        _binding=verified_binding,
+        _observation_seal=seal,
         _mint_token=_TRUTH_MINT_TOKEN,
     )
+    if verified_binding is not None:
+        object.__setattr__(
+            truth,
+            "_portable_receipt_sha256",
+            _portable_truth_receipt_sha256(truth),
+        )
+    return truth
 
 
 def probe_resolved_qwen_artifact(
@@ -991,13 +1222,51 @@ def _runtime_cache_geometry(truth: QwenArtifactTruth) -> tuple[tuple[str, str], 
     return tuple(sorted((key, str(value)) for key, value in values.items()))
 
 
+def _fresh_verified_truth(truth: QwenArtifactTruth) -> QwenArtifactTruth | None:
+    """Rebind and reprobe the exact artifact represented by ``truth``."""
+
+    binding = truth._binding
+    if (
+        binding is None
+        or truth._portable_receipt_sha256 is None
+        or truth._observation_seal is None
+        or _portable_truth_receipt_sha256(truth) != truth._portable_receipt_sha256
+    ):
+        return None
+    rebound = verify_hub_snapshot_binding(
+        binding._artifact_dir,
+        repo_id=binding.repo_id,
+        revision=binding.revision,
+        subfolder=binding.subfolder,
+    )
+    if rebound is None or rebound._artifact_dir != binding._artifact_dir:
+        return None
+    try:
+        fresh = probe_qwen_artifact(binding._artifact_dir, binding=rebound)
+    except (ArtifactProbeError, OSError, TypeError, ValueError):
+        return None
+    if (
+        fresh._portable_receipt_sha256 != truth._portable_receipt_sha256
+        or fresh._observation_seal != truth._observation_seal
+    ):
+        return None
+    return fresh
+
+
 def to_verified_runtime_target(truth: QwenArtifactTruth):
     """Convert verified truth to the core target-only identity, fail closed.
 
     Import is delayed so this truth slice remains independently cherry-pickable
     while the core planner lands.  The conversion lives here—not in a caller—so
     ordered layers, quantization, weight receipts, and cache geometry have one
-    canonical mapping.
+    canonical mapping. Conversion rebinds and reprobes the exact private
+    artifact path, then mints only from those fresh facts. A mismatch returns
+    ``None``.
+
+    This is a point-in-time receipt, not atomic protection against a hostile
+    same-user process that mutates and restores paths around the check. B1 must
+    therefore repeat conversion after model loading and before publishing the
+    loaded runtime; B0 has no pre-load qualification seam to enforce that yet.
     """
 
     if not isinstance(truth, QwenArtifactTruth):
@@ -1013,6 +1282,10 @@ def to_verified_runtime_target(truth: QwenArtifactTruth):
         or truth.verification_id is None
     ):
         raise ArtifactProbeError("runtime conversion requires verified Hub identity")
+    fresh = _fresh_verified_truth(truth)
+    if fresh is None:
+        return None
+    truth = fresh
     if not truth.outer_model_type or not truth.text_model_type:
         raise ArtifactProbeError("artifact has incomplete Qwen model types")
     if not truth.geometry.layer_types or truth.geometry.num_hidden_layers != len(
