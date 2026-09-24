@@ -3021,6 +3021,9 @@ def test_other_catalogs_still_get_no_thinking():
         (["--max-num-seqs", "0"], 1),
         (["--max-num-seqs", "lots"], 2),
         (["--max-num-seqs"], 2),
+        # argparse store semantics: the last occurrence is what serve runs with
+        (["--max-num-seqs", "8", "--max-num-seqs", "1"], 1),
+        (["--max-num-seqs=1", "--max-num-seqs", "8"], 8),
     ],
 )
 def test_pool_max_concurrency_mirrors_serve_slots(passthrough, expected):

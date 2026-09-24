@@ -799,16 +799,18 @@ def _pool_max_concurrency(passthrough: list[str]) -> int:
     override), so the pool never routes more concurrent requests than the
     local server admits. Unparseable overrides fall back to the default —
     serve itself rejects them with a proper error."""
+    # argparse "store" semantics: the LAST occurrence wins, so scan them all.
+    result = _POOL_DEFAULT_MAX_CONCURRENCY
     for i, token in enumerate(passthrough):
         key, sep, value = token.partition("=")
         if key != "--max-num-seqs":
             continue
         raw = value if sep else (passthrough[i + 1] if i + 1 < len(passthrough) else "")
         try:
-            return max(1, min(int(raw), _POOL_MAX_CONCURRENCY_CEILING))
+            result = max(1, min(int(raw), _POOL_MAX_CONCURRENCY_CEILING))
         except ValueError:
-            return _POOL_DEFAULT_MAX_CONCURRENCY
-    return _POOL_DEFAULT_MAX_CONCURRENCY
+            result = _POOL_DEFAULT_MAX_CONCURRENCY
+    return result
 
 
 def register_node(
