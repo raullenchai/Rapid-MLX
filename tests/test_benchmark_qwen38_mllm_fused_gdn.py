@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+import hashlib
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
@@ -451,12 +452,18 @@ def _idle_status(*, paused=False):
 
 def _checkpoint():
     return {
+        "phase": "before_engine_construction",
         "mlx": {
             "available": True,
             "active_bytes": 10,
             "peak_bytes": 20,
             "cache_bytes": 5,
             "error": None,
+        },
+        "aggregate_run_max": {
+            "active_bytes": 10,
+            "peak_bytes": 20,
+            "cache_bytes": 5,
         },
         "physical_footprint": {
             "available": True,
@@ -471,8 +478,16 @@ def _checkpoint():
 def _passing_receipt() -> dict[str, Any]:
     pairs = []
     for index in range(bench.EXPECTED_STRATA):
+        order = (
+            ["baseline", "candidate", "candidate", "baseline"]
+            if index % 2 == 0
+            else ["candidate", "baseline", "baseline", "candidate"]
+        )
         pairs.append(
             {
+                "index": index + 1,
+                "category": bench.PROMPTS[index][0],
+                "order": order,
                 "baseline": [_sample("baseline", 100), _sample("baseline", 100)],
                 "candidate": [
                     _sample("candidate", 105),
@@ -554,7 +569,24 @@ def _passing_receipt() -> dict[str, Any]:
                 "loaded": False,
             },
         },
-        "hardware": {"verified": True},
+        "hardware": {
+            "verified": True,
+            "expected_memory_gib": 48,
+            "expected_chip": "Apple M4 Pro",
+        },
+        "runtime_contract": {
+            "packages": {
+                "mlx": bench.EXPECTED_MLX_VERSION,
+                "mlx-lm": bench.EXPECTED_MLX_LM_VERSION,
+                "mlx-vlm": bench.EXPECTED_MLX_VLM_VERSION,
+            },
+            "kernel": {
+                "source_tree_match": True,
+                "source_sha256": bench.EXPECTED_KERNEL_SHA256,
+            },
+            "stock_method": {"source_sha256": bench.EXPECTED_LANGUAGE_SHA256},
+            "cache_class": {"source_sha256": bench.EXPECTED_CACHE_SHA256},
+        },
         "memory_checkpoints": {
             name: _checkpoint()
             for name in ("pre", "probe", "peak", "post_clear", "post_stop")
@@ -567,6 +599,37 @@ def test_all_decision_gates_pass_on_complete_exact_receipt():
     gates = bench.evaluate_gates(_passing_receipt())
     assert gates["pass"] is True
     assert all(gates["checks"].values())
+
+
+def test_parent_v1_gate_keys_remain_additively_compatible():
+    parent_v1 = {
+        "six_complete_prompt_strata",
+        "all_twenty_four_samples_are_256_tokens",
+        "median_decode_speedup_gte_1_03",
+        "five_of_six_strata_positive",
+        "median_wall_speedup_gte_1_03",
+        "five_of_six_wall_strata_positive",
+        "paired_ratio_cv_lte_0_05",
+        "paired_wall_ratio_cv_lte_0_05",
+        "exact_token_ids_all_runs_per_stratum",
+        "median_ttft_ratio_lte_1_10",
+        "active_delta_lte_64_mib",
+        "isolated_peak_delta_lte_64_mib",
+        "exact_candidate_hits_per_layer_and_zero_baseline",
+        "singleton_fastpath_engaged",
+        "real_weight_32_step_bit_exact",
+        "same_model_and_executor",
+        "prefix_cache_disabled",
+        "greedy_thinking_off",
+        "measured_ignore_eos_enabled",
+        "artifact_exact_b0_verified",
+        "source_clean",
+        "source_tree_match",
+        "vlm_candidate_and_stock_recovery",
+        "no_errors",
+    }
+    assert parent_v1 <= set(bench.evaluate_gates(_passing_receipt())["checks"])
+    assert bench.evaluate_gates(_passing_receipt(), 64 * bench.MIB)["pass"] is True
 
 
 @pytest.mark.parametrize(
@@ -633,6 +696,83 @@ def test_all_decision_gates_pass_on_complete_exact_receipt():
                 "physical_footprint"
             ].__setitem__("available", False),
             "all_five_physical_footprint_checkpoints_available",
+        ),
+        (
+            lambda receipt: receipt["memory_checkpoints"]["post_stop"][
+                "mlx"
+            ].__setitem__("active_bytes", 60 * bench.GIB),
+            "post_stop_mlx_active_within_cleanup_bound",
+        ),
+        (
+            lambda receipt: receipt["memory_checkpoints"]["post_stop"][
+                "mlx"
+            ].__setitem__("cache_bytes", 60 * bench.GIB),
+            "post_stop_mlx_cache_within_cleanup_bound",
+        ),
+        (
+            lambda receipt: receipt["memory_checkpoints"]["post_stop"][
+                "mlx"
+            ].__setitem__("peak_bytes", 64 * bench.GIB),
+            "stop_does_not_raise_mlx_peak_beyond_allowance",
+        ),
+        (
+            lambda receipt: receipt["memory_checkpoints"]["post_stop"][
+                "physical_footprint"
+            ].update(
+                current_bytes=60 * bench.GIB,
+                peak_bytes=64 * bench.GIB,
+            ),
+            "post_stop_footprint_within_cleanup_bound",
+        ),
+        (
+            lambda receipt: receipt["memory_checkpoints"]["post_stop"][
+                "physical_footprint"
+            ].__setitem__("peak_bytes", 64 * bench.GIB),
+            "stop_does_not_raise_footprint_peak_beyond_allowance",
+        ),
+        (
+            lambda receipt: receipt["memory_checkpoints"]["post_stop"][
+                "swap"
+            ].__setitem__("used_bytes", 32 * bench.GIB),
+            "end_to_end_extra_swap_lte_256_mib",
+        ),
+        (
+            lambda receipt: receipt["pairs"][0].__setitem__(
+                "order", ["candidate", "baseline", "baseline", "candidate"]
+            ),
+            "exact_abba_baab_order_index_category",
+        ),
+        (
+            lambda receipt: receipt["pairs"][1].__setitem__("index", 99),
+            "exact_abba_baab_order_index_category",
+        ),
+        (
+            lambda receipt: receipt["pairs"][2].__setitem__("category", "wrong"),
+            "exact_abba_baab_order_index_category",
+        ),
+        (
+            lambda receipt: receipt["memory_checkpoints"]["pre"].__setitem__(
+                "phase", "after_engine_start"
+            ),
+            "pre_memory_captured_before_engine_construction",
+        ),
+        (
+            lambda receipt: receipt["memory_checkpoints"]["peak"].pop(
+                "aggregate_run_max"
+            ),
+            "aggregate_mlx_peak_covers_run",
+        ),
+        (
+            lambda receipt: receipt["runtime_contract"]["packages"].__setitem__(
+                "mlx", "0.0.0"
+            ),
+            "exact_pinned_runtime_contract",
+        ),
+        (
+            lambda receipt: receipt["hardware"].update(
+                expected_memory_gib=64, expected_chip="Apple M4 Pro"
+            ),
+            "target_48_or_64_gib_hardware",
         ),
     ],
 )
@@ -716,6 +856,18 @@ def test_pinned_installed_gdn_and_cache_abi_provenance():
     assert len(ArraysCache(size=2).cache) == 2
 
 
+def test_pinned_kernel_source_hash_matches_contract():
+    kernel = (
+        bench.SCRIPT.parent.parent
+        / "rapid_mlx"
+        / "kernels"
+        / "qwen4_fused_gdn_decode.py"
+    )
+    assert (
+        hashlib.sha256(kernel.read_bytes()).hexdigest() == bench.EXPECTED_KERNEL_SHA256
+    )
+
+
 def test_validate_args_rejects_blank_image_expect(tmp_path: Path):
     model = tmp_path / "model"
     model.mkdir()
@@ -797,8 +949,157 @@ async def test_fifty_abort_cycles_close_streams_and_recover_with_fakes(monkeypat
         }
 
     monkeypatch.setattr(bench, "_run_sample", fake_sample)
+
+    async def fake_memory(*_args, **_kwargs):
+        return {"active_bytes": 1, "peak_bytes": 2, "cache_bytes": 0}
+
+    monkeypatch.setattr(bench.common, "_worker_memory", fake_memory)
     result = await bench.run_abort_recovery(FakeEngine(), FakePatch(), timeout=0.1)
     assert result["pass"] is True
     assert len(result["cycles"]) == 50
     assert all(cycle["closed"] for cycle in result["cycles"])
     assert bench._request_counts_zero(result["final_status"])
+
+
+def test_cli_rejects_cross_paired_hardware_before_touching_paths():
+    class PoisonPath:
+        def is_dir(self):
+            raise AssertionError("model path was touched")
+
+    args = argparse.Namespace(
+        model=PoisonPath(),
+        image_path=PoisonPath(),
+        image_expect="expected",
+        expected_memory_gib=64,
+        expected_chip="Apple M4 Pro",
+        lifecycle_timeout=120.0,
+        max_memory_delta_mib=None,
+        output=PoisonPath(),
+    )
+    with pytest.raises(SystemExit):
+        bench._validate_args(bench.build_parser(), args)
+
+
+def test_cli_accepts_legacy_max_memory_delta_spelling():
+    args = bench.build_parser().parse_args(
+        [
+            "--model",
+            "/model",
+            "--image-path",
+            "/image.png",
+            "--image-expect",
+            "subject",
+            "--output",
+            "/receipt.json",
+            "--expected-memory-gib",
+            "48",
+            "--expected-chip",
+            "Apple M4 Pro",
+            "--max-memory-delta-mib",
+            "64",
+        ]
+    )
+    assert args.max_memory_delta_mib == 64
+
+
+@pytest.mark.asyncio
+async def test_hardware_mismatch_precedes_artifact_or_engine_path(monkeypatch):
+    touched = False
+
+    def inspect_artifact(_model):
+        nonlocal touched
+        touched = True
+        raise AssertionError("artifact path was touched")
+
+    monkeypatch.setattr(
+        bench,
+        "_hardware_snapshot",
+        lambda *_args: {
+            "expected_memory_gib": 48,
+            "expected_chip": "Apple M4 Pro",
+            "physical_memory_bytes": 64 * bench.GIB,
+            "chip": "Apple M1 Max",
+            "verified": False,
+            "errors": [],
+        },
+    )
+    monkeypatch.setattr(bench.common, "_inspect_exact_artifact", inspect_artifact)
+    args = argparse.Namespace(
+        model=object(), expected_memory_gib=48, expected_chip="Apple M4 Pro"
+    )
+    with pytest.raises(bench.QualificationRunError) as failure:
+        await bench.run_benchmark(args)
+    assert touched is False
+    assert failure.value.receipt["stage"] == "hardware_preflight"
+    assert failure.value.receipt["hardware"]["verified"] is False
+
+
+@pytest.mark.parametrize("mismatched", ["mlx", "mlx-lm", "mlx-vlm"])
+@pytest.mark.asyncio
+async def test_runtime_version_mismatch_precedes_artifact_load(monkeypatch, mismatched):
+    expected = {
+        "mlx": bench.EXPECTED_MLX_VERSION,
+        "mlx-lm": bench.EXPECTED_MLX_LM_VERSION,
+        "mlx-vlm": bench.EXPECTED_MLX_VLM_VERSION,
+    }
+    monkeypatch.setattr(
+        bench,
+        "_hardware_snapshot",
+        lambda *_args: {
+            "expected_memory_gib": 48,
+            "expected_chip": "Apple M4 Pro",
+            "physical_memory_bytes": 48 * bench.GIB,
+            "chip": "Apple M4 Pro",
+            "verified": True,
+            "errors": [],
+        },
+    )
+    monkeypatch.setattr(
+        bench.importlib.metadata,
+        "version",
+        lambda package: "0.0.0" if package == mismatched else expected[package],
+    )
+    monkeypatch.setattr(
+        bench.subprocess,
+        "run",
+        lambda command, **_kwargs: SimpleNamespace(
+            stdout="deadbeef\n" if command[1:3] == ["rev-parse", "HEAD"] else ""
+        ),
+    )
+    monkeypatch.setattr(
+        bench.common,
+        "_inspect_exact_artifact",
+        lambda _model: pytest.fail("artifact must not be inspected"),
+    )
+    args = argparse.Namespace(
+        model=object(), expected_memory_gib=48, expected_chip="Apple M4 Pro"
+    )
+    with pytest.raises(bench.QualificationRunError) as failure:
+        await bench.run_benchmark(args)
+    assert failure.value.receipt["stage"] == "runtime_preflight"
+    assert mismatched in failure.value.receipt["errors"][0]
+
+
+@pytest.mark.asyncio
+async def test_partial_receipt_preserves_primary_and_cleanup_errors(monkeypatch):
+    async def fail(_args, state):
+        state.update(
+            stage="abort_recovery",
+            hardware={"verified": True},
+            source={"dirty": False, "source_tree_match": True},
+            memory_checkpoints={"pre": _checkpoint()},
+            cleanup_errors=[{"type": "OSError", "message": "cleanup failed"}],
+        )
+        raise ValueError(f"primary at {Path.home()}/private-model")
+
+    monkeypatch.setattr(bench, "_run_benchmark_impl", fail)
+    with pytest.raises(bench.QualificationRunError) as failure:
+        await bench.run_benchmark(SimpleNamespace())
+    receipt = failure.value.receipt
+    assert receipt["stage"] == "abort_recovery"
+    assert receipt["failure"]["primary"]["type"] == "ValueError"
+    assert receipt["failure"]["cleanup"] == [
+        {"type": "OSError", "message": "cleanup failed"}
+    ]
+    assert "<home>" in receipt["failure"]["primary"]["message"]
+    assert receipt["gates"]["pass"] is False
