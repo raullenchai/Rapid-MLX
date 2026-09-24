@@ -3,7 +3,7 @@ from pathlib import Path
 
 import tomllib
 
-from rapid_mlx.cli import build_parser
+from rapid_mlx.cli import _resolve_system_one_backend, build_parser
 
 
 def test_system_one_cli_defaults_to_laya_service():
@@ -29,6 +29,11 @@ def test_system_one_cli_accepts_clm_runtime_inputs():
     )
     assert args.head == "/tmp/head"
     assert args.encoder == "Qwen/Qwen3-8B"
+
+
+def test_system_one_auto_backend_does_not_substring_match_clm():
+    assert _resolve_system_one_backend("org/aclmish-laya", "auto") == "laya"
+    assert _resolve_system_one_backend("Contrastive-LM/CLM-v0.1-8B", "auto") == "clm"
 
 
 def test_system_one_extra_is_optional_and_included_in_all():

@@ -195,6 +195,7 @@ class CLMBackend:
         *,
         cache_entries: int = 20_000,
         max_tokens: int = 2048,
+        max_work_tokens: int = 32_768,
     ):
         import mlx.core as mx
 
@@ -251,6 +252,7 @@ class CLMBackend:
         self.default_model = self.config.get("model_name", "clm-latest")
         self._scale = min(100.0, math.exp(float(self.config["logit_scale"])))
         self._max_tokens = max_tokens
+        self._max_work_tokens = max_work_tokens
         self._cache_entries = max(0, cache_entries)
         self._cache: OrderedDict[tuple[str, str], Any] = OrderedDict()
         self._lock = threading.Lock()
@@ -305,6 +307,14 @@ class CLMBackend:
         pairs = clm_pairs(state, questions)
         states = [item[0] for item in pairs.values()]
         candidates = [candidate for item in pairs.values() for candidate in item[2]]
+        requested_tokens = sum(
+            len(self._token_ids(text)) for text in states + candidates
+        )
+        if requested_tokens > self._max_work_tokens:
+            raise ValueError(
+                "request needs "
+                f"{requested_tokens} encoder tokens; limit is {self._max_work_tokens}"
+            )
         with self._lock:
             state_vectors, state_tokens = self._project("state", states)
             action_vectors, action_tokens = self._project("action", candidates)

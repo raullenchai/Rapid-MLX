@@ -100,3 +100,5 @@ nesting-depth protection.
   reference server. `--max-tokens` can lower or raise the cap, but parity above
   2,048 tokens has not been qualified.
 - A request may contain at most 64 questions and 255 options per question.
+  Across all questions it may contain at most 255 candidates and 32,768 CLM
+  encoder tokens. `--max-work-tokens` changes the token budget.

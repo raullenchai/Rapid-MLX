@@ -51,6 +51,21 @@ class SystemOneRequest(BaseModel):
             raise ValueError("temperature must be finite")
         return value
 
+    @model_validator(mode="after")
+    def bounded_candidates(self) -> SystemOneRequest:
+        # CLM encodes every candidate independently. Bound the aggregate, not
+        # only each question, so a schema-valid request cannot multiply 64
+        # individually-valid 255-option questions into 16k encoder passes.
+        total = 0
+        for question in self.questions.values():
+            if question.type == "noul":
+                total += 2
+            else:
+                total += len(question.criteria or [])
+        if total > 255:
+            raise ValueError("a request supports at most 255 total answer candidates")
+        return self
+
 
 class RankRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")

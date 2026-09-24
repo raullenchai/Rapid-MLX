@@ -88,6 +88,25 @@ def test_system_one_rejects_ambiguous_or_unbounded_questions():
         },
     )
     assert too_many.status_code == 422
+    aggregate = client.post(
+        "/v1/systemone",
+        json={
+            "state": "x",
+            "questions": {
+                "first": {
+                    "type": "choice",
+                    "instructions": "x",
+                    "criteria": {str(index): str(index) for index in range(128)},
+                },
+                "second": {
+                    "type": "choice",
+                    "instructions": "x",
+                    "criteria": {str(index): str(index) for index in range(128)},
+                },
+            },
+        },
+    )
+    assert aggregate.status_code == 422
 
 
 def test_rank_contract():
@@ -189,3 +208,11 @@ def test_clm_backend_runs_native_hidden_state_and_reuses_action_cache(
     second = backend.answer("ctx", {"q": question}, "clm-test", 1.0)
     assert second["usage"]["input_tokens"] == 0
     assert len(calls) == 3
+
+    backend._max_work_tokens = 2
+    try:
+        backend.answer("ctx", {"q": question}, "clm-test", 1.0)
+    except ValueError as exc:
+        assert "encoder tokens" in str(exc)
+    else:
+        raise AssertionError("CLM accepted a request over its work-token budget")

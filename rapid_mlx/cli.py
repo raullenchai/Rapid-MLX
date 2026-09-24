@@ -3957,6 +3957,17 @@ def _validate_v41_product_spec_flags(args, *, owns_runtime: bool) -> None:
         raise SystemExit(2)
 
 
+def _resolve_system_one_backend(model: str, requested: str) -> str:
+    if requested != "auto":
+        return requested
+    model_key = model.lower()
+    if model_key in {"clm", "clm-8b", "clm-latest"} or model_key.startswith(
+        "contrastive-lm/"
+    ):
+        return "clm"
+    return "laya"
+
+
 def system_one_command(args) -> None:
     """Start the dedicated typed-decision API without a generative model."""
     import os
@@ -3965,9 +3976,7 @@ def system_one_command(args) -> None:
     from rapid_mlx.system_one.backends import CLMBackend, LayaBackend
     from rapid_mlx.system_one.server import create_app
 
-    backend_name = args.backend
-    if backend_name == "auto":
-        backend_name = "clm" if "clm" in args.model.lower() else "laya"
+    backend_name = _resolve_system_one_backend(args.model, args.backend)
     if backend_name == "clm":
         if not args.head:
             raise SystemExit(
@@ -3979,6 +3988,7 @@ def system_one_command(args) -> None:
             args.head,
             cache_entries=args.cache_entries,
             max_tokens=args.max_tokens,
+            max_work_tokens=args.max_work_tokens,
         )
     else:
         if args.head:
@@ -12257,8 +12267,12 @@ Examples:
     system_one_parser.add_argument(
         "--cache-entries", type=non_negative_int, default=20_000
     )
+    system_one_parser.add_argument("--max-tokens", type=positive_int, default=2048)
     system_one_parser.add_argument(
-        "--max-tokens", type=positive_int, default=2048
+        "--max-work-tokens",
+        type=positive_int,
+        default=32_768,
+        help="Maximum aggregate CLM encoder tokens accepted in one request",
     )
 
     # Serve command. ``allow_abbrev=False`` blocks unique-prefix matches
