@@ -8,13 +8,13 @@ import os
 import sys
 from collections.abc import Mapping
 from dataclasses import dataclass
-from typing import Any
+from typing import Any, TypeGuard
 
-psutil: Any
 try:
-    import psutil
+    import psutil as _psutil_module
 except ImportError:
-    psutil = None
+    _psutil_module = None
+psutil: Any = _psutil_module
 
 
 @dataclass(frozen=True)
@@ -24,13 +24,16 @@ class ProcessIdentity:
     boot_time: float
 
 
-def _valid_pid(value: object) -> bool:
+def _valid_pid(value: object) -> TypeGuard[int]:
     return type(value) is int and value > 0
 
 
-def _valid_time(value: object) -> bool:
+def _valid_time(value: object) -> TypeGuard[int | float]:
     return (
-        type(value) in (int, float) and math.isfinite(float(value)) and float(value) > 0
+        not isinstance(value, bool)
+        and isinstance(value, (int, float))
+        and math.isfinite(float(value))
+        and float(value) > 0
     )
 
 

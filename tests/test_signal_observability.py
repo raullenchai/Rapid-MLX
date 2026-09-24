@@ -19,6 +19,7 @@ the install is the smoke-test surface.
 
 from __future__ import annotations
 
+import builtins
 import json
 import os
 import re
@@ -29,6 +30,7 @@ import sys
 import textwrap
 import threading
 from pathlib import Path
+from types import ModuleType, SimpleNamespace
 
 import pytest
 
@@ -458,9 +460,97 @@ def test_windows_liveness_never_calls_os_kill(monkeypatch):
         lambda *_args: (_ for _ in ()).throw(AssertionError("os.kill called")),
     )
 
+    assert identity.process_identity(123) is None
     assert identity.is_same_process(marker) is True
     assert server_start.is_same_process is identity.is_same_process
     assert so.is_same_process is identity.is_same_process
+
+
+def test_process_identity_import_without_psutil(monkeypatch):
+    from rapid_mlx import _process_identity as identity
+
+    real_import = builtins.__import__
+
+    def import_without_psutil(name, *args, **kwargs):
+        if name == "psutil":
+            raise ImportError("psutil unavailable")
+        return real_import(name, *args, **kwargs)
+
+    module_name = "rapid_mlx._process_identity_without_psutil"
+    module = ModuleType(module_name)
+    module.__file__ = identity.__file__
+    monkeypatch.setitem(sys.modules, module_name, module)
+    monkeypatch.setattr(builtins, "__import__", import_without_psutil)
+
+    source = Path(identity.__file__).read_text(encoding="utf-8")
+    exec(compile(source, identity.__file__, "exec"), module.__dict__)
+
+    assert module._psutil_module is None
+    assert module.psutil is None
+
+
+def test_process_identity_validation_and_probe_fallbacks(monkeypatch):
+    from rapid_mlx import _process_identity as identity
+
+    marker = {
+        "pid": 123,
+        "create_time": 1.0,
+        "boot_time": 1.0,
+        "app_version": "0.15.1",
+    }
+    assert identity.marker_identity([]) is None
+    assert identity.process_identity(True) is None
+    assert identity.is_same_process({}) is False
+
+    no_such_process = type("NoSuchProcess", (Exception,), {})
+    zombie_process = type("ZombieProcess", (Exception,), {})
+    access_denied = type("AccessDenied", (Exception,), {})
+
+    class MissingProcess:
+        def create_time(self):
+            raise no_such_process()
+
+    fake_psutil = SimpleNamespace(
+        pid_exists=lambda _pid: True,
+        Process=lambda _pid: MissingProcess(),
+        boot_time=lambda: 1.0,
+        NoSuchProcess=no_such_process,
+        ZombieProcess=zombie_process,
+        AccessDenied=access_denied,
+    )
+    monkeypatch.setattr(identity, "psutil", fake_psutil)
+    assert identity.process_identity(123) is None
+
+    fake_psutil.Process = lambda _pid: SimpleNamespace(create_time=lambda: 1.0)
+    fake_psutil.boot_time = lambda: (_ for _ in ()).throw(OSError("probe failed"))
+    assert identity.process_identity(123) is None
+
+    monkeypatch.setattr(identity, "psutil", None)
+    monkeypatch.setattr(identity.sys, "platform", "darwin")
+    for error, alive in (
+        (ProcessLookupError(), False),
+        (PermissionError(), True),
+        (OSError("probe failed"), True),
+        (None, True),
+    ):
+        if error is None:
+            monkeypatch.setattr(identity.os, "kill", lambda *_args: None)
+        else:
+            monkeypatch.setattr(
+                identity.os,
+                "kill",
+                lambda *_args, error=error: (_ for _ in ()).throw(error),
+            )
+        assert (identity.process_identity(123) is not None) is alive
+    assert identity.is_same_process(marker) is True
+
+    monkeypatch.setattr(identity, "psutil", fake_psutil)
+    monkeypatch.setattr(
+        identity,
+        "process_identity",
+        lambda _pid: (_ for _ in ()).throw(access_denied()),
+    )
+    assert identity.is_same_process(marker) is True
 
 
 def test_empty_crash_file_is_removed_at_clean_shutdown(monkeypatch, tmp_path):
@@ -599,6 +689,28 @@ def test_stuck_tee_is_killed_and_reaped():
     assert process.terminated is True
     assert process.killed is True
     assert process.waits == 3
+
+
+def test_ensure_crash_sink_rearms_and_warns_on_failure(monkeypatch, caplog):
+    from rapid_mlx import _signal_observability as so
+
+    prior_fd = so._crash_fd
+    calls = []
+    so._crash_fd = 123
+    try:
+        monkeypatch.setattr(so, "_enable_faulthandler", calls.append)
+        assert so.ensure_crash_sink() is True
+        assert calls == [123]
+
+        monkeypatch.setattr(
+            so,
+            "_enable_faulthandler",
+            lambda _fd: (_ for _ in ()).throw(RuntimeError("rearm failed")),
+        )
+        assert so.ensure_crash_sink() is False
+        assert "could not re-arm durable rapid-mlx crash file" in caplog.text
+    finally:
+        so._crash_fd = prior_fd
 
 
 @pytest.mark.parametrize("stderr", [None, object()])

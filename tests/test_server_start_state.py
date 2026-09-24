@@ -236,6 +236,13 @@ def test_atomic_marker_rejects_zero_progress_write(monkeypatch, tmp_path):
         server_start._atomic_write_marker(marker)
 
 
+def test_atomic_marker_requires_current_process_identity(monkeypatch, tmp_path):
+    monkeypatch.setattr(server_start, "process_identity", lambda _pid: None)
+
+    with pytest.raises(OSError, match="determine current process identity"):
+        server_start._atomic_write_marker(tmp_path / "serve-inflight-123.json")
+
+
 def test_marker_write_and_remove_failures_are_inert(monkeypatch, tmp_path):
     monkeypatch.setenv("HOME", str(tmp_path))
     monkeypatch.setattr(
@@ -280,6 +287,21 @@ def test_stale_marker_unlink_failure_still_counts(monkeypatch, tmp_path):
     monkeypatch.setattr(server_start, "_atomic_write_marker", lambda _path: None)
 
     assert server_start._begin_inflight_marker() == (True, True)
+
+
+def test_invalid_marker_unlink_failure_is_silent(monkeypatch, tmp_path):
+    monkeypatch.setenv("HOME", str(tmp_path))
+    marker = tmp_path / ".rapid-mlx" / "state" / "serve-inflight-99999999.json"
+    marker.parent.mkdir(parents=True)
+    marker.write_text("not json", encoding="utf-8")
+    monkeypatch.setattr(
+        Path,
+        "unlink",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(OSError("unlink failed")),
+    )
+    monkeypatch.setattr(server_start, "_atomic_write_marker", lambda _path: None)
+
+    assert server_start._begin_inflight_marker() == (False, True)
 
 
 @pytest.mark.parametrize(
@@ -459,6 +481,19 @@ def test_disabled_then_enabled_never_emits_terminal_only(monkeypatch):
     server_start.ready()
 
     assert events == []
+
+
+def test_ready_survives_crash_sink_rearm_failure(monkeypatch):
+    events = _capture(monkeypatch)
+    monkeypatch.setattr(
+        "rapid_mlx._signal_observability.ensure_crash_sink",
+        lambda: (_ for _ in ()).throw(SystemExit(91)),
+    )
+    server_start.attempted("qwen3.5-4b-4bit", load_policy="eager")
+
+    server_start.ready()
+
+    assert [props["state"] for _, props in events] == ["attempted", "ready"]
 
 
 def test_attempt_setup_failure_cannot_emit_terminal_without_attempted(

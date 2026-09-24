@@ -11,6 +11,7 @@ import threading
 from collections.abc import Iterator
 from contextlib import contextmanager
 from pathlib import Path
+from typing import cast
 
 import rapid_mlx
 from rapid_mlx._process_identity import (
@@ -62,7 +63,7 @@ def _read_marker(path: Path) -> dict[str, object] | None:
         return None
     if marker_identity(value) is None:
         return None
-    return value
+    return cast(dict[str, object], value)
 
 
 def _atomic_write_marker(path: Path) -> None:
