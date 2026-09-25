@@ -30,6 +30,8 @@ from rapid_mlx.model_load_errors import (
     load_tokenizer_checked,
     load_weights_checked,
     quantize_checked,
+    typed_quantization_boundary,
+    typed_weight_boundary,
     validate_model_config_file,
 )
 from rapid_mlx.runtime.optional_runtime import OptionalRuntimeMissing
@@ -498,6 +500,19 @@ def test_config_boundary_handles_non_model_paths_and_invalid_shapes(tmp_path):
         validate_model_config_file(empty_dir)
 
 
+def test_config_boundary_preserves_existing_typed_failure(tmp_path, monkeypatch):
+    model_dir = tmp_path / "typed-config"
+    model_dir.mkdir()
+    (model_dir / "config.json").write_text("{}", encoding="utf-8")
+    failure = InvalidModelConfig("already classified")
+    monkeypatch.setattr(json, "load", lambda _file: (_ for _ in ()).throw(failure))
+
+    with pytest.raises(InvalidModelConfig) as raised:
+        validate_model_config_file(model_dir)
+
+    assert raised.value is failure
+
+
 def test_tokenizer_load_boundary_is_classified():
     def load_invalid_tokenizer():
         raise ValueError("tokenizer.json has an invalid model section")
@@ -540,6 +555,34 @@ def test_tokenizer_wrapper_preserves_runtime_availability_failures(failure):
 
     with pytest.raises(type(failure)) as raised:
         load_tokenizer_checked(fail)
+
+    assert raised.value is failure
+
+
+def test_tokenizer_wrapper_preserves_remote_hub_failure():
+    from huggingface_hub.utils import RepositoryNotFoundError
+
+    response = httpx.Response(
+        404, request=httpx.Request("GET", "https://huggingface.co/org/missing")
+    )
+    failure = RepositoryNotFoundError("missing", response=response)
+
+    with pytest.raises(RepositoryNotFoundError) as raised:
+        load_tokenizer_checked(lambda: (_ for _ in ()).throw(failure))
+
+    assert raised.value is failure
+
+
+@pytest.mark.parametrize(
+    "boundary,failure",
+    [
+        (typed_weight_boundary, IncompatibleWeights("already typed")),
+        (typed_quantization_boundary, QuantizationMismatch("already typed")),
+    ],
+)
+def test_typed_model_boundaries_preserve_existing_failure(boundary, failure):
+    with pytest.raises(type(failure)) as raised, boundary():
+        raise failure
 
     assert raised.value is failure
 
@@ -836,7 +879,13 @@ def test_raw_tokenizer_fallback_uses_typed_boundaries(tmp_path, monkeypatch):
     tokenizers.Tokenizer = SimpleNamespace(from_file=lambda _path: object())
     monkeypatch.setitem(sys.modules, "tokenizers", tokenizers)
     transformers = ModuleType("transformers")
-    transformers.PreTrainedTokenizerFast = lambda **_kwargs: loaded_tokenizer
+    tokenizer_kwargs = []
+
+    def build_tokenizer(**kwargs):
+        tokenizer_kwargs.append(kwargs)
+        return loaded_tokenizer
+
+    transformers.PreTrainedTokenizerFast = build_tokenizer
     monkeypatch.setitem(sys.modules, "transformers", transformers)
     monkeypatch.setattr(tokenizer, "_register_vendored_archs", lambda: None)
     monkeypatch.setattr(
@@ -856,6 +905,35 @@ def test_raw_tokenizer_fallback_uses_typed_boundaries(tmp_path, monkeypatch):
         model,
         loaded_tokenizer,
     )
+
+    (tmp_path / "tokenizer_config.json").write_text(
+        json.dumps(
+            {
+                "bos_token": "<bos>",
+                "eos_token": {"content": "<eos>"},
+                "unk_token": "<unknown>",
+                "pad_token": "<padding>",
+                "chat_template": "{{ messages }}",
+            }
+        ),
+        encoding="utf-8",
+    )
+    assert tokenizer._load_with_tokenizer_fallback(str(tmp_path)) == (
+        model,
+        loaded_tokenizer,
+    )
+    assert tokenizer_kwargs[-1] == {
+        "tokenizer_object": tokenizer_kwargs[-1]["tokenizer_object"],
+        "bos_token": "<bos>",
+        "eos_token": "<eos>",
+        "unk_token": "<unknown>",
+        "pad_token": "<padding>",
+    }
+    assert loaded_tokenizer.chat_template == "{{ messages }}"
+
+    (tmp_path / "tokenizer_config.json").write_text("[]", encoding="utf-8")
+    with pytest.raises(TokenizerLoadFailed, match="must contain an object"):
+        tokenizer._load_with_tokenizer_fallback(str(tmp_path))
 
     (tmp_path / "tokenizer_config.json").write_text("{broken", encoding="utf-8")
     with pytest.raises(TokenizerLoadFailed) as raised:
