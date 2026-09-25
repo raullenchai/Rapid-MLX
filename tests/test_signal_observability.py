@@ -1131,6 +1131,19 @@ def test_crash_marker_reader_rejects_oversized_and_growing_files(monkeypatch, tm
         assert so._marker_for_pid(log_dir, 123) is None
 
 
+@pytest.mark.skipif(not hasattr(os, "mkfifo"), reason="FIFO requires POSIX")
+def test_crash_marker_reader_rejects_fifo_without_blocking(tmp_path):
+    from rapid_mlx import _signal_observability as so
+
+    log_dir = tmp_path / "logs"
+    state_dir = tmp_path / "state"
+    log_dir.mkdir()
+    state_dir.mkdir()
+    os.mkfifo(state_dir / "serve-inflight-123.json")
+
+    assert so._marker_for_pid(log_dir, 123) is None
+
+
 def test_crash_marker_reader_handles_short_reads(monkeypatch, tmp_path):
     from rapid_mlx import _signal_observability as so
 

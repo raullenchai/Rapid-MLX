@@ -64,6 +64,7 @@ def _marker_pid(path: Path) -> int | None:
 
 def _read_marker(path: Path) -> dict[str, object] | None:
     flags = os.O_RDONLY | getattr(os, "O_CLOEXEC", 0)
+    flags |= getattr(os, "O_NONBLOCK", 0)
     flags |= getattr(os, "O_NOFOLLOW", 0)
     try:
         fd = os.open(path, flags)

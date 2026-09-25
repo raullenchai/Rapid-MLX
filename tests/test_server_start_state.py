@@ -558,6 +558,14 @@ def test_state_marker_symlink_does_not_delete_target(monkeypatch, tmp_path):
     assert target.exists()
 
 
+@pytest.mark.skipif(not hasattr(os, "mkfifo"), reason="FIFO requires POSIX")
+def test_marker_reader_rejects_fifo_without_blocking(tmp_path):
+    marker = tmp_path / "serve-inflight-123.json"
+    os.mkfifo(marker)
+
+    assert server_start._read_marker(marker) is None
+
+
 def test_invalid_marker_removal_preserves_concurrent_replacement(monkeypatch, tmp_path):
     monkeypatch.setenv("HOME", str(tmp_path / "home"))
     peer = tmp_path / "home" / ".rapid-mlx" / "state" / "serve-inflight-99999999.json"

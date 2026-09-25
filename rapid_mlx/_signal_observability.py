@@ -227,6 +227,7 @@ def _crash_file_pid(path: Path) -> int | None:
 def _marker_for_pid(log_dir: Path, pid: int) -> dict[str, object] | None:
     marker_path = log_dir.parent / "state" / f"serve-inflight-{pid}.json"
     flags = os.O_RDONLY | getattr(os, "O_CLOEXEC", 0)
+    flags |= getattr(os, "O_NONBLOCK", 0)
     flags |= getattr(os, "O_NOFOLLOW", 0)
     try:
         fd = os.open(marker_path, flags)
