@@ -273,14 +273,17 @@ def handle_optional_runtime_missing(
         exc.status == "absent"
         and not _running_in_desktop_sidecar()
         and importlib.util.find_spec("pip") is not None
-        and (
-            assume_yes
-            or (
-                _is_tty(sys.stdin)
-                and _is_tty(sys.stderr)
-                and _prompt_to_install(exc.extra)
-            )
-        )
     ):
-        _install_optional_extra(exc)
+        if assume_yes:
+            _install_optional_extra(exc)
+        elif _is_tty(sys.stdin) and _is_tty(sys.stderr):
+            if _prompt_to_install(exc.extra):
+                _install_optional_extra(exc)
+        else:
+            print(
+                "Non-interactive session: rerun with --yes to install "
+                f"rapid-mlx[{exc.extra}] automatically, or install it manually "
+                "with the command above.",
+                file=sys.stderr,
+            )
     raise SystemExit(2)
