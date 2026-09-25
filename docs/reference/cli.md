@@ -216,9 +216,9 @@ are the argparse defaults from `rapid_mlx/cli.py`.
 
 | Option | Description | Default |
 |--------|-------------|---------|
-| `--port` | Server port | 8000 |
+| `--port` | Server port; when omitted, selects the first free port in 8000–8009; an explicit port never falls back | First free in 8000–8009 |
 | `--host` | Server host (loopback-only by default; pass `0.0.0.0` to expose on LAN — review the auth posture first) | 127.0.0.1 |
-| `--listen-fd` | File descriptor of a pre-bound listening socket (3-1023) for socket activation (launchd/systemd/parent-process supervision). When set, `--host`/`--port` are ignored for binding. | None |
+| `--listen-fd` | File descriptor of a pre-bound listening socket (3-1023) for socket activation (launchd/systemd/parent-process supervision). When set, `--host`/`--port` are ignored for binding. Native MTP, DSpark K4, DFlash, and DDTree reject this option with rc 2. | None |
 | `--log-level` | Log level for Python logging and uvicorn (`DEBUG`, `INFO`, `WARNING`, `ERROR`; case-insensitive) | INFO |
 | `--served-model-name` | Model name reported by the API; when unset the `model` argument is used | None |
 | `--watchdog-ppid` | Self-terminate when the parent process with this PID dies (defeats orphaned sidecars). Falls back to `RAPID_MLX_WATCHDOG_PPID`; 0 / unset disables. | None (disabled) |

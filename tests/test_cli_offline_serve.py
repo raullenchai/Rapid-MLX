@@ -26,6 +26,8 @@ import pytest
 
 from rapid_mlx import cli
 
+pytestmark = pytest.mark.usefixtures("stub_serve_port_resolution")
+
 
 def _make_serve_args(model: str) -> Namespace:
     """Minimal serve ``Namespace`` mirroring test_audio_alias_registry's helper
@@ -332,8 +334,12 @@ def test_serve_audio_alias_refuses_offline_uncached(monkeypatch, capsys):
         reached_audio_boot.append(a)
         raise AssertionError("audio server must not boot for offline+uncached")
 
+    def _cannot_resolve_port(*a, **k):
+        raise AssertionError("offline+uncached refusal must run before port resolution")
+
     with (
         patch.object(cli, "_resolve_audio_model_for_serve", return_value=entry),
+        patch.object(cli, "_resolve_serve_port", side_effect=_cannot_resolve_port),
         patch.object(cli, "_serve_audio_mode", side_effect=_cannot_boot),
     ):
         args = _make_serve_args("whisper")

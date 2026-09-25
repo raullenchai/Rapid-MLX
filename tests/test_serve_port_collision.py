@@ -39,12 +39,16 @@ These tests pin the contract:
 from __future__ import annotations
 
 import errno
+import os
 import socket
 import types
+from argparse import Namespace
+from contextlib import ExitStack
 
 import pytest
 
 from rapid_mlx import cli
+from rapid_mlx.connect import endpoints_from_bind, render_banner
 
 
 def _claim_loopback_port() -> tuple[socket.socket, int]:
@@ -71,6 +75,452 @@ def _serve_ns(port: int) -> types.SimpleNamespace:
     bypassed; we only need the host/port/listen_fd fields the
     dispatcher reads."""
     return types.SimpleNamespace(host="127.0.0.1", port=port, listen_fd=None)
+
+
+def _claim_exact_loopback_port(stack: ExitStack, port: int) -> None:
+    """Hold one exact loopback port for the duration of ``stack``."""
+
+    sock = stack.enter_context(socket.socket(socket.AF_INET, socket.SOCK_STREAM))
+    sock.bind(("127.0.0.1", port))
+    sock.listen(1)
+
+
+@pytest.fixture
+def scan_base() -> int:
+    """Return an OS-selected base whose full candidate range is available."""
+
+    for _attempt in range(100):
+        with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as seed:
+            seed.bind(("127.0.0.1", 0))
+            base = seed.getsockname()[1]
+        if base + cli.DEFAULT_SERVE_PORT_CANDIDATES > 65536:
+            continue
+        try:
+            with ExitStack() as probes:
+                for port in range(base, base + cli.DEFAULT_SERVE_PORT_CANDIDATES):
+                    _claim_exact_loopback_port(probes, port)
+        except OSError:
+            continue
+        return base
+    pytest.fail("could not reserve an ephemeral serve-port scan range")
+
+
+def test_implicit_busy_default_selects_next_port_and_stamps_user_urls(
+    capsys, scan_base
+):
+    """An omitted ``--port`` falls forward before any server URL is rendered."""
+
+    with ExitStack() as stack:
+        _claim_exact_loopback_port(stack, scan_base)
+        resolved = cli._resolve_serve_port(
+            "127.0.0.1",
+            None,
+            model="qwen3.5-4b-4bit",
+            scan_base=scan_base,
+        )
+
+    assert resolved == scan_base + 1
+    captured = capsys.readouterr()
+    assert captured.err.splitlines() == [
+        f"Port {scan_base} is in use; using {scan_base + 1} instead "
+        "(pass --port to choose)."
+    ]
+
+    args = types.SimpleNamespace(
+        host="127.0.0.1", port=resolved, listen_fd=None, lazy_load=False
+    )
+    assert f"http://127.0.0.1:{scan_base + 1}" in cli._serve_startup_message(args)
+    ready = render_banner(
+        endpoints_from_bind(args.host, args.port, model="qwen3.5-4b-4bit")
+    )
+    assert f"Ready: http://127.0.0.1:{scan_base + 1}" in ready
+
+
+def test_explicit_busy_port_keeps_existing_hard_failure(capsys, scan_base):
+    """An explicit collision remains rc 1 with the established message."""
+
+    with ExitStack() as stack:
+        _claim_exact_loopback_port(stack, scan_base)
+        with pytest.raises(SystemExit) as excinfo:
+            cli._resolve_serve_port("127.0.0.1", scan_base, model="qwen3.5-4b-4bit")
+
+    assert excinfo.value.code == 1
+    captured = capsys.readouterr()
+    assert captured.err == ""
+    assert captured.out == (
+        f"\n  Error: Port {scan_base} is already in use on 127.0.0.1.\n"
+        "  Try a different port: rapid-mlx serve qwen3.5-4b-4bit "
+        f"--port {scan_base + 1}\n"
+    )
+
+
+def test_implicit_port_fails_when_all_ten_candidates_are_busy(capsys, scan_base):
+    """The implicit scan is bounded to ten candidates and retains rc 1."""
+
+    with ExitStack() as stack:
+        for port in range(scan_base, scan_base + cli.DEFAULT_SERVE_PORT_CANDIDATES):
+            _claim_exact_loopback_port(stack, port)
+        with pytest.raises(SystemExit) as excinfo:
+            cli._resolve_serve_port(
+                "127.0.0.1",
+                None,
+                model="qwen3.5-4b-4bit",
+                scan_base=scan_base,
+            )
+
+    assert excinfo.value.code == 1
+    captured = capsys.readouterr()
+    assert captured.err == ""
+    scan_end = scan_base + cli.DEFAULT_SERVE_PORT_CANDIDATES - 1
+    assert captured.out == (
+        f"Ports {scan_base}-{scan_end} are all in use; "
+        "pass --port with a free port outside that range.\n"
+    )
+
+
+def test_implicit_wildcard_scan_detects_loopback_shadow(capsys, scan_base):
+    """Wildcard fallback also treats a loopback-only listener as busy."""
+
+    with ExitStack() as stack:
+        _claim_exact_loopback_port(stack, scan_base)
+        resolved = cli._resolve_serve_port(
+            "0.0.0.0", None, model="qwen3.5-4b-4bit", scan_base=scan_base
+        )
+
+    assert resolved == scan_base + 1
+    assert capsys.readouterr().err.splitlines() == [
+        f"Port {scan_base} is in use; using {scan_base + 1} instead "
+        "(pass --port to choose)."
+    ]
+
+
+def test_explicit_free_port_has_no_substitution_notice(capsys):
+    """A user-selected free port passes through without fallback output."""
+
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as probe:
+        probe.bind(("127.0.0.1", 0))
+        port = probe.getsockname()[1]
+
+    assert cli._resolve_serve_port("127.0.0.1", port, model="qwen3.5-4b-4bit") == port
+    captured = capsys.readouterr()
+    assert captured.err == ""
+    assert captured.out == ""
+
+
+def test_implicit_free_scan_base_has_no_notice(capsys, scan_base):
+    """The normal omitted-port path keeps 8000 when it is available."""
+
+    assert (
+        cli._resolve_serve_port("127.0.0.1", None, model="model", scan_base=scan_base)
+        == scan_base
+    )
+    captured = capsys.readouterr()
+    assert captured.err == ""
+    assert captured.out == ""
+
+
+@pytest.mark.parametrize("requested_port", [None, 8000])
+def test_port_probe_reports_non_collision_bind_error(
+    monkeypatch, capsys, requested_port
+):
+    error = OSError(errno.EADDRNOTAVAIL, "address not available")
+
+    class FailingProbe:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args):
+            return False
+
+        def setsockopt(self, *_args):
+            pass
+
+        def bind(self, _address):
+            raise error
+
+    monkeypatch.setattr(socket, "socket", lambda *_args: FailingProbe())
+
+    with pytest.raises(SystemExit) as excinfo:
+        cli._resolve_serve_port(
+            "192.0.2.1",
+            requested_port,
+            model="model",
+            scan_base=8000,
+            scan_count=1,
+        )
+
+    assert excinfo.value.code == 2
+    assert "Invalid --host '192.0.2.1'" in capsys.readouterr().err
+
+
+def test_product_scan_defaults_remain_8000_through_8009():
+    assert cli.DEFAULT_SERVE_PORT == 8000
+    assert cli.DEFAULT_SERVE_PORT_CANDIDATES == 10
+
+
+def test_listen_fd_uses_bound_socket_port_and_keeps_fd_open():
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as listener:
+        listener.bind(("127.0.0.1", 0))
+        listener.listen(1)
+        bound_port = listener.getsockname()[1]
+
+        resolved = cli._resolve_serve_port(
+            "127.0.0.1",
+            None,
+            model="model",
+            listen_fd=listener.fileno(),
+        )
+
+        assert resolved == bound_port
+        assert listener.getsockname()[1] == bound_port
+
+
+def test_resolve_listen_fd_reports_cli_error_without_traceback(monkeypatch, capsys):
+    monkeypatch.setattr(
+        cli,
+        "_listen_fd_port",
+        lambda _fd: (_ for _ in ()).throw(OSError("descriptor is closed")),
+    )
+
+    with pytest.raises(SystemExit) as caught:
+        cli._resolve_serve_port("127.0.0.1", None, model="model", listen_fd=17)
+
+    assert caught.value.code == 2
+    assert capsys.readouterr().err == ("Invalid --listen-fd 17: descriptor is closed\n")
+
+
+def test_listen_fd_rejects_non_tcp_socket():
+    left, right = socket.socketpair()
+    with left, right, pytest.raises(OSError, match="not bound to a TCP socket"):
+        cli._listen_fd_port(left.fileno())
+
+
+def test_listen_fd_rejects_bound_udp_socket():
+    with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as udp:
+        udp.bind(("127.0.0.1", 0))
+        with pytest.raises(OSError, match="not bound to a TCP socket"):
+            cli._listen_fd_port(udp.fileno())
+
+
+def test_listen_fd_rejects_tcp_socket_that_is_not_listening():
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as stream:
+        stream.bind(("127.0.0.1", 0))
+        with pytest.raises(OSError, match="SO_ACCEPTCONN is false"):
+            cli._listen_fd_port(stream.fileno())
+
+
+def test_listen_fd_plain_file_failure_does_not_leak_dup(tmp_path):
+    if not os.path.isdir("/dev/fd"):
+        pytest.skip("platform does not expose /dev/fd")
+
+    path = tmp_path / "plain-file"
+    path.write_text("not a socket", encoding="utf-8")
+    fd = os.open(path, os.O_RDONLY)
+    try:
+        before = len(os.listdir("/dev/fd"))
+        for _ in range(50):
+            with pytest.raises(OSError):
+                cli._listen_fd_port(fd)
+        after = len(os.listdir("/dev/fd"))
+        os.fstat(fd)
+    finally:
+        os.close(fd)
+
+    assert after == before
+
+
+def _fake_inherited_socket(*, sockname):
+    class FakeInheritedSocket:
+        family = socket.AF_INET
+
+        def __init__(self, *, fileno):
+            self.fileno = fileno
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_exc_info):
+            os.close(self.fileno)
+
+        def getsockopt(self, _level, option, *_args):
+            if option == socket.SO_TYPE:
+                return socket.SOCK_STREAM
+            return 1
+
+        def getsockname(self):
+            return sockname
+
+    return FakeInheritedSocket
+
+
+class _FakeSocketOptions:
+    def __init__(self, *results):
+        self.results = list(results)
+        self.calls = []
+
+    def getsockopt(self, *args):
+        self.calls.append(args)
+        result = self.results.pop(0)
+        if isinstance(result, BaseException):
+            raise result
+        return result
+
+
+def _listener_accepting(sock, *, platform_name="linux", tcp_connection_info=42):
+    return cli._listener_accepting(
+        sock,
+        so_acceptconn=30,
+        platform_name=platform_name,
+        enoprotoopt=errno.ENOPROTOOPT,
+        tcp_connection_info=tcp_connection_info,
+        sol_socket=1,
+        ipproto_tcp=6,
+    )
+
+
+@pytest.mark.parametrize(("acceptconn", "expected"), [(1, True), (0, False)])
+def test_listener_accepting_uses_so_acceptconn(acceptconn, expected):
+    sock = _FakeSocketOptions(acceptconn)
+
+    assert _listener_accepting(sock) is expected
+    assert sock.calls == [(1, 30)]
+
+
+@pytest.mark.parametrize(("state", "expected"), [(1, True), (0, False)])
+def test_listener_accepting_uses_darwin_tcp_connection_info(state, expected):
+    tcp_info = bytes([state]) + bytes(cli._DARWIN_TCP_CONNECTION_INFO_SIZE - 1)
+    sock = _FakeSocketOptions(OSError(errno.ENOPROTOOPT, "unsupported"), tcp_info)
+
+    assert _listener_accepting(sock, platform_name="darwin") is expected
+    assert sock.calls == [
+        (1, 30),
+        (6, 42, cli._DARWIN_TCP_CONNECTION_INFO_SIZE),
+    ]
+
+
+def test_listener_accepting_reraises_enoprotoopt_off_darwin():
+    error = OSError(errno.ENOPROTOOPT, "unsupported")
+    sock = _FakeSocketOptions(error)
+
+    with pytest.raises(OSError) as excinfo:
+        _listener_accepting(sock)
+
+    assert excinfo.value is error
+
+
+def test_listener_accepting_reraises_other_errno_on_darwin():
+    error = OSError(errno.EINVAL, "unexpected socket option failure")
+    sock = _FakeSocketOptions(error)
+
+    with pytest.raises(OSError) as excinfo:
+        _listener_accepting(sock, platform_name="darwin")
+
+    assert excinfo.value is error
+
+
+def test_listener_accepting_reraises_without_tcp_connection_info():
+    error = OSError(errno.ENOPROTOOPT, "unsupported")
+    sock = _FakeSocketOptions(error)
+
+    with pytest.raises(OSError) as excinfo:
+        _listener_accepting(sock, platform_name="darwin", tcp_connection_info=None)
+
+    assert excinfo.value is error
+
+
+def test_listener_accepting_fails_closed_without_listener_state_options():
+    sock = _FakeSocketOptions()
+
+    assert not cli._listener_accepting(
+        sock,
+        so_acceptconn=None,
+        platform_name="linux",
+        enoprotoopt=errno.ENOPROTOOPT,
+        tcp_connection_info=None,
+        sol_socket=1,
+        ipproto_tcp=6,
+    )
+    assert sock.calls == []
+
+
+def test_listener_accepting_uses_darwin_fallback_without_so_acceptconn():
+    tcp_info = bytes([1]) + bytes(cli._DARWIN_TCP_CONNECTION_INFO_SIZE - 1)
+    sock = _FakeSocketOptions(tcp_info)
+
+    assert cli._listener_accepting(
+        sock,
+        so_acceptconn=None,
+        platform_name="darwin",
+        enoprotoopt=errno.ENOPROTOOPT,
+        tcp_connection_info=42,
+        sol_socket=1,
+        ipproto_tcp=6,
+    )
+    assert sock.calls == [(6, 42, cli._DARWIN_TCP_CONNECTION_INFO_SIZE)]
+
+
+def test_listen_fd_rejects_invalid_inet_sockname(monkeypatch):
+    read_fd, write_fd = os.pipe()
+    try:
+        monkeypatch.setattr(
+            socket,
+            "socket",
+            _fake_inherited_socket(sockname="not-an-inet-address"),
+        )
+        with pytest.raises(OSError, match="not bound to a TCP listener"):
+            cli._listen_fd_port(read_fd)
+    finally:
+        os.close(read_fd)
+        os.close(write_fd)
+
+
+def test_serve_lane_port_invariant_rejects_none():
+    with pytest.raises(AssertionError, match="unresolved port"):
+        cli._resolved_serve_port(types.SimpleNamespace(port=None))
+
+
+def test_listen_fd_resolves_once_before_audio_lane(monkeypatch):
+    seen: list[int | None] = []
+    resolve_calls = 0
+    real_resolve = cli._resolve_serve_port
+
+    def tracked_resolve(*args, **kwargs):
+        nonlocal resolve_calls
+        resolve_calls += 1
+        return real_resolve(*args, **kwargs)
+
+    monkeypatch.setattr(cli, "_resolve_serve_port", tracked_resolve)
+    monkeypatch.setattr(cli, "_run_optional_runtime_guard", lambda *_a, **_kw: None)
+    monkeypatch.setattr(cli, "_offline_hub_mode_active", lambda: False)
+    monkeypatch.setattr(
+        cli, "_serve_audio_mode", lambda args, _entry: seen.append(args.port)
+    )
+
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as listener:
+        listener.bind(("127.0.0.1", 0))
+        listener.listen(1)
+        bound_port = listener.getsockname()[1]
+        args = Namespace(
+            model="kokoro",
+            embedding_model=None,
+            served_model_name=None,
+            no_mllm=True,
+            mllm=False,
+            max_tokens=None,
+            api_key=None,
+            timeout=60,
+            max_request_bytes=None,
+            cors_origins=None,
+            rate_limit=0,
+            log_level="INFO",
+            host="127.0.0.1",
+            port=None,
+            listen_fd=listener.fileno(),
+        )
+        cli.serve_command(args)
+
+    assert resolve_calls == 1
+    assert seen == [bound_port]
 
 
 def test_run_uvicorn_exits_nonzero_on_eaddrinuse(monkeypatch, capsys):

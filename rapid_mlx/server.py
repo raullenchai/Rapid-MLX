@@ -3529,15 +3529,9 @@ def _capture_start_failures(func):
     return wrapped
 
 
-@_capture_start_failures
-def main():
-    """Run the server."""
-    global _standalone_start_model
-    set_optional_runtime_assume_yes(False)
-    if os.environ.get("RAPID_PYSAMPLE"):
-        from ._pysample import install as _pysample_install
+def _build_parser() -> argparse.ArgumentParser:
+    """Build the parser for the standalone ``python -m rapid_mlx.server`` CLI."""
 
-        _pysample_install()
     parser = argparse.ArgumentParser(
         description="Rapid-MLX OpenAI-compatible server for LLM and MLLM inference",
         formatter_class=argparse.RawDescriptionHelpFormatter,
@@ -3575,8 +3569,11 @@ Examples:
     parser.add_argument(
         "--port",
         type=int,
-        default=8000,
-        help="Port to bind to",
+        default=None,
+        help=(
+            "Port to bind to (default when omitted: first free port in "
+            "8000-8009; an explicit port never falls back)"
+        ),
     )
     from .cli import _add_video_job_args as _add_video_job_args_to_server_parser
 
@@ -3857,6 +3854,20 @@ Examples:
         ),
     )
 
+    return parser
+
+
+@_capture_start_failures
+def main():
+    """Run the server."""
+    global _standalone_start_model
+    if os.environ.get("RAPID_PYSAMPLE"):
+        from ._pysample import install as _pysample_install
+
+        _pysample_install()
+
+    set_optional_runtime_assume_yes(False)
+    parser = _build_parser()
     args = parser.parse_args()
     _standalone_start_model = args.model
     set_optional_runtime_assume_yes(args.yes)
@@ -3902,9 +3913,10 @@ Examples:
     # AND ``127.0.0.1`` when ``args.host`` is a wildcard alias
     # (``0.0.0.0`` or ``""``) so a co-resident loopback-only listener
     # is caught before we sink time into model load.
-    from .cli import _port_preflight_or_die
+    from .cli import _resolve_serve_port
 
-    _port_preflight_or_die(args.host, args.port, model=args.model)
+    args.port = _resolve_serve_port(args.host, args.port, model=args.model)
+    assert isinstance(args.port, int)
 
     # F-H08-INCOMPLETE: the ``[embeddings]`` extra-required guard MUST
     # fire BEFORE logging configuration and the security/banner side

@@ -847,6 +847,10 @@ if sys.argv[1:3] == ["serve", "owner/gated-model"]:
     response.url = "https://huggingface.co/owner/gated-model"
     response.request = requests.Request("GET", response.url).prepare()
     cli._validate_primary_lifecycle_args = lambda _args: None
+    # The product now validates an explicit port before any model download.
+    # This scenario owns the gated-Hub failure, so keep the unrelated listener
+    # probe inert instead of letting the fixture's generic early-exit hook win.
+    cli._port_preflight_or_die = lambda *_args, **_kwargs: None
     cli._cache_runnability = lambda _model: False
     cli._offline_hub_mode_active = lambda: False
     cli._check_disk_space = lambda *_args, **_kwargs: None

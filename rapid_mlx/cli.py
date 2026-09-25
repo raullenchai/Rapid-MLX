@@ -24,6 +24,7 @@ import sys
 import threading
 import urllib.error
 from collections.abc import Callable
+from typing import NoReturn
 
 from rapid_mlx._completion import alias_completer
 from rapid_mlx.client_header import RAPID_CLIENT_CLI_CHAT
@@ -39,6 +40,13 @@ from rapid_mlx.runtime.optional_runtime import (
 # rate-limit + Range-request passthrough. Override with the env var
 # (set to an empty string to disable the mirror and force HF Hub).
 MIRROR_DEFAULT = "https://models.rapidmlx.com"
+
+DEFAULT_SERVE_PORT = 8000
+DEFAULT_SERVE_PORT_CANDIDATES = 10
+# Darwin's TCP_CONNECTION_INFO returns ``struct tcp_connection_info``.
+# Request a full, future-tolerant buffer instead of the one byte that happens
+# to contain ``tcpi_state``; kernels may reject undersized option buffers.
+_DARWIN_TCP_CONNECTION_INFO_SIZE = 256
 
 _CONSENT_MUTATION_EVENT_LIMIT = 5
 _consent_mutation_event_count = 0
@@ -361,6 +369,69 @@ def _is_ipv6_host(host: str) -> bool:
     return ":" in host
 
 
+def _port_collision_host(host: str, port: int) -> str | None:
+    """Return the first bind address that collides, or ``None`` if free.
+
+    Wildcard hosts use the same loopback-shadow check as the serve preflight.
+    The sockets are probes only: each is closed before this function returns.
+    """
+    import errno
+    import socket
+
+    if host in _wildcard_host_aliases():
+        hosts_to_probe: tuple[str, ...] = (host, "127.0.0.1")
+    else:
+        hosts_to_probe = (host,)
+
+    for probe_host in hosts_to_probe:
+        family = socket.AF_INET6 if _is_ipv6_host(probe_host) else socket.AF_INET
+        with socket.socket(family, socket.SOCK_STREAM) as probe:
+            probe.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+            try:
+                probe.bind((probe_host, port))
+            except OSError as exc:
+                if exc.errno == errno.EADDRINUSE:
+                    return probe_host or "0.0.0.0"
+                raise
+    return None
+
+
+def _exit_for_port_collision(port: int, collision_host: str, *, model: str) -> NoReturn:
+    """Emit the established preflight failure and terminate with rc 1."""
+
+    from rapid_mlx.telemetry.server_start import failed
+
+    failed("bind")
+    print(f"\n  Error: Port {port} is already in use on {collision_host}.")
+    print(f"  Try a different port: rapid-mlx serve {model} --port {port + 1}")
+    sys.exit(1)
+
+
+def _exit_for_port_scan_exhaustion(scan_base: int, scan_count: int) -> NoReturn:
+    """Report that the bounded implicit-port scan found no free port."""
+
+    from rapid_mlx.telemetry.server_start import failed
+
+    failed("bind")
+    scan_end = scan_base + scan_count - 1
+    print(
+        f"Ports {scan_base}-{scan_end} are all in use; "
+        "pass --port with a free port outside that range."
+    )
+    sys.exit(1)
+
+
+def _exit_for_host_bind_error(host: str, exc: OSError) -> NoReturn:
+    """Turn an invalid/unavailable bind address into a CLI diagnostic."""
+
+    display_host = host or "0.0.0.0"
+    print(
+        f"Invalid --host {display_host!r}: could not bind that address ({exc}).",
+        file=sys.stderr,
+    )
+    raise SystemExit(2) from None
+
+
 def _port_preflight_or_die(host: str, port: int, *, model: str) -> None:
     """Probe ``(host, port)`` AND — when ``host`` is a wildcard alias —
     additionally probe ``("127.0.0.1", port)``. Print a friendly error
@@ -389,8 +460,6 @@ def _port_preflight_or_die(host: str, port: int, *, model: str) -> None:
     MED #6 on PR #855 — pre-fix ``--host ::1`` raised ``OSError`` from
     the ``AF_INET`` socket and was misreported as "port already in use").
     """
-    import socket
-
     # Validate the port range up front. ``socket.bind()`` raises
     # ``OverflowError`` (NOT an ``OSError`` subclass) for a port outside
     # 0-65535, so the ``except OSError`` collision handler below would let
@@ -404,48 +473,185 @@ def _port_preflight_or_die(host: str, port: int, *, model: str) -> None:
         print(f"  Try a valid port: rapid-mlx serve {model} --port 8000")
         sys.exit(1)
 
-    wildcards = _wildcard_host_aliases()
-    if host in wildcards:
-        # Probe the requested wildcard FIRST (so a LAN-side port
-        # collision still surfaces the user-supplied host name in the
-        # error), then probe 127.0.0.1 to catch the loopback shadow.
-        hosts_to_probe: tuple[str, ...] = (host, "127.0.0.1")
-    else:
-        hosts_to_probe = (host,)
+    try:
+        collision_host = _port_collision_host(host, port)
+    except OSError as exc:
+        _exit_for_host_bind_error(host, exc)
+    if collision_host is not None:
+        _exit_for_port_collision(port, collision_host, model=model)
 
-    for probe_host in hosts_to_probe:
-        # Pick the address family that matches the host string. IPv6
-        # literals (``::``, ``::1``, etc.) need ``AF_INET6`` or the bind
-        # raises before we can detect a real collision (codex r1 MED #6
-        # on PR #855). Everything else — IPv4 literals, wildcards
-        # (``0.0.0.0``, ``""``), the loopback-shadow probe ``127.0.0.1``
-        # — stays on ``AF_INET``.
-        family = socket.AF_INET6 if _is_ipv6_host(probe_host) else socket.AF_INET
-        # ``with`` guarantees the preflight socket is closed on every
-        # exit path — including OSError during ``bind``. The previous
-        # form called ``_sock.close()`` only on the success branch,
-        # which leaked the fd whenever the bind raised (e.g. when
-        # running under a test harness that catches ``SystemExit``).
-        with socket.socket(family, socket.SOCK_STREAM) as _sock:
-            _sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-            try:
-                _sock.bind((probe_host, port))
-            except OSError:
-                from rapid_mlx.telemetry.server_start import failed
 
-                failed("bind")
-                # Surface the host we actually collided on so the user
-                # can distinguish "LAN port busy" from "loopback port
-                # already claimed by another rapid-mlx / nc / proxy".
-                # Use the empty-string-friendly display name so
-                # ``--host ""`` shows up as ``0.0.0.0`` rather than a
-                # confusing bare quote.
-                display_host = probe_host or "0.0.0.0"
-                print(f"\n  Error: Port {port} is already in use on {display_host}.")
+def _listener_accepting(
+    sock,
+    *,
+    so_acceptconn: int | None,
+    platform_name: str,
+    enoprotoopt: int,
+    tcp_connection_info: int | None,
+    sol_socket: int,
+    ipproto_tcp: int,
+) -> bool:
+    """Return whether a socket is listening, including the Darwin fallback."""
+
+    if so_acceptconn is None:
+        # A stream socket can be bound without listening. When the platform
+        # exposes neither SO_ACCEPTCONN nor Darwin's TCP state, fail closed
+        # instead of handing Uvicorn an unverified descriptor.
+        if platform_name != "darwin" or tcp_connection_info is None:
+            return False
+        tcp_info = sock.getsockopt(
+            ipproto_tcp,
+            tcp_connection_info,
+            _DARWIN_TCP_CONNECTION_INFO_SIZE,
+        )
+        return bool(tcp_info and tcp_info[0] == 1)
+    try:
+        return bool(sock.getsockopt(sol_socket, so_acceptconn))
+    except OSError as exc:
+        # macOS 26 exposes SO_ACCEPTCONN but returns ENOPROTOOPT for it.
+        # TCP_CONNECTION_INFO reports the same kernel state; TCPS_LISTEN is 1
+        # in Darwin's tcp_fsm.h.
+        if (
+            platform_name != "darwin"
+            or exc.errno != enoprotoopt
+            or tcp_connection_info is None
+        ):
+            raise
+        tcp_info = sock.getsockopt(
+            ipproto_tcp,
+            tcp_connection_info,
+            _DARWIN_TCP_CONNECTION_INFO_SIZE,
+        )
+        return bool(tcp_info and tcp_info[0] == 1)
+
+
+def _listen_fd_port(listen_fd: int) -> int:
+    """Read the bound TCP port without taking ownership of ``listen_fd``."""
+
+    import errno
+    import socket
+
+    duplicated_fd = os.dup(listen_fd)
+    try:
+        inherited = socket.socket(fileno=duplicated_fd)
+    except BaseException:
+        os.close(duplicated_fd)
+        raise
+
+    with inherited:
+        if inherited.family not in (socket.AF_INET, socket.AF_INET6):
+            raise OSError(
+                f"--listen-fd {listen_fd} is not bound to a TCP socket "
+                "(expected IPv4 or IPv6)"
+            )
+        socket_type = inherited.getsockopt(socket.SOL_SOCKET, socket.SO_TYPE)
+        if socket_type != socket.SOCK_STREAM:
+            raise OSError(
+                f"--listen-fd {listen_fd} is not bound to a TCP socket "
+                "(SO_TYPE is not SOCK_STREAM)"
+            )
+        accepting = _listener_accepting(
+            inherited,
+            so_acceptconn=getattr(socket, "SO_ACCEPTCONN", None),
+            platform_name=sys.platform,
+            enoprotoopt=errno.ENOPROTOOPT,
+            tcp_connection_info=getattr(socket, "TCP_CONNECTION_INFO", None),
+            sol_socket=socket.SOL_SOCKET,
+            ipproto_tcp=socket.IPPROTO_TCP,
+        )
+        if not accepting:
+            raise OSError(
+                f"--listen-fd {listen_fd} is not bound to a TCP socket "
+                "(SO_ACCEPTCONN is false)"
+            )
+        sockname = inherited.getsockname()
+    if not isinstance(sockname, tuple) or len(sockname) < 2:
+        raise OSError(f"--listen-fd {listen_fd} is not bound to a TCP listener")
+    return int(sockname[1])
+
+
+def _reject_unsupported_listen_fd_lane(
+    args, *, owns_v41_product_download: bool
+) -> None:
+    """Reject inherited listeners for lanes whose runners bind host/port."""
+
+    if getattr(args, "listen_fd", None) is None:
+        return
+
+    lane = None
+    if owns_v41_product_download:
+        lane = "DSpark K4"
+    elif getattr(args, "mtp_backend", None) == "native":
+        lane = "Native MTP"
+    elif getattr(args, "enable_dflash", False):
+        lane = "DFlash"
+    elif getattr(args, "enable_ddtree", False):
+        lane = "DDTree"
+
+    if lane is not None:
+        print(
+            f"--listen-fd is not supported with the {lane} lane; "
+            "omit --listen-fd or pass --host/--port.",
+            file=sys.stderr,
+        )
+        raise SystemExit(2)
+
+
+def _resolve_serve_port(
+    host: str,
+    port: int | None,
+    *,
+    model: str,
+    listen_fd: int | None = None,
+    scan_base: int = DEFAULT_SERVE_PORT,
+    scan_count: int = DEFAULT_SERVE_PORT_CANDIDATES,
+) -> int:
+    """Resolve the effective port once, before any serve-lane dispatch.
+
+    An explicit port retains the established hard-fail behavior. The scan is
+    deliberately preflight-only; the Uvicorn bind guard remains authoritative
+    if another process claims the resolved port before the real bind.
+    """
+
+    if listen_fd is not None:
+        try:
+            return _listen_fd_port(listen_fd)
+        except OSError as exc:
+            print(f"Invalid --listen-fd {listen_fd}: {exc}", file=sys.stderr)
+            raise SystemExit(2) from None
+
+    if port is not None:
+        _port_preflight_or_die(host, port, model=model)
+        return port
+
+    first_collision_host: str | None = None
+    for candidate in range(scan_base, scan_base + scan_count):
+        try:
+            collision_host = _port_collision_host(host, candidate)
+        except OSError as exc:
+            _exit_for_host_bind_error(host, exc)
+        if collision_host is None:
+            if candidate != scan_base:
                 print(
-                    f"  Try a different port: rapid-mlx serve {model} --port {port + 1}"
+                    f"Port {scan_base} is in use; using {candidate} instead "
+                    "(pass --port to choose).",
+                    file=sys.stderr,
                 )
-                sys.exit(1)
+            return candidate
+        if first_collision_host is None:
+            first_collision_host = collision_host
+
+    assert first_collision_host is not None
+    _exit_for_port_scan_exhaustion(scan_base, scan_count)
+
+
+def _resolved_serve_port(args) -> int:
+    """Return the shared-entrypoint port invariant used by serve lanes."""
+
+    port = getattr(args, "port", None)
+    if not isinstance(port, int):
+        raise AssertionError("serve lane received an unresolved port")
+    return port
 
 
 def _print_port_collision_and_exit(
@@ -537,10 +743,11 @@ def _run_uvicorn(app, args, log_level: str) -> None:
                 on_server_accepting=print_ready_banner,
             )
         else:
+            port = _resolved_serve_port(args)
             run_uvicorn(
                 app,
                 host=args.host,
-                port=args.port,
+                port=port,
                 log_level=log_level,
                 timeout_keep_alive=30,
                 on_server_accepting=print_ready_banner,
@@ -552,7 +759,9 @@ def _run_uvicorn(app, args, log_level: str) -> None:
         # propagate so the failure is debuggable.
         if exc.errno == errno.EADDRINUSE:
             _print_port_collision_and_exit(
-                args.host, args.port, in_listen_fd_mode=listen_fd is not None
+                args.host,
+                _resolved_serve_port(args),
+                in_listen_fd_mode=listen_fd is not None,
             )
         raise
     except SystemExit as exc:
@@ -565,12 +774,12 @@ def _run_uvicorn(app, args, log_level: str) -> None:
             and not getattr(exc, "rapid_mlx_bind_reported", False)
         ):
             try:
-                busy = _port_is_busy(args.host, args.port)
+                busy = _port_is_busy(args.host, _resolved_serve_port(args))
             except BaseException:
                 busy = False
             if busy:
                 _print_port_collision_and_exit(
-                    args.host, args.port, in_listen_fd_mode=False
+                    args.host, _resolved_serve_port(args), in_listen_fd_mode=False
                 )
         raise
 
@@ -1048,13 +1257,6 @@ def _serve_audio_mode(args, entry) -> None:
     # prints the right URL. Mirrors the text-path block.
     host_display = "localhost" if args.host == "0.0.0.0" else args.host
     listen_fd = getattr(args, "listen_fd", None)
-
-    # Port preflight — same friendly "port already in use" probe the
-    # text path runs. Skip in --listen-fd mode (the supervisor owns
-    # the socket; binding here would race). Mirrors the rationale on
-    # the text-path call site.
-    if listen_fd is None:
-        _port_preflight_or_die(args.host, args.port, model=args.model)
 
     if listen_fd is not None:
         print(
@@ -3283,7 +3485,7 @@ def _serve_native_mtp_if_requested(
     run_native_mtp_server(
         pair=pair,
         host=args.host,
-        port=args.port,
+        port=_resolved_serve_port(args),
         served_model_name=args.served_model_name or alias_name,
         default_max_tokens=effective_max_tokens,
         cors_origins=cors_origins,
@@ -4436,6 +4638,9 @@ def serve_command(args):
     # rejecting an explicit MLLM/speculative conflict before optional-runtime
     # checks or model downloads can obscure the actionable error.
     _normalize_speculative_config_or_exit(args)
+    _reject_unsupported_listen_fd_lane(
+        args, owns_v41_product_download=_owns_v41_product_download
+    )
     _preflight_native_mtp_or_exit(args)
     _companion_dspark_pair = _preflight_companion_dspark_or_exit(args)
 
@@ -4591,6 +4796,15 @@ def serve_command(args):
             and _cache_runnability(audio_entry.hf_id) is False
         ):
             _refuse_offline_uncached(audio_entry.hf_id)
+    if audio_entry is not None:
+        # Audio loads on demand, so resolve its listener immediately before
+        # dispatch. Offline uncached aliases have already failed above.
+        args.port = _resolve_serve_port(
+            getattr(args, "host", "127.0.0.1"),
+            getattr(args, "port", None),
+            model=args.model,
+            listen_fd=getattr(args, "listen_fd", None),
+        )
         _serve_audio_mode(args, audio_entry)
         return
 
@@ -4636,6 +4850,17 @@ def serve_command(args):
             print(_stub_notice, file=sys.stderr, flush=True)
     except Exception:
         pass
+
+    # Resolve the listener after all cheap alias/runtime/offline checks but
+    # before any path can download model weights. A busy explicit port or an
+    # exhausted default range must fail in milliseconds, not after a multi-GB
+    # pull. Audio has already returned through its equivalent early gate.
+    args.port = _resolve_serve_port(
+        getattr(args, "host", "127.0.0.1"),
+        getattr(args, "port", None),
+        model=args.model,
+        listen_fd=getattr(args, "listen_fd", None),
+    )
 
     # Pre-fetch the model via the R2 mirror (with HF fallback) BEFORE the
     # heavy server boot. Without this, ``serve`` falls into
@@ -5403,7 +5628,7 @@ def serve_command(args):
         server._sync_config()
         run_v41_server(
             host=args.host,
-            port=args.port,
+            port=_resolved_serve_port(args),
             served_model_name=(
                 args.served_model_name
                 or getattr(args, "_original_alias", None)
@@ -5481,7 +5706,7 @@ def serve_command(args):
             drafter_repo=_drafter_repo,
             drafter_revision=_drafter_revision,
             host=args.host,
-            port=args.port,
+            port=_resolved_serve_port(args),
             served_model_name=args.served_model_name or _alias_name,
             default_max_tokens=effective_max_tokens,
             cors_origins=cors_origins,
@@ -6026,25 +6251,6 @@ def serve_command(args):
     elif enable_prefix_cache:
         print(f"Prefix cache: max_entries={args.prefix_cache_size}")
 
-    # Check port availability before loading model (avoid wasting RAM on conflict).
-    # Set SO_REUSEADDR to match uvicorn's bind behavior — without it, this
-    # preflight fails on a port still in TCP TIME_WAIT (e.g. just after a
-    # previous rapid-mlx process exited), even though uvicorn would happily
-    # bind it. Caused spurious "port in use" errors for back-to-back server
-    # starts in the validation pipeline.
-    #
-    # Skip in --listen-fd mode: the supervisor has already bound the socket
-    # and handed us the fd. There is no host/port for us to check, and any
-    # bind we attempt here would race or collide with the inherited socket.
-    if getattr(args, "listen_fd", None) is None:
-        # Shared helper so the legacy ``python -m rapid_mlx.server``
-        # entrypoint (rapid_mlx/server.py) can call the same probe
-        # without duplicating the wildcard-alias / loopback-shadow
-        # logic. See ``_port_preflight_or_die`` for why we probe both
-        # the requested host AND 127.0.0.1 when the requested host is
-        # a wildcard alias.
-        _port_preflight_or_die(args.host, args.port, model=args.model)
-
     # Alias-level unified-memory floor (codex #1069 round 3 [NIT #3]).
     # Fires BEFORE _check_disk_space so the user sees the actionable
     # "your Mac is too small for this Ultra-only alias" hint before we
@@ -6080,7 +6286,7 @@ def serve_command(args):
             tree_budget=getattr(args, "_ddtree_tree_budget", None)
             or _profile.ddtree_tree_budget,
             host=args.host,
-            port=args.port,
+            port=_resolved_serve_port(args),
             served_model_name=args.served_model_name or _alias_name,
             default_max_tokens=args.max_tokens,
             cors_origins=cors_origins,
@@ -12638,7 +12844,7 @@ Examples:
             "\n"
             "  rapid-mlx serve qwen3.5-4b-4bit\n"
             "    <model>    pick yours: a short alias (rapid-mlx models) or HF repo\n"
-            "    --port     bind port (default 8000)\n"
+            "    --port     bind port (default: first free in 8000-8009)\n"
             "    --host     bind host (default 127.0.0.1, loopback-only)\n"
             "    --api-key  require a bearer token on every request\n"
             "\n"
@@ -12743,7 +12949,15 @@ Examples:
             "alias to keep that bypass closed."
         ),
     )
-    serve_parser.add_argument("--port", type=int, default=8000, help="Port to bind")
+    serve_parser.add_argument(
+        "--port",
+        type=int,
+        default=None,
+        help=(
+            "Port to bind (default when omitted: first free port in 8000-8009; "
+            "an explicit port never falls back)"
+        ),
+    )
     _add_video_job_args(serve_parser)
     # Socket activation — let an external supervisor (launchd, systemd,
     # parent process) bind the listening socket and execve into
@@ -12772,7 +12986,8 @@ Examples:
             "Used for socket activation (launchd/systemd/parent-process "
             "supervision) — supervisor binds the loopback socket, "
             "validates auth secret, then execve's into rapid-mlx. "
-            "When set, --host/--port are ignored for binding."
+            "When set, --host/--port are ignored for binding. Native MTP, "
+            "DSpark K4, DFlash, and DDTree reject --listen-fd with rc 2."
         ),
     )
     serve_parser.add_argument(
