@@ -296,6 +296,9 @@ def test_non_tty_without_yes_prints_automatic_install_guidance(monkeypatch) -> N
 
     assert "Install rapid-mlx[vision] now?" not in stderr.getvalue()
     assert _NON_INTERACTIVE_HINT in stderr.getvalue()
+    assert stderr.getvalue().splitlines()[-1] == (
+        "RAPID-MLX-STARTUP-FAILURE: runtime_extra_missing extra=vision"
+    )
 
 
 def test_isatty_exception_is_non_tty(monkeypatch) -> None:

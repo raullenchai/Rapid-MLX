@@ -254,6 +254,21 @@ def handle_optional_runtime_missing(
 ) -> None:
     """Render and record the sole terminal result for an unavailable extra."""
     print(exc.format_user_message(), file=sys.stderr)
+    can_install = (
+        exc.status == "absent"
+        and not _running_in_desktop_sidecar()
+        and importlib.util.find_spec("pip") is not None
+    )
+    is_interactive = (
+        can_install and not assume_yes and _is_tty(sys.stdin) and _is_tty(sys.stderr)
+    )
+    if can_install and not assume_yes and not is_interactive:
+        print(
+            "Non-interactive session: rerun with --yes to install "
+            f"rapid-mlx[{exc.extra}] automatically, or install it manually "
+            "with the command above.",
+            file=sys.stderr,
+        )
     print(
         format_startup_failure_marker(exc.marker_reason, extra=exc.extra),
         file=sys.stderr,
@@ -269,21 +284,8 @@ def handle_optional_runtime_missing(
         alias_or_path=alias_or_path,
         auto_selected=auto_selected,
     )
-    if (
-        exc.status == "absent"
-        and not _running_in_desktop_sidecar()
-        and importlib.util.find_spec("pip") is not None
+    if can_install and (
+        assume_yes or (is_interactive and _prompt_to_install(exc.extra))
     ):
-        if assume_yes:
-            _install_optional_extra(exc)
-        elif _is_tty(sys.stdin) and _is_tty(sys.stderr):
-            if _prompt_to_install(exc.extra):
-                _install_optional_extra(exc)
-        else:
-            print(
-                "Non-interactive session: rerun with --yes to install "
-                f"rapid-mlx[{exc.extra}] automatically, or install it manually "
-                "with the command above.",
-                file=sys.stderr,
-            )
+        _install_optional_extra(exc)
     raise SystemExit(2)
