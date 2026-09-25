@@ -25,6 +25,7 @@ import os
 import re
 import select
 import signal
+import stat
 import subprocess
 import sys
 import textwrap
@@ -894,6 +895,7 @@ def test_closed_crash_fd_rearm_recovers_file_only_in_process(monkeypatch, tmp_pa
     previous = (
         so._crash_fd,
         so._crash_fd_identity,
+        so._crash_file_identity,
         so._crash_path,
         so._crash_pipe,
         so._crash_tee,
@@ -901,6 +903,8 @@ def test_closed_crash_fd_rearm_recovers_file_only_in_process(monkeypatch, tmp_pa
     calls = []
     so._crash_fd = fd
     so._crash_fd_identity = (-1, -1)
+    path_stat = path.stat()
+    so._crash_file_identity = (path_stat.st_dev, path_stat.st_ino)
     so._crash_path = path
     so._crash_pipe = None
     so._crash_tee = None
@@ -915,6 +919,7 @@ def test_closed_crash_fd_rearm_recovers_file_only_in_process(monkeypatch, tmp_pa
         (
             so._crash_fd,
             so._crash_fd_identity,
+            so._crash_file_identity,
             so._crash_path,
             so._crash_pipe,
             so._crash_tee,
@@ -975,12 +980,14 @@ def test_exited_tee_is_replaced_with_direct_crash_file(monkeypatch, tmp_path):
     previous = (
         so._crash_fd,
         so._crash_fd_identity,
+        so._crash_file_identity,
         so._crash_path,
         so._crash_pipe,
         so._crash_tee,
     )
     so._crash_fd = fd
     so._crash_fd_identity = (file_stat.st_dev, file_stat.st_ino)
+    so._crash_file_identity = (file_stat.st_dev, file_stat.st_ino)
     so._crash_path = path
     so._crash_pipe = pipe
     so._crash_tee = ExitedProcess()
@@ -998,6 +1005,7 @@ def test_exited_tee_is_replaced_with_direct_crash_file(monkeypatch, tmp_path):
         (
             so._crash_fd,
             so._crash_fd_identity,
+            so._crash_file_identity,
             so._crash_path,
             so._crash_pipe,
             so._crash_tee,
@@ -1035,11 +1043,13 @@ def test_closed_crash_fd_rearm_failure_closes_replacement(monkeypatch, tmp_path)
     previous = (
         so._crash_fd,
         so._crash_fd_identity,
+        so._crash_file_identity,
         so._crash_path,
         so._crash_pipe,
         so._crash_tee,
     )
     so._crash_fd = 123
+    so._crash_file_identity = (1, 2)
     so._crash_path = tmp_path / "crash.txt"
     so._crash_pipe = None
     so._crash_tee = None
@@ -1049,7 +1059,7 @@ def test_closed_crash_fd_rearm_failure_closes_replacement(monkeypatch, tmp_path)
         lambda fd: (
             (_ for _ in ()).throw(OSError("closed"))
             if fd == 123
-            else SimpleNamespace(st_dev=1, st_ino=2)
+            else SimpleNamespace(st_dev=1, st_ino=2, st_mode=stat.S_IFREG)
         ),
     )
     monkeypatch.setattr(so.os, "open", lambda *_args: 456)
@@ -1067,6 +1077,7 @@ def test_closed_crash_fd_rearm_failure_closes_replacement(monkeypatch, tmp_path)
         (
             so._crash_fd,
             so._crash_fd_identity,
+            so._crash_file_identity,
             so._crash_path,
             so._crash_pipe,
             so._crash_tee,

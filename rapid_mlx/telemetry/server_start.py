@@ -400,17 +400,18 @@ def ready() -> None:
             return
         _terminal = True
         attempted_emitted = _attempted_emitted
-        # A successful bind is terminal startup state even when telemetry is
-        # disabled. Keep that durable fact separate from event emission so a
-        # later runtime crash is not misreported as an interrupted startup.
-        _mark_inflight_terminal()
         if not attempted_emitted:
+            # No attempted event exists to balance, but the marker still has
+            # to remain for crash-log liveness until clean process exit.
+            _mark_inflight_terminal()
             return
     # Keep the marker for the lifetime of a ready server. Crash-log rotation
     # uses it to distinguish this process's open sink from stale diagnostics;
     # the atexit hook removes it on a clean shutdown. A failed telemetry write
     # likewise leaves the attempted marker behind for the next run to report.
-    _track("ready")
+    if _track("ready") is not False:
+        with _lock:
+            _mark_inflight_terminal()
 
 
 def failed(failure_stage: object) -> None:

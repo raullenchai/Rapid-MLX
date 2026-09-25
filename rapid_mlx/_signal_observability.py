@@ -115,6 +115,7 @@ _install_lock = threading.Lock()
 _prior_handlers: dict[int, signal.Handlers | Callable[..., object] | int | None] = {}
 _crash_fd: int | None = None
 _crash_fd_identity: tuple[int, int] | None = None
+_crash_file_identity: tuple[int, int] | None = None
 _crash_path: Path | None = None
 _crash_pipe = None
 _crash_tee: subprocess.Popen[bytes] | None = None
@@ -149,7 +150,7 @@ while chunk := os.read(0, 65536):
         pending = chunk
         while pending:
             pending = pending[os.write(2, pending):]
-    except OSError:
+    except (AttributeError, OSError):
         pass
 """
 
@@ -431,13 +432,16 @@ def _reap_crash_tee(process: subprocess.Popen[bytes]) -> None:
 
 def _cleanup_crash_file() -> None:
     """Remove an empty clean-run file and release faulthandler's descriptor."""
-    global _crash_fd, _crash_fd_identity, _crash_path, _crash_pipe, _crash_tee
+    global _crash_fd, _crash_fd_identity, _crash_file_identity
+    global _crash_path, _crash_pipe, _crash_tee
     fd, path = _crash_fd, _crash_path
+    file_identity = _crash_file_identity
     pipe, process = _crash_pipe, _crash_tee
     if fd is None or path is None:
         return
     _crash_fd = None
     _crash_fd_identity = None
+    _crash_file_identity = None
     _crash_path = None
     _crash_pipe = None
     _crash_tee = None
@@ -453,9 +457,14 @@ def _cleanup_crash_file() -> None:
         except OSError:
             pass
     try:
-        if path.stat().st_size == 0:
+        path_stat = path.lstat()
+        if (
+            stat.S_ISREG(path_stat.st_mode)
+            and (path_stat.st_dev, path_stat.st_ino) == file_identity
+            and path_stat.st_size == 0
+        ):
             path.unlink(missing_ok=True)
-    except OSError:
+    except (AttributeError, OSError):
         pass
     if (
         _faulthandler_was_enabled
@@ -470,7 +479,8 @@ def _cleanup_crash_file() -> None:
 
 def _install_crash_file() -> None:
     """Mirror fatal tracebacks to stderr and a private rotating file."""
-    global _crash_cleanup_registered, _crash_fd, _crash_fd_identity, _crash_path
+    global _crash_cleanup_registered, _crash_fd, _crash_fd_identity
+    global _crash_file_identity, _crash_path
     global _crash_pipe
     global _crash_tee, _faulthandler_was_enabled
     if _crash_fd is not None:
@@ -494,6 +504,9 @@ def _install_crash_file() -> None:
             0o600,
         )
         os.chmod(path, 0o600)
+        file_stat = os.fstat(fd)
+        if not stat.S_ISREG(file_stat.st_mode):
+            raise OSError("crash sink is not a regular file")
         if os.name == "nt":
             _warn_tee_fallback(OSError("crash mirror helper is unavailable on Windows"))
         else:
@@ -523,6 +536,7 @@ def _install_crash_file() -> None:
         _enable_faulthandler(target_fd)
         _crash_fd = target_fd
         _crash_fd_identity = (target_stat.st_dev, target_stat.st_ino)
+        _crash_file_identity = (file_stat.st_dev, file_stat.st_ino)
         _crash_path = path
         _crash_pipe = pipe
         _crash_tee = process
@@ -553,7 +567,8 @@ def _install_crash_file() -> None:
 
 def _ensure_crash_sink_locked() -> bool:
     """Re-arm the installed sink while the caller holds ``_install_lock``."""
-    global _crash_fd, _crash_fd_identity, _crash_pipe, _crash_tee
+    global _crash_fd, _crash_fd_identity, _crash_file_identity
+    global _crash_pipe, _crash_tee
     if _crash_fd is None:
         return False
     failure = OSError("crash descriptor no longer identifies the installed sink")
@@ -592,6 +607,11 @@ def _ensure_crash_sink_locked() -> bool:
             flags = os.O_WRONLY | os.O_APPEND | getattr(os, "O_NOFOLLOW", 0)
             new_fd = os.open(_crash_path, flags)
             new_stat = os.fstat(new_fd)
+            if not stat.S_ISREG(new_stat.st_mode) or (
+                new_stat.st_dev,
+                new_stat.st_ino,
+            ) != _crash_file_identity:
+                raise OSError("crash file path no longer identifies the installed sink")
             _enable_faulthandler(new_fd)
             _crash_fd = new_fd
             _crash_fd_identity = (new_stat.st_dev, new_stat.st_ino)
