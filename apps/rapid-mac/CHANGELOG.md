@@ -17,6 +17,38 @@ can actually understand.
 
 ## [Unreleased]
 
+## [0.15.2] — 2026-09-24
+
+Rapid-MLX 0.15.2 makes local model serving easier to connect, harder to
+misconfigure, and much more useful when startup fails.
+
+### Added
+- **Agent connection setup is visible at a glance.** Desktop now leads with the
+  local endpoint and copy-ready connection details, then guides users through
+  popular agent integrations.
+- **More capable local models.** GLM-5.3 Flash can join the QuickSilver pool,
+  Qwen4 can load validated PLE rows from a bounded sidecar, Laya and CLM System
+  One are supported, and LFM2.5-VL gains a qualified DSpark companion.
+- **Reasoning control for GLM-5.3.** The server accepts an explicit default
+  reasoning effort and correctly recognises GLM's coercion behavior.
+- **Persistent crash diagnostics.** Fatal server tracebacks survive process
+  death, and a subsequent start can report that the previous startup ended
+  before reaching a terminal state.
+
+### Changed
+- **`rapid-mlx serve` finds a free default port.** When no port is specified,
+  the CLI scans a bounded local range instead of failing immediately on 8000;
+  explicit ports still fail closed.
+- **Optional features are installable from the failure itself.** Missing
+  vision, image, video, or audio support now offers the exact extra to install,
+  with `--yes` available for unattended setup.
+
+### Fixed
+- **Startup failures retain their real cause.** Hugging Face access failures,
+  invalid model configs, tokenizer assets, incompatible weights,
+  quantization mismatches, and memory pressure map to actionable, stable
+  categories instead of collapsing into a generic error.
+
 ## [0.15.1] — 2026-09-23
 
 Rapid-MLX 0.15.1 makes first-start failures actionable in Desktop and aligns
@@ -4054,7 +4086,8 @@ Older versions: see the
 [GitHub Releases page](https://github.com/machinefi/rapid-desktop/releases)
 for auto-generated notes against earlier tags.
 
-[Unreleased]: https://github.com/raullenchai/Rapid-MLX/compare/rapid-mac-v0.15.1...HEAD
+[Unreleased]: https://github.com/raullenchai/Rapid-MLX/compare/rapid-mac-v0.15.2...HEAD
+[0.15.2]: https://github.com/raullenchai/Rapid-MLX/compare/rapid-mac-v0.15.1...rapid-mac-v0.15.2
 [0.15.1]: https://github.com/raullenchai/Rapid-MLX/compare/rapid-mac-v0.15.0...rapid-mac-v0.15.1
 [0.15.0]: https://github.com/raullenchai/Rapid-MLX/compare/rapid-mac-v0.14.3...rapid-mac-v0.15.0
 [0.14.3]: https://github.com/raullenchai/Rapid-MLX/compare/rapid-mac-v0.14.2...rapid-mac-v0.14.3
