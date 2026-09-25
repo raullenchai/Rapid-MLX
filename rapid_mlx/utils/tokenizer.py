@@ -2051,6 +2051,7 @@ def _load_with_tokenizer_fallback(
         chat_template = None
 
         if tokenizer_config_path.exists():
+
             def read_tokenizer_config(path: Path) -> dict:
                 with path.open(encoding="utf-8") as config_file:
                     value = json.load(config_file)
