@@ -279,9 +279,7 @@ def test_resolve_listen_fd_reports_cli_error_without_traceback(monkeypatch, caps
         cli._resolve_serve_port("127.0.0.1", None, model="model", listen_fd=17)
 
     assert caught.value.code == 2
-    assert capsys.readouterr().err == (
-        "Invalid --listen-fd 17: descriptor is closed\n"
-    )
+    assert capsys.readouterr().err == ("Invalid --listen-fd 17: descriptor is closed\n")
 
 
 def test_listen_fd_rejects_non_tcp_socket():
