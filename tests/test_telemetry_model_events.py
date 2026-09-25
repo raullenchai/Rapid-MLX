@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+import ast
 import errno
 import http.client
 import json
@@ -10,6 +11,7 @@ import sys
 import threading
 import urllib.error
 import uuid
+from contextlib import contextmanager
 from datetime import datetime, timezone
 from http.server import BaseHTTPRequestHandler, HTTPServer
 from pathlib import Path
@@ -671,6 +673,283 @@ def test_quantization_boundary_is_classified():
             {"bits": 4, "group_size": 64, "dtype": "uint32"},
         )
         == 4
+    )
+
+
+def _fp8_config(tmp_path):
+    model_path = tmp_path / "fp8"
+    model_path.mkdir()
+    (model_path / "config.json").write_text(
+        '{"model_type":"synthetic","quantization_config":'
+        '{"quant_method":"fp8","fmt":"e4m3","scale_fmt":"ue8m0",'
+        '"weight_block_size":[128,128]}}',
+        encoding="utf-8",
+    )
+    return model_path
+
+
+def _install_fp8_skeleton(monkeypatch, fp8_repack, model):
+    class ModelArgs:
+        @classmethod
+        def from_dict(cls, _config):
+            return cls()
+
+    monkeypatch.setattr(
+        fp8_repack.importlib,
+        "import_module",
+        lambda _name: SimpleNamespace(Model=model, ModelArgs=ModelArgs),
+    )
+    monkeypatch.setattr(fp8_repack, "_open_shards", lambda _path: ({}, {}))
+
+
+def test_fp8_direct_quantize_valueerror_is_typed(tmp_path, monkeypatch):
+    pytest.importorskip("mlx.core")
+    from rapid_mlx import fp8_repack
+
+    model_path = _fp8_config(tmp_path)
+
+    class Model:
+        def __init__(self, _args):
+            pass
+
+    _install_fp8_skeleton(monkeypatch, fp8_repack, Model)
+
+    def fail_quantize(*_args, **_kwargs):
+        raise ValueError("Invalid quantization mode 'mxfp8'")
+
+    monkeypatch.setattr(fp8_repack.nn, "quantize", fail_quantize)
+
+    with pytest.raises(QuantizationMismatch):
+        fp8_repack.load_fp8_model_online(model_path)
+
+
+def test_fp8_direct_load_weights_valueerror_is_typed(tmp_path, monkeypatch):
+    mx = pytest.importorskip("mlx.core")
+    nn = pytest.importorskip("mlx.nn")
+    from rapid_mlx import fp8_repack
+
+    model_path = _fp8_config(tmp_path)
+
+    class Model(nn.Module):
+        def __init__(self, _args):
+            super().__init__()
+            self.weight = mx.zeros((8, 8))
+
+    _install_fp8_skeleton(monkeypatch, fp8_repack, Model)
+    monkeypatch.setattr(fp8_repack.nn, "quantize", lambda *_args, **_kwargs: None)
+
+    with pytest.raises(IncompatibleWeights):
+        fp8_repack.load_fp8_model_online(model_path)
+
+
+def test_fp8_lm_head_quantize_valueerror_is_typed(tmp_path, monkeypatch):
+    nn = pytest.importorskip("mlx.nn")
+    from rapid_mlx import fp8_repack
+
+    model_path = _fp8_config(tmp_path)
+
+    class Model:
+        def __init__(self, _args):
+            self.lm_head = nn.Linear(8, 8)
+
+        def load_weights(self, _weights, *, strict):
+            assert strict is True
+
+        def parameters(self):
+            return []
+
+        def eval(self):
+            return self
+
+    _install_fp8_skeleton(monkeypatch, fp8_repack, Model)
+    calls = 0
+
+    def quantize(*_args, **_kwargs):
+        nonlocal calls
+        calls += 1
+        if calls == 2:
+            raise ValueError("lm_head affine quantization is incompatible")
+
+    monkeypatch.setattr(fp8_repack.nn, "quantize", quantize)
+    monkeypatch.setenv("RAPID_MLX_FP8_LM_HEAD_AFFINE8", "1")
+
+    with pytest.raises(QuantizationMismatch):
+        fp8_repack.load_fp8_model_online(model_path)
+
+
+def test_qwen4_ple_direct_load_model_valueerror_is_typed(tmp_path, monkeypatch):
+    mx = pytest.importorskip("mlx.core")
+    nn = pytest.importorskip("mlx.nn")
+    from mlx_lm import utils as mlx_lm_utils
+
+    from rapid_mlx.models import qwen4_ple_nvme
+
+    model_path = tmp_path / "model"
+    sidecar_path = tmp_path / "sidecar"
+    model_path.mkdir()
+    sidecar_path.mkdir()
+    monkeypatch.setattr(qwen4_ple_nvme, "validate_artifact", lambda *_args: None)
+
+    @contextmanager
+    def bound(_path):
+        yield
+
+    monkeypatch.setattr(qwen4_ple_nvme, "_bound_load_source", bound)
+
+    def fail_load_model(*_args, **_kwargs):
+        class BrokenModel(nn.Module):
+            def __init__(self):
+                super().__init__()
+                self.weight = mx.zeros((8, 8))
+
+        BrokenModel().load_weights([], strict=True)
+
+    monkeypatch.setattr(mlx_lm_utils, "load_model", fail_load_model)
+
+    with pytest.raises(IncompatibleWeights):
+        qwen4_ple_nvme.load_file_backed_qwen4(model_path, sidecar_path)
+
+
+def test_prism_direct_load_weights_valueerror_is_typed(tmp_path, monkeypatch):
+    mx = pytest.importorskip("mlx.core")
+    nn = pytest.importorskip("mlx.nn")
+    from mlx_vlm import utils as mlx_vlm_utils
+    from mlx_vlm.models import qwen3_5
+
+    from rapid_mlx.models import prism_hadamard_qwen35 as prism
+
+    class ModelConfig:
+        @classmethod
+        def from_dict(cls, _config):
+            return cls()
+
+    class Model(nn.Module):
+        def __init__(self, _config):
+            super().__init__()
+            self.language_model = object()
+            self.weight = mx.zeros((8, 8))
+
+    monkeypatch.setattr(qwen3_5, "Model", Model)
+    monkeypatch.setattr(qwen3_5, "ModelConfig", ModelConfig)
+    monkeypatch.setattr(mlx_vlm_utils, "get_model_path", lambda _path: tmp_path)
+    monkeypatch.setattr(prism, "_install_packed", lambda *_args: None)
+    monkeypatch.setattr(prism.mx, "load", lambda _path: {})
+    config = {
+        "schema_version": 2,
+        "model_type": "prism_hadamard_qwen35",
+        "base_model_type": "qwen3_5",
+        "tensor_namespace": "mlx-vlm-qwen3_5",
+        "gdn_activation_layout": "grouped",
+        "components": {"text": True, "vision": True, "mtp": False},
+        "quantization": {"bits": 2, "group_size": 128, "mode": "affine"},
+    }
+
+    with pytest.raises(IncompatibleWeights):
+        prism.load(tmp_path, config)
+
+
+def test_direct_per_model_loaders_do_not_bypass_typed_boundaries():
+    package_root = Path(__file__).parents[1] / "rapid_mlx"
+    shared_boundary_calls = {
+        ("model_load_errors.py", "load_weights_checked", "load_weights"),
+    }
+    shared_loader_callbacks = {
+        ("models/deepseek_v41_native/load.py", "load", "load_weights"),
+        ("models/deepseek_v41_native/load.py", "load", "quantize"),
+    }
+    offenders = []
+
+    class LoadBoundaryVisitor(ast.NodeVisitor):
+        def __init__(self, relative_path):
+            self.relative_path = relative_path
+            self.functions = []
+            self.boundary_depth = 0
+
+        def visit_FunctionDef(self, node):
+            self.functions.append(node.name)
+            self.generic_visit(node)
+            self.functions.pop()
+
+        def visit_AsyncFunctionDef(self, node):  # noqa: N802 - ast API
+            self.visit_FunctionDef(node)
+
+        def visit_With(self, node):
+            guarded = any(
+                isinstance(item.context_expr, ast.Call)
+                and (
+                    (
+                        isinstance(item.context_expr.func, ast.Name)
+                        and item.context_expr.func.id
+                        in {
+                            "typed_mlx_load_boundaries",
+                            "typed_quantization_boundary",
+                            "typed_weight_boundary",
+                        }
+                    )
+                    or (
+                        isinstance(item.context_expr.func, ast.Attribute)
+                        and item.context_expr.func.attr
+                        in {
+                            "typed_mlx_load_boundaries",
+                            "typed_quantization_boundary",
+                            "typed_weight_boundary",
+                        }
+                    )
+                )
+                for item in node.items
+            )
+            self.boundary_depth += int(guarded)
+            self.generic_visit(node)
+            self.boundary_depth -= int(guarded)
+
+        def visit_AsyncWith(self, node):  # noqa: N802 - ast API
+            self.visit_With(node)
+
+        def visit_Call(self, node):
+            kind = None
+            if (
+                isinstance(node.func, ast.Attribute)
+                and node.func.attr == "load_weights"
+            ):
+                kind = "load_weights"
+            elif (
+                isinstance(node.func, ast.Attribute)
+                and node.func.attr == "quantize"
+                and isinstance(node.func.value, ast.Name)
+                and node.func.value.id == "nn"
+            ):
+                kind = "quantize"
+            elif isinstance(node.func, ast.Name) and node.func.id == "load_model":
+                kind = "load_model"
+
+            function = self.functions[-1] if self.functions else "<module>"
+            is_direct_loader = (
+                self.relative_path == "fp8_repack.py"
+                and function == "load_fp8_model_online"
+            ) or (
+                self.relative_path.startswith("models/") and function.startswith("load")
+            )
+            call = (self.relative_path, function, kind)
+            if (
+                kind
+                and (is_direct_loader or call in shared_boundary_calls)
+                and not self.boundary_depth
+                and call not in shared_boundary_calls
+                and call not in shared_loader_callbacks
+            ):
+                offenders.append(f"{self.relative_path}:{node.lineno} ({kind})")
+            self.generic_visit(node)
+
+    for source_path in package_root.rglob("*.py"):
+        relative_path = source_path.relative_to(package_root).as_posix()
+        tree = ast.parse(
+            source_path.read_text(encoding="utf-8"), filename=relative_path
+        )
+        LoadBoundaryVisitor(relative_path).visit(tree)
+
+    assert not offenders, (
+        "direct per-model loaders must use the shared typed MLX load boundary: "
+        + ", ".join(offenders)
     )
 
 

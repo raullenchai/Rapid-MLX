@@ -53,6 +53,8 @@ import mlx.core as mx
 import mlx.nn as nn
 import numpy as np
 
+from .model_load_errors import load_weights_checked, quantize_checked
+
 logger = logging.getLogger(__name__)
 
 _SCALE_SUFFIX = "_scale_inv"
@@ -272,7 +274,8 @@ def load_fp8_model_online(model_path: Path) -> nn.Module:
     # Both the skeleton's random init and this quantization graph stay
     # lazy; load_weights below replaces every parameter before anything
     # is evaluated, so neither ever materializes.
-    nn.quantize(
+    quantize_checked(
+        nn.quantize,
         model,
         group_size=_MXFP8_GROUP,
         bits=8,
@@ -315,7 +318,7 @@ def load_fp8_model_online(model_path: Path) -> nn.Module:
 
     if hasattr(model, "sanitize"):
         weights = model.sanitize(weights)
-    model.load_weights(list(weights.items()), strict=True)
+    load_weights_checked(model, weights, strict=True)
 
     # Opt-in (default OFF, keeping the load fully checkpoint-faithful):
     # RAPID_MLX_FP8_LM_HEAD_AFFINE8=1 quantizes the untied bf16 lm_head
@@ -323,7 +326,8 @@ def load_fp8_model_online(model_path: Path) -> nn.Module:
     # tiny for a measured-zero top-1 change (see module docstring).
     want_q = os.environ.get("RAPID_MLX_FP8_LM_HEAD_AFFINE8", "") == "1"
     if want_q and isinstance(getattr(model, "lm_head", None), nn.Linear):
-        nn.quantize(
+        quantize_checked(
+            nn.quantize,
             model,
             class_predicate=lambda path, module: (
                 {"group_size": 64, "bits": 8, "mode": "affine"}
