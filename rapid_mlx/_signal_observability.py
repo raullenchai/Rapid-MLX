@@ -206,7 +206,15 @@ def _marker_for_pid(log_dir: Path, pid: int) -> dict[str, object] | None:
                 or marker_stat.st_size > _MAX_MARKER_BYTES
             ):
                 return None
-            payload = os.read(fd, _MAX_MARKER_BYTES + 1)
+            chunks: list[bytes] = []
+            remaining = _MAX_MARKER_BYTES + 1
+            while remaining:
+                chunk = os.read(fd, remaining)
+                if not chunk:
+                    break
+                chunks.append(chunk)
+                remaining -= len(chunk)
+            payload = b"".join(chunks)
             if len(payload) > _MAX_MARKER_BYTES:
                 return None
         finally:

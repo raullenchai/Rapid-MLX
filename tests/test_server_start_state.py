@@ -241,9 +241,41 @@ def test_terminal_stale_marker_does_not_report_unterminated(monkeypatch, tmp_pat
     assert "previous_run_unterminated" not in events[0][1]
 
 
+def test_any_unterminated_stale_marker_is_reported(monkeypatch, tmp_path):
+    monkeypatch.setenv("HOME", str(tmp_path))
+    state_dir = tmp_path / ".rapid-mlx" / "state"
+    state_dir.mkdir(parents=True)
+    (state_dir / "serve-inflight-99999998.json").write_text(
+        json.dumps(_marker_payload(99_999_998)), encoding="utf-8"
+    )
+    (state_dir / "serve-inflight-99999999.json").write_text(
+        json.dumps({**_marker_payload(99_999_999), "startup_terminal": True}),
+        encoding="utf-8",
+    )
+    events = _capture(monkeypatch)
+
+    server_start.attempted("qwen3.5-4b-4bit", load_policy="eager")
+
+    assert events[0][1]["previous_run_unterminated"] is True
+
+
 def test_ready_marks_live_marker_terminal(monkeypatch, tmp_path):
     monkeypatch.setenv("HOME", str(tmp_path))
     _capture(monkeypatch)
+    server_start.attempted("qwen3.5-4b-4bit", load_policy="eager")
+    marker = server_start._marker_path()
+
+    server_start.ready()
+
+    payload = json.loads(marker.read_text(encoding="utf-8"))
+    assert payload["startup_terminal"] is True
+
+
+def test_ready_marks_live_marker_terminal_when_telemetry_disabled(
+    monkeypatch, tmp_path
+):
+    monkeypatch.setenv("HOME", str(tmp_path))
+    monkeypatch.setattr("rapid_mlx.telemetry.track._upload_allowed", lambda: False)
     server_start.attempted("qwen3.5-4b-4bit", load_policy="eager")
     marker = server_start._marker_path()
 

@@ -1046,6 +1046,34 @@ def test_crash_marker_reader_rejects_oversized_and_growing_files(monkeypatch, tm
         assert so._marker_for_pid(log_dir, 123) is None
 
 
+def test_crash_marker_reader_handles_short_reads(monkeypatch, tmp_path):
+    from rapid_mlx import _signal_observability as so
+
+    log_dir = tmp_path / "logs"
+    state_dir = tmp_path / "state"
+    log_dir.mkdir()
+    state_dir.mkdir()
+    marker = state_dir / "serve-inflight-123.json"
+    marker.write_text(
+        json.dumps(
+            {
+                "pid": 123,
+                "create_time": 1.0,
+                "boot_time": 2.0,
+                "app_version": "0.15.1",
+            }
+        ),
+        encoding="utf-8",
+    )
+    real_read = os.read
+
+    monkeypatch.setattr(so.os, "read", lambda fd, size: real_read(fd, min(size, 5)))
+
+    parsed = so._marker_for_pid(log_dir, 123)
+    assert parsed is not None
+    assert parsed["pid"] == 123
+
+
 def test_empty_crash_file_is_removed_at_clean_shutdown(monkeypatch, tmp_path):
     from rapid_mlx import _signal_observability as so
 
