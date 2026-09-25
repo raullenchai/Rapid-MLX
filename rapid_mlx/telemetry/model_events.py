@@ -151,11 +151,18 @@ def serve_error_class(exc: BaseException) -> str:
         from huggingface_hub.errors import HfHubHTTPError
         from huggingface_hub.utils import RepositoryNotFoundError
 
+        from rapid_mlx.model_load_errors import (
+            IncompatibleWeights,
+            InvalidModelConfig,
+            QuantizationMismatch,
+            TokenizerLoadFailed,
+        )
         from rapid_mlx.request import (
             ENGINE_ABORT_CODE_INSUFFICIENT_MEMORY,
             classify_engine_abort,
         )
 
+        chain: list[BaseException] = []
         current: BaseException | None = exc
         seen: set[int] = set()
         for _ in range(_EXCEPTION_CHAIN_LIMIT):
@@ -164,8 +171,27 @@ def serve_error_class(exc: BaseException) -> str:
             if id(current) in seen:
                 break
             seen.add(id(current))
-            # The outermost explicit signal wins; only ``raise ... from`` links are followed.
-            text = _exception_text(current)
+            chain.append(current)
+            current = current.__cause__
+
+        # The four explicit load-boundary types are authoritative across the
+        # cause chain. A generic outer wrapper may mention memory or corruption
+        # while merely relaying one of these more precise failures.
+        for current in chain:
+            if isinstance(current, InvalidModelConfig):
+                return "invalid_config"
+            if isinstance(current, TokenizerLoadFailed):
+                return "tokenizer_load_failed"
+            if isinstance(current, IncompatibleWeights):
+                return "incompatible_weights"
+            if isinstance(current, QuantizationMismatch):
+                return "quantization_mismatch"
+
+        # Preserve the established outermost-match contract for all existing
+        # signals. Only the new boundary types above outrank incidental outer
+        # wording; existing typed and textual categories remain ordered by the
+        # exception that callers actually observed.
+        for current in chain:
             if classify_engine_abort(current) == ENGINE_ABORT_CODE_INSUFFICIENT_MEMORY:
                 return "insufficient_memory"
             if isinstance(current, (HfHubHTTPError, RepositoryNotFoundError)):
@@ -181,14 +207,19 @@ def serve_error_class(exc: BaseException) -> str:
                 missing = current.name or ""
                 if missing.startswith("mlx_lm.models."):
                     return "unsupported_architecture"
+                text = _exception_text(current)
                 if re.fullmatch(
                     r"No module named ['\"]mlx_lm\.models\.[^'\"]+['\"]", text
                 ):
                     return "unsupported_architecture"
-            elif isinstance(current, ValueError):
+
+            text = _exception_text(current)
+            if isinstance(current, ValueError):
                 # mlx-lm/utils.py::_get_classes translates the module import failure
                 # to exactly ``ValueError: Model type <X> not supported.``.
                 if re.fullmatch(r"Model type .+ not supported\.?", text):
+                    return "unsupported_architecture"
+                if "does not recognize this architecture" in text:
                     return "unsupported_architecture"
             name = type(current).__name__.lower()
             if "safetensor" in name or any(
@@ -196,7 +227,6 @@ def serve_error_class(exc: BaseException) -> str:
                 for marker in ("safetensor", "corrupt", "checksum", "size mismatch")
             ):
                 return "corrupt_weights"
-            current = current.__cause__
     except BaseException:
         return "other"
     return "other"

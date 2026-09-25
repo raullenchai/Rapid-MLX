@@ -52,6 +52,8 @@ from pathlib import Path
 import mlx.core as mx
 import mlx.nn as nn
 
+from ..model_load_errors import load_weights_checked, quantize_checked
+
 logger = logging.getLogger(__name__)
 
 
@@ -871,7 +873,7 @@ def _load_gemma4_text_impl(
                         return override_cfg
                 return {"bits": default_bits, "group_size": default_gs}
 
-            nn.quantize(model, class_predicate=_class_predicate)
+            quantize_checked(nn.quantize, model, class_predicate=_class_predicate)
         else:
             logger.info(
                 "[gemma4] Applying %d-bit quantization (group_size=%d)",
@@ -886,14 +888,15 @@ def _load_gemma4_text_impl(
                     return False
                 return True
 
-            nn.quantize(
+            quantize_checked(
+                nn.quantize,
                 model,
                 class_predicate=_class_predicate,
                 group_size=default_gs,
                 bits=default_bits,
             )
 
-    model.load_weights(list(sanitized.items()), strict=False)
+    load_weights_checked(model, sanitized, strict=False)
 
     # Verify weights loaded
     test_param = model.language_model.model.embed_tokens

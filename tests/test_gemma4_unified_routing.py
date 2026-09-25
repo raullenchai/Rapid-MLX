@@ -44,6 +44,7 @@ pytestmark = pytest.mark.requires_mlx
 import json
 import sys
 from pathlib import Path
+from types import ModuleType, SimpleNamespace
 
 from rapid_mlx.models import gemma4_text
 
@@ -496,3 +497,84 @@ def test_wrapper_reports_routed_model_type(routed, inner, expected):
 
     wrapper = gemma4_text.Gemma4TextWrapper(_FakeLM(), routed_model_type=routed)
     assert wrapper.model_type == expected
+
+
+@pytest.mark.parametrize("mixed_quantization", [False, True])
+def test_loader_routes_quantization_and_checked_weight_load(
+    tmp_path, monkeypatch, mixed_quantization
+):
+    """Exercise both checkpoint quantization paths through their typed wrappers."""
+
+    quantization = {"bits": 4, "group_size": 64}
+    if mixed_quantization:
+        quantization["language_model.model.layers.0.proj"] = {
+            "bits": 8,
+            "group_size": 64,
+        }
+    (tmp_path / "config.json").write_text(
+        json.dumps(
+            {
+                "model_type": "gemma4",
+                "num_kv_shared_layers": 0,
+                "quantization": quantization,
+            }
+        ),
+        encoding="utf-8",
+    )
+    (tmp_path / "model.safetensors").write_bytes(b"fixture")
+
+    class TextConfig:
+        @classmethod
+        def from_dict(cls, _config):
+            return cls()
+
+    class LanguageModel:
+        def __init__(self, config):
+            self.config = config
+            self.model = SimpleNamespace(embed_tokens=object())
+            self.model_type = "gemma4_text"
+            self.layers = []
+
+    utils = ModuleType("mlx_lm.utils")
+    expected_tokenizer = object()
+    utils.load_tokenizer = lambda *_args, **_kwargs: expected_tokenizer
+    mlx_lm = ModuleType("mlx_lm")
+    mlx_lm.utils = utils
+    monkeypatch.setitem(sys.modules, "mlx_lm", mlx_lm)
+    monkeypatch.setitem(sys.modules, "mlx_lm.utils", utils)
+    monkeypatch.setattr(gemma4_text, "_check_kv_share_config", lambda *_args: None)
+    weight = object()
+    monkeypatch.setattr(gemma4_text.mx, "load", lambda _path: {"weight": weight})
+    monkeypatch.setattr(gemma4_text, "_bare_fp_weight_paths", lambda _weights: set())
+
+    quantize_calls = []
+
+    def checked_quantize(_quantizer, _model, **kwargs):
+        quantize_calls.append(kwargs)
+        predicate = kwargs["class_predicate"]
+        module = SimpleNamespace(to_quantized=True)
+        if mixed_quantization:
+            assert predicate("model.layers.0.proj", module) == {
+                "bits": 8,
+                "group_size": 64,
+            }
+        else:
+            assert predicate("model.layers.0.proj", module) is True
+
+    weight_calls = []
+    monkeypatch.setattr(gemma4_text, "quantize_checked", checked_quantize)
+    monkeypatch.setattr(
+        gemma4_text,
+        "load_weights_checked",
+        lambda model, weights, *, strict: weight_calls.append((model, weights, strict)),
+    )
+
+    model, tokenizer = gemma4_text._load_gemma4_text_impl(
+        tmp_path,
+        resolve_classes=lambda _config: (TextConfig, LanguageModel),
+        default_model_type="gemma4",
+    )
+
+    assert tokenizer is expected_tokenizer
+    assert len(quantize_calls) == 1
+    assert weight_calls == [(model, {"language_model.weight": weight}, False)]

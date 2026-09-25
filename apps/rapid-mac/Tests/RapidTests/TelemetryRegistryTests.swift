@@ -204,6 +204,14 @@ struct TelemetryRegistryTests {
     @Test("a _failed twin accepts error_class alone and rejects it missing")
     func failedTwinContract() {
         #expect(registry.validate("model_serve_failed", ["error_class": .string("insufficient_memory")]) != nil)
+        for errorClass in [
+            "invalid_config",
+            "tokenizer_load_failed",
+            "incompatible_weights",
+            "quantization_mismatch"
+        ] {
+            #expect(registry.validate("model_serve_failed", ["error_class": .string(errorClass)]) != nil)
+        }
         #expect(registry.validate("model_serve_failed", [
             "error_class": .string("missing_extra"),
             "extra": .string("vision"),

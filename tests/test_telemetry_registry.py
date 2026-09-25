@@ -137,6 +137,27 @@ def test_optional_property_may_be_absent():
     }
 
 
+@pytest.mark.parametrize(
+    "error_class",
+    [
+        "invalid_config",
+        "tokenizer_load_failed",
+        "incompatible_weights",
+        "quantization_mismatch",
+    ],
+)
+def test_model_serve_failed_accepts_named_engine_start_errors(error_class):
+    assert reg.validate("model_serve_failed", {"error_class": error_class}) == {
+        "error_class": error_class
+    }
+
+
+def test_model_serve_failed_rejects_unknown_error_class():
+    assert (
+        reg.validate("model_serve_failed", {"error_class": "future_load_error"}) is None
+    )
+
+
 def test_missing_extra_property_is_closed_and_conditional():
     assert reg.validate(
         "model_serve_failed",

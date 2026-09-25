@@ -6,19 +6,35 @@ from __future__ import annotations
 import errno
 import http.client
 import json
+import sys
 import threading
 import urllib.error
 import uuid
 from datetime import datetime, timezone
 from http.server import BaseHTTPRequestHandler, HTTPServer
 from pathlib import Path
-from types import SimpleNamespace
+from types import ModuleType, SimpleNamespace
 
 import httpx
 import pytest
 import requests
 
 import rapid_mlx
+from rapid_mlx.model_load_errors import (
+    IncompatibleWeights,
+    InvalidModelConfig,
+    QuantizationMismatch,
+    TokenizerLoadFailed,
+    load_mlx_lm_checked,
+    load_model_checked,
+    load_tokenizer_checked,
+    load_weights_checked,
+    quantize_checked,
+    typed_quantization_boundary,
+    typed_weight_boundary,
+    validate_model_config_file,
+)
+from rapid_mlx.runtime.optional_runtime import OptionalRuntimeMissing
 from rapid_mlx.telemetry import (
     consent_runtime,
     envelope,
@@ -256,6 +272,14 @@ def test_model_type_fails_closed_on_bad_profile(monkeypatch):
 
 
 def _serve_exception(error_class):
+    typed = {
+        "invalid_config": InvalidModelConfig,
+        "tokenizer_load_failed": TokenizerLoadFailed,
+        "incompatible_weights": IncompatibleWeights,
+        "quantization_mismatch": QuantizationMismatch,
+    }
+    if error_class in typed:
+        return typed[error_class]("typed loader failure")
     if error_class == "insufficient_memory":
         return MemoryError()
     if error_class == "download_failed":
@@ -288,6 +312,10 @@ def _chain_serve_exception(inner, shape):
         "download_failed",
         "unsupported_architecture",
         "corrupt_weights",
+        "invalid_config",
+        "tokenizer_load_failed",
+        "incompatible_weights",
+        "quantization_mismatch",
         "other",
     ],
 )
@@ -318,6 +346,10 @@ def test_serve_error_class_ignores_implicit_context():
         "download_failed",
         "unsupported_architecture",
         "corrupt_weights",
+        "invalid_config",
+        "tokenizer_load_failed",
+        "incompatible_weights",
+        "quantization_mismatch",
         "other",
     ],
 )
@@ -393,6 +425,520 @@ def test_serve_error_class_stops_at_chain_bound():
 )
 def test_serve_error_class_preserves_existing_variants(exc, expected):
     assert model_events.serve_error_class(exc) == expected
+
+
+@pytest.mark.parametrize(
+    ("exc", "expected"),
+    [
+        (
+            ValueError(
+                "The checkpoint you are trying to load has model type `future_arch` "
+                "but Transformers does not recognize this architecture."
+            ),
+            "unsupported_architecture",
+        ),
+        (
+            RuntimeError("scoped_pymalloc(): could not allocate 4096 bytes of memory!"),
+            "insufficient_memory",
+        ),
+    ],
+)
+def test_serve_error_class_recognizes_engine_start_wording(exc, expected):
+    assert model_events.serve_error_class(exc) == expected
+
+
+def test_typed_quantization_beats_memory_wording():
+    typed = QuantizationMismatch(
+        "[quantized_matmul] out of memory while checking uint32 weights"
+    )
+    outer = RuntimeError("scoped_pymalloc(): could not allocate 4096 bytes")
+    outer.__cause__ = typed
+
+    assert model_events.serve_error_class(outer) == "quantization_mismatch"
+
+
+def test_could_not_allocate_is_not_a_generic_oom_marker():
+    exc = RuntimeError("plugin could not allocate tokenizer ID 7")
+
+    assert model_events.serve_error_class(exc) == "other"
+
+
+def test_invalid_config_boundary_is_classified(tmp_path, monkeypatch):
+    from rapid_mlx.utils import tokenizer
+
+    model_dir = tmp_path / "bad-config"
+    model_dir.mkdir()
+    (model_dir / "config.json").write_text('{"model_type":', encoding="utf-8")
+    monkeypatch.setattr(tokenizer, "_resolve_subfolder_checkpoint", lambda value: value)
+    monkeypatch.setattr(tokenizer, "_local_snapshot_if_cached", lambda value: value)
+    monkeypatch.setattr(tokenizer, "_resolve_model_path", lambda _value: None)
+
+    with pytest.raises(InvalidModelConfig) as raised:
+        tokenizer.load_model_with_fallback(str(model_dir))
+
+    assert isinstance(raised.value.__cause__, json.JSONDecodeError)
+    assert model_events.serve_error_class(raised.value) == "invalid_config"
+
+
+def test_config_boundary_handles_non_model_paths_and_invalid_shapes(tmp_path):
+    assert validate_model_config_file(tmp_path / "remote-repo-id") is None
+    empty_dir = tmp_path / "empty"
+    empty_dir.mkdir()
+    assert validate_model_config_file(empty_dir) is None
+
+    config_path = empty_dir / "config.json"
+    config_path.write_text("[]", encoding="utf-8")
+    with pytest.raises(InvalidModelConfig, match="top-level value"):
+        validate_model_config_file(empty_dir)
+
+    config_path.write_text(json.dumps({"model_type": ""}), encoding="utf-8")
+    with pytest.raises(InvalidModelConfig, match="non-empty string"):
+        validate_model_config_file(empty_dir)
+
+    config_path.write_text(json.dumps({"model_file": ""}), encoding="utf-8")
+    with pytest.raises(InvalidModelConfig, match="model_file must be"):
+        validate_model_config_file(empty_dir)
+
+
+def test_config_boundary_preserves_existing_typed_failure(tmp_path, monkeypatch):
+    model_dir = tmp_path / "typed-config"
+    model_dir.mkdir()
+    (model_dir / "config.json").write_text("{}", encoding="utf-8")
+    failure = InvalidModelConfig("already classified")
+    monkeypatch.setattr(json, "load", lambda _file: (_ for _ in ()).throw(failure))
+
+    with pytest.raises(InvalidModelConfig) as raised:
+        validate_model_config_file(model_dir)
+
+    assert raised.value is failure
+
+
+def test_tokenizer_load_boundary_is_classified():
+    def load_invalid_tokenizer():
+        raise ValueError("tokenizer.json has an invalid model section")
+
+    with pytest.raises(TokenizerLoadFailed) as raised:
+        load_tokenizer_checked(load_invalid_tokenizer)
+
+    assert isinstance(raised.value.__cause__, ValueError)
+    assert model_events.serve_error_class(raised.value) == "tokenizer_load_failed"
+
+
+def test_tokenizer_wrapper_classifies_local_file_failure():
+    missing = FileNotFoundError("tokenizer.json")
+
+    def load_missing_tokenizer():
+        raise missing
+
+    with pytest.raises(TokenizerLoadFailed) as raised:
+        load_tokenizer_checked(load_missing_tokenizer)
+
+    assert raised.value.__cause__ is missing
+    assert model_events.serve_error_class(raised.value) == "tokenizer_load_failed"
+
+
+@pytest.mark.parametrize(
+    "failure",
+    [
+        ModuleNotFoundError("missing runtime"),
+        OptionalRuntimeMissing(
+            extra="audio",
+            install_hint="pip install rapid-mlx[audio]",
+            detail="audio runtime is missing",
+            status="absent",
+        ),
+    ],
+)
+def test_tokenizer_wrapper_preserves_runtime_availability_failures(failure):
+    def fail():
+        raise failure
+
+    with pytest.raises(type(failure)) as raised:
+        load_tokenizer_checked(fail)
+
+    assert raised.value is failure
+
+
+def test_tokenizer_wrapper_preserves_remote_hub_failure():
+    from huggingface_hub.utils import RepositoryNotFoundError
+
+    response = httpx.Response(
+        404, request=httpx.Request("GET", "https://huggingface.co/org/missing")
+    )
+    failure = RepositoryNotFoundError("missing", response=response)
+
+    with pytest.raises(RepositoryNotFoundError) as raised:
+        load_tokenizer_checked(lambda: (_ for _ in ()).throw(failure))
+
+    assert raised.value is failure
+
+
+@pytest.mark.parametrize(
+    "boundary,failure",
+    [
+        (typed_weight_boundary, IncompatibleWeights("already typed")),
+        (typed_quantization_boundary, QuantizationMismatch("already typed")),
+    ],
+)
+def test_typed_model_boundaries_preserve_existing_failure(boundary, failure):
+    with pytest.raises(type(failure)) as raised, boundary():
+        raise failure
+
+    assert raised.value is failure
+
+
+def test_weight_load_boundary_is_classified():
+    class ShapeCheckingModel:
+        def load_weights(self, weights, *, strict):
+            assert strict is True
+            shape = dict(weights)["model.embed_tokens.weight"]["shape"]
+            if shape != (32, 16):
+                raise ValueError(f"expected shape (32, 16), got {shape}")
+
+    bad_weights = {"model.embed_tokens.weight": {"shape": (31, 16)}}
+    model = ShapeCheckingModel()
+
+    with pytest.raises(IncompatibleWeights) as raised:
+        load_weights_checked(model, bad_weights, strict=True)
+
+    assert isinstance(raised.value.__cause__, ValueError)
+    assert model_events.serve_error_class(raised.value) == "incompatible_weights"
+    load_weights_checked(
+        model,
+        {"model.embed_tokens.weight": {"shape": (32, 16)}},
+        strict=True,
+    )
+
+
+def test_quantization_boundary_is_classified():
+    def apply_quantization(config):
+        if (config["bits"], config["group_size"], config["dtype"]) != (
+            4,
+            64,
+            "uint32",
+        ):
+            raise ValueError("quantized weight metadata does not match the model")
+
+    with pytest.raises(QuantizationMismatch) as raised:
+        quantize_checked(
+            apply_quantization,
+            {"bits": 8, "group_size": 128, "dtype": "bfloat16"},
+        )
+
+    assert isinstance(raised.value.__cause__, ValueError)
+    assert model_events.serve_error_class(raised.value) == "quantization_mismatch"
+    assert (
+        quantize_checked(
+            lambda config: config["bits"],
+            {"bits": 4, "group_size": 64, "dtype": "uint32"},
+        )
+        == 4
+    )
+
+
+def test_generic_model_loader_types_quantization_boundary(tmp_path, monkeypatch):
+    model_dir = tmp_path / "bad-quantization"
+    model_dir.mkdir()
+    (model_dir / "config.json").write_text(
+        json.dumps({"model_type": "synthetic"}), encoding="utf-8"
+    )
+
+    nn = ModuleType("mlx.nn")
+
+    class Module:
+        def load_weights(self, *_args, **_kwargs):
+            return None
+
+    def quantize():
+        raise ValueError("group_size does not divide the weight shape")
+
+    nn.Module = Module
+    nn.quantize = quantize
+    mlx = ModuleType("mlx")
+    mlx.nn = nn
+    monkeypatch.setitem(sys.modules, "mlx", mlx)
+    monkeypatch.setitem(sys.modules, "mlx.nn", nn)
+
+    def loader(_model_path):
+        nn.quantize()
+
+    with pytest.raises(QuantizationMismatch) as raised:
+        load_model_checked(loader, model_dir)
+
+    assert model_events.serve_error_class(raised.value) == "quantization_mismatch"
+
+
+def test_generic_model_loader_preserves_unclassified_value_error(tmp_path):
+    model_dir = tmp_path / "unsupported-model"
+    model_dir.mkdir()
+    (model_dir / "config.json").write_text(
+        json.dumps({"model_type": "future_arch"}), encoding="utf-8"
+    )
+
+    def loader(_model_path):
+        raise ValueError("Model type future_arch not supported.")
+
+    with pytest.raises(ValueError, match="not supported") as raised:
+        load_model_checked(loader, model_dir)
+
+    assert model_events.serve_error_class(raised.value) == "unsupported_architecture"
+
+
+def test_generic_eager_loader_separates_tokenizer_boundary(tmp_path, monkeypatch):
+    model_dir = tmp_path / "generic-loader"
+    model_dir.mkdir()
+    (model_dir / "config.json").write_text(
+        json.dumps({"model_type": "synthetic"}), encoding="utf-8"
+    )
+    model = object()
+    tokenizer = object()
+    utils = ModuleType("mlx_lm.utils")
+    utils._download = lambda _name: (_ for _ in ()).throw(
+        AssertionError("local checkpoints must not be sent to the Hub downloader")
+    )
+    utils.load_model = lambda _path, **_kwargs: (model, {"eos_token_id": [1, 2]})
+
+    def load_tokenizer(_path, _config, *, eos_token_ids):
+        assert eos_token_ids == [1, 2]
+        return tokenizer
+
+    utils.load_tokenizer = load_tokenizer
+    mlx_lm = ModuleType("mlx_lm")
+    mlx_lm.utils = utils
+    monkeypatch.setitem(sys.modules, "mlx_lm", mlx_lm)
+    monkeypatch.setitem(sys.modules, "mlx_lm.utils", utils)
+
+    assert load_mlx_lm_checked(str(model_dir), {"legacy": False}) == (
+        model,
+        tokenizer,
+    )
+
+
+def test_generic_eager_loader_normalizes_missing_tokenizer_config(
+    tmp_path, monkeypatch
+):
+    model_dir = tmp_path / "generic-loader"
+    model_dir.mkdir()
+    (model_dir / "config.json").write_text(
+        json.dumps({"model_type": "synthetic"}), encoding="utf-8"
+    )
+    model = object()
+    tokenizer = object()
+    utils = ModuleType("mlx_lm.utils")
+    utils._download = lambda _name: model_dir
+    utils.load_model = lambda _path, **_kwargs: (model, {})
+
+    def load_tokenizer(_path, config, *, eos_token_ids):
+        assert config == {}
+        assert eos_token_ids is None
+        return tokenizer
+
+    utils.load_tokenizer = load_tokenizer
+    mlx_lm = ModuleType("mlx_lm")
+    mlx_lm.utils = utils
+    monkeypatch.setitem(sys.modules, "mlx_lm", mlx_lm)
+    monkeypatch.setitem(sys.modules, "mlx_lm.utils", utils)
+
+    assert load_mlx_lm_checked(str(model_dir)) == (model, tokenizer)
+
+
+def _prepare_generic_tokenizer_dispatch(monkeypatch):
+    from rapid_mlx.utils import tokenizer
+
+    mlx_lm = ModuleType("mlx_lm")
+    mlx_lm.load = lambda *_args, **_kwargs: None
+    monkeypatch.setitem(sys.modules, "mlx_lm", mlx_lm)
+    gemma = ModuleType("rapid_mlx.models.gemma4_text")
+    gemma.gemma4_load_plan = lambda _name: (None, False)
+    monkeypatch.setitem(sys.modules, "rapid_mlx.models.gemma4_text", gemma)
+    monkeypatch.setattr(tokenizer, "_register_vendored_archs", lambda: None)
+    monkeypatch.setattr(tokenizer, "_needs_tokenizer_fallback", lambda _name: False)
+    monkeypatch.setattr(tokenizer, "_is_vendored_arch_model", lambda _name: False)
+    monkeypatch.setattr(
+        tokenizer, "_neutralize_unbundled_template_types", lambda _name, cfg: cfg
+    )
+    return tokenizer
+
+
+def test_generic_tokenizer_dispatch_uses_typed_eager_loader(monkeypatch):
+    tokenizer = _prepare_generic_tokenizer_dispatch(monkeypatch)
+    model = object()
+    loaded_tokenizer = SimpleNamespace(chat_template="template")
+    monkeypatch.setattr(
+        tokenizer,
+        "load_mlx_lm_checked",
+        lambda *_args, **_kwargs: (model, loaded_tokenizer),
+    )
+    monkeypatch.setattr(tokenizer, "_try_inject_mtp_post_load", lambda *_args: None)
+    monkeypatch.setattr(
+        tokenizer, "augment_eos_token_ids_from_generation_config", lambda *_args: None
+    )
+    monkeypatch.setattr(tokenizer, "repair_byte_level_decoder", lambda *_args: None)
+
+    assert tokenizer._load_model_with_fallback_impl("org/model", {}) == (
+        model,
+        loaded_tokenizer,
+    )
+
+
+@pytest.mark.parametrize(
+    ("failure", "fallback_name"),
+    [
+        (
+            TokenizerLoadFailed("tokenizer failed"),
+            "tokenizer",
+        ),
+        (
+            IncompatibleWeights("weights failed"),
+            "weights",
+        ),
+    ],
+)
+def test_generic_tokenizer_dispatch_preserves_existing_fallbacks(
+    monkeypatch, failure, fallback_name
+):
+    tokenizer = _prepare_generic_tokenizer_dispatch(monkeypatch)
+    cause = ValueError(
+        "Tokenizer class is unavailable"
+        if fallback_name == "tokenizer"
+        else "Missing parameters in model"
+    )
+    failure.__cause__ = cause
+
+    def fail_load(*_args, **_kwargs):
+        raise failure
+
+    monkeypatch.setattr(tokenizer, "load_mlx_lm_checked", fail_load)
+    monkeypatch.setattr(
+        tokenizer,
+        "_load_with_tokenizer_fallback",
+        lambda *_args, **_kwargs: ("fallback-model", "fallback-tokenizer"),
+    )
+    monkeypatch.setattr(
+        tokenizer,
+        "_load_strict_false",
+        lambda *_args, **_kwargs: ("loose-model", "loose-tokenizer"),
+    )
+
+    expected = (
+        ("fallback-model", "fallback-tokenizer")
+        if fallback_name == "tokenizer"
+        else ("loose-model", "loose-tokenizer")
+    )
+    assert tokenizer._load_model_with_fallback_impl("org/model", {}) == expected
+
+
+def test_strict_false_loader_uses_typed_boundaries(tmp_path, monkeypatch):
+    from rapid_mlx.utils import tokenizer
+
+    (tmp_path / "config.json").write_text(
+        json.dumps({"model_type": "synthetic"}), encoding="utf-8"
+    )
+    model = object()
+    loaded_tokenizer = object()
+    utils = ModuleType("mlx_lm.utils")
+    utils.load_model = lambda _path, **_kwargs: (model, {"eos_token_id": 7})
+    utils.load_tokenizer = lambda *_args, **_kwargs: loaded_tokenizer
+    mlx_lm = ModuleType("mlx_lm")
+    mlx_lm.utils = utils
+    monkeypatch.setitem(sys.modules, "mlx_lm", mlx_lm)
+    monkeypatch.setitem(sys.modules, "mlx_lm.utils", utils)
+    monkeypatch.setattr(tokenizer, "_try_inject_mtp", lambda *_args: None)
+    monkeypatch.setattr(tokenizer, "_apply_chat_template_sidecar", lambda *_args: None)
+    monkeypatch.setattr(
+        tokenizer, "augment_eos_token_ids_from_generation_config", lambda *_args: None
+    )
+    monkeypatch.setattr(tokenizer, "repair_byte_level_decoder", lambda *_args: None)
+
+    assert tokenizer._load_strict_false(str(tmp_path), {}) == (
+        model,
+        loaded_tokenizer,
+    )
+
+
+def test_raw_tokenizer_fallback_uses_typed_boundaries(tmp_path, monkeypatch):
+    from rapid_mlx.utils import tokenizer
+
+    (tmp_path / "config.json").write_text(
+        json.dumps({"model_type": "synthetic"}), encoding="utf-8"
+    )
+    (tmp_path / "tokenizer.json").write_text("{}", encoding="utf-8")
+    model = object()
+    loaded_tokenizer = SimpleNamespace(chat_template=None)
+    utils = ModuleType("mlx_lm.utils")
+    utils.load_model = lambda _path, **_kwargs: (model, {})
+    mlx_lm = ModuleType("mlx_lm")
+    mlx_lm.utils = utils
+    monkeypatch.setitem(sys.modules, "mlx_lm", mlx_lm)
+    monkeypatch.setitem(sys.modules, "mlx_lm.utils", utils)
+    fp8 = ModuleType("rapid_mlx.fp8_repack")
+    fp8.is_fp8_block_checkpoint = lambda _path: False
+    fp8.load_fp8_model_online = lambda _path: None
+    monkeypatch.setitem(sys.modules, "rapid_mlx.fp8_repack", fp8)
+    tokenizers = ModuleType("tokenizers")
+    tokenizers.Tokenizer = SimpleNamespace(from_file=lambda _path: object())
+    monkeypatch.setitem(sys.modules, "tokenizers", tokenizers)
+    transformers = ModuleType("transformers")
+    tokenizer_kwargs = []
+
+    def build_tokenizer(**kwargs):
+        tokenizer_kwargs.append(kwargs)
+        return loaded_tokenizer
+
+    transformers.PreTrainedTokenizerFast = build_tokenizer
+    monkeypatch.setitem(sys.modules, "transformers", transformers)
+    monkeypatch.setattr(tokenizer, "_register_vendored_archs", lambda: None)
+    monkeypatch.setattr(
+        tokenizer,
+        "_deepseek_v4_quantization_override",
+        lambda *_args, **_kwargs: None,
+    )
+    monkeypatch.setattr(tokenizer, "_uses_rapid_owned_runtime", lambda _path: False)
+    monkeypatch.setattr(tokenizer, "_apply_chat_template_sidecar", lambda *_args: False)
+    monkeypatch.setattr(tokenizer, "_needs_tokenizer_fallback", lambda _name: False)
+    monkeypatch.setattr(tokenizer, "repair_byte_level_decoder", lambda *_args: None)
+    monkeypatch.setattr(
+        tokenizer, "augment_eos_token_ids_from_generation_config", lambda *_args: None
+    )
+
+    assert tokenizer._load_with_tokenizer_fallback(str(tmp_path)) == (
+        model,
+        loaded_tokenizer,
+    )
+
+    (tmp_path / "tokenizer_config.json").write_text(
+        json.dumps(
+            {
+                "bos_token": "<bos>",
+                "eos_token": {"content": "<eos>"},
+                "unk_token": "<unknown>",
+                "pad_token": "<padding>",
+                "chat_template": "{{ messages }}",
+            }
+        ),
+        encoding="utf-8",
+    )
+    assert tokenizer._load_with_tokenizer_fallback(str(tmp_path)) == (
+        model,
+        loaded_tokenizer,
+    )
+    assert tokenizer_kwargs[-1] == {
+        "tokenizer_object": tokenizer_kwargs[-1]["tokenizer_object"],
+        "bos_token": "<bos>",
+        "eos_token": "<eos>",
+        "unk_token": "<unknown>",
+        "pad_token": "<padding>",
+    }
+    assert loaded_tokenizer.chat_template == "{{ messages }}"
+
+    (tmp_path / "tokenizer_config.json").write_text("[]", encoding="utf-8")
+    with pytest.raises(TokenizerLoadFailed, match="must contain an object"):
+        tokenizer._load_with_tokenizer_fallback(str(tmp_path))
+
+    (tmp_path / "tokenizer_config.json").write_text("{broken", encoding="utf-8")
+    with pytest.raises(TokenizerLoadFailed) as raised:
+        tokenizer._load_with_tokenizer_fallback(str(tmp_path))
+    assert isinstance(raised.value.__cause__, json.JSONDecodeError)
 
 
 def test_serve_download_error_class():

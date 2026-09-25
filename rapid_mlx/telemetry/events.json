@@ -207,7 +207,9 @@
       "_about": "Design sec 1.3, model_serve_failed. Verbatim from the table.",
       "values": [
         "unsupported_architecture", "insufficient_memory",
-        "corrupt_weights", "download_failed", "missing_extra", "other"
+        "corrupt_weights", "download_failed", "missing_extra",
+        "invalid_config", "tokenizer_load_failed", "incompatible_weights",
+        "quantization_mismatch", "other"
       ]
     },
     "optional_extra": {
