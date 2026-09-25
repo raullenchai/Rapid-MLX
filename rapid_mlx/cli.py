@@ -600,7 +600,11 @@ def _resolve_serve_port(
     """
 
     if listen_fd is not None:
-        return _listen_fd_port(listen_fd)
+        try:
+            return _listen_fd_port(listen_fd)
+        except OSError as exc:
+            print(f"Invalid --listen-fd {listen_fd}: {exc}", file=sys.stderr)
+            raise SystemExit(2) from None
 
     if port is not None:
         _port_preflight_or_die(host, port, model=model)

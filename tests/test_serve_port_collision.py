@@ -265,6 +265,22 @@ def test_listen_fd_uses_bound_socket_port_and_keeps_fd_open():
         assert listener.getsockname()[1] == bound_port
 
 
+def test_resolve_listen_fd_reports_cli_error_without_traceback(monkeypatch, capsys):
+    monkeypatch.setattr(
+        cli,
+        "_listen_fd_port",
+        lambda _fd: (_ for _ in ()).throw(OSError("descriptor is closed")),
+    )
+
+    with pytest.raises(SystemExit) as caught:
+        cli._resolve_serve_port("127.0.0.1", None, model="model", listen_fd=17)
+
+    assert caught.value.code == 2
+    assert capsys.readouterr().err == (
+        "Invalid --listen-fd 17: descriptor is closed\n"
+    )
+
+
 def test_listen_fd_rejects_non_tcp_socket():
     left, right = socket.socketpair()
     with left, right, pytest.raises(OSError, match="not bound to a TCP socket"):
