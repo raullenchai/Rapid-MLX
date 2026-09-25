@@ -12,6 +12,26 @@ import pytest
 _HUB_GUIDANCE_CLI_MODULES: set[object] = set()
 
 
+@pytest.fixture
+def stub_serve_port_resolution(monkeypatch):
+    """Keep non-collision serve tests independent of host port availability."""
+    from rapid_mlx import cli
+
+    def resolve_requested_port(
+        _host,
+        port,
+        *,
+        model,
+        listen_fd=None,
+        scan_base=cli.DEFAULT_SERVE_PORT,
+        scan_count=cli.DEFAULT_SERVE_PORT_CANDIDATES,
+    ):
+        del model, listen_fd, scan_count
+        return scan_base if port is None else port
+
+    monkeypatch.setattr(cli, "_resolve_serve_port", resolve_requested_port)
+
+
 def _assert_no_uninjected_posthog_posts(calls: list[str]) -> None:
     """Check that the session transport guard observed no production calls."""
     assert calls == [], f"uninjected PostHog calls reached default_post: {calls!r}"

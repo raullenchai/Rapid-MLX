@@ -44,6 +44,7 @@ import pytest
 # sentinel that would reject the model before the mocked dispatch is reached.
 pytestmark = [
     pytest.mark.usefixtures("hub_online_env"),
+    pytest.mark.usefixtures("stub_serve_port_resolution"),
     pytest.mark.requires_mlx,
 ]
 

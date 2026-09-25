@@ -20,6 +20,7 @@ These tests pin the public CLI contract:
 
 from __future__ import annotations
 
+import socket
 import sys
 from types import ModuleType
 from unittest.mock import patch
@@ -194,13 +195,18 @@ def test_run_uvicorn_passes_fd_when_listen_fd_set(monkeypatch):
 
     monkeypatch.setattr(uvicorn, "run", fake_run)
 
-    ns = _minimal_serve_ns(listen_fd=7, port=9000, host="127.0.0.1")
-    sentinel_app = object()
-    cli._run_uvicorn(sentinel_app, ns, "info")
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as listener:
+        listener.bind(("127.0.0.1", 0))
+        listener.listen(1)
+        listener_fd = listener.fileno()
+        ns = _minimal_serve_ns(listen_fd=listener_fd, port=9000, host="127.0.0.1")
+        sentinel_app = object()
+        cli._run_uvicorn(sentinel_app, ns, "info")
 
     assert captured_kwargs.get("app") is sentinel_app
-    assert captured_kwargs.get("fd") == 7, (
-        f"expected fd=7 in uvicorn.run kwargs, got {captured_kwargs!r}"
+    assert captured_kwargs.get("fd") == listener_fd, (
+        "expected the inherited listener in uvicorn.run kwargs, "
+        f"got {captured_kwargs!r}"
     )
     assert "host" not in captured_kwargs, (
         f"host must NOT be passed when fd is set, got {captured_kwargs!r}"
@@ -241,6 +247,106 @@ def test_run_uvicorn_passes_host_port_when_listen_fd_unset(monkeypatch):
     assert captured_kwargs.get("timeout_keep_alive") == 30
 
 
+def _assert_unsupported_lane_rejects_before_bind(
+    monkeypatch,
+    capsys,
+    *,
+    lane: str,
+    speculative_config: str | None = None,
+    model: str | None = None,
+    assert_preflight_lifecycle: bool = False,
+) -> None:
+    """Drive the shared serve entry and prove no port resolution/bind follows."""
+
+    def unexpected_work(*_args, **_kwargs):
+        pytest.fail("unsupported --listen-fd lane continued toward model load/bind")
+
+    monkeypatch.setattr(cli, "_resolve_serve_port", unexpected_work)
+    monkeypatch.setattr(cli, "_ensure_model_downloaded", unexpected_work)
+    monkeypatch.setattr(cli, "_check_alias_min_memory", lambda *_args: None)
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as listener:
+        listener.bind(("127.0.0.1", 0))
+        listener.listen(1)
+        args = _minimal_serve_ns(listen_fd=listener.fileno())
+        if speculative_config is not None:
+            args.speculative_config = speculative_config
+        if model is not None:
+            args._original_alias = model
+            args.model = model
+        if assert_preflight_lifecycle:
+            from rapid_mlx.telemetry import server_start
+
+            events: list[tuple[str, str | None]] = []
+            monkeypatch.setattr(
+                "rapid_mlx.telemetry.track._upload_allowed", lambda: True
+            )
+            monkeypatch.setattr(
+                "rapid_mlx.telemetry.posthog_sender.install_atexit", lambda: None
+            )
+            monkeypatch.setattr(
+                server_start,
+                "_track",
+                lambda state, *, failure_stage=None: events.append(
+                    (state, failure_stage)
+                ),
+            )
+            server_start._reset_for_tests()
+            server_start.attempted(args.model, load_policy="eager")
+            server_start.set_failure_stage("preflight")
+            guarded_serve = cli._capture_start_failures(cli.serve_command)
+            try:
+                with pytest.raises(SystemExit) as excinfo:
+                    guarded_serve(args)
+            finally:
+                server_start._reset_for_tests()
+            assert events == [("attempted", None), ("failed", "preflight")]
+        else:
+            with pytest.raises(SystemExit) as excinfo:
+                cli.serve_command(args)
+
+    assert excinfo.value.code == 2
+    assert capsys.readouterr().err == (
+        f"--listen-fd is not supported with the {lane} lane; "
+        "omit --listen-fd or pass --host/--port.\n"
+    )
+
+
+def test_native_mtp_lane_rejects_listen_fd_before_second_bind(monkeypatch, capsys):
+    _assert_unsupported_lane_rejects_before_bind(
+        monkeypatch,
+        capsys,
+        lane="Native MTP",
+        speculative_config='{"method":"mtp","backend":"native"}',
+        assert_preflight_lifecycle=True,
+    )
+
+
+def test_dspark_k4_lane_rejects_listen_fd_before_second_bind(monkeypatch, capsys):
+    from rapid_mlx.models.deepseek_v41_native.artifacts import TARGET_REPO
+
+    _assert_unsupported_lane_rejects_before_bind(
+        monkeypatch, capsys, lane="DSpark K4", model=TARGET_REPO
+    )
+
+
+def test_dflash_lane_rejects_listen_fd_before_second_bind(monkeypatch, capsys):
+    _assert_unsupported_lane_rejects_before_bind(
+        monkeypatch,
+        capsys,
+        lane="DFlash",
+        speculative_config='{"method":"dflash","model":"drafter"}',
+    )
+
+
+def test_ddtree_lane_rejects_listen_fd_before_second_bind(monkeypatch, capsys):
+    _assert_unsupported_lane_rejects_before_bind(
+        monkeypatch,
+        capsys,
+        lane="DDTree",
+        speculative_config='{"method":"ddtree"}',
+    )
+
+
 @pytest.mark.requires_mlx
 def test_serve_command_hard_exits_immediately_after_uvicorn_returns(
     stub_heavy_serve_deps,
@@ -275,6 +381,33 @@ def test_serve_command_hard_exits_immediately_after_uvicorn_returns(
     )
 
 
+def test_explicit_port_preflight_precedes_model_download(
+    stub_heavy_serve_deps,
+):
+    """A busy listener must fail before a model download can begin."""
+
+    failure = SystemExit(1)
+    events: list[str] = []
+
+    def fail_model_download(_model):
+        events.append("download")
+
+    def resolve_port(*_args, **_kwargs):
+        events.append("port")
+        raise failure
+
+    stub_heavy_serve_deps.setattr(cli, "_ensure_model_downloaded", fail_model_download)
+    stub_heavy_serve_deps.setattr(cli, "_resolve_serve_port", resolve_port)
+
+    ns = _minimal_serve_ns(port=0)
+    with pytest.raises(SystemExit) as excinfo:
+        cli.serve_command(ns)
+
+    assert excinfo.value is failure
+    assert events == ["port"]
+    assert ns.port == 0
+
+
 @pytest.fixture
 def stub_heavy_serve_deps(monkeypatch):
     """Stub the heavyweight prologue of ``serve_command`` so a behavioral
@@ -301,6 +434,7 @@ def stub_heavy_serve_deps(monkeypatch):
     monkeypatch.setattr(cli, "_ensure_model_downloaded", lambda model: None)
     monkeypatch.setattr(cli, "_check_memory_capacity", lambda *a, **kw: None)
     monkeypatch.setattr(cli, "_check_disk_space", lambda *a, **kw: None)
+    monkeypatch.setattr(cli, "_listen_fd_port", lambda _fd: 8000)
     monkeypatch.setattr(server_mod, "configure_logging", lambda level: "info")
     monkeypatch.setattr(server_mod, "load_model", lambda *a, **kw: None)
     # ``serve_command`` calls ``server.configure_cors`` which does an
