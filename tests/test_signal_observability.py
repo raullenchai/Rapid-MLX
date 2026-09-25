@@ -1522,6 +1522,118 @@ def test_crash_file_scan_and_io_failures_are_inert(monkeypatch, tmp_path):
     so._rotate_crash_files(tmp_path)
 
 
+def test_acknowledged_inode_scan_tolerates_candidate_and_source_races(
+    monkeypatch, tmp_path
+):
+    from rapid_mlx import _signal_observability as so
+
+    crash = tmp_path / "crash-20260924T000000Z-99999.txt"
+    reported = tmp_path / "crash-20260924T000000Z-99999.reported.txt"
+    crash.write_text("crash", encoding="utf-8")
+    reported.write_text("reported", encoding="utf-8")
+    real_lstat = Path.lstat
+
+    with monkeypatch.context() as patch:
+        patch.setattr(
+            Path,
+            "lstat",
+            lambda path: (
+                (_ for _ in ()).throw(OSError("candidate disappeared"))
+                if path == reported
+                else real_lstat(path)
+            ),
+        )
+        assert so._has_acknowledged_inode(crash) is False
+
+    with monkeypatch.context() as patch:
+        patch.setattr(
+            Path,
+            "lstat",
+            lambda path: (
+                (_ for _ in ()).throw(OSError("source disappeared"))
+                if path == crash
+                else real_lstat(path)
+            ),
+        )
+        assert so._has_acknowledged_inode(crash) is False
+
+
+def test_windows_crash_directory_rejects_identity_swap(monkeypatch, tmp_path):
+    from rapid_mlx import _signal_observability as so
+
+    real = os.lstat(tmp_path)
+    stats = iter(
+        [
+            real,
+            SimpleNamespace(
+                st_mode=real.st_mode,
+                st_dev=real.st_dev,
+                st_ino=real.st_ino + 1,
+            ),
+        ]
+    )
+    monkeypatch.setattr(so.os, "name", "nt")
+    monkeypatch.setattr(so.os, "chmod", lambda *_args: None)
+    monkeypatch.setattr(so.os, "lstat", lambda _path: next(stats))
+
+    assert so._prepare_crash_logs_dir(tmp_path) is False
+
+
+def test_stderr_faulthandler_and_tee_reaper_defensive_paths(monkeypatch):
+    from rapid_mlx import _signal_observability as so
+
+    monkeypatch.setattr(so.sys, "stderr", None)
+    so._enable_stderr_faulthandler()
+
+    process = SimpleNamespace(
+        wait=lambda: (_ for _ in ()).throw(OSError("wait failed"))
+    )
+    so._reap_crash_tee(process)
+
+
+def test_crash_install_rejects_nonregular_sink(monkeypatch, tmp_path):
+    from rapid_mlx import _signal_observability as so
+
+    so._reset_for_tests()
+    monkeypatch.setenv("HOME", str(tmp_path))
+    monkeypatch.setattr(so, "_crash_logs_dir", lambda: tmp_path)
+    monkeypatch.setattr(so, "_prepare_crash_logs_dir", lambda _path: True)
+    monkeypatch.setattr(so, "_report_previous_crash", lambda _path: None)
+    monkeypatch.setattr(so, "_enable_stderr_faulthandler", lambda: None)
+    real_fstat = so.os.fstat
+    monkeypatch.setattr(
+        so.os,
+        "fstat",
+        lambda fd: SimpleNamespace(st_mode=stat.S_IFIFO, st_dev=1, st_ino=2),
+    )
+
+    so._install_crash_file()
+
+    monkeypatch.setattr(so.os, "fstat", real_fstat)
+    so._reset_for_tests()
+
+
+def test_crash_sink_rearm_rejects_replaced_path(monkeypatch, tmp_path):
+    from rapid_mlx import _signal_observability as so
+
+    so._reset_for_tests()
+    path = tmp_path / "crash.txt"
+    path.write_text("diagnostic", encoding="utf-8")
+    fd = os.open(path, os.O_WRONLY | os.O_APPEND)
+    current = os.fstat(fd)
+    so._crash_fd = fd
+    so._crash_fd_identity = (current.st_dev, current.st_ino)
+    so._crash_file_identity = (current.st_dev, current.st_ino + 1)
+    so._crash_path = path
+    so._crash_tee = SimpleNamespace(poll=lambda: 1)
+
+    try:
+        assert so._ensure_crash_sink_locked() is False
+    finally:
+        so._crash_tee = None
+        so._reset_for_tests()
+
+
 def test_crash_cleanup_and_failed_install_cleanup_errors_are_inert(
     monkeypatch, tmp_path
 ):

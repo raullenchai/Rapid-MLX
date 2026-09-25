@@ -850,6 +850,85 @@ def test_state_dir_and_marker_cleanup_defensive_races(monkeypatch, tmp_path):
         assert marker.exists()
 
 
+def test_windows_state_directory_rejects_identity_swap(monkeypatch, tmp_path):
+    state = tmp_path / "state"
+    state.mkdir()
+    real = os.lstat(state)
+    stats = iter(
+        [
+            real,
+            SimpleNamespace(
+                st_mode=real.st_mode,
+                st_dev=real.st_dev,
+                st_ino=real.st_ino + 1,
+            ),
+        ]
+    )
+    monkeypatch.setattr(server_start.os, "name", "nt")
+    monkeypatch.setattr(server_start.os, "chmod", lambda *_args: None)
+    monkeypatch.setattr(server_start.os, "lstat", lambda _path: next(stats))
+
+    assert server_start._prepare_state_dir(state) is False
+
+
+def test_atomic_marker_windows_return_and_directory_fsync_failure(
+    monkeypatch, tmp_path
+):
+    marker = tmp_path / "serve-inflight-123.json"
+    windows_tmp = tmp_path / ".windows.tmp"
+    fd = os.open(windows_tmp, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+    monkeypatch.setattr(
+        server_start.tempfile,
+        "mkstemp",
+        lambda **_kwargs: (fd, str(windows_tmp)),
+    )
+    monkeypatch.setattr(server_start, "Path", lambda _value: windows_tmp)
+    monkeypatch.setattr(server_start.os, "name", "nt")
+    snapshot = server_start._atomic_write_marker(marker)
+    assert snapshot == server_start._marker_snapshot(marker)
+
+    monkeypatch.undo()
+    marker.unlink()
+    real_fsync = os.fsync
+    calls = 0
+
+    def fail_directory_fsync(open_fd):
+        nonlocal calls
+        calls += 1
+        if calls == 2:
+            raise OSError("directory fsync failed")
+        return real_fsync(open_fd)
+
+    monkeypatch.setattr(server_start.os, "fsync", fail_directory_fsync)
+    with pytest.raises(OSError, match="directory fsync failed"):
+        server_start._atomic_write_marker(marker)
+    assert not marker.exists()
+
+
+def test_mark_terminal_ignores_replaced_marker_and_logs_write_failure(
+    monkeypatch, tmp_path, caplog
+):
+    caplog.set_level("DEBUG")
+    marker = tmp_path / "serve-inflight-123.json"
+    server_start._owns_inflight_marker = False
+    server_start._mark_inflight_terminal()
+    server_start._owns_inflight_marker = True
+    server_start._owned_inflight_snapshot = (1, 2)
+    monkeypatch.setattr(server_start, "_marker_path", lambda: marker)
+    monkeypatch.setattr(server_start, "_marker_snapshot", lambda _path: (1, 3))
+    server_start._mark_inflight_terminal()
+
+    monkeypatch.setattr(server_start, "_marker_snapshot", lambda _path: (1, 2))
+    monkeypatch.setattr(
+        server_start,
+        "_atomic_write_marker",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(OSError("write failed")),
+    )
+    server_start._mark_inflight_terminal()
+
+    assert "could not mark serve startup terminal" in caplog.text
+
+
 def test_pid_reuse_does_not_hide_pre_reboot_marker(monkeypatch, tmp_path):
     monkeypatch.setenv("HOME", str(tmp_path))
     marker = server_start._marker_path()
