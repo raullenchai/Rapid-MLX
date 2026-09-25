@@ -135,11 +135,16 @@ import sys
 
 signal.signal(signal.SIGPIPE, signal.SIG_IGN)
 crash_fd = int(sys.argv[1])
+durable_sink_ok = True
 while chunk := os.read(0, 65536):
-    pending = chunk
-    while pending:
-        pending = pending[os.write(crash_fd, pending):]
-    os.fsync(crash_fd)
+    if durable_sink_ok:
+        try:
+            pending = chunk
+            while pending:
+                pending = pending[os.write(crash_fd, pending):]
+            os.fsync(crash_fd)
+        except OSError:
+            durable_sink_ok = False
     try:
         pending = chunk
         while pending:
@@ -184,6 +189,27 @@ def _crash_files(log_dir: Path) -> list[Path]:
 
 def _is_acknowledged(name: str) -> bool:
     return _ACKNOWLEDGED_CRASH_FILE.search(name) is not None
+
+
+def _has_acknowledged_inode(path: Path) -> bool:
+    """Return whether an acknowledged hard link already names ``path``."""
+
+    try:
+        source = path.lstat()
+        candidates = path.parent.glob(f"{path.stem}.reported*{path.suffix}")
+        for candidate in candidates:
+            try:
+                acknowledged = candidate.lstat()
+            except OSError:
+                continue
+            if (acknowledged.st_dev, acknowledged.st_ino) == (
+                source.st_dev,
+                source.st_ino,
+            ):
+                return True
+    except OSError:
+        return False
+    return False
 
 
 def _crash_file_pid(path: Path) -> int | None:
@@ -286,6 +312,8 @@ def _prepare_crash_logs_dir(path: Path) -> bool:
 def _report_previous_crash(log_dir: Path) -> None:
     for path in _crash_files(log_dir):
         if _is_acknowledged(path.name):
+            continue
+        if _has_acknowledged_inode(path):
             continue
         if _crash_file_is_live(path, log_dir):
             continue

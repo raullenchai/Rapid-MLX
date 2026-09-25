@@ -396,6 +396,47 @@ def test_crash_file_is_private_rotated_and_previous_crash_reported_once(
         so._reset_for_tests()
 
 
+def test_acknowledged_hard_link_suppresses_repeat_after_unlink_failure(
+    monkeypatch, tmp_path, capsys
+):
+    from rapid_mlx import _signal_observability as so
+
+    crash = tmp_path / "crash-20260924T000000Z-99999999.txt"
+    crash.write_text("fatal traceback\n", encoding="utf-8")
+    real_unlink = Path.unlink
+
+    def fail_original_unlink(path, *args, **kwargs):
+        if path == crash:
+            raise PermissionError("simulated unlink failure")
+        return real_unlink(path, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "unlink", fail_original_unlink)
+
+    so._report_previous_crash(tmp_path)
+    first = capsys.readouterr().err
+    so._report_previous_crash(tmp_path)
+    second = capsys.readouterr().err
+
+    assert "Previous run crashed" in first
+    assert second == ""
+    assert crash.exists()
+    assert any(".reported" in path.name for path in tmp_path.iterdir())
+
+
+def test_tee_keeps_stderr_mirror_when_durable_sink_fails():
+    from rapid_mlx import _signal_observability as so
+
+    result = subprocess.run(
+        [sys.executable, "-c", so._CRASH_TEE_SCRIPT, "999999"],
+        input=b"fatal traceback\nsecond chunk\n",
+        capture_output=True,
+        check=False,
+    )
+
+    assert result.returncode == 0
+    assert result.stderr == b"fatal traceback\nsecond chunk\n"
+
+
 def test_rotation_never_unlinks_live_process_crash_files(monkeypatch, tmp_path):
     from rapid_mlx import _signal_observability as so
 
