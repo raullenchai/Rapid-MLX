@@ -30,11 +30,11 @@ class TokenizerLoadFailed(RuntimeError):  # noqa: N818 - domain name is user-fac
     """The checkpoint tokenizer assets or configuration cannot be loaded."""
 
 
-class IncompatibleWeights(RuntimeError):  # noqa: N818 - domain name is user-facing
+class IncompatibleWeights(ValueError):  # noqa: N818 - domain name is user-facing
     """Checkpoint parameter names or shapes do not match the model."""
 
 
-class QuantizationMismatch(RuntimeError):  # noqa: N818 - domain name is user-facing
+class QuantizationMismatch(ValueError):  # noqa: N818 - domain name is user-facing
     """Checkpoint quantization metadata and tensors are incompatible."""
 
 

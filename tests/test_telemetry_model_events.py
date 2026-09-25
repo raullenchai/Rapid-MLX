@@ -461,6 +461,18 @@ def test_typed_quantization_beats_memory_wording():
     assert model_events.serve_error_class(outer) == "quantization_mismatch"
 
 
+@pytest.mark.parametrize(
+    "failure_type", [InvalidModelConfig, IncompatibleWeights, QuantizationMismatch]
+)
+def test_value_error_load_failures_remain_value_error_compatible(failure_type):
+    failure = failure_type("load failed")
+
+    with pytest.raises(ValueError) as raised:
+        raise failure
+
+    assert raised.value is failure
+
+
 def test_could_not_allocate_is_not_a_generic_oom_marker():
     exc = RuntimeError("plugin could not allocate tokenizer ID 7")
 
