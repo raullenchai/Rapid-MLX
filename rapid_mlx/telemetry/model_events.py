@@ -192,6 +192,8 @@ def serve_error_class(exc: BaseException) -> str:
         # wording; existing typed and textual categories remain ordered by the
         # exception that callers actually observed.
         for current in chain:
+            if classify_engine_abort(current) == ENGINE_ABORT_CODE_INSUFFICIENT_MEMORY:
+                return "insufficient_memory"
             if isinstance(current, (HfHubHTTPError, RepositoryNotFoundError)):
                 return "download_failed"
             # A missing local/Hub shard is an availability failure, not evidence that
@@ -212,8 +214,6 @@ def serve_error_class(exc: BaseException) -> str:
                     return "unsupported_architecture"
 
             text = _exception_text(current)
-            if classify_engine_abort(current) == ENGINE_ABORT_CODE_INSUFFICIENT_MEMORY:
-                return "insufficient_memory"
             if isinstance(current, ValueError):
                 # mlx-lm/utils.py::_get_classes translates the module import failure
                 # to exactly ``ValueError: Model type <X> not supported.``.

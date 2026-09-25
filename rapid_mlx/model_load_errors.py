@@ -94,10 +94,17 @@ def load_tokenizer_checked(loader: Callable[..., _T], *args: Any, **kwargs: Any)
         # Preserve remote resolution/download failures for the existing Hub
         # error path. Local tokenizer assets instead belong to this boundary.
         raise
+    except (
+        OptionalRuntimeMissing,
+        InvalidModelConfig,
+        TokenizerLoadFailed,
+        IncompatibleWeights,
+        QuantizationMismatch,
+        ModuleNotFoundError,
+    ):
+        raise
     except (OSError, ImportError, TypeError, ValueError) as exc:
         raise TokenizerLoadFailed(f"Tokenizer loading failed: {exc}") from exc
-    except _TYPED_LOAD_FAILURES:
-        raise
 
 
 @contextmanager

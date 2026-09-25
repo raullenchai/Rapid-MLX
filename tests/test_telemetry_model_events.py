@@ -32,6 +32,7 @@ from rapid_mlx.model_load_errors import (
     quantize_checked,
     validate_model_config_file,
 )
+from rapid_mlx.runtime.optional_runtime import OptionalRuntimeMissing
 from rapid_mlx.telemetry import (
     consent_runtime,
     envelope,
@@ -515,6 +516,28 @@ def test_tokenizer_wrapper_classifies_local_file_failure():
 
     assert raised.value.__cause__ is missing
     assert model_events.serve_error_class(raised.value) == "tokenizer_load_failed"
+
+
+@pytest.mark.parametrize(
+    "failure",
+    [
+        ModuleNotFoundError("missing runtime"),
+        OptionalRuntimeMissing(
+            extra="audio",
+            install_hint="pip install rapid-mlx[audio]",
+            detail="audio runtime is missing",
+            status="absent",
+        ),
+    ],
+)
+def test_tokenizer_wrapper_preserves_runtime_availability_failures(failure):
+    def fail():
+        raise failure
+
+    with pytest.raises(type(failure)) as raised:
+        load_tokenizer_checked(fail)
+
+    assert raised.value is failure
 
 
 def test_weight_load_boundary_is_classified():
