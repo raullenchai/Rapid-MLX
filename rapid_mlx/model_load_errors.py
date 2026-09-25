@@ -72,7 +72,11 @@ def validate_model_config_file(model_path: str | Path) -> dict[str, Any] | None:
             config = json.load(config_file)
         if not isinstance(config, dict):
             raise ValueError("the top-level value must be an object")
-        if config.get("model_file") is None:
+        model_file = config.get("model_file")
+        if model_file is not None:
+            if not isinstance(model_file, str) or not model_file:
+                raise ValueError("model_file must be a non-empty string when present")
+        else:
             model_type = config["model_type"]
             if not isinstance(model_type, str) or not model_type:
                 raise ValueError("model_type must be a non-empty string")

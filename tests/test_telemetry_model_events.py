@@ -493,6 +493,10 @@ def test_config_boundary_handles_non_model_paths_and_invalid_shapes(tmp_path):
     with pytest.raises(InvalidModelConfig, match="non-empty string"):
         validate_model_config_file(empty_dir)
 
+    config_path.write_text(json.dumps({"model_file": ""}), encoding="utf-8")
+    with pytest.raises(InvalidModelConfig, match="model_file must be"):
+        validate_model_config_file(empty_dir)
+
 
 def test_tokenizer_load_boundary_is_classified():
     def load_invalid_tokenizer():
@@ -852,6 +856,11 @@ def test_raw_tokenizer_fallback_uses_typed_boundaries(tmp_path, monkeypatch):
         model,
         loaded_tokenizer,
     )
+
+    (tmp_path / "tokenizer_config.json").write_text("{broken", encoding="utf-8")
+    with pytest.raises(TokenizerLoadFailed) as raised:
+        tokenizer._load_with_tokenizer_fallback(str(tmp_path))
+    assert isinstance(raised.value.__cause__, json.JSONDecodeError)
 
 
 def test_serve_download_error_class():

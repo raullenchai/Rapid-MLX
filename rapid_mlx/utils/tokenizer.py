@@ -2051,13 +2051,21 @@ def _load_with_tokenizer_fallback(
         chat_template = None
 
         if tokenizer_config_path.exists():
-            with open(tokenizer_config_path) as f:
-                config = json.load(f)
-                bos_token = _special_token_text(config.get("bos_token"), bos_token)
-                eos_token = _special_token_text(config.get("eos_token"), eos_token)
-                unk_token = _special_token_text(config.get("unk_token"), unk_token)
-                pad_token = _special_token_text(config.get("pad_token"), pad_token)
-                chat_template = config.get("chat_template")
+            def read_tokenizer_config(path: Path) -> dict:
+                with path.open(encoding="utf-8") as config_file:
+                    value = json.load(config_file)
+                if not isinstance(value, dict):
+                    raise ValueError("tokenizer_config.json must contain an object")
+                return value
+
+            config = load_tokenizer_checked(
+                read_tokenizer_config, tokenizer_config_path
+            )
+            bos_token = _special_token_text(config.get("bos_token"), bos_token)
+            eos_token = _special_token_text(config.get("eos_token"), eos_token)
+            unk_token = _special_token_text(config.get("unk_token"), unk_token)
+            pad_token = _special_token_text(config.get("pad_token"), pad_token)
+            chat_template = config.get("chat_template")
 
         tokenizer = load_tokenizer_checked(
             PreTrainedTokenizerFast,
