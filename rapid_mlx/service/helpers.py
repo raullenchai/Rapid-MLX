@@ -2669,6 +2669,50 @@ def build_extended_sampling_kwargs(request) -> dict:
     return kwargs
 
 
+def reasoning_stop_scope_kwargs(engine: Any, request: Any) -> dict:
+    """Scope user ``stop`` strings to the answer of a ``<think>`` model.
+
+    Returns ``{"reasoning_stop_scope": scope}`` for a chat-shaped request
+    that sets ``stop`` while a ``<think>``-tag reasoning parser is
+    configured, and ``{}`` otherwise. The schedulers then match stops only
+    after the reasoning close marker, so a stop string the model writes
+    while reasoning no longer ends the request with empty ``content``
+    (the ``<think>`` counterpart of the harmony final-channel scoping in
+    #1049).
+
+    Whether generation starts inside the reasoning block comes from
+    ``_should_start_in_thinking``, the predicate the routes already use to
+    classify streamed text as reasoning, so stop matching and the
+    reasoning/content split agree on where the answer begins.
+    """
+    if not getattr(request, "stop", None):
+        return {}
+    cfg = get_config()
+    reasoning_parser = getattr(cfg, "reasoning_parser", None)
+    if reasoning_parser is None:
+        return {}
+    from ..reasoning.think_stop import build_reasoning_stop_scope
+
+    chat_template = ""
+    tokenizer = getattr(engine, "tokenizer", None)
+    if tokenizer is not None and hasattr(tokenizer, "chat_template"):
+        chat_template = tokenizer.chat_template or ""
+    starts_in_reasoning = _should_start_in_thinking(
+        chat_template,
+        _resolve_enable_thinking(request),
+        unconditional=bool(
+            getattr(reasoning_parser, "implicit_reasoning_until_close", False)
+        ),
+        tools_requested=bool(getattr(request, "tools", None)),
+    )
+    scope = build_reasoning_stop_scope(
+        reasoning_parser, starts_in_reasoning=starts_in_reasoning
+    )
+    if scope is None:
+        return {}
+    return {"reasoning_stop_scope": scope}
+
+
 # ── Usage / logprobs ───────────────────────────────────────────────
 
 

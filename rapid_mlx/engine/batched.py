@@ -160,6 +160,7 @@ _LANE_PARITY_SAMPLING_KEYS = (
     "repetition_penalty",
     "presence_penalty",
     "frequency_penalty",
+    "reasoning_stop_scope",
 )
 _TEXT_ONLY_SAMPLING_KEYS = ("top_k", "min_p", "seed")
 _LANE_PARITY_PROCESSOR_KEYS = (

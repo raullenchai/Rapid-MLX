@@ -9072,11 +9072,25 @@ class Scheduler:
                 # that appears anywhere in ``decoded_so_far`` wins) so
                 # this change is a strict superset for harmony models
                 # and a no-op for everyone else.
+                # ``<think>``-style reasoning models have the same
+                # problem: the route attaches a ``reasoning_stop_scope``
+                # when a ``<think>`` reasoning parser is configured, and
+                # stops then match only the answer after the reasoning
+                # close. Requests without a scope keep the raw match.
                 stop_match: tuple[str, int] | None = None
+                reasoning_stop_scope = getattr(
+                    request.sampling_params, "reasoning_stop_scope", None
+                )
                 if self._is_harmony_family:
                     from .reasoning.harmony_stop import find_stop_in_final_channel
 
                     stop_match = find_stop_in_final_channel(decoded_so_far, stop_params)
+                elif reasoning_stop_scope is not None:
+                    from .reasoning.think_stop import find_stop_in_answer
+
+                    stop_match = find_stop_in_answer(
+                        decoded_so_far, stop_params, reasoning_stop_scope
+                    )
                 else:
                     for stop_str in stop_params:
                         if stop_str and stop_str in decoded_so_far:
