@@ -132,6 +132,21 @@ struct TelemetryRegistryTests {
                 ]
             ) == nil)
         }
+        let attempted = try #require(registry.validate(
+            "server_start_state",
+            [
+                "state": .string("attempted"),
+                "previous_run_unterminated": .bool(true)
+            ]
+        ))
+        #expect(attempted["previous_run_unterminated"] == .bool(true))
+        #expect(registry.validate(
+            "server_start_state",
+            [
+                "state": .string("ready"),
+                "previous_run_unterminated": .bool(true)
+            ]
+        ) == nil)
     }
 
     @Test("an unknown event name is dropped")

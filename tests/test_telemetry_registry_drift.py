@@ -202,7 +202,13 @@ def test_server_start_state_contract_is_exact(registry):
         "bind",
     ]
     props = _specs(registry["events"]["server_start_state"]["props"])
-    assert set(props) == {"state", "model_type", "load_policy", "failure_stage"}
+    assert set(props) == {
+        "state",
+        "model_type",
+        "load_policy",
+        "previous_run_unterminated",
+        "failure_stage",
+    }
     assert props["state"] == {
         "kind": "enum",
         "enum": "server_start_state",
@@ -213,6 +219,11 @@ def test_server_start_state_contract_is_exact(registry):
         "enum": "failure_stage",
         "required": False,
         "only_when": {"state": ["failed"]},
+    }
+    assert props["previous_run_unterminated"] == {
+        "kind": "bool",
+        "required": False,
+        "only_when": {"state": ["attempted"]},
     }
 
 

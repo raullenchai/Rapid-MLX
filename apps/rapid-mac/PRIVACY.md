@@ -85,6 +85,10 @@ service:
     buckets for token counts, time to first token, and decode speed.
   * Closed-set error categories and non-reversible stack fingerprints; no
     exception message or raw traceback.
+  * Whether the preceding server start ended without reporting ready or failed.
+    The local marker's process ID, process creation time, system boot time, and
+    app version stay on the device; local crash-file contents and paths are
+    never sent.
   * For a failed model serve caused by a missing optional runtime, the closed
     extra name (`vision`, `video`, `audio`, or `image`).
 

@@ -392,6 +392,11 @@
         "state": {"kind": "enum", "enum": "server_start_state", "required": true},
         "model_type": {"kind": "enum", "enum": "model_type", "required": false},
         "load_policy": {"kind": "enum", "enum": "load_policy", "required": false},
+        "previous_run_unterminated": {
+          "kind": "bool",
+          "required": false,
+          "only_when": {"state": ["attempted"]}
+        },
         "failure_stage": {
           "kind": "enum",
           "enum": "failure_stage",

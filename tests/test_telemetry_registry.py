@@ -190,6 +190,20 @@ def test_conditional_property_rejects_event_when_condition_is_false(state):
     )
 
 
+def test_previous_run_unterminated_is_attempted_only():
+    assert reg.validate(
+        "server_start_state",
+        {"state": "attempted", "previous_run_unterminated": True},
+    ) == {"state": "attempted", "previous_run_unterminated": True}
+    assert (
+        reg.validate(
+            "server_start_state",
+            {"state": "ready", "previous_run_unterminated": True},
+        )
+        is None
+    )
+
+
 def test_malformed_conditional_property_fails_closed():
     loaded = reg.load_registry()
     assert (
