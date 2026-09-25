@@ -223,7 +223,7 @@ def load_mlx_lm_checked(
     tokenizer = load_tokenizer_checked(
         load_tokenizer,
         model_path,
-        tokenizer_config,
+        tokenizer_config or {},
         eos_token_ids=config.get("eos_token_id"),
     )
     return model, tokenizer

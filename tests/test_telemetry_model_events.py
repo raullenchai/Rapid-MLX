@@ -644,6 +644,34 @@ def test_generic_eager_loader_separates_tokenizer_boundary(tmp_path, monkeypatch
     )
 
 
+def test_generic_eager_loader_normalizes_missing_tokenizer_config(
+    tmp_path, monkeypatch
+):
+    model_dir = tmp_path / "generic-loader"
+    model_dir.mkdir()
+    (model_dir / "config.json").write_text(
+        json.dumps({"model_type": "synthetic"}), encoding="utf-8"
+    )
+    model = object()
+    tokenizer = object()
+    utils = ModuleType("mlx_lm.utils")
+    utils._download = lambda _name: model_dir
+    utils.load_model = lambda _path, **_kwargs: (model, {})
+
+    def load_tokenizer(_path, config, *, eos_token_ids):
+        assert config == {}
+        assert eos_token_ids is None
+        return tokenizer
+
+    utils.load_tokenizer = load_tokenizer
+    mlx_lm = ModuleType("mlx_lm")
+    mlx_lm.utils = utils
+    monkeypatch.setitem(sys.modules, "mlx_lm", mlx_lm)
+    monkeypatch.setitem(sys.modules, "mlx_lm.utils", utils)
+
+    assert load_mlx_lm_checked(str(model_dir)) == (model, tokenizer)
+
+
 def _prepare_generic_tokenizer_dispatch(monkeypatch):
     from rapid_mlx.utils import tokenizer
 
