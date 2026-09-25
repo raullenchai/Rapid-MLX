@@ -561,6 +561,14 @@ def test_windows_without_psutil_identifies_current_process(monkeypatch, tmp_path
         identity._CURRENT_PROCESS_CREATE_TIME
     )
 
+    stale = {
+        "pid": os.getpid(),
+        "create_time": identity._CURRENT_PROCESS_CREATE_TIME - 10.0,
+        "boot_time": 0.0,
+        "app_version": "0.15.1",
+    }
+    assert identity.is_same_process(stale) is False
+
 
 def test_process_identity_import_without_psutil(monkeypatch):
     from rapid_mlx import _process_identity as identity

@@ -129,7 +129,14 @@ def is_same_process(marker: object) -> bool:
         return False
     if psutil is None:
         if sys.platform == "win32":
-            return True
+            if expected.pid != os.getpid():
+                return True
+            return math.isclose(
+                expected.create_time,
+                _CURRENT_PROCESS_CREATE_TIME,
+                rel_tol=0.0,
+                abs_tol=0.01,
+            )
         return process_identity(expected.pid) is not None
     try:
         current = process_identity(expected.pid)
