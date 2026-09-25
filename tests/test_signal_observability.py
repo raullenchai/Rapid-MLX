@@ -1248,9 +1248,7 @@ def test_crash_log_directory_inode_swap_and_io_failure_are_refused(
         assert so._prepare_crash_logs_dir(log_dir) is False
 
 
-def test_crash_log_directory_uses_windows_compatible_validation(
-    monkeypatch, tmp_path
-):
+def test_crash_log_directory_uses_windows_compatible_validation(monkeypatch, tmp_path):
     from rapid_mlx import _signal_observability as so
 
     log_dir = tmp_path / "logs"
@@ -1377,6 +1375,7 @@ def test_stuck_tee_is_killed_and_reaped(monkeypatch):
             self.killed = True
 
     process = StuckProcess()
+
     class ImmediateThread:
         def __init__(self, *, target, args, **_kwargs):
             self.target = target

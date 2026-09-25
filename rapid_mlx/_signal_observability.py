@@ -608,10 +608,14 @@ def _ensure_crash_sink_locked() -> bool:
             flags = os.O_WRONLY | os.O_APPEND | getattr(os, "O_NOFOLLOW", 0)
             new_fd = os.open(_crash_path, flags)
             new_stat = os.fstat(new_fd)
-            if not stat.S_ISREG(new_stat.st_mode) or (
-                new_stat.st_dev,
-                new_stat.st_ino,
-            ) != _crash_file_identity:
+            if (
+                not stat.S_ISREG(new_stat.st_mode)
+                or (
+                    new_stat.st_dev,
+                    new_stat.st_ino,
+                )
+                != _crash_file_identity
+            ):
                 raise OSError("crash file path no longer identifies the installed sink")
             _enable_faulthandler(new_fd)
             _crash_fd = new_fd
