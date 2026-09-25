@@ -8,9 +8,16 @@ exception types and never sends these messages.
 from __future__ import annotations
 
 import json
-from collections.abc import Callable, Mapping, Sequence
+from collections.abc import Callable, Iterator, Mapping, Sequence
+from contextlib import contextmanager
+from contextvars import ContextVar
+from functools import wraps
 from pathlib import Path
 from typing import Any, TypeVar
+
+from huggingface_hub.errors import HfHubHTTPError, RepositoryNotFoundError
+
+from .runtime.optional_runtime import OptionalRuntimeMissing
 
 _T = TypeVar("_T")
 
@@ -29,6 +36,22 @@ class IncompatibleWeights(RuntimeError):  # noqa: N818 - domain name is user-fac
 
 class QuantizationMismatch(RuntimeError):  # noqa: N818 - domain name is user-facing
     """Checkpoint quantization metadata and tensors are incompatible."""
+
+
+_TYPED_LOAD_FAILURES = (
+    OptionalRuntimeMissing,
+    InvalidModelConfig,
+    TokenizerLoadFailed,
+    IncompatibleWeights,
+    QuantizationMismatch,
+    HfHubHTTPError,
+    RepositoryNotFoundError,
+    FileNotFoundError,
+    ModuleNotFoundError,
+)
+_MLX_LOAD_BOUNDARIES_ACTIVE: ContextVar[bool] = ContextVar(
+    "mlx_load_boundaries_active", default=False
+)
 
 
 def validate_model_config_file(model_path: str | Path) -> dict[str, Any] | None:
@@ -53,6 +76,8 @@ def validate_model_config_file(model_path: str | Path) -> dict[str, Any] | None:
             model_type = config["model_type"]
             if not isinstance(model_type, str) or not model_type:
                 raise ValueError("model_type must be a non-empty string")
+    except _TYPED_LOAD_FAILURES:
+        raise
     except (KeyError, ValueError) as exc:
         raise InvalidModelConfig(
             f"Invalid model config at {config_path}: {exc}"
@@ -65,8 +90,36 @@ def load_tokenizer_checked(loader: Callable[..., _T], *args: Any, **kwargs: Any)
 
     try:
         return loader(*args, **kwargs)
-    except (FileNotFoundError, ImportError, TypeError, ValueError) as exc:
+    except _TYPED_LOAD_FAILURES:
+        raise
+    except (ImportError, TypeError, ValueError) as exc:
         raise TokenizerLoadFailed(f"Tokenizer loading failed: {exc}") from exc
+
+
+@contextmanager
+def typed_weight_boundary() -> Iterator[None]:
+    """Type only MLX's documented ``load_weights`` ``ValueError`` failures."""
+
+    try:
+        yield
+    except _TYPED_LOAD_FAILURES:
+        raise
+    except ValueError as exc:
+        raise IncompatibleWeights(f"Model weights are incompatible: {exc}") from exc
+
+
+@contextmanager
+def typed_quantization_boundary() -> Iterator[None]:
+    """Type only MLX quantization ``ValueError`` failures."""
+
+    try:
+        yield
+    except _TYPED_LOAD_FAILURES:
+        raise
+    except ValueError as exc:
+        raise QuantizationMismatch(
+            f"Model quantization is incompatible: {exc}"
+        ) from exc
 
 
 def load_weights_checked(
@@ -78,30 +131,62 @@ def load_weights_checked(
     """Apply checkpoint weights while naming parameter and shape failures."""
 
     items = list(weights.items()) if isinstance(weights, Mapping) else list(weights)
-    try:
+    with typed_weight_boundary():
         model.load_weights(items, strict=strict)
-    except (RuntimeError, TypeError, ValueError) as exc:
-        raise IncompatibleWeights(f"Model weights are incompatible: {exc}") from exc
 
 
 def quantize_checked(quantize: Callable[..., _T], *args: Any, **kwargs: Any) -> _T:
     """Apply checkpoint quantization while naming metadata/tensor mismatches."""
 
-    try:
+    with typed_quantization_boundary():
         return quantize(*args, **kwargs)
-    except (KeyError, RuntimeError, TypeError, ValueError) as exc:
-        raise QuantizationMismatch(
-            f"Model quantization is incompatible: {exc}"
-        ) from exc
 
 
-def _traceback_contains(exc: BaseException, function_names: set[str]) -> bool:
-    traceback = exc.__traceback__
-    while traceback is not None:
-        if traceback.tb_frame.f_code.co_name in function_names:
-            return True
-        traceback = traceback.tb_next
-    return False
+def _install_mlx_load_boundary_hooks() -> None:
+    """Install context-gated wrappers at mlx-lm's two shared load call sites."""
+
+    try:
+        import mlx.nn as nn
+    except ImportError:
+        return
+
+    if not getattr(nn.quantize, "_rapid_mlx_typed_boundary", False):
+        original_quantize = nn.quantize
+
+        @wraps(original_quantize)
+        def checked_quantize(*args: Any, **kwargs: Any) -> Any:
+            if not _MLX_LOAD_BOUNDARIES_ACTIVE.get():
+                return original_quantize(*args, **kwargs)
+            with typed_quantization_boundary():
+                return original_quantize(*args, **kwargs)
+
+        checked_quantize._rapid_mlx_typed_boundary = True  # type: ignore[attr-defined]
+        nn.quantize = checked_quantize
+
+    if not getattr(nn.Module.load_weights, "_rapid_mlx_typed_boundary", False):
+        original_load_weights = nn.Module.load_weights
+
+        @wraps(original_load_weights)
+        def checked_load_weights(self: Any, *args: Any, **kwargs: Any) -> Any:
+            if not _MLX_LOAD_BOUNDARIES_ACTIVE.get():
+                return original_load_weights(self, *args, **kwargs)
+            with typed_weight_boundary():
+                return original_load_weights(self, *args, **kwargs)
+
+        checked_load_weights._rapid_mlx_typed_boundary = True  # type: ignore[attr-defined]
+        nn.Module.load_weights = checked_load_weights
+
+
+@contextmanager
+def typed_mlx_load_boundaries() -> Iterator[None]:
+    """Enable the shared mlx-lm weight and quantization API boundaries."""
+
+    _install_mlx_load_boundary_hooks()
+    token = _MLX_LOAD_BOUNDARIES_ACTIVE.set(True)
+    try:
+        yield
+    finally:
+        _MLX_LOAD_BOUNDARIES_ACTIVE.reset(token)
 
 
 def load_model_checked(
@@ -112,19 +197,8 @@ def load_model_checked(
     """Run an mlx-lm model loader and type its internal load phase."""
 
     validate_model_config_file(model_path)
-    try:
+    with typed_mlx_load_boundaries():
         return loader(model_path, **kwargs)
-    except (KeyError, RuntimeError, TypeError, ValueError) as exc:
-        if _traceback_contains(
-            exc,
-            {"_quantize", "quantize", "quantized_matmul", "to_quantized"},
-        ):
-            raise QuantizationMismatch(
-                f"Model quantization is incompatible: {exc}"
-            ) from exc
-        if _traceback_contains(exc, {"load_weights"}):
-            raise IncompatibleWeights(f"Model weights are incompatible: {exc}") from exc
-        raise
 
 
 def load_mlx_lm_checked(
@@ -137,7 +211,8 @@ def load_mlx_lm_checked(
 
     from mlx_lm.utils import _download, load_model, load_tokenizer
 
-    model_path = _download(model_name)
+    local_path = Path(model_name).expanduser()
+    model_path = local_path if local_path.exists() else _download(model_name)
     model, config = load_model_checked(
         load_model, model_path, model_config=model_config
     )

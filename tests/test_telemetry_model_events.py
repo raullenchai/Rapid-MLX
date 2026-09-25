@@ -444,6 +444,22 @@ def test_serve_error_class_recognizes_engine_start_wording(exc, expected):
     assert model_events.serve_error_class(exc) == expected
 
 
+def test_typed_quantization_beats_memory_wording():
+    typed = QuantizationMismatch(
+        "[quantized_matmul] out of memory while checking uint32 weights"
+    )
+    outer = RuntimeError("scoped_pymalloc(): could not allocate 4096 bytes")
+    outer.__cause__ = typed
+
+    assert model_events.serve_error_class(outer) == "quantization_mismatch"
+
+
+def test_could_not_allocate_is_not_a_generic_oom_marker():
+    exc = RuntimeError("plugin could not allocate tokenizer ID 7")
+
+    assert model_events.serve_error_class(exc) == "other"
+
+
 def test_invalid_config_boundary_is_classified(tmp_path, monkeypatch):
     from rapid_mlx.utils import tokenizer
 
@@ -477,27 +493,30 @@ def test_config_boundary_handles_non_model_paths_and_invalid_shapes(tmp_path):
         validate_model_config_file(empty_dir)
 
 
-def test_tokenizer_load_boundary_is_classified(tmp_path):
-    tokenizer_dir = tmp_path / "missing-tokenizer"
-    tokenizer_dir.mkdir()
-
-    def load_missing_tokenizer(path):
-        return json.loads((path / "tokenizer.json").read_text(encoding="utf-8"))
+def test_tokenizer_load_boundary_is_classified():
+    def load_invalid_tokenizer():
+        raise ValueError("tokenizer.json has an invalid model section")
 
     with pytest.raises(TokenizerLoadFailed) as raised:
-        load_tokenizer_checked(load_missing_tokenizer, tokenizer_dir)
+        load_tokenizer_checked(load_invalid_tokenizer)
 
-    assert isinstance(raised.value.__cause__, FileNotFoundError)
+    assert isinstance(raised.value.__cause__, ValueError)
     assert model_events.serve_error_class(raised.value) == "tokenizer_load_failed"
 
 
-def test_weight_load_boundary_is_classified(tmp_path):
-    model_dir = tmp_path / "wrong-shape"
-    model_dir.mkdir()
-    (model_dir / "config.json").write_text(
-        json.dumps({"model_type": "synthetic"}), encoding="utf-8"
-    )
+def test_tokenizer_wrapper_preserves_typed_file_failure():
+    missing = FileNotFoundError("tokenizer.json")
 
+    def load_missing_tokenizer():
+        raise missing
+
+    with pytest.raises(FileNotFoundError) as raised:
+        load_tokenizer_checked(load_missing_tokenizer)
+
+    assert raised.value is missing
+
+
+def test_weight_load_boundary_is_classified():
     class ShapeCheckingModel:
         def load_weights(self, weights, *, strict):
             assert strict is True
@@ -508,18 +527,11 @@ def test_weight_load_boundary_is_classified(tmp_path):
     bad_weights = {"model.embed_tokens.weight": {"shape": (31, 16)}}
     model = ShapeCheckingModel()
 
-    def loader(_model_path):
-        model.load_weights(list(bad_weights.items()), strict=True)
-        return model, {}
-
     with pytest.raises(IncompatibleWeights) as raised:
-        load_model_checked(loader, model_dir)
+        load_weights_checked(model, bad_weights, strict=True)
 
     assert isinstance(raised.value.__cause__, ValueError)
     assert model_events.serve_error_class(raised.value) == "incompatible_weights"
-
-    with pytest.raises(IncompatibleWeights):
-        load_weights_checked(model, bad_weights, strict=True)
     load_weights_checked(
         model,
         {"model.embed_tokens.weight": {"shape": (32, 16)}},
@@ -553,18 +565,31 @@ def test_quantization_boundary_is_classified():
     )
 
 
-def test_generic_model_loader_types_quantization_traceback(tmp_path):
+def test_generic_model_loader_types_quantization_boundary(tmp_path, monkeypatch):
     model_dir = tmp_path / "bad-quantization"
     model_dir.mkdir()
     (model_dir / "config.json").write_text(
         json.dumps({"model_type": "synthetic"}), encoding="utf-8"
     )
 
-    def loader(_model_path):
-        def _quantize():
-            raise ValueError("group_size does not divide the weight shape")
+    nn = ModuleType("mlx.nn")
 
-        _quantize()
+    class Module:
+        def load_weights(self, *_args, **_kwargs):
+            return None
+
+    def quantize():
+        raise ValueError("group_size does not divide the weight shape")
+
+    nn.Module = Module
+    nn.quantize = quantize
+    mlx = ModuleType("mlx")
+    mlx.nn = nn
+    monkeypatch.setitem(sys.modules, "mlx", mlx)
+    monkeypatch.setitem(sys.modules, "mlx.nn", nn)
+
+    def loader(_model_path):
+        nn.quantize()
 
     with pytest.raises(QuantizationMismatch) as raised:
         load_model_checked(loader, model_dir)
@@ -597,7 +622,9 @@ def test_generic_eager_loader_separates_tokenizer_boundary(tmp_path, monkeypatch
     model = object()
     tokenizer = object()
     utils = ModuleType("mlx_lm.utils")
-    utils._download = lambda _name: model_dir
+    utils._download = lambda _name: (_ for _ in ()).throw(
+        AssertionError("local checkpoints must not be sent to the Hub downloader")
+    )
     utils.load_model = lambda _path, **_kwargs: (model, {"eos_token_id": [1, 2]})
 
     def load_tokenizer(_path, _config, *, eos_token_ids):
