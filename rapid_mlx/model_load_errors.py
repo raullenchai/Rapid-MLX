@@ -90,10 +90,14 @@ def load_tokenizer_checked(loader: Callable[..., _T], *args: Any, **kwargs: Any)
 
     try:
         return loader(*args, **kwargs)
+    except (HfHubHTTPError, RepositoryNotFoundError):
+        # Preserve remote resolution/download failures for the existing Hub
+        # error path. Local tokenizer assets instead belong to this boundary.
+        raise
+    except (OSError, ImportError, TypeError, ValueError) as exc:
+        raise TokenizerLoadFailed(f"Tokenizer loading failed: {exc}") from exc
     except _TYPED_LOAD_FAILURES:
         raise
-    except (ImportError, TypeError, ValueError) as exc:
-        raise TokenizerLoadFailed(f"Tokenizer loading failed: {exc}") from exc
 
 
 @contextmanager

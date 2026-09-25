@@ -504,16 +504,17 @@ def test_tokenizer_load_boundary_is_classified():
     assert model_events.serve_error_class(raised.value) == "tokenizer_load_failed"
 
 
-def test_tokenizer_wrapper_preserves_typed_file_failure():
+def test_tokenizer_wrapper_classifies_local_file_failure():
     missing = FileNotFoundError("tokenizer.json")
 
     def load_missing_tokenizer():
         raise missing
 
-    with pytest.raises(FileNotFoundError) as raised:
+    with pytest.raises(TokenizerLoadFailed) as raised:
         load_tokenizer_checked(load_missing_tokenizer)
 
-    assert raised.value is missing
+    assert raised.value.__cause__ is missing
+    assert model_events.serve_error_class(raised.value) == "tokenizer_load_failed"
 
 
 def test_weight_load_boundary_is_classified():
