@@ -32,6 +32,8 @@ import mlx.core as mx
 from mlx import nn
 from mlx.utils import tree_unflatten
 
+from ..model_load_errors import load_weights_checked
+
 
 def _fwht(x, block, signs, *, inverse=False):
     shape, dtype = x.shape, x.dtype
@@ -191,7 +193,7 @@ def load(model_path, config):
     weights = mx.load(str(directory / "model.safetensors"))
     _install_packed(model.language_model, config, weights)
     # The pack already uses MLX tensor layout; do not sanitize/reorder it again.
-    model.load_weights(list(weights.items()), strict=True)
+    load_weights_checked(model, weights, strict=True)
     model.eval()
     mx.eval(model.parameters())
     return model, _build_processor(directory)

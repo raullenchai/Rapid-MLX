@@ -682,6 +682,7 @@ jobs:
             tests/test_deepseek_v41_engram_offload.py \
             tests/test_deepseek_v41_hyper_connections.py \
             tests/test_deepseek_v41_native_load.py \
+            tests/test_model_load_entrypoint_boundaries.py \
             tests/test_dspark_scheduler.py \
             tests/test_scheduler_admission_policy.py \
             tests/test_scheduler_recurrent_cache_materialization.py \
