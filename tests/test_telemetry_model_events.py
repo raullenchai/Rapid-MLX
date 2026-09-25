@@ -363,21 +363,23 @@ def test_serve_error_class_terminates_on_cycles(error_class):
 
 
 @pytest.mark.parametrize(
-    ("outer_class", "inner_class"),
+    ("outer_class", "inner_class", "expected"),
     [
-        ("insufficient_memory", "corrupt_weights"),
-        ("download_failed", "insufficient_memory"),
-        ("unsupported_architecture", "download_failed"),
-        ("corrupt_weights", "unsupported_architecture"),
+        ("insufficient_memory", "corrupt_weights", "insufficient_memory"),
+        ("download_failed", "insufficient_memory", "download_failed"),
+        ("unsupported_architecture", "download_failed", "download_failed"),
+        ("corrupt_weights", "unsupported_architecture", "corrupt_weights"),
     ],
 )
-def test_serve_error_class_outermost_match_wins(outer_class, inner_class):
+def test_serve_error_class_typed_precedence_then_outermost(
+    outer_class, inner_class, expected
+):
     outer = _serve_exception(outer_class)
     middle = RuntimeError("second loader wrapper")
     outer.__cause__ = middle
     middle.__cause__ = _serve_exception(inner_class)
 
-    assert model_events.serve_error_class(outer) == outer_class
+    assert model_events.serve_error_class(outer) == expected
 
 
 @pytest.mark.parametrize("exc", [KeyboardInterrupt(), SystemExit(), GeneratorExit()])
@@ -461,6 +463,25 @@ def test_could_not_allocate_is_not_a_generic_oom_marker():
     exc = RuntimeError("plugin could not allocate tokenizer ID 7")
 
     assert model_events.serve_error_class(exc) == "other"
+
+
+def test_typed_download_failure_beats_memory_wording():
+    outer = RuntimeError("scoped_pymalloc(): could not allocate 4096 bytes")
+    outer.__cause__ = FileNotFoundError("missing shard")
+
+    assert model_events.serve_error_class(outer) == "download_failed"
+
+
+def test_typed_hub_failure_beats_memory_wording():
+    from huggingface_hub.errors import HfHubHTTPError
+
+    response = httpx.Response(
+        503, request=httpx.Request("GET", "https://huggingface.co/org/model")
+    )
+    outer = RuntimeError("scoped_pymalloc(): could not allocate 4096 bytes")
+    outer.__cause__ = HfHubHTTPError("unavailable", response=response)
+
+    assert model_events.serve_error_class(outer) == "download_failed"
 
 
 def test_invalid_config_boundary_is_classified(tmp_path, monkeypatch):
@@ -587,6 +608,23 @@ def test_typed_model_boundaries_preserve_existing_failure(boundary, failure):
     assert raised.value is failure
 
 
+@pytest.mark.parametrize(
+    "boundary", [typed_weight_boundary, typed_quantization_boundary]
+)
+def test_model_boundaries_do_not_swallow_optional_runtime(boundary):
+    failure = OptionalRuntimeMissing(
+        extra="vision",
+        install_hint="pip install 'rapid-mlx[vision]'",
+        detail="mlx-vlm unavailable",
+        status="absent",
+    )
+
+    with pytest.raises(OptionalRuntimeMissing) as raised, boundary():
+        raise failure
+
+    assert raised.value is failure
+
+
 def test_weight_load_boundary_is_classified():
     class ShapeCheckingModel:
         def load_weights(self, weights, *, strict):
@@ -682,6 +720,25 @@ def test_generic_model_loader_preserves_unclassified_value_error(tmp_path):
         load_model_checked(loader, model_dir)
 
     assert model_events.serve_error_class(raised.value) == "unsupported_architecture"
+
+
+def test_traceback_name_does_not_relabel_unrelated_runtime(tmp_path):
+    model_dir = tmp_path / "remote-model-hook"
+    model_dir.mkdir()
+    (model_dir / "config.json").write_text(
+        json.dumps({"model_type": "synthetic"}), encoding="utf-8"
+    )
+
+    def loader(_model_path):
+        def load_weights():
+            raise RuntimeError("remote model hook crashed")
+
+        load_weights()
+
+    with pytest.raises(RuntimeError) as raised:
+        load_model_checked(loader, model_dir)
+
+    assert type(raised.value) is RuntimeError
 
 
 def test_generic_eager_loader_separates_tokenizer_boundary(tmp_path, monkeypatch):
