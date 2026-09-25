@@ -103,19 +103,28 @@ def _prepare_state_dir(path: Path) -> bool:
         if stat.S_ISLNK(state_stat.st_mode) or not stat.S_ISDIR(state_stat.st_mode):
             logger.warning("rapid-mlx state directory is unavailable: %s", path)
             return False
-        flags = os.O_RDONLY | getattr(os, "O_DIRECTORY", 0)
-        flags |= getattr(os, "O_NOFOLLOW", 0)
-        fd = os.open(path, flags)
-        try:
-            opened_stat = os.fstat(fd)
-            if (opened_stat.st_dev, opened_stat.st_ino) != (
-                state_stat.st_dev,
-                state_stat.st_ino,
-            ):
+        if os.name == "nt":
+            os.chmod(path, 0o700)
+            opened_stat = os.lstat(path)
+            if stat.S_ISLNK(opened_stat.st_mode) or (
+                opened_stat.st_dev,
+                opened_stat.st_ino,
+            ) != (state_stat.st_dev, state_stat.st_ino):
                 return False
-            os.fchmod(fd, 0o700)
-        finally:
-            os.close(fd)
+        else:
+            flags = os.O_RDONLY | getattr(os, "O_DIRECTORY", 0)
+            flags |= getattr(os, "O_NOFOLLOW", 0)
+            fd = os.open(path, flags)
+            try:
+                opened_stat = os.fstat(fd)
+                if (opened_stat.st_dev, opened_stat.st_ino) != (
+                    state_stat.st_dev,
+                    state_stat.st_ino,
+                ):
+                    return False
+                os.fchmod(fd, 0o700)
+            finally:
+                os.close(fd)
     except OSError as exc:
         logger.warning("rapid-mlx state directory is unavailable: %s", exc)
         return False
@@ -230,6 +239,8 @@ def _atomic_write_marker(
         os.replace(tmp, path)
         snapshot = written_stat.st_dev, written_stat.st_ino
         try:
+            if os.name == "nt":
+                return snapshot
             flags = os.O_RDONLY | getattr(os, "O_DIRECTORY", 0)
             flags |= getattr(os, "O_NOFOLLOW", 0)
             dir_fd = os.open(path.parent, flags)

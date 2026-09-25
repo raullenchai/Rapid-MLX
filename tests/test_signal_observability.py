@@ -370,6 +370,7 @@ def test_crash_file_is_private_rotated_and_previous_crash_reported_once(
 
     so._reset_for_tests()
     monkeypatch.setenv("HOME", str(tmp_path))
+    monkeypatch.setattr(so, "process_identity", lambda _pid: None)
     log_dir = tmp_path / ".rapid-mlx" / "logs"
     log_dir.mkdir(parents=True, mode=0o777)
     for index in range(7):
@@ -382,8 +383,8 @@ def test_crash_file_is_private_rotated_and_previous_crash_reported_once(
         current = max(files, key=lambda path: path.stat().st_mtime_ns)
 
         inactive = [path for path in files if so._crash_file_pid(path) == 100]
-        assert len(files) == 5
-        assert len(inactive) == 4
+        assert len(files) == 6
+        assert len(inactive) == 5
         assert current.stat().st_mode & 0o777 == 0o600
         assert log_dir.stat().st_mode & 0o777 == 0o700
         lines = capsys.readouterr().err.splitlines()
@@ -415,12 +416,36 @@ def test_rotation_never_unlinks_live_process_crash_files(monkeypatch, tmp_path):
         "is_same_process",
         lambda marker: marker["pid"] == live_pid,
     )
+    monkeypatch.setattr(so, "process_identity", lambda _pid: None)
 
     so._rotate_crash_files(tmp_path)
 
     assert paths[0].exists()
     assert len(list(tmp_path.glob("crash-*.txt"))) == 6
     assert not paths[1].exists()
+
+
+def test_rotation_retains_live_process_before_marker_exists(monkeypatch, tmp_path):
+    from rapid_mlx import _signal_observability as so
+    from rapid_mlx._process_identity import ProcessIdentity
+
+    live_pid = 4567
+    live = tmp_path / f"crash-20260924T000000000000Z-{live_pid}.txt"
+    live.write_text("", encoding="utf-8")
+    for pid in range(100, 106):
+        path = tmp_path / f"crash-20260923T000000000{pid}Z-{pid}.txt"
+        path.write_text("old\n", encoding="utf-8")
+        os.utime(path, (pid, pid))
+    monkeypatch.setattr(so, "_marker_for_pid", lambda *_args: None)
+    monkeypatch.setattr(
+        so,
+        "process_identity",
+        lambda pid: ProcessIdentity(pid, 1.0, 1.0) if pid == live_pid else None,
+    )
+
+    so._rotate_crash_files(tmp_path)
+
+    assert live.exists()
 
 
 def test_rotation_treats_reused_pid_marker_as_inactive(tmp_path):
@@ -1148,6 +1173,25 @@ def test_crash_log_directory_inode_swap_and_io_failure_are_refused(
     with monkeypatch.context() as patch:
         patch.setattr(so.os, "fstat", lambda _fd: SimpleNamespace(st_dev=-1, st_ino=-1))
         assert so._prepare_crash_logs_dir(log_dir) is False
+
+
+def test_crash_log_directory_uses_windows_compatible_validation(
+    monkeypatch, tmp_path
+):
+    from rapid_mlx import _signal_observability as so
+
+    log_dir = tmp_path / "logs"
+    log_dir.mkdir()
+    monkeypatch.setattr(so.os, "name", "nt")
+    monkeypatch.setattr(
+        so.os,
+        "open",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            AssertionError("Windows directory validation must not os.open a directory")
+        ),
+    )
+
+    assert so._prepare_crash_logs_dir(log_dir) is True
     with monkeypatch.context() as patch:
         patch.setattr(
             so.os,
@@ -1233,7 +1277,7 @@ def test_tee_without_stdin_falls_back_to_file(monkeypatch, tmp_path):
         so._reset_for_tests()
 
 
-def test_stuck_tee_is_killed_and_reaped():
+def test_stuck_tee_is_killed_and_reaped(monkeypatch):
     from rapid_mlx import _signal_observability as so
 
     class BrokenPipe:
@@ -1243,10 +1287,14 @@ def test_stuck_tee_is_killed_and_reaped():
     class StuckProcess:
         terminated = False
         killed = False
+        reaped = False
         waits = 0
 
-        def wait(self, *, timeout):
+        def wait(self, *, timeout=None):
             self.waits += 1
+            if timeout is None:
+                self.reaped = True
+                return 0
             raise subprocess.TimeoutExpired("tee", timeout)
 
         def terminate(self):
@@ -1256,11 +1304,21 @@ def test_stuck_tee_is_killed_and_reaped():
             self.killed = True
 
     process = StuckProcess()
+    class ImmediateThread:
+        def __init__(self, *, target, args, **_kwargs):
+            self.target = target
+            self.args = args
+
+        def start(self):
+            self.target(*self.args)
+
+    monkeypatch.setattr(so.threading, "Thread", ImmediateThread)
     so._stop_crash_tee(process, BrokenPipe())
 
     assert process.terminated is True
     assert process.killed is True
-    assert process.waits == 3
+    assert process.reaped is True
+    assert process.waits == 4
 
 
 def test_ensure_crash_sink_rearms_and_warns_on_failure(monkeypatch, caplog, tmp_path):

@@ -61,7 +61,11 @@ from collections.abc import Callable
 from datetime import datetime, timezone
 from pathlib import Path
 
-from rapid_mlx._process_identity import is_same_process, marker_identity
+from rapid_mlx._process_identity import (
+    is_same_process,
+    marker_identity,
+    process_identity,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -230,7 +234,14 @@ def _crash_file_is_live(path: Path, log_dir: Path) -> bool:
     if pid is None:
         return False
     marker = _marker_for_pid(log_dir, pid)
-    return marker is not None and marker.get("pid") == pid and is_same_process(marker)
+    if marker is not None:
+        return marker.get("pid") == pid and is_same_process(marker)
+    # Crash-sink installation precedes the startup marker. Conservatively
+    # retain an unmarked file while its owner PID is alive so concurrent
+    # startups cannot rotate away one another's open diagnostics.
+    if pid == os.getpid():
+        return True
+    return process_identity(pid) is not None
 
 
 def _prepare_crash_logs_dir(path: Path) -> bool:
@@ -244,19 +255,28 @@ def _prepare_crash_logs_dir(path: Path) -> bool:
         if stat.S_ISLNK(log_stat.st_mode) or not stat.S_ISDIR(log_stat.st_mode):
             logger.warning("rapid-mlx crash log directory is unavailable: %s", path)
             return False
-        flags = os.O_RDONLY | getattr(os, "O_DIRECTORY", 0)
-        flags |= getattr(os, "O_NOFOLLOW", 0)
-        fd = os.open(path, flags)
-        try:
-            opened_stat = os.fstat(fd)
-            if (opened_stat.st_dev, opened_stat.st_ino) != (
-                log_stat.st_dev,
-                log_stat.st_ino,
-            ):
+        if os.name == "nt":
+            os.chmod(path, 0o700)
+            opened_stat = os.lstat(path)
+            if stat.S_ISLNK(opened_stat.st_mode) or (
+                opened_stat.st_dev,
+                opened_stat.st_ino,
+            ) != (log_stat.st_dev, log_stat.st_ino):
                 return False
-            os.fchmod(fd, 0o700)
-        finally:
-            os.close(fd)
+        else:
+            flags = os.O_RDONLY | getattr(os, "O_DIRECTORY", 0)
+            flags |= getattr(os, "O_NOFOLLOW", 0)
+            fd = os.open(path, flags)
+            try:
+                opened_stat = os.fstat(fd)
+                if (opened_stat.st_dev, opened_stat.st_ino) != (
+                    log_stat.st_dev,
+                    log_stat.st_ino,
+                ):
+                    return False
+                os.fchmod(fd, 0o700)
+            finally:
+                os.close(fd)
     except OSError as exc:
         logger.warning("rapid-mlx crash log directory is unavailable: %s", exc)
         return False
@@ -363,7 +383,22 @@ def _stop_crash_tee(
                 process.kill()
                 process.wait(timeout=1.0)
             except (OSError, subprocess.TimeoutExpired):
-                pass
+                # A killed child can still take time to become waitable. Do
+                # not block shutdown indefinitely, but keep a live reference
+                # and reap it asynchronously instead of abandoning a zombie.
+                threading.Thread(
+                    target=_reap_crash_tee,
+                    args=(process,),
+                    daemon=True,
+                    name="rapid-mlx-crash-tee-reaper",
+                ).start()
+
+
+def _reap_crash_tee(process: subprocess.Popen[bytes]) -> None:
+    try:
+        process.wait()
+    except OSError:
+        pass
 
 
 def _cleanup_crash_file() -> None:

@@ -308,6 +308,21 @@ def test_atomic_marker_requires_current_process_identity(monkeypatch, tmp_path):
         server_start._atomic_write_marker(tmp_path / "serve-inflight-123.json")
 
 
+def test_state_directory_uses_windows_compatible_validation(monkeypatch, tmp_path):
+    state_dir = tmp_path / "state"
+    state_dir.mkdir()
+    monkeypatch.setattr(server_start.os, "name", "nt")
+    monkeypatch.setattr(
+        server_start.os,
+        "open",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            AssertionError("Windows directory validation must not os.open a directory")
+        ),
+    )
+
+    assert server_start._prepare_state_dir(state_dir) is True
+
+
 def test_marker_write_and_remove_failures_are_inert(monkeypatch, tmp_path):
     monkeypatch.setenv("HOME", str(tmp_path))
     monkeypatch.setattr(
