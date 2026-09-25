@@ -3866,6 +3866,7 @@ def main():
 
         _pysample_install()
 
+    set_optional_runtime_assume_yes(False)
     parser = _build_parser()
     args = parser.parse_args()
     _standalone_start_model = args.model

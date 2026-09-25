@@ -421,6 +421,17 @@ def _exit_for_port_scan_exhaustion(scan_base: int, scan_count: int) -> NoReturn:
     sys.exit(1)
 
 
+def _exit_for_host_bind_error(host: str, exc: OSError) -> NoReturn:
+    """Turn an invalid/unavailable bind address into a CLI diagnostic."""
+
+    display_host = host or "0.0.0.0"
+    print(
+        f"Invalid --host {display_host!r}: could not bind that address ({exc}).",
+        file=sys.stderr,
+    )
+    raise SystemExit(2) from None
+
+
 def _port_preflight_or_die(host: str, port: int, *, model: str) -> None:
     """Probe ``(host, port)`` AND — when ``host`` is a wildcard alias —
     additionally probe ``("127.0.0.1", port)``. Print a friendly error
@@ -462,7 +473,10 @@ def _port_preflight_or_die(host: str, port: int, *, model: str) -> None:
         print(f"  Try a valid port: rapid-mlx serve {model} --port 8000")
         sys.exit(1)
 
-    collision_host = _port_collision_host(host, port)
+    try:
+        collision_host = _port_collision_host(host, port)
+    except OSError as exc:
+        _exit_for_host_bind_error(host, exc)
     if collision_host is not None:
         _exit_for_port_collision(port, collision_host, model=model)
 
@@ -612,7 +626,10 @@ def _resolve_serve_port(
 
     first_collision_host: str | None = None
     for candidate in range(scan_base, scan_base + scan_count):
-        collision_host = _port_collision_host(host, candidate)
+        try:
+            collision_host = _port_collision_host(host, candidate)
+        except OSError as exc:
+            _exit_for_host_bind_error(host, exc)
         if collision_host is None:
             if candidate != scan_base:
                 print(

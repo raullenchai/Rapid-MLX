@@ -219,7 +219,7 @@ def test_implicit_free_scan_base_has_no_notice(capsys, scan_base):
     assert captured.out == ""
 
 
-def test_port_probe_reraises_non_collision_bind_error(monkeypatch):
+def test_port_probe_reports_non_collision_bind_error(monkeypatch, capsys):
     error = OSError(errno.EADDRNOTAVAIL, "address not available")
 
     class FailingProbe:
@@ -237,10 +237,13 @@ def test_port_probe_reraises_non_collision_bind_error(monkeypatch):
 
     monkeypatch.setattr(socket, "socket", lambda *_args: FailingProbe())
 
-    with pytest.raises(OSError) as excinfo:
-        cli._port_collision_host("192.0.2.1", 8000)
+    with pytest.raises(SystemExit) as excinfo:
+        cli._resolve_serve_port(
+            "192.0.2.1", None, model="model", scan_base=8000, scan_count=1
+        )
 
-    assert excinfo.value is error
+    assert excinfo.value.code == 2
+    assert "Invalid --host '192.0.2.1'" in capsys.readouterr().err
 
 
 def test_product_scan_defaults_remain_8000_through_8009():
