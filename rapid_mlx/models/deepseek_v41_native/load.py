@@ -31,6 +31,7 @@ import mlx.core as mx
 import mlx.nn as nn
 from mlx.utils import tree_flatten
 
+from ...model_load_errors import typed_mlx_load_boundaries
 from .config import ModelArgs
 from .convert import VISION_PREFIXES, bits_for, is_quant_target
 from .model import Model
@@ -248,14 +249,15 @@ def load(
     if q:
         if q.get("bits"):
             module_map = q.get("modules")
-            nn.quantize(
-                model,
-                group_size=q["group_size"],
-                bits=q["bits"],
-                class_predicate=quant_predicate(
-                    q["group_size"], q["bits"], q.get("expert_bits"), module_map
-                ),
-            )
+            with typed_mlx_load_boundaries():
+                nn.quantize(
+                    model,
+                    group_size=q["group_size"],
+                    bits=q["bits"],
+                    class_predicate=quant_predicate(
+                        q["group_size"], q["bits"], q.get("expert_bits"), module_map
+                    ),
+                )
         if q.get("engram_bits"):
             from .engram import (
                 DiskQuantizedEngramEmbedding,
@@ -321,7 +323,8 @@ def load(
                 continue
             items.append((k, v))
         items = reshape_grouped_wo_a(items, args)
-        model.load_weights(items, strict=False)
+        with typed_mlx_load_boundaries():
+            model.load_weights(items, strict=False)
         if not lazy:
             mx.eval([v for _, v in items])
         loaded.update(k for k, _ in items)

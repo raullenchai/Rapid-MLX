@@ -850,13 +850,7 @@ def test_prism_direct_load_weights_valueerror_is_typed(tmp_path, monkeypatch):
 
 def test_direct_per_model_loaders_do_not_bypass_typed_boundaries():
     package_root = Path(__file__).parents[1] / "rapid_mlx"
-    shared_boundary_calls = {
-        ("model_load_errors.py", "load_weights_checked", "load_weights"),
-    }
-    shared_loader_callbacks = {
-        ("models/deepseek_v41_native/load.py", "load", "load_weights"),
-        ("models/deepseek_v41_native/load.py", "load", "quantize"),
-    }
+    boundary_helper_module = "model_load_errors.py"
     offenders = []
 
     class LoadBoundaryVisitor(ast.NodeVisitor):
@@ -879,21 +873,11 @@ def test_direct_per_model_loaders_do_not_bypass_typed_boundaries():
                 and (
                     (
                         isinstance(item.context_expr.func, ast.Name)
-                        and item.context_expr.func.id
-                        in {
-                            "typed_mlx_load_boundaries",
-                            "typed_quantization_boundary",
-                            "typed_weight_boundary",
-                        }
+                        and item.context_expr.func.id == "typed_mlx_load_boundaries"
                     )
                     or (
                         isinstance(item.context_expr.func, ast.Attribute)
-                        and item.context_expr.func.attr
-                        in {
-                            "typed_mlx_load_boundaries",
-                            "typed_quantization_boundary",
-                            "typed_weight_boundary",
-                        }
+                        and item.context_expr.func.attr == "typed_mlx_load_boundaries"
                     )
                 )
                 for item in node.items
@@ -912,36 +896,34 @@ def test_direct_per_model_loaders_do_not_bypass_typed_boundaries():
                 and node.func.attr == "load_weights"
             ):
                 kind = "load_weights"
-            elif (
+            elif (isinstance(node.func, ast.Name) and node.func.id == "quantize") or (
                 isinstance(node.func, ast.Attribute)
                 and node.func.attr == "quantize"
                 and isinstance(node.func.value, ast.Name)
                 and node.func.value.id == "nn"
             ):
                 kind = "quantize"
-            elif isinstance(node.func, ast.Name) and node.func.id == "load_model":
+            elif (isinstance(node.func, ast.Name) and node.func.id == "load_model") or (
+                isinstance(node.func, ast.Attribute) and node.func.attr == "load_model"
+            ):
                 kind = "load_model"
 
-            function = self.functions[-1] if self.functions else "<module>"
-            is_direct_loader = (
-                self.relative_path == "fp8_repack.py"
-                and function == "load_fp8_model_online"
-            ) or (
-                self.relative_path.startswith("models/") and function.startswith("load")
-            )
-            call = (self.relative_path, function, kind)
-            if (
-                kind
-                and (is_direct_loader or call in shared_boundary_calls)
-                and not self.boundary_depth
-                and call not in shared_boundary_calls
-                and call not in shared_loader_callbacks
-            ):
+            if kind and self.functions and not self.boundary_depth:
                 offenders.append(f"{self.relative_path}:{node.lineno} ({kind})")
             self.generic_visit(node)
 
     for source_path in package_root.rglob("*.py"):
         relative_path = source_path.relative_to(package_root).as_posix()
+        model_relative_path = relative_path.removeprefix("models/")
+        is_direct_loader_module = relative_path == "fp8_repack.py" or (
+            relative_path.startswith("models/")
+            and (
+                "/" not in model_relative_path
+                or model_relative_path.endswith("/load.py")
+            )
+        )
+        if relative_path == boundary_helper_module or not is_direct_loader_module:
+            continue
         tree = ast.parse(
             source_path.read_text(encoding="utf-8"), filename=relative_path
         )
