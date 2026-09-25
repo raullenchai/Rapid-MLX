@@ -1,0 +1,71 @@
+name: Manzanita macOS runner smoke
+
+on:
+  pull_request:
+    branches: [main]
+    paths:
+      - .github/workflows/manzanita-smoke.yml
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  swift-package:
+    name: SwiftPM library test
+    runs-on: [self-hosted, mzr-001]
+    timeout-minutes: 10
+    steps:
+      - name: Record runner environment
+        run: |
+          sw_vers
+          uname -m
+          xcodebuild -version
+          swift --version
+
+      - name: Create and test a Swift package
+        run: |
+          work="$(mktemp -d)"
+          cd "$work"
+          swift package init --type library --name CustomerSmoke
+          swift test
+
+  swift-build:
+    name: Rapid macOS app build
+    runs-on: [self-hosted, mzr-001]
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Record runner environment
+        run: |
+          sw_vers
+          uname -m
+          sysctl -n machdep.cpu.brand_string
+          xcodebuild -version
+          swift --version
+
+      - name: Compile Rapid macOS app
+        run: swift build --package-path apps/rapid-mac
+
+  ios-simulator:
+    name: iOS Simulator SDK build
+    runs-on: [self-hosted, mzr-001]
+    timeout-minutes: 15
+    steps:
+      - name: Record iOS toolchain
+        run: |
+          xcodebuild -version
+          xcodebuild -showsdks
+          xcrun simctl list devices available | head -40
+
+      - name: Build a Swift package for iOS Simulator
+        run: |
+          work="$(mktemp -d)"
+          cd "$work"
+          swift package init --type library --name IOSCustomerSmoke
+          xcodebuild \
+            -scheme IOSCustomerSmoke \
+            -destination 'generic/platform=iOS Simulator' \
+            CODE_SIGNING_ALLOWED=NO \
+            build
