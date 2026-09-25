@@ -24,7 +24,13 @@ import uuid
 import weakref
 from collections.abc import AsyncIterator, Callable
 from dataclasses import dataclass, replace
-from typing import Any
+from enum import Enum
+from pathlib import Path
+from typing import TYPE_CHECKING, Any
+
+if TYPE_CHECKING:
+    from ..qwen_runtime_plan import QwenRuntimePlan
+    from ..runtime.qwen_artifact import QwenArtifactTruth
 
 from ..api.errors import GuidedGenerationCancelledError
 from ..api.tool_calling import convert_tools_for_template
@@ -42,6 +48,15 @@ from .base import BaseEngine, GenerationOutput
 ADMISSION_ORPHAN_GRACE_SECONDS = 2.0
 
 logger = logging.getLogger(__name__)
+
+
+class _QwenRuntimeActivation(str, Enum):
+    """Closed live activation state for the immutable selected plan."""
+
+    NOT_APPLICABLE = "not_applicable"
+    PENDING_FIRST_REQUEST = "pending_first_request"
+    ACTIVE = "active"
+    FALLBACK_NATIVE_AR = "fallback_native_ar"
 
 
 def _clone_mllm_worker_processor(processor: Any) -> Any:
@@ -1064,6 +1079,9 @@ class BatchedEngine(BaseEngine):
         chat_template_id: str | None = None,
         profile_name: str | None = None,
         serving_lane_reason: str | None = None,
+        speculative_intent: Any | None = None,
+        artifact_repo_id: str | None = None,
+        operator_target_lane: Any | None = None,
     ):
         """
         Initialize the batched engine.
@@ -1110,6 +1128,12 @@ class BatchedEngine(BaseEngine):
             serving_lane_reason: Machine-readable reason from the shared
                 serving-lane decision. Kept on the live engine so model and
                 residency APIs report the decision that was actually loaded.
+            speculative_intent: Closed pre-normalization provenance used only
+                for behavior-neutral Qwen runtime-plan observability.
+            artifact_repo_id: Canonical Hub repository expected to own the
+                already-resolved local checkpoint. Never used to load weights.
+            operator_target_lane: Original explicit CLI lane, before aliases
+                and automatic fallback fold into the engine's force flags.
         """
         self._model_name = model_name
         self._profile_name = profile_name or model_name
@@ -1157,6 +1181,29 @@ class BatchedEngine(BaseEngine):
                 is_mllm=self._is_mllm,
             )
         self._serving_lane_reason = serving_lane_reason
+        from ..qwen_runtime_plan import SpeculativeIntent, TargetLane
+
+        if speculative_intent is None:
+            requested_spec_decode = getattr(scheduler_config, "spec_decode", "none")
+            if no_spec_decode:
+                speculative_intent = SpeculativeIntent.EXPLICIT_DISABLED
+            elif requested_spec_decode not in (None, "none"):
+                speculative_intent = SpeculativeIntent.EXPLICIT_ENABLED
+            else:
+                speculative_intent = SpeculativeIntent.NONE
+        if not isinstance(speculative_intent, SpeculativeIntent):
+            raise ValueError("speculative_intent must be a SpeculativeIntent")
+        if operator_target_lane is not None and not isinstance(
+            operator_target_lane, TargetLane
+        ):
+            raise ValueError("operator_target_lane must be a TargetLane")
+        self._qwen_speculative_intent = speculative_intent
+        self._qwen_operator_target_lane = operator_target_lane
+        self._qwen_artifact_repo_id = artifact_repo_id or model_name
+        self._qwen_artifact_snapshot_source: str | None = model_name
+        self._qwen_runtime_plan: QwenRuntimePlan | None = None
+        self._qwen_artifact_truth: QwenArtifactTruth | None = None
+        self._qwen_mtp_dispatch_result: str | None = None
         self._tool_logits_processor_factory = None
 
         self._model = None
@@ -1681,6 +1728,11 @@ class BatchedEngine(BaseEngine):
         if self._loaded:
             return
 
+        # A prior interrupted stop/start must never lend this boot stale
+        # observability. Immutable input provenance remains engine-owned;
+        # boot-derived plan/truth/receipt/source are recomputed below.
+        self._clear_qwen_runtime_observability()
+
         # Lane-capability admission at the text/MLLM split — BEFORE any
         # weights are loaded or a scheduler is constructed, so an
         # unsupported explicit configuration can never come up "Ready"
@@ -1692,11 +1744,200 @@ class BatchedEngine(BaseEngine):
         else:
             await self._start_llm()
 
+        # Observe the runtime only after the existing lane resolution has
+        # finished: MLLM may have degraded to text and Qwen3.6 may now own an
+        # optional shared-weight native text companion. This seam never feeds
+        # back into loading, routing, or defaults.
+        try:
+            self._finalize_qwen_runtime_observability()
+        except Exception:  # noqa: BLE001 - observability must not change boot
+            logger.warning(
+                "Qwen runtime observability unavailable; serving behavior unchanged",
+                exc_info=True,
+            )
+
         with self._guided_requests_lock:
             self._guided_stopping = False
         self._loaded = True
         self._start_time = time.monotonic()
         logger.info(f"BatchedEngine loaded: {self._model_name} (mllm={self._is_mllm})")
+
+    def _clear_qwen_runtime_observability(self) -> None:
+        """Drop facts owned by one completed boot transaction."""
+
+        self._qwen_runtime_plan = None
+        self._qwen_artifact_truth = None
+        self._qwen_artifact_snapshot_source = None
+        self._qwen_mtp_dispatch_result = None
+
+    def _qwen_runtime_activation(self) -> _QwenRuntimeActivation:
+        """Report selected-MTP activation without mutating its boot plan."""
+
+        plan = getattr(self, "_qwen_runtime_plan", None)
+        if plan is None or plan.text_mode.value != "mtp":
+            return _QwenRuntimeActivation.NOT_APPLICABLE
+        scheduler = getattr(getattr(self._engine, "engine", None), "scheduler", None)
+        if not getattr(scheduler, "spec_decode_runtime_attempted", False):
+            return _QwenRuntimeActivation.PENDING_FIRST_REQUEST
+        if getattr(scheduler, "spec_decode_runtime_method", None) == "mtp":
+            return _QwenRuntimeActivation.ACTIVE
+        return _QwenRuntimeActivation.FALLBACK_NATIVE_AR
+
+    def _finalize_qwen_runtime_observability(self) -> None:
+        """Store one exact legacy plan after the live serving shape is final."""
+
+        if self._qwen_runtime_plan is not None:
+            return
+
+        # Exact loaded checkpoint metadata—not a model-name substring—decides
+        # whether this engine owns a Qwen3.5-family runtime surface.
+        snapshot_source = self._qwen_artifact_snapshot_source
+        config = None
+        if self._is_mllm:
+            config = getattr(self._mllm_instance, "config", None)
+        elif isinstance(snapshot_source, str) and Path(snapshot_source).is_dir():
+            from ..model_metadata import read_local_model_metadata
+
+            metadata = read_local_model_metadata(snapshot_source)
+            config = metadata.config if metadata is not None else None
+
+        def _config_value(value: Any, key: str) -> Any:
+            return (
+                value.get(key) if isinstance(value, dict) else getattr(value, key, None)
+            )
+
+        outer_model_type = _config_value(config, "model_type")
+        nested_text = _config_value(config, "text_config")
+        text_config = nested_text if nested_text is not None else config
+        text_model_type = _config_value(text_config, "model_type")
+        if (outer_model_type, text_model_type) not in {
+            ("qwen3_5", "qwen3_5_text"),
+            ("qwen3_5_moe", "qwen3_5_moe_text"),
+        }:
+            return
+
+        truth = None
+        if isinstance(snapshot_source, str) and isinstance(
+            self._qwen_artifact_repo_id, str
+        ):
+            try:
+                from ..runtime.qwen_artifact import probe_resolved_qwen_artifact
+
+                truth = probe_resolved_qwen_artifact(
+                    snapshot_source,
+                    repo_id=self._qwen_artifact_repo_id,
+                )
+            except Exception:  # noqa: BLE001 - optional, redacted truth only
+                logger.debug("Verified Qwen artifact truth unavailable", exc_info=True)
+                truth = None
+
+        from ..qwen_runtime_plan import (
+            PlanReason,
+            QwenRuntimePlan,
+            SelectionSource,
+            SpeculativeIntent,
+            TargetLane,
+            TextMode,
+            resolve_qwen_runtime_plan,
+        )
+
+        target_lane = TargetLane.VISION if self._is_mllm else TargetLane.TEXT
+        if self._is_mllm:
+            text_mode = (
+                TextMode.NATIVE_AR if self._mllm_native_text_engine else TextMode.NONE
+            )
+        else:
+            requested_spec_method = getattr(
+                self._scheduler_config, "spec_decode", "none"
+            )
+            if requested_spec_method not in (None, "none", "mtp") or getattr(
+                self._scheduler_config, "enable_suffix_decoding", False
+            ):
+                # TextMode intentionally has no suffix/DFlash/DSpark variant.
+                # Legacy suffix can be selected independently while
+                # spec_decode remains "none"; omitting the plan is safer than
+                # falsely labeling that live decoder native autoregressive.
+                return
+            mtp_attached = False
+            if requested_spec_method == "mtp":
+                # The scheduler publishes ``spec_decode_runtime_method`` only
+                # while lazily constructing the first request's generator, so
+                # it is necessarily unset at boot.  The dispatch receipt is
+                # the completed boot transaction: only an attached protocol
+                # can become MTP. Mirror the scheduler's remaining profile
+                # gate without eagerly creating a sampling-specific generator.
+                scheduler = getattr(
+                    getattr(self._engine, "engine", None), "scheduler", None
+                )
+                model_config = getattr(scheduler, "model_config", None)
+                supports_spec_decode = getattr(
+                    model_config, "supports_spec_decode", True
+                )
+                from ..spec_decode.config import (
+                    config_vetted_mtp_supports_spec_decode,
+                )
+
+                config_vetted = config_vetted_mtp_supports_spec_decode(
+                    getattr(self._scheduler_config, "mtp_model_type", None)
+                )
+                profile_allows_mtp = (
+                    model_config is None or supports_spec_decode or config_vetted
+                )
+                mtp_attached = (
+                    self._qwen_mtp_dispatch_result == _DISPATCH_ATTACHED
+                    and profile_allows_mtp
+                )
+            text_mode = TextMode.MTP if mtp_attached else TextMode.NATIVE_AR
+
+        operator_selected = self._qwen_operator_target_lane is not None or (
+            self._qwen_speculative_intent
+            in {
+                SpeculativeIntent.EXPLICIT_DISABLED,
+                SpeculativeIntent.EXPLICIT_ENABLED,
+            }
+        )
+        if operator_selected:
+            selection_source = SelectionSource.OPERATOR
+            reason = PlanReason.LEGACY_OPERATOR
+        elif self._qwen_speculative_intent is SpeculativeIntent.ALIAS_DEFAULT:
+            selection_source = SelectionSource.ALIAS_DEFAULT
+            reason = PlanReason.LEGACY_ALIAS_DEFAULT
+        else:
+            selection_source = SelectionSource.FALLBACK
+            reason = PlanReason.LEGACY_DEFAULT
+
+        legacy_plan = QwenRuntimePlan(
+            target_lane=target_lane,
+            text_mode=text_mode,
+            selection_source=selection_source,
+            qualification_id=None,
+            receipt_id=None,
+            verified_target=None,
+            reason=reason,
+            media_enabled=self._is_mllm,
+        )
+        plan = resolve_qwen_runtime_plan(
+            legacy_plan=legacy_plan,
+            speculative_intent=self._qwen_speculative_intent,
+            auto_enabled=False,
+            artifact=None,
+            qualification_rows=(),
+            operator_target_lane=self._qwen_operator_target_lane,
+        )
+        self._qwen_runtime_plan = plan
+        self._qwen_artifact_truth = truth
+
+        boot_record: dict[str, Any] = {
+            "auto_enabled": False,
+            "plan": plan.to_status_dict(),
+            "activation": self._qwen_runtime_activation().value,
+        }
+        if truth is not None:
+            boot_record["artifact_truth"] = truth.to_status_dict()
+        logger.info(
+            "Qwen runtime boot: %s",
+            json.dumps(boot_record, sort_keys=True, separators=(",", ":")),
+        )
 
     def _validate_lane_capabilities(self) -> None:
         """Fail closed on capabilities the selected serving lane cannot honor.
@@ -1730,6 +1971,8 @@ class BatchedEngine(BaseEngine):
         from ..mllm_scheduler import MLLMScheduler, MLLMSchedulerConfig
         from ..models.mllm import MLXMultimodalLM, TextOnlyCheckpointError
         from ..scheduler import SchedulerConfig
+
+        self._qwen_mtp_dispatch_result = None
 
         # Capability gate BEFORE loading weights (#78).
         _check_mllm_kv_quantization(self._scheduler_config, self._model_name)
@@ -1823,6 +2066,7 @@ class BatchedEngine(BaseEngine):
             await self._start_llm()
             return
 
+        self._qwen_artifact_snapshot_source = self._model_name
         self._model = self._mllm_instance.model
         self._processor = self._mllm_instance.processor
         # MLLM processors bypass the text tokenizer loader, so resolve their
@@ -2078,6 +2322,10 @@ class BatchedEngine(BaseEngine):
         from ..scheduler import SchedulerConfig
         from ..utils.tokenizer import load_model_with_fallback
 
+        # One boot owns one dispatch receipt. It is populated only by the
+        # completed MTP attachment transaction below and cleared on stop.
+        self._qwen_mtp_dispatch_result = None
+
         # The shared loader applies RAPID_MLX_TRUST_REMOTE_CODE=0 across every
         # text-model entry point. Keep the engine's explicit request here so
         # the default serve behavior remains unchanged.
@@ -2190,6 +2438,11 @@ class BatchedEngine(BaseEngine):
                     install_qwen35_fused_gdn_decode, self._model
                 ).result()
 
+        # Retain the exact source selected by the existing loader. The B0
+        # truth probe may inspect it after startup, but never resolves or
+        # changes it and never falls back to mutable repo HEAD.
+        self._qwen_artifact_snapshot_source = checkpoint_source
+
         # Capture persistence identity from the exact immutable snapshot
         # selected by the loader before this engine is published through
         # ServerConfig and concurrent cache load/save tasks can observe it.
@@ -2235,7 +2488,7 @@ class BatchedEngine(BaseEngine):
             # timeout that converts a stuck HF/DNS load into a
             # clean startup ``RuntimeError`` instead of an
             # indefinite hang.
-            _apply_mtp_dispatch(
+            self._qwen_mtp_dispatch_result = _apply_mtp_dispatch(
                 model=self._model,
                 model_name=self._model_name,
                 scheduler_config=sc,
@@ -2458,6 +2711,9 @@ class BatchedEngine(BaseEngine):
 
     async def stop(self) -> None:
         """Stop the engine and cleanup resources."""
+        # Status must fail closed immediately even if a downstream scheduler
+        # stop/close raises and leaves the rest of teardown incomplete.
+        self._clear_qwen_runtime_observability()
         # Scheduler shutdown queues work on the same single model executor
         # used by guided decoding. Signal guided jobs first so a long schema
         # request cannot hold model unload behind it.
@@ -4315,6 +4571,14 @@ class BatchedEngine(BaseEngine):
             "loaded": self._loaded,
             "stream_interval": self._stream_interval,
         }
+        qwen_plan = getattr(self, "_qwen_runtime_plan", None)
+        if qwen_plan is not None:
+            stats["qwen_auto_enabled"] = False
+            stats["qwen_runtime_plan"] = qwen_plan.to_status_dict()
+            stats["qwen_runtime_activation"] = self._qwen_runtime_activation().value
+        qwen_truth = getattr(self, "_qwen_artifact_truth", None)
+        if qwen_truth is not None:
+            stats["qwen_artifact_truth"] = qwen_truth.to_status_dict()
         prompt_host_cache = getattr(self, "_prompt_host_cache", None)
         if prompt_host_cache is not None:
             stats["prompt_host_cache"] = prompt_host_cache.stats()

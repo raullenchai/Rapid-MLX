@@ -2906,8 +2906,43 @@ def _native_mtp_runtime_ready(model_name) -> bool:
         return False
 
 
+_SPECULATIVE_CONFIG_SOURCE_NONE = "none"
+_SPECULATIVE_CONFIG_SOURCE_EXPLICIT = "explicit_config"
+_SPECULATIVE_CONFIG_SOURCE_LEGACY = "legacy_flags"
+_SPECULATIVE_CONFIG_SOURCE_ALIAS_DEFAULT = "alias_default"
+
+
+def _qwen_speculative_intent(args):
+    """Map normalized CLI provenance to the planner's closed intent enum."""
+
+    from .qwen_runtime_plan import SpeculativeIntent
+
+    if getattr(args, "no_spec_decode", False):
+        return SpeculativeIntent.EXPLICIT_DISABLED
+
+    source = getattr(
+        args, "_speculative_config_source", _SPECULATIVE_CONFIG_SOURCE_NONE
+    )
+    intents = {
+        _SPECULATIVE_CONFIG_SOURCE_NONE: SpeculativeIntent.NONE,
+        _SPECULATIVE_CONFIG_SOURCE_ALIAS_DEFAULT: SpeculativeIntent.ALIAS_DEFAULT,
+        _SPECULATIVE_CONFIG_SOURCE_EXPLICIT: SpeculativeIntent.EXPLICIT_ENABLED,
+        _SPECULATIVE_CONFIG_SOURCE_LEGACY: SpeculativeIntent.EXPLICIT_ENABLED,
+    }
+    try:
+        return intents[source]
+    except KeyError as exc:
+        raise ValueError(f"unknown speculative config source: {source!r}") from exc
+
+
 def _normalize_speculative_config_or_exit(args):
-    """Parse ``--speculative-config`` and map methods to runtime fields."""
+    """Parse ``--speculative-config`` and map methods to runtime fields.
+
+    ``args._speculative_config_source`` records who selected the normalized
+    configuration. Keep this separate from ``args.speculative_config``:
+    alias defaults and legacy flags are materialized into that same JSON field,
+    which otherwise erases the distinction needed by runtime planning.
+    """
     import json
     import sys
 
@@ -2919,6 +2954,11 @@ def _normalize_speculative_config_or_exit(args):
 
     raw_config = getattr(args, "speculative_config", None)
     raw_config_was_explicit = raw_config is not None
+    args._speculative_config_source = (
+        _SPECULATIVE_CONFIG_SOURCE_EXPLICIT
+        if raw_config_was_explicit
+        else _SPECULATIVE_CONFIG_SOURCE_NONE
+    )
     config = None
 
     def _fill_runtime_defaults(*, overwrite: bool) -> None:
@@ -3170,6 +3210,7 @@ def _normalize_speculative_config_or_exit(args):
         _reject_no_spec_decode_runtime_conflicts()
         legacy_payload = _legacy_speculative_config_payload()
         if legacy_payload is not None:
+            args._speculative_config_source = _SPECULATIVE_CONFIG_SOURCE_LEGACY
             raw_config = json.dumps(legacy_payload, separators=(",", ":"))
             args.speculative_config = raw_config
         elif (
@@ -3184,6 +3225,7 @@ def _normalize_speculative_config_or_exit(args):
             and _alias_mtp_default_enabled(getattr(args, "model", None))
             and _native_mtp_runtime_ready(getattr(args, "model", None))
         ):
+            args._speculative_config_source = _SPECULATIVE_CONFIG_SOURCE_ALIAS_DEFAULT
             raw_config = '{"method":"mtp","backend":"native"}'
             args.speculative_config = raw_config
         elif (
@@ -3198,6 +3240,7 @@ def _normalize_speculative_config_or_exit(args):
             # single-stream on M2 Pro / M3 Ultra).  The alias registry remains
             # the single source of truth, and --no-spec-decode stays the
             # explicit user escape hatch on every surface.
+            args._speculative_config_source = _SPECULATIVE_CONFIG_SOURCE_ALIAS_DEFAULT
             raw_config = '{"method":"mtp"}'
             args.speculative_config = raw_config
 
@@ -3267,6 +3310,7 @@ def _normalize_speculative_config_or_exit(args):
     if config is None:
         _fill_runtime_defaults(overwrite=True)
         args._speculative_config = None
+        args._speculative_config_source = _SPECULATIVE_CONFIG_SOURCE_NONE
         _fill_suffix_defaults()
         return
 
@@ -6362,6 +6406,7 @@ def serve_command(args):
             ),
             enable_disk_stream=getattr(args, "disk_stream", False),
             disk_stream_cache_gb=getattr(args, "disk_stream_cache_gb", 1.0),
+            speculative_intent=_qwen_speculative_intent(args),
         )
     except OptionalRuntimeMissing:
         # All optional-runtime failures converge at the serve dispatch below.

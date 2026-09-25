@@ -55,6 +55,9 @@ from .kv_estimation import (  # noqa: E402
     estimate_kv_footprint,
     rotating_cache_slots,
 )
+from .spec_decode.config import (  # noqa: E402
+    config_vetted_mtp_supports_spec_decode as _config_vetted_mtp_supports_spec_decode,
+)
 
 
 def _read_kv_dims(model):
@@ -2408,26 +2411,6 @@ def _install_mtp_vendored(
         "request state reaped on finish/remove)."
     )
     return True
-
-
-def _config_vetted_mtp_supports_spec_decode(model_type: str | None) -> bool:
-    """Return True for model types that passed config-driven MTP eligibility.
-
-    Some older alias profiles still carry ``supports_spec_decode=False`` even
-    when the checkpoint config advertises a Qwen MTP head. The CLI promotes the
-    eligibility gate's model_type into SchedulerConfig only after
-    ``detect_mtp_eligibility`` accepts the config; keep the scheduler override
-    narrowly tied to the model families this MTP runtime supports.
-    """
-
-    return model_type in {
-        "qwen3_5",
-        "qwen3_5_moe",
-        "hy_v3",
-        "qwen4_exp",
-        "gemma4",
-        "gemma4_unified",
-    }
 
 
 def _replay_dspark_committed(

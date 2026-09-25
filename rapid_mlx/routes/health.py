@@ -405,7 +405,7 @@ async def status():
         v = bg.get(key)
         return 0.0 if v is None else v
 
-    return {
+    status_payload = {
         # "generating" must reflect ACTIVE token generation, not engine
         # liveness. ``stats["running"]`` is the engine-loop lifecycle flag
         # (True for the whole server lifetime), so keying off it reported
@@ -450,6 +450,18 @@ async def status():
         ),
         "requests": stats.get("requests", []),
     }
+    # Forward only the explicit redacted Qwen observability surfaces. Never
+    # nest the full engine stats object: scheduler internals and local paths
+    # are not part of the public status contract.
+    for key in (
+        "qwen_auto_enabled",
+        "qwen_runtime_plan",
+        "qwen_runtime_activation",
+        "qwen_artifact_truth",
+    ):
+        if key in stats:
+            status_payload[key] = stats[key]
+    return status_payload
 
 
 @router.get("/v1/cache/stats")

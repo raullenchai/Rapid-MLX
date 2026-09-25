@@ -1,0 +1,25 @@
+{
+  "source_repo": "rapid-mlx/Qwen3.8-27B-4bit-MTP-MLX",
+  "revision": "aa985c29ff5b334cbfdcbbc787d47e66e9d9e456",
+  "config_sha256": "48e2fc64017e1d7472373ce012ba1db172319e5fc1e4f81ccc97fea523b00d1b",
+  "target_layout": "indexed_safetensors",
+  "index_sha256": "47d389bc0826b9f8d0ad495d0c4bf89d7e9398a50b77ae35771dde96e9db9229",
+  "target_shards": [
+    "model-00001-of-00003.safetensors",
+    "model-00002-of-00003.safetensors",
+    "model-00003-of-00003.safetensors"
+  ],
+  "target_blob_ids": {
+    "model-00001-of-00003.safetensors": "6cc1508e96fb5d0865dfd5753a79f4ec60651bf3e2a82844a7e8ae9c60528c0d",
+    "model-00002-of-00003.safetensors": "83f2a20ca8058f486a3634a27faf99587f4cd3c156a83dee34fb99e6ac178670",
+    "model-00003-of-00003.safetensors": "31b8c91ef899f79efaaa69e3d2c096f6e2ebeb2ff20e29222abbd9ebc79e560a"
+  },
+  "mtp_candidate": {
+    "path": "mtp/model.safetensors",
+    "storage": "symlink",
+    "blob_id": "76663c101e7e8ea9c0ae17bcb95183cd7f733ce424c912b8b264a7b1c48e4cc6",
+    "declared_sha256": "76663c101e7e8ea9c0ae17bcb95183cd7f733ce424c912b8b264a7b1c48e4cc6",
+    "declared_name": "model-mtp.safetensors",
+    "file_size_bytes": 238934137
+  }
+}

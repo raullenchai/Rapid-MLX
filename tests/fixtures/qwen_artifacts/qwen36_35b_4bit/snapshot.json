@@ -1,0 +1,20 @@
+{
+  "source_repo": "mlx-community/Qwen3.6-35B-A3B-4bit",
+  "revision": "38740b847e4cb78f352aba30aa41c76e08e6eb46",
+  "config_sha256": "970690379c5e41f79dad9d1e5a5bb0a47e8356705af87dd1b939faee520a8d0f",
+  "target_layout": "indexed_safetensors",
+  "index_sha256": "5466a2a96e252ce9878fbcf30a9a5f45cf97dbc16fea6dcdb74b25183c2d6abb",
+  "target_shards": [
+    "model-00001-of-00004.safetensors",
+    "model-00002-of-00004.safetensors",
+    "model-00003-of-00004.safetensors",
+    "model-00004-of-00004.safetensors"
+  ],
+  "target_blob_ids": {
+    "model-00001-of-00004.safetensors": "09f3e6ecb0b7af6e6a38bc8169a134c821b0924c2679b2bb8f4426ad38d032b8",
+    "model-00002-of-00004.safetensors": "31dcdb1c49eebdb1505bd14e3cb33f9cf900bd2546b638f2464694ae763a033f",
+    "model-00003-of-00004.safetensors": "3e66de06a1f03dade16a612a368cfce4a4c9caa4efd7d28185454384082cec03",
+    "model-00004-of-00004.safetensors": "a5d0cf03519c26f8b506df6b0ba60526e5c08c8cea22d0c21ce92950e58a5422"
+  },
+  "mtp_candidate": null
+}
