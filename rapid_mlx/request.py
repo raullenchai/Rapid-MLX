@@ -352,6 +352,9 @@ _MEMORY_ABORT_SIGNALS = (
     "insufficient memory",
     "unable to allocate",
     "failed to allocate",
+    # nanobind's allocator emits this exact diagnostic prefix at
+    # ``src/nb_internals.h:1097``.
+    "scoped_pymalloc(): could not allocate",
     "attempting to allocate",
     "maximum allowed buffer",
     "metal::malloc",
