@@ -219,7 +219,10 @@ def test_implicit_free_scan_base_has_no_notice(capsys, scan_base):
     assert captured.out == ""
 
 
-def test_port_probe_reports_non_collision_bind_error(monkeypatch, capsys):
+@pytest.mark.parametrize("requested_port", [None, 8000])
+def test_port_probe_reports_non_collision_bind_error(
+    monkeypatch, capsys, requested_port
+):
     error = OSError(errno.EADDRNOTAVAIL, "address not available")
 
     class FailingProbe:
@@ -239,7 +242,11 @@ def test_port_probe_reports_non_collision_bind_error(monkeypatch, capsys):
 
     with pytest.raises(SystemExit) as excinfo:
         cli._resolve_serve_port(
-            "192.0.2.1", None, model="model", scan_base=8000, scan_count=1
+            "192.0.2.1",
+            requested_port,
+            model="model",
+            scan_base=8000,
+            scan_count=1,
         )
 
     assert excinfo.value.code == 2
