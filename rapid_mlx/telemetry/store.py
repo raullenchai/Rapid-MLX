@@ -71,8 +71,9 @@ SCHEMA_VERSION = 1
 #: Longest key we accept. Keys are built by callers from closed enum
 #: values (model id + endpoint + caller + result [+ error class]), so a long
 #: one means a caller leaked something free-form — drop it rather than store
-#: it. The longest legitimate key (a 128-char model id on a failed request)
-#: is 204 characters.
+#: it. The longest key the registry permits (its 128-char model_id cap on a
+#: failed request) is 204 characters; telemetry_model_id() itself caps ids
+#: at 96, so real keys stay at or under 172.
 MAX_KEY_LENGTH = 256
 
 #: Hard cap on distinct rows in ``counters`` / ``models_served``. A

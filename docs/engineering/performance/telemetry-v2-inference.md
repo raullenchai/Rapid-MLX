@@ -81,8 +81,9 @@ saturated worst-case installation begins exhausting new keys. The cap was
 raised from 2,000 to 12,000 when that allowed only 5 complete models, and from
 12,000 to 67,000 when failures started being counted per class (which would
 otherwise have left 5). Even 67,000 short rows remain a small local SQLite
-database, and existing keys continue counting at the cap. The longest
-legitimate key (a 128-character model id on a failed request) is 204
-characters, under `store.MAX_KEY_LENGTH = 256`. `tests/test_telemetry_inference.py`
+database, and existing keys continue counting at the cap. The longest key
+the registry permits (its 128-character `model_id` cap on a failed request) is
+204 characters, under `store.MAX_KEY_LENGTH = 256`; `telemetry_model_id()`
+itself caps ids at 96 characters, so real keys stay at or under 172. `tests/test_telemetry_inference.py`
 derives both numbers from the registry, and `tests/test_telemetry_store.py`
 fills a real database to the unpatched cap.

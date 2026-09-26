@@ -1969,55 +1969,67 @@ def test_nonstream_failure_sites_count_their_class(
     assert "alice" not in repr(calls)
 
 
-def _raise_tool_choice_unfulfilled(*_args, **_kwargs):
-    from fastapi import HTTPException
-
-    exc = HTTPException(
-        status_code=422,
-        detail={
-            "error": {
-                "code": "tool_choice_unfulfilled",
-                "message": "tool_choice could not be fulfilled",
-            }
-        },
-    )
-    exc.rapid_mlx_error_code = "tool_choice_unfulfilled"
-    raise exc
+_TWO_TOOLS = [
+    {"type": "function", "name": "shell", "parameters": {"type": "object"}},
+    {"type": "function", "name": "grep", "parameters": {"type": "object"}},
+]
 
 
 @pytest.mark.parametrize("stream", [False, True])
-def test_tool_choice_unfulfilled_counts_output_contract_unmet(monkeypatch, stream):
+def test_real_tool_choice_rejection_counts_output_contract_unmet(monkeypatch, stream):
+    """Drives the REAL ``_enforce_responses_tool_choice``: two tools,
+    tool_choice="required", the model answers text only. Non-stream answers
+    the route's 422; stream answers response.failed. Both count once."""
     holder = _build_client(monkeypatch, _HealthyEngine)
     try:
-        import rapid_mlx.routes.responses as responses_route
-
-        monkeypatch.setattr(
-            responses_route,
-            "_enforce_responses_tool_choice",
-            _raise_tool_choice_unfulfilled,
-        )
         calls = _capture_emits(monkeypatch)
         body = {
             **PAYLOAD,
-            "tools": _SHELL_TOOL,
+            "tools": _TWO_TOOLS,
             "tool_choice": "required",
             "stream": stream,
         }
+        resp = holder.client.post("/v1/responses", json=body, headers=HEADERS)
         if stream:
-            with holder.client.stream(
-                "POST", "/v1/responses", json=body, headers=HEADERS
-            ) as resp:
-                events = _parse_sse("".join(resp.iter_text()))
-            failed = [data for name, data in events if name == "response.failed"]
-            assert failed, events
-            code = failed[0]["response"]["error"]["code"]
+            names = [name for name, _ in _parse_sse(resp.text)]
+            assert "response.failed" in names, names
+            assert "response.completed" not in names, names
         else:
-            resp = holder.client.post("/v1/responses", json=body, headers=HEADERS)
-            assert resp.status_code == 200, resp.text
-            code = resp.json()["error"]["code"]
+            assert resp.status_code == 422, resp.text
     finally:
         holder.cleanup()
-    assert code == "tool_choice_unfulfilled"
+    assert [(c["result"], c["error_class"]) for c in calls] == [
+        ("failed", "output_contract_unmet")
+    ]
+
+
+def test_invalid_tool_arguments_envelope_counts_output_contract_unmet(monkeypatch):
+    """The classified (``rapid_mlx_error_code``) arm answers a failed
+    envelope instead of re-raising; it must still count exactly once."""
+    holder = _build_client(monkeypatch, _HealthyEngine)
+    try:
+        from fastapi import HTTPException
+
+        import rapid_mlx.routes.responses as responses_route
+
+        def _raise_classified(*_args, **_kwargs):
+            exc = HTTPException(status_code=400, detail="bad tool arguments")
+            exc.rapid_mlx_error_code = "invalid_tool_arguments"
+            raise exc
+
+        monkeypatch.setattr(
+            responses_route, "_enforce_responses_tool_choice", _raise_classified
+        )
+        calls = _capture_emits(monkeypatch)
+        resp = holder.client.post(
+            "/v1/responses",
+            json={**PAYLOAD, "tools": _SHELL_TOOL},
+            headers=HEADERS,
+        )
+    finally:
+        holder.cleanup()
+    assert resp.status_code == 200, resp.text
+    assert resp.json()["error"]["code"] == "invalid_tool_arguments"
     assert [(c["result"], c["error_class"]) for c in calls] == [
         ("failed", "output_contract_unmet")
     ]

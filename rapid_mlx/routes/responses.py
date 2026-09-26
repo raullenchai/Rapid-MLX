@@ -2282,6 +2282,10 @@ async def _non_stream(
                 tool_calls, openai_request.tools, enforce_required=True
             )
     except HTTPException as tool_error:
+        # Every rejection out of the tool_choice / tool-argument contract
+        # check is an unmet output contract, whether it is answered as the
+        # failed envelope below or re-raised as the route's 4xx.
+        _record_nonstream_failure(engine, request, "output_contract_unmet")
         detail = tool_error.detail
         classified_code = getattr(tool_error, "rapid_mlx_error_code", None)
         if classified_code is None:
@@ -2308,7 +2312,6 @@ async def _non_stream(
         )
         payload = failed_payload.model_dump(exclude_none=True)
         payload["error"] = {"code": code, "message": message}
-        _record_nonstream_failure(engine, request, "output_contract_unmet")
         return Response(content=json.dumps(payload), media_type="application/json")
 
     cleaned_text, reasoning_text = _finalize_content_and_reasoning(
