@@ -59,6 +59,12 @@ class _ExecCalled(BaseException):
     pass
 
 
+_NON_INTERACTIVE_HINT = (
+    "Non-interactive session: rerun with --yes to install rapid-mlx[vision] "
+    "automatically, or install it manually with the command above."
+)
+
+
 def _failure(*, status: str = "absent", extra: str = "vision"):
     return OptionalRuntimeMissing(
         extra=extra,
@@ -173,6 +179,7 @@ def test_tty_decline_keeps_exit_two_without_install(
         optional_runtime.handle_optional_runtime_missing(_failure(extra=extra))
 
     assert expected_prompt in stderr.getvalue()
+    assert _NON_INTERACTIVE_HINT not in stderr.getvalue()
 
 
 def test_tty_timeout_defaults_no_without_reading_stdin(monkeypatch) -> None:
@@ -275,7 +282,7 @@ def test_windows_console_exception_defaults_no(monkeypatch) -> None:
     assert optional_runtime._prompt_to_install("vision") is False
 
 
-def test_non_tty_without_yes_keeps_existing_failure_without_prompt(monkeypatch) -> None:
+def test_non_tty_without_yes_prints_automatic_install_guidance(monkeypatch) -> None:
     stderr = _NotTTY()
     _isolate_handler(monkeypatch, stdin=_NotTTY(), stderr=stderr)
     monkeypatch.setattr(
@@ -288,6 +295,10 @@ def test_non_tty_without_yes_keeps_existing_failure_without_prompt(monkeypatch) 
         optional_runtime.handle_optional_runtime_missing(_failure())
 
     assert "Install rapid-mlx[vision] now?" not in stderr.getvalue()
+    assert _NON_INTERACTIVE_HINT in stderr.getvalue()
+    assert stderr.getvalue().splitlines()[-1] == (
+        "RAPID-MLX-STARTUP-FAILURE: runtime_extra_missing extra=vision"
+    )
 
 
 def test_isatty_exception_is_non_tty(monkeypatch) -> None:
@@ -337,7 +348,8 @@ def test_detached_or_stream_without_isatty_is_non_tty(
 
 
 def test_yes_installs_without_tty(monkeypatch) -> None:
-    order = _isolate_handler(monkeypatch, stdin=_NotTTY(), stderr=_NotTTY())
+    stderr = _NotTTY()
+    order = _isolate_handler(monkeypatch, stdin=_NotTTY(), stderr=stderr)
     _install_succeeds(monkeypatch, order)
     monkeypatch.setattr(sys, "executable", "/tmp/rapid/bin/python")
     monkeypatch.setattr(sys, "orig_argv", ["python", "rapid-mlx", "serve", "kokoro"])
@@ -352,6 +364,7 @@ def test_yes_installs_without_tty(monkeypatch) -> None:
         "/tmp/rapid/bin/python",
         ["/tmp/rapid/bin/python", "rapid-mlx", "serve", "kokoro"],
     )
+    assert _NON_INTERACTIVE_HINT not in stderr.getvalue()
 
 
 def test_pip_failure_preserves_original_multiline_hint(monkeypatch) -> None:
@@ -568,19 +581,20 @@ def test_non_absent_status_never_prompts_or_installs(monkeypatch, status) -> Non
 
 
 def test_missing_pip_never_prompts(monkeypatch) -> None:
-    stderr = _TTY()
-    _isolate_handler(monkeypatch, stdin=_TTY("y\n"), stderr=stderr)
+    stderr = _NotTTY()
+    _isolate_handler(monkeypatch, stdin=_NotTTY(), stderr=stderr)
     monkeypatch.setattr(importlib.util, "find_spec", lambda name: None)
 
     with pytest.raises(SystemExit, match="2"):
-        optional_runtime.handle_optional_runtime_missing(_failure(), assume_yes=True)
+        optional_runtime.handle_optional_runtime_missing(_failure())
 
     assert "Install rapid-mlx[vision] now?" not in stderr.getvalue()
+    assert _NON_INTERACTIVE_HINT not in stderr.getvalue()
 
 
 def test_desktop_bundle_interpreter_never_prompts(monkeypatch) -> None:
-    stderr = _TTY()
-    _isolate_handler(monkeypatch, stdin=_TTY("y\n"), stderr=stderr)
+    stderr = _NotTTY()
+    _isolate_handler(monkeypatch, stdin=_NotTTY(), stderr=stderr)
     monkeypatch.setattr(
         sys,
         "executable",
@@ -588,9 +602,10 @@ def test_desktop_bundle_interpreter_never_prompts(monkeypatch) -> None:
     )
 
     with pytest.raises(SystemExit, match="2"):
-        optional_runtime.handle_optional_runtime_missing(_failure(), assume_yes=True)
+        optional_runtime.handle_optional_runtime_missing(_failure())
 
     assert "Install rapid-mlx[vision] now?" not in stderr.getvalue()
+    assert _NON_INTERACTIVE_HINT not in stderr.getvalue()
 
 
 def test_desktop_sidecar_role_never_prompts(monkeypatch) -> None:
