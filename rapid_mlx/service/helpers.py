@@ -2689,6 +2689,26 @@ def reasoning_stop_scope_kwargs(engine: Any, request: Any) -> dict:
         return {}
     cfg = get_config()
     reasoning_parser = getattr(cfg, "reasoning_parser", None)
+    registry = getattr(cfg, "model_registry", None)
+    if registry is not None:
+        try:
+            entry = registry.get_entry(getattr(request, "model", None))
+        except KeyError:
+            # Model validation normally rejects this before generation. If a
+            # registry changes between validation and this lookup, preserve
+            # raw stop semantics instead of borrowing the default parser.
+            return {}
+        if getattr(entry, "engine", None) is not engine:
+            # A replacement can be published after the route captured its
+            # engine. Never apply the replacement model's parser contract to
+            # an in-flight request on the retired engine.
+            return {}
+        parser_name = getattr(entry, "reasoning_parser", None)
+        if not parser_name:
+            return {}
+        from ..reasoning import get_parser
+
+        reasoning_parser = get_parser(parser_name)()
     if reasoning_parser is None:
         return {}
     from ..reasoning.think_stop import build_reasoning_stop_scope

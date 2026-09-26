@@ -255,3 +255,80 @@ def test_thinking_off_scope_does_not_start_in_reasoning(surface):
 def test_routes_leave_other_requests_unscoped(surface, parser_name, stop):
     kwargs = _post(surface, parser_name=parser_name, stop=stop, stream=False)
     assert "reasoning_stop_scope" not in kwargs
+
+
+def test_multimodel_scope_uses_the_selected_entry_not_the_global_parser():
+    """A reasoning sidecar gets its parser even when the default is plain."""
+    from rapid_mlx.config import reset_config
+    from rapid_mlx.service.helpers import reasoning_stop_scope_kwargs
+
+    engine = _RecordingEngine()
+    entry = SimpleNamespace(engine=engine, reasoning_parser="qwen3")
+    registry = SimpleNamespace(get_entry=lambda _model: entry)
+    request = SimpleNamespace(
+        model="reasoning-sidecar",
+        stop=["10"],
+        tools=None,
+        enable_thinking=None,
+        chat_template_kwargs={"enable_thinking": True},
+    )
+    cfg = reset_config()
+    cfg.model_registry = registry
+    cfg.reasoning_parser = None
+    cfg.reasoning_parser_name = None
+    try:
+        assert reasoning_stop_scope_kwargs(engine, request) == {
+            "reasoning_stop_scope": PROMPT_OPENED
+        }
+    finally:
+        reset_config()
+
+
+def test_multimodel_plain_entry_does_not_borrow_the_global_parser():
+    """A plain sidecar keeps raw stops when the default model reasons."""
+    from rapid_mlx.config import reset_config
+    from rapid_mlx.reasoning import get_parser
+    from rapid_mlx.service.helpers import reasoning_stop_scope_kwargs
+
+    engine = _RecordingEngine()
+    entry = SimpleNamespace(engine=engine, reasoning_parser=None)
+    registry = SimpleNamespace(get_entry=lambda _model: entry)
+    request = SimpleNamespace(
+        model="plain-sidecar",
+        stop=["10"],
+        tools=None,
+        enable_thinking=None,
+        chat_template_kwargs={"enable_thinking": True},
+    )
+    cfg = reset_config()
+    cfg.model_registry = registry
+    cfg.reasoning_parser = get_parser("qwen3")()
+    cfg.reasoning_parser_name = "qwen3"
+    try:
+        assert reasoning_stop_scope_kwargs(engine, request) == {}
+    finally:
+        reset_config()
+
+
+def test_multimodel_scope_fails_closed_on_registry_replacement():
+    """Do not attach a replacement entry's parser to a retired engine."""
+    from rapid_mlx.config import reset_config
+    from rapid_mlx.service.helpers import reasoning_stop_scope_kwargs
+
+    captured_engine = _RecordingEngine()
+    replacement = _RecordingEngine()
+    entry = SimpleNamespace(engine=replacement, reasoning_parser="qwen3")
+    registry = SimpleNamespace(get_entry=lambda _model: entry)
+    request = SimpleNamespace(
+        model="replaced-sidecar",
+        stop=["10"],
+        tools=None,
+        enable_thinking=None,
+        chat_template_kwargs={"enable_thinking": True},
+    )
+    cfg = reset_config()
+    cfg.model_registry = registry
+    try:
+        assert reasoning_stop_scope_kwargs(captured_engine, request) == {}
+    finally:
+        reset_config()
