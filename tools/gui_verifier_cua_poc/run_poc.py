@@ -1017,7 +1017,11 @@ async def run(args: argparse.Namespace) -> Path:
                 json.dumps(trace, ensure_ascii=False, indent=2), encoding="utf-8"
             )
         for step_number in range(1, args.max_steps + 1):
-            if args.purchase and sign_in_pauses < 3 and "/ap/signin" in page.url:
+            if (
+                (args.purchase or args.human_login)
+                and sign_in_pauses < 3
+                and re.search(r"/ap/signin|/login|accounts\.", page.url or "")
+            ):
                 sign_in_pauses += 1
                 resumed = await _wait_for_human(
                     run_dir,
@@ -1409,6 +1413,11 @@ def parse_args() -> argparse.Namespace:
         type=float,
         default=600.0,
         help="Seconds to wait at a human gate before ending the run",
+    )
+    parser.add_argument(
+        "--human-login",
+        action="store_true",
+        help="Pause at sign-in pages so the human can log in (RESUME gate)",
     )
     parser.add_argument("--fast-controller-max-scrolls", type=int, default=4)
     parser.add_argument("--start-url", default="https://www.amazon.com/")

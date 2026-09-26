@@ -37,11 +37,11 @@ outcome whenever the operator declines permission.
 | # | Scenario | Muse evidence | Our MVP status | Acceptance for "done" |
 |---|---|---|---|---|
 | 1 | **Agentic shopping**: NL goal → search → compare (rating × review count × sponsorship) → product page → cart → checkout → order | Muse's flagship; blocked by Amazon | Proven end-to-end to verified add-to-cart (cart-count postcondition 0→1, 1→2); place-order path implemented behind `CONFIRM_ORDER` gate | One operator-authorized run places a real, cancellable order; trace captures the whole chain |
-| 2 | **Travel booking**: NL trip → search flights/hotels across sites → compare → fill passenger/guest forms → stop at payment | Announced Muse capability; high value | Same protocol applies; search/compare phase mirrors scenario 1; forms are `fill`/`submit` targets | Search→select→form-fill completes; run stops at payment with a typed order summary awaiting approval |
+| 2 | **Travel booking**: NL trip → search flights/hotels across sites → compare → fill passenger/guest forms → stop at payment | Announced Muse capability; high value | Same protocol applies; search/compare phase mirrors scenario 1; forms are `fill`/`submit` targets; smoke command documented below | Search→select→form-fill completes; run stops at payment with a typed order summary awaiting approval |
 | 3 | **Money assistant**: read-only account/spend digest; bill pay strictly behind a human gate | Muse money flows; Wells Fargo partner coverage | Not started; browser lane + gate machinery already exist | Read-only digest of one bank dashboard; a payment flow demonstrably halts at the gate unexecuted |
-| 4 | **Music/media**: create/curate playlists and queues from NL; discovery | Spotify is Muse's first official connector | Browser lane works; Spotify web app is session-reuse friendly like Amazon | One playlist created from an NL prompt in the user's own account, trace-verified |
-| 5 | **Local files & desktop**: organize folders, find documents, cross-app desktop flows | Muse expanded filesystem access; highest-privilege surface | Rapid Desktop already does local files/code (Personal Intelligence); repo has real terminal harnesses | One rule-based Downloads organization with dry-run summary and per-batch confirm |
-| 6 | **Always-on proactive agent**: price/deal watching, inbox digest, reminders | OpenAI's "o" copies this; Muse's retention hook | `always-on` service ADR exists; laya is the natural cheap filter | One watcher produces a daily human digest for a product price threshold |
+| 4 | **Music/media**: create/curate playlists and queues from NL; discovery | Spotify is Muse's first official connector | Runner is site-agnostic; `--human-login` gate added for first-time Spotify sign-in; playlist flow command documented | One playlist created from an NL prompt in the user's own account, trace-verified |
+| 5 | **Local files & desktop**: organize folders, find documents, cross-app desktop flows | Muse expanded filesystem access; highest-privilege surface | **Dogfooded end-to-end** (`tools/local_muse/file_organizer.py`): NL rule → planner proposal → validation caught a hallucinated file → repair retry → APPROVE gate → 12 files moved with undo log | One rule-based Downloads organization with dry-run summary and per-batch confirm — **met** |
+| 6 | **Always-on proactive agent**: price/deal watching, inbox digest, reminders | OpenAI's "o" copies this; Muse's retention hook | **Digest flow dogfooded** (`tools/local_muse/digest.py`): 5 repo docs → urgency-sorted digest with action items (long-doc token fix applied); watcher scheduling pending | One watcher produces a daily human digest for a product price threshold |
 
 Scenarios 1, 2, 3 share one pipeline (browser lane + money gate). Scenario 4 is
 the low-risk quick win with an official integration path. Scenario 5 is our home
@@ -102,8 +102,12 @@ unless marked next:
 
 ## Next actions
 
-1. Operator-authorized `CONFIRM_ORDER` run to certify scenario 1 end to end.
-2. Scenario 4 (Spotify) as the second flow — lowest risk, validates reuse of
-   the same stack outside shopping.
-3. Native macOS Accessibility targets to open scenario 5 and non-browser apps.
-4. Scenario 6 watcher on top of the always-on service.
+1. Scenario 4 smoke run: sign in to Spotify once at the `--human-login` gate,
+   then let the planner create a playlist from an NL prompt.
+2. Scenario 2 smoke run: Google Flights search/compare, stopping before
+   payment (`--start-url https://www.google.com/travel/flights`, research
+   guards, `done` on the comparison summary).
+3. Scenario 6 watcher on top of the always-on service (laya as cheap filter).
+4. Native macOS Accessibility targets to open non-browser desktop flows.
+5. Operator-authorized `CONFIRM_ORDER` run remains optional (per operator:
+   add-to-cart is the accepted shopping terminal for the MVP).

@@ -9,7 +9,14 @@
 - Scenario research: Muse top flows distilled into
   `docs/engineering/decisions/2026-09-26-local-muse-mvp-scenarios.md`
   (shopping, travel, money, music, local files, always-on) with the MVP stack
-  mapping and next actions.
+  mapping and next actions. Architecture note: laya (not GUI-Actor) is the
+  fast-thinking lane; GUI-Actor-Verifier-2B is grounding-only.
+- New flows dogfooded 2026-09-26: `tools/local_muse/file_organizer.py`
+  (NL rule → validated plan with repair retry → APPROVE gate → reversible
+  moves) and `tools/local_muse/digest.py` (5 docs → urgency-sorted digest).
+  Generic `--human-login` RESUME gate added to the browser runner for Spotify
+  and other sign-in-first sites. Per operator: shopping MVP terminal is
+  verified add-to-cart; CONFIRM_ORDER stays optional.
 
 ## Verified facts
 
