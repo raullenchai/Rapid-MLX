@@ -20,6 +20,10 @@
   `746a58556820933a2df5c75887a2570f1ad200c0`; the engine verifies and loads
   its q4 encoder, materializes prompt embeddings, and evicts components. The
   GUI catalog exposes both low-memory and bf16 aliases.
+- Exact Server candidate: branch `efa24060` passed default generation and
+  img2img against the pinned uploaded artifact. Generation was HTTP 200 at
+  512-square/40 steps with 4.65 GiB peak RSS; img2img was HTTP 200 at the
+  derived 1024-square canvas with 5.06 GiB peak RSS.
 - Risk: testing ran on a 256 GB Mac Studio with MLX memory limits, not a
   physical 8 GB Mac. Quality evidence covers only two prompts. The repository
   remains private until exact Server/GUI dogfood and publication approval.
