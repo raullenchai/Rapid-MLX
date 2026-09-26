@@ -3581,8 +3581,14 @@ def test_privacy_gate_leaves_depends_and_engine_lookup_boundaries_clean(tmp_path
 _EMIT_NAMES = frozenset({"emit_completed_request", "_record_completed_request"})
 
 
-def _failed_emits_missing_class(tree: ast.AST) -> list[int]:
-    """Line numbers of result="failed" emits that omit ``error_class``."""
+def _failed_emits(tree: ast.AST) -> tuple[list[int], list[int]]:
+    """``(failed emit lines, those among them that omit error_class)``.
+
+    Purely AST-based: any spelling of ``result="failed"`` (spacing, quote
+    style) is the same ``ast.Constant``, so no textual prefilter can let a
+    site slip past the gate.
+    """
+    failed: list[int] = []
     missing: list[int] = []
     for node in ast.walk(tree):
         if not isinstance(node, ast.Call):
@@ -3600,28 +3606,24 @@ def _failed_emits_missing_class(tree: ast.AST) -> list[int]:
         keywords = {kw.arg: kw.value for kw in node.keywords if kw.arg}
         result = keywords.get("result")
         if isinstance(result, ast.Constant) and result.value == "failed":
+            failed.append(node.lineno)
             error_class = keywords.get("error_class")
             if error_class is None or (
                 isinstance(error_class, ast.Constant) and error_class.value is None
             ):
                 missing.append(node.lineno)
-    return missing
+    return failed, missing
 
 
 def test_every_failed_inference_site_passes_an_error_class():
     offenders: list[str] = []
     failed_sites = 0
     for path in sorted((REPO_ROOT / "rapid_mlx").rglob("*.py")):
-        source = path.read_text(encoding="utf-8")
-        if 'result="failed"' not in source:
-            continue
-        tree = ast.parse(source, filename=str(path))
-        failed_sites += source.count('result="failed"')
-        offenders.extend(
-            f"{path.relative_to(REPO_ROOT)}:{line}"
-            for line in _failed_emits_missing_class(tree)
-        )
-    assert failed_sites >= 10
+        tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
+        failed, missing = _failed_emits(tree)
+        failed_sites += len(failed)
+        offenders.extend(f"{path.relative_to(REPO_ROOT)}:{line}" for line in missing)
+    assert failed_sites >= 12
     assert offenders == []
 
 
@@ -3632,8 +3634,12 @@ def test_failed_site_gate_catches_a_site_without_a_class():
         "x.emit_completed_request(result='failed', error_class='other')\n"
         "x.emit_completed_request(result='ok')\n"
         "(lambda: None)()(result='failed')\n"
+        'x.emit_completed_request(result = "failed")\n'
+        "_record_completed_request(\n    result=(\n        'failed'\n    )\n)\n"
     )
-    assert _failed_emits_missing_class(tree) == [1, 2]
+    failed, missing = _failed_emits(tree)
+    assert failed == [1, 2, 3, 6, 7]
+    assert missing == [1, 2, 6, 7]
 
 
 def test_inference_error_class_enum_is_the_documented_closed_set():
