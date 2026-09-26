@@ -3631,11 +3631,43 @@ def _emit_shape_violations(tree: ast.AST) -> list[tuple[int, str]]:
     ``error_class``. The single exception is the worker hand-off
     ``partial(_record_completed_request, ..., result=result,
     error_class=error_class)``, which must forward both unchanged. Any other
-    reference to the emitters (alias, getattr-free re-binding, import alias,
-    passing them around) is rejected, so the static gate cannot be bypassed.
+    reference to the emitters (alias, re-binding, import alias, passing them
+    around) is rejected. A failed class must be a registry literal or a
+    classifier call / name; a name that is a parameter of the enclosing
+    function must have NO default (a forwarding wrapper whose class defaults
+    to None would let callers omit it). String-keyed dynamic lookups
+    (``getattr(mod, "emit_...")``) are out of reach of any static check; the
+    runtime still collapses a missing class to ``other``.
     """
     violations: list[tuple[int, str]] = []
     allowed: set[int] = set()
+    allowed_classes = set(
+        __import__("rapid_mlx.telemetry.registry", fromlist=["x"]).load_registry()[
+            "enums"
+        ]["inference_error_class"]["values"]
+    )
+    enclosing: dict[int, ast.AST] = {}
+    for fn in ast.walk(tree):
+        if isinstance(fn, (ast.FunctionDef, ast.AsyncFunctionDef)):
+            for inner in ast.walk(fn):
+                if isinstance(inner, ast.Call):
+                    enclosing[id(inner)] = fn  # innermost wins (walk is BFS)
+
+    def _param_has_default(fn: ast.AST | None, name: str) -> bool:
+        if not isinstance(fn, (ast.FunctionDef, ast.AsyncFunctionDef)):
+            return False
+        args = fn.args
+        positional = [*args.posonlyargs, *args.args]
+        with_default = {
+            a.arg for a in positional[len(positional) - len(args.defaults) :]
+        }
+        with_default |= {
+            a.arg
+            for a, default in zip(args.kwonlyargs, args.kw_defaults, strict=True)
+            if default is not None
+        }
+        return name in with_default
+
     for node in ast.walk(tree):
         if isinstance(node, ast.ImportFrom):
             for alias in node.names:
@@ -3646,7 +3678,7 @@ def _emit_shape_violations(tree: ast.AST) -> list[tuple[int, str]]:
         if (
             _emit_name(node.func) == "partial"
             and node.args
-            and _emit_name(node.args[0]) in _EMIT_NAMES
+            and _emit_name(node.args[0]) == "_record_completed_request"
         ):
             allowed.add(id(node.args[0]))
             forwarded = {kw.arg: kw.value for kw in node.keywords}
@@ -3678,6 +3710,13 @@ def _emit_shape_violations(tree: ast.AST) -> list[tuple[int, str]]:
                 isinstance(error_class, ast.Constant) and error_class.value is None
             ):
                 violations.append((node.lineno, "failed without error_class"))
+            elif isinstance(error_class, ast.Constant):
+                if error_class.value not in allowed_classes:
+                    violations.append((node.lineno, "class not in registry"))
+            elif isinstance(error_class, ast.Name) and _param_has_default(
+                enclosing.get(id(node)), error_class.id
+            ):
+                violations.append((node.lineno, "class parameter has a default"))
     for node in ast.walk(tree):
         if (
             isinstance(node, (ast.Name, ast.Attribute))
@@ -3720,6 +3759,47 @@ def test_every_failed_inference_site_passes_an_error_class():
             "partial(_record_completed_request, result='failed')",
             "partial must forward result+class",
         ),
+        (
+            "partial(_record_completed_request, result=r, error_class=error_class)",
+            "partial must forward result+class",
+        ),
+        (
+            "partial(_record_completed_request, result=result, error_class=c)",
+            "partial must forward result+class",
+        ),
+        (
+            "partial(_record_completed_request, x, result=result,"
+            " error_class=error_class)",
+            "partial must forward result+class",
+        ),
+        (
+            "partial(_record_completed_request, **kw, result=result,"
+            " error_class=error_class)",
+            "partial must forward result+class",
+        ),
+        (
+            "partial(emit_completed_request, result=result, error_class=error_class)",
+            "emitter referenced outside a call",
+        ),
+        (
+            "x.emit_completed_request(result='failed', error_class=None)",
+            "failed without error_class",
+        ),
+        (
+            "x.emit_completed_request(result='failed', error_class='')",
+            "class not in registry",
+        ),
+        ("x.emit_completed_request(result='error')", "non-literal result"),
+        (
+            "def w(m, error_class=None):\n"
+            "    x.emit_completed_request(result='failed', error_class=error_class)",
+            "class parameter has a default",
+        ),
+        (
+            "def w(m, *, error_class='other'):\n"
+            "    x.emit_completed_request(result='failed', error_class=error_class)",
+            "class parameter has a default",
+        ),
     ],
 )
 def test_emit_shape_gate_rejects_every_bypass(source, reason):
@@ -3730,6 +3810,9 @@ def test_emit_shape_gate_accepts_the_allowed_shapes():
     source = (
         "x.emit_completed_request(result='ok')\n"
         "x.emit_completed_request(result='failed', error_class=classify(e))\n"
+        "x.emit_completed_request(result='failed', error_class='model_replaced')\n"
+        "def w(m, error_class: str):\n"
+        "    x.emit_completed_request(result='failed', error_class=error_class)\n"
         "partial(_record_completed_request, model=m, result=result,"
         " error_class=error_class)\n"
         "def emit_completed_request(*, result, error_class=None): pass\n"
