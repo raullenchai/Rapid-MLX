@@ -373,6 +373,19 @@ def _reset_one_shot_state():
         model_events._reset_for_tests()
 
 
+def test_telemetry_state_uses_per_test_root(tmp_path) -> None:
+    from rapid_mlx.telemetry import state, store
+
+    root = tmp_path / ".rapid-mlx"
+    assert state.client_id_path() == root / "telemetry-client-id"
+    assert state.consent_path() == root / "telemetry-consent.yaml"
+    assert store.db_path() == root / "telemetry.db"
+    assert model_events._serve_failed_recent_path() == (
+        root / "state" / "serve-failed-recent.json"
+    )
+    assert server_start._marker_path().parent == root / "state"
+
+
 def test_posix_prompt_ready_at_deadline_is_not_accepted(monkeypatch) -> None:
     now = [10.0]
 
@@ -414,6 +427,12 @@ def _capture(monkeypatch):
         "rapid_mlx.telemetry.track.track",
         lambda event, props, **_kwargs: events.append((event, dict(props))),
     )
+
+    def enqueue(accepted):
+        events.append((accepted.event, dict(accepted.props)))
+        return True
+
+    monkeypatch.setattr("rapid_mlx.telemetry.track._enqueue_accepted", enqueue)
     return events
 
 

@@ -202,21 +202,28 @@ def _remove_marker_snapshot(path: Path, snapshot: tuple[int, int] | None) -> Non
 
 
 def _atomic_write_marker(
-    path: Path, *, startup_terminal: bool = False
+    path: Path, *, startup_terminal: bool = False, value: object | None = None
 ) -> tuple[int, int]:
-    identity = process_identity(os.getpid())
-    if identity is None:
-        raise OSError("could not determine current process identity")
-    if not _prepare_state_dir(path.parent):
-        raise OSError("state directory is unavailable")
-    payload = json.dumps(
-        {
+    if value is None:
+        identity = process_identity(os.getpid())
+        if identity is None:
+            raise OSError("could not determine current process identity")
+        value = {
             "pid": identity.pid,
             "create_time": identity.create_time,
             "boot_time": identity.boot_time,
             "app_version": rapid_mlx.__version__,
             "startup_terminal": startup_terminal,
-        },
+        }
+    return _atomic_write_state_json(path, value)
+
+
+def _atomic_write_state_json(path: Path, value: object) -> tuple[int, int]:
+    """Atomically replace one private JSON file under the telemetry state root."""
+    if not _prepare_state_dir(path.parent):
+        raise OSError("state directory is unavailable")
+    payload = json.dumps(
+        value,
         separators=(",", ":"),
         sort_keys=True,
     ).encode("utf-8")
