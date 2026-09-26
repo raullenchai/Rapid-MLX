@@ -217,6 +217,20 @@ def test_qwen_image_q4_still_warns_when_8gb_host_is_already_busy(capsys):
     assert "likely too large" in out
 
 
+def test_catalog_lookup_failure_uses_disk_fallback(monkeypatch, capsys):
+    """Catalog failures must keep the best-effort disk-size fallback working."""
+    _patch_size_bytes(monkeypatch, size_gb=2.0)
+    with (
+        patch.dict("sys.modules", {"psutil": _fake_psutil(32.0)}),
+        patch(
+            "rapid_mlx.model_aliases.resolve_profile",
+            side_effect=RuntimeError("catalog unavailable"),
+        ),
+    ):
+        _check_memory_capacity("/local/path/to/model", alias="unknown-alias")
+    assert capsys.readouterr().out == ""
+
+
 def test_silent_when_psutil_unavailable(monkeypatch, capsys):
     """Best-effort: if psutil can't be imported, fall through silently
     rather than blocking startup.
