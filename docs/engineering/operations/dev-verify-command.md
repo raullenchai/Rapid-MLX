@@ -37,7 +37,9 @@ install.
 Exactly one primary input is required: `--diff-base`, `--paths-file`,
 `--area`, or `--journey`. `--journey` may additionally refine an area or diff.
 `--plan` prints the plan and runs nothing; `--json` emits the same payload the
-result artifact carries.
+result artifact carries. A relative `--out` resolves against the repository
+root (journey checks execute from `apps/rapid-mac/`, so a cwd-relative path
+would otherwise strand the evidence in the app build tree).
 
 ## What the plan contains
 

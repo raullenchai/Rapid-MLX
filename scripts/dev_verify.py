@@ -393,6 +393,19 @@ def swift_filter_command(journeys: list[str]) -> str:
     return f'swift test --filter "Golden journey: ({pattern})"'
 
 
+def journey_command(name: str) -> str:
+    """The harness invocation for one journey, injection-safe.
+
+    journeys.yaml is PR-controlled content: a malicious journey name must
+    never reach a shell string, where it would execute before the harness's
+    own `case` validation could reject it. Fail closed on anything outside
+    the manifest's contractual `[a-z0-9-]+` namespace.
+    """
+    if not re.fullmatch(r"[a-z0-9-]+", name):
+        raise RuntimeError(f"journey name is not a safe command argument: {name!r}")
+    return f"./scripts/gui-golden-flows.sh --flow {name}"
+
+
 def select_all_flows() -> list[str]:
     """Import lazily so the router stays the single selection authority."""
     from scripts.select_gui_flows import all_flows
@@ -499,7 +512,7 @@ def _checks_for_diff_mode(
                 Check(
                     id=f"journey:{name}",
                     kind="gui-journey",
-                    command=f"./scripts/gui-golden-flows.sh --flow {name}",
+                    command=journey_command(name),
                     why=f"changed paths route here via journeys.yaml"
                     f" ({index[name]['group']} group)",
                     cwd=DESKTOP_DIR,
@@ -563,7 +576,7 @@ def _checks_for_area_mode(
             Check(
                 id=f"journey:{name}",
                 kind="gui-journey",
-                command=f"./scripts/gui-golden-flows.sh --flow {name}",
+                command=journey_command(name),
                 why=f"{reason} ({index[name]['group']} group)",
                 cwd=DESKTOP_DIR,
                 env={
@@ -666,6 +679,12 @@ def build_plan(args: argparse.Namespace, evidence_dir: Path | None = None) -> Pl
     evidence_dir = evidence_dir or (
         Path(args.out) if args.out else default_evidence_dir()
     )
+    if not evidence_dir.is_absolute():
+        # A relative --out must resolve against the repo root, not the
+        # process cwd: journey checks run with cwd=apps/rapid-mac, and a
+        # cwd-relative artifact path would strand the evidence inside the
+        # app build tree with a wrong recorded location.
+        evidence_dir = ROOT / evidence_dir
     if args.diff_base or args.paths_file:
         checks, diff_notes = _checks_for_diff_mode(lanes, flows, evidence_dir)
         notes.extend(diff_notes)

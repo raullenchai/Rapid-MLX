@@ -140,12 +140,17 @@ def test_unknown_journey_and_unknown_area_are_usage_errors():
         plan_for(area="Not a real area")
 
 
-def test_diff_base_resolution_covers_worktree_and_untracked():
-    # This worktree itself carries uncommitted files (this feature), so the
-    # merge-base diff against origin/main must be non-empty and include them.
-    paths, base_sha = dev_verify.resolve_diff("origin/main")
-    assert base_sha
-    assert "scripts/dev_verify.py" in paths
+def test_diff_base_resolution_covers_worktree_and_untracked(tmp_path: Path):
+    """Hermetic on any checkout: an untracked probe file must appear in the
+    resolved diff, proving worktree changes are part of PR-shaped input."""
+    probe = ROOT / "rapid-dev-verify-probe-untracked.txt"
+    probe.write_text("probe")
+    try:
+        paths, base_sha = dev_verify.resolve_diff("origin/main")
+        assert base_sha
+        assert "rapid-dev-verify-probe-untracked.txt" in paths
+    finally:
+        probe.unlink(missing_ok=True)
 
 
 # --------------------------------------------------------------------------
@@ -394,6 +399,36 @@ def test_explicit_swift_journey_is_recorded_in_result_input(tmp_path: Path):
     plan = plan_for(journey=["message-actions"])
     payload = dev_verify.result_payload(plan, tmp_path, "a" * 40, "", "", "plan")
     assert payload["input"]["explicit_journeys"] == ["message-actions"]
+
+
+def test_journey_names_never_reach_a_shell_unvalidated(tmp_path: Path, monkeypatch):
+    """journeys.yaml is PR-controlled: a crafted journey name must fail the
+    plan instead of executing inside the command string."""
+    malicious = "x; touch pwned-proof"
+    real_index = dev_verify.journey_index
+    monkeypatch.setattr(
+        dev_verify,
+        "journey_index",
+        lambda: {
+            malicious: {
+                "name": malicious,
+                "group": "chat",
+                "driver": "ax",
+                "ci_tier": "pr",
+                "source_paths": ["apps/rapid-mac/Sources/Rapid/Chat/"],
+            },
+            **real_index(),
+        },
+    )
+    with pytest.raises(RuntimeError, match="safe command argument"):
+        plan_for(journey=[malicious])
+    assert not (ROOT / "pwned-proof").exists()
+
+
+def test_relative_out_resolves_against_repo_root(tmp_path: Path):
+    plan = plan_for(area="Settings", out="relative-evidence-dir")
+    assert plan.evidence_dir.is_absolute()
+    assert str(plan.evidence_dir).startswith(str(ROOT))
 
 
 def test_result_artifacts_include_the_check_log(tmp_path: Path):
