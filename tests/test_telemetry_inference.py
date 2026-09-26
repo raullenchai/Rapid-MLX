@@ -1251,7 +1251,15 @@ def _request_model_violations(
                     if keyword.arg == "telemetry_model"
                 ]
                 if is_telemetry_call(node):
-                    expressions.extend(node.args)
+                    function_name = (
+                        node.func.id
+                        if isinstance(node.func, ast.Name)
+                        else node.func.attr
+                    )
+                    positional = node.args
+                    if function_name == "emit_failed_on_stream_error":
+                        positional = positional[1:]
+                    expressions.extend(positional)
                     expressions.extend(
                         keyword.value
                         for keyword in node.keywords
@@ -1295,6 +1303,8 @@ def _request_model_violations(
                             )
                     if resolved_name in _ENGINE_LOOKUP_FUNCTIONS:
                         return False
+                if isinstance(node, ast.Name) and node.id in request_roots:
+                    return True
                 if (
                     isinstance(node, ast.Attribute)
                     and node.attr == "model"
@@ -1328,6 +1338,32 @@ def _request_model_violations(
                     for child in ast.iter_child_nodes(node)
                 )
 
+            def expression_contains_request_root(
+                node: ast.AST,
+                request_roots: set[str],
+                lookup_scopes: list[
+                    dict[str, list[tuple[tuple[int, int], str | None]]]
+                ],
+            ) -> bool:
+                if isinstance(node, ast.Call):
+                    resolved_name = None
+                    if isinstance(node.func, ast.Name):
+                        position = (node.lineno, node.col_offset)
+                        for scope in lookup_scopes:
+                            for binding_position, value in scope.get(node.func.id, ()):
+                                if binding_position <= position:
+                                    resolved_name = value
+                    if resolved_name in _ENGINE_LOOKUP_FUNCTIONS:
+                        return False
+                if isinstance(node, ast.Name) and node.id in request_roots:
+                    return True
+                return any(
+                    expression_contains_request_root(
+                        child, request_roots, lookup_scopes
+                    )
+                    for child in ast.iter_child_nodes(node)
+                )
+
             def add_assignment_taint(
                 target: ast.AST,
                 value: ast.AST,
@@ -1358,6 +1394,12 @@ def _request_model_violations(
                     before = len(tainted)
                     tainted.update(_target_names(target))
                     changed = len(tainted) != before
+                if expression_contains_request_root(
+                    value, request_roots, lookup_scopes
+                ):
+                    before = len(request_roots)
+                    request_roots.update(_target_names(target))
+                    changed |= len(request_roots) != before
                 return changed
 
             def scope_taint(
@@ -1461,6 +1503,33 @@ def _request_model_violations(
                     bound_names = _function_bound_names(function, nodes)
                     request_roots.difference_update(bound_names)
                     inherited_scope_taint.difference_update(bound_names)
+                    positional = [
+                        *function.args.posonlyargs,
+                        *function.args.args,
+                    ]
+                    defaults = [
+                        *zip(
+                            positional[len(positional) - len(function.args.defaults) :],
+                            function.args.defaults,
+                            strict=True,
+                        ),
+                        *(
+                            (argument, default)
+                            for argument, default in zip(
+                                function.args.kwonlyargs,
+                                function.args.kw_defaults,
+                                strict=True,
+                            )
+                            if default is not None
+                        ),
+                    ]
+                    request_roots.update(
+                        argument.arg
+                        for argument, default in defaults
+                        if expression_contains_request_root(
+                            default, inherited_roots, lookup_scopes
+                        )
+                    )
                 request_roots.update(
                     child.id
                     for child in nodes
@@ -1561,6 +1630,33 @@ def test_no_route_or_api_telemetry_call_receives_request_model_expression():
             "engine = get_engine(request.model)\n"
             "emit_capability_rejected('unsupported', model=engine_telemetry_id(engine))"
         ),
+        "alias = request\nemit_capability_rejected('unsupported', model=alias.model)",
+        "alias = request\nemit_capability_rejected('unsupported', model=alias['model'])",
+        (
+            "alias = request\n"
+            "emit_capability_rejected('unsupported', model=getattr(alias, 'model'))"
+        ),
+        "alias, _ = request, 1\nemit_capability_rejected('unsupported', model=alias.model)",
+        (
+            "def inner(rq=request):\n"
+            "    emit_capability_rejected('unsupported', model=rq.model)"
+        ),
+        (
+            "alias = wrap(request)\n"
+            "emit_capability_rejected('unsupported', model=alias.model)"
+        ),
+        (
+            "if (alias := request):\n"
+            "    emit_capability_rejected('unsupported', model=alias.model)"
+        ),
+        (
+            "with request as alias:\n"
+            "    emit_capability_rejected('unsupported', model=alias.model)"
+        ),
+        (
+            "for alias in (request,):\n"
+            "    emit_capability_rejected('unsupported', model=alias.model)"
+        ),
     ],
     ids=[
         "direct",
@@ -1573,6 +1669,15 @@ def test_no_route_or_api_telemetry_call_receives_request_model_expression():
         "shadowed-engine-helper",
         "string-call",
         "shadowed-engine-lookup",
+        "bare-root-alias",
+        "bare-root-mapping-alias",
+        "bare-root-getattr-alias",
+        "bare-root-unpack",
+        "bare-root-default-argument",
+        "bare-root-wrapper-call",
+        "bare-root-walrus",
+        "bare-root-with-as",
+        "bare-root-for-target",
     ],
 )
 def test_request_model_privacy_gate_rejects_scratch_variants(tmp_path, function_body):
