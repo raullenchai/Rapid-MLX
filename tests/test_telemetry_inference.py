@@ -1047,7 +1047,7 @@ def _assigned_request_value(node: ast.AST) -> bool:
 
 
 def _function_request_roots(
-    function: ast.FunctionDef | ast.AsyncFunctionDef,
+    function: ast.FunctionDef | ast.AsyncFunctionDef | ast.Lambda,
     nodes: list[ast.AST],
     imported: dict[str, str],
     pydantic_models: set[str],
@@ -1088,7 +1088,8 @@ def _function_request_roots(
 
 
 def _function_bound_names(
-    function: ast.FunctionDef | ast.AsyncFunctionDef, nodes: list[ast.AST]
+    function: ast.FunctionDef | ast.AsyncFunctionDef | ast.Lambda,
+    nodes: list[ast.AST],
 ) -> set[str]:
     arguments = [
         *function.args.posonlyargs,
@@ -1107,20 +1108,24 @@ def _function_bound_names(
             for node in nodes
             if isinstance(node, ast.Name) and isinstance(node.ctx, ast.Store)
         }
-        | {
-            statement.name
-            for statement in function.body
-            if isinstance(
-                statement, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)
-            )
-        }
+        | (
+            {
+                statement.name
+                for statement in function.body
+                if isinstance(
+                    statement, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)
+                )
+            }
+            if isinstance(function, (ast.FunctionDef, ast.AsyncFunctionDef))
+            else set()
+        )
     )
 
 
 def _scope_lookup_bindings(
     module_name: str,
     nodes: list[ast.AST],
-    function: ast.FunctionDef | ast.AsyncFunctionDef | None,
+    function: ast.FunctionDef | ast.AsyncFunctionDef | ast.Lambda | None,
 ) -> dict[str, list[tuple[tuple[int, int], str | None]]]:
     """Collect ordered name bindings without entering nested scopes."""
     bindings: dict[str, list[tuple[tuple[int, int], str | None]]] = {}
@@ -1353,6 +1358,23 @@ def _request_model_violations(
                             for binding_position, value in scope.get(node.func.id, ()):
                                 if binding_position <= position:
                                     resolved_name = value
+                    elif isinstance(node.func, ast.Attribute):
+                        root = node.func.value
+                        attributes = [node.func.attr]
+                        while isinstance(root, ast.Attribute):
+                            attributes.append(root.attr)
+                            root = root.value
+                        if isinstance(root, ast.Name):
+                            position = (node.lineno, node.col_offset)
+                            root_binding = None
+                            for scope in lookup_scopes:
+                                for binding_position, value in scope.get(root.id, ()):
+                                    if binding_position <= position:
+                                        root_binding = value
+                            if root_binding is not None:
+                                resolved_name = ".".join(
+                                    [root_binding, *reversed(attributes)]
+                                )
                     if resolved_name in _ENGINE_LOOKUP_FUNCTIONS:
                         return False
                 if isinstance(node, ast.Name) and node.id in request_roots:
@@ -1482,7 +1504,10 @@ def _request_model_violations(
                 body: list[ast.AST],
                 inherited_roots: set[str],
                 inherited_taint: set[str],
-                function: ast.FunctionDef | ast.AsyncFunctionDef | None = None,
+                function: ast.FunctionDef
+                | ast.AsyncFunctionDef
+                | ast.Lambda
+                | None = None,
                 inherited_lookup_scopes: list[
                     dict[str, list[tuple[tuple[int, int], str | None]]]
                 ]
@@ -1543,9 +1568,14 @@ def _request_model_violations(
                             function, nodes, imported, pydantic_models
                         )
                     )
-                    debug_key = f"{path.relative_to(repo_root)}:{function.name}"
+                    debug_key = (
+                        f"{path.relative_to(repo_root)}:{function.name}"
+                        if isinstance(function, (ast.FunctionDef, ast.AsyncFunctionDef))
+                        else None
+                    )
                     if (
-                        root_debug is not None
+                        debug_key is not None
+                        and root_debug is not None
                         and debug_key in _REQUEST_MODEL_DEBUG_HANDLERS
                     ):
                         root_debug[debug_key] = sorted(request_roots)
@@ -1568,6 +1598,7 @@ def _request_model_violations(
                             [nested.body],
                             request_roots,
                             tainted,
+                            function=nested,
                             inherited_lookup_scopes=lookup_scopes,
                         )
                     elif isinstance(
@@ -1709,6 +1740,39 @@ def test_request_model_privacy_gate_accepts_imported_engine_lookup(tmp_path):
         "from rapid_mlx.telemetry.model_id import engine_telemetry_id\n\n"
         "def scratch(request):\n"
         "    engine = lookup_engine(request.model)\n"
+        "    emit_completed_request(\n"
+        "        model=engine_telemetry_id(engine), endpoint='/v1/test'\n"
+        "    )\n"
+    )
+    (route_dir / "scratch.py").write_text(source, encoding="utf-8")
+
+    assert _request_model_violations(tmp_path) == []
+
+
+def test_lambda_default_request_root_fails_closed(tmp_path):
+    route_dir = tmp_path / "rapid_mlx/routes"
+    route_dir.mkdir(parents=True)
+    source = (
+        "from rapid_mlx.telemetry.inference import emit_capability_rejected\n\n"
+        "def scratch(request):\n"
+        "    callback = lambda rq=request: emit_capability_rejected(\n"
+        "        'unsupported', model=rq.model\n"
+        "    )\n"
+    )
+    (route_dir / "scratch.py").write_text(source, encoding="utf-8")
+
+    assert _request_model_violations(tmp_path) == ["rapid_mlx/routes/scratch.py:4"]
+
+
+def test_module_qualified_engine_lookup_remains_a_privacy_boundary(tmp_path):
+    route_dir = tmp_path / "rapid_mlx/routes"
+    route_dir.mkdir(parents=True)
+    source = (
+        "import rapid_mlx.service.helpers as helpers\n"
+        "from rapid_mlx.telemetry.inference import emit_completed_request\n"
+        "from rapid_mlx.telemetry.model_id import engine_telemetry_id\n\n"
+        "def scratch(request):\n"
+        "    engine = helpers.get_engine(request.model)\n"
         "    emit_completed_request(\n"
         "        model=engine_telemetry_id(engine), endpoint='/v1/test'\n"
         "    )\n"
