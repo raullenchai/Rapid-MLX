@@ -4,6 +4,8 @@
 - Branch: `atlas/gui-verifier-cua-poc`
 - Host: Studio
 - Status: POC implemented and dogfooded; product integration remains open
+- Landed: semantic action protocol committed as `fe6624989` and pushed to
+  `origin/atlas/gui-verifier-cua-poc` (14 POC tests green, ruff clean).
 
 ## Verified facts
 
