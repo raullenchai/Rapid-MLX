@@ -2,7 +2,8 @@ import json
 from types import SimpleNamespace
 
 import pytest
-from rapid_general_cue import (
+
+from tools.general_cue_mvp.rapid_general_cue import (
     JevConfig,
     JevDecision,
     JevGuardBackend,
