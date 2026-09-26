@@ -1,19 +1,45 @@
 # SPDX-License-Identifier: Apache-2.0
-"""Best-effort telemetry v2 event emission."""
+"""Best-effort telemetry v2 event emission.
+
+The accepted-event token is an accidental-misuse guard, not an unforgeable
+capability. Same-process Python can always reach module state or use tools such
+as ``object.__new__``; resisting that is outside this module's threat model.
+The token instead carries one immutable, validated property snapshot across
+the consent decision and dedupe claim. Enqueue deliberately does not decide
+consent again, but it does re-run the cheap registry validation so mutation or
+forgery can never put registry-invalid or free-text properties on the wire.
+"""
 
 from __future__ import annotations
 
+import copy
 import threading
 from collections.abc import Mapping
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import date, datetime, timezone
+from types import MappingProxyType
 from typing import TYPE_CHECKING, Protocol
 
 import rapid_mlx
-from rapid_mlx.telemetry import build_gate, common_props, envelope, state, store
+from rapid_mlx.telemetry import (
+    build_gate,
+    common_props,
+    envelope,
+    registry,
+    state,
+    store,
+)
 
 if TYPE_CHECKING:
     from rapid_mlx.telemetry.consent_decision import ProcessRole
+
+__all__ = [
+    "emit_active_day",
+    "set_surface_for_role",
+    "start_lifecycle",
+    "track",
+    "would_accept",
+]
 
 
 @dataclass(frozen=True)
@@ -24,6 +50,39 @@ class _ProcessContext:
     session_id: str
     app_version: str
     channel: str
+
+
+# This discourages accidental construction only. Python module internals are
+# reachable by same-process code, which is explicitly outside the threat model.
+__ACCEPTED_EVENT_AUTHORITY = object()
+
+
+def _has_accepted_event_authority(candidate: object) -> bool:
+    """Check the misuse guard without class-scope name mangling."""
+    return candidate is __ACCEPTED_EVENT_AUTHORITY
+
+
+@dataclass(frozen=True, slots=True)
+class _AcceptedEvent:
+    """Opaque accidental-misuse guard carrying one immutable snapshot."""
+
+    event: str
+    props: Mapping[str, object]
+    nth_model_served: int | None
+    _authority: object = field(repr=False, compare=False)
+
+    def __post_init__(self) -> None:
+        if not _has_accepted_event_authority(self._authority):
+            raise TypeError("accepted events can only be created by would_accept")
+        object.__setattr__(
+            self,
+            "props",
+            MappingProxyType(copy.deepcopy(dict(self.props))),
+        )
+
+    def __copy__(self) -> _AcceptedEvent:
+        """An immutable token is its own safe shallow copy."""
+        return self
 
 
 class _ActiveDayStore(Protocol):
@@ -142,6 +201,36 @@ def _days_since_first_run_bucket() -> str | None:
         return _cohort_bucket
 
 
+def _accepted_props(
+    event: str, props: Mapping[str, object]
+) -> dict[str, object] | None:
+    """Apply the sole consent and event-registry acceptance decision."""
+    try:
+        if not _upload_allowed():
+            return None
+        return registry.validate(event, dict(props))
+    except Exception:
+        return None
+
+
+def would_accept(
+    event: str,
+    props: Mapping[str, object],
+    *,
+    nth_model_served: int | None = None,
+) -> _AcceptedEvent | None:
+    """Return opaque proof of consent and registry acceptance, or ``None``."""
+    accepted_props = _accepted_props(event, props)
+    if accepted_props is None:
+        return None
+    return _AcceptedEvent(
+        event=event,
+        props=accepted_props,
+        nth_model_served=nth_model_served,
+        _authority=__ACCEPTED_EVENT_AUTHORITY,
+    )
+
+
 def track(
     event: str,
     props: Mapping[str, object],
@@ -150,7 +239,34 @@ def track(
 ) -> bool:
     """Queue one registry-approved v2 event and report sender acceptance."""
     try:
-        if not _upload_allowed():
+        accepted = would_accept(
+            event,
+            props,
+            nth_model_served=nth_model_served,
+        )
+        if accepted is None:
+            return False
+        return _enqueue_accepted(accepted)
+    except Exception:
+        return False
+
+
+def _enqueue_accepted(accepted: _AcceptedEvent) -> bool:
+    """Queue an event only when accompanied by proof minted by this module."""
+    try:
+        if type(accepted) is not _AcceptedEvent:
+            return False
+        authority = accepted._authority
+        event = str(accepted.event)
+        props = dict(accepted.props)
+        nth_model_served = accepted.nth_model_served
+        if not _has_accepted_event_authority(authority):
+            return False
+        # Consent was decided exactly once before the dedupe ledger claim. The
+        # registry is cheap and is intentionally re-run here: even same-process
+        # forgery or ``object.__setattr__`` cannot put unvalidated data on wire.
+        accepted_props = registry.validate(event, props)
+        if accepted_props is None:
             return False
         context = _process_context()
         if context is None:
@@ -171,7 +287,9 @@ def track(
         )
         if common is None:
             return False
-        item = envelope.build_batch_item(event, props, common)
+        item = envelope._build_batch_item_from_validated(
+            event, dict(accepted_props), common
+        )
         if item is None:
             return False
 

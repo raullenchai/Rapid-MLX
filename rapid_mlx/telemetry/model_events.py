@@ -4,12 +4,20 @@
 from __future__ import annotations
 
 import errno
+import fcntl
 import functools
+import json
+import logging
+import math
+import os
 import re
 import socket
+import stat
 import threading
+import time
 import urllib.error
 from collections.abc import Callable
+from pathlib import Path
 from typing import ParamSpec
 
 from rapid_mlx.runtime.optional_runtime import OptionalRuntimeMissing
@@ -18,6 +26,14 @@ _serve_failure_lock = threading.Lock()
 _serve_failure_claimed = False
 _P = ParamSpec("_P")
 _EXCEPTION_CHAIN_LIMIT = 32
+SERVE_FAILED_DEDUPE_SECONDS = 600
+_SERVE_FAILED_MAX_KEYS = 64
+_SERVE_FAILED_MAX_BYTES = 64 * 1024
+_SERVE_FAILED_LOCK_WAIT_SECONDS = 0.25
+_SERVE_FAILED_LOCK_SLEEP_SECONDS = 0.01
+_serve_failed_clock = time.time
+
+logger = logging.getLogger(__name__)
 
 
 def _never_raise(func: Callable[_P, None]) -> Callable[_P, None]:
@@ -391,6 +407,192 @@ def emit_model_served(
         return False
 
 
+def _serve_failed_recent_path() -> Path:
+    from rapid_mlx.telemetry.state import _default_telemetry_dir
+
+    return _default_telemetry_dir() / "state" / "serve-failed-recent.json"
+
+
+def _read_serve_failed_recent(path: Path) -> dict[str, float]:
+    flags = os.O_RDONLY | getattr(os, "O_CLOEXEC", 0)
+    flags |= getattr(os, "O_NONBLOCK", 0)
+    flags |= getattr(os, "O_NOFOLLOW", 0)
+    try:
+        fd = os.open(path, flags)
+    except FileNotFoundError:
+        return {}
+    try:
+        file_stat = os.fstat(fd)
+        if (
+            not stat.S_ISREG(file_stat.st_mode)
+            or file_stat.st_size > _SERVE_FAILED_MAX_BYTES
+        ):
+            return {}
+        payload = bytearray()
+        while len(payload) <= _SERVE_FAILED_MAX_BYTES:
+            chunk = os.read(
+                fd,
+                min(4096, _SERVE_FAILED_MAX_BYTES + 1 - len(payload)),
+            )
+            if not chunk:
+                break
+            payload.extend(chunk)
+        if len(payload) > _SERVE_FAILED_MAX_BYTES:
+            return {}
+    finally:
+        os.close(fd)
+    try:
+        value = json.loads(payload.decode("utf-8"))
+    except (UnicodeError, json.JSONDecodeError):
+        return {}
+    if not isinstance(value, dict):
+        return {}
+    return {
+        key: float(timestamp)
+        for key, timestamp in value.items()
+        if isinstance(key, str)
+        and isinstance(timestamp, (int, float))
+        and not isinstance(timestamp, bool)
+        and math.isfinite(timestamp)
+    }
+
+
+def _acquire_serve_failed_lock(dir_fd: int) -> bool:
+    """Acquire the ledger lock within its bounded wait budget."""
+    deadline = time.monotonic() + _SERVE_FAILED_LOCK_WAIT_SECONDS
+    while True:
+        try:
+            fcntl.flock(dir_fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            return True
+        except BlockingIOError:
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                return False
+            time.sleep(min(_SERVE_FAILED_LOCK_SLEEP_SECONDS, remaining))
+
+
+def _serve_failure_claim_is_fresh(
+    recent: dict[str, float], encoded_key: str, current: float
+) -> bool:
+    previous = recent.get(encoded_key)
+    return (
+        previous is not None
+        and current >= previous
+        and current - previous < SERVE_FAILED_DEDUPE_SECONDS
+    )
+
+
+def _claim_serve_failure_key(
+    key: tuple[str, str, str, str],
+    *,
+    now: float | None = None,
+    would_accept: Callable[[], bool] | None = None,
+    on_claim: Callable[[], object] | None = None,
+) -> bool:
+    """Accept then claim a cross-process failure key and enqueue after unlock."""
+    decision: bool | None = None
+
+    def accepted() -> bool:
+        nonlocal decision
+        if decision is None:
+            decision = would_accept is None or would_accept() is True
+        return decision
+
+    def enqueue_accepted() -> bool:
+        if not accepted():
+            return False
+        if on_claim is not None:
+            try:
+                enqueue_result = on_claim()
+            except Exception:
+                logger.debug(
+                    "model_serve_failed enqueue raised; any durable dedupe claim "
+                    "was left intact"
+                )
+            else:
+                if enqueue_result is False:
+                    logger.debug(
+                        "model_serve_failed enqueue was rejected; any durable dedupe "
+                        "claim was left intact"
+                    )
+        return True
+
+    try:
+        from rapid_mlx.telemetry.server_start import (
+            _atomic_write_marker,
+            _prepare_state_dir,
+        )
+
+        current = _serve_failed_clock() if now is None else now
+        if not math.isfinite(current):
+            return enqueue_accepted()
+        encoded_key = json.dumps(key, separators=(",", ":"))
+        path = _serve_failed_recent_path()
+        if not _prepare_state_dir(path.parent):
+            return enqueue_accepted()
+        flags = os.O_RDONLY | getattr(os, "O_DIRECTORY", 0)
+        flags |= getattr(os, "O_CLOEXEC", 0)
+        flags |= getattr(os, "O_NOFOLLOW", 0)
+        dir_fd = os.open(path.parent, flags)
+    except Exception:
+        return enqueue_accepted()
+
+    should_enqueue = False
+    try:
+        try:
+            if not _acquire_serve_failed_lock(dir_fd):
+                # Ledger replacement is atomic, so an unlocked read is a
+                # consistent snapshot. The lock winner may already have
+                # published this key even though our bounded wait expired.
+                # The 250 ms bound ensures telemetry can never delay ``serve``
+                # startup longer than that for this local mode-0600 ledger.
+                # After the bound, fail open: a duplicate is preferable to a
+                # blocked startup. The worst case is N duplicates, and only if
+                # N processes simultaneously hit >250 ms contention on the
+                # local file; the unlocked re-read handles the common case.
+                recent = _read_serve_failed_recent(path)
+                if _serve_failure_claim_is_fresh(recent, encoded_key, current):
+                    return False
+                should_enqueue = True
+            else:
+                recent = _read_serve_failed_recent(path)
+                # A wall-clock rollback makes claims written by the previous
+                # clock appear to be in the future. They cannot provide a
+                # meaningful freshness bound and must not crowd a claim from
+                # the current clock out of the bounded ledger.
+                recent = {
+                    stored_key: timestamp
+                    for stored_key, timestamp in recent.items()
+                    if timestamp <= current
+                }
+                if _serve_failure_claim_is_fresh(recent, encoded_key, current):
+                    return False
+                if not accepted():
+                    return False
+                # Persisting the claim before enqueue is deliberate: it gives all
+                # processes exactly one event per key per window. The rejected
+                # enqueue-then-claim alternative lets lock-contention losers emit
+                # duplicates. A process death or defensive enqueue rejection can
+                # instead lose at most this <=10-minute window, matching the
+                # sender's batch-loss profile; do not roll the durable claim back.
+                recent[encoded_key] = current
+                if len(recent) > _SERVE_FAILED_MAX_KEYS:
+                    recent = dict(
+                        sorted(
+                            recent.items(),
+                            key=lambda item: item[1],
+                            reverse=True,
+                        )[:_SERVE_FAILED_MAX_KEYS]
+                    )
+                _atomic_write_marker(path, value=recent)
+                should_enqueue = True
+        except Exception:
+            should_enqueue = True
+    finally:
+        os.close(dir_fd)
+    return enqueue_accepted() if should_enqueue else False
+
+
 @_never_raise
 def emit_model_serve_failed(
     exc: BaseException,
@@ -405,8 +607,8 @@ def emit_model_serve_failed(
         if _serve_failure_claimed:
             return
 
+    from rapid_mlx.telemetry import track as track_module
     from rapid_mlx.telemetry.model_id import engine_telemetry_id, telemetry_model_id
-    from rapid_mlx.telemetry.track import track
 
     optional_runtime_missing = find_optional_runtime_missing(exc)
     error_class = (
@@ -425,14 +627,31 @@ def emit_model_serve_failed(
         props["model_type"] = model_type(alias_or_path)
         props["auto_selected"] = bool(auto_selected)
         props["quant"] = _quant_for_ref(alias_or_path)
-    # Build every potentially-failing property before claiming the one-shot
-    # latch. A telemetry-only conversion bug must not suppress a later valid
-    # failure event from this process.
+    # Build and validate every potentially-failing property before claiming the
+    # one-shot latch. A rejected event must not suppress a later valid failure
+    # event from this process.
+    accepted = track_module.would_accept("model_serve_failed", props)
+    if accepted is None:
+        return
     with _serve_failure_lock:
         if _serve_failure_claimed:
             return
         _serve_failure_claimed = True
-    track("model_serve_failed", props)
+    model = props.get("model")
+    served_type = props.get("model_type")
+    extra = props.get("extra")
+    key = (
+        model if isinstance(model, str) else "",
+        served_type if isinstance(served_type, str) else "",
+        error_class,
+        extra if isinstance(extra, str) else "",
+    )
+    _claim_serve_failure_key(
+        key,
+        # Consent may change after this decision, just as it may while an
+        # already-queued event waits for the sender thread. Do not re-decide.
+        on_claim=lambda: track_module._enqueue_accepted(accepted),
+    )
 
 
 def _reset_for_tests() -> None:

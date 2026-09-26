@@ -6,6 +6,7 @@ import ipaddress
 import os
 import socket
 import sys
+from pathlib import Path
 
 import pytest
 
@@ -81,8 +82,8 @@ def _forbid_uninjected_posthog_default_post():
 
 
 @pytest.fixture(autouse=True)
-def _isolate_v2_telemetry_process_state(monkeypatch):
-    """Keep lifecycle singletons and real atexit hooks out of every test."""
+def _isolate_v2_telemetry_process_state(monkeypatch, tmp_path):
+    """Keep telemetry state and lifecycle singletons isolated per test."""
     try:
         from rapid_mlx.telemetry import (
             build_gate,
@@ -90,12 +91,26 @@ def _isolate_v2_telemetry_process_state(monkeypatch):
             model_events,
             posthog_sender,
             server_start,
+            state,
             track,
         )
     except ImportError:
         yield
         return
 
+    process_home = Path.home()
+
+    def telemetry_dir():
+        # Module-local telemetry fixtures and individual tests sometimes use
+        # HOME to exercise a specific filesystem shape. Preserve those
+        # explicit overrides while keeping every other test away from the
+        # process's real telemetry state.
+        current_home = Path.home()
+        if current_home != process_home:
+            return current_home / ".rapid-mlx"
+        return tmp_path / ".rapid-mlx"
+
+    monkeypatch.setattr(state, "_default_telemetry_dir", telemetry_dir)
     posthog_sender._reset_for_tests()
     build_gate._reset_for_tests()
     track._reset_for_tests()
@@ -382,7 +397,10 @@ def _hermetic_hf_and_config_dirs(tmp_path, monkeypatch, request):
 
     # Application state is independent of the HF cache opt-in. A test that
     # reads real cached weights must still never read or mutate the developer's
-    # first-run/config/bench state under ~/.rapid-mlx.
+    # first-run/config/bench state under ~/.rapid-mlx. Telemetry's shared state
+    # root is isolated by ``_isolate_v2_telemetry_process_state`` above without
+    # changing HOME, so lazy HF/Transformers imports keep the documented real
+    # cache when a test opts in with ``real_hf_cache``.
     for var in _RAPID_MLX_DIR_ENV_VARS:
         monkeypatch.setenv(var, str(tmp_path / var.lower()))
 

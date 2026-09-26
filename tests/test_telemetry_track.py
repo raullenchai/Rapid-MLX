@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import ast
+import copy
 import json
 import os
 import shutil
@@ -12,6 +13,7 @@ import socket
 import subprocess
 import sys
 import threading
+import time
 import uuid
 from collections.abc import Iterator, Mapping
 from datetime import date, datetime, timezone
@@ -82,6 +84,22 @@ class ExplodingMapping(Mapping[str, object]):
 
     def __iter__(self) -> Iterator[str]:
         raise RuntimeError("exploded iter")
+
+    def __len__(self) -> int:
+        return 1
+
+
+class ChangingMapping(Mapping[str, object]):
+    def __init__(self) -> None:
+        self.reads = 0
+
+    def __getitem__(self, key: str) -> object:
+        assert key == "error_class"
+        self.reads += 1
+        return "other" if self.reads == 1 else "future_load_error"
+
+    def __iter__(self) -> Iterator[str]:
+        yield "error_class"
 
     def __len__(self) -> int:
         return 1
@@ -242,6 +260,211 @@ def test_registry_is_the_only_event_gate(monkeypatch):
     track_module.track("app_opened", {"x": 1})
     assert sender.calls == 0
     assert sender.items == []
+
+
+def test_would_accept_is_track_acceptance_authority(monkeypatch):
+    sender = inject_sender(monkeypatch)
+    decisions: list[tuple[str, dict[str, object]]] = []
+
+    def reject(event, props, **_kwargs):
+        decisions.append((event, dict(props)))
+        return False
+
+    monkeypatch.setattr(track_module, "would_accept", reject)
+
+    assert track_module.track("app_opened", {}) is False
+    assert decisions == [("app_opened", {})]
+    assert sender.items == []
+
+
+def test_track_contains_acceptance_decision_failure(monkeypatch):
+    sender = inject_sender(monkeypatch)
+    monkeypatch.setattr(
+        track_module,
+        "would_accept",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(RuntimeError("failed")),
+    )
+
+    assert track_module.track("app_opened", {}) is False
+    assert sender.items == []
+
+
+def test_accepted_event_constructor_rejects_forged_authority():
+    with pytest.raises(TypeError, match="only be created by would_accept"):
+        track_module._AcceptedEvent(
+            event="app_opened",
+            props={},
+            nth_model_served=None,
+            _authority=object(),
+        )
+
+
+def test_accepted_event_authority_is_not_exported():
+    assert "__ACCEPTED_EVENT_AUTHORITY" not in track_module.__all__
+    assert not hasattr(track_module, "_ACCEPTED_EVENT_AUTHORITY")
+
+
+@pytest.mark.parametrize(
+    "hand_built",
+    [
+        {"event": "app_opened", "props": {}, "nth_model_served": None},
+        SimpleNamespace(event="app_opened", props={}, nth_model_served=None),
+    ],
+)
+def test_enqueue_rejects_hand_built_acceptance_token(monkeypatch, hand_built):
+    sender = inject_sender(monkeypatch)
+
+    assert track_module._enqueue_accepted(hand_built) is False
+    assert sender.items == []
+
+
+def test_copy_of_accepted_token_cannot_mutate_snapshot(monkeypatch):
+    sender = inject_sender(monkeypatch)
+    accepted = track_module.would_accept("app_opened", {})
+    assert accepted is not None
+
+    copied = copy.copy(accepted)
+    assert copied is accepted
+    with pytest.raises(TypeError):
+        copied.props["free_text"] = "copy"  # type: ignore[index]
+
+    assert track_module._enqueue_accepted(copied) is True
+    assert "free_text" not in sender.items[-1]["properties"]
+
+
+def test_enqueue_rejects_token_with_mutated_authority(monkeypatch):
+    sender = inject_sender(monkeypatch)
+    accepted = track_module.would_accept("app_opened", {})
+    assert accepted is not None
+    object.__setattr__(accepted, "_authority", object())
+
+    assert track_module._enqueue_accepted(accepted) is False
+    assert sender.items == []
+
+
+def test_enqueue_rejects_accepted_event_subclass(monkeypatch):
+    sender = inject_sender(monkeypatch)
+    accepted = track_module.would_accept("app_opened", {})
+    assert accepted is not None
+
+    class Forged(track_module._AcceptedEvent):
+        pass
+
+    forged = Forged("app_opened", {"free_text": "subclass"}, None, accepted._authority)
+    assert track_module._enqueue_accepted(forged) is False
+    assert sender.items == []
+
+
+def test_object_new_forgery_cannot_enqueue_invalid_props(monkeypatch):
+    sender = inject_sender(monkeypatch)
+    accepted = track_module.would_accept("app_opened", {})
+    assert accepted is not None
+    forged = object.__new__(track_module._AcceptedEvent)
+    object.__setattr__(forged, "event", "app_opened")
+    object.__setattr__(forged, "props", {"free_text": "object-new"})
+    object.__setattr__(forged, "nth_model_served", None)
+    object.__setattr__(forged, "_authority", accepted._authority)
+
+    assert track_module._enqueue_accepted(forged) is False
+    assert sender.items == []
+
+
+def test_enqueue_revalidation_binds_event_to_validated_snapshot(monkeypatch):
+    sender = inject_sender(monkeypatch)
+    accepted = track_module.would_accept("app_opened", {})
+    assert accepted is not None
+    forged = object.__new__(track_module._AcceptedEvent)
+
+    class SwitchEventMapping(Mapping[str, object]):
+        def __getitem__(self, key: str) -> object:
+            assert key == "error_class"
+            object.__setattr__(forged, "event", "app_opened")
+            return "other"
+
+        def __iter__(self) -> Iterator[str]:
+            yield "error_class"
+
+        def __len__(self) -> int:
+            return 1
+
+    object.__setattr__(forged, "event", "model_serve_failed")
+    object.__setattr__(forged, "props", SwitchEventMapping())
+    object.__setattr__(forged, "nth_model_served", None)
+    object.__setattr__(forged, "_authority", accepted._authority)
+
+    assert track_module._enqueue_accepted(forged) is True
+    [item] = sender.items
+    assert item["event"] == "model_serve_failed"
+    assert item["properties"]["error_class"] == "other"
+
+
+def test_direct_constructor_cannot_enqueue_invalid_props_when_consent_denied(
+    monkeypatch,
+):
+    sender = inject_sender(monkeypatch)
+    accepted = track_module.would_accept("app_opened", {})
+    assert accepted is not None
+    monkeypatch.setattr(consent_runtime, "upload_allowed", lambda: False)
+    forged = track_module._AcceptedEvent(
+        "app_opened",
+        {"free_text": "direct-constructor-no-consent"},
+        None,
+        accepted._authority,
+    )
+
+    assert track_module._enqueue_accepted(forged) is False
+    assert sender.items == []
+
+
+def test_duck_typed_token_with_real_authority_is_rejected(monkeypatch):
+    sender = inject_sender(monkeypatch)
+    accepted = track_module.would_accept("app_opened", {})
+    assert accepted is not None
+    duck = SimpleNamespace(
+        event="app_opened",
+        props={"free_text": "duck"},
+        nth_model_served=None,
+        _authority=accepted._authority,
+    )
+
+    assert track_module._enqueue_accepted(duck) is False
+    assert sender.items == []
+
+
+def test_track_uses_one_validated_mapping_snapshot(monkeypatch):
+    sender = inject_sender(monkeypatch)
+    props = ChangingMapping()
+    validated: list[dict[str, object]] = []
+    real_validate = track_module.registry.validate
+    real_build = track_module.envelope._build_batch_item_from_validated
+
+    def validate(event, snapshot):
+        accepted = real_validate(event, snapshot)
+        assert accepted is not None
+        validated.append(accepted)
+        return accepted
+
+    def build(event, accepted_props, common):
+        assert isinstance(accepted_props, dict)
+        assert accepted_props is not validated[0]
+        assert accepted_props is not validated[1]
+        assert accepted_props == validated[1]
+        return real_build(event, accepted_props, common)
+
+    monkeypatch.setattr(track_module.registry, "validate", validate)
+    monkeypatch.setattr(
+        track_module.envelope,
+        "_build_batch_item_from_validated",
+        build,
+    )
+
+    assert track_module.track("model_serve_failed", props) is True
+    assert props.reads == 1
+    assert len(validated) == 2
+    [item] = sender.items
+    properties = item["properties"]
+    assert isinstance(properties, dict)
+    assert properties["error_class"] == "other"
 
 
 def test_zero_nth_model_served_is_omitted(monkeypatch):
@@ -863,6 +1086,31 @@ if sys.argv[1:3] == ["serve", "owner/gated-model"]:
             HfHubHTTPError("token=wire-secret", response=response)
         )
     )
+
+if sys.argv[1:3] == ["serve", "gemma-4-e4b-4bit"]:
+    import pathlib
+    import time
+
+    from rapid_mlx.runtime.optional_runtime import OptionalRuntimeMissing
+
+    def _missing_vision_runtime(_args):
+        barrier_dir = os.environ.get("TEL_DEDUPE_BARRIER_DIR")
+        if barrier_dir is not None:
+            barrier = pathlib.Path(barrier_dir)
+            (barrier / f"ready-{os.getpid()}").write_text("ready")
+            deadline = time.monotonic() + 5
+            while not (barrier / "go").exists():
+                if time.monotonic() >= deadline:
+                    raise RuntimeError("telemetry dedupe barrier timed out")
+                time.sleep(0.001)
+        raise OptionalRuntimeMissing(
+            extra="vision",
+            install_hint="pip install 'rapid-mlx[vision]'",
+            detail="deterministic missing vision runtime",
+            status="broken",
+        )
+
+    cli.serve_command = _missing_vision_runtime
 """.lstrip(),
         encoding="utf-8",
     )
@@ -1205,6 +1453,97 @@ def test_gated_serve_posts_one_resolve_and_serve_failure_to_loopback(
     assert serve_failures[0]["properties"]["error_class"] == "download_failed"
     assert len(pull_failures) == 1
     assert pull_failures[0]["properties"]["error_class"] == "gated"
+
+
+def test_simultaneous_missing_extra_serve_failures_emit_once(
+    tmp_path, official_entrypoint_layout
+):
+    root, hooks_dir, site_dir, console = official_entrypoint_layout
+    home = tmp_path / "home"
+    telemetry_dir = home / ".rapid-mlx"
+    telemetry_dir.mkdir(parents=True)
+    (telemetry_dir / "telemetry-consent.yaml").write_text(
+        "consent: true\nprompted_version: 0.15.1\nnotice_revision_seen: 1\n",
+        encoding="utf-8",
+    )
+    sink = HTTPServer(("127.0.0.1", 0), _CaptureHandler)
+    sink.bodies = []  # type: ignore[attr-defined]
+    thread = threading.Thread(target=sink.serve_forever, daemon=True)
+    thread.start()
+    barrier_dir = tmp_path / "barrier"
+    barrier_dir.mkdir()
+    env = dict(
+        os.environ,
+        HOME=str(home),
+        USER="rc",
+        PATH=f"{root / 'bin'}{os.pathsep}{os.environ.get('PATH', '')}",
+        PYTHONPATH=os.pathsep.join(
+            (
+                str(hooks_dir),
+                str(site_dir),
+                *(path for path in sys.path if path.endswith("site-packages")),
+            )
+        ),
+        RAPID_MLX_POSTHOG_URL=f"http://127.0.0.1:{sink.server_port}/batch/",
+        RAPID_MLX_DISABLE_VERSION_CHECK="1",
+        TEL_DEDUPE_BARRIER_DIR=str(barrier_dir),
+    )
+    for name in (*state.CI_ENV_VARS, state.ENV_VAR, state.DO_NOT_TRACK_ENV):
+        env.pop(name, None)
+    process_count = 8
+    deadline = time.monotonic() + 10
+    procs = [
+        subprocess.Popen(
+            [str(console), "serve", "gemma-4-e4b-4bit", "--port", "0"],
+            cwd=home,
+            env=env,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+        )
+        for _ in range(process_count)
+    ]
+    outputs: list[tuple[str, str]] = []
+    try:
+        while len(list(barrier_dir.glob("ready-*"))) != process_count:
+            assert time.monotonic() < deadline, "serve processes missed barrier"
+            time.sleep(0.005)
+        (barrier_dir / "go").write_text("go", encoding="utf-8")
+        for proc in procs:
+            outputs.append(
+                proc.communicate(timeout=max(0.1, deadline - time.monotonic()))
+            )
+    finally:
+        for proc in procs:
+            if proc.poll() is None:
+                proc.terminate()
+        for proc in procs:
+            if proc.poll() is None:
+                proc.wait(timeout=1)
+        sink.shutdown()
+        thread.join(timeout=2.0)
+        sink.server_close()
+
+    assert [proc.returncode for proc in procs] == [2] * process_count, [
+        stderr[-300:] for _, stderr in outputs
+    ]
+    items = [
+        item
+        for body in sink.bodies  # type: ignore[attr-defined]
+        for item in json.loads(body)["batch"]
+    ]
+    serve_failures = [item for item in items if item["event"] == "model_serve_failed"]
+    start_states = [item for item in items if item["event"] == "server_start_state"]
+    assert len(serve_failures) == 1
+    assert serve_failures[0]["properties"]["error_class"] == "missing_extra"
+    assert serve_failures[0]["properties"]["extra"] == "vision"
+    record_path = telemetry_dir / "state" / "serve-failed-recent.json"
+    assert len(json.loads(record_path.read_text(encoding="utf-8"))) == 1
+    assert record_path.stat().st_mode & 0o777 == 0o600
+    assert (
+        sorted(item["properties"]["state"] for item in start_states)
+        == ["attempted"] * process_count + ["failed"] * process_count
+    )
 
 
 @pytest.mark.parametrize(
