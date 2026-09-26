@@ -229,7 +229,7 @@ def test_completed_inference_with_non_string_endpoint_falls_back_to_other(
     )
     inference._QUEUE.join()
 
-    assert records == ["inf|<custom>|other|unknown|failed"]
+    assert records == ["inf|<custom>|other|unknown|failed|other"]
 
 
 @pytest.mark.asyncio
@@ -597,6 +597,7 @@ async def test_midstream_generation_error_records_failed_without_active_day(
                 "result": "failed",
                 "count_bucket": "1",
                 "bucket_source": "crossed_now",
+                "error_class": "other",
             },
         )
     ]
@@ -3147,13 +3148,43 @@ def test_worst_case_counter_cardinality_supports_28_complete_models():
     from rapid_mlx.telemetry import registry, store
 
     enums = registry.load_registry()["enums"]
+    # One ok key plus one failed key per inference_error_class value.
+    assert enums["result"]["values"] == ["ok", "failed"]
     keys_per_model = (
         len(enums["endpoint"]["values"])
         * len(enums["caller"]["values"])
-        * len(enums["result"]["values"])
+        * (1 + len(enums["inference_error_class"]["values"]))
     )
-    assert keys_per_model == 8 * 26 * 2
+    assert keys_per_model == 8 * 27 * 10
     assert store.MAX_KEYS // keys_per_model == 28
+
+
+def test_longest_failed_counter_key_fits_the_store_limit(monkeypatch):
+    """A worst-case legitimate key (128-char public model id) must be storable."""
+    from rapid_mlx.telemetry import inference, registry
+
+    enums = registry.load_registry()["enums"]
+    longest = "inf|{}|{}|{}|failed|{}".format(
+        "x" * registry.load_registry()["model_id"]["max_length"],
+        max(enums["endpoint"]["values"], key=len),
+        max(enums["caller"]["values"], key=len),
+        max(enums["inference_error_class"]["values"], key=len),
+    )
+    assert len(longest) <= inference.store.MAX_KEY_LENGTH
+    keys: list[str] = []
+    monkeypatch.setattr(inference.store, "record", lambda key: keys.append(key))
+    inference._record_completed_request(
+        model="x" * 128,
+        endpoint="/v1/audio/transcriptions",
+        caller_agent="python-requests/2.32",
+        caller_client=None,
+        result="failed",
+        error_class="strict_schema_violation",
+    )
+    assert keys == [
+        "inf|<custom>|/v1/audio/transcriptions|python-requests|failed|"
+        "strict_schema_violation"
+    ]
 
 
 @pytest.mark.parametrize(
@@ -3178,6 +3209,7 @@ def test_additional_endpoint_has_completed_request_emit(relative_path, endpoint)
         ("rapid_mlx/routes/chat.py", 4),
         ("rapid_mlx/routes/completions.py", 1),
         ("rapid_mlx/routes/anthropic.py", 1),
+        ("rapid_mlx/routes/responses.py", 1),
     ],
 )
 def test_each_terminal_site_uses_only_v2_emit(relative_path, failed_count):
@@ -3541,3 +3573,311 @@ def test_privacy_gate_leaves_depends_and_engine_lookup_boundaries_clean(tmp_path
     route_dir.mkdir(parents=True)
     (route_dir / "images.py").write_text(source, encoding="utf-8")
     assert _request_model_violations(tmp_path) == []
+
+
+# ------------------------------------------------ failed-inference classes
+
+
+_EMIT_NAMES = frozenset({"emit_completed_request", "_record_completed_request"})
+
+
+def _failed_emits_missing_class(tree: ast.AST) -> list[int]:
+    """Line numbers of result="failed" emits that omit ``error_class``."""
+    missing: list[int] = []
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.Call):
+            continue
+        func = node.func
+        name = (
+            func.id
+            if isinstance(func, ast.Name)
+            else func.attr
+            if isinstance(func, ast.Attribute)
+            else None
+        )
+        if name not in _EMIT_NAMES:
+            continue
+        keywords = {kw.arg: kw.value for kw in node.keywords if kw.arg}
+        result = keywords.get("result")
+        if isinstance(result, ast.Constant) and result.value == "failed":
+            error_class = keywords.get("error_class")
+            if error_class is None or (
+                isinstance(error_class, ast.Constant) and error_class.value is None
+            ):
+                missing.append(node.lineno)
+    return missing
+
+
+def test_every_failed_inference_site_passes_an_error_class():
+    offenders: list[str] = []
+    failed_sites = 0
+    for path in sorted((REPO_ROOT / "rapid_mlx").rglob("*.py")):
+        source = path.read_text(encoding="utf-8")
+        if 'result="failed"' not in source:
+            continue
+        tree = ast.parse(source, filename=str(path))
+        failed_sites += source.count('result="failed"')
+        offenders.extend(
+            f"{path.relative_to(REPO_ROOT)}:{line}"
+            for line in _failed_emits_missing_class(tree)
+        )
+    assert failed_sites >= 8
+    assert offenders == []
+
+
+def test_failed_site_gate_catches_a_site_without_a_class():
+    tree = ast.parse(
+        "emit_completed_request(model=m, result='failed')\n"
+        "x.emit_completed_request(result='failed', error_class=None)\n"
+        "x.emit_completed_request(result='failed', error_class='other')\n"
+        "x.emit_completed_request(result='ok')\n"
+        "(lambda: None)()(result='failed')\n"
+    )
+    assert _failed_emits_missing_class(tree) == [1, 2]
+
+
+def test_inference_error_class_enum_is_the_documented_closed_set():
+    from rapid_mlx.telemetry import registry
+
+    reg = registry.load_registry()
+    assert reg["enums"]["inference_error_class"]["values"] == [
+        "insufficient_memory",
+        "engine_aborted",
+        "template_error",
+        "media_input_invalid",
+        "prompt_too_large",
+        "strict_schema_violation",
+        "model_replaced",
+        "stream_error",
+        "other",
+    ]
+    prop = reg["events"]["inference_bucket_reached"]["props"]["error_class"]
+    assert prop == {
+        "kind": "enum",
+        "enum": "inference_error_class",
+        "required": False,
+        "only_when": {"result": ["failed"]},
+    }
+
+
+def _classify_cases():
+    from rapid_mlx.request import (
+        ENGINE_ABORT_CODE_ENGINE_ABORTED,
+        ENGINE_ABORT_CODE_INSUFFICIENT_MEMORY,
+        InferenceAbortedError,
+    )
+
+    class TemplateError(Exception):
+        pass
+
+    return [
+        (
+            InferenceAbortedError(
+                "/Users/alice/secret.txt",
+                error_kind=ENGINE_ABORT_CODE_INSUFFICIENT_MEMORY,
+            ),
+            "insufficient_memory",
+        ),
+        (
+            InferenceAbortedError(
+                "Metal out of memory", error_kind=ENGINE_ABORT_CODE_ENGINE_ABORTED
+            ),
+            "engine_aborted",
+        ),
+        (
+            InferenceAbortedError("kIOGPUCommandBufferCallbackErrorOutOfMemory"),
+            "insufficient_memory",
+        ),
+        (InferenceAbortedError("Metal command buffer failed"), "engine_aborted"),
+        (InferenceAbortedError("cancelled", error_kind="lifecycle"), "model_replaced"),
+        (InferenceAbortedError("template gone", error_kind="bogus"), "engine_aborted"),
+        (TemplateError("bad jinja"), "template_error"),
+        (ValueError("Conversation roles must alternate user/assistant"), "other"),
+        (ValueError("No user query found in messages."), "template_error"),
+        (ValueError("chat template missing"), "template_error"),
+        (
+            ValueError("Failed to process image: http://private/x.png"),
+            "media_input_invalid",
+        ),
+        (ValueError("Failed to process video: /tmp/x.mp4"), "media_input_invalid"),
+        (
+            ValueError("prompt of 9000 tokens exceeds the per-batch cap of 8192"),
+            "prompt_too_large",
+        ),
+        (RuntimeError("boom /Users/alice/prompt text"), "other"),
+        (MemoryError(), "other"),
+        (None, "other"),
+    ]
+
+
+def test_classify_inference_failure_mirrors_route_decisions_and_never_leaks():
+    from rapid_mlx.telemetry import inference, registry
+
+    allowed = set(registry.load_registry()["enums"]["inference_error_class"]["values"])
+    for exc, expected in _classify_cases():
+        got = inference.classify_inference_failure(exc)
+        assert got == expected, (exc, got)
+        assert got in allowed
+
+
+def test_classify_inference_failure_is_total():
+    from rapid_mlx.telemetry import inference
+
+    class HostileError(Exception):
+        def __str__(self) -> str:
+            raise RuntimeError("str() explodes")
+
+    assert inference.classify_inference_failure(HostileError()) == "other"
+
+
+def test_abort_classes_follow_the_client_error_payload():
+    """Telemetry and the client-visible error.code come from one helper."""
+    from rapid_mlx import request
+    from rapid_mlx.telemetry import inference
+
+    for exc, _expected in _classify_cases():
+        if not isinstance(exc, request.InferenceAbortedError):
+            continue
+        payload_code = request.inference_aborted_error_payload(exc)["code"]
+        assert inference._ABORT_CODE_CLASSES[payload_code] == (
+            inference.classify_inference_failure(exc)
+        )
+
+
+@pytest.mark.parametrize(
+    ("error_class", "expected"),
+    [
+        ("insufficient_memory", "insufficient_memory"),
+        ("stream_error", "stream_error"),
+        (None, "other"),
+        ("/Users/alice/secret", "other"),
+        (["not", "hashable"], "other"),
+    ],
+)
+def test_failed_request_carries_validated_class_and_per_class_key(
+    monkeypatch, error_class, expected
+):
+    from rapid_mlx.telemetry import inference
+
+    records: list[str] = []
+    events: list[dict[str, object]] = []
+    monkeypatch.setattr(
+        inference.store,
+        "record",
+        lambda key: (
+            records.append(key)
+            or SimpleNamespace(bucket="1", bucket_source="crossed_now")
+        ),
+    )
+    monkeypatch.setattr(
+        inference.track_module,
+        "track",
+        lambda _event, props: events.append(dict(props)),
+    )
+
+    inference._record_completed_request(
+        model="<custom>",
+        endpoint="/v1/messages",
+        caller_agent="claude-cli/2.0",
+        caller_client=None,
+        result="failed",
+        error_class=error_class,
+    )
+
+    assert records == [f"inf|<custom>|/v1/messages|claude-code|failed|{expected}"]
+    assert events[0]["error_class"] == expected
+    assert "alice" not in repr(records + events)
+
+
+def test_ok_request_never_carries_an_error_class(monkeypatch):
+    from rapid_mlx.telemetry import inference
+
+    records: list[str] = []
+    events: list[dict[str, object]] = []
+    monkeypatch.setattr(
+        inference.store,
+        "record",
+        lambda key: (
+            records.append(key)
+            or SimpleNamespace(bucket="1", bucket_source="crossed_now")
+        ),
+    )
+    monkeypatch.setattr(
+        inference.track_module,
+        "track",
+        lambda _event, props: events.append(dict(props)),
+    )
+    monkeypatch.setattr(inference.track_module, "emit_active_day", lambda: None)
+
+    inference._record_completed_request(
+        model="<custom>",
+        endpoint="/v1/messages",
+        caller_agent=None,
+        caller_client=None,
+        result="ok",
+        error_class="insufficient_memory",
+    )
+
+    assert records == ["inf|<custom>|/v1/messages|unknown|ok"]
+    assert "error_class" not in events[0]
+
+
+def test_failed_event_with_class_passes_registry_validation():
+    from rapid_mlx.telemetry import registry
+
+    base = {
+        "model": "<custom>",
+        "endpoint": "/v1/chat/completions",
+        "caller": "openai-node",
+        "result": "failed",
+        "count_bucket": "1",
+        "bucket_source": "crossed_now",
+    }
+    ok = {**base, "error_class": "template_error"}
+    assert registry.validate("inference_bucket_reached", ok) == ok
+    assert registry.validate("inference_bucket_reached", base) == base
+    for bad in (
+        {**base, "error_class": "free text"},
+        {**base, "result": "ok", "error_class": "template_error"},
+    ):
+        assert registry.validate("inference_bucket_reached", bad) is None
+
+
+@pytest.mark.asyncio
+async def test_midstream_engine_abort_is_classified_without_message_text(
+    monkeypatch,
+):
+    from rapid_mlx.request import InferenceAbortedError
+    from rapid_mlx.telemetry import inference
+
+    inference._QUEUE.join()
+    monkeypatch.setattr(inference.track_module, "_upload_allowed", lambda: True)
+    events: list[dict[str, object]] = []
+    captured = threading.Event()
+
+    def capture(_event, props):
+        events.append(dict(props))
+        captured.set()
+
+    monkeypatch.setattr(inference.track_module, "track", capture)
+
+    async def aborted_stream():
+        yield "first-token"
+        raise InferenceAbortedError("Metal: out of memory at /Users/alice/x")
+
+    guarded = inference.emit_failed_on_stream_error(
+        aborted_stream(),
+        model="<custom>",
+        endpoint="/v1/responses",
+        caller_agent="OpenAI/JS 5.23.0",
+        caller_client=None,
+    )
+    with pytest.raises(InferenceAbortedError):
+        async for _ in guarded:
+            pass
+
+    loop = asyncio.get_running_loop()
+    assert await loop.run_in_executor(None, captured.wait, 5)
+    assert events[0]["error_class"] == "insufficient_memory"
+    assert events[0]["caller"] == "openai-node"
+    assert "alice" not in repr(events)

@@ -168,6 +168,10 @@ _CALLER_AGENT_MARKERS: tuple[tuple[str, str], ...] = (
     ("openai-python", "openai-python"),
     ("openai/python", "openai-python"),
     ("openai-node", "openai-node"),
+    # openai-node sends ``${this.constructor.name}/JS ${VERSION}`` -- e.g.
+    # "OpenAI/JS 4.95.1" (github.com/openai/openai-node src/client.ts; core.js
+    # ``getUserAgent()`` in the 4.x build). No "openai-node" token ever appears.
+    ("openai/js", "openai-node"),
     ("anthropic", "anthropic-sdk"),
     ("litellm", "litellm"),
     ("langchain", "langchain"),
@@ -179,6 +183,10 @@ _CALLER_AGENT_MARKERS: tuple[tuple[str, str], ...] = (
     ("httpx", "python-httpx"),
     ("python-requests", "python-requests"),
     ("requests", "python-requests"),
+    # aiohttp's default client UA is ``SERVER_SOFTWARE`` =
+    # "Python/<major>.<minor> aiohttp/<version>" (aiohttp/http.py, applied in
+    # aiohttp/client_reqrep.py when the caller sets no User-Agent).
+    ("aiohttp", "python-aiohttp"),
     ("node-fetch", "node-fetch"),
     ("undici", "node-fetch"),
     ("axios", "axios"),

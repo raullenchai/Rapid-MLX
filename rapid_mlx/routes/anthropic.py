@@ -44,6 +44,11 @@ from ..config import get_config
 from ..engine import BaseEngine
 from ..middleware.auth import check_rate_limit_or_x_api_key, verify_api_key_or_x_api_key
 from ..reasoning import finalize_streaming_compat
+from ..request import (
+    is_batch_cap_error,
+    is_chat_template_error,
+    is_media_input_error,
+)
 from ..service.helpers import (
     _TOOL_USE_REQUIRED_SUFFIX,
     SSE_RESPONSE_HEADERS,
@@ -960,14 +965,10 @@ async def create_anthropic_message(
                     else None
                 ),
                 result="failed",
+                error_class=_telemetry_inference.classify_inference_failure(e),
             )
             err_msg = str(e)
-            err_type = type(e).__name__
-            if (
-                "TemplateError" in err_type
-                or "template" in err_msg.lower()
-                or ("user" in err_msg.lower() and "found" in err_msg.lower())
-            ):
+            if is_chat_template_error(e):
                 raise HTTPException(
                     status_code=400, detail=f"Chat template error: {err_msg}"
                 )
@@ -978,11 +979,7 @@ async def create_anthropic_message(
             # treats both as client errors; this route must map both to 400
             # or Anthropic-style clients get a 500 for what is really an
             # oversized-image / oversized-prompt user error.
-            if (
-                "Failed to process image" in err_msg
-                or "Failed to process video" in err_msg
-                or "exceeds the per-batch cap" in err_msg
-            ):
+            if is_media_input_error(e) or is_batch_cap_error(e):
                 raise HTTPException(status_code=400, detail=err_msg)
             raise
         if output is None:

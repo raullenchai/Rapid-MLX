@@ -147,6 +147,43 @@ def model_type_token(source: object | None) -> str:
         return "other"
 
 
+#: ``request.inference_aborted_error_code`` category -> ``inference_error_class``.
+_ABORT_CODE_CLASSES = {
+    "insufficient_memory": "insufficient_memory",
+    "engine_aborted": "engine_aborted",
+    "model_replacement": "model_replaced",
+}
+
+
+def classify_inference_failure(exc: BaseException | None) -> str:
+    """Map a failed request's exception onto the closed ``inference_error_class``.
+
+    Mirrors the decisions the routes already make, through the SAME predicates
+    (``rapid_mlx.request``), in the same order as the chat route's handler:
+    engine abort category first, then chat-template, media-input and per-batch
+    cap errors. The exception text is read here, inside the process, but only
+    a registry enum value is ever returned — never ``str(exc)``. Total: any
+    unexpected input or internal failure yields ``"other"``.
+    """
+    try:
+        if exc is None:
+            return "other"
+        from rapid_mlx import request as request_module
+
+        if isinstance(exc, request_module.InferenceAbortedError):
+            code = request_module.inference_aborted_error_code(exc)
+            return _ABORT_CODE_CLASSES.get(code, "other")
+        if request_module.is_chat_template_error(exc):
+            return "template_error"
+        if request_module.is_media_input_error(exc):
+            return "media_input_invalid"
+        if request_module.is_batch_cap_error(exc):
+            return "prompt_too_large"
+        return "other"
+    except Exception:
+        return "other"
+
+
 def _record_completed_request(
     *,
     model: str,
@@ -154,11 +191,15 @@ def _record_completed_request(
     caller_agent: str | None,
     caller_client: str | None,
     result: str,
+    error_class: str | None = None,
 ) -> None:
     """Worker-thread half of :func:`emit_completed_request`.
 
     Callers pass the resolved telemetry model id, never the request's model
     field. Every operation is best effort; no exception can escape the worker.
+    A failure carries one ``inference_error_class`` value (anything outside the
+    registry, including a missing class, collapses to ``"other"``) and is
+    counted under its own local key, so thresholds are per class.
     """
     try:
         safe_model = model_id.telemetry_model_id(model)
@@ -173,19 +214,27 @@ def _record_completed_request(
         if caller not in allowed_callers:
             caller = "other"
         outcome = result if result in ("ok", "failed") else "failed"
-        crossing = store.record(f"inf|{safe_model}|{safe_endpoint}|{caller}|{outcome}")
+        key = f"inf|{safe_model}|{safe_endpoint}|{caller}|{outcome}"
+        failure_class: str | None = None
+        if outcome == "failed":
+            allowed_classes = registry.load_registry()["enums"][
+                "inference_error_class"
+            ]["values"]
+            failure_class = error_class if error_class in allowed_classes else "other"
+            key = f"{key}|{failure_class}"
+        crossing = store.record(key)
         if crossing is not None:
-            track_module.track(
-                "inference_bucket_reached",
-                {
-                    "model": safe_model,
-                    "endpoint": safe_endpoint,
-                    "caller": caller,
-                    "result": outcome,
-                    "count_bucket": crossing.bucket,
-                    "bucket_source": crossing.bucket_source,
-                },
-            )
+            props = {
+                "model": safe_model,
+                "endpoint": safe_endpoint,
+                "caller": caller,
+                "result": outcome,
+                "count_bucket": crossing.bucket,
+                "bucket_source": crossing.bucket_source,
+            }
+            if failure_class is not None:
+                props["error_class"] = failure_class
+            track_module.track("inference_bucket_reached", props)
         if outcome == "ok":
             track_module.emit_active_day()
     except Exception:
@@ -199,6 +248,7 @@ def emit_completed_request(
     caller_agent: str | None,
     caller_client: str | None,
     result: str,
+    error_class: str | None = None,
 ) -> None:
     """Gate, then enqueue one completed-request update without blocking.
 
@@ -217,6 +267,7 @@ def emit_completed_request(
                 caller_agent=caller_agent,
                 caller_client=caller_client,
                 result=result,
+                error_class=error_class,
             )
         )
     except Exception:
@@ -236,7 +287,7 @@ async def emit_failed_on_stream_error(
     try:
         async for item in source:
             yield item
-    except Exception:
+    except Exception as exc:
         if failure_latch is not None:
             failure_latch[:] = [True]
         emit_completed_request(
@@ -245,6 +296,7 @@ async def emit_failed_on_stream_error(
             caller_agent=caller_agent,
             caller_client=caller_client,
             result="failed",
+            error_class=classify_inference_failure(exc),
         )
         raise
 
