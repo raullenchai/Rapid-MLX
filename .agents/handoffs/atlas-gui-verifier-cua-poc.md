@@ -14,6 +14,13 @@
   wrong points, but misranked an Amazon carousel arrow above the correct product.
 - The main end-to-end failures were Qwen planning, coordinate candidate
   generation, goal retention, and repeated recovery actions.
+- GLM-5.3-Flash with low reasoning completed the same task both with the search
+  bootstrap (4 model steps) and fully unguided (11 model steps). Unguided mean
+  planning latency was 7.65 seconds versus Qwen's 38.68 seconds in the
+  controlled run.
+- GLM's four redundant search-field clicks exposed an action/state-contract
+  failure: a screenshot cannot reliably report keyboard focus, `type` carries
+  no semantic target, and reflection therefore reinforced an unnecessary retry.
 - No cart, account, checkout, payment, or purchase action was executed.
 
 ## Risks
@@ -28,8 +35,8 @@
 
 ## Next concrete action
 
-Replace Qwen-generated coordinate alternatives with candidates compiled from
-macOS Accessibility/DOM nodes, batch the verifier scores, and run a held-out
-suite that labels planner, candidate-generation, verifier, executor, reflection,
-and terminal-verification failures separately.
-
+Add atomic `fill(target_node_id, text)` and `submit(target_node_id)` actions and
+record the focused Accessibility/DOM node after execution. Then replace raw
+coordinate alternatives with Accessibility/DOM candidates, batch verifier
+scores, and run a held-out suite that labels planner, candidate-generation,
+verifier, executor, reflection, and terminal-verification failures separately.
