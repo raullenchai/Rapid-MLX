@@ -922,7 +922,9 @@ class _NestedScopes(ast.NodeVisitor):
         self._add(node)
 
     def visit_ClassDef(self, node: ast.ClassDef) -> None:
-        return
+        # A class body is not part of its enclosing function scope, but methods
+        # and other callable scopes nested in it still need their own analysis.
+        super().generic_visit(node)
 
 
 def _nested_scopes(body: list[ast.AST]) -> list[ast.AST]:
@@ -1083,6 +1085,26 @@ def _function_request_roots(
             if _assigned_request_value(value):
                 roots.update(names)
     return roots
+
+
+def _function_bound_names(
+    function: ast.FunctionDef | ast.AsyncFunctionDef, nodes: list[ast.AST]
+) -> set[str]:
+    arguments = [
+        *function.args.posonlyargs,
+        *function.args.args,
+        *function.args.kwonlyargs,
+        *(
+            argument
+            for argument in (function.args.vararg, function.args.kwarg)
+            if argument is not None
+        ),
+    ]
+    return {argument.arg for argument in arguments} | {
+        node.id
+        for node in nodes
+        if isinstance(node, ast.Name) and isinstance(node.ctx, ast.Store)
+    }
 
 
 def _request_model_violations(
@@ -1298,6 +1320,11 @@ def _request_model_violations(
             ) -> None:
                 nodes = _scope_nodes(body)
                 request_roots = set(inherited_roots)
+                inherited_scope_taint = set(inherited_taint)
+                if function is not None:
+                    bound_names = _function_bound_names(function, nodes)
+                    request_roots.difference_update(bound_names)
+                    inherited_scope_taint.difference_update(bound_names)
                 request_roots.update(
                     child.id
                     for child in nodes
@@ -1317,7 +1344,7 @@ def _request_model_violations(
                         and debug_key in _REQUEST_MODEL_DEBUG_HANDLERS
                     ):
                         root_debug[debug_key] = sorted(request_roots)
-                tainted = scope_taint(nodes, request_roots, inherited_taint)
+                tainted = scope_taint(nodes, request_roots, inherited_scope_taint)
                 check_calls(nodes, tainted, request_roots)
 
                 for nested in _nested_scopes(body):
@@ -1499,6 +1526,50 @@ def test_request_model_privacy_gate_inherits_closure_roots_and_taint(
     violations = _request_model_violations(tmp_path)
     assert len(violations) == 1
     assert violations[0].startswith("rapid_mlx/routes/scratch.py:")
+
+
+def test_request_model_privacy_gate_checks_class_methods(tmp_path):
+    route_dir = tmp_path / "rapid_mlx/routes"
+    route_dir.mkdir(parents=True)
+    source = (
+        "from rapid_mlx.telemetry.inference import emit_capability_rejected\n\n"
+        "class Handler:\n"
+        "    def serve(self, request):\n"
+        "        emit_capability_rejected('unsupported', model=request.model)\n"
+    )
+    (route_dir / "scratch.py").write_text(source, encoding="utf-8")
+
+    assert _request_model_violations(tmp_path) == ["rapid_mlx/routes/scratch.py:5"]
+
+
+@pytest.mark.parametrize(
+    "body",
+    [
+        (
+            "def outer(foo: ChatCompletionRequest):\n"
+            "    def nested(foo):\n"
+            "        emit_capability_rejected('unsupported', model=foo.model)\n"
+        ),
+        (
+            "def outer(foo: ChatCompletionRequest):\n"
+            "    model = foo.model\n"
+            "    def nested():\n"
+            "        model = 'resident'\n"
+            "        emit_capability_rejected('unsupported', model=model)\n"
+        ),
+    ],
+    ids=["parameter-shadows-root", "assignment-shadows-taint"],
+)
+def test_request_model_privacy_gate_respects_nested_function_shadowing(tmp_path, body):
+    route_dir = tmp_path / "rapid_mlx/routes"
+    route_dir.mkdir(parents=True)
+    source = (
+        "from rapid_mlx.api.models import ChatCompletionRequest\n"
+        "from rapid_mlx.telemetry.inference import emit_capability_rejected\n\n" + body
+    )
+    (route_dir / "scratch.py").write_text(source, encoding="utf-8")
+
+    assert _request_model_violations(tmp_path) == []
 
 
 @pytest.mark.parametrize(
