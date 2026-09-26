@@ -28,6 +28,8 @@ _EXCEPTION_CHAIN_LIMIT = 32
 SERVE_FAILED_DEDUPE_SECONDS = 600
 _SERVE_FAILED_MAX_KEYS = 64
 _SERVE_FAILED_MAX_BYTES = 64 * 1024
+_SERVE_FAILED_LOCK_WAIT_SECONDS = 0.25
+_SERVE_FAILED_LOCK_SLEEP_SECONDS = 0.01
 _serve_failed_clock = time.time
 
 
@@ -473,7 +475,16 @@ def _claim_serve_failure_key(
         flags |= getattr(os, "O_NOFOLLOW", 0)
         dir_fd = os.open(path.parent, flags)
         try:
-            fcntl.flock(dir_fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            deadline = time.monotonic() + _SERVE_FAILED_LOCK_WAIT_SECONDS
+            while True:
+                try:
+                    fcntl.flock(dir_fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                    break
+                except BlockingIOError:
+                    remaining = deadline - time.monotonic()
+                    if remaining <= 0:
+                        return True
+                    time.sleep(min(_SERVE_FAILED_LOCK_SLEEP_SECONDS, remaining))
             recent = _read_serve_failed_recent(path)
             encoded_key = json.dumps(key, separators=(",", ":"))
             previous = recent.get(encoded_key)
@@ -514,6 +525,7 @@ def emit_model_serve_failed(
         if _serve_failure_claimed:
             return
 
+    from rapid_mlx.telemetry import registry
     from rapid_mlx.telemetry import track as track_module
     from rapid_mlx.telemetry.model_id import engine_telemetry_id, telemetry_model_id
 
@@ -534,6 +546,9 @@ def emit_model_serve_failed(
         props["model_type"] = model_type(alias_or_path)
         props["auto_selected"] = bool(auto_selected)
         props["quant"] = _quant_for_ref(alias_or_path)
+    validated_props = registry.validate("model_serve_failed", props)
+    if validated_props is None:
+        return
     # Build every potentially-failing property before claiming the one-shot
     # latch. A telemetry-only conversion bug must not suppress a later valid
     # failure event from this process.
@@ -543,18 +558,19 @@ def emit_model_serve_failed(
         _serve_failure_claimed = True
     if not track_module._upload_allowed():
         return
-    model = props.get("model")
-    served_type = props.get("model_type")
-    extra = props.get("extra")
+    model = validated_props.get("model")
+    served_type = validated_props.get("model_type")
+    validated_error_class = validated_props["error_class"]
+    extra = validated_props.get("extra")
     key = (
         model if isinstance(model, str) else "",
         served_type if isinstance(served_type, str) else "",
-        error_class,
+        validated_error_class,
         extra if isinstance(extra, str) else "",
     )
     if not _claim_serve_failure_key(key):
         return
-    track_module.track("model_serve_failed", props)
+    track_module.track("model_serve_failed", validated_props)
 
 
 def _reset_for_tests() -> None:

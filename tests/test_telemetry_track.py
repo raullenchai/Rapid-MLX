@@ -12,6 +12,7 @@ import socket
 import subprocess
 import sys
 import threading
+import time
 import uuid
 from collections.abc import Iterator, Mapping
 from datetime import date, datetime, timezone
@@ -865,16 +866,29 @@ if sys.argv[1:3] == ["serve", "owner/gated-model"]:
     )
 
 if sys.argv[1:3] == ["serve", "gemma-4-e4b-4bit"]:
+    import pathlib
+    import time
+
     from rapid_mlx.runtime.optional_runtime import OptionalRuntimeMissing
 
-    cli.serve_command = lambda _args: (_ for _ in ()).throw(
-        OptionalRuntimeMissing(
+    def _missing_vision_runtime(_args):
+        barrier_dir = os.environ.get("TEL_DEDUPE_BARRIER_DIR")
+        if barrier_dir is not None:
+            barrier = pathlib.Path(barrier_dir)
+            (barrier / f"ready-{os.getpid()}").write_text("ready")
+            deadline = time.monotonic() + 5
+            while not (barrier / "go").exists():
+                if time.monotonic() >= deadline:
+                    raise RuntimeError("telemetry dedupe barrier timed out")
+                time.sleep(0.001)
+        raise OptionalRuntimeMissing(
             extra="vision",
             install_hint="pip install 'rapid-mlx[vision]'",
             detail="deterministic missing vision runtime",
             status="broken",
         )
-    )
+
+    cli.serve_command = _missing_vision_runtime
 """.lstrip(),
         encoding="utf-8",
     )
@@ -1219,7 +1233,7 @@ def test_gated_serve_posts_one_resolve_and_serve_failure_to_loopback(
     assert pull_failures[0]["properties"]["error_class"] == "gated"
 
 
-def test_restarted_missing_extra_serve_dedupes_only_model_failure(
+def test_simultaneous_missing_extra_serve_failures_emit_once(
     tmp_path, official_entrypoint_layout
 ):
     root, hooks_dir, site_dir, console = official_entrypoint_layout
@@ -1234,6 +1248,8 @@ def test_restarted_missing_extra_serve_dedupes_only_model_failure(
     sink.bodies = []  # type: ignore[attr-defined]
     thread = threading.Thread(target=sink.serve_forever, daemon=True)
     thread.start()
+    barrier_dir = tmp_path / "barrier"
+    barrier_dir.mkdir()
     env = dict(
         os.environ,
         HOME=str(home),
@@ -1248,28 +1264,47 @@ def test_restarted_missing_extra_serve_dedupes_only_model_failure(
         ),
         RAPID_MLX_POSTHOG_URL=f"http://127.0.0.1:{sink.server_port}/batch/",
         RAPID_MLX_DISABLE_VERSION_CHECK="1",
+        TEL_DEDUPE_BARRIER_DIR=str(barrier_dir),
     )
     for name in (*state.CI_ENV_VARS, state.ENV_VAR, state.DO_NOT_TRACK_ENV):
         env.pop(name, None)
+    process_count = 8
+    deadline = time.monotonic() + 10
+    procs = [
+        subprocess.Popen(
+            [str(console), "serve", "gemma-4-e4b-4bit", "--port", "0"],
+            cwd=home,
+            env=env,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+        )
+        for _ in range(process_count)
+    ]
+    outputs: list[tuple[str, str]] = []
     try:
-        procs = [
-            subprocess.run(
-                [str(console), "serve", "gemma-4-e4b-4bit", "--port", "0"],
-                cwd=home,
-                env=env,
-                capture_output=True,
-                text=True,
-                timeout=30,
-                check=False,
+        while len(list(barrier_dir.glob("ready-*"))) != process_count:
+            assert time.monotonic() < deadline, "serve processes missed barrier"
+            time.sleep(0.005)
+        (barrier_dir / "go").write_text("go", encoding="utf-8")
+        for proc in procs:
+            outputs.append(
+                proc.communicate(timeout=max(0.1, deadline - time.monotonic()))
             )
-            for _ in range(2)
-        ]
     finally:
+        for proc in procs:
+            if proc.poll() is None:
+                proc.terminate()
+        for proc in procs:
+            if proc.poll() is None:
+                proc.wait(timeout=1)
         sink.shutdown()
         thread.join(timeout=2.0)
         sink.server_close()
 
-    assert [proc.returncode for proc in procs] == [2, 2]
+    assert [proc.returncode for proc in procs] == [2] * process_count, [
+        stderr[-300:] for _, stderr in outputs
+    ]
     items = [
         item
         for body in sink.bodies  # type: ignore[attr-defined]
@@ -1280,12 +1315,13 @@ def test_restarted_missing_extra_serve_dedupes_only_model_failure(
     assert len(serve_failures) == 1
     assert serve_failures[0]["properties"]["error_class"] == "missing_extra"
     assert serve_failures[0]["properties"]["extra"] == "vision"
-    assert [item["properties"]["state"] for item in start_states] == [
-        "attempted",
-        "failed",
-        "attempted",
-        "failed",
-    ]
+    record_path = telemetry_dir / "state" / "serve-failed-recent.json"
+    assert len(json.loads(record_path.read_text(encoding="utf-8"))) == 1
+    assert record_path.stat().st_mode & 0o777 == 0o600
+    assert (
+        sorted(item["properties"]["state"] for item in start_states)
+        == ["attempted"] * process_count + ["failed"] * process_count
+    )
 
 
 @pytest.mark.parametrize(

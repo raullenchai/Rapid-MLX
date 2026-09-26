@@ -41,6 +41,7 @@ from rapid_mlx.telemetry import (
     model_events,
     model_id,
     posthog_sender,
+    registry,
     state,
     store,
 )
@@ -1370,7 +1371,39 @@ def test_serve_failure_claim_nonfinite_clock_and_lock_contention_fail_open(
         "flock",
         lambda *_args: (_ for _ in ()).throw(BlockingIOError()),
     )
+    monkeypatch.setattr(model_events, "_SERVE_FAILED_LOCK_WAIT_SECONDS", 0)
     assert model_events._claim_serve_failure_key(key, now=1000.0) is True
+
+
+def test_invalid_optional_extra_writes_no_dedupe_file_or_event(monkeypatch, tmp_path):
+    calls: list[tuple[str, dict[str, object]]] = []
+    secret = "/Users/alice/private-extra"
+    failure = OptionalRuntimeMissing(
+        extra=secret,  # type: ignore[arg-type]
+        install_hint="private install hint",
+        detail="private detail",
+        status="broken",
+    )
+    props = {
+        "error_class": "missing_extra",
+        "extra": secret,
+        "model": "<custom>",
+        "model_type": "other",
+        "auto_selected": False,
+        "quant": "unknown",
+    }
+    assert registry.validate("model_serve_failed", props) is None
+    monkeypatch.setattr(
+        track_module,
+        "track",
+        lambda event, values: calls.append((event, dict(values))),
+    )
+
+    model_events.emit_model_serve_failed(failure, alias_or_path="acme/private-model")
+
+    path = tmp_path / ".rapid-mlx" / "state" / "serve-failed-recent.json"
+    assert not path.exists()
+    assert calls == []
 
 
 def test_opted_out_serve_failure_writes_no_dedupe_file(monkeypatch, tmp_path):
