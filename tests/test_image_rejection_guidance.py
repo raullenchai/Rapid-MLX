@@ -1115,16 +1115,19 @@ def test_desktop_speculative_copy_checks_floor_and_runtime(monkeypatch):
     assert "--" not in runtime and "pip install" not in runtime
 
 
-def test_relative_and_windows_paths_are_reduced(tmp_path, monkeypatch):
-    local = tmp_path / "private" / "models" / "customer" / "foo"
-    local.mkdir(parents=True)
-    monkeypatch.chdir(tmp_path)
+def test_relative_and_windows_paths_are_reduced_lexically(tmp_path, monkeypatch):
+    """No filesystem probe: the label must not reveal whether a path exists."""
+    import os
+
+    probes = []
+    monkeypatch.setattr(os.path, "exists", lambda p: probes.append(p) or True)
     assert public_model_label("private/models/customer/foo") == "foo"
     assert public_model_label("C:\\Users\\name\\model") == "model"
     assert public_model_label("D:/weights/m") == "m"
-    assert public_model_label("org-that-does-not-exist/repo") == (
-        "org-that-does-not-exist/repo"
-    )
+    # A Hub id and a two-segment relative path look alike: kept verbatim,
+    # whether or not such a path exists.
+    assert public_model_label("org/repo") == "org/repo"
+    assert probes == []
     message = _chat_image_error(
         "text_checkpoint", model_name="private/models/customer/foo"
     )

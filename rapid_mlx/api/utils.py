@@ -1747,25 +1747,25 @@ def fitting_vision_alias(
     return None if best is None else best[1]
 
 
-@lru_cache(maxsize=64)
 def public_model_label(model_name: object) -> str:
     """Model name safe to echo to clients: never a local filesystem path.
 
-    Absolute, home, dot-relative and Windows-style spellings are reduced to
-    their last component, as is a relative ``a/b`` spelling that exists on
-    disk (a configured local checkpoint, not an ``org/repo`` Hub id). Cached:
-    the served names are few, so the existence probe runs once per name.
+    Absolute, home, dot-relative and Windows-style spellings, and relative
+    spellings with more than one ``/`` (a Hub id is exactly ``org/repo``),
+    are reduced to their last component. Purely lexical: the filesystem is
+    never probed, so the label cannot reveal which paths exist. A relative
+    two-segment path is indistinguishable from a Hub id and is kept.
     """
     import os
 
     if not isinstance(model_name, str):
         return str(model_name)
-    windows = "\\" in model_name or re.match(r"^[A-Za-z]:", model_name)
     local = (
-        windows
+        "\\" in model_name
+        or re.match(r"^[A-Za-z]:", model_name) is not None
         or os.path.isabs(model_name)
         or model_name.startswith(("~", "."))
-        or ("/" in model_name and os.path.exists(model_name))
+        or model_name.strip("/").count("/") > 1
     )
     if not local:
         return model_name
