@@ -62,7 +62,7 @@ from typing import TypeVar
 
 import yaml
 
-from rapid_mlx.telemetry.state import _default_telemetry_dir
+from rapid_mlx.telemetry import state
 
 #: Bumped when the on-disk schema changes incompatibly. Stored in
 #: ``schema_meta`` so a future version can migrate or quarantine.
@@ -178,7 +178,7 @@ class BucketCrossing:
 
 def db_path() -> Path:
     """Resolved at call time so ``HOME`` overrides in tests take effect."""
-    return _default_telemetry_dir() / "telemetry.db"
+    return state._default_telemetry_dir() / "telemetry.db"
 
 
 def bucket_for(count: int) -> str | None:
@@ -696,7 +696,7 @@ def _seed_first_run_date(now: datetime | None) -> str:
     ignored without discarding dates recovered from the other items.
     """
     today = _as_day(now)
-    state_dir = _default_telemetry_dir()
+    state_dir = state._default_telemetry_dir()
     evidence: list[date] = []
     for name in _INSTALL_EVIDENCE_FILES:
         if found := _regular_file_date(state_dir / name):

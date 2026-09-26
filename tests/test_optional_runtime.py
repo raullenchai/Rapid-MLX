@@ -373,10 +373,17 @@ def _reset_one_shot_state():
         model_events._reset_for_tests()
 
 
-def test_telemetry_state_uses_per_test_home(tmp_path) -> None:
+def test_telemetry_state_uses_per_test_root(tmp_path) -> None:
+    from rapid_mlx.telemetry import state, store
+
+    root = tmp_path / ".rapid-mlx"
+    assert state.client_id_path() == root / "telemetry-client-id"
+    assert state.consent_path() == root / "telemetry-consent.yaml"
+    assert store.db_path() == root / "telemetry.db"
     assert model_events._serve_failed_recent_path() == (
-        tmp_path / "home" / ".rapid-mlx" / "state" / "serve-failed-recent.json"
+        root / "state" / "serve-failed-recent.json"
     )
+    assert server_start._marker_path().parent == root / "state"
 
 
 def test_posix_prompt_ready_at_deadline_is_not_accepted(monkeypatch) -> None:
