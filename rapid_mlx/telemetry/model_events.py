@@ -479,71 +479,31 @@ def _serve_failure_claim_is_fresh(
     )
 
 
-def _invalidate_serve_failure_ledger(
-    path: Path, atomic_write: Callable[..., object]
-) -> None:
-    """Ensure a rejected claim cannot remain authoritative after rollback errors."""
-    try:
-        path.unlink(missing_ok=True)
-        return
-    except OSError:
-        pass
-    try:
-        atomic_write(path, value={})
-    except Exception:
-        return
-
-
-def _rollback_serve_failure_claim(
-    path: Path,
-    encoded_key: str,
-    current: float,
-    atomic_write: Callable[..., object],
-) -> None:
-    """Remove a rejected claim, retrying once before invalidating the ledger."""
-    flags = os.O_RDONLY | getattr(os, "O_DIRECTORY", 0)
-    flags |= getattr(os, "O_CLOEXEC", 0)
-    flags |= getattr(os, "O_NOFOLLOW", 0)
-    try:
-        dir_fd = os.open(path.parent, flags)
-    except OSError:
-        _invalidate_serve_failure_ledger(path, atomic_write)
-        return
-    try:
-        try:
-            locked = _acquire_serve_failed_lock(dir_fd)
-        except Exception:
-            locked = False
-        if not locked:
-            _invalidate_serve_failure_ledger(path, atomic_write)
-            return
-        for _attempt in range(2):
-            try:
-                recent = _read_serve_failed_recent(path)
-                if recent.get(encoded_key) != current:
-                    return
-                recent.pop(encoded_key)
-                atomic_write(path, value=recent)
-                return
-            except Exception:
-                continue
-        _invalidate_serve_failure_ledger(path, atomic_write)
-    finally:
-        os.close(dir_fd)
-
-
 def _claim_serve_failure_key(
     key: tuple[str, str, str, str],
     *,
     now: float | None = None,
-    on_claim: Callable[[], bool] | None = None,
+    would_accept: Callable[[], bool] | None = None,
+    on_claim: Callable[[], object] | None = None,
 ) -> bool:
-    """Claim a cross-process failure key, then accept it outside the lock."""
+    """Accept then claim a cross-process failure key and enqueue after unlock."""
+    decision: bool | None = None
 
-    def accept_without_dedupe() -> bool:
-        if on_claim is None:
-            return True
-        return on_claim()
+    def accepted() -> bool:
+        nonlocal decision
+        if decision is None:
+            try:
+                decision = would_accept is None or would_accept() is True
+            except Exception:
+                decision = False
+        return decision
+
+    def enqueue_accepted() -> bool:
+        if not accepted():
+            return False
+        if on_claim is not None:
+            on_claim()
+        return True
 
     try:
         from rapid_mlx.telemetry.server_start import (
@@ -553,18 +513,19 @@ def _claim_serve_failure_key(
 
         current = _serve_failed_clock() if now is None else now
         if not math.isfinite(current):
-            return accept_without_dedupe()
+            return enqueue_accepted()
         encoded_key = json.dumps(key, separators=(",", ":"))
         path = _serve_failed_recent_path()
         if not _prepare_state_dir(path.parent):
-            return accept_without_dedupe()
+            return enqueue_accepted()
         flags = os.O_RDONLY | getattr(os, "O_DIRECTORY", 0)
         flags |= getattr(os, "O_CLOEXEC", 0)
         flags |= getattr(os, "O_NOFOLLOW", 0)
         dir_fd = os.open(path.parent, flags)
     except Exception:
-        return accept_without_dedupe()
+        return enqueue_accepted()
 
+    should_enqueue = False
     try:
         try:
             if not _acquire_serve_failed_lock(dir_fd):
@@ -574,28 +535,32 @@ def _claim_serve_failure_key(
                 recent = _read_serve_failed_recent(path)
                 if _serve_failure_claim_is_fresh(recent, encoded_key, current):
                     return False
-                return accept_without_dedupe()
-            recent = _read_serve_failed_recent(path)
-            if _serve_failure_claim_is_fresh(recent, encoded_key, current):
-                return False
-            recent[encoded_key] = current
-            if len(recent) > _SERVE_FAILED_MAX_KEYS:
-                recent = dict(
-                    sorted(
-                        recent.items(),
-                        key=lambda item: item[1],
-                        reverse=True,
-                    )[:_SERVE_FAILED_MAX_KEYS]
-                )
-            _atomic_write_marker(path, value=recent)
+                should_enqueue = True
+            else:
+                recent = _read_serve_failed_recent(path)
+                if _serve_failure_claim_is_fresh(recent, encoded_key, current):
+                    return False
+                if not accepted():
+                    return False
+                recent[encoded_key] = current
+                if len(recent) > _SERVE_FAILED_MAX_KEYS:
+                    recent = dict(
+                        sorted(
+                            recent.items(),
+                            key=lambda item: item[1],
+                            reverse=True,
+                        )[:_SERVE_FAILED_MAX_KEYS]
+                    )
+                _atomic_write_marker(path, value=recent)
+                should_enqueue = True
         except Exception:
-            return accept_without_dedupe()
+            should_enqueue = True
     finally:
-        os.close(dir_fd)
-    if on_claim is None or on_claim():
-        return True
-    _rollback_serve_failure_claim(path, encoded_key, current, _atomic_write_marker)
-    return False
+        try:
+            os.close(dir_fd)
+        except OSError:
+            pass
+    return enqueue_accepted() if should_enqueue else False
 
 
 @_never_raise
@@ -612,7 +577,6 @@ def emit_model_serve_failed(
         if _serve_failure_claimed:
             return
 
-    from rapid_mlx.telemetry import registry
     from rapid_mlx.telemetry import track as track_module
     from rapid_mlx.telemetry.model_id import engine_telemetry_id, telemetry_model_id
 
@@ -633,9 +597,6 @@ def emit_model_serve_failed(
         props["model_type"] = model_type(alias_or_path)
         props["auto_selected"] = bool(auto_selected)
         props["quant"] = _quant_for_ref(alias_or_path)
-    validated_props = registry.validate("model_serve_failed", props)
-    if validated_props is None:
-        return
     # Build every potentially-failing property before claiming the one-shot
     # latch. A telemetry-only conversion bug must not suppress a later valid
     # failure event from this process.
@@ -643,21 +604,21 @@ def emit_model_serve_failed(
         if _serve_failure_claimed:
             return
         _serve_failure_claimed = True
-    if not track_module._upload_allowed():
-        return
-    model = validated_props.get("model")
-    served_type = validated_props.get("model_type")
-    validated_error_class = validated_props["error_class"]
-    extra = validated_props.get("extra")
+    model = props.get("model")
+    served_type = props.get("model_type")
+    extra = props.get("extra")
     key = (
         model if isinstance(model, str) else "",
         served_type if isinstance(served_type, str) else "",
-        validated_error_class,
+        error_class,
         extra if isinstance(extra, str) else "",
     )
     _claim_serve_failure_key(
         key,
-        on_claim=lambda: track_module.track("model_serve_failed", validated_props),
+        would_accept=lambda: track_module.would_accept("model_serve_failed", props),
+        # Consent may change after this decision, just as it may while an
+        # already-queued event waits for the sender thread. Do not re-decide.
+        on_claim=lambda: track_module.track("model_serve_failed", props, decided=True),
     )
 
 
