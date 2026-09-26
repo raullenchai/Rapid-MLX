@@ -685,6 +685,7 @@ jobs:
             tests/test_dspark_scheduler.py \
             tests/test_scheduler_admission_policy.py \
             tests/test_scheduler_recurrent_cache_materialization.py \
+            tests/test_think_stop_scheduler.py \
             tests/test_prefix_cache_persistence.py \
             tests/test_prefix_boundary_path_parity.py \
             tests/test_prompt_cache_snapshot.py \

@@ -75,6 +75,7 @@ from ..service.helpers import (
     get_engine,
     maybe_auto_disable_thinking_for_casual_chat,
     maybe_auto_disable_thinking_for_tools,
+    reasoning_stop_scope_kwargs,
 )
 
 
@@ -888,6 +889,7 @@ async def create_anthropic_message(
                 _resolve_enable_thinking(openai_request),
             ),
             **_resolved_sampling_kwargs(openai_request),
+            **reasoning_stop_scope_kwargs(engine, openai_request),
         }
 
         if openai_request.tools:
@@ -1707,6 +1709,7 @@ async def _stream_anthropic_messages(
             _resolve_enable_thinking(openai_request),
         ),
         **_resolved_sampling_kwargs(openai_request),
+        **reasoning_stop_scope_kwargs(engine, openai_request),
     }
     # C-01: thread the request_id holder to the engine so disconnect
     # detection can force-call scheduler.abort_request.

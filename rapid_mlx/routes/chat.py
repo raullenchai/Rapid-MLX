@@ -128,6 +128,7 @@ from ..service.helpers import (
     maybe_apply_reasoning_effort,
     maybe_auto_disable_thinking_for_casual_chat,
     maybe_auto_disable_thinking_for_tools,
+    reasoning_stop_scope_kwargs,
     repair_messages_fit_context,
     served_chat_template,
 )
@@ -4739,6 +4740,7 @@ async def _create_chat_completion_impl(
     # alias → generation_config cascade. Only forwards values the
     # cascade actually produced.
     chat_kwargs.update(build_extended_sampling_kwargs(request))
+    chat_kwargs.update(reasoning_stop_scope_kwargs(engine, request))
 
     # Add multimodal content
     if has_media:
