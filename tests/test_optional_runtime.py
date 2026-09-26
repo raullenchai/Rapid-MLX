@@ -414,6 +414,12 @@ def _capture(monkeypatch):
         "rapid_mlx.telemetry.track.track",
         lambda event, props, **_kwargs: events.append((event, dict(props))),
     )
+
+    def enqueue(accepted):
+        events.append((accepted.event, dict(accepted.props)))
+        return True
+
+    monkeypatch.setattr("rapid_mlx.telemetry.track._enqueue_accepted", enqueue)
     return events
 
 

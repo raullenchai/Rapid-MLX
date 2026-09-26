@@ -12,6 +12,7 @@ import sys
 import threading
 import urllib.error
 import uuid
+from collections.abc import Callable
 from datetime import datetime, timezone
 from http.server import BaseHTTPRequestHandler, HTTPServer
 from pathlib import Path
@@ -63,6 +64,18 @@ FACTS = PlatformFacts(
     memory_gb=64,
     python_version="3.11",
 )
+
+
+def _capture_accepted_events(
+    monkeypatch,
+    callback: Callable[[str, dict[str, object]], None],
+) -> None:
+    def enqueue(accepted) -> bool:
+        assert isinstance(accepted, track_module._AcceptedEvent)
+        callback(accepted.event, dict(accepted.props))
+        return True
+
+    monkeypatch.setattr(track_module, "_enqueue_accepted", enqueue)
 
 
 @pytest.fixture(autouse=True)
@@ -1089,9 +1102,7 @@ def test_auto_selected_is_not_hardcoded_on_success(monkeypatch, auto_selected):
 @pytest.mark.parametrize("auto_selected", [False, True])
 def test_auto_selected_is_not_hardcoded_on_failure(monkeypatch, auto_selected):
     calls = []
-    monkeypatch.setattr(
-        track_module, "track", lambda _event, props, **_kwargs: calls.append(props)
-    )
+    _capture_accepted_events(monkeypatch, lambda _event, props: calls.append(props))
     model_events.emit_model_serve_failed(
         RuntimeError("load"), alias_or_path="unknown", auto_selected=auto_selected
     )
@@ -1102,9 +1113,7 @@ def test_auto_selected_is_not_hardcoded_on_failure(monkeypatch, auto_selected):
 def test_failure_uses_only_privacy_reduced_model_on_wire(monkeypatch, tmp_path):
     hostile = str(tmp_path / "alice-secret" / "weights")
     calls = []
-    monkeypatch.setattr(
-        track_module, "track", lambda event, props, **_kwargs: calls.append(props)
-    )
+    _capture_accepted_events(monkeypatch, lambda _event, props: calls.append(props))
     model_events.emit_model_serve_failed(RuntimeError("load"), alias_or_path=hostile)
     assert calls[0]["model"] == "<local>"
     assert hostile not in repr(calls)
@@ -1114,9 +1123,7 @@ def test_failure_prefers_engine_telemetry_identity(monkeypatch):
     calls = []
     engine = object()
     monkeypatch.setattr(model_id, "engine_telemetry_id", lambda value: "tmax-9b")
-    monkeypatch.setattr(
-        track_module, "track", lambda event, props, **_kwargs: calls.append(props)
-    )
+    _capture_accepted_events(monkeypatch, lambda _event, props: calls.append(props))
     model_events.emit_model_serve_failed(RuntimeError("load"), engine=engine)
     assert calls == [{"error_class": "other", "model": "tmax-9b"}]
 
@@ -1131,9 +1138,7 @@ def test_optional_runtime_failure_class_and_extra_are_structured(monkeypatch):
         detail="private diagnostic detail",
         status="broken",
     )
-    monkeypatch.setattr(
-        track_module, "track", lambda event, props, **_kwargs: calls.append(props)
-    )
+    _capture_accepted_events(monkeypatch, lambda _event, props: calls.append(props))
 
     model_events.emit_model_serve_failed(failure)
 
@@ -1154,9 +1159,7 @@ def test_wrapped_optional_runtime_failure_preserves_class_and_extra(monkeypatch)
     )
     wrapped = RuntimeError("outer")
     wrapped.__cause__ = missing
-    monkeypatch.setattr(
-        track_module, "track", lambda event, props, **_kwargs: calls.append(props)
-    )
+    _capture_accepted_events(monkeypatch, lambda _event, props: calls.append(props))
 
     model_events.emit_model_serve_failed(wrapped)
 
@@ -1183,9 +1186,7 @@ def test_failure_loses_race_after_payload_build_without_emitting(monkeypatch):
         return "other"
 
     monkeypatch.setattr(model_events, "model_type", claim_during_build)
-    monkeypatch.setattr(
-        track_module, "track", lambda event, props, **_kwargs: calls.append(props)
-    )
+    _capture_accepted_events(monkeypatch, lambda _event, props: calls.append(props))
     model_events.emit_model_serve_failed(RuntimeError("load"), alias_or_path="unknown")
     assert calls == []
 
@@ -1209,6 +1210,7 @@ def test_emitters_never_raise_and_failed_latch_is_not_burned(monkeypatch):
     monkeypatch.setattr(
         track_module, "track", lambda event, props, **kw: calls.append(event)
     )
+    _capture_accepted_events(monkeypatch, lambda event, _props: calls.append(event))
     monkeypatch.setattr(
         model_id,
         "telemetry_model_id",
@@ -1244,9 +1246,7 @@ def test_serve_failure_latch_claims_before_building(monkeypatch):
         "serve_error_class",
         lambda _exc: calls.append("classify") or "other",
     )
-    monkeypatch.setattr(
-        track_module, "track", lambda event, props, **_kwargs: calls.append(event)
-    )
+    _capture_accepted_events(monkeypatch, lambda event, _props: calls.append(event))
     model_events.emit_model_serve_failed(RuntimeError("first"))
     model_events.emit_model_serve_failed(RuntimeError("second"))
     assert calls == ["classify", "model_serve_failed"]
@@ -1265,11 +1265,7 @@ def test_identical_serve_failures_within_window_emit_once(monkeypatch):
     calls: list[dict[str, object]] = []
     now = iter((1000.0, 1599.0))
     monkeypatch.setattr(model_events, "_serve_failed_clock", lambda: next(now))
-    monkeypatch.setattr(
-        track_module,
-        "track",
-        lambda _event, props, **_kwargs: (calls.append(dict(props)), True)[1],
-    )
+    _capture_accepted_events(monkeypatch, lambda _event, props: calls.append(props))
 
     _emit_failure_from_fresh_process(RuntimeError("first"), alias_or_path="unknown")
     _emit_failure_from_fresh_process(RuntimeError("second"), alias_or_path="unknown")
@@ -1281,11 +1277,7 @@ def test_identical_serve_failures_after_window_emit_twice(monkeypatch):
     calls: list[dict[str, object]] = []
     now = iter((1000.0, 1600.0))
     monkeypatch.setattr(model_events, "_serve_failed_clock", lambda: next(now))
-    monkeypatch.setattr(
-        track_module,
-        "track",
-        lambda _event, props, **_kwargs: (calls.append(dict(props)), True)[1],
-    )
+    _capture_accepted_events(monkeypatch, lambda _event, props: calls.append(props))
 
     _emit_failure_from_fresh_process(RuntimeError("first"), alias_or_path="unknown")
     _emit_failure_from_fresh_process(RuntimeError("second"), alias_or_path="unknown")
@@ -1296,11 +1288,7 @@ def test_identical_serve_failures_after_window_emit_twice(monkeypatch):
 def test_different_serve_failure_key_is_not_suppressed(monkeypatch):
     calls: list[dict[str, object]] = []
     monkeypatch.setattr(model_events, "_serve_failed_clock", lambda: 1000.0)
-    monkeypatch.setattr(
-        track_module,
-        "track",
-        lambda _event, props, **_kwargs: (calls.append(dict(props)), True)[1],
-    )
+    _capture_accepted_events(monkeypatch, lambda _event, props: calls.append(props))
 
     _emit_failure_from_fresh_process(RuntimeError("first"), alias_or_path="unknown")
     _emit_failure_from_fresh_process(RuntimeError("second"), alias_or_path="sdxl-base")
@@ -1330,11 +1318,7 @@ def test_serve_failure_dedupe_storage_failures_and_backwards_clock_fail_open(
     else:
         times = iter((1000.0, 999.0))
     monkeypatch.setattr(model_events, "_serve_failed_clock", lambda: next(times))
-    monkeypatch.setattr(
-        track_module,
-        "track",
-        lambda _event, props, **_kwargs: (calls.append(dict(props)), True)[1],
-    )
+    _capture_accepted_events(monkeypatch, lambda _event, props: calls.append(props))
 
     _emit_failure_from_fresh_process(RuntimeError("first"), alias_or_path="unknown")
     _emit_failure_from_fresh_process(RuntimeError("second"), alias_or_path="unknown")
@@ -1574,10 +1558,8 @@ def test_invalid_optional_extra_writes_no_dedupe_file_or_event(monkeypatch, tmp_
         "quant": "unknown",
     }
     assert registry.validate("model_serve_failed", props) is None
-    monkeypatch.setattr(
-        track_module,
-        "track",
-        lambda event, values: calls.append((event, dict(values))),
+    _capture_accepted_events(
+        monkeypatch, lambda event, values: calls.append((event, values))
     )
 
     model_events.emit_model_serve_failed(failure, alias_or_path="acme/private-model")
@@ -1597,10 +1579,9 @@ def test_invalid_serve_failure_props_write_no_file_or_event(
         )
     else:
         monkeypatch.setattr(model_events, "model_type", lambda _value: "invalid")
-    monkeypatch.setattr(
-        track_module,
-        "track",
-        lambda *_args, **_kwargs: pytest.fail("invalid event reached enqueue"),
+    _capture_accepted_events(
+        monkeypatch,
+        lambda _event, _props: pytest.fail("invalid event reached enqueue"),
     )
 
     model_events.emit_model_serve_failed(
@@ -1616,16 +1597,7 @@ def test_rejected_first_serve_failure_does_not_consume_process_latch(
     identities = iter(("private/model/path", "<custom>"))
     calls: list[dict[str, object]] = []
     monkeypatch.setattr(model_id, "telemetry_model_id", lambda _value: next(identities))
-    monkeypatch.setattr(
-        track_module,
-        "would_accept",
-        lambda event, props: registry.validate(event, dict(props)) is not None,
-    )
-    monkeypatch.setattr(
-        track_module,
-        "track",
-        lambda _event, props, **_kwargs: (calls.append(dict(props)), True)[1],
-    )
+    _capture_accepted_events(monkeypatch, lambda _event, props: calls.append(props))
 
     model_events.emit_model_serve_failed(
         RuntimeError("first invalid"), alias_or_path="unknown"
@@ -1664,20 +1636,18 @@ def test_valid_serve_failure_wins_race_with_rejected_failure(monkeypatch, tmp_pa
         lambda value: "private/model/path" if value == "invalid" else "<custom>",
     )
 
+    real_accepted_props = track_module._accepted_props
+
     def decide(event, props):
         if props["model"] == "private/model/path":
             invalid_is_validating.set()
             valid_is_validating.wait(timeout=1.0)
         else:
             valid_is_validating.set()
-        return registry.validate(event, dict(props)) is not None
+        return real_accepted_props(event, props)
 
-    monkeypatch.setattr(track_module, "would_accept", decide)
-    monkeypatch.setattr(
-        track_module,
-        "track",
-        lambda _event, props, **_kwargs: (calls.append(dict(props)), True)[1],
-    )
+    monkeypatch.setattr(track_module, "_accepted_props", decide)
+    _capture_accepted_events(monkeypatch, lambda _event, props: calls.append(props))
 
     invalid = threading.Thread(
         target=model_events.emit_model_serve_failed,
@@ -1705,10 +1675,9 @@ def test_valid_serve_failure_wins_race_with_rejected_failure(monkeypatch, tmp_pa
 
 def test_opted_out_serve_failure_writes_no_dedupe_file(monkeypatch, tmp_path):
     monkeypatch.setattr(consent_runtime, "upload_allowed", lambda: False)
-    monkeypatch.setattr(
-        track_module,
-        "track",
-        lambda *_args, **_kwargs: pytest.fail("opted-out event reached track"),
+    _capture_accepted_events(
+        monkeypatch,
+        lambda _event, _props: pytest.fail("opted-out event reached enqueue"),
     )
 
     model_events.emit_model_serve_failed(

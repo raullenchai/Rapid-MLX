@@ -594,7 +594,8 @@ def emit_model_serve_failed(
     # Build and validate every potentially-failing property before claiming the
     # one-shot latch. A rejected event must not suppress a later valid failure
     # event from this process.
-    if not track_module.would_accept("model_serve_failed", props):
+    accepted = track_module.would_accept("model_serve_failed", props)
+    if accepted is None:
         return
     with _serve_failure_lock:
         if _serve_failure_claimed:
@@ -613,7 +614,7 @@ def emit_model_serve_failed(
         key,
         # Consent may change after this decision, just as it may while an
         # already-queued event waits for the sender thread. Do not re-decide.
-        on_claim=lambda: track_module.track("model_serve_failed", props, decided=True),
+        on_claim=lambda: track_module._enqueue_accepted(accepted),
     )
 
 
