@@ -454,13 +454,91 @@ def _read_serve_failed_recent(path: Path) -> dict[str, float]:
     }
 
 
+def _acquire_serve_failed_lock(dir_fd: int) -> bool:
+    """Acquire the ledger lock within its bounded wait budget."""
+    deadline = time.monotonic() + _SERVE_FAILED_LOCK_WAIT_SECONDS
+    while True:
+        try:
+            fcntl.flock(dir_fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            return True
+        except BlockingIOError:
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                return False
+            time.sleep(min(_SERVE_FAILED_LOCK_SLEEP_SECONDS, remaining))
+
+
+def _serve_failure_claim_is_fresh(
+    recent: dict[str, float], encoded_key: str, current: float
+) -> bool:
+    previous = recent.get(encoded_key)
+    return (
+        previous is not None
+        and current >= previous
+        and current - previous < SERVE_FAILED_DEDUPE_SECONDS
+    )
+
+
+def _invalidate_serve_failure_ledger(
+    path: Path, atomic_write: Callable[..., object]
+) -> None:
+    """Ensure a rejected claim cannot remain authoritative after rollback errors."""
+    try:
+        path.unlink(missing_ok=True)
+        return
+    except OSError:
+        pass
+    try:
+        atomic_write(path, value={})
+    except Exception:
+        return
+
+
+def _rollback_serve_failure_claim(
+    path: Path,
+    encoded_key: str,
+    current: float,
+    atomic_write: Callable[..., object],
+) -> None:
+    """Remove a rejected claim, retrying once before invalidating the ledger."""
+    flags = os.O_RDONLY | getattr(os, "O_DIRECTORY", 0)
+    flags |= getattr(os, "O_CLOEXEC", 0)
+    flags |= getattr(os, "O_NOFOLLOW", 0)
+    try:
+        dir_fd = os.open(path.parent, flags)
+    except OSError:
+        _invalidate_serve_failure_ledger(path, atomic_write)
+        return
+    try:
+        try:
+            locked = _acquire_serve_failed_lock(dir_fd)
+        except Exception:
+            locked = False
+        if not locked:
+            _invalidate_serve_failure_ledger(path, atomic_write)
+            return
+        for _attempt in range(2):
+            try:
+                recent = _read_serve_failed_recent(path)
+                if recent.get(encoded_key) != current:
+                    return
+                recent.pop(encoded_key)
+                atomic_write(path, value=recent)
+                return
+            except Exception:
+                continue
+        _invalidate_serve_failure_ledger(path, atomic_write)
+    finally:
+        os.close(dir_fd)
+
+
 def _claim_serve_failure_key(
     key: tuple[str, str, str, str],
     *,
     now: float | None = None,
     on_claim: Callable[[], bool] | None = None,
 ) -> bool:
-    """Claim a cross-process failure key and optionally accept it under lock."""
+    """Claim a cross-process failure key, then accept it outside the lock."""
 
     def accept_without_dedupe() -> bool:
         if on_claim is None:
@@ -476,6 +554,7 @@ def _claim_serve_failure_key(
         current = _serve_failed_clock() if now is None else now
         if not math.isfinite(current):
             return accept_without_dedupe()
+        encoded_key = json.dumps(key, separators=(",", ":"))
         path = _serve_failed_recent_path()
         if not _prepare_state_dir(path.parent):
             return accept_without_dedupe()
@@ -488,24 +567,16 @@ def _claim_serve_failure_key(
 
     try:
         try:
-            deadline = time.monotonic() + _SERVE_FAILED_LOCK_WAIT_SECONDS
-            while True:
-                try:
-                    fcntl.flock(dir_fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
-                    break
-                except BlockingIOError:
-                    remaining = deadline - time.monotonic()
-                    if remaining <= 0:
-                        return accept_without_dedupe()
-                    time.sleep(min(_SERVE_FAILED_LOCK_SLEEP_SECONDS, remaining))
+            if not _acquire_serve_failed_lock(dir_fd):
+                # Ledger replacement is atomic, so an unlocked read is a
+                # consistent snapshot. The lock winner may already have
+                # published this key even though our bounded wait expired.
+                recent = _read_serve_failed_recent(path)
+                if _serve_failure_claim_is_fresh(recent, encoded_key, current):
+                    return False
+                return accept_without_dedupe()
             recent = _read_serve_failed_recent(path)
-            encoded_key = json.dumps(key, separators=(",", ":"))
-            previous = recent.get(encoded_key)
-            if (
-                previous is not None
-                and current >= previous
-                and current - previous < SERVE_FAILED_DEDUPE_SECONDS
-            ):
+            if _serve_failure_claim_is_fresh(recent, encoded_key, current):
                 return False
             recent[encoded_key] = current
             if len(recent) > _SERVE_FAILED_MAX_KEYS:
@@ -519,13 +590,12 @@ def _claim_serve_failure_key(
             _atomic_write_marker(path, value=recent)
         except Exception:
             return accept_without_dedupe()
-        if on_claim is not None and not on_claim():
-            recent.pop(encoded_key, None)
-            _atomic_write_marker(path, value=recent)
-            return False
-        return True
     finally:
         os.close(dir_fd)
+    if on_claim is None or on_claim():
+        return True
+    _rollback_serve_failure_claim(path, encoded_key, current, _atomic_write_marker)
+    return False
 
 
 @_never_raise

@@ -1419,6 +1419,185 @@ def test_serve_failure_lock_contention_retries_then_rereads(monkeypatch):
     assert sleeps == [model_events._SERVE_FAILED_LOCK_SLEEP_SECONDS]
 
 
+@pytest.mark.parametrize(
+    ("recent", "expected", "expected_calls"),
+    [
+        ({"matching": 999.0}, False, 0),
+        ({}, True, 1),
+    ],
+)
+def test_serve_failure_lock_timeout_rereads_before_failing_open(
+    monkeypatch, recent, expected, expected_calls
+):
+    key = ("model", "llm", "other", "")
+    encoded_key = json.dumps(key, separators=(",", ":"))
+    stored = {encoded_key: recent["matching"]} if "matching" in recent else {}
+    calls: list[None] = []
+    monkeypatch.setattr(
+        model_events.fcntl,
+        "flock",
+        lambda *_args: (_ for _ in ()).throw(BlockingIOError()),
+    )
+    monkeypatch.setattr(model_events, "_SERVE_FAILED_LOCK_WAIT_SECONDS", 0)
+    monkeypatch.setattr(model_events, "_read_serve_failed_recent", lambda _path: stored)
+
+    result = model_events._claim_serve_failure_key(
+        key,
+        now=1000.0,
+        on_claim=lambda: (calls.append(None), True)[1],
+    )
+
+    assert result is expected
+    assert len(calls) == expected_calls
+
+
+def test_slow_serve_failure_acceptance_does_not_hold_ledger_lock(monkeypatch):
+    key = ("model", "llm", "other", "")
+    barrier = threading.Barrier(8)
+    calls: list[None] = []
+    results: list[bool] = []
+
+    def claim() -> None:
+        barrier.wait()
+
+        def slow_track() -> bool:
+            calls.append(None)
+            threading.Event().wait(0.6)
+            return True
+
+        results.append(
+            model_events._claim_serve_failure_key(key, now=1000.0, on_claim=slow_track)
+        )
+
+    threads = [threading.Thread(target=claim) for _ in range(8)]
+    for thread in threads:
+        thread.start()
+    for thread in threads:
+        thread.join(timeout=2.0)
+
+    assert all(not thread.is_alive() for thread in threads)
+    assert calls == [None]
+    assert results.count(True) == 1
+    assert results.count(False) == 7
+
+
+def test_serve_failure_rollback_write_failure_invalidates_claim(monkeypatch, tmp_path):
+    from rapid_mlx.telemetry import server_start
+
+    real_atomic_write = server_start._atomic_write_marker
+    write_count = 0
+    emissions: list[None] = []
+
+    def fail_rollback_writes(path, *, value):
+        nonlocal write_count
+        write_count += 1
+        if write_count in (2, 3):
+            raise OSError("rollback write failed")
+        real_atomic_write(path, value=value)
+
+    monkeypatch.setattr(server_start, "_atomic_write_marker", fail_rollback_writes)
+
+    assert (
+        model_events._claim_serve_failure_key(
+            ("model", "llm", "other", ""),
+            now=1000.0,
+            on_claim=lambda: False,
+        )
+        is False
+    )
+    path = tmp_path / ".rapid-mlx" / "state" / "serve-failed-recent.json"
+    assert not path.exists()
+
+    assert (
+        model_events._claim_serve_failure_key(
+            ("model", "llm", "other", ""),
+            now=1001.0,
+            on_claim=lambda: (emissions.append(None), True)[1],
+        )
+        is True
+    )
+    assert emissions == [None]
+
+
+@pytest.mark.parametrize("empty_write_fails", [False, True])
+def test_serve_failure_ledger_invalidation_falls_back_to_empty_write(
+    empty_write_fails,
+):
+    writes: list[dict[object, object]] = []
+
+    def write_empty(_path, *, value):
+        writes.append(value)
+        if empty_write_fails:
+            raise OSError("empty ledger write failed")
+
+    path = SimpleNamespace(
+        unlink=lambda **_kwargs: (_ for _ in ()).throw(OSError("unlink failed"))
+    )
+
+    model_events._invalidate_serve_failure_ledger(path, write_empty)
+
+    assert writes == [{}]
+
+
+def test_serve_failure_rollback_open_failure_invalidates(monkeypatch, tmp_path):
+    invalidated: list[Path] = []
+    path = tmp_path / "serve-failed-recent.json"
+    monkeypatch.setattr(
+        model_events.os,
+        "open",
+        lambda *_args: (_ for _ in ()).throw(OSError("open failed")),
+    )
+    monkeypatch.setattr(
+        model_events,
+        "_invalidate_serve_failure_ledger",
+        lambda value, _writer: invalidated.append(value),
+    )
+
+    model_events._rollback_serve_failure_claim(path, "key", 1000.0, lambda *_a: None)
+
+    assert invalidated == [path]
+
+
+@pytest.mark.parametrize("lock_outcome", [False, OSError("lock failed")])
+def test_serve_failure_rollback_lock_failure_invalidates(
+    monkeypatch, tmp_path, lock_outcome
+):
+    invalidated: list[Path] = []
+    path = tmp_path / "serve-failed-recent.json"
+
+    def acquire(_fd):
+        if isinstance(lock_outcome, Exception):
+            raise lock_outcome
+        return lock_outcome
+
+    monkeypatch.setattr(model_events, "_acquire_serve_failed_lock", acquire)
+    monkeypatch.setattr(
+        model_events,
+        "_invalidate_serve_failure_ledger",
+        lambda value, _writer: invalidated.append(value),
+    )
+
+    model_events._rollback_serve_failure_claim(path, "key", 1000.0, lambda *_a: None)
+
+    assert invalidated == [path]
+
+
+def test_serve_failure_rollback_preserves_replaced_claim(tmp_path):
+    path = tmp_path / "serve-failed-recent.json"
+    path.write_text('{"key":1001.0}', encoding="utf-8")
+    writes: list[dict[str, float]] = []
+
+    model_events._rollback_serve_failure_claim(
+        path,
+        "key",
+        1000.0,
+        lambda _path, *, value: writes.append(value),
+    )
+
+    assert writes == []
+    assert json.loads(path.read_text(encoding="utf-8")) == {"key": 1001.0}
+
+
 def test_invalid_optional_extra_writes_no_dedupe_file_or_event(monkeypatch, tmp_path):
     calls: list[tuple[str, dict[str, object]]] = []
     secret = "/Users/alice/private-extra"
