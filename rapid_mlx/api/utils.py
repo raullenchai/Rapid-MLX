@@ -1789,10 +1789,10 @@ def text_lane_image_guidance(
             "--force-spec-decode or MTP) and only the text lane runs it; restart "
             "without speculative decoding for image input."
         )
-    cause = _SUGGEST_VISION_ALIAS_CAUSES.get(reason)
-    if cause is None:
+    checkpoint_cause = _SUGGEST_VISION_ALIAS_CAUSES.get(reason)
+    if checkpoint_cause is None:
         return None
-    return f"{cause} {_suggest()}"
+    return f"{checkpoint_cause} {_suggest()}"
 
 
 def decode_inline_tool_call_arguments(messages: list[dict]) -> None:
