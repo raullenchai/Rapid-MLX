@@ -468,7 +468,7 @@ def inference_aborted_error_code(exc: BaseException) -> str:
     kind = getattr(exc, "error_kind", None)
     if kind == "lifecycle":
         return MODEL_REPLACEMENT_CODE
-    if kind in ENGINE_ABORT_CODES:
+    if isinstance(kind, str) and kind in ENGINE_ABORT_CODES:
         return kind
     return classify_engine_abort(exc)
 
