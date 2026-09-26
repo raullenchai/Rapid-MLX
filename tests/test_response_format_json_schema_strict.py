@@ -2793,3 +2793,26 @@ def test_strict_postgen_stream_buffer_overflow_counts_strict_schema_violation(
     assert [(c["result"], c.get("error_class")) for c in calls] == [
         ("failed", "strict_schema_violation")
     ]
+
+
+def test_chat_nonstream_abort_is_classified_abort_first(
+    monkeypatch, _rate_limiter_state
+):
+    """The chat handler maps InferenceAbortedError to 503 BEFORE its template
+    400 check, so an abort whose text matches the template predicate is an
+    abort in telemetry too (the counterpart of the template-first routes)."""
+    from rapid_mlx.request import InferenceAbortedError
+
+    class _AbortingEngine(_Engine):
+        async def chat(self, *, messages, **kwargs):
+            raise InferenceAbortedError("chat template render aborted")
+
+    calls = _capture_failed_emits(monkeypatch)
+    client = _make_client(_AbortingEngine(supports_guided=False))
+    body = _payload(strict=False)
+    body.pop("response_format", None)
+    resp = client.post("/v1/chat/completions", json=body)
+    assert resp.status_code == 503, resp.text
+    assert [(c["result"], c["error_class"]) for c in calls] == [
+        ("failed", "engine_aborted")
+    ]

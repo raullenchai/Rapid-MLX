@@ -2231,25 +2231,40 @@ def test_deepseek_deferred_route_failure_is_counted_when_not_retried(monkeypatch
     ]
 
 
-def test_nonstream_abort_matching_template_predicate_counts_template_error(
-    monkeypatch,
+@pytest.mark.parametrize(
+    ("message", "expected_status", "expected_class"),
+    [
+        # template predicate first -> template 400
+        ("chat template render aborted", 400, "template_error"),
+        # responses-only input marker -> request-shape 400, never an abort
+        ("Metal fault in content block 3", 400, "other"),
+        ("bad input_text.value", 400, "other"),
+        # no 400 predicate matches -> the abort category is still recorded
+        ("Metal: out of memory", None, "insufficient_memory"),
+    ],
+)
+def test_nonstream_failure_class_follows_the_responses_route_order(
+    monkeypatch, message, expected_status, expected_class
 ):
-    """/v1/responses tests the template predicate first and answers 400; the
+    """/v1/responses tests its 400 predicates before anything else; the
     telemetry class must follow that route order, not the chat order."""
+    from rapid_mlx.request import InferenceAbortedError
 
     class _Engine(_HealthyEngine):
         async def chat(self, messages, **kwargs):
-            from rapid_mlx.request import InferenceAbortedError
-
-            raise InferenceAbortedError("chat template render aborted")
+            raise InferenceAbortedError(message)
 
     holder = _build_client(monkeypatch, _Engine)
     try:
         calls = _capture_emits(monkeypatch)
-        resp = holder.client.post("/v1/responses", json=PAYLOAD, headers=HEADERS)
+        if expected_status is None:
+            with pytest.raises(InferenceAbortedError):
+                holder.client.post("/v1/responses", json=PAYLOAD, headers=HEADERS)
+        else:
+            resp = holder.client.post("/v1/responses", json=PAYLOAD, headers=HEADERS)
+            assert resp.status_code == expected_status, resp.text
     finally:
         holder.cleanup()
-    assert resp.status_code == 400, resp.text
     assert [(c["result"], c["error_class"]) for c in calls] == [
-        ("failed", "template_error")
+        ("failed", expected_class)
     ]

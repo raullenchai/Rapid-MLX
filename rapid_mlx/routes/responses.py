@@ -1625,6 +1625,15 @@ def _message_to_engine_dict(msg) -> dict:
     return {k: v for k, v in raw.items() if v is not None}
 
 
+#: Responses-input conversion failures the non-stream handler answers as 400.
+_RESPONSES_INPUT_400_MARKERS = (
+    "content block",
+    "input_text.",
+    "output_text.",
+    "input_image.",
+)
+
+
 def _record_nonstream_failure(engine, request: Request, error_class: str) -> None:
     """Count one failed non-streaming /v1/responses request under a class."""
     from rapid_mlx.telemetry import inference as _telemetry_inference
@@ -1914,11 +1923,6 @@ async def _non_stream(
     except Exception as e:  # noqa: BLE001 — match other routes' error shape
         from rapid_mlx.telemetry import inference as _telemetry_inference
 
-        _record_nonstream_failure(
-            engine,
-            request,
-            _telemetry_inference.classify_inference_failure(e, abort_first=False),
-        )
         from ..request import (
             is_batch_cap_error,
             is_chat_template_error,
@@ -1926,6 +1930,23 @@ async def _non_stream(
         )
 
         err_msg = str(e)
+        # Responses-input conversion failures this route answers as 400.
+        responses_input_400 = any(
+            marker in err_msg for marker in _RESPONSES_INPUT_400_MARKERS
+        )
+        # Classify in THIS handler's order: the shared 400 predicates, then
+        # the responses-only input markers (a request-shape 400 is "other",
+        # never an engine abort), then the abort category.
+        error_class = _telemetry_inference.classify_inference_failure(
+            e, abort_first=False
+        )
+        if responses_input_400 and error_class not in (
+            "template_error",
+            "media_input_invalid",
+            "prompt_too_large",
+        ):
+            error_class = "other"
+        _record_nonstream_failure(engine, request, error_class)
         if is_chat_template_error(e):
             raise HTTPException(
                 status_code=400, detail=f"Chat template error: {err_msg}"
@@ -1936,14 +1957,7 @@ async def _non_stream(
         # must map both to 400 or the /v1/responses surface returns a 500
         # for what is really an oversized-image / oversized-prompt user
         # error.
-        if (
-            is_media_input_error(e)
-            or is_batch_cap_error(e)
-            or "content block" in err_msg
-            or "input_text." in err_msg
-            or "output_text." in err_msg
-            or "input_image." in err_msg
-        ):
+        if is_media_input_error(e) or is_batch_cap_error(e) or responses_input_400:
             raise HTTPException(status_code=400, detail=err_msg)
         raise
 
