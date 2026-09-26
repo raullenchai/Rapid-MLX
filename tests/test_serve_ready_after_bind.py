@@ -983,6 +983,40 @@ def test_runner_failure_emits_bind_and_preserves_exit(monkeypatch):
     server_start._reset_for_tests()
 
 
+@pytest.mark.parametrize(
+    "port_argv",
+    [[], ["--port", "8123"]],
+    ids=["inherited-only", "ignored-explicit-port"],
+)
+def test_listen_fd_bind_failure_omits_port_context(monkeypatch, port_argv):
+    events: list[dict[str, object]] = []
+    monkeypatch.setattr("rapid_mlx.telemetry.track._upload_allowed", lambda: True)
+    monkeypatch.setattr(
+        "rapid_mlx.telemetry.track.track",
+        lambda event, props: events.append({"event": event, **props}),
+    )
+
+    def fail_runner(*_args, **_kwargs):
+        raise SystemExit(STARTUP_FAILURE)
+
+    monkeypatch.setattr("rapid_mlx._uvicorn.uvicorn.run", fail_runner)
+    args = cli.build_parser().parse_args(
+        ["serve", "qwen3.5-4b-4bit", "--listen-fd", "7", *port_argv]
+    )
+    assert args._port_explicit is None
+
+    server_start._reset_for_tests()
+    server_start.attempted("qwen3.5-4b-4bit", load_policy="eager")
+    with pytest.raises(SystemExit) as caught:
+        cli._run_uvicorn(_asgi_app, args, "error")
+
+    assert caught.value.code == STARTUP_FAILURE
+    assert [event["state"] for event in events] == ["attempted", "failed"]
+    assert events[-1]["failure_stage"] == "bind"
+    assert "port_explicit" not in events[-1]
+    server_start._reset_for_tests()
+
+
 def test_port_collision_emits_only_failed_bind(monkeypatch):
     events: list[dict[str, object]] = []
     legacy_failures: list[BaseException] = []

@@ -771,7 +771,7 @@ def _run_uvicorn(app, args, log_level: str) -> None:
                 log_level=log_level,
                 timeout_keep_alive=30,
                 on_server_accepting=print_ready_banner,
-                port_explicit=None,
+                port_explicit=args._port_explicit,
             )
         else:
             port = _resolved_serve_port(args)
