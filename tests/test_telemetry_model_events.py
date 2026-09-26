@@ -1373,6 +1373,36 @@ def test_serve_failure_claim_nonfinite_clock_and_lock_contention_fail_open(
     )
     monkeypatch.setattr(model_events, "_SERVE_FAILED_LOCK_WAIT_SECONDS", 0)
     assert model_events._claim_serve_failure_key(key, now=1000.0) is True
+    monkeypatch.setattr(
+        model_events.fcntl,
+        "flock",
+        lambda *_args: (_ for _ in ()).throw(PermissionError()),
+    )
+    assert model_events._claim_serve_failure_key(key, now=1000.0) is True
+
+
+def test_serve_failure_lock_contention_retries_then_rereads(monkeypatch):
+    key = ("model", "llm", "other", "")
+    encoded_key = json.dumps(key, separators=(",", ":"))
+    attempts = iter((BlockingIOError(), None))
+    sleeps: list[float] = []
+
+    def flock(*_args):
+        outcome = next(attempts)
+        if outcome is not None:
+            raise outcome
+
+    monkeypatch.setattr(model_events.fcntl, "flock", flock)
+    monkeypatch.setattr(model_events.time, "monotonic", lambda: 0.0)
+    monkeypatch.setattr(model_events.time, "sleep", sleeps.append)
+    monkeypatch.setattr(
+        model_events,
+        "_read_serve_failed_recent",
+        lambda _path: {encoded_key: 999.0},
+    )
+
+    assert model_events._claim_serve_failure_key(key, now=1000.0) is False
+    assert sleeps == [model_events._SERVE_FAILED_LOCK_SLEEP_SECONDS]
 
 
 def test_invalid_optional_extra_writes_no_dedupe_file_or_event(monkeypatch, tmp_path):
