@@ -149,7 +149,11 @@ _CONNECT_ROWS: list[tuple[str, str, bool]] = [
 
 
 def render_banner(
-    ep: ServerEndpoints, *, include_connect: bool = True, running: bool = True
+    ep: ServerEndpoints,
+    *,
+    include_connect: bool = True,
+    running: bool = True,
+    image_note: str | None = None,
 ) -> str:
     """Render the human "Ready:" / "OpenAI:" / "Connect:" block.
 
@@ -163,6 +167,9 @@ def render_banner(
     "Ready:" for an address that refuses connections (#1999) — it says there is
     no server and how to start one, and drops the Connect cheat-sheet that
     would otherwise wire a client to a dead endpoint.
+
+    ``image_note`` (serve only) explains why a vision-capable model started
+    text-only and what to do; it is shown directly under ``Model:``.
     """
     lines: list[str] = []
 
@@ -183,6 +190,8 @@ def render_banner(
         lines.append(f"  OpenAI:    {ep.openai_url}")
         lines.append(f"  Anthropic: {ep.anthropic_url}")
         lines.append(f"  Model:     {ep.model or '(not yet loaded)'}")
+        if image_note:
+            lines.append(f"  Images:    off. {image_note}")
 
     if include_connect and ep.listen_fd is None:
         lines.append("")

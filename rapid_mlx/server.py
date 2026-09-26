@@ -1135,7 +1135,20 @@ def print_ready_banner() -> None:
         listen_fd=_cfg.bind_listen_fd,
     )
     if _ep.listen_fd is not None or (_cfg.bind_host and _cfg.bind_port):
-        print(render_banner(_ep), end="")
+        print(render_banner(_ep, image_note=_text_lane_image_note(_cfg)), end="")
+
+
+def _text_lane_image_note(cfg) -> str | None:
+    """Ready-banner line for a vision-capable model auto-routed to text-only."""
+    from .api.utils import BANNER_TEXT_LANE_REASONS, text_lane_image_guidance
+
+    engine = _engine
+    if engine is None or getattr(engine, "is_mllm", True) is not False:
+        return None
+    reason = getattr(engine, "serving_lane_reason", None)
+    if reason not in BANNER_TEXT_LANE_REASONS:
+        return None
+    return text_lane_image_guidance(cfg.model_alias or cfg.model_name, reason)
 
 
 app = FastAPI(
