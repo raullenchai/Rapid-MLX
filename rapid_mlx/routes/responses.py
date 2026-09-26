@@ -1929,11 +1929,15 @@ async def _non_stream(
             is_media_input_error,
         )
 
-        err_msg = str(e)
-        # Responses-input conversion failures this route answers as 400.
-        responses_input_400 = any(
-            marker in err_msg for marker in _RESPONSES_INPUT_400_MARKERS
-        )
+        # Responses-input conversion failures this route answers as 400. The
+        # text is read defensively so an exception whose ``__str__`` raises is
+        # still counted before the (unchanged) ``str(e)`` below re-raises.
+        try:
+            responses_input_400 = any(
+                marker in str(e) for marker in _RESPONSES_INPUT_400_MARKERS
+            )
+        except Exception:
+            responses_input_400 = False
         # Classify in THIS handler's order: the shared 400 predicates, then
         # the responses-only input markers (a request-shape 400 is "other",
         # never an engine abort), then the abort category.
@@ -1947,6 +1951,7 @@ async def _non_stream(
         ):
             error_class = "other"
         _record_nonstream_failure(engine, request, error_class)
+        err_msg = str(e)
         if is_chat_template_error(e):
             raise HTTPException(
                 status_code=400, detail=f"Chat template error: {err_msg}"

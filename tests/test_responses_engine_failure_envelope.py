@@ -2239,6 +2239,11 @@ def test_deepseek_deferred_route_failure_is_counted_when_not_retried(monkeypatch
         # responses-only input marker -> request-shape 400, never an abort
         ("Metal fault in content block 3", 400, "other"),
         ("bad input_text.value", 400, "other"),
+        ("bad output_text.value", 400, "other"),
+        ("bad input_image.url", 400, "other"),
+        # overlap: the earlier shared predicate keeps its class
+        ("chat template error in content block 2", 400, "template_error"),
+        ("Failed to process image in content block 1", 400, "media_input_invalid"),
         # no 400 predicate matches -> the abort category is still recorded
         ("Metal: out of memory", None, "insufficient_memory"),
     ],
@@ -2268,3 +2273,22 @@ def test_nonstream_failure_class_follows_the_responses_route_order(
     assert [(c["result"], c["error_class"]) for c in calls] == [
         ("failed", expected_class)
     ]
+
+
+def test_nonstream_failure_with_unprintable_exception_is_still_counted(monkeypatch):
+    class _UnprintableError(Exception):
+        def __str__(self) -> str:
+            raise RuntimeError("str() explodes")
+
+    class _Engine(_HealthyEngine):
+        async def chat(self, messages, **kwargs):
+            raise _UnprintableError()
+
+    holder = _build_client(monkeypatch, _Engine)
+    try:
+        calls = _capture_emits(monkeypatch)
+        with pytest.raises(RuntimeError, match="str\\(\\) explodes"):
+            holder.client.post("/v1/responses", json=PAYLOAD, headers=HEADERS)
+    finally:
+        holder.cleanup()
+    assert [(c["result"], c["error_class"]) for c in calls] == [("failed", "other")]
