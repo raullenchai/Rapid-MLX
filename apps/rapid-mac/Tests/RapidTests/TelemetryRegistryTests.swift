@@ -123,6 +123,14 @@ struct TelemetryRegistryTests {
             "server_start_state",
             ["state": .string("exploded")]
         ) == nil)
+        #expect(registry.validate(
+            "server_start_state",
+            [
+                "state": .string("failed"),
+                "failure_stage": .string("prepare"),
+                "port_explicit": .bool(true)
+            ]
+        ) == nil)
         for state in ["attempted", "ready"] {
             #expect(registry.validate(
                 "server_start_state",

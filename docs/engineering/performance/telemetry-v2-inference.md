@@ -72,10 +72,17 @@ inference._record_completed_request(
 
 ## Counter cardinality
 
-The closed registry currently has 8 endpoint values (including `other`), 26
-caller values, and 2 result values: 416 worst-case counter keys per model.
-`store.MAX_KEYS = 12_000` therefore holds every combination for 28 complete
-models (`28 × 416 = 11,648`); the 29th model is where a fully saturated
-worst-case installation begins exhausting new keys. The cap was raised from
-2,000 because that allowed only 5 complete models. Even 12,000 rows remain a
-small local SQLite database, and existing keys continue counting at the cap.
+The closed registry currently has 8 endpoint values (including `other`), 27
+caller values, and one `ok` key plus one `failed` key per
+`inference_error_class` value (10): 8 × 27 × 11 = 2,376 worst-case counter keys
+per model. `store.MAX_KEYS = 67_000` therefore holds every combination for 28
+complete models (`28 × 2,376 = 66,528`); the 29th model is where a fully
+saturated worst-case installation begins exhausting new keys. The cap was
+raised from 2,000 to 12,000 when that allowed only 5 complete models, and from
+12,000 to 67,000 when failures started being counted per class (which would
+otherwise have left 5). Even 67,000 short rows remain a small local SQLite
+database, and existing keys continue counting at the cap. The longest
+legitimate key (a 128-character model id on a failed request) is 204
+characters, under `store.MAX_KEY_LENGTH = 256`. `tests/test_telemetry_inference.py`
+derives both numbers from the registry, and `tests/test_telemetry_store.py`
+fills a real database to the unpatched cap.

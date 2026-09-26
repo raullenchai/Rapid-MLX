@@ -518,6 +518,7 @@ def run_ddtree_server(
     tree_budget: int,
     host: str,
     port: int,
+    port_explicit: bool | None = None,
     served_model_name: str,
     default_max_tokens: int,
     cors_origins: list[str],
@@ -578,4 +579,5 @@ def run_ddtree_server(
         port=port,
         log_level=uvicorn_log_level,
         timeout_keep_alive=30,
+        port_explicit=port_explicit,
     )

@@ -83,11 +83,20 @@ def _engine_supports_completion_logprobs(engine) -> bool:
 )
 async def create_completion(request: CompletionRequest, raw_request: Request):
     """Create a text completion."""
+    from rapid_mlx.telemetry import inference as _telemetry_inference
+
+    _caller_agent, _caller_client = _telemetry_inference.request_caller_headers(
+        raw_request
+    )
     _validate_model_name(request.model)
     if request.suffix:
         from rapid_mlx.telemetry.inference import emit_capability_rejected
 
-        emit_capability_rejected("fim_suffix_unsupported")
+        emit_capability_rejected(
+            "fim_suffix_unsupported",
+            caller_agent=_caller_agent,
+            caller_client=_caller_client,
+        )
         raise HTTPException(
             status_code=400,
             detail=(
@@ -106,7 +115,11 @@ async def create_completion(request: CompletionRequest, raw_request: Request):
     if request.n is not None and request.n > 1:
         from rapid_mlx.telemetry.inference import emit_capability_rejected
 
-        emit_capability_rejected("multi_sample_unsupported")
+        emit_capability_rejected(
+            "multi_sample_unsupported",
+            caller_agent=_caller_agent,
+            caller_client=_caller_client,
+        )
         raise HTTPException(
             status_code=400,
             detail=(
@@ -118,7 +131,11 @@ async def create_completion(request: CompletionRequest, raw_request: Request):
     if request.best_of is not None and request.best_of > 1:
         from rapid_mlx.telemetry.inference import emit_capability_rejected
 
-        emit_capability_rejected("multi_sample_unsupported")
+        emit_capability_rejected(
+            "multi_sample_unsupported",
+            caller_agent=_caller_agent,
+            caller_client=_caller_client,
+        )
         raise HTTPException(
             status_code=400,
             detail=(
@@ -157,7 +174,11 @@ async def create_completion(request: CompletionRequest, raw_request: Request):
     if request.echo and request.logprobs is not None:
         from rapid_mlx.telemetry.inference import emit_capability_rejected
 
-        emit_capability_rejected("logprobs_unsupported")
+        emit_capability_rejected(
+            "logprobs_unsupported",
+            caller_agent=_caller_agent,
+            caller_client=_caller_client,
+        )
         raise HTTPException(
             status_code=400,
             detail=(
@@ -275,7 +296,11 @@ async def create_completion(request: CompletionRequest, raw_request: Request):
         if rf_type == "json_schema":
             from rapid_mlx.telemetry.inference import emit_capability_rejected
 
-            emit_capability_rejected("structured_output_unsupported")
+            emit_capability_rejected(
+                "structured_output_unsupported",
+                caller_agent=_caller_agent,
+                caller_client=_caller_client,
+            )
             raise HTTPException(
                 status_code=400,
                 detail={
@@ -377,7 +402,14 @@ async def create_completion(request: CompletionRequest, raw_request: Request):
         # ``service/helpers.py::enforce_context_length_for_prompt``.
         _resolved_max = _resolve_max_tokens(request.max_tokens)
         for _p in prompts:
-            enforce_context_length_for_prompt(engine, _p, max_tokens=_resolved_max)
+            enforce_context_length_for_prompt(
+                engine,
+                _p,
+                max_tokens=_resolved_max,
+                telemetry_model=_served_telemetry_id,
+                caller_agent=_caller_agent,
+                caller_client=_caller_client,
+            )
 
         # Codex r2/r3 BLOCKING: engine capability guard for ``logprobs``
         # applies to BOTH streaming and non-streaming paths. Without
@@ -394,7 +426,11 @@ async def create_completion(request: CompletionRequest, raw_request: Request):
             )
 
             emit_capability_rejected(
-                "logprobs_unsupported", model_type=model_type_token(engine)
+                "logprobs_unsupported",
+                model_type=model_type_token(engine),
+                model=_served_telemetry_id,
+                caller_agent=_caller_agent,
+                caller_client=_caller_client,
             )
             raise HTTPException(
                 status_code=501,
@@ -720,7 +756,7 @@ async def create_completion(request: CompletionRequest, raw_request: Request):
         _raise_lifecycle_cancel_or_reraise(engine, exc)
     except HTTPException:
         raise
-    except Exception:
+    except Exception as exc:
         from rapid_mlx.telemetry import inference as _telemetry_inference
 
         _telemetry_inference.emit_completed_request(
@@ -737,6 +773,7 @@ async def create_completion(request: CompletionRequest, raw_request: Request):
                 else None
             ),
             result="failed",
+            error_class=_telemetry_inference.classify_inference_failure(exc),
         )
         raise
     finally:

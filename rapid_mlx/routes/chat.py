@@ -75,6 +75,9 @@ from ..request import (
     ClientRequestError,
     InferenceAbortedError,
     inference_aborted_error_payload,
+    is_batch_cap_error,
+    is_chat_template_error,
+    is_media_input_error,
 )
 from ..response_cache import (
     UNCACHEABLE,
@@ -133,6 +136,29 @@ from ..service.helpers import (
 )
 
 logger = logging.getLogger(__name__)
+
+
+def _record_nonstream_failure(
+    raw_request, served_telemetry_id: str | None, error_class: str
+) -> None:
+    """Count one failed non-streaming chat completion under a fixed class.
+
+    For failures the route raises itself as an ``HTTPException`` (which the
+    generic handler re-raises uncounted), e.g. the strict-schema 502s.
+    """
+    from rapid_mlx.telemetry import inference as _telemetry_inference
+
+    caller_agent, caller_client = _telemetry_inference.request_caller_headers(
+        raw_request
+    )
+    _telemetry_inference.emit_completed_request(
+        model=served_telemetry_id or "<custom>",
+        endpoint="/v1/chat/completions",
+        caller_agent=caller_agent,
+        caller_client=caller_client,
+        result="failed",
+        error_class=error_class,
+    )
 
 
 def _new_stream_request_id() -> str:
@@ -4077,6 +4103,11 @@ async def _create_chat_completion_impl(
     Admission is reserved after cheap validation to avoid leaking a slot on
     validation ``HTTPException`` paths.
     """
+    from rapid_mlx.telemetry import inference as _telemetry_inference
+
+    _caller_agent, _caller_client = _telemetry_inference.request_caller_headers(
+        raw_request
+    )
     # Validate messages is non-empty
     if not request.messages:
         raise HTTPException(
@@ -4273,7 +4304,11 @@ async def _create_chat_completion_impl(
         )
 
         emit_capability_rejected(
-            "multi_sample_unsupported", model_type=model_type_token(engine)
+            "multi_sample_unsupported",
+            model_type=model_type_token(engine),
+            model=served_telemetry_id,
+            caller_agent=_caller_agent,
+            caller_client=_caller_client,
         )
         raise HTTPException(
             status_code=400,
@@ -4331,7 +4366,11 @@ async def _create_chat_completion_impl(
         )
 
         emit_capability_rejected(
-            "logit_bias_unsupported", model_type=model_type_token(engine)
+            "logit_bias_unsupported",
+            model_type=model_type_token(engine),
+            model=served_telemetry_id,
+            caller_agent=_caller_agent,
+            caller_client=_caller_client,
         )
         raise HTTPException(
             status_code=400,
@@ -4474,6 +4513,9 @@ async def _create_chat_completion_impl(
             allow_image=engine.is_mllm,
             allow_video=engine.is_mllm,
             allow_audio=False,
+            telemetry_model=served_telemetry_id,
+            caller_agent=_caller_agent,
+            caller_client=_caller_client,
         )
     except UnsupportedContentBlockError as e:
         raise HTTPException(
@@ -4507,6 +4549,9 @@ async def _create_chat_completion_impl(
         messages, images, videos = extract_multimodal_content(
             request.messages,
             preserve_native_format=engine.preserve_native_tool_format,
+            telemetry_model=served_telemetry_id,
+            caller_agent=_caller_agent,
+            caller_client=_caller_client,
         )
 
     has_media = bool(images or videos)
@@ -4917,6 +4962,9 @@ async def _create_chat_completion_impl(
         max_tokens=chat_kwargs.get("max_tokens"),
         enable_thinking=resolved_thinking,
         chat_template_kwargs=chat_kwargs.get("chat_template_kwargs"),
+        telemetry_model=served_telemetry_id,
+        caller_agent=_caller_agent,
+        caller_client=_caller_client,
     )
 
     # LINE① (#558, codex r4 #1) — HARD context-window allowance check. With
@@ -5320,7 +5368,11 @@ async def _create_chat_completion_impl(
             )
 
             emit_capability_rejected(
-                "structured_output_unsupported", model_type=model_type_token(engine)
+                "structured_output_unsupported",
+                model_type=model_type_token(engine),
+                model=served_telemetry_id,
+                caller_agent=_caller_agent,
+                caller_client=_caller_client,
             )
             incr_strict_request()
             raise HTTPException(
@@ -5470,16 +5522,10 @@ async def _create_chat_completion_impl(
                     chat_template_kwargs=chat_kwargs.get("chat_template_kwargs"),
                 )
             except Exception as e:
-                err_msg = str(e)
-                err_type = type(e).__name__
-                if (
-                    "TemplateError" in err_type
-                    or "template" in err_msg.lower()
-                    or ("user" in err_msg.lower() and "found" in err_msg.lower())
-                ):
+                if is_chat_template_error(e):
                     raise HTTPException(
                         status_code=400,
-                        detail=f"Chat template error: {err_msg}",
+                        detail=f"Chat template error: {e}",
                     )
                 raise
         # L-05: surface silent ``enable_thinking`` drop on non-Qwen
@@ -5798,6 +5844,9 @@ async def _create_chat_completion_impl(
                         "strict=true: %s",
                         guided_err,
                     )
+                    _record_nonstream_failure(
+                        raw_request, served_telemetry_id, "strict_schema_violation"
+                    )
                     raise HTTPException(
                         status_code=502,
                         detail={
@@ -5853,9 +5902,9 @@ async def _create_chat_completion_impl(
             caller_agent=caller_agent,
             caller_client=caller_client,
             result="failed",
+            error_class=_telemetry_inference.classify_inference_failure(e),
         )
         err_msg = str(e)
-        err_type = type(e).__name__
         if isinstance(e, InferenceAbortedError):
             # Engine aborted the request (e.g. Metal runtime error caught
             # in the engine loop). Structured 503 carrying a stable
@@ -5863,11 +5912,7 @@ async def _create_chat_completion_impl(
             # (#3564) — the server is still up and a smaller request may
             # succeed (#353).
             raise _inference_aborted_http_exception(e) from e
-        if (
-            "TemplateError" in err_type
-            or "template" in err_msg.lower()
-            or ("user" in err_msg.lower() and "found" in err_msg.lower())
-        ):
+        if is_chat_template_error(e):
             raise HTTPException(
                 status_code=400, detail=f"Chat template error: {err_msg}"
             )
@@ -5885,11 +5930,7 @@ async def _create_chat_completion_impl(
         # 500. Surface as 400 so Desktop / curl clients see the actionable
         # message ("downscale image / raise --prefill-step-size") instead
         # of a generic server error.
-        if (
-            "Failed to process image" in err_msg
-            or "Failed to process video" in err_msg
-            or "exceeds the per-batch cap" in err_msg
-        ):
+        if is_media_input_error(e) or is_batch_cap_error(e):
             raise HTTPException(status_code=400, detail=err_msg)
         raise
     finally:
@@ -5930,6 +5971,9 @@ async def _create_chat_completion_impl(
             logger.warning(
                 "Strict json_schema response failed post-decode validation: %s",
                 err,
+            )
+            _record_nonstream_failure(
+                raw_request, served_telemetry_id, "strict_schema_violation"
             )
             raise HTTPException(
                 status_code=502,
@@ -8193,6 +8237,7 @@ async def stream_chat_completion_guided(
                 caller_agent=caller_agent,
                 caller_client=caller_client,
                 result="failed",
+                error_class="model_replaced",
             )
 
         def _finish_guided_handoff() -> tuple[bool, object | None]:
@@ -8356,6 +8401,7 @@ async def stream_chat_completion_guided(
                     caller_agent=caller_agent,
                     caller_client=caller_client,
                     result="failed",
+                    error_class="strict_schema_violation",
                 )
                 yield f"data: {json.dumps(_err_envelope)}\n\n"
                 yield "data: [DONE]\n\n"
@@ -8461,6 +8507,7 @@ async def stream_chat_completion_guided(
                     caller_agent=caller_agent,
                     caller_client=caller_client,
                     result="failed",
+                    error_class="strict_schema_violation",
                 )
                 yield f"data: {json.dumps(_err_envelope)}\n\n"
                 yield "data: [DONE]\n\n"

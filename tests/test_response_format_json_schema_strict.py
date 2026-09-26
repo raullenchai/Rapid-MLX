@@ -2594,3 +2594,65 @@ def test_strict_true_responses_sync_setup_failure_returns_502(_rate_limiter_stat
     assert engine.chat_calls == []
     snap = response_format_metrics.snapshot()
     assert snap["strict_violations_total"] == 1
+
+
+# ---------------------------------------------------------------------------
+# Telemetry: every non-stream strict 502 is a counted strict_schema_violation
+# ---------------------------------------------------------------------------
+
+
+def _capture_failed_emits(monkeypatch) -> list[dict]:
+    from rapid_mlx.telemetry import inference
+
+    calls: list[dict] = []
+    monkeypatch.setattr(
+        inference, "emit_completed_request", lambda **kwargs: calls.append(kwargs)
+    )
+    return calls
+
+
+@pytest.mark.parametrize(
+    ("endpoint", "engine_factory"),
+    [
+        # chat: guided raises -> 502 without fallback
+        (
+            "/v1/chat/completions",
+            lambda: _Engine(supports_guided=True, guided_raises=RuntimeError("x")),
+        ),
+        # chat: post-decode validation
+        (
+            "/v1/chat/completions",
+            lambda: _Engine(supports_guided=True, guided_text=_INVALID_PAYLOAD_PROSE),
+        ),
+        # responses: guided raises mid-await
+        (
+            "/v1/responses",
+            lambda: _Engine(supports_guided=True, guided_raises=RuntimeError("x")),
+        ),
+        # responses: guided raises at sync setup
+        ("/v1/responses", lambda: _SyncFailureEngine(supports_guided=True)),
+        # responses: post-decode validation
+        (
+            "/v1/responses",
+            lambda: _Engine(supports_guided=True, guided_text=_INVALID_PAYLOAD_PROSE),
+        ),
+    ],
+)
+def test_nonstream_strict_502_counts_one_strict_schema_violation(
+    monkeypatch, _rate_limiter_state, endpoint, engine_factory
+):
+    calls = _capture_failed_emits(monkeypatch)
+    engine = engine_factory()
+    if endpoint == "/v1/responses":
+        client = _make_responses_client(engine, _rate_limiter_state)
+        body = _responses_payload(strict=True)
+    else:
+        client = _make_client(engine)
+        body = _payload(strict=True)
+    resp = client.post(endpoint, json=body, headers={"User-Agent": "OpenAI/JS 5.23.0"})
+    assert resp.status_code == 502, resp.text
+    assert resp.json()["error"]["code"] == "strict_schema_violation"
+    assert [call["result"] for call in calls] == ["failed"]
+    assert calls[0]["error_class"] == "strict_schema_violation"
+    assert calls[0]["endpoint"] == endpoint
+    assert calls[0]["caller_agent"] == "OpenAI/JS 5.23.0"

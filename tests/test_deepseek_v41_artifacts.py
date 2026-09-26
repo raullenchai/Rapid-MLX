@@ -1325,7 +1325,7 @@ def test_serve_command_rejects_product_limits(monkeypatch, capsys, extra, messag
     monkeypatch.setattr(
         inference,
         "emit_capability_rejected",
-        lambda capability, *, model_type="other": telemetry_calls.append(
+        lambda capability, *, model_type="other", **_context: telemetry_calls.append(
             (capability, model_type)
         ),
     )

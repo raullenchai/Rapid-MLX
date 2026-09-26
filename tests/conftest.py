@@ -23,10 +23,11 @@ def stub_serve_port_resolution(monkeypatch):
         *,
         model,
         listen_fd=None,
+        port_explicit=None,
         scan_base=cli.DEFAULT_SERVE_PORT,
         scan_count=cli.DEFAULT_SERVE_PORT_CANDIDATES,
     ):
-        del model, listen_fd, scan_count
+        del model, listen_fd, port_explicit, scan_count
         return scan_base if port is None else port
 
     monkeypatch.setattr(cli, "_resolve_serve_port", resolve_requested_port)

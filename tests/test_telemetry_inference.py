@@ -3,10 +3,12 @@
 
 from __future__ import annotations
 
+import ast
 import asyncio
 import json
 import multiprocessing
 import os
+import re
 import sqlite3
 import subprocess
 import sys
@@ -227,7 +229,7 @@ def test_completed_inference_with_non_string_endpoint_falls_back_to_other(
     )
     inference._QUEUE.join()
 
-    assert records == ["inf|<custom>|other|unknown|failed"]
+    assert records == ["inf|<custom>|other|unknown|failed|other"]
 
 
 @pytest.mark.asyncio
@@ -595,6 +597,7 @@ async def test_midstream_generation_error_records_failed_without_active_day(
                 "result": "failed",
                 "count_bucket": "1",
                 "bucket_source": "crossed_now",
+                "error_class": "other",
             },
         )
     ]
@@ -667,7 +670,11 @@ def test_capability_rejected_requires_closed_model_type_and_never_raises(monkeyp
         lambda event, props: calls.append((event, dict(props))),
     )
     inference._record_capability_rejected(
-        capability="mcp_unsupported", model_type="other"
+        capability="mcp_unsupported",
+        model_type="other",
+        model="mlx-community/private-user/model",
+        caller_agent="private-agent/99 cursor/1.0",
+        caller_client=None,
     )
     inference._record_capability_rejected(
         capability="logprobs_unsupported",
@@ -687,7 +694,12 @@ def test_capability_rejected_requires_closed_model_type_and_never_raises(monkeyp
     assert calls == [
         (
             "capability_rejected",
-            {"capability": "mcp_unsupported", "model_type": "other"},
+            {
+                "capability": "mcp_unsupported",
+                "model_type": "other",
+                "model": "<local>",
+                "caller": "cursor",
+            },
         ),
         (
             "capability_rejected",
@@ -827,6 +839,1339 @@ def test_model_type_tokens_match_registry():
     assert declared == inference._MODEL_TYPES
 
 
+_REQUEST_ROOT_NAME = re.compile(r"^(request|req|body|payload|.*_request|.*_body)$")
+_REQUEST_TYPE_SUFFIXES = ("Request", "Body", "Params")
+#: FastAPI markers whose parameter VALUE is client-controlled request input.
+_REQUEST_PARAM_MARKERS = frozenset(
+    {"Form", "Query", "Body", "Header", "Cookie", "File", "Path", "UploadFile"}
+)
+_ROUTE_DECORATOR_METHODS = frozenset(
+    {"get", "post", "put", "patch", "delete", "api_route", "websocket"}
+)
+_REQUEST_MODEL_DEBUG_HANDLERS = frozenset(
+    {
+        "rapid_mlx/routes/anthropic.py:_stream_anthropic_messages",
+        "rapid_mlx/routes/completions.py:create_completion",
+        "rapid_mlx/routes/responses.py:_non_stream",
+    }
+)
+
+
+class _FunctionScopeNodes(ast.NodeVisitor):
+    """Collect one function's nodes without leaking into nested scopes."""
+
+    def __init__(self):
+        self.nodes: list[ast.AST] = []
+
+    def generic_visit(self, node: ast.AST) -> None:
+        self.nodes.append(node)
+        super().generic_visit(node)
+
+    def visit_FunctionDef(self, node: ast.FunctionDef) -> None:
+        self.nodes.append(node)
+
+    def visit_AsyncFunctionDef(self, node: ast.AsyncFunctionDef) -> None:
+        self.nodes.append(node)
+
+    def visit_Lambda(self, node: ast.Lambda) -> None:
+        return
+
+    def visit_ListComp(self, node: ast.ListComp) -> None:
+        return
+
+    def visit_SetComp(self, node: ast.SetComp) -> None:
+        return
+
+    def visit_DictComp(self, node: ast.DictComp) -> None:
+        return
+
+    def visit_GeneratorExp(self, node: ast.GeneratorExp) -> None:
+        return
+
+    def visit_ClassDef(self, node: ast.ClassDef) -> None:
+        self.nodes.append(node)
+
+
+def _scope_nodes(body: list[ast.AST]) -> list[ast.AST]:
+    collector = _FunctionScopeNodes()
+    for statement in body:
+        collector.visit(statement)
+    return collector.nodes
+
+
+class _NestedScopes(ast.NodeVisitor):
+    """Collect directly nested callable and comprehension scopes."""
+
+    def __init__(self):
+        self.nodes: list[ast.AST] = []
+
+    def _add(self, node: ast.AST) -> None:
+        self.nodes.append(node)
+
+    def visit_FunctionDef(self, node: ast.FunctionDef) -> None:
+        self._add(node)
+
+    def visit_AsyncFunctionDef(self, node: ast.AsyncFunctionDef) -> None:
+        self._add(node)
+
+    def visit_Lambda(self, node: ast.Lambda) -> None:
+        self._add(node)
+
+    def visit_ListComp(self, node: ast.ListComp) -> None:
+        self._add(node)
+
+    def visit_SetComp(self, node: ast.SetComp) -> None:
+        self._add(node)
+
+    def visit_DictComp(self, node: ast.DictComp) -> None:
+        self._add(node)
+
+    def visit_GeneratorExp(self, node: ast.GeneratorExp) -> None:
+        self._add(node)
+
+    def visit_ClassDef(self, node: ast.ClassDef) -> None:
+        # A class body is not part of its enclosing function scope, but methods
+        # and other callable scopes nested in it still need their own analysis.
+        super().generic_visit(node)
+
+
+def _nested_scopes(body: list[ast.AST]) -> list[ast.AST]:
+    collector = _NestedScopes()
+    for node in body:
+        collector.visit(node)
+    return collector.nodes
+
+
+def _target_names(target: ast.AST) -> set[str]:
+    return {
+        node.id
+        for node in ast.walk(target)
+        if isinstance(node, ast.Name) and isinstance(node.ctx, ast.Store)
+    }
+
+
+def _module_name(repo_root: Path, path: Path) -> str:
+    return ".".join(path.relative_to(repo_root).with_suffix("").parts)
+
+
+def _imported_names(module_name: str, tree: ast.Module) -> dict[str, str]:
+    imported: dict[str, str] = {}
+    package = module_name.split(".")[:-1]
+    for node in ast.walk(tree):
+        if isinstance(node, ast.ImportFrom) and node.module:
+            parent = package[: len(package) - max(node.level - 1, 0)]
+            source = ".".join([*parent, node.module]) if node.level else node.module
+            for alias in node.names:
+                imported[alias.asname or alias.name] = f"{source}.{alias.name}"
+        elif isinstance(node, ast.Import):
+            for alias in node.names:
+                imported[alias.asname or alias.name.split(".")[0]] = alias.name
+    return imported
+
+
+def _pydantic_model_classes(repo_root: Path) -> set[str]:
+    """Resolve BaseModel subclasses without importing MLX-bearing route modules."""
+    class_bases: dict[str, set[str]] = {}
+    for package in ("api", "routes", "schemas"):
+        directory = repo_root / "rapid_mlx" / package
+        if not directory.exists():
+            continue
+        for path in directory.rglob("*.py"):
+            tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
+            module_name = _module_name(repo_root, path)
+            imported = _imported_names(module_name, tree)
+            for node in tree.body:
+                if not isinstance(node, ast.ClassDef):
+                    continue
+                bases: set[str] = set()
+                for base in node.bases:
+                    if isinstance(base, ast.Name):
+                        bases.add(imported.get(base.id, f"{module_name}.{base.id}"))
+                    elif isinstance(base, ast.Attribute):
+                        root = base.value
+                        while isinstance(root, ast.Attribute):
+                            root = root.value
+                        if isinstance(root, ast.Name):
+                            bases.add(f"{imported.get(root.id, root.id)}.{base.attr}")
+                class_bases[f"{module_name}.{node.name}"] = bases
+
+    models = {"pydantic.BaseModel"}
+    changed = True
+    while changed:
+        changed = False
+        for class_name, bases in class_bases.items():
+            if class_name not in models and models.intersection(bases):
+                models.add(class_name)
+                changed = True
+    return models
+
+
+def _annotation_names(annotation: ast.AST | None) -> set[str]:
+    if annotation is None:
+        return set()
+    names: set[str] = set()
+    pending = [annotation]
+    parsed_strings: set[str] = set()
+    while pending:
+        node = pending.pop()
+        for child in ast.walk(node):
+            if isinstance(child, ast.Name):
+                names.add(child.id)
+            elif isinstance(child, ast.Attribute):
+                names.add(child.attr)
+            elif (
+                isinstance(child, ast.Constant)
+                and isinstance(child.value, str)
+                and child.value not in parsed_strings
+            ):
+                parsed_strings.add(child.value)
+                try:
+                    parsed = ast.parse(child.value, mode="eval").body
+                except SyntaxError:
+                    names.update(re.findall(r"[A-Za-z_]\w*", child.value))
+                else:
+                    if isinstance(parsed, ast.Constant) and isinstance(
+                        parsed.value, str
+                    ):
+                        names.update(re.findall(r"[A-Za-z_]\w*", parsed.value))
+                    else:
+                        pending.append(parsed)
+    return names
+
+
+def _assigned_request_value(node: ast.AST) -> bool:
+    while isinstance(node, ast.Await):
+        node = node.value
+    if isinstance(node, ast.Name):
+        return node.id == "Request"
+    if not isinstance(node, ast.Call):
+        return False
+    if isinstance(node.func, ast.Name):
+        return node.func.id.endswith("Request")
+    return isinstance(node.func, ast.Attribute) and (
+        node.func.attr in {"json", "parse_obj", "model_validate"}
+        or node.func.attr.endswith("Request")
+    )
+
+
+def _call_name(node: ast.AST) -> str | None:
+    if not isinstance(node, ast.Call):
+        return None
+    if isinstance(node.func, ast.Name):
+        return node.func.id
+    if isinstance(node.func, ast.Attribute):
+        return node.func.attr
+    return None
+
+
+def _is_route_handler(
+    function: ast.FunctionDef | ast.AsyncFunctionDef | ast.Lambda,
+) -> bool:
+    return not isinstance(function, ast.Lambda) and any(
+        _call_name(decorator) in _ROUTE_DECORATOR_METHODS
+        for decorator in function.decorator_list
+    )
+
+
+def _parameter_defaults(
+    function: ast.FunctionDef | ast.AsyncFunctionDef | ast.Lambda,
+) -> dict[str, ast.AST]:
+    positional = [*function.args.posonlyargs, *function.args.args]
+    defaults = dict(
+        zip(
+            (
+                argument.arg
+                for argument in positional[
+                    len(positional) - len(function.args.defaults) :
+                ]
+            ),
+            function.args.defaults,
+            strict=True,
+        )
+    )
+    defaults.update(
+        (argument.arg, default)
+        for argument, default in zip(
+            function.args.kwonlyargs, function.args.kw_defaults, strict=True
+        )
+        if default is not None
+    )
+    return defaults
+
+
+def _function_request_roots(
+    function: ast.FunctionDef | ast.AsyncFunctionDef | ast.Lambda,
+    nodes: list[ast.AST],
+    imported: dict[str, str],
+    pydantic_models: set[str],
+) -> set[str]:
+    """Names whose value (or ``.model``) is client-controlled in ``function``.
+
+    Every parameter of a route handler is request input as a VALUE — a bare
+    multipart ``model: str = Form(...)`` is exactly as attacker-controlled as
+    ``request.model`` — except ``Depends(...)`` injections. Outside route
+    handlers, a ``Form``/``Query``/``Body``/``Header``/``File`` default or
+    annotation marks the same thing.
+    """
+    roots: set[str] = set()
+    route_handler = _is_route_handler(function)
+    defaults = _parameter_defaults(function)
+    arguments = [
+        *function.args.posonlyargs,
+        *function.args.args,
+        *function.args.kwonlyargs,
+        *(
+            argument
+            for argument in (function.args.vararg, function.args.kwarg)
+            if argument is not None
+        ),
+    ]
+    for argument in arguments:
+        annotation_names = _annotation_names(argument.annotation)
+        typed_request = any(
+            name.endswith(_REQUEST_TYPE_SUFFIXES) for name in annotation_names
+        ) or any(imported.get(name) in pydantic_models for name in annotation_names)
+        default_marker = _call_name(defaults.get(argument.arg, ast.Constant(None)))
+        request_param = default_marker in _REQUEST_PARAM_MARKERS or bool(
+            annotation_names & _REQUEST_PARAM_MARKERS
+        )
+        injected = default_marker == "Depends" or "Depends" in annotation_names
+        if (
+            _REQUEST_ROOT_NAME.fullmatch(argument.arg)
+            or typed_request
+            or request_param
+            or (route_handler and not injected)
+        ):
+            roots.add(argument.arg)
+
+    for node in nodes:
+        assignments: list[tuple[ast.AST, ast.AST]] = []
+        if isinstance(node, ast.Assign):
+            assignments.extend((target, node.value) for target in node.targets)
+        elif (isinstance(node, ast.AnnAssign) and node.value is not None) or isinstance(
+            node, ast.NamedExpr
+        ):
+            assignments.append((node.target, node.value))
+        for target, value in assignments:
+            names = _target_names(target)
+            roots.update(name for name in names if _REQUEST_ROOT_NAME.fullmatch(name))
+            if _assigned_request_value(value):
+                roots.update(names)
+    return roots
+
+
+def _function_bound_names(
+    function: ast.FunctionDef | ast.AsyncFunctionDef | ast.Lambda,
+    nodes: list[ast.AST],
+) -> set[str]:
+    arguments = [
+        *function.args.posonlyargs,
+        *function.args.args,
+        *function.args.kwonlyargs,
+        *(
+            argument
+            for argument in (function.args.vararg, function.args.kwarg)
+            if argument is not None
+        ),
+    ]
+    return (
+        {argument.arg for argument in arguments}
+        | {
+            node.id
+            for node in nodes
+            if isinstance(node, ast.Name) and isinstance(node.ctx, ast.Store)
+        }
+        | (
+            {
+                statement.name
+                for statement in function.body
+                if isinstance(
+                    statement, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)
+                )
+            }
+            if isinstance(function, (ast.FunctionDef, ast.AsyncFunctionDef))
+            else set()
+        )
+    )
+
+
+def _scope_lookup_bindings(
+    module_name: str,
+    nodes: list[ast.AST],
+    function: ast.FunctionDef | ast.AsyncFunctionDef | ast.Lambda | None,
+) -> dict[str, list[tuple[tuple[int, int], str | None]]]:
+    """Collect ordered name bindings without entering nested scopes."""
+    bindings: dict[str, list[tuple[tuple[int, int], str | None]]] = {}
+
+    def bind(node: ast.AST, name: str, value: str | None) -> None:
+        bindings.setdefault(name, []).append(((node.lineno, node.col_offset), value))
+
+    if function is not None:
+        arguments = [
+            *function.args.posonlyargs,
+            *function.args.args,
+            *function.args.kwonlyargs,
+            *(
+                argument
+                for argument in (function.args.vararg, function.args.kwarg)
+                if argument is not None
+            ),
+        ]
+        for argument in arguments:
+            bind(argument, argument.arg, None)
+
+    package = module_name.split(".")[:-1]
+    for node in nodes:
+        if isinstance(node, ast.ImportFrom) and node.module:
+            parent = package[: len(package) - max(node.level - 1, 0)]
+            source = ".".join([*parent, node.module]) if node.level else node.module
+            for alias in node.names:
+                bind(node, alias.asname or alias.name, f"{source}.{alias.name}")
+        elif isinstance(node, ast.Import):
+            for alias in node.names:
+                bind(
+                    node,
+                    alias.asname or alias.name.split(".")[0],
+                    alias.name,
+                )
+        elif isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+            value = f"{module_name}.{node.name}" if function is None else None
+            bind(node, node.name, value)
+        elif isinstance(node, ast.ClassDef) or (
+            isinstance(node, ast.ExceptHandler) and node.name
+        ):
+            bind(node, node.name, None)
+        elif isinstance(node, ast.Name) and isinstance(node.ctx, ast.Store):
+            bind(node, node.id, None)
+
+    for events in bindings.values():
+        events.sort(key=lambda event: event[0])
+    return bindings
+
+
+_ENGINE_LOOKUP_FUNCTIONS = {
+    "rapid_mlx.routes.images._image_engine",
+    "rapid_mlx.service.helpers.get_engine",
+}
+
+
+def _request_model_violations(
+    repo_root: Path, root_debug: dict[str, list[str]] | None = None
+) -> list[str]:
+    """Find request-derived model identities reaching route telemetry sinks.
+
+    Request model names stop being attacker-controlled telemetry identity only
+    at the exact engine lookup boundaries used by the routes. Imported
+    ``rapid_mlx.service.helpers.get_engine`` and the module-local
+    ``rapid_mlx.routes.images._image_engine`` return a loaded engine or raise;
+    neither can echo its string argument. Calls are matched by qualified symbol
+    identity, so a same-named local function is not a privacy boundary. All
+    other calls, including telemetry model-id helpers, propagate taint.
+
+    Taint also crosses module-local calls: an argument that is tainted at a
+    call to a module-level function makes the matching parameter a request
+    root inside that function (iterated to a fixpoint), so a route handler
+    handing its ``model`` form field to a helper that emits telemetry is
+    caught at the helper's sink. The two engine-lookup boundaries above are
+    the exception: they are the reviewed place where a request name becomes a
+    resident engine, so their parameters are not re-tainted.
+    """
+    violations: list[str] = []
+    pydantic_models = _pydantic_model_classes(repo_root)
+
+    for directory in (
+        repo_root / "rapid_mlx/routes",
+        repo_root / "rapid_mlx/api",
+    ):
+        for path in directory.rglob("*.py"):
+            tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
+            module_name = _module_name(repo_root, path)
+            imported = _imported_names(module_name, tree)
+            module_functions = {
+                f"{module_name}.{node.name}": node
+                for node in tree.body
+                if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
+            }
+            param_taint: dict[str, set[str]] = {}
+            telemetry_names: set[str] = set()
+            telemetry_modules: set[str] = set()
+            for node in ast.walk(tree):
+                if (
+                    isinstance(node, ast.ImportFrom)
+                    and node.module
+                    and (
+                        node.module.startswith("rapid_mlx.telemetry")
+                        or node.module.startswith("telemetry")
+                    )
+                ):
+                    for alias in node.names:
+                        imported_name = alias.asname or alias.name
+                        if alias.name == "track" or alias.name.startswith("emit_"):
+                            telemetry_names.add(imported_name)
+                        telemetry_modules.add(imported_name)
+                elif isinstance(node, ast.Import):
+                    for alias in node.names:
+                        if alias.name.startswith("rapid_mlx.telemetry"):
+                            telemetry_modules.add(
+                                alias.asname or alias.name.split(".")[0]
+                            )
+
+            def is_telemetry_call(
+                node: ast.Call,
+                telemetry_names: set[str] = telemetry_names,
+                telemetry_modules: set[str] = telemetry_modules,
+            ) -> bool:
+                if isinstance(node.func, ast.Name):
+                    return node.func.id in telemetry_names
+                if not isinstance(node.func, ast.Attribute):
+                    return False
+                root = node.func.value
+                while isinstance(root, ast.Attribute):
+                    root = root.value
+                return (
+                    isinstance(root, ast.Name)
+                    and root.id in telemetry_modules
+                    and (
+                        node.func.attr == "track" or node.func.attr.startswith("emit_")
+                    )
+                )
+
+            def sink_expressions(node: ast.Call) -> list[ast.AST]:
+                expressions = [
+                    keyword.value
+                    for keyword in node.keywords
+                    if keyword.arg == "telemetry_model"
+                ]
+                if is_telemetry_call(node):
+                    function_name = (
+                        node.func.id
+                        if isinstance(node.func, ast.Name)
+                        else node.func.attr
+                    )
+                    positional = node.args
+                    if function_name == "emit_failed_on_stream_error":
+                        positional = positional[1:]
+                    expressions.extend(positional)
+                    expressions.extend(
+                        keyword.value
+                        for keyword in node.keywords
+                        if keyword.arg in {"model", "model_id"}
+                    )
+                return expressions
+
+            def expression_is_tainted(
+                node: ast.AST,
+                tainted: set[str],
+                request_roots: set[str],
+                lookup_scopes: list[
+                    dict[str, list[tuple[tuple[int, int], str | None]]]
+                ],
+            ) -> bool:
+                def lookup_binding(name: str) -> str | None:
+                    position = (node.lineno, node.col_offset)
+                    resolved = None
+                    for scope in lookup_scopes:
+                        for binding_position, value in scope.get(name, ()):
+                            if binding_position <= position:
+                                resolved = value
+                    return resolved
+
+                if isinstance(node, ast.Call):
+                    resolved_name = None
+                    if isinstance(node.func, ast.Name):
+                        resolved_name = lookup_binding(node.func.id)
+                    elif isinstance(node.func, ast.Attribute):
+                        root = node.func.value
+                        attributes = [node.func.attr]
+                        while isinstance(root, ast.Attribute):
+                            attributes.append(root.attr)
+                            root = root.value
+                        if (
+                            isinstance(root, ast.Name)
+                            and (root_binding := lookup_binding(root.id)) is not None
+                        ):
+                            resolved_name = ".".join(
+                                [root_binding, *reversed(attributes)]
+                            )
+                    if resolved_name in _ENGINE_LOOKUP_FUNCTIONS:
+                        return False
+                if isinstance(node, ast.Name) and node.id in request_roots:
+                    return True
+                if (
+                    isinstance(node, ast.Attribute)
+                    and node.attr == "model"
+                    and isinstance(node.value, ast.Name)
+                    and node.value.id in request_roots
+                ):
+                    return True
+                if (
+                    isinstance(node, ast.Subscript)
+                    and isinstance(node.value, ast.Name)
+                    and node.value.id in request_roots
+                    and isinstance(node.slice, ast.Constant)
+                    and node.slice.value == "model"
+                ):
+                    return True
+                if (
+                    isinstance(node, ast.Call)
+                    and isinstance(node.func, ast.Name)
+                    and node.func.id == "getattr"
+                    and len(node.args) >= 2
+                    and isinstance(node.args[0], ast.Name)
+                    and node.args[0].id in request_roots
+                    and isinstance(node.args[1], ast.Constant)
+                    and node.args[1].value == "model"
+                ):
+                    return True
+                if isinstance(node, ast.Name) and node.id in tainted:
+                    return True
+                return any(
+                    expression_is_tainted(child, tainted, request_roots, lookup_scopes)
+                    for child in ast.iter_child_nodes(node)
+                )
+
+            def expression_contains_request_root(
+                node: ast.AST,
+                request_roots: set[str],
+                lookup_scopes: list[
+                    dict[str, list[tuple[tuple[int, int], str | None]]]
+                ],
+            ) -> bool:
+                if isinstance(node, ast.Call):
+                    resolved_name = None
+                    if isinstance(node.func, ast.Name):
+                        position = (node.lineno, node.col_offset)
+                        for scope in lookup_scopes:
+                            for binding_position, value in scope.get(node.func.id, ()):
+                                if binding_position <= position:
+                                    resolved_name = value
+                    elif isinstance(node.func, ast.Attribute):
+                        root = node.func.value
+                        attributes = [node.func.attr]
+                        while isinstance(root, ast.Attribute):
+                            attributes.append(root.attr)
+                            root = root.value
+                        if isinstance(root, ast.Name):
+                            position = (node.lineno, node.col_offset)
+                            root_binding = None
+                            for scope in lookup_scopes:
+                                for binding_position, value in scope.get(root.id, ()):
+                                    if binding_position <= position:
+                                        root_binding = value
+                            if root_binding is not None:
+                                resolved_name = ".".join(
+                                    [root_binding, *reversed(attributes)]
+                                )
+                    if resolved_name in _ENGINE_LOOKUP_FUNCTIONS:
+                        return False
+                if isinstance(node, ast.Name) and node.id in request_roots:
+                    return True
+                return any(
+                    expression_contains_request_root(
+                        child, request_roots, lookup_scopes
+                    )
+                    for child in ast.iter_child_nodes(node)
+                )
+
+            def add_assignment_taint(
+                target: ast.AST,
+                value: ast.AST,
+                tainted: set[str],
+                request_roots: set[str],
+                lookup_scopes: list[
+                    dict[str, list[tuple[tuple[int, int], str | None]]]
+                ],
+            ) -> bool:
+                changed = False
+                if (
+                    isinstance(target, (ast.Tuple, ast.List))
+                    and isinstance(value, (ast.Tuple, ast.List))
+                    and len(target.elts) == len(value.elts)
+                ):
+                    for child_target, child_value in zip(
+                        target.elts, value.elts, strict=True
+                    ):
+                        changed |= add_assignment_taint(
+                            child_target,
+                            child_value,
+                            tainted,
+                            request_roots,
+                            lookup_scopes,
+                        )
+                    return changed
+                if expression_is_tainted(value, tainted, request_roots, lookup_scopes):
+                    before = len(tainted)
+                    tainted.update(_target_names(target))
+                    changed = len(tainted) != before
+                if expression_contains_request_root(
+                    value, request_roots, lookup_scopes
+                ):
+                    before = len(request_roots)
+                    request_roots.update(_target_names(target))
+                    changed |= len(request_roots) != before
+                return changed
+
+            def scope_taint(
+                nodes: list[ast.AST],
+                request_roots: set[str],
+                inherited_taint: set[str],
+                lookup_scopes: list[
+                    dict[str, list[tuple[tuple[int, int], str | None]]]
+                ],
+            ) -> set[str]:
+                tainted = set(inherited_taint)
+                changed = True
+                while changed:
+                    changed = False
+                    for node in nodes:
+                        if isinstance(node, ast.Assign):
+                            for target in node.targets:
+                                changed |= add_assignment_taint(
+                                    target,
+                                    node.value,
+                                    tainted,
+                                    request_roots,
+                                    lookup_scopes,
+                                )
+                        elif (
+                            isinstance(node, ast.AnnAssign) and node.value is not None
+                        ) or isinstance(node, (ast.AugAssign, ast.NamedExpr)):
+                            changed |= add_assignment_taint(
+                                node.target,
+                                node.value,
+                                tainted,
+                                request_roots,
+                                lookup_scopes,
+                            )
+                        elif isinstance(
+                            node, (ast.For, ast.AsyncFor, ast.comprehension)
+                        ):
+                            changed |= add_assignment_taint(
+                                node.target,
+                                node.iter,
+                                tainted,
+                                request_roots,
+                                lookup_scopes,
+                            )
+                        elif isinstance(node, (ast.With, ast.AsyncWith)):
+                            for item in node.items:
+                                if item.optional_vars is not None:
+                                    changed |= add_assignment_taint(
+                                        item.optional_vars,
+                                        item.context_expr,
+                                        tainted,
+                                        request_roots,
+                                        lookup_scopes,
+                                    )
+                return tainted
+
+            def check_calls(
+                nodes: list[ast.AST],
+                tainted: set[str],
+                request_roots: set[str],
+                lookup_scopes: list[
+                    dict[str, list[tuple[tuple[int, int], str | None]]]
+                ],
+                path: Path = path,
+                module_functions: dict[
+                    str, ast.FunctionDef | ast.AsyncFunctionDef
+                ] = module_functions,
+                param_taint: dict[str, set[str]] = param_taint,
+            ) -> None:
+                for node in nodes:
+                    if not isinstance(node, ast.Call):
+                        continue
+                    callee_name = None
+                    if isinstance(node.func, ast.Name):
+                        position = (node.lineno, node.col_offset)
+                        for scope in lookup_scopes:
+                            for binding_position, value in scope.get(node.func.id, ()):
+                                if binding_position <= position:
+                                    callee_name = value
+                    # The engine-lookup boundaries are reviewed not to echo
+                    # their argument; their callers already stop taint there.
+                    callee = (
+                        None
+                        if callee_name in _ENGINE_LOOKUP_FUNCTIONS
+                        else module_functions.get(callee_name or "")
+                    )
+                    if callee is not None:
+                        positional = [*callee.args.posonlyargs, *callee.args.args]
+                        passed = [
+                            *zip(positional, node.args, strict=False),
+                            *(
+                                (argument, keyword.value)
+                                for keyword in node.keywords
+                                for argument in (
+                                    *positional,
+                                    *callee.args.kwonlyargs,
+                                )
+                                if argument.arg == keyword.arg
+                            ),
+                        ]
+                        param_taint.setdefault(callee_name or "", set()).update(
+                            argument.arg
+                            for argument, value in passed
+                            if expression_is_tainted(
+                                value, tainted, request_roots, lookup_scopes
+                            )
+                        )
+                    if any(
+                        expression_is_tainted(
+                            expression, tainted, request_roots, lookup_scopes
+                        )
+                        for expression in sink_expressions(node)
+                    ):
+                        violations.append(
+                            f"{path.relative_to(repo_root)}:{node.lineno}"
+                        )
+
+            def analyze_scope(
+                body: list[ast.AST],
+                inherited_roots: set[str],
+                inherited_taint: set[str],
+                function: ast.FunctionDef
+                | ast.AsyncFunctionDef
+                | ast.Lambda
+                | None = None,
+                inherited_lookup_scopes: list[
+                    dict[str, list[tuple[tuple[int, int], str | None]]]
+                ]
+                | None = None,
+                imported: dict[str, str] = imported,
+                module_name: str = module_name,
+                path: Path = path,
+                pydantic_models: set[str] = pydantic_models,
+                module_functions: dict[
+                    str, ast.FunctionDef | ast.AsyncFunctionDef
+                ] = module_functions,
+                param_taint: dict[str, set[str]] = param_taint,
+            ) -> None:
+                nodes = _scope_nodes(body)
+                request_roots = set(inherited_roots)
+                inherited_scope_taint = set(inherited_taint)
+                lookup_scopes = [*(inherited_lookup_scopes or [])]
+                lookup_scopes.append(
+                    _scope_lookup_bindings(module_name, nodes, function)
+                )
+                if function is not None:
+                    bound_names = _function_bound_names(function, nodes)
+                    request_roots.difference_update(bound_names)
+                    inherited_scope_taint.difference_update(bound_names)
+                    positional = [
+                        *function.args.posonlyargs,
+                        *function.args.args,
+                    ]
+                    defaults = [
+                        *zip(
+                            positional[len(positional) - len(function.args.defaults) :],
+                            function.args.defaults,
+                            strict=True,
+                        ),
+                        *(
+                            (argument, default)
+                            for argument, default in zip(
+                                function.args.kwonlyargs,
+                                function.args.kw_defaults,
+                                strict=True,
+                            )
+                            if default is not None
+                        ),
+                    ]
+                    request_roots.update(
+                        argument.arg
+                        for argument, default in defaults
+                        if expression_contains_request_root(
+                            default, inherited_roots, lookup_scopes
+                        )
+                    )
+                request_roots.update(
+                    child.id
+                    for child in nodes
+                    if isinstance(child, ast.Name)
+                    and isinstance(child.ctx, ast.Load)
+                    and _REQUEST_ROOT_NAME.fullmatch(child.id)
+                )
+                if function is not None:
+                    request_roots.update(
+                        _function_request_roots(
+                            function, nodes, imported, pydantic_models
+                        )
+                    )
+                    for qualified, candidate in module_functions.items():
+                        if candidate is function:
+                            request_roots.update(param_taint.get(qualified, set()))
+                    debug_key = (
+                        f"{path.relative_to(repo_root)}:{function.name}"
+                        if isinstance(function, (ast.FunctionDef, ast.AsyncFunctionDef))
+                        else None
+                    )
+                    if (
+                        debug_key is not None
+                        and root_debug is not None
+                        and debug_key in _REQUEST_MODEL_DEBUG_HANDLERS
+                    ):
+                        root_debug[debug_key] = sorted(request_roots)
+                tainted = scope_taint(
+                    nodes, request_roots, inherited_scope_taint, lookup_scopes
+                )
+                check_calls(nodes, tainted, request_roots, lookup_scopes)
+
+                for nested in _nested_scopes(body):
+                    if isinstance(nested, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                        analyze_scope(
+                            nested.body,
+                            request_roots,
+                            tainted,
+                            function=nested,
+                            inherited_lookup_scopes=lookup_scopes,
+                        )
+                    elif isinstance(nested, ast.Lambda):
+                        analyze_scope(
+                            [nested.body],
+                            request_roots,
+                            tainted,
+                            function=nested,
+                            inherited_lookup_scopes=lookup_scopes,
+                        )
+                    elif isinstance(
+                        nested, (ast.ListComp, ast.SetComp, ast.GeneratorExp)
+                    ):
+                        analyze_scope(
+                            [nested.elt, *nested.generators],
+                            request_roots,
+                            tainted,
+                            inherited_lookup_scopes=lookup_scopes,
+                        )
+                    elif isinstance(nested, ast.DictComp):
+                        analyze_scope(
+                            [nested.key, nested.value, *nested.generators],
+                            request_roots,
+                            tainted,
+                            inherited_lookup_scopes=lookup_scopes,
+                        )
+
+            module_start = len(violations)
+            while True:
+                before = {key: set(params) for key, params in param_taint.items()}
+                del violations[module_start:]
+                analyze_scope(tree.body, set(), set())
+                if param_taint == before:
+                    break
+
+    return violations
+
+
+def test_no_route_or_api_telemetry_call_receives_request_model_expression():
+    """Client model fields are routing input, never telemetry identity."""
+    root_debug: dict[str, list[str]] = {}
+    violations = _request_model_violations(REPO_ROOT, root_debug)
+    assert violations == [], f"derived request roots: {root_debug}"
+
+
+@pytest.mark.parametrize(
+    "function_body",
+    [
+        "emit_capability_rejected('unsupported', model=request.model)",
+        (
+            "emit_capability_rejected('unsupported', "
+            "model=telemetry_model_id(responses_request.model))"
+        ),
+        "m = request.model\nemit_capability_rejected('unsupported', model=m)",
+        (
+            "m, ignored = body.model, None\n"
+            "emit_completed_request(model=m, endpoint='/v1/test')"
+        ),
+        (
+            'm = f"model={payload.model}"\n'
+            "emit_capability_rejected('unsupported', model_id=m)"
+        ),
+        "emit_capability_rejected('unsupported', model=engine_telemetry_id(request.model))",
+        "emit_capability_rejected('unsupported', model=telemetry_model_id(request.model))",
+        (
+            "def engine_telemetry_id(x):\n"
+            "    return x\n"
+            "emit_capability_rejected('unsupported', model=engine_telemetry_id(request.model))"
+        ),
+        "emit_capability_rejected('unsupported', model=str(request.model))",
+        (
+            "def get_engine(x):\n"
+            "    return x\n"
+            "engine = get_engine(request.model)\n"
+            "emit_capability_rejected('unsupported', model=engine_telemetry_id(engine))"
+        ),
+        "alias = request\nemit_capability_rejected('unsupported', model=alias.model)",
+        "alias = request\nemit_capability_rejected('unsupported', model=alias['model'])",
+        (
+            "alias = request\n"
+            "emit_capability_rejected('unsupported', model=getattr(alias, 'model'))"
+        ),
+        "alias, _ = request, 1\nemit_capability_rejected('unsupported', model=alias.model)",
+        (
+            "def inner(rq=request):\n"
+            "    emit_capability_rejected('unsupported', model=rq.model)"
+        ),
+        (
+            "alias = wrap(request)\n"
+            "emit_capability_rejected('unsupported', model=alias.model)"
+        ),
+        (
+            "if (alias := request):\n"
+            "    emit_capability_rejected('unsupported', model=alias.model)"
+        ),
+        (
+            "with request as alias:\n"
+            "    emit_capability_rejected('unsupported', model=alias.model)"
+        ),
+        (
+            "for alias in (request,):\n"
+            "    emit_capability_rejected('unsupported', model=alias.model)"
+        ),
+    ],
+    ids=[
+        "direct",
+        "wrapped",
+        "local-alias",
+        "tuple-unpack",
+        "f-string",
+        "engine-helper",
+        "telemetry-model-helper",
+        "shadowed-engine-helper",
+        "string-call",
+        "shadowed-engine-lookup",
+        "bare-root-alias",
+        "bare-root-mapping-alias",
+        "bare-root-getattr-alias",
+        "bare-root-unpack",
+        "bare-root-default-argument",
+        "bare-root-wrapper-call",
+        "bare-root-walrus",
+        "bare-root-with-as",
+        "bare-root-for-target",
+    ],
+)
+def test_request_model_privacy_gate_rejects_scratch_variants(tmp_path, function_body):
+    route_dir = tmp_path / "rapid_mlx/routes"
+    route_dir.mkdir(parents=True)
+    source = (
+        "from rapid_mlx.service.helpers import get_engine\n"
+        "from rapid_mlx.telemetry.inference import (\n"
+        "    emit_capability_rejected, emit_completed_request, telemetry_model_id,\n"
+        ")\n\n"
+        "def scratch(request, responses_request, body, payload):\n"
+        + "\n".join(f"    {line}" for line in function_body.splitlines())
+        + "\n"
+    )
+    (route_dir / "scratch.py").write_text(source, encoding="utf-8")
+
+    expected_line = 6 + len(function_body.splitlines())
+    assert _request_model_violations(tmp_path) == [
+        f"rapid_mlx/routes/scratch.py:{expected_line}"
+    ]
+
+
+def test_request_model_privacy_gate_accepts_imported_engine_lookup(tmp_path):
+    route_dir = tmp_path / "rapid_mlx/routes"
+    route_dir.mkdir(parents=True)
+    source = (
+        "from rapid_mlx.service.helpers import get_engine as lookup_engine\n"
+        "from rapid_mlx.telemetry.inference import emit_completed_request\n"
+        "from rapid_mlx.telemetry.model_id import engine_telemetry_id\n\n"
+        "def scratch(request):\n"
+        "    engine = lookup_engine(request.model)\n"
+        "    emit_completed_request(\n"
+        "        model=engine_telemetry_id(engine), endpoint='/v1/test'\n"
+        "    )\n"
+    )
+    (route_dir / "scratch.py").write_text(source, encoding="utf-8")
+
+    assert _request_model_violations(tmp_path) == []
+
+
+def test_lambda_default_request_root_fails_closed(tmp_path):
+    route_dir = tmp_path / "rapid_mlx/routes"
+    route_dir.mkdir(parents=True)
+    source = (
+        "from rapid_mlx.telemetry.inference import emit_capability_rejected\n\n"
+        "def scratch(request):\n"
+        "    callback = lambda rq=request: emit_capability_rejected(\n"
+        "        'unsupported', model=rq.model\n"
+        "    )\n"
+    )
+    (route_dir / "scratch.py").write_text(source, encoding="utf-8")
+
+    assert _request_model_violations(tmp_path) == ["rapid_mlx/routes/scratch.py:4"]
+
+
+def test_module_qualified_engine_lookup_remains_a_privacy_boundary(tmp_path):
+    route_dir = tmp_path / "rapid_mlx/routes"
+    route_dir.mkdir(parents=True)
+    source = (
+        "import rapid_mlx.service.helpers as helpers\n"
+        "from rapid_mlx.telemetry.inference import emit_completed_request\n"
+        "from rapid_mlx.telemetry.model_id import engine_telemetry_id\n\n"
+        "def scratch(request):\n"
+        "    engine = helpers.get_engine(request.model)\n"
+        "    emit_completed_request(\n"
+        "        model=engine_telemetry_id(engine), endpoint='/v1/test'\n"
+        "    )\n"
+    )
+    (route_dir / "scratch.py").write_text(source, encoding="utf-8")
+
+    assert _request_model_violations(tmp_path) == []
+
+
+def test_request_model_privacy_gate_rejects_module_rebound_lookup(tmp_path):
+    route_dir = tmp_path / "rapid_mlx/routes"
+    route_dir.mkdir(parents=True)
+    source = (
+        "from rapid_mlx.service.helpers import get_engine as lookup\n"
+        "from rapid_mlx.telemetry.inference import emit_completed_request\n"
+        "from rapid_mlx.telemetry.model_id import engine_telemetry_id\n"
+        "lookup = lambda value: value\n\n"
+        "def scratch(request):\n"
+        "    engine = lookup(request.model)\n"
+        "    emit_completed_request(\n"
+        "        model=engine_telemetry_id(engine), endpoint='/v1/test'\n"
+        "    )\n"
+    )
+    (route_dir / "scratch.py").write_text(source, encoding="utf-8")
+
+    assert _request_model_violations(tmp_path) == ["rapid_mlx/routes/scratch.py:8"]
+
+
+def test_request_model_privacy_gate_rejects_enclosing_rebound_lookup(tmp_path):
+    route_dir = tmp_path / "rapid_mlx/routes"
+    route_dir.mkdir(parents=True)
+    source = (
+        "from rapid_mlx.service.helpers import get_engine as lookup\n"
+        "from rapid_mlx.telemetry.inference import emit_completed_request\n"
+        "from rapid_mlx.telemetry.model_id import engine_telemetry_id\n\n"
+        "def outer(request):\n"
+        "    lookup = lambda value: value\n"
+        "    def scratch():\n"
+        "        engine = lookup(request.model)\n"
+        "        emit_completed_request(\n"
+        "            model=engine_telemetry_id(engine), endpoint='/v1/test'\n"
+        "        )\n"
+    )
+    (route_dir / "scratch.py").write_text(source, encoding="utf-8")
+
+    assert _request_model_violations(tmp_path) == ["rapid_mlx/routes/scratch.py:9"]
+
+
+@pytest.mark.parametrize(
+    ("module", "type_name", "parameter"),
+    [
+        ("rapid_mlx.api.anthropic_models", "AnthropicRequest", "anthropic_request"),
+        ("rapid_mlx.api.models", "ChatCompletionRequest", "openai_request"),
+    ],
+    ids=["anthropic-request", "openai-request"],
+)
+def test_request_model_privacy_gate_derives_real_handler_roots(
+    tmp_path, module, type_name, parameter
+):
+    route_dir = tmp_path / "rapid_mlx/routes"
+    route_dir.mkdir(parents=True)
+    source = (
+        f"from {module} import {type_name}\n"
+        "from rapid_mlx.telemetry.inference import emit_capability_rejected\n\n"
+        f"def scratch({parameter}: {type_name}):\n"
+        f"    model = {parameter}.model\n"
+        "    emit_capability_rejected('unsupported', model=model)\n"
+    )
+    (route_dir / "scratch.py").write_text(source, encoding="utf-8")
+
+    assert _request_model_violations(tmp_path) == ["rapid_mlx/routes/scratch.py:6"]
+
+
+@pytest.mark.parametrize(
+    "annotation",
+    [
+        "models.ChatCompletionRequest",
+        "Optional[models.ChatCompletionRequest]",
+        "Annotated[models.ChatCompletionRequest, 'request']",
+        "models.ChatCompletionRequest | None",
+        "'models.ChatCompletionRequest'",
+    ],
+    ids=["qualified", "optional", "annotated", "union", "string"],
+)
+def test_request_model_privacy_gate_reads_terminal_annotation_names(
+    tmp_path, annotation
+):
+    route_dir = tmp_path / "rapid_mlx/routes"
+    route_dir.mkdir(parents=True)
+    source = (
+        "from typing import Annotated, Optional\n"
+        "from rapid_mlx.api import models\n"
+        "from rapid_mlx.telemetry.inference import emit_capability_rejected\n\n"
+        f"def scratch(foo: {annotation}):\n"
+        "    emit_capability_rejected('unsupported', model=foo.model)\n"
+    )
+    (route_dir / "scratch.py").write_text(source, encoding="utf-8")
+
+    assert _request_model_violations(tmp_path) == ["rapid_mlx/routes/scratch.py:6"]
+
+
+@pytest.mark.parametrize(
+    ("parameter", "setup", "nested"),
+    [
+        (
+            "foo: ChatCompletionRequest",
+            "",
+            "def nested():\n        emit_capability_rejected('unsupported', model=foo.model)",
+        ),
+        (
+            "ignored",
+            "",
+            "def nested():\n        emit_capability_rejected('unsupported', model=request.model)",
+        ),
+        (
+            "foo: ChatCompletionRequest",
+            "model = foo.model",
+            "def nested():\n        emit_capability_rejected('unsupported', model=model)",
+        ),
+        (
+            "foo: ChatCompletionRequest",
+            "",
+            "nested = lambda: emit_capability_rejected('unsupported', model=foo.model)",
+        ),
+        (
+            "foo: ChatCompletionRequest",
+            "",
+            "nested = [emit_capability_rejected('unsupported', model=foo.model) for _ in range(1)]",
+        ),
+    ],
+    ids=[
+        "nested-typed-root",
+        "nested-regex-root",
+        "nested-tainted-name",
+        "lambda-closure",
+        "comprehension-closure",
+    ],
+)
+def test_request_model_privacy_gate_inherits_closure_roots_and_taint(
+    tmp_path, parameter, setup, nested
+):
+    route_dir = tmp_path / "rapid_mlx/routes"
+    route_dir.mkdir(parents=True)
+    body = [line for line in (setup, nested) if line]
+    source = (
+        "from rapid_mlx.api.models import ChatCompletionRequest\n"
+        "from rapid_mlx.telemetry.inference import emit_capability_rejected\n\n"
+        f"def scratch({parameter}):\n"
+        + "\n".join(f"    {line}" for line in "\n".join(body).splitlines())
+        + "\n"
+    )
+    (route_dir / "scratch.py").write_text(source, encoding="utf-8")
+
+    violations = _request_model_violations(tmp_path)
+    assert len(violations) == 1
+    assert violations[0].startswith("rapid_mlx/routes/scratch.py:")
+
+
+def test_request_model_privacy_gate_checks_class_methods(tmp_path):
+    route_dir = tmp_path / "rapid_mlx/routes"
+    route_dir.mkdir(parents=True)
+    source = (
+        "from rapid_mlx.telemetry.inference import emit_capability_rejected\n\n"
+        "class Handler:\n"
+        "    def serve(self, request):\n"
+        "        emit_capability_rejected('unsupported', model=request.model)\n"
+    )
+    (route_dir / "scratch.py").write_text(source, encoding="utf-8")
+
+    assert _request_model_violations(tmp_path) == ["rapid_mlx/routes/scratch.py:5"]
+
+
+@pytest.mark.parametrize(
+    "body",
+    [
+        (
+            "def outer(foo: ChatCompletionRequest):\n"
+            "    def nested(foo):\n"
+            "        emit_capability_rejected('unsupported', model=foo.model)\n"
+        ),
+        (
+            "def outer(foo: ChatCompletionRequest):\n"
+            "    model = foo.model\n"
+            "    def nested():\n"
+            "        model = 'resident'\n"
+            "        emit_capability_rejected('unsupported', model=model)\n"
+        ),
+    ],
+    ids=["parameter-shadows-root", "assignment-shadows-taint"],
+)
+def test_request_model_privacy_gate_respects_nested_function_shadowing(tmp_path, body):
+    route_dir = tmp_path / "rapid_mlx/routes"
+    route_dir.mkdir(parents=True)
+    source = (
+        "from rapid_mlx.api.models import ChatCompletionRequest\n"
+        "from rapid_mlx.telemetry.inference import emit_capability_rejected\n\n" + body
+    )
+    (route_dir / "scratch.py").write_text(source, encoding="utf-8")
+
+    assert _request_model_violations(tmp_path) == []
+
+
+@pytest.mark.parametrize(
+    "model_expression",
+    ['request["model"]', 'getattr(request, "model")'],
+    ids=["mapping-access", "getattr"],
+)
+def test_request_model_privacy_gate_rejects_all_model_access_forms(
+    tmp_path, model_expression
+):
+    route_dir = tmp_path / "rapid_mlx/routes"
+    route_dir.mkdir(parents=True)
+    source = (
+        "from rapid_mlx.telemetry.inference import emit_capability_rejected\n\n"
+        "def scratch(request):\n"
+        f"    model = {model_expression}\n"
+        "    emit_capability_rejected('unsupported', model=model)\n"
+    )
+    (route_dir / "scratch.py").write_text(source, encoding="utf-8")
+
+    assert _request_model_violations(tmp_path) == ["rapid_mlx/routes/scratch.py:5"]
+
+
+def test_image_unavailable_reports_resident_engine_telemetry_id(monkeypatch):
+    from fastapi import HTTPException
+
+    from rapid_mlx.routes import images
+    from rapid_mlx.telemetry import inference, model_id
+
+    engine = SimpleNamespace(is_image_gen=False, modality="text")
+    cfg = SimpleNamespace(
+        engine=engine,
+        model_alias="private-alias",
+        model_name="private-name",
+        model_path="qwen3.5-4b-4bit",
+        model_registry=None,
+    )
+    monkeypatch.setattr("rapid_mlx.config.get_config", lambda: cfg)
+    monkeypatch.setattr("rapid_mlx.config.server_config.get_config", lambda: cfg)
+    calls: list[dict[str, object]] = []
+    monkeypatch.setattr(
+        inference,
+        "emit_capability_rejected",
+        lambda _capability, **context: calls.append(context),
+    )
+
+    with pytest.raises(HTTPException) as exc_info:
+        images._image_engine()
+
+    assert exc_info.value.status_code == 409
+    assert calls == [
+        {
+            "model_type": "llm",
+            "model": model_id.engine_telemetry_id(engine),
+            "caller_agent": None,
+            "caller_client": None,
+        }
+    ]
+
+
 @pytest.mark.asyncio
 async def test_legacy_completion_multi_sample_rejection_emits_capability(monkeypatch):
     from fastapi import HTTPException
@@ -840,7 +2185,7 @@ async def test_legacy_completion_multi_sample_rejection_emits_capability(monkeyp
     monkeypatch.setattr(
         inference,
         "emit_capability_rejected",
-        lambda capability, *, model_type="other": calls.append(
+        lambda capability, *, model_type="other", **_context: calls.append(
             (capability, model_type)
         ),
     )
@@ -867,7 +2212,7 @@ async def test_chat_multi_sample_rejection_emits_capability(monkeypatch):
     monkeypatch.setattr(
         inference,
         "emit_capability_rejected",
-        lambda capability, *, model_type="other": calls.append(
+        lambda capability, *, model_type="other", **_context: calls.append(
             (capability, model_type)
         ),
     )
@@ -898,7 +2243,9 @@ async def test_responses_stateless_rejection_emits_capability(monkeypatch):
     monkeypatch.setattr(
         inference,
         "emit_capability_rejected",
-        lambda value, *, model_type="other": calls.append((value, model_type)),
+        lambda value, *, model_type="other", **_context: calls.append(
+            (value, model_type)
+        ),
     )
     body = json.dumps(
         {
@@ -936,7 +2283,9 @@ async def test_residency_perf_rejection_emits_capability(monkeypatch):
     monkeypatch.setattr(
         inference,
         "emit_capability_rejected",
-        lambda value, *, model_type="other": calls.append((value, model_type)),
+        lambda value, *, model_type="other", **_context: calls.append(
+            (value, model_type)
+        ),
     )
 
     request = residency.ModelLoadRequest(
@@ -958,18 +2307,37 @@ def test_context_length_rejection_emits_capability(monkeypatch):
 
     engine = SimpleNamespace(modality="text", supports_image_input=False)
     monkeypatch.setattr(helpers, "get_model_max_context", lambda _engine: 8)
-    calls: list[tuple[str, str]] = []
+    calls: list[tuple[str, dict[str, object]]] = []
+    monkeypatch.setattr(inference.track_module, "_upload_allowed", lambda: True)
+    monkeypatch.setattr(inference, "_submit", lambda work: work())
     monkeypatch.setattr(
-        inference,
-        "emit_capability_rejected",
-        lambda value, *, model_type="other": calls.append((value, model_type)),
+        inference.track_module,
+        "track",
+        lambda event, props: calls.append((event, dict(props))),
     )
 
     with pytest.raises(HTTPException) as exc_info:
-        helpers.enforce_context_length(engine, 8, max_tokens=1)
+        helpers.enforce_context_length(
+            engine,
+            8,
+            max_tokens=1,
+            telemetry_model="qwen3.5-4b-4bit",
+            caller_agent="private-agent/1.0 cursor/0.50",
+            caller_client="rapid-desktop",
+        )
 
     assert exc_info.value.status_code == 400
-    assert calls == [("context_length_exceeded", "llm")]
+    assert calls == [
+        (
+            "capability_rejected",
+            {
+                "capability": "context_length_exceeded",
+                "model_type": "llm",
+                "model": "qwen3.5-4b-4bit",
+                "caller": "rapid-desktop",
+            },
+        )
+    ]
 
 
 @pytest.mark.asyncio
@@ -994,7 +2362,9 @@ async def test_legacy_completion_early_rejections_emit_capability(
     monkeypatch.setattr(
         inference,
         "emit_capability_rejected",
-        lambda value, *, model_type="other": calls.append((value, model_type)),
+        lambda value, *, model_type="other", **_context: calls.append(
+            (value, model_type)
+        ),
     )
     values = {"model": "ignored", "prompt": "hello", "suffix": None, "n": 1}
     values.update(fields)
@@ -1031,7 +2401,9 @@ async def test_legacy_completion_format_rejections_emit_capability(
     monkeypatch.setattr(
         inference,
         "emit_capability_rejected",
-        lambda value, *, model_type="other": calls.append((value, model_type)),
+        lambda value, *, model_type="other", **_context: calls.append(
+            (value, model_type)
+        ),
     )
     values = {
         "model": "ignored",
@@ -1083,7 +2455,9 @@ async def test_legacy_completion_engine_logprobs_rejection_emits_capability(
     monkeypatch.setattr(
         inference,
         "emit_capability_rejected",
-        lambda value, *, model_type="other": calls.append((value, model_type)),
+        lambda value, *, model_type="other", **_context: calls.append(
+            (value, model_type)
+        ),
     )
     request = CompletionRequest.model_construct(
         model="ignored",
@@ -1131,7 +2505,9 @@ async def test_embedding_configuration_rejections_emit_capability(monkeypatch, c
     monkeypatch.setattr(
         inference,
         "emit_capability_rejected",
-        lambda value, *, model_type="other": calls.append((value, model_type)),
+        lambda value, *, model_type="other", **_context: calls.append(
+            (value, model_type)
+        ),
     )
 
     with pytest.raises(HTTPException):
@@ -1160,7 +2536,9 @@ def test_audio_capability_helpers_emit_before_http_error(monkeypatch, helper, ar
     monkeypatch.setattr(
         inference,
         "emit_capability_rejected",
-        lambda value, *, model_type="other": calls.append((value, model_type)),
+        lambda value, *, model_type="other", **_context: calls.append(
+            (value, model_type)
+        ),
     )
 
     with pytest.raises(HTTPException):
@@ -1189,7 +2567,9 @@ async def test_audio_alignment_wrong_model_emits_before_http_error(monkeypatch):
     monkeypatch.setattr(
         inference,
         "emit_capability_rejected",
-        lambda value, *, model_type="other": calls.append((value, model_type)),
+        lambda value, *, model_type="other", **_context: calls.append(
+            (value, model_type)
+        ),
     )
 
     with pytest.raises(HTTPException):
@@ -1225,7 +2605,9 @@ async def test_audio_speech_capability_rejections_emit(monkeypatch, case):
     monkeypatch.setattr(
         inference,
         "emit_capability_rejected",
-        lambda value, *, model_type="other": calls.append((value, model_type)),
+        lambda value, *, model_type="other", **_context: calls.append(
+            (value, model_type)
+        ),
     )
     request = AudioSpeechRequest.model_construct(
         model="model",
@@ -1280,7 +2662,7 @@ async def test_embedding_runtime_rejection_emits_capability(monkeypatch):
     monkeypatch.setattr(
         inference,
         "emit_capability_rejected",
-        lambda capability, *, model_type="other": calls.append(
+        lambda capability, *, model_type="other", **_context: calls.append(
             (capability, model_type)
         ),
     )
@@ -1357,7 +2739,7 @@ def test_video_engine_and_runtime_rejections_emit_capabilities(monkeypatch, tmp_
     monkeypatch.setattr(
         inference,
         "emit_capability_rejected",
-        lambda capability, *, model_type="other": calls.append(
+        lambda capability, *, model_type="other", **_context: calls.append(
             (capability, model_type)
         ),
     )
@@ -1396,7 +2778,7 @@ async def test_audio_runtime_rejections_emit_capabilities(monkeypatch):
     monkeypatch.setattr(
         inference,
         "emit_capability_rejected",
-        lambda capability, *, model_type="other": calls.append(
+        lambda capability, *, model_type="other", **_context: calls.append(
             (capability, model_type)
         ),
     )
@@ -1447,11 +2829,16 @@ async def test_audio_transcription_success_emits_completed_request(monkeypatch):
     response = {"text": "transcribed"}
 
     async def fake_stt_request(**_kwargs):
+        # The runner names the RESIDENT engine that served the request; the
+        # completed event reports that, never the request's form field.
+        audio._note_served_stt_engine(
+            SimpleNamespace(model_name=audio._resolve_stt_model("whisper-large-v3"))
+        )
         return response
 
     monkeypatch.setattr(probe, "require_mlx_audio_stt", lambda: None)
     monkeypatch.setattr(
-        audio, "_reject_word_timestamps_for_non_whisper", lambda *_a: None
+        audio, "_reject_word_timestamps_for_non_whisper", lambda *_a, **_k: None
     )
     monkeypatch.setattr(audio, "_run_stt_request", fake_stt_request)
     calls: list[dict[str, object]] = []
@@ -1502,7 +2889,7 @@ async def test_audio_alignment_success_emits_completed_request(monkeypatch):
 
     monkeypatch.setattr(probe, "require_mlx_audio_stt", lambda: None)
     monkeypatch.setattr(
-        audio, "_reject_word_timestamps_for_non_whisper", lambda *_a: None
+        audio, "_reject_word_timestamps_for_non_whisper", lambda *_a, **_k: None
     )
     monkeypatch.setattr(audio, "_run_alignment_request", fake_alignment_request)
     calls: list[dict[str, object]] = []
@@ -1530,8 +2917,129 @@ async def test_audio_alignment_success_emits_completed_request(monkeypatch):
 
     assert result is response
     assert len(calls) == 1
+    # No engine was noted by the (stubbed) runner: fail closed to <custom>.
+    assert calls[0]["model"] == "<custom>"
     assert calls[0]["endpoint"] == "/v1/audio/transcriptions"
     assert calls[0]["result"] == "ok"
+
+
+def _served_stt_route_harness(monkeypatch):
+    """Drive the REAL STT/alignment runners with only the MLX edges faked.
+
+    ``STTEngine``, the audio worker hops and ``telemetry_model_id`` are the
+    only stand-ins, so the ``_note_served_stt_engine`` wiring inside
+    ``_run_stt_request`` / ``_run_alignment_request`` is what decides the
+    ``completed_request`` model.
+    """
+    import httpx
+    from fastapi import FastAPI
+
+    import rapid_mlx.server as server
+    from rapid_mlx.audio import probe
+    from rapid_mlx.audio import stt as stt_mod
+    from rapid_mlx.config import get_config
+    from rapid_mlx.routes import audio
+    from rapid_mlx.runtime import audio_worker
+    from rapid_mlx.telemetry import inference, model_id
+
+    class FakeSTT:
+        def __init__(self, name):
+            self.model_name = name
+
+        def load(self):
+            return None
+
+        def transcribe(self, _path, **_kwargs):
+            return SimpleNamespace(
+                text="heard", segments=[], language="en", duration=1.0
+            )
+
+        def align(self, _path, text, **_kwargs):
+            return SimpleNamespace(text=text, segments=[], language="en", duration=1.0)
+
+    async def run_async(_lane, _model, _op, func, *args, **kwargs):
+        return func(*args, **kwargs)
+
+    def run_sync(_lane, _model, _op, func, *args, **kwargs):
+        return func(*args, **kwargs)
+
+    monkeypatch.setattr(stt_mod, "STTEngine", FakeSTT)
+    monkeypatch.setattr(audio_worker, "run_audio_mlx", run_async)
+    monkeypatch.setattr(audio_worker, "run_audio_mlx_sync", run_sync)
+    monkeypatch.setattr(probe, "require_mlx_audio_stt", lambda: None)
+    monkeypatch.setattr(server, "_emit_audio_model_served_once", lambda *_a: None)
+    monkeypatch.setattr(audio, "_stt_engine", None)
+    monkeypatch.setattr(audio, "_aligner_engine", None)
+    monkeypatch.setattr(get_config(), "api_key", None)
+    monkeypatch.setattr(get_config(), "residency_manager", None)
+    monkeypatch.setattr(model_id, "telemetry_model_id", lambda ref: f"ID({ref})")
+    calls: list[dict[str, object]] = []
+    monkeypatch.setattr(
+        inference, "emit_completed_request", lambda **kwargs: calls.append(kwargs)
+    )
+    app = FastAPI()
+    app.include_router(audio.router)
+    client = httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://loopback"
+    )
+    return audio, client, calls
+
+
+_WAV = ("a.wav", b"RIFF" + b"\0" * 100, "audio/wav")
+
+
+@pytest.mark.asyncio
+async def test_real_stt_runners_report_the_served_engine(monkeypatch):
+    audio, client, calls = _served_stt_route_harness(monkeypatch)
+    async with client:
+        asr = await client.post(
+            "/v1/audio/transcriptions",
+            data={"model": "whisper-large-v3"},
+            files={"file": _WAV},
+        )
+        aligned = await client.post(
+            "/v1/audio/transcriptions",
+            data={"model": "qwen3-forced-aligner", "text": "known transcript"},
+            files={"file": _WAV},
+        )
+
+    assert asr.status_code == 200, asr.text
+    assert aligned.status_code == 200, aligned.text
+    asr_id = f"ID({audio._resolve_stt_model('whisper-large-v3')})"
+    aligner_id = f"ID({audio._resolve_stt_model('qwen3-forced-aligner')})"
+    assert [call["model"] for call in calls] == [asr_id, aligner_id]
+    assert all(call["result"] == "ok" for call in calls)
+
+
+@pytest.mark.asyncio
+async def test_telemetry_import_failure_never_fails_a_served_stt_request(
+    monkeypatch,
+):
+    from rapid_mlx.telemetry import model_id
+
+    _audio, client, calls = _served_stt_route_harness(monkeypatch)
+
+    def broken_telemetry(_ref):
+        raise ImportError("telemetry dependency missing")
+
+    monkeypatch.setattr(model_id, "telemetry_model_id", broken_telemetry)
+    async with client:
+        asr = await client.post(
+            "/v1/audio/transcriptions",
+            data={"model": "whisper-large-v3"},
+            files={"file": _WAV},
+        )
+        aligned = await client.post(
+            "/v1/audio/transcriptions",
+            data={"model": "qwen3-forced-aligner", "text": "known transcript"},
+            files={"file": _WAV},
+        )
+
+    # A telemetry failure must not surface as the 503 "mlx-audio not
+    # installed" envelope for audio that was transcribed successfully.
+    assert asr.status_code == 200, asr.text
+    assert aligned.status_code == 200, aligned.text
+    assert [call["model"] for call in calls] == ["<custom>", "<custom>"]
 
 
 def test_completed_inference_key_stays_within_store_limit(monkeypatch):
@@ -1640,13 +3148,43 @@ def test_worst_case_counter_cardinality_supports_28_complete_models():
     from rapid_mlx.telemetry import registry, store
 
     enums = registry.load_registry()["enums"]
+    # One ok key plus one failed key per inference_error_class value.
+    assert enums["result"]["values"] == ["ok", "failed"]
     keys_per_model = (
         len(enums["endpoint"]["values"])
         * len(enums["caller"]["values"])
-        * len(enums["result"]["values"])
+        * (1 + len(enums["inference_error_class"]["values"]))
     )
-    assert keys_per_model == 8 * 26 * 2
+    assert keys_per_model == 8 * 27 * 11
     assert store.MAX_KEYS // keys_per_model == 28
+
+
+def test_longest_failed_counter_key_fits_the_store_limit(monkeypatch):
+    """A worst-case legitimate key (128-char public model id) must be storable."""
+    from rapid_mlx.telemetry import inference, registry
+
+    enums = registry.load_registry()["enums"]
+    longest = "inf|{}|{}|{}|failed|{}".format(
+        "x" * registry.load_registry()["model_id"]["max_length"],
+        max(enums["endpoint"]["values"], key=len),
+        max(enums["caller"]["values"], key=len),
+        max(enums["inference_error_class"]["values"], key=len),
+    )
+    assert len(longest) <= inference.store.MAX_KEY_LENGTH
+    keys: list[str] = []
+    monkeypatch.setattr(inference.store, "record", lambda key: keys.append(key))
+    inference._record_completed_request(
+        model="x" * 128,
+        endpoint="/v1/audio/transcriptions",
+        caller_agent="python-requests/2.32",
+        caller_client=None,
+        result="failed",
+        error_class="strict_schema_violation",
+    )
+    assert keys == [
+        "inf|<custom>|/v1/audio/transcriptions|python-requests|failed|"
+        "strict_schema_violation"
+    ]
 
 
 @pytest.mark.parametrize(
@@ -1668,9 +3206,10 @@ def test_additional_endpoint_has_completed_request_emit(relative_path, endpoint)
 @pytest.mark.parametrize(
     ("relative_path", "failed_count"),
     [
-        ("rapid_mlx/routes/chat.py", 4),
+        ("rapid_mlx/routes/chat.py", 5),
         ("rapid_mlx/routes/completions.py", 1),
         ("rapid_mlx/routes/anthropic.py", 1),
+        ("rapid_mlx/routes/responses.py", 2),
     ],
 )
 def test_each_terminal_site_uses_only_v2_emit(relative_path, failed_count):
@@ -1778,7 +3317,13 @@ def test_inference_and_capability_events_reach_loopback_as_exact_json(
             caller_client=caller_client,
             result="ok",
         )
-        inference.emit_capability_rejected("logprobs_unsupported", model_type="llm")
+        inference.emit_capability_rejected(
+            "logprobs_unsupported",
+            model_type="llm",
+            model="neohorse-9b-4bit",
+            caller_agent=caller_agent,
+            caller_client=caller_client,
+        )
         sender.flush(2.0)
     finally:
         sender.close(0.5)
@@ -1829,8 +3374,511 @@ def test_inference_and_capability_events_reach_loopback_as_exact_json(
         **expected_common,
         "capability": "logprobs_unsupported",
         "model_type": "llm",
+        "model": "neohorse-9b-4bit",
+        "caller": expected_caller,
     }
     assert "hostname" not in repr(items)
     assert "username" not in repr(items)
     assert str(tmp_path) not in repr(items)
     assert "127.0.0.1" not in repr(items)
+
+
+_PRIVATE_FORM_MODEL = "evil-org/private-repo"
+
+
+@pytest.mark.parametrize(
+    ("path", "data", "code"),
+    [
+        (
+            "/v1/audio/translations",
+            {"model": _PRIVATE_FORM_MODEL},
+            "invalid_model_for_translation",
+        ),
+        (
+            "/v1/audio/transcriptions",
+            {
+                "model": _PRIVATE_FORM_MODEL,
+                "response_format": "verbose_json",
+                "timestamp_granularities[]": "word",
+            },
+            "invalid_model_for_word_timestamps",
+        ),
+    ],
+    ids=["translation-non-whisper", "word-timestamps-non-whisper"],
+)
+def test_audio_pre_engine_rejection_never_reports_form_model_on_the_wire(
+    monkeypatch, path, data, code
+):
+    """A multipart ``model`` field is request input, not telemetry identity.
+
+    ``telemetry_model_id`` is stubbed to echo its input (as it would for a
+    repo with public proof), so any request-derived value that reached it
+    would land on the loopback wire verbatim.
+    """
+    from fastapi import FastAPI
+    from fastapi.testclient import TestClient
+
+    import rapid_mlx
+    from rapid_mlx.config import get_config
+    from rapid_mlx.routes import audio
+    from rapid_mlx.telemetry import (
+        consent_runtime,
+        inference,
+        model_id,
+        posthog_sender,
+    )
+    from rapid_mlx.telemetry import track as track_module
+    from rapid_mlx.telemetry.build_gate import ReleaseStamp
+
+    stamp = ReleaseStamp(channel="stable", posthog_key="phc_" + "a" * 32)
+    monkeypatch.setattr(rapid_mlx, "__version__", "0.15.1")
+    monkeypatch.setattr(track_module.build_gate, "official_build", lambda: stamp)
+    monkeypatch.setattr(consent_runtime, "upload_allowed", lambda: True)
+    identity_inputs: list[object] = []
+    monkeypatch.setattr(
+        model_id,
+        "telemetry_model_id",
+        lambda ref: identity_inputs.append(ref) or str(ref),
+    )
+    track_module._reset_for_tests()
+    posthog_sender._reset_for_tests()
+
+    server = HTTPServer(("127.0.0.1", 0), _CaptureHandler)
+    server.bodies = []  # type: ignore[attr-defined]
+    loopback_url = f"http://127.0.0.1:{server.server_port}/batch/"
+    monkeypatch.setenv(posthog_sender.POSTHOG_URL_ENV, loopback_url)
+
+    def post(url: str, body: bytes, timeout: float) -> int:
+        assert url == loopback_url
+        request = urllib.request.Request(url, data=body, method="POST")
+        request.add_header("Content-Type", "application/json")
+        with urllib.request.urlopen(request, timeout=timeout) as response:
+            return int(response.status)
+
+    sender = posthog_sender.PostHogSender(
+        post=post, gate=lambda: stamp, allowed=lambda: True
+    )
+    monkeypatch.setattr(posthog_sender, "get_sender", lambda: sender)
+    cfg = get_config()
+    monkeypatch.setattr(cfg, "api_key", None)
+    app = FastAPI()
+    app.include_router(audio.router)
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    try:
+        response = TestClient(app).post(
+            path,
+            data=data,
+            files={"file": ("clip.wav", b"RIFF", "audio/wav")},
+        )
+        inference._QUEUE.join()
+        sender.flush(2.0)
+    finally:
+        sender.close(0.5)
+        server.shutdown()
+        thread.join(timeout=2.0)
+        server.server_close()
+
+    assert response.status_code == 400
+    assert response.json()["detail"]["error"]["code"] == code
+    items = [
+        item
+        for body in server.bodies  # type: ignore[attr-defined]
+        for item in json.loads(body)["batch"]
+    ]
+    rejected = [item for item in items if item["event"] == "capability_rejected"]
+    assert len(rejected) == 1
+    assert rejected[0]["properties"]["capability"] == "speech_capability_unsupported"
+    assert "model" not in rejected[0]["properties"]
+    assert identity_inputs == []
+    wire = b"".join(server.bodies).decode()  # type: ignore[attr-defined]
+    assert "evil-org" not in wire
+    assert "private-repo" not in wire
+
+
+def _scratch_route(tmp_path, source: str) -> list[str]:
+    route_dir = tmp_path / "rapid_mlx/routes"
+    route_dir.mkdir(parents=True)
+    (route_dir / "scratch.py").write_text(source, encoding="utf-8")
+    return _request_model_violations(tmp_path)
+
+
+def test_privacy_gate_taints_form_field_through_module_helpers(tmp_path):
+    """The pre-fix audio shape: handler Form field -> resolver -> helper sink."""
+    source = (
+        "from fastapi import APIRouter, Form, UploadFile\n"
+        "from rapid_mlx.telemetry.inference import emit_capability_rejected\n"
+        "router = APIRouter()\n\n"
+        "def _resolve(model):\n"
+        "    return ALIASES.get(model, model)\n\n"
+        "def _reject(model, *, caller_agent=None):\n"
+        "    resolved = _resolve(model)\n"
+        "    emit_capability_rejected('x', model=resolved)\n\n"
+        "def _later(file, choice=None):\n"
+        "    emit_capability_rejected('x', model=_resolve(choice))\n\n"
+        "@router.post('/v1/scratch')\n"
+        "async def handler(file: UploadFile, model_form: str | None = Form(None)):\n"
+        "    model = model_form or 'default'\n"
+        "    _reject(model, caller_agent=None)\n"
+        "    _later(file, choice=model)\n"
+    )
+    assert _scratch_route(tmp_path, source) == [
+        "rapid_mlx/routes/scratch.py:10",
+        "rapid_mlx/routes/scratch.py:13",
+    ]
+
+
+@pytest.mark.parametrize(
+    ("signature", "decorator"),
+    [
+        ("model: str = ''", "@router.get('/v1/scratch')\n"),
+        ("model: str = Query('')", ""),
+        ("model: Annotated[str, Header()] = ''", ""),
+        ("model: str = Body(...)", ""),
+    ],
+    ids=["route-handler-bare-param", "query-default", "header-annotation", "body"],
+)
+def test_privacy_gate_treats_route_and_marker_params_as_values(
+    tmp_path, signature, decorator
+):
+    source = (
+        "from typing import Annotated\n"
+        "from fastapi import APIRouter, Body, Header, Query\n"
+        "from rapid_mlx.telemetry.inference import emit_capability_rejected\n"
+        "router = APIRouter()\n\n"
+        f"{decorator}async def handler({signature}):\n"
+        "    emit_capability_rejected('x', model=model.strip())\n"
+    )
+    violations = _scratch_route(tmp_path, source)
+    assert len(violations) == 1
+    assert violations[0].startswith("rapid_mlx/routes/scratch.py:")
+
+
+def test_privacy_gate_leaves_depends_and_engine_lookup_boundaries_clean(tmp_path):
+    source = (
+        "from fastapi import APIRouter, Depends, Form\n"
+        "from rapid_mlx.telemetry.inference import emit_capability_rejected\n"
+        "from rapid_mlx.telemetry.model_id import engine_telemetry_id\n"
+        "router = APIRouter()\n\n"
+        "def _image_engine(model_name=''):\n"
+        "    engine = REGISTRY.get_engine(model_name)\n"
+        "    emit_capability_rejected('x', model=engine_telemetry_id(engine))\n"
+        "    return engine\n\n"
+        "@router.post('/v1/scratch')\n"
+        "async def handler(model: str = Form(''), engine=Depends(current_engine)):\n"
+        "    _image_engine(model)\n"
+        "    emit_capability_rejected('x', model=engine_telemetry_id(engine))\n"
+    )
+    route_dir = tmp_path / "rapid_mlx/routes"
+    route_dir.mkdir(parents=True)
+    (route_dir / "images.py").write_text(source, encoding="utf-8")
+    assert _request_model_violations(tmp_path) == []
+
+
+# ------------------------------------------------ failed-inference classes
+
+
+_EMIT_NAMES = frozenset({"emit_completed_request", "_record_completed_request"})
+
+
+def _failed_emits_missing_class(tree: ast.AST) -> list[int]:
+    """Line numbers of result="failed" emits that omit ``error_class``."""
+    missing: list[int] = []
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.Call):
+            continue
+        func = node.func
+        name = (
+            func.id
+            if isinstance(func, ast.Name)
+            else func.attr
+            if isinstance(func, ast.Attribute)
+            else None
+        )
+        if name not in _EMIT_NAMES:
+            continue
+        keywords = {kw.arg: kw.value for kw in node.keywords if kw.arg}
+        result = keywords.get("result")
+        if isinstance(result, ast.Constant) and result.value == "failed":
+            error_class = keywords.get("error_class")
+            if error_class is None or (
+                isinstance(error_class, ast.Constant) and error_class.value is None
+            ):
+                missing.append(node.lineno)
+    return missing
+
+
+def test_every_failed_inference_site_passes_an_error_class():
+    offenders: list[str] = []
+    failed_sites = 0
+    for path in sorted((REPO_ROOT / "rapid_mlx").rglob("*.py")):
+        source = path.read_text(encoding="utf-8")
+        if 'result="failed"' not in source:
+            continue
+        tree = ast.parse(source, filename=str(path))
+        failed_sites += source.count('result="failed"')
+        offenders.extend(
+            f"{path.relative_to(REPO_ROOT)}:{line}"
+            for line in _failed_emits_missing_class(tree)
+        )
+    assert failed_sites >= 10
+    assert offenders == []
+
+
+def test_failed_site_gate_catches_a_site_without_a_class():
+    tree = ast.parse(
+        "emit_completed_request(model=m, result='failed')\n"
+        "x.emit_completed_request(result='failed', error_class=None)\n"
+        "x.emit_completed_request(result='failed', error_class='other')\n"
+        "x.emit_completed_request(result='ok')\n"
+        "(lambda: None)()(result='failed')\n"
+    )
+    assert _failed_emits_missing_class(tree) == [1, 2]
+
+
+def test_inference_error_class_enum_is_the_documented_closed_set():
+    from rapid_mlx.telemetry import registry
+
+    reg = registry.load_registry()
+    assert reg["enums"]["inference_error_class"]["values"] == [
+        "insufficient_memory",
+        "engine_aborted",
+        "template_error",
+        "media_input_invalid",
+        "prompt_too_large",
+        "strict_schema_violation",
+        "model_replaced",
+        "output_contract_unmet",
+        "stream_error",
+        "other",
+    ]
+    prop = reg["events"]["inference_bucket_reached"]["props"]["error_class"]
+    assert prop == {
+        "kind": "enum",
+        "enum": "inference_error_class",
+        "required": False,
+        "only_when": {"result": ["failed"]},
+    }
+
+
+def _classify_cases():
+    from rapid_mlx.request import (
+        ENGINE_ABORT_CODE_ENGINE_ABORTED,
+        ENGINE_ABORT_CODE_INSUFFICIENT_MEMORY,
+        InferenceAbortedError,
+    )
+
+    class TemplateError(Exception):
+        pass
+
+    return [
+        (
+            InferenceAbortedError(
+                "/Users/alice/secret.txt",
+                error_kind=ENGINE_ABORT_CODE_INSUFFICIENT_MEMORY,
+            ),
+            "insufficient_memory",
+        ),
+        (
+            InferenceAbortedError(
+                "Metal out of memory", error_kind=ENGINE_ABORT_CODE_ENGINE_ABORTED
+            ),
+            "engine_aborted",
+        ),
+        (
+            InferenceAbortedError("kIOGPUCommandBufferCallbackErrorOutOfMemory"),
+            "insufficient_memory",
+        ),
+        (InferenceAbortedError("Metal command buffer failed"), "engine_aborted"),
+        (InferenceAbortedError("cancelled", error_kind="lifecycle"), "model_replaced"),
+        (InferenceAbortedError("template gone", error_kind="bogus"), "engine_aborted"),
+        (TemplateError("bad jinja"), "template_error"),
+        (ValueError("Conversation roles must alternate user/assistant"), "other"),
+        (ValueError("No user query found in messages."), "template_error"),
+        (ValueError("chat template missing"), "template_error"),
+        (
+            ValueError("Failed to process image: http://private/x.png"),
+            "media_input_invalid",
+        ),
+        (ValueError("Failed to process video: /tmp/x.mp4"), "media_input_invalid"),
+        (
+            ValueError("prompt of 9000 tokens exceeds the per-batch cap of 8192"),
+            "prompt_too_large",
+        ),
+        (RuntimeError("boom /Users/alice/prompt text"), "other"),
+        (MemoryError(), "other"),
+        (None, "other"),
+    ]
+
+
+def test_classify_inference_failure_mirrors_route_decisions_and_never_leaks():
+    from rapid_mlx.telemetry import inference, registry
+
+    allowed = set(registry.load_registry()["enums"]["inference_error_class"]["values"])
+    for exc, expected in _classify_cases():
+        got = inference.classify_inference_failure(exc)
+        assert got == expected, (exc, got)
+        assert got in allowed
+
+
+def test_classify_inference_failure_is_total():
+    from rapid_mlx.telemetry import inference
+
+    class HostileError(Exception):
+        def __str__(self) -> str:
+            raise RuntimeError("str() explodes")
+
+    assert inference.classify_inference_failure(HostileError()) == "other"
+
+
+def test_abort_classes_follow_the_client_error_payload():
+    """Telemetry and the client-visible error.code come from one helper."""
+    from rapid_mlx import request
+    from rapid_mlx.telemetry import inference
+
+    for exc, _expected in _classify_cases():
+        if not isinstance(exc, request.InferenceAbortedError):
+            continue
+        payload_code = request.inference_aborted_error_payload(exc)["code"]
+        assert inference._ABORT_CODE_CLASSES[payload_code] == (
+            inference.classify_inference_failure(exc)
+        )
+
+
+@pytest.mark.parametrize(
+    ("error_class", "expected"),
+    [
+        ("insufficient_memory", "insufficient_memory"),
+        ("stream_error", "stream_error"),
+        (None, "other"),
+        ("/Users/alice/secret", "other"),
+        (["not", "hashable"], "other"),
+    ],
+)
+def test_failed_request_carries_validated_class_and_per_class_key(
+    monkeypatch, error_class, expected
+):
+    from rapid_mlx.telemetry import inference
+
+    records: list[str] = []
+    events: list[dict[str, object]] = []
+    monkeypatch.setattr(
+        inference.store,
+        "record",
+        lambda key: (
+            records.append(key)
+            or SimpleNamespace(bucket="1", bucket_source="crossed_now")
+        ),
+    )
+    monkeypatch.setattr(
+        inference.track_module,
+        "track",
+        lambda _event, props: events.append(dict(props)),
+    )
+
+    inference._record_completed_request(
+        model="<custom>",
+        endpoint="/v1/messages",
+        caller_agent="claude-cli/2.0",
+        caller_client=None,
+        result="failed",
+        error_class=error_class,
+    )
+
+    assert records == [f"inf|<custom>|/v1/messages|claude-code|failed|{expected}"]
+    assert events[0]["error_class"] == expected
+    assert "alice" not in repr(records + events)
+
+
+def test_ok_request_never_carries_an_error_class(monkeypatch):
+    from rapid_mlx.telemetry import inference
+
+    records: list[str] = []
+    events: list[dict[str, object]] = []
+    monkeypatch.setattr(
+        inference.store,
+        "record",
+        lambda key: (
+            records.append(key)
+            or SimpleNamespace(bucket="1", bucket_source="crossed_now")
+        ),
+    )
+    monkeypatch.setattr(
+        inference.track_module,
+        "track",
+        lambda _event, props: events.append(dict(props)),
+    )
+    monkeypatch.setattr(inference.track_module, "emit_active_day", lambda: None)
+
+    inference._record_completed_request(
+        model="<custom>",
+        endpoint="/v1/messages",
+        caller_agent=None,
+        caller_client=None,
+        result="ok",
+        error_class="insufficient_memory",
+    )
+
+    assert records == ["inf|<custom>|/v1/messages|unknown|ok"]
+    assert "error_class" not in events[0]
+
+
+def test_failed_event_with_class_passes_registry_validation():
+    from rapid_mlx.telemetry import registry
+
+    base = {
+        "model": "<custom>",
+        "endpoint": "/v1/chat/completions",
+        "caller": "openai-node",
+        "result": "failed",
+        "count_bucket": "1",
+        "bucket_source": "crossed_now",
+    }
+    ok = {**base, "error_class": "template_error"}
+    assert registry.validate("inference_bucket_reached", ok) == ok
+    assert registry.validate("inference_bucket_reached", base) == base
+    for bad in (
+        {**base, "error_class": "free text"},
+        {**base, "result": "ok", "error_class": "template_error"},
+    ):
+        assert registry.validate("inference_bucket_reached", bad) is None
+
+
+@pytest.mark.asyncio
+async def test_midstream_engine_abort_is_classified_without_message_text(
+    monkeypatch,
+):
+    from rapid_mlx.request import InferenceAbortedError
+    from rapid_mlx.telemetry import inference
+
+    inference._QUEUE.join()
+    monkeypatch.setattr(inference.track_module, "_upload_allowed", lambda: True)
+    events: list[dict[str, object]] = []
+    captured = threading.Event()
+
+    def capture(_event, props):
+        events.append(dict(props))
+        captured.set()
+
+    monkeypatch.setattr(inference.track_module, "track", capture)
+
+    async def aborted_stream():
+        yield "first-token"
+        raise InferenceAbortedError("Metal: out of memory at /Users/alice/x")
+
+    guarded = inference.emit_failed_on_stream_error(
+        aborted_stream(),
+        model="<custom>",
+        endpoint="/v1/responses",
+        caller_agent="OpenAI/JS 5.23.0",
+        caller_client=None,
+    )
+    with pytest.raises(InferenceAbortedError):
+        async for _ in guarded:
+            pass
+
+    loop = asyncio.get_running_loop()
+    assert await loop.run_in_executor(None, captured.wait, 5)
+    assert events[0]["error_class"] == "insufficient_memory"
+    assert events[0]["caller"] == "openai-node"
+    assert "alice" not in repr(events)

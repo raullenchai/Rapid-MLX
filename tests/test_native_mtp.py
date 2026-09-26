@@ -472,6 +472,7 @@ def test_serve_native_mtp_helper_routes_exact_pair(
         force_disk_check=False,
         host="127.0.0.1",
         port=8766,
+        _port_explicit=True,
         served_model_name=None,
         no_thinking=True,
         rate_limit=7,

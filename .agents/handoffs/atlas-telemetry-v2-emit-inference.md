@@ -32,10 +32,12 @@
   0.6275 ms p95 over 500 samples. Public submission with the real worker
   completing every item measured 4.29 us p50 and 5.50 us p95 over 1,000
   samples.
-- Worst-case cardinality is 416 keys/model after adding the five first-party
-  caller labels. `MAX_KEYS=12_000` holds all endpoint/caller/result combinations
-  for 28 complete models; the 29th is the first fully saturated model that can
-  exhaust new keys.
+- Worst-case cardinality was 416 keys/model after adding the five first-party
+  caller labels, and `MAX_KEYS=12_000` held all endpoint/caller/result
+  combinations for 28 complete models. Superseded: failures are now counted
+  per `inference_error_class`, so it is 2,376 keys/model and `MAX_KEYS=67_000`
+  (still 28 complete models); see
+  docs/engineering/performance/telemetry-v2-inference.md.
 - The exact telemetry/route/request selector passes 5,879 tests (25 skipped,
   6 xfailed, 1 xpassed). Changed tests pass three consecutive 577-test runs
   under `USER=rc`; the opt-out/CI-marker run also passes all 577. With `mlx`

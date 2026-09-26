@@ -1770,6 +1770,9 @@ def validate_content_blocks_for_capabilities(
     allow_image: bool,
     allow_video: bool,
     allow_audio: bool = False,
+    telemetry_model: str | None = None,
+    caller_agent: str | None = None,
+    caller_client: str | None = None,
 ) -> None:
     """Reject content blocks the active model/path cannot preserve."""
     for msg in messages:
@@ -1807,7 +1810,13 @@ def validate_content_blocks_for_capabilities(
             if item_type in IMAGE_CONTENT_TYPES and not allow_image:
                 from rapid_mlx.telemetry.inference import emit_capability_rejected
 
-                emit_capability_rejected("image_input_unsupported", model_type="llm")
+                emit_capability_rejected(
+                    "image_input_unsupported",
+                    model_type="llm",
+                    model=telemetry_model,
+                    caller_agent=caller_agent,
+                    caller_client=caller_client,
+                )
                 raise UnsupportedContentBlockError(
                     f"Model '{model_name}' is serving text-only; image input "
                     "is unsupported.",
@@ -1820,6 +1829,9 @@ def validate_content_blocks_for_capabilities(
                 emit_capability_rejected(
                     "video_input_unsupported",
                     model_type="vlm" if allow_image else "llm",
+                    model=telemetry_model,
+                    caller_agent=caller_agent,
+                    caller_client=caller_client,
                 )
             elif item_type in AUDIO_CONTENT_TYPES:
                 from rapid_mlx.telemetry.inference import emit_capability_rejected
@@ -1827,11 +1839,20 @@ def validate_content_blocks_for_capabilities(
                 emit_capability_rejected(
                     "audio_input_unsupported",
                     model_type="vlm" if allow_image or allow_video else "llm",
+                    model=telemetry_model,
+                    caller_agent=caller_agent,
+                    caller_client=caller_client,
                 )
             raise ValueError(f"Model '{model_name}' does not support {detail}.")
 
 
-def normalize_responses_content_part(item) -> dict:
+def normalize_responses_content_part(
+    item,
+    *,
+    telemetry_model: str | None = None,
+    caller_agent: str | None = None,
+    caller_client: str | None = None,
+) -> dict:
     """Convert a Responses input content item into Chat content-part shape."""
     data = item.model_dump(exclude_none=True) if hasattr(item, "model_dump") else item
     if not isinstance(data, dict):
@@ -1868,7 +1889,12 @@ def normalize_responses_content_part(item) -> dict:
     if item_type == "input_audio":
         from rapid_mlx.telemetry.inference import emit_capability_rejected
 
-        emit_capability_rejected("audio_input_unsupported")
+        emit_capability_rejected(
+            "audio_input_unsupported",
+            model=telemetry_model,
+            caller_agent=caller_agent,
+            caller_client=caller_client,
+        )
         raise ValueError("Responses input_audio content blocks are not supported")
     raise ValueError(f"Unsupported Responses content block type: {item_type!r}")
 
@@ -1901,6 +1927,10 @@ def _content_to_text(content) -> str:
 def extract_multimodal_content(
     messages: list[Message],
     preserve_native_format: bool = False,
+    *,
+    telemetry_model: str | None = None,
+    caller_agent: str | None = None,
+    caller_client: str | None = None,
 ) -> tuple[list[dict], list[str], list[str]]:
     """
     Extract text content, images, and videos from OpenAI-format messages.
@@ -2090,7 +2120,12 @@ def extract_multimodal_content(
                 elif item_type in AUDIO_CONTENT_TYPES:
                     from rapid_mlx.telemetry.inference import emit_capability_rejected
 
-                    emit_capability_rejected("audio_input_unsupported")
+                    emit_capability_rejected(
+                        "audio_input_unsupported",
+                        model=telemetry_model,
+                        caller_agent=caller_agent,
+                        caller_client=caller_client,
+                    )
                     raise ValueError(
                         "Audio content blocks are not supported on this path."
                     )

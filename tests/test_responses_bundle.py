@@ -286,7 +286,7 @@ def test_strict_stream_rejection_emits_capability(monkeypatch, make_responses_cl
     monkeypatch.setattr(
         inference,
         "emit_capability_rejected",
-        lambda capability, *, model_type="other": calls.append(
+        lambda capability, *, model_type="other", **_context: calls.append(
             (capability, model_type)
         ),
     )
