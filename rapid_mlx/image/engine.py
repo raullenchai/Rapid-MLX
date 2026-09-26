@@ -48,7 +48,7 @@ import threading
 import time
 from pathlib import Path
 
-from .precision import is_packaged_bf16_model
+from .precision import is_packaged_bf16_model, is_qwen_image_21_full_q4
 
 # A pre-quantized mflux repo carries a quant tag in its id — either the
 # ``<n>bit`` / ``<n>-bit`` convention (``FLUX.1-schnell-mflux-4bit``) or the
@@ -137,6 +137,28 @@ class _ProgressReporter:
             "total", 0
         )
         self._engine._finish_denoise(int(total))
+
+
+class _PromptMaterializer:
+    """Cut MLX's lazy text-encoder graph before MemorySaver evicts it.
+
+    Qwen Image 2.1 caches prompt embeddings, but merely storing the lazy arrays
+    keeps their encoder weights reachable. Evaluating the cached pair at the
+    before-loop boundary lets the following MemorySaver callback release the
+    encoder before denoising starts.
+    """
+
+    def __init__(self, model) -> None:  # noqa: ANN001
+        self._model = model
+
+    def call_before_loop(self, *, prompt: str, **kwargs) -> None:  # noqa: ANN003
+        del kwargs
+        cached = getattr(self._model, "prompt_cache", {}) or {}
+        arrays = cached.get(prompt)
+        if arrays:
+            import mlx.core as mx
+
+            mx.eval(*arrays)
 
 
 def _detect_family(model_name: str) -> str:
@@ -275,6 +297,7 @@ class ImageGenerationEngine:
             "bonsai-image",
             "sd35-large",
         } or _looks_like_prequantized(model_name)
+        self._qwen21_full_q4 = is_qwen_image_21_full_q4(model_name)
         if (
             self.family == "qwen-image-2.1"
             and self._prequantized
@@ -487,11 +510,42 @@ class ImageGenerationEngine:
         if self.family == "qwen-image-2.1":
             from mflux.models.qwen21.variants.txt2img.qwen_image_21 import QwenImage21
 
-            return QwenImage21(
-                quantize=self._quantize,
-                model_path=model_path,
-                model_config=ModelConfig.qwen_image_21(),
+            if not self._qwen21_full_q4:
+                return QwenImage21(
+                    quantize=self._quantize,
+                    model_path=model_path,
+                    model_config=ModelConfig.qwen_image_21(),
+                )
+
+            # mflux 0.20.0 deliberately skips Qwen3-VL quantization. Rapid's
+            # reviewed low-memory pack stores that encoder in native MLX q4,
+            # so construct quantized modules before applying its packed
+            # weight/scales/biases tensors. Keep this narrowly scoped to the
+            # pinned pack and restore the process-global definition at once.
+            from mflux.models.qwen21.weights.qwen21_weight_definition import (
+                Qwen21WeightDefinition,
             )
+
+            original_components = Qwen21WeightDefinition.get_components
+
+            def full_q4_components():
+                components = original_components()
+                for component in components:
+                    if component.name == "text_encoder":
+                        component.skip_quantization = False
+                return components
+
+            Qwen21WeightDefinition.get_components = staticmethod(full_q4_components)
+            try:
+                return QwenImage21(
+                    quantize=self._quantize,
+                    model_path=model_path,
+                    model_config=ModelConfig.qwen_image_21(),
+                )
+            finally:
+                Qwen21WeightDefinition.get_components = staticmethod(
+                    original_components
+                )
 
         from mflux.models.flux.variants.txt2img.flux import Flux1
 
@@ -672,6 +726,9 @@ class ImageGenerationEngine:
         snapshot = mflux_local_snapshot(self.model_name)
         if snapshot is None:
             return
+        if self._qwen21_full_q4:
+            self._verify_qwen21_full_q4_encoder(Path(snapshot) / "text_encoder")
+            return
         weight_key = (
             "model.language_model.embed_tokens.weight"
             if self.family == "qwen-image-2.1"
@@ -761,6 +818,39 @@ class ImageGenerationEngine:
         ):
             self._raise_quantized_text_encoder_error(
                 weight_key, shard_path or str(text_encoder_dir)
+            )
+
+    def _verify_qwen21_full_q4_encoder(self, text_encoder_dir: Path) -> None:
+        """Require the curated pack's native MLX q4 encoder contract."""
+
+        import json
+
+        index_path = text_encoder_dir / "model.safetensors.index.json"
+        try:
+            with open(index_path, encoding="utf-8") as fh:
+                index = json.load(fh)
+        except (OSError, json.JSONDecodeError, UnicodeDecodeError) as exc:
+            raise ImageRuntimeError(
+                f"Qwen-Image 2.1 low-memory checkpoint has an unreadable "
+                f"text-encoder index: {index_path}"
+            ) from exc
+        metadata = index.get("metadata") if isinstance(index, dict) else None
+        weight_map = index.get("weight_map") if isinstance(index, dict) else None
+        required = {
+            "embed_tokens.weight",
+            "embed_tokens.scales",
+            "embed_tokens.biases",
+        }
+        if (
+            not isinstance(metadata, dict)
+            or str(metadata.get("quantization_level")) != "4"
+            or not isinstance(weight_map, dict)
+            or not required.issubset(weight_map)
+        ):
+            raise ImageRuntimeError(
+                "Qwen-Image 2.1 low-memory checkpoint does not contain the "
+                "expected native MLX q4 text encoder. Re-download the pinned "
+                "qwen-image-2.1 model."
             )
 
     def _raise_quantized_text_encoder_error(
@@ -898,11 +988,12 @@ class ImageGenerationEngine:
                     # Evict the bf16 Qwen3-VL encoder once its prompt embeds
                     # are cached. A later, uncached prompt reloads the model.
                     self._model.tiling_config = TilingConfig()
+                    registry.register(_PromptMaterializer(self._model))
                     registry.register(
                         MemorySaver(
                             model=self._model,
-                            keep_transformer=True,
-                            cache_limit_bytes=None,
+                            keep_transformer=not self._qwen21_full_q4,
+                            cache_limit_bytes=(0 if self._qwen21_full_q4 else None),
                             num_seeds=1,
                         )
                     )
@@ -1112,10 +1203,16 @@ class ImageGenerationEngine:
                 if self.family == "qwen-image-2.1" and self._model is not None:
                     cached = getattr(self._model, "prompt_cache", {}) or {}
                     needs_negative = (guidance or 1.0) > 1.0 and bool(negative_prompt)
-                    if getattr(self._model, "text_encoder", None) is None and (
+                    encoder_needed = getattr(
+                        self._model, "text_encoder", None
+                    ) is None and (
                         prompt not in cached
                         or (needs_negative and negative_prompt not in cached)
-                    ):
+                    )
+                    transformer_missing = (
+                        getattr(self._model, "transformer", None) is None
+                    )
+                    if encoder_needed or transformer_missing:
                         self._model = None
                         self._loaded_mode = None
                         _release_allocator_cache()

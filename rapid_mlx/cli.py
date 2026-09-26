@@ -8826,7 +8826,7 @@ def models_command(args):
                 "flux2" in folded_path
                 or "flux.2" in folded_path
                 or "klein" in folded_path
-                or folded_path == "qwen/qwen-image-2.1"
+                or "qwen-image-2.1" in folded_path
             ):
                 kind_tag = "[image:both]"
             elif "qwen-image-edit" in folded_path:

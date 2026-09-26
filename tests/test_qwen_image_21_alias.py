@@ -17,12 +17,15 @@ from rapid_mlx.image.engine import (
     _detect_family,
     default_steps_for_model,
 )
+from rapid_mlx.image.precision import QWEN_IMAGE_21_Q4_REPO
 from rapid_mlx.model_aliases import resolve_profile
 from rapid_mlx.model_sizes import size_bytes
 from rapid_mlx.runtime.resident_models import estimate_model_bytes
 
 REPO = "Qwen/Qwen-Image-2.1"
+LOW_REPO = QWEN_IMAGE_21_Q4_REPO
 REVISION = "790c92633540aa0cb11d9abf19eb46d861714758"
+LOW_REVISION = "746a58556820933a2df5c75887a2570f1ad200c0"
 
 
 @pytest.mark.parametrize(
@@ -57,12 +60,19 @@ def test_unsupported_2x_does_not_fall_into_1x(name):
 
 def test_catalog_pin_and_capabilities():
     profile = resolve_profile("qwen-image-2.1")
-    assert profile.hf_path == REPO
+    assert profile.hf_path == LOW_REPO
     assert profile.modality == "image-gen"
-    assert profile.min_memory_gb == 32
+    assert profile.min_memory_gb == 8
+    quality = resolve_profile("qwen-image-2.1-bf16")
+    assert quality.hf_path == REPO
+    assert quality.min_memory_gb == 32
     assert _download_gate.IMAGE_MODEL_REVISIONS[REPO] == REVISION
+    assert _download_gate.IMAGE_MODEL_REVISIONS[LOW_REPO] == LOW_REVISION
     assert size_bytes(REPO) == 33_131_596_301
+    assert size_bytes(LOW_REPO) == 9_600_382_915
     assert estimate_model_bytes(REPO) == int(28.0 * 1024**3)
+    assert estimate_model_bytes("qwen-image-2.1") == int(6.0 * 1024**3)
+    assert estimate_model_bytes(LOW_REPO) == int(6.0 * 1024**3)
     assert estimate_model_bytes("acme/qwen_image_21") == int(28.0 * 1024**3)
     assert estimate_model_bytes("acme/qwen-image-v2.1-mflux-q8") == int(28.0 * 1024**3)
     engine = ImageGenerationEngine(REPO)
@@ -73,6 +83,10 @@ def test_catalog_pin_and_capabilities():
     assert engine._quantize == 8  # noqa: SLF001
     assert ImageGenerationEngine(REPO, quantize=4)._quantize == 4  # noqa: SLF001
     assert ImageGenerationEngine(REPO, quantize=None)._quantize is None  # noqa: SLF001
+    low = ImageGenerationEngine(LOW_REPO)
+    assert low._prequantized is True  # noqa: SLF001
+    assert low._qwen21_full_q4 is True  # noqa: SLF001
+    assert low._quantize is None  # noqa: SLF001
     operations = next(
         x["capabilities"]["operation_modes"]
         for x in build_catalog_bundle()["snapshot"]["aliases"]
@@ -166,7 +180,10 @@ def test_load_constructs_qwen21_and_registers_memory_policy(monkeypatch, for_edi
     }
     assert isinstance(model.tiling_config, FakeTilingConfig)
     assert model.callbacks.registered[0] is engine._reporter  # noqa: SLF001
-    memory_saver = model.callbacks.registered[1]
+    assert len(model.callbacks.registered) == 3
+    materializer = model.callbacks.registered[1]
+    assert materializer._model is model  # noqa: SLF001
+    memory_saver = model.callbacks.registered[2]
     assert isinstance(memory_saver, FakeMemorySaver)
     assert memory_saver.kwargs == {
         "model": model,
@@ -174,6 +191,96 @@ def test_load_constructs_qwen21_and_registers_memory_policy(monkeypatch, for_edi
         "cache_limit_bytes": None,
         "num_seeds": 1,
     }
+
+
+def test_low_memory_pack_enables_q4_encoder_and_evicts_transformer(monkeypatch):
+    class Component:
+        def __init__(self, name, skip_quantization):
+            self.name = name
+            self.skip_quantization = skip_quantization
+
+    class FakeDefinition:
+        @staticmethod
+        def get_components():
+            return [Component("transformer", False), Component("text_encoder", True)]
+
+    class FakeCallbacks:
+        def __init__(self):
+            self.registered = []
+
+        def register(self, callback):
+            self.registered.append(callback)
+
+    class FakeQwenImage21:
+        def __init__(self, **kwargs):
+            components = FakeDefinition.get_components()
+            assert (
+                next(
+                    x for x in components if x.name == "text_encoder"
+                ).skip_quantization
+                is False
+            )
+            self.constructor_kwargs = kwargs
+            self.callbacks = FakeCallbacks()
+
+    class FakeMemorySaver:
+        def __init__(self, **kwargs):
+            self.kwargs = kwargs
+
+    class FakeTilingConfig:
+        pass
+
+    class FakeModelConfig:
+        @staticmethod
+        def qwen_image_21():
+            return "qwen21-config"
+
+    def install_module(name, **members):
+        parts = name.split(".")
+        for count in range(1, len(parts) + 1):
+            prefix = ".".join(parts[:count])
+            if prefix not in sys.modules:
+                package = types.ModuleType(prefix)
+                package.__path__ = []
+                monkeypatch.setitem(sys.modules, prefix, package)
+        for key, value in members.items():
+            monkeypatch.setattr(sys.modules[name], key, value, raising=False)
+
+    install_module(
+        "mflux.models.common.config.model_config", ModelConfig=FakeModelConfig
+    )
+    install_module(
+        "mflux.models.qwen21.variants.txt2img.qwen_image_21",
+        QwenImage21=FakeQwenImage21,
+    )
+    install_module(
+        "mflux.models.qwen21.weights.qwen21_weight_definition",
+        Qwen21WeightDefinition=FakeDefinition,
+    )
+    install_module(
+        "mflux.callbacks.instances.memory_saver", MemorySaver=FakeMemorySaver
+    )
+    install_module(
+        "mflux.models.common.vae.tiling_config", TilingConfig=FakeTilingConfig
+    )
+
+    engine = ImageGenerationEngine(LOW_REPO)
+    monkeypatch.setattr(engine, "_model_path_for_mflux", lambda: "/pinned/q4")
+    monkeypatch.setattr(engine, "_ensure_runtime_assets", lambda: None)
+    monkeypatch.setattr(engine, "_verify_weights_complete", lambda: None)
+    model = engine._ensure_loaded()  # noqa: SLF001
+
+    assert model.constructor_kwargs["quantize"] is None
+    saver = model.callbacks.registered[2]
+    assert saver.kwargs["keep_transformer"] is False
+    assert saver.kwargs["cache_limit_bytes"] == 0
+    # The process-global mflux definition is restored after construction.
+    assert (
+        next(
+            x for x in FakeDefinition.get_components() if x.name == "text_encoder"
+        ).skip_quantization
+        is True
+    )
 
 
 def test_img2img_passes_one_path_and_strength(monkeypatch, tmp_path):
@@ -211,7 +318,7 @@ def test_new_prompt_reloads_evicted_encoder(monkeypatch):
     def ensure_loaded(**_):
         if engine._model is None:  # noqa: SLF001
             engine._model = types.SimpleNamespace(
-                text_encoder=object(), prompt_cache={}
+                text_encoder=object(), transformer=object(), prompt_cache={}
             )  # noqa: SLF001
             builds.append(engine._model)  # noqa: SLF001
         model = engine._model  # noqa: SLF001
@@ -257,6 +364,35 @@ def test_text_encoder_guard_uses_qwen3_vl_key_and_width(monkeypatch, tmp_path):
     engine._verify_text_encoder_not_quantized()  # noqa: SLF001
     write_header(3584)
     with pytest.raises(ImageRuntimeError, match="quantized text encoder"):
+        engine._verify_text_encoder_not_quantized()  # noqa: SLF001
+
+
+def test_low_memory_pack_requires_native_q4_encoder_metadata(monkeypatch, tmp_path):
+    import json
+
+    encoder = tmp_path / "text_encoder"
+    encoder.mkdir()
+    index = encoder / "model.safetensors.index.json"
+    index.write_text(
+        json.dumps(
+            {
+                "metadata": {"quantization_level": "4", "mflux_version": "0.20.0"},
+                "weight_map": {
+                    "embed_tokens.weight": "0.safetensors",
+                    "embed_tokens.scales": "0.safetensors",
+                    "embed_tokens.biases": "0.safetensors",
+                },
+            }
+        )
+    )
+    monkeypatch.setattr(
+        _download_gate, "mflux_local_snapshot", lambda _repo: str(tmp_path)
+    )
+    engine = ImageGenerationEngine(LOW_REPO)
+    engine._verify_text_encoder_not_quantized()  # noqa: SLF001
+
+    index.write_text(json.dumps({"metadata": {}, "weight_map": {}}))
+    with pytest.raises(ImageRuntimeError, match="native MLX q4 text encoder"):
         engine._verify_text_encoder_not_quantized()  # noqa: SLF001
 
 

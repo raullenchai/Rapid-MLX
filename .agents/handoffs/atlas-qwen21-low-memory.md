@@ -3,8 +3,8 @@
 - Receiving role: Atlas for runtime/checkpoint integration; Vector for physical
   8 GB and 16 GB qualification.
 - Branch: `atlas/qwen21-lowmem-experiment` from `origin/main` at `e68bb534`.
-- Goal: make Qwen Image 2.1 usable on 8 GB and 16 GB Macs without changing the
-  existing q8 alias until the low-memory artifact is qualified.
+- Goal: make Qwen Image 2.1 usable on 8 GB and 16 GB Macs in both Server and
+  GUI while preserving the previous path as `qwen-image-2.1-bf16`.
 - Verified facts: a full MLX q4 mflux checkpoint was produced from the pinned
   official revision. It is 8.9 GB on disk. Its measured peak was 4.68 GiB for
   512-square/40-step generation and 5.14 GiB for 1024-square/four-step
@@ -15,10 +15,13 @@
 - Constraint: mflux 0.20.0 marks the Qwen3-VL encoder `skip_quantization=True`,
   and Rapid-MLX currently rejects quantized Qwen text encoders. Both contracts
   must change narrowly for the reviewed Qwen Image 2.1 full-q4 pack.
+- Product integration: the default alias points to the private pinned
+  `mlx-community/Qwen-Image-2.1-mflux-q4` revision
+  `746a58556820933a2df5c75887a2570f1ad200c0`; the engine verifies and loads
+  its q4 encoder, materializes prompt embeddings, and evicts components. The
+  GUI catalog exposes both low-memory and bf16 aliases.
 - Risk: testing ran on a 256 GB Mac Studio with MLX memory limits, not a
-  physical 8 GB Mac. Quality evidence covers only two prompts. The generated
-  checkpoint remains local to the Studio lab and is not a publishable artifact.
-- Next action: implement pinned full-q4 checkpoint loading and prompt
-  materialization in the image engine, add hermetic loader guards, then run the
-  documented suite on physical 8 GB and 16 GB Macs before changing catalog
-  memory claims.
+  physical 8 GB Mac. Quality evidence covers only two prompts. The repository
+  remains private until exact Server/GUI dogfood and publication approval.
+- Next action: run the exact Server generation and img2img paths, then qualify
+  the candidate on physical 8 GB and 16 GB Macs.

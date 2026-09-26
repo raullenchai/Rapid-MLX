@@ -12,6 +12,11 @@ FLUX2_KLEIN_BF16_REPO = "mflux-community/flux2-klein-4b-mflux-bf16"
 
 IMAGE_WEIGHT_PRECISIONS = ("q4", "bf16")
 
+QWEN_IMAGE_21_Q4_ALIAS = "qwen-image-2.1"
+QWEN_IMAGE_21_BF16_ALIAS = "qwen-image-2.1-bf16"
+QWEN_IMAGE_21_Q4_REPO = "mlx-community/Qwen-Image-2.1-mflux-q4"
+QWEN_IMAGE_21_BF16_REPO = "Qwen/Qwen-Image-2.1"
+
 _FLUX2_KLEIN_SOURCES = frozenset(
     {
         FLUX2_KLEIN_Q4_ALIAS.casefold(),
@@ -62,3 +67,9 @@ def is_packaged_bf16_model(model_name: str) -> bool:
     """Whether *model_name* is an mflux-layout bf16 checkpoint."""
 
     return model_name.casefold() == FLUX2_KLEIN_BF16_REPO.casefold()
+
+
+def is_qwen_image_21_full_q4(model_name: str) -> bool:
+    """Whether *model_name* is Rapid's reviewed full-q4 Qwen 2.1 pack."""
+
+    return model_name.casefold() == QWEN_IMAGE_21_Q4_REPO.casefold()
