@@ -175,7 +175,8 @@ def test_hybrid_runtime_unsupported_reuses_the_vision_install_hint():
 
 _FORCED_TEXT = (
     "This server was started on the text-only lane (e.g. with "
-    "--no-mllm / --text-only). Restart without it for image input."
+    "--no-mllm / --text-only). Restart without --no-mllm / --text-only for "
+    "image input."
 )
 # A vision model with no RAM floor and a plain attention backbone: dropping a
 # text-lane flag really does enable images for it on the pinned 16 GB host.
@@ -214,7 +215,8 @@ def test_speculative_decode_names_the_switch_that_turns_it_off():
     assert message == (
         f"{_UNBLOCKED_BASE} Speculative decoding (MTP) is on, and only the text "
         "lane runs it. Restart with --no-spec-decode (and without any "
-        "--spec-decode / --force-spec-decode flag) for image input."
+        "--speculative-config / --spec-decode / --force-spec-decode flag) for "
+        "image input."
     )
     assert text_lane_image_guidance(
         "org/x", "text_lane_speculative_decode", desktop=True
@@ -782,14 +784,14 @@ def test_missing_vision_runtime_leads_with_the_install_hint(monkeypatch):
         # Install first, only then a model to serve.
         assert guidance.endswith(
             "Image input needs the vision runtime (mlx-vlm), which is not usable "
-            f"here. {hint} Then for image input, serve '{alias}', a vision model "
+            f"here. {hint}. Then for image input, serve '{alias}', a vision model "
             "that fits this Mac."
         )
     nothing_fits = text_lane_image_guidance(
         "org/x", "text_checkpoint", vision_runtime_ok=False, ram_gb=0.5
     )
     assert nothing_fits.endswith(
-        f"{hint} Then no catalog vision model fits this Mac's memory."
+        f"{hint}. Then no catalog vision model fits this Mac's memory."
     )
     assert text_lane_image_guidance(
         "qwen3.5-4b-4bit", "vision_architecture_unavailable", vision_runtime_ok=False
@@ -1001,9 +1003,9 @@ def test_flag_copy_names_the_memory_floor_it_would_hit(reason):
     guidance = text_lane_image_guidance("qwen3.5-9b-4bit", reason, ram_gb=16)
     alias = fitting_vision_alias(16, hybrid_runtime_ok=True)
     assert guidance.endswith(
-        "Even then, vision for this model needs at least 32 GB of RAM; this Mac "
-        f"has 16 GB. For image input, serve '{alias}', a vision model that fits "
-        "this Mac."
+        "Dropping it would not help: vision for this model needs at least 32 GB "
+        f"of RAM; this Mac has 16 GB. For image input, serve '{alias}', a vision "
+        "model that fits this Mac."
     )
     assert "Restart" not in guidance and "restart with" not in guidance
 
@@ -1023,7 +1025,7 @@ def test_flag_copy_installs_the_runtime_first(
         hybrid_runtime_ok=hybrid_ok,
     )
     assert (
-        f"Image input also needs a working vision runtime (mlx-vlm). {hint} Then "
+        f"Image input also needs a working vision runtime (mlx-vlm). {hint}. Then "
         in guidance
     )
     assert guidance.endswith("for image input.")
@@ -1031,12 +1033,15 @@ def test_flag_copy_installs_the_runtime_first(
 
 @pytest.mark.parametrize("reason", _FLAG_REASONS)
 def test_flag_copy_matches_the_lane_the_model_would_get(reason):
-    """Sweep: advise dropping the flag exactly when the unflagged lane decision
-    (memory floor, hybrid runtime, vision runtime) would be a vision lane."""
+    """Sweep, in the engine's order (RAM floor, then runtime): a restart
+    without the flag is advised only when it can reach the vision lane, after
+    an install when the runtime is the blocker, and never under a RAM floor."""
     for alias in sorted(list_builtin_aliases()):
         profile = resolve_profile(alias)
         if not profile.supports_image_input or profile.is_text_only:
             continue
+        hybrid = profile.is_hybrid or profile.vision_min_memory_gb is not None
+        floor = profile.vision_min_memory_gb
         for ram in (8, 16, 24, 32, 64):
             for vision_ok in (True, False):
                 for hybrid_ok in (True, False):
@@ -1047,22 +1052,31 @@ def test_flag_copy_matches_the_lane_the_model_would_get(reason):
                         vision_runtime_ok=vision_ok,
                         hybrid_runtime_ok=hybrid_ok,
                     )
-                    hybrid = (
-                        profile.is_hybrid or profile.vision_min_memory_gb is not None
-                    )
-                    floor = profile.vision_min_memory_gb
-                    unblocked = (
-                        vision_ok
-                        and (hybrid_ok or not hybrid)
-                        and (floor is None or floor <= ram)
-                    )
-                    advises_restart_only = guidance.split(". ")[-1].startswith(
-                        "Restart"
-                    )
-                    assert advises_restart_only == unblocked, (
-                        alias,
-                        ram,
-                        vision_ok,
-                        hybrid_ok,
-                        guidance,
-                    )
+                    case = (alias, ram, vision_ok, hybrid_ok, guidance)
+                    restarts = "estart with" in guidance or "estart without" in guidance
+                    if floor is not None and floor > ram:
+                        assert not restarts, case
+                        assert "Dropping it would not help" in guidance, case
+                    elif not vision_ok or (hybrid and not hybrid_ok):
+                        assert ". Then restart" in guidance, case
+                        assert "pip install" in guidance, case
+                    else:
+                        assert guidance.split(". ")[-1].startswith("Restart"), case
+
+
+def test_base_install_on_16gb_flagship_is_not_told_to_restart():
+    """r4 repro: ``serve qwen3.5-9b-4bit`` (default MTP, 32 GB vision floor)
+    on a 16 GB Mac without mlx-vlm. Installing cannot lift the RAM floor."""
+    guidance = text_lane_image_guidance(
+        "qwen3.5-9b-4bit",
+        "text_lane_speculative_decode",
+        ram_gb=16,
+        vision_runtime_ok=False,
+        hybrid_runtime_ok=False,
+    )
+    assert "estart" not in guidance
+    assert "Dropping it would not help" in guidance
+    alias = fitting_vision_alias(16, hybrid_runtime_ok=False)
+    assert guidance.endswith(
+        f"Then for image input, serve '{alias}', a vision model that fits this Mac."
+    )

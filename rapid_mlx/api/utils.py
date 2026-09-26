@@ -1850,7 +1850,7 @@ def text_lane_image_guidance(
             then = f" Then {pick[0].lower()}{pick[1:]}" if pick else ""
             return (
                 "Image input needs the vision runtime (mlx-vlm), which is not "
-                f"usable here. {_install_hint()}{then}"
+                f"usable here. {_install_hint().rstrip('.')}.{then}"
             )
         return _pick_model()
 
@@ -1912,17 +1912,20 @@ def text_lane_image_guidance(
         runtime and memory floor are checked, so it can hide either one.
         Name the blocker instead of a restart that would stay text-only.
         """
+        # Same order as the engine: the RAM floor first (no install lifts it),
+        # then the runtime; ``_suggest`` still leads with an install hint.
+        floor = profile.vision_min_memory_gb if profile is not None else None
+        if floor is not None and 0 < ram_gb < floor:
+            return (
+                "Dropping it would not help: vision for this model needs at "
+                f"least {floor:g} GB of RAM; this Mac has {ram_gb:.0f} GB. "
+                f"{_suggest()}"
+            )
         hybrid = profile is not None and _profile_has_hybrid_backbone(profile)
         if not vision_runtime_ok or (hybrid and not hybrid_runtime_ok):
             return (
                 "Image input also needs a working vision runtime (mlx-vlm). "
-                f"{_install_hint()} Then {flag_remedy}"
-            )
-        floor = profile.vision_min_memory_gb if profile is not None else None
-        if floor is not None and 0 < ram_gb < floor:
-            return (
-                f"Even then, vision for this model needs at least {floor:g} GB "
-                f"of RAM; this Mac has {ram_gb:.0f} GB. {_pick_model()}"
+                f"{_install_hint().rstrip('.')}. Then {flag_remedy}"
             )
         return flag_remedy[0].upper() + flag_remedy[1:]
 
@@ -1934,7 +1937,9 @@ def text_lane_image_guidance(
         return (
             "This server was started on the text-only lane (e.g. with "
             "--no-mllm / --text-only). "
-            + _unflagged_outcome("restart without it for image input.")
+            + _unflagged_outcome(
+                "restart without --no-mllm / --text-only for image input."
+            )
         )
     if reason == "text_lane_speculative_decode":
         # Usually the catalog's MTP default, not a flag the user passed, so
@@ -1947,8 +1952,9 @@ def text_lane_image_guidance(
         return (
             "Speculative decoding (MTP) is on, and only the text lane runs it. "
             + _unflagged_outcome(
-                "restart with --no-spec-decode (and without any --spec-decode "
-                "/ --force-spec-decode flag) for image input."
+                "restart with --no-spec-decode (and without any "
+                "--speculative-config / --spec-decode / --force-spec-decode "
+                "flag) for image input."
             )
         )
     checkpoint_cause = _SUGGEST_VISION_ALIAS_CAUSES.get(reason)
