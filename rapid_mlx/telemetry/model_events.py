@@ -544,6 +544,12 @@ def _claim_serve_failure_key(
                 # Ledger replacement is atomic, so an unlocked read is a
                 # consistent snapshot. The lock winner may already have
                 # published this key even though our bounded wait expired.
+                # The 250 ms bound ensures telemetry can never delay ``serve``
+                # startup longer than that for this local mode-0600 ledger.
+                # After the bound, fail open: a duplicate is preferable to a
+                # blocked startup. The worst case is N duplicates, and only if
+                # N processes simultaneously hit >250 ms contention on the
+                # local file; the unlocked re-read handles the common case.
                 recent = _read_serve_failed_recent(path)
                 if _serve_failure_claim_is_fresh(recent, encoded_key, current):
                     return False
