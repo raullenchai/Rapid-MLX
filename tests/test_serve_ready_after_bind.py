@@ -1039,6 +1039,7 @@ def test_port_collision_emits_only_failed_bind(monkeypatch):
                 "127.0.0.1",
                 occupied.getsockname()[1],
                 model="qwen3.5-4b-4bit",
+                port_explicit=True,
             )
 
     assert caught.value.code == 1
@@ -1065,6 +1066,7 @@ def test_implicit_port_scan_exhaustion_emits_nonexplicit_bind(monkeypatch):
             "127.0.0.1",
             None,
             model="qwen3.5-4b-4bit",
+            port_explicit=False,
             scan_base=8000,
             scan_count=1,
         )

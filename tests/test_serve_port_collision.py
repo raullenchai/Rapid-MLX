@@ -118,6 +118,7 @@ def test_implicit_busy_default_selects_next_port_and_stamps_user_urls(
             "127.0.0.1",
             None,
             model="qwen3.5-4b-4bit",
+            port_explicit=False,
             scan_base=scan_base,
         )
 
@@ -144,7 +145,12 @@ def test_explicit_busy_port_keeps_existing_hard_failure(capsys, scan_base):
     with ExitStack() as stack:
         _claim_exact_loopback_port(stack, scan_base)
         with pytest.raises(SystemExit) as excinfo:
-            cli._resolve_serve_port("127.0.0.1", scan_base, model="qwen3.5-4b-4bit")
+            cli._resolve_serve_port(
+                "127.0.0.1",
+                scan_base,
+                model="qwen3.5-4b-4bit",
+                port_explicit=True,
+            )
 
     assert excinfo.value.code == 1
     captured = capsys.readouterr()
@@ -167,6 +173,7 @@ def test_implicit_port_fails_when_all_ten_candidates_are_busy(capsys, scan_base)
                 "127.0.0.1",
                 None,
                 model="qwen3.5-4b-4bit",
+                port_explicit=False,
                 scan_base=scan_base,
             )
 
@@ -186,7 +193,11 @@ def test_implicit_wildcard_scan_detects_loopback_shadow(capsys, scan_base):
     with ExitStack() as stack:
         _claim_exact_loopback_port(stack, scan_base)
         resolved = cli._resolve_serve_port(
-            "0.0.0.0", None, model="qwen3.5-4b-4bit", scan_base=scan_base
+            "0.0.0.0",
+            None,
+            model="qwen3.5-4b-4bit",
+            port_explicit=False,
+            scan_base=scan_base,
         )
 
     assert resolved == scan_base + 1
@@ -203,7 +214,15 @@ def test_explicit_free_port_has_no_substitution_notice(capsys):
         probe.bind(("127.0.0.1", 0))
         port = probe.getsockname()[1]
 
-    assert cli._resolve_serve_port("127.0.0.1", port, model="qwen3.5-4b-4bit") == port
+    assert (
+        cli._resolve_serve_port(
+            "127.0.0.1",
+            port,
+            model="qwen3.5-4b-4bit",
+            port_explicit=True,
+        )
+        == port
+    )
     captured = capsys.readouterr()
     assert captured.err == ""
     assert captured.out == ""
@@ -213,7 +232,13 @@ def test_implicit_free_scan_base_has_no_notice(capsys, scan_base):
     """The normal omitted-port path keeps 8000 when it is available."""
 
     assert (
-        cli._resolve_serve_port("127.0.0.1", None, model="model", scan_base=scan_base)
+        cli._resolve_serve_port(
+            "127.0.0.1",
+            None,
+            model="model",
+            port_explicit=False,
+            scan_base=scan_base,
+        )
         == scan_base
     )
     captured = capsys.readouterr()
@@ -247,6 +272,7 @@ def test_port_probe_reports_non_collision_bind_error(
             "192.0.2.1",
             requested_port,
             model="model",
+            port_explicit=requested_port is not None,
             scan_base=8000,
             scan_count=1,
         )
@@ -270,6 +296,7 @@ def test_listen_fd_uses_bound_socket_port_and_keeps_fd_open():
             "127.0.0.1",
             None,
             model="model",
+            port_explicit=None,
             listen_fd=listener.fileno(),
         )
 
@@ -285,7 +312,13 @@ def test_resolve_listen_fd_reports_cli_error_without_traceback(monkeypatch, caps
     )
 
     with pytest.raises(SystemExit) as caught:
-        cli._resolve_serve_port("127.0.0.1", None, model="model", listen_fd=17)
+        cli._resolve_serve_port(
+            "127.0.0.1",
+            None,
+            model="model",
+            port_explicit=None,
+            listen_fd=17,
+        )
 
     assert caught.value.code == 2
     assert capsys.readouterr().err == ("Invalid --listen-fd 17: descriptor is closed\n")
@@ -518,6 +551,7 @@ def test_listen_fd_resolves_once_before_audio_lane(monkeypatch):
             host="127.0.0.1",
             port=None,
             listen_fd=listener.fileno(),
+            _port_explicit=None,
         )
         cli.serve_command(args)
 

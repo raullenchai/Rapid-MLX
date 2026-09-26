@@ -1,12 +1,6 @@
 # SPDX-License-Identifier: Apache-2.0
 import argparse
-import json
-import os
-import socket
-import subprocess
 import sys
-import threading
-from http.server import BaseHTTPRequestHandler, HTTPServer
 from pathlib import Path
 
 import pytest
@@ -18,23 +12,10 @@ except ModuleNotFoundError:  # Python 3.10
 
 from rapid_mlx.cli import (
     _resolve_system_one_backend,
-    _set_port_explicit_from_argv,
+    _stamp_port_explicit,
     build_parser,
     system_one_command,
 )
-
-
-class _CaptureHandler(BaseHTTPRequestHandler):
-    def do_POST(self) -> None:
-        length = int(self.headers["Content-Length"])
-        self.server.bodies.append(self.rfile.read(length))  # type: ignore[attr-defined]
-        self.send_response(200)
-        self.send_header("Content-Length", "2")
-        self.end_headers()
-        self.wfile.write(b"{}")
-
-    def log_message(self, format: str, *args: object) -> None:
-        pass
 
 
 def test_system_one_cli_defaults_to_laya_service():
@@ -42,120 +23,95 @@ def test_system_one_cli_defaults_to_laya_service():
     assert args.model == "convaiinnovations/laya"
     assert args.backend == "auto"
     assert args.host == "127.0.0.1"
-    assert args.port == 8700
+    assert args.port is None
     assert args._port_explicit is False
     assert args.max_concurrent_requests == 8
 
 
-def test_system_one_busy_explicit_port_reports_context_to_loopback_sink(
-    tmp_path,
-):
-    home = tmp_path / "home"
-    home.mkdir()
-    sink = HTTPServer(("127.0.0.1", 0), _CaptureHandler)
-    sink.bodies = []  # type: ignore[attr-defined]
-    thread = threading.Thread(target=sink.serve_forever, daemon=True)
-    thread.start()
-
-    with socket.socket() as occupied:
-        occupied.bind(("127.0.0.1", 0))
-        occupied.listen()
-        port = occupied.getsockname()[1]
-        program = f"""
-import sys
-import types
-
-import rapid_mlx
-from rapid_mlx import cli
-from rapid_mlx.telemetry import build_gate, common_props, consent_runtime, posthog_sender, server_start, state
-from rapid_mlx.telemetry.build_gate import ReleaseStamp
-from rapid_mlx.telemetry.common_props import PlatformFacts
-
-rapid_mlx.__version__ = "0.15.1"
-stamp = ReleaseStamp(channel="stable", posthog_key="phc_" + "a" * 32)
-build_gate.official_build = lambda: stamp
-consent_runtime.upload_allowed = lambda: True
-common_props.read_platform_facts = lambda: PlatformFacts(
-    os="darwin", os_version="25.3", arch="arm64", chip="m1-pro",
-    memory_gb=32, python_version="3.11"
+@pytest.mark.parametrize(
+    ("argv", "expected_port", "expected_explicit"),
+    [
+        (["system-one"], 8700, False),
+        (["system-one", "--port", "8123"], 8123, True),
+    ],
 )
-state.get_or_create_client_id = lambda: "6f1b1d3e-4a2b-4c9d-8e7f-0a1b2c3d4e5f"
-state.session_id = lambda: "0a1b2c3d-4e5f-6071-8293-a4b5c6d7e8f9"
+def test_system_one_forwards_stamped_port_context_to_preflight_and_uvicorn(
+    monkeypatch, argv, expected_port, expected_explicit
+):
+    import rapid_mlx._uvicorn as uvicorn_module
+    import rapid_mlx.system_one.backends as backend_module
+    import rapid_mlx.system_one.server as server_module
 
-class Backend:
-    default_model = "fake-system-one"
+    captured = {}
 
-    def __init__(self, *_args, **_kwargs):
+    class Backend:
+        default_model = "fake-system-one"
+
+        def __init__(self, *_args, **_kwargs):
+            pass
+
+    monkeypatch.setitem(
+        system_one_command.__globals__,
+        "_port_preflight_or_die",
+        lambda host, port, **kwargs: captured.update(
+            preflight=(host, port, kwargs["port_explicit"])
+        ),
+    )
+    monkeypatch.setattr(backend_module, "LayaBackend", Backend)
+    monkeypatch.setattr(server_module, "create_app", lambda *_args, **_kwargs: object())
+    monkeypatch.setattr(
+        uvicorn_module,
+        "run_uvicorn",
+        lambda _app, **kwargs: captured.update(uvicorn=kwargs),
+    )
+
+    args = build_parser().parse_args(argv)
+    assert args._port_explicit is expected_explicit
+    system_one_command(args)
+
+    assert captured["preflight"] == (
+        "127.0.0.1",
+        expected_port,
+        expected_explicit,
+    )
+    assert captured["uvicorn"]["port"] == expected_port
+    assert captured["uvicorn"]["port_explicit"] is expected_explicit
+
+
+def test_system_one_default_collision_forwards_nonexplicit_context(monkeypatch):
+    captured = {}
+
+    class CollisionError(Exception):
         pass
 
-    def models(self):
-        return []
-
-backends = types.ModuleType("rapid_mlx.system_one.backends")
-backends.CLMBackend = Backend
-backends.DecisionBackend = Backend
-backends.LayaBackend = Backend
-sys.modules[backends.__name__] = backends
-
-async def app(scope, receive, send):
-    if scope["type"] != "lifespan":
-        return
-    while True:
-        message = await receive()
-        if message["type"] == "lifespan.startup":
-            await send({{"type": "lifespan.startup.complete"}})
-        elif message["type"] == "lifespan.shutdown":
-            await send({{"type": "lifespan.shutdown.complete"}})
-            return
-
-server = types.ModuleType("rapid_mlx.system_one.server")
-server.create_app = lambda *_args, **_kwargs: app
-sys.modules[server.__name__] = server
-
-cli._port_preflight_or_die = lambda *_args, **_kwargs: None
-args = cli.build_parser().parse_args(["system-one", "--port", "{port}"])
-server_start.attempted("system-one", load_policy="eager")
-try:
-    cli.system_one_command(args)
-finally:
-    posthog_sender.get_sender().flush(5.0)
-"""
-        env = dict(
-            os.environ,
-            HOME=str(home),
-            RAPID_MLX_POSTHOG_URL=f"http://127.0.0.1:{sink.server_port}/batch/",
+    def fake_exit(port, collision_host, *, model, port_explicit):
+        captured.update(
+            port=port,
+            collision_host=collision_host,
+            model=model,
+            port_explicit=port_explicit,
         )
-        for name in ("CI", "GITHUB_ACTIONS", "RAPID_MLX_TELEMETRY", "DO_NOT_TRACK"):
-            env.pop(name, None)
-        try:
-            proc = subprocess.run(
-                [sys.executable, "-c", program],
-                cwd=Path(__file__).resolve().parents[1],
-                env=env,
-                capture_output=True,
-                text=True,
-                timeout=15,
-                check=False,
-            )
-        finally:
-            sink.shutdown()
-            thread.join(timeout=2.0)
-            sink.server_close()
+        raise CollisionError
 
-    assert proc.returncode != 0, proc.stderr
-    start_events = [
-        item
-        for body in sink.bodies  # type: ignore[attr-defined]
-        for item in json.loads(body)["batch"]
-        if item["event"] == "server_start_state"
-    ]
-    assert [item["properties"]["state"] for item in start_events] == [
-        "attempted",
-        "failed",
-    ]
-    failure = start_events[-1]["properties"]
-    assert failure["failure_stage"] == "bind"
-    assert failure["port_explicit"] is True
+    monkeypatch.setitem(
+        system_one_command.__globals__,
+        "_port_collision_host",
+        lambda host, _port: host,
+    )
+    monkeypatch.setitem(
+        system_one_command.__globals__, "_exit_for_port_collision", fake_exit
+    )
+    args = build_parser().parse_args(["system-one"])
+
+    with pytest.raises(CollisionError):
+        system_one_command(args)
+
+    assert captured == {
+        "port": 8700,
+        "collision_host": "127.0.0.1",
+        "model": "convaiinnovations/laya",
+        "port_explicit": False,
+    }
 
 
 def test_system_one_cli_accepts_clm_runtime_inputs():
@@ -189,11 +145,12 @@ def test_server_parsers_stamp_port_context_at_parse_time():
     assert inherited._port_explicit is None
     assert standalone.parse_args([])._port_explicit is False
     assert standalone.parse_args(["--port=8123"])._port_explicit is True
+    assert standalone.parse_args(["--por", "8123"])._port_explicit is True
 
 
 def test_port_context_parser_preserves_caller_namespace_and_non_server_args():
     non_server = argparse.Namespace(command="models")
-    assert _set_port_explicit_from_argv(non_server, ["models"]) is non_server
+    assert _stamp_port_explicit(non_server) is non_server
 
     namespace = argparse.Namespace(caller_seed="kept")
     parsed = build_parser().parse_args(["system-one"], namespace=namespace)

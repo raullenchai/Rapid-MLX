@@ -3923,7 +3923,12 @@ def main():
     # is caught before we sink time into model load.
     from .cli import _resolve_serve_port
 
-    args.port = _resolve_serve_port(args.host, args.port, model=args.model)
+    args.port = _resolve_serve_port(
+        args.host,
+        args.port,
+        model=args.model,
+        port_explicit=args._port_explicit,
+    )
     assert isinstance(args.port, int)
 
     # F-H08-INCOMPLETE: the ``[embeddings]`` extra-required guard MUST

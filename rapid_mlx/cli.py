@@ -43,6 +43,7 @@ MIRROR_DEFAULT = "https://models.rapidmlx.com"
 
 DEFAULT_SERVE_PORT = 8000
 DEFAULT_SERVE_PORT_CANDIDATES = 10
+DEFAULT_SYSTEM_ONE_PORT = 8700
 # Darwin's TCP_CONNECTION_INFO returns ``struct tcp_connection_info``.
 # Request a full, future-tolerant buffer instead of the one byte that happens
 # to contain ``tcpi_state``; kernels may reject undersized option buffers.
@@ -55,20 +56,14 @@ _hub_guidance_rendered = False
 _hub_guidance_lock = threading.Lock()
 
 
-def _set_port_explicit_from_argv(
-    args: argparse.Namespace, raw_argv: list[str] | tuple[str, ...] | None
-) -> argparse.Namespace:
-    """Stamp bind-port provenance on every parsed server namespace."""
+def _stamp_port_explicit(args: argparse.Namespace) -> argparse.Namespace:
+    """Stamp bind-port provenance from the parsed server namespace."""
     if not hasattr(args, "port"):
         return args
-    argv = list(sys.argv[1:] if raw_argv is None else raw_argv)
-    option_argv = argv[: argv.index("--")] if "--" in argv else argv
     if getattr(args, "listen_fd", None) is not None:
         args._port_explicit = None
     else:
-        args._port_explicit = any(
-            token == "--port" or token.startswith("--port=") for token in option_argv
-        )
+        args._port_explicit = args.port is not None
     return args
 
 
@@ -82,7 +77,7 @@ class _PortContextArgumentParser(argparse.ArgumentParser):
             parsed = super().parse_args(args)
         else:
             parsed = super().parse_args(args, namespace)
-        return _set_port_explicit_from_argv(parsed, args)
+        return _stamp_port_explicit(parsed)
 
 
 def _run_optional_runtime_guard(
@@ -426,12 +421,14 @@ def _port_collision_host(host: str, port: int) -> str | None:
     return None
 
 
-def _exit_for_port_collision(port: int, collision_host: str, *, model: str) -> NoReturn:
+def _exit_for_port_collision(
+    port: int, collision_host: str, *, model: str, port_explicit: bool
+) -> NoReturn:
     """Emit the established preflight failure and terminate with rc 1."""
 
     from rapid_mlx.telemetry.server_start import failed
 
-    failed("bind", port_explicit=True)
+    failed("bind", port_explicit=port_explicit)
     print(f"\n  Error: Port {port} is already in use on {collision_host}.")
     print(f"  Try a different port: rapid-mlx serve {model} --port {port + 1}")
     sys.exit(1)
@@ -462,7 +459,9 @@ def _exit_for_host_bind_error(host: str, exc: OSError) -> NoReturn:
     raise SystemExit(2) from None
 
 
-def _port_preflight_or_die(host: str, port: int, *, model: str) -> None:
+def _port_preflight_or_die(
+    host: str, port: int, *, model: str, port_explicit: bool
+) -> None:
     """Probe ``(host, port)`` AND — when ``host`` is a wildcard alias —
     additionally probe ``("127.0.0.1", port)``. Print a friendly error
     and ``sys.exit(1)`` on the first collision.
@@ -508,7 +507,12 @@ def _port_preflight_or_die(host: str, port: int, *, model: str) -> None:
     except OSError as exc:
         _exit_for_host_bind_error(host, exc)
     if collision_host is not None:
-        _exit_for_port_collision(port, collision_host, model=model)
+        _exit_for_port_collision(
+            port,
+            collision_host,
+            model=model,
+            port_explicit=port_explicit,
+        )
 
 
 def _listener_accepting(
@@ -632,6 +636,7 @@ def _resolve_serve_port(
     port: int | None,
     *,
     model: str,
+    port_explicit: bool | None,
     listen_fd: int | None = None,
     scan_base: int = DEFAULT_SERVE_PORT,
     scan_count: int = DEFAULT_SERVE_PORT_CANDIDATES,
@@ -651,7 +656,13 @@ def _resolve_serve_port(
             raise SystemExit(2) from None
 
     if port is not None:
-        _port_preflight_or_die(host, port, model=model)
+        assert port_explicit is not None
+        _port_preflight_or_die(
+            host,
+            port,
+            model=model,
+            port_explicit=port_explicit,
+        )
         return port
 
     first_collision_host: str | None = None
@@ -4501,7 +4512,13 @@ def system_one_command(args) -> None:
         raise SystemExit("error: --head is only valid with --backend clm")
     # Fail before model download or initialization when the listener cannot
     # start. Cheap argument validation above still wins for invalid commands.
-    _port_preflight_or_die(args.host, args.port, model=args.model)
+    args.port = DEFAULT_SYSTEM_ONE_PORT if args.port is None else args.port
+    _port_preflight_or_die(
+        args.host,
+        args.port,
+        model=args.model,
+        port_explicit=args._port_explicit,
+    )
     backend: DecisionBackend
     if backend_name == "clm":
         backend = CLMBackend(
@@ -4838,6 +4855,7 @@ def serve_command(args):
             getattr(args, "host", "127.0.0.1"),
             getattr(args, "port", None),
             model=args.model,
+            port_explicit=args._port_explicit,
             listen_fd=getattr(args, "listen_fd", None),
         )
         _serve_audio_mode(args, audio_entry)
@@ -4894,6 +4912,7 @@ def serve_command(args):
         getattr(args, "host", "127.0.0.1"),
         getattr(args, "port", None),
         model=args.model,
+        port_explicit=args._port_explicit,
         listen_fd=getattr(args, "listen_fd", None),
     )
 
@@ -12821,7 +12840,7 @@ Examples:
         "--backend", choices=("auto", "laya", "clm"), default="auto"
     )
     system_one_parser.add_argument("--host", default="127.0.0.1")
-    system_one_parser.add_argument("--port", type=_port_arg, default=8700)
+    system_one_parser.add_argument("--port", type=_port_arg, default=None)
     system_one_parser.add_argument("--api-key", default=None)
     system_one_parser.add_argument(
         "--log-level",
