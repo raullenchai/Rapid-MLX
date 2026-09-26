@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from typing import Literal
 
-from fastapi import APIRouter, Depends, HTTPException, Response
+from fastapi import APIRouter, Depends, HTTPException, Request, Response
 from pydantic import BaseModel, Field, StrictBool, model_validator
 
 from ..config import get_config
@@ -127,10 +127,13 @@ def _resolved_group_for_profile(modality: str) -> str:
 
 
 @router.post("/v1/models/load")
-async def load_resident_model(request: ModelLoadRequest):
+async def load_resident_model(request: ModelLoadRequest, raw_request: Request):
     """Load a model into the current process, evicting idle LRU entries first."""
 
     manager = _manager()
+    from rapid_mlx.telemetry.inference import request_caller_headers
+
+    caller_agent, caller_client = request_caller_headers(raw_request)
     estimated_bytes = (
         int(request.estimated_size_gb * 1024**3)
         if request.estimated_size_gb is not None
@@ -169,7 +172,10 @@ async def load_resident_model(request: ModelLoadRequest):
             )
 
             emit_capability_rejected(
-                "perf_overrides_unsupported", model_type=model_type_token(profile)
+                "perf_overrides_unsupported",
+                model_type=model_type_token(profile),
+                caller_agent=caller_agent,
+                caller_client=caller_client,
             )
             raise HTTPException(
                 status_code=422,
@@ -206,6 +212,8 @@ async def load_resident_model(request: ModelLoadRequest):
         emit_capability_rejected(
             "perf_overrides_unsupported",
             model_type=model_type_token(locals().get("profile")),
+            caller_agent=caller_agent,
+            caller_client=caller_client,
         )
         raise HTTPException(status_code=422, detail=str(exc)) from exc
     except ResidentModelCapacityError as exc:

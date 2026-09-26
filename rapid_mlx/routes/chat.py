@@ -4077,6 +4077,11 @@ async def _create_chat_completion_impl(
     Admission is reserved after cheap validation to avoid leaking a slot on
     validation ``HTTPException`` paths.
     """
+    from rapid_mlx.telemetry import inference as _telemetry_inference
+
+    _caller_agent, _caller_client = _telemetry_inference.request_caller_headers(
+        raw_request
+    )
     # Validate messages is non-empty
     if not request.messages:
         raise HTTPException(
@@ -4273,7 +4278,11 @@ async def _create_chat_completion_impl(
         )
 
         emit_capability_rejected(
-            "multi_sample_unsupported", model_type=model_type_token(engine)
+            "multi_sample_unsupported",
+            model_type=model_type_token(engine),
+            model=served_telemetry_id,
+            caller_agent=_caller_agent,
+            caller_client=_caller_client,
         )
         raise HTTPException(
             status_code=400,
@@ -4331,7 +4340,11 @@ async def _create_chat_completion_impl(
         )
 
         emit_capability_rejected(
-            "logit_bias_unsupported", model_type=model_type_token(engine)
+            "logit_bias_unsupported",
+            model_type=model_type_token(engine),
+            model=served_telemetry_id,
+            caller_agent=_caller_agent,
+            caller_client=_caller_client,
         )
         raise HTTPException(
             status_code=400,
@@ -4474,6 +4487,9 @@ async def _create_chat_completion_impl(
             allow_image=engine.is_mllm,
             allow_video=engine.is_mllm,
             allow_audio=False,
+            telemetry_model=served_telemetry_id,
+            caller_agent=_caller_agent,
+            caller_client=_caller_client,
         )
     except UnsupportedContentBlockError as e:
         raise HTTPException(
@@ -4507,6 +4523,9 @@ async def _create_chat_completion_impl(
         messages, images, videos = extract_multimodal_content(
             request.messages,
             preserve_native_format=engine.preserve_native_tool_format,
+            telemetry_model=served_telemetry_id,
+            caller_agent=_caller_agent,
+            caller_client=_caller_client,
         )
 
     has_media = bool(images or videos)
@@ -4917,6 +4936,9 @@ async def _create_chat_completion_impl(
         max_tokens=chat_kwargs.get("max_tokens"),
         enable_thinking=resolved_thinking,
         chat_template_kwargs=chat_kwargs.get("chat_template_kwargs"),
+        telemetry_model=served_telemetry_id,
+        caller_agent=_caller_agent,
+        caller_client=_caller_client,
     )
 
     # LINE① (#558, codex r4 #1) — HARD context-window allowance check. With
@@ -5320,7 +5342,11 @@ async def _create_chat_completion_impl(
             )
 
             emit_capability_rejected(
-                "structured_output_unsupported", model_type=model_type_token(engine)
+                "structured_output_unsupported",
+                model_type=model_type_token(engine),
+                model=served_telemetry_id,
+                caller_agent=_caller_agent,
+                caller_client=_caller_client,
             )
             incr_strict_request()
             raise HTTPException(
@@ -5508,11 +5534,7 @@ async def _create_chat_completion_impl(
         response_id = _new_stream_request_id()
         # Preserve request attribution for the v2 inference emitter. Thread it
         # explicitly so it never leaks into the engine's ``**chat_kwargs``.
-        from rapid_mlx.telemetry import inference as _telemetry_inference
-
-        _caller_ua, _caller_client = _telemetry_inference.request_caller_headers(
-            raw_request
-        )
+        _caller_ua = _caller_agent
         if use_guided and json_schema:
             # Constrained streaming: run guided generation buffered, then
             # synthesize an SSE stream from the buffered output. Falls

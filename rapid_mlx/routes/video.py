@@ -22,7 +22,7 @@ from dataclasses import asdict, dataclass, replace
 from pathlib import Path
 from typing import Annotated
 
-from fastapi import APIRouter, Depends, File, Form, HTTPException, Query, UploadFile
+from fastapi import APIRouter, Depends, File, Form, HTTPException, Query, Request, UploadFile
 from fastapi.responses import JSONResponse, StreamingResponse
 
 from ..middleware.auth import _verify_api_key_values, verify_api_key
@@ -672,7 +672,11 @@ async def _run_in_generation_thread(function, /, **kwargs) -> None:
     await completed
 
 
-def _video_engine():
+def _video_engine(
+    *,
+    caller_agent: str | None = None,
+    caller_client: str | None = None,
+):
     from ..config import get_config
 
     engine = get_config().engine
@@ -683,7 +687,10 @@ def _video_engine():
         )
 
         emit_capability_rejected(
-            "video_generation_unavailable", model_type=model_type_token(engine)
+            "video_generation_unavailable",
+            model_type=model_type_token(engine),
+            caller_agent=caller_agent,
+            caller_client=caller_client,
         )
         raise HTTPException(
             status_code=409,
@@ -841,13 +848,25 @@ def _video_capabilities(engine) -> dict:
     }
 
 
-def _validate_reference_image(path: Path) -> None:
+def _validate_reference_image(
+    path: Path,
+    *,
+    telemetry_model: str | None = None,
+    caller_agent: str | None = None,
+    caller_client: str | None = None,
+) -> None:
     try:
         from PIL import Image
     except ImportError as exc:
         from rapid_mlx.telemetry.inference import emit_capability_rejected
 
-        emit_capability_rejected("runtime_extra_missing", model_type="video-gen")
+        emit_capability_rejected(
+            "runtime_extra_missing",
+            model_type="video-gen",
+            model=telemetry_model,
+            caller_agent=caller_agent,
+            caller_client=caller_client,
+        )
         raise HTTPException(
             status_code=503,
             detail="image-to-video requires `pip install 'rapid-mlx[video]'`",
@@ -1012,6 +1031,7 @@ async def _run_job(
 
 @router.post("/v1/videos", dependencies=[Depends(verify_api_key)])
 async def create_video(
+    raw_request: Request,
     prompt: str = Form(..., min_length=1, max_length=4096),
     model: str = Form("ltx-2.3-mlx-q4"),
     seconds: str = Form("4"),
@@ -1024,7 +1044,15 @@ async def create_video(
     negative_prompt: Annotated[str | None, Form(max_length=4096)] = None,
     input_reference: UploadFile | None = File(None),
 ):
-    engine = _video_engine()
+    from rapid_mlx.telemetry.inference import request_caller_headers
+    from rapid_mlx.telemetry.model_id import engine_telemetry_id
+
+    caller_agent, caller_client = request_caller_headers(raw_request)
+    engine = _video_engine(
+        caller_agent=caller_agent,
+        caller_client=caller_client,
+    )
+    telemetry_model = engine_telemetry_id(engine)
     is_cogvideox = getattr(engine, "video_family", "") == "cogvideox-fun"
     is_wan = getattr(engine, "video_family", "") == "wan"
     is_ltx25 = getattr(engine, "video_family", "") == "ltx-2.5"
@@ -1117,7 +1145,13 @@ async def create_video(
     if is_ltx25 and (negative_prompt or guidance_scale is not None):
         from rapid_mlx.telemetry.inference import emit_capability_rejected
 
-        emit_capability_rejected("video_generation_unavailable", model_type="video-gen")
+        emit_capability_rejected(
+            "video_generation_unavailable",
+            model_type="video-gen",
+            model=telemetry_model,
+            caller_agent=caller_agent,
+            caller_client=caller_client,
+        )
         raise HTTPException(
             status_code=400,
             detail=(
@@ -1202,7 +1236,13 @@ async def create_video(
                     await asyncio.to_thread(target.write, chunk)
             finally:
                 await asyncio.to_thread(target.close)
-            await asyncio.to_thread(_validate_reference_image, image_path)
+            await asyncio.to_thread(
+                _validate_reference_image,
+                image_path,
+                telemetry_model=telemetry_model,
+                caller_agent=caller_agent,
+                caller_client=caller_client,
+            )
 
         num_frames = request_frames
         if is_wan:
@@ -1288,9 +1328,17 @@ async def create_video(
 
 
 @router.get("/v1/videos/capabilities", dependencies=[Depends(verify_api_key)])
-async def video_capabilities():
+async def video_capabilities(raw_request: Request):
     """Return machine-readable limits for the currently served video model."""
-    return _video_capabilities(_video_engine())
+    from rapid_mlx.telemetry.inference import request_caller_headers
+
+    caller_agent, caller_client = request_caller_headers(raw_request)
+    return _video_capabilities(
+        _video_engine(
+            caller_agent=caller_agent,
+            caller_client=caller_client,
+        )
+    )
 
 
 def _get_job(video_id: str) -> _VideoJob:

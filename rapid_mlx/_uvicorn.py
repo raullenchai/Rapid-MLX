@@ -108,6 +108,7 @@ def run_uvicorn(
     *,
     on_server_accepting: ServerAcceptingCallback | None = None,
     uvicorn_runner: Callable[..., None] | None = None,
+    port_explicit: bool | None = None,
     **config_kwargs: Any,
 ) -> None:
     """Run Uvicorn with its normal runner and the post-bind server subclass."""
@@ -132,7 +133,7 @@ def run_uvicorn(
         except BaseException:
             from rapid_mlx.telemetry.server_start import failed
 
-            failed("bind")
+            failed("bind", port_explicit=port_explicit)
             raise
     finally:
         uvicorn_main.Server = original_server

@@ -249,7 +249,14 @@ async def emit_failed_on_stream_error(
         raise
 
 
-def emit_capability_rejected(capability: str, *, model_type: str = "other") -> None:
+def emit_capability_rejected(
+    capability: str,
+    *,
+    model_type: str = "other",
+    model: str | None = None,
+    caller_agent: str | None = None,
+    caller_client: str | None = None,
+) -> None:
     """Enqueue one closed-vocabulary capability rejection without blocking."""
     try:
         if not track_module._upload_allowed():
@@ -259,25 +266,39 @@ def emit_capability_rejected(capability: str, *, model_type: str = "other") -> N
                 _record_capability_rejected,
                 capability=capability,
                 model_type=model_type,
+                model=model,
+                caller_agent=caller_agent,
+                caller_client=caller_client,
             )
         )
     except Exception:
         return
 
 
-def _record_capability_rejected(*, capability: str, model_type: str) -> None:
+def _record_capability_rejected(
+    *,
+    capability: str,
+    model_type: str,
+    model: str | None = None,
+    caller_agent: str | None = None,
+    caller_client: str | None = None,
+) -> None:
     """Worker-thread half of :func:`emit_capability_rejected`."""
     try:
         allowed = registry.load_registry()["enums"]["capability"]["values"]
         if capability not in allowed:
             return
-        track_module.track(
-            "capability_rejected",
-            {
-                "capability": capability,
-                "model_type": model_type_token(model_type),
-            },
-        )
+        props = {
+            "capability": capability,
+            "model_type": model_type_token(model_type),
+        }
+        if model is not None:
+            props["model"] = model_id.telemetry_model_id(model)
+        if caller_agent is not None or caller_client is not None:
+            caller = redact.normalize_caller_agent(caller_agent, caller_client)
+            allowed_callers = registry.load_registry()["enums"]["caller"]["values"]
+            props["caller"] = caller if caller in allowed_callers else "other"
+        track_module.track("capability_rejected", props)
     except Exception:
         return
 

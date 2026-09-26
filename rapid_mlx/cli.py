@@ -401,7 +401,7 @@ def _exit_for_port_collision(port: int, collision_host: str, *, model: str) -> N
 
     from rapid_mlx.telemetry.server_start import failed
 
-    failed("bind")
+    failed("bind", port_explicit=True)
     print(f"\n  Error: Port {port} is already in use on {collision_host}.")
     print(f"  Try a different port: rapid-mlx serve {model} --port {port + 1}")
     sys.exit(1)
@@ -412,7 +412,7 @@ def _exit_for_port_scan_exhaustion(scan_base: int, scan_count: int) -> NoReturn:
 
     from rapid_mlx.telemetry.server_start import failed
 
-    failed("bind")
+    failed("bind", port_explicit=False)
     scan_end = scan_base + scan_count - 1
     print(
         f"Ports {scan_base}-{scan_end} are all in use; "
@@ -751,6 +751,7 @@ def _run_uvicorn(app, args, log_level: str) -> None:
                 log_level=log_level,
                 timeout_keep_alive=30,
                 on_server_accepting=print_ready_banner,
+                port_explicit=getattr(args, "_port_explicit", None),
             )
     except OSError as exc:
         # Direct EADDRINUSE — older uvicorn, ``--listen-fd`` mode bind
@@ -4507,6 +4508,7 @@ def system_one_command(args) -> None:
 
 def serve_command(args):
     """Start the OpenAI-compatible server."""
+    args._port_explicit = getattr(args, "port", None) is not None
     import logging
     import os
     import sys

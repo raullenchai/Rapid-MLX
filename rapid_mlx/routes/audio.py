@@ -522,7 +522,12 @@ def _is_aligner_model(model_name: str) -> bool:
     return isinstance(model_name, str) and "aligner" in model_name.lower()
 
 
-def _reject_non_whisper_for_translation(model: str) -> None:
+def _reject_non_whisper_for_translation(
+    model: str,
+    *,
+    caller_agent: str | None = None,
+    caller_client: str | None = None,
+) -> None:
     """Codex r6 NIT: ``/v1/audio/translations`` promises English output.
 
     Only Whisper engines honor ``task="translate"`` (mlx_audio's
@@ -562,7 +567,13 @@ def _reject_non_whisper_for_translation(model: str) -> None:
         return
     from rapid_mlx.telemetry.inference import emit_capability_rejected
 
-    emit_capability_rejected("speech_capability_unsupported", model_type="audio")
+    emit_capability_rejected(
+        "speech_capability_unsupported",
+        model_type="audio",
+        model=resolved,
+        caller_agent=caller_agent,
+        caller_client=caller_client,
+    )
     raise HTTPException(
         status_code=400,
         detail={
@@ -584,7 +595,11 @@ def _reject_non_whisper_for_translation(model: str) -> None:
 
 
 def _reject_word_timestamps_for_non_whisper(
-    model: str, timestamp_granularities: list[str] | None
+    model: str,
+    timestamp_granularities: list[str] | None,
+    *,
+    caller_agent: str | None = None,
+    caller_client: str | None = None,
 ) -> None:
     """Reject ``timestamp_granularities[]=word`` on non-Whisper engines.
 
@@ -616,7 +631,13 @@ def _reject_word_timestamps_for_non_whisper(
         return
     from rapid_mlx.telemetry.inference import emit_capability_rejected
 
-    emit_capability_rejected("speech_capability_unsupported", model_type="audio")
+    emit_capability_rejected(
+        "speech_capability_unsupported",
+        model_type="audio",
+        model=resolved,
+        caller_agent=caller_agent,
+        caller_client=caller_client,
+    )
     raise HTTPException(
         status_code=400,
         detail={
@@ -1399,6 +1420,8 @@ async def _run_stt_request(
     task: str,
     timestamp_granularities: list[str] | None = None,
     context: str | None = None,
+    caller_agent: str | None = None,
+    caller_client: str | None = None,
 ):
     """Shared STT pipeline used by both ``/v1/audio/transcriptions`` and
     ``/v1/audio/translations``.
@@ -1527,7 +1550,13 @@ async def _run_stt_request(
     except ImportError:
         from rapid_mlx.telemetry.inference import emit_capability_rejected
 
-        emit_capability_rejected("runtime_extra_missing", model_type="audio")
+        emit_capability_rejected(
+            "runtime_extra_missing",
+            model_type="audio",
+            model=model_name,
+            caller_agent=caller_agent,
+            caller_client=caller_client,
+        )
         raise HTTPException(
             status_code=503,
             detail="mlx-audio not installed. Install with: pip install mlx-audio",
@@ -1984,6 +2013,9 @@ async def _run_alignment_request(
     text: str,
     language: str | None,
     response_format: str,
+    *,
+    caller_agent: str | None = None,
+    caller_client: str | None = None,
 ):
     """Forced-alignment pipeline for ``/v1/audio/transcriptions`` + ``text``.
 
@@ -2011,7 +2043,13 @@ async def _run_alignment_request(
     if not _is_aligner_model(model_name):
         from rapid_mlx.telemetry.inference import emit_capability_rejected
 
-        emit_capability_rejected("speech_capability_unsupported", model_type="audio")
+        emit_capability_rejected(
+            "speech_capability_unsupported",
+            model_type="audio",
+            model=model_name,
+            caller_agent=caller_agent,
+            caller_client=caller_client,
+        )
         raise HTTPException(
             status_code=400,
             detail={
@@ -2122,7 +2160,13 @@ async def _run_alignment_request(
     except ImportError:
         from rapid_mlx.telemetry.inference import emit_capability_rejected
 
-        emit_capability_rejected("runtime_extra_missing", model_type="audio")
+        emit_capability_rejected(
+            "runtime_extra_missing",
+            model_type="audio",
+            model=model_name,
+            caller_agent=caller_agent,
+            caller_client=caller_client,
+        )
         raise HTTPException(
             status_code=503,
             detail="mlx-audio not installed. Install with: pip install mlx-audio",
@@ -2275,6 +2319,9 @@ async def create_transcription(
     The 25 MB ceiling matches OpenAI's Whisper API and bounds the
     worst-case STT inference cost.
     """
+    from rapid_mlx.telemetry import inference as _telemetry_inference
+
+    caller_agent, caller_client = _telemetry_inference.request_caller_headers(request)
     # Form wins over query when both are present (form is the OpenAI
     # contract; query is the pre-F-165 internal contract we're keeping
     # for back-compat). Defaults match the original signature.
@@ -2448,7 +2495,12 @@ async def create_transcription(
     # Word-level timings are a Whisper-only capability — reject the
     # ``word`` granularity on non-Whisper engines with a 400 rather than
     # returning an empty ``words`` array that falsely claims fulfillment.
-    _reject_word_timestamps_for_non_whisper(model, timestamp_granularities)
+    _reject_word_timestamps_for_non_whisper(
+        model,
+        timestamp_granularities,
+        caller_agent=caller_agent,
+        caller_client=caller_client,
+    )
 
     # F-D05: STT-lane audio dep probe — same envelope as the TTS
     # lane shares. Fires BEFORE we spool any upload bytes so a broken
@@ -2467,6 +2519,8 @@ async def create_transcription(
             text=text,
             language=language,
             response_format=response_format,
+            caller_agent=caller_agent,
+            caller_client=caller_client,
         )
     else:
         response = await _run_stt_request(
@@ -2477,12 +2531,12 @@ async def create_transcription(
             task="transcribe",
             timestamp_granularities=timestamp_granularities,
             context=context_form,
+            caller_agent=caller_agent,
+            caller_client=caller_client,
         )
 
-    from rapid_mlx.telemetry import inference as _telemetry_inference
     from rapid_mlx.telemetry.model_id import telemetry_model_id
 
-    caller_agent, caller_client = _telemetry_inference.request_caller_headers(request)
     _telemetry_inference.emit_completed_request(
         model=telemetry_model_id(_resolve_stt_model(cast(str, model))),
         endpoint="/v1/audio/transcriptions",
@@ -2495,6 +2549,7 @@ async def create_transcription(
 
 @router.post("/v1/audio/translations", dependencies=[Depends(verify_api_key)])
 async def create_translation(
+    raw_request: Request,
     file: UploadFile,
     # OpenAI's translations endpoint mirrors transcriptions but
     # OMITS the ``language`` field — the destination language is
@@ -2525,6 +2580,9 @@ async def create_translation(
     with a 400 ``invalid_model_for_translation`` so callers get a
     distinct, actionable error instead of mislabeled output.
     """
+    from rapid_mlx.telemetry.inference import request_caller_headers
+
+    caller_agent, caller_client = request_caller_headers(raw_request)
     model = (
         model_form
         if model_form is not None
@@ -2551,7 +2609,11 @@ async def create_translation(
     # only need source-language text). Performed BEFORE the body probe
     # so a clearly-misrouted Parakeet request fails without touching
     # mlx_audio at all.
-    _reject_non_whisper_for_translation(model)
+    _reject_non_whisper_for_translation(
+        model,
+        caller_agent=caller_agent,
+        caller_client=caller_client,
+    )
 
     # F-D05: STT-lane audio dep probe (kept inside the route body so
     # the source-grep regression guard in
@@ -2567,6 +2629,8 @@ async def create_translation(
         language=None,
         response_format=response_format,
         task="translate",
+        caller_agent=caller_agent,
+        caller_client=caller_client,
     )
 
 
@@ -2987,7 +3051,9 @@ def _generate_speech_blocking(
 
 
 @router.post("/v1/audio/speech", dependencies=[Depends(verify_api_key)])
-async def create_speech(request: AudioSpeechRequest = Body(...)):
+async def create_speech(
+    raw_request: Request, request: AudioSpeechRequest = Body(...)
+):
     """Generate speech from text (OpenAI TTS API compatible).
 
     R7-M8 (Bo 0.8.8 dogfood): Bind a Pydantic :class:`AudioSpeechRequest`
@@ -3018,6 +3084,9 @@ async def create_speech(request: AudioSpeechRequest = Body(...)):
     because the traceback never reached the log.
     """
     global _tts_engine
+    from rapid_mlx.telemetry.inference import request_caller_headers
+
+    caller_agent, caller_client = request_caller_headers(raw_request)
 
     # TTS-lane audio dep probe (F-D05 + codex r3 BLOCKING). Fires
     # BEFORE the lazy TTSEngine import — if the TTS sub-module of
@@ -3073,7 +3142,11 @@ async def create_speech(request: AudioSpeechRequest = Body(...)):
             from rapid_mlx.telemetry.inference import emit_capability_rejected
 
             emit_capability_rejected(
-                "speech_capability_unsupported", model_type="audio"
+                "speech_capability_unsupported",
+                model_type="audio",
+                model=model_name,
+                caller_agent=caller_agent,
+                caller_client=caller_client,
             )
             raise HTTPException(
                 status_code=400,
@@ -3105,7 +3178,11 @@ async def create_speech(request: AudioSpeechRequest = Body(...)):
             from rapid_mlx.telemetry.inference import emit_capability_rejected
 
             emit_capability_rejected(
-                "speech_capability_unsupported", model_type="audio"
+                "speech_capability_unsupported",
+                model_type="audio",
+                model=model_name,
+                caller_agent=caller_agent,
+                caller_client=caller_client,
             )
             raise HTTPException(
                 status_code=400,
@@ -3168,7 +3245,11 @@ async def create_speech(request: AudioSpeechRequest = Body(...)):
             from rapid_mlx.telemetry.inference import emit_capability_rejected
 
             emit_capability_rejected(
-                "speech_capability_unsupported", model_type="audio"
+                "speech_capability_unsupported",
+                model_type="audio",
+                model=model_name,
+                caller_agent=caller_agent,
+                caller_client=caller_client,
             )
             raise HTTPException(
                 status_code=400,

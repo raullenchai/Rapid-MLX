@@ -628,6 +628,9 @@ async def create_anthropic_message(
     Translates Anthropic-format requests to OpenAI format, runs inference
     through the existing engine, and converts the response back.
     """
+    from rapid_mlx.telemetry import inference as _telemetry_inference
+
+    _caller_agent, _caller_client = _telemetry_inference.request_caller_headers(request)
     body = await request.json()
     # ``AnthropicRequest`` is constructed manually (not as a FastAPI body
     # parameter). The raw :class:`pydantic.ValidationError` it can raise
@@ -730,6 +733,9 @@ async def create_anthropic_message(
                         emit_capability_rejected(
                             "image_input_unsupported",
                             model_type=model_type_token(engine),
+                            model=_served_telemetry_id,
+                            caller_agent=_caller_agent,
+                            caller_client=_caller_client,
                         )
                         raise HTTPException(
                             status_code=400,
@@ -752,7 +758,12 @@ async def create_anthropic_message(
         # the source of the H-17 leak (model class name + pydantic
         # version + attacker ``input_value`` echo).
         try:
-            openai_request = anthropic_to_openai(anthropic_request)
+            openai_request = anthropic_to_openai(
+                anthropic_request,
+                telemetry_model=_served_telemetry_id,
+                caller_agent=_caller_agent,
+                caller_client=_caller_client,
+            )
         except AnthropicOutputConfigError as e:
             raise HTTPException(status_code=400, detail=str(e))
         _apply_anthropic_thinking_defaults(openai_request)
@@ -777,6 +788,9 @@ async def create_anthropic_message(
         messages, images, videos = extract_multimodal_content(
             openai_request.messages,
             preserve_native_format=engine.preserve_native_tool_format,
+            telemetry_model=_served_telemetry_id,
+            caller_agent=_caller_agent,
+            caller_client=_caller_client,
         )
         # Dogfood C-05 / F-R2-04 / r5-B C-11 lane parity: auto-prepend the
         # canonical UI-TARS Computer-Use sysprompt on the Anthropic lane
@@ -830,6 +844,9 @@ async def create_anthropic_message(
                 openai_request.max_tokens,
                 _resolve_enable_thinking(openai_request),
             ),
+            telemetry_model=_served_telemetry_id,
+            caller_agent=_caller_agent,
+            caller_client=_caller_client,
         )
 
         if anthropic_request.stream:
@@ -1229,16 +1246,11 @@ async def create_anthropic_message(
             content=anthropic_response.model_dump_json(exclude_none=True),
             media_type="application/json",
         )
-        from rapid_mlx.telemetry import inference as _telemetry_inference
-
-        caller_agent, caller_client = _telemetry_inference.request_caller_headers(
-            request
-        )
         _telemetry_inference.emit_completed_request(
             model=_served_telemetry_id or "<custom>",
             endpoint="/v1/messages",
-            caller_agent=caller_agent,
-            caller_client=caller_client,
+            caller_agent=_caller_agent,
+            caller_client=_caller_client,
             result="ok",
         )
         return response

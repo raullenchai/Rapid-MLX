@@ -2328,7 +2328,9 @@ def load_model(
         if existing_spec_decode not in ("none", "mtp"):
             from .telemetry.inference import emit_capability_rejected
 
-            emit_capability_rejected("speculative_decoding_unsupported")
+            emit_capability_rejected(
+                "speculative_decoding_unsupported", model=model_name
+            )
             raise ValueError(
                 "load_model(mtp=True) conflicts with "
                 f"scheduler_config.spec_decode={existing_spec_decode!r}; "
@@ -2339,7 +2341,9 @@ def load_model(
         ):
             from .telemetry.inference import emit_capability_rejected
 
-            emit_capability_rejected("speculative_decoding_unsupported")
+            emit_capability_rejected(
+                "speculative_decoding_unsupported", model=model_name
+            )
             raise ValueError(
                 "load_model(mtp=True) conflicts with "
                 "scheduler_config.enable_suffix_decoding=True; pass only one "
@@ -2351,7 +2355,9 @@ def load_model(
         ):
             from .telemetry.inference import emit_capability_rejected
 
-            emit_capability_rejected("speculative_decoding_unsupported")
+            emit_capability_rejected(
+                "speculative_decoding_unsupported", model=model_name
+            )
             raise ValueError(
                 "load_model(mtp=True) conflicts with "
                 "scheduler_config.dflash_drafter_path; pass only one "
@@ -3869,6 +3875,7 @@ def main():
     set_optional_runtime_assume_yes(False)
     parser = _build_parser()
     args = parser.parse_args()
+    args._port_explicit = args.port is not None
     _standalone_start_model = args.model
     set_optional_runtime_assume_yes(args.yes)
 
@@ -4332,6 +4339,7 @@ def main():
         port=args.port,
         log_level=uvicorn_log_level,
         on_server_accepting=print_ready_banner,
+        port_explicit=args._port_explicit,
     )
 
     # Issue #3495: same contract as the CLI serve entrypoints — after a
