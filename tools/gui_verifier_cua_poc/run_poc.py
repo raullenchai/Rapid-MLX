@@ -165,9 +165,16 @@ def _validate_loopback_url(value: str) -> str:
 
 
 class Planner:
-    def __init__(self, url: str, model: str, timeout: float = 180.0):
+    def __init__(
+        self,
+        url: str,
+        model: str,
+        reasoning_effort: str | None = None,
+        timeout: float = 180.0,
+    ):
         self.url = url
         self.model = model
+        self.reasoning_effort = reasoning_effort
         self.client = httpx.AsyncClient(timeout=timeout)
 
     async def close(self) -> None:
@@ -185,6 +192,8 @@ class Planner:
             "max_tokens": max_tokens,
             "messages": [{"role": "user", "content": content}],
         }
+        if self.reasoning_effort:
+            payload["reasoning_effort"] = self.reasoning_effort
         if schema is not None:
             payload["response_format"] = {
                 "type": "json_schema",
@@ -519,12 +528,17 @@ async def run(args: argparse.Namespace) -> Path:
     run_dir = Path(args.output_root) / time.strftime("%Y%m%d-%H%M%S")
     run_dir.mkdir(parents=True, exist_ok=False)
     profile = run_dir / "chrome-profile"
-    planner = Planner(args.planner_url, args.planner_model)
+    planner = Planner(
+        args.planner_url,
+        args.planner_model,
+        reasoning_effort=args.reasoning_effort,
+    )
     verifier = GUIVerifier()
     playwright, context, page = await _new_browser(profile, args.start_url)
     trace: dict[str, Any] = {
         "goal": args.goal,
         "planner_model": args.planner_model,
+        "reasoning_effort": args.reasoning_effort,
         "verifier_model": VERIFIER_REPO,
         "verifier_revision": VERIFIER_REVISION,
         "started_at": time.time(),
@@ -648,6 +662,11 @@ def parse_args() -> argparse.Namespace:
         "--planner-url", default="http://127.0.0.1:18730/v1/chat/completions"
     )
     parser.add_argument("--planner-model", default="qwen3.5-9b-4bit")
+    parser.add_argument(
+        "--reasoning-effort",
+        choices=("low", "medium", "high", "max"),
+        help="Optional OpenAI-compatible reasoning effort for the planner",
+    )
     parser.add_argument("--start-url", default="https://www.amazon.com/")
     parser.add_argument(
         "--goal",

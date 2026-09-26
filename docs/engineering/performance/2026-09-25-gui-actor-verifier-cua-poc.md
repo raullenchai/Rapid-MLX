@@ -1,4 +1,4 @@
-# Qwen3.5-9B + GUI-Actor-Verifier browser POC
+# Planner + GUI-Actor-Verifier browser POC
 
 Date: 2026-09-25  
 Owner: Atlas  
@@ -149,3 +149,67 @@ The verifier is useful but insufficient:
 The current combination is a useful research harness. It is not reliable enough
 for general browser Computer Use or shopping recommendations.
 
+## GLM-5.3 planner comparison
+
+The same harness was then run against the user's existing two-node Spark vLLM
+service:
+
+- planner: `GLM-5.3-Flash-EXL3`, immutable checkpoint revision
+  `25a44fdbf16862a46b7cc9921142c6c81350af2f`;
+- speculative draft: `incoai/GLM-5.3-Flash-DFlash2`, revision
+  `7d74cdd881ed7e32c31175984a67823127b66cfe`;
+- `reasoning_effort=low`, strict JSON schema, and the same screenshot input
+  format, prompt, verifier, viewport, browser profile policy, and safety guard.
+
+### Controlled search
+
+With the deterministic focus/type/submit bootstrap, GLM completed the remaining
+task in four model steps: two scrolls, one product click, then `done`. It examined
+visible candidates including 4.7 stars / about 2K ratings, 4.6 / 81.9K, 4.6 /
+50.8K, 4.5 / 6.9K, and 4.5 / 16.2K. It rejected a 4.8-star result with only 24
+ratings and selected the organic Lepro result with 4.6 stars and 50,823 ratings.
+All three proposed points for the product resolved to the same title link and
+scored 0.980-0.998. This is a material improvement over Qwen's mixed-target
+candidate sets and unsupported comparison.
+
+### Unguided run
+
+GLM also completed the task from the Amazon home page, without the bootstrap,
+in 11 model steps. The result was substantively useful and stopped on the same
+Lepro product without adding it to the cart. However, four steps were wasted on
+repeated search-field clicks:
+
+1. The first plan selected `action=type` while its instruction said to click and
+   type. The executor correctly performed only the declared action, so typing
+   had no effect because the field was not focused.
+2. GLM then proposed three valid points inside the search input. The verifier
+   scored them 0.982-0.989 and execution focused the input.
+3. Screenshot-only reflection could not observe keyboard focus, reported
+   `no_effect`, and GLM repeated the same successful focus action three times.
+4. GLM eventually typed the query, submitted it, compared the visible results,
+   and opened the selected product.
+
+GLM occasionally described sponsored results as organic while collecting the
+comparison set. The final selected Lepro result was visibly organic, but the
+wording shows that page-state claims still need structured attribution.
+
+| Component | Qwen controlled | GLM controlled | GLM unguided |
+|---|---:|---:|---:|
+| Plan mean | 38.68 s | 9.88 s | 7.65 s |
+| Reflection mean | 8.30 s | 4.50 s | 4.53 s |
+| Model steps | 4, incomplete comparison | 4, completed | 11, completed |
+| End-to-end task | Failed | Completed after bootstrap | Completed |
+
+These runs change the attribution. A stronger planner fixes most goal tracking,
+comparison, candidate-generation, and latency failures. The remaining dominant
+problem is the agent protocol: `type` does not carry a target, focus is not
+represented in observable state, compound operations are not atomic, and a
+visual reflection cannot reliably detect focus. The verifier remains effective
+for clear candidates but still cannot validate sponsored status or the overall
+shopping policy.
+
+Before testing another larger planner, the next POC should add typed semantic
+actions such as `fill(target_node_id, text)` and `submit(target_node_id)`, record
+the focused Accessibility/DOM node after each action, and make `no_effect`
+recovery consume that structured state. GLM at low reasoning is already strong
+enough to expose this interface bottleneck.
