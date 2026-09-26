@@ -79,6 +79,7 @@ def test_port_explicit_never_uses_getattr_fallback() -> None:
 )
 def test_port_explicit_for_supports_programmatic_namespaces(args, expected) -> None:
     assert cli.port_explicit_for(args) is expected
+    assert args._port_explicit is expected
 
 
 async def _asgi_app(scope, receive, send):

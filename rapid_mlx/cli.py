@@ -70,10 +70,16 @@ def _stamp_port_explicit(args: argparse.Namespace) -> argparse.Namespace:
 def port_explicit_for(args: argparse.Namespace) -> bool | None:
     """Return bind-port provenance for parsed or programmatic namespaces."""
     if hasattr(args, "_port_explicit"):
-        return args._port_explicit
-    if getattr(args, "listen_fd", None) is not None:
-        return None
-    return getattr(args, "port", None) is not None
+        stamped = args._port_explicit
+        if stamped is None or isinstance(stamped, bool):
+            return stamped
+    derived = (
+        None
+        if getattr(args, "listen_fd", None) is not None
+        else getattr(args, "port", None) is not None
+    )
+    args._port_explicit = derived
+    return derived
 
 
 class _PortContextArgumentParser(argparse.ArgumentParser):
@@ -4521,12 +4527,14 @@ def system_one_command(args) -> None:
         raise SystemExit("error: --head is only valid with --backend clm")
     # Fail before model download or initialization when the listener cannot
     # start. Cheap argument validation above still wins for invalid commands.
+    port_explicit = port_explicit_for(args)
+    assert port_explicit is not None
     args.port = DEFAULT_SYSTEM_ONE_PORT if args.port is None else args.port
     _port_preflight_or_die(
         args.host,
         args.port,
         model=args.model,
-        port_explicit=port_explicit_for(args),
+        port_explicit=port_explicit,
     )
     backend: DecisionBackend
     if backend_name == "clm":
@@ -4562,7 +4570,7 @@ def system_one_command(args) -> None:
         port=args.port,
         log_level=args.log_level.lower(),
         timeout_keep_alive=30,
-        port_explicit=port_explicit_for(args),
+        port_explicit=port_explicit,
     )
 
 
