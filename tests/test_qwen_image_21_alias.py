@@ -15,6 +15,7 @@ from rapid_mlx.image.engine import (
     ImageGenerationEngine,
     ImageRuntimeError,
     _detect_family,
+    _PromptMaterializer,
     default_steps_for_model,
 )
 from rapid_mlx.image.precision import QWEN_IMAGE_21_Q4_REPO
@@ -283,6 +284,26 @@ def test_low_memory_pack_enables_q4_encoder_and_evicts_transformer(monkeypatch):
     )
 
 
+def test_prompt_materializer_evaluates_only_the_requested_cached_arrays(monkeypatch):
+    calls = []
+    mlx = types.ModuleType("mlx")
+    mlx.__path__ = []
+    core = types.ModuleType("mlx.core")
+    core.eval = lambda *arrays: calls.append(arrays)
+    monkeypatch.setitem(sys.modules, "mlx", mlx)
+    monkeypatch.setitem(sys.modules, "mlx.core", core)
+
+    _PromptMaterializer(types.SimpleNamespace()).call_before_loop(
+        prompt="uncached", ignored=True
+    )
+    arrays = (object(), object())
+    _PromptMaterializer(
+        types.SimpleNamespace(prompt_cache={"cached": arrays})
+    ).call_before_loop(prompt="cached")
+
+    assert calls == [arrays]
+
+
 def test_img2img_passes_one_path_and_strength(monkeypatch, tmp_path):
     path = tmp_path / "source.png"
     Image.new("RGB", (640, 320)).save(path)
@@ -393,6 +414,10 @@ def test_low_memory_pack_requires_native_q4_encoder_metadata(monkeypatch, tmp_pa
 
     index.write_text(json.dumps({"metadata": {}, "weight_map": {}}))
     with pytest.raises(ImageRuntimeError, match="native MLX q4 text encoder"):
+        engine._verify_text_encoder_not_quantized()  # noqa: SLF001
+
+    index.write_text("{")
+    with pytest.raises(ImageRuntimeError, match="unreadable text-encoder index"):
         engine._verify_text_encoder_not_quantized()  # noqa: SLF001
 
 
