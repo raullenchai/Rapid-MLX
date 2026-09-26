@@ -27,6 +27,13 @@
   structured postconditions, target-derived click candidates, and adaptive
   verifier scoring. Two clean protocol runs completed in 75-82 seconds without
   a GLM reflection or repeated action.
+- Purchase mode (`--purchase`) with human gates (RESUME after sign-in,
+  CONFIRM_ORDER before placing the order) reached a verified add-to-cart
+  end-to-end without human input; the operator chose to stop before checkout,
+  so no order was placed. Verifier correctly rejected ad-banner misclicks on
+  the cart page; DOM ids in target context plus a cart checkout bootstrap
+  removed that retry loop. One residual finding: a background run died
+  silently between gates once (no traceback), restarts were clean.
 - The Laya + GLM shopping fast path completed in 37.37 seconds with three visible
   actions and two GLM calls. Laya pre-ranked four organic cards in 0.253 seconds;
   its low top probability (0.3024) means the ranking remains advisory.
@@ -44,7 +51,9 @@
 
 ## Next concrete action
 
-Port semantic targets from browser DOM nodes to native macOS Accessibility,
-add typed drag/select operations, and run a held-out multi-application task
-suite. Qualify a local Qwen 27B planner against the same traces before replacing
+Run the first human-authorized CONFIRM_ORDER pass to certify the complete
+purchase path (operator approval required for the real order), then port
+semantic targets from browser DOM nodes to native macOS Accessibility, add
+typed drag/select operations, and run a held-out multi-application task suite.
+Qualify a local Qwen 27B planner against the same traces before replacing
 GLM-5.3.

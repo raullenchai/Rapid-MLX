@@ -120,6 +120,41 @@ click or make the final product claim.
 - Same-site navigation and product-detail terminal guards close two prompt
   injection paths that otherwise allowed page text to redirect or end the task.
 
+## Purchase-mode dogfood (2026-09-26)
+
+A `--purchase` mode relaxes the guard to allow cart/checkout/place-order while
+still hard-blocking credential, password, CVV, and card-number entry. Two human
+gates make the money moment explicit: the runner pauses at an Amazon sign-in
+page until the human signs in inside the Chrome window and touches `RESUME`, and
+it pauses before any place-order click, writes `order-summary.json`, and waits
+for `CONFIRM_ORDER` (or the pause timeout, which ends the run with
+`awaiting_human` recorded). Termination requires the Amazon order-confirmation
+page (`/buy/confirmation` or "Order placed" text).
+
+Three dogfood runs exercised the pipeline (GLM-5.3-Flash low reasoning + laya
+pre-ranking + GUI-Actor-Verifier-2B, signed-in persistent profile):
+
+- Search, compare, product selection, buy-box scroll, and add-to-cart all ran
+  without human input. Add-to-cart was verified by the typed cart-count
+  postcondition (`#nav-cart-count` 0 → 1, and 1 → 2 on a re-run). Mean GLM
+  planning latency was 9.3–11.2 s per step across the runs.
+- The cart page's Prime Video ad banner was misread by the planner as the
+  checkout button three times; GUI-Actor-Verifier correctly rejected every
+  click (P(True) 0.47–0.56 < 0.65), after which the planner looped on the wrong
+  target. Fix: expose DOM ids in target context plus a deterministic cart-page
+  checkout bootstrap that still passes verifier review.
+- The executor-side research guard was still applied inside `_verified_click`,
+  rejecting add-to-cart clicks in purchase mode; threading `forbidden_re`
+  through verifier-click and bootstrap paths fixed it.
+- One background run died silently between gates (no traceback); restarts with
+  the persistent profile resumed cleanly. Gates, timeouts, and graceful
+  `awaiting_human` exits behaved as designed.
+
+No order was placed: per operator decision the dogfood stopped at a populated
+shopping cart, and the sign-in gate timeout ended the final run before checkout.
+The end-to-end purchase path remains gated behind `CONFIRM_ORDER` for a
+human-authorized run.
+
 ## Product assessment
 
 The resulting browser movement is coherent: one search operation, one scroll,
