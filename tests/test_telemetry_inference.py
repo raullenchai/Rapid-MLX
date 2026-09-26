@@ -868,14 +868,67 @@ class _FunctionScopeNodes(ast.NodeVisitor):
     def visit_Lambda(self, node: ast.Lambda) -> None:
         return
 
+    def visit_ListComp(self, node: ast.ListComp) -> None:
+        return
+
+    def visit_SetComp(self, node: ast.SetComp) -> None:
+        return
+
+    def visit_DictComp(self, node: ast.DictComp) -> None:
+        return
+
+    def visit_GeneratorExp(self, node: ast.GeneratorExp) -> None:
+        return
+
     def visit_ClassDef(self, node: ast.ClassDef) -> None:
         return
 
 
-def _scope_nodes(body: list[ast.stmt]) -> list[ast.AST]:
+def _scope_nodes(body: list[ast.AST]) -> list[ast.AST]:
     collector = _FunctionScopeNodes()
     for statement in body:
         collector.visit(statement)
+    return collector.nodes
+
+
+class _NestedScopes(ast.NodeVisitor):
+    """Collect directly nested callable and comprehension scopes."""
+
+    def __init__(self):
+        self.nodes: list[ast.AST] = []
+
+    def _add(self, node: ast.AST) -> None:
+        self.nodes.append(node)
+
+    def visit_FunctionDef(self, node: ast.FunctionDef) -> None:
+        self._add(node)
+
+    def visit_AsyncFunctionDef(self, node: ast.AsyncFunctionDef) -> None:
+        self._add(node)
+
+    def visit_Lambda(self, node: ast.Lambda) -> None:
+        self._add(node)
+
+    def visit_ListComp(self, node: ast.ListComp) -> None:
+        self._add(node)
+
+    def visit_SetComp(self, node: ast.SetComp) -> None:
+        self._add(node)
+
+    def visit_DictComp(self, node: ast.DictComp) -> None:
+        self._add(node)
+
+    def visit_GeneratorExp(self, node: ast.GeneratorExp) -> None:
+        self._add(node)
+
+    def visit_ClassDef(self, node: ast.ClassDef) -> None:
+        return
+
+
+def _nested_scopes(body: list[ast.AST]) -> list[ast.AST]:
+    collector = _NestedScopes()
+    for node in body:
+        collector.visit(node)
     return collector.nodes
 
 
@@ -946,9 +999,34 @@ def _pydantic_model_classes(repo_root: Path) -> set[str]:
 def _annotation_names(annotation: ast.AST | None) -> set[str]:
     if annotation is None:
         return set()
-    if isinstance(annotation, ast.Constant) and isinstance(annotation.value, str):
-        return set(re.findall(r"[A-Za-z_]\w*", annotation.value))
-    return {child.id for child in ast.walk(annotation) if isinstance(child, ast.Name)}
+    names: set[str] = set()
+    pending = [annotation]
+    parsed_strings: set[str] = set()
+    while pending:
+        node = pending.pop()
+        for child in ast.walk(node):
+            if isinstance(child, ast.Name):
+                names.add(child.id)
+            elif isinstance(child, ast.Attribute):
+                names.add(child.attr)
+            elif (
+                isinstance(child, ast.Constant)
+                and isinstance(child.value, str)
+                and child.value not in parsed_strings
+            ):
+                parsed_strings.add(child.value)
+                try:
+                    parsed = ast.parse(child.value, mode="eval").body
+                except SyntaxError:
+                    names.update(re.findall(r"[A-Za-z_]\w*", child.value))
+                else:
+                    if isinstance(parsed, ast.Constant) and isinstance(
+                        parsed.value, str
+                    ):
+                        names.update(re.findall(r"[A-Za-z_]\w*", parsed.value))
+                    else:
+                        pending.append(parsed)
+    return names
 
 
 def _assigned_request_value(node: ast.AST) -> bool:
@@ -1154,8 +1232,12 @@ def _request_model_violations(
                     changed = len(tainted) != before
                 return changed
 
-            def scope_taint(nodes: list[ast.AST], request_roots: set[str]) -> set[str]:
-                tainted: set[str] = set()
+            def scope_taint(
+                nodes: list[ast.AST],
+                request_roots: set[str],
+                inherited_taint: set[str],
+            ) -> set[str]:
+                tainted = set(inherited_taint)
                 changed = True
                 while changed:
                     changed = False
@@ -1205,25 +1287,60 @@ def _request_model_violations(
                             f"{path.relative_to(repo_root)}:{node.lineno}"
                         )
 
-            module_nodes = _scope_nodes(tree.body)
-            check_calls(module_nodes, set(), set())
-            for node in ast.walk(tree):
-                if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
-                    nodes = _scope_nodes(node.body)
-                    request_roots = _function_request_roots(
-                        node, nodes, imported, pydantic_models
+            def analyze_scope(
+                body: list[ast.AST],
+                inherited_roots: set[str],
+                inherited_taint: set[str],
+                function: ast.FunctionDef | ast.AsyncFunctionDef | None = None,
+                imported: dict[str, str] = imported,
+                path: Path = path,
+                pydantic_models: set[str] = pydantic_models,
+            ) -> None:
+                nodes = _scope_nodes(body)
+                request_roots = set(inherited_roots)
+                request_roots.update(
+                    child.id
+                    for child in nodes
+                    if isinstance(child, ast.Name)
+                    and isinstance(child.ctx, ast.Load)
+                    and _REQUEST_ROOT_NAME.fullmatch(child.id)
+                )
+                if function is not None:
+                    request_roots.update(
+                        _function_request_roots(
+                            function, nodes, imported, pydantic_models
+                        )
                     )
-                    debug_key = f"{path.relative_to(repo_root)}:{node.name}"
+                    debug_key = f"{path.relative_to(repo_root)}:{function.name}"
                     if (
                         root_debug is not None
                         and debug_key in _REQUEST_MODEL_DEBUG_HANDLERS
                     ):
                         root_debug[debug_key] = sorted(request_roots)
-                    check_calls(
-                        nodes,
-                        scope_taint(nodes, request_roots),
-                        request_roots,
-                    )
+                tainted = scope_taint(nodes, request_roots, inherited_taint)
+                check_calls(nodes, tainted, request_roots)
+
+                for nested in _nested_scopes(body):
+                    if isinstance(nested, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                        analyze_scope(
+                            nested.body, request_roots, tainted, function=nested
+                        )
+                    elif isinstance(nested, ast.Lambda):
+                        analyze_scope([nested.body], request_roots, tainted)
+                    elif isinstance(
+                        nested, (ast.ListComp, ast.SetComp, ast.GeneratorExp)
+                    ):
+                        analyze_scope(
+                            [nested.elt, *nested.generators], request_roots, tainted
+                        )
+                    elif isinstance(nested, ast.DictComp):
+                        analyze_scope(
+                            [nested.key, nested.value, *nested.generators],
+                            request_roots,
+                            tainted,
+                        )
+
+            analyze_scope(tree.body, set(), set())
 
     return violations
 
@@ -1297,6 +1414,91 @@ def test_request_model_privacy_gate_derives_real_handler_roots(
     (route_dir / "scratch.py").write_text(source, encoding="utf-8")
 
     assert _request_model_violations(tmp_path) == ["rapid_mlx/routes/scratch.py:6"]
+
+
+@pytest.mark.parametrize(
+    "annotation",
+    [
+        "models.ChatCompletionRequest",
+        "Optional[models.ChatCompletionRequest]",
+        "Annotated[models.ChatCompletionRequest, 'request']",
+        "models.ChatCompletionRequest | None",
+        "'models.ChatCompletionRequest'",
+    ],
+    ids=["qualified", "optional", "annotated", "union", "string"],
+)
+def test_request_model_privacy_gate_reads_terminal_annotation_names(
+    tmp_path, annotation
+):
+    route_dir = tmp_path / "rapid_mlx/routes"
+    route_dir.mkdir(parents=True)
+    source = (
+        "from typing import Annotated, Optional\n"
+        "from rapid_mlx.api import models\n"
+        "from rapid_mlx.telemetry.inference import emit_capability_rejected\n\n"
+        f"def scratch(foo: {annotation}):\n"
+        "    emit_capability_rejected('unsupported', model=foo.model)\n"
+    )
+    (route_dir / "scratch.py").write_text(source, encoding="utf-8")
+
+    assert _request_model_violations(tmp_path) == ["rapid_mlx/routes/scratch.py:6"]
+
+
+@pytest.mark.parametrize(
+    ("parameter", "setup", "nested"),
+    [
+        (
+            "foo: ChatCompletionRequest",
+            "",
+            "def nested():\n        emit_capability_rejected('unsupported', model=foo.model)",
+        ),
+        (
+            "ignored",
+            "",
+            "def nested():\n        emit_capability_rejected('unsupported', model=request.model)",
+        ),
+        (
+            "foo: ChatCompletionRequest",
+            "model = foo.model",
+            "def nested():\n        emit_capability_rejected('unsupported', model=model)",
+        ),
+        (
+            "foo: ChatCompletionRequest",
+            "",
+            "nested = lambda: emit_capability_rejected('unsupported', model=foo.model)",
+        ),
+        (
+            "foo: ChatCompletionRequest",
+            "",
+            "nested = [emit_capability_rejected('unsupported', model=foo.model) for _ in range(1)]",
+        ),
+    ],
+    ids=[
+        "nested-typed-root",
+        "nested-regex-root",
+        "nested-tainted-name",
+        "lambda-closure",
+        "comprehension-closure",
+    ],
+)
+def test_request_model_privacy_gate_inherits_closure_roots_and_taint(
+    tmp_path, parameter, setup, nested
+):
+    route_dir = tmp_path / "rapid_mlx/routes"
+    route_dir.mkdir(parents=True)
+    body = [line for line in (setup, nested) if line]
+    source = (
+        "from rapid_mlx.api.models import ChatCompletionRequest\n"
+        "from rapid_mlx.telemetry.inference import emit_capability_rejected\n\n"
+        f"def scratch({parameter}):\n"
+        + "\n".join(f"    {line}" for line in "\n".join(body).splitlines())
+        + "\n"
+    )
+    (route_dir / "scratch.py").write_text(source, encoding="utf-8")
+
+    violations = _request_model_violations(tmp_path)
+    assert len(violations) == 1
+    assert violations[0].startswith("rapid_mlx/routes/scratch.py:")
 
 
 @pytest.mark.parametrize(
