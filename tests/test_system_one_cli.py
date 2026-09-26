@@ -1,4 +1,5 @@
 # SPDX-License-Identifier: Apache-2.0
+import argparse
 import json
 import os
 import socket
@@ -15,7 +16,12 @@ try:
 except ModuleNotFoundError:  # Python 3.10
     import tomli as tomllib
 
-from rapid_mlx.cli import _resolve_system_one_backend, build_parser, system_one_command
+from rapid_mlx.cli import (
+    _resolve_system_one_backend,
+    _set_port_explicit_from_argv,
+    build_parser,
+    system_one_command,
+)
 
 
 class _CaptureHandler(BaseHTTPRequestHandler):
@@ -183,6 +189,17 @@ def test_server_parsers_stamp_port_context_at_parse_time():
     assert inherited._port_explicit is None
     assert standalone.parse_args([])._port_explicit is False
     assert standalone.parse_args(["--port=8123"])._port_explicit is True
+
+
+def test_port_context_parser_preserves_caller_namespace_and_non_server_args():
+    non_server = argparse.Namespace(command="models")
+    assert _set_port_explicit_from_argv(non_server, ["models"]) is non_server
+
+    namespace = argparse.Namespace(caller_seed="kept")
+    parsed = build_parser().parse_args(["system-one"], namespace=namespace)
+    assert parsed is namespace
+    assert parsed.caller_seed == "kept"
+    assert parsed._port_explicit is False
 
 
 def test_system_one_cli_rejects_non_positive_laya_batch_size():

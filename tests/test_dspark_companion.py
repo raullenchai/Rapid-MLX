@@ -459,6 +459,7 @@ def test_cli_companion_server_dispatches_exact_runtime(monkeypatch) -> None:
         model=LFM25_VL_3B.target_repo,
         host="127.0.0.1",
         port=8765,
+        _port_explicit=True,
         served_model_name=None,
         no_thinking=True,
         rate_limit=7,

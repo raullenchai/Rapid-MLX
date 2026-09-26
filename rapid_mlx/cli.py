@@ -76,7 +76,12 @@ class _PortContextArgumentParser(argparse.ArgumentParser):
     """Argument parser that records the effective bind-port provenance."""
 
     def parse_args(self, args=None, namespace=None):
-        parsed = super().parse_args(args, namespace)
+        if args is None and namespace is None:
+            parsed = super().parse_args()
+        elif namespace is None:
+            parsed = super().parse_args(args)
+        else:
+            parsed = super().parse_args(args, namespace)
         return _set_port_explicit_from_argv(parsed, args)
 
 
