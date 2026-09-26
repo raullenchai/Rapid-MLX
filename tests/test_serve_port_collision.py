@@ -314,6 +314,10 @@ else:
     )
 
     assert result.returncode == 0, result.stderr
+    with pytest.raises(
+        ValueError, match="port_explicit must be provided when port is set"
+    ):
+        cli._resolve_serve_port("127.0.0.1", 8123, model="model", port_explicit=None)
 
 
 def test_listen_fd_uses_bound_socket_port_and_keeps_fd_open():
