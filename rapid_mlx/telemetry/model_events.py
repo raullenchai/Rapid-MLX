@@ -591,9 +591,11 @@ def emit_model_serve_failed(
         props["model_type"] = model_type(alias_or_path)
         props["auto_selected"] = bool(auto_selected)
         props["quant"] = _quant_for_ref(alias_or_path)
-    # Build every potentially-failing property before claiming the one-shot
-    # latch. A telemetry-only conversion bug must not suppress a later valid
-    # failure event from this process.
+    # Build and validate every potentially-failing property before claiming the
+    # one-shot latch. A rejected event must not suppress a later valid failure
+    # event from this process.
+    if not track_module.would_accept("model_serve_failed", props):
+        return
     with _serve_failure_lock:
         if _serve_failure_claimed:
             return
@@ -609,7 +611,6 @@ def emit_model_serve_failed(
     )
     _claim_serve_failure_key(
         key,
-        would_accept=lambda: track_module.would_accept("model_serve_failed", props),
         # Consent may change after this decision, just as it may while an
         # already-queued event waits for the sender thread. Do not re-decide.
         on_claim=lambda: track_module.track("model_serve_failed", props, decided=True),

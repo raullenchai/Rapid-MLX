@@ -1397,6 +1397,15 @@ def test_serve_failure_claim_nonfinite_clock_and_lock_contention_fail_open(
         )
         is False
     )
+    assert (
+        model_events._claim_serve_failure_key(
+            key,
+            now=1000.0,
+            would_accept=lambda: False,
+            on_claim=lambda: pytest.fail("rejected event reached enqueue"),
+        )
+        is False
+    )
     monkeypatch.setattr(
         model_events.fcntl,
         "flock",
@@ -1599,6 +1608,99 @@ def test_invalid_serve_failure_props_write_no_file_or_event(
     )
 
     assert not (tmp_path / ".rapid-mlx" / "state" / "serve-failed-recent.json").exists()
+
+
+def test_rejected_first_serve_failure_does_not_consume_process_latch(
+    monkeypatch, tmp_path
+):
+    identities = iter(("private/model/path", "<custom>"))
+    calls: list[dict[str, object]] = []
+    monkeypatch.setattr(model_id, "telemetry_model_id", lambda _value: next(identities))
+    monkeypatch.setattr(
+        track_module,
+        "would_accept",
+        lambda event, props: registry.validate(event, dict(props)) is not None,
+    )
+    monkeypatch.setattr(
+        track_module,
+        "track",
+        lambda _event, props, **_kwargs: (calls.append(dict(props)), True)[1],
+    )
+
+    model_events.emit_model_serve_failed(
+        RuntimeError("first invalid"), alias_or_path="unknown"
+    )
+
+    path = tmp_path / ".rapid-mlx" / "state" / "serve-failed-recent.json"
+    assert calls == []
+    assert not path.exists()
+    assert model_events._serve_failure_claimed is False
+
+    model_events.emit_model_serve_failed(
+        RuntimeError("second valid"), alias_or_path="unknown"
+    )
+
+    assert calls == [
+        {
+            "error_class": "other",
+            "model": "<custom>",
+            "model_type": "other",
+            "auto_selected": False,
+            "quant": "unknown",
+        }
+    ]
+    assert path.exists()
+    assert model_events._serve_failure_claimed is True
+
+
+def test_valid_serve_failure_wins_race_with_rejected_failure(monkeypatch, tmp_path):
+    invalid_is_validating = threading.Event()
+    valid_is_validating = threading.Event()
+    calls: list[dict[str, object]] = []
+
+    monkeypatch.setattr(
+        model_id,
+        "telemetry_model_id",
+        lambda value: "private/model/path" if value == "invalid" else "<custom>",
+    )
+
+    def decide(event, props):
+        if props["model"] == "private/model/path":
+            invalid_is_validating.set()
+            valid_is_validating.wait(timeout=1.0)
+        else:
+            valid_is_validating.set()
+        return registry.validate(event, dict(props)) is not None
+
+    monkeypatch.setattr(track_module, "would_accept", decide)
+    monkeypatch.setattr(
+        track_module,
+        "track",
+        lambda _event, props, **_kwargs: (calls.append(dict(props)), True)[1],
+    )
+
+    invalid = threading.Thread(
+        target=model_events.emit_model_serve_failed,
+        args=(RuntimeError("invalid"),),
+        kwargs={"alias_or_path": "invalid"},
+    )
+    valid = threading.Thread(
+        target=model_events.emit_model_serve_failed,
+        args=(RuntimeError("valid"),),
+        kwargs={"alias_or_path": "valid"},
+    )
+    invalid.start()
+    assert invalid_is_validating.wait(timeout=1.0)
+    valid.start()
+    invalid.join(timeout=2.0)
+    valid.join(timeout=2.0)
+
+    assert not invalid.is_alive()
+    assert not valid.is_alive()
+    assert [props["model"] for props in calls] == ["<custom>"]
+    path = tmp_path / ".rapid-mlx" / "state" / "serve-failed-recent.json"
+    assert len(json.loads(path.read_text(encoding="utf-8"))) == 1
+    assert model_events._serve_failure_claimed is True
 
 
 def test_opted_out_serve_failure_writes_no_dedupe_file(monkeypatch, tmp_path):
