@@ -1,12 +1,23 @@
 # SPDX-License-Identifier: Apache-2.0
-"""Best-effort telemetry v2 event emission."""
+"""Best-effort telemetry v2 event emission.
+
+The accepted-event token is an accidental-misuse guard, not an unforgeable
+capability. Same-process Python can always reach module state or use tools such
+as ``object.__new__``; resisting that is outside this module's threat model.
+The token instead carries one immutable, validated property snapshot across
+the consent decision and dedupe claim. Enqueue deliberately does not decide
+consent again, but it does re-run the cheap registry validation so mutation or
+forgery can never put registry-invalid or free-text properties on the wire.
+"""
 
 from __future__ import annotations
 
+import copy
 import threading
 from collections.abc import Mapping
 from dataclasses import dataclass, field
 from datetime import date, datetime, timezone
+from types import MappingProxyType
 from typing import TYPE_CHECKING, Protocol
 
 import rapid_mlx
@@ -22,6 +33,14 @@ from rapid_mlx.telemetry import (
 if TYPE_CHECKING:
     from rapid_mlx.telemetry.consent_decision import ProcessRole
 
+__all__ = [
+    "emit_active_day",
+    "set_surface_for_role",
+    "start_lifecycle",
+    "track",
+    "would_accept",
+]
+
 
 @dataclass(frozen=True)
 class _ProcessContext:
@@ -33,21 +52,37 @@ class _ProcessContext:
     channel: str
 
 
-_ACCEPTED_EVENT_AUTHORITY = object()
+# This discourages accidental construction only. Python module internals are
+# reachable by same-process code, which is explicitly outside the threat model.
+__ACCEPTED_EVENT_AUTHORITY = object()
+
+
+def _has_accepted_event_authority(candidate: object) -> bool:
+    """Check the misuse guard without class-scope name mangling."""
+    return candidate is __ACCEPTED_EVENT_AUTHORITY
 
 
 @dataclass(frozen=True, slots=True)
 class _AcceptedEvent:
-    """Opaque proof that one event-property snapshot was accepted."""
+    """Opaque accidental-misuse guard carrying one immutable snapshot."""
 
     event: str
-    props: dict[str, object]
+    props: Mapping[str, object]
     nth_model_served: int | None
     _authority: object = field(repr=False, compare=False)
 
     def __post_init__(self) -> None:
-        if self._authority is not _ACCEPTED_EVENT_AUTHORITY:
+        if not _has_accepted_event_authority(self._authority):
             raise TypeError("accepted events can only be created by would_accept")
+        object.__setattr__(
+            self,
+            "props",
+            MappingProxyType(copy.deepcopy(dict(self.props))),
+        )
+
+    def __copy__(self) -> _AcceptedEvent:
+        """An immutable token is its own safe shallow copy."""
+        return self
 
 
 class _ActiveDayStore(Protocol):
@@ -192,7 +227,7 @@ def would_accept(
         event=event,
         props=accepted_props,
         nth_model_served=nth_model_served,
-        _authority=_ACCEPTED_EVENT_AUTHORITY,
+        _authority=__ACCEPTED_EVENT_AUTHORITY,
     )
 
 
@@ -219,10 +254,15 @@ def track(
 def _enqueue_accepted(accepted: _AcceptedEvent) -> bool:
     """Queue an event only when accompanied by proof minted by this module."""
     try:
-        if (
-            not isinstance(accepted, _AcceptedEvent)
-            or accepted._authority is not _ACCEPTED_EVENT_AUTHORITY
+        if type(accepted) is not _AcceptedEvent or not _has_accepted_event_authority(
+            accepted._authority
         ):
+            return False
+        # Consent was decided exactly once before the dedupe ledger claim. The
+        # registry is cheap and is intentionally re-run here: even same-process
+        # forgery or ``object.__setattr__`` cannot put unvalidated data on wire.
+        accepted_props = registry.validate(accepted.event, dict(accepted.props))
+        if accepted_props is None:
             return False
         context = _process_context()
         if context is None:
@@ -244,7 +284,7 @@ def _enqueue_accepted(accepted: _AcceptedEvent) -> bool:
         if common is None:
             return False
         item = envelope._build_batch_item_from_validated(
-            accepted.event, accepted.props, common
+            accepted.event, dict(accepted_props), common
         )
         if item is None:
             return False

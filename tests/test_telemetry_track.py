@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import ast
+import copy
 import json
 import os
 import shutil
@@ -298,6 +299,11 @@ def test_accepted_event_constructor_rejects_forged_authority():
         )
 
 
+def test_accepted_event_authority_is_not_exported():
+    assert "__ACCEPTED_EVENT_AUTHORITY" not in track_module.__all__
+    assert not hasattr(track_module, "_ACCEPTED_EVENT_AUTHORITY")
+
+
 @pytest.mark.parametrize(
     "hand_built",
     [
@@ -309,6 +315,80 @@ def test_enqueue_rejects_hand_built_acceptance_token(monkeypatch, hand_built):
     sender = inject_sender(monkeypatch)
 
     assert track_module._enqueue_accepted(hand_built) is False
+    assert sender.items == []
+
+
+def test_copy_of_accepted_token_cannot_mutate_snapshot(monkeypatch):
+    sender = inject_sender(monkeypatch)
+    accepted = track_module.would_accept("app_opened", {})
+    assert accepted is not None
+
+    copied = copy.copy(accepted)
+    assert copied is accepted
+    with pytest.raises(TypeError):
+        copied.props["free_text"] = "copy"  # type: ignore[index]
+
+    assert track_module._enqueue_accepted(copied) is True
+    assert "free_text" not in sender.items[-1]["properties"]
+
+
+def test_enqueue_rejects_accepted_event_subclass(monkeypatch):
+    sender = inject_sender(monkeypatch)
+    accepted = track_module.would_accept("app_opened", {})
+    assert accepted is not None
+
+    class Forged(track_module._AcceptedEvent):
+        pass
+
+    forged = Forged("app_opened", {"free_text": "subclass"}, None, accepted._authority)
+    assert track_module._enqueue_accepted(forged) is False
+    assert sender.items == []
+
+
+def test_object_new_forgery_cannot_enqueue_invalid_props(monkeypatch):
+    sender = inject_sender(monkeypatch)
+    accepted = track_module.would_accept("app_opened", {})
+    assert accepted is not None
+    forged = object.__new__(track_module._AcceptedEvent)
+    object.__setattr__(forged, "event", "app_opened")
+    object.__setattr__(forged, "props", {"free_text": "object-new"})
+    object.__setattr__(forged, "nth_model_served", None)
+    object.__setattr__(forged, "_authority", accepted._authority)
+
+    assert track_module._enqueue_accepted(forged) is False
+    assert sender.items == []
+
+
+def test_direct_constructor_cannot_enqueue_invalid_props_when_consent_denied(
+    monkeypatch,
+):
+    sender = inject_sender(monkeypatch)
+    accepted = track_module.would_accept("app_opened", {})
+    assert accepted is not None
+    monkeypatch.setattr(consent_runtime, "upload_allowed", lambda: False)
+    forged = track_module._AcceptedEvent(
+        "app_opened",
+        {"free_text": "direct-constructor-no-consent"},
+        None,
+        accepted._authority,
+    )
+
+    assert track_module._enqueue_accepted(forged) is False
+    assert sender.items == []
+
+
+def test_duck_typed_token_with_real_authority_is_rejected(monkeypatch):
+    sender = inject_sender(monkeypatch)
+    accepted = track_module.would_accept("app_opened", {})
+    assert accepted is not None
+    duck = SimpleNamespace(
+        event="app_opened",
+        props={"free_text": "duck"},
+        nth_model_served=None,
+        _authority=accepted._authority,
+    )
+
+    assert track_module._enqueue_accepted(duck) is False
     assert sender.items == []
 
 
@@ -326,7 +406,10 @@ def test_track_uses_one_validated_mapping_snapshot(monkeypatch):
         return accepted
 
     def build(event, accepted_props, common):
-        assert accepted_props is validated[0]
+        assert isinstance(accepted_props, dict)
+        assert accepted_props is not validated[0]
+        assert accepted_props is not validated[1]
+        assert accepted_props == validated[1]
         return real_build(event, accepted_props, common)
 
     monkeypatch.setattr(track_module.registry, "validate", validate)
@@ -338,6 +421,7 @@ def test_track_uses_one_validated_mapping_snapshot(monkeypatch):
 
     assert track_module.track("model_serve_failed", props) is True
     assert props.reads == 1
+    assert len(validated) == 2
     [item] = sender.items
     properties = item["properties"]
     assert isinstance(properties, dict)
