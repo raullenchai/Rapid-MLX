@@ -433,7 +433,7 @@ def test_fitting_alias_is_deterministic_and_picks_the_largest_fit(monkeypatch):
         ),
         "text": ModelProfile(hf_path="o/text"),
         "drafter": ModelProfile(
-            hf_path="o/tiny-it-assistant-bf16", supports_image_input=True
+            hf_path="o/gemma-4-tiny-it-assistant-bf16", supports_image_input=True
         ),
         "served": ModelProfile(hf_path="o/served", supports_image_input=True),
         "missing": None,
@@ -447,7 +447,7 @@ def test_fitting_alias_is_deterministic_and_picks_the_largest_fit(monkeypatch):
         "o/floor": 1 * gib,
         "o/hybrid": 5 * gib,
         "o/exp": 1 * gib,
-        "o/tiny-it-assistant-bf16": gib // 4,
+        "o/gemma-4-tiny-it-assistant-bf16": gib // 4,
         "o/served": 7 * gib,
     }
     monkeypatch.setattr(
@@ -1080,3 +1080,59 @@ def test_base_install_on_16gb_flagship_is_not_told_to_restart():
     assert guidance.endswith(
         f"Then for image input, serve '{alias}', a vision model that fits this Mac."
     )
+
+
+# ---------------------------------------------------------------------------
+# pr_validate codex_review findings.
+# ---------------------------------------------------------------------------
+
+
+def test_desktop_speculative_copy_checks_floor_and_runtime(monkeypatch):
+    monkeypatch.setattr(mllm, "_managed_desktop_runtime_kind", lambda: "embedded")
+    unblocked = text_lane_image_guidance(
+        _UNBLOCKED, "text_lane_speculative_decode", desktop=True
+    )
+    assert unblocked == (
+        "Speculative decoding is on, and only the text lane runs it. Turn it off "
+        "in Settings → Performance to add photos."
+    )
+    floor = text_lane_image_guidance(
+        "qwen3.5-9b-4bit", "text_lane_speculative_decode", desktop=True, ram_gb=16
+    )
+    assert (
+        "Turning it off would not help: vision for this model needs at least " in floor
+    )
+    assert "Settings" not in floor and "--" not in floor
+    assert "model picker" in floor
+    runtime = text_lane_image_guidance(
+        _UNBLOCKED,
+        "text_lane_speculative_decode",
+        desktop=True,
+        vision_runtime_ok=False,
+    )
+    assert "Reinstall Rapid-MLX Desktop.app" in runtime
+    assert runtime.endswith("Then turn it off in Settings → Performance to add photos.")
+    assert "--" not in runtime and "pip install" not in runtime
+
+
+def test_relative_and_windows_paths_are_reduced(tmp_path, monkeypatch):
+    local = tmp_path / "private" / "models" / "customer" / "foo"
+    local.mkdir(parents=True)
+    monkeypatch.chdir(tmp_path)
+    assert public_model_label("private/models/customer/foo") == "foo"
+    assert public_model_label("C:\\Users\\name\\model") == "model"
+    assert public_model_label("D:/weights/m") == "m"
+    assert public_model_label("org-that-does-not-exist/repo") == (
+        "org-that-does-not-exist/repo"
+    )
+    message = _chat_image_error(
+        "text_checkpoint", model_name="private/models/customer/foo"
+    )
+    assert message.startswith("Model 'foo' is serving text-only;")
+
+
+def test_drafter_filter_is_scoped_to_gemma_4():
+    from rapid_mlx.api.utils import _is_sidecar_drafter
+
+    assert _is_sidecar_drafter(ModelProfile(hf_path="o/gemma-4-e4b-it-assistant-bf16"))
+    assert not _is_sidecar_drafter(ModelProfile(hf_path="o/acme-vl-assistant-7b"))

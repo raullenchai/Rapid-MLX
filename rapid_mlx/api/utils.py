@@ -1669,7 +1669,8 @@ DESKTOP_HIDDEN_BROKEN_ALIASES = frozenset(
 def _is_sidecar_drafter(profile) -> bool:
     """Gemma 4 ``*-assistant`` checkpoints are speculative-decoding drafters
     (``gemma4_assistant``, a few hundred MB), not standalone chat models."""
-    return "-assistant" in profile.hf_path.rsplit("/", 1)[-1].lower()
+    name = profile.hf_path.rsplit("/", 1)[-1].lower()
+    return name.startswith("gemma-4") and "-assistant" in name
 
 
 def _starts_on_speculative_text_lane(profile) -> bool:
@@ -1746,15 +1747,30 @@ def fitting_vision_alias(
     return None if best is None else best[1]
 
 
+@lru_cache(maxsize=64)
 def public_model_label(model_name: object) -> str:
-    """Model name safe to echo to clients: never a local filesystem path."""
+    """Model name safe to echo to clients: never a local filesystem path.
+
+    Absolute, home, dot-relative and Windows-style spellings are reduced to
+    their last component, as is a relative ``a/b`` spelling that exists on
+    disk (a configured local checkpoint, not an ``org/repo`` Hub id). Cached:
+    the served names are few, so the existence probe runs once per name.
+    """
     import os
 
     if not isinstance(model_name, str):
         return str(model_name)
-    if os.path.isabs(model_name) or model_name.startswith(("~", ".")):
-        return os.path.basename(os.path.normpath(model_name)) or "model"
-    return model_name
+    windows = "\\" in model_name or re.match(r"^[A-Za-z]:", model_name)
+    local = (
+        windows
+        or os.path.isabs(model_name)
+        or model_name.startswith(("~", "."))
+        or ("/" in model_name and os.path.exists(model_name))
+    )
+    if not local:
+        return model_name
+    last = re.split(r"[\\/]+", model_name.rstrip("/\\"))[-1]
+    return last or "model"
 
 
 # Host facts the guidance depends on. None of them changes while the server
@@ -1905,7 +1921,7 @@ def text_lane_image_guidance(
             f"{_suggest()}"
         )
 
-    def _unflagged_outcome(flag_remedy: str) -> str:
+    def _unflagged_outcome(flag_remedy: str, *, would_not_help: str) -> str:
         """``flag_remedy`` only if dropping the flag really enables images.
 
         A forced or speculative text lane is decided before the vision
@@ -1917,7 +1933,7 @@ def text_lane_image_guidance(
         floor = profile.vision_min_memory_gb if profile is not None else None
         if floor is not None and 0 < ram_gb < floor:
             return (
-                "Dropping it would not help: vision for this model needs at "
+                f"{would_not_help}: vision for this model needs at "
                 f"least {floor:g} GB of RAM; this Mac has {ram_gb:.0f} GB. "
                 f"{_suggest()}"
             )
@@ -1938,7 +1954,8 @@ def text_lane_image_guidance(
             "This server was started on the text-only lane (e.g. with "
             "--no-mllm / --text-only). "
             + _unflagged_outcome(
-                "restart without --no-mllm / --text-only for image input."
+                "restart without --no-mllm / --text-only for image input.",
+                would_not_help="Dropping it would not help",
             )
         )
     if reason == "text_lane_speculative_decode":
@@ -1947,14 +1964,18 @@ def text_lane_image_guidance(
         if desktop:
             return (
                 "Speculative decoding is on, and only the text lane runs it. "
-                "Turn it off in Settings → Performance to add photos."
+                + _unflagged_outcome(
+                    "turn it off in Settings → Performance to add photos.",
+                    would_not_help="Turning it off would not help",
+                )
             )
         return (
             "Speculative decoding (MTP) is on, and only the text lane runs it. "
             + _unflagged_outcome(
                 "restart with --no-spec-decode (and without any "
                 "--speculative-config / --spec-decode / --force-spec-decode "
-                "flag) for image input."
+                "flag) for image input.",
+                would_not_help="Dropping it would not help",
             )
         )
     checkpoint_cause = _SUGGEST_VISION_ALIAS_CAUSES.get(reason)
