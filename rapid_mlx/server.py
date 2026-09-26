@@ -1150,12 +1150,7 @@ def _text_lane_image_note(cfg) -> str | None:
         return None
     # The operator's own terminal: keep the exact interpreter path in the
     # install hint (a bare ``python`` can repair the wrong environment).
-    return image_rejection_guidance(
-        reason,
-        engine=engine,
-        model_name=cfg.model_alias or cfg.model_name,
-        include_paths=True,
-    )
+    return image_rejection_guidance(reason, engine=engine, include_paths=True)
 
 
 app = FastAPI(

@@ -175,15 +175,21 @@ def test_hybrid_runtime_unsupported_reuses_the_vision_install_hint():
 
 _FORCED_TEXT = (
     "This server was started on the text-only lane (e.g. with "
-    "--no-mllm / --text-only); restart without it for image input."
+    "--no-mllm / --text-only). Restart without it for image input."
+)
+# A vision model with no RAM floor and a plain attention backbone: dropping a
+# text-lane flag really does enable images for it on the pinned 16 GB host.
+_UNBLOCKED = "gemma-4-e4b-4bit"
+_UNBLOCKED_BASE = (
+    f"Model '{_UNBLOCKED}' is serving text-only; image input is unsupported."
 )
 
 
 def test_forced_text_lane_is_worded_neutrally():
     """The engine cannot tell --no-mllm from other forced-text causes (e.g. a
     residency load), so the copy names the flag as an example, not a fact."""
-    message = _chat_image_error("text_lane_forced")
-    assert message == f"{_BASE} {_FORCED_TEXT}"
+    message = _chat_image_error("text_lane_forced", model_name=_UNBLOCKED)
+    assert message == f"{_UNBLOCKED_BASE} {_FORCED_TEXT}"
     assert "was forced with" not in message
 
 
@@ -204,10 +210,11 @@ def test_catalog_text_only_pin_suggests_a_vision_alias():
 def test_speculative_decode_names_the_switch_that_turns_it_off():
     """Usually the catalog's MTP default: name --no-spec-decode, not flags the
     user never passed."""
-    message = _chat_image_error("text_lane_speculative_decode")
+    message = _chat_image_error("text_lane_speculative_decode", model_name=_UNBLOCKED)
     assert message == (
-        f"{_BASE} Speculative decoding (MTP) is on, and only the text lane runs "
-        "it; restart with --no-spec-decode for image input."
+        f"{_UNBLOCKED_BASE} Speculative decoding (MTP) is on, and only the text "
+        "lane runs it. Restart with --no-spec-decode (and without any "
+        "--spec-decode / --force-spec-decode flag) for image input."
     )
     assert text_lane_image_guidance(
         "org/x", "text_lane_speculative_decode", desktop=True
@@ -276,11 +283,11 @@ def test_other_codes_and_modelless_errors_are_untouched():
 
 
 def test_responses_route_carries_the_same_guidance():
-    client, _ = _client("text_lane_forced")
+    client, _ = _client("text_lane_forced", model_name=_UNBLOCKED)
     response = client.post(
         "/v1/responses",
         json={
-            "model": "qwen3.5-4b-4bit",
+            "model": _UNBLOCKED,
             "input": [
                 {
                     "role": "user",
@@ -299,11 +306,11 @@ def test_responses_route_carries_the_same_guidance():
     assert error["message"].endswith(_FORCED_TEXT)
 
 
-def _anthropic_image(client):
+def _anthropic_image(client, model="qwen3.5-4b-4bit"):
     return client.post(
         "/v1/messages",
         json={
-            "model": "qwen3.5-4b-4bit",
+            "model": model,
             "max_tokens": 8,
             "messages": [
                 {
@@ -326,11 +333,11 @@ def _anthropic_image(client):
 
 
 def test_anthropic_route_appends_guidance_and_keeps_400():
-    client, _ = _client("text_lane_forced")
-    response = _anthropic_image(client)
+    client, _ = _client("text_lane_forced", model_name=_UNBLOCKED)
+    response = _anthropic_image(client, _UNBLOCKED)
     assert response.status_code == 400, response.text
     assert response.json()["detail"] == (
-        f"Model 'qwen3.5-4b-4bit' does not support image inputs. {_FORCED_TEXT}"
+        f"Model '{_UNBLOCKED}' does not support image inputs. {_FORCED_TEXT}"
     )
 
 
@@ -918,6 +925,13 @@ def test_evicted_resident_gets_generic_copy_not_the_primarys():
     assert api_utils.served_model_catalog_name(evicted) is None
     guidance = api_utils.image_rejection_guidance("text_lane_forced", engine=evicted)
     assert guidance == _FORCED_TEXT
+    # The routes also pass the (primary's) label; it must not be used either.
+    assert (
+        api_utils.image_rejection_guidance(
+            "text_lane_forced", engine=evicted, model_name="qwen3.6-35b"
+        )
+        == _FORCED_TEXT
+    )
     assert api_utils.served_model_catalog_name(primary) == "qwen3.6-35b"
 
 
@@ -972,3 +986,83 @@ def test_broken_user_aliases_file_is_never_read_on_rejection(monkeypatch):
         resolve_profile("qwen3.5-4b-4bit").hf_path, "vision_memory_insufficient"
     )
     assert direct.startswith("Vision for this model needs at least 32 GB of RAM")
+
+
+# ---------------------------------------------------------------------------
+# Review r3: a text-lane flag can hide a vision blocker. Dropping the flag is
+# advised only when it would really enable images.
+# ---------------------------------------------------------------------------
+
+_FLAG_REASONS = ("text_lane_forced", "text_lane_speculative_decode")
+
+
+@pytest.mark.parametrize("reason", _FLAG_REASONS)
+def test_flag_copy_names_the_memory_floor_it_would_hit(reason):
+    guidance = text_lane_image_guidance("qwen3.5-9b-4bit", reason, ram_gb=16)
+    alias = fitting_vision_alias(16, hybrid_runtime_ok=True)
+    assert guidance.endswith(
+        "Even then, vision for this model needs at least 32 GB of RAM; this Mac "
+        f"has 16 GB. For image input, serve '{alias}', a vision model that fits "
+        "this Mac."
+    )
+    assert "Restart" not in guidance and "restart with" not in guidance
+
+
+@pytest.mark.parametrize("reason", _FLAG_REASONS)
+@pytest.mark.parametrize(("vision_ok", "hybrid_ok"), [(False, True), (True, False)])
+def test_flag_copy_installs_the_runtime_first(
+    monkeypatch, reason, vision_ok, hybrid_ok
+):
+    monkeypatch.setattr(mllm, "_managed_desktop_runtime_kind", lambda: None)
+    hint = " ".join(mllm._vision_install_hint(include_paths=False).split())
+    guidance = text_lane_image_guidance(
+        "qwen3.5-9b-4bit",
+        reason,
+        ram_gb=64,
+        vision_runtime_ok=vision_ok,
+        hybrid_runtime_ok=hybrid_ok,
+    )
+    assert (
+        f"Image input also needs a working vision runtime (mlx-vlm). {hint} Then "
+        in guidance
+    )
+    assert guidance.endswith("for image input.")
+
+
+@pytest.mark.parametrize("reason", _FLAG_REASONS)
+def test_flag_copy_matches_the_lane_the_model_would_get(reason):
+    """Sweep: advise dropping the flag exactly when the unflagged lane decision
+    (memory floor, hybrid runtime, vision runtime) would be a vision lane."""
+    for alias in sorted(list_builtin_aliases()):
+        profile = resolve_profile(alias)
+        if not profile.supports_image_input or profile.is_text_only:
+            continue
+        for ram in (8, 16, 24, 32, 64):
+            for vision_ok in (True, False):
+                for hybrid_ok in (True, False):
+                    guidance = text_lane_image_guidance(
+                        alias,
+                        reason,
+                        ram_gb=ram,
+                        vision_runtime_ok=vision_ok,
+                        hybrid_runtime_ok=hybrid_ok,
+                    )
+                    hybrid = (
+                        profile.is_hybrid or profile.vision_min_memory_gb is not None
+                    )
+                    floor = profile.vision_min_memory_gb
+                    unblocked = (
+                        vision_ok
+                        and (hybrid_ok or not hybrid)
+                        and (floor is None or floor <= ram)
+                    )
+                    advises_restart_only = guidance.split(". ")[-1].startswith(
+                        "Restart"
+                    )
+                    assert advises_restart_only == unblocked, (
+                        alias,
+                        ram,
+                        vision_ok,
+                        hybrid_ok,
+                        guidance,
+                    )

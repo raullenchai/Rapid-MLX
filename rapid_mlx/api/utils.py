@@ -1904,6 +1904,28 @@ def text_lane_image_guidance(
             "model's vision architecture, so it started text-only. "
             f"{_suggest()}"
         )
+
+    def _unflagged_outcome(flag_remedy: str) -> str:
+        """``flag_remedy`` only if dropping the flag really enables images.
+
+        A forced or speculative text lane is decided before the vision
+        runtime and memory floor are checked, so it can hide either one.
+        Name the blocker instead of a restart that would stay text-only.
+        """
+        hybrid = profile is not None and _profile_has_hybrid_backbone(profile)
+        if not vision_runtime_ok or (hybrid and not hybrid_runtime_ok):
+            return (
+                "Image input also needs a working vision runtime (mlx-vlm). "
+                f"{_install_hint()} Then {flag_remedy}"
+            )
+        floor = profile.vision_min_memory_gb if profile is not None else None
+        if floor is not None and 0 < ram_gb < floor:
+            return (
+                f"Even then, vision for this model needs at least {floor:g} GB "
+                f"of RAM; this Mac has {ram_gb:.0f} GB. {_pick_model()}"
+            )
+        return flag_remedy[0].upper() + flag_remedy[1:]
+
     if reason == "text_lane_forced":
         if profile is not None and profile.is_text_only:
             return f"Its catalog entry pins it to text-only serving. {_suggest()}"
@@ -1911,7 +1933,8 @@ def text_lane_image_guidance(
             return f"This model was started text-only. {_suggest()}"
         return (
             "This server was started on the text-only lane (e.g. with "
-            "--no-mllm / --text-only); restart without it for image input."
+            "--no-mllm / --text-only). "
+            + _unflagged_outcome("restart without it for image input.")
         )
     if reason == "text_lane_speculative_decode":
         # Usually the catalog's MTP default, not a flag the user passed, so
@@ -1922,8 +1945,11 @@ def text_lane_image_guidance(
                 "Turn it off in Settings → Performance to add photos."
             )
         return (
-            "Speculative decoding (MTP) is on, and only the text lane runs it; "
-            "restart with --no-spec-decode for image input."
+            "Speculative decoding (MTP) is on, and only the text lane runs it. "
+            + _unflagged_outcome(
+                "restart with --no-spec-decode (and without any --spec-decode "
+                "/ --force-spec-decode flag) for image input."
+            )
         )
     checkpoint_cause = _SUGGEST_VISION_ALIAS_CAUSES.get(reason)
     if checkpoint_cause is None:
