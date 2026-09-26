@@ -187,13 +187,11 @@ def serve_error_class(exc: BaseException) -> str:
             if isinstance(current, QuantizationMismatch):
                 return "quantization_mismatch"
 
-        # Preserve the established outermost-match contract for all existing
-        # signals. Only the new boundary types above outrank incidental outer
-        # wording; existing typed and textual categories remain ordered by the
-        # exception that callers actually observed.
+        # Existing typed availability failures are authoritative too. Inspect
+        # the full explicit cause chain before consulting message text so an
+        # outer relay that happens to mention memory or corruption cannot
+        # overwrite the concrete Hub/file failure beneath it.
         for current in chain:
-            if classify_engine_abort(current) == ENGINE_ABORT_CODE_INSUFFICIENT_MEMORY:
-                return "insufficient_memory"
             if isinstance(current, (HfHubHTTPError, RepositoryNotFoundError)):
                 return "download_failed"
             # A missing local/Hub shard is an availability failure, not evidence that
@@ -213,6 +211,11 @@ def serve_error_class(exc: BaseException) -> str:
                 ):
                     return "unsupported_architecture"
 
+        # Text markers are deliberately last: they are less precise than the
+        # typed load, Hub, and file boundaries above.
+        for current in chain:
+            if classify_engine_abort(current) == ENGINE_ABORT_CODE_INSUFFICIENT_MEMORY:
+                return "insufficient_memory"
             text = _exception_text(current)
             if isinstance(current, ValueError):
                 # mlx-lm/utils.py::_get_classes translates the module import failure

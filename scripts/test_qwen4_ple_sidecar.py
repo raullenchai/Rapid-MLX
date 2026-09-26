@@ -1013,6 +1013,8 @@ class CPULoadContracts(SidecarContracts):
                 held_error = exc
         self.assertIsNotNone(held_error)
         self.assertIn("embed_tokens.weight", str(held_error))
+        self.assertIsInstance(held_error.__cause__, ValueError)
+        self.assertIn("embed_tokens.weight", str(held_error.__cause__))
         reader = refs[0]()
         self.assertIsNotNone(reader)  # retained partial model in traceback
         self.assertIsNone(reader._fd)
