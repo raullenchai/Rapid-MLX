@@ -89,6 +89,9 @@ service:
     The local marker's process ID, process creation time, system boot time, and
     app version stay on the device; local crash-file contents and paths are
     never sent.
+  * `~/.rapid-mlx/state/serve-failed-recent.json` keeps up to 64 recent,
+    privacy-reduced serve-failure keys and their timestamps on the device for
+    ten-minute duplicate suppression; the file itself is never sent.
   * For a failed model serve caused by a missing optional runtime, the closed
     extra name (`vision`, `video`, `audio`, or `image`).
 

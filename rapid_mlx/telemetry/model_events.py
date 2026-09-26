@@ -4,12 +4,19 @@
 from __future__ import annotations
 
 import errno
+import fcntl
 import functools
+import json
+import math
+import os
 import re
 import socket
+import stat
 import threading
+import time
 import urllib.error
 from collections.abc import Callable
+from pathlib import Path
 from typing import ParamSpec
 
 from rapid_mlx.runtime.optional_runtime import OptionalRuntimeMissing
@@ -18,6 +25,10 @@ _serve_failure_lock = threading.Lock()
 _serve_failure_claimed = False
 _P = ParamSpec("_P")
 _EXCEPTION_CHAIN_LIMIT = 32
+SERVE_FAILED_DEDUPE_SECONDS = 600
+_SERVE_FAILED_MAX_KEYS = 64
+_SERVE_FAILED_MAX_BYTES = 64 * 1024
+_serve_failed_clock = time.time
 
 
 def _never_raise(func: Callable[_P, None]) -> Callable[_P, None]:
@@ -391,6 +402,104 @@ def emit_model_served(
         return False
 
 
+def _serve_failed_recent_path() -> Path:
+    from rapid_mlx.telemetry.state import _default_telemetry_dir
+
+    return _default_telemetry_dir() / "state" / "serve-failed-recent.json"
+
+
+def _read_serve_failed_recent(path: Path) -> dict[str, float]:
+    flags = os.O_RDONLY | getattr(os, "O_CLOEXEC", 0)
+    flags |= getattr(os, "O_NONBLOCK", 0)
+    flags |= getattr(os, "O_NOFOLLOW", 0)
+    try:
+        fd = os.open(path, flags)
+    except FileNotFoundError:
+        return {}
+    try:
+        file_stat = os.fstat(fd)
+        if (
+            not stat.S_ISREG(file_stat.st_mode)
+            or file_stat.st_size > _SERVE_FAILED_MAX_BYTES
+        ):
+            return {}
+        payload = bytearray()
+        while len(payload) <= _SERVE_FAILED_MAX_BYTES:
+            chunk = os.read(
+                fd,
+                min(4096, _SERVE_FAILED_MAX_BYTES + 1 - len(payload)),
+            )
+            if not chunk:
+                break
+            payload.extend(chunk)
+        if len(payload) > _SERVE_FAILED_MAX_BYTES:
+            return {}
+    finally:
+        os.close(fd)
+    try:
+        value = json.loads(payload.decode("utf-8"))
+    except (UnicodeError, json.JSONDecodeError):
+        return {}
+    if not isinstance(value, dict):
+        return {}
+    return {
+        key: float(timestamp)
+        for key, timestamp in value.items()
+        if isinstance(key, str)
+        and isinstance(timestamp, (int, float))
+        and not isinstance(timestamp, bool)
+        and math.isfinite(timestamp)
+    }
+
+
+def _claim_serve_failure_key(
+    key: tuple[str, str, str, str], *, now: float | None = None
+) -> bool:
+    """Claim a cross-process failure key; fail open on every storage error."""
+    try:
+        from rapid_mlx.telemetry.server_start import (
+            _atomic_write_state_json,
+            _prepare_state_dir,
+        )
+
+        current = _serve_failed_clock() if now is None else now
+        if not math.isfinite(current):
+            return True
+        path = _serve_failed_recent_path()
+        if not _prepare_state_dir(path.parent):
+            return True
+        flags = os.O_RDONLY | getattr(os, "O_DIRECTORY", 0)
+        flags |= getattr(os, "O_CLOEXEC", 0)
+        flags |= getattr(os, "O_NOFOLLOW", 0)
+        dir_fd = os.open(path.parent, flags)
+        try:
+            fcntl.flock(dir_fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            recent = _read_serve_failed_recent(path)
+            encoded_key = json.dumps(key, separators=(",", ":"))
+            previous = recent.get(encoded_key)
+            if (
+                previous is not None
+                and current >= previous
+                and current - previous < SERVE_FAILED_DEDUPE_SECONDS
+            ):
+                return False
+            recent[encoded_key] = current
+            if len(recent) > _SERVE_FAILED_MAX_KEYS:
+                recent = dict(
+                    sorted(
+                        recent.items(),
+                        key=lambda item: item[1],
+                        reverse=True,
+                    )[:_SERVE_FAILED_MAX_KEYS]
+                )
+            _atomic_write_state_json(path, recent)
+            return True
+        finally:
+            os.close(dir_fd)
+    except Exception:
+        return True
+
+
 @_never_raise
 def emit_model_serve_failed(
     exc: BaseException,
@@ -405,8 +514,8 @@ def emit_model_serve_failed(
         if _serve_failure_claimed:
             return
 
+    from rapid_mlx.telemetry import track as track_module
     from rapid_mlx.telemetry.model_id import engine_telemetry_id, telemetry_model_id
-    from rapid_mlx.telemetry.track import track
 
     optional_runtime_missing = find_optional_runtime_missing(exc)
     error_class = (
@@ -432,7 +541,17 @@ def emit_model_serve_failed(
         if _serve_failure_claimed:
             return
         _serve_failure_claimed = True
-    track("model_serve_failed", props)
+    if not track_module._upload_allowed():
+        return
+    key = (
+        str(props.get("model") or ""),
+        str(props.get("model_type") or ""),
+        error_class,
+        str(props.get("extra") or ""),
+    )
+    if not _claim_serve_failure_key(key):
+        return
+    track_module.track("model_serve_failed", props)
 
 
 def _reset_for_tests() -> None:

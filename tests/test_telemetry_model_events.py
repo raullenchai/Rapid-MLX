@@ -1237,6 +1237,120 @@ def test_serve_failure_latch_claims_before_building(monkeypatch):
     assert calls == ["classify", "model_serve_failed"]
 
 
+def _emit_failure_from_fresh_process(
+    exc: BaseException,
+    *,
+    alias_or_path: object = None,
+) -> None:
+    model_events._reset_for_tests()
+    model_events.emit_model_serve_failed(exc, alias_or_path=alias_or_path)
+
+
+def test_identical_serve_failures_within_window_emit_once(monkeypatch):
+    calls: list[dict[str, object]] = []
+    now = iter((1000.0, 1599.0))
+    monkeypatch.setattr(model_events, "_serve_failed_clock", lambda: next(now))
+    monkeypatch.setattr(
+        track_module, "track", lambda _event, props: calls.append(dict(props))
+    )
+
+    _emit_failure_from_fresh_process(RuntimeError("first"), alias_or_path="unknown")
+    _emit_failure_from_fresh_process(RuntimeError("second"), alias_or_path="unknown")
+
+    assert len(calls) == 1
+
+
+def test_identical_serve_failures_after_window_emit_twice(monkeypatch):
+    calls: list[dict[str, object]] = []
+    now = iter((1000.0, 1600.0))
+    monkeypatch.setattr(model_events, "_serve_failed_clock", lambda: next(now))
+    monkeypatch.setattr(
+        track_module, "track", lambda _event, props: calls.append(dict(props))
+    )
+
+    _emit_failure_from_fresh_process(RuntimeError("first"), alias_or_path="unknown")
+    _emit_failure_from_fresh_process(RuntimeError("second"), alias_or_path="unknown")
+
+    assert len(calls) == 2
+
+
+def test_different_serve_failure_key_is_not_suppressed(monkeypatch):
+    calls: list[dict[str, object]] = []
+    monkeypatch.setattr(model_events, "_serve_failed_clock", lambda: 1000.0)
+    monkeypatch.setattr(
+        track_module, "track", lambda _event, props: calls.append(dict(props))
+    )
+
+    _emit_failure_from_fresh_process(RuntimeError("first"), alias_or_path="unknown")
+    _emit_failure_from_fresh_process(RuntimeError("second"), alias_or_path="sdxl-base")
+
+    assert len(calls) == 2
+
+
+@pytest.mark.parametrize(
+    ("failure_mode", "expected_emissions"),
+    [("unwritable", 2), ("corrupt", 1), ("clock-backwards", 2)],
+)
+def test_serve_failure_dedupe_storage_failures_and_backwards_clock_fail_open(
+    monkeypatch, tmp_path, failure_mode, expected_emissions
+):
+    calls: list[dict[str, object]] = []
+    state_dir = tmp_path / ".rapid-mlx" / "state"
+    if failure_mode == "unwritable":
+        state_dir.parent.mkdir(parents=True)
+        state_dir.write_text("not a directory", encoding="utf-8")
+        times = iter((1000.0, 1001.0))
+    elif failure_mode == "corrupt":
+        state_dir.mkdir(parents=True)
+        (state_dir / "serve-failed-recent.json").write_text(
+            "{not-json", encoding="utf-8"
+        )
+        times = iter((1000.0, 1001.0))
+    else:
+        times = iter((1000.0, 999.0))
+    monkeypatch.setattr(model_events, "_serve_failed_clock", lambda: next(times))
+    monkeypatch.setattr(
+        track_module, "track", lambda _event, props: calls.append(dict(props))
+    )
+
+    _emit_failure_from_fresh_process(RuntimeError("first"), alias_or_path="unknown")
+    _emit_failure_from_fresh_process(RuntimeError("second"), alias_or_path="unknown")
+
+    assert len(calls) == expected_emissions
+
+
+def test_serve_failure_recent_file_is_private_and_evicts_oldest(monkeypatch, tmp_path):
+    monkeypatch.setattr(model_events, "_serve_failed_clock", lambda: 1000.0)
+
+    for index in range(65):
+        key = (f"model-{index}", "llm", "other", "")
+        assert model_events._claim_serve_failure_key(key, now=float(index)) is True
+
+    path = tmp_path / ".rapid-mlx" / "state" / "serve-failed-recent.json"
+    record = json.loads(path.read_text(encoding="utf-8"))
+    assert len(record) == 64
+    assert (
+        json.dumps(["model-0", "llm", "other", ""], separators=(",", ":")) not in record
+    )
+    assert json.dumps(["model-64", "llm", "other", ""], separators=(",", ":")) in record
+    assert path.stat().st_mode & 0o777 == 0o600
+
+
+def test_opted_out_serve_failure_writes_no_dedupe_file(monkeypatch, tmp_path):
+    monkeypatch.setattr(consent_runtime, "upload_allowed", lambda: False)
+    monkeypatch.setattr(
+        track_module,
+        "track",
+        lambda *_args, **_kwargs: pytest.fail("opted-out event reached track"),
+    )
+
+    model_events.emit_model_serve_failed(
+        RuntimeError("private failure"), alias_or_path="unknown"
+    )
+
+    assert not (tmp_path / ".rapid-mlx" / "state" / "serve-failed-recent.json").exists()
+
+
 class _CaptureHandler(BaseHTTPRequestHandler):
     def do_POST(self) -> None:
         length = int(self.headers["Content-Length"])

@@ -207,9 +207,8 @@ def _atomic_write_marker(
     identity = process_identity(os.getpid())
     if identity is None:
         raise OSError("could not determine current process identity")
-    if not _prepare_state_dir(path.parent):
-        raise OSError("state directory is unavailable")
-    payload = json.dumps(
+    return _atomic_write_state_json(
+        path,
         {
             "pid": identity.pid,
             "create_time": identity.create_time,
@@ -217,6 +216,15 @@ def _atomic_write_marker(
             "app_version": rapid_mlx.__version__,
             "startup_terminal": startup_terminal,
         },
+    )
+
+
+def _atomic_write_state_json(path: Path, value: object) -> tuple[int, int]:
+    """Atomically replace one private JSON file under the telemetry state root."""
+    if not _prepare_state_dir(path.parent):
+        raise OSError("state directory is unavailable")
+    payload = json.dumps(
+        value,
         separators=(",", ":"),
         sort_keys=True,
     ).encode("utf-8")
