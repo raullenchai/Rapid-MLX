@@ -7,6 +7,7 @@ import json
 import logging
 import re
 from dataclasses import dataclass
+from functools import lru_cache
 from importlib.metadata import PackageNotFoundError, version
 
 from packaging.version import InvalidVersion, Version
@@ -1624,10 +1625,6 @@ _SUGGEST_VISION_ALIAS_CAUSES = {
     "vision_weights_unavailable": (
         "This checkpoint's vision weights are missing, so it started text-only."
     ),
-    "vision_architecture_unavailable": (
-        "The installed vision runtime does not provide this model's vision "
-        "architecture, so it started text-only."
-    ),
     "vision_hybrid_cache_unsupported": (
         "The vision lane does not support this model's cache layout, so it "
         "started text-only."
@@ -1741,27 +1738,104 @@ def public_model_label(model_name: object) -> str:
     return model_name
 
 
+# Host facts the guidance depends on. None of them changes while the server
+# runs, so each is probed once per process: an image rejection must never fork
+# ``sysctl`` or re-import the vision runtime on the request path.
+@lru_cache(maxsize=1)
+def _host_ram_gb() -> float:
+    return physical_ram_gb()
+
+
+@lru_cache(maxsize=1)
+def _host_hybrid_runtime_ok() -> bool:
+    return mllm_hybrid_runtime_supported()
+
+
+@lru_cache(maxsize=1)
+def _host_vision_runtime_ok() -> bool:
+    """Cheap, import-free: mlx-vlm installed at the validated version."""
+    from ..models.mllm import VALIDATED_MLX_VLM_VERSION, _mlx_vlm_installed
+
+    if not _mlx_vlm_installed():
+        return False
+    try:
+        return version("mlx-vlm") == VALIDATED_MLX_VLM_VERSION
+    except PackageNotFoundError:
+        return False
+
+
+@lru_cache(maxsize=1)
+def _host_is_desktop() -> bool:
+    """Whether this engine runs inside Rapid Desktop (app or its sidecar).
+
+    Same role detection telemetry uses for ``surface=desktop``; there, only
+    remedies the user can carry out from the app may be offered.
+    """
+    from ..telemetry.track import _surface_from_role
+
+    return _surface_from_role() == "desktop"
+
+
+def _catalog_profile(model_name: object):
+    """Built-in catalog profile for an alias or HF path, else ``None``.
+
+    Built-in only: user aliases live in a file that can be edited (or broken)
+    while the server runs, and are not needed to explain a lane decision.
+    """
+    from ..model_aliases import catalog_alias_for
+
+    alias = catalog_alias_for(model_name) if isinstance(model_name, str) else None
+    return resolve_profile(alias) if alias is not None else None
+
+
 def text_lane_image_guidance(
     model_name: object,
     reason: object,
     *,
     ram_gb: float | None = None,
     hybrid_runtime_ok: bool | None = None,
+    vision_runtime_ok: bool | None = None,
+    desktop: bool | None = None,
+    include_paths: bool = False,
 ) -> str | None:
     """Explain why a model serves text-only and what to do, or ``None``.
 
-    ``reason`` is the engine's ``serving_lane_reason``. The text never contains
-    a filesystem path: it names flags, catalog aliases and memory sizes only.
+    ``model_name`` identifies the model that served the request (catalog alias
+    or HF path); ``reason`` is its engine's ``serving_lane_reason``. With
+    ``include_paths=False`` (every HTTP response) the text never contains a
+    filesystem path. Inside Rapid Desktop only app-actionable remedies are
+    given: no CLI flags or ``serve`` commands.
     """
     if not isinstance(reason, str):
         return None
-    profile = resolve_profile(model_name) if isinstance(model_name, str) else None
+    profile = _catalog_profile(model_name)
     if ram_gb is None:
-        ram_gb = physical_ram_gb()
+        ram_gb = _host_ram_gb()
     if hybrid_runtime_ok is None:
-        hybrid_runtime_ok = mllm_hybrid_runtime_supported()
+        hybrid_runtime_ok = _host_hybrid_runtime_ok()
+    if vision_runtime_ok is None:
+        vision_runtime_ok = _host_vision_runtime_ok()
+    if desktop is None:
+        desktop = _host_is_desktop()
+
+    def _install_hint() -> str:
+        from ..models.mllm import _vision_install_hint
+
+        return " ".join(_vision_install_hint(include_paths=include_paths).split())
 
     def _suggest() -> str:
+        # No alias can start without a usable vision runtime: lead with the
+        # install hint instead of naming a model that would fail to load.
+        if not vision_runtime_ok:
+            return (
+                "Image input needs the vision runtime (mlx-vlm), which is not "
+                f"usable here. {_install_hint()}"
+            )
+        if ram_gb <= 0:
+            # RAM unknown: no fit can be judged, so name nothing.
+            if desktop:
+                return "Choose a vision model in the model picker."
+            return "Serve a vision-capable model for image input."
         alias = fitting_vision_alias(
             ram_gb,
             hybrid_runtime_ok=hybrid_runtime_ok,
@@ -1769,38 +1843,58 @@ def text_lane_image_guidance(
         )
         if alias is None:
             return "No catalog vision model fits this Mac's memory."
+        if desktop:
+            return (
+                f"Choose a vision model in the model picker, such as '{alias}', "
+                "which fits this Mac."
+            )
         return f"For image input, serve '{alias}', a vision model that fits this Mac."
 
-    mac_gb = f"{ram_gb:.0f}"
     if reason == "vision_memory_insufficient":
         floor = profile.vision_min_memory_gb if profile is not None else None
         if floor is not None:
-            cause = (
-                f"Vision for this model needs at least {floor:g} GB of RAM; "
-                f"this Mac has {mac_gb} GB, so it started text-only."
-            )
+            need = f"at least {floor:g} GB of RAM"
+            if ram_gb > 0:
+                need += f"; this Mac has {ram_gb:.0f} GB"
+        elif ram_gb > 0:
+            need = f"more RAM than this Mac's {ram_gb:.0f} GB"
         else:
-            cause = (
-                f"Vision for this model needs more than this Mac's {mac_gb} GB "
-                "of RAM, so it started text-only."
-            )
-        return f"{cause} {_suggest()}"
+            need = "more RAM"
+        return (
+            f"Vision for this model needs {need}, so it started text-only. {_suggest()}"
+        )
     if reason == "vision_hybrid_runtime_unsupported":
-        from ..models.mllm import _vision_install_hint
-
-        hint = " ".join(_vision_install_hint(include_paths=False).split())
         return (
             "The installed vision runtime (mlx-vlm) is missing or too old for "
-            f"this model's hybrid backbone, so it started text-only. {hint}"
+            "this model's hybrid backbone, so it started text-only. "
+            f"{_install_hint()}"
+        )
+    if reason == "vision_architecture_unavailable":
+        if not vision_runtime_ok:
+            return (
+                "The vision runtime (mlx-vlm) is missing or not usable, so this "
+                f"model started text-only. {_install_hint()}"
+            )
+        return (
+            "The installed vision runtime (mlx-vlm) does not support this "
+            "model's vision architecture, so it started text-only. "
+            f"{_suggest()}"
         )
     if reason == "text_lane_forced":
         if profile is not None and profile.is_text_only:
             return f"Its catalog entry pins it to text-only serving. {_suggest()}"
+        if desktop:
+            return f"This model was started text-only. {_suggest()}"
         return (
             "This server was started on the text-only lane (e.g. with "
             "--no-mllm / --text-only); restart without it for image input."
         )
     if reason == "text_lane_speculative_decode":
+        if desktop:
+            return (
+                "Speculative decoding is on, and only the text lane runs it. "
+                f"{_suggest()}"
+            )
         return (
             "Speculative decoding was requested (--spec-decode, "
             "--force-spec-decode or MTP) and only the text lane runs it; restart "
@@ -1810,6 +1904,59 @@ def text_lane_image_guidance(
     if checkpoint_cause is None:
         return None
     return f"{checkpoint_cause} {_suggest()}"
+
+
+def served_model_catalog_name(engine: object) -> str | None:
+    """The catalog identity of the model ``engine`` serves.
+
+    ``cfg.model_name`` is the ``--served-model-name`` when one was given and,
+    with a model registry, always the primary; neither identifies the model
+    that answered a request. A registry entry owning ``engine`` wins (its
+    aliases, then name, then path); the primary falls back to its resolved
+    alias and path. The first candidate the catalog knows is returned, else
+    the first non-empty one.
+    """
+    from ..config import get_config
+    from ..model_aliases import catalog_alias_for
+
+    cfg = get_config()
+    candidates: list[object] = []
+    registry = getattr(cfg, "model_registry", None)
+    if registry:
+        for entry in registry.list_entries():
+            if entry.engine is engine:
+                candidates += [*sorted(entry.aliases), entry.model_name]
+                candidates.append(entry.model_path)
+    if engine is cfg.engine or not candidates:
+        candidates = [cfg.model_alias, cfg.model_path, cfg.model_name, *candidates]
+    names = [c for c in candidates if isinstance(c, str) and c]
+    for name in names:
+        alias = catalog_alias_for(name)
+        if alias is not None:
+            return alias
+    return names[0] if names else None
+
+
+def image_rejection_guidance(
+    reason: object,
+    *,
+    engine: object = None,
+    model_name: object = None,
+    include_paths: bool = False,
+) -> str | None:
+    """Never-raise wrapper: guidance for ``engine``'s model, or ``None``.
+
+    Guidance is advisory. Any failure while building it (a broken catalog or
+    config, an unexpected engine) must leave the original 400 and the ready
+    banner exactly as they were, so it is logged and dropped.
+    """
+    try:
+        if engine is not None:
+            model_name = served_model_catalog_name(engine) or model_name
+        return text_lane_image_guidance(model_name, reason, include_paths=include_paths)
+    except Exception:  # noqa: BLE001 — advisory text must never fail a request
+        logger.debug("text-lane image guidance unavailable", exc_info=True)
+        return None
 
 
 def decode_inline_tool_call_arguments(messages: list[dict]) -> None:
@@ -1963,17 +2110,27 @@ class UnsupportedContentBlockError(ValueError):
         self.param = param
         self.model_name = model_name
 
-    def client_message(self, serving_lane_reason: object = None) -> str:
-        """The message plus, for a text-lane image rejection, why and what next."""
+    def client_message(
+        self, serving_lane_reason: object = None, *, engine: object = None
+    ) -> str:
+        """The message plus, for a text-lane image rejection, why and what next.
+
+        ``engine`` is the engine that rejected the request; its model (not the
+        primary's or the ``--served-model-name``) is the one explained.
+        """
         message = str(self)
         if self.code != "image_input_unsupported" or self.model_name is None:
             return message
-        guidance = text_lane_image_guidance(self.model_name, serving_lane_reason)
+        guidance = image_rejection_guidance(
+            serving_lane_reason, engine=engine, model_name=self.model_name
+        )
         return message if guidance is None else f"{message} {guidance}"
 
-    def openai_detail(self, *, serving_lane_reason: str | None = None) -> dict:
+    def openai_detail(
+        self, *, serving_lane_reason: str | None = None, engine: object = None
+    ) -> dict:
         error = {
-            "message": self.client_message(serving_lane_reason),
+            "message": self.client_message(serving_lane_reason, engine=engine),
             "type": "invalid_request_error",
             "code": self.code,
             "param": self.param,

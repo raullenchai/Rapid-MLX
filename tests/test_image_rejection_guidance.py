@@ -42,12 +42,29 @@ _BASE = "Model 'qwen3.5-4b-4bit' is serving text-only; image input is unsupporte
 _IMAGE_URL = "data:image/png;base64,iVBORw0KGgoAAAANSUhEUg=="
 
 
+_HOST_PROBES = (
+    "_host_ram_gb",
+    "_host_hybrid_runtime_ok",
+    "_host_vision_runtime_ok",
+    "_host_is_desktop",
+)
+_REAL_PROBES = {name: getattr(api_utils, name) for name in _HOST_PROBES}
+
+
+def _clear_probe_caches():
+    for probe in _REAL_PROBES.values():
+        probe.cache_clear()
+
+
 @pytest.fixture(autouse=True)
 def _pin_host(monkeypatch):
-    """A 16 GB Mac whose vision runtime can serve hybrid backbones."""
-    monkeypatch.setattr(api_utils, "physical_ram_gb", lambda: 16.0)
-    monkeypatch.setattr(api_utils, "mllm_hybrid_runtime_supported", lambda: True)
+    """A 16 GB CLI Mac with a working vision runtime (hybrid-capable)."""
+    monkeypatch.setattr(api_utils, "_host_ram_gb", lambda: 16.0)
+    monkeypatch.setattr(api_utils, "_host_hybrid_runtime_ok", lambda: True)
+    monkeypatch.setattr(api_utils, "_host_vision_runtime_ok", lambda: True)
+    monkeypatch.setattr(api_utils, "_host_is_desktop", lambda: False)
     yield
+    _clear_probe_caches()
     reset_config()
 
 
@@ -133,7 +150,7 @@ def test_memory_insufficient_without_catalog_floor():
     )
     assert guidance is not None
     assert guidance.startswith(
-        "Vision for this model needs more than this Mac's 8 GB of RAM, so it "
+        "Vision for this model needs more RAM than this Mac's 8 GB, so it "
         "started text-only."
     )
 
@@ -203,8 +220,8 @@ def test_speculative_decode_names_the_flags():
         ),
         (
             "vision_architecture_unavailable",
-            "The installed vision runtime does not provide this model's vision "
-            "architecture, so it started text-only.",
+            "The installed vision runtime (mlx-vlm) does not support this "
+            "model's vision architecture, so it started text-only.",
         ),
         (
             "vision_hybrid_cache_unsupported",
@@ -549,7 +566,7 @@ def test_ready_banner_note_only_for_automatic_text_fallback(
         return
     assert engine.serving_lane_reason in BANNER_TEXT_LANE_REASONS
     assert note == text_lane_image_guidance(
-        "qwen3.5-4b-4bit", engine.serving_lane_reason
+        "qwen3.5-4b-4bit", engine.serving_lane_reason, include_paths=True
     )
 
 
@@ -564,3 +581,273 @@ def test_print_ready_banner_prints_the_note(monkeypatch, capsys):
     server.print_ready_banner()
     out = capsys.readouterr().out
     assert "  Images:    off. Vision for this model needs at least 32 GB" in out
+
+
+# ---------------------------------------------------------------------------
+# Review r1: never-raise, cached probes, served-model identity, missing
+# vision runtime, banner paths, unknown RAM, Desktop-only remedies.
+# ---------------------------------------------------------------------------
+
+
+def _boom(*_args, **_kwargs):
+    raise RuntimeError("broken catalog")
+
+
+def test_raising_guidance_keeps_the_original_400_everywhere(monkeypatch, capsys):
+    monkeypatch.setattr(api_utils, "text_lane_image_guidance", _boom)
+    message = _chat_image_error("text_lane_forced")
+    assert message == _BASE
+
+    client, _ = _client("text_lane_forced")
+    response = _anthropic_image(client)
+    assert response.status_code == 400, response.text
+    assert response.json()["detail"] == (
+        "Model 'qwen3.5-4b-4bit' does not support image inputs."
+    )
+
+    cfg = reset_config()
+    cfg.model_name = "qwen3.5-4b-4bit"
+    cfg.bind_host = "127.0.0.1"
+    cfg.bind_port = 8000
+    monkeypatch.setattr(
+        server, "_engine", _BannerEngine(False, "vision_memory_insufficient")
+    )
+    server.print_ready_banner()
+    out = capsys.readouterr().out
+    assert "Ready: http://127.0.0.1:8000" in out
+    assert "Images:" not in out
+
+
+def test_raising_identity_lookup_is_also_contained(monkeypatch):
+    monkeypatch.setattr(api_utils, "served_model_catalog_name", _boom)
+    assert (
+        api_utils.image_rejection_guidance("text_lane_forced", engine=object()) is None
+    )
+
+
+def test_host_probes_run_once_per_process(monkeypatch):
+    import subprocess
+
+    for name, probe in _REAL_PROBES.items():
+        monkeypatch.setattr(api_utils, name, probe)
+    _clear_probe_caches()
+    calls = []
+
+    class _Done:
+        stdout = str(16 << 30)
+
+    def fake_run(cmd, **_kwargs):
+        calls.append(cmd)
+        return _Done()
+
+    monkeypatch.setattr(subprocess, "run", fake_run)
+    monkeypatch.setattr("rapid_mlx.telemetry.track._surface_from_role", lambda: "cli")
+    for _ in range(5):
+        _chat_image_error("vision_memory_insufficient")
+    assert calls == [["sysctl", "-n", "hw.memsize"]]
+    assert api_utils._host_ram_gb() == 16.0
+    assert api_utils._host_is_desktop() is False
+    assert api_utils._host_hybrid_runtime_ok() in (True, False)
+
+
+@pytest.mark.parametrize(
+    ("installed", "dist_version", "expected"),
+    [
+        (False, None, False),
+        (True, None, False),
+        (True, "0.0.1", False),
+        (True, "ok", True),
+    ],
+)
+def test_vision_runtime_probe_is_import_free(
+    monkeypatch, installed, dist_version, expected
+):
+    from importlib.metadata import PackageNotFoundError
+
+    monkeypatch.setattr(
+        api_utils, "_host_vision_runtime_ok", _REAL_PROBES["_host_vision_runtime_ok"]
+    )
+    _clear_probe_caches()
+    monkeypatch.setattr(mllm, "_mlx_vlm_installed", lambda: installed)
+
+    def fake_version(_dist):
+        if dist_version is None:
+            raise PackageNotFoundError("mlx-vlm")
+        return mllm.VALIDATED_MLX_VLM_VERSION if dist_version == "ok" else dist_version
+
+    monkeypatch.setattr(api_utils, "version", fake_version)
+    assert api_utils._host_vision_runtime_ok() is expected
+
+
+def test_served_model_name_uses_the_resolved_alias():
+    """``serve qwen3.6-35b --served-model-name gpt-4o``: explain qwen3.6-35b."""
+    cfg = reset_config()
+    engine = _TextLaneEngine("text_lane_forced")
+    cfg.engine = engine
+    cfg.model_name = "gpt-4o"
+    cfg.model_alias = "qwen3.6-35b"
+    assert api_utils.served_model_catalog_name(engine) == "qwen3.6-35b"
+    guidance = api_utils.image_rejection_guidance(
+        "text_lane_forced", engine=engine, model_name="gpt-4o"
+    )
+    assert guidance is not None
+    assert guidance.startswith("Its catalog entry pins it to text-only serving.")
+
+
+def test_resident_model_is_explained_not_the_primary():
+    from rapid_mlx.runtime.model_registry import ModelEntry, ModelRegistry
+
+    primary = _TextLaneEngine("vision_supported")
+    resident = _TextLaneEngine("text_lane_forced")
+    registry = ModelRegistry()
+    registry.add(
+        ModelEntry(engine=primary, model_name="gemma3-12b-4bit", model_path="p"),
+        is_default=True,
+    )
+    registry.add(
+        ModelEntry(
+            engine=resident,
+            model_name="my-resident",
+            model_path="mlx-community/unknown-path",
+            aliases={"qwen3.6-35b"},
+        )
+    )
+    client, _ = _client("vision_supported", model_name="gemma3-12b-4bit")
+    cfg = api_utils_get_config()
+    cfg.engine = primary
+    cfg.model_registry = registry
+    response = client.post(
+        "/v1/chat/completions",
+        json={
+            "model": "my-resident",
+            "max_tokens": 8,
+            "messages": [
+                {
+                    "role": "user",
+                    "content": [
+                        {"type": "image_url", "image_url": {"url": _IMAGE_URL}},
+                    ],
+                }
+            ],
+        },
+    )
+    assert response.status_code == 400, response.text
+    error = response.json()["detail"]["error"]
+    assert error["code"] == "image_input_unsupported"
+    assert "Its catalog entry pins it to text-only serving." in error["message"]
+    assert "--no-mllm" not in error["message"]
+
+
+def api_utils_get_config():
+    from rapid_mlx.config import get_config
+
+    return get_config()
+
+
+def test_identity_falls_back_to_first_name_and_to_none():
+    from rapid_mlx.runtime.model_registry import ModelEntry, ModelRegistry
+
+    cfg = reset_config()
+    stranger = object()
+    assert api_utils.served_model_catalog_name(stranger) is None
+    registry = ModelRegistry()
+    registry.add(ModelEntry(engine=stranger, model_name="custom", model_path="/x/y"))
+    cfg.model_registry = registry
+    assert api_utils.served_model_catalog_name(stranger) == "custom"
+
+
+def test_missing_vision_runtime_leads_with_the_install_hint(monkeypatch):
+    monkeypatch.setattr(mllm, "_managed_desktop_runtime_kind", lambda: None)
+    hint = " ".join(mllm._vision_install_hint(include_paths=False).split())
+    for reason in (
+        "text_checkpoint",
+        "vision_memory_insufficient",
+        "text_lane_speculative_decode",
+    ):
+        guidance = text_lane_image_guidance(
+            "qwen3.5-4b-4bit",
+            reason,
+            vision_runtime_ok=False,
+            desktop=reason == "text_lane_speculative_decode",
+        )
+        assert guidance is not None
+        assert guidance.endswith(
+            "Image input needs the vision runtime (mlx-vlm), which is not usable "
+            f"here. {hint}"
+        )
+        assert "serve '" not in guidance and "such as '" not in guidance
+    assert text_lane_image_guidance(
+        "qwen3.5-4b-4bit", "vision_architecture_unavailable", vision_runtime_ok=False
+    ) == (
+        "The vision runtime (mlx-vlm) is missing or not usable, so this model "
+        f"started text-only. {hint}"
+    )
+
+
+def test_banner_keeps_the_interpreter_path_http_does_not(monkeypatch):
+    import sys
+
+    monkeypatch.setattr(mllm, "_managed_desktop_runtime_kind", lambda: None)
+    cfg = reset_config()
+    cfg.model_name = "qwen3.5-4b-4bit"
+    monkeypatch.setattr(
+        server, "_engine", _BannerEngine(False, "vision_hybrid_runtime_unsupported")
+    )
+    note = server._text_lane_image_note(cfg)
+    assert note is not None and sys.executable in note
+    message = _chat_image_error("vision_hybrid_runtime_unsupported")
+    assert sys.executable not in message and "python -m pip" in message
+
+
+def test_unknown_ram_drops_ram_and_fit_wording():
+    guidance = text_lane_image_guidance(
+        "qwen3.5-4b-4bit", "vision_memory_insufficient", ram_gb=0.0
+    )
+    assert guidance == (
+        "Vision for this model needs at least 32 GB of RAM, so it started "
+        "text-only. Serve a vision-capable model for image input."
+    )
+    assert text_lane_image_guidance(
+        "org/x", "vision_memory_insufficient", ram_gb=0.0, desktop=True
+    ) == (
+        "Vision for this model needs more RAM, so it started text-only. Choose "
+        "a vision model in the model picker."
+    )
+
+
+def test_desktop_gets_only_app_actionable_remedies(monkeypatch):
+    monkeypatch.setattr(mllm, "_managed_desktop_runtime_kind", lambda: "embedded")
+    reasons = [
+        "vision_memory_insufficient",
+        "vision_hybrid_runtime_unsupported",
+        "vision_architecture_unavailable",
+        "text_lane_forced",
+        "text_lane_speculative_decode",
+        "text_checkpoint",
+        "vision_weights_unavailable",
+        "vision_hybrid_cache_unsupported",
+    ]
+    alias = fitting_vision_alias(16.0, hybrid_runtime_ok=True)
+    for runtime_ok in (True, False):
+        for reason in reasons:
+            guidance = text_lane_image_guidance(
+                "org/x", reason, desktop=True, vision_runtime_ok=runtime_ok
+            )
+            assert guidance is not None, reason
+            assert "--" not in guidance, (reason, guidance)
+            assert "serve '" not in guidance and "restart" not in guidance
+            assert "pip install" not in guidance and "python" not in guidance
+    assert text_lane_image_guidance("org/x", "text_lane_forced", desktop=True) == (
+        "This model was started text-only. Choose a vision model in the model "
+        f"picker, such as '{alias}', which fits this Mac."
+    )
+    assert text_lane_image_guidance(
+        "org/x", "text_lane_speculative_decode", desktop=True
+    ).startswith("Speculative decoding is on, and only the text lane runs it.")
+
+
+def test_route_detects_desktop_through_the_cached_probe(monkeypatch):
+    monkeypatch.setattr(api_utils, "_host_is_desktop", lambda: True)
+    message = _chat_image_error("text_lane_forced")
+    assert "--no-mllm" not in message
+    assert "model picker" in message

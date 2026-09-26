@@ -738,17 +738,18 @@ async def create_anthropic_message(
                             caller_client=_caller_client,
                         )
                         from rapid_mlx.api.utils import (
+                            image_rejection_guidance,
                             public_model_label,
-                            text_lane_image_guidance,
                         )
 
                         _detail = (
                             f"Model '{public_model_label(cfg_pre.model_name)}' "
                             f"does not support {_block_type} inputs."
                         )
-                        _guidance = text_lane_image_guidance(
-                            cfg_pre.model_name,
+                        _guidance = image_rejection_guidance(
                             getattr(engine, "serving_lane_reason", None),
+                            engine=engine,
+                            model_name=cfg_pre.model_name,
                         )
                         if _guidance is not None:
                             _detail = f"{_detail} {_guidance}"

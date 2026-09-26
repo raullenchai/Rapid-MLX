@@ -4495,7 +4495,8 @@ async def _create_chat_completion_impl(
         raise HTTPException(
             status_code=400,
             detail=e.openai_detail(
-                serving_lane_reason=getattr(engine, "serving_lane_reason", None)
+                serving_lane_reason=getattr(engine, "serving_lane_reason", None),
+                engine=engine,
             ),
         ) from e
     except ValueError as e:
