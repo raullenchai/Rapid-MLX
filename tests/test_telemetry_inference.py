@@ -860,10 +860,10 @@ class _FunctionScopeNodes(ast.NodeVisitor):
         super().generic_visit(node)
 
     def visit_FunctionDef(self, node: ast.FunctionDef) -> None:
-        return
+        self.nodes.append(node)
 
     def visit_AsyncFunctionDef(self, node: ast.AsyncFunctionDef) -> None:
-        return
+        self.nodes.append(node)
 
     def visit_Lambda(self, node: ast.Lambda) -> None:
         return
@@ -881,7 +881,7 @@ class _FunctionScopeNodes(ast.NodeVisitor):
         return
 
     def visit_ClassDef(self, node: ast.ClassDef) -> None:
-        return
+        self.nodes.append(node)
 
 
 def _scope_nodes(body: list[ast.AST]) -> list[ast.AST]:
@@ -1117,6 +1117,60 @@ def _function_bound_names(
     )
 
 
+def _scope_lookup_bindings(
+    module_name: str,
+    nodes: list[ast.AST],
+    function: ast.FunctionDef | ast.AsyncFunctionDef | None,
+) -> dict[str, list[tuple[tuple[int, int], str | None]]]:
+    """Collect ordered name bindings without entering nested scopes."""
+    bindings: dict[str, list[tuple[tuple[int, int], str | None]]] = {}
+
+    def bind(node: ast.AST, name: str, value: str | None) -> None:
+        bindings.setdefault(name, []).append(((node.lineno, node.col_offset), value))
+
+    if function is not None:
+        arguments = [
+            *function.args.posonlyargs,
+            *function.args.args,
+            *function.args.kwonlyargs,
+            *(
+                argument
+                for argument in (function.args.vararg, function.args.kwarg)
+                if argument is not None
+            ),
+        ]
+        for argument in arguments:
+            bind(argument, argument.arg, None)
+
+    package = module_name.split(".")[:-1]
+    for node in nodes:
+        if isinstance(node, ast.ImportFrom) and node.module:
+            parent = package[: len(package) - max(node.level - 1, 0)]
+            source = ".".join([*parent, node.module]) if node.level else node.module
+            for alias in node.names:
+                bind(node, alias.asname or alias.name, f"{source}.{alias.name}")
+        elif isinstance(node, ast.Import):
+            for alias in node.names:
+                bind(
+                    node,
+                    alias.asname or alias.name.split(".")[0],
+                    alias.name,
+                )
+        elif isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+            value = f"{module_name}.{node.name}" if function is None else None
+            bind(node, node.name, value)
+        elif isinstance(node, ast.ClassDef) or (
+            isinstance(node, ast.ExceptHandler) and node.name
+        ):
+            bind(node, node.name, None)
+        elif isinstance(node, ast.Name) and isinstance(node.ctx, ast.Store):
+            bind(node, node.id, None)
+
+    for events in bindings.values():
+        events.sort(key=lambda event: event[0])
+    return bindings
+
+
 _ENGINE_LOOKUP_FUNCTIONS = {
     "rapid_mlx.routes.images._image_engine",
     "rapid_mlx.service.helpers.get_engine",
@@ -1147,11 +1201,6 @@ def _request_model_violations(
             tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
             module_name = _module_name(repo_root, path)
             imported = _imported_names(module_name, tree)
-            module_functions = {
-                node.name: f"{module_name}.{node.name}"
-                for node in tree.body
-                if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
-            }
             telemetry_names: set[str] = set()
             telemetry_modules: set[str] = set()
             for node in ast.walk(tree):
@@ -1214,19 +1263,23 @@ def _request_model_violations(
                 node: ast.AST,
                 tainted: set[str],
                 request_roots: set[str],
-                shadowed_names: set[str],
-                imported: dict[str, str] = imported,
-                module_functions: dict[str, str] = module_functions,
+                lookup_scopes: list[
+                    dict[str, list[tuple[tuple[int, int], str | None]]]
+                ],
             ) -> bool:
+                def lookup_binding(name: str) -> str | None:
+                    position = (node.lineno, node.col_offset)
+                    resolved = None
+                    for scope in lookup_scopes:
+                        for binding_position, value in scope.get(name, ()):
+                            if binding_position <= position:
+                                resolved = value
+                    return resolved
+
                 if isinstance(node, ast.Call):
                     resolved_name = None
-                    if (
-                        isinstance(node.func, ast.Name)
-                        and node.func.id not in shadowed_names
-                    ):
-                        resolved_name = imported.get(
-                            node.func.id, module_functions.get(node.func.id)
-                        )
+                    if isinstance(node.func, ast.Name):
+                        resolved_name = lookup_binding(node.func.id)
                     elif isinstance(node.func, ast.Attribute):
                         root = node.func.value
                         attributes = [node.func.attr]
@@ -1235,11 +1288,10 @@ def _request_model_violations(
                             root = root.value
                         if (
                             isinstance(root, ast.Name)
-                            and root.id not in shadowed_names
-                            and root.id in imported
+                            and (root_binding := lookup_binding(root.id)) is not None
                         ):
                             resolved_name = ".".join(
-                                [imported[root.id], *reversed(attributes)]
+                                [root_binding, *reversed(attributes)]
                             )
                     if resolved_name in _ENGINE_LOOKUP_FUNCTIONS:
                         return False
@@ -1272,7 +1324,7 @@ def _request_model_violations(
                 if isinstance(node, ast.Name) and node.id in tainted:
                     return True
                 return any(
-                    expression_is_tainted(child, tainted, request_roots, shadowed_names)
+                    expression_is_tainted(child, tainted, request_roots, lookup_scopes)
                     for child in ast.iter_child_nodes(node)
                 )
 
@@ -1281,7 +1333,9 @@ def _request_model_violations(
                 value: ast.AST,
                 tainted: set[str],
                 request_roots: set[str],
-                shadowed_names: set[str],
+                lookup_scopes: list[
+                    dict[str, list[tuple[tuple[int, int], str | None]]]
+                ],
             ) -> bool:
                 changed = False
                 if (
@@ -1297,10 +1351,10 @@ def _request_model_violations(
                             child_value,
                             tainted,
                             request_roots,
-                            shadowed_names,
+                            lookup_scopes,
                         )
                     return changed
-                if expression_is_tainted(value, tainted, request_roots, shadowed_names):
+                if expression_is_tainted(value, tainted, request_roots, lookup_scopes):
                     before = len(tainted)
                     tainted.update(_target_names(target))
                     changed = len(tainted) != before
@@ -1310,7 +1364,9 @@ def _request_model_violations(
                 nodes: list[ast.AST],
                 request_roots: set[str],
                 inherited_taint: set[str],
-                shadowed_names: set[str],
+                lookup_scopes: list[
+                    dict[str, list[tuple[tuple[int, int], str | None]]]
+                ],
             ) -> set[str]:
                 tainted = set(inherited_taint)
                 changed = True
@@ -1324,7 +1380,7 @@ def _request_model_violations(
                                     node.value,
                                     tainted,
                                     request_roots,
-                                    shadowed_names,
+                                    lookup_scopes,
                                 )
                         elif (
                             isinstance(node, ast.AnnAssign) and node.value is not None
@@ -1334,7 +1390,7 @@ def _request_model_violations(
                                 node.value,
                                 tainted,
                                 request_roots,
-                                shadowed_names,
+                                lookup_scopes,
                             )
                         elif isinstance(
                             node, (ast.For, ast.AsyncFor, ast.comprehension)
@@ -1344,7 +1400,7 @@ def _request_model_violations(
                                 node.iter,
                                 tainted,
                                 request_roots,
-                                shadowed_names,
+                                lookup_scopes,
                             )
                         elif isinstance(node, (ast.With, ast.AsyncWith)):
                             for item in node.items:
@@ -1354,7 +1410,7 @@ def _request_model_violations(
                                         item.context_expr,
                                         tainted,
                                         request_roots,
-                                        shadowed_names,
+                                        lookup_scopes,
                                     )
                 return tainted
 
@@ -1362,7 +1418,9 @@ def _request_model_violations(
                 nodes: list[ast.AST],
                 tainted: set[str],
                 request_roots: set[str],
-                shadowed_names: set[str],
+                lookup_scopes: list[
+                    dict[str, list[tuple[tuple[int, int], str | None]]]
+                ],
                 path: Path = path,
             ) -> None:
                 for node in nodes:
@@ -1370,7 +1428,7 @@ def _request_model_violations(
                         continue
                     if any(
                         expression_is_tainted(
-                            expression, tainted, request_roots, shadowed_names
+                            expression, tainted, request_roots, lookup_scopes
                         )
                         for expression in sink_expressions(node)
                     ):
@@ -1383,17 +1441,24 @@ def _request_model_violations(
                 inherited_roots: set[str],
                 inherited_taint: set[str],
                 function: ast.FunctionDef | ast.AsyncFunctionDef | None = None,
+                inherited_lookup_scopes: list[
+                    dict[str, list[tuple[tuple[int, int], str | None]]]
+                ]
+                | None = None,
                 imported: dict[str, str] = imported,
+                module_name: str = module_name,
                 path: Path = path,
                 pydantic_models: set[str] = pydantic_models,
             ) -> None:
                 nodes = _scope_nodes(body)
                 request_roots = set(inherited_roots)
                 inherited_scope_taint = set(inherited_taint)
-                shadowed_names: set[str] = set()
+                lookup_scopes = [*(inherited_lookup_scopes or [])]
+                lookup_scopes.append(
+                    _scope_lookup_bindings(module_name, nodes, function)
+                )
                 if function is not None:
                     bound_names = _function_bound_names(function, nodes)
-                    shadowed_names = bound_names.intersection(imported)
                     request_roots.difference_update(bound_names)
                     inherited_scope_taint.difference_update(bound_names)
                 request_roots.update(
@@ -1416,28 +1481,41 @@ def _request_model_violations(
                     ):
                         root_debug[debug_key] = sorted(request_roots)
                 tainted = scope_taint(
-                    nodes, request_roots, inherited_scope_taint, shadowed_names
+                    nodes, request_roots, inherited_scope_taint, lookup_scopes
                 )
-                check_calls(nodes, tainted, request_roots, shadowed_names)
+                check_calls(nodes, tainted, request_roots, lookup_scopes)
 
                 for nested in _nested_scopes(body):
                     if isinstance(nested, (ast.FunctionDef, ast.AsyncFunctionDef)):
                         analyze_scope(
-                            nested.body, request_roots, tainted, function=nested
+                            nested.body,
+                            request_roots,
+                            tainted,
+                            function=nested,
+                            inherited_lookup_scopes=lookup_scopes,
                         )
                     elif isinstance(nested, ast.Lambda):
-                        analyze_scope([nested.body], request_roots, tainted)
+                        analyze_scope(
+                            [nested.body],
+                            request_roots,
+                            tainted,
+                            inherited_lookup_scopes=lookup_scopes,
+                        )
                     elif isinstance(
                         nested, (ast.ListComp, ast.SetComp, ast.GeneratorExp)
                     ):
                         analyze_scope(
-                            [nested.elt, *nested.generators], request_roots, tainted
+                            [nested.elt, *nested.generators],
+                            request_roots,
+                            tainted,
+                            inherited_lookup_scopes=lookup_scopes,
                         )
                     elif isinstance(nested, ast.DictComp):
                         analyze_scope(
                             [nested.key, nested.value, *nested.generators],
                             request_roots,
                             tainted,
+                            inherited_lookup_scopes=lookup_scopes,
                         )
 
             analyze_scope(tree.body, set(), set())
@@ -1533,6 +1611,45 @@ def test_request_model_privacy_gate_accepts_imported_engine_lookup(tmp_path):
     (route_dir / "scratch.py").write_text(source, encoding="utf-8")
 
     assert _request_model_violations(tmp_path) == []
+
+
+def test_request_model_privacy_gate_rejects_module_rebound_lookup(tmp_path):
+    route_dir = tmp_path / "rapid_mlx/routes"
+    route_dir.mkdir(parents=True)
+    source = (
+        "from rapid_mlx.service.helpers import get_engine as lookup\n"
+        "from rapid_mlx.telemetry.inference import emit_completed_request\n"
+        "from rapid_mlx.telemetry.model_id import engine_telemetry_id\n"
+        "lookup = lambda value: value\n\n"
+        "def scratch(request):\n"
+        "    engine = lookup(request.model)\n"
+        "    emit_completed_request(\n"
+        "        model=engine_telemetry_id(engine), endpoint='/v1/test'\n"
+        "    )\n"
+    )
+    (route_dir / "scratch.py").write_text(source, encoding="utf-8")
+
+    assert _request_model_violations(tmp_path) == ["rapid_mlx/routes/scratch.py:8"]
+
+
+def test_request_model_privacy_gate_rejects_enclosing_rebound_lookup(tmp_path):
+    route_dir = tmp_path / "rapid_mlx/routes"
+    route_dir.mkdir(parents=True)
+    source = (
+        "from rapid_mlx.service.helpers import get_engine as lookup\n"
+        "from rapid_mlx.telemetry.inference import emit_completed_request\n"
+        "from rapid_mlx.telemetry.model_id import engine_telemetry_id\n\n"
+        "def outer(request):\n"
+        "    lookup = lambda value: value\n"
+        "    def scratch():\n"
+        "        engine = lookup(request.model)\n"
+        "        emit_completed_request(\n"
+        "            model=engine_telemetry_id(engine), endpoint='/v1/test'\n"
+        "        )\n"
+    )
+    (route_dir / "scratch.py").write_text(source, encoding="utf-8")
+
+    assert _request_model_violations(tmp_path) == ["rapid_mlx/routes/scratch.py:9"]
 
 
 @pytest.mark.parametrize(
