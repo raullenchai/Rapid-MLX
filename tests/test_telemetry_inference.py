@@ -3888,3 +3888,22 @@ async def test_midstream_engine_abort_is_classified_without_message_text(
     assert events[0]["error_class"] == "insufficient_memory"
     assert events[0]["caller"] == "openai-node"
     assert "alice" not in repr(events)
+
+
+def test_classifier_route_order_for_template_first_handlers():
+    from rapid_mlx.request import InferenceAbortedError
+    from rapid_mlx.telemetry import inference
+
+    template_abort = InferenceAbortedError("chat template render aborted")
+    media_abort = InferenceAbortedError("Failed to process image: x")
+    oom = InferenceAbortedError("Metal: out of memory")
+    # chat order: abort category wins
+    assert inference.classify_inference_failure(template_abort) == "engine_aborted"
+    # anthropic / non-stream responses order: the 400 predicates win
+    for exc, expected in (
+        (template_abort, "template_error"),
+        (media_abort, "media_input_invalid"),
+        (oom, "insufficient_memory"),
+        (RuntimeError("boom"), "other"),
+    ):
+        assert inference.classify_inference_failure(exc, abort_first=False) == expected

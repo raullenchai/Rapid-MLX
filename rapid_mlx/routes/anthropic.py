@@ -965,7 +965,9 @@ async def create_anthropic_message(
                     else None
                 ),
                 result="failed",
-                error_class=_telemetry_inference.classify_inference_failure(e),
+                error_class=_telemetry_inference.classify_inference_failure(
+                    e, abort_first=False
+                ),
             )
             err_msg = str(e)
             if is_chat_template_error(e):

@@ -1915,7 +1915,9 @@ async def _non_stream(
         from rapid_mlx.telemetry import inference as _telemetry_inference
 
         _record_nonstream_failure(
-            engine, request, _telemetry_inference.classify_inference_failure(e)
+            engine,
+            request,
+            _telemetry_inference.classify_inference_failure(e, abort_first=False),
         )
         from ..request import (
             is_batch_cap_error,

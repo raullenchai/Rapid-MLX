@@ -2229,3 +2229,27 @@ def test_deepseek_deferred_route_failure_is_counted_when_not_retried(monkeypatch
     assert [(c["result"], c.get("error_class")) for c in calls] == [
         ("failed", "output_contract_unmet")
     ]
+
+
+def test_nonstream_abort_matching_template_predicate_counts_template_error(
+    monkeypatch,
+):
+    """/v1/responses tests the template predicate first and answers 400; the
+    telemetry class must follow that route order, not the chat order."""
+
+    class _Engine(_HealthyEngine):
+        async def chat(self, messages, **kwargs):
+            from rapid_mlx.request import InferenceAbortedError
+
+            raise InferenceAbortedError("chat template render aborted")
+
+    holder = _build_client(monkeypatch, _Engine)
+    try:
+        calls = _capture_emits(monkeypatch)
+        resp = holder.client.post("/v1/responses", json=PAYLOAD, headers=HEADERS)
+    finally:
+        holder.cleanup()
+    assert resp.status_code == 400, resp.text
+    assert [(c["result"], c["error_class"]) for c in calls] == [
+        ("failed", "template_error")
+    ]

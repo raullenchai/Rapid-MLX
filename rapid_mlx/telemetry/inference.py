@@ -155,31 +155,49 @@ _ABORT_CODE_CLASSES = {
 }
 
 
-def classify_inference_failure(exc: BaseException | None) -> str:
+def classify_inference_failure(
+    exc: BaseException | None, *, abort_first: bool = True
+) -> str:
     """Map a failed request's exception onto the closed ``inference_error_class``.
 
     Mirrors the decisions the routes already make, through the SAME predicates
-    (``rapid_mlx.request``), in the same order as the chat route's handler:
-    engine abort category first, then chat-template, media-input and per-batch
-    cap errors. The exception text is read here, inside the process, but only
-    a registry enum value is ever returned — never ``str(exc)``. Total: any
-    unexpected input or internal failure yields ``"other"``.
+    (``rapid_mlx.request``), in the SAME order as the calling handler:
+
+    * ``abort_first=True`` (chat, completions, stream wrappers): engine abort
+      category first, then chat-template, media-input and per-batch-cap
+      errors -- the chat handler's order.
+    * ``abort_first=False`` (the anthropic and non-stream /v1/responses
+      handlers): those handlers test the template / media / batch-cap
+      predicates BEFORE anything else, so an abort whose text matches one is
+      answered as that 400 and must be classified as it; the abort category
+      applies only after them.
+
+    The exception text is read here, inside the process, but only a registry
+    enum value is ever returned — never ``str(exc)``. Total: any unexpected
+    input or internal failure yields ``"other"``.
     """
     try:
         if exc is None:
             return "other"
         from rapid_mlx import request as request_module
 
-        if isinstance(exc, request_module.InferenceAbortedError):
-            code = request_module.inference_aborted_error_code(exc)
-            return _ABORT_CODE_CLASSES.get(code, "other")
+        def abort_class() -> str | None:
+            if isinstance(exc, request_module.InferenceAbortedError):
+                code = request_module.inference_aborted_error_code(exc)
+                return _ABORT_CODE_CLASSES.get(code, "other")
+            return None
+
+        if abort_first:
+            aborted = abort_class()
+            if aborted is not None:
+                return aborted
         if request_module.is_chat_template_error(exc):
             return "template_error"
         if request_module.is_media_input_error(exc):
             return "media_input_invalid"
         if request_module.is_batch_cap_error(exc):
             return "prompt_too_large"
-        return "other"
+        return abort_class() or "other"
     except Exception:
         return "other"
 
