@@ -840,6 +840,13 @@ def test_model_type_tokens_match_registry():
 
 _REQUEST_ROOT_NAME = re.compile(r"^(request|req|body|payload|.*_request|.*_body)$")
 _REQUEST_TYPE_SUFFIXES = ("Request", "Body", "Params")
+#: FastAPI markers whose parameter VALUE is client-controlled request input.
+_REQUEST_PARAM_MARKERS = frozenset(
+    {"Form", "Query", "Body", "Header", "Cookie", "File", "Path", "UploadFile"}
+)
+_ROUTE_DECORATOR_METHODS = frozenset(
+    {"get", "post", "put", "patch", "delete", "api_route", "websocket"}
+)
 _REQUEST_MODEL_DEBUG_HANDLERS = frozenset(
     {
         "rapid_mlx/routes/anthropic.py:_stream_anthropic_messages",
@@ -1046,13 +1053,68 @@ def _assigned_request_value(node: ast.AST) -> bool:
     )
 
 
+def _call_name(node: ast.AST) -> str | None:
+    if not isinstance(node, ast.Call):
+        return None
+    if isinstance(node.func, ast.Name):
+        return node.func.id
+    if isinstance(node.func, ast.Attribute):
+        return node.func.attr
+    return None
+
+
+def _is_route_handler(
+    function: ast.FunctionDef | ast.AsyncFunctionDef | ast.Lambda,
+) -> bool:
+    return not isinstance(function, ast.Lambda) and any(
+        _call_name(decorator) in _ROUTE_DECORATOR_METHODS
+        for decorator in function.decorator_list
+    )
+
+
+def _parameter_defaults(
+    function: ast.FunctionDef | ast.AsyncFunctionDef | ast.Lambda,
+) -> dict[str, ast.AST]:
+    positional = [*function.args.posonlyargs, *function.args.args]
+    defaults = dict(
+        zip(
+            (
+                argument.arg
+                for argument in positional[
+                    len(positional) - len(function.args.defaults) :
+                ]
+            ),
+            function.args.defaults,
+            strict=True,
+        )
+    )
+    defaults.update(
+        (argument.arg, default)
+        for argument, default in zip(
+            function.args.kwonlyargs, function.args.kw_defaults, strict=True
+        )
+        if default is not None
+    )
+    return defaults
+
+
 def _function_request_roots(
     function: ast.FunctionDef | ast.AsyncFunctionDef | ast.Lambda,
     nodes: list[ast.AST],
     imported: dict[str, str],
     pydantic_models: set[str],
 ) -> set[str]:
+    """Names whose value (or ``.model``) is client-controlled in ``function``.
+
+    Every parameter of a route handler is request input as a VALUE — a bare
+    multipart ``model: str = Form(...)`` is exactly as attacker-controlled as
+    ``request.model`` — except ``Depends(...)`` injections. Outside route
+    handlers, a ``Form``/``Query``/``Body``/``Header``/``File`` default or
+    annotation marks the same thing.
+    """
     roots: set[str] = set()
+    route_handler = _is_route_handler(function)
+    defaults = _parameter_defaults(function)
     arguments = [
         *function.args.posonlyargs,
         *function.args.args,
@@ -1068,7 +1130,17 @@ def _function_request_roots(
         typed_request = any(
             name.endswith(_REQUEST_TYPE_SUFFIXES) for name in annotation_names
         ) or any(imported.get(name) in pydantic_models for name in annotation_names)
-        if _REQUEST_ROOT_NAME.fullmatch(argument.arg) or typed_request:
+        default_marker = _call_name(defaults.get(argument.arg, ast.Constant(None)))
+        request_param = default_marker in _REQUEST_PARAM_MARKERS or bool(
+            annotation_names & _REQUEST_PARAM_MARKERS
+        )
+        injected = default_marker == "Depends" or "Depends" in annotation_names
+        if (
+            _REQUEST_ROOT_NAME.fullmatch(argument.arg)
+            or typed_request
+            or request_param
+            or (route_handler and not injected)
+        ):
             roots.add(argument.arg)
 
     for node in nodes:
@@ -1194,6 +1266,14 @@ def _request_model_violations(
     neither can echo its string argument. Calls are matched by qualified symbol
     identity, so a same-named local function is not a privacy boundary. All
     other calls, including telemetry model-id helpers, propagate taint.
+
+    Taint also crosses module-local calls: an argument that is tainted at a
+    call to a module-level function makes the matching parameter a request
+    root inside that function (iterated to a fixpoint), so a route handler
+    handing its ``model`` form field to a helper that emits telemetry is
+    caught at the helper's sink. The two engine-lookup boundaries above are
+    the exception: they are the reviewed place where a request name becomes a
+    resident engine, so their parameters are not re-tainted.
     """
     violations: list[str] = []
     pydantic_models = _pydantic_model_classes(repo_root)
@@ -1206,6 +1286,12 @@ def _request_model_violations(
             tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
             module_name = _module_name(repo_root, path)
             imported = _imported_names(module_name, tree)
+            module_functions = {
+                f"{module_name}.{node.name}": node
+                for node in tree.body
+                if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
+            }
+            param_taint: dict[str, set[str]] = {}
             telemetry_names: set[str] = set()
             telemetry_modules: set[str] = set()
             for node in ast.walk(tree):
@@ -1486,10 +1572,49 @@ def _request_model_violations(
                     dict[str, list[tuple[tuple[int, int], str | None]]]
                 ],
                 path: Path = path,
+                module_functions: dict[
+                    str, ast.FunctionDef | ast.AsyncFunctionDef
+                ] = module_functions,
+                param_taint: dict[str, set[str]] = param_taint,
             ) -> None:
                 for node in nodes:
                     if not isinstance(node, ast.Call):
                         continue
+                    callee_name = None
+                    if isinstance(node.func, ast.Name):
+                        position = (node.lineno, node.col_offset)
+                        for scope in lookup_scopes:
+                            for binding_position, value in scope.get(node.func.id, ()):
+                                if binding_position <= position:
+                                    callee_name = value
+                    # The engine-lookup boundaries are reviewed not to echo
+                    # their argument; their callers already stop taint there.
+                    callee = (
+                        None
+                        if callee_name in _ENGINE_LOOKUP_FUNCTIONS
+                        else module_functions.get(callee_name or "")
+                    )
+                    if callee is not None:
+                        positional = [*callee.args.posonlyargs, *callee.args.args]
+                        passed = [
+                            *zip(positional, node.args, strict=False),
+                            *(
+                                (argument, keyword.value)
+                                for keyword in node.keywords
+                                for argument in (
+                                    *positional,
+                                    *callee.args.kwonlyargs,
+                                )
+                                if argument.arg == keyword.arg
+                            ),
+                        ]
+                        param_taint.setdefault(callee_name or "", set()).update(
+                            argument.arg
+                            for argument, value in passed
+                            if expression_is_tainted(
+                                value, tainted, request_roots, lookup_scopes
+                            )
+                        )
                     if any(
                         expression_is_tainted(
                             expression, tainted, request_roots, lookup_scopes
@@ -1516,6 +1641,10 @@ def _request_model_violations(
                 module_name: str = module_name,
                 path: Path = path,
                 pydantic_models: set[str] = pydantic_models,
+                module_functions: dict[
+                    str, ast.FunctionDef | ast.AsyncFunctionDef
+                ] = module_functions,
+                param_taint: dict[str, set[str]] = param_taint,
             ) -> None:
                 nodes = _scope_nodes(body)
                 request_roots = set(inherited_roots)
@@ -1568,6 +1697,9 @@ def _request_model_violations(
                             function, nodes, imported, pydantic_models
                         )
                     )
+                    for qualified, candidate in module_functions.items():
+                        if candidate is function:
+                            request_roots.update(param_taint.get(qualified, set()))
                     debug_key = (
                         f"{path.relative_to(repo_root)}:{function.name}"
                         if isinstance(function, (ast.FunctionDef, ast.AsyncFunctionDef))
@@ -1618,7 +1750,13 @@ def _request_model_violations(
                             inherited_lookup_scopes=lookup_scopes,
                         )
 
-            analyze_scope(tree.body, set(), set())
+            module_start = len(violations)
+            while True:
+                before = {key: set(params) for key, params in param_taint.items()}
+                del violations[module_start:]
+                analyze_scope(tree.body, set(), set())
+                if param_taint == before:
+                    break
 
     return violations
 
@@ -2690,6 +2828,11 @@ async def test_audio_transcription_success_emits_completed_request(monkeypatch):
     response = {"text": "transcribed"}
 
     async def fake_stt_request(**_kwargs):
+        # The runner names the RESIDENT engine that served the request; the
+        # completed event reports that, never the request's form field.
+        audio._note_served_stt_engine(
+            SimpleNamespace(model_name=audio._resolve_stt_model("whisper-large-v3"))
+        )
         return response
 
     monkeypatch.setattr(probe, "require_mlx_audio_stt", lambda: None)
@@ -2773,6 +2916,8 @@ async def test_audio_alignment_success_emits_completed_request(monkeypatch):
 
     assert result is response
     assert len(calls) == 1
+    # No engine was noted by the (stubbed) runner: fail closed to <custom>.
+    assert calls[0]["model"] == "<custom>"
     assert calls[0]["endpoint"] == "/v1/audio/transcriptions"
     assert calls[0]["result"] == "ok"
 
@@ -3085,3 +3230,195 @@ def test_inference_and_capability_events_reach_loopback_as_exact_json(
     assert "username" not in repr(items)
     assert str(tmp_path) not in repr(items)
     assert "127.0.0.1" not in repr(items)
+
+
+_PRIVATE_FORM_MODEL = "evil-org/private-repo"
+
+
+@pytest.mark.parametrize(
+    ("path", "data", "code"),
+    [
+        (
+            "/v1/audio/translations",
+            {"model": _PRIVATE_FORM_MODEL},
+            "invalid_model_for_translation",
+        ),
+        (
+            "/v1/audio/transcriptions",
+            {
+                "model": _PRIVATE_FORM_MODEL,
+                "response_format": "verbose_json",
+                "timestamp_granularities[]": "word",
+            },
+            "invalid_model_for_word_timestamps",
+        ),
+    ],
+    ids=["translation-non-whisper", "word-timestamps-non-whisper"],
+)
+def test_audio_pre_engine_rejection_never_reports_form_model_on_the_wire(
+    monkeypatch, path, data, code
+):
+    """A multipart ``model`` field is request input, not telemetry identity.
+
+    ``telemetry_model_id`` is stubbed to echo its input (as it would for a
+    repo with public proof), so any request-derived value that reached it
+    would land on the loopback wire verbatim.
+    """
+    from fastapi import FastAPI
+    from fastapi.testclient import TestClient
+
+    import rapid_mlx
+    from rapid_mlx.config import get_config
+    from rapid_mlx.routes import audio
+    from rapid_mlx.telemetry import (
+        consent_runtime,
+        inference,
+        model_id,
+        posthog_sender,
+    )
+    from rapid_mlx.telemetry import track as track_module
+    from rapid_mlx.telemetry.build_gate import ReleaseStamp
+
+    stamp = ReleaseStamp(channel="stable", posthog_key="phc_" + "a" * 32)
+    monkeypatch.setattr(rapid_mlx, "__version__", "0.15.1")
+    monkeypatch.setattr(track_module.build_gate, "official_build", lambda: stamp)
+    monkeypatch.setattr(consent_runtime, "upload_allowed", lambda: True)
+    identity_inputs: list[object] = []
+    monkeypatch.setattr(
+        model_id,
+        "telemetry_model_id",
+        lambda ref: identity_inputs.append(ref) or str(ref),
+    )
+    track_module._reset_for_tests()
+    posthog_sender._reset_for_tests()
+
+    server = HTTPServer(("127.0.0.1", 0), _CaptureHandler)
+    server.bodies = []  # type: ignore[attr-defined]
+    loopback_url = f"http://127.0.0.1:{server.server_port}/batch/"
+    monkeypatch.setenv(posthog_sender.POSTHOG_URL_ENV, loopback_url)
+
+    def post(url: str, body: bytes, timeout: float) -> int:
+        assert url == loopback_url
+        request = urllib.request.Request(url, data=body, method="POST")
+        request.add_header("Content-Type", "application/json")
+        with urllib.request.urlopen(request, timeout=timeout) as response:
+            return int(response.status)
+
+    sender = posthog_sender.PostHogSender(
+        post=post, gate=lambda: stamp, allowed=lambda: True
+    )
+    monkeypatch.setattr(posthog_sender, "get_sender", lambda: sender)
+    cfg = get_config()
+    monkeypatch.setattr(cfg, "api_key", None)
+    app = FastAPI()
+    app.include_router(audio.router)
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    try:
+        response = TestClient(app).post(
+            path,
+            data=data,
+            files={"file": ("clip.wav", b"RIFF", "audio/wav")},
+        )
+        inference._QUEUE.join()
+        sender.flush(2.0)
+    finally:
+        sender.close(0.5)
+        server.shutdown()
+        thread.join(timeout=2.0)
+        server.server_close()
+
+    assert response.status_code == 400
+    assert response.json()["detail"]["error"]["code"] == code
+    items = [
+        item
+        for body in server.bodies  # type: ignore[attr-defined]
+        for item in json.loads(body)["batch"]
+    ]
+    rejected = [item for item in items if item["event"] == "capability_rejected"]
+    assert len(rejected) == 1
+    assert rejected[0]["properties"]["capability"] == "speech_capability_unsupported"
+    assert "model" not in rejected[0]["properties"]
+    assert identity_inputs == []
+    wire = b"".join(server.bodies).decode()  # type: ignore[attr-defined]
+    assert "evil-org" not in wire
+    assert "private-repo" not in wire
+
+
+def _scratch_route(tmp_path, source: str) -> list[str]:
+    route_dir = tmp_path / "rapid_mlx/routes"
+    route_dir.mkdir(parents=True)
+    (route_dir / "scratch.py").write_text(source, encoding="utf-8")
+    return _request_model_violations(tmp_path)
+
+
+def test_privacy_gate_taints_form_field_through_module_helpers(tmp_path):
+    """The pre-fix audio shape: handler Form field -> resolver -> helper sink."""
+    source = (
+        "from fastapi import APIRouter, Form, UploadFile\n"
+        "from rapid_mlx.telemetry.inference import emit_capability_rejected\n"
+        "router = APIRouter()\n\n"
+        "def _resolve(model):\n"
+        "    return ALIASES.get(model, model)\n\n"
+        "def _reject(model, *, caller_agent=None):\n"
+        "    resolved = _resolve(model)\n"
+        "    emit_capability_rejected('x', model=resolved)\n\n"
+        "def _later(file, choice=None):\n"
+        "    emit_capability_rejected('x', model=_resolve(choice))\n\n"
+        "@router.post('/v1/scratch')\n"
+        "async def handler(file: UploadFile, model_form: str | None = Form(None)):\n"
+        "    model = model_form or 'default'\n"
+        "    _reject(model, caller_agent=None)\n"
+        "    _later(file, choice=model)\n"
+    )
+    assert _scratch_route(tmp_path, source) == [
+        "rapid_mlx/routes/scratch.py:10",
+        "rapid_mlx/routes/scratch.py:13",
+    ]
+
+
+@pytest.mark.parametrize(
+    ("signature", "decorator"),
+    [
+        ("model: str = ''", "@router.get('/v1/scratch')\n"),
+        ("model: str = Query('')", ""),
+        ("model: Annotated[str, Header()] = ''", ""),
+        ("model: str = Body(...)", ""),
+    ],
+    ids=["route-handler-bare-param", "query-default", "header-annotation", "body"],
+)
+def test_privacy_gate_treats_route_and_marker_params_as_values(
+    tmp_path, signature, decorator
+):
+    source = (
+        "from typing import Annotated\n"
+        "from fastapi import APIRouter, Body, Header, Query\n"
+        "from rapid_mlx.telemetry.inference import emit_capability_rejected\n"
+        "router = APIRouter()\n\n"
+        f"{decorator}async def handler({signature}):\n"
+        "    emit_capability_rejected('x', model=model.strip())\n"
+    )
+    violations = _scratch_route(tmp_path, source)
+    assert len(violations) == 1
+    assert violations[0].startswith("rapid_mlx/routes/scratch.py:")
+
+
+def test_privacy_gate_leaves_depends_and_engine_lookup_boundaries_clean(tmp_path):
+    source = (
+        "from fastapi import APIRouter, Depends, Form\n"
+        "from rapid_mlx.telemetry.inference import emit_capability_rejected\n"
+        "from rapid_mlx.telemetry.model_id import engine_telemetry_id\n"
+        "router = APIRouter()\n\n"
+        "def _image_engine(model_name=''):\n"
+        "    engine = REGISTRY.get_engine(model_name)\n"
+        "    emit_capability_rejected('x', model=engine_telemetry_id(engine))\n"
+        "    return engine\n\n"
+        "@router.post('/v1/scratch')\n"
+        "async def handler(model: str = Form(''), engine=Depends(current_engine)):\n"
+        "    _image_engine(model)\n"
+        "    emit_capability_rejected('x', model=engine_telemetry_id(engine))\n"
+    )
+    route_dir = tmp_path / "rapid_mlx/routes"
+    route_dir.mkdir(parents=True)
+    (route_dir / "images.py").write_text(source, encoding="utf-8")
+    assert _request_model_violations(tmp_path) == []

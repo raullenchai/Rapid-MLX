@@ -4,6 +4,7 @@
 import asyncio
 import base64
 import binascii
+import contextvars
 import io
 import logging
 import math
@@ -16,7 +17,7 @@ import wave
 from collections.abc import Callable
 from concurrent.futures import ThreadPoolExecutor
 from contextlib import asynccontextmanager
-from typing import Any, cast
+from typing import Any
 
 from fastapi import (
     APIRouter,
@@ -167,6 +168,26 @@ _AUDIO_READ_CHUNK_SIZE = 1024 * 1024  # 1 MB chunks
 
 # Audio engines (lazy loaded, module-level to persist across requests)
 _stt_engine = None
+
+#: Telemetry id of the STT/aligner engine that served the current request,
+#: captured under the STT lane lock by the request runners. Telemetry model
+#: identity comes ONLY from the engine that actually ran — never from the
+#: request's ``model`` form/query field, which passes ``org/name`` strings
+#: through verbatim (see ``rapid_mlx/telemetry/events.json`` ``model_id``).
+_SERVED_STT_TELEMETRY_ID: contextvars.ContextVar[str | None] = contextvars.ContextVar(
+    "rapid_mlx_served_stt_telemetry_id", default=None
+)
+
+
+def _note_served_stt_engine(engine: object) -> None:
+    """Record the telemetry id of the resident engine that just ran."""
+    from rapid_mlx.telemetry.model_id import telemetry_model_id
+
+    _SERVED_STT_TELEMETRY_ID.set(
+        telemetry_model_id(getattr(engine, "model_name", None))
+    )
+
+
 _tts_engine = None
 _music_engine: Any = None
 
@@ -567,10 +588,12 @@ def _reject_non_whisper_for_translation(
         return
     from rapid_mlx.telemetry.inference import emit_capability_rejected
 
+    # No ``model``: ``resolved`` is the request's form field (``org/name``
+    # passes through verbatim) and no engine has loaded — telemetry model
+    # identity comes only from a resident engine, never from the request.
     emit_capability_rejected(
         "speech_capability_unsupported",
         model_type="audio",
-        model=resolved,
         caller_agent=caller_agent,
         caller_client=caller_client,
     )
@@ -631,10 +654,12 @@ def _reject_word_timestamps_for_non_whisper(
         return
     from rapid_mlx.telemetry.inference import emit_capability_rejected
 
+    # No ``model``: ``resolved`` is the request's form field (``org/name``
+    # passes through verbatim) and no engine has loaded — telemetry model
+    # identity comes only from a resident engine, never from the request.
     emit_capability_rejected(
         "speech_capability_unsupported",
         model_type="audio",
-        model=resolved,
         caller_agent=caller_agent,
         caller_client=caller_client,
     )
@@ -1535,6 +1560,7 @@ async def _run_stt_request(
                 tmp_path,
                 **transcribe_kwargs,
             )
+            _note_served_stt_engine(_stt_engine)
 
         # R6-H2: branch on the validated ``response_format`` so callers
         # that requested ``srt`` / ``vtt`` / ``verbose_json`` actually
@@ -1550,10 +1576,11 @@ async def _run_stt_request(
     except ImportError:
         from rapid_mlx.telemetry.inference import emit_capability_rejected
 
+        # No ``model``: ``model_name`` is the resolved request form field
+        # and no engine served it (see ``_note_served_stt_engine``).
         emit_capability_rejected(
             "runtime_extra_missing",
             model_type="audio",
-            model=model_name,
             caller_agent=caller_agent,
             caller_client=caller_client,
         )
@@ -2043,10 +2070,11 @@ async def _run_alignment_request(
     if not _is_aligner_model(model_name):
         from rapid_mlx.telemetry.inference import emit_capability_rejected
 
+        # No ``model``: ``model_name`` is the resolved request form field
+        # and no engine has loaded (see ``_note_served_stt_engine``).
         emit_capability_rejected(
             "speech_capability_unsupported",
             model_type="audio",
-            model=model_name,
             caller_agent=caller_agent,
             caller_client=caller_client,
         )
@@ -2154,16 +2182,18 @@ async def _run_alignment_request(
             result = await run_to_completion(
                 _align_blocking, model_name, tmp_path, text, language
             )
+            _note_served_stt_engine(_aligner_engine)
 
         return _format_stt_response(result, response_format, task="transcribe")
 
     except ImportError:
         from rapid_mlx.telemetry.inference import emit_capability_rejected
 
+        # No ``model``: ``model_name`` is the resolved request form field
+        # and no engine served it (see ``_note_served_stt_engine``).
         emit_capability_rejected(
             "runtime_extra_missing",
             model_type="audio",
-            model=model_name,
             caller_agent=caller_agent,
             caller_client=caller_client,
         )
@@ -2512,6 +2542,7 @@ async def create_transcription(
 
     require_mlx_audio_stt()
 
+    _SERVED_STT_TELEMETRY_ID.set(None)
     if is_alignment:
         response = await _run_alignment_request(
             file=file,
@@ -2535,10 +2566,11 @@ async def create_transcription(
             caller_client=caller_client,
         )
 
-    from rapid_mlx.telemetry.model_id import telemetry_model_id
+    from rapid_mlx.telemetry.model_id import CUSTOM
 
+    served_model = _SERVED_STT_TELEMETRY_ID.get()
     _telemetry_inference.emit_completed_request(
-        model=telemetry_model_id(_resolve_stt_model(cast(str, model))),
+        model=served_model if served_model is not None else CUSTOM,
         endpoint="/v1/audio/transcriptions",
         caller_agent=caller_agent,
         caller_client=caller_client,
