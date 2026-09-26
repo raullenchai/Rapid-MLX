@@ -245,6 +245,33 @@ def test_registry_is_the_only_event_gate(monkeypatch):
     assert sender.items == []
 
 
+def test_would_accept_is_track_acceptance_authority(monkeypatch):
+    sender = inject_sender(monkeypatch)
+    decisions: list[tuple[str, dict[str, object]]] = []
+
+    def reject(event, props):
+        decisions.append((event, dict(props)))
+        return False
+
+    monkeypatch.setattr(track_module, "would_accept", reject)
+
+    assert track_module.track("app_opened", {}) is False
+    assert decisions == [("app_opened", {})]
+    assert sender.items == []
+
+
+def test_decided_track_does_not_recheck_acceptance(monkeypatch):
+    sender = inject_sender(monkeypatch)
+    monkeypatch.setattr(
+        track_module,
+        "would_accept",
+        lambda *_args: pytest.fail("accepted event was re-decided"),
+    )
+
+    assert track_module.track("app_opened", {}, decided=True) is True
+    assert [item["event"] for item in sender.items] == ["app_opened"]
+
+
 def test_zero_nth_model_served_is_omitted(monkeypatch):
     sender = inject_sender(monkeypatch)
     result = track_module.track("app_opened", {}, nth_model_served=0)

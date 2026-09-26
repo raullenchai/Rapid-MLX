@@ -10,7 +10,14 @@ from datetime import date, datetime, timezone
 from typing import TYPE_CHECKING, Protocol
 
 import rapid_mlx
-from rapid_mlx.telemetry import build_gate, common_props, envelope, state, store
+from rapid_mlx.telemetry import (
+    build_gate,
+    common_props,
+    envelope,
+    registry,
+    state,
+    store,
+)
 
 if TYPE_CHECKING:
     from rapid_mlx.telemetry.consent_decision import ProcessRole
@@ -142,16 +149,35 @@ def _days_since_first_run_bucket() -> str | None:
         return _cohort_bucket
 
 
+def _accepted_props(
+    event: str, props: Mapping[str, object]
+) -> dict[str, object] | None:
+    """Apply the sole consent and event-registry acceptance decision."""
+    try:
+        if not _upload_allowed():
+            return None
+        return registry.validate(event, dict(props))
+    except Exception:
+        return None
+
+
+def would_accept(event: str, props: Mapping[str, object]) -> bool:
+    """Return whether the consent gate and event registry accept this event."""
+    return _accepted_props(event, props) is not None
+
+
 def track(
     event: str,
     props: Mapping[str, object],
     *,
     nth_model_served: int | None = None,
+    decided: bool = False,
 ) -> bool:
     """Queue one registry-approved v2 event and report sender acceptance."""
     try:
-        if not _upload_allowed():
+        if not decided and not would_accept(event, props):
             return False
+        accepted_props = dict(props)
         context = _process_context()
         if context is None:
             return False
@@ -171,7 +197,7 @@ def track(
         )
         if common is None:
             return False
-        item = envelope.build_batch_item(event, props, common)
+        item = envelope._build_batch_item_from_validated(event, accepted_props, common)
         if item is None:
             return False
 
