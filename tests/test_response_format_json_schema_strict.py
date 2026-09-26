@@ -2665,3 +2665,95 @@ def test_nonstream_strict_502_counts_one_strict_schema_violation(
     assert calls[0]["error_class"] == "strict_schema_violation"
     assert calls[0]["endpoint"] == endpoint
     assert calls[0]["caller_agent"] == "OpenAI/JS 5.23.0"
+
+
+class _EngineThatBreaksOnRepair(_Engine):
+    """First (unconstrained) attempt misses the schema; the repair turn raises
+    an engine OOM abort."""
+
+    async def chat(self, *, messages, **kwargs):
+        from rapid_mlx.request import InferenceAbortedError
+
+        is_repair = len(self.chat_calls) > 0
+        self.chat_calls.append({"messages": messages, "kwargs": kwargs})
+        if is_repair:
+            raise InferenceAbortedError("Metal: out of memory at /Users/alice/x")
+        return GenerationOutput(
+            text=_INVALID_PAYLOAD_OUT_OF_RANGE,
+            new_text=_INVALID_PAYLOAD_OUT_OF_RANGE,
+            prompt_tokens=4,
+            completion_tokens=5,
+            finished=True,
+            finish_reason="stop",
+            channel=None,
+        )
+
+
+_LIFECYCLE_TASK = object()
+
+
+class _ReplacedDuringGuidedEngine(_Engine):
+    def consume_lifecycle_task_abort(self, task):
+        return task is _LIFECYCLE_TASK
+
+    async def generate_with_schema(self, *, messages, json_schema, **kwargs):
+        from rapid_mlx.api.errors import GuidedGenerationCancelledError
+
+        raise GuidedGenerationCancelledError(lifecycle_task=_LIFECYCLE_TASK)
+
+
+def _post_strict(endpoint, engine, rate_limiter_state):
+    if endpoint == "/v1/responses":
+        client = _make_responses_client(engine, rate_limiter_state)
+        body = _responses_payload(strict=True)
+    else:
+        client = _make_client(engine)
+        body = _payload(strict=True)
+    return client.post(endpoint, json=body)
+
+
+@pytest.mark.parametrize("endpoint", ["/v1/chat/completions", "/v1/responses"])
+def test_strict_repair_engine_failure_counts_the_classified_exception(
+    monkeypatch, _rate_limiter_state, endpoint
+):
+    calls = _capture_failed_emits(monkeypatch)
+    resp = _post_strict(
+        endpoint, _EngineThatBreaksOnRepair(supports_guided=False), _rate_limiter_state
+    )
+    assert resp.status_code == 502, resp.text
+    assert resp.json()["error"]["code"] == "strict_repair_engine_failure"
+    assert [(c["result"], c["error_class"]) for c in calls] == [
+        ("failed", "insufficient_memory")
+    ]
+    assert "alice" not in repr(calls)
+
+
+@pytest.mark.parametrize("endpoint", ["/v1/chat/completions", "/v1/responses"])
+def test_strict_422_after_repair_counts_strict_schema_violation(
+    monkeypatch, _rate_limiter_state, endpoint
+):
+    calls = _capture_failed_emits(monkeypatch)
+    resp = _post_strict(
+        endpoint,
+        _Engine(supports_guided=False, chat_text=_INVALID_PAYLOAD_OUT_OF_RANGE),
+        _rate_limiter_state,
+    )
+    assert resp.status_code == 422, resp.text
+    assert resp.json()["error"]["code"] == "json_schema_violation"
+    assert [(c["result"], c["error_class"]) for c in calls] == [
+        ("failed", "strict_schema_violation")
+    ]
+
+
+@pytest.mark.parametrize("endpoint", ["/v1/chat/completions", "/v1/responses"])
+def test_nonstream_guided_model_replacement_counts_model_replaced(
+    monkeypatch, _rate_limiter_state, endpoint
+):
+    calls = _capture_failed_emits(monkeypatch)
+    resp = _post_strict(
+        endpoint, _ReplacedDuringGuidedEngine(supports_guided=True), _rate_limiter_state
+    )
+    assert resp.status_code == 503, resp.text
+    assert [(c["result"], c["error_class"]) for c in calls] == [
+        ("failed", "model_replaced")
+    ]

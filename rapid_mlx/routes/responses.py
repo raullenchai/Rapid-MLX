@@ -1871,6 +1871,7 @@ async def _non_stream(
                 # Engine-owned cancellation is lifecycle control, never a
                 # strict-schema failure and never eligible for fallback.
                 if _consume_guided_lifecycle_cancel(engine, exc):
+                    _record_nonstream_failure(engine, request, "model_replaced")
                     raise HTTPException(
                         status_code=503,
                         detail="Request cancelled by model replacement",
@@ -1916,13 +1917,14 @@ async def _non_stream(
         _record_nonstream_failure(
             engine, request, _telemetry_inference.classify_inference_failure(e)
         )
+        from ..request import (
+            is_batch_cap_error,
+            is_chat_template_error,
+            is_media_input_error,
+        )
+
         err_msg = str(e)
-        err_type = type(e).__name__
-        if (
-            "TemplateError" in err_type
-            or "template" in err_msg.lower()
-            or ("user" in err_msg.lower() and "found" in err_msg.lower())
-        ):
+        if is_chat_template_error(e):
             raise HTTPException(
                 status_code=400, detail=f"Chat template error: {err_msg}"
             )
@@ -1933,9 +1935,8 @@ async def _non_stream(
         # for what is really an oversized-image / oversized-prompt user
         # error.
         if (
-            "Failed to process image" in err_msg
-            or "Failed to process video" in err_msg
-            or "exceeds the per-batch cap" in err_msg
+            is_media_input_error(e)
+            or is_batch_cap_error(e)
             or "content block" in err_msg
             or "input_text." in err_msg
             or "output_text." in err_msg
@@ -2043,6 +2044,13 @@ async def _non_stream(
                         type(repair_err).__name__,
                         repair_err,
                     )
+                    from rapid_mlx.telemetry import inference as _telemetry_inference
+
+                    _record_nonstream_failure(
+                        engine,
+                        request,
+                        _telemetry_inference.classify_inference_failure(repair_err),
+                    )
                     raise HTTPException(
                         status_code=502,
                         detail={
@@ -2107,6 +2115,7 @@ async def _non_stream(
                 attempts,
                 (failure_details or {}).get("message"),
             )
+            _record_nonstream_failure(engine, request, "strict_schema_violation")
             raise HTTPException(status_code=422, detail=envelope)
 
     # r6-A R6-C2: detect a degenerate engine output — no text, no

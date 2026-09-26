@@ -5812,6 +5812,9 @@ async def _create_chat_completion_impl(
                     # failure card (was a bare-string 503).
                     from ..request import lifecycle_cancel_error_payload
 
+                    _record_nonstream_failure(
+                        raw_request, served_telemetry_id, "model_replaced"
+                    )
                     raise HTTPException(
                         status_code=503,
                         detail={"error": lifecycle_cancel_error_payload()},
@@ -6128,6 +6131,13 @@ async def _create_chat_completion_impl(
                         type(repair_err).__name__,
                         repair_err,
                     )
+                    from rapid_mlx.telemetry import inference as _telemetry_inference
+
+                    _record_nonstream_failure(
+                        raw_request,
+                        served_telemetry_id,
+                        _telemetry_inference.classify_inference_failure(repair_err),
+                    )
                     raise HTTPException(
                         status_code=502,
                         detail={
@@ -6197,6 +6207,9 @@ async def _create_chat_completion_impl(
                 "R12-4 strict json_schema validation failed after %d attempt(s): %s",
                 attempts,
                 (failure_details or {}).get("message"),
+            )
+            _record_nonstream_failure(
+                raw_request, served_telemetry_id, "strict_schema_violation"
             )
             raise HTTPException(status_code=422, detail=envelope)
 
