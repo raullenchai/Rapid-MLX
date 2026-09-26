@@ -671,7 +671,8 @@ def _resolve_serve_port(
             raise SystemExit(2) from None
 
     if port is not None:
-        assert port_explicit is not None
+        if port_explicit is None:
+            raise ValueError("port_explicit must be provided when port is set")
         _port_preflight_or_die(
             host,
             port,

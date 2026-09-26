@@ -322,8 +322,9 @@ class TestResponsesNonStream:
         assert response.status_code == 400
         assert response.json()["error"]["code"] == "unsupported_tool_type"
 
-    def test_unsupported_tool_telemetry_posts_served_model_to_loopback(
-        self, responses_client, monkeypatch
+    @pytest.mark.parametrize("with_registry", [False, True])
+    def test_unsupported_tool_telemetry_never_posts_requested_model_to_loopback(
+        self, responses_client, monkeypatch, with_registry
     ):
         from rapid_mlx.telemetry import inference, posthog_sender
         from rapid_mlx.telemetry.build_gate import ReleaseStamp
@@ -367,11 +368,16 @@ class TestResponsesNonStream:
             ),
         )
         responses_client.cfg.model_path = "qwen3.5-4b-4bit"
+        if with_registry:
+            responses_client.cfg.model_registry = object()
 
         try:
             response = responses_client.client.post(
                 "/v1/responses",
-                json=_payload(tools=[{"type": "web_search"}]),
+                json=_payload(
+                    model="/Users/alice/secret",
+                    tools=[{"type": "web_search"}],
+                ),
                 headers={
                     "Authorization": "Bearer test-secret",
                     "x-rapid-client": "rapid-desktop",
@@ -391,18 +397,21 @@ class TestResponsesNonStream:
             for body in sink.bodies  # type: ignore[attr-defined]
             for item in json.loads(body)["batch"]
         ]
+        expected_properties = {
+            "capability": "tool_type_unsupported",
+            "model_type": "other",
+            "caller": "rapid-desktop",
+        }
+        if not with_registry:
+            expected_properties["model"] = "qwen3.5-4b-4bit"
         assert items == [
             {
                 "uuid": "01020304-0506-4708-890a-0b0c0d0e0f10",
                 "event": "capability_rejected",
-                "properties": {
-                    "capability": "tool_type_unsupported",
-                    "model_type": "other",
-                    "model": "qwen3.5-4b-4bit",
-                    "caller": "rapid-desktop",
-                },
+                "properties": expected_properties,
             }
         ]
+        assert "/Users/alice/secret" not in repr(items)
 
     def test_response_shape_matches_codex_expectation(self, responses_client):
         client = responses_client.client

@@ -200,10 +200,12 @@ def _image_engine(
             emit_capability_rejected,
             model_type_token,
         )
+        from rapid_mlx.telemetry.model_id import engine_telemetry_id
 
         emit_capability_rejected(
             "image_generation_unavailable",
             model_type=model_type_token(img_engine),
+            model=(engine_telemetry_id(img_engine) if img_engine is not None else None),
             caller_agent=caller_agent,
             caller_client=caller_client,
         )

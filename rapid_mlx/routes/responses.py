@@ -969,12 +969,21 @@ async def create_response(request: Request):
         )
     # Keep this gate ahead of tool-choice and model validation so requests
     # with multiple invalid fields retain their established error ordering.
-    # The server can resolve the selected served identity without loading or
-    # readying the engine; the identity-based value below remains authoritative
-    # for events emitted after engine selection.
-    from rapid_mlx.telemetry.model_id import served_model_id
+    # Before model validation, only a single configured engine is authoritative.
+    # A registry selection depends on the request's model field, so omit the
+    # identity there until the validated engine has been resolved below.
+    from rapid_mlx.telemetry.model_id import engine_telemetry_id
 
-    _preflight_telemetry_id = served_model_id(responses_request.model)
+    _preflight_engine = (
+        getattr(cfg_for_priming, "engine", None)
+        if not getattr(cfg_for_priming, "model_registry", None)
+        else None
+    )
+    _preflight_telemetry_id = (
+        engine_telemetry_id(_preflight_engine)
+        if _preflight_engine is not None
+        else None
+    )
     validate_responses_tool_types(
         responses_request.tools,
         telemetry_model=_preflight_telemetry_id,
@@ -998,8 +1007,6 @@ async def create_response(request: Request):
     if not (responses_request.model or "").startswith(("claude-", "gpt-")):
         _validate_model_name(responses_request.model)
     engine = get_engine(responses_request.model)
-    from rapid_mlx.telemetry.model_id import engine_telemetry_id
-
     _served_telemetry_id = engine_telemetry_id(engine)
     await ensure_engine_ready(engine)
 

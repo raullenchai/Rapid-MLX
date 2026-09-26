@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+import ast
 import asyncio
 import json
 import multiprocessing
@@ -834,6 +835,114 @@ def test_model_type_tokens_match_registry():
 
     declared = frozenset(registry.load_registry()["enums"]["model_type"]["values"])
     assert declared == inference._MODEL_TYPES
+
+
+def test_no_route_or_api_telemetry_call_receives_request_model_expression():
+    """Client model fields are routing input, never telemetry identity."""
+    forbidden_roots = {"request", "responses_request", "body"}
+    violations: list[str] = []
+
+    for directory in (REPO_ROOT / "rapid_mlx/routes", REPO_ROOT / "rapid_mlx/api"):
+        for path in directory.glob("*.py"):
+            tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
+            telemetry_names: set[str] = set()
+            telemetry_modules: set[str] = set()
+            for node in ast.walk(tree):
+                if (
+                    isinstance(node, ast.ImportFrom)
+                    and node.module
+                    and (
+                        node.module.startswith("rapid_mlx.telemetry")
+                        or node.module.startswith("telemetry")
+                    )
+                ):
+                    for alias in node.names:
+                        imported_name = alias.asname or alias.name
+                        telemetry_names.add(imported_name)
+                        telemetry_modules.add(imported_name)
+                elif isinstance(node, ast.Import):
+                    for alias in node.names:
+                        if alias.name.startswith("rapid_mlx.telemetry"):
+                            telemetry_modules.add(
+                                alias.asname or alias.name.split(".")[0]
+                            )
+
+            def contains_request_model(node: ast.AST) -> bool:
+                return any(
+                    isinstance(child, ast.Attribute)
+                    and child.attr == "model"
+                    and isinstance(child.value, ast.Name)
+                    and child.value.id in forbidden_roots
+                    for child in ast.walk(node)
+                )
+
+            for node in ast.walk(tree):
+                if not isinstance(node, ast.Call):
+                    continue
+                imported_telemetry_call = False
+                if isinstance(node.func, ast.Name):
+                    imported_telemetry_call = node.func.id in telemetry_names
+                elif isinstance(node.func, ast.Attribute):
+                    root = node.func.value
+                    while isinstance(root, ast.Attribute):
+                        root = root.value
+                    imported_telemetry_call = (
+                        isinstance(root, ast.Name) and root.id in telemetry_modules
+                    )
+                telemetry_keywords = [
+                    keyword.value
+                    for keyword in node.keywords
+                    if keyword.arg == "telemetry_model"
+                ]
+                if not imported_telemetry_call and not telemetry_keywords:
+                    continue
+                expressions = telemetry_keywords
+                if imported_telemetry_call:
+                    expressions.extend(node.args)
+                    expressions.extend(keyword.value for keyword in node.keywords)
+                if any(
+                    contains_request_model(expression) for expression in expressions
+                ):
+                    violations.append(f"{path.relative_to(REPO_ROOT)}:{node.lineno}")
+
+    assert violations == []
+
+
+def test_image_unavailable_reports_resident_engine_telemetry_id(monkeypatch):
+    from fastapi import HTTPException
+
+    from rapid_mlx.routes import images
+    from rapid_mlx.telemetry import inference, model_id
+
+    engine = SimpleNamespace(is_image_gen=False, modality="text")
+    cfg = SimpleNamespace(
+        engine=engine,
+        model_alias="private-alias",
+        model_name="private-name",
+        model_path="qwen3.5-4b-4bit",
+        model_registry=None,
+    )
+    monkeypatch.setattr("rapid_mlx.config.get_config", lambda: cfg)
+    monkeypatch.setattr("rapid_mlx.config.server_config.get_config", lambda: cfg)
+    calls: list[dict[str, object]] = []
+    monkeypatch.setattr(
+        inference,
+        "emit_capability_rejected",
+        lambda _capability, **context: calls.append(context),
+    )
+
+    with pytest.raises(HTTPException) as exc_info:
+        images._image_engine()
+
+    assert exc_info.value.status_code == 409
+    assert calls == [
+        {
+            "model_type": "llm",
+            "model": model_id.engine_telemetry_id(engine),
+            "caller_agent": None,
+            "caller_client": None,
+        }
+    ]
 
 
 @pytest.mark.asyncio

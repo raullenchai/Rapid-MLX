@@ -41,9 +41,12 @@ from __future__ import annotations
 import errno
 import os
 import socket
+import subprocess
+import sys
 import types
 from argparse import Namespace
 from contextlib import ExitStack
+from pathlib import Path
 
 import pytest
 
@@ -284,6 +287,32 @@ def test_port_probe_reports_non_collision_bind_error(
 def test_product_scan_defaults_remain_8000_through_8009():
     assert cli.DEFAULT_SERVE_PORT == 8000
     assert cli.DEFAULT_SERVE_PORT_CANDIDATES == 10
+
+
+def test_explicit_port_requires_provenance_under_optimized_python():
+    script = """
+from rapid_mlx import cli
+
+try:
+    cli._resolve_serve_port(
+        "127.0.0.1", 8123, model="model", port_explicit=None
+    )
+except ValueError as exc:
+    assert str(exc) == "port_explicit must be provided when port is set"
+else:
+    raise AssertionError("missing port provenance was accepted")
+"""
+    result = subprocess.run(
+        [sys.executable, "-O", "-c", script],
+        cwd=os.fspath(Path(__file__).resolve().parents[1]),
+        env=os.environ.copy(),
+        capture_output=True,
+        text=True,
+        timeout=30,
+        check=False,
+    )
+
+    assert result.returncode == 0, result.stderr
 
 
 def test_listen_fd_uses_bound_socket_port_and_keeps_fd_open():
