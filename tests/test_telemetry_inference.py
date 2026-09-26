@@ -3615,16 +3615,126 @@ def _failed_emits(tree: ast.AST) -> tuple[list[int], list[int]]:
     return failed, missing
 
 
+def _emit_name(node: ast.AST) -> str | None:
+    if isinstance(node, ast.Name):
+        return node.id
+    if isinstance(node, ast.Attribute):
+        return node.attr
+    return None
+
+
+def _emit_shape_violations(tree: ast.AST) -> list[tuple[int, str]]:
+    """Every way an emit could dodge the literal-result check.
+
+    Allowed shapes only: a direct call with keyword arguments, a literal
+    ``result`` of "ok"/"failed", and -- for "failed" -- an explicit non-None
+    ``error_class``. The single exception is the worker hand-off
+    ``partial(_record_completed_request, ..., result=result,
+    error_class=error_class)``, which must forward both unchanged. Any other
+    reference to the emitters (alias, getattr-free re-binding, import alias,
+    passing them around) is rejected, so the static gate cannot be bypassed.
+    """
+    violations: list[tuple[int, str]] = []
+    allowed: set[int] = set()
+    for node in ast.walk(tree):
+        if isinstance(node, ast.ImportFrom):
+            for alias in node.names:
+                if alias.name in _EMIT_NAMES and alias.asname:
+                    violations.append((node.lineno, "import alias"))
+        if not isinstance(node, ast.Call):
+            continue
+        if (
+            _emit_name(node.func) == "partial"
+            and node.args
+            and _emit_name(node.args[0]) in _EMIT_NAMES
+        ):
+            allowed.add(id(node.args[0]))
+            forwarded = {kw.arg: kw.value for kw in node.keywords}
+            ok = (
+                None not in forwarded
+                and len(node.args) == 1
+                and isinstance(forwarded.get("result"), ast.Name)
+                and forwarded["result"].id == "result"
+                and isinstance(forwarded.get("error_class"), ast.Name)
+                and forwarded["error_class"].id == "error_class"
+            )
+            if not ok:
+                violations.append((node.lineno, "partial must forward result+class"))
+            continue
+        if _emit_name(node.func) not in _EMIT_NAMES:
+            continue
+        allowed.add(id(node.func))
+        if node.args or any(kw.arg is None for kw in node.keywords):
+            violations.append((node.lineno, "positional or **kwargs"))
+            continue
+        keywords = {kw.arg: kw.value for kw in node.keywords}
+        result = keywords.get("result")
+        if not (isinstance(result, ast.Constant) and result.value in ("ok", "failed")):
+            violations.append((node.lineno, "non-literal result"))
+            continue
+        if result.value == "failed":
+            error_class = keywords.get("error_class")
+            if error_class is None or (
+                isinstance(error_class, ast.Constant) and error_class.value is None
+            ):
+                violations.append((node.lineno, "failed without error_class"))
+    for node in ast.walk(tree):
+        if (
+            isinstance(node, (ast.Name, ast.Attribute))
+            and _emit_name(node) in _EMIT_NAMES
+            and id(node) not in allowed
+        ):
+            violations.append((node.lineno, "emitter referenced outside a call"))
+    return violations
+
+
 def test_every_failed_inference_site_passes_an_error_class():
     offenders: list[str] = []
     failed_sites = 0
     for path in sorted((REPO_ROOT / "rapid_mlx").rglob("*.py")):
         tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
-        failed, missing = _failed_emits(tree)
+        failed, _missing = _failed_emits(tree)
         failed_sites += len(failed)
-        offenders.extend(f"{path.relative_to(REPO_ROOT)}:{line}" for line in missing)
+        offenders.extend(
+            f"{path.relative_to(REPO_ROOT)}:{line}: {why}"
+            for line, why in _emit_shape_violations(tree)
+        )
     assert failed_sites >= 12
     assert offenders == []
+
+
+@pytest.mark.parametrize(
+    ("source", "reason"),
+    [
+        ("emit_completed_request(result='failed')", "failed without error_class"),
+        (
+            "x.emit_completed_request(result=outcome, error_class=c)",
+            "non-literal result",
+        ),
+        ("x.emit_completed_request(**kwargs)", "positional or **kwargs"),
+        ("emit_completed_request('<custom>', result='ok')", "positional or **kwargs"),
+        ("f = x.emit_completed_request", "emitter referenced outside a call"),
+        ("g(x.emit_completed_request)", "emitter referenced outside a call"),
+        ("from m import emit_completed_request as e", "import alias"),
+        (
+            "partial(_record_completed_request, result='failed')",
+            "partial must forward result+class",
+        ),
+    ],
+)
+def test_emit_shape_gate_rejects_every_bypass(source, reason):
+    assert [why for _line, why in _emit_shape_violations(ast.parse(source))] == [reason]
+
+
+def test_emit_shape_gate_accepts_the_allowed_shapes():
+    source = (
+        "x.emit_completed_request(result='ok')\n"
+        "x.emit_completed_request(result='failed', error_class=classify(e))\n"
+        "partial(_record_completed_request, model=m, result=result,"
+        " error_class=error_class)\n"
+        "def emit_completed_request(*, result, error_class=None): pass\n"
+    )
+    assert _emit_shape_violations(ast.parse(source)) == []
 
 
 def test_failed_site_gate_catches_a_site_without_a_class():
