@@ -1,0 +1,80 @@
+# SPDX-License-Identifier: Apache-2.0
+# Ten representative historical Desktop reports and their verification route.
+#
+# Each entry is a real user-reported Desktop issue. The expectation records
+# what `scripts/dev_verify.py --area "<area>"` must yield for it: either
+# candidate journeys from the area mapping, or an explicit uncovered marker
+# when no automated journey can demonstrate the reported behavior. This is the
+# triage contract between issue intake and the local verification command;
+# when an area mapping changes, this file is where the drift shows first.
+
+- issue: 2329
+  title: >-
+    Desktop onboarding cannot load cached Qwen3.5 2B checkpoint through
+    automatic lane resolution
+  area: First-run setup wizard
+  expected_journeys: [fresh-install, cached-quickstart]
+
+- issue: 2330
+  title: >-
+    Desktop Chat has no authoritative current-date context
+  area: Chat window (asking, answering, tools, formatting)
+  expected_journeys: [chat-restore, chat-multimodal-attachments]
+  note: >-
+    candidates only — no journey asserts date-context prompt content; the
+    report maps to the chat area, not to a proven cause
+
+- issue: 2343
+  title: >-
+    Desktop model picker can trigger removable-volume permission for a mounted
+    installer DMG
+  area: Models — downloading, picking, or starting one
+  expected_journeys: [cached-variant-collapse, catalog-integrity]
+
+- issue: 2378
+  title: >-
+    Desktop bug(mac): failed photo attachments poison subsequent chat turns
+  area: Chat window (asking, answering, tools, formatting)
+  expected_journeys: [chat-multimodal-attachments]
+
+- issue: 2459
+  title: >-
+    fix(mac): dictation sidecar auto-spawns on app foreground after the chat
+    server was stopped or crashed
+  area: Somewhere else / not sure
+  expected_journeys: [dictation, model-crash-recovery]
+
+- issue: 2521
+  title: >-
+    desktop: serving-lane photo hints are not localized
+  area: Chat window (asking, answering, tools, formatting)
+  expected_journeys: [chat-multimodal-attachments]
+
+- issue: 2527
+  title: >-
+    Desktop: LogDrawer minHeight=100 assumes a headerless drawer (new ~26pt
+    header shrinks the log viewport)
+  area: Settings
+  expected_journeys: [settings-persistence, no-dead-controls]
+
+- issue: 2716
+  title: >-
+    fix(mac): clear persisted embedded bearer when selecting Every start
+  area: Settings
+  expected_journeys: [settings-persistence]
+
+- issue: 3433
+  title: >-
+    release: Desktop sidecar pruning breaks mlx-audio 0.5.3 import
+  area: Somewhere else / not sure
+  expected_journeys: [audio-readiness, dictation-rc2-upgrade]
+
+- issue: 3468
+  title: >-
+    Latest (v0.14.1) Desktop DMG code-signature validation
+  area: Installing or launching for the first time
+  uncovered: true
+  reason: >-
+    no automated journey validates DMG code-signature or notarisation; this is
+    release validation performed by hand, so the command must report the area
+    gap explicitly instead of implying journey coverage
