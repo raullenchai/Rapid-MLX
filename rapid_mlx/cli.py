@@ -1893,13 +1893,28 @@ def _check_memory_capacity(model_name: str, *, alias: str | None = None) -> None
 
     display_alias = alias or model_name
     catalog_working_gb = recommendation_footprint_gb(display_alias)
+    catalog_profile = None
+    try:
+        from rapid_mlx.model_aliases import resolve_profile
+
+        catalog_profile = resolve_profile(display_alias)
+        if catalog_working_gb is None and catalog_profile.modality == "image-gen":
+            from rapid_mlx.runtime.resident_models import estimate_model_bytes
+
+            catalog_working_gb = estimate_model_bytes(display_alias) / (1024**3)
+    except Exception:
+        # The preflight is best-effort. Unknown aliases retain the conservative
+        # disk-derived fallback below.
+        catalog_profile = None
 
     # Resolve model size in bytes — local path, then HF cache, then HF API.
     model_size_bytes = 0
     try:
         from rapid_mlx._download_gate import IMAGE_MODEL_DATA_FILES
 
-        if model_name in IMAGE_MODEL_DATA_FILES:
+        if model_name in IMAGE_MODEL_DATA_FILES or (
+            catalog_profile is not None and catalog_profile.modality == "image-gen"
+        ):
             # A vendored image backend downloads an audited allowlist, not the
             # whole Hub repository. SDXL's repository also carries fp32,
             # refiner, ONNX, and ancillary artifacts (~72 GB total) while the
@@ -1909,7 +1924,7 @@ def _check_memory_capacity(model_name: str, *, alias: str | None = None) -> None
             from rapid_mlx.model_sizes import size_bytes
             from rapid_mlx.runtime.resident_models import estimate_model_bytes
 
-            model_size_bytes = size_bytes(model_name) or 0
+            model_size_bytes = size_bytes(model_name) or size_bytes(display_alias) or 0
             if catalog_working_gb is None:
                 catalog_working_gb = estimate_model_bytes(model_name) / (1024**3)
         elif os.path.isdir(model_name):
@@ -1977,8 +1992,14 @@ def _check_memory_capacity(model_name: str, *, alias: str | None = None) -> None
     projected_use = used_ram_bytes + estimated_working
     ratio = projected_use / total_ram_bytes
     total_gb = total_ram_bytes / (1024**3)
-    host_pick = catalog_working_gb is not None and is_recommended_alias(
-        display_alias, total_gb
+    catalog_floor_gb = (
+        float(catalog_profile.min_memory_gb)
+        if catalog_profile is not None and catalog_profile.min_memory_gb is not None
+        else None
+    )
+    host_pick = catalog_working_gb is not None and (
+        is_recommended_alias(display_alias, total_gb)
+        or (catalog_floor_gb is not None and total_gb >= catalog_floor_gb)
     )
     # A measured tier pick follows the same live policy as Desktop: remain
     # silent below 95%, advise at 95–100%, and use the blocking-strength copy
