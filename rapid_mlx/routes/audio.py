@@ -180,12 +180,22 @@ _SERVED_STT_TELEMETRY_ID: contextvars.ContextVar[str | None] = contextvars.Conte
 
 
 def _note_served_stt_engine(engine: object) -> None:
-    """Record the telemetry id of the resident engine that just ran."""
-    from rapid_mlx.telemetry.model_id import telemetry_model_id
+    """Record the telemetry id of the resident engine that just ran.
 
-    _SERVED_STT_TELEMETRY_ID.set(
-        telemetry_model_id(getattr(engine, "model_name", None))
-    )
+    Never raises: the runners call this inside their ``except ImportError``
+    → 503 "mlx-audio not installed" guard, so a telemetry import/resolution
+    failure must not turn audio that was already transcribed into an error.
+    On failure nothing is recorded and the completion event reports
+    ``<custom>``.
+    """
+    try:
+        from rapid_mlx.telemetry.model_id import telemetry_model_id
+
+        served = telemetry_model_id(getattr(engine, "model_name", None))
+    except Exception:
+        logger.debug("served STT telemetry id unavailable", exc_info=True)
+        return
+    _SERVED_STT_TELEMETRY_ID.set(served)
 
 
 _tts_engine = None

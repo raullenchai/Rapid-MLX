@@ -2922,6 +2922,125 @@ async def test_audio_alignment_success_emits_completed_request(monkeypatch):
     assert calls[0]["result"] == "ok"
 
 
+def _served_stt_route_harness(monkeypatch):
+    """Drive the REAL STT/alignment runners with only the MLX edges faked.
+
+    ``STTEngine``, the audio worker hops and ``telemetry_model_id`` are the
+    only stand-ins, so the ``_note_served_stt_engine`` wiring inside
+    ``_run_stt_request`` / ``_run_alignment_request`` is what decides the
+    ``completed_request`` model.
+    """
+    import httpx
+    from fastapi import FastAPI
+
+    import rapid_mlx.server as server
+    from rapid_mlx.audio import probe
+    from rapid_mlx.audio import stt as stt_mod
+    from rapid_mlx.config import get_config
+    from rapid_mlx.routes import audio
+    from rapid_mlx.runtime import audio_worker
+    from rapid_mlx.telemetry import inference, model_id
+
+    class FakeSTT:
+        def __init__(self, name):
+            self.model_name = name
+
+        def load(self):
+            return None
+
+        def transcribe(self, _path, **_kwargs):
+            return SimpleNamespace(
+                text="heard", segments=[], language="en", duration=1.0
+            )
+
+        def align(self, _path, text, **_kwargs):
+            return SimpleNamespace(text=text, segments=[], language="en", duration=1.0)
+
+    async def run_async(_lane, _model, _op, func, *args, **kwargs):
+        return func(*args, **kwargs)
+
+    def run_sync(_lane, _model, _op, func, *args, **kwargs):
+        return func(*args, **kwargs)
+
+    monkeypatch.setattr(stt_mod, "STTEngine", FakeSTT)
+    monkeypatch.setattr(audio_worker, "run_audio_mlx", run_async)
+    monkeypatch.setattr(audio_worker, "run_audio_mlx_sync", run_sync)
+    monkeypatch.setattr(probe, "require_mlx_audio_stt", lambda: None)
+    monkeypatch.setattr(server, "_emit_audio_model_served_once", lambda *_a: None)
+    monkeypatch.setattr(audio, "_stt_engine", None)
+    monkeypatch.setattr(audio, "_aligner_engine", None)
+    monkeypatch.setattr(get_config(), "api_key", None)
+    monkeypatch.setattr(get_config(), "residency_manager", None)
+    monkeypatch.setattr(model_id, "telemetry_model_id", lambda ref: f"ID({ref})")
+    calls: list[dict[str, object]] = []
+    monkeypatch.setattr(
+        inference, "emit_completed_request", lambda **kwargs: calls.append(kwargs)
+    )
+    app = FastAPI()
+    app.include_router(audio.router)
+    client = httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://loopback"
+    )
+    return audio, client, calls
+
+
+_WAV = ("a.wav", b"RIFF" + b"\0" * 100, "audio/wav")
+
+
+@pytest.mark.asyncio
+async def test_real_stt_runners_report_the_served_engine(monkeypatch):
+    audio, client, calls = _served_stt_route_harness(monkeypatch)
+    async with client:
+        asr = await client.post(
+            "/v1/audio/transcriptions",
+            data={"model": "whisper-large-v3"},
+            files={"file": _WAV},
+        )
+        aligned = await client.post(
+            "/v1/audio/transcriptions",
+            data={"model": "qwen3-forced-aligner", "text": "known transcript"},
+            files={"file": _WAV},
+        )
+
+    assert asr.status_code == 200, asr.text
+    assert aligned.status_code == 200, aligned.text
+    asr_id = f"ID({audio._resolve_stt_model('whisper-large-v3')})"
+    aligner_id = f"ID({audio._resolve_stt_model('qwen3-forced-aligner')})"
+    assert [call["model"] for call in calls] == [asr_id, aligner_id]
+    assert all(call["result"] == "ok" for call in calls)
+
+
+@pytest.mark.asyncio
+async def test_telemetry_import_failure_never_fails_a_served_stt_request(
+    monkeypatch,
+):
+    from rapid_mlx.telemetry import model_id
+
+    _audio, client, calls = _served_stt_route_harness(monkeypatch)
+
+    def broken_telemetry(_ref):
+        raise ImportError("telemetry dependency missing")
+
+    monkeypatch.setattr(model_id, "telemetry_model_id", broken_telemetry)
+    async with client:
+        asr = await client.post(
+            "/v1/audio/transcriptions",
+            data={"model": "whisper-large-v3"},
+            files={"file": _WAV},
+        )
+        aligned = await client.post(
+            "/v1/audio/transcriptions",
+            data={"model": "qwen3-forced-aligner", "text": "known transcript"},
+            files={"file": _WAV},
+        )
+
+    # A telemetry failure must not surface as the 503 "mlx-audio not
+    # installed" envelope for audio that was transcribed successfully.
+    assert asr.status_code == 200, asr.text
+    assert aligned.status_code == 200, aligned.text
+    assert [call["model"] for call in calls] == ["<custom>", "<custom>"]
+
+
 def test_completed_inference_key_stays_within_store_limit(monkeypatch):
     from rapid_mlx.telemetry import inference
 
