@@ -1,0 +1,18 @@
+[build-system]
+requires = ["setuptools>=61"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "rapid-general-cue-mvp"
+version = "0.1.0"
+description = "Bounded local desktop dogfood harness for Rapid-MLX and Meta metacua"
+requires-python = ">=3.10"
+dependencies = [
+    "metacua @ git+https://github.com/meta-models/meta-model-cookbook.git@c5a9882b4c7f3900e9c93122249d37317c8abff4#subdirectory=03_use_cases/13_macos_cua/python",
+]
+
+[project.scripts]
+rapid-general-cue = "rapid_general_cue:main"
+
+[tool.setuptools]
+py-modules = ["rapid_general_cue"]

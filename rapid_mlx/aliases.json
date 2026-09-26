@@ -1521,7 +1521,7 @@
   },
   "muse-glimmer-30b-4bit": {
     "hf_path": "mlx-community/Muse-Glimmer-30B-4bit",
-    "is_text_only": true,
+    "supports_image_input": true,
     "tool_call_parser": "muse",
     "reasoning_parser": "muse",
     "is_hybrid": false,
@@ -1532,7 +1532,7 @@
   },
   "muse-glimmer-30b-8bit": {
     "hf_path": "mlx-community/Muse-Glimmer-30B-8bit",
-    "is_text_only": true,
+    "supports_image_input": true,
     "tool_call_parser": "muse",
     "reasoning_parser": "muse",
     "is_hybrid": false,
@@ -1548,7 +1548,7 @@
   },
   "muse-glimmer-30b-bf16": {
     "hf_path": "mlx-community/Muse-Glimmer-30B-bf16",
-    "is_text_only": true,
+    "supports_image_input": true,
     "tool_call_parser": "muse",
     "reasoning_parser": "muse",
     "is_hybrid": false,

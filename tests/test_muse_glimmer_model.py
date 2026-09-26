@@ -328,7 +328,7 @@ def test_resolve_serving_lane_muse_text_fallback(monkeypatch, tmp_path):
     assert not api_utils.mllm_arch_unsupported_but_text_vendored("fake/qwen")
 
 
-def test_aliases_pin_text_only_and_muse_parsers():
+def test_aliases_enable_vision_and_muse_parsers():
     aliases = json.loads(
         (Path(__file__).parent.parent / "rapid_mlx" / "aliases.json").read_text()
     )
@@ -339,9 +339,11 @@ def test_aliases_pin_text_only_and_muse_parsers():
     ):
         entry = aliases[name]
         assert entry["hf_path"].startswith("mlx-community/Muse-Glimmer-30B")
-        # The #393 state-pin: vision weights exist but text-only serving
-        # is a deliberate curated decision until mlx-vlm learns the arch.
-        assert entry["is_text_only"] is True
+        # mlx-vlm >= 0.6.12 ships the full Muse Glimmer perception stack.
+        # Keep this explicit so the model catalog and desktop can discover
+        # screenshot input without probing the remote checkpoint.
+        assert entry["supports_image_input"] is True
+        assert entry.get("is_text_only", False) is False
         assert entry["tool_call_parser"] == "muse"
         assert entry["reasoning_parser"] == "muse"
         assert entry["is_hybrid"] is False
