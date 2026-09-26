@@ -1411,7 +1411,8 @@ async def create_response(request: Request):
             raise HTTPException(
                 status_code=400,
                 detail=e.openai_detail(
-                    serving_lane_reason=getattr(engine, "serving_lane_reason", None)
+                    serving_lane_reason=getattr(engine, "serving_lane_reason", None),
+                    engine=engine,
                 ),
             ) from e
         except ValueError as e:

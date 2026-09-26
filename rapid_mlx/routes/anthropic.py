@@ -737,13 +737,28 @@ async def create_anthropic_message(
                             caller_agent=_caller_agent,
                             caller_client=_caller_client,
                         )
-                        raise HTTPException(
-                            status_code=400,
-                            detail=(
-                                f"Model '{cfg_pre.model_name}' does not support "
-                                f"{_block_type} inputs."
-                            ),
+                        from rapid_mlx.api.utils import (
+                            image_rejection_guidance,
+                            public_model_label,
                         )
+
+                        _detail = (
+                            f"Model '{public_model_label(cfg_pre.model_name)}' "
+                            f"does not support {_block_type} inputs."
+                        )
+                        # A vision model cannot read documents on this route
+                        # either, so only image blocks get lane guidance.
+                        _guidance = (
+                            image_rejection_guidance(
+                                getattr(engine, "serving_lane_reason", None),
+                                engine=engine,
+                            )
+                            if _block_type == "image"
+                            else None
+                        )
+                        if _guidance is not None:
+                            _detail = f"{_detail} {_guidance}"
+                        raise HTTPException(status_code=400, detail=_detail)
 
         # Convert Anthropic request -> OpenAI request. The adapter raises
         # ``AnthropicOutputConfigError`` (a ``ValueError`` subclass) on
