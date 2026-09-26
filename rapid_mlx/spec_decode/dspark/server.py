@@ -22,7 +22,13 @@ from .runtime import load_runtime
 logger = logging.getLogger(__name__)
 
 
-def _validate_greedy_request(request: ChatCompletionRequest) -> None:
+def _validate_greedy_request(
+    request: ChatCompletionRequest,
+    *,
+    telemetry_model: str | None = None,
+    caller_agent: str | None = None,
+    caller_client: str | None = None,
+) -> None:
     """Reject every request shape outside the qualified greedy contract."""
 
     # Keep every malformed/unsupported content block on the request-policy
@@ -38,6 +44,9 @@ def _validate_greedy_request(request: ChatCompletionRequest) -> None:
             allow_image=True,
             allow_video=False,
             allow_audio=False,
+            telemetry_model=telemetry_model,
+            caller_agent=caller_agent,
+            caller_client=caller_client,
         )
     except ValueError as exc:
         message = str(exc)
@@ -114,6 +123,9 @@ def _validate_companion_request(
     request: ChatCompletionRequest,
     *,
     served_model_name: str,
+    telemetry_model: str | None = None,
+    caller_agent: str | None = None,
+    caller_client: str | None = None,
 ) -> None:
     """Apply the qualified request policy and bind it to the loaded target."""
 
@@ -129,7 +141,12 @@ def _validate_companion_request(
                 }
             },
         )
-    _validate_greedy_request(request)
+    _validate_greedy_request(
+        request,
+        telemetry_model=telemetry_model,
+        caller_agent=caller_agent,
+        caller_client=caller_client,
+    )
 
 
 def _build_companion_model_info(
@@ -166,6 +183,9 @@ def _prepare_multimodal_prompt(
     request: ChatCompletionRequest,
     *,
     enable_thinking: bool | None = None,
+    telemetry_model: str | None = None,
+    caller_agent: str | None = None,
+    caller_client: str | None = None,
 ):
     """Render native multimodal messages and retain their image payloads."""
 
@@ -182,6 +202,9 @@ def _prepare_multimodal_prompt(
         allow_image=True,
         allow_video=False,
         allow_audio=False,
+        telemetry_model=telemetry_model,
+        caller_agent=caller_agent,
+        caller_client=caller_client,
     )
     messages: list[dict[str, Any]] = []
     images: list[str] = []
@@ -245,6 +268,7 @@ def run_companion_dspark_server(
     artifacts: CompanionDSparkArtifacts | None,
     host: str,
     port: int,
+    port_explicit: bool | None = None,
     served_model_name: str,
     default_max_tokens: int,
     cors_origins: list[str],
@@ -263,6 +287,7 @@ def run_companion_dspark_server(
 
     from rapid_mlx._uvicorn import run_uvicorn
     from rapid_mlx.speculative.dflash.server import _build_app, _dflash_executor
+    from rapid_mlx.telemetry.model_id import telemetry_model_id
     from rapid_mlx.telemetry.server_start import failure_stage
 
     def _load_all():
@@ -318,13 +343,17 @@ def run_companion_dspark_server(
         reasoning_parser_name=reasoning_parser_name,
         render_prompt_fn=_prepare_multimodal_prompt,
         generation_kwargs_fn=_generation_kwargs,
-        validate_request_fn=lambda request: _validate_companion_request(
-            request,
-            served_model_name=served_model_name,
+        validate_request_fn=lambda request, **telemetry_context: (
+            _validate_companion_request(
+                request,
+                served_model_name=served_model_name,
+                **telemetry_context,
+            )
         ),
         backend_name="LFM DSpark",
         model_info=model_info,
         strict_openai_streaming=True,
+        telemetry_model=telemetry_model_id(pair.target_repo),
     )
 
     host_display = "localhost" if host == "0.0.0.0" else host
@@ -340,6 +369,7 @@ def run_companion_dspark_server(
         log_level=uvicorn_log_level,
         timeout_keep_alive=30,
         on_server_accepting=_print_ready,
+        port_explicit=port_explicit,
     )
 
 

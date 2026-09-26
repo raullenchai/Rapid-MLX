@@ -83,6 +83,9 @@ service:
   * Public model aliases, subcommand and feature/flag names (never values).
   * Request endpoint, streaming/tool-use booleans, HTTP status, and coarse
     buckets for token counts, time to first token, and decode speed.
+  * A rejected capability can include the privacy-safe served model identity
+    and a normalized, closed-set caller label. It never includes the model
+    string supplied by the request.
   * Closed-set error categories and non-reversible stack fingerprints; no
     exception message or raw traceback.
   * Whether the preceding server start ended without reporting ready or failed.
@@ -91,6 +94,8 @@ service:
     never sent.
   * For a failed model serve caused by a missing optional runtime, the closed
     extra name (`vision`, `video`, `audio`, or `image`).
+  * For a failed server bind, whether its port was explicitly selected. The
+    port number itself is not sent.
 
 Anonymous telemetry does **not** collect:
 

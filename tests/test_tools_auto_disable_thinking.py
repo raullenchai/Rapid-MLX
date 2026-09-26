@@ -343,6 +343,7 @@ def _make_chat_client(engine: _ChatEngine) -> TestClient:
     cfg = reset_config()
     cfg.engine = engine
     cfg.model_name = "test-model"
+    cfg.model_path = "qwen3.5-4b-4bit"
     cfg.model_registry = None
     cfg.no_thinking = False
 
@@ -870,13 +871,29 @@ def test_responses_strict_with_tools_still_rejects_with_400(_rate_limiter_state)
     )
 
 
-def test_chat_strict_with_tools_still_rejects_with_400(_rate_limiter_state):
+def test_chat_strict_with_tools_still_rejects_with_400(
+    _rate_limiter_state, monkeypatch
+):
     """Mirror gate on /v1/chat/completions — ``strict_with_tools_
     unsupported`` 400 is unchanged."""
+    from rapid_mlx.telemetry import inference
+
+    events: list[tuple[str, dict[str, object]]] = []
+    monkeypatch.setattr(inference.track_module, "_upload_allowed", lambda: True)
+    monkeypatch.setattr(inference, "_submit", lambda work: work())
+    monkeypatch.setattr(
+        inference.track_module,
+        "track",
+        lambda event, props: events.append((event, dict(props))),
+    )
     engine = _ChatEngine(text="ok")
     client = _make_chat_client(engine)
     resp = client.post(
         "/v1/chat/completions",
+        headers={
+            "user-agent": "openai-python/1.2",
+            "x-rapid-client": "rapid-desktop",
+        },
         json={
             "model": "test-model",
             "messages": [{"role": "user", "content": "hi"}],
@@ -903,3 +920,14 @@ def test_chat_strict_with_tools_still_rejects_with_400(_rate_limiter_state):
         f"expected strict_with_tools_unsupported, got body={body!r}"
     )
     assert not engine.chat_calls
+    assert events == [
+        (
+            "capability_rejected",
+            {
+                "capability": "structured_output_unsupported",
+                "model_type": "llm",
+                "model": "qwen3.5-4b-4bit",
+                "caller": "rapid-desktop",
+            },
+        )
+    ]

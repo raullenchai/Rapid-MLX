@@ -27,6 +27,7 @@ def run_server(
     *,
     host: str,
     port: int,
+    port_explicit: bool | None = None,
     served_model_name: str,
     default_max_tokens: int,
     cors_origins: list[str],
@@ -107,4 +108,5 @@ def run_server(
         log_level=uvicorn_log_level,
         timeout_keep_alive=30,
         on_server_accepting=_print_ready,
+        port_explicit=port_explicit,
     )

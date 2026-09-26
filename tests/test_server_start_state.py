@@ -68,7 +68,10 @@ class _CaptureHandler(BaseHTTPRequestHandler):
         pass
 
 
-def test_stale_marker_reports_previous_run_unterminated_once_to_loopback(tmp_path):
+@pytest.mark.parametrize("port_explicit", [False, True])
+def test_stale_marker_reports_previous_run_unterminated_once_to_loopback(
+    tmp_path, port_explicit
+):
     home = tmp_path / "home"
     state_dir = home / ".rapid-mlx" / "state"
     state_dir.mkdir(parents=True)
@@ -80,7 +83,7 @@ def test_stale_marker_reports_previous_run_unterminated_once_to_loopback(tmp_pat
     sink.bodies = []  # type: ignore[attr-defined]
     thread = threading.Thread(target=sink.serve_forever, daemon=True)
     thread.start()
-    program = """
+    program = f"""
 import rapid_mlx
 from rapid_mlx.telemetry import build_gate, common_props, consent_runtime, posthog_sender, server_start, state
 from rapid_mlx.telemetry.build_gate import ReleaseStamp
@@ -98,6 +101,7 @@ state.get_or_create_client_id = lambda: "6f1b1d3e-4a2b-4c9d-8e7f-0a1b2c3d4e5f"
 state.session_id = lambda: "0a1b2c3d-4e5f-6071-8293-a4b5c6d7e8f9"
 server_start.attempted("qwen3.5-4b-4bit", load_policy="eager")
 server_start.attempted("ignored", load_policy="lazy")
+server_start.failed("bind", port_explicit={port_explicit!r})
 posthog_sender.get_sender().flush(5.0)
 """
     env = dict(os.environ, HOME=str(home))
@@ -131,14 +135,18 @@ posthog_sender.get_sender().flush(5.0)
         sink.server_close()
 
     assert proc.returncode == 0, proc.stderr
-    attempted = [
+    start_events = [
         item
         for body in sink.bodies  # type: ignore[attr-defined]
         for item in json.loads(body)["batch"]
         if item["event"] == "server_start_state"
     ]
-    assert len(attempted) == 1
-    assert attempted[0]["properties"]["previous_run_unterminated"] is True
+    assert [item["properties"]["state"] for item in start_events] == [
+        "attempted",
+        "failed",
+    ]
+    assert start_events[0]["properties"]["previous_run_unterminated"] is True
+    assert start_events[1]["properties"]["port_explicit"] is port_explicit
 
 
 def test_attempted_then_ready_exactly_once(monkeypatch):
@@ -958,6 +966,16 @@ def test_each_failure_stage_is_the_only_terminal(monkeypatch, stage):
     assert [props["state"] for _, props in events] == ["attempted", "failed"]
     assert events[-1][1]["failure_stage"] == stage
     assert "failure_stage" not in events[0][1]
+
+
+def test_port_explicit_is_ignored_outside_bind(monkeypatch):
+    events = _capture(monkeypatch)
+    server_start.attempted("qwen3.5-4b-4bit", load_policy="eager")
+
+    server_start.failed("prepare", port_explicit=True)
+
+    assert events[-1][1]["failure_stage"] == "prepare"
+    assert "port_explicit" not in events[-1][1]
 
 
 def test_invalid_values_are_omitted_or_ignored(monkeypatch):

@@ -328,7 +328,12 @@ def _register_marker_cleanup() -> None:
     _marker_cleanup_registered = True
 
 
-def _track(state: str, *, failure_stage: str | None = None) -> bool:
+def _track(
+    state: str,
+    *,
+    failure_stage: str | None = None,
+    port_explicit: bool | None = None,
+) -> bool:
     """Build only registry-approved properties and never affect the host."""
     try:
         from rapid_mlx.telemetry.track import track
@@ -340,6 +345,8 @@ def _track(state: str, *, failure_stage: str | None = None) -> bool:
             props["load_policy"] = _load_policy
         if state == "failed" and failure_stage is not None:
             props["failure_stage"] = failure_stage
+        if state == "failed" and failure_stage == "bind" and port_explicit is not None:
+            props["port_explicit"] = port_explicit
         if state == "attempted" and _previous_run_unterminated:
             props["previous_run_unterminated"] = True
         return track("server_start_state", props)
@@ -415,7 +422,7 @@ def ready() -> None:
             _mark_inflight_terminal()
 
 
-def failed(failure_stage: object) -> None:
+def failed(failure_stage: object, *, port_explicit: bool | None = None) -> None:
     """Emit the sole failed terminal state with a closed startup stage."""
     global _terminal
     if not isinstance(failure_stage, str) or failure_stage not in _FAILURE_STAGES:
@@ -427,7 +434,10 @@ def failed(failure_stage: object) -> None:
             _remove_inflight_marker()
             return
         _terminal = True
-    if _track("failed", failure_stage=failure_stage) is not False:
+    context: dict[str, bool] = {}
+    if failure_stage == "bind" and port_explicit is not None:
+        context["port_explicit"] = port_explicit
+    if _track("failed", failure_stage=failure_stage, **context) is not False:
         _remove_inflight_marker()
 
 

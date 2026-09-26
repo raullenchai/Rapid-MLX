@@ -156,7 +156,13 @@ class AnthropicOutputConfigError(ValueError):
     """
 
 
-def anthropic_to_openai(request: AnthropicRequest) -> ChatCompletionRequest:
+def anthropic_to_openai(
+    request: AnthropicRequest,
+    *,
+    telemetry_model: str | None = None,
+    caller_agent: str | None = None,
+    caller_client: str | None = None,
+) -> ChatCompletionRequest:
     """
     Convert an Anthropic Messages API request to OpenAI Chat Completions format.
 
@@ -274,7 +280,12 @@ def anthropic_to_openai(request: AnthropicRequest) -> ChatCompletionRequest:
     # the chat-completions guided-decode pipeline already understands.
     # Adapter-layer validation: invalid shapes raise
     # ``AnthropicOutputConfigError``; the route converts that to HTTP 400.
-    response_format = _convert_output_config(request.output_config)
+    response_format = _convert_output_config(
+        request.output_config,
+        telemetry_model=telemetry_model,
+        caller_agent=caller_agent,
+        caller_client=caller_client,
+    )
 
     # Preserve the same thinking controls accepted by the OpenAI-compatible
     # routes. Anthropic's native controls are authoritative over compatibility
@@ -897,6 +908,10 @@ def _convert_tool_choice(tool_choice: dict) -> str | dict | None:
 
 def _convert_output_config(
     output_config: AnthropicOutputConfig | None,
+    *,
+    telemetry_model: str | None = None,
+    caller_agent: str | None = None,
+    caller_client: str | None = None,
 ) -> ResponseFormat | None:
     """Translate Anthropic ``output_config`` → OpenAI ``response_format``.
 
@@ -924,7 +939,12 @@ def _convert_output_config(
         # error strings on the two surfaces look like siblings.
         from rapid_mlx.telemetry.inference import emit_capability_rejected
 
-        emit_capability_rejected("structured_output_unsupported")
+        emit_capability_rejected(
+            "structured_output_unsupported",
+            model=telemetry_model,
+            caller_agent=caller_agent,
+            caller_client=caller_client,
+        )
         raise AnthropicOutputConfigError(
             f"output_config.format.type={fmt_type!r} is not supported on "
             "/v1/messages; only 'json_schema' is accepted. See upstream "

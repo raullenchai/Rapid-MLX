@@ -238,7 +238,9 @@ class TestServePortCollisionExitCode:
                 f"""
                 import sys
                 from rapid_mlx.cli import _port_preflight_or_die
-                _port_preflight_or_die("127.0.0.1", {port}, model="stub")
+                _port_preflight_or_die(
+                    "127.0.0.1", {port}, model="stub", port_explicit=True
+                )
                 # If preflight didn't exit, that's the bug — exit 0 here
                 # so the test sees a passing subprocess and fails the
                 # ``returncode != 0`` assertion.

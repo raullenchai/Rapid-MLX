@@ -2099,12 +2099,13 @@ class TestValidateContentBlocksForCapabilities:
             not in caught.value.openai_detail(serving_lane_reason=object())["error"]
         )
 
-    def test_chat_route_preserves_typed_text_lane_image_error(self):
+    def test_chat_route_preserves_typed_text_lane_image_error(self, monkeypatch):
         from fastapi import FastAPI
         from fastapi.testclient import TestClient
 
         from rapid_mlx.config import reset_config
         from rapid_mlx.routes.chat import router
+        from rapid_mlx.telemetry import inference
 
         class TextLaneEngine:
             is_mllm = False
@@ -2116,16 +2117,29 @@ class TestValidateContentBlocksForCapabilities:
         cfg = reset_config()
         cfg.engine = TextLaneEngine()
         cfg.model_name = "vision-model"
+        cfg.model_path = "qwen3.5-4b-4bit"
         cfg.model_registry = None
         cfg.no_thinking = True
         cfg.tool_call_parser = None
         cfg.reasoning_parser_name = None
         app = FastAPI()
         app.include_router(router)
+        capability_events = []
+        monkeypatch.setattr(inference.track_module, "_upload_allowed", lambda: True)
+        monkeypatch.setattr(inference, "_submit", lambda work: work())
+        monkeypatch.setattr(
+            inference.track_module,
+            "track",
+            lambda event, props: capability_events.append((event, dict(props))),
+        )
 
         try:
             response = TestClient(app).post(
                 "/v1/chat/completions",
+                headers={
+                    "user-agent": "openai-python/1.2",
+                    "x-rapid-client": "rapid-desktop",
+                },
                 json={
                     "model": "vision-model",
                     "messages": [
@@ -2147,6 +2161,17 @@ class TestValidateContentBlocksForCapabilities:
 
         assert response.status_code == 400
         assert response.json()["detail"]["error"]["code"] == ("image_input_unsupported")
+        assert capability_events == [
+            (
+                "capability_rejected",
+                {
+                    "capability": "image_input_unsupported",
+                    "model_type": "llm",
+                    "model": "qwen3.5-4b-4bit",
+                    "caller": "rapid-desktop",
+                },
+            )
+        ]
 
     def test_chat_text_block_rejects_missing_text(self):
         messages = [{"role": "user", "content": [{"type": "text"}]}]

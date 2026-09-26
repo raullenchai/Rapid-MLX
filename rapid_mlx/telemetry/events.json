@@ -397,6 +397,11 @@
           "required": false,
           "only_when": {"state": ["attempted"]}
         },
+        "port_explicit": {
+          "kind": "bool",
+          "required": false,
+          "only_when": {"state": ["failed"], "failure_stage": ["bind"]}
+        },
         "failure_stage": {
           "kind": "enum",
           "enum": "failure_stage",
@@ -474,7 +479,9 @@
       "_about": "Features people reach for that we do not have.",
       "props": {
         "capability": {"kind": "enum", "enum": "capability", "required": true},
-        "model_type": {"kind": "enum", "enum": "model_type", "required": true}
+        "model_type": {"kind": "enum", "enum": "model_type", "required": true},
+        "model": {"kind": "model_id", "required": false},
+        "caller": {"kind": "enum", "enum": "caller", "required": false}
       }
     },
     "inference_bucket_reached": {

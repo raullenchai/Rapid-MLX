@@ -35,6 +35,11 @@ async def create_embeddings(
     from ..server import load_embedding_model
 
     cfg = get_config()
+    from rapid_mlx.telemetry import inference as _telemetry_inference
+
+    caller_agent, caller_client = _telemetry_inference.request_caller_headers(
+        raw_request
+    )
     # Bridge: fall back to server globals if config not yet synced
     if cfg.embedding_engine is None:
         from ..server import _embedding_engine
@@ -69,7 +74,11 @@ async def create_embeddings(
     if cfg.embedding_model_locked is None:
         from rapid_mlx.telemetry.inference import emit_capability_rejected
 
-        emit_capability_rejected("embeddings_unavailable")
+        emit_capability_rejected(
+            "embeddings_unavailable",
+            caller_agent=caller_agent,
+            caller_client=caller_client,
+        )
         raise HTTPException(
             status_code=503,
             detail={
@@ -112,7 +121,13 @@ async def create_embeddings(
         if resolved is None:
             from rapid_mlx.telemetry.inference import emit_capability_rejected
 
-            emit_capability_rejected("embeddings_unavailable", model_type="embedding")
+            emit_capability_rejected(
+                "embeddings_unavailable",
+                model_type="embedding",
+                model=cfg.embedding_model_locked,
+                caller_agent=caller_agent,
+                caller_client=caller_client,
+            )
             raise HTTPException(
                 status_code=400,
                 detail={
@@ -275,12 +290,8 @@ async def create_embeddings(
                 total_tokens=prompt_tokens,
             ),
         )
-        from rapid_mlx.telemetry import inference as _telemetry_inference
         from rapid_mlx.telemetry.model_id import engine_telemetry_id
 
-        caller_agent, caller_client = _telemetry_inference.request_caller_headers(
-            raw_request
-        )
         _telemetry_inference.emit_completed_request(
             model=engine_telemetry_id(cfg.embedding_engine),
             endpoint="/v1/embeddings",
@@ -292,8 +303,15 @@ async def create_embeddings(
 
     except ImportError:
         from rapid_mlx.telemetry.inference import emit_capability_rejected
+        from rapid_mlx.telemetry.model_id import engine_telemetry_id
 
-        emit_capability_rejected("runtime_extra_missing", model_type="embedding")
+        emit_capability_rejected(
+            "runtime_extra_missing",
+            model_type="embedding",
+            model=engine_telemetry_id(cfg.embedding_engine),
+            caller_agent=caller_agent,
+            caller_client=caller_client,
+        )
         raise HTTPException(
             status_code=503,
             detail="mlx-embeddings not installed. Install with: pip install 'rapid-mlx[embeddings]'",

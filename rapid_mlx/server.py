@@ -2328,7 +2328,9 @@ def load_model(
         if existing_spec_decode not in ("none", "mtp"):
             from .telemetry.inference import emit_capability_rejected
 
-            emit_capability_rejected("speculative_decoding_unsupported")
+            emit_capability_rejected(
+                "speculative_decoding_unsupported", model=model_name
+            )
             raise ValueError(
                 "load_model(mtp=True) conflicts with "
                 f"scheduler_config.spec_decode={existing_spec_decode!r}; "
@@ -2339,7 +2341,9 @@ def load_model(
         ):
             from .telemetry.inference import emit_capability_rejected
 
-            emit_capability_rejected("speculative_decoding_unsupported")
+            emit_capability_rejected(
+                "speculative_decoding_unsupported", model=model_name
+            )
             raise ValueError(
                 "load_model(mtp=True) conflicts with "
                 "scheduler_config.enable_suffix_decoding=True; pass only one "
@@ -2351,7 +2355,9 @@ def load_model(
         ):
             from .telemetry.inference import emit_capability_rejected
 
-            emit_capability_rejected("speculative_decoding_unsupported")
+            emit_capability_rejected(
+                "speculative_decoding_unsupported", model=model_name
+            )
             raise ValueError(
                 "load_model(mtp=True) conflicts with "
                 "scheduler_config.dflash_drafter_path; pass only one "
@@ -3532,7 +3538,9 @@ def _capture_start_failures(func):
 def _build_parser() -> argparse.ArgumentParser:
     """Build the parser for the standalone ``python -m rapid_mlx.server`` CLI."""
 
-    parser = argparse.ArgumentParser(
+    from .cli import _PortContextArgumentParser
+
+    parser = _PortContextArgumentParser(
         description="Rapid-MLX OpenAI-compatible server for LLM and MLLM inference",
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
@@ -3913,9 +3921,14 @@ def main():
     # AND ``127.0.0.1`` when ``args.host`` is a wildcard alias
     # (``0.0.0.0`` or ``""``) so a co-resident loopback-only listener
     # is caught before we sink time into model load.
-    from .cli import _resolve_serve_port
+    from .cli import _resolve_serve_port, port_explicit_for
 
-    args.port = _resolve_serve_port(args.host, args.port, model=args.model)
+    args.port = _resolve_serve_port(
+        args.host,
+        args.port,
+        model=args.model,
+        port_explicit=port_explicit_for(args),
+    )
     assert isinstance(args.port, int)
 
     # F-H08-INCOMPLETE: the ``[embeddings]`` extra-required guard MUST
@@ -4332,6 +4345,7 @@ def main():
         port=args.port,
         log_level=uvicorn_log_level,
         on_server_accepting=print_ready_banner,
+        port_explicit=port_explicit_for(args),
     )
 
     # Issue #3495: same contract as the CLI serve entrypoints — after a

@@ -166,7 +166,12 @@ def test_preflight_rejects_wildcard_when_loopback_already_bound(capsys):
         blocked_port = blocker.getsockname()[1]
 
         with pytest.raises(SystemExit) as exc:
-            cli._port_preflight_or_die("0.0.0.0", blocked_port, model="qwen3.5-4b-4bit")
+            cli._port_preflight_or_die(
+                "0.0.0.0",
+                blocked_port,
+                model="qwen3.5-4b-4bit",
+                port_explicit=True,
+            )
 
     assert exc.value.code == 1
     err_out = capsys.readouterr().out
@@ -188,7 +193,12 @@ def test_preflight_rejects_empty_host_when_loopback_already_bound(capsys):
         blocked_port = blocker.getsockname()[1]
 
         with pytest.raises(SystemExit) as exc:
-            cli._port_preflight_or_die("", blocked_port, model="qwen3.5-4b-4bit")
+            cli._port_preflight_or_die(
+                "",
+                blocked_port,
+                model="qwen3.5-4b-4bit",
+                port_explicit=True,
+            )
 
     assert exc.value.code == 1
     err_out = capsys.readouterr().out
@@ -209,7 +219,10 @@ def test_preflight_rejects_loopback_when_loopback_already_bound(capsys):
 
         with pytest.raises(SystemExit) as exc:
             cli._port_preflight_or_die(
-                "127.0.0.1", blocked_port, model="qwen3.5-4b-4bit"
+                "127.0.0.1",
+                blocked_port,
+                model="qwen3.5-4b-4bit",
+                port_explicit=True,
             )
 
     assert exc.value.code == 1
@@ -225,7 +238,10 @@ def test_preflight_passes_on_free_port():
     collision."""
     # Should return None and not raise.
     result = cli._port_preflight_or_die(
-        "127.0.0.1", _free_loopback_port(), model="qwen3.5-4b-4bit"
+        "127.0.0.1",
+        _free_loopback_port(),
+        model="qwen3.5-4b-4bit",
+        port_explicit=True,
     )
     assert result is None
 
@@ -240,7 +256,12 @@ def test_preflight_rejects_out_of_range_port_with_friendly_error(bad_port, capsy
     ``OverflowError`` (not an ``OSError`` subclass), so the collision
     handler's ``except OSError`` let it escape uncaught."""
     with pytest.raises(SystemExit) as exc:
-        cli._port_preflight_or_die("127.0.0.1", bad_port, model="qwen3.5-4b-4bit")
+        cli._port_preflight_or_die(
+            "127.0.0.1",
+            bad_port,
+            model="qwen3.5-4b-4bit",
+            port_explicit=True,
+        )
 
     assert exc.value.code == 1
     err_out = capsys.readouterr().out
@@ -254,7 +275,9 @@ def test_preflight_rejects_out_of_range_port_with_friendly_error(bad_port, capsy
 def test_preflight_accepts_port_zero_as_ephemeral():
     """``--port 0`` is legitimate — it asks the OS for an ephemeral port,
     which uvicorn binds normally. The range guard must NOT reject it."""
-    result = cli._port_preflight_or_die("127.0.0.1", 0, model="qwen3.5-4b-4bit")
+    result = cli._port_preflight_or_die(
+        "127.0.0.1", 0, model="qwen3.5-4b-4bit", port_explicit=True
+    )
     assert result is None
 
 
@@ -263,7 +286,10 @@ def test_preflight_wildcard_branch_passes_on_free_port():
     probe loop runs twice (host + 127.0.0.1) but neither probe should
     collide."""
     result = cli._port_preflight_or_die(
-        "0.0.0.0", _free_loopback_port(), model="qwen3.5-4b-4bit"
+        "0.0.0.0",
+        _free_loopback_port(),
+        model="qwen3.5-4b-4bit",
+        port_explicit=True,
     )
     assert result is None
 
@@ -286,7 +312,12 @@ def test_preflight_error_uses_friendly_host_display_for_empty(capsys):
         blocked_port = blocker.getsockname()[1]
 
         with pytest.raises(SystemExit) as exc:
-            cli._port_preflight_or_die("", blocked_port, model="qwen3.5-4b-4bit")
+            cli._port_preflight_or_die(
+                "",
+                blocked_port,
+                model="qwen3.5-4b-4bit",
+                port_explicit=True,
+            )
 
     assert exc.value.code == 1
     err_out = capsys.readouterr().out
@@ -374,7 +405,9 @@ def test_preflight_passes_for_ipv6_loopback_on_free_port():
         s.bind(("::1", 0))
         free_port = s.getsockname()[1]
 
-    result = cli._port_preflight_or_die("::1", free_port, model="qwen3.5-4b-4bit")
+    result = cli._port_preflight_or_die(
+        "::1", free_port, model="qwen3.5-4b-4bit", port_explicit=True
+    )
     assert result is None
 
 
@@ -397,7 +430,9 @@ def test_preflight_passes_for_ipv6_wildcard_on_free_port():
         s.bind(("::", 0))
         free_port = s.getsockname()[1]
 
-    result = cli._port_preflight_or_die("::", free_port, model="qwen3.5-4b-4bit")
+    result = cli._port_preflight_or_die(
+        "::", free_port, model="qwen3.5-4b-4bit", port_explicit=True
+    )
     assert result is None
 
 

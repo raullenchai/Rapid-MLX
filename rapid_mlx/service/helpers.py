@@ -4958,6 +4958,9 @@ def enforce_context_length(
     prompt_tokens: int,
     *,
     max_tokens: int | None = None,
+    telemetry_model: str | None = None,
+    caller_agent: str | None = None,
+    caller_client: str | None = None,
 ) -> None:
     """Raise HTTP 400 ``context_length_exceeded`` if ``prompt_tokens`` is
     over the model's max context window.
@@ -4989,7 +4992,11 @@ def enforce_context_length(
     )
 
     emit_capability_rejected(
-        "context_length_exceeded", model_type=model_type_token(engine)
+        "context_length_exceeded",
+        model_type=model_type_token(engine),
+        model=telemetry_model,
+        caller_agent=caller_agent,
+        caller_client=caller_client,
     )
     raise HTTPException(
         status_code=400,
@@ -5084,6 +5091,9 @@ def enforce_context_length_for_messages(
     max_tokens: int | None = None,
     enable_thinking: bool | None = None,
     chat_template_kwargs: dict | None = None,
+    telemetry_model: str | None = None,
+    caller_agent: str | None = None,
+    caller_client: str | None = None,
 ) -> int | None:
     """Run the context-length gate for a chat-style request and return
     the rendered prompt's token count (``None`` on permissive-skip paths).
@@ -5181,7 +5191,14 @@ def enforce_context_length_for_messages(
     prompt_tokens = count_prompt_tokens(engine, prompt)
     if prompt_tokens <= 0:
         return None
-    enforce_context_length(engine, prompt_tokens, max_tokens=max_tokens)
+    enforce_context_length(
+        engine,
+        prompt_tokens,
+        max_tokens=max_tokens,
+        telemetry_model=telemetry_model,
+        caller_agent=caller_agent,
+        caller_client=caller_client,
+    )
     return prompt_tokens
 
 
@@ -5271,6 +5288,9 @@ def enforce_context_length_for_prompt(
     prompt,
     *,
     max_tokens: int | None = None,
+    telemetry_model: str | None = None,
+    caller_agent: str | None = None,
+    caller_client: str | None = None,
 ) -> None:
     """Run the context-length gate for a raw-prompt completion request.
 
@@ -5288,4 +5308,11 @@ def enforce_context_length_for_prompt(
     prompt_tokens = count_prompt_tokens(engine, prompt)
     if prompt_tokens <= 0:
         return
-    enforce_context_length(engine, prompt_tokens, max_tokens=max_tokens)
+    enforce_context_length(
+        engine,
+        prompt_tokens,
+        max_tokens=max_tokens,
+        telemetry_model=telemetry_model,
+        caller_agent=caller_agent,
+        caller_client=caller_client,
+    )

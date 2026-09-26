@@ -43,6 +43,7 @@ MIRROR_DEFAULT = "https://models.rapidmlx.com"
 
 DEFAULT_SERVE_PORT = 8000
 DEFAULT_SERVE_PORT_CANDIDATES = 10
+DEFAULT_SYSTEM_ONE_PORT = 8700
 # Darwin's TCP_CONNECTION_INFO returns ``struct tcp_connection_info``.
 # Request a full, future-tolerant buffer instead of the one byte that happens
 # to contain ``tcpi_state``; kernels may reject undersized option buffers.
@@ -53,6 +54,45 @@ _consent_mutation_event_count = 0
 _consent_mutation_event_lock = threading.Lock()
 _hub_guidance_rendered = False
 _hub_guidance_lock = threading.Lock()
+
+
+def _stamp_port_explicit(args: argparse.Namespace) -> argparse.Namespace:
+    """Stamp bind-port provenance from the parsed server namespace."""
+    if not hasattr(args, "port"):
+        return args
+    if getattr(args, "listen_fd", None) is not None:
+        args._port_explicit = None
+    else:
+        args._port_explicit = args.port is not None
+    return args
+
+
+def port_explicit_for(args: argparse.Namespace) -> bool | None:
+    """Return bind-port provenance for parsed or programmatic namespaces."""
+    if hasattr(args, "_port_explicit"):
+        stamped = args._port_explicit
+        if stamped is None or isinstance(stamped, bool):
+            return stamped
+    derived = (
+        None
+        if getattr(args, "listen_fd", None) is not None
+        else getattr(args, "port", None) is not None
+    )
+    args._port_explicit = derived
+    return derived
+
+
+class _PortContextArgumentParser(argparse.ArgumentParser):
+    """Argument parser that records the effective bind-port provenance."""
+
+    def parse_args(self, args=None, namespace=None):
+        if args is None and namespace is None:
+            parsed = super().parse_args()
+        elif namespace is None:
+            parsed = super().parse_args(args)
+        else:
+            parsed = super().parse_args(args, namespace)
+        return _stamp_port_explicit(parsed)
 
 
 def _run_optional_runtime_guard(
@@ -396,12 +436,14 @@ def _port_collision_host(host: str, port: int) -> str | None:
     return None
 
 
-def _exit_for_port_collision(port: int, collision_host: str, *, model: str) -> NoReturn:
+def _exit_for_port_collision(
+    port: int, collision_host: str, *, model: str, port_explicit: bool
+) -> NoReturn:
     """Emit the established preflight failure and terminate with rc 1."""
 
     from rapid_mlx.telemetry.server_start import failed
 
-    failed("bind")
+    failed("bind", port_explicit=port_explicit)
     print(f"\n  Error: Port {port} is already in use on {collision_host}.")
     print(f"  Try a different port: rapid-mlx serve {model} --port {port + 1}")
     sys.exit(1)
@@ -412,7 +454,7 @@ def _exit_for_port_scan_exhaustion(scan_base: int, scan_count: int) -> NoReturn:
 
     from rapid_mlx.telemetry.server_start import failed
 
-    failed("bind")
+    failed("bind", port_explicit=False)
     scan_end = scan_base + scan_count - 1
     print(
         f"Ports {scan_base}-{scan_end} are all in use; "
@@ -432,7 +474,9 @@ def _exit_for_host_bind_error(host: str, exc: OSError) -> NoReturn:
     raise SystemExit(2) from None
 
 
-def _port_preflight_or_die(host: str, port: int, *, model: str) -> None:
+def _port_preflight_or_die(
+    host: str, port: int, *, model: str, port_explicit: bool
+) -> None:
     """Probe ``(host, port)`` AND — when ``host`` is a wildcard alias —
     additionally probe ``("127.0.0.1", port)``. Print a friendly error
     and ``sys.exit(1)`` on the first collision.
@@ -478,7 +522,12 @@ def _port_preflight_or_die(host: str, port: int, *, model: str) -> None:
     except OSError as exc:
         _exit_for_host_bind_error(host, exc)
     if collision_host is not None:
-        _exit_for_port_collision(port, collision_host, model=model)
+        _exit_for_port_collision(
+            port,
+            collision_host,
+            model=model,
+            port_explicit=port_explicit,
+        )
 
 
 def _listener_accepting(
@@ -602,6 +651,7 @@ def _resolve_serve_port(
     port: int | None,
     *,
     model: str,
+    port_explicit: bool | None,
     listen_fd: int | None = None,
     scan_base: int = DEFAULT_SERVE_PORT,
     scan_count: int = DEFAULT_SERVE_PORT_CANDIDATES,
@@ -621,7 +671,14 @@ def _resolve_serve_port(
             raise SystemExit(2) from None
 
     if port is not None:
-        _port_preflight_or_die(host, port, model=model)
+        if port_explicit is None:
+            raise ValueError("port_explicit must be provided when port is set")
+        _port_preflight_or_die(
+            host,
+            port,
+            model=model,
+            port_explicit=port_explicit,
+        )
         return port
 
     first_collision_host: str | None = None
@@ -741,6 +798,7 @@ def _run_uvicorn(app, args, log_level: str) -> None:
                 log_level=log_level,
                 timeout_keep_alive=30,
                 on_server_accepting=print_ready_banner,
+                port_explicit=port_explicit_for(args),
             )
         else:
             port = _resolved_serve_port(args)
@@ -751,6 +809,7 @@ def _run_uvicorn(app, args, log_level: str) -> None:
                 log_level=log_level,
                 timeout_keep_alive=30,
                 on_server_accepting=print_ready_banner,
+                port_explicit=port_explicit_for(args),
             )
     except OSError as exc:
         # Direct EADDRINUSE — older uvicorn, ``--listen-fd`` mode bind
@@ -3486,6 +3545,7 @@ def _serve_native_mtp_if_requested(
         pair=pair,
         host=args.host,
         port=_resolved_serve_port(args),
+        port_explicit=port_explicit_for(args),
         served_model_name=args.served_model_name or alias_name,
         default_max_tokens=effective_max_tokens,
         cors_origins=cors_origins,
@@ -3588,6 +3648,7 @@ def _serve_companion_dspark_if_requested(
         artifacts=getattr(args, "_companion_dspark_artifacts", None),
         host=args.host,
         port=args.port,
+        port_explicit=port_explicit_for(args),
         served_model_name=args.served_model_name or alias_name,
         default_max_tokens=effective_max_tokens,
         cors_origins=cors_origins,
@@ -4467,7 +4528,15 @@ def system_one_command(args) -> None:
         raise SystemExit("error: --head is only valid with --backend clm")
     # Fail before model download or initialization when the listener cannot
     # start. Cheap argument validation above still wins for invalid commands.
-    _port_preflight_or_die(args.host, args.port, model=args.model)
+    port_explicit = port_explicit_for(args)
+    assert port_explicit is not None
+    args.port = DEFAULT_SYSTEM_ONE_PORT if args.port is None else args.port
+    _port_preflight_or_die(
+        args.host,
+        args.port,
+        model=args.model,
+        port_explicit=port_explicit,
+    )
     backend: DecisionBackend
     if backend_name == "clm":
         backend = CLMBackend(
@@ -4502,6 +4571,7 @@ def system_one_command(args) -> None:
         port=args.port,
         log_level=args.log_level.lower(),
         timeout_keep_alive=30,
+        port_explicit=port_explicit,
     )
 
 
@@ -4803,6 +4873,7 @@ def serve_command(args):
             getattr(args, "host", "127.0.0.1"),
             getattr(args, "port", None),
             model=args.model,
+            port_explicit=port_explicit_for(args),
             listen_fd=getattr(args, "listen_fd", None),
         )
         _serve_audio_mode(args, audio_entry)
@@ -4859,6 +4930,7 @@ def serve_command(args):
         getattr(args, "host", "127.0.0.1"),
         getattr(args, "port", None),
         model=args.model,
+        port_explicit=port_explicit_for(args),
         listen_fd=getattr(args, "listen_fd", None),
     )
 
@@ -5629,6 +5701,7 @@ def serve_command(args):
         run_v41_server(
             host=args.host,
             port=_resolved_serve_port(args),
+            port_explicit=port_explicit_for(args),
             served_model_name=(
                 args.served_model_name
                 or getattr(args, "_original_alias", None)
@@ -5707,6 +5780,7 @@ def serve_command(args):
             drafter_revision=_drafter_revision,
             host=args.host,
             port=_resolved_serve_port(args),
+            port_explicit=port_explicit_for(args),
             served_model_name=args.served_model_name or _alias_name,
             default_max_tokens=effective_max_tokens,
             cors_origins=cors_origins,
@@ -6287,6 +6361,7 @@ def serve_command(args):
             or _profile.ddtree_tree_budget,
             host=args.host,
             port=_resolved_serve_port(args),
+            port_explicit=port_explicit_for(args),
             served_model_name=args.served_model_name or _alias_name,
             default_max_tokens=args.max_tokens,
             cors_origins=cors_origins,
@@ -12732,7 +12807,7 @@ def build_parser() -> argparse.ArgumentParser:
     of scraping source or help text)."""
     _version = _resolve_cli_version()
 
-    parser = argparse.ArgumentParser(
+    parser = _PortContextArgumentParser(
         description="Rapid-MLX: AI inference for Apple Silicon",
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""\
@@ -12783,7 +12858,7 @@ Examples:
         "--backend", choices=("auto", "laya", "clm"), default="auto"
     )
     system_one_parser.add_argument("--host", default="127.0.0.1")
-    system_one_parser.add_argument("--port", type=_port_arg, default=8700)
+    system_one_parser.add_argument("--port", type=_port_arg, default=None)
     system_one_parser.add_argument("--api-key", default=None)
     system_one_parser.add_argument(
         "--log-level",
