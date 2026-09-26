@@ -960,3 +960,30 @@ def test_port_collision_emits_only_failed_bind(monkeypatch):
     assert events[-1]["port_explicit"] is True
     assert legacy_failures == []
     server_start._reset_for_tests()
+
+
+def test_implicit_port_scan_exhaustion_emits_nonexplicit_bind(monkeypatch):
+    events: list[dict[str, object]] = []
+    monkeypatch.setattr("rapid_mlx.telemetry.track._upload_allowed", lambda: True)
+    monkeypatch.setattr(
+        "rapid_mlx.telemetry.track.track",
+        lambda event, props: events.append({"event": event, **props}),
+    )
+    monkeypatch.setattr(cli, "_port_collision_host", lambda _host, _port: _host)
+    server_start._reset_for_tests()
+    server_start.attempted("qwen3.5-4b-4bit", load_policy="eager")
+
+    with pytest.raises(SystemExit) as caught:
+        cli._resolve_serve_port(
+            "127.0.0.1",
+            None,
+            model="qwen3.5-4b-4bit",
+            scan_base=8000,
+            scan_count=1,
+        )
+
+    assert caught.value.code == 1
+    assert [event["state"] for event in events] == ["attempted", "failed"]
+    assert events[-1]["failure_stage"] == "bind"
+    assert events[-1]["port_explicit"] is False
+    server_start._reset_for_tests()

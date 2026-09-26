@@ -479,6 +479,45 @@ def test_enforce_for_messages_http_exception_passes_through():
     assert excinfo.value.status_code == 503
 
 
+def test_context_wrappers_forward_telemetry_context(monkeypatch):
+    from rapid_mlx.service import helpers
+
+    class _PromptEngine(_StubEngine):
+        def build_prompt(self, messages, tools=None, enable_thinking=None):  # noqa: ARG002
+            return "rendered prompt"
+
+    engine = _PromptEngine(tokenizer=_StubTokenizer(chars_per_token=1))
+    calls = []
+    monkeypatch.setattr(
+        helpers,
+        "enforce_context_length",
+        lambda *args, **kwargs: calls.append((args, kwargs)),
+    )
+    context = {
+        "telemetry_model": "qwen3.5-4b-4bit",
+        "caller_agent": "cursor/1.0",
+        "caller_client": "rapid-desktop",
+    }
+
+    helpers.enforce_context_length_for_messages(
+        engine,
+        [{"role": "user", "content": "hello"}],
+        max_tokens=7,
+        **context,
+    )
+    helpers.enforce_context_length_for_prompt(
+        engine,
+        "plain prompt",
+        max_tokens=9,
+        **context,
+    )
+
+    assert calls == [
+        ((engine, 15), {"max_tokens": 7, **context}),
+        ((engine, 12), {"max_tokens": 9, **context}),
+    ]
+
+
 # ─── End-to-end shape: structured handler passes envelope through ───
 
 

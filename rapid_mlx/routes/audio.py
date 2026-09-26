@@ -2605,9 +2605,7 @@ async def create_translation(
     # only need source-language text). Performed BEFORE the body probe
     # so a clearly-misrouted Parakeet request fails without touching
     # mlx_audio at all.
-    _reject_non_whisper_for_translation(
-        model,
-    )
+    _reject_non_whisper_for_translation(model)
 
     # F-D05: STT-lane audio dep probe (kept inside the route body so
     # the source-grep regression guard in

@@ -5534,7 +5534,11 @@ async def _create_chat_completion_impl(
         response_id = _new_stream_request_id()
         # Preserve request attribution for the v2 inference emitter. Thread it
         # explicitly so it never leaks into the engine's ``**chat_kwargs``.
-        _caller_ua = _caller_agent
+        from rapid_mlx.telemetry import inference as _telemetry_inference
+
+        _caller_ua, _caller_client = _telemetry_inference.request_caller_headers(
+            raw_request
+        )
         if use_guided and json_schema:
             # Constrained streaming: run guided generation buffered, then
             # synthesize an SSE stream from the buffered output. Falls

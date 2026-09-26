@@ -1385,9 +1385,7 @@ async def count_anthropic_tokens(request: Request):
     from rapid_mlx.telemetry import inference as _telemetry_inference
     from rapid_mlx.telemetry.model_id import engine_telemetry_id
 
-    _caller_agent, _caller_client = _telemetry_inference.request_caller_headers(
-        request
-    )
+    _caller_agent, _caller_client = _telemetry_inference.request_caller_headers(request)
     _served_telemetry_id = engine_telemetry_id(engine)
 
     # F12: count_tokens must apply the SAME chat template + tools
