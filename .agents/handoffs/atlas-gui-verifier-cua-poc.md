@@ -6,6 +6,10 @@
 - Status: POC implemented and dogfooded; product integration remains open
 - Landed: semantic action protocol committed as `fe6624989` and pushed to
   `origin/atlas/gui-verifier-cua-poc` (14 POC tests green, ruff clean).
+- Scenario research: Muse top flows distilled into
+  `docs/engineering/decisions/2026-09-26-local-muse-mvp-scenarios.md`
+  (shopping, travel, money, music, local files, always-on) with the MVP stack
+  mapping and next actions.
 
 ## Verified facts
 
