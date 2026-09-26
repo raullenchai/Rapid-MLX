@@ -8,6 +8,7 @@ import asyncio
 import json
 import multiprocessing
 import os
+import re
 import sqlite3
 import subprocess
 import sys
@@ -837,15 +838,13 @@ def test_model_type_tokens_match_registry():
     assert declared == inference._MODEL_TYPES
 
 
-_REQUEST_MODEL_ROOTS = frozenset(
+_REQUEST_ROOT_NAME = re.compile(r"^(request|req|body|payload|.*_request|.*_body)$")
+_REQUEST_TYPE_SUFFIXES = ("Request", "Body", "Params")
+_REQUEST_MODEL_DEBUG_HANDLERS = frozenset(
     {
-        "request",
-        "responses_request",
-        "body",
-        "payload",
-        "req",
-        "chat_request",
-        "completion_request",
+        "rapid_mlx/routes/anthropic.py:_stream_anthropic_messages",
+        "rapid_mlx/routes/completions.py:create_completion",
+        "rapid_mlx/routes/responses.py:_non_stream",
     }
 )
 
@@ -888,9 +887,132 @@ def _target_names(target: ast.AST) -> set[str]:
     }
 
 
-def _request_model_violations(repo_root: Path) -> list[str]:
+def _module_name(repo_root: Path, path: Path) -> str:
+    return ".".join(path.relative_to(repo_root).with_suffix("").parts)
+
+
+def _imported_names(module_name: str, tree: ast.Module) -> dict[str, str]:
+    imported: dict[str, str] = {}
+    package = module_name.split(".")[:-1]
+    for node in ast.walk(tree):
+        if isinstance(node, ast.ImportFrom) and node.module:
+            parent = package[: len(package) - max(node.level - 1, 0)]
+            source = ".".join([*parent, node.module]) if node.level else node.module
+            for alias in node.names:
+                imported[alias.asname or alias.name] = f"{source}.{alias.name}"
+        elif isinstance(node, ast.Import):
+            for alias in node.names:
+                imported[alias.asname or alias.name.split(".")[0]] = alias.name
+    return imported
+
+
+def _pydantic_model_classes(repo_root: Path) -> set[str]:
+    """Resolve BaseModel subclasses without importing MLX-bearing route modules."""
+    class_bases: dict[str, set[str]] = {}
+    for package in ("api", "routes", "schemas"):
+        directory = repo_root / "rapid_mlx" / package
+        if not directory.exists():
+            continue
+        for path in directory.rglob("*.py"):
+            tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
+            module_name = _module_name(repo_root, path)
+            imported = _imported_names(module_name, tree)
+            for node in tree.body:
+                if not isinstance(node, ast.ClassDef):
+                    continue
+                bases: set[str] = set()
+                for base in node.bases:
+                    if isinstance(base, ast.Name):
+                        bases.add(imported.get(base.id, f"{module_name}.{base.id}"))
+                    elif isinstance(base, ast.Attribute):
+                        root = base.value
+                        while isinstance(root, ast.Attribute):
+                            root = root.value
+                        if isinstance(root, ast.Name):
+                            bases.add(f"{imported.get(root.id, root.id)}.{base.attr}")
+                class_bases[f"{module_name}.{node.name}"] = bases
+
+    models = {"pydantic.BaseModel"}
+    changed = True
+    while changed:
+        changed = False
+        for class_name, bases in class_bases.items():
+            if class_name not in models and models.intersection(bases):
+                models.add(class_name)
+                changed = True
+    return models
+
+
+def _annotation_names(annotation: ast.AST | None) -> set[str]:
+    if annotation is None:
+        return set()
+    if isinstance(annotation, ast.Constant) and isinstance(annotation.value, str):
+        return set(re.findall(r"[A-Za-z_]\w*", annotation.value))
+    return {child.id for child in ast.walk(annotation) if isinstance(child, ast.Name)}
+
+
+def _assigned_request_value(node: ast.AST) -> bool:
+    while isinstance(node, ast.Await):
+        node = node.value
+    if isinstance(node, ast.Name):
+        return node.id == "Request"
+    if not isinstance(node, ast.Call):
+        return False
+    if isinstance(node.func, ast.Name):
+        return node.func.id.endswith("Request")
+    return isinstance(node.func, ast.Attribute) and (
+        node.func.attr in {"json", "parse_obj", "model_validate"}
+        or node.func.attr.endswith("Request")
+    )
+
+
+def _function_request_roots(
+    function: ast.FunctionDef | ast.AsyncFunctionDef,
+    nodes: list[ast.AST],
+    imported: dict[str, str],
+    pydantic_models: set[str],
+) -> set[str]:
+    roots: set[str] = set()
+    arguments = [
+        *function.args.posonlyargs,
+        *function.args.args,
+        *function.args.kwonlyargs,
+        *(
+            argument
+            for argument in (function.args.vararg, function.args.kwarg)
+            if argument is not None
+        ),
+    ]
+    for argument in arguments:
+        annotation_names = _annotation_names(argument.annotation)
+        typed_request = any(
+            name.endswith(_REQUEST_TYPE_SUFFIXES) for name in annotation_names
+        ) or any(imported.get(name) in pydantic_models for name in annotation_names)
+        if _REQUEST_ROOT_NAME.fullmatch(argument.arg) or typed_request:
+            roots.add(argument.arg)
+
+    for node in nodes:
+        assignments: list[tuple[ast.AST, ast.AST]] = []
+        if isinstance(node, ast.Assign):
+            assignments.extend((target, node.value) for target in node.targets)
+        elif (isinstance(node, ast.AnnAssign) and node.value is not None) or isinstance(
+            node, ast.NamedExpr
+        ):
+            assignments.append((node.target, node.value))
+        for target, value in assignments:
+            names = _target_names(target)
+            roots.update(name for name in names if _REQUEST_ROOT_NAME.fullmatch(name))
+            if _assigned_request_value(value):
+                roots.update(names)
+    return roots
+
+
+def _request_model_violations(
+    repo_root: Path, root_debug: dict[str, list[str]] | None = None
+) -> list[str]:
     """Find request-derived model identities reaching route telemetry sinks."""
     violations: list[str] = []
+    pydantic_models = _pydantic_model_classes(repo_root)
 
     for directory in (
         repo_root / "rapid_mlx/routes",
@@ -898,6 +1020,8 @@ def _request_model_violations(repo_root: Path) -> list[str]:
     ):
         for path in directory.rglob("*.py"):
             tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
+            module_name = _module_name(repo_root, path)
+            imported = _imported_names(module_name, tree)
             telemetry_names: set[str] = set()
             telemetry_modules: set[str] = set()
             for node in ast.walk(tree):
@@ -956,7 +1080,9 @@ def _request_model_violations(repo_root: Path) -> list[str]:
                     )
                 return expressions
 
-            def expression_is_tainted(node: ast.AST, tainted: set[str]) -> bool:
+            def expression_is_tainted(
+                node: ast.AST, tainted: set[str], request_roots: set[str]
+            ) -> bool:
                 if isinstance(node, ast.Call):
                     function_name = (
                         node.func.id
@@ -974,18 +1100,40 @@ def _request_model_violations(repo_root: Path) -> list[str]:
                     isinstance(node, ast.Attribute)
                     and node.attr == "model"
                     and isinstance(node.value, ast.Name)
-                    and node.value.id in _REQUEST_MODEL_ROOTS
+                    and node.value.id in request_roots
+                ):
+                    return True
+                if (
+                    isinstance(node, ast.Subscript)
+                    and isinstance(node.value, ast.Name)
+                    and node.value.id in request_roots
+                    and isinstance(node.slice, ast.Constant)
+                    and node.slice.value == "model"
+                ):
+                    return True
+                if (
+                    isinstance(node, ast.Call)
+                    and isinstance(node.func, ast.Name)
+                    and node.func.id == "getattr"
+                    and len(node.args) >= 2
+                    and isinstance(node.args[0], ast.Name)
+                    and node.args[0].id in request_roots
+                    and isinstance(node.args[1], ast.Constant)
+                    and node.args[1].value == "model"
                 ):
                     return True
                 if isinstance(node, ast.Name) and node.id in tainted:
                     return True
                 return any(
-                    expression_is_tainted(child, tainted)
+                    expression_is_tainted(child, tainted, request_roots)
                     for child in ast.iter_child_nodes(node)
                 )
 
             def add_assignment_taint(
-                target: ast.AST, value: ast.AST, tainted: set[str]
+                target: ast.AST,
+                value: ast.AST,
+                tainted: set[str],
+                request_roots: set[str],
             ) -> bool:
                 changed = False
                 if (
@@ -997,16 +1145,16 @@ def _request_model_violations(repo_root: Path) -> list[str]:
                         target.elts, value.elts, strict=True
                     ):
                         changed |= add_assignment_taint(
-                            child_target, child_value, tainted
+                            child_target, child_value, tainted, request_roots
                         )
                     return changed
-                if expression_is_tainted(value, tainted):
+                if expression_is_tainted(value, tainted, request_roots):
                     before = len(tainted)
                     tainted.update(_target_names(target))
                     changed = len(tainted) != before
                 return changed
 
-            def scope_taint(nodes: list[ast.AST]) -> set[str]:
+            def scope_taint(nodes: list[ast.AST], request_roots: set[str]) -> set[str]:
                 tainted: set[str] = set()
                 changed = True
                 while changed:
@@ -1015,19 +1163,19 @@ def _request_model_violations(repo_root: Path) -> list[str]:
                         if isinstance(node, ast.Assign):
                             for target in node.targets:
                                 changed |= add_assignment_taint(
-                                    target, node.value, tainted
+                                    target, node.value, tainted, request_roots
                                 )
                         elif (
                             isinstance(node, ast.AnnAssign) and node.value is not None
                         ) or isinstance(node, (ast.AugAssign, ast.NamedExpr)):
                             changed |= add_assignment_taint(
-                                node.target, node.value, tainted
+                                node.target, node.value, tainted, request_roots
                             )
                         elif isinstance(
                             node, (ast.For, ast.AsyncFor, ast.comprehension)
                         ):
                             changed |= add_assignment_taint(
-                                node.target, node.iter, tainted
+                                node.target, node.iter, tainted, request_roots
                             )
                         elif isinstance(node, (ast.With, ast.AsyncWith)):
                             for item in node.items:
@@ -1036,19 +1184,21 @@ def _request_model_violations(repo_root: Path) -> list[str]:
                                         item.optional_vars,
                                         item.context_expr,
                                         tainted,
+                                        request_roots,
                                     )
                 return tainted
 
             def check_calls(
                 nodes: list[ast.AST],
                 tainted: set[str],
+                request_roots: set[str],
                 path: Path = path,
             ) -> None:
                 for node in nodes:
                     if not isinstance(node, ast.Call):
                         continue
                     if any(
-                        expression_is_tainted(expression, tainted)
+                        expression_is_tainted(expression, tainted, request_roots)
                         for expression in sink_expressions(node)
                     ):
                         violations.append(
@@ -1056,18 +1206,33 @@ def _request_model_violations(repo_root: Path) -> list[str]:
                         )
 
             module_nodes = _scope_nodes(tree.body)
-            check_calls(module_nodes, set())
+            check_calls(module_nodes, set(), set())
             for node in ast.walk(tree):
                 if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
                     nodes = _scope_nodes(node.body)
-                    check_calls(nodes, scope_taint(nodes))
+                    request_roots = _function_request_roots(
+                        node, nodes, imported, pydantic_models
+                    )
+                    debug_key = f"{path.relative_to(repo_root)}:{node.name}"
+                    if (
+                        root_debug is not None
+                        and debug_key in _REQUEST_MODEL_DEBUG_HANDLERS
+                    ):
+                        root_debug[debug_key] = sorted(request_roots)
+                    check_calls(
+                        nodes,
+                        scope_taint(nodes, request_roots),
+                        request_roots,
+                    )
 
     return violations
 
 
 def test_no_route_or_api_telemetry_call_receives_request_model_expression():
     """Client model fields are routing input, never telemetry identity."""
-    assert _request_model_violations(REPO_ROOT) == []
+    root_debug: dict[str, list[str]] = {}
+    violations = _request_model_violations(REPO_ROOT, root_debug)
+    assert violations == [], f"derived request roots: {root_debug}"
 
 
 @pytest.mark.parametrize(
@@ -1107,6 +1272,52 @@ def test_request_model_privacy_gate_rejects_scratch_variants(tmp_path, function_
     assert _request_model_violations(tmp_path) == [
         f"rapid_mlx/routes/scratch.py:{expected_line}"
     ]
+
+
+@pytest.mark.parametrize(
+    ("module", "type_name", "parameter"),
+    [
+        ("rapid_mlx.api.anthropic_models", "AnthropicRequest", "anthropic_request"),
+        ("rapid_mlx.api.models", "ChatCompletionRequest", "openai_request"),
+    ],
+    ids=["anthropic-request", "openai-request"],
+)
+def test_request_model_privacy_gate_derives_real_handler_roots(
+    tmp_path, module, type_name, parameter
+):
+    route_dir = tmp_path / "rapid_mlx/routes"
+    route_dir.mkdir(parents=True)
+    source = (
+        f"from {module} import {type_name}\n"
+        "from rapid_mlx.telemetry.inference import emit_capability_rejected\n\n"
+        f"def scratch({parameter}: {type_name}):\n"
+        f"    model = {parameter}.model\n"
+        "    emit_capability_rejected('unsupported', model=model)\n"
+    )
+    (route_dir / "scratch.py").write_text(source, encoding="utf-8")
+
+    assert _request_model_violations(tmp_path) == ["rapid_mlx/routes/scratch.py:6"]
+
+
+@pytest.mark.parametrize(
+    "model_expression",
+    ['request["model"]', 'getattr(request, "model")'],
+    ids=["mapping-access", "getattr"],
+)
+def test_request_model_privacy_gate_rejects_all_model_access_forms(
+    tmp_path, model_expression
+):
+    route_dir = tmp_path / "rapid_mlx/routes"
+    route_dir.mkdir(parents=True)
+    source = (
+        "from rapid_mlx.telemetry.inference import emit_capability_rejected\n\n"
+        "def scratch(request):\n"
+        f"    model = {model_expression}\n"
+        "    emit_capability_rejected('unsupported', model=model)\n"
+    )
+    (route_dir / "scratch.py").write_text(source, encoding="utf-8")
+
+    assert _request_model_violations(tmp_path) == ["rapid_mlx/routes/scratch.py:5"]
 
 
 def test_image_unavailable_reports_resident_engine_telemetry_id(monkeypatch):
