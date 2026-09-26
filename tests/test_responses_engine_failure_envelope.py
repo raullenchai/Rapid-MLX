@@ -2033,3 +2033,199 @@ def test_invalid_tool_arguments_envelope_counts_output_contract_unmet(monkeypatc
     assert [(c["result"], c["error_class"]) for c in calls] == [
         ("failed", "output_contract_unmet")
     ]
+
+
+class _DeepSeekStopThenOutcomeEngine:
+    """DeepSeek Codex surface. Attempt 1 stops reasoning-only (the transparent
+    non-progress retry fires); attempt 2 answers, or stops again."""
+
+    preserve_native_tool_format = False
+
+    def __init__(self, second_answers: bool = True):
+        self.tokenizer = _Tokenizer()
+        self.calls = 0
+        self.second_answers = second_answers
+
+    async def chat(self, messages, **kwargs):
+        return _GenerationOutput(
+            text="ok", prompt_tokens=3, completion_tokens=1, finish_reason="stop"
+        )
+
+    async def stream_chat(self, messages, **kwargs):
+        self.calls += 1
+        if self.calls == 1 or not self.second_answers:
+            chunks = ["thinking ", "more"]
+            for index, chunk in enumerate(chunks):
+                yield _GenerationOutput(
+                    text="".join(chunks[: index + 1]),
+                    new_text=chunk,
+                    prompt_tokens=7 if index == 0 else 0,
+                    completion_tokens=index + 1,
+                    finish_reason="stop" if index == 1 else None,
+                    finished=index == 1,
+                    channel="reasoning",
+                )
+            return
+        yield _GenerationOutput(
+            text="done",
+            new_text="done",
+            prompt_tokens=3,
+            completion_tokens=1,
+            finish_reason="stop",
+            channel="content",
+        )
+
+
+_DEEPSEEK_CODEX_INPUT = [
+    {"type": "message", "role": "user", "content": "list files"},
+    {
+        "type": "function_call",
+        "call_id": "c1",
+        "name": "exec_command",
+        "arguments": "{}",
+    },
+    {"type": "function_call_output", "call_id": "c1", "output": "a.txt"},
+]
+_DEEPSEEK_CODEX_TOOLS = [
+    {
+        "type": "function",
+        "name": "exec_command",
+        "parameters": {"type": "object", "properties": {}},
+    },
+    {
+        "type": "function",
+        "name": "write_stdin",
+        "parameters": {"type": "object", "properties": {}},
+    },
+]
+
+
+@pytest.mark.parametrize(
+    ("second_answers", "expected_events", "expected_counts"),
+    [
+        # The hidden first failure is retried away: the client sees success,
+        # so exactly one ok is counted and no failure.
+        (True, "response.completed", [("ok", None)]),
+        # Both attempts fail: only the failure the client actually sees
+        # (the retry's) is counted, once.
+        (False, "response.failed", [("failed", "output_contract_unmet")]),
+    ],
+)
+def test_deepseek_transparent_retry_counts_only_the_visible_outcome(
+    monkeypatch, second_answers, expected_events, expected_counts
+):
+    holder = _build_client(
+        monkeypatch, lambda: _DeepSeekStopThenOutcomeEngine(second_answers)
+    )
+    try:
+        from rapid_mlx.config import get_config
+
+        get_config().tool_call_parser = "deepseek_v4_0731"
+        calls = _capture_emits(monkeypatch)
+        with holder.client.stream(
+            "POST",
+            "/v1/responses",
+            json={
+                **PAYLOAD,
+                "stream": True,
+                "tools": _DEEPSEEK_CODEX_TOOLS,
+                "input": _DEEPSEEK_CODEX_INPUT,
+            },
+            headers=HEADERS,
+        ) as resp:
+            names = [name for name, _ in _parse_sse("".join(resp.iter_text()))]
+        engine_calls = holder.engine.calls
+    finally:
+        holder.cleanup()
+    assert engine_calls == 2
+    assert expected_events in names, names
+    assert [(c["result"], c.get("error_class")) for c in calls] == expected_counts
+
+
+def test_deepseek_first_attempt_failure_is_counted_when_not_retried(monkeypatch):
+    """A first-attempt failure that is NOT a retryable non-progress stop
+    (here: an engine exception) reaches the client and is counted once."""
+
+    class _ExplodingDeepSeekEngine(_DeepSeekStopThenOutcomeEngine):
+        async def stream_chat(self, messages, **kwargs):
+            self.calls += 1
+            yield _GenerationOutput(
+                text="",
+                new_text="",
+                prompt_tokens=3,
+                completion_tokens=0,
+                finish_reason=None,
+                finished=False,
+                channel="reasoning",
+            )
+            raise RuntimeError("engine exploded")
+
+    holder = _build_client(monkeypatch, _ExplodingDeepSeekEngine)
+    try:
+        from rapid_mlx.config import get_config
+
+        get_config().tool_call_parser = "deepseek_v4_0731"
+        calls = _capture_emits(monkeypatch)
+        with holder.client.stream(
+            "POST",
+            "/v1/responses",
+            json={
+                **PAYLOAD,
+                "stream": True,
+                "tools": _DEEPSEEK_CODEX_TOOLS,
+                "input": _DEEPSEEK_CODEX_INPUT,
+            },
+            headers=HEADERS,
+        ) as resp:
+            names = [name for name, _ in _parse_sse("".join(resp.iter_text()))]
+        engine_calls = holder.engine.calls
+    finally:
+        holder.cleanup()
+    assert engine_calls == 1
+    assert "response.failed" in names, names
+    assert [(c["result"], c.get("error_class")) for c in calls] == [("failed", "other")]
+
+
+def test_deepseek_deferred_route_failure_is_counted_when_not_retried(monkeypatch):
+    """A route-level first-attempt failure the wrapper does not retry
+    (engine_no_output: zero tokens, finish=length) is released from the
+    deferral and counted exactly once."""
+
+    class _EmptyDeepSeekEngine(_DeepSeekStopThenOutcomeEngine):
+        async def stream_chat(self, messages, **kwargs):
+            self.calls += 1
+            yield _GenerationOutput(
+                text="",
+                new_text="",
+                prompt_tokens=42,
+                completion_tokens=0,
+                finish_reason="length",
+                finished=True,
+            )
+
+    holder = _build_client(monkeypatch, _EmptyDeepSeekEngine)
+    try:
+        from rapid_mlx.config import get_config
+
+        get_config().tool_call_parser = "deepseek_v4_0731"
+        calls = _capture_emits(monkeypatch)
+        with holder.client.stream(
+            "POST",
+            "/v1/responses",
+            json={
+                **PAYLOAD,
+                "stream": True,
+                "tools": _DEEPSEEK_CODEX_TOOLS,
+                "input": _DEEPSEEK_CODEX_INPUT,
+            },
+            headers=HEADERS,
+        ) as resp:
+            names = [name for name, _ in _parse_sse("".join(resp.iter_text()))]
+        engine_calls = holder.engine.calls
+    finally:
+        holder.cleanup()
+    assert engine_calls == 1
+    assert "response.failed" in names, names
+    assert [(c["result"], c.get("error_class")) for c in calls] == [
+        ("failed", "output_contract_unmet")
+    ]

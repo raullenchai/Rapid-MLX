@@ -2757,3 +2757,39 @@ def test_nonstream_guided_model_replacement_counts_model_replaced(
     assert [(c["result"], c["error_class"]) for c in calls] == [
         ("failed", "model_replaced")
     ]
+
+
+@pytest.mark.parametrize(
+    ("chat_text", "expected"),
+    [
+        (_INVALID_PAYLOAD_OUT_OF_RANGE, [("failed", "strict_schema_violation")]),
+        (_VALID_PAYLOAD, [("ok", None)]),
+    ],
+)
+def test_strict_postgen_stream_counts_exactly_one_judged_outcome(
+    monkeypatch, _rate_limiter_state, chat_text, expected
+):
+    """The unconstrained strict stream is judged AFTER the upstream stream's
+    clean end: a violation is one strict_schema_violation (never also ok),
+    a valid body is one ok."""
+    calls = _capture_failed_emits(monkeypatch)
+    engine = _Engine(supports_guided=False, chat_text=chat_text)
+    client = _make_client(engine)
+    resp = client.post("/v1/chat/completions", json=_payload(strict=True, stream=True))
+    assert resp.status_code == 200, resp.text
+    assert ("json_schema_violation" in resp.text) == (expected[0][0] == "failed")
+    assert [(c["result"], c.get("error_class")) for c in calls] == expected
+
+
+def test_strict_postgen_stream_buffer_overflow_counts_strict_schema_violation(
+    monkeypatch, _rate_limiter_state
+):
+    monkeypatch.setenv("RAPID_MLX_STRICT_BUFFER_BYTES", "8")
+    calls = _capture_failed_emits(monkeypatch)
+    engine = _Engine(supports_guided=False, chat_text=_VALID_PAYLOAD * 50)
+    client = _make_client(engine)
+    resp = client.post("/v1/chat/completions", json=_payload(strict=True, stream=True))
+    assert "buffer_overflow" in resp.text, resp.text[-400:]
+    assert [(c["result"], c.get("error_class")) for c in calls] == [
+        ("failed", "strict_schema_violation")
+    ]

@@ -3206,10 +3206,10 @@ def test_additional_endpoint_has_completed_request_emit(relative_path, endpoint)
 @pytest.mark.parametrize(
     ("relative_path", "failed_count"),
     [
-        ("rapid_mlx/routes/chat.py", 5),
+        ("rapid_mlx/routes/chat.py", 6),
         ("rapid_mlx/routes/completions.py", 1),
         ("rapid_mlx/routes/anthropic.py", 1),
-        ("rapid_mlx/routes/responses.py", 2),
+        ("rapid_mlx/routes/responses.py", 3),
     ],
 )
 def test_each_terminal_site_uses_only_v2_emit(relative_path, failed_count):

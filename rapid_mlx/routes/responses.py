@@ -2671,6 +2671,9 @@ async def _stream_responses_with_nonprogress_retry(
         public_sequence,
     )
     attempt_heartbeat_state: dict[str, object] = {}
+    # The first attempt's route-level failure is only counted if we do NOT
+    # retry it (see _stream_responses ``deferred_failure``).
+    first_attempt_failure: list[str | None] = [None]
     buffered: list[str] = []
     buffered_bytes = 0
     committed = False
@@ -2690,6 +2693,7 @@ async def _stream_responses_with_nonprogress_retry(
         caller_agent=caller_agent,
         caller_client=caller_client,
         served_telemetry_id=served_telemetry_id,
+        deferred_failure=first_attempt_failure,
     ):
         if committed:
             if heartbeat_state is not None:
@@ -2727,6 +2731,17 @@ async def _stream_responses_with_nonprogress_retry(
         elif _responses_event_is_nonprogress_failure(event):
             retry_nonprogress = True
 
+    if (committed or not retry_nonprogress) and first_attempt_failure[0] is not None:
+        from rapid_mlx.telemetry import inference as _telemetry_inference
+
+        _telemetry_inference.emit_completed_request(
+            model=served_telemetry_id or "<custom>",
+            endpoint="/v1/responses",
+            caller_agent=caller_agent,
+            caller_client=caller_client,
+            result="failed",
+            error_class=first_attempt_failure[0],
+        )
     if committed:
         return
     if not retry_nonprogress:
@@ -2851,6 +2866,7 @@ async def _stream_responses(
     caller_agent: str | None = None,
     caller_client: str | None = None,
     served_telemetry_id: str | None = None,
+    deferred_failure: list[str | None] | None = None,
 ) -> AsyncIterator[str]:
     """Stream a Responses-API SSE event sequence Codex CLI can parse.
 
@@ -2905,6 +2921,12 @@ async def _stream_responses(
         if telemetry_failure_emitted[0]:
             return
         telemetry_failure_emitted[0] = True
+        if deferred_failure is not None:
+            # A buffered attempt the caller may still retry transparently:
+            # hand the class back instead of counting a failure the client
+            # may never see.
+            deferred_failure[:] = [error_class]
+            return
         from rapid_mlx.telemetry import inference as _telemetry_inference
 
         _telemetry_inference.emit_completed_request(

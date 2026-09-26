@@ -6842,6 +6842,7 @@ async def stream_chat_completion(
     caller_client: str | None = None,
     served_telemetry_id: str | None = None,
     _client_disconnect_state: list[bool] | None = None,
+    _ok_outcome: list[bool] | None = None,
     **kwargs,
 ) -> AsyncIterator[str]:
     """Stream chat completion response.
@@ -6860,6 +6861,10 @@ async def stream_chat_completion(
         _client_disconnect_state: Private route/guard coordination latch.
             True means the consumer disappeared and post-stream recovery must
             not synthesize terminal frames for the dead connection.
+        _ok_outcome: Private telemetry hand-off for a wrapper that still has
+            to judge the stream (strict post-generation validation). When
+            given, a clean end sets ``_ok_outcome[0] = True`` INSTEAD of
+            counting ``ok``; the wrapper then counts exactly one outcome.
     """
     from ..service.postprocessor import StreamingPostProcessor
 
@@ -8127,15 +8132,18 @@ async def stream_chat_completion(
 
         yield "data: [DONE]\n\n"
 
-        from rapid_mlx.telemetry import inference as _telemetry_inference
+        if _ok_outcome is not None:
+            _ok_outcome[:] = [True]
+        else:
+            from rapid_mlx.telemetry import inference as _telemetry_inference
 
-        _telemetry_inference.emit_completed_request(
-            model=served_telemetry_id or "<custom>",
-            endpoint="/v1/chat/completions",
-            caller_agent=caller_agent,
-            caller_client=caller_client,
-            result="ok",
-        )
+            _telemetry_inference.emit_completed_request(
+                model=served_telemetry_id or "<custom>",
+                endpoint="/v1/chat/completions",
+                caller_agent=caller_agent,
+                caller_client=caller_client,
+                result="ok",
+            )
 
     finally:
         if admission_task is not None and not admission_task.done():
@@ -8787,6 +8795,31 @@ async def stream_chat_completion_strict_postgen(
     # handle we explicitly close the generator on overflow so the
     # engine cleanup runs synchronously with the wrapper's
     # decision to bail.
+    # The upstream stream hands its clean-end ``ok`` to us: only after
+    # validation do we know whether this request succeeded.
+    upstream_ok: list[bool] = [False]
+
+    def _count_outcome(error_class: str | None) -> None:
+        from rapid_mlx.telemetry import inference as _telemetry_inference
+
+        if error_class is None:
+            _telemetry_inference.emit_completed_request(
+                model=served_telemetry_id or "<custom>",
+                endpoint="/v1/chat/completions",
+                caller_agent=caller_agent,
+                caller_client=caller_client,
+                result="ok",
+            )
+            return
+        _telemetry_inference.emit_completed_request(
+            model=served_telemetry_id or "<custom>",
+            endpoint="/v1/chat/completions",
+            caller_agent=caller_agent,
+            caller_client=caller_client,
+            result="failed",
+            error_class=error_class,
+        )
+
     upstream_agen = stream_chat_completion(
         engine,
         messages,
@@ -8796,6 +8829,7 @@ async def stream_chat_completion_strict_postgen(
         caller_agent=caller_agent,
         caller_client=caller_client,
         served_telemetry_id=served_telemetry_id,
+        _ok_outcome=upstream_ok,
         **kwargs,
     )
     try:
@@ -9019,6 +9053,7 @@ async def stream_chat_completion_strict_postgen(
                 "R12-4 strict json_schema streaming buffer overflow at %d bytes",
                 _buffer_cap,
             )
+            _count_outcome("strict_schema_violation")
             validation_emitted = True
             return
 
@@ -9035,8 +9070,14 @@ async def stream_chat_completion_strict_postgen(
                 yield terminal
             if held_usage_chunk is not None:
                 yield held_usage_chunk
+            if upstream_ok[0]:
+                _count_outcome(None)
         else:
             incr_strict_violation()
+            if upstream_ok[0]:
+                # Only a stream that ran to its clean end is judged; one the
+                # client abandoned was never going to validate.
+                _count_outcome("strict_schema_violation")
             envelope = build_violation_envelope(
                 failure_details or {"reason": "schema_violation"},
                 attempts=1,
