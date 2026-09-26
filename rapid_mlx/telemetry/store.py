@@ -69,17 +69,22 @@ from rapid_mlx.telemetry.state import _default_telemetry_dir
 SCHEMA_VERSION = 1
 
 #: Longest key we accept. Keys are built by callers from closed enum
-#: values (model id + endpoint + caller + result), so a long one means a
-#: caller leaked something free-form — drop it rather than store it.
-MAX_KEY_LENGTH = 200
+#: values (model id + endpoint + caller + result [+ error class]), so a long
+#: one means a caller leaked something free-form — drop it rather than store
+#: it. The longest legitimate key (a 128-char model id on a failed request)
+#: is 204 characters.
+MAX_KEY_LENGTH = 256
 
 #: Hard cap on distinct rows in ``counters`` / ``models_served``. A
 #: pathological caller (or a model id that turns out not to be closed
 #: after all) must not grow this file without bound. Past the cap a new
-#: key is ignored; existing keys keep counting. Twelve thousand rows cover
-#: every endpoint/caller/result combination for 35 models; this local SQLite
-#: state remains tiny while avoiding exhaustion on ordinary multi-model hosts.
-MAX_KEYS = 12_000
+#: key is ignored; existing keys keep counting. Failures are counted per
+#: inference_error_class, so one model has endpoint x caller x (1 ok + one
+#: failed key per class) worst-case keys; 61,000 rows still cover every
+#: combination for 28 complete models (see
+#: docs/engineering/performance/telemetry-v2-inference.md). This local SQLite
+#: state stays small while avoiding exhaustion on ordinary multi-model hosts.
+MAX_KEYS = 61_000
 
 #: Nothing in here may block a request path. SQLite retries a locked
 #: database internally for at most this long, then raises and we fall

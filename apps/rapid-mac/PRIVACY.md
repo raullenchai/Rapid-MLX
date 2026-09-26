@@ -96,6 +96,11 @@ service:
     extra name (`vision`, `video`, `audio`, or `image`).
   * For a failed server bind, whether its port was explicitly selected. The
     port number itself is not sent.
+  * For a failed inference counted in `inference_bucket_reached`, a closed
+    failure class (`error_class`: `insufficient_memory`, `engine_aborted`,
+    `template_error`, `media_input_invalid`, `prompt_too_large`,
+    `strict_schema_violation`, `model_replaced`, `stream_error`, or `other`).
+    The class is picked on the device; the error message itself is never sent.
 
 Anonymous telemetry does **not** collect:
 

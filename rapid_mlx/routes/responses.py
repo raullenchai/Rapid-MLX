@@ -2862,7 +2862,7 @@ async def _stream_responses(
         _seq[0] += 1
         return _sse(event, data)
 
-    def _record_failed() -> None:
+    def _record_failed(error_class: str) -> None:
         if telemetry_failure_emitted[0]:
             return
         telemetry_failure_emitted[0] = True
@@ -2874,6 +2874,7 @@ async def _stream_responses(
             caller_agent=caller_agent,
             caller_client=caller_client,
             result="failed",
+            error_class=error_class,
         )
 
     # response.created — Codex needs this before any deltas.
@@ -4216,7 +4217,7 @@ async def _stream_responses(
                     "tool_choice_unfulfilled",
                 )
                 err_msg = str(err_detail)
-            _record_failed()
+            _record_failed("stream_error")
             yield _emit(
                 "response.failed",
                 {
@@ -4635,7 +4636,7 @@ async def _stream_responses(
                 if isinstance(part, dict)
             )
         if reasoning_item_finalized and emitted_reasoning != accumulated_reasoning_text:
-            _record_failed()
+            _record_failed("stream_error")
             yield _emit(
                 "response.failed",
                 {
@@ -4680,7 +4681,7 @@ async def _stream_responses(
                 error_code,
                 completion_tokens,
             )
-            _record_failed()
+            _record_failed("stream_error")
             yield _emit(
                 "response.failed",
                 {
@@ -4992,7 +4993,7 @@ async def _stream_responses(
                 "(accumulated_text empty, no tool_calls, completion_tokens=0); "
                 "surfacing as response.failed"
             )
-            _record_failed()
+            _record_failed("stream_error")
             yield _emit(
                 "response.failed",
                 {
@@ -5088,7 +5089,9 @@ async def _stream_responses(
         # a half-stream-then-EOF; matches how the OpenAI cloud
         # Responses API closes errored streams.
         logger.exception("Responses stream failed: %s", e)
-        _record_failed()
+        from rapid_mlx.telemetry import inference as _telemetry_inference
+
+        _record_failed(_telemetry_inference.classify_inference_failure(e))
         yield _emit(
             "response.failed",
             {

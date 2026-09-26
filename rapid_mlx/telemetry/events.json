@@ -115,7 +115,8 @@
         "claude-code", "cursor", "aider", "cline", "continue",
         "openai-python", "openai-node", "anthropic-sdk", "litellm",
         "langchain", "llamaindex", "ollama",
-        "python-httpx", "python-requests", "node-fetch", "axios",
+        "python-httpx", "python-requests", "python-aiohttp", "node-fetch",
+        "axios",
         "curl", "okhttp", "go-http",
         "rapid-agents", "rapid-bench", "rapid-cli-chat", "rapid-desktop",
         "rapid-gradio",
@@ -299,6 +300,40 @@
         "response_format_unsupported",
         "perf_overrides_unsupported",
         "other"
+      ]
+    },
+    "inference_error_class": {
+      "_about": [
+        "Why a counted inference failed (inference_bucket_reached, result=failed).",
+        "telemetry/inference.py classify_inference_failure() maps the exception",
+        "through the SAME predicates the routes use to pick the HTTP error",
+        "(rapid_mlx/request.py); it reads the exception inside the process but",
+        "only ever returns one of these values -- never exception text.",
+        "insufficient_memory / engine_aborted -> InferenceAbortedError category",
+        "                          (request.inference_aborted_error_code)",
+        "model_replaced          -> InferenceAbortedError(error_kind=lifecycle), or",
+        "                          chat stream cancelled by a model replacement",
+        "template_error          -> request.is_chat_template_error (the 400 'Chat",
+        "                          template error' mapping)",
+        "media_input_invalid     -> request.is_media_input_error ('Failed to",
+        "                          process image|video')",
+        "prompt_too_large        -> request.is_batch_cap_error ('exceeds the",
+        "                          per-batch cap')",
+        "strict_schema_violation -> chat stream strict json_schema 'strict_schema_",
+        "                          violation' frames (guided failure or post-decode)",
+        "stream_error            -> ONLY where no engine exception exists: a stream",
+        "                          the route itself ended with a failure frame after",
+        "                          generation (Responses: tool_choice unfulfilled,",
+        "                          no final answer, empty output, reasoning order)",
+        "other                   -> any exception the routes do not classify, and",
+        "                          any value outside this list at the emitter.",
+        "Rule: where an exception object exists it is classified (never",
+        "stream_error); the local failure counter is kept per class."
+      ],
+      "values": [
+        "insufficient_memory", "engine_aborted", "template_error",
+        "media_input_invalid", "prompt_too_large", "strict_schema_violation",
+        "model_replaced", "stream_error", "other"
       ]
     },
     "opt_via": {
@@ -489,7 +524,10 @@
         "Which models / APIs / clients carry real load, and how many installs hit",
         "repeated failures. One event per local counter threshold crossing:",
         "O(log n) events, no timing trail, no sampling. Read it as unique",
-        "installs that reached bucket >= N — never as a sum."
+        "installs that reached bucket >= N — never as a sum.",
+        "A failure carries error_class (closed enum inference_error_class, never",
+        "error text); failure counters are kept per class, so a failed bucket",
+        "is 'installs that hit >= N failures of THIS class'."
       ],
       "props": {
         "model": {"kind": "model_id", "required": true},
@@ -497,7 +535,13 @@
         "caller": {"kind": "enum", "enum": "caller", "required": true},
         "result": {"kind": "enum", "enum": "result", "required": true},
         "count_bucket": {"kind": "enum", "enum": "count_bucket", "required": true},
-        "bucket_source": {"kind": "enum", "enum": "bucket_source", "required": true}
+        "bucket_source": {"kind": "enum", "enum": "bucket_source", "required": true},
+        "error_class": {
+          "kind": "enum",
+          "enum": "inference_error_class",
+          "required": false,
+          "only_when": {"result": ["failed"]}
+        }
       }
     },
     "agent_configured": {

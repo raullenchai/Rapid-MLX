@@ -756,7 +756,7 @@ async def create_completion(request: CompletionRequest, raw_request: Request):
         _raise_lifecycle_cancel_or_reraise(engine, exc)
     except HTTPException:
         raise
-    except Exception:
+    except Exception as exc:
         from rapid_mlx.telemetry import inference as _telemetry_inference
 
         _telemetry_inference.emit_completed_request(
@@ -773,6 +773,7 @@ async def create_completion(request: CompletionRequest, raw_request: Request):
                 else None
             ),
             result="failed",
+            error_class=_telemetry_inference.classify_inference_failure(exc),
         )
         raise
     finally:

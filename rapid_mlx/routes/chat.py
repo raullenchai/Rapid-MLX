@@ -75,6 +75,9 @@ from ..request import (
     ClientRequestError,
     InferenceAbortedError,
     inference_aborted_error_payload,
+    is_batch_cap_error,
+    is_chat_template_error,
+    is_media_input_error,
 )
 from ..response_cache import (
     UNCACHEABLE,
@@ -5496,16 +5499,10 @@ async def _create_chat_completion_impl(
                     chat_template_kwargs=chat_kwargs.get("chat_template_kwargs"),
                 )
             except Exception as e:
-                err_msg = str(e)
-                err_type = type(e).__name__
-                if (
-                    "TemplateError" in err_type
-                    or "template" in err_msg.lower()
-                    or ("user" in err_msg.lower() and "found" in err_msg.lower())
-                ):
+                if is_chat_template_error(e):
                     raise HTTPException(
                         status_code=400,
-                        detail=f"Chat template error: {err_msg}",
+                        detail=f"Chat template error: {e}",
                     )
                 raise
         # L-05: surface silent ``enable_thinking`` drop on non-Qwen
@@ -5879,9 +5876,9 @@ async def _create_chat_completion_impl(
             caller_agent=caller_agent,
             caller_client=caller_client,
             result="failed",
+            error_class=_telemetry_inference.classify_inference_failure(e),
         )
         err_msg = str(e)
-        err_type = type(e).__name__
         if isinstance(e, InferenceAbortedError):
             # Engine aborted the request (e.g. Metal runtime error caught
             # in the engine loop). Structured 503 carrying a stable
@@ -5889,11 +5886,7 @@ async def _create_chat_completion_impl(
             # (#3564) — the server is still up and a smaller request may
             # succeed (#353).
             raise _inference_aborted_http_exception(e) from e
-        if (
-            "TemplateError" in err_type
-            or "template" in err_msg.lower()
-            or ("user" in err_msg.lower() and "found" in err_msg.lower())
-        ):
+        if is_chat_template_error(e):
             raise HTTPException(
                 status_code=400, detail=f"Chat template error: {err_msg}"
             )
@@ -5911,11 +5904,7 @@ async def _create_chat_completion_impl(
         # 500. Surface as 400 so Desktop / curl clients see the actionable
         # message ("downscale image / raise --prefill-step-size") instead
         # of a generic server error.
-        if (
-            "Failed to process image" in err_msg
-            or "Failed to process video" in err_msg
-            or "exceeds the per-batch cap" in err_msg
-        ):
+        if is_media_input_error(e) or is_batch_cap_error(e):
             raise HTTPException(status_code=400, detail=err_msg)
         raise
     finally:
@@ -8219,6 +8208,7 @@ async def stream_chat_completion_guided(
                 caller_agent=caller_agent,
                 caller_client=caller_client,
                 result="failed",
+                error_class="model_replaced",
             )
 
         def _finish_guided_handoff() -> tuple[bool, object | None]:
@@ -8382,6 +8372,7 @@ async def stream_chat_completion_guided(
                     caller_agent=caller_agent,
                     caller_client=caller_client,
                     result="failed",
+                    error_class="strict_schema_violation",
                 )
                 yield f"data: {json.dumps(_err_envelope)}\n\n"
                 yield "data: [DONE]\n\n"
@@ -8487,6 +8478,7 @@ async def stream_chat_completion_guided(
                     caller_agent=caller_agent,
                     caller_client=caller_client,
                     result="failed",
+                    error_class="strict_schema_violation",
                 )
                 yield f"data: {json.dumps(_err_envelope)}\n\n"
                 yield "data: [DONE]\n\n"
