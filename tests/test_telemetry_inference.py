@@ -843,7 +843,7 @@ def test_no_route_or_api_telemetry_call_receives_request_model_expression():
     violations: list[str] = []
 
     for directory in (REPO_ROOT / "rapid_mlx/routes", REPO_ROOT / "rapid_mlx/api"):
-        for path in directory.glob("*.py"):
+        for path in directory.rglob("*.py"):
             tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
             telemetry_names: set[str] = set()
             telemetry_modules: set[str] = set()

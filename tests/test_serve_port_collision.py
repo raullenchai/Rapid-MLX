@@ -298,7 +298,8 @@ try:
         "127.0.0.1", 8123, model="model", port_explicit=None
     )
 except ValueError as exc:
-    assert str(exc) == "port_explicit must be provided when port is set"
+    if str(exc) != "port_explicit must be provided when port is set":
+        raise RuntimeError(f"unexpected error: {exc}") from exc
 else:
     raise AssertionError("missing port provenance was accepted")
 """
