@@ -259,6 +259,52 @@ def test_key_length_cap(fake_home):
     assert store.record("") is None
 
 
+def test_key_length_cap_admits_the_longest_failed_inference_key(fake_home):
+    """204 chars: 128-char model id, failed, strict_schema_violation."""
+    from rapid_mlx.telemetry import store
+
+    longest = "inf|{}|/v1/audio/transcriptions|python-requests|failed|{}".format(
+        "m" * 128, "strict_schema_violation"
+    )
+    assert len(longest) == 204
+    assert store.MAX_KEY_LENGTH == 256
+    assert store.record(longest) is not None
+
+
+def test_distinct_key_cap_holds_at_the_real_bound(fake_home):
+    """Fill a real database to the UNPATCHED cap: the last slot is taken, the
+    next new key is refused, and existing keys keep counting."""
+    from rapid_mlx.telemetry import store
+
+    assert store.MAX_KEYS == 67_000
+    assert store.record("seed") is not None
+    with sqlite3.connect(store.db_path()) as connection:
+        connection.executemany(
+            "INSERT INTO counters (key, count, last_bucket) VALUES (?, 1, '1')",
+            ((f"k{index}",) for index in range(store.MAX_KEYS - 2)),
+        )
+    assert store.record("last-slot") is not None
+    assert store.record("one-too-many") is None
+    assert store.record("seed") is not None
+    with sqlite3.connect(store.db_path()) as connection:
+        (rows,) = connection.execute("SELECT COUNT(*) FROM counters").fetchone()
+    assert rows == store.MAX_KEYS
+
+
+def test_models_served_cap_holds_at_the_real_bound(fake_home):
+    from rapid_mlx.telemetry import store
+
+    assert store.note_model_served("seed") == 1
+    with sqlite3.connect(store.db_path()) as connection:
+        connection.executemany(
+            "INSERT INTO models_served (model_id, first_seen) "
+            "VALUES (?, '2026-09-26T00:00:00Z')",
+            ((f"m{index}",) for index in range(store.MAX_KEYS - 2)),
+        )
+    assert store.note_model_served("last-slot") == store.MAX_KEYS
+    assert store.note_model_served("one-too-many") == store.MAX_KEYS
+
+
 def test_distinct_key_cap(fake_home, monkeypatch):
     from rapid_mlx.telemetry import store
 

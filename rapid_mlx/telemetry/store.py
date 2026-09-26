@@ -80,11 +80,11 @@ MAX_KEY_LENGTH = 256
 #: after all) must not grow this file without bound. Past the cap a new
 #: key is ignored; existing keys keep counting. Failures are counted per
 #: inference_error_class, so one model has endpoint x caller x (1 ok + one
-#: failed key per class) worst-case keys; 61,000 rows still cover every
+#: failed key per class) worst-case keys; 67,000 rows still cover every
 #: combination for 28 complete models (see
 #: docs/engineering/performance/telemetry-v2-inference.md). This local SQLite
 #: state stays small while avoiding exhaustion on ordinary multi-model hosts.
-MAX_KEYS = 61_000
+MAX_KEYS = 67_000
 
 #: Nothing in here may block a request path. SQLite retries a locked
 #: database internally for at most this long, then raises and we fall

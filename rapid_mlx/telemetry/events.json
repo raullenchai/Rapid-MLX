@@ -319,12 +319,20 @@
         "                          process image|video')",
         "prompt_too_large        -> request.is_batch_cap_error ('exceeds the",
         "                          per-batch cap')",
-        "strict_schema_violation -> chat stream strict json_schema 'strict_schema_",
-        "                          violation' frames (guided failure or post-decode)",
-        "stream_error            -> ONLY where no engine exception exists: a stream",
-        "                          the route itself ended with a failure frame after",
-        "                          generation (Responses: tool_choice unfulfilled,",
-        "                          no final answer, empty output, reasoning order)",
+        "strict_schema_violation -> strict json_schema contract failures that",
+        "                          answer 'strict_schema_violation': the chat",
+        "                          stream frames and 502s, and the non-stream",
+        "                          /v1/responses strict 502s (guided failure or",
+        "                          post-decode validation)",
+        "output_contract_unmet   -> the model finished but broke the agent/tool",
+        "                          contract the request asked for (/v1/responses",
+        "                          stream and non-stream): tool_choice unfulfilled,",
+        "                          no final answer, empty output (stream), late",
+        "                          reasoning after content (stream)",
+        "stream_error            -> a stream failure with NO exception object and",
+        "                          no contract reason. No site emits it today; it",
+        "                          is reserved so such a site never has to reuse",
+        "                          another class.",
         "other                   -> any exception the routes do not classify, and",
         "                          any value outside this list at the emitter.",
         "Rule: where an exception object exists it is classified (never",
@@ -333,7 +341,7 @@
       "values": [
         "insufficient_memory", "engine_aborted", "template_error",
         "media_input_invalid", "prompt_too_large", "strict_schema_violation",
-        "model_replaced", "stream_error", "other"
+        "model_replaced", "output_contract_unmet", "stream_error", "other"
       ]
     },
     "opt_via": {
