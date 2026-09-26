@@ -921,11 +921,12 @@ def test_runner_failure_emits_bind_and_preserves_exit(monkeypatch):
         raise SystemExit(7)
 
     with pytest.raises(SystemExit) as caught:
-        run_uvicorn(_asgi_app, uvicorn_runner=fail_runner)
+        run_uvicorn(_asgi_app, uvicorn_runner=fail_runner, port_explicit=False)
 
     assert caught.value.code == 7
     assert [event["state"] for event in events] == ["attempted", "failed"]
     assert events[-1]["failure_stage"] == "bind"
+    assert events[-1]["port_explicit"] is False
     server_start._reset_for_tests()
 
 
@@ -956,5 +957,6 @@ def test_port_collision_emits_only_failed_bind(monkeypatch):
     assert caught.value.code == 1
     assert [event["state"] for event in events] == ["attempted", "failed"]
     assert events[-1]["failure_stage"] == "bind"
+    assert events[-1]["port_explicit"] is True
     assert legacy_failures == []
     server_start._reset_for_tests()

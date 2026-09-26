@@ -422,9 +422,7 @@ def ready() -> None:
             _mark_inflight_terminal()
 
 
-def failed(
-    failure_stage: object, *, port_explicit: bool | None = None
-) -> None:
+def failed(failure_stage: object, *, port_explicit: bool | None = None) -> None:
     """Emit the sole failed terminal state with a closed startup stage."""
     global _terminal
     if not isinstance(failure_stage, str) or failure_stage not in _FAILURE_STAGES:
@@ -436,14 +434,10 @@ def failed(
             _remove_inflight_marker()
             return
         _terminal = True
-    if (
-        _track(
-            "failed",
-            failure_stage=failure_stage,
-            port_explicit=port_explicit if failure_stage == "bind" else None,
-        )
-        is not False
-    ):
+    context: dict[str, bool] = {}
+    if failure_stage == "bind" and port_explicit is not None:
+        context["port_explicit"] = port_explicit
+    if _track("failed", failure_stage=failure_stage, **context) is not False:
         _remove_inflight_marker()
 
 

@@ -303,7 +303,6 @@ async def create_embeddings(
 
     except ImportError:
         from rapid_mlx.telemetry.inference import emit_capability_rejected
-
         from rapid_mlx.telemetry.model_id import engine_telemetry_id
 
         emit_capability_rejected(

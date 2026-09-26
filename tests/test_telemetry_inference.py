@@ -667,7 +667,11 @@ def test_capability_rejected_requires_closed_model_type_and_never_raises(monkeyp
         lambda event, props: calls.append((event, dict(props))),
     )
     inference._record_capability_rejected(
-        capability="mcp_unsupported", model_type="other"
+        capability="mcp_unsupported",
+        model_type="other",
+        model="mlx-community/private-user/model",
+        caller_agent="private-agent/99 cursor/1.0",
+        caller_client=None,
     )
     inference._record_capability_rejected(
         capability="logprobs_unsupported",
@@ -687,7 +691,12 @@ def test_capability_rejected_requires_closed_model_type_and_never_raises(monkeyp
     assert calls == [
         (
             "capability_rejected",
-            {"capability": "mcp_unsupported", "model_type": "other"},
+            {
+                "capability": "mcp_unsupported",
+                "model_type": "other",
+                "model": "<local>",
+                "caller": "cursor",
+            },
         ),
         (
             "capability_rejected",
@@ -840,7 +849,7 @@ async def test_legacy_completion_multi_sample_rejection_emits_capability(monkeyp
     monkeypatch.setattr(
         inference,
         "emit_capability_rejected",
-        lambda capability, *, model_type="other": calls.append(
+        lambda capability, *, model_type="other", **_context: calls.append(
             (capability, model_type)
         ),
     )
@@ -867,7 +876,7 @@ async def test_chat_multi_sample_rejection_emits_capability(monkeypatch):
     monkeypatch.setattr(
         inference,
         "emit_capability_rejected",
-        lambda capability, *, model_type="other": calls.append(
+        lambda capability, *, model_type="other", **_context: calls.append(
             (capability, model_type)
         ),
     )
@@ -898,7 +907,9 @@ async def test_responses_stateless_rejection_emits_capability(monkeypatch):
     monkeypatch.setattr(
         inference,
         "emit_capability_rejected",
-        lambda value, *, model_type="other": calls.append((value, model_type)),
+        lambda value, *, model_type="other", **_context: calls.append(
+            (value, model_type)
+        ),
     )
     body = json.dumps(
         {
@@ -936,7 +947,9 @@ async def test_residency_perf_rejection_emits_capability(monkeypatch):
     monkeypatch.setattr(
         inference,
         "emit_capability_rejected",
-        lambda value, *, model_type="other": calls.append((value, model_type)),
+        lambda value, *, model_type="other", **_context: calls.append(
+            (value, model_type)
+        ),
     )
 
     request = residency.ModelLoadRequest(
@@ -958,18 +971,37 @@ def test_context_length_rejection_emits_capability(monkeypatch):
 
     engine = SimpleNamespace(modality="text", supports_image_input=False)
     monkeypatch.setattr(helpers, "get_model_max_context", lambda _engine: 8)
-    calls: list[tuple[str, str]] = []
+    calls: list[tuple[str, dict[str, object]]] = []
+    monkeypatch.setattr(inference.track_module, "_upload_allowed", lambda: True)
+    monkeypatch.setattr(inference, "_submit", lambda work: work())
     monkeypatch.setattr(
-        inference,
-        "emit_capability_rejected",
-        lambda value, *, model_type="other": calls.append((value, model_type)),
+        inference.track_module,
+        "track",
+        lambda event, props: calls.append((event, dict(props))),
     )
 
     with pytest.raises(HTTPException) as exc_info:
-        helpers.enforce_context_length(engine, 8, max_tokens=1)
+        helpers.enforce_context_length(
+            engine,
+            8,
+            max_tokens=1,
+            telemetry_model="qwen3.5-4b-4bit",
+            caller_agent="private-agent/1.0 cursor/0.50",
+            caller_client="rapid-desktop",
+        )
 
     assert exc_info.value.status_code == 400
-    assert calls == [("context_length_exceeded", "llm")]
+    assert calls == [
+        (
+            "capability_rejected",
+            {
+                "capability": "context_length_exceeded",
+                "model_type": "llm",
+                "model": "qwen3.5-4b-4bit",
+                "caller": "rapid-desktop",
+            },
+        )
+    ]
 
 
 @pytest.mark.asyncio
@@ -994,7 +1026,9 @@ async def test_legacy_completion_early_rejections_emit_capability(
     monkeypatch.setattr(
         inference,
         "emit_capability_rejected",
-        lambda value, *, model_type="other": calls.append((value, model_type)),
+        lambda value, *, model_type="other", **_context: calls.append(
+            (value, model_type)
+        ),
     )
     values = {"model": "ignored", "prompt": "hello", "suffix": None, "n": 1}
     values.update(fields)
@@ -1031,7 +1065,9 @@ async def test_legacy_completion_format_rejections_emit_capability(
     monkeypatch.setattr(
         inference,
         "emit_capability_rejected",
-        lambda value, *, model_type="other": calls.append((value, model_type)),
+        lambda value, *, model_type="other", **_context: calls.append(
+            (value, model_type)
+        ),
     )
     values = {
         "model": "ignored",
@@ -1083,7 +1119,9 @@ async def test_legacy_completion_engine_logprobs_rejection_emits_capability(
     monkeypatch.setattr(
         inference,
         "emit_capability_rejected",
-        lambda value, *, model_type="other": calls.append((value, model_type)),
+        lambda value, *, model_type="other", **_context: calls.append(
+            (value, model_type)
+        ),
     )
     request = CompletionRequest.model_construct(
         model="ignored",
@@ -1131,7 +1169,9 @@ async def test_embedding_configuration_rejections_emit_capability(monkeypatch, c
     monkeypatch.setattr(
         inference,
         "emit_capability_rejected",
-        lambda value, *, model_type="other": calls.append((value, model_type)),
+        lambda value, *, model_type="other", **_context: calls.append(
+            (value, model_type)
+        ),
     )
 
     with pytest.raises(HTTPException):
@@ -1160,7 +1200,9 @@ def test_audio_capability_helpers_emit_before_http_error(monkeypatch, helper, ar
     monkeypatch.setattr(
         inference,
         "emit_capability_rejected",
-        lambda value, *, model_type="other": calls.append((value, model_type)),
+        lambda value, *, model_type="other", **_context: calls.append(
+            (value, model_type)
+        ),
     )
 
     with pytest.raises(HTTPException):
@@ -1189,7 +1231,9 @@ async def test_audio_alignment_wrong_model_emits_before_http_error(monkeypatch):
     monkeypatch.setattr(
         inference,
         "emit_capability_rejected",
-        lambda value, *, model_type="other": calls.append((value, model_type)),
+        lambda value, *, model_type="other", **_context: calls.append(
+            (value, model_type)
+        ),
     )
 
     with pytest.raises(HTTPException):
@@ -1225,7 +1269,9 @@ async def test_audio_speech_capability_rejections_emit(monkeypatch, case):
     monkeypatch.setattr(
         inference,
         "emit_capability_rejected",
-        lambda value, *, model_type="other": calls.append((value, model_type)),
+        lambda value, *, model_type="other", **_context: calls.append(
+            (value, model_type)
+        ),
     )
     request = AudioSpeechRequest.model_construct(
         model="model",
@@ -1280,7 +1326,7 @@ async def test_embedding_runtime_rejection_emits_capability(monkeypatch):
     monkeypatch.setattr(
         inference,
         "emit_capability_rejected",
-        lambda capability, *, model_type="other": calls.append(
+        lambda capability, *, model_type="other", **_context: calls.append(
             (capability, model_type)
         ),
     )
@@ -1357,7 +1403,7 @@ def test_video_engine_and_runtime_rejections_emit_capabilities(monkeypatch, tmp_
     monkeypatch.setattr(
         inference,
         "emit_capability_rejected",
-        lambda capability, *, model_type="other": calls.append(
+        lambda capability, *, model_type="other", **_context: calls.append(
             (capability, model_type)
         ),
     )
@@ -1396,7 +1442,7 @@ async def test_audio_runtime_rejections_emit_capabilities(monkeypatch):
     monkeypatch.setattr(
         inference,
         "emit_capability_rejected",
-        lambda capability, *, model_type="other": calls.append(
+        lambda capability, *, model_type="other", **_context: calls.append(
             (capability, model_type)
         ),
     )
@@ -1451,7 +1497,7 @@ async def test_audio_transcription_success_emits_completed_request(monkeypatch):
 
     monkeypatch.setattr(probe, "require_mlx_audio_stt", lambda: None)
     monkeypatch.setattr(
-        audio, "_reject_word_timestamps_for_non_whisper", lambda *_a: None
+        audio, "_reject_word_timestamps_for_non_whisper", lambda *_a, **_k: None
     )
     monkeypatch.setattr(audio, "_run_stt_request", fake_stt_request)
     calls: list[dict[str, object]] = []
@@ -1502,7 +1548,7 @@ async def test_audio_alignment_success_emits_completed_request(monkeypatch):
 
     monkeypatch.setattr(probe, "require_mlx_audio_stt", lambda: None)
     monkeypatch.setattr(
-        audio, "_reject_word_timestamps_for_non_whisper", lambda *_a: None
+        audio, "_reject_word_timestamps_for_non_whisper", lambda *_a, **_k: None
     )
     monkeypatch.setattr(audio, "_run_alignment_request", fake_alignment_request)
     calls: list[dict[str, object]] = []
@@ -1778,7 +1824,13 @@ def test_inference_and_capability_events_reach_loopback_as_exact_json(
             caller_client=caller_client,
             result="ok",
         )
-        inference.emit_capability_rejected("logprobs_unsupported", model_type="llm")
+        inference.emit_capability_rejected(
+            "logprobs_unsupported",
+            model_type="llm",
+            model="neohorse-9b-4bit",
+            caller_agent=caller_agent,
+            caller_client=caller_client,
+        )
         sender.flush(2.0)
     finally:
         sender.close(0.5)
@@ -1829,6 +1881,8 @@ def test_inference_and_capability_events_reach_loopback_as_exact_json(
         **expected_common,
         "capability": "logprobs_unsupported",
         "model_type": "llm",
+        "model": "neohorse-9b-4bit",
+        "caller": expected_caller,
     }
     assert "hostname" not in repr(items)
     assert "username" not in repr(items)

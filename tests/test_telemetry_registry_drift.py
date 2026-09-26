@@ -207,6 +207,7 @@ def test_server_start_state_contract_is_exact(registry):
         "model_type",
         "load_policy",
         "previous_run_unterminated",
+        "port_explicit",
         "failure_stage",
     }
     assert props["state"] == {
@@ -224,6 +225,11 @@ def test_server_start_state_contract_is_exact(registry):
         "kind": "bool",
         "required": False,
         "only_when": {"state": ["attempted"]},
+    }
+    assert props["port_explicit"] == {
+        "kind": "bool",
+        "required": False,
+        "only_when": {"state": ["failed"]},
     }
 
 

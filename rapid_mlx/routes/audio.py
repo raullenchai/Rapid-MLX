@@ -2549,7 +2549,6 @@ async def create_transcription(
 
 @router.post("/v1/audio/translations", dependencies=[Depends(verify_api_key)])
 async def create_translation(
-    raw_request: Request,
     file: UploadFile,
     # OpenAI's translations endpoint mirrors transcriptions but
     # OMITS the ``language`` field — the destination language is
@@ -2580,9 +2579,6 @@ async def create_translation(
     with a 400 ``invalid_model_for_translation`` so callers get a
     distinct, actionable error instead of mislabeled output.
     """
-    from rapid_mlx.telemetry.inference import request_caller_headers
-
-    caller_agent, caller_client = request_caller_headers(raw_request)
     model = (
         model_form
         if model_form is not None
@@ -2611,8 +2607,6 @@ async def create_translation(
     # mlx_audio at all.
     _reject_non_whisper_for_translation(
         model,
-        caller_agent=caller_agent,
-        caller_client=caller_client,
     )
 
     # F-D05: STT-lane audio dep probe (kept inside the route body so
@@ -2629,8 +2623,6 @@ async def create_translation(
         language=None,
         response_format=response_format,
         task="translate",
-        caller_agent=caller_agent,
-        caller_client=caller_client,
     )
 
 
@@ -3051,9 +3043,7 @@ def _generate_speech_blocking(
 
 
 @router.post("/v1/audio/speech", dependencies=[Depends(verify_api_key)])
-async def create_speech(
-    raw_request: Request, request: AudioSpeechRequest = Body(...)
-):
+async def create_speech(request: AudioSpeechRequest = Body(...)):
     """Generate speech from text (OpenAI TTS API compatible).
 
     R7-M8 (Bo 0.8.8 dogfood): Bind a Pydantic :class:`AudioSpeechRequest`
@@ -3084,9 +3074,6 @@ async def create_speech(
     because the traceback never reached the log.
     """
     global _tts_engine
-    from rapid_mlx.telemetry.inference import request_caller_headers
-
-    caller_agent, caller_client = request_caller_headers(raw_request)
 
     # TTS-lane audio dep probe (F-D05 + codex r3 BLOCKING). Fires
     # BEFORE the lazy TTSEngine import — if the TTS sub-module of
@@ -3145,8 +3132,6 @@ async def create_speech(
                 "speech_capability_unsupported",
                 model_type="audio",
                 model=model_name,
-                caller_agent=caller_agent,
-                caller_client=caller_client,
             )
             raise HTTPException(
                 status_code=400,
@@ -3181,8 +3166,6 @@ async def create_speech(
                 "speech_capability_unsupported",
                 model_type="audio",
                 model=model_name,
-                caller_agent=caller_agent,
-                caller_client=caller_client,
             )
             raise HTTPException(
                 status_code=400,
@@ -3248,8 +3231,6 @@ async def create_speech(
                 "speech_capability_unsupported",
                 model_type="audio",
                 model=model_name,
-                caller_agent=caller_agent,
-                caller_client=caller_client,
             )
             raise HTTPException(
                 status_code=400,

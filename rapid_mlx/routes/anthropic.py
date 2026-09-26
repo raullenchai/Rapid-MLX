@@ -1382,6 +1382,13 @@ async def count_anthropic_tokens(request: Request):
 
     engine = get_engine()
     await ensure_engine_ready(engine)
+    from rapid_mlx.telemetry import inference as _telemetry_inference
+    from rapid_mlx.telemetry.model_id import engine_telemetry_id
+
+    _caller_agent, _caller_client = _telemetry_inference.request_caller_headers(
+        request
+    )
+    _served_telemetry_id = engine_telemetry_id(engine)
 
     # F12: count_tokens must apply the SAME chat template + tools
     # rendering that ``/v1/messages`` applies before tokenizing,
@@ -1438,7 +1445,12 @@ async def count_anthropic_tokens(request: Request):
     # propagates as a 500, which is the right shape for a server-side
     # regression (better than a silent fallback to legacy counting).
     try:
-        openai_request = anthropic_to_openai(anthropic_request)
+        openai_request = anthropic_to_openai(
+            anthropic_request,
+            telemetry_model=_served_telemetry_id,
+            caller_agent=_caller_agent,
+            caller_client=_caller_client,
+        )
     except AnthropicOutputConfigError as e:
         raise HTTPException(status_code=400, detail=str(e)) from e
     _apply_anthropic_thinking_defaults(openai_request)
@@ -1454,6 +1466,9 @@ async def count_anthropic_tokens(request: Request):
             preserve_native_format=getattr(
                 engine, "preserve_native_tool_format", False
             ),
+            telemetry_model=_served_telemetry_id,
+            caller_agent=_caller_agent,
+            caller_client=_caller_client,
         )
     except Exception:
         _ctx_messages = None

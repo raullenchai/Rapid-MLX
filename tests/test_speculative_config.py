@@ -382,7 +382,9 @@ def test_speculative_config_rejects_mllm_with_capability_event(monkeypatch) -> N
     monkeypatch.setattr(
         inference,
         "emit_capability_rejected",
-        lambda value, *, model_type="other": calls.append((value, model_type)),
+        lambda value, *, model_type="other", **_context: calls.append(
+            (value, model_type)
+        ),
     )
     args = _spec_config_args(
         speculative_config='{"method":"mtp"}',

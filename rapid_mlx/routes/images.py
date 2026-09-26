@@ -315,9 +315,10 @@ async def create_image(
     responses are not offered by the local lane (there is no object store to
     host the bytes) — callers must request ``b64_json``.
     """
-    from ..image.engine import ImageRuntimeError
     from rapid_mlx.telemetry import inference as _telemetry_inference
     from rapid_mlx.telemetry.model_id import engine_telemetry_id
+
+    from ..image.engine import ImageRuntimeError
 
     caller_agent, caller_client = _telemetry_inference.request_caller_headers(
         raw_request
@@ -446,7 +447,7 @@ async def create_image(
 
 
 @router.get("/v1/images/progress")
-async def image_progress(raw_request: Request, model: str = ""):
+async def image_progress(model: str = ""):
     """Live denoise progress for the single in-flight render.
 
     Diffusion has a fixed step count, so this is a *true* ``step / total``
@@ -454,19 +455,12 @@ async def image_progress(raw_request: Request, model: str = ""):
     streaming parser, and honest on slow hardware (the bar can't outrun the
     real steps). Single-flight: the server renders one image at a time.
     """
-    from rapid_mlx.telemetry.inference import request_caller_headers
-
-    caller_agent, caller_client = request_caller_headers(raw_request)
-    img_engine = _image_engine(
-        model,
-        caller_agent=caller_agent,
-        caller_client=caller_client,
-    )
+    img_engine = _image_engine(model)
     return img_engine.progress_snapshot()
 
 
 @router.post("/v1/images/cancel")
-async def image_cancel(raw_request: Request, model: str = ""):
+async def image_cancel(model: str = ""):
     """Ask the in-flight render to stop at the next denoise step.
 
     By design the image lane is **single-flight**: the engine's process lock
@@ -475,14 +469,7 @@ async def image_cancel(raw_request: Request, model: str = ""):
     single-user server (the desktop app issues one generation at a time), so
     there is deliberately no per-request generation id to thread through.
     """
-    from rapid_mlx.telemetry.inference import request_caller_headers
-
-    caller_agent, caller_client = request_caller_headers(raw_request)
-    img_engine = _image_engine(
-        model,
-        caller_agent=caller_agent,
-        caller_client=caller_client,
-    )
+    img_engine = _image_engine(model)
     img_engine.request_cancel()
     return {"ok": True}
 
@@ -591,7 +578,6 @@ def _generate_edit_one(
 
 @router.post("/v1/images/edits")
 async def edit_image(
-    raw_request: Request,
     image: UploadFile = File(...),
     prompt: str = Form(...),
     model: str = Form(""),
@@ -610,16 +596,11 @@ async def edit_image(
     drive a global instruction edit (no mask). Returns the same
     ``{created, data:[{b64_json}]}`` envelope as generations.
     """
-    from ..image.engine import ImageGenerationCancelled, ImageRuntimeError
-    from rapid_mlx.telemetry.inference import request_caller_headers
     from rapid_mlx.telemetry.model_id import engine_telemetry_id
 
-    caller_agent, caller_client = request_caller_headers(raw_request)
-    img_engine = _image_engine(
-        model,
-        caller_agent=caller_agent,
-        caller_client=caller_client,
-    )
+    from ..image.engine import ImageGenerationCancelled, ImageRuntimeError
+
+    img_engine = _image_engine(model)
     telemetry_model = engine_telemetry_id(img_engine)
 
     # /v1/images/edits requires the edit family; a txt2img server points the
@@ -631,8 +612,6 @@ async def edit_image(
             "image_generation_unavailable",
             model_type="image-gen",
             model=telemetry_model,
-            caller_agent=caller_agent,
-            caller_client=caller_client,
         )
         raise HTTPException(
             status_code=409,
@@ -670,8 +649,6 @@ async def edit_image(
             "response_format_unsupported",
             model_type="image-gen",
             model=telemetry_model,
-            caller_agent=caller_agent,
-            caller_client=caller_client,
         )
         raise HTTPException(
             status_code=400,

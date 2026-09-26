@@ -204,6 +204,34 @@ def test_previous_run_unterminated_is_attempted_only():
     )
 
 
+@pytest.mark.parametrize("port_explicit", [False, True])
+def test_port_explicit_is_failed_only(port_explicit):
+    props = {
+        "state": "failed",
+        "failure_stage": "bind",
+        "port_explicit": port_explicit,
+    }
+    assert reg.validate("server_start_state", props) == props
+    for state in ("attempted", "ready"):
+        assert (
+            reg.validate(
+                "server_start_state",
+                {"state": state, "port_explicit": port_explicit},
+            )
+            is None
+        )
+
+
+def test_capability_rejected_accepts_closed_model_and_caller_context():
+    props = {
+        "capability": "image_input_unsupported",
+        "model_type": "llm",
+        "model": "qwen3.5-4b-4bit",
+        "caller": "rapid-desktop",
+    }
+    assert reg.validate("capability_rejected", props) == props
+
+
 def test_malformed_conditional_property_fails_closed():
     loaded = reg.load_registry()
     assert (
