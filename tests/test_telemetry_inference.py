@@ -3623,7 +3623,9 @@ def _emit_name(node: ast.AST) -> str | None:
     return None
 
 
-def _emit_shape_violations(tree: ast.AST) -> list[tuple[int, str]]:
+def _emit_shape_violations(
+    tree: ast.AST, *, allow_worker_partial: bool = True
+) -> list[tuple[int, str]]:
     """Every way an emit could dodge the literal-result check.
 
     Allowed shapes only: a direct call with keyword arguments, a literal
@@ -3633,8 +3635,8 @@ def _emit_shape_violations(tree: ast.AST) -> list[tuple[int, str]]:
     error_class=error_class)``, which must forward both unchanged. Any other
     reference to the emitters (alias, re-binding, import alias, passing them
     around) is rejected. A failed class must be a registry literal or a
-    classifier call / name; a name that is a parameter of the enclosing
-    function must have NO default (a forwarding wrapper whose class defaults
+    classifier call / name; a name that resolves (lexically, through
+    closures) to a function or lambda parameter must have NO default (a forwarding wrapper whose class defaults
     to None would let callers omit it). String-keyed dynamic lookups
     (``getattr(mod, "emit_...")``) are out of reach of any static check; the
     runtime still collapses a missing class to ``other``.
@@ -3646,27 +3648,63 @@ def _emit_shape_violations(tree: ast.AST) -> list[tuple[int, str]]:
             "enums"
         ]["inference_error_class"]["values"]
     )
-    enclosing: dict[int, ast.AST] = {}
-    for fn in ast.walk(tree):
-        if isinstance(fn, (ast.FunctionDef, ast.AsyncFunctionDef)):
-            for inner in ast.walk(fn):
-                if isinstance(inner, ast.Call):
-                    enclosing[id(inner)] = fn  # innermost wins (walk is BFS)
+    scopes = (ast.FunctionDef, ast.AsyncFunctionDef, ast.Lambda)
+    parent: dict[int, ast.AST] = {}
+    for outer in ast.walk(tree):
+        for child in ast.iter_child_nodes(outer):
+            parent[id(child)] = outer
 
-    def _param_has_default(fn: ast.AST | None, name: str) -> bool:
-        if not isinstance(fn, (ast.FunctionDef, ast.AsyncFunctionDef)):
-            return False
-        args = fn.args
+    def _params(fn: ast.AST) -> tuple[set[str], set[str]]:
+        """(all parameter names, those with a default) of ``fn``."""
+        args = fn.args  # type: ignore[attr-defined]
         positional = [*args.posonlyargs, *args.args]
-        with_default = {
-            a.arg for a in positional[len(positional) - len(args.defaults) :]
-        }
-        with_default |= {
+        names = {a.arg for a in [*positional, *args.kwonlyargs]}
+        names |= {a.arg for a in (args.vararg, args.kwarg) if a is not None}
+        defaulted = (
+            {a.arg for a in positional[len(positional) - len(args.defaults) :]}
+            if args.defaults
+            else set()
+        )
+        defaulted |= {
             a.arg
             for a, default in zip(args.kwonlyargs, args.kw_defaults, strict=True)
             if default is not None
         }
-        return name in with_default
+        return names, defaulted
+
+    def _binds_locally(fn: ast.AST, name: str) -> bool:
+        body = fn.body if isinstance(fn.body, list) else [fn.body]  # type: ignore[attr-defined]
+        stack: list[ast.AST] = list(body)
+        while stack:
+            current = stack.pop()
+            if isinstance(current, (*scopes, ast.ClassDef)):
+                if getattr(current, "name", None) == name:
+                    return True
+                continue
+            if (
+                isinstance(current, ast.Name)
+                and current.id == name
+                and isinstance(current.ctx, ast.Store)
+            ):
+                return True
+            stack.extend(ast.iter_child_nodes(current))
+        return False
+
+    def _class_param_has_default(call: ast.AST, name: str) -> bool:
+        """Resolve ``name`` lexically, innermost scope outward (def, async
+        def, lambda; class bodies are skipped as Python does). The first scope
+        that binds it decides: a parameter with a default is a violation; a
+        local assignment ends the walk (dataflow is out of static reach)."""
+        scope = parent.get(id(call))
+        while scope is not None:
+            if isinstance(scope, scopes):
+                names, defaulted = _params(scope)
+                if name in names:
+                    return name in defaulted
+                if _binds_locally(scope, name):
+                    return False
+            scope = parent.get(id(scope))
+        return False
 
     for node in ast.walk(tree):
         if isinstance(node, ast.ImportFrom):
@@ -3676,7 +3714,8 @@ def _emit_shape_violations(tree: ast.AST) -> list[tuple[int, str]]:
         if not isinstance(node, ast.Call):
             continue
         if (
-            _emit_name(node.func) == "partial"
+            allow_worker_partial
+            and _emit_name(node.func) == "partial"
             and node.args
             and _emit_name(node.args[0]) == "_record_completed_request"
         ):
@@ -3713,8 +3752,8 @@ def _emit_shape_violations(tree: ast.AST) -> list[tuple[int, str]]:
             elif isinstance(error_class, ast.Constant):
                 if error_class.value not in allowed_classes:
                     violations.append((node.lineno, "class not in registry"))
-            elif isinstance(error_class, ast.Name) and _param_has_default(
-                enclosing.get(id(node)), error_class.id
+            elif isinstance(error_class, ast.Name) and _class_param_has_default(
+                node, error_class.id
             ):
                 violations.append((node.lineno, "class parameter has a default"))
     for node in ast.walk(tree):
@@ -3734,9 +3773,15 @@ def test_every_failed_inference_site_passes_an_error_class():
         tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
         failed, _missing = _failed_emits(tree)
         failed_sites += len(failed)
+        relative = path.relative_to(REPO_ROOT)
         offenders.extend(
-            f"{path.relative_to(REPO_ROOT)}:{line}: {why}"
-            for line, why in _emit_shape_violations(tree)
+            f"{relative}:{line}: {why}"
+            for line, why in _emit_shape_violations(
+                tree,
+                # The worker hand-off partial lives only in the emitter module.
+                allow_worker_partial=relative.as_posix()
+                == "rapid_mlx/telemetry/inference.py",
+            )
         )
     assert failed_sites >= 12
     assert offenders == []
@@ -3800,6 +3845,51 @@ def test_every_failed_inference_site_passes_an_error_class():
             "    x.emit_completed_request(result='failed', error_class=error_class)",
             "class parameter has a default",
         ),
+        (
+            "def outer(m, error_class=None):\n"
+            "    def inner():\n"
+            "        x.emit_completed_request(result='failed', error_class=error_class)\n"
+            "    inner()",
+            "class parameter has a default",
+        ),
+        (
+            "def outer(src, *, error_class=None):\n"
+            "    async def gen():\n"
+            "        x.emit_completed_request(result='failed', error_class=error_class)\n"
+            "        yield 1\n"
+            "    return gen()",
+            "class parameter has a default",
+        ),
+        (
+            "def outer(m, error_class=None):\n"
+            "    class K:\n"
+            "        def go(self):\n"
+            "            x.emit_completed_request("
+            "result='failed', error_class=error_class)\n"
+            "    K().go()",
+            "class parameter has a default",
+        ),
+        (
+            "g(_record_completed_request, result=result, error_class=error_class)",
+            "emitter referenced outside a call",
+        ),
+        (
+            "def w(error_class=None, /):\n"
+            "    x.emit_completed_request(result='failed', error_class=error_class)",
+            "class parameter has a default",
+        ),
+        (
+            "rec = lambda m, error_class=None: x.emit_completed_request("
+            "result='failed', error_class=error_class)",
+            "class parameter has a default",
+        ),
+        (
+            "def outer(m, error_class):\n"
+            "    def inner(error_class=None):\n"
+            "        x.emit_completed_request(result='failed', error_class=error_class)\n"
+            "    inner()",
+            "class parameter has a default",
+        ),
     ],
 )
 def test_emit_shape_gate_rejects_every_bypass(source, reason):
@@ -3813,6 +3903,14 @@ def test_emit_shape_gate_accepts_the_allowed_shapes():
         "x.emit_completed_request(result='failed', error_class='model_replaced')\n"
         "def w(m, error_class: str):\n"
         "    x.emit_completed_request(result='failed', error_class=error_class)\n"
+        "def outer(m, error_class=None):\n"
+        "    def inner(error_class):\n"
+        "        x.emit_completed_request(result='failed', error_class=error_class)\n"
+        "    cb = lambda error_class: x.emit_completed_request("
+        "result='failed', error_class=error_class)\n"
+        "def closure_ok(m, error_class: str):\n"
+        "    def inner():\n"
+        "        x.emit_completed_request(result='failed', error_class=error_class)\n"
         "partial(_record_completed_request, model=m, result=result,"
         " error_class=error_class)\n"
         "def emit_completed_request(*, result, error_class=None): pass\n"
@@ -4100,3 +4198,14 @@ def test_classifier_route_order_for_template_first_handlers():
         (RuntimeError("boom"), "other"),
     ):
         assert inference.classify_inference_failure(exc, abort_first=False) == expected
+
+
+def test_worker_partial_is_only_allowed_in_the_emitter_module():
+    source = (
+        "partial(_record_completed_request, result=result, error_class=error_class)"
+    )
+    tree = ast.parse(source)
+    assert _emit_shape_violations(tree) == []
+    assert [
+        why for _l, why in _emit_shape_violations(tree, allow_worker_partial=False)
+    ] == ["emitter referenced outside a call"]
