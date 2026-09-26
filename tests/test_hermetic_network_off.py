@@ -22,6 +22,8 @@ from pathlib import Path
 
 import pytest
 
+_COLLECTION_HOME = Path.home()
+
 FAKE_REPO = "rapid-mlx-tests/does-not-exist-2518"
 LEAKED_REPO = "mlx-community/Qwen3.5-9B-4bit"
 # TEST-NET-1 (RFC 5737) is never routable, so a leak could not succeed here
@@ -128,7 +130,19 @@ def test_leaked_prefetch_cannot_download_under_default_fixture(capsys):
 
 @pytest.mark.real_hf_cache
 def test_real_hf_cache_only_opts_out_of_hf_cache_redirection(tmp_path):
+    # Import lazily, after autouse fixtures have run: changing HOME here makes
+    # Transformers resolve its default cache under an empty per-test home and
+    # breaks every real-cache opt-in that imports it from the test body.
+    transformers_hub = pytest.importorskip("transformers.utils.hub")
     hf_constants = pytest.importorskip("huggingface_hub.constants")
+    assert Path.home() == _COLLECTION_HOME
+    if not any(
+        os.environ.get(name)
+        for name in ("HF_HOME", "HF_MODULES_CACHE", "TRANSFORMERS_CACHE")
+    ):
+        assert Path(transformers_hub.HF_MODULES_CACHE).is_relative_to(
+            _COLLECTION_HOME / ".cache" / "huggingface"
+        )
     assert os.environ.get("HF_HUB_OFFLINE") == "1"
     assert hf_constants.is_offline_mode() is True
     assert _guard_armed()
