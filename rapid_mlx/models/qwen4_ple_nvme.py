@@ -10,6 +10,7 @@ import mlx.core as mx
 import mlx.nn as nn
 import numpy as np
 
+from ..model_load_errors import load_model_checked
 from .qwen4_ple_sidecar import (
     ADAPTER_VERSION,
     PLESidecarReader,
@@ -164,7 +165,8 @@ def load_file_backed_qwen4(model_path, sidecar_path, *, cache_bytes=0, lazy=Fals
         model_file=None,
     )
     with _bound_load_source(model_path):
-        model, config = load_model(
+        model, config = load_model_checked(
+            load_model,
             model_path,
             strict=True,
             lazy=lazy,
