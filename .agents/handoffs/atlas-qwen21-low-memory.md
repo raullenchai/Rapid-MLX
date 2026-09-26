@@ -15,7 +15,7 @@
 - Constraint: mflux 0.20.0 marks the Qwen3-VL encoder `skip_quantization=True`,
   and Rapid-MLX currently rejects quantized Qwen text encoders. Both contracts
   must change narrowly for the reviewed Qwen Image 2.1 full-q4 pack.
-- Product integration: the default alias points to the private pinned
+- Product integration: the default alias points to the public pinned
   `mlx-community/Qwen-Image-2.1-mflux-q4` revision
   `746a58556820933a2df5c75887a2570f1ad200c0`; the engine verifies and loads
   its q4 encoder, materializes prompt embeddings, and evicts components. The
@@ -25,7 +25,6 @@
   512-square/40 steps with 4.65 GiB peak RSS; img2img was HTTP 200 at the
   derived 1024-square canvas with 5.06 GiB peak RSS.
 - Risk: testing ran on a 256 GB Mac Studio with MLX memory limits, not a
-  physical 8 GB Mac. Quality evidence covers only two prompts. The repository
-  remains private until exact Server/GUI dogfood and publication approval.
+  physical 8 GB Mac. Quality evidence covers only two prompts.
 - Next action: run the exact Server generation and img2img paths, then qualify
   the candidate on physical 8 GB and 16 GB Macs.
