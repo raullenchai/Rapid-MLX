@@ -1100,17 +1100,42 @@ def _function_bound_names(
             if argument is not None
         ),
     ]
-    return {argument.arg for argument in arguments} | {
-        node.id
-        for node in nodes
-        if isinstance(node, ast.Name) and isinstance(node.ctx, ast.Store)
-    }
+    return (
+        {argument.arg for argument in arguments}
+        | {
+            node.id
+            for node in nodes
+            if isinstance(node, ast.Name) and isinstance(node.ctx, ast.Store)
+        }
+        | {
+            statement.name
+            for statement in function.body
+            if isinstance(
+                statement, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)
+            )
+        }
+    )
+
+
+_ENGINE_LOOKUP_FUNCTIONS = {
+    "rapid_mlx.routes.images._image_engine",
+    "rapid_mlx.service.helpers.get_engine",
+}
 
 
 def _request_model_violations(
     repo_root: Path, root_debug: dict[str, list[str]] | None = None
 ) -> list[str]:
-    """Find request-derived model identities reaching route telemetry sinks."""
+    """Find request-derived model identities reaching route telemetry sinks.
+
+    Request model names stop being attacker-controlled telemetry identity only
+    at the exact engine lookup boundaries used by the routes. Imported
+    ``rapid_mlx.service.helpers.get_engine`` and the module-local
+    ``rapid_mlx.routes.images._image_engine`` return a loaded engine or raise;
+    neither can echo its string argument. Calls are matched by qualified symbol
+    identity, so a same-named local function is not a privacy boundary. All
+    other calls, including telemetry model-id helpers, propagate taint.
+    """
     violations: list[str] = []
     pydantic_models = _pydantic_model_classes(repo_root)
 
@@ -1122,6 +1147,11 @@ def _request_model_violations(
             tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
             module_name = _module_name(repo_root, path)
             imported = _imported_names(module_name, tree)
+            module_functions = {
+                node.name: f"{module_name}.{node.name}"
+                for node in tree.body
+                if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
+            }
             telemetry_names: set[str] = set()
             telemetry_modules: set[str] = set()
             for node in ast.walk(tree):
@@ -1181,20 +1211,37 @@ def _request_model_violations(
                 return expressions
 
             def expression_is_tainted(
-                node: ast.AST, tainted: set[str], request_roots: set[str]
+                node: ast.AST,
+                tainted: set[str],
+                request_roots: set[str],
+                shadowed_names: set[str],
+                imported: dict[str, str] = imported,
+                module_functions: dict[str, str] = module_functions,
             ) -> bool:
                 if isinstance(node, ast.Call):
-                    function_name = (
-                        node.func.id
-                        if isinstance(node.func, ast.Name)
-                        else node.func.attr
-                        if isinstance(node.func, ast.Attribute)
-                        else None
-                    )
-                    # This resolver reads identity from a resident engine, not
-                    # from its routing input. It is the privacy boundary the
-                    # production telemetry contract requires.
-                    if function_name == "engine_telemetry_id":
+                    resolved_name = None
+                    if (
+                        isinstance(node.func, ast.Name)
+                        and node.func.id not in shadowed_names
+                    ):
+                        resolved_name = imported.get(
+                            node.func.id, module_functions.get(node.func.id)
+                        )
+                    elif isinstance(node.func, ast.Attribute):
+                        root = node.func.value
+                        attributes = [node.func.attr]
+                        while isinstance(root, ast.Attribute):
+                            attributes.append(root.attr)
+                            root = root.value
+                        if (
+                            isinstance(root, ast.Name)
+                            and root.id not in shadowed_names
+                            and root.id in imported
+                        ):
+                            resolved_name = ".".join(
+                                [imported[root.id], *reversed(attributes)]
+                            )
+                    if resolved_name in _ENGINE_LOOKUP_FUNCTIONS:
                         return False
                 if (
                     isinstance(node, ast.Attribute)
@@ -1225,7 +1272,7 @@ def _request_model_violations(
                 if isinstance(node, ast.Name) and node.id in tainted:
                     return True
                 return any(
-                    expression_is_tainted(child, tainted, request_roots)
+                    expression_is_tainted(child, tainted, request_roots, shadowed_names)
                     for child in ast.iter_child_nodes(node)
                 )
 
@@ -1234,6 +1281,7 @@ def _request_model_violations(
                 value: ast.AST,
                 tainted: set[str],
                 request_roots: set[str],
+                shadowed_names: set[str],
             ) -> bool:
                 changed = False
                 if (
@@ -1245,10 +1293,14 @@ def _request_model_violations(
                         target.elts, value.elts, strict=True
                     ):
                         changed |= add_assignment_taint(
-                            child_target, child_value, tainted, request_roots
+                            child_target,
+                            child_value,
+                            tainted,
+                            request_roots,
+                            shadowed_names,
                         )
                     return changed
-                if expression_is_tainted(value, tainted, request_roots):
+                if expression_is_tainted(value, tainted, request_roots, shadowed_names):
                     before = len(tainted)
                     tainted.update(_target_names(target))
                     changed = len(tainted) != before
@@ -1258,6 +1310,7 @@ def _request_model_violations(
                 nodes: list[ast.AST],
                 request_roots: set[str],
                 inherited_taint: set[str],
+                shadowed_names: set[str],
             ) -> set[str]:
                 tainted = set(inherited_taint)
                 changed = True
@@ -1267,19 +1320,31 @@ def _request_model_violations(
                         if isinstance(node, ast.Assign):
                             for target in node.targets:
                                 changed |= add_assignment_taint(
-                                    target, node.value, tainted, request_roots
+                                    target,
+                                    node.value,
+                                    tainted,
+                                    request_roots,
+                                    shadowed_names,
                                 )
                         elif (
                             isinstance(node, ast.AnnAssign) and node.value is not None
                         ) or isinstance(node, (ast.AugAssign, ast.NamedExpr)):
                             changed |= add_assignment_taint(
-                                node.target, node.value, tainted, request_roots
+                                node.target,
+                                node.value,
+                                tainted,
+                                request_roots,
+                                shadowed_names,
                             )
                         elif isinstance(
                             node, (ast.For, ast.AsyncFor, ast.comprehension)
                         ):
                             changed |= add_assignment_taint(
-                                node.target, node.iter, tainted, request_roots
+                                node.target,
+                                node.iter,
+                                tainted,
+                                request_roots,
+                                shadowed_names,
                             )
                         elif isinstance(node, (ast.With, ast.AsyncWith)):
                             for item in node.items:
@@ -1289,6 +1354,7 @@ def _request_model_violations(
                                         item.context_expr,
                                         tainted,
                                         request_roots,
+                                        shadowed_names,
                                     )
                 return tainted
 
@@ -1296,13 +1362,16 @@ def _request_model_violations(
                 nodes: list[ast.AST],
                 tainted: set[str],
                 request_roots: set[str],
+                shadowed_names: set[str],
                 path: Path = path,
             ) -> None:
                 for node in nodes:
                     if not isinstance(node, ast.Call):
                         continue
                     if any(
-                        expression_is_tainted(expression, tainted, request_roots)
+                        expression_is_tainted(
+                            expression, tainted, request_roots, shadowed_names
+                        )
                         for expression in sink_expressions(node)
                     ):
                         violations.append(
@@ -1321,8 +1390,10 @@ def _request_model_violations(
                 nodes = _scope_nodes(body)
                 request_roots = set(inherited_roots)
                 inherited_scope_taint = set(inherited_taint)
+                shadowed_names: set[str] = set()
                 if function is not None:
                     bound_names = _function_bound_names(function, nodes)
+                    shadowed_names = bound_names.intersection(imported)
                     request_roots.difference_update(bound_names)
                     inherited_scope_taint.difference_update(bound_names)
                 request_roots.update(
@@ -1344,8 +1415,10 @@ def _request_model_violations(
                         and debug_key in _REQUEST_MODEL_DEBUG_HANDLERS
                     ):
                         root_debug[debug_key] = sorted(request_roots)
-                tainted = scope_taint(nodes, request_roots, inherited_scope_taint)
-                check_calls(nodes, tainted, request_roots)
+                tainted = scope_taint(
+                    nodes, request_roots, inherited_scope_taint, shadowed_names
+                )
+                check_calls(nodes, tainted, request_roots, shadowed_names)
 
                 for nested in _nested_scopes(body):
                     if isinstance(nested, (ast.FunctionDef, ast.AsyncFunctionDef)):
@@ -1396,13 +1469,39 @@ def test_no_route_or_api_telemetry_call_receives_request_model_expression():
             'm = f"model={payload.model}"\n'
             "emit_capability_rejected('unsupported', model_id=m)"
         ),
+        "emit_capability_rejected('unsupported', model=engine_telemetry_id(request.model))",
+        "emit_capability_rejected('unsupported', model=telemetry_model_id(request.model))",
+        (
+            "def engine_telemetry_id(x):\n"
+            "    return x\n"
+            "emit_capability_rejected('unsupported', model=engine_telemetry_id(request.model))"
+        ),
+        "emit_capability_rejected('unsupported', model=str(request.model))",
+        (
+            "def get_engine(x):\n"
+            "    return x\n"
+            "engine = get_engine(request.model)\n"
+            "emit_capability_rejected('unsupported', model=engine_telemetry_id(engine))"
+        ),
     ],
-    ids=["direct", "wrapped", "local-alias", "tuple-unpack", "f-string"],
+    ids=[
+        "direct",
+        "wrapped",
+        "local-alias",
+        "tuple-unpack",
+        "f-string",
+        "engine-helper",
+        "telemetry-model-helper",
+        "shadowed-engine-helper",
+        "string-call",
+        "shadowed-engine-lookup",
+    ],
 )
 def test_request_model_privacy_gate_rejects_scratch_variants(tmp_path, function_body):
     route_dir = tmp_path / "rapid_mlx/routes"
     route_dir.mkdir(parents=True)
     source = (
+        "from rapid_mlx.service.helpers import get_engine\n"
         "from rapid_mlx.telemetry.inference import (\n"
         "    emit_capability_rejected, emit_completed_request, telemetry_model_id,\n"
         ")\n\n"
@@ -1412,10 +1511,28 @@ def test_request_model_privacy_gate_rejects_scratch_variants(tmp_path, function_
     )
     (route_dir / "scratch.py").write_text(source, encoding="utf-8")
 
-    expected_line = 7 if "\n" in function_body else 6
+    expected_line = 6 + len(function_body.splitlines())
     assert _request_model_violations(tmp_path) == [
         f"rapid_mlx/routes/scratch.py:{expected_line}"
     ]
+
+
+def test_request_model_privacy_gate_accepts_imported_engine_lookup(tmp_path):
+    route_dir = tmp_path / "rapid_mlx/routes"
+    route_dir.mkdir(parents=True)
+    source = (
+        "from rapid_mlx.service.helpers import get_engine as lookup_engine\n"
+        "from rapid_mlx.telemetry.inference import emit_completed_request\n"
+        "from rapid_mlx.telemetry.model_id import engine_telemetry_id\n\n"
+        "def scratch(request):\n"
+        "    engine = lookup_engine(request.model)\n"
+        "    emit_completed_request(\n"
+        "        model=engine_telemetry_id(engine), endpoint='/v1/test'\n"
+        "    )\n"
+    )
+    (route_dir / "scratch.py").write_text(source, encoding="utf-8")
+
+    assert _request_model_violations(tmp_path) == []
 
 
 @pytest.mark.parametrize(
