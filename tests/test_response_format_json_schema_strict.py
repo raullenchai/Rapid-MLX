@@ -2601,6 +2601,15 @@ def test_strict_true_responses_sync_setup_failure_returns_502(_rate_limiter_stat
 # ---------------------------------------------------------------------------
 
 
+class _CallTimeFailureEngine(_Engine):
+    """``generate_with_schema`` raises when CALLED (plain ``def``), before any
+    coroutine exists -- the responses.py sync-setup arm, which
+    ``_SyncFailureEngine`` (an ``async def``) never actually reaches."""
+
+    def generate_with_schema(self, *, messages, json_schema, **kwargs):
+        raise RuntimeError("grammar setup failed at call time")
+
+
 def _capture_failed_emits(monkeypatch) -> list[dict]:
     from rapid_mlx.telemetry import inference
 
@@ -2629,8 +2638,8 @@ def _capture_failed_emits(monkeypatch) -> list[dict]:
             "/v1/responses",
             lambda: _Engine(supports_guided=True, guided_raises=RuntimeError("x")),
         ),
-        # responses: guided raises at sync setup
-        ("/v1/responses", lambda: _SyncFailureEngine(supports_guided=True)),
+        # responses: guided raises at sync setup (call time)
+        ("/v1/responses", lambda: _CallTimeFailureEngine(supports_guided=True)),
         # responses: post-decode validation
         (
             "/v1/responses",
