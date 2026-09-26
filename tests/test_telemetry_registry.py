@@ -220,6 +220,17 @@ def test_port_explicit_is_failed_only(port_explicit):
             )
             is None
         )
+    assert (
+        reg.validate(
+            "server_start_state",
+            {
+                "state": "failed",
+                "failure_stage": "prepare",
+                "port_explicit": port_explicit,
+            },
+        )
+        is None
+    )
 
 
 def test_capability_rejected_accepts_closed_model_and_caller_context():

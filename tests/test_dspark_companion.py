@@ -82,6 +82,7 @@ def _companion_client(
     strict_openai_streaming=False,
     render_prompt_fn=None,
     default_timeout=1800.0,
+    telemetry_model=None,
 ):
     from fastapi.testclient import TestClient
 
@@ -123,6 +124,7 @@ def _companion_client(
         model_info=model_info,
         strict_openai_streaming=strict_openai_streaming,
         default_timeout=default_timeout,
+        telemetry_model=telemetry_model,
     )
     return TestClient(app), render_calls, generation_calls
 
@@ -1022,6 +1024,62 @@ def test_companion_rejects_unsupported_media_before_render_or_generation(
     }
     assert render_calls == []
     assert generation_calls == []
+
+
+def test_companion_video_rejection_carries_served_model_and_caller(
+    monkeypatch,
+) -> None:
+    from rapid_mlx.spec_decode.dspark.server import _validate_greedy_request
+    from rapid_mlx.telemetry import inference
+    from rapid_mlx.telemetry.model_id import telemetry_model_id
+
+    emitted = []
+    monkeypatch.setattr(
+        inference,
+        "emit_capability_rejected",
+        lambda capability, **kwargs: emitted.append((capability, kwargs)),
+    )
+    served_model = telemetry_model_id(LFM25_VL_3B.target_repo)
+    client, _, _ = _companion_client(
+        validate_request_fn=_validate_greedy_request,
+        telemetry_model=served_model,
+    )
+
+    response = client.post(
+        "/v1/chat/completions",
+        headers={
+            "User-Agent": "Codex CLI/1.0",
+            "X-Rapid-Client": "codex-cli",
+        },
+        json={
+            "model": "lfm-vl",
+            "messages": [
+                {
+                    "role": "user",
+                    "content": [
+                        {
+                            "type": "video_url",
+                            "video_url": {"url": "https://example.test/clip.mp4"},
+                        }
+                    ],
+                }
+            ],
+            "temperature": 0,
+        },
+    )
+
+    assert response.status_code == 400
+    assert emitted == [
+        (
+            "video_input_unsupported",
+            {
+                "model_type": "vlm",
+                "model": served_model,
+                "caller_agent": "Codex CLI/1.0",
+                "caller_client": "codex-cli",
+            },
+        )
+    ]
 
 
 @pytest.mark.parametrize(

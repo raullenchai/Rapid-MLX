@@ -400,7 +400,7 @@
         "port_explicit": {
           "kind": "bool",
           "required": false,
-          "only_when": {"state": ["failed"]}
+          "only_when": {"state": ["failed"], "failure_stage": ["bind"]}
         },
         "failure_stage": {
           "kind": "enum",

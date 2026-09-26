@@ -681,6 +681,7 @@ def _build_app(
     speculative_info: SpeculativeDecodingInfo | None = None,
     model_info: ModelInfo | None = None,
     strict_openai_streaming: bool = False,
+    telemetry_model: str | None = None,
 ) -> FastAPI:
     """Create the FastAPI application for DFlash mode.
 
@@ -940,8 +941,22 @@ def _build_app(
     ):
         if not request.messages:
             raise HTTPException(status_code=400, detail="messages must not be empty")
+        caller_agent: str | None = None
+        caller_client: str | None = None
+        if telemetry_model is not None:
+            from rapid_mlx.telemetry.inference import request_caller_headers
+
+            caller_agent, caller_client = request_caller_headers(http_request)
         if validate_request_fn is not None:
-            validate_request_fn(request)
+            if telemetry_model is None:
+                validate_request_fn(request)
+            else:
+                validate_request_fn(
+                    request,
+                    telemetry_model=telemetry_model,
+                    caller_agent=caller_agent,
+                    caller_client=caller_client,
+                )
         if request.n is not None and request.n > 1:
             raise HTTPException(status_code=400, detail="n > 1 is not supported")
         if request.tools and not cfg.tool_call_parser:
@@ -1099,9 +1114,14 @@ def _build_app(
             # behind it, unlike a timed-out generation worker.
             def _render() -> str | PreparedPrompt:
                 renderer = render_prompt_fn or _render_prompt
-                return renderer(
-                    processor, model, request, enable_thinking=effective_thinking
-                )
+                renderer_kwargs = {"enable_thinking": effective_thinking}
+                if telemetry_model is not None:
+                    renderer_kwargs.update(
+                        telemetry_model=telemetry_model,
+                        caller_agent=caller_agent,
+                        caller_client=caller_client,
+                    )
+                return renderer(processor, model, request, **renderer_kwargs)
 
             # codex round-8 #1: validate the remaining budget BEFORE submitting
             # any work. Submitting first — then checking ``render_budget <= 0``
@@ -2340,6 +2360,7 @@ def run_dflash_server(
     drafter_revision: str | None = None,
     host: str,
     port: int,
+    port_explicit: bool | None = None,
     served_model_name: str,
     default_max_tokens: int,
     cors_origins: list[str],
@@ -2486,4 +2507,5 @@ def run_dflash_server(
         log_level=uvicorn_log_level,
         timeout_keep_alive=30,
         on_server_accepting=_print_ready,
+        port_explicit=port_explicit,
     )

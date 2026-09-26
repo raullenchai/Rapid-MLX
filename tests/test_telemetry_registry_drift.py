@@ -229,7 +229,7 @@ def test_server_start_state_contract_is_exact(registry):
     assert props["port_explicit"] == {
         "kind": "bool",
         "required": False,
-        "only_when": {"state": ["failed"]},
+        "only_when": {"state": ["failed"], "failure_stage": ["bind"]},
     }
 
 

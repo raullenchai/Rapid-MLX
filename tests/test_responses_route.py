@@ -587,7 +587,15 @@ class TestResponsesNonStream:
             captured["context_max_tokens"] = kwargs.get("max_tokens")
             return 100_581
 
-        def _capture_enforce(_engine, prompt_tokens, *, max_tokens=None):
+        def _capture_enforce(
+            _engine,
+            prompt_tokens,
+            *,
+            max_tokens=None,
+            telemetry_model=None,
+            caller_agent=None,
+            caller_client=None,
+        ):
             captured.setdefault("enforce_calls", []).append((prompt_tokens, max_tokens))
 
         monkeypatch.setattr(

@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+import ast
 import asyncio
 import importlib
 import inspect
@@ -24,6 +25,26 @@ from rapid_mlx._uvicorn import (
     run_uvicorn,
 )
 from rapid_mlx.telemetry import server_start
+
+
+def test_every_run_uvicorn_call_declares_port_explicit() -> None:
+    root = Path(__file__).resolve().parents[1]
+    missing: list[str] = []
+    for path in (root / "rapid_mlx").rglob("*.py"):
+        tree = ast.parse(path.read_text(encoding="utf-8"))
+        for node in ast.walk(tree):
+            if not isinstance(node, ast.Call):
+                continue
+            is_run_uvicorn = (
+                isinstance(node.func, ast.Name) and node.func.id == "run_uvicorn"
+            ) or (
+                isinstance(node.func, ast.Attribute) and node.func.attr == "run_uvicorn"
+            )
+            if is_run_uvicorn and not any(
+                keyword.arg == "port_explicit" for keyword in node.keywords
+            ):
+                missing.append(f"{path.relative_to(root)}:{node.lineno}")
+    assert missing == [], f"run_uvicorn calls omit port_explicit: {missing}"
 
 
 async def _asgi_app(scope, receive, send):
@@ -523,6 +544,7 @@ def test_dflash_runner_defers_its_existing_banner_to_callback(monkeypatch, capsy
         "port": 8102,
         "log_level": "warning",
         "timeout_keep_alive": 30,
+        "port_explicit": None,
     }
     callback()
     assert capsys.readouterr().out == (
@@ -634,6 +656,7 @@ def test_dspark_runner_defers_its_existing_banner_to_callback(monkeypatch, capsy
         "port": 8104,
         "log_level": "warning",
         "timeout_keep_alive": 30,
+        "port_explicit": None,
     }
     callback()
     assert capsys.readouterr().out == (

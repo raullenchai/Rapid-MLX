@@ -741,6 +741,7 @@ def _run_uvicorn(app, args, log_level: str) -> None:
                 log_level=log_level,
                 timeout_keep_alive=30,
                 on_server_accepting=print_ready_banner,
+                port_explicit=None,
             )
         else:
             port = _resolved_serve_port(args)
@@ -3487,6 +3488,7 @@ def _serve_native_mtp_if_requested(
         pair=pair,
         host=args.host,
         port=_resolved_serve_port(args),
+        port_explicit=getattr(args, "_port_explicit", None),
         served_model_name=args.served_model_name or alias_name,
         default_max_tokens=effective_max_tokens,
         cors_origins=cors_origins,
@@ -3589,6 +3591,7 @@ def _serve_companion_dspark_if_requested(
         artifacts=getattr(args, "_companion_dspark_artifacts", None),
         host=args.host,
         port=args.port,
+        port_explicit=getattr(args, "_port_explicit", None),
         served_model_name=args.served_model_name or alias_name,
         default_max_tokens=effective_max_tokens,
         cors_origins=cors_origins,
@@ -4503,6 +4506,7 @@ def system_one_command(args) -> None:
         port=args.port,
         log_level=args.log_level.lower(),
         timeout_keep_alive=30,
+        port_explicit=getattr(args, "_port_explicit", None),
     )
 
 
@@ -5631,6 +5635,7 @@ def serve_command(args):
         run_v41_server(
             host=args.host,
             port=_resolved_serve_port(args),
+            port_explicit=getattr(args, "_port_explicit", None),
             served_model_name=(
                 args.served_model_name
                 or getattr(args, "_original_alias", None)
@@ -5709,6 +5714,7 @@ def serve_command(args):
             drafter_revision=_drafter_revision,
             host=args.host,
             port=_resolved_serve_port(args),
+            port_explicit=getattr(args, "_port_explicit", None),
             served_model_name=args.served_model_name or _alias_name,
             default_max_tokens=effective_max_tokens,
             cors_origins=cors_origins,
@@ -6289,6 +6295,7 @@ def serve_command(args):
             or _profile.ddtree_tree_budget,
             host=args.host,
             port=_resolved_serve_port(args),
+            port_explicit=getattr(args, "_port_explicit", None),
             served_model_name=args.served_model_name or _alias_name,
             default_max_tokens=args.max_tokens,
             cors_origins=cors_origins,
