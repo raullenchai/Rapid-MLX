@@ -65,6 +65,118 @@ def test_execution_guard_uses_live_element_text_and_href():
         )
 
 
+def test_purchase_mode_allows_cart_and_checkout_actions():
+    plan = MODULE._validate_plan(
+        {
+            "action": "click",
+            "step_instruction": "Add the chosen flashlight to cart",
+            "target_id": "t007",
+        },
+        {"t007"},
+        forbidden_re=MODULE.SENSITIVE_RE,
+    )
+    assert plan["target_id"] == "t007"
+    MODULE._guard_element(
+        {"text": "Add to Cart", "href": ""}, forbidden_re=MODULE.SENSITIVE_RE
+    )
+
+
+@pytest.mark.parametrize(
+    "instruction",
+    ["Enter your password", "type the card number", "输入支付密码", "Enter CVV"],
+)
+def test_purchase_mode_still_blocks_credentials_and_payment_data(instruction):
+    with pytest.raises(ValueError, match="forbidden"):
+        MODULE._validate_plan(
+            {
+                "action": "fill",
+                "step_instruction": instruction,
+                "target_id": "t004",
+                "text": "secret",
+                "submit": False,
+            },
+            {"t004"},
+            forbidden_re=MODULE.SENSITIVE_RE,
+        )
+
+
+def test_place_order_target_detection():
+    product_target = _product("t002", "B000000002")
+    order_button_target = MODULE.Target(
+        **{**product_target.__dict__, "label": "Place your order", "href": ""}
+    )
+    # The gate keys on the executed target: clicking a place-order button is
+    # gated even when the instruction wording is innocuous.
+    assert MODULE._is_place_order_target(
+        {"action": "click", "step_instruction": "finish the purchase"},
+        order_button_target,
+    )
+    assert MODULE._is_place_order_target(
+        {"action": "click", "step_instruction": "下单"},
+        product_target,
+    )
+    assert not MODULE._is_place_order_target(
+        {"action": "click", "step_instruction": "Proceed to checkout"},
+        product_target,
+    )
+    assert not MODULE._is_place_order_target(
+        {"action": "click", "step_instruction": "Add to Cart"},
+        None,
+    )
+
+
+def test_order_confirmation_detection():
+    assert MODULE._order_confirmation_reached(
+        {"url": "https://www.amazon.com/buy/confirmation?orderId=x"}
+    )
+    assert MODULE._order_confirmation_reached(
+        {
+            "url": "https://www.amazon.com/",
+            "visible_text_prefix": "Order placed, thank you!",
+        }
+    )
+    assert not MODULE._order_confirmation_reached(
+        {
+            "url": "https://www.amazon.com/gp/cart/view.html",
+            "visible_text_prefix": "Shopping Cart",
+        }
+    )
+
+
+def test_state_delta_tracks_cart_count():
+    before = {
+        "url": "https://www.amazon.com/dp/B000000001",
+        "visible_text_hash": "a",
+        "scroll_y": 0,
+        "active_target_id": "",
+        "active_value": "",
+        "cart_count": 0,
+    }
+    after = {
+        **before,
+        "visible_text_hash": "b",
+        "cart_count": 1,
+    }
+    delta = MODULE._state_delta(before, after, "t004")
+    assert delta["cart_count_changed"] is True
+    assert delta["cart_count_after"] == 1
+
+
+def test_protocol_click_success_on_cart_count_change():
+    outcome = MODULE._protocol_outcome(
+        {"action": "click", "target_id": "t004", "step_instruction": "Add to cart"},
+        {
+            "url_changed": False,
+            "dom_changed": False,
+            "focus_matches_target": False,
+            "scroll_changed": False,
+            "cart_count_changed": True,
+        },
+        "",
+    )
+    assert outcome == "success"
+
+
 @pytest.mark.parametrize(
     "url",
     ["https://example.com/v1/chat/completions", "http://localhost:18730/v1"],

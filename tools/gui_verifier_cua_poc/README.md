@@ -24,6 +24,16 @@ the final evidence-based choice.
 The default shopping task stops at a product detail page. A hard guard rejects
 cart, checkout, purchase, account, credential, and payment actions.
 
+With `--purchase`, the guard relaxes to cart/checkout/purchase actions only:
+credential and payment-data entry stays blocked, and two human gates make the
+money moment explicit. When Amazon asks for sign-in the runner pauses until the
+human signs in inside the opened Chrome window and touches `RESUME` in the run
+directory (or the pause timeout ends the run). Before executing any place-order
+click the runner writes `order-summary.json`, then pauses until the human
+touches `CONFIRM_ORDER`. The run terminates on the Amazon order-confirmation
+page. Use `--profile-dir` to reuse a signed-in browser profile across runs;
+never commit profile directories or order summaries.
+
 ## Run
 
 Install the optional vision runtime and browser driver into the active Rapid
@@ -53,6 +63,21 @@ python tools/gui_verifier_cua_poc/run_poc.py \
   --shopping-fast-path \
   --start-url https://www.amazon.com/ \
   --goal '在 Amazon 上找到评价最好且评价数量足够可信的手电筒，比较前几个结果，停在推荐商品详情页。不要加入购物车或购买。'
+```
+
+End-to-end purchase variant (human-gated sign-in and order placement):
+
+```bash
+python tools/gui_verifier_cua_poc/run_poc.py \
+  --planner-url http://127.0.0.1:18888/v1/chat/completions \
+  --planner-model GLM-5.3-Flash-EXL3 \
+  --reasoning-effort low \
+  --fast-ranker-url http://127.0.0.1:18700/v1/rank \
+  --shopping-fast-path \
+  --purchase \
+  --profile-dir /private/tmp/rapid-mlx-cua-profile \
+  --pause-timeout 600
+```
 ```
 
 The planner and fast-ranker URLs must use literal loopback IPs. Every selected
