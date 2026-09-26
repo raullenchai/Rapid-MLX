@@ -884,6 +884,9 @@ async def create_response(request: Request):
     conversation history in ``input[]`` each turn, so the streaming
     path is the hot path.
     """
+    from rapid_mlx.telemetry import inference as _telemetry_inference
+
+    _caller_agent, _caller_client = _telemetry_inference.request_caller_headers(request)
     body = await request.json()
     # ``ResponsesRequest`` is constructed manually (not as a FastAPI body
     # parameter). The raw :class:`pydantic.ValidationError` it can raise
@@ -902,7 +905,11 @@ async def create_response(request: Request):
     if responses_request.previous_response_id:
         from rapid_mlx.telemetry.inference import emit_capability_rejected
 
-        emit_capability_rejected("stateless_api_only")
+        emit_capability_rejected(
+            "stateless_api_only",
+            caller_agent=_caller_agent,
+            caller_client=_caller_client,
+        )
         raise HTTPException(
             status_code=400,
             detail=(
@@ -960,7 +967,29 @@ async def create_response(request: Request):
             "DeepSeek Codex first-action priming: pinning exec_command for "
             "the initial repository locating turn"
         )
-    validate_responses_tool_types(responses_request.tools)
+    # Keep this gate ahead of tool-choice and model validation so requests
+    # with multiple invalid fields retain their established error ordering.
+    # Before model validation, only a single configured engine is authoritative.
+    # A registry selection depends on the request's model field, so omit the
+    # identity there until the validated engine has been resolved below.
+    from rapid_mlx.telemetry.model_id import engine_telemetry_id
+
+    _preflight_engine = (
+        getattr(cfg_for_priming, "engine", None)
+        if not getattr(cfg_for_priming, "model_registry", None)
+        else None
+    )
+    _preflight_telemetry_id = (
+        engine_telemetry_id(_preflight_engine)
+        if _preflight_engine is not None
+        else None
+    )
+    validate_responses_tool_types(
+        responses_request.tools,
+        telemetry_model=_preflight_telemetry_id,
+        caller_agent=_caller_agent,
+        caller_client=_caller_client,
+    )
     # Yuki F6 (0.8.5 dogfood): mirror the chat-completions tool_choice
     # gate so ``required`` / named-function tool_choice REJECTS shapes
     # that cannot be honoured (e.g. ``required`` with empty tools, named
@@ -978,8 +1007,6 @@ async def create_response(request: Request):
     if not (responses_request.model or "").startswith(("claude-", "gpt-")):
         _validate_model_name(responses_request.model)
     engine = get_engine(responses_request.model)
-    from rapid_mlx.telemetry.model_id import engine_telemetry_id
-
     _served_telemetry_id = engine_telemetry_id(engine)
     await ensure_engine_ready(engine)
 
@@ -1020,6 +1047,9 @@ async def create_response(request: Request):
                 preserve_developer_role=(
                     cfg_for_adapter.tool_call_parser == "deepseek_v4_0731"
                 ),
+                telemetry_model=_served_telemetry_id,
+                caller_agent=_caller_agent,
+                caller_client=_caller_client,
             )
             # #3714: ``serve --default-reasoning-effort`` fills the knob
             # before anything else reads the request, so it behaves exactly
@@ -1129,6 +1159,9 @@ async def create_response(request: Request):
                 emit_capability_rejected(
                     "structured_output_unsupported",
                     model_type=model_type_token(engine),
+                    model=_served_telemetry_id,
+                    caller_agent=_caller_agent,
+                    caller_client=_caller_client,
                 )
                 raise HTTPException(
                     status_code=400,
@@ -1168,6 +1201,9 @@ async def create_response(request: Request):
                 emit_capability_rejected(
                     "structured_output_unsupported",
                     model_type=model_type_token(engine),
+                    model=_served_telemetry_id,
+                    caller_agent=_caller_agent,
+                    caller_client=_caller_client,
                 )
                 raise HTTPException(
                     status_code=400,
@@ -1367,6 +1403,9 @@ async def create_response(request: Request):
                 allow_image=getattr(engine, "is_mllm", False),
                 allow_video=getattr(engine, "is_mllm", False),
                 allow_audio=False,
+                telemetry_model=_served_telemetry_id,
+                caller_agent=_caller_agent,
+                caller_client=_caller_client,
             )
         except UnsupportedContentBlockError as e:
             raise HTTPException(
@@ -1416,6 +1455,9 @@ async def create_response(request: Request):
             max_tokens=None if _resp_implicit_max_tokens else _resp_resolved_max_tokens,
             enable_thinking=_resp_resolved_thinking,
             chat_template_kwargs=_resp_ctk,
+            telemetry_model=_served_telemetry_id,
+            caller_agent=_caller_agent,
+            caller_client=_caller_client,
         )
         if _resp_implicit_max_tokens:
             if _resp_ctx_prompt_tokens is None:
@@ -1430,6 +1472,9 @@ async def create_response(request: Request):
                     max_tokens=_resp_resolved_max_tokens,
                     enable_thinking=_resp_resolved_thinking,
                     chat_template_kwargs=_resp_ctk,
+                    telemetry_model=_served_telemetry_id,
+                    caller_agent=_caller_agent,
+                    caller_client=_caller_client,
                 )
             else:
                 _resp_resolved_max_tokens = (
@@ -1443,6 +1488,9 @@ async def create_response(request: Request):
                     engine,
                     _resp_ctx_prompt_tokens,
                     max_tokens=_resp_resolved_max_tokens,
+                    telemetry_model=_served_telemetry_id,
+                    caller_agent=_caller_agent,
+                    caller_client=_caller_client,
                 )
                 # Thread the clamped default through the downstream
                 # ``_resolve_max_tokens`` calls in ``_non_stream`` /

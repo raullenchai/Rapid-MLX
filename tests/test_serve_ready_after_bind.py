@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+import ast
 import asyncio
 import importlib
 import inspect
@@ -24,6 +25,61 @@ from rapid_mlx._uvicorn import (
     run_uvicorn,
 )
 from rapid_mlx.telemetry import server_start
+
+
+def test_every_run_uvicorn_call_declares_port_explicit() -> None:
+    root = Path(__file__).resolve().parents[1]
+    missing: list[str] = []
+    for path in (root / "rapid_mlx").rglob("*.py"):
+        tree = ast.parse(path.read_text(encoding="utf-8"))
+        for node in ast.walk(tree):
+            if not isinstance(node, ast.Call):
+                continue
+            is_run_uvicorn = (
+                isinstance(node.func, ast.Name) and node.func.id == "run_uvicorn"
+            ) or (
+                isinstance(node.func, ast.Attribute) and node.func.attr == "run_uvicorn"
+            )
+            if is_run_uvicorn and not any(
+                keyword.arg == "port_explicit" for keyword in node.keywords
+            ):
+                missing.append(f"{path.relative_to(root)}:{node.lineno}")
+    assert missing == [], f"run_uvicorn calls omit port_explicit: {missing}"
+
+
+def test_port_explicit_never_uses_getattr_fallback() -> None:
+    root = Path(__file__).resolve().parents[1]
+    offenders: list[str] = []
+    for path in (root / "rapid_mlx").rglob("*.py"):
+        tree = ast.parse(path.read_text(encoding="utf-8"))
+        for node in ast.walk(tree):
+            if not (
+                isinstance(node, ast.Call)
+                and isinstance(node.func, ast.Name)
+                and node.func.id == "getattr"
+                and len(node.args) >= 2
+                and isinstance(node.args[0], ast.Name)
+                and node.args[0].id == "args"
+                and isinstance(node.args[1], ast.Constant)
+                and node.args[1].value == "_port_explicit"
+            ):
+                continue
+            offenders.append(f"{path.relative_to(root)}:{node.lineno}")
+    assert offenders == [], f"_port_explicit getattr fallbacks remain: {offenders}"
+
+
+@pytest.mark.parametrize(
+    ("args", "expected"),
+    [
+        (SimpleNamespace(port=8123, _port_explicit=False), False),
+        (SimpleNamespace(port=8123), True),
+        (SimpleNamespace(port=None), False),
+        (SimpleNamespace(port=8123, listen_fd=9), None),
+    ],
+)
+def test_port_explicit_for_supports_programmatic_namespaces(args, expected) -> None:
+    assert cli.port_explicit_for(args) is expected
+    assert args._port_explicit is expected
 
 
 async def _asgi_app(scope, receive, send):
@@ -281,7 +337,12 @@ def test_cli_host_port_and_inherited_fd_register_shared_callback(
         calls.append(kwargs)
 
     monkeypatch.setattr("rapid_mlx._uvicorn.run_uvicorn", fake_run)
-    args = SimpleNamespace(host="127.0.0.1", port=8000, listen_fd=listen_fd)
+    args = SimpleNamespace(
+        host="127.0.0.1",
+        port=8000,
+        listen_fd=listen_fd,
+        _port_explicit=False if listen_fd is None else None,
+    )
     cli._run_uvicorn(object(), args, "error")
 
     if listen_fd is None:
@@ -302,7 +363,9 @@ def test_cli_preserves_non_bind_oserror(monkeypatch):
         raise error
 
     monkeypatch.setattr("rapid_mlx._uvicorn.run_uvicorn", fail_before_bind)
-    args = SimpleNamespace(host="127.0.0.1", port=80, listen_fd=None)
+    args = SimpleNamespace(
+        host="127.0.0.1", port=80, listen_fd=None, _port_explicit=True
+    )
 
     with pytest.raises(OSError) as raised:
         cli._run_uvicorn(object(), args, "error")
@@ -323,7 +386,9 @@ def test_cli_preserves_already_reported_uvicorn_exit(monkeypatch):
         "_port_is_busy",
         lambda *_args: pytest.fail("reported bind failures must not be probed twice"),
     )
-    args = SimpleNamespace(host="127.0.0.1", port=8000, listen_fd=None)
+    args = SimpleNamespace(
+        host="127.0.0.1", port=8000, listen_fd=None, _port_explicit=True
+    )
 
     with pytest.raises(SystemExit) as raised:
         cli._run_uvicorn(object(), args, "error")
@@ -523,6 +588,7 @@ def test_dflash_runner_defers_its_existing_banner_to_callback(monkeypatch, capsy
         "port": 8102,
         "log_level": "warning",
         "timeout_keep_alive": 30,
+        "port_explicit": None,
     }
     callback()
     assert capsys.readouterr().out == (
@@ -634,6 +700,7 @@ def test_dspark_runner_defers_its_existing_banner_to_callback(monkeypatch, capsy
         "port": 8104,
         "log_level": "warning",
         "timeout_keep_alive": 30,
+        "port_explicit": None,
     }
     callback()
     assert capsys.readouterr().out == (
@@ -921,11 +988,46 @@ def test_runner_failure_emits_bind_and_preserves_exit(monkeypatch):
         raise SystemExit(7)
 
     with pytest.raises(SystemExit) as caught:
-        run_uvicorn(_asgi_app, uvicorn_runner=fail_runner)
+        run_uvicorn(_asgi_app, uvicorn_runner=fail_runner, port_explicit=False)
 
     assert caught.value.code == 7
     assert [event["state"] for event in events] == ["attempted", "failed"]
     assert events[-1]["failure_stage"] == "bind"
+    assert events[-1]["port_explicit"] is False
+    server_start._reset_for_tests()
+
+
+@pytest.mark.parametrize(
+    "port_argv",
+    [[], ["--port", "8123"]],
+    ids=["inherited-only", "ignored-explicit-port"],
+)
+def test_listen_fd_bind_failure_omits_port_context(monkeypatch, port_argv):
+    events: list[dict[str, object]] = []
+    monkeypatch.setattr("rapid_mlx.telemetry.track._upload_allowed", lambda: True)
+    monkeypatch.setattr(
+        "rapid_mlx.telemetry.track.track",
+        lambda event, props: events.append({"event": event, **props}),
+    )
+
+    def fail_runner(*_args, **_kwargs):
+        raise SystemExit(STARTUP_FAILURE)
+
+    monkeypatch.setattr("rapid_mlx._uvicorn.uvicorn.run", fail_runner)
+    args = cli.build_parser().parse_args(
+        ["serve", "qwen3.5-4b-4bit", "--listen-fd", "7", *port_argv]
+    )
+    assert args._port_explicit is None
+
+    server_start._reset_for_tests()
+    server_start.attempted("qwen3.5-4b-4bit", load_policy="eager")
+    with pytest.raises(SystemExit) as caught:
+        cli._run_uvicorn(_asgi_app, args, "error")
+
+    assert caught.value.code == STARTUP_FAILURE
+    assert [event["state"] for event in events] == ["attempted", "failed"]
+    assert events[-1]["failure_stage"] == "bind"
+    assert "port_explicit" not in events[-1]
     server_start._reset_for_tests()
 
 
@@ -951,10 +1053,40 @@ def test_port_collision_emits_only_failed_bind(monkeypatch):
                 "127.0.0.1",
                 occupied.getsockname()[1],
                 model="qwen3.5-4b-4bit",
+                port_explicit=True,
             )
 
     assert caught.value.code == 1
     assert [event["state"] for event in events] == ["attempted", "failed"]
     assert events[-1]["failure_stage"] == "bind"
+    assert events[-1]["port_explicit"] is True
     assert legacy_failures == []
+    server_start._reset_for_tests()
+
+
+def test_implicit_port_scan_exhaustion_emits_nonexplicit_bind(monkeypatch):
+    events: list[dict[str, object]] = []
+    monkeypatch.setattr("rapid_mlx.telemetry.track._upload_allowed", lambda: True)
+    monkeypatch.setattr(
+        "rapid_mlx.telemetry.track.track",
+        lambda event, props: events.append({"event": event, **props}),
+    )
+    monkeypatch.setattr(cli, "_port_collision_host", lambda _host, _port: _host)
+    server_start._reset_for_tests()
+    server_start.attempted("qwen3.5-4b-4bit", load_policy="eager")
+
+    with pytest.raises(SystemExit) as caught:
+        cli._resolve_serve_port(
+            "127.0.0.1",
+            None,
+            model="qwen3.5-4b-4bit",
+            port_explicit=False,
+            scan_base=8000,
+            scan_count=1,
+        )
+
+    assert caught.value.code == 1
+    assert [event["state"] for event in events] == ["attempted", "failed"]
+    assert events[-1]["failure_stage"] == "bind"
+    assert events[-1]["port_explicit"] is False
     server_start._reset_for_tests()

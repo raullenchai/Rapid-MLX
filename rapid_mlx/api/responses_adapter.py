@@ -88,7 +88,13 @@ def _canonicalize_tool_type(ttype: str | None) -> str | None:
     return _RESPONSES_TOOL_TYPE_ALIASES.get(ttype, ttype)
 
 
-def _raise_unsupported_tool_type(tool_type: str) -> None:
+def _raise_unsupported_tool_type(
+    tool_type: str,
+    *,
+    telemetry_model: str | None = None,
+    caller_agent: str | None = None,
+    caller_client: str | None = None,
+) -> None:
     """Single source of truth for the F13 envelope (Yuki R1 0.8.5 dogfood).
 
     Raised by the adapter when an incoming tool entry has a ``type``
@@ -102,7 +108,12 @@ def _raise_unsupported_tool_type(tool_type: str) -> None:
     aliases = sorted(_RESPONSES_TOOL_TYPE_ALIASES)
     from rapid_mlx.telemetry.inference import emit_capability_rejected
 
-    emit_capability_rejected("tool_type_unsupported")
+    emit_capability_rejected(
+        "tool_type_unsupported",
+        model=telemetry_model,
+        caller_agent=caller_agent,
+        caller_client=caller_client,
+    )
     raise HTTPException(
         status_code=400,
         detail={
@@ -328,13 +339,18 @@ def normalize_responses_tool_types(tools: list[dict] | None) -> dict[str, str]:
     }
 
 
-def validate_responses_tool_types(tools: list[dict] | None) -> None:
+def validate_responses_tool_types(
+    tools: list[dict] | None,
+    *,
+    telemetry_model: str | None = None,
+    caller_agent: str | None = None,
+    caller_client: str | None = None,
+) -> None:
     """Raise 400 if any ``tools[i].type`` falls outside the allowlist.
 
-    Idempotent — safe to call from both the route entry point and from
-    the adapter's own ``responses_to_openai`` path. The route gate fires
-    BEFORE we touch the engine so unsupported requests don't admit a
-    scheduler slot.
+    The route calls this before its other semantic validators, using the
+    server's pre-resolved served identity so telemetry gains model context
+    without changing HTTP validation ordering.
 
     Alias-aware: ``tools[i].type`` is checked AFTER the alias map is
     applied (see :func:`_canonicalize_tool_type`), so OpenAI-SDK
@@ -349,7 +365,12 @@ def validate_responses_tool_types(tools: list[dict] | None) -> None:
         ttype = t.get("type")
         canonical = _canonicalize_tool_type(ttype)
         if canonical and canonical not in SUPPORTED_RESPONSES_TOOL_TYPES:
-            _raise_unsupported_tool_type(ttype)
+            _raise_unsupported_tool_type(
+                ttype,
+                telemetry_model=telemetry_model,
+                caller_agent=caller_agent,
+                caller_client=caller_client,
+            )
 
 
 def _is_computer_use_tool(tool: dict) -> bool:
@@ -511,7 +532,12 @@ def _resolve_reasoning_effort(request: ResponsesRequest) -> str | None:
 
 
 def responses_to_openai(
-    request: ResponsesRequest, *, preserve_developer_role: bool = False
+    request: ResponsesRequest,
+    *,
+    preserve_developer_role: bool = False,
+    telemetry_model: str | None = None,
+    caller_agent: str | None = None,
+    caller_client: str | None = None,
 ) -> ChatCompletionRequest:
     """
     Convert a Responses-API request to an OpenAI Chat Completions request.
@@ -539,7 +565,11 @@ def responses_to_openai(
     else:
         for item in request.input:
             converted = _convert_input_item(
-                item, preserve_developer_role=preserve_developer_role
+                item,
+                preserve_developer_role=preserve_developer_role,
+                telemetry_model=telemetry_model,
+                caller_agent=caller_agent,
+                caller_client=caller_client,
             )
             messages.extend(converted)
 
@@ -561,7 +591,12 @@ def responses_to_openai(
     if not preserve_developer_role:
         messages = _merge_system_messages(messages)
 
-    tools = _convert_tools(request.tools)
+    tools = _convert_tools(
+        request.tools,
+        telemetry_model=telemetry_model,
+        caller_agent=caller_agent,
+        caller_client=caller_client,
+    )
     tool_choice = _convert_tool_choice(request.tool_choice)
     # R14 task #293: ``text.format`` is the canonical Responses-spec
     # shape for structured output and wins when both are set; the
@@ -1152,12 +1187,23 @@ def _parse_computer_action(arguments: str) -> dict:
 
 
 def _convert_input_item(
-    item: ResponsesInputItem, *, preserve_developer_role: bool = False
+    item: ResponsesInputItem,
+    *,
+    preserve_developer_role: bool = False,
+    telemetry_model: str | None = None,
+    caller_agent: str | None = None,
+    caller_client: str | None = None,
 ) -> list[Message]:
     """Translate one Responses-API input item to 0+ Chat messages."""
     if item.type == "message":
         return [
-            _message_item_to_chat(item, preserve_developer_role=preserve_developer_role)
+            _message_item_to_chat(
+                item,
+                preserve_developer_role=preserve_developer_role,
+                telemetry_model=telemetry_model,
+                caller_agent=caller_agent,
+                caller_client=caller_client,
+            )
         ]
     if item.type == "function_call":
         return [_function_call_to_chat(item)]
@@ -1190,7 +1236,12 @@ _RESPONSES_TO_CHAT_ROLE = {
 
 
 def _message_item_to_chat(
-    item: ResponsesInputItem, *, preserve_developer_role: bool = False
+    item: ResponsesInputItem,
+    *,
+    preserve_developer_role: bool = False,
+    telemetry_model: str | None = None,
+    caller_agent: str | None = None,
+    caller_client: str | None = None,
 ) -> Message:
     raw_role = item.role or "user"
     role = (
@@ -1206,7 +1257,10 @@ def _message_item_to_chat(
             if content == ""
             else [
                 normalize_responses_content_part(
-                    {"type": "input_text", "text": content}
+                    {"type": "input_text", "text": content},
+                    telemetry_model=telemetry_model,
+                    caller_agent=caller_agent,
+                    caller_client=caller_client,
                 )
             ]
         )
@@ -1218,7 +1272,14 @@ def _message_item_to_chat(
             # input_text/output_text become Chat text parts; input_image
             # becomes Chat image_url. Unsupported or malformed blocks raise
             # here rather than producing an empty prompt.
-            parts.append(normalize_responses_content_part(c))
+            parts.append(
+                normalize_responses_content_part(
+                    c,
+                    telemetry_model=telemetry_model,
+                    caller_agent=caller_agent,
+                    caller_client=caller_client,
+                )
+            )
         if not parts:
             raise ValueError("Responses message content must not be empty")
         chat_content = parts
@@ -1270,7 +1331,13 @@ def _function_call_output_to_chat(item: ResponsesInputItem) -> Message:
 # ---------------------------------------------------------------------------
 
 
-def _convert_tools(tools: list[dict] | None) -> list[ToolDefinition] | None:
+def _convert_tools(
+    tools: list[dict] | None,
+    *,
+    telemetry_model: str | None = None,
+    caller_agent: str | None = None,
+    caller_client: str | None = None,
+) -> list[ToolDefinition] | None:
     """Convert Responses-flat tool shape to Chat-nested.
 
     Responses: ``{type: "function", name, description, parameters}``
@@ -1364,7 +1431,12 @@ def _convert_tools(tools: list[dict] | None) -> list[ToolDefinition] | None:
             # fires before we reach here, but keep this as defense-in-
             # depth so a future bypass still 400s instead of silently
             # dropping the tool entry.
-            _raise_unsupported_tool_type(ttype or "<missing>")
+            _raise_unsupported_tool_type(
+                ttype or "<missing>",
+                telemetry_model=telemetry_model,
+                caller_agent=caller_agent,
+                caller_client=caller_client,
+            )
     return converted or None
 
 

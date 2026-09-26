@@ -185,7 +185,7 @@ def test_text_model_image_rejection_emits_capability(anthropic_client, monkeypat
     monkeypatch.setattr(
         inference,
         "emit_capability_rejected",
-        lambda capability, *, model_type="other": calls.append(
+        lambda capability, *, model_type="other", **_context: calls.append(
             (capability, model_type)
         ),
     )

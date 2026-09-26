@@ -53,6 +53,7 @@ def run_native_mtp_server(
     pair: NativeMTPPair,
     host: str,
     port: int,
+    port_explicit: bool | None = None,
     served_model_name: str,
     default_max_tokens: int,
     cors_origins: list[str],
@@ -180,6 +181,7 @@ def run_native_mtp_server(
         timeout_keep_alive=30,
         on_server_accepting=_print_ready,
         uvicorn_runner=uvicorn.run,
+        port_explicit=port_explicit,
     )
 
 
