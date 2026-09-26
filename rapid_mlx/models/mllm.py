@@ -217,17 +217,24 @@ def _managed_desktop_runtime_root() -> Path:
     return Path(sys.executable).resolve().parents[2]
 
 
-def _vision_install_hint() -> str:
+def _vision_install_hint(*, include_paths: bool = True) -> str:
     """Return a repair path that cannot accidentally target another Python.
 
     A signed Desktop runtime is immutable product state: mutating it with pip
     invalidates the tested dependency set (and can invalidate a bundle seal).
     Standalone environments use the active interpreter explicitly so a
     two-venv installation cannot repair the wrong environment.
+
+    ``include_paths=False`` keeps the same wording with every filesystem path
+    replaced by a generic name, for text sent to HTTP clients.
     """
     managed_kind = _managed_desktop_runtime_kind()
     if managed_kind == "runtime-override":
-        runtime_root = _managed_desktop_runtime_root()
+        runtime_root = (
+            _managed_desktop_runtime_root()
+            if include_paths
+            else "the Desktop runtime-override folder"
+        )
         return (
             "Install the current Rapid-MLX Desktop.app first (its DMG ships a "
             "validated sidecar), then remove "
@@ -240,7 +247,7 @@ def _vision_install_hint() -> str:
             "Reinstall Rapid-MLX Desktop.app to restore its validated vision "
             "runtime. Do not pip-install into the code-signed bundled sidecar."
         )
-    python = shlex.quote(sys.executable)
+    python = shlex.quote(sys.executable) if include_paths else "python"
     return (
         "Install the validated vision stack into this runtime with:\n"
         f"    {python} -m pip install --upgrade --force-reinstall "
