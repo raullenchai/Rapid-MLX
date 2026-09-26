@@ -458,7 +458,7 @@ def _claim_serve_failure_key(
     """Claim a cross-process failure key; fail open on every storage error."""
     try:
         from rapid_mlx.telemetry.server_start import (
-            _atomic_write_state_json,
+            _atomic_write_marker,
             _prepare_state_dir,
         )
 
@@ -492,7 +492,7 @@ def _claim_serve_failure_key(
                         reverse=True,
                     )[:_SERVE_FAILED_MAX_KEYS]
                 )
-            _atomic_write_state_json(path, recent)
+            _atomic_write_marker(path, value=recent)
             return True
         finally:
             os.close(dir_fd)
