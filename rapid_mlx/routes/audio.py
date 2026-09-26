@@ -3129,7 +3129,6 @@ async def create_speech(request: AudioSpeechRequest = Body(...)):
             emit_capability_rejected(
                 "speech_capability_unsupported",
                 model_type="audio",
-                model=model_name,
             )
             raise HTTPException(
                 status_code=400,
@@ -3163,7 +3162,6 @@ async def create_speech(request: AudioSpeechRequest = Body(...)):
             emit_capability_rejected(
                 "speech_capability_unsupported",
                 model_type="audio",
-                model=model_name,
             )
             raise HTTPException(
                 status_code=400,
@@ -3228,7 +3226,6 @@ async def create_speech(request: AudioSpeechRequest = Body(...)):
             emit_capability_rejected(
                 "speech_capability_unsupported",
                 model_type="audio",
-                model=model_name,
             )
             raise HTTPException(
                 status_code=400,

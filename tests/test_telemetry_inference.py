@@ -837,12 +837,65 @@ def test_model_type_tokens_match_registry():
     assert declared == inference._MODEL_TYPES
 
 
-def test_no_route_or_api_telemetry_call_receives_request_model_expression():
-    """Client model fields are routing input, never telemetry identity."""
-    forbidden_roots = {"request", "responses_request", "body"}
+_REQUEST_MODEL_ROOTS = frozenset(
+    {
+        "request",
+        "responses_request",
+        "body",
+        "payload",
+        "req",
+        "chat_request",
+        "completion_request",
+    }
+)
+
+
+class _FunctionScopeNodes(ast.NodeVisitor):
+    """Collect one function's nodes without leaking into nested scopes."""
+
+    def __init__(self):
+        self.nodes: list[ast.AST] = []
+
+    def generic_visit(self, node: ast.AST) -> None:
+        self.nodes.append(node)
+        super().generic_visit(node)
+
+    def visit_FunctionDef(self, node: ast.FunctionDef) -> None:
+        return
+
+    def visit_AsyncFunctionDef(self, node: ast.AsyncFunctionDef) -> None:
+        return
+
+    def visit_Lambda(self, node: ast.Lambda) -> None:
+        return
+
+    def visit_ClassDef(self, node: ast.ClassDef) -> None:
+        return
+
+
+def _scope_nodes(body: list[ast.stmt]) -> list[ast.AST]:
+    collector = _FunctionScopeNodes()
+    for statement in body:
+        collector.visit(statement)
+    return collector.nodes
+
+
+def _target_names(target: ast.AST) -> set[str]:
+    return {
+        node.id
+        for node in ast.walk(target)
+        if isinstance(node, ast.Name) and isinstance(node.ctx, ast.Store)
+    }
+
+
+def _request_model_violations(repo_root: Path) -> list[str]:
+    """Find request-derived model identities reaching route telemetry sinks."""
     violations: list[str] = []
 
-    for directory in (REPO_ROOT / "rapid_mlx/routes", REPO_ROOT / "rapid_mlx/api"):
+    for directory in (
+        repo_root / "rapid_mlx/routes",
+        repo_root / "rapid_mlx/api",
+    ):
         for path in directory.rglob("*.py"):
             tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
             telemetry_names: set[str] = set()
@@ -858,7 +911,8 @@ def test_no_route_or_api_telemetry_call_receives_request_model_expression():
                 ):
                     for alias in node.names:
                         imported_name = alias.asname or alias.name
-                        telemetry_names.add(imported_name)
+                        if alias.name == "track" or alias.name.startswith("emit_"):
+                            telemetry_names.add(imported_name)
                         telemetry_modules.add(imported_name)
                 elif isinstance(node, ast.Import):
                     for alias in node.names:
@@ -867,45 +921,192 @@ def test_no_route_or_api_telemetry_call_receives_request_model_expression():
                                 alias.asname or alias.name.split(".")[0]
                             )
 
-            def contains_request_model(node: ast.AST) -> bool:
-                return any(
-                    isinstance(child, ast.Attribute)
-                    and child.attr == "model"
-                    and isinstance(child.value, ast.Name)
-                    and child.value.id in forbidden_roots
-                    for child in ast.walk(node)
+            def is_telemetry_call(
+                node: ast.Call,
+                telemetry_names: set[str] = telemetry_names,
+                telemetry_modules: set[str] = telemetry_modules,
+            ) -> bool:
+                if isinstance(node.func, ast.Name):
+                    return node.func.id in telemetry_names
+                if not isinstance(node.func, ast.Attribute):
+                    return False
+                root = node.func.value
+                while isinstance(root, ast.Attribute):
+                    root = root.value
+                return (
+                    isinstance(root, ast.Name)
+                    and root.id in telemetry_modules
+                    and (
+                        node.func.attr == "track" or node.func.attr.startswith("emit_")
+                    )
                 )
 
-            for node in ast.walk(tree):
-                if not isinstance(node, ast.Call):
-                    continue
-                imported_telemetry_call = False
-                if isinstance(node.func, ast.Name):
-                    imported_telemetry_call = node.func.id in telemetry_names
-                elif isinstance(node.func, ast.Attribute):
-                    root = node.func.value
-                    while isinstance(root, ast.Attribute):
-                        root = root.value
-                    imported_telemetry_call = (
-                        isinstance(root, ast.Name) and root.id in telemetry_modules
-                    )
-                telemetry_keywords = [
+            def sink_expressions(node: ast.Call) -> list[ast.AST]:
+                expressions = [
                     keyword.value
                     for keyword in node.keywords
                     if keyword.arg == "telemetry_model"
                 ]
-                if not imported_telemetry_call and not telemetry_keywords:
-                    continue
-                expressions = telemetry_keywords
-                if imported_telemetry_call:
+                if is_telemetry_call(node):
                     expressions.extend(node.args)
-                    expressions.extend(keyword.value for keyword in node.keywords)
-                if any(
-                    contains_request_model(expression) for expression in expressions
-                ):
-                    violations.append(f"{path.relative_to(REPO_ROOT)}:{node.lineno}")
+                    expressions.extend(
+                        keyword.value
+                        for keyword in node.keywords
+                        if keyword.arg in {"model", "model_id"}
+                    )
+                return expressions
 
-    assert violations == []
+            def expression_is_tainted(node: ast.AST, tainted: set[str]) -> bool:
+                if isinstance(node, ast.Call):
+                    function_name = (
+                        node.func.id
+                        if isinstance(node.func, ast.Name)
+                        else node.func.attr
+                        if isinstance(node.func, ast.Attribute)
+                        else None
+                    )
+                    # This resolver reads identity from a resident engine, not
+                    # from its routing input. It is the privacy boundary the
+                    # production telemetry contract requires.
+                    if function_name == "engine_telemetry_id":
+                        return False
+                if (
+                    isinstance(node, ast.Attribute)
+                    and node.attr == "model"
+                    and isinstance(node.value, ast.Name)
+                    and node.value.id in _REQUEST_MODEL_ROOTS
+                ):
+                    return True
+                if isinstance(node, ast.Name) and node.id in tainted:
+                    return True
+                return any(
+                    expression_is_tainted(child, tainted)
+                    for child in ast.iter_child_nodes(node)
+                )
+
+            def add_assignment_taint(
+                target: ast.AST, value: ast.AST, tainted: set[str]
+            ) -> bool:
+                changed = False
+                if (
+                    isinstance(target, (ast.Tuple, ast.List))
+                    and isinstance(value, (ast.Tuple, ast.List))
+                    and len(target.elts) == len(value.elts)
+                ):
+                    for child_target, child_value in zip(
+                        target.elts, value.elts, strict=True
+                    ):
+                        changed |= add_assignment_taint(
+                            child_target, child_value, tainted
+                        )
+                    return changed
+                if expression_is_tainted(value, tainted):
+                    before = len(tainted)
+                    tainted.update(_target_names(target))
+                    changed = len(tainted) != before
+                return changed
+
+            def scope_taint(nodes: list[ast.AST]) -> set[str]:
+                tainted: set[str] = set()
+                changed = True
+                while changed:
+                    changed = False
+                    for node in nodes:
+                        if isinstance(node, ast.Assign):
+                            for target in node.targets:
+                                changed |= add_assignment_taint(
+                                    target, node.value, tainted
+                                )
+                        elif (
+                            isinstance(node, ast.AnnAssign) and node.value is not None
+                        ) or isinstance(node, (ast.AugAssign, ast.NamedExpr)):
+                            changed |= add_assignment_taint(
+                                node.target, node.value, tainted
+                            )
+                        elif isinstance(
+                            node, (ast.For, ast.AsyncFor, ast.comprehension)
+                        ):
+                            changed |= add_assignment_taint(
+                                node.target, node.iter, tainted
+                            )
+                        elif isinstance(node, (ast.With, ast.AsyncWith)):
+                            for item in node.items:
+                                if item.optional_vars is not None:
+                                    changed |= add_assignment_taint(
+                                        item.optional_vars,
+                                        item.context_expr,
+                                        tainted,
+                                    )
+                return tainted
+
+            def check_calls(
+                nodes: list[ast.AST],
+                tainted: set[str],
+                path: Path = path,
+            ) -> None:
+                for node in nodes:
+                    if not isinstance(node, ast.Call):
+                        continue
+                    if any(
+                        expression_is_tainted(expression, tainted)
+                        for expression in sink_expressions(node)
+                    ):
+                        violations.append(
+                            f"{path.relative_to(repo_root)}:{node.lineno}"
+                        )
+
+            module_nodes = _scope_nodes(tree.body)
+            check_calls(module_nodes, set())
+            for node in ast.walk(tree):
+                if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                    nodes = _scope_nodes(node.body)
+                    check_calls(nodes, scope_taint(nodes))
+
+    return violations
+
+
+def test_no_route_or_api_telemetry_call_receives_request_model_expression():
+    """Client model fields are routing input, never telemetry identity."""
+    assert _request_model_violations(REPO_ROOT) == []
+
+
+@pytest.mark.parametrize(
+    "function_body",
+    [
+        "emit_capability_rejected('unsupported', model=request.model)",
+        (
+            "emit_capability_rejected('unsupported', "
+            "model=telemetry_model_id(responses_request.model))"
+        ),
+        "m = request.model\nemit_capability_rejected('unsupported', model=m)",
+        (
+            "m, ignored = body.model, None\n"
+            "emit_completed_request(model=m, endpoint='/v1/test')"
+        ),
+        (
+            'm = f"model={payload.model}"\n'
+            "emit_capability_rejected('unsupported', model_id=m)"
+        ),
+    ],
+    ids=["direct", "wrapped", "local-alias", "tuple-unpack", "f-string"],
+)
+def test_request_model_privacy_gate_rejects_scratch_variants(tmp_path, function_body):
+    route_dir = tmp_path / "rapid_mlx/routes"
+    route_dir.mkdir(parents=True)
+    source = (
+        "from rapid_mlx.telemetry.inference import (\n"
+        "    emit_capability_rejected, emit_completed_request, telemetry_model_id,\n"
+        ")\n\n"
+        "def scratch(request, responses_request, body, payload):\n"
+        + "\n".join(f"    {line}" for line in function_body.splitlines())
+        + "\n"
+    )
+    (route_dir / "scratch.py").write_text(source, encoding="utf-8")
+
+    expected_line = 7 if "\n" in function_body else 6
+    assert _request_model_violations(tmp_path) == [
+        f"rapid_mlx/routes/scratch.py:{expected_line}"
+    ]
 
 
 def test_image_unavailable_reports_resident_engine_telemetry_id(monkeypatch):
