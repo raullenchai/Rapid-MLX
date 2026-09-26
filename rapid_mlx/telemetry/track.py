@@ -254,14 +254,18 @@ def track(
 def _enqueue_accepted(accepted: _AcceptedEvent) -> bool:
     """Queue an event only when accompanied by proof minted by this module."""
     try:
-        if type(accepted) is not _AcceptedEvent or not _has_accepted_event_authority(
-            accepted._authority
-        ):
+        if type(accepted) is not _AcceptedEvent:
+            return False
+        authority = accepted._authority
+        event = str(accepted.event)
+        props = dict(accepted.props)
+        nth_model_served = accepted.nth_model_served
+        if not _has_accepted_event_authority(authority):
             return False
         # Consent was decided exactly once before the dedupe ledger claim. The
         # registry is cheap and is intentionally re-run here: even same-process
         # forgery or ``object.__setattr__`` cannot put unvalidated data on wire.
-        accepted_props = registry.validate(accepted.event, dict(accepted.props))
+        accepted_props = registry.validate(event, props)
         if accepted_props is None:
             return False
         context = _process_context()
@@ -270,7 +274,7 @@ def _enqueue_accepted(accepted: _AcceptedEvent) -> bool:
 
         # ``note_model_served`` uses zero as its failure sentinel. A real
         # successful note is always at least one, so zero must stay off wire.
-        nth = None if accepted.nth_model_served == 0 else accepted.nth_model_served
+        nth = None if nth_model_served == 0 else nth_model_served
         common = common_props.build_common_props(
             surface=context.surface,
             install_id=context.install_id,
@@ -284,7 +288,7 @@ def _enqueue_accepted(accepted: _AcceptedEvent) -> bool:
         if common is None:
             return False
         item = envelope._build_batch_item_from_validated(
-            accepted.event, dict(accepted_props), common
+            event, dict(accepted_props), common
         )
         if item is None:
             return False

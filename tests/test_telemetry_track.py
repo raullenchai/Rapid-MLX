@@ -359,6 +359,35 @@ def test_object_new_forgery_cannot_enqueue_invalid_props(monkeypatch):
     assert sender.items == []
 
 
+def test_enqueue_revalidation_binds_event_to_validated_snapshot(monkeypatch):
+    sender = inject_sender(monkeypatch)
+    accepted = track_module.would_accept("app_opened", {})
+    assert accepted is not None
+    forged = object.__new__(track_module._AcceptedEvent)
+
+    class SwitchEventMapping(Mapping[str, object]):
+        def __getitem__(self, key: str) -> object:
+            assert key == "error_class"
+            object.__setattr__(forged, "event", "app_opened")
+            return "other"
+
+        def __iter__(self) -> Iterator[str]:
+            yield "error_class"
+
+        def __len__(self) -> int:
+            return 1
+
+    object.__setattr__(forged, "event", "model_serve_failed")
+    object.__setattr__(forged, "props", SwitchEventMapping())
+    object.__setattr__(forged, "nth_model_served", None)
+    object.__setattr__(forged, "_authority", accepted._authority)
+
+    assert track_module._enqueue_accepted(forged) is True
+    [item] = sender.items
+    assert item["event"] == "model_serve_failed"
+    assert item["properties"]["error_class"] == "other"
+
+
 def test_direct_constructor_cannot_enqueue_invalid_props_when_consent_denied(
     monkeypatch,
 ):
