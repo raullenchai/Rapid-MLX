@@ -1625,6 +1625,22 @@ def _message_to_engine_dict(msg) -> dict:
     return {k: v for k, v in raw.items() if v is not None}
 
 
+def _record_nonstream_failure(engine, request: Request, error_class: str) -> None:
+    """Count one failed non-streaming /v1/responses request under a class."""
+    from rapid_mlx.telemetry import inference as _telemetry_inference
+    from rapid_mlx.telemetry.model_id import engine_telemetry_id
+
+    caller_agent, caller_client = _telemetry_inference.request_caller_headers(request)
+    _telemetry_inference.emit_completed_request(
+        model=engine_telemetry_id(engine),
+        endpoint="/v1/responses",
+        caller_agent=caller_agent,
+        caller_client=caller_client,
+        result="failed",
+        error_class=error_class,
+    )
+
+
 async def _non_stream(
     engine: BaseEngine,
     openai_request: ChatCompletionRequest,
@@ -1799,6 +1815,7 @@ async def _non_stream(
                 guided_err,
             )
             incr_strict_violation()
+            _record_nonstream_failure(engine, request, "strict_schema_violation")
             raise HTTPException(
                 status_code=502,
                 detail={
@@ -1866,6 +1883,7 @@ async def _non_stream(
                     guided_err,
                 )
                 incr_strict_violation()
+                _record_nonstream_failure(engine, request, "strict_schema_violation")
                 raise HTTPException(
                     status_code=502,
                     detail={
@@ -1893,6 +1911,11 @@ async def _non_stream(
     except HTTPException:
         raise
     except Exception as e:  # noqa: BLE001 — match other routes' error shape
+        from rapid_mlx.telemetry import inference as _telemetry_inference
+
+        _record_nonstream_failure(
+            engine, request, _telemetry_inference.classify_inference_failure(e)
+        )
         err_msg = str(e)
         err_type = type(e).__name__
         if (
@@ -2169,6 +2192,7 @@ async def _non_stream(
                 "the server logs for the underlying engine error."
             ),
         }
+        _record_nonstream_failure(engine, request, "output_contract_unmet")
         return Response(
             content=json.dumps(payload),
             media_type="application/json",
@@ -2210,6 +2234,7 @@ async def _non_stream(
                 "on /v1/responses: %s",
                 err,
             )
+            _record_nonstream_failure(engine, request, "strict_schema_violation")
             raise HTTPException(
                 status_code=502,
                 detail={
@@ -2274,6 +2299,7 @@ async def _non_stream(
         )
         payload = failed_payload.model_dump(exclude_none=True)
         payload["error"] = {"code": code, "message": message}
+        _record_nonstream_failure(engine, request, "output_contract_unmet")
         return Response(content=json.dumps(payload), media_type="application/json")
 
     cleaned_text, reasoning_text = _finalize_content_and_reasoning(
@@ -2378,6 +2404,7 @@ async def _non_stream(
                 "call. Retry the request."
             ),
         }
+        _record_nonstream_failure(engine, request, "output_contract_unmet")
         return Response(content=json.dumps(payload), media_type="application/json")
 
     openai_response = ChatCompletionResponse(
@@ -4217,7 +4244,7 @@ async def _stream_responses(
                     "tool_choice_unfulfilled",
                 )
                 err_msg = str(err_detail)
-            _record_failed("stream_error")
+            _record_failed("output_contract_unmet")
             yield _emit(
                 "response.failed",
                 {
@@ -4636,7 +4663,7 @@ async def _stream_responses(
                 if isinstance(part, dict)
             )
         if reasoning_item_finalized and emitted_reasoning != accumulated_reasoning_text:
-            _record_failed("stream_error")
+            _record_failed("output_contract_unmet")
             yield _emit(
                 "response.failed",
                 {
@@ -4681,7 +4708,7 @@ async def _stream_responses(
                 error_code,
                 completion_tokens,
             )
-            _record_failed("stream_error")
+            _record_failed("output_contract_unmet")
             yield _emit(
                 "response.failed",
                 {
@@ -4993,7 +5020,7 @@ async def _stream_responses(
                 "(accumulated_text empty, no tool_calls, completion_tokens=0); "
                 "surfacing as response.failed"
             )
-            _record_failed("stream_error")
+            _record_failed("output_contract_unmet")
             yield _emit(
                 "response.failed",
                 {

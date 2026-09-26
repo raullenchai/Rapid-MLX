@@ -138,6 +138,29 @@ from ..service.helpers import (
 logger = logging.getLogger(__name__)
 
 
+def _record_nonstream_failure(
+    raw_request, served_telemetry_id: str | None, error_class: str
+) -> None:
+    """Count one failed non-streaming chat completion under a fixed class.
+
+    For failures the route raises itself as an ``HTTPException`` (which the
+    generic handler re-raises uncounted), e.g. the strict-schema 502s.
+    """
+    from rapid_mlx.telemetry import inference as _telemetry_inference
+
+    caller_agent, caller_client = _telemetry_inference.request_caller_headers(
+        raw_request
+    )
+    _telemetry_inference.emit_completed_request(
+        model=served_telemetry_id or "<custom>",
+        endpoint="/v1/chat/completions",
+        caller_agent=caller_agent,
+        caller_client=caller_client,
+        result="failed",
+        error_class=error_class,
+    )
+
+
 def _new_stream_request_id() -> str:
     """Return an unguessable public identity suitable for scheduler admission."""
 
@@ -5821,6 +5844,9 @@ async def _create_chat_completion_impl(
                         "strict=true: %s",
                         guided_err,
                     )
+                    _record_nonstream_failure(
+                        raw_request, served_telemetry_id, "strict_schema_violation"
+                    )
                     raise HTTPException(
                         status_code=502,
                         detail={
@@ -5945,6 +5971,9 @@ async def _create_chat_completion_impl(
             logger.warning(
                 "Strict json_schema response failed post-decode validation: %s",
                 err,
+            )
+            _record_nonstream_failure(
+                raw_request, served_telemetry_id, "strict_schema_violation"
             )
             raise HTTPException(
                 status_code=502,

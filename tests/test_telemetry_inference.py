@@ -3155,7 +3155,7 @@ def test_worst_case_counter_cardinality_supports_28_complete_models():
         * len(enums["caller"]["values"])
         * (1 + len(enums["inference_error_class"]["values"]))
     )
-    assert keys_per_model == 8 * 27 * 10
+    assert keys_per_model == 8 * 27 * 11
     assert store.MAX_KEYS // keys_per_model == 28
 
 
@@ -3206,10 +3206,10 @@ def test_additional_endpoint_has_completed_request_emit(relative_path, endpoint)
 @pytest.mark.parametrize(
     ("relative_path", "failed_count"),
     [
-        ("rapid_mlx/routes/chat.py", 4),
+        ("rapid_mlx/routes/chat.py", 5),
         ("rapid_mlx/routes/completions.py", 1),
         ("rapid_mlx/routes/anthropic.py", 1),
-        ("rapid_mlx/routes/responses.py", 1),
+        ("rapid_mlx/routes/responses.py", 2),
     ],
 )
 def test_each_terminal_site_uses_only_v2_emit(relative_path, failed_count):
@@ -3621,7 +3621,7 @@ def test_every_failed_inference_site_passes_an_error_class():
             f"{path.relative_to(REPO_ROOT)}:{line}"
             for line in _failed_emits_missing_class(tree)
         )
-    assert failed_sites >= 8
+    assert failed_sites >= 10
     assert offenders == []
 
 
@@ -3648,6 +3648,7 @@ def test_inference_error_class_enum_is_the_documented_closed_set():
         "prompt_too_large",
         "strict_schema_violation",
         "model_replaced",
+        "output_contract_unmet",
         "stream_error",
         "other",
     ]
